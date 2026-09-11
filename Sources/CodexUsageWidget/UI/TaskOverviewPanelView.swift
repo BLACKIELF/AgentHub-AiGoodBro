@@ -214,7 +214,7 @@ struct TaskOverviewPanelView: View {
             Spacer(minLength: 0)
         }
         .font(.system(size: 10, weight: .medium))
-        .foregroundStyle(state == .available ? Color.secondary : Color.orange)
+        .foregroundStyle(state == .available ? Color.secondary : FixedVisualPalette.statusWarning)
         .lineLimit(1)
     }
 
@@ -226,36 +226,11 @@ struct TaskOverviewPanelView: View {
     }
 
     private func stateLabel(_ state: TaskOverviewItemState) -> String {
-        switch state {
-        case .waitingInput: return model.language.text("待你处理", "Needs action")
-        case .pendingApproval: return model.language.text("待批准", "Awaiting approval")
-        case .running: return model.language.text("运行中", "Running")
-        case .failed: return model.language.text("失败", "Failed")
-        case .blocked: return model.language.text("受阻", "Blocked")
-        case .recentlyActive: return model.language.text("最近活跃，待核对", "Recently active; verify")
-        case .completed: return model.language.text("已完成", "Completed")
-        case .interrupted: return model.language.text("已中断", "Interrupted")
-        case .archived: return model.language.text("已归档", "Archived")
-        case .disconnected: return model.language.text("连接中断，回原任务核对", "Disconnected; verify original task")
-        case .unknown: return model.language.text("状态未知，回原任务核对", "Unknown; verify original task")
-        case .pending: return model.language.text("待继续", "Continue")
-        }
+        TaskStatusCopy.label(state, model.language)
     }
 
     private func stateColor(_ state: TaskOverviewItemState) -> Color {
-        switch state {
-        case .waitingInput: return .orange
-        case .pendingApproval: return .orange
-        case .running: return .blue
-        case .failed: return .red
-        case .blocked: return .red
-        case .recentlyActive: return .secondary
-        case .completed: return .green
-        case .interrupted: return .orange
-        case .archived: return .gray
-        case .disconnected, .unknown: return .gray
-        case .pending: return .yellow
-        }
+        TaskStatusCopy.color(state)
     }
 
     private func dataStateText(_ state: TaskOverviewDataState) -> String {

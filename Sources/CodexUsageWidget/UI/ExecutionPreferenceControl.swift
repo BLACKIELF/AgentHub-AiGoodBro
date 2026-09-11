@@ -301,6 +301,11 @@ struct ExecutionPreferenceControl: View {
                     .font(.caption.weight(.semibold))
                     .lineLimit(1)
                     .truncationMode(.tail)
+                Text(modeBehaviorSummary(mode))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
                 Text(strategy.map { "\($0.mainModel.displayName) · \($0.mainReasoningEffort.displayName)" } ?? "—")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
@@ -310,7 +315,7 @@ struct ExecutionPreferenceControl: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
-            .frame(maxWidth: .infinity, minHeight: 56, alignment: .leading)
+            .frame(maxWidth: .infinity, minHeight: 64, alignment: .leading)
             .padding(8)
             .background(selected ? Color.accentColor.opacity(0.10) : Color.primary.opacity(0.03), in: RoundedRectangle(cornerRadius: 10))
             .overlay {
@@ -557,6 +562,19 @@ struct ExecutionPreferenceControl: View {
     private var preferenceSummary: String {
         let strategy = preference.effectiveStrategy
         return "\(strategy.mainModel.displayName) · \(strategy.mainReasoningEffort.displayName) · \(childSummary(strategy)) · \(speedTitle)"
+    }
+
+    private func modeBehaviorSummary(_ mode: CodexExecutionPreference.SubagentMode) -> String {
+        switch mode {
+        case .standard:
+            return language.text("跟随已保存的主模型和强度；无子代理", "Follows the saved main model and effort; no subagent")
+        case .solLuna:
+            return language.text("默认 planner + worker 组合", "Default planner + worker combination")
+        case .lunaDirect:
+            return language.text("默认不额外调用规划模型", "Default: no extra planner call")
+        default:
+            return language.text("需重新选择档位", "Choose a preset")
+        }
     }
 
     private func builtInModeTitle(_ mode: CodexExecutionPreference.SubagentMode) -> String {

@@ -6,7 +6,7 @@ cd "$ROOT_DIR"
 
 MANIFEST="scripts/self-tests.txt"
 SWIFT_SOURCE="Sources/CodexUsageWidget/main.swift"
-EXPECTED_COUNT=28
+EXPECTED_COUNT=29
 BUILD_DIR="build"
 SKIP_BUILD=0
 SELECTED_TEST=""

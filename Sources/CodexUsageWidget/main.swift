@@ -160,9 +160,13 @@ struct CodexAccountManagerNextMain {
             exit(AccountFloatingPanelStateStore.selfTest() ? 0 : 1)
         }
 
+        if CommandLine.arguments.contains("--self-test-brand-assets") {
+            exit(AHBrandAssetsSelfTest.run() ? 0 : 1)
+        }
+
         if CommandLine.arguments.contains("--self-test-account-inspection") {
             // Preserve the test CLI contract after merging inspection into account cards.
-            exit(AccountTaskStatusSelfTest.run() ? 0 : 1)
+            exit(AccountTaskStatusSelfTest.run() && TaskStatusCopy.selfTest() ? 0 : 1)
         }
 
         if CommandLine.arguments.contains("--self-test-automatic-account-switch") {

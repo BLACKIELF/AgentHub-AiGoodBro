@@ -558,7 +558,7 @@ enum SevenDayResetReminder {
 
     static func message(resetsAt: Date?, now: Date = Date(), language: WidgetLanguage = .zh) -> String? {
         remainingDays(resetsAt: resetsAt, now: now).map {
-            language.text("7 天额度 \($0) 天后重置", "Weekly limit resets in \($0) \($0 == 1 ? "day" : "days")")
+            language.text("7 天窗口 \($0) 天后重置", "Weekly window resets in \($0) \($0 == 1 ? "day" : "days")")
         }
     }
 }
@@ -2289,7 +2289,7 @@ enum CodexProfileStoreSelfTest {
                 SevenDayResetReminder.message(
                     resetsAt: reminderNow.addingTimeInterval(1),
                     now: reminderNow
-                ) == "7 天额度 1 天后重置",
+                ) == "7 天窗口 1 天后重置",
                 SevenDayResetReminder.remainingDays(
                     resetsAt: reminderNow.addingTimeInterval(72 * 60 * 60 + 1),
                     now: reminderNow

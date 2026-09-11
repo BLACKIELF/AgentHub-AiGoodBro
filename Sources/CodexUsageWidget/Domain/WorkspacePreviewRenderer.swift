@@ -448,6 +448,68 @@ enum WorkspacePreviewRenderer {
                 .background(FixedVisualPalette.windowScrim(scheme, reduceTransparency: true))
                 try renderView(editor, size: CGSize(width: 400, height: 470), scheme: scheme, to: directory.appendingPathComponent("astra-model-\(theme).png"))
 
+                let previousDisplayMode = settings.workspaceDisplayMode
+                settings.workspaceDisplayMode = .professional
+                for count in [1, 3] {
+                    let name = count == 1 ? "professional-codex-single" : "professional-codex-multi"
+                    let store = fixtureStore(
+                        accountCount: count,
+                        root: root.appendingPathComponent("\(theme)-pro-codex-\(count)"),
+                        language: language
+                    )
+                    let view = CodexAccountManagerView(
+                        store: store,
+                        settings: settings,
+                        paletteCatalog: catalog,
+                        previewOpenCodexWorkspace: true
+                    )
+                    for width: CGFloat in [820, 980] {
+                        try renderView(
+                            view.frame(width: width, height: 760)
+                                .environment(\.colorScheme, scheme),
+                            size: CGSize(width: width, height: 760),
+                            scheme: scheme,
+                            to: directory.appendingPathComponent("\(name)-\(theme)-\(Int(width)).png")
+                        )
+                    }
+                }
+                settings.workspaceDisplayMode = previousDisplayMode
+
+                let announcedStore = fixtureStore(
+                    accountCount: 3,
+                    root: root.appendingPathComponent("\(theme)-announced"),
+                    language: language
+                )
+                let announcementID = "1234567890123456789"
+                announcedStore.publicResetAnnouncements.seedPreviewLatest(
+                    PublicResetAnnouncement(
+                        id: announcementID,
+                        resetType: .regular,
+                        announcedAt: Date().addingTimeInterval(-7_200),
+                        text: "Synthetic public reset window notice for layout preview.",
+                        source: .init(
+                            type: "x_post",
+                            author: "thsottiaux",
+                            url: URL(string: "https://x.com/thsottiaux/status/\(announcementID)")
+                        )
+                    ),
+                    checkedAt: Date()
+                )
+                try renderView(
+                    CodexAccountManagerView(store: announcedStore, settings: settings, paletteCatalog: catalog)
+                        .frame(width: 980, height: 760),
+                    size: CGSize(width: 980, height: 760),
+                    scheme: scheme,
+                    to: directory.appendingPathComponent("reset-banner-announced-\(theme).png")
+                )
+                try renderView(
+                    CodexAccountManagerView(store: announcedStore, settings: settings, paletteCatalog: catalog)
+                        .frame(width: 820, height: 760),
+                    size: CGSize(width: 820, height: 760),
+                    scheme: scheme,
+                    to: directory.appendingPathComponent("reset-banner-announced-\(theme)-820.png")
+                )
+
                 // Cross-provider placement uses only labeled synthetic data.
                 let fixtureRoot = root.appendingPathComponent("unified-\(theme)")
                 let codex = fixtureStore(accountCount: 3, root: fixtureRoot, language: language, includeQuotaEdgeCases: true)

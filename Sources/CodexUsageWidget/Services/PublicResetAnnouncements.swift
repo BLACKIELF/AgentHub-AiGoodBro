@@ -424,6 +424,13 @@ final class PublicResetAnnouncementMonitor: ObservableObject {
         localStateURL = directory.appendingPathComponent("public-reset-local-v1.json")
     }
 
+    /// Preview fixtures only. Does not start a check or change delivery ledgers.
+    func seedPreviewLatest(_ announcement: PublicResetAnnouncement?, checkedAt: Date?) {
+        guard preview else { return }
+        latest = announcement
+        self.checkedAt = checkedAt
+    }
+
     func configure(
         notifyLocally: @escaping (PublicResetAnnouncement) async -> LocalDelivery,
         canSend: @escaping () -> Bool,

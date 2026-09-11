@@ -6,8 +6,8 @@ let settingsAccessoryColumnWidth: CGFloat = 184
 let settingsControlCornerRadius: CGFloat = 8
 let settingsSegmentHeight: CGFloat = 30
 let settingsControlVisualHeight: CGFloat = settingsSegmentHeight + 6
-let settingsRowTitleFontSize: CGFloat = 11.5
-let settingsRowDetailFontSize: CGFloat = 9.5
+let settingsRowTitleFontSize: CGFloat = 12.5
+let settingsRowDetailFontSize: CGFloat = 10.5
 let settingsControlFontSize: CGFloat = 11
 private let settingsSwitchWidth: CGFloat = 56
 private let settingsShortcutControlSpacing: CGFloat = 8
@@ -94,9 +94,9 @@ struct TitlebarToolbarView: View {
     var body: some View {
         HStack(spacing: 10) {
             Spacer(minLength: 0)
-            ZYZHMark(size: 27)
+            AHBrandSymbol(size: 24)
                 .frame(width: 34, height: titlebarControlHeight)
-                .help(language.text("帧影帧画", "Frame by Frame"))
+                .help("AiGoodBro")
 
             HStack(spacing: 2) {
                 HeaderActionButton(
@@ -190,7 +190,7 @@ struct NextSettingsHeader: View {
 
     var body: some View {
         HStack(alignment: .center, spacing: 8) {
-            AHBrandMark(size: 18)
+            AHBrandSymbol(size: 18)
             VStack(alignment: .leading, spacing: 1) {
                 Text(AHBrandIdentity.displayName)
                     .font(.system(size: 13, weight: .semibold))
@@ -259,7 +259,7 @@ struct SettingsPanelView: View {
             }
             pageNavigation
             ScrollView(.vertical) {
-                VStack(alignment: .leading, spacing: 10) {
+                VStack(alignment: .leading, spacing: compact ? 8 : 10) {
                     VStack(alignment: .leading, spacing: 3) {
                         Text(selectedPage.title(language))
                             .font(.system(size: 15, weight: .semibold))
@@ -272,13 +272,16 @@ struct SettingsPanelView: View {
                     pageContent
                 }
                 .padding(.horizontal, 20)
-                .padding(.vertical, 12)
+                .padding(.top, 12)
+                .padding(.bottom, compact ? 36 : 12)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .accessibilityIdentifier("next.settings.page.\(selectedPage.rawValue)")
             }
             .id(selectedPage)
+            .frame(maxHeight: .infinity)
         }
         .frame(width: compact ? CodexAccountMenuView.preferredSize.width : 480, alignment: .topLeading)
+        .frame(maxHeight: compact ? .infinity : nil)
         .appVisualEnvironment(
             catalog: settings.paletteCatalog,
             paletteID: settings.paletteID,
@@ -333,7 +336,7 @@ struct SettingsPanelView: View {
         switch selectedPage {
         case .appearance: appearancePage
         case .menuBar:
-            VStack(spacing: 4) {
+            VStack(spacing: 6) {
                 StatusItemSettingsView(settings: settings, store: store)
             }
         case .automation: automationPage
@@ -343,7 +346,7 @@ struct SettingsPanelView: View {
     }
 
     private var appearancePage: some View {
-        VStack(spacing: 4) {
+        VStack(spacing: 6) {
             SettingsAppearanceChooser(selection: $settings.themeMode, language: language)
                 .padding(.bottom, 4)
             PaletteSettingsView(settings: settings, onOpenLibrary: onOpenPaletteLibrary)
@@ -392,7 +395,7 @@ struct SettingsPanelView: View {
     }
 
     private var automationPage: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 6) {
             SettingsWarmUpCard(
                 interval: "5h",
                 title: language.text("5 小时暖号", "5-hour warm-up"),
@@ -509,9 +512,9 @@ struct SettingsPanelView: View {
     }
 
     private var aboutPage: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: compact ? 4 : 6) {
             HStack(alignment: .center, spacing: 10) {
-                AHBrandMark(size: 28)
+                AHBrandSymbol(size: 28)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(AHBrandIdentity.displayName)
                         .font(.system(size: 16, weight: .semibold))
@@ -525,6 +528,10 @@ struct SettingsPanelView: View {
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
             }
+            Text(AHBrandIdentity.aboutAttribution(language))
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
             SettingsValueRow(
                 title: language.text("当前 Runtime", "Current runtime"),
                 detail: language.text("当前工作台的数据范围", "Data scope of the current workspace"),
@@ -536,10 +543,6 @@ struct SettingsPanelView: View {
                 value: store.snapshot.account?.planType?.uppercased() ?? "LOCAL"
             )
             AppUpdateSettingsRows(settings: settings, updateStore: updateStore, language: language)
-            Text(AHBrandIdentity.aboutAttribution(language))
-                .font(.system(size: 10))
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -655,35 +658,16 @@ private struct SettingsAppearanceChooser: View {
 }
 
 private struct SettingsWarmUpCard: View {
-    @Environment(\.visualTokens) private var visualTokens
     let interval: String
     let title: String
     let detail: String
     let isOn: Binding<Bool>
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 10) {
-                Text(interval)
-                    .font(.system(size: 13, weight: .semibold).monospacedDigit())
-                    .foregroundStyle(visualTokens.accent.primary.color)
-                    .frame(width: 28, alignment: .leading)
-                Text(title)
-                    .font(.system(size: 13, weight: .semibold))
-                Spacer()
-                SettingsSwitchToggle(isOn: isOn)
-                    .accessibilityLabel(title)
-            }
-            Text(detail)
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+        SettingsBaseRow(title: "\(interval) · \(title)", detail: detail) {
+            SettingsSwitchToggle(isOn: isOn)
+                .accessibilityLabel(title)
         }
-        .padding(12)
-        .background(
-            RoundedRectangle(cornerRadius: settingsControlCornerRadius, style: .continuous)
-                .fill(visualTokens.accent.primary.color.opacity(0.065))
-        )
     }
 }
 
@@ -888,7 +872,6 @@ struct SettingsErrorRow: View {
                         .strokeBorder(FixedVisualPalette.statusDangerStroke(colorScheme), lineWidth: 0.8)
                 )
         )
-        .padding(.horizontal, 8)
         .padding(.vertical, 6)
         .accessibilityElement(children: .combine)
     }

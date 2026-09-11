@@ -160,7 +160,7 @@ private struct StatusItemPreviewRow: View {
     var body: some View {
         VStack(spacing: 8) {
             HStack(spacing: 8) {
-                AHBrandMark(size: 14)
+                AHBrandSymbol(size: 14)
                 Text(AHBrandIdentity.displayName)
                     .font(.system(size: 11, weight: .semibold))
                 Text(AHBrandIdentity.shortName)

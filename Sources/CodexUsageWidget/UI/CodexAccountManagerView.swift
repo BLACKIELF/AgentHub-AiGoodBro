@@ -71,13 +71,15 @@ struct CodexAccountManagerView: View {
     init(
         store: UsageStore, settings: AppSettings, paletteCatalog: PaletteCatalog,
         screenshotRequests: AnyPublisher<NSWindow, Never> = Empty().eraseToAnyPublisher(),
-        localCLIAccounts: LocalCLIAccountStore? = nil
+        localCLIAccounts: LocalCLIAccountStore? = nil,
+        previewOpenCodexWorkspace: Bool = false
     ) {
         self.store = store
         self.settings = settings
         self.paletteCatalog = paletteCatalog
         self.screenshotRequests = screenshotRequests
         _localCLIAccounts = StateObject(wrappedValue: localCLIAccounts ?? LocalCLIAccountStore())
+        _showingHome = State(initialValue: !previewOpenCodexWorkspace)
     }
 
     private var effectiveColorScheme: ColorScheme {
@@ -230,7 +232,7 @@ struct CodexAccountManagerView: View {
 
     private var homeBrandMark: some View {
         HStack(spacing: 6) {
-            ZYZHMark(size: 20)
+            AHBrandSymbol(size: 20)
                 .frame(width: 22, height: 22)
                 .accessibilityHidden(true)
             Text("AiGoodBro")
@@ -324,10 +326,35 @@ struct CodexAccountManagerView: View {
 
     private var professionalOverviewContent: some View {
         VStack(alignment: .leading, spacing: 10) {
-            compactHomeOverview
+            homeTokenTotalsCard
+            resetUpdatesBanner
+            compactHomeMonitorCard
             professionalTaskSummary
             homeOverviewRows
         }
+    }
+
+    private var resetUpdatesBanner: some View {
+        ResetUpdatesBanner(
+            language: language,
+            fiveHourResetsAt: overviewQuota.fiveHour?.resetsAt,
+            sevenDayResetsAt: overviewQuota.sevenDay?.resetsAt,
+            announcement: store.publicResetAnnouncements.latest,
+            checkedAt: store.publicResetAnnouncements.checkedAt,
+            accountsWithResetCards: accountsWithAvailableResetCards,
+            onOpenAnnouncements: { isAutomationCenterPresented = true },
+            onOpenAccounts: { openAccountsFromResetBanner() }
+        )
+    }
+
+    private var accountsWithAvailableResetCards: Int {
+        store.profiles.filter { ($0.lastSnapshot?.availableResetCredits ?? 0) > 0 }.count
+    }
+
+    private func openAccountsFromResetBanner() {
+        showingHome = true
+        professionalSection = .accounts
+        selectedLocalCLI = nil
     }
 
     private var professionalTaskOverview: TaskOverviewPresentation {
@@ -529,37 +556,17 @@ struct CodexAccountManagerView: View {
     private func taskDataStateColor(_ state: TaskOverviewDataState) -> Color {
         switch state {
         case .available: return FixedVisualPalette.statusSuccess
-        case .stale: return .orange
+        case .stale: return FixedVisualPalette.statusWarning
         case .disconnected, .noData: return .secondary
         }
     }
 
     private func taskStateText(_ state: TaskOverviewItemState) -> String {
-        switch state {
-        case .waitingInput: return language.text("等待输入", "Waiting for input")
-        case .pendingApproval: return language.text("等待批准", "Pending approval")
-        case .failed: return language.text("失败", "Failed")
-        case .blocked: return language.text("已阻塞", "Blocked")
-        case .running: return language.text("运行中", "Running")
-        case .pending: return language.text("待开始", "Pending")
-        case .recentlyActive: return language.text("最近活跃", "Recently active")
-        case .completed: return language.text("已完成", "Completed")
-        case .interrupted: return language.text("已中断", "Interrupted")
-        case .disconnected: return language.text("未连接", "Disconnected")
-        case .unknown: return language.text("待核实", "Unverified")
-        case .archived: return language.text("已归档", "Archived")
-        }
+        TaskStatusCopy.label(state, language)
     }
 
     private func taskStateColor(_ state: TaskOverviewItemState) -> Color {
-        switch state {
-        case .running: return .blue
-        case .waitingInput, .pendingApproval, .blocked: return .orange
-        case .failed: return .red
-        case .completed: return .green
-        case .interrupted, .disconnected, .unknown, .archived: return .secondary
-        case .pending, .recentlyActive: return .teal
-        }
+        TaskStatusCopy.color(state)
     }
 
     private var simpleHomeContent: some View {
@@ -583,7 +590,9 @@ struct CodexAccountManagerView: View {
             .font(.caption)
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
-            compactHomeOverview
+            homeTokenTotalsCard
+            resetUpdatesBanner
+            compactHomeMonitorCard
             if settings.simpleWorkspacePreset == .overview {
                 compactHomeMetricTiles
             }
@@ -594,58 +603,27 @@ struct CodexAccountManagerView: View {
         }
     }
 
-    private var compactHomeOverview: some View {
+    private var homeTokenTotalsCard: some View {
+        TokenTotalsHeader(
+            layout: .compact,
+            language: language,
+            combinedTokensTotal: combinedTokensTotal,
+            combinedEquivalentCostUSD: combinedEquivalentCostUSD,
+            officialAccountsLifetimeTokens: officialAccountsTotal,
+            localAllAgentsLifetimeTokens: localAllAgentsTokens
+        )
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .sectionBackground()
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(language.text("总 Token 消耗量", "Total Token Consumption"))
+    }
+
+    private var compactHomeMonitorCard: some View {
         let summary = crossProviderSummary
         let monitored = summary.monitored
         let tasks = professionalTaskOverview
         return VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .firstTextBaseline) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(language.text("总 Token 消耗量", "Total token consumption"))
-                        .font(.system(size: 12, weight: .semibold))
-                    Text(language.text("所有账号官方 + 本机全 Agent · 全时段", "All accounts + all local agents"))
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-                Spacer(minLength: 8)
-                if let cost = combinedEquivalentCostUSD {
-                    Text(String(format: language.text("≈ $%.0f · ¥%.0f", "≈ $%.0f · ¥%.0f"), cost, cost * 6.8))
-                        .font(.system(size: 10, weight: .semibold).monospacedDigit())
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-            }
-            Text(combinedTokensTotal.map(language.tokens) ?? language.text("暂无记录", "No records"))
-                .font(.system(size: 28, weight: .bold, design: .rounded))
-                .foregroundStyle(.tint)
-                .monospacedDigit()
-                .lineLimit(1)
-                .minimumScaleFactor(0.6)
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text(language.text("账号", "Accounts"))
-                    .font(.system(size: 10.5, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                Text(officialAccountsTotal.map(language.tokens) ?? language.text("暂不可用", "Unavailable"))
-                    .font(.system(size: 12, weight: .semibold, design: .rounded).monospacedDigit())
-                    .lineLimit(1)
-                Text(language.text("官方", "official"))
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(.secondary)
-                Text("·")
-                    .foregroundStyle(.secondary)
-                Text(language.text("本机全 Agent", "local agents"))
-                    .font(.system(size: 10.5, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                Text(localAllAgentsTokens.map(language.tokens) ?? language.text("暂无记录", "No records"))
-                    .font(.system(size: 12, weight: .semibold, design: .rounded).monospacedDigit())
-                    .lineLimit(1)
-                Text(language.text("本地", "local"))
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(.secondary)
-            }
-            .lineLimit(1)
-            Divider().opacity(0.45)
             if let monitored {
                 HStack(alignment: .firstTextBaseline, spacing: 10) {
                     Text(language.text("当前监控", "Monitored"))
@@ -688,18 +666,12 @@ struct CodexAccountManagerView: View {
                     value: "\(tasks.needsAttentionCount)"
                 )
             }
-            Text(summary.providerLine(percentText: QuotaAvailabilityPresentation.percentText))
-                .font(.system(size: 10.5, weight: .medium).monospacedDigit())
-                .foregroundStyle(.secondary)
-                .lineLimit(2)
-                .fixedSize(horizontal: false, vertical: true)
-                .help(language.text("各平台窗口分别显示，未知额度不按 0 计算。", "Each provider window is shown separately. Unknown limits are not treated as zero."))
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
         .sectionBackground()
         .accessibilityElement(children: .contain)
-        .accessibilityLabel(language.text("全部平台额度总览", "All-provider usage overview"))
+        .accessibilityLabel(language.text("当前监控与任务计数", "Monitored account and task counts"))
     }
 
     private var compactHomeMetricTiles: some View {
@@ -1392,15 +1364,12 @@ struct CodexAccountManagerView: View {
     private var workspace: some View {
         VStack(alignment: .leading, spacing: 12) {
             workspaceHeader
+            tokenTotalPanel
+            resetUpdatesBanner
             if presentation.isSingleAccount {
-                quotaOverview
-                focusedExecutionPanel
+                currentExecutableSection
                 DisclosureGroup(language.text("用量统计", "Usage"), isExpanded: $isUsageDetailsExpanded) {
-                    HStack(alignment: .top, spacing: 14) {
-                        tokenTotalPanel.frame(width: 320)
-                        agentBreakdownPanel
-                    }
-                    .padding(.top, 12)
+                    agentBreakdownPanel.padding(.top, 12)
                 }
                 .font(.subheadline.weight(.medium))
                 .padding(16)
@@ -1418,19 +1387,11 @@ struct CodexAccountManagerView: View {
                 .sectionBackground()
             } else {
                 DisclosureGroup(isExpanded: $isUsageDetailsExpanded) {
-                    HStack(alignment: .top, spacing: 14) {
-                        quotaOverview
-                        tokenTotalPanel.frame(width: 270)
-                    }
-                    .padding(.top, 8)
+                    quotaOverview.padding(.top, 8)
                 } label: {
                     HStack(spacing: 16) {
                         Label(language.text("当前监控 · \(selectedAccountName)", "Monitoring · \(selectedAccountName)"), systemImage: "eye")
                             .lineLimit(1)
-                        Spacer(minLength: 0)
-                        Text(language.text("总消耗 \(language.tokens(combinedTokensTotal)) Token", "Total: \(language.tokens(combinedTokensTotal)) tokens"))
-                            .foregroundStyle(.secondary)
-                            .fixedSize()
                     }
                     .font(.caption.weight(.medium))
                 }
@@ -1452,6 +1413,15 @@ struct CodexAccountManagerView: View {
 
     private var overviewQuota: (fiveHour: RateWindow?, sevenDay: RateWindow?, readSucceeded: Bool) {
         presentation.quotaSummary(monitored: store.snapshot)
+    }
+
+    private var currentExecutableSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(language.text("当前可执行", "Ready to run"))
+                .font(.headline)
+            quotaOverview
+            focusedExecutionPanel
+        }
     }
 
     @ViewBuilder
@@ -1487,8 +1457,10 @@ struct CodexAccountManagerView: View {
                 }
                 Text(
                     status.blocksLocalCLI
-                        ? language.text(
-                            "账号正在使用，或调度状态尚未确认。确认空闲后才能开始，避免重复占用。", "This account is busy or its status is unverified. CLI launch is available after Hub confirms it is idle.")
+                        ? (status.blockingReason(language)
+                            ?? language.text(
+                                "账号正在使用，或调度状态尚未确认。确认空闲后才能开始，避免重复占用。",
+                                "This account is busy or its status is unverified. CLI launch is available after Hub confirms it is idle."))
                         : language.text("模型偏好已就绪。新任务使用上面的模型与速度，现有任务保持不变。", "These settings apply to new CLI sessions and dispatched tasks. Running tasks stay unchanged.")
                 )
                 .font(.caption)
@@ -1675,72 +1647,18 @@ struct CodexAccountManagerView: View {
     }
 
     private var tokenTotalPanel: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Label(language.text("总消耗", "Total tokens"), systemImage: "chart.bar.xaxis")
-                    .font(.headline)
-                Spacer()
-                Text(language.text("官方 + 本机", "Account + local")).profileBadge()
-            }
-
-            Text(language.tokens(combinedTokensTotal))
-                .font(.system(size: 32, weight: .bold, design: .rounded))
-                .foregroundStyle(.tint)
-                .monospacedDigit()
-                .lineLimit(1)
-                .minimumScaleFactor(0.72)
-            HStack(alignment: .firstTextBaseline) {
-                Text(language.text("所有账号 + 本机全 Agent", "All accounts + all local agents"))
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                Spacer()
-                if let cost = combinedEquivalentCostUSD {
-                    Text(String(format: language.text("API 等效 ≈ $%.0f · ¥%.0f", "API equivalent ≈ $%.0f · ¥%.0f"), cost, cost * 6.8))
-                        .font(.caption.weight(.semibold).monospacedDigit())
-                        .foregroundStyle(.secondary)
-                }
-            }
-
-            if let accountTotal = officialAccountsTotal {
-                HStack(alignment: .firstTextBaseline) {
-                    Text(language.text("账号 Token · 官方统计", "Account tokens · reported total"))
-                        .font(.caption.weight(.semibold))
-                    Spacer()
-                    Text(language.tokens(accountTotal) + " Token")
-                        .font(.caption.weight(.semibold).monospacedDigit())
-                        .foregroundStyle(.tint)
-                }
-                if let statsAsOf = officialAccountsStatsAsOf {
-                    Text(language.text("统计至 ", "As of ") + statsAsOf.formatted(.dateTime.month().day().locale(language.locale)))
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-            } else {
-                Text(language.text("账号官方统计暂不可用", "Account total unavailable"))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            if let localTotal = localAllAgentsTokens {
-                HStack(alignment: .firstTextBaseline) {
-                    Text(language.text("本机全 Agent · 本地记录", "All local agents · local records"))
-                        .font(.caption.weight(.semibold))
-                    Spacer()
-                    Text(language.tokens(localTotal) + " Token")
-                        .font(.caption.weight(.semibold).monospacedDigit())
-                        .foregroundStyle(.tint)
-                }
-                .help(
-                    language.text(
-                        "本机记录的全部 Agent（Codex、Claude Code、ZCode、自定义来源等）全时段 token 总和，本地口径", "Lifetime tokens from local records across Codex, Claude Code, ZCode and custom sources.")
-                )
-            }
-
-        }
+        TokenTotalsHeader(
+            layout: .hero,
+            language: language,
+            combinedTokensTotal: combinedTokensTotal,
+            combinedEquivalentCostUSD: combinedEquivalentCostUSD,
+            officialAccountsLifetimeTokens: officialAccountsTotal,
+            localAllAgentsLifetimeTokens: localAllAgentsTokens,
+            officialAccountsStatsAsOf: officialAccountsStatsAsOf
+        )
         .padding(16)
-        .frame(minHeight: 188, alignment: .topLeading)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
         .sectionBackground()
-        .accessibilityElement(children: .combine)
     }
 
     private var agentBreakdownPanel: some View {
@@ -2067,7 +1985,10 @@ struct CodexAccountManagerView: View {
                     store.isLoggingIn
                         ? language.text("取消正在进行的登录", "Cancel the current sign-in")
                         : selectedMonitorHubTaskStatus.blocksLocalCLI
-                            ? language.text("Hub 状态未确认或同账号有活跃任务，暂不能重新登录所选账号", "Sign-in is blocked while Hub status is unverified or this account has an active task.")
+                            ? (selectedMonitorHubTaskStatus.blockingReason(language)
+                                ?? language.text(
+                                    "Hub 状态未确认或同账号有活跃任务，暂不能重新登录所选账号",
+                                    "Sign-in is blocked while Hub status is unverified or this account has an active task."))
                             : language.text("重新登录当前监控账号", "Sign in to the monitored account again"))
             }
         }
@@ -2429,7 +2350,7 @@ private struct AutomationMaintenanceNotice: View {
                 Spacer(minLength: 0)
             }
             .padding(12)
-            .background(Color.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
+            .background(FixedVisualPalette.statusWarning.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
             .accessibilityElement(children: .combine)
         }
     }
@@ -3096,7 +3017,7 @@ struct CodexAccountMenuView: View {
                         Group {
                             switch screen {
                             case .home:
-                                home
+                                ScrollView(showsIndicators: false) { home }
                             case .accounts:
                                 accounts
                             case .runningTasks:
@@ -3251,66 +3172,49 @@ struct CodexAccountMenuView: View {
     }
 
     private var footerMenu: some View {
-        Menu {
-            Button {
-                changeScreen(.home)
-            } label: {
-                screenMenuLabel(.home, title: text("总览", "Overview"), icon: "rectangle.grid.2x2")
-            }
-            Button {
-                changeScreen(.accounts)
-            } label: {
-                screenMenuLabel(.accounts, title: text("账号与额度", "Accounts & Quota"), icon: "person.2")
-            }
-            Button {
-                changeScreen(.runningTasks)
-            } label: {
-                HStack {
-                    screenMenuLabel(.runningTasks, title: text("运行任务", "Running Tasks"), icon: "checklist")
-                    if pendingTaskCount > 0 {
-                        Text("\(pendingTaskCount)")
-                            .monospacedDigit()
-                            .foregroundStyle(.secondary)
-                    }
-                }
-            }
-            Button {
-                changeScreen(.usageDetails)
-            } label: {
-                screenMenuLabel(.usageDetails, title: text("用量明细", "Usage Details"), icon: "chart.xyaxis.line")
-            }
-            Divider()
-            Button(action: openFullWindow) {
-                Label(text("打开工作台", "Open Workspace"), systemImage: "arrow.up.right.square")
-            }
-            Button {
-                changeScreen(.settings)
-            } label: {
-                screenMenuLabel(.settings, title: text("设置", "Settings"), icon: "gearshape")
-            }
-        } label: {
-            HStack(spacing: 8) {
-                Image(systemName: currentScreenIcon)
-                    .frame(width: 18)
-                Text(currentScreenTitle)
-                    .font(.system(size: 11, weight: .semibold))
-                Spacer(minLength: 4)
-                Image(systemName: "chevron.up.chevron.down")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(.secondary)
-            }
-            .padding(.horizontal, 15)
-            .frame(height: 42)
-            .frame(maxWidth: .infinity)
-            .contentShape(Rectangle())
+        HStack(spacing: 2) {
+            footerTab(.home, title: text("总览", "Overview"), icon: "rectangle.grid.2x2")
+            footerTab(.accounts, title: text("账号", "Accounts"), icon: "person.2")
+            footerTab(.runningTasks, title: text("任务", "Tasks"), icon: "checklist", badge: pendingTaskCount)
+            footerTab(.usageDetails, title: text("用量", "Usage"), icon: "chart.xyaxis.line")
+            footerTab(.settings, title: text("设置", "Settings"), icon: "gearshape")
         }
-        .menuStyle(.borderlessButton)
-        .buttonStyle(.plain)
-        .foregroundStyle(.primary)
+        .padding(.horizontal, 8)
+        .frame(height: 46)
         .overlay(alignment: .top) {
             Rectangle().fill(Color.primary.opacity(0.10)).frame(height: 0.5)
         }
-        .accessibilityLabel(text("当前视图：\(currentScreenTitle)", "Current view: \(currentScreenTitle)"))
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(text("菜单栏导航", "Menu bar navigation"))
+    }
+
+    private func footerTab(_ target: Screen, title: String, icon: String, badge: Int = 0) -> some View {
+        Button {
+            changeScreen(target)
+        } label: {
+            VStack(spacing: 2) {
+                ZStack(alignment: .topTrailing) {
+                    Image(systemName: icon)
+                        .font(.system(size: 12, weight: screen == target ? .semibold : .medium))
+                    if badge > 0 {
+                        Text("\(badge)")
+                            .font(.system(size: 8, weight: .bold))
+                            .padding(.horizontal, 3)
+                            .background(Capsule().fill(Color.accentColor.opacity(0.18)))
+                            .offset(x: 8, y: -6)
+                    }
+                }
+                Text(title)
+                    .font(.system(size: 9, weight: screen == target ? .semibold : .medium))
+                    .lineLimit(1)
+            }
+            .frame(maxWidth: .infinity)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(screen == target ? Color.accentColor : Color.secondary)
+        .accessibilityLabel(title)
+        .accessibilityAddTraits(screen == target ? .isSelected : [])
     }
 
     private var currentScreenTitle: String {
@@ -3320,28 +3224,6 @@ struct CodexAccountMenuView: View {
         case .runningTasks: return text("运行任务", "Running Tasks")
         case .usageDetails: return text("用量明细", "Usage Details")
         case .settings: return text("设置", "Settings")
-        }
-    }
-
-    private var currentScreenIcon: String {
-        switch screen {
-        case .home: return "rectangle.grid.2x2"
-        case .accounts: return "person.2"
-        case .runningTasks: return "checklist"
-        case .usageDetails: return "chart.xyaxis.line"
-        case .settings: return "gearshape"
-        }
-    }
-
-    @ViewBuilder
-    private func screenMenuLabel(_ target: Screen, title: String, icon: String) -> some View {
-        HStack {
-            Label(title, systemImage: icon)
-            Spacer(minLength: 12)
-            if target == screen {
-                Image(systemName: "checkmark")
-                    .foregroundStyle(.tint)
-            }
         }
     }
 
@@ -3369,27 +3251,44 @@ struct CodexAccountMenuView: View {
     }
 
     private var compactUsageOverview: some View {
-        HStack(spacing: 12) {
-            Label(panelModel.usageRange.title(language: language), systemImage: "chart.bar.fill")
-                .foregroundStyle(.secondary)
-            Text(language.tokens(selectedUsageTotal))
-                .fontWeight(.semibold)
-                .monospacedDigit()
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            menuLabeledMetric(
+                title: panelModel.usageRange.title(language: language),
+                value: language.tokens(selectedUsageTotal),
+                alignment: .leading
+            )
             Spacer(minLength: 4)
-            Label("\(pendingTaskCount)", systemImage: "checklist")
-                .monospacedDigit()
-                .help(text("待处理任务", "Tasks needing action"))
-            Text(menuQuota.sevenDay.map { "\(Int($0.remainingPercent.rounded()))%" } ?? "--")
-                .fontWeight(.semibold)
-                .monospacedDigit()
-                .help(text("官方 7 天剩余", "Official 7-day remaining"))
+            menuLabeledMetric(
+                title: text("待处理", "Needs action"),
+                value: "\(pendingTaskCount)",
+                alignment: .center
+            )
+            menuLabeledMetric(
+                title: text("7 天剩余", "7-day left"),
+                value: menuQuota.sevenDay.map { "\(Int($0.remainingPercent.rounded()))%" } ?? "--",
+                alignment: .trailing
+            )
         }
-        .font(.system(size: 10.5, weight: .medium))
         .padding(.horizontal, 15)
-        .frame(height: 34)
+        .frame(height: 38)
         .background(Color.primary.opacity(0.025))
         .overlay(alignment: .bottom) {
             Rectangle().fill(Color.primary.opacity(0.08)).frame(height: 0.5)
+        }
+        .accessibilityElement(children: .contain)
+    }
+
+    private func menuLabeledMetric(title: String, value: String, alignment: HorizontalAlignment) -> some View {
+        VStack(alignment: alignment, spacing: 1) {
+            Text(title)
+                .font(.system(size: 9, weight: .medium))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            Text(value)
+                .font(.system(size: 11, weight: .semibold, design: .rounded))
+                .monospacedDigit()
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
         }
     }
 
@@ -3538,6 +3437,14 @@ struct CodexAccountMenuView: View {
     private var home: some View {
         VStack(spacing: 10) {
             if menuPresentation.isSingleAccount {
+                TokenTotalsHeader(
+                    layout: .compact,
+                    language: language,
+                    combinedTokensTotal: combinedTokensTotal,
+                    combinedEquivalentCostUSD: combinedEquivalentCostUSD,
+                    officialAccountsLifetimeTokens: officialAccountsTotal,
+                    localAllAgentsLifetimeTokens: localAllAgentsTokens
+                )
                 HStack(spacing: 18) {
                     QuotaDetailTile(title: text("5 小时剩余", "5-hour remaining"), icon: "timer", window: menuQuota.fiveHour, prominent: true)
                     QuotaDetailTile(title: text("7 天剩余", "7-day remaining"), icon: "calendar", window: menuQuota.sevenDay, prominent: true)
@@ -3625,10 +3532,13 @@ struct CodexAccountMenuView: View {
                 .buttonStyle(.borderedProminent)
                 .disabled(status.blocksLocalCLI || store.isLoggingIn || store.isLaunchingCodex)
                 if status.blocksLocalCLI {
-                    Text(text("确认账号空闲后才能开始；不会重复占用。", "Waiting for confirmed availability; no overlapping tasks."))
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+                    Text(
+                        status.blockingReason(language)
+                            ?? text("确认账号空闲后才能开始；不会重复占用。", "Waiting for confirmed availability; no overlapping tasks.")
+                    )
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
                 }
             }
             .padding(14)
@@ -3859,31 +3769,11 @@ struct CodexAccountMenuView: View {
     }
 
     private func taskStateTitle(_ state: TaskOverviewItemState) -> String {
-        switch state {
-        case .waitingInput: return text("待你处理", "Needs action")
-        case .pendingApproval: return text("待批准", "Awaiting approval")
-        case .failed: return text("失败", "Failed")
-        case .blocked: return text("受阻", "Blocked")
-        case .running: return text("运行中", "Running")
-        case .pending: return text("待继续", "Continue")
-        case .recentlyActive: return text("最近活跃", "Recently active")
-        case .completed: return text("已完成", "Completed")
-        case .interrupted: return text("已中断", "Interrupted")
-        case .disconnected: return text("连接中断", "Disconnected")
-        case .unknown: return text("状态未知", "Unknown")
-        case .archived: return text("已归档", "Archived")
-        }
+        TaskStatusCopy.label(state, language)
     }
 
     private func taskStateColor(_ state: TaskOverviewItemState) -> Color {
-        switch state {
-        case .waitingInput, .pendingApproval, .interrupted, .pending: return .orange
-        case .failed, .blocked: return .red
-        case .running: return .blue
-        case .completed: return .green
-        case .recentlyActive: return .secondary
-        case .disconnected, .unknown, .archived: return .gray
-        }
+        TaskStatusCopy.color(state)
     }
 
     private var localAllAgentsTokens: Int64? {
@@ -3910,51 +3800,14 @@ struct CodexAccountMenuView: View {
     private var tokenHero: some View {
         let sevenDayRemaining = store.snapshot.sevenDayQuota?.remainingPercent
         return VStack(alignment: .leading, spacing: 9) {
-            HStack(alignment: .firstTextBaseline) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(text("总 Token 消耗量", "Total token consumption"))
-                        .font(.system(size: 12, weight: .semibold))
-                    Text(text("所有账号官方 + 本机全 Agent · 全时段", "All accounts + all local agents"))
-                        .font(.system(size: 9.5, weight: .medium))
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                if let cost = combinedEquivalentCostUSD {
-                    Text(String(format: "≈ $%.0f · ¥%.0f", cost, cost * 6.8))
-                        .font(.system(size: 9.5, weight: .semibold).monospacedDigit())
-                        .foregroundStyle(.secondary)
-                }
-            }
-            Text(combinedTokensTotal.map(language.tokens) ?? text("暂无记录", "No records"))
-                .font(.system(size: 34, weight: .bold, design: .rounded))
-                .foregroundStyle(.tint)
-                .monospacedDigit()
-                .lineLimit(1)
-                .minimumScaleFactor(0.6)
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text(text("账号", "Accounts"))
-                    .font(.system(size: 10.5, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                Text(officialAccountsTotal.map(language.tokens) ?? text("暂不可用", "Unavailable"))
-                    .font(.system(size: 12, weight: .semibold, design: .rounded))
-                    .monospacedDigit()
-                Text(text("官方", "official"))
-                    .font(.system(size: 9.5, weight: .medium))
-                    .foregroundStyle(.secondary)
-                Text("·")
-                    .font(.system(size: 10.5))
-                    .foregroundStyle(.secondary)
-                Text(text("本机全 Agent", "local agents"))
-                    .font(.system(size: 10.5, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                Text(localAllAgentsTokens.map(language.tokens) ?? text("暂无记录", "No records"))
-                    .font(.system(size: 12, weight: .semibold, design: .rounded))
-                    .monospacedDigit()
-                Text(text("本地", "local"))
-                    .font(.system(size: 9.5, weight: .medium))
-                    .foregroundStyle(.secondary)
-            }
-            .lineLimit(1)
+            TokenTotalsHeader(
+                layout: .hero,
+                language: language,
+                combinedTokensTotal: combinedTokensTotal,
+                combinedEquivalentCostUSD: combinedEquivalentCostUSD,
+                officialAccountsLifetimeTokens: officialAccountsTotal,
+                localAllAgentsLifetimeTokens: localAllAgentsTokens
+            )
             Divider()
             HStack(alignment: .firstTextBaseline) {
                 Text(text("7 天剩余", "7-day left"))
@@ -4047,7 +3900,10 @@ struct CodexAccountMenuView: View {
             .disabled(profile.isSystemProfile || profile.lastSnapshot == nil || cliTaskStatus.blocksLocalCLI)
             .help(
                 cliTaskStatus.blocksLocalCLI
-                    ? language.text("缺少可信映射、Hub 概览不新鲜或同账号有活跃任务", "Blocked: missing account mapping, stale Hub status or an active task.")
+                    ? (cliTaskStatus.blockingReason(language)
+                        ?? language.text(
+                            "缺少可信映射、Hub 概览不新鲜或同账号有活跃任务",
+                            "Blocked: missing account mapping, stale Hub status or an active task."))
                     : text("在终端中使用", "Use in Terminal")
             )
             .accessibilityLabel(text("在终端中使用", "Use in Terminal"))
@@ -4333,7 +4189,10 @@ struct CodexAccountMenuView: View {
                     .disabled(store.isLoggingIn || store.isLaunchingCodex || cliTaskStatus.blocksLocalCLI)
                     .help(
                         cliTaskStatus.blocksLocalCLI
-                            ? text("Hub 状态未确认或同账号有活跃任务，暂不能重新登录", "Hub status is unverified or this account has an active task; login is disabled")
+                            ? (cliTaskStatus.blockingReason(language)
+                                ?? text(
+                                    "Hub 状态未确认或同账号有活跃任务，暂不能重新登录",
+                                    "Hub status is unverified or this account has an active task; login is disabled"))
                             : text("重新登录此账号", "Log in to this account again"))
                     Button {
                         moveProfile(profile, offset: -1)
@@ -4364,7 +4223,10 @@ struct CodexAccountMenuView: View {
                         .disabled(store.isLaunchingCodex || cliTaskStatus.blocksLocalCLI)
                         .help(
                             cliTaskStatus.blocksLocalCLI
-                                ? text("Hub 状态未确认或同账号有活跃任务，暂不能删除", "Hub status is unverified or this account has an active task; deletion is disabled")
+                                ? (cliTaskStatus.blockingReason(language)
+                                    ?? text(
+                                        "Hub 状态未确认或同账号有活跃任务，暂不能删除",
+                                        "Hub status is unverified or this account has an active task; deletion is disabled"))
                                 : text("删除账号", "Delete account")
                         )
                         .accessibilityLabel(text("删除账号", "Delete account"))
@@ -4384,7 +4246,10 @@ struct CodexAccountMenuView: View {
                     .disabled(store.isLaunchingCodex || isCurrent || cliTaskStatus.blocksLocalCLI)
                     .help(
                         cliTaskStatus.blocksLocalCLI
-                            ? text("Hub 状态未确认或同账号有活跃任务，暂不能切换 Desktop", "Hub status is unverified or this account has an active task; Desktop switching is disabled")
+                            ? (cliTaskStatus.blockingReason(language)
+                                ?? text(
+                                    "Hub 状态未确认或同账号有活跃任务，暂不能切换 Desktop",
+                                    "Hub status is unverified or this account has an active task; Desktop switching is disabled"))
                             : text("切换 Desktop 到此账号", "Switch Desktop to this account"))
                 }
             }
@@ -4460,7 +4325,7 @@ struct CodexAccountMenuView: View {
                 Button {
                     quit()
                 } label: {
-                    Label(text("退出 Next", "Quit Next"), systemImage: "power")
+                    Label(text("退出 AiGoodBro", "Quit AiGoodBro"), systemImage: "power")
                 }
                 .buttonStyle(.plain)
             }
@@ -4525,8 +4390,8 @@ struct CodexAccountMenuView: View {
     }
 
     private func resetSummary(_ date: Date?) -> String {
-        guard let date else { return text("官方未返回重置时间", "Reset time unavailable") }
-        return text("\(language.dateTime(date)) 重置", "Resets \(language.dateTime(date))")
+        guard let date else { return text("官方未返回窗口重置时间", "Window reset time unavailable") }
+        return text("\(language.dateTime(date)) 窗口重置", "Window resets \(language.dateTime(date))")
     }
 
     private func sevenDayRemaining(for profile: CodexProfile) -> Double? {
@@ -4673,54 +4538,6 @@ private extension View {
     }
 }
 
-struct ZYZHMark: View {
-    @Environment(\.widgetLanguage) private var language
-    @Environment(\.colorScheme) private var colorScheme
-    let size: CGFloat
-
-    var body: some View {
-        Canvas { context, canvasSize in
-            let scale = min(canvasSize.width / 365, canvasSize.height / 264)
-            let origin = CGPoint(
-                x: (canvasSize.width - 365 * scale) / 2,
-                y: (canvasSize.height - 264 * scale) / 2
-            )
-            let marks: [(CGRect, Color)] = [
-                (CGRect(x: 7, y: 47, width: 213, height: 210), markColor(0)),
-                (CGRect(x: 76, y: 25, width: 213, height: 210), markColor(1)),
-                (CGRect(x: 145, y: 7, width: 213, height: 210), markColor(2)),
-            ]
-            for (rect, color) in marks {
-                let scaled = CGRect(
-                    x: origin.x + rect.minX * scale,
-                    y: origin.y + rect.minY * scale,
-                    width: rect.width * scale,
-                    height: rect.height * scale
-                )
-                context.stroke(
-                    Path(roundedRect: scaled, cornerRadius: 58 * scale),
-                    with: .color(color),
-                    lineWidth: 14 * scale
-                )
-            }
-        }
-        .frame(width: size, height: size * 264 / 365)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(language.text("帧影帧画", "Frame by Frame"))
-    }
-
-    private func markColor(_ index: Int) -> Color {
-        if colorScheme == .dark {
-            return Color.white.opacity([0.38, 0.64, 0.9][index])
-        }
-        return [
-            Color(red: 20 / 255, green: 37 / 255, blue: 52 / 255),
-            Color(red: 104 / 255, green: 121 / 255, blue: 133 / 255),
-            Color(red: 168 / 255, green: 178 / 255, blue: 184 / 255),
-        ][index]
-    }
-}
-
 private struct QuotaDetailTile: View {
     @Environment(\.widgetLanguage) private var language
     let title: String
@@ -4753,22 +4570,38 @@ private struct QuotaDetailTile: View {
             Text(resetText)
                 .font(.caption2)
                 .foregroundStyle(.secondary)
-                .lineLimit(1)
+                .lineLimit(prominent ? 2 : 1)
+                .minimumScaleFactor(prominent ? 0.85 : 1)
+                .fixedSize(horizontal: false, vertical: true)
+                .help(resetHelp)
         }
         .padding(.horizontal, prominent ? 0 : 10)
         .padding(.vertical, prominent ? 0 : 7)
         .background(RoundedRectangle(cornerRadius: 11).fill(FixedVisualPalette.surfaceTrack.opacity(prominent ? 0 : 0.72)))
         .frame(maxWidth: .infinity, alignment: .topLeading)
         .accessibilityElement(children: .combine)
+        .accessibilityValue(resetHelp)
     }
 
     private var resetText: String {
-        guard let reset = window?.resetsAt else { return language.text("官方未返回重置时间", "Reset time not reported") }
+        guard let reset = window?.resetsAt else { return language.text("官方未返回窗口重置时间", "Window reset time not reported") }
         let absolute = language.dateTime(reset)
+        if prominent {
+            return language.text("窗口重置 \(absolute)", "Window resets \(absolute)")
+        }
+        return language.text("窗口重置：\(absolute)（\(resetRelative(reset))）", "Window resets \(absolute) (\(resetRelative(reset)))")
+    }
+
+    private var resetHelp: String {
+        guard let reset = window?.resetsAt else { return language.text("官方未返回窗口重置时间", "Window reset time not reported") }
+        let absolute = language.dateTime(reset)
+        return language.text("窗口重置 \(absolute)（\(resetRelative(reset))）", "Window resets \(absolute) (\(resetRelative(reset)))")
+    }
+
+    private func resetRelative(_ reset: Date) -> String {
         let formatter = RelativeDateTimeFormatter()
         formatter.locale = language.locale
-        let relative = formatter.localizedString(for: reset, relativeTo: Date())
-        return language.text("重置：\(absolute)（\(relative)）", "Resets \(absolute) (\(relative))")
+        return formatter.localizedString(for: reset, relativeTo: Date())
     }
 }
 
@@ -4810,7 +4643,7 @@ enum WarmUpStatusText {
         for phrase in criticalPhrases {
             var start = text.startIndex
             while let range = text[start...].range(of: phrase) {
-                text[range].foregroundColor = .red
+                text[range].foregroundColor = FixedVisualPalette.statusDanger
                 text[range].font = .caption2.weight(.semibold)
                 start = range.upperBound
             }
@@ -4939,7 +4772,7 @@ private struct ProfileRow: View {
         .cardBackground(cornerRadius: layout == .cards ? 14 : 12, elevated: isMonitoring)
         .overlay(
             RoundedRectangle(cornerRadius: layout == .cards ? 14 : 12, style: .continuous)
-                .strokeBorder(resetReminder == nil && !cardExpiring ? Color.clear : Color.red, lineWidth: 1.5)
+                .strokeBorder(resetReminder == nil && !cardExpiring ? Color.clear : FixedVisualPalette.statusDanger, lineWidth: 1.5)
                 .allowsHitTesting(false)
         )
         .accessibilityElement(children: .contain)
@@ -5152,7 +4985,10 @@ private struct ProfileRow: View {
                 .foregroundStyle(.secondary)
                 .help(
                     cliTaskStatus.blocksLocalCLI
-                        ? language.text("Hub 状态未确认或同账号有活跃任务，暂不能删除账号", "Removal is blocked while Hub status is unverified or this account has an active task.")
+                        ? (cliTaskStatus.blockingReason(language)
+                            ?? language.text(
+                                "Hub 状态未确认或同账号有活跃任务，暂不能删除账号",
+                                "Removal is blocked while Hub status is unverified or this account has an active task."))
                         : language.text("删除账号", "Remove account")
                 )
                 .accessibilityLabel(language.text("删除账号", "Remove account"))
@@ -5205,7 +5041,7 @@ private struct ProfileRow: View {
             HStack(spacing: 4) {
                 Image(systemName: "arrow.counterclockwise.circle")
                     .foregroundStyle(.secondary)
-                Text(language.text("可用重置", "Reset credits"))
+                Text(language.text("可用重置卡", "Reset cards"))
                     .foregroundStyle(.secondary)
                 if let availableResetCredits {
                     Text(language.text("\(availableResetCredits) 次", "\(availableResetCredits)"))
@@ -5221,14 +5057,14 @@ private struct ProfileRow: View {
             .help(language.text("仅显示 Codex 官方返回的当前可用重置卡数量", "Available banked reset credits reported by Codex. This label does not redeem a credit."))
             .accessibilityElement(children: availableResetCredits == nil ? .contain : .ignore)
             .accessibilityLabel(
-                availableResetCredits.map { language.text("可用重置 \($0) 次", "\($0) reset credits") }
-                    ?? (quotaReadSucceeded ? language.text("官方未返回可用重置次数", "Reset credit count not reported") : language.text("可用重置次数未知", "Reset credit count unknown")))
+                availableResetCredits.map { language.text("可用重置卡 \($0) 次", "\($0) reset cards") }
+                    ?? (quotaReadSucceeded ? language.text("官方未返回可用重置卡次数", "Reset-card count not reported") : language.text("可用重置卡次数未知", "Reset-card count unknown")))
             if (availableResetCredits ?? 0) > 0,
                 let expiry = resetCreditExpiries.first
             {
                 Text(language.text("到期 ", "Expires ") + language.dateTime(expiry))
                     .font(.caption2)
-                    .foregroundStyle(expiry <= currentDate ? Color.red : Color.secondary)
+                    .foregroundStyle(expiry <= currentDate ? FixedVisualPalette.statusDanger : Color.secondary)
                     .lineLimit(1)
                     .help(language.text("重置卡最近到期 ", "Next reset credit expiry: ") + language.dateTime(expiry))
             }
@@ -5261,13 +5097,13 @@ private struct ProfileRow: View {
                 weeklyLimitExhausted
                     ? language.text("周额度已用尽", layout == .cards ? "Weekly limit reached" : "Weekly limit exhausted")
                     : resetsAt.map {
-                        (layout == .cards ? "" : language.text("重置 ", "Resets ")) + language.dateTime($0)
-                    } ?? (officialReadSucceeded && windowUnavailable ? language.text("此窗口未由官方返回", "Limit not reported") : language.text("官方重置时间未知", "Reset time unknown"))
+                        (layout == .cards ? "" : language.text("窗口重置 ", "Window resets ")) + language.dateTime($0)
+                    } ?? (officialReadSucceeded && windowUnavailable ? language.text("此窗口未由官方返回", "Limit not reported") : language.text("官方窗口重置时间未知", "Window reset time unknown"))
             )
             .font(.caption2)
             .foregroundStyle(.secondary)
             .lineLimit(1)
-            .help(resetsAt.map { language.text("官方重置 ", "Reported reset: ") + language.dateTime($0) } ?? language.text("官方重置时间未知", "Reset time unknown"))
+            .help(resetsAt.map { language.text("官方窗口重置 ", "Reported window reset: ") + language.dateTime($0) } ?? language.text("官方窗口重置时间未知", "Window reset time unknown"))
         }
     }
 
@@ -5446,7 +5282,10 @@ private struct ProfileRow: View {
             .disabled(launchUnavailable)
             .help(
                 cliTaskStatus.blocksLocalCLI
-                    ? language.text("缺少可信映射、Hub 概览不新鲜或同账号有活跃任务", "Blocked: missing account mapping, stale Hub status or an active task.")
+                    ? (cliTaskStatus.blockingReason(language)
+                        ?? language.text(
+                            "缺少可信映射、Hub 概览不新鲜或同账号有活跃任务",
+                            "Blocked: missing account mapping, stale Hub status or an active task."))
                     : language.text("在终端中使用此账号", "Open CLI with this account"))
 
             Rectangle()
@@ -5498,7 +5337,10 @@ private struct ProfileRow: View {
                 .disabled(isLoggingIn || isLaunching || isRefreshingStatistics || cliTaskStatus.blocksLocalCLI)
                 .help(
                     cliTaskStatus.blocksLocalCLI
-                        ? language.text("Hub 状态未确认或同账号有活跃任务，暂不能登录", "Sign-in is blocked while Hub status is unverified or this account has an active task.")
+                        ? (cliTaskStatus.blockingReason(language)
+                            ?? language.text(
+                                "Hub 状态未确认或同账号有活跃任务，暂不能登录",
+                                "Sign-in is blocked while Hub status is unverified or this account has an active task."))
                         : language.text("登录为独立账号，不修改当前 Codex 登录", "Sign in to this isolated profile without changing the current Codex sign-in."))
             } else {
                 Button {
@@ -5528,7 +5370,10 @@ private struct ProfileRow: View {
             .disabled(isLaunching || linkedAccountName != nil || isCurrentCodexAccount || cliTaskStatus.blocksLocalCLI)
             .help(
                 cliTaskStatus.blocksLocalCLI
-                    ? language.text("Hub 状态未确认或同账号有活跃任务，暂不能切换 Desktop", "Desktop switching is blocked while Hub status is unverified or this account has an active task.")
+                    ? (cliTaskStatus.blockingReason(language)
+                        ?? language.text(
+                            "Hub 状态未确认或同账号有活跃任务，暂不能切换 Desktop",
+                            "Desktop switching is blocked while Hub status is unverified or this account has an active task."))
                     : language.text("切换 Desktop 到此账号", "Switch Codex Desktop to this account"))
         }
         .labelStyle(.iconOnly)
@@ -5555,7 +5400,10 @@ private struct ProfileRow: View {
                 .disabled(isLoggingIn || isLaunching || cliTaskStatus.blocksLocalCLI)
                 .help(
                     cliTaskStatus.blocksLocalCLI
-                        ? language.text("Hub 状态未确认或同账号有活跃任务，暂不能重新登录", "Sign-in is blocked while Hub status is unverified or this account has an active task.")
+                        ? (cliTaskStatus.blockingReason(language)
+                            ?? language.text(
+                                "Hub 状态未确认或同账号有活跃任务，暂不能重新登录",
+                                "Sign-in is blocked while Hub status is unverified or this account has an active task."))
                         : language.text("重新登录此账号", "Sign in to this account again"))
             }
             if isProPlan {
@@ -5590,18 +5438,18 @@ private struct ProfileRow: View {
             .help(language.text("首次登录或重新认证时使用；平时切号不会打开浏览器", "Used for sign-in and reauthentication. Normal account switching does not open a browser."))
 
             Divider().frame(height: 24)
-            Text(language.text("本地历史 \(localResetHistoryCount)", "Local reset history: \(localResetHistoryCount)"))
+            Text(language.text("本地重置记录 \(localResetHistoryCount)", "Local reset records: \(localResetHistoryCount)"))
                 .font(.caption.weight(.semibold).monospacedDigit())
                 .foregroundStyle(.secondary)
-                .help(language.text("本机检测与手工校正的历史记录，不代表当前可用重置卡", "Detected and manually adjusted local history. Not your available reset credit balance."))
+                .help(language.text("本机检测与手工校正的本地重置记录，不代表当前可用重置卡", "Detected and manually adjusted local reset records. Not your available reset credit balance."))
             Button {
                 onAdjustResetCount(-1)
             } label: {
                 Image(systemName: "minus")
             }
             .buttonStyle(.bordered)
-            .help(language.text("本地历史次数减一；不影响官方可用重置", "Subtract one from local reset history. Does not affect available reset credits."))
-            .accessibilityLabel(language.text("本地历史次数减一", "Decrease local reset history"))
+            .help(language.text("本地重置记录减一；不影响官方可用重置卡", "Subtract one from local reset records. Does not affect available reset cards."))
+            .accessibilityLabel(language.text("本地重置记录减一", "Decrease local reset records"))
             .disabled(localResetHistoryCount <= 0)
             Button {
                 onAdjustResetCount(1)
@@ -5609,8 +5457,8 @@ private struct ProfileRow: View {
                 Image(systemName: "plus")
             }
             .buttonStyle(.bordered)
-            .help(language.text("本地历史次数加一；不影响官方可用重置", "Add one to local reset history. Does not affect available reset credits."))
-            .accessibilityLabel(language.text("本地历史次数加一", "Increase local reset history"))
+            .help(language.text("本地重置记录加一；不影响官方可用重置卡", "Add one to local reset records. Does not affect available reset cards."))
+            .accessibilityLabel(language.text("本地重置记录加一", "Increase local reset records"))
 
         }
         .controlSize(.small)
@@ -5678,7 +5526,7 @@ private struct ProfileSnapshotNotice: View {
         if let notice = health.notice(language) {
             Label(notice, systemImage: "exclamationmark.circle")
                 .font(.caption2.weight(.medium))
-                .foregroundStyle(health == .failed ? Color.red : Color.orange)
+                .foregroundStyle(health == .failed ? FixedVisualPalette.statusDanger : FixedVisualPalette.statusWarning)
                 .help(
                     language.text(
                         "刷新只读取官方额度，不会触发暖号；超过 30 分钟的快照仅供参考。", "Refresh reads usage limits without warming up the account. Snapshots older than 30 minutes are for reference only."))

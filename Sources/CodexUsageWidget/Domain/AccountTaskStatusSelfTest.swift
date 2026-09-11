@@ -98,8 +98,20 @@ enum AccountTaskStatusSelfTest {
             && newestTerminalByAlias["gamma"]?.state == "succeeded"
             && offline.localizedLabel == "状态待确认"
             && offline.blocksLocalCLI
+            && offline.blockDetail == .hubOffline
             && staleOverview.phase == .unavailable
             && staleOverview.blocksLocalCLI
+            && staleOverview.blockDetail == .staleOverview
+            && HubAccountTaskStatusResolver.status(
+                forAccountAlias: nil,
+                tasksByAlias: newestByAlias,
+                connectionState: .online,
+                lastSuccessfulRefreshAt: now,
+                now: now
+            ).blockDetail == .missingMapping
+            && HubAccountTaskStatus(phase: .running, updatedAt: now).blockingReason(.zh)?.contains("活跃任务") == true
+            && HubAccountTaskStatus(phase: .idle, updatedAt: now).blockingReason(.zh) == nil
+            && HubAccountTaskStatus(phase: .running, updatedAt: now).blocksLocalCLI
         print(passed ? "Account task status self-test passed" : "Account task status self-test failed")
         return passed
     }

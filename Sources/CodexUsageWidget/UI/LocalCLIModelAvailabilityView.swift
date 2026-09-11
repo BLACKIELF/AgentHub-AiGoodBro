@@ -11,7 +11,30 @@ struct LocalCLIModelAvailabilityView: View {
     var now: Date = Date()
     var timeZone: TimeZone = .current
     var includeDocumentedFreeFacts = true
-    @State private var expanded = true
+    var compactLabel = false
+    @State private var expanded: Bool
+
+    init(
+        snapshot: LocalCLIModelAvailabilitySnapshot,
+        language: WidgetLanguage,
+        provider: LocalCLIKind,
+        binding: LocalCLICurrentBinding? = nil,
+        now: Date = Date(),
+        timeZone: TimeZone = .current,
+        includeDocumentedFreeFacts: Bool = true,
+        initiallyExpanded: Bool = true,
+        compactLabel: Bool = false
+    ) {
+        self.snapshot = snapshot
+        self.language = language
+        self.provider = provider
+        self.binding = binding
+        self.now = now
+        self.timeZone = timeZone
+        self.includeDocumentedFreeFacts = includeDocumentedFreeFacts
+        self.compactLabel = compactLabel
+        _expanded = State(initialValue: initiallyExpanded)
+    }
 
     private var rows: [LocalCLIModelAvailabilityRow] {
         LocalCLIModelAvailabilityPresentation.rows(
@@ -63,7 +86,7 @@ struct LocalCLIModelAvailabilityView: View {
                                     row.deadline, window: row.window, language: language)
                             )
                             .font(.caption2)
-                            .foregroundStyle(row.window == .expired ? Color.orange : Color.secondary)
+                            .foregroundStyle(row.window == .expired ? FixedVisualPalette.statusWarning : Color.secondary)
                             Text(
                                 LocalCLIModelAvailabilityPresentation.testText(
                                     status: row.testStatus, testedAt: row.testedAt, language: language)
@@ -79,13 +102,20 @@ struct LocalCLIModelAvailabilityView: View {
                 .padding(.top, 6)
             }
         } label: {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(LocalCLIModelAvailabilityPresentation.heading(language))
-                    .font(.caption.weight(.semibold))
-                Text(LocalCLIModelAvailabilityPresentation.summary(language))
-                    .font(.caption2)
+            if compactLabel {
+                Text(LocalCLIModelAvailabilityPresentation.cardSummary(rows: rows, language: language))
+                    .font(.caption2.weight(.medium))
                     .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                    .lineLimit(1)
+            } else {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(LocalCLIModelAvailabilityPresentation.heading(language))
+                        .font(.caption.weight(.semibold))
+                    Text(LocalCLIModelAvailabilityPresentation.summary(language))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
         }
         .font(.caption)

@@ -657,6 +657,17 @@ enum LocalCLIModelAvailabilityPresentation {
         language.text("尚无模型测试证据。", "No model-test evidence yet.")
     }
 
+    static func cardSummary(rows: [LocalCLIModelAvailabilityRow], language: WidgetLanguage) -> String {
+        guard !rows.isEmpty else {
+            return language.text("暂无验证记录", "No verification records")
+        }
+        let verified = rows.filter { $0.testStatus == .passed }.count
+        return language.text(
+            "可用模型 \(rows.count) · 已验证 \(verified)",
+            "\(rows.count) models · \(verified) verified"
+        )
+    }
+
     static func sourceText(_ kind: LocalCLIFreeSourceKind?, language: WidgetLanguage) -> String? {
         switch kind {
         case .official: language.text("来源 官方", "Source official")

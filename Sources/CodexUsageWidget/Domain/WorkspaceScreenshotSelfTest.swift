@@ -18,7 +18,9 @@ enum WorkspaceScreenshotSelfTest {
         let status = "5 小时已暂停 · 7 天额度不足 · 下次暖号 7 天 9月10日 09:30 · 7 天额度不足"
         let highlighted = WarmUpStatusText.attributed(status)
         expect(String(highlighted.characters) == status, "highlighting must preserve the exact status text")
-        expect(highlighted.runs.filter { $0.foregroundColor == .red }.count == 2, "every critical phrase occurrence must be red")
+        expect(
+            highlighted.runs.filter { $0.foregroundColor == FixedVisualPalette.statusDanger }.count == 2,
+            "every critical phrase occurrence must be red")
         if let dateRange = highlighted.range(of: "9月10日 09:30") {
             expect(highlighted[dateRange].foregroundColor == nil, "ordinary schedule dates must keep their neutral color")
         }
@@ -27,7 +29,7 @@ enum WorkspaceScreenshotSelfTest {
         }
         for phrase in WarmUpStatusText.criticalPhrases {
             let text = WarmUpStatusText.attributed(phrase)
-            expect(text.foregroundColor == .red, "each supported blocking status must be red")
+            expect(text.foregroundColor == FixedVisualPalette.statusDanger, "each supported blocking status must be red")
             expect(text.font == .caption2.weight(.semibold), "blocking status must also use stronger weight")
         }
         let reset = Date(timeIntervalSince1970: 1_800_000_000)

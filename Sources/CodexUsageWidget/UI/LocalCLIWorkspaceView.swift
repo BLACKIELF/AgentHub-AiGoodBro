@@ -139,7 +139,7 @@ struct LocalCLIWorkspaceView: View {
                         grokResetLookupLink(destination: officialUsageURL)
                             .font(.caption2)
                     } else if kind == .grok, let summary = ResetCardPresentation.summaryText(result?.resetCards, now: Date(), timeZone: .current, language: language) {
-                        Label(summary, systemImage: "creditcard").font(.caption2).foregroundStyle(expiring ? Color.red : Color.secondary).lineLimit(2)
+                        Label(summary, systemImage: "creditcard").font(.caption2).foregroundStyle(expiring ? FixedVisualPalette.statusDanger : Color.secondary).lineLimit(2)
                     }
                     if expiring { Text(ResetCardPresentation.expiringLabelText(language: language)).font(.caption2.weight(.semibold)).foregroundStyle(.red) }
                 }
@@ -147,6 +147,7 @@ struct LocalCLIWorkspaceView: View {
                     Text(fresh ? result.sourceLabel : language.text("上次快照 · 请刷新", "Previous snapshot · Refresh needed"))
                         .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
                 }
+                modelAvailabilitySummary(for: profile)
             }.frame(minWidth: layout == .rows ? 170 : nil, maxWidth: .infinity, alignment: .leading)
             VStack(alignment: .leading, spacing: 6) {
                 if let result, !result.windows.isEmpty {
@@ -252,7 +253,7 @@ struct LocalCLIWorkspaceView: View {
                         } else if kind == .grok, let summary = ResetCardPresentation.summaryText(result?.resetCards, now: Date(), timeZone: .current, language: language) {
                             Label(summary, systemImage: "creditcard")
                                 .font(.caption2)
-                                .foregroundStyle(expiring ? Color.red : Color.secondary)
+                                .foregroundStyle(expiring ? FixedVisualPalette.statusDanger : Color.secondary)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                         if expiring {
@@ -318,6 +319,7 @@ struct LocalCLIWorkspaceView: View {
                     }
                     if let identity = result?.maskedIdentity { Text(identity).font(.caption).foregroundStyle(.secondary) }
                     if let plan = result?.planLabel { Text(plan).font(.caption).foregroundStyle(.secondary) }
+                    modelAvailabilitySummary(for: profile)
                 }
                 Spacer()
                 if model.refreshing.contains(profile.id) { ProgressView().controlSize(.small) }
@@ -414,7 +416,7 @@ struct LocalCLIWorkspaceView: View {
                     if expiringSoon {
                         Text(ResetCardPresentation.expiringLabelText(language: language))
                             .fontWeight(.semibold)
-                            .foregroundStyle(Color.red)
+                            .foregroundStyle(FixedVisualPalette.statusDanger)
                     }
                 }
                 .font(.caption)
@@ -475,7 +477,7 @@ struct LocalCLIWorkspaceView: View {
         .overlay(
             expiringSoon
                 ? RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .strokeBorder(Color.red, lineWidth: 2)
+                    .strokeBorder(FixedVisualPalette.statusDanger, lineWidth: 2)
                     .allowsHitTesting(false)
                 : nil
         )
@@ -501,9 +503,23 @@ struct LocalCLIWorkspaceView: View {
         }
     }
 
+    private func modelAvailabilitySummary(for profile: LocalCLIProfile) -> some View {
+        LocalCLIModelAvailabilityView(
+            snapshot: LocalCLIModelAvailabilityStore.load(
+                root: URL(fileURLWithPath: profile.configDirectory, isDirectory: true),
+                now: Date()
+            ),
+            language: language,
+            provider: kind,
+            initiallyExpanded: false,
+            compactLabel: true
+        )
+        .font(.caption2)
+    }
+
     private func grokResetLookupLink(destination: URL) -> some View {
         Link(destination: destination) {
-            Label(language.text("重置卡 · 官网查询", "Reset credits · View on Grok"), systemImage: "arrow.up.right.square")
+            Label(language.text("在官网查看重置卡", "View reset cards on the official site"), systemImage: "arrow.up.right.square")
         }
         .help(language.text("在 Grok 官网核对对应账号的可用重置和到期时间。", "Check available resets and expiry for the matching account on Grok."))
     }
