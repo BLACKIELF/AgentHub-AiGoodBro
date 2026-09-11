@@ -184,10 +184,15 @@ fn load_parent_edges(conn: &rusqlite::Connection) -> anyhow::Result<HashMap<Stri
 }
 
 /// Returns the basename of a rollout path as the lookup key.
+///
+/// Splits on both `/` and `\` so the key is identical whether the path was
+/// recorded on Windows or on a Unix host. Relying on the host path separator
+/// made the result depend on which machine parsed the database.
 fn normalize_rollout_key(path: &str) -> String {
-    Path::new(path)
-        .file_name()
-        .map(|s| s.to_string_lossy().to_string())
+    path.rsplit(['/', '\\'])
+        .next()
+        .filter(|segment| !segment.is_empty())
+        .map(str::to_string)
         .unwrap_or_else(|| path.to_string())
 }
 

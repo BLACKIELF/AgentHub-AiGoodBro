@@ -147,6 +147,8 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            commands::accounts::list_accounts,
+            commands::accounts::set_account_preference,
             commands::usage::get_local_usage,
             commands::usage::refresh_usage,
             commands::usage::clear_cache,

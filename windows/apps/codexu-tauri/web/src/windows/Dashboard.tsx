@@ -1,17 +1,26 @@
 import { useEffect } from 'react';
 import { Activity, CircleDashed } from 'lucide-react';
+import { AccountsPanel } from '../components/AccountsPanel';
 import { Header } from '../components/Header';
 import { DashboardHome } from '../components/DashboardHome';
+import { useAccounts } from '../hooks/useAccounts';
 import { useSettings } from '../hooks/useSettings';
 import { useUsage } from '../hooks/useUsage';
 import { applyAppTheme } from '../utils/appTheme';
 import { DEFAULT_PALETTE_ID } from '../utils/paletteCatalog';
+import { quotaIndexFromUsage } from '../utils/quotaBridge';
 import { useI18n } from '../i18n/I18nProvider';
 
 export function Dashboard() {
   const { t } = useI18n();
   const { dashboard, loading, error, refresh } = useUsage();
   const { settings, update } = useSettings();
+  const {
+    accounts,
+    loading: accountsLoading,
+    error: accountsError,
+    refresh: refreshAccounts,
+  } = useAccounts();
 
   useEffect(() => {
     applyAppTheme(
@@ -126,6 +135,14 @@ export function Dashboard() {
               {t('dashboard.errors.status', { messages: dashboard.messages.join(' · ') })}
             </p>
           ) : null}
+
+          <AccountsPanel
+            accounts={accounts}
+            loading={accountsLoading}
+            error={accountsError}
+            onRefresh={refreshAccounts}
+            quotaByAccountId={quotaIndexFromUsage(dashboard?.codex?.snapshot)}
+          />
 
           <DashboardHome
             snapshot={dashboard?.codex?.snapshot}

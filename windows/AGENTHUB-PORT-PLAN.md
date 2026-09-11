@@ -1,0 +1,159 @@
+# AiGoodBro · AgentHub for Windows — 移植计划
+
+本文件记录 Windows 工作区从旧 `Codex Account Manager Next` 只读看板，拉齐到当前 macOS **AiGoodBro · AgentHub 9.5.21** 产品能力的切片划分。
+
+- 基准：macOS 源码 `Sources/CodexUsageWidget/`（139 个 Swift 文件）与 `README.md`。
+- 目标线：`windows-port/ui-dev`。本任务的直接父基线与工作分支见下。
+- 本文件只描述计划与验证边界，不把未实现的能力画成已完成。
+
+## 一、现状差距
+
+Windows 工作区已有（来自 0824v1 基线）：
+
+| 已有 | 位置 |
+| --- | --- |
+| Codex 本地读取（state_5.sqlite / transcript / automation） | `crates/codexu-core/src/readers/` |
+| 用量、任务板、AI Leadership、Skills、Projects 聚合 | `crates/codexu-core/src/` |
+| Tauri IPC、缓存与 single-flight | `apps/codexu-tauri/src-tauri/src/app_state.rs` |
+| Dashboard / Settings / Tray、中英 i18n、palette catalog | `apps/codexu-tauri/web/src/` |
+| 原生视觉采集 workflow | `windows/scripts/` |
+
+Windows 完全缺失（即 AgentHub 的产品身份）：
+
+- 多账号工作台：账号身份、执行偏好、排序与固定
+- 官方额度作为一等产品：5 小时 / 7 天窗口、重置时间、重置卡
+- 暖号（5h / 7d）
+- 派单协调：占用状态、心跳、并发预约拒绝
+- 消息通道：飞书、Telegram、企业微信、重置消息提醒
+- 多 CLI：Grok、Kimi Code、Claude Code、OpenCode、Gemini CLI、MiMo、ZCode
+- Desktop 切换事务
+
+## 二、切片划分
+
+| 切片 | 内容 | 状态 |
+| --- | --- | --- |
+| S1 | 账号与额度域：身份、执行偏好、额度窗口、重置卡、占用与派单门禁 | 已实现 |
+| S2 | 账号工作台 UI：账号卡片、双栏 5h/7d、未知占位、取整标记 | 已实现 |
+| S3 | 官方额度接线：app-server / dashboard 两种来源统一映射到 `AccountQuotaSnapshot`，含保留与过期降级 | 已实现 |
+| S4 | 暖号策略：5h / 7d 开关、先刷新后校验、失败重试 | 待做 |
+| S5 | 派单协调：预约、心跳、释放、与 Hub 状态对齐 | 待做 |
+| S6 | 消息通道：飞书 / Telegram / 企业微信，凭据隔离存储 | 待做 |
+| S7 | 多 CLI 账号：登录目录关联、命名、模型可用性 | 待做 |
+| S8 | Desktop 切换事务：身份验证、锁、原子写入、回滚 | 待做 |
+| S9 | 打包与签名：MSI / NSIS、代码签名、更新器 | 待做 |
+
+## 三、已落地的语义
+
+### S1 · 域模型
+
+`crates/codexu-core/src/models/`：
+
+- `account.rs` — `CodexModel`（`gpt-6-astra` / `gpt-5.6-sol` / `gpt-5.6-terra` / `gpt-5.6-luna` / `gpt-5.5` / `gpt-5.2`）、`ReasoningEffort`（含 `xhigh` / `ultra`）、`ServiceTier`（`Standard` 序列化为 `default`）、`SubagentMode`、`ExecutionPreference` 与校验、`PreferenceOverrides`。默认值 **GPT-6 Astra / Low / Standard / standard**，与 macOS `CodexExecutionPreference.defaultValue` 一致。
+- `quota.rs` — `QuotaWindowSnapshot`（沿用来源的 `used_percent`，`remaining` 由派生得出）、`AccountQuotaSnapshot`、`LowQuotaThresholds`（5h ≤5%，7d <10%）、`QuotaGate`。
+- `occupancy.rs` — `OccupancyState`（含中文表标签）、`OccupancyRecord`、`can_accept_new_task`。
+
+### S3 · 官方额度接线
+
+`crates/codexu-core/src/readers/account_quota.rs`：
+
+- `OfficialQuotaInput` 把两种来源统一成同一形状——直接读 app-server 的 `CodexAppServerQuotaSnapshot`，以及 dashboard 管线缓存的 `UsageSnapshot`（`from_usage_snapshot`）。转换规则只存在一份。
+- `quota_snapshot_from_official` 的**质量判定跟随数据而非尝试**：
+  - 读取成功 → `Official`，带上报窗口；
+  - 读取失败但窗口有值 → `Stale`（dashboard 自己做过保留，或调用方保留了上次已验证值）；
+  - 读取失败且无窗口 → `LocalOnly`，界面显示 `—`。
+- `retain_last_verified_account_quota` 对齐 `codex_dashboard.rs::retain_last_verified_quota`：保留上次窗口，但**观测时间取被保留的那次**，并标 `Stale`，因此 `QuotaGate` 同样关闭。
+- `degrade_stale_quality` 把超出新鲜窗口的 `Official` 降级为 `Stale`，数值保留、标签改变。
+
+Tauri `list_accounts` 复用 AppState 里**已缓存的 dashboard 快照**推导系统账号额度，不重复拉起 app-server 进程；托管资料暂无读取路径，因此不在 map 中，界面显示 `—`。
+
+前端 `resolveAccountQuota` 规定优先级：**dashboard 的实时读数 > DTO 携带值 > 缺失（显示 `—`）**，因为 dashboard 随用量事件刷新，而账号列表按需加载。
+
+### 三条不可放宽的规则
+
+1. **未知不等于 0。** 来源未返回的窗口是 `None`，显示为 `—`；未知额度永远不会被报成"低额度"。
+2. **心跳超时不等于空闲。** 心跳过期或缺失把记录降级为"状态待确认"，并继续占位、拒绝新预约。
+3. **自动化 fail-closed。** 缺证据、证据过期、来源不可分类、账号未登录，全部阻断变更。
+
+### 与 macOS 的两处有意分歧
+
+| 项 | macOS | Windows | 原因 |
+| --- | --- | --- | --- |
+| 快照携带 `email` / `accountType` / `accountID` | 是 | 否 | 根 `AGENTS.md` 禁止跨 IPC 传递原始账号邮箱；身份统一由 `AccountIdentity` 以掩码形式承载 |
+| 额度来源质量 | 隐式（`quotaReadSucceeded` + 时间） | 显式 `QuotaSourceQuality` | 界面需要区分"新鲜官方数据 / 旧快照 / 从未读到"三态 |
+
+### 已知缺口（后续切片）
+
+- app-server 读取路径**尚未解析重置卡数量与到期**，`available_reset_credits` / `reset_credit_expiries` 恒为 `None`，界面显示 `—`。需要先拿到真实响应样本，不做猜测式解析。
+- 托管资料（隔离 profile）**没有额度读取路径**：现有 `read_installed_codex_quota` 不接收自定义 `CODEX_HOME`，需要扩展进程启动环境后才能接 S3 的映射。
+
+## 四、隐私边界
+
+`readers/codex_accounts.rs` 是缩减边界：
+
+- 只读 `auth.json` 的 `tokens`，用于校验身份一致性，**不返回** token 本体。
+- 邮箱经 `mask_email` 缩减为 `a***@example.com`；原始 `account_id` 只在 reader 内部用于三方一致性校验，不进入 `AccountIdentity`。
+- 托管 profile 根目录使用 Next 独立命名空间 `~/.aigoodbro-agenthub/profiles`，不复用 `.codex-account-manager-next` 或任何 `codexu` 目录。
+- 记录的路径一律只保留 basename。
+
+## 五、验证边界（重要）
+
+本次实现的验证状态（2026-09-11，macOS 主机 + rustc 1.97.1 + Node 22.22.2）：
+
+| 验证 | 命令 | 结果 |
+| --- | --- | --- |
+| Rust 单元测试 | `cargo test -p codexu-core` | **115 passed / 0 failed** |
+| Rust 集成测试（额度协议、Dashboard、任务板） | 同上 | **9 passed / 0 failed** |
+| Rust 构建告警 | `cargo build -p codexu-core` | 0 warning |
+| Web 契约与运行时测试 | `npm test`（`node --test`） | **50 passed / 0 failed**（基线为 20/1） |
+| 新增纯 TS 模块严格类型检查 | `tsc --noEmit --strict` | 通过 |
+| Windows MSVC 目标构建 | — | **未执行**：本机无 Windows 目标工具链 |
+| Tauri release 构建 / MSI / NSIS 打包 | — | **未执行** |
+| 真实 WebView2 渲染、DPI、原生对话框 | — | **未执行** |
+| 渲染后定位器级截图断言（`windows/AGENTS.md` 要求） | — | **未执行**：本机无 WebView2 运行时 |
+| 真实账号登录、暖号、派单、通知送达 | — | **未执行**，且本切片不包含这些行为 |
+
+本次顺带修复的既有缺陷：
+
+1. `readers/codex_state.rs` 的 `normalize_rollout_key` 依赖宿主路径分隔符，导致 Windows 记录的路径在非 Windows 主机上归一化失败。改为同时按 `/` 与 `\` 切分，两个原本失败的测试转为通过。
+2. 非有限的 `used_percent`（`NaN` / `±Infinity`）会被算成剩余 0%，进而被误报为"低额度"。现在 `is_measured()` 为假的值一律视为未测量：显示 `—`、不算低额度、不算用尽。
+
+### 对抗性自审发现（同一轮修复）
+
+主动审查自己的实现，找到并修掉 5 处真实缺陷：
+
+| # | 缺陷 | 影响 | 修复 |
+| --- | --- | --- | --- |
+| 1 | reader 的邮箱比较是大小写敏感的，而 macOS `normalizedEmail` 会 `lowercased()` | id_token 与 access_token 声明只差大小写时会被判为凭据不一致，**把已登录账号显示成未登录** | `normalized_email` 统一小写；`mask_email` 结果也小写，避免同一登录渲染成两个账号 |
+| 2 | 额度窗口映射门控在 `quota_read_succeeded` 上 | dashboard 的 `retain_last_verified_quota` 会在读取失败时保留上次窗口，这些**被保留的额度会被静默丢弃** | 质量判定改为跟随数据：失败但有窗口 → `Stale` 且保留数值 |
+| 3 | `PreferenceOverrides::set` 对空 account id 返回 `UnsupportedExecutionMode` | 错误语义误导，排障时会指向错误的根因 | 新增 `PreferenceError::EmptyAccountId` |
+| 4 | 托管 profile 目录名若恰好是 `system`，会与系统登录**共用同一 account id** | 系统登录的额度被错误归属到无关 profile | reader 导出 `SYSTEM_ACCOUNT_ID` 并在枚举时跳过同名目录；Tauri 侧改为引用同一常量，避免两处定义漂移 |
+| 5 | 前端在 JSX 里硬编码低额度阈值 `5` / `10`，并用"格式化结果是否等于 `—`"判断未知 | 阈值是用户可调设置，硬编码会与设置脱节；字符串比较判断未知很脆弱 | 新增 `LowQuotaThresholds` / `DEFAULT_LOW_QUOTA_THRESHOLDS` / `isLowQuotaForWindow`，阈值作为组件入参；未知改用 `isMeasuredUsage` 判定 |
+
+第 1、2 项是会导致**错误用户可见结论**的缺陷，不是风格问题。
+
+Web 侧新增的 23 个测试里，`quota-display` 与 `quota-bridge` 是**真实运行时**测试（Node 22 直接加载 `.ts` 模块），不是源码正则断言；`bilingual-i18n` 用 TypeScript 转译后校验中英键位对齐，因此新增的 `accounts.*` 文案在两种语言下都被实际执行过。
+
+> Windows 打包必须在目标环境执行独立构建与测试，不能以 macOS 自测代替（`docs/windows-port/RFC.md`）。
+> 上述 Rust 测试证明域逻辑与 reader 缩减行为，**不**证明窗口渲染、IPC 或打包。Tauri 命令层（`commands/accounts.rs`）本次**未经编译**。
+
+### 环境限制记录
+
+- `npm install` 被宿主文件规则拒绝（`CODEBUDDY_BROKER_DENY`），因此 `react` / `vite` / `recharts` 等依赖未安装；`typescript` 通过直接下载 tarball 安装，用于修复既有的 `bilingual-i18n` 失败。
+- 依赖缺失意味着**未执行** `vite build` 与整仓 `tsc`；`AccountsPanel.tsx` 的 JSX 未经类型检查。
+
+## 六、下一断点
+
+1. **S4 暖号策略**：5h / 7d 分别开关，到时先刷新官方额度、再核实身份与占用，条件满足才发一次最小请求。前置门禁直接复用 `QuotaGate` 与 `can_accept_new_task`。
+2. **S3 收尾**：扩展 `read_installed_codex_quota` 支持自定义 `CODEX_HOME`，让托管资料也能读额度；并从真实响应中解析重置卡数量与到期。
+3. **S5 派单协调**：把 `OccupancyRecord` 落到持久化存储并加心跳。
+4. **提交与集成**：本任务改动尚未提交（见下）。最终集成线是 `windows-port/ui-dev`，该分支检出在另一个 worktree，需在那边合并。
+
+## 七、提交状态
+
+本切片改动**尚未提交**。`codex/windows-agenthub-0911v1` 工作分支上 git 写入被一个陈旧的 0 字节锁文件挡住：
+
+```
+.git/worktrees/camnext-0911v14-candidate/index.lock
+```
+
+无 git 进程持有它，且它只影响本 worktree 的索引写入。移除后即可 `git add windows/ && git commit`。

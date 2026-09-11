@@ -1,6 +1,10 @@
 node_modules/
 dist/
 .cache/
+# Workspace-local npm cache/temp, used when the host blocks the default
+# locations. Never committed.
+.npm-cache/
+.npm-tmp/
 *.log
 .env
 .env.local
