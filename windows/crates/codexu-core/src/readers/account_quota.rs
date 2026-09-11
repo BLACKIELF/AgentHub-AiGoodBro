@@ -32,6 +32,8 @@ pub struct OfficialQuotaInput<'a> {
     pub five_hour: Option<&'a RateWindow>,
     pub seven_day: Option<&'a RateWindow>,
     pub monthly: Option<&'a RateWindow>,
+    pub available_reset_credits: Option<u32>,
+    pub reset_credit_expiries: Option<Vec<DateTime<Utc>>>,
 }
 
 impl<'a> OfficialQuotaInput<'a> {
@@ -43,6 +45,8 @@ impl<'a> OfficialQuotaInput<'a> {
             five_hour: quota.five_hour_quota.as_ref(),
             seven_day: quota.seven_day_quota.as_ref(),
             monthly: quota.monthly_quota.as_ref(),
+            available_reset_credits: quota.available_reset_credits,
+            reset_credit_expiries: quota.reset_credit_expiries.clone(),
         }
     }
 
@@ -54,6 +58,8 @@ impl<'a> OfficialQuotaInput<'a> {
             five_hour: snapshot.five_hour_quota.as_ref(),
             seven_day: snapshot.seven_day_quota.as_ref(),
             monthly: snapshot.monthly_quota.as_ref(),
+            available_reset_credits: None,
+            reset_credit_expiries: None,
         }
     }
 }
@@ -103,10 +109,8 @@ pub fn quota_snapshot_from_official(
         five_hour: carry_windows.then(|| to_window(input.five_hour)).flatten(),
         seven_day: carry_windows.then(|| to_window(input.seven_day)).flatten(),
         monthly: carry_windows.then(|| to_window(input.monthly)).flatten(),
-        // The app-server read path does not parse reset credits or balance yet.
-        // They stay unknown rather than being inferred from the window usage.
-        available_reset_credits: None,
-        reset_credit_expiries: None,
+        available_reset_credits: input.available_reset_credits,
+        reset_credit_expiries: input.reset_credit_expiries.clone(),
         credit_balance: None,
         credit_balance_unlimited: None,
         fetched_at,
@@ -140,6 +144,8 @@ pub fn retain_last_verified_account_quota(
         five_hour: previous.five_hour.clone(),
         seven_day: previous.seven_day.clone(),
         monthly: previous.monthly.clone(),
+        available_reset_credits: previous.available_reset_credits,
+        reset_credit_expiries: previous.reset_credit_expiries.clone(),
         limit_id: previous.limit_id.clone(),
         limit_name: previous.limit_name.clone(),
         fetched_at: previous.fetched_at,
@@ -203,6 +209,8 @@ mod tests {
             five_hour_quota: five.map(window),
             seven_day_quota: seven.map(window),
             monthly_quota: None,
+            available_reset_credits: None,
+            reset_credit_expiries: None,
         }
     }
 
@@ -223,9 +231,22 @@ mod tests {
         assert_eq!(snapshot.seven_day.as_ref().map(|w| w.used_percent), Some(60.0));
         assert_eq!(snapshot.monthly, None);
         assert_eq!(snapshot.fetched_at, at(0));
-        // Not parsed by the app-server path yet, so they must stay unknown.
         assert_eq!(snapshot.available_reset_credits, None);
         assert_eq!(snapshot.credit_balance, None);
+    }
+
+    #[test]
+    fn app_server_reset_credits_are_carried_into_the_workbench_snapshot() {
+        let mut quota = app_server(Some(25.0), Some(60.0), true);
+        quota.available_reset_credits = Some(2);
+        quota.reset_credit_expiries = Some(vec![at(120)]);
+        let snapshot = quota_snapshot_from_official(
+            "profile-a",
+            OfficialQuotaInput::from_app_server(&quota),
+            at(0),
+        );
+        assert_eq!(snapshot.available_reset_credits, Some(2));
+        assert_eq!(snapshot.reset_credit_expiries, Some(vec![at(120)]));
     }
 
     #[test]
@@ -360,6 +381,26 @@ mod tests {
         assert_eq!(retained.fetched_at, at(0));
         // The failed attempt is still recorded as a failed attempt.
         assert_eq!(retained.quota_read_succeeded, Some(false));
+    }
+
+    #[test]
+    fn retention_keeps_previous_reset_credits() {
+        let mut previous_quota = app_server(Some(25.0), Some(60.0), true);
+        previous_quota.available_reset_credits = Some(3);
+        previous_quota.reset_credit_expiries = Some(vec![at(90)]);
+        let previous = quota_snapshot_from_official(
+            "system",
+            OfficialQuotaInput::from_app_server(&previous_quota),
+            at(0),
+        );
+        let failed = quota_snapshot_from_official(
+            "system",
+            OfficialQuotaInput::from_app_server(&app_server(None, None, false)),
+            at(30),
+        );
+        let retained = retain_last_verified_account_quota(Some(&previous), failed);
+        assert_eq!(retained.available_reset_credits, Some(3));
+        assert_eq!(retained.reset_credit_expiries, Some(vec![at(90)]));
     }
 
     #[test]

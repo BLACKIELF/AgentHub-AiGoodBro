@@ -51,11 +51,10 @@ test('a read that returned no window is local-only, not an official zero', () =>
   assert.equal(mapped.seven_day, null);
 });
 
-test('a failed official read is local-only even when a window is present', () => {
+test('a failed official read with windows is stale, not an official zero', () => {
   const mapped = quotaSnapshotFromUsage(usageSnapshot({ quota_read_succeeded: false }));
-  assert.equal(mapped.quality, 'local_only');
-  // The window is still carried through; the quality label is what prevents it
-  // from being presented as fresh official evidence.
+  assert.equal(mapped.quality, 'stale');
+  // The window is still carried through; stale prevents treating it as fresh.
   assert.equal(mapped.five_hour.used_percent, 25);
 });
 

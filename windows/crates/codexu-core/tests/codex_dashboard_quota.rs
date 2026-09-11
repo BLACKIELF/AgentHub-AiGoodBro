@@ -64,6 +64,8 @@ fn applies_a_weekly_official_quota_without_inventing_a_five_hour_window() {
                 resets_at: None,
             }),
             monthly_quota: None,
+            available_reset_credits: None,
+            reset_credit_expiries: None,
         },
     );
 
@@ -98,6 +100,8 @@ fn keeps_a_previous_official_window_visible_as_stale_after_a_refresh_failure() {
                 resets_at: None,
             }),
             monthly_quota: None,
+            available_reset_credits: None,
+            reset_credit_expiries: None,
         },
     );
 

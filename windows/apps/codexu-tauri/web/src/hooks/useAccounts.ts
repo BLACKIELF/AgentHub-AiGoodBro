@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import type { AccountsDto } from '../types/accounts';
+import type { AccountQuotaSnapshot, AccountsDto } from '../types/accounts';
 import { isTauriRuntimeAvailable, requireTauriRuntime } from '../utils/tauri';
 
 /**
@@ -35,5 +35,24 @@ export function useAccounts() {
     load();
   }, [load]);
 
-  return { accounts, loading, error, refresh: load };
+  const refreshQuota = useCallback(async (accountId: string) => {
+    if (!isTauriRuntimeAvailable()) return;
+    try {
+      requireTauriRuntime();
+      const snapshot = await invoke<AccountQuotaSnapshot>('refresh_account_quota', {
+        accountId,
+      });
+      setAccounts((current) => {
+        if (!current) return current;
+        return {
+          ...current,
+          quotas: { ...current.quotas, [accountId]: snapshot },
+        };
+      });
+    } catch (cause) {
+      setError(String(cause));
+    }
+  }, []);
+
+  return { accounts, loading, error, refresh: load, refreshQuota };
 }

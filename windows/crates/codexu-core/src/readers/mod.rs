@@ -17,7 +17,9 @@ pub use claude_transcript::ClaudeCodeTranscriptReader;
 pub use codex_accounts::{
     identity_from_auth_json, AuthIdentity, CodexAccountReader, MANAGED_PROFILES_RELATIVE_PATH,
 };
-pub use codex_app_server::{read_installed_codex_quota, CodexAppServerQuotaSnapshot};
+pub use codex_app_server::{
+    read_codex_quota, read_installed_codex_quota, CodexAppServerQuotaSnapshot,
+};
 pub use codex_dashboard::{
     apply_official_quota, retain_last_verified_quota, CodexDashboardProvider,
 };

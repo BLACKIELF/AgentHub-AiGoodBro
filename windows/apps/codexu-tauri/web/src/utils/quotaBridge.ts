@@ -41,6 +41,11 @@ export function quotaSnapshotFromUsage(
   const monthly = toWindow(snapshot.monthly_quota);
   const readSucceeded = snapshot.quota_read_succeeded === true;
   const hasAnyWindow = Boolean(fiveHour || sevenDay || monthly);
+  const quality = readSucceeded && hasAnyWindow
+    ? 'official'
+    : hasAnyWindow
+      ? 'stale'
+      : 'local_only';
 
   return {
     account_id: SYSTEM_ACCOUNT_ID,
@@ -57,7 +62,7 @@ export function quotaSnapshotFromUsage(
     fetched_at: snapshot.refreshed_at,
     app_server_version: null,
     quota_read_succeeded: snapshot.quota_read_succeeded ?? null,
-    quality: readSucceeded && hasAnyWindow ? 'official' : 'local_only',
+    quality,
   };
 }
 

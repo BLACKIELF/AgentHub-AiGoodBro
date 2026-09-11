@@ -84,12 +84,13 @@ impl QuotaWindowSnapshot {
     /// Remaining percent derived from the reported usage.
     ///
     /// The source reports usage, so remaining is always derived here rather than
-    /// stored twice and allowed to drift.
-    pub fn remaining_percent(&self) -> f64 {
+    /// stored twice and allowed to drift. Unmeasured values stay `None` so a
+    /// caller cannot treat unknown as 0% remaining.
+    pub fn remaining_percent(&self) -> Option<f64> {
         if !self.is_measured() {
-            return 0.0;
+            return None;
         }
-        (100.0 - self.used_percent).clamp(0.0, 100.0)
+        Some((100.0 - self.used_percent).clamp(0.0, 100.0))
     }
 
     /// Whether this window is known to be exhausted.
@@ -100,10 +101,10 @@ impl QuotaWindowSnapshot {
     /// Integer remaining percent for display, or the unknown placeholder when
     /// the source did not report a usable number.
     pub fn remaining_display(&self) -> String {
-        if !self.is_measured() {
-            return UNKNOWN_DISPLAY.to_string();
+        match self.remaining_percent() {
+            Some(remaining) => format!("{}%", remaining.round() as i64),
+            None => UNKNOWN_DISPLAY.to_string(),
         }
-        format!("{}%", self.remaining_percent().round() as i64)
     }
 }
 
@@ -270,10 +271,9 @@ impl LowQuotaThresholds {
             };
             // A value the source did not actually measure is unverified, so it
             // must never be reported as a reached low-quota condition.
-            if !window.is_measured() {
+            let Some(remaining) = window.remaining_percent() else {
                 continue;
-            }
-            let remaining = window.remaining_percent();
+            };
             let threshold = match kind {
                 QuotaWindowKind::FiveHour => self.five_hour_percent,
                 QuotaWindowKind::SevenDay => self.seven_day_percent,
@@ -448,12 +448,21 @@ mod tests {
 
     #[test]
     fn remaining_is_derived_from_reported_usage() {
-        assert_eq!(window(0.0).remaining_percent(), 100.0);
-        assert_eq!(window(25.0).remaining_percent(), 75.0);
-        assert_eq!(window(100.0).remaining_percent(), 0.0);
+        assert_eq!(window(0.0).remaining_percent(), Some(100.0));
+        assert_eq!(window(25.0).remaining_percent(), Some(75.0));
+        assert_eq!(window(100.0).remaining_percent(), Some(0.0));
         // A source that over-reports is clamped rather than going negative.
-        assert_eq!(window(140.0).remaining_percent(), 0.0);
-        assert_eq!(window(-10.0).remaining_percent(), 100.0);
+        assert_eq!(window(140.0).remaining_percent(), Some(0.0));
+        assert_eq!(window(-10.0).remaining_percent(), Some(100.0));
+        assert_eq!(
+            QuotaWindowSnapshot {
+                used_percent: f64::NAN,
+                window_duration_mins: None,
+                resets_at: None,
+            }
+            .remaining_percent(),
+            None
+        );
     }
 
     #[test]

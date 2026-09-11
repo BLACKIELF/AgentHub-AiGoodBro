@@ -219,8 +219,10 @@ Tauri `list_accounts` 复用 AppState 里**已缓存的 dashboard 快照**推导
 
 ### 已知缺口（后续切片）
 
-- app-server 读取路径**尚未解析重置卡数量与到期**，`available_reset_credits` / `reset_credit_expiries` 恒为 `None`，界面显示 `—`。需要先拿到真实响应样本，不做猜测式解析。
-- 托管资料（隔离 profile）**没有额度读取路径**：现有 `read_installed_codex_quota` 不接收自定义 `CODEX_HOME`，需要扩展进程启动环境后才能接 S3 的映射。
+- 重置卡：app-server JSON 现已按 macOS `rateLimitResetCredits` 形状解析；畸形载荷仍保持未知。Dashboard 缓存的 `UsageSnapshot` 仍不携带重置卡，因此系统账号在只走 dashboard 桥接时界面仍可能是 `—`，直到调用 `refresh_account_quota`。
+- 托管资料：`read_codex_quota(Some(CODEX_HOME))` 与 Tauri `refresh_account_quota` 已接线。列表接口仍不在每次刷新时拉起多个 app-server。
+- S4/S5/S6/S8 **运行层 / 平台层**（真实发暖号、文件锁、HTTP 投递、切号事务）仍未实现。
+- S9 打包签名仍须在 Windows 目标环境执行。
 
 ## 四、隐私边界
 

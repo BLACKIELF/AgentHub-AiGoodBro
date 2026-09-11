@@ -15,7 +15,7 @@ use codexu_core::models::account::{AccountRecord, ExecutionPreference, Preferenc
 use codexu_core::models::quota::AccountQuotaSnapshot;
 use codexu_core::readers::codex_accounts::{CodexAccountReader, SYSTEM_ACCOUNT_ID};
 use codexu_core::readers::{
-    degrade_stale_quality, quota_snapshot_from_official, OfficialQuotaInput,
+    degrade_stale_quality, quota_snapshot_from_official, read_codex_quota, OfficialQuotaInput,
 };
 
 use crate::app_state::AppState;
@@ -129,6 +129,56 @@ async fn system_account_quotas(state: &State<'_, Arc<AppState>>) -> BTreeMap<Str
 pub struct SetPreferenceRequest {
     pub account_id: String,
     pub preference: ExecutionPreference,
+}
+
+/// Read official quota for one account.
+///
+/// The system login uses the default Codex home. Managed profiles pass their
+/// isolated directory as `CODEX_HOME`. The absolute path never leaves this
+/// command: the UI only sees the account id and the reduced quota snapshot.
+#[tauri::command]
+pub async fn refresh_account_quota(
+    state: State<'_, Arc<AppState>>,
+    account_id: String,
+) -> Result<AccountQuotaSnapshot, String> {
+    let app_data_dir = state.app_data_dir.clone();
+    let home = if account_id == SYSTEM_ACCOUNT_ID {
+        None
+    } else {
+        Some(managed_codex_home(&profiles_root(&app_data_dir), &account_id)?)
+    };
+
+    let quota = read_codex_quota(home.as_deref())
+        .await
+        .map_err(|error| error.to_string())?;
+    let built = quota_snapshot_from_official(
+        &account_id,
+        OfficialQuotaInput::from_app_server(&quota),
+        Utc::now(),
+    );
+    Ok(degrade_stale_quality(
+        built,
+        Utc::now(),
+        Duration::minutes(QUOTA_EVIDENCE_MAX_AGE_MINUTES),
+    ))
+}
+
+fn managed_codex_home(profiles_root: &Path, account_id: &str) -> Result<PathBuf, String> {
+    if account_id.is_empty()
+        || account_id == "."
+        || account_id == ".."
+        || account_id == SYSTEM_ACCOUNT_ID
+        || account_id.contains('/')
+        || account_id.contains('\\')
+        || account_id.contains('\0')
+    {
+        return Err("account id is not a managed profile".to_string());
+    }
+    let home = profiles_root.join(account_id);
+    if !home.is_dir() {
+        return Err("managed profile directory was not found".to_string());
+    }
+    Ok(home)
 }
 
 /// Persist an execution preference for one account.

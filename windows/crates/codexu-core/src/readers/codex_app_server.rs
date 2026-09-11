@@ -1,6 +1,13 @@
-use std::{env, net::Ipv4Addr, path::PathBuf, process::Stdio, time::Duration};
+use std::{
+    collections::BTreeSet,
+    env,
+    net::Ipv4Addr,
+    path::{Path, PathBuf},
+    process::Stdio,
+    time::Duration,
+};
 
-use chrono::{TimeZone, Utc};
+use chrono::{DateTime, TimeZone, Utc};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::Value;
 use tokio::{
@@ -29,6 +36,8 @@ pub struct CodexAppServerQuotaSnapshot {
     pub five_hour_quota: Option<RateWindow>,
     pub seven_day_quota: Option<RateWindow>,
     pub monthly_quota: Option<RateWindow>,
+    pub available_reset_credits: Option<u32>,
+    pub reset_credit_expiries: Option<Vec<DateTime<Utc>>>,
 }
 
 impl CodexAppServerQuotaSnapshot {
@@ -84,6 +93,8 @@ impl CodexAppServerQuotaSnapshot {
             return Self::unavailable();
         }
 
+        let (available_reset_credits, reset_credit_expiries) = parse_reset_credits(limits);
+
         Self {
             account: None,
             limit_id: limits
@@ -98,6 +109,8 @@ impl CodexAppServerQuotaSnapshot {
             five_hour_quota: single_window(five_hour_matches),
             seven_day_quota: single_window(seven_day_matches),
             monthly_quota: single_window(monthly_matches),
+            available_reset_credits,
+            reset_credit_expiries,
         }
     }
 
@@ -110,6 +123,8 @@ impl CodexAppServerQuotaSnapshot {
             five_hour_quota: None,
             seven_day_quota: None,
             monthly_quota: None,
+            available_reset_credits: None,
+            reset_credit_expiries: None,
         }
     }
 }
@@ -125,8 +140,19 @@ pub trait AppServerTransport {
 /// Reads the installed Codex CLI through a short-lived loopback-only
 /// app-server. The API calls themselves are read-only account lookups.
 pub async fn read_installed_codex_quota() -> anyhow::Result<CodexAppServerQuotaSnapshot> {
+    read_codex_quota(None).await
+}
+
+/// Same as [`read_installed_codex_quota`], with an optional `CODEX_HOME`.
+///
+/// Managed profiles isolate their login under a dedicated directory. Passing
+/// that directory here is the only way to read their official quota without
+/// guessing or mixing it with the system login.
+pub async fn read_codex_quota(
+    codex_home: Option<&Path>,
+) -> anyhow::Result<CodexAppServerQuotaSnapshot> {
     let port = reserve_loopback_port().await?;
-    let mut child = launch_app_server(port)?;
+    let mut child = launch_app_server(port, codex_home)?;
     let endpoint = format!("ws://127.0.0.1:{port}");
 
     let result = timeout(APP_SERVER_REQUEST_TIMEOUT, async {
@@ -197,8 +223,8 @@ pub async fn read_quota_from_transport<T: AppServerTransport>(
             "method": "initialize",
             "params": {
                 "clientInfo": {
-                    "name": "codex-account-manager-next",
-                    "title": "Codex Account Manager Next",
+                    "name": "aigoodbro",
+                    "title": "AiGoodBro",
                     "version": env!("CARGO_PKG_VERSION")
                 },
                 "capabilities": {
@@ -267,39 +293,56 @@ fn selected_rate_limits(response: &Value) -> Option<&Value> {
         .filter(|value| value.is_object())
 }
 
-fn launch_app_server(port: u16) -> anyhow::Result<Child> {
+fn launch_app_server(port: u16, codex_home: Option<&Path>) -> anyhow::Result<Child> {
     let executable = resolve_codex_executable()
         .ok_or_else(|| anyhow::anyhow!("Could not locate the installed Codex CLI executable"))?;
-    Command::new(executable)
+    let mut command = Command::new(executable);
+    command
         .args(["app-server", "--listen", &format!("ws://127.0.0.1:{port}")])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .kill_on_drop(true)
+        .kill_on_drop(true);
+    if let Some(home) = codex_home {
+        command.env("CODEX_HOME", home);
+    }
+    command
         .spawn()
         .map_err(|_| anyhow::anyhow!("Could not launch the installed Codex CLI"))
 }
 
 fn resolve_codex_executable() -> Option<PathBuf> {
-    let app_data = env::var_os("APPDATA")?;
-    let (package, triple) = if cfg!(target_arch = "aarch64") {
-        ("codex-win32-arm64", "aarch64-pc-windows-msvc")
-    } else {
-        ("codex-win32-x64", "x86_64-pc-windows-msvc")
-    };
-    let candidate = PathBuf::from(app_data)
-        .join("npm")
-        .join("node_modules")
-        .join("@openai")
-        .join("codex")
-        .join("node_modules")
-        .join("@openai")
-        .join(package)
-        .join("vendor")
-        .join(triple)
-        .join("bin")
-        .join("codex.exe");
-    candidate.is_file().then_some(candidate)
+    if let Some(app_data) = env::var_os("APPDATA") {
+        let (package, triple) = if cfg!(target_arch = "aarch64") {
+            ("codex-win32-arm64", "aarch64-pc-windows-msvc")
+        } else {
+            ("codex-win32-x64", "x86_64-pc-windows-msvc")
+        };
+        let candidate = PathBuf::from(app_data)
+            .join("npm")
+            .join("node_modules")
+            .join("@openai")
+            .join("codex")
+            .join("node_modules")
+            .join("@openai")
+            .join(package)
+            .join("vendor")
+            .join(triple)
+            .join("bin")
+            .join("codex.exe");
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    executable_on_path("codex.exe").or_else(|| executable_on_path("codex"))
+}
+
+fn executable_on_path(name: &str) -> Option<PathBuf> {
+    let path = env::var_os("PATH")?;
+    env::split_paths(&path).find_map(|directory| {
+        let candidate = directory.join(name);
+        candidate.is_file().then_some(candidate)
+    })
 }
 
 async fn reserve_loopback_port() -> anyhow::Result<u16> {
@@ -334,6 +377,9 @@ async fn stop_child(child: &mut Child) {
 
 fn parse_rate_window(value: &Value) -> Option<RateWindow> {
     let used_percent = value.get("usedPercent")?.as_f64()?;
+    if !used_percent.is_finite() {
+        return None;
+    }
     let resets_at = value
         .get("resetsAt")
         .and_then(Value::as_i64)
@@ -352,4 +398,161 @@ fn is_monthly_duration(duration_mins: Option<i64>) -> bool {
 
 fn single_window(mut matches: Vec<RateWindow>) -> Option<RateWindow> {
     (matches.len() == 1).then(|| matches.remove(0))
+}
+
+/// Port of macOS `CodexUsageReader` reset-credit parsing. Unknown or malformed
+/// payloads stay unknown; they are never coerced to zero.
+fn parse_reset_credits(limits: &Value) -> (Option<u32>, Option<Vec<DateTime<Utc>>>) {
+    let Some(reset) = limits.get("rateLimitResetCredits") else {
+        return (None, None);
+    };
+    if reset.is_null() {
+        return (None, None);
+    }
+    let Some(count) = exact_non_negative_count(reset.get("availableCount")) else {
+        return (None, None);
+    };
+
+    match reset.get("credits") {
+        None | Some(Value::Null) => (Some(count), None),
+        Some(Value::Array(rows)) if rows.len() <= 1_024 => {
+            let mut seen = BTreeSet::new();
+            let mut expiries = Vec::new();
+            for row in rows {
+                let Some(object) = row.as_object() else {
+                    return (None, None);
+                };
+                let Some(id) = object
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .filter(|value| reset_valid_field(value, 512))
+                else {
+                    return (None, None);
+                };
+                if !seen.insert(id.to_string()) {
+                    return (None, None);
+                }
+                let status = object.get("status").and_then(Value::as_str);
+                let reset_type = object.get("resetType").and_then(Value::as_str);
+                let Some(expiry) = parse_reset_expiry(object.get("expiresAt")) else {
+                    return (None, None);
+                };
+                if status == Some("available") && reset_type == Some("codexRateLimits") {
+                    if let Some(at) = expiry {
+                        expiries.push(at);
+                    }
+                }
+            }
+            expiries.sort();
+            (
+                Some(count),
+                if expiries.is_empty() {
+                    None
+                } else {
+                    Some(expiries)
+                },
+            )
+        }
+        _ => (None, None),
+    }
+}
+
+fn exact_non_negative_count(value: Option<&Value>) -> Option<u32> {
+    let value = value?;
+    let count = if let Some(number) = value.as_u64() {
+        u32::try_from(number).ok()?
+    } else if let Some(number) = value.as_i64() {
+        u32::try_from(number).ok()?
+    } else {
+        return None;
+    };
+    (count <= 1_000_000).then_some(count)
+}
+
+fn parse_reset_expiry(value: Option<&Value>) -> Option<Option<DateTime<Utc>>> {
+    match value {
+        None | Some(Value::Null) => Some(None),
+        Some(Value::Number(number)) => {
+            let seconds = number.as_i64()?;
+            Utc.timestamp_opt(seconds, 0).single().map(Some)
+        }
+        _ => None,
+    }
+}
+
+fn reset_valid_field(value: &str, maximum_bytes: usize) -> bool {
+    !value.is_empty()
+        && value.len() <= maximum_bytes
+        && !value.chars().any(|ch| ch.is_control())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn reset_credits_follow_the_macos_payload_shape() {
+        let quota = CodexAppServerQuotaSnapshot::from_rate_limit_response(&json!({
+            "rateLimits": {
+                "limitId": "codex",
+                "limitName": "Codex",
+                "primary": {
+                    "usedPercent": 10,
+                    "windowDurationMins": 300,
+                    "resetsAt": 1_800_000_000
+                },
+                "secondary": {
+                    "usedPercent": 20,
+                    "windowDurationMins": 10080,
+                    "resetsAt": 1_800_100_000
+                },
+                "rateLimitResetCredits": {
+                    "availableCount": 2,
+                    "credits": [
+                        {
+                            "id": "card-b",
+                            "status": "available",
+                            "resetType": "codexRateLimits",
+                            "expiresAt": 1_800_200_000
+                        },
+                        {
+                            "id": "card-a",
+                            "status": "available",
+                            "resetType": "codexRateLimits",
+                            "expiresAt": 1_800_050_000
+                        }
+                    ]
+                }
+            }
+        }));
+
+        assert!(quota.quota_read_succeeded);
+        assert_eq!(quota.available_reset_credits, Some(2));
+        let expiries = quota.reset_credit_expiries.expect("expiries");
+        assert_eq!(expiries.len(), 2);
+        assert!(expiries[0] < expiries[1]);
+    }
+
+    #[test]
+    fn malformed_reset_credits_stay_unknown() {
+        let quota = CodexAppServerQuotaSnapshot::from_rate_limit_response(&json!({
+            "rateLimits": {
+                "limitId": "codex",
+                "limitName": "Codex",
+                "primary": {
+                    "usedPercent": 10,
+                    "windowDurationMins": 300,
+                    "resetsAt": 1_800_000_000
+                },
+                "rateLimitResetCredits": {
+                    "availableCount": -1
+                }
+            }
+        }));
+
+        assert!(quota.quota_read_succeeded);
+        assert_eq!(quota.available_reset_credits, None);
+        assert_eq!(quota.reset_credit_expiries, None);
+    }
 }

@@ -63,8 +63,11 @@ pub struct RateWindow {
 }
 
 impl RateWindow {
-    pub fn remaining_percent(&self) -> f64 {
-        (100.0 - self.used_percent).clamp(0.0, 100.0)
+    pub fn remaining_percent(&self) -> Option<f64> {
+        if !self.used_percent.is_finite() {
+            return None;
+        }
+        Some((100.0 - self.used_percent).clamp(0.0, 100.0))
     }
 }
 
