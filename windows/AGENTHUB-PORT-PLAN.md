@@ -148,12 +148,18 @@ Web 侧新增的 23 个测试里，`quota-display` 与 `quota-bridge` 是**真�
 3. **S5 派单协调**：把 `OccupancyRecord` 落到持久化存储并加心跳。
 4. **提交与集成**：本任务改动尚未提交（见下）。最终集成线是 `windows-port/ui-dev`，该分支检出在另一个 worktree，需在那边合并。
 
-## 七、提交状态
+## 七、提交与推送状态
 
-本切片改动**尚未提交**。`codex/windows-agenthub-0911v1` 工作分支上 git 写入被一个陈旧的 0 字节锁文件挡住：
+提交 `50b55b877ed4084dbf098e77a23e2f12534794c7`（23 个文件，全部位于 `windows/`）已推送到 `origin` 的 `codex/windows-agenthub-0911v1` 分支。`main` 未被触碰。
 
+- 该分支远端已存在，可用 `git ls-remote origin refs/heads/codex/windows-agenthub-0911v1` 核对。
+- `windows-port/ui-dev` 在远端尚不存在，因此无法对其开 PR；需要先由该 worktree 推送该分支。
+- **本 worktree 的本地分支指针仍指向旧提交**：本次提交是通过 `git commit-tree` + 直接推送 SHA 完成的，以绕开本 worktree 里被占用的 `.lock`（那些锁是先前被中断的 git 命令留下的）。本地同步只需一次 compare-and-swap：
+
+```sh
+git update-ref refs/heads/codex/windows-agenthub-0911v1 \
+  50b55b877ed4084dbf098e77a23e2f12534794c7 \
+  489afe1fb3efee2753acfa620d24d92f487cd154
 ```
-.git/worktrees/camnext-0911v14-candidate/index.lock
-```
 
-无 git 进程持有它，且它只影响本 worktree 的索引写入。移除后即可 `git add windows/ && git commit`。
+该命令只移动分支指针，不触碰工作区，也不会丢弃任何未提交改动。
