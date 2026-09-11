@@ -141,7 +141,9 @@ struct LocalCLIWorkspaceView: View {
                     } else if kind == .grok, let summary = ResetCardPresentation.summaryText(result?.resetCards, now: Date(), timeZone: .current, language: language) {
                         Label(summary, systemImage: "creditcard").font(.caption2).foregroundStyle(expiring ? FixedVisualPalette.statusDanger : Color.secondary).lineLimit(2)
                     }
-                    if expiring { Text(ResetCardPresentation.expiringLabelText(language: language)).font(.caption2.weight(.semibold)).foregroundStyle(.red) }
+                    if expiring {
+                        Text(ResetCardPresentation.expiringLabelText(language: language)).font(.caption2.weight(.semibold)).foregroundStyle(FixedVisualPalette.statusDanger)
+                    }
                 }
                 if let result {
                     Text(fresh ? result.sourceLabel : language.text("上次快照 · 请刷新", "Previous snapshot · Refresh needed"))
@@ -275,7 +277,7 @@ struct LocalCLIWorkspaceView: View {
         .overlay {
             if expiring {
                 RoundedRectangle(cornerRadius: layout == .cards ? 14 : 12)
-                    .strokeBorder(.red, lineWidth: 1.5).allowsHitTesting(false)
+                    .strokeBorder(FixedVisualPalette.statusDanger, lineWidth: 1.5).allowsHitTesting(false)
             }
         }
     }

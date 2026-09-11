@@ -109,7 +109,7 @@ struct HubAccountTaskStatus: Equatable {
     /// Presentation-only. Does not change `blocksLocalCLI`.
     func blockingReason(_ language: WidgetLanguage) -> String? {
         guard blocksLocalCLI else { return nil }
-        switch blockDetail ?? .hubOffline {
+        switch blockDetail {
         case .missingMapping:
             return language.text(
                 "缺少可信账号映射，暂不能执行。请确认该账号已关联 Hub。",
@@ -126,13 +126,15 @@ struct HubAccountTaskStatus: Equatable {
             return language.text(
                 "同账号有活跃任务（\(activePhase.label(language))），暂不能执行。",
                 "This account has an active task (\(activePhase.label(language))). CLI launch stays blocked.")
+        case nil:
+            return language.text("当前不能执行，请刷新后再试。", "Cannot start now. Refresh and try again.")
         }
     }
 
     private static func inferredDetail(phase: HubAccountTaskPhase) -> HubCLIBlockDetail? {
         switch phase {
         case .unavailable:
-            return .hubOffline
+            return nil
         case .awaitingApproval, .starting, .running, .maintenance, .cancelRequested, .uncertain:
             return .activeTask(phase)
         case .idle, .awaitingAcceptance, .succeeded, .failed, .cancelled:
@@ -237,7 +239,10 @@ enum HubAccountTaskStatusResolver {
             return HubAccountTaskStatus(phase: .unavailable, updatedAt: nil, blockDetail: .missingMapping)
         }
         guard connectionState == .online, let lastSuccessfulRefreshAt else {
-            return HubAccountTaskStatus(phase: .unavailable, updatedAt: nil, blockDetail: .hubOffline)
+            if connectionState == .offline {
+                return HubAccountTaskStatus(phase: .unavailable, updatedAt: nil, blockDetail: .hubOffline)
+            }
+            return HubAccountTaskStatus(phase: .unavailable, updatedAt: nil)
         }
         guard (-maximumFutureClockSkew...overviewFreshnessTTL).contains(now.timeIntervalSince(lastSuccessfulRefreshAt))
         else {

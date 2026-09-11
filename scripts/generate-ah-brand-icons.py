@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 """AiGoodBro (AH) brand icon generator.
 
-Single reproducible source for the AH "hub ligature" mark:
-an A whose right leg doubles as the H left stem, one shared crossbar,
-one hub node on that crossbar. Everything is drawn in a normalized
-0-100 glyph box and rasterized with PIL at heavy supersampling, so the
-Resources PNG/ICNS can be rebuilt byte-identically at any time:
+Product-informed mark: AH ligature (AiGoodBro / AgentHub) whose shared
+crossbar carries a reset-cycle hub — the workspace's distinctive 5h/7d
+window. Drawn in a normalized 0-100 glyph box and rasterized with PIL at
+heavy supersampling so Resources PNG/ICNS rebuild byte-identically:
 
     python3 scripts/generate-ah-brand-icons.py --candidates docs/images/ah-brand-0911v1/candidates
     python3 scripts/generate-ah-brand-icons.py --final
@@ -15,6 +14,7 @@ Resources PNG/ICNS can be rebuilt byte-identically at any time:
 """
 
 import argparse
+import math
 import os
 import subprocess
 import sys
@@ -34,8 +34,10 @@ H_RIGHT_X = 83.0
 H_TOP = 15.0
 H_BOTTOM = 85.0
 STROKE = 10.5
-HUB_CENTER = (66.0, CROSSBAR_Y)
-HUB_RADIUS = 9.5
+HUB_CENTER = (64.5, CROSSBAR_Y)
+HUB_RADIUS = 11.0
+HUB_RING = 3.4
+FINAL_VARIANT = "c5"
 
 
 def crossbar_x_left():
@@ -57,10 +59,11 @@ def glyph_segments():
 # Colors
 # ---------------------------------------------------------------------------
 
-TILE_TOP = (56, 118, 250)      # #3876FA
-TILE_BOTTOM = (30, 79, 216)    # #1E4FD8
+TILE_TOP = (64, 112, 255)      # #4070FF
+TILE_BOTTOM = (28, 62, 196)    # #1C3EC4
 GLYPH_WHITE = (255, 255, 255)
-GLYPH_TINT = (196, 214, 255)   # restrained secondary tone for two-tone variant
+GLYPH_TINT = (196, 214, 255)
+FRAME_WHITE = (255, 255, 255, 56)
 
 
 # ---------------------------------------------------------------------------
@@ -76,14 +79,35 @@ def draw_polyline(draw, points, u, width, color):
 
 
 def draw_glyph(draw, u, color, stroke=STROKE, hub=None):
-    """Draw the AH ligature. `hub`: None or (radius, color)."""
+    """Draw the AH ligature. `hub`: None, 'dot', 'ring', or 'reset'."""
     for segment in glyph_segments():
         draw_polyline(draw, segment, u, stroke, color)
-    if hub is not None:
-        radius, hub_color = hub
-        cx, cy = HUB_CENTER[0] * u, HUB_CENTER[1] * u
-        r = radius * u
-        draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=hub_color)
+    if hub is None:
+        return
+    cx, cy = HUB_CENTER[0] * u, HUB_CENTER[1] * u
+    r = HUB_RADIUS * u
+    if hub == "dot":
+        draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=color)
+        return
+    ring_w = max(1, int(round(HUB_RING * u)))
+    bbox = [cx - r, cy - r, cx + r, cy + r]
+    if hub == "ring":
+        draw.ellipse(bbox, outline=color, width=ring_w)
+        return
+    if hub == "reset":
+        # PIL arcs: 0° = 3 o'clock, increasing clockwise. Leave a gap at
+        # ~1 o'clock so the hub reads as a returning window, not a blob.
+        draw.arc(bbox, start=40, end=320, fill=color, width=ring_w)
+        ang = math.radians(40)
+        ax = cx + r * math.cos(ang)
+        ay = cy + r * math.sin(ang)
+        tangent = ang + math.pi / 2
+        ah = max(3.0, 4.6 * u)
+        aw = max(2.2, 3.2 * u)
+        tip = (ax + ah * math.cos(tangent), ay + ah * math.sin(tangent))
+        left = (ax - aw * math.cos(ang), ay - aw * math.sin(ang))
+        right = (ax + aw * math.cos(ang), ay + aw * math.sin(ang))
+        draw.polygon([tip, left, right], fill=color)
 
 
 def vertical_gradient(size, top, bottom):
@@ -100,7 +124,7 @@ def vertical_gradient(size, top, bottom):
 def render_icon(px, variant, supersample=8):
     """Render the full macOS tile icon at `px` pixels.
 
-    variant: "c1" plain ligature | "c2" ligature + hub node | "c3" two-tone
+    variant: c4 ring hub | c5 ring + workspace frame | c6 reset-cycle hub + frame
     Returns an RGBA image with transparent surroundings (safe area respected).
     """
     S = px * supersample
@@ -129,15 +153,37 @@ def render_icon(px, variant, supersample=8):
     layer = Image.new("RGBA", (S, S), (0, 0, 0, 0))
     ld = ImageDraw.Draw(layer)
 
+    if variant in ("c5", "c6"):
+        # Inner workspace window: the AgentHub surface sitting inside the app tile.
+        fd = ImageDraw.Draw(img)
+        inset = tile * 0.11
+        frame = [
+            off + inset,
+            off + inset,
+            off + tile - inset,
+            off + tile - inset,
+        ]
+        fd.rounded_rectangle(
+            frame,
+            radius=int(round(tile * 0.16)),
+            outline=(255, 255, 255, 64 if px >= 64 else 90),
+            width=max(1, int(round(tile * (0.018 if px >= 64 else 0.028)))),
+        )
+
     if variant == "c1":
         draw_glyph(ld, u, GLYPH_WHITE, stroke=stroke)
     elif variant == "c2":
-        draw_glyph(ld, u, GLYPH_WHITE, stroke=stroke, hub=(HUB_RADIUS, GLYPH_WHITE))
+        draw_glyph(ld, u, GLYPH_WHITE, stroke=stroke, hub="dot")
     elif variant == "c3":
-        # A strokes in white, H stem + crossbar in a lighter tint.
         draw_polyline(ld, glyph_segments()[0], u, stroke, GLYPH_WHITE)
         for seg in glyph_segments()[1:]:
             draw_polyline(ld, seg, u, stroke, GLYPH_TINT)
+    elif variant == "c4":
+        draw_glyph(ld, u, GLYPH_WHITE, stroke=stroke, hub="ring")
+    elif variant == "c5":
+        draw_glyph(ld, u, GLYPH_WHITE, stroke=stroke, hub="ring")
+    elif variant == "c6":
+        draw_glyph(ld, u, GLYPH_WHITE, stroke=stroke, hub="reset")
     else:
         raise ValueError(f"unknown variant {variant}")
 
@@ -157,7 +203,7 @@ def render_template(px, color=(0, 0, 0), stroke_scale=1.0, supersample=8):
     oy = (S - box) / 2.0
     sub = Image.new("RGBA", (S, S), (0, 0, 0, 0))
     sd = ImageDraw.Draw(sub)
-    draw_glyph(sd, u, color, stroke=STROKE * stroke_scale, hub=(HUB_RADIUS, color))
+    draw_glyph(sd, u, color, stroke=STROKE * stroke_scale, hub="ring")
     img.alpha_composite(sub, (int(round(ox)), int(round(oy))))
     return img.resize((px, px), Image.LANCZOS)
 
@@ -168,7 +214,7 @@ def render_template(px, color=(0, 0, 0), stroke_scale=1.0, supersample=8):
 
 def write_candidates(out_dir):
     os.makedirs(out_dir, exist_ok=True)
-    for variant in ("c1", "c2", "c3"):
+    for variant in ("c4", "c5", "c6"):
         render_icon(256, variant).save(os.path.join(out_dir, f"candidate-{variant}-256.png"))
         strip = Image.new("RGBA", (64 + 32 + 16 + 16, 64), (0, 0, 0, 0))
         x = 0
@@ -185,7 +231,7 @@ def write_candidates(out_dir):
 
 def write_final(resources_dir):
     os.makedirs(resources_dir, exist_ok=True)
-    icon1024 = render_icon(1024, "c2")
+    icon1024 = render_icon(1024, FINAL_VARIANT)
     png_path = os.path.join(resources_dir, "codexU-icon.png")
     icon1024.save(png_path)
 
@@ -207,7 +253,7 @@ def write_final(resources_dir):
         for name, size in entries.items():
             if size <= 64:
                 # optical sizing: direct redraw keeps the glyph legible
-                img = render_icon(size, "c2")
+                img = render_icon(size, FINAL_VARIANT)
             else:
                 img = icon1024.resize((size, size), Image.LANCZOS)
             img.save(os.path.join(iconset, name))
@@ -229,9 +275,9 @@ def write_board(board_path):
 
     # top row: 512 color icon on light and dark panels, template pair beside
     panel(30, 30, 600, 600, (255, 255, 255, 255))
-    board.alpha_composite(render_icon(512, "c2"), (74, 74))
+    board.alpha_composite(render_icon(512, FINAL_VARIANT), (74, 74))
     panel(660, 30, 600, 600, (30, 32, 38, 255))
-    board.alpha_composite(render_icon(512, "c2"), (704, 74))
+    board.alpha_composite(render_icon(512, FINAL_VARIANT), (704, 74))
     panel(1290, 30, 240, 290, (30, 32, 38, 255))
     board.alpha_composite(render_template(160, color=(255, 255, 255)), (1330, 95))
     panel(1290, 340, 240, 290, (255, 255, 255, 255))
@@ -241,7 +287,7 @@ def write_board(board_path):
     panel(30, 660, 740, 290, (255, 255, 255, 255))
     x = 55
     for size in (128, 64, 32, 16):
-        board.alpha_composite(render_icon(size, "c2"), (x, 660 + 145 - size // 2))
+        board.alpha_composite(render_icon(size, FINAL_VARIANT), (x, 660 + 145 - size // 2))
         x += size + 30
     for size in (128, 64, 32, 16):
         board.alpha_composite(render_template(size, stroke_scale=1.12 if size <= 32 else 1.0), (x, 660 + 145 - size // 2))
@@ -249,7 +295,7 @@ def write_board(board_path):
     panel(800, 660, 730, 290, (30, 32, 38, 255))
     x = 830
     for size in (128, 64, 32, 16):
-        board.alpha_composite(render_icon(size, "c2"), (x, 660 + 145 - size // 2))
+        board.alpha_composite(render_icon(size, FINAL_VARIANT), (x, 660 + 145 - size // 2))
         x += size + 30
     for size in (128, 64, 32, 16):
         board.alpha_composite(render_template(size, color=(255, 255, 255), stroke_scale=1.12 if size <= 32 else 1.0), (x, 660 + 145 - size // 2))

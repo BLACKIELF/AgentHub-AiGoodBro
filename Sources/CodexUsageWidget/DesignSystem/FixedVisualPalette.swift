@@ -21,6 +21,19 @@ enum FixedVisualPalette {
     static let statusScheduledLightText = Color(red: 0.384, green: 0.251, blue: 0.773)  // #6240C5
 
     static let surfaceTrack = Color.primary.opacity(0.10)
+    static let surfaceSubtleFill = Color.primary.opacity(0.025)
+    static let surfaceFaintFill = Color.primary.opacity(0.035)
+    static let surfaceMutedFill = Color.primary.opacity(0.045)
+    static let surfaceSoftFill = Color.primary.opacity(0.06)
+    static let surfaceHairline = Color.primary.opacity(0.08)
+    static let surfaceStrokeSubtle = Color.primary.opacity(0.07)
+    static let surfaceStrokeSoft = Color.primary.opacity(0.09)
+    static let surfaceStrokeStrong = Color.primary.opacity(0.12)
+    static let surfaceRing = Color.primary.opacity(0.16)
+
+    static func primarySurface(_ opacity: Double) -> Color {
+        Color.primary.opacity(opacity)
+    }
 
     static func windowScrim(_ colorScheme: ColorScheme, reduceTransparency: Bool = false) -> Color {
         if reduceTransparency {

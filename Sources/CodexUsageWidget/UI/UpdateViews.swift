@@ -10,7 +10,7 @@ struct AppUpdateSettingsRows: View {
     var body: some View {
         SettingsToggleRow(
             title: language.text("自动检查更新", "Check automatically"),
-            detail: language.text("每天最多读取一次 GitHub Release，包含 beta 版本", "Reads GitHub Releases at most once per day, including beta releases")
+            detail: language.text("每天最多读取一次 GitHub Release，包含 beta 版本", "Daily GitHub Releases check, including beta")
         ) {
             SettingsSwitchToggle(isOn: $settings.automaticUpdateChecksEnabled)
         }

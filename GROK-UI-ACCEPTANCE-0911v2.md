@@ -27,7 +27,7 @@ v1 未写独立验收文件，以上并入本文件。
 | T08 | 设置行标题 12.5、说明 10.5；五页 spacing 6；ErrorRow 对齐；暖号改 BaseRow；关于页声明上移且 compact 可滚 |
 | T09 | 狂蹬/中蹬/慢蹬按钮增加既有口径的行为摘要 |
 | T10 | **跳过**：同文件私有助手过多，无法纯移动且无法像素对比 |
-| T11 | 任务状态与到期/警示色改走 `FixedVisualPalette.status*`；表面透明度散写未全收 |
+| T11 | 任务状态与到期/警示色改走 `FixedVisualPalette.status*`；表面透明度收到 `surface*`，原 token 数值未改 |
 | T12 | `docs/non-codex-model-selection-0911v1.md`：非 Codex 不做 GUI 模型选择器 |
 
 ## 3. 修改文件清单（本轮 UI）
@@ -73,7 +73,7 @@ v1 未写独立验收文件，以上并入本文件。
 隔离构建（不碰运行中的 `build/`）：
 
 ```bash
-make build BUILD_DIR=.local-artifacts/grok-ui-p11-build SWIFT_OPTIMIZATION=-Onone
+make build BUILD_DIR=.local-artifacts/grok-ui-p12-build SWIFT_OPTIMIZATION=-Onone
 # 成功；codesign --verify --deep --strict 通过
 ```
 
@@ -84,7 +84,7 @@ git diff --check
 ```
 
 ```bash
-./scripts/run-self-tests.sh --skip-build --build-dir .local-artifacts/grok-ui-p11-build
+./scripts/run-self-tests.sh --skip-build --build-dir .local-artifacts/grok-ui-p12-build
 # All 29 selected self-test(s) passed
 ```
 
@@ -122,7 +122,9 @@ AiGoodBro --render-settings-previews .local-artifacts/grok-ui-p10-settings
 - 不可执行说明已是「缺少可信账号映射…」而不是三合一句子。
 - 菜单 380 宽「窗口重置」已改为只显示绝对时间，相对时间放在 help。
 - 关于页开源声明已移到品牌名下方，首屏可读；更新检查一行在 550 高菜单里仍可能被底栏挡住，可上滚。
-- `Color.primary.opacity` 表面填充未收敛。
+- UI 表面 `Color.primary.opacity` 已收到 `FixedVisualPalette.surface*`；既有 token 数值未改。
+- 工作台标题改为 AiGoodBro 主名 + AgentHub/重置窗口副标题；有重置卡或公告时重置条带信息色强调。
+- API 等效估算只保留 ≈$，不再用硬编码 6.8 换算人民币。
 
 ## 7. 未真实验证（必须标出）
 
@@ -163,7 +165,9 @@ Codex 已按第 8 节接管并复验。**改动了一个本轮新增的文件**�
 
 **未改动、但请你回看的两条：**
 
-- `TokenTotalsHeader.swift:134` 硬编码人民币汇率 `cost * 6.8`，无来源会漂移，界面却显示具体金额。属产品口径决定，Codex 未擅自改；建议改为可配置常量或去掉人民币那一行。
+- `TokenTotalsHeader` 已去掉人民币 6.8 换算，只保留 ≈$。
 - 本文件第 2 节与进度文件的「去掉 `minHeight: 188`」措辞会让人以为该文件里再无该值；实际 `CodexAccountManagerView.swift:1624` 仍有（另一张 5h/7d 双栏卡，布局仍是双栏，合理）。建议措辞改为「去掉**总量卡**的 `minHeight: 188`」。
 
-其余本轮内容 Codex **一字未改**。独立复验记录见 `CODEX-UI-REVIEW-0911v2.md`；macOS UI 改动已推送到 `origin/codex/aigoodbro-ui-0911v2`（`48de939`），39 个文件，与 Windows 移植改动分开分支。
+其余当时内容 Codex **一字未改**。独立复验记录见 `CODEX-UI-REVIEW-0911v2.md`；macOS UI 当时已推送到 `origin/codex/aigoodbro-ui-0911v2`（`48de939`，通知提交 `724a169`），与 Windows 移植分开分支。
+
+后续 Grok 已按「未改动但请回看」处理：去掉人民币 6.8 换算；进度/验收措辞改为「去掉总量卡的 minHeight: 188」。`AHBrandAssetsSelfTest.swift` 与 Codex 补丁保持一致（未再改）。

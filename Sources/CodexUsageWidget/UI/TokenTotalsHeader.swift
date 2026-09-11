@@ -128,13 +128,12 @@ struct TokenTotalsHeader: View {
             if let cost = combinedEquivalentCostUSD {
                 metricRow(
                     label: language.text("API 等效估算", "API equivalent estimate"),
-                    value: String(
-                        format: language.text("≈ $%.0f · ¥%.0f", "≈ $%.0f · ¥%.0f"),
-                        cost,
-                        cost * 6.8
-                    ),
+                    value: String(format: "≈ $%.0f", cost),
                     tint: .secondary,
-                    help: nil
+                    help: language.text(
+                        "按本机记录估算的 API 等效美元，不是账单，也不是汇率换算。",
+                        "Local API-equivalent USD estimate. Not a bill and not a currency conversion."
+                    )
                 )
             }
         }

@@ -317,10 +317,10 @@ struct ExecutionPreferenceControl: View {
             }
             .frame(maxWidth: .infinity, minHeight: 64, alignment: .leading)
             .padding(8)
-            .background(selected ? Color.accentColor.opacity(0.10) : Color.primary.opacity(0.03), in: RoundedRectangle(cornerRadius: 10))
+            .background(selected ? Color.accentColor.opacity(0.10) : FixedVisualPalette.primarySurface(0.03), in: RoundedRectangle(cornerRadius: 10))
             .overlay {
                 RoundedRectangle(cornerRadius: 10)
-                    .strokeBorder(selected ? Color.accentColor.opacity(0.48) : Color.primary.opacity(0.09), lineWidth: selected ? 1 : 0.5)
+                    .strokeBorder(selected ? Color.accentColor.opacity(0.48) : FixedVisualPalette.surfaceStrokeSoft, lineWidth: selected ? 1 : 0.5)
             }
         }
         .buttonStyle(.plain)

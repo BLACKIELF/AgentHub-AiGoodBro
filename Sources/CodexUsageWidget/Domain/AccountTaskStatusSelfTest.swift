@@ -112,6 +112,23 @@ enum AccountTaskStatusSelfTest {
             && HubAccountTaskStatus(phase: .running, updatedAt: now).blockingReason(.zh)?.contains("活跃任务") == true
             && HubAccountTaskStatus(phase: .idle, updatedAt: now).blockingReason(.zh) == nil
             && HubAccountTaskStatus(phase: .running, updatedAt: now).blocksLocalCLI
+            && HubAccountTaskStatus(phase: .unavailable, updatedAt: now).blockDetail == nil
+            && HubAccountTaskStatus(phase: .unavailable, updatedAt: now).blockingReason(.zh)?.contains("当前不能执行") == true
+            && HubAccountTaskStatus(phase: .unavailable, updatedAt: now, blockDetail: .hubOffline).blockingReason(.zh)?.contains("Hub 概览未连接") == true
+            && HubAccountTaskStatusResolver.status(
+                forAccountAlias: "alpha",
+                tasksByAlias: newestByAlias,
+                connectionState: .loading,
+                lastSuccessfulRefreshAt: nil,
+                now: now
+            ).blockDetail == nil
+            && HubAccountTaskStatusResolver.status(
+                forAccountAlias: "alpha",
+                tasksByAlias: newestByAlias,
+                connectionState: .loading,
+                lastSuccessfulRefreshAt: nil,
+                now: now
+            ).blockingReason(.zh)?.contains("Hub 概览未连接") != true
         print(passed ? "Account task status self-test passed" : "Account task status self-test failed")
         return passed
     }

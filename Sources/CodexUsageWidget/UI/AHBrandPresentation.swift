@@ -43,9 +43,8 @@ final class AHSettingsHeaderContext: ObservableObject {
     fileprivate init() {}
 }
 
-/// AiGoodBro brand mark: the AH hub ligature. `A` 的右腿兼作 `H` 的左干，
-/// 共用横杠，横杠中央为枢纽节点。与 `scripts/generate-ah-brand-icons.py`
-/// 共享同一套 0-100 规范化几何，保证应用内标记与 App 图标同源。
+/// AiGoodBro brand mark: AH ligature plus a reset-cycle hub.
+/// Geometry stays in lockstep with `scripts/generate-ah-brand-icons.py`.
 struct AHBrandSymbol: View {
     enum Variant {
         /// 彩色底板 + 白色字形（设置页、关于页、主界面品牌位）。
@@ -86,6 +85,13 @@ struct AHBrandSymbol: View {
         )
         var clipped = context
         clipped.clip(to: tilePath)
+        let inset = canvasSize.width * 0.11
+        let inner = tile.insetBy(dx: inset, dy: inset)
+        clipped.stroke(
+            Path(roundedRect: inner, cornerRadius: max(3, canvasSize.width * 0.16), style: .continuous),
+            with: .color(Color.white.opacity(canvasSize.width >= 64 ? 0.25 : 0.35)),
+            lineWidth: max(1, canvasSize.width * (canvasSize.width >= 64 ? 0.018 : 0.028))
+        )
         drawGlyph(context: clipped, rect: glyphRect(in: canvasSize), heavy: canvasSize.width <= 32, color: .white)
     }
 
@@ -119,16 +125,18 @@ struct AHBrandSymbol: View {
             with: .color(color),
             style: StrokeStyle(lineWidth: (heavy ? 11.5 : 10.5) * u, lineCap: .round, lineJoin: .round)
         )
-        let hubRadius = 9.5 * u
-        context.fill(
+        let hubRadius = 11 * u
+        context.stroke(
             Path(
                 ellipseIn: CGRect(
-                    x: rect.minX + 66 * u - hubRadius,
+                    x: rect.minX + 64.5 * u - hubRadius,
                     y: rect.minY + 55 * u - hubRadius,
                     width: hubRadius * 2,
                     height: hubRadius * 2
-                )),
-            with: .color(color)
+                )
+            ),
+            with: .color(color),
+            style: StrokeStyle(lineWidth: 3.4 * u, lineCap: .round)
         )
     }
 }

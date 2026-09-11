@@ -663,7 +663,7 @@ enum LocalCLIModelAvailabilityPresentation {
         }
         let verified = rows.filter { $0.testStatus == .passed }.count
         return language.text(
-            "可用模型 \(rows.count) · 已验证 \(verified)",
+            "列出模型 \(rows.count) · 已验证 \(verified)",
             "\(rows.count) models · \(verified) verified"
         )
     }

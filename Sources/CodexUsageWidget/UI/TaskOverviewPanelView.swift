@@ -20,7 +20,7 @@ struct TaskOverviewPanelView: View {
         .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .stroke(Color.primary.opacity(0.10), lineWidth: 1)
+                .stroke(FixedVisualPalette.surfaceTrack, lineWidth: 1)
         }
         .padding(1)
         .environment(\.locale, model.language.locale)
@@ -149,7 +149,7 @@ struct TaskOverviewPanelView: View {
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 7)
-        .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .background(FixedVisualPalette.surfaceMutedFill, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 
     private func taskRow(_ item: TaskOverviewItem) -> some View {
@@ -185,7 +185,7 @@ struct TaskOverviewPanelView: View {
             .contentShape(Rectangle())
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
-            .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .background(FixedVisualPalette.surfaceMutedFill, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         }
         .buttonStyle(.plain)
         .help(model.language.text("在工作台核对原任务", "Verify the original task in the workspace"))

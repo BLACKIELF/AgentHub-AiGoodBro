@@ -273,7 +273,7 @@ struct SettingsPanelView: View {
                 }
                 .padding(.horizontal, 20)
                 .padding(.top, 12)
-                .padding(.bottom, compact ? 36 : 12)
+                .padding(.bottom, compact ? 52 : 12)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .accessibilityIdentifier("next.settings.page.\(selectedPage.rawValue)")
             }
@@ -327,7 +327,7 @@ struct SettingsPanelView: View {
         .padding(.horizontal, 14)
         .padding(.bottom, 8)
         .overlay(alignment: .bottom) {
-            Rectangle().fill(Color.primary.opacity(0.08)).frame(height: 1)
+            Rectangle().fill(FixedVisualPalette.surfaceHairline).frame(height: 1)
                 .padding(.horizontal, 20)
         }
     }
@@ -607,12 +607,12 @@ private struct SettingsAppearanceChooser: View {
                     .frame(maxWidth: .infinity)
                     .background(
                         RoundedRectangle(cornerRadius: settingsControlCornerRadius, style: .continuous)
-                            .fill(Color.primary.opacity(selection == mode ? 0.06 : 0.025))
+                            .fill(selection == mode ? FixedVisualPalette.surfaceSoftFill : FixedVisualPalette.surfaceSubtleFill)
                     )
                     .overlay(
                         RoundedRectangle(cornerRadius: settingsControlCornerRadius, style: .continuous)
                             .strokeBorder(
-                                selection == mode ? visualTokens.accent.primary.color : Color.primary.opacity(0.08),
+                                selection == mode ? visualTokens.accent.primary.color : FixedVisualPalette.surfaceHairline,
                                 lineWidth: 1
                             )
                     )
@@ -909,7 +909,7 @@ struct SettingsBaseRow<Accessory: View>: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .overlay(alignment: .bottom) {
             Rectangle()
-                .fill(Color.primary.opacity(0.06))
+                .fill(FixedVisualPalette.surfaceSoftFill)
                 .frame(height: 1)
         }
     }

@@ -199,11 +199,7 @@ struct CodexAccountManagerView: View {
         ViewThatFits(in: .horizontal) {
             homeHeaderRow
             VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 8) {
-                    homeWorkspaceTitle
-                    Spacer(minLength: 8)
-                    homeBrandMark
-                }
+                homeWorkspaceTitle
                 HStack(spacing: 8) {
                     homeDisplayModePicker
                     homeGettingStartedButton
@@ -220,27 +216,24 @@ struct CodexAccountManagerView: View {
             homeDisplayModePicker
             homeGettingStartedButton
             Spacer(minLength: 8)
-            homeBrandMark
         }
     }
 
     private var homeWorkspaceTitle: some View {
-        Text("AgentHub")
-            .font(.title3.weight(.semibold))
-            .accessibilityAddTraits(.isHeader)
-    }
-
-    private var homeBrandMark: some View {
-        HStack(spacing: 6) {
-            AHBrandSymbol(size: 20)
-                .frame(width: 22, height: 22)
+        HStack(spacing: 8) {
+            AHBrandSymbol(size: 26)
                 .accessibilityHidden(true)
-            Text("AiGoodBro")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("AiGoodBro")
+                    .font(.title3.weight(.semibold))
+                Text("AgentHub")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
         }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("AiGoodBro")
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("AiGoodBro AgentHub")
+        .accessibilityAddTraits(.isHeader)
         .help("AiGoodBro")
     }
 
@@ -315,10 +308,10 @@ struct CodexAccountManagerView: View {
             }
         }
         .padding(4)
-        .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .background(FixedVisualPalette.surfaceMutedFill, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(Color.primary.opacity(0.07), lineWidth: 0.8)
+                .strokeBorder(FixedVisualPalette.surfaceStrokeSubtle, lineWidth: 0.8)
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel(language.text("专业工作台导航", "Professional workspace navigation"))
@@ -341,14 +334,18 @@ struct CodexAccountManagerView: View {
             sevenDayResetsAt: overviewQuota.sevenDay?.resetsAt,
             announcement: store.publicResetAnnouncements.latest,
             checkedAt: store.publicResetAnnouncements.checkedAt,
-            accountsWithResetCards: accountsWithAvailableResetCards,
+            resetCards: resetCardAccountSummary,
             onOpenAnnouncements: { isAutomationCenterPresented = true },
             onOpenAccounts: { openAccountsFromResetBanner() }
         )
     }
 
-    private var accountsWithAvailableResetCards: Int {
-        store.profiles.filter { ($0.lastSnapshot?.availableResetCredits ?? 0) > 0 }.count
+    private var resetCardAccountSummary: ResetCardAccountSummary {
+        let credits = presentedProfiles.map { store.availableResetCredits(for: $0) }
+        let withCards = credits.compactMap { $0 }.filter { $0 > 0 }.count
+        if withCards > 0 { return .accounts(withCards) }
+        if credits.contains(where: { $0 == nil }) { return .unknown }
+        return .none
     }
 
     private func openAccountsFromResetBanner() {
@@ -470,7 +467,7 @@ struct CodexAccountManagerView: View {
                         .padding(.horizontal, 12)
                         .padding(.vertical, 9)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        .background(FixedVisualPalette.surfaceFaintFill, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                     }
                 }
                 .padding(10)
@@ -700,7 +697,7 @@ struct CodexAccountManagerView: View {
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 5)
-        .background(Color.primary.opacity(0.04), in: Capsule())
+        .background(FixedVisualPalette.primarySurface(0.04), in: Capsule())
     }
 
     private func compactMetricTile(title: String, value: String) -> some View {
@@ -1341,13 +1338,6 @@ struct CodexAccountManagerView: View {
 
     private var workspaceBranding: some View {
         HStack {
-            if !showingHome {
-                Text("AgentHub")
-                    .font(.system(size: 11, weight: .bold, design: .rounded))
-                    .tracking(1)
-                    .foregroundStyle(.secondary)
-                    .padding(.trailing, 12)
-            }
             Spacer()
 
             Label(
@@ -1546,15 +1536,25 @@ struct CodexAccountManagerView: View {
 
     private var workspaceHeader: some View {
         HStack(alignment: .center, spacing: 12) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text("AgentHub")
-                    .font(.system(size: presentation.isSingleAccount ? 24 : 20, weight: .semibold))
-                if presentation.isSingleAccount {
-                    Text(language.text("看清额度，专注下一次任务。", "Know your limits. Focus on the next task."))
-                        .font(.system(size: 12, weight: .regular))
-                        .foregroundStyle(.secondary)
+            HStack(alignment: .center, spacing: 10) {
+                AHBrandSymbol(size: presentation.isSingleAccount ? 30 : 26)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("AiGoodBro")
+                        .font(.system(size: presentation.isSingleAccount ? 24 : 20, weight: .semibold))
+                    Text(
+                        language.text(
+                            "AgentHub · 额度、重置窗口、下一次任务",
+                            "AgentHub · limits, reset windows, next task"
+                        )
+                    )
+                    .font(.system(size: 12, weight: .regular))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
                 }
             }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("AiGoodBro AgentHub")
             Spacer(minLength: 16)
             Button {
                 store.refreshQuotas()
@@ -2857,7 +2857,7 @@ struct AccountAutomationCenterView: View {
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .background(FixedVisualPalette.surfaceFaintFill, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
     }
 
     private func safetyRule(_ text: String) -> some View {
@@ -3182,7 +3182,7 @@ struct CodexAccountMenuView: View {
         .padding(.horizontal, 8)
         .frame(height: 46)
         .overlay(alignment: .top) {
-            Rectangle().fill(Color.primary.opacity(0.10)).frame(height: 0.5)
+            Rectangle().fill(FixedVisualPalette.surfaceTrack).frame(height: 0.5)
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel(text("菜单栏导航", "Menu bar navigation"))
@@ -3264,16 +3264,16 @@ struct CodexAccountMenuView: View {
                 alignment: .center
             )
             menuLabeledMetric(
-                title: text("7 天剩余", "7-day left"),
+                title: text("7 天剩余", "7d left"),
                 value: menuQuota.sevenDay.map { "\(Int($0.remainingPercent.rounded()))%" } ?? "--",
                 alignment: .trailing
             )
         }
         .padding(.horizontal, 15)
         .frame(height: 38)
-        .background(Color.primary.opacity(0.025))
+        .background(FixedVisualPalette.surfaceSubtleFill)
         .overlay(alignment: .bottom) {
-            Rectangle().fill(Color.primary.opacity(0.08)).frame(height: 0.5)
+            Rectangle().fill(FixedVisualPalette.surfaceHairline).frame(height: 0.5)
         }
         .accessibilityElement(children: .contain)
     }
@@ -3430,7 +3430,7 @@ struct CodexAccountMenuView: View {
         .padding(.horizontal, 16)
         .frame(height: 60)
         .overlay(alignment: .bottom) {
-            Rectangle().fill(Color.primary.opacity(0.12)).frame(height: 0.5)
+            Rectangle().fill(FixedVisualPalette.surfaceStrokeStrong).frame(height: 0.5)
         }
     }
 
@@ -3446,8 +3446,8 @@ struct CodexAccountMenuView: View {
                     localAllAgentsLifetimeTokens: localAllAgentsTokens
                 )
                 HStack(spacing: 18) {
-                    QuotaDetailTile(title: text("5 小时剩余", "5-hour remaining"), icon: "timer", window: menuQuota.fiveHour, prominent: true)
-                    QuotaDetailTile(title: text("7 天剩余", "7-day remaining"), icon: "calendar", window: menuQuota.sevenDay, prominent: true)
+                    QuotaDetailTile(title: text("5 小时剩余", "5h remaining"), icon: "timer", window: menuQuota.fiveHour, prominent: true)
+                    QuotaDetailTile(title: text("7 天剩余", "7d remaining"), icon: "calendar", window: menuQuota.sevenDay, prominent: true)
                 }
                 .padding(16)
                 .cardBackground(cornerRadius: 18)
@@ -3685,7 +3685,7 @@ struct CodexAccountMenuView: View {
                             .background(
                                 panelModel.usageRange == range
                                     ? Color.accentColor.opacity(0.16)
-                                    : Color.primary.opacity(0.045),
+                                    : FixedVisualPalette.surfaceMutedFill,
                                 in: RoundedRectangle(cornerRadius: 8, style: .continuous)
                             )
                     }
@@ -3810,7 +3810,7 @@ struct CodexAccountMenuView: View {
             )
             Divider()
             HStack(alignment: .firstTextBaseline) {
-                Text(text("7 天剩余", "7-day left"))
+                Text(text("7 天剩余", "7d left"))
                     .font(.system(size: 10.5, weight: .semibold))
                     .foregroundStyle(.secondary)
                 Spacer()
@@ -4334,7 +4334,7 @@ struct CodexAccountMenuView: View {
             .padding(.horizontal, 20)
             .padding(.vertical, 15)
             .overlay(alignment: .top) {
-                Rectangle().fill(Color.primary.opacity(0.07)).frame(height: 1)
+                Rectangle().fill(FixedVisualPalette.surfaceStrokeSubtle).frame(height: 1)
                     .padding(.horizontal, 20)
             }
         }
@@ -4456,7 +4456,7 @@ private struct AccountSemanticQuotaTrack: View {
     var body: some View {
         GeometryReader { proxy in
             ZStack(alignment: .leading) {
-                Capsule().fill(Color.primary.opacity(0.10))
+                Capsule().fill(FixedVisualPalette.surfaceTrack)
                 Capsule()
                     .fill(LinearGradient(colors: colors, startPoint: .leading, endPoint: .trailing))
                     .frame(width: proxy.size.width * CGFloat(max(0, min(100, percent ?? 0)) / 100))
@@ -4474,7 +4474,7 @@ private struct AccountMenuIconButtonStyle: ButtonStyle {
             .font(.system(size: 12, weight: .semibold))
             .frame(width: 29, height: 29)
             .background(.thinMaterial, in: Circle())
-            .overlay(Circle().strokeBorder(Color.primary.opacity(0.16), lineWidth: 0.75))
+            .overlay(Circle().strokeBorder(FixedVisualPalette.surfaceRing, lineWidth: 0.75))
             .scaleEffect(configuration.isPressed ? 0.94 : 1)
     }
 }
@@ -4494,12 +4494,12 @@ private struct AccountGlassButtonStyle: ButtonStyle {
             .foregroundStyle(foreground)
             .background(
                 RoundedRectangle(cornerRadius: compact ? 8 : 10, style: .continuous)
-                    .fill(tint == .clear ? Color.primary.opacity(0.06) : tint.opacity(0.88))
+                    .fill(tint == .clear ? FixedVisualPalette.surfaceSoftFill : tint.opacity(0.88))
             )
             .overlay(
                 RoundedRectangle(cornerRadius: compact ? 8 : 10, style: .continuous)
                     .strokeBorder(
-                        tint == .clear ? Color.primary.opacity(0.12) : Color.white.opacity(0.16),
+                        tint == .clear ? FixedVisualPalette.surfaceStrokeStrong : Color.white.opacity(0.16),
                         lineWidth: 0.7
                     )
             )
@@ -4524,7 +4524,7 @@ private struct AccountMenuCardModifier: ViewModifier {
                 .overlay(
                     RoundedRectangle(cornerRadius: 11, style: .continuous)
                         .strokeBorder(
-                            highlighted ? Color.accentColor.opacity(0.38) : Color.primary.opacity(contrast == .increased ? 0.24 : 0.10),
+                            highlighted ? Color.accentColor.opacity(0.38) : (contrast == .increased ? FixedVisualPalette.primarySurface(0.24) : FixedVisualPalette.surfaceTrack),
                             lineWidth: highlighted ? 1 : 0.6
                         )
                 )
@@ -4587,7 +4587,7 @@ private struct QuotaDetailTile: View {
         guard let reset = window?.resetsAt else { return language.text("官方未返回窗口重置时间", "Window reset time not reported") }
         let absolute = language.dateTime(reset)
         if prominent {
-            return language.text("窗口重置 \(absolute)", "Window resets \(absolute)")
+            return language.text("窗口重置 \(compactReset(reset))", "Resets \(compactReset(reset))")
         }
         return language.text("窗口重置：\(absolute)（\(resetRelative(reset))）", "Window resets \(absolute) (\(resetRelative(reset)))")
     }
@@ -4602,6 +4602,13 @@ private struct QuotaDetailTile: View {
         let formatter = RelativeDateTimeFormatter()
         formatter.locale = language.locale
         return formatter.localizedString(for: reset, relativeTo: Date())
+    }
+
+    private func compactReset(_ reset: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = language.locale
+        formatter.setLocalizedDateFormatFromTemplate("MMMd HHmm")
+        return formatter.string(from: reset)
     }
 }
 
@@ -5150,7 +5157,7 @@ private struct ProfileRow: View {
             onCancel: onEndReorder
         )
         .frame(width: 28, height: 24)
-        .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 6))
+        .background(FixedVisualPalette.primarySurface(0.04), in: RoundedRectangle(cornerRadius: 6))
         .contextMenu {
             Button(language.text("上移账号", "Move account up"), action: onMoveUp).disabled(!canMoveUp || isLaunching || isLoggingIn)
             Button(language.text("下移账号", "Move account down"), action: onMoveDown).disabled(!canMoveDown || isLaunching || isLoggingIn)
@@ -5645,7 +5652,7 @@ private struct HubCLITaskStatusBadge: View {
         .padding(.horizontal, compact ? 5 : 7)
         .padding(.vertical, compact ? 2 : 3)
         .background(Capsule().fill(FixedVisualPalette.statusFill(tint, colorScheme: colorScheme)))
-        .overlay(Capsule().stroke(Color.primary.opacity(0.09), lineWidth: 0.5))
+        .overlay(Capsule().stroke(FixedVisualPalette.surfaceStrokeSoft, lineWidth: 0.5))
         .accessibilityElement(children: .combine)
         .accessibilityLabel(language.text("CLI 任务状态：\(status.localizedLabel)", "CLI task status: \(status.label(language))"))
     }
