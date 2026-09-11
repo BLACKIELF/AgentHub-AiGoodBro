@@ -27,6 +27,10 @@ rusqlite = { version = "0.32", features = ["bundled", "chrono"] }
 # Dispatch coordination keys must match next_dispatch_activity.py byte for byte.
 sha2 = "0.10"
 
+# Outbound webhook targets are security-sensitive; parse them with a real
+# parser instead of hand-splitting strings.
+url = "2.5"
+
 # CLI
 clap = { version = "4.5", features = ["derive"] }
 dirs = "5.0"

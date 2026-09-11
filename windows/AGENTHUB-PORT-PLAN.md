@@ -37,7 +37,7 @@ Windows 完全缺失（即 AgentHub 的产品身份）：
 | S3 | 官方额度接线：app-server / dashboard 两种来源统一映射到 `AccountQuotaSnapshot`，含保留与过期降级 | 已实现 |
 | S4 | 暖号策略：5h / 7d 分别开关、重置与失败重试的调度决策 | 已实现（策略层） |
 | S5 | 派单协调：共享占用契约（线格式、校验、冲突判定、心跳、历史上限） | 已实现（契约层） |
-| S6 | 消息通道：飞书 / Telegram / 企业微信，凭据隔离存储 | 待做 |
+| S6 | 消息通道：掩码 DTO、webhook 目标白名单、去重与投递语义 | 已实现（策略/契约层） |
 | S7 | 多 CLI 账号：登录目录关联、命名、模型可用性 | 待做 |
 | S8 | Desktop 切换事务：身份验证、锁、原子写入、回滚 | 待做 |
 | S9 | 打包与签名：MSI / NSIS、代码签名、更新器 | 待做 |
@@ -110,6 +110,32 @@ Tauri `list_accounts` 复用 AppState 里**已缓存的 dashboard 快照**推导
 
 > 本切片只实现**契约层**（纯函数 + 测试）。文件锁、原子替换与进程存活判定属平台层，尚未实现。
 
+### S6 · 消息通道（策略 / 契约层）
+
+`crates/codexu-core/src/models/messaging.rs`，逐条移植 `Domain/MessageChannel.swift`。
+
+核心思想是**依靠构造让敏感内容无法被表达**：prompt、模型回复、文件路径、原始账号标识与自由文本在 `MessageTaskStatus` 里根本构造不出来，因为构成它的两个标签类型在构造时就把这些形状拒掉了。通道就算行为异常，也没有东西可泄露。
+
+- **通道生命周期**：`MessageChannelPhase` 从 `Disabled` 起步，**没有任何自我启用**，`Ready` 需要一次用户发起的验证发送；只有 `Ready` 允许发送。
+- **掩码 DTO**：`MessageChannelAccountLabel` 两种构造——显示名（≤48 字，字母数字 + ` .-•·()（）` + 其他符号 + ZWJ/VS16）与掩码值（≤64 字，必须含 `***` 或 `•••`）。`MessageChannelTaskLabel`（≤48 字）拒绝 `@`、`:`、`/` 与 `\`，因此邮箱、URL 与路径进不来。
+- **唯一可外发载荷**：`MessageTaskStatus` 只带事件种类、两个标签、任务状态、两个额度百分比、失败原因、时间与事件 ID。百分比必须有限且落在 0–100；除连接测试外，必须至少指明账号或任务之一。
+- **规范化渲染**：`summary()` 放在域里，保证不同通道**披露的字段不会漂移**。
+- **去重**：`MessageEventDeduplicator` 先占位（in-flight）再认领（seen），失败 `release` 可重试，历史有界。
+- **出站目标白名单**：`WebhookTargetPolicy` + `validate_webhook_target` 强制 https、拒绝 URL 内凭据、按 host 与 path 前缀白名单放行，**默认拒绝 query string**（密钥不得搭便车）、拒绝 fragment，并把解析后的 `Url` 交回调用方，避免"校验过的字符串被重新解析成另一个地址"。
+- **重定向必须拒绝**：bot token 与 webhook key 在 URL 里，跟随重定向就是跨源泄露。
+
+三条硬规则：
+
+1. **默认关闭，验证后才发。** 通道不自我启用。
+2. **出站目标必须落在白名单内**，且默认不接受 query。
+3. **API 接受 ≠ 送达人。** `MessageDeliveryOutcome` 只表示平台收下。
+
+#### 实现中发现并补上的接缝
+
+`readers/codex_accounts.rs::mask_email` 产出 `a***@example.com`，但共享的消息通道标签规则**不含 `@`**（域名仍是身份事实），所以掩码邮箱不能进消息。已新增 `account_label_from_masked_email` 把 `a***@example.com` 收敛为 `a***`，并有测试固定该行为。
+
+> 本切片只实现**策略 / 契约层**。凭据存储（Keychain / 凭据管理器）、HTTP 传输与重定向守卫属平台层，尚未实现。
+
 ### 三条不可放宽的规则
 
 1. **未知不等于 0。** 来源未返回的窗口是 `None`，显示为 `—`；未知额度永远不会被报成"低额度"。
@@ -143,7 +169,7 @@ Tauri `list_accounts` 复用 AppState 里**已缓存的 dashboard 快照**推导
 
 | 验证 | 命令 | 结果 |
 | --- | --- | --- |
-| Rust 单元测试 | `cargo test -p codexu-core` | **169 passed / 0 failed** |
+| Rust 单元测试 | `cargo test -p codexu-core` | **192 passed / 0 failed** |
 | Rust 集成测试（额度协议、Dashboard、任务板） | 同上 | **9 passed / 0 failed** |
 | Rust 构建告警 | `cargo build -p codexu-core` | 0 warning |
 | Web 契约与运行时测试 | `npm test`（`node --test`） | **50 passed / 0 failed**（基线为 20/1） |
