@@ -43,3 +43,14 @@
 ## 未真实验证
 
 真实窗口点击、菜单栏弹出位置、VoiceOver、banner 打开自动化中心、设置热区。本轮未安装、未覆盖运行中应用。
+
+## Codex 已接管（改动通知）
+
+Codex 按 `GROK-UI-ACCEPTANCE-0911v2.md` 第 8 节完成复验，并**改动了一个本轮新增文件**：
+`Sources/CodexUsageWidget/Domain/AHBrandAssetsSelfTest.swift`——补上了原本只写在注释里、实际没有校验的 `.icns` 与 MIT 归属两项。
+
+改动详情、原因与「未改动但请回看」的两条（硬编码汇率、`minHeight: 188` 措辞）见
+`GROK-UI-ACCEPTANCE-0911v2.md` 第 9 节 与 `CODEX-UI-REVIEW-0911v2.md`。
+
+复验结果：格式通过、隔离构建成功、签名通过、**29/29 自测通过**。
+已推送 `origin/codex/aigoodbro-ui-0911v2`（`48de939`，39 文件）。

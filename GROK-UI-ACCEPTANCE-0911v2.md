@@ -144,3 +144,26 @@ AiGoodBro --render-settings-previews .local-artifacts/grok-ui-p10-settings
 5. 打开上表 PNG，不要只认文件存在。
 6. 真实 GUI 回归需用户授权安装/启动；本轮禁止覆盖正在运行的应用。
 7. 需要拆 CAMV 时另开任务，不要在本 diff 上硬拆。
+
+## 9. Codex 改动通知（务必回看）
+
+Codex 已按第 8 节接管并复验。**改动了一个本轮新增的文件**，在此登记，避免后续按旧内容继续工作：
+
+**改：`Sources/CodexUsageWidget/Domain/AHBrandAssetsSelfTest.swift`**
+
+原因：该自测的文档注释声称校验「the codexU MIT attribution required by the license」，但代码实际只校验身份常量与运行时 PNG，既没有校验任何归属文本，也没有校验 Finder/Dock 真正使用的 `.icns`。前者是注释不实，后者是覆盖缺口。
+
+改动内容（三处，均为增补，未删除任何既有断言）：
+
+1. 文档注释改为准确描述实际校验范围。
+2. 新增 `.icns` 校验：打包内 `AiGoodBro.icns` 必须存在、可解码、且保留 ≥512px 表示。注意 `Makefile` 在打包时把 `Resources/codexU.icns` 重命名为 `AiGoodBro.icns`，两者是同一资源。
+3. 新增 MIT 归属校验：打包内 `THIRD_PARTY_NOTICES.txt` 必须含 `shanggqm/codexU` 与 `MIT License`。
+
+改动后已重跑格式检查（通过）、隔离构建（成功）、`run-self-tests.sh`（**29/29 通过**）。`EXPECTED_COUNT` 与清单条目数未变，无需调整。
+
+**未改动、但请你回看的两条：**
+
+- `TokenTotalsHeader.swift:134` 硬编码人民币汇率 `cost * 6.8`，无来源会漂移，界面却显示具体金额。属产品口径决定，Codex 未擅自改；建议改为可配置常量或去掉人民币那一行。
+- 本文件第 2 节与进度文件的「去掉 `minHeight: 188`」措辞会让人以为该文件里再无该值；实际 `CodexAccountManagerView.swift:1624` 仍有（另一张 5h/7d 双栏卡，布局仍是双栏，合理）。建议措辞改为「去掉**总量卡**的 `minHeight: 188`」。
+
+其余本轮内容 Codex **一字未改**。独立复验记录见 `CODEX-UI-REVIEW-0911v2.md`；macOS UI 改动已推送到 `origin/codex/aigoodbro-ui-0911v2`（`48de939`），39 个文件，与 Windows 移植改动分开分支。
