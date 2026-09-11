@@ -17,74 +17,182 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-/// Local CLI families supported by the Windows workbench.
+/// Local CLI families the workbench can read.
 ///
-/// `MiMo` and `ZCode` native subscription quota is not wired up yet, which
-/// `has_official_quota` reports so the UI can say so explicitly instead of
-/// rendering a fake `0`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+/// Codex is deliberately absent: it is the primary account system and is
+/// modelled by [`AccountRecord`], not by this enum. Adding it here would create
+/// two competing representations of the same login.
+///
+/// The wire identifiers match `LocalCLIKind` in
+/// `Sources/CodexUsageWidget/Domain/LocalCLIAccount.swift`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum LocalCliKind {
-    Codex,
-    Grok,
-    KimiCode,
     ClaudeCode,
+    Grok,
     OpenCode,
-    GeminiCli,
+    Trae,
+    WorkBuddy,
+    Kimi,
     MiMo,
     ZCode,
+    Gemini,
+}
+
+/// Why a CLI cannot report official quota yet.
+///
+/// The product must say this out loud. "Not wired" is not the same as "zero",
+/// and a fake zero would be read as an exhausted window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QuotaNotWiredReason {
+    /// The vendor exposes no usable quota endpoint for this build.
+    NativeQuotaUnavailable,
+    /// Only account metadata is read; no quota source is connected.
+    NativeSubscriptionNotWired,
+}
+
+impl QuotaNotWiredReason {
+    pub fn id(self) -> &'static str {
+        match self {
+            QuotaNotWiredReason::NativeQuotaUnavailable => "native_quota_unavailable",
+            QuotaNotWiredReason::NativeSubscriptionNotWired => "native_subscription_not_wired",
+        }
+    }
+}
+
+/// Whether a CLI's official quota is actually read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "wiring", content = "reason")]
+pub enum QuotaWiring {
+    Wired,
+    NotWired(QuotaNotWiredReason),
 }
 
 impl LocalCliKind {
-    pub const ALL: [LocalCliKind; 8] = [
-        LocalCliKind::Codex,
-        LocalCliKind::Grok,
-        LocalCliKind::KimiCode,
+    pub const ALL: [LocalCliKind; 9] = [
         LocalCliKind::ClaudeCode,
+        LocalCliKind::Grok,
         LocalCliKind::OpenCode,
-        LocalCliKind::GeminiCli,
+        LocalCliKind::Trae,
+        LocalCliKind::WorkBuddy,
+        LocalCliKind::Kimi,
         LocalCliKind::MiMo,
         LocalCliKind::ZCode,
+        LocalCliKind::Gemini,
     ];
 
     /// Stable identifier used across the IPC boundary.
     pub fn id(self) -> &'static str {
         match self {
-            LocalCliKind::Codex => "codex",
+            LocalCliKind::ClaudeCode => "claudeCode",
             LocalCliKind::Grok => "grok",
-            LocalCliKind::KimiCode => "kimi_code",
-            LocalCliKind::ClaudeCode => "claude_code",
-            LocalCliKind::OpenCode => "opencode",
-            LocalCliKind::GeminiCli => "gemini_cli",
+            LocalCliKind::OpenCode => "openCode",
+            LocalCliKind::Trae => "trae",
+            LocalCliKind::WorkBuddy => "workBuddy",
+            LocalCliKind::Kimi => "kimi",
             LocalCliKind::MiMo => "mimo",
             LocalCliKind::ZCode => "zcode",
+            LocalCliKind::Gemini => "gemini",
         }
     }
 
     pub fn display_name(self) -> &'static str {
         match self {
-            LocalCliKind::Codex => "Codex",
-            LocalCliKind::Grok => "Grok",
-            LocalCliKind::KimiCode => "Kimi Code",
             LocalCliKind::ClaudeCode => "Claude Code",
+            LocalCliKind::Grok => "Grok",
             LocalCliKind::OpenCode => "OpenCode",
-            LocalCliKind::GeminiCli => "Gemini CLI",
+            LocalCliKind::Trae => "TRAE",
+            LocalCliKind::WorkBuddy => "WorkBuddy",
+            LocalCliKind::Kimi => "Kimi Code",
             LocalCliKind::MiMo => "MiMo",
             LocalCliKind::ZCode => "ZCode",
+            LocalCliKind::Gemini => "Gemini CLI",
         }
     }
 
-    /// Whether this CLI can currently report official subscription quota.
-    pub fn has_official_quota(self) -> bool {
-        !matches!(self, LocalCliKind::MiMo | LocalCliKind::ZCode)
+    /// The vendor's own executable name.
+    pub fn command_name(self) -> &'static str {
+        match self {
+            LocalCliKind::ClaudeCode => "claude",
+            LocalCliKind::Grok => "grok",
+            LocalCliKind::OpenCode => "opencode",
+            LocalCliKind::Trae => "traecli",
+            LocalCliKind::WorkBuddy => "codebuddy",
+            LocalCliKind::Kimi => "kimi",
+            LocalCliKind::MiMo => "mimo",
+            LocalCliKind::ZCode => "zcode",
+            LocalCliKind::Gemini => "gemini",
+        }
     }
 
-    /// Whether the Windows workbench can launch an isolated session for this CLI.
+    /// Default login/config directory, relative to the user home.
+    pub fn default_config_directory(self) -> &'static str {
+        match self {
+            LocalCliKind::ClaudeCode => ".claude",
+            LocalCliKind::Grok => ".grok",
+            LocalCliKind::OpenCode => ".local/share/opencode",
+            LocalCliKind::Trae => ".trae-cn",
+            LocalCliKind::WorkBuddy => ".workbuddy",
+            LocalCliKind::Kimi => ".kimi-code",
+            LocalCliKind::MiMo => ".local/share/mimocode",
+            LocalCliKind::ZCode => ".zcode",
+            LocalCliKind::Gemini => ".gemini",
+        }
+    }
+
+    /// Whether this CLI's official quota is actually read.
     ///
-    /// Only Codex has a launch path in this slice; the rest stay read-only until
-    /// their login workflow is ported.
-    pub fn supports_isolated_launch(self) -> bool {
-        matches!(self, LocalCliKind::Codex)
+    /// Per `docs/local-cli-accounts.md`: MiMo only reads account metadata,
+    /// while WorkBuddy and TRAE SOLO have no native quota endpoint wired.
+    /// ZCode *is* wired, but only for the configured GLM/Z.AI Coding Plan and
+    /// separately from its native subscription.
+    pub fn quota_wiring(self) -> QuotaWiring {
+        match self {
+            LocalCliKind::MiMo => {
+                QuotaWiring::NotWired(QuotaNotWiredReason::NativeSubscriptionNotWired)
+            }
+            LocalCliKind::WorkBuddy | LocalCliKind::Trae => {
+                QuotaWiring::NotWired(QuotaNotWiredReason::NativeQuotaUnavailable)
+            }
+            LocalCliKind::ClaudeCode
+            | LocalCliKind::Grok
+            | LocalCliKind::OpenCode
+            | LocalCliKind::Kimi
+            | LocalCliKind::ZCode
+            | LocalCliKind::Gemini => QuotaWiring::Wired,
+        }
+    }
+
+    /// Whether the workbench may offer a terminal sign-in entry.
+    pub fn supports_terminal_sign_in(self) -> bool {
+        matches!(
+            self,
+            LocalCliKind::Grok
+                | LocalCliKind::OpenCode
+                | LocalCliKind::WorkBuddy
+                | LocalCliKind::ZCode
+        )
+    }
+
+    /// Whether the workbench may open the vendor's own native surface.
+    pub fn supports_native_open(self) -> bool {
+        matches!(
+            self,
+            LocalCliKind::Grok
+                | LocalCliKind::OpenCode
+                | LocalCliKind::Trae
+                | LocalCliKind::WorkBuddy
+                | LocalCliKind::ZCode
+        )
+    }
+
+    /// Whether a separate, already logged-in directory can be linked.
+    ///
+    /// TRAE SOLO is personal-edition only and must not gain linked
+    /// environments that would imply an enterprise `traecli`.
+    pub fn supports_linked_environments(self) -> bool {
+        self != LocalCliKind::Trae
     }
 }
 
@@ -612,7 +720,15 @@ pub struct LocalCliAccount {
 impl LocalCliAccount {
     /// Whether the UI must state that quota is unavailable rather than showing 0.
     pub fn quota_is_wired(&self) -> bool {
-        self.kind.has_official_quota()
+        self.quota_wiring() == QuotaWiring::Wired
+    }
+
+    /// Why quota cannot be shown, when it cannot.
+    ///
+    /// Carrying the reason is what lets the UI say "暂未接通" instead of the
+    /// ambiguous "0".
+    pub fn quota_wiring(&self) -> QuotaWiring {
+        self.kind.quota_wiring()
     }
 }
 
@@ -965,13 +1081,77 @@ mod tests {
     }
 
     #[test]
-    fn mimo_and_zcode_report_quota_as_not_wired() {
-        assert!(!LocalCliKind::MiMo.has_official_quota());
-        assert!(!LocalCliKind::ZCode.has_official_quota());
-        assert!(LocalCliKind::Codex.has_official_quota());
-        assert!(LocalCliKind::Grok.has_official_quota());
-        assert!(LocalCliKind::Codex.supports_isolated_launch());
-        assert!(!LocalCliKind::GeminiCli.supports_isolated_launch());
+    fn quota_wiring_follows_the_documented_support_scope() {
+        // Per docs/local-cli-accounts.md: MiMo only carries account metadata,
+        // while WorkBuddy and TRAE SOLO have no native quota endpoint wired.
+        assert_eq!(
+            LocalCliKind::MiMo.quota_wiring(),
+            QuotaWiring::NotWired(QuotaNotWiredReason::NativeSubscriptionNotWired)
+        );
+        for kind in [LocalCliKind::WorkBuddy, LocalCliKind::Trae] {
+            assert_eq!(
+                kind.quota_wiring(),
+                QuotaWiring::NotWired(QuotaNotWiredReason::NativeQuotaUnavailable)
+            );
+        }
+        // ZCode is wired for the configured Coding Plan, not its native plan.
+        assert_eq!(LocalCliKind::ZCode.quota_wiring(), QuotaWiring::Wired);
+        for kind in [
+            LocalCliKind::ClaudeCode,
+            LocalCliKind::Grok,
+            LocalCliKind::OpenCode,
+            LocalCliKind::Kimi,
+            LocalCliKind::Gemini,
+        ] {
+            assert_eq!(kind.quota_wiring(), QuotaWiring::Wired, "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn codex_is_not_a_local_cli_kind() {
+        // Codex is the primary account system; listing it here would create two
+        // competing models of the same login.
+        assert!(!LocalCliKind::ALL.iter().any(|kind| kind.id() == "codex"));
+    }
+
+    #[test]
+    fn launch_capabilities_follow_the_documented_matrix() {
+        assert!(LocalCliKind::Grok.supports_terminal_sign_in());
+        assert!(LocalCliKind::OpenCode.supports_terminal_sign_in());
+        assert!(LocalCliKind::WorkBuddy.supports_terminal_sign_in());
+        assert!(LocalCliKind::ZCode.supports_terminal_sign_in());
+        assert!(!LocalCliKind::ClaudeCode.supports_terminal_sign_in());
+        assert!(!LocalCliKind::Trae.supports_terminal_sign_in());
+        assert!(!LocalCliKind::Kimi.supports_terminal_sign_in());
+        assert!(!LocalCliKind::MiMo.supports_terminal_sign_in());
+        assert!(!LocalCliKind::Gemini.supports_terminal_sign_in());
+
+        assert!(LocalCliKind::Trae.supports_native_open());
+        assert!(!LocalCliKind::Kimi.supports_native_open());
+        assert!(!LocalCliKind::MiMo.supports_native_open());
+        assert!(!LocalCliKind::Gemini.supports_native_open());
+        assert!(!LocalCliKind::ClaudeCode.supports_native_open());
+
+        // TRAE SOLO is personal-edition only; linked environments would imply
+        // the enterprise traecli.
+        assert!(!LocalCliKind::Trae.supports_linked_environments());
+        assert!(LocalCliKind::ClaudeCode.supports_linked_environments());
+    }
+
+    #[test]
+    fn command_names_and_default_directories_are_stable() {
+        assert_eq!(LocalCliKind::ClaudeCode.command_name(), "claude");
+        assert_eq!(LocalCliKind::OpenCode.command_name(), "opencode");
+        assert_eq!(LocalCliKind::WorkBuddy.command_name(), "codebuddy");
+        assert_eq!(LocalCliKind::Trae.command_name(), "traecli");
+
+        assert_eq!(LocalCliKind::ClaudeCode.default_config_directory(), ".claude");
+        assert_eq!(
+            LocalCliKind::OpenCode.default_config_directory(),
+            ".local/share/opencode"
+        );
+        assert_eq!(LocalCliKind::Kimi.default_config_directory(), ".kimi-code");
+        assert_eq!(LocalCliKind::ZCode.default_config_directory(), ".zcode");
     }
 
     #[test]
@@ -981,7 +1161,10 @@ mod tests {
         let count = ids.len();
         ids.dedup();
         assert_eq!(ids.len(), count);
-        assert_eq!(LocalCliKind::KimiCode.id(), "kimi_code");
+        assert_eq!(LocalCliKind::Kimi.id(), "kimi");
+        assert_eq!(LocalCliKind::WorkBuddy.id(), "workBuddy");
+        assert_eq!(LocalCliKind::OpenCode.id(), "openCode");
+        assert_eq!(LocalCliKind::ALL.len(), 9);
     }
 
     #[test]

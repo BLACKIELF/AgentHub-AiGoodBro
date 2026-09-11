@@ -17,6 +17,7 @@
 pub mod account;
 pub mod dispatch;
 pub mod leadership;
+pub mod local_cli;
 pub mod messaging;
 pub mod occupancy;
 pub mod quota;
@@ -27,6 +28,7 @@ pub mod warmup;
 pub use account::*;
 pub use dispatch::*;
 pub use leadership::*;
+pub use local_cli::*;
 pub use messaging::*;
 pub use occupancy::*;
 pub use quota::*;

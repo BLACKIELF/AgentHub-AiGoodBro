@@ -38,7 +38,7 @@ Windows 完全缺失（即 AgentHub 的产品身份）：
 | S4 | 暖号策略：5h / 7d 分别开关、重置与失败重试的调度决策 | 已实现（策略层） |
 | S5 | 派单协调：共享占用契约（线格式、校验、冲突判定、心跳、历史上限） | 已实现（契约层） |
 | S6 | 消息通道：掩码 DTO、webhook 目标白名单、去重与投递语义 | 已实现（策略/契约层） |
-| S7 | 多 CLI 账号：登录目录关联、命名、模型可用性 | 待做 |
+| S7 | 多 CLI 账号：支持矩阵、额度结果契约、失败保留与同一登录判定 | 已实现（契约层） |
 | S8 | Desktop 切换事务：身份验证、锁、原子写入、回滚 | 待做 |
 | S9 | 打包与签名：MSI / NSIS、代码签名、更新器 | 待做 |
 
@@ -136,6 +136,44 @@ Tauri `list_accounts` 复用 AppState 里**已缓存的 dashboard 快照**推导
 
 > 本切片只实现**策略 / 契约层**。凭据存储（Keychain / 凭据管理器）、HTTP 传输与重定向守卫属平台层，尚未实现。
 
+### S7 · 多 CLI 账号（契约层）
+
+修正 `models/account.rs` 的 `LocalCliKind` 并新增 `models/local_cli.rs`。
+
+#### 修正了三处与产品不符的地方
+
+先前的 `LocalCliKind` 与 macOS 和 `docs/local-cli-accounts.md` 都不一致，本轮按文档改正：
+
+| 项 | 先前（错） | 现在（按文档） |
+|---|---|---|
+| 枚举成员 | 8 个，**含 Codex** | 9 个，**不含 Codex**（Codex 是主账号体系，由 `AccountRecord` 承载；放进这里会让同一登录有两套表示） |
+| 缺失成员 | 无 TRAE、无 WorkBuddy | 补 `Trae` / `WorkBuddy` |
+| 额度接通判定 | 只有 MiMo / ZCode 未接通 | MiMo 仅读账号元数据；**WorkBuddy 与 TRAE SOLO 原生额度未接通**；**ZCode 对已配置的 GLM/Z.AI Coding Plan 是接通的**（与原生订阅额度分开） |
+
+现在 `quota_wiring()` 返回 `Wired | NotWired(reason)`，把"未接通"的原因也带出去，界面才能说「暂未接通」而不是含糊的 0。
+
+同时按 macOS 补齐能力矩阵：`command_name`、`default_config_directory`（相对 home 的路径）、`supports_terminal_sign_in`（grok/openCode/workBuddy/zcode）、`supports_native_open`（另加 trae）、`supports_linked_environments`（`!= Trae`——TRAE SOLO 是个人版，不能给关联环境，否则等于暗示企业版 `traecli`）。
+
+#### 新增额度结果契约
+
+`models/local_cli.rs`：
+
+- `LocalCliQuotaState`：`available / unavailable / needsLogin / unsupported / rateLimited`，只有 `available` 算有数据。
+- `LocalCliQuotaResult` + `LocalCliQuotaWindow` + `LocalCliResetCard`，含**独立的重置卡观测时间**——官方请求若不带卡字段，就不能让旧的一组看起来是新观测的。
+- `retain_last_valid_result`：**刷新失败时保留该账号自己的上次有效快照**，并写入 `retained_from` 记录这些数字真正的观测时间，**重置卡不随额度刷新继承**。没有上次快照时保持原状、绝不推算成 0。
+- `shares_login`：只有同族且双方都有指纹时才判定同一登录；**没有可靠标识时返回 unknown，绝不猜测共用额度**。
+- `LocalCliPresentation`：`bounded_label` / `valid_identity` / `masked_identity` / `valid_windows` / `valid_reset_cards`，全部有界并拒绝控制字符与越界百分比。
+- `CliReadPolicy`：总时限 + 响应大小上限，**Cookie、重定向、自动重试全部关闭**（重定向可能把凭据带到用户没选的主机）。
+- `LocalCliProfile` 只保存名称与目录标签，**不复制任何厂商凭据**。
+
+三条硬规则：
+
+1. **未接通 ≠ 0。** 界面必须能说「暂未读到」或「暂未接通」。
+2. **同登录只在可确认时才提示。** 无可靠标识即 unknown。
+3. **不以命令退出码冒充成功。** 未知状态保持未知。
+
+> 本切片只实现**契约层**。各 CLI 的适配器、进程启动与目录隔离属平台层，尚未实现。
+
 ### 三条不可放宽的规则
 
 1. **未知不等于 0。** 来源未返回的窗口是 `None`，显示为 `—`；未知额度永远不会被报成"低额度"。
@@ -169,7 +207,7 @@ Tauri `list_accounts` 复用 AppState 里**已缓存的 dashboard 快照**推导
 
 | 验证 | 命令 | 结果 |
 | --- | --- | --- |
-| Rust 单元测试 | `cargo test -p codexu-core` | **192 passed / 0 failed** |
+| Rust 单元测试 | `cargo test -p codexu-core` | **210 passed / 0 failed** |
 | Rust 集成测试（额度协议、Dashboard、任务板） | 同上 | **9 passed / 0 failed** |
 | Rust 构建告警 | `cargo build -p codexu-core` | 0 warning |
 | Web 契约与运行时测试 | `npm test`（`node --test`） | **50 passed / 0 failed**（基线为 20/1） |
