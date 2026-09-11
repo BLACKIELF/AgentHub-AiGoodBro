@@ -20,6 +20,7 @@ pub mod occupancy;
 pub mod quota;
 pub mod runtime;
 pub mod usage;
+pub mod warmup;
 
 pub use account::*;
 pub use leadership::*;
@@ -27,3 +28,4 @@ pub use occupancy::*;
 pub use quota::*;
 pub use runtime::*;
 pub use usage::*;
+pub use warmup::*;

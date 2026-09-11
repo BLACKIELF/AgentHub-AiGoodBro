@@ -35,7 +35,7 @@ Windows 完全缺失（即 AgentHub 的产品身份）：
 | S1 | 账号与额度域：身份、执行偏好、额度窗口、重置卡、占用与派单门禁 | 已实现 |
 | S2 | 账号工作台 UI：账号卡片、双栏 5h/7d、未知占位、取整标记 | 已实现 |
 | S3 | 官方额度接线：app-server / dashboard 两种来源统一映射到 `AccountQuotaSnapshot`，含保留与过期降级 | 已实现 |
-| S4 | 暖号策略：5h / 7d 开关、先刷新后校验、失败重试 | 待做 |
+| S4 | 暖号策略：5h / 7d 分别开关、重置与失败重试的调度决策 | 已实现（策略层） |
 | S5 | 派单协调：预约、心跳、释放、与 Hub 状态对齐 | 待做 |
 | S6 | 消息通道：飞书 / Telegram / 企业微信，凭据隔离存储 | 待做 |
 | S7 | 多 CLI 账号：登录目录关联、命名、模型可用性 | 待做 |
@@ -67,6 +67,26 @@ Windows 完全缺失（即 AgentHub 的产品身份）：
 Tauri `list_accounts` 复用 AppState 里**已缓存的 dashboard 快照**推导系统账号额度，不重复拉起 app-server 进程；托管资料暂无读取路径，因此不在 map 中，界面显示 `—`。
 
 前端 `resolveAccountQuota` 规定优先级：**dashboard 的实时读数 > DTO 携带值 > 缺失（显示 `—`）**，因为 dashboard 随用量事件刷新，而账号列表按需加载。
+
+### S4 · 暖号策略（策略层）
+
+`crates/codexu-core/src/models/warmup.rs`，逐条移植 macOS `CodexWarmUpPolicy`：
+
+- **常量同值**：重置宽限 8s；5h 成功间隔 5h；7d 成功间隔 7d；失败重试 5min；额度证据最长 15min；空闲阈值 `usedPercent < 0.5`；意外回落阈值 8%；窗口起点容差 10min。
+- **维护节奏**：有额度通知 60s；仅暖号 10min；都不开 30min。
+- **调度**：`next_date_for_kind` / `next_eligible_date` / `is_due` / `next_scheduled_reset_date` / `next_quota_reset_refresh_date`，含 `unexpected`（意外重置立即到期）与 `blockIdleRetry`（未解决的失败按 5min 重试）两条分支。
+- **决策**：`warm_up_decision` 把门禁与调度合成一个 `Send { kinds } | WaitUntil | Blocked(reason)`，运行层直接消费，界面可直接解释原因。
+- **重置票**：`WarmUpResetTracker` 用单调票号替代 macOS 的 UUID，语义一致——**成功请求只确认它实际处理的那次重置事件**，即使额度仍显示 100%；后来的重置保留自己的票。
+
+三条硬规则：
+
+1. **暖号从不增加额度、从不兑换重置券。** 有额外余额不构成降级到付费额度的许可——`ExhaustedSubscriptionWindow` 直接阻断。
+2. **失败不清空日程。** 读取失败或发送失败都让截止时间保持 pending，并以有界频率重试；不会静默丢档。
+3. **缺失即 fail-closed。** 被选中的窗口没有数据时返回 `MissingSelectedWindow` 阻断，绝不用另一个窗口的数值推断它空闲。
+
+`WarmUpState` 保存快照、上次尝试时间/结果、上次读取失败时间与有界历史（最多 20 条）。
+
+> 本切片只实现**策略层**（纯函数 + 测试）。定时器、实际发送最小请求、进程与网络生命周期属于运行层，尚未实现。
 
 ### 三条不可放宽的规则
 
@@ -101,7 +121,7 @@ Tauri `list_accounts` 复用 AppState 里**已缓存的 dashboard 快照**推导
 
 | 验证 | 命令 | 结果 |
 | --- | --- | --- |
-| Rust 单元测试 | `cargo test -p codexu-core` | **115 passed / 0 failed** |
+| Rust 单元测试 | `cargo test -p codexu-core` | **148 passed / 0 failed** |
 | Rust 集成测试（额度协议、Dashboard、任务板） | 同上 | **9 passed / 0 failed** |
 | Rust 构建告警 | `cargo build -p codexu-core` | 0 warning |
 | Web 契约与运行时测试 | `npm test`（`node --test`） | **50 passed / 0 failed**（基线为 20/1） |
@@ -143,10 +163,10 @@ Web 侧新增的 23 个测试里，`quota-display` 与 `quota-bridge` 是**真�
 
 ## 六、下一断点
 
-1. **S4 暖号策略**：5h / 7d 分别开关，到时先刷新官方额度、再核实身份与占用，条件满足才发一次最小请求。前置门禁直接复用 `QuotaGate` 与 `can_accept_new_task`。
+1. **S4 运行层**：把 `warm_up_decision` 接到定时器与真实的最小请求发送，复用 `QuotaGate` 与 `can_accept_new_task` 作为发送前的二次校验；`can_continue_after_async_check` 已备好用于异步查完后的生命周期复核。
 2. **S3 收尾**：扩展 `read_installed_codex_quota` 支持自定义 `CODEX_HOME`，让托管资料也能读额度；并从真实响应中解析重置卡数量与到期。
 3. **S5 派单协调**：把 `OccupancyRecord` 落到持久化存储并加心跳。
-4. **提交与集成**：本任务改动尚未提交（见下）。最终集成线是 `windows-port/ui-dev`，该分支检出在另一个 worktree，需在那边合并。
+4. **集成**：最终集成线是 `windows-port/ui-dev`，该分支检出在另一个 worktree，需在那边合并。
 
 ## 七、提交与推送状态
 
