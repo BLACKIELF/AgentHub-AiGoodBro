@@ -15,6 +15,7 @@
 //! or response bodies, or absolute local paths.
 
 pub mod account;
+pub mod dispatch;
 pub mod leadership;
 pub mod occupancy;
 pub mod quota;
@@ -23,6 +24,7 @@ pub mod usage;
 pub mod warmup;
 
 pub use account::*;
+pub use dispatch::*;
 pub use leadership::*;
 pub use occupancy::*;
 pub use quota::*;

@@ -36,7 +36,7 @@ Windows 完全缺失（即 AgentHub 的产品身份）：
 | S2 | 账号工作台 UI：账号卡片、双栏 5h/7d、未知占位、取整标记 | 已实现 |
 | S3 | 官方额度接线：app-server / dashboard 两种来源统一映射到 `AccountQuotaSnapshot`，含保留与过期降级 | 已实现 |
 | S4 | 暖号策略：5h / 7d 分别开关、重置与失败重试的调度决策 | 已实现（策略层） |
-| S5 | 派单协调：预约、心跳、释放、与 Hub 状态对齐 | 待做 |
+| S5 | 派单协调：共享占用契约（线格式、校验、冲突判定、心跳、历史上限） | 已实现（契约层） |
 | S6 | 消息通道：飞书 / Telegram / 企业微信，凭据隔离存储 | 待做 |
 | S7 | 多 CLI 账号：登录目录关联、命名、模型可用性 | 待做 |
 | S8 | Desktop 切换事务：身份验证、锁、原子写入、回滚 | 待做 |
@@ -88,6 +88,28 @@ Tauri `list_accounts` 复用 AppState 里**已缓存的 dashboard 快照**推导
 
 > 本切片只实现**策略层**（纯函数 + 测试）。定时器、实际发送最小请求、进程与网络生命周期属于运行层，尚未实现。
 
+### S5 · 派单协调（契约层）
+
+`crates/codexu-core/src/models/dispatch.rs`，逐条移植 `DispatchActivityStore`——它是与 `next_dispatch_activity.py` 和 Hub 共享的**版本化本地契约**，字段名、密钥派生、状态集合与校验必须逐字节一致，否则两侧会静默看不见对方的预约。
+
+- **共享文件**：`dispatch-activity-v1.json`、`.dispatch-activity.lock`、`operations-issues-v1.jsonl`。
+- **状态集合**：活跃 `preparing / starting / running / cancel_requested / uncertain`；终结 `awaiting_acceptance / accepted / rejected / failed / cancelled`。
+- **线格式**：camelCase，`leaseId / ownerThreadId / taskId / accountKey / aliasKey / projectKey / code? / route / state / createdAt / updatedAt / heartbeatDueAt / pid?`。未设置的 `code` / `pid` 不写出。
+- **密钥派生**：SHA-256 十六进制。`accountKey = hash(account)`（不归一化）；`aliasKey = hash(alias.trim().lowercase())`；账户路由 `projectKey = hash("<route>:<accountKey>")`；终端 `projectKey = hash(已解析的真实目录)`。用 `sha2` crate 而非手写摘要——摘要错一位就会静默破坏互通。
+- **校验**（与另外两个读取方同规则）：`schemaVersion == 1`、≤2000 条、`leaseId` 唯一、三个 key 均为 64 位**小写**十六进制、标识非空、时间戳有限。任一条不过即视为**不可读**，而不是部分信任——部分信任的预约集会让两个运行器抢同一账号。
+- **心跳**：账户路由 600s、终端 120s；`heartbeatDueAt` 已过或 `updatedAt` 超前 5s 以上 → 判定为 `uncertain`，但**记录状态不变**，因此预约继续占位。
+- **冲突判定**：账户路由按 accountKey **或** aliasKey 冲突；终端额外按 projectKey 冲突（同账号不能在同一真实项目目录并发）。判定读**记录状态**而非 `effectiveState`，所以过期心跳照样阻断。
+- **历史上限**：保留全部活跃 + 最近 100 条终结记录，按 `updatedAt` 排序、`leaseId` 破平——刚结束的记录可能排在数组首位，必须按完成时间保留，否则下一次写入会在验收前把它挤掉。
+- **问题日志**：append-only JSONL，UTC `recordedAt`（`Z`）+ 同一时刻的 `dateShanghai`（`+08:00`），`component` 固定 `next`，可选 `code` 为单个大写字母。
+
+三条硬规则：
+
+1. **心跳超时不等于空闲。** 只降级为 `uncertain`，预约继续占位，绝不自动释放别人的占用。
+2. **契约不符即不可读。** 校验失败不是"跳过坏记录"，而是整体拒绝——否则并发保护会退化成部分保护。
+3. **日志不得泄露本地状态。** `validate_issue_summary` 按 token 判定绝对路径（POSIX 与 Windows 盘符）、URL scheme 与邮箱，藏在句子中间的路径同样拦截；`5h/7d` 这类词内斜杠仍放行。
+
+> 本切片只实现**契约层**（纯函数 + 测试）。文件锁、原子替换与进程存活判定属平台层，尚未实现。
+
 ### 三条不可放宽的规则
 
 1. **未知不等于 0。** 来源未返回的窗口是 `None`，显示为 `—`；未知额度永远不会被报成"低额度"。
@@ -121,7 +143,7 @@ Tauri `list_accounts` 复用 AppState 里**已缓存的 dashboard 快照**推导
 
 | 验证 | 命令 | 结果 |
 | --- | --- | --- |
-| Rust 单元测试 | `cargo test -p codexu-core` | **148 passed / 0 failed** |
+| Rust 单元测试 | `cargo test -p codexu-core` | **169 passed / 0 failed** |
 | Rust 集成测试（额度协议、Dashboard、任务板） | 同上 | **9 passed / 0 failed** |
 | Rust 构建告警 | `cargo build -p codexu-core` | 0 warning |
 | Web 契约与运行时测试 | `npm test`（`node --test`） | **50 passed / 0 failed**（基线为 20/1） |
@@ -163,10 +185,11 @@ Web 侧新增的 23 个测试里，`quota-display` 与 `quota-bridge` 是**真�
 
 ## 六、下一断点
 
-1. **S4 运行层**：把 `warm_up_decision` 接到定时器与真实的最小请求发送，复用 `QuotaGate` 与 `can_accept_new_task` 作为发送前的二次校验；`can_continue_after_async_check` 已备好用于异步查完后的生命周期复核。
-2. **S3 收尾**：扩展 `read_installed_codex_quota` 支持自定义 `CODEX_HOME`，让托管资料也能读额度；并从真实响应中解析重置卡数量与到期。
-3. **S5 派单协调**：把 `OccupancyRecord` 落到持久化存储并加心跳。
-4. **集成**：最终集成线是 `windows-port/ui-dev`，该分支检出在另一个 worktree，需在那边合并。
+1. **S5 平台层**：实现 `dispatch.rs` 契约之下的文件锁、原子替换与进程存活判定。Windows 需要 `LockFileEx`、`MoveFileEx(MOVEFILE_REPLACE_EXISTING)`、`OpenProcess`，不能照搬 POSIX 的 `flock` / `rename` / `kill(pid, 0)`；还要复刻 macOS 的目录与锁文件属主/权限检查（Windows 侧对应 ACL 检查）。随后接 Tauri 命令与 UI。
+2. **S4 运行层**：把 `warm_up_decision` 接到定时器与真实的最小请求发送，复用 `QuotaGate` 与 `can_accept_new_task` 作为发送前的二次校验；`can_continue_after_async_check` 已备好用于异步查完后的生命周期复核。
+3. **S3 收尾**：扩展 `read_installed_codex_quota` 支持自定义 `CODEX_HOME`，让托管资料也能读额度；并从真实响应中解析重置卡数量与到期。
+4. **`occupancy.rs` 与 `dispatch.rs` 的关系**：前者是工作台自己的占用视图（面向界面），后者是与外部工具共享的线格式契约。平台层落地时应让两者由同一份状态派生，避免出现两套互相矛盾的占用真相。
+5. **集成**：最终集成线是 `windows-port/ui-dev`，该分支检出在另一个 worktree，需在那边合并。
 
 ## 七、提交与推送状态
 
