@@ -39,7 +39,7 @@ Windows 完全缺失（即 AgentHub 的产品身份）：
 | S5 | 派单协调：共享占用契约（线格式、校验、冲突判定、心跳、历史上限） | 已实现（契约层） |
 | S6 | 消息通道：掩码 DTO、webhook 目标白名单、去重与投递语义 | 已实现（策略/契约层） |
 | S7 | 多 CLI 账号：支持矩阵、额度结果契约、失败保留与同一登录判定 | 已实现（契约层） |
-| S8 | Desktop 切换事务：身份验证、锁、原子写入、回滚 | 待做 |
+| S8 | 自动切换策略 + 切换请求校验（手动与自动共用同一形状与门禁） | 已实现（策略层） |
 | S9 | 打包与签名：MSI / NSIS、代码签名、更新器 | 待做 |
 
 ## 三、已落地的语义
@@ -174,6 +174,36 @@ Tauri `list_accounts` 复用 AppState 里**已缓存的 dashboard 快照**推导
 
 > 本切片只实现**契约层**。各 CLI 的适配器、进程启动与目录隔离属平台层，尚未实现。
 
+### S8 · 自动切换策略（策略层）
+
+新增 `crates/codexu-core/src/models/automatic_switch.rs`，移植 `Domain/AutomaticAccountSwitch.swift`。
+
+#### 先说一处文档与代码不符
+
+根 `AGENTS.md` 提到的 `DesktopSwitchCoordinator / DesktopSwitchTransaction / DesktopSwitchJournal / DesktopSwitchVerifier` **在本仓库从未存在过**——不在 HEAD，也不在任何分支的提交历史里（`git log --all -S "DesktopSwitchTransaction"` 无结果）。真正的切换实现是 `Domain/AutomaticAccountSwitch.swift` 与 `Services/CodexSwitchPreparation.swift`。本切片按**实际存在的代码**移植，并在此记录该偏差，避免后续按文档去找不存在的文件。
+
+#### 移植内容
+
+- `LowQuotaAlertThresholds`：可选项 `[5, 10, 15, 20, 25]`，标准值 (5, 10)。**无法识别的取值回落到标准值**，因为阈值是安全设置，静默放宽会触发用户没要求的切换；设置读取只接受"整数且在可选项内"。
+- `PausedAutomationFeature`：可被启动覆盖暂停的五项（5h 暖号 / 7d 暖号 / 低额度提醒 / 飞书通知 / 系统通知）。**只有显式的 `no` / `false` / `0` 才算暂停**，缺失或无法识别的一律不暂停——否则一个拼写错误就会静默关掉安全网。
+- `AutomaticSwitchQuotaState`：剩余百分比被 clamp 到 0–100，非有限值变成 `None`，**未知窗口永不触发切换**。触发规则沿用产品一贯口径：**5h 包含（≤），7d 不包含（<）**。
+- `AutomaticSwitchPolicy` 及其门禁：
+  - 常量：5h 触发 5%、7d 触发 10%、候选下限 30%、失败重试 3600s、成功冷却 1800s、额度快照上限 45s、任务快照上限 45s、Codex 空闲要求 120s、时钟偏移容差 5s。
+  - `has_no_active_tasks`：**断连快照是"未知"而非"空"，因此阻断**；任务状态中 `running / waitingInput / recorded / disconnected` 阻断（`recorded` 与 `disconnected` 也阻断，因为未完成或未核实的任务不等于账号空闲）。
+  - `has_safe_task_state`：必须先观测到 Codex 空闲且已满 120s，再看无活跃任务。
+  - `should_evaluate`：启用 + 额度新鲜 + 有触发窗口 + 任务状态安全 + 不在成功冷却内 + 不在失败重试内，全部满足才考虑。
+  - `preferred_candidate`：**候选必须上报每一个触发窗口**，缺任何一个即视为未知并取消资格；得分取触发窗口中的最小值且必须 ≥30；同分时取**较小的 profile id**，保证选择确定。
+  - `lowest_trigger`：触发窗口中最紧张的那个。
+- `SwitchRequest`：`Manual` 与 `Automatic` **共用同一形状与同一校验**，落实「手动与自动切换必须共用同一条身份、锁、优雅退出、原子写入、校验、回滚与恢复路径」。校验要求两端都非空且不同——**两端必须在同一把锁内一起预约**（`dispatch.rs` 的 `reserveMaintenance(accounts:)` 已实现该语义），否则第二个预约失败时会留下第一个账号的孤立准备状态。
+
+三条硬规则：
+
+1. **自动化默认关闭且 fail-closed。** 额度缺失/陈旧、任务快照缺失/陈旧、连接状态未知、旧管理器在跑、Codex 未确认空闲——任一项即阻断。
+2. **未知不等于空闲。** 断连、缺失窗口、未上报的窗口，全部按未知处理。
+3. **手动与自动同构。** 不做两套判定。
+
+> 本切片只实现**策略层**。事务本身（锁、原子写入、回滚、恢复日志）属平台层，尚未实现。
+
 ### 三条不可放宽的规则
 
 1. **未知不等于 0。** 来源未返回的窗口是 `None`，显示为 `—`；未知额度永远不会被报成"低额度"。
@@ -207,7 +237,7 @@ Tauri `list_accounts` 复用 AppState 里**已缓存的 dashboard 快照**推导
 
 | 验证 | 命令 | 结果 |
 | --- | --- | --- |
-| Rust 单元测试 | `cargo test -p codexu-core` | **210 passed / 0 failed** |
+| Rust 单元测试 | `cargo test -p codexu-core` | **229 passed / 0 failed** |
 | Rust 集成测试（额度协议、Dashboard、任务板） | 同上 | **9 passed / 0 failed** |
 | Rust 构建告警 | `cargo build -p codexu-core` | 0 warning |
 | Web 契约与运行时测试 | `npm test`（`node --test`） | **50 passed / 0 failed**（基线为 20/1） |
@@ -249,7 +279,8 @@ Web 侧新增的 23 个测试里，`quota-display` 与 `quota-bridge` 是**真�
 
 ## 六、下一断点
 
-1. **S5 平台层**：实现 `dispatch.rs` 契约之下的文件锁、原子替换与进程存活判定。Windows 需要 `LockFileEx`、`MoveFileEx(MOVEFILE_REPLACE_EXISTING)`、`OpenProcess`，不能照搬 POSIX 的 `flock` / `rename` / `kill(pid, 0)`；还要复刻 macOS 的目录与锁文件属主/权限检查（Windows 侧对应 ACL 检查）。随后接 Tauri 命令与 UI。
+1. **S8 事务平台层**：在 `automatic_switch.rs` 的判定之下实现切换事务本身——同一把锁内同时预约来源与目标身份、优雅退出、原子写入、校验、回滚与恢复日志。任一方冲突即不建立部分预约；恢复事务未完成时保留占用。
+2. **S5 平台层**：实现 `dispatch.rs` 契约之下的文件锁、原子替换与进程存活判定。Windows 需要 `LockFileEx`、`MoveFileEx(MOVEFILE_REPLACE_EXISTING)`、`OpenProcess`，不能照搬 POSIX 的 `flock` / `rename` / `kill(pid, 0)`；还要复刻 macOS 的目录与锁文件属主/权限检查（Windows 侧对应 ACL 检查）。随后接 Tauri 命令与 UI。
 2. **S4 运行层**：把 `warm_up_decision` 接到定时器与真实的最小请求发送，复用 `QuotaGate` 与 `can_accept_new_task` 作为发送前的二次校验；`can_continue_after_async_check` 已备好用于异步查完后的生命周期复核。
 3. **S3 收尾**：扩展 `read_installed_codex_quota` 支持自定义 `CODEX_HOME`，让托管资料也能读额度；并从真实响应中解析重置卡数量与到期。
 4. **`occupancy.rs` 与 `dispatch.rs` 的关系**：前者是工作台自己的占用视图（面向界面），后者是与外部工具共享的线格式契约。平台层落地时应让两者由同一份状态派生，避免出现两套互相矛盾的占用真相。

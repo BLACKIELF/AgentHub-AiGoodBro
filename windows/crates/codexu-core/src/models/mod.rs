@@ -15,6 +15,7 @@
 //! or response bodies, or absolute local paths.
 
 pub mod account;
+pub mod automatic_switch;
 pub mod dispatch;
 pub mod leadership;
 pub mod local_cli;
@@ -26,6 +27,7 @@ pub mod usage;
 pub mod warmup;
 
 pub use account::*;
+pub use automatic_switch::*;
 pub use dispatch::*;
 pub use leadership::*;
 pub use local_cli::*;
