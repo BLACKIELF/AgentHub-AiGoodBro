@@ -397,7 +397,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        store.isLaunchingCodex ? .terminateCancel : .terminateNow
+        if store.isLaunchingCodex { return .terminateCancel }
+        if store.isLoggingIn {
+            Task { @MainActor in
+                await store.finishLoginForTermination()
+                sender.reply(toApplicationShouldTerminate: true)
+            }
+            return .terminateLater
+        }
+        return .terminateNow
     }
 
     func applicationWillTerminate(_ notification: Notification) {

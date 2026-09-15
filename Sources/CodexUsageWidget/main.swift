@@ -64,6 +64,18 @@ struct CodexAccountManagerNextMain {
             exit(WorkspacePreviewRenderer.render(to: outputURL, language: language) ? 0 : 1)
         }
 
+        if CommandLine.arguments.contains("--preview-device-login-interaction") {
+            CodexDeviceLoginPreviewRenderer.showInteractive()
+            return
+        }
+
+        if let previewIndex = CommandLine.arguments.firstIndex(of: "--render-device-login-previews"),
+            CommandLine.arguments.indices.contains(previewIndex + 1)
+        {
+            _ = NSApplication.shared
+            exit(CodexDeviceLoginPreviewRenderer.render(to: URL(fileURLWithPath: CommandLine.arguments[previewIndex + 1], isDirectory: true)) ? 0 : 1)
+        }
+
         if let previewIndex = CommandLine.arguments.firstIndex(of: "--render-setup-previews"),
             CommandLine.arguments.indices.contains(previewIndex + 1)
         {
@@ -109,6 +121,8 @@ struct CodexAccountManagerNextMain {
                 POSIXPipeReaderSelfTest.run()
                     && CodexThreadHistoryProbeSelfTest.run()
                     && CodexAccountLoginProtocolSelfTest.run()
+                    && CodexDeviceLoginSelfTest.run()
+                    && UsageStore.deviceLoginTargetSelfTest()
                     ? 0 : 1
             )
         }
