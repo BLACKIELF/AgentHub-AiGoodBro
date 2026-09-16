@@ -90,28 +90,39 @@ Coverage 运行速度不是当前验收重点；重点是它不会抢焦点或�
 
 ```text
 windows/
-├── Cargo.toml
+├── AGENTS.md                              ← Windows 专属代理规则
+├── Cargo.toml / Cargo.lock                ← Rust 工作区
 ├── README.md
-└── crates/
-    ├── codexu-core/
-    │   ├── Cargo.toml
-    │   └── src/
-    │       ├── lib.rs
-    │       ├── models/
-    │       │   ├── mod.rs
-    │       │   ├── usage.rs
-    │       │   ├── runtime.rs
-    │       │   └── leadership.rs
-    │       └── readers/
-    │           ├── mod.rs
-    │           ├── common.rs              ← 聚合、缓存、成本估算
-    │           ├── codex_state.rs         ← 新增：state_5.sqlite 读取
-    │           ├── codex_transcript.rs    ← Codex JSONL + 元数据富化
-    │           └── claude_transcript.rs   ← Claude Code JSONL（保留，待激活）
-    └── codexu-cli/
-        ├── Cargo.toml
-        └── src/
-            └── main.rs                    ← CLI 入口
+├── apps/
+│   └── codexu-tauri/                      ← Tauri 桌面应用
+│       ├── src-tauri/                     ← Rust 后端（app_state / commands / tray）
+│       └── web/                           ← React + TypeScript + Vite 前端
+│           ├── src/                       ← 界面、hooks、i18n、类型、工具
+│           └── tests/                     ← 契约测试与视觉断言
+├── crates/
+│   ├── codexu-core/                       ← reader / 聚合 / 模型
+│   │   ├── Cargo.toml
+│   │   └── src/
+│   │       ├── lib.rs
+│   │       ├── models/
+│   │       │   ├── mod.rs
+│   │       │   ├── usage.rs
+│   │       │   ├── runtime.rs
+│   │       │   └── leadership.rs
+│   │       └── readers/
+│   │           ├── mod.rs
+│   │           ├── common.rs              ← 聚合、缓存、成本估算
+│   │           ├── codex_state.rs         ← state_5.sqlite 读取
+│   │           ├── codex_transcript.rs    ← Codex JSONL + 元数据富化
+│   │           └── claude_transcript.rs   ← Claude Code JSONL（保留，待激活）
+│   └── codexu-cli/
+│       ├── Cargo.toml
+│       └── src/
+│           └── main.rs                    ← codexu-probe 只读诊断 CLI 入口
+└── scripts/                               ← Windows 原生视觉采集与测试脚本
+    ├── Capture-NativeVisuals.ps1
+    ├── native-visual-capture/
+    └── tests/
 ```
 
 ## 下一阶段（只记录，不实施）

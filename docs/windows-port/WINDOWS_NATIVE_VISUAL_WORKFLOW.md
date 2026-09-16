@@ -21,7 +21,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\windows\scripts\Captur
 默认入口会从 `windows/` 执行：
 
 ```text
-cargo +stable-x86_64-pc-windows-msvc tauri build --no-bundle
+cargo +1.97.1-x86_64-pc-windows-msvc tauri build --no-bundle
 ```
 
 只有在同一 checkout 的 release executable 已由本次开发者明确验证时，才可用 `-SkipBuild` 做调试采集；正式验收记录必须使用默认构建路径。
@@ -132,7 +132,7 @@ foreach ($script in $scripts) {
 }
 
 cd .\windows
-cargo +stable-x86_64-pc-windows-msvc test --workspace
+cargo +1.97.1-x86_64-pc-windows-msvc test --workspace
 
 cd .\apps\codexu-tauri\web
 npm run build
