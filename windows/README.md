@@ -9,6 +9,8 @@
 - 中英文设置、Light/Dark/System 外观和六套语义 palette catalog
 - Windows 原生 exact-HWND、后台不抢前台的视觉采集 workflow
 
+当前实现仍是只读 Dashboard，没有账号档案、登录或账号切换命令。后续不再以模糊的“下一阶段”追赶移动目标；功能所有权、固定基线和 P0–P5 顺序见 [Windows 功能对齐路线图](../docs/windows-port/WINDOWS_PARITY_ROADMAP_0919v1.md)。
+
 任务快照读取并展示：
 
 - 线程标题、项目路径、模型、归档状态、Git 信息
