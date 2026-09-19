@@ -19,6 +19,9 @@ class WindowsCISelectionTest(unittest.TestCase):
         cls.mac = cls.commit("README.md", "macOS documentation")
         cls.windows = cls.commit("windows/source.txt", "Windows change")
         cls.workflow = cls.commit(".github/workflows/ci.yml", "workflow change")
+        cls.palette = cls.commit("Resources/Palettes/example/tokens/light.json", "{}")
+        cls.badge = cls.commit("Resources/LeadershipBadges/example.png", "synthetic fixture")
+        cls.other_resource = cls.commit("Resources/Other/example.txt", "unrelated resource")
         cls.git("checkout", "-q", "-b", "base-only-change", cls.base)
         cls.diverged_base = cls.commit("windows/source.txt", "base-only Windows change")
 
@@ -57,6 +60,17 @@ class WindowsCISelectionTest(unittest.TestCase):
 
     def test_workflow_changes_validate_the_gate(self):
         self.assertTrue(self.push(self.windows, self.workflow))
+
+    def test_shared_resources_select_windows_on_push_and_pull(self):
+        for before, after in ((self.workflow, self.palette), (self.palette, self.badge)):
+            with self.subTest(after=after):
+                self.assertTrue(self.push(before, after))
+                self.assertTrue(self.pull(before, after))
+                self.assertTrue(self.push(after, before))  # Resource deletion.
+
+    def test_unrelated_resources_do_not_select_windows(self):
+        self.assertFalse(self.push(self.badge, self.other_resource))
+        self.assertFalse(self.pull(self.badge, self.other_resource))
 
     def test_pr_uses_merge_base_not_unrelated_base_changes(self):
         self.assertFalse(self.pull(self.diverged_base, self.mac))

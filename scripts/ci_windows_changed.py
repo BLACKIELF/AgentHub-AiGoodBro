@@ -20,6 +20,7 @@ def windows_changed(event_name, event, cwd=None):
         raise ValueError("Unsupported CI event")
     result = subprocess.run(
         ["git", "diff", "--quiet", *revisions, "--", "windows/",
+         "Resources/Palettes/", "Resources/LeadershipBadges/",
          ".github/workflows/ci.yml", "scripts/ci_windows_changed.py",
          "tests/test_ci_windows_changed.py"],
         cwd=cwd,
