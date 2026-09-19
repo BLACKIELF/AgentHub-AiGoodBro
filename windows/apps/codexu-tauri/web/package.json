@@ -7,6 +7,8 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "test": "node --test",
+    "test:visual": "playwright test --config tests/visual/playwright.config.mjs",
+    "test:visual:update": "playwright test --config tests/visual/playwright.config.mjs --update-snapshots",
     "preview": "vite preview"
   },
   "dependencies": {
@@ -18,6 +20,7 @@
     "recharts": "^2.13.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.3",

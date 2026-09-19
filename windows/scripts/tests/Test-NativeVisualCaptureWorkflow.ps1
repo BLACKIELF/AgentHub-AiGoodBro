@@ -109,7 +109,7 @@ Assert-True (
   $manifest.projects_capture_mode -eq 'first panel viewport'
 ) 'Preflight did not limit Projects to its first panel viewport.'
 Assert-True ($manifest.app_executable_relative -eq 'windows/target/release/codexu-tauri.exe') 'Preflight selected the wrong release executable.'
-Assert-True ($manifest.build_command -eq 'cargo +stable-x86_64-pc-windows-msvc tauri build --no-bundle') 'Preflight selected the wrong release build command.'
+Assert-True ($manifest.build_command -eq 'cargo +1.97.1-x86_64-pc-windows-msvc tauri build --no-bundle') 'Preflight selected the wrong release build command.'
 Assert-True ([bool]$manifest.prerequisites.csharp_compiler) 'Preflight did not locate the C# compiler.'
 Assert-True ([bool]$manifest.prerequisites.windows_metadata) 'Preflight did not locate Windows SDK metadata.'
 Assert-True (

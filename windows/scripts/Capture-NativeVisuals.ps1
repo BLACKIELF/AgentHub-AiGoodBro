@@ -637,7 +637,7 @@ function Get-PreflightManifest {
     segment_overlap_ratio = $segmentOverlapRatio
     max_segments_per_surface = $maxSegmentsPerSurface
     surface_file_pattern = $surfaceFilePattern
-    build_command = 'cargo +stable-x86_64-pc-windows-msvc tauri build --no-bundle'
+    build_command = 'cargo +1.97.1-x86_64-pc-windows-msvc tauri build --no-bundle'
     app_executable_relative = 'windows/target/release/codexu-tauri.exe'
     output_root = $ResolvedOutputRoot
     prerequisites = [ordered]@{
@@ -1599,7 +1599,7 @@ try {
     Invoke-LoggedProcess `
       -FileName $cargo.Source `
       -Arguments @(
-        '+stable-x86_64-pc-windows-msvc',
+        '+1.97.1-x86_64-pc-windows-msvc',
         'tauri',
         'build',
         '--no-bundle'

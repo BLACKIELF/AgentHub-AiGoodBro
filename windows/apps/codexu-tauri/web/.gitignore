@@ -4,4 +4,7 @@ dist/
 *.log
 .env
 .env.local
+# Vite leaves this temp file behind when the dev server is terminated by a test
+# runner (see tests/visual/playwright.config.mjs).
+vite.config.ts.timestamp-*.mjs
 # package-lock.json is committed for reproducible npm ci builds.
