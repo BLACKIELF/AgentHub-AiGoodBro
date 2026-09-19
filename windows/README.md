@@ -72,6 +72,10 @@ Git 忽略的 `.local-artifacts/`；不得提交、上传、复制进公开报�
 2. `Test-NativeVisualCaptureWorkflow.ps1` 检查采集 workflow 的静态契约，包括最大化、non-activating、保留前台窗口、后台 Z-order、tool window、任务栏/Alt-Tab 排除和精确 capture 参数。
 3. `Test-NativeVisualCaptureCoverage.ps1` 构建并启动真实 Tauri release 应用，覆盖各 Dashboard surface，验证 exact HWND、真实截图、前台窗口未改变和最终进程清理。
 
+若 preflight 失败，它会分别说明 `cargo` 未加入 `PATH`，或已找到 `cargo` 但缺少固定的
+`1.97.1-x86_64-pc-windows-msvc` 工具链，并给出对应的 `rustup toolchain install` 命令；
+两种情况仍保持非零退出并阻止后续构建。
+
 ```powershell
 cd ..
 

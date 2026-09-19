@@ -29,6 +29,76 @@ Assert-True (Test-Path -LiteralPath $entry -PathType Leaf) 'The formal native vi
 Assert-True (Test-Path -LiteralPath $windowConfig -PathType Leaf) 'The Tauri window configuration is missing.'
 Assert-True (Test-Path -LiteralPath $mainSource -PathType Leaf) 'The Tauri startup source is missing.'
 
+$tokens = $null
+$parseErrors = $null
+$entryAst = [System.Management.Automation.Language.Parser]::ParseFile(
+  $entry,
+  [ref]$tokens,
+  [ref]$parseErrors
+)
+Assert-True ($parseErrors.Count -eq 0) 'The native visual capture entry point has PowerShell parse errors.'
+$assertPreflightDefinition = @(
+  $entryAst.FindAll(
+    {
+      param($ast)
+      $ast -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+      $ast.Name -eq 'Assert-PreflightReady'
+    },
+    $true
+  )
+)[0]
+Assert-True ($null -ne $assertPreflightDefinition) 'The preflight assertion function is missing.'
+Invoke-Expression $assertPreflightDefinition.Extent.Text
+
+function New-SyntheticPrerequisites {
+  return [ordered]@{
+    windows = $true
+    cargo = $true
+    cargo_toolchain = $true
+    git = $true
+    helper_source = $true
+    csharp_compiler = $true
+    windows_metadata = $true
+    windows_metadata_version = '10.0.26100.0'
+    ui_automation = $true
+    native_driver = $true
+  }
+}
+$missingCargo = [ordered]@{
+  required_rust_toolchain = '1.97.1-x86_64-pc-windows-msvc'
+  prerequisites = New-SyntheticPrerequisites
+}
+$missingCargo.prerequisites.cargo = $false
+$missingCargo.prerequisites.cargo_toolchain = $false
+try {
+  Assert-PreflightReady -Preflight $missingCargo
+  throw 'A missing cargo executable passed preflight.'
+} catch {
+  Assert-True (
+    $_.Exception.Message.Contains('cargo was not found in PATH')
+  ) 'Missing cargo did not produce an actionable PATH diagnostic.'
+  Assert-True (
+    -not $_.Exception.Message.Contains('required Rust toolchain')
+  ) 'Missing cargo incorrectly reported a second toolchain problem.'
+}
+
+$missingToolchain = [ordered]@{
+  required_rust_toolchain = '1.97.1-x86_64-pc-windows-msvc'
+  prerequisites = New-SyntheticPrerequisites
+}
+$missingToolchain.prerequisites.cargo_toolchain = $false
+try {
+  Assert-PreflightReady -Preflight $missingToolchain
+  throw 'A missing pinned Rust toolchain passed preflight.'
+} catch {
+  Assert-True (
+    $_.Exception.Message.Contains("required Rust toolchain '1.97.1-x86_64-pc-windows-msvc' is unavailable")
+  ) 'Missing pinned toolchain did not name the required version.'
+  Assert-True (
+    $_.Exception.Message.Contains('rustup toolchain install 1.97.1-x86_64-pc-windows-msvc')
+  ) 'Missing pinned toolchain did not include the repair command.'
+}
+
 $config = Get-Content -LiteralPath $windowConfig -Raw -Encoding UTF8 | ConvertFrom-Json
 $mainWindow = @($config.app.windows | Where-Object { $_.label -eq 'main' })[0]
 Assert-True ($null -ne $mainWindow) 'The Tauri main window configuration is missing.'
@@ -109,7 +179,9 @@ Assert-True (
   $manifest.projects_capture_mode -eq 'first panel viewport'
 ) 'Preflight did not limit Projects to its first panel viewport.'
 Assert-True ($manifest.app_executable_relative -eq 'windows/target/release/codexu-tauri.exe') 'Preflight selected the wrong release executable.'
+Assert-True ($manifest.required_rust_toolchain -eq '1.97.1-x86_64-pc-windows-msvc') 'Preflight selected the wrong required Rust toolchain.'
 Assert-True ($manifest.build_command -eq 'cargo +1.97.1-x86_64-pc-windows-msvc tauri build --no-bundle') 'Preflight selected the wrong release build command.'
+Assert-True ([bool]$manifest.prerequisites.cargo_toolchain) 'Preflight did not validate the pinned Rust toolchain.'
 Assert-True ([bool]$manifest.prerequisites.csharp_compiler) 'Preflight did not locate the C# compiler.'
 Assert-True ([bool]$manifest.prerequisites.windows_metadata) 'Preflight did not locate Windows SDK metadata.'
 Assert-True (

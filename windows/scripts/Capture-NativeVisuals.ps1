@@ -18,6 +18,7 @@ $windowsRoot = Join-Path $repositoryRoot 'windows'
 $artifactBase = Join-Path $repositoryRoot '.local-artifacts\windows-visual-captures'
 $helperSource = Join-Path $PSScriptRoot 'native-visual-capture\GraphicsCaptureSnapshot.cs'
 $appPath = Join-Path $windowsRoot 'target\release\codexu-tauri.exe'
+$requiredRustToolchain = '1.97.1-x86_64-pc-windows-msvc'
 $captureRuns = @('fullscreen')
 $segmentOverlapRatio = 0.2
 $maxSegmentsPerSurface = 12
@@ -587,6 +588,24 @@ public static class NativeVisualCaptureDriver
 '@
 }
 
+function Test-CargoToolchain {
+  param(
+    [System.Management.Automation.CommandInfo] $Cargo,
+    [string] $Toolchain
+  )
+
+  if ($null -eq $Cargo) {
+    return $false
+  }
+
+  try {
+    & $Cargo.Source "+$Toolchain" --version *> $null
+    return $LASTEXITCODE -eq 0
+  } catch {
+    return $false
+  }
+}
+
 function Get-PreflightManifest {
   param([string] $ResolvedOutputRoot, [pscustomobject] $Compiler)
 
@@ -608,6 +627,9 @@ function Get-PreflightManifest {
   if ($null -eq $cargo) {
     $cargo = Get-Command cargo -ErrorAction SilentlyContinue
   }
+  $cargoToolchainReady = Test-CargoToolchain `
+    -Cargo $cargo `
+    -Toolchain $requiredRustToolchain
   $git = Get-Command git.exe -ErrorAction SilentlyContinue
   if ($null -eq $git) {
     $git = Get-Command git -ErrorAction SilentlyContinue
@@ -637,7 +659,8 @@ function Get-PreflightManifest {
     segment_overlap_ratio = $segmentOverlapRatio
     max_segments_per_surface = $maxSegmentsPerSurface
     surface_file_pattern = $surfaceFilePattern
-    build_command = 'cargo +1.97.1-x86_64-pc-windows-msvc tauri build --no-bundle'
+    required_rust_toolchain = $requiredRustToolchain
+    build_command = "cargo +$requiredRustToolchain tauri build --no-bundle"
     app_executable_relative = 'windows/target/release/codexu-tauri.exe'
     output_root = $ResolvedOutputRoot
     prerequisites = [ordered]@{
@@ -645,6 +668,7 @@ function Get-PreflightManifest {
         [Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT
       )
       cargo = ($null -ne $cargo)
+      cargo_toolchain = $cargoToolchainReady
       git = ($null -ne $git)
       helper_source = (Test-Path -LiteralPath $helperSource -PathType Leaf)
       csharp_compiler = (Test-CompilerReady -Compiler $Compiler)
@@ -662,13 +686,27 @@ function Get-PreflightManifest {
 
 function Assert-PreflightReady {
   param([System.Collections.IDictionary] $Preflight)
-  $missing = @(
+  $problems = @()
+  if (-not [bool]$Preflight.prerequisites.cargo) {
+    $problems += 'cargo was not found in PATH; install Rust with rustup and reopen the shell'
+  } elseif (-not [bool]$Preflight.prerequisites.cargo_toolchain) {
+    $toolchain = $Preflight.required_rust_toolchain
+    $problems += (
+      "required Rust toolchain '$toolchain' is unavailable; run " +
+      "'rustup toolchain install $toolchain --profile minimal --component rustfmt'"
+    )
+  }
+
+  $problems += @(
     $Preflight.prerequisites.GetEnumerator() |
-      Where-Object { -not [bool]$_.Value } |
+      Where-Object {
+        $_.Key -notin @('cargo', 'cargo_toolchain') -and
+        -not [bool]$_.Value
+      } |
       ForEach-Object { $_.Key }
   )
-  if ($missing.Count -gt 0) {
-    throw ('Native visual preflight failed: ' + ($missing -join ', '))
+  if ($problems.Count -gt 0) {
+    throw ('Native visual preflight failed: ' + ($problems -join '; '))
   }
 }
 
@@ -1599,7 +1637,7 @@ try {
     Invoke-LoggedProcess `
       -FileName $cargo.Source `
       -Arguments @(
-        '+1.97.1-x86_64-pc-windows-msvc',
+        "+$requiredRustToolchain",
         'tauri',
         'build',
         '--no-bundle'
