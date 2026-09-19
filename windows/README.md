@@ -16,6 +16,10 @@
 - 标题优先使用 `title`，为空时回退到 `preview`，展示前归一化并截断到 48 个字符
 - 工作区只展示路径尾名，automation 优先使用配置中的 `name`
 
+## 外部贡献 · 0916v1
+
+相对历史说明：Windows PR 统一提交到 `main`，贡献范围、分层验收及共享资源依赖见 [CONTRIBUTING.md](../CONTRIBUTING.md#windows-contributions)。完整检出仓库；稀疏检出须同时包含 `windows/`、`Resources/LeadershipBadges/` 和 `Resources/Palettes/`。下方下一阶段列表是待办，不代表已承诺的跨平台对齐计划。
+
 ## 快速开始
 
 Windows 工作区使用 MSVC ABI。首次在当前检出目录开发时，安装并设置项目级 toolchain override：
