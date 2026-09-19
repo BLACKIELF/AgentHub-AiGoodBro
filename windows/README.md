@@ -76,11 +76,18 @@ Git 忽略的 `.local-artifacts/`；不得提交、上传、复制进公开报�
 `1.97.1-x86_64-pc-windows-msvc` 工具链，并给出对应的 `rustup toolchain install` 命令；
 两种情况仍保持非零退出并阻止后续构建。
 
+正常终端仍输出唯一的 `NATIVE_VISUAL_PREFLIGHT=` JSON。受限 Agent 宿主若无法可靠回传
+stdout，可显式传入 `-PreflightResultPath`，将同一份结果原子写入 `.local-artifacts` 下的新
+JSON 文件；成功和依赖阻塞都会写入，既有文件不会覆盖。该诊断写入与截图/运行时产物分开
+记录，默认不启用。Windows SDK 优先接受 `-WindowsSdkRoot`，未指定时依次检查注册表
+`KitsRoot10`、系统 `ProgramFilesX86` 和同名环境变量，不修改机器环境。
+
 ```powershell
 cd ..
 
 # 不启动 app 的快速检查
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\windows\scripts\Capture-NativeVisuals.ps1 -PreflightOnly
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\windows\scripts\Capture-NativeVisuals.ps1 -PreflightOnly -PreflightResultPath .\.local-artifacts\windows-visual-captures\preflight.json
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\windows\scripts\tests\Test-NativeVisualCaptureWorkflow.ps1
 
 # 真实窗口覆盖测试（会构建、启动、截图并清理）

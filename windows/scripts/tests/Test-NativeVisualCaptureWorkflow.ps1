@@ -20,9 +20,16 @@ $repositoryRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\
 $entry = Join-Path $repositoryRoot 'windows\scripts\Capture-NativeVisuals.ps1'
 $windowConfig = Join-Path $repositoryRoot 'windows\apps\codexu-tauri\src-tauri\tauri.conf.json'
 $mainSource = Join-Path $repositoryRoot 'windows\apps\codexu-tauri\src-tauri\src\main.rs'
-$powershell = (Get-Command powershell.exe -ErrorAction Stop).Source
 $preflightOutput = Join-Path $repositoryRoot (
   '.local-artifacts\windows-visual-captures\preflight-contract-' + [guid]::NewGuid().ToString('N')
+)
+$preflightResult = Join-Path $repositoryRoot (
+  '.local-artifacts\windows-visual-captures\preflight-result-' +
+  [guid]::NewGuid().ToString('N') + '.json'
+)
+$blockedPreflightResult = Join-Path $repositoryRoot (
+  '.local-artifacts\windows-visual-captures\preflight-blocked-' +
+  [guid]::NewGuid().ToString('N') + '.json'
 )
 
 Assert-True (Test-Path -LiteralPath $entry -PathType Leaf) 'The formal native visual capture entry point is missing.'
@@ -37,18 +44,43 @@ $entryAst = [System.Management.Automation.Language.Parser]::ParseFile(
   [ref]$parseErrors
 )
 Assert-True ($parseErrors.Count -eq 0) 'The native visual capture entry point has PowerShell parse errors.'
-$assertPreflightDefinition = @(
-  $entryAst.FindAll(
-    {
-      param($ast)
-      $ast -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
-      $ast.Name -eq 'Assert-PreflightReady'
-    },
-    $true
-  )
-)[0]
-Assert-True ($null -ne $assertPreflightDefinition) 'The preflight assertion function is missing.'
-Invoke-Expression $assertPreflightDefinition.Extent.Text
+function Import-EntryFunction {
+  param([string] $Name)
+  $definition = @(
+    $entryAst.FindAll(
+      {
+        param($ast)
+        $ast -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+        $ast.Name -eq $Name
+      },
+      $true
+    )
+  )[0]
+  Assert-True ($null -ne $definition) "The $Name function is missing."
+  Invoke-Expression $definition.Extent.Text
+}
+
+Import-EntryFunction -Name 'Assert-PreflightReady'
+Import-EntryFunction -Name 'Get-WindowsSdkRootCandidates'
+Import-EntryFunction -Name 'Get-CaptureCompiler'
+
+$sdkFixtureRoot = Join-Path $repositoryRoot (
+  '.local-artifacts\windows-visual-captures\sdk-fixture-' + [guid]::NewGuid().ToString('N')
+)
+$sdkFixtureMetadata = Join-Path $sdkFixtureRoot 'UnionMetadata\10.0.26100.0\Windows.winmd'
+New-Item -ItemType Directory -Path (Split-Path -Parent $sdkFixtureMetadata) | Out-Null
+Set-Content -LiteralPath $sdkFixtureMetadata -Value 'synthetic metadata' -Encoding UTF8
+try {
+  $syntheticCompiler = Get-CaptureCompiler -ExplicitWindowsSdkRoot $sdkFixtureRoot
+  Assert-True (
+    $syntheticCompiler.windows_metadata -eq $sdkFixtureMetadata
+  ) 'An explicit Windows SDK root did not resolve its versioned metadata.'
+  Assert-True (
+    $syntheticCompiler.windows_sdk_source -eq 'parameter'
+  ) 'An explicit Windows SDK root did not record its discovery source.'
+} finally {
+  Remove-Item -LiteralPath $sdkFixtureRoot -Recurse -Force
+}
 
 function New-SyntheticPrerequisites {
   return [ordered]@{
@@ -120,16 +152,38 @@ Assert-True (
 ) 'Background startup must not call Tauri window.show, because that asynchronous path can activate the window before z-order correction.'
 
 $output = @(
-  & $powershell -NoProfile -ExecutionPolicy Bypass -File $entry `
+  & $entry `
     -PreflightOnly `
-    -OutputRoot $preflightOutput 2>&1
+    -OutputRoot $preflightOutput `
+    -PreflightResultPath $preflightResult
 )
-$exitCode = $LASTEXITCODE
-Assert-True ($exitCode -eq 0) "Preflight failed with exit code $exitCode."
 
 $manifestLine = @($output | Where-Object { "$_".StartsWith('NATIVE_VISUAL_PREFLIGHT=') })
 Assert-True ($manifestLine.Count -eq 1) 'Preflight did not emit exactly one machine-readable manifest.'
 $manifest = "$($manifestLine[0])".Substring('NATIVE_VISUAL_PREFLIGHT='.Length) | ConvertFrom-Json
+$result = Get-Content -LiteralPath $preflightResult -Raw -Encoding UTF8 | ConvertFrom-Json
+Assert-True ($result.schema_version -eq 1) 'The preflight result file used the wrong schema version.'
+Assert-True ($result.status -eq 'ready') 'The preflight result file did not record readiness.'
+Assert-True ([bool]$result.diagnostic_write_performed) 'The preflight result did not record its diagnostic write.'
+Assert-True (-not [bool]$result.runtime_writes_performed) 'The preflight result reported runtime writes.'
+Assert-True ($result.manifest.output_root -eq $manifest.output_root) 'File and stdout preflight manifests disagree.'
+
+$blockedResultWritten = $false
+try {
+  & $entry `
+    -PreflightOnly `
+    -OutputRoot $preflightOutput `
+    -PreflightResultPath $blockedPreflightResult `
+    -WindowsSdkRoot (Join-Path $sdkFixtureRoot 'missing') | Out-Null
+} catch {
+  $blockedResultWritten = Test-Path -LiteralPath $blockedPreflightResult -PathType Leaf
+}
+Assert-True $blockedResultWritten 'A blocked preflight did not publish its diagnostic result file.'
+$blockedResult = Get-Content -LiteralPath $blockedPreflightResult -Raw -Encoding UTF8 | ConvertFrom-Json
+Assert-True ($blockedResult.status -eq 'blocked') 'A failed preflight did not record blocked status.'
+Assert-True (
+  "$($blockedResult.error)".Contains('windows_metadata')
+) 'A blocked preflight result omitted the missing Windows metadata diagnostic.'
 
 Assert-True ($manifest.capture_engine -eq 'Windows.Graphics.Capture') 'Preflight selected the wrong capture engine.'
 Assert-True ($manifest.targeting -eq 'exact HWND') 'Preflight did not declare exact-HWND targeting.'
@@ -197,15 +251,11 @@ $singleSurfaceOutput = Join-Path $repositoryRoot (
   [guid]::NewGuid().ToString('N')
 )
 $singleSurfaceLines = @(
-  & $powershell -NoProfile -ExecutionPolicy Bypass -File $entry `
+  & $entry `
     -PreflightOnly `
     -Surface 'Skills' `
-    -OutputRoot $singleSurfaceOutput 2>&1
+    -OutputRoot $singleSurfaceOutput
 )
-$singleSurfaceExitCode = $LASTEXITCODE
-Assert-True (
-  $singleSurfaceExitCode -eq 0
-) "Single-surface preflight failed with exit code $singleSurfaceExitCode."
 $singleSurfaceManifestLine = @(
   $singleSurfaceLines | Where-Object { "$($_)".StartsWith('NATIVE_VISUAL_PREFLIGHT=') }
 )
@@ -230,10 +280,8 @@ Assert-True (
 ) 'Single-surface preflight created the requested runtime output directory.'
 
 $defaultOutput = @(
-  & $powershell -NoProfile -ExecutionPolicy Bypass -File $entry -PreflightOnly 2>&1
+  & $entry -PreflightOnly
 )
-$defaultExitCode = $LASTEXITCODE
-Assert-True ($defaultExitCode -eq 0) "Default preflight failed with exit code $defaultExitCode."
 $defaultManifestLine = @(
   $defaultOutput | Where-Object { "$_".StartsWith('NATIVE_VISUAL_PREFLIGHT=') }
 )
@@ -252,19 +300,18 @@ Assert-True (
 $outsideRoot = Join-Path ([System.IO.Path]::GetTempPath()) (
   'codexu-native-visual-invalid-' + [guid]::NewGuid().ToString('N')
 )
-$previousErrorActionPreference = $ErrorActionPreference
+$invalidRejected = $false
 try {
-  $ErrorActionPreference = 'Continue'
-  $invalidOutput = @(
-    & $powershell -NoProfile -ExecutionPolicy Bypass -File $entry `
-      -PreflightOnly `
-      -OutputRoot $outsideRoot 2>&1
+  & $entry -PreflightOnly -OutputRoot $outsideRoot | Out-Null
+} catch {
+  $invalidRejected = $_.Exception.Message.Contains(
+    'OutputRoot must be a new child of .local-artifacts/windows-visual-captures.'
   )
-  $invalidExitCode = $LASTEXITCODE
-} finally {
-  $ErrorActionPreference = $previousErrorActionPreference
 }
-Assert-True ($invalidExitCode -ne 0) 'An output path outside .local-artifacts was accepted.'
+Assert-True $invalidRejected 'An output path outside .local-artifacts was accepted.'
 Assert-True (-not (Test-Path -LiteralPath $outsideRoot)) 'The rejected output path was created.'
+
+Remove-Item -LiteralPath $preflightResult -Force
+Remove-Item -LiteralPath $blockedPreflightResult -Force
 
 Write-Output 'PASS: native visual capture preflight and local-artifact boundary'

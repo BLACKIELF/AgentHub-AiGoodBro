@@ -93,6 +93,12 @@ jobs:
       - name: Test Windows Rust workspace
         working-directory: windows
         run: cargo test --workspace --locked
+      - name: Test native visual script contracts with Windows PowerShell 5.1
+        shell: powershell
+        run: .\windows\scripts\tests\Test-NativeVisualCaptureWorkflow.ps1
+      - name: Test native visual script contracts with PowerShell 7
+        shell: pwsh
+        run: .\windows\scripts\tests\Test-NativeVisualCaptureWorkflow.ps1
 
   windows-web:
     needs: changes
