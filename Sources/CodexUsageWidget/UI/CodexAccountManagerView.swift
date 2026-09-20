@@ -481,6 +481,7 @@ struct CodexAccountManagerView: View {
         .onChange(of: usesHomeAccountCards) { compact in
             if compact { directReorder.cancel() }
         }
+        .modifier(CodexDeviceLoginSheet(store: store, language: language))
         .sheet(isPresented: $isAutomationCenterPresented) {
             AccountAutomationCenterView(store: store)
                 .environment(\.widgetLanguage, language)
@@ -3532,6 +3533,7 @@ struct CodexAccountMenuView: View {
         }
         .environment(\.accountAvatarSettings, settings)
         .environment(\.accountAvatarEdit, { menuAvatarEditor = $0 })
+        .modifier(CodexDeviceLoginSheet(store: store, language: language))
         .sheet(item: $menuAvatarEditor) { target in
             AccountAvatarEditor(
                 target: target,
@@ -5063,6 +5065,38 @@ enum AccountCardFooterSlots {
     static let resetSummary: CGFloat = 18
 }
 
+/// Every action gets the same cell, independent of label, menu or spinner size.
+struct AccountActionRowLayout: Layout {
+    static let height: CGFloat = 24
+    static let spacing: CGFloat = 8
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        CGSize(width: proposal.width ?? 290, height: Self.height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        guard !subviews.isEmpty else { return }
+        let width = max(0, (bounds.width - CGFloat(subviews.count - 1) * Self.spacing) / CGFloat(subviews.count))
+        for (index, view) in subviews.enumerated() {
+            view.place(
+                at: CGPoint(x: bounds.minX + CGFloat(index) * (width + Self.spacing), y: bounds.minY),
+                proposal: ProposedViewSize(width: width, height: Self.height))
+        }
+    }
+}
+
+private struct AccountActionButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .frame(maxWidth: .infinity).frame(height: AccountActionRowLayout.height)
+            .contentShape(Rectangle())
+            .background(Color.primary.opacity(configuration.isPressed ? 0.15 : 0.08), in: RoundedRectangle(cornerRadius: 7))
+            .opacity(isEnabled ? 1 : 0.45)
+    }
+}
+
 private struct ProfileRow: View {
     @Environment(\.widgetLanguage) private var language
     let profile: CodexProfile
@@ -5516,16 +5550,15 @@ private struct ProfileRow: View {
     }
 
     private var cardActionRow: some View {
-        HStack(spacing: 8) {
+        AccountActionRowLayout {
             refreshAndWarmUpControls
             terminalControls
-                .fixedSize()
             monitorAndDesktopControls
         }
     }
 
     private var refreshAndWarmUpControls: some View {
-        HStack(spacing: 6) {
+        Group {
             Button(action: onRefresh) {
                 HStack(spacing: 4) {
                     if isRefreshingProfile {
@@ -5537,7 +5570,7 @@ private struct ProfileRow: View {
                 }
                 .frame(maxWidth: .infinity)
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(AccountActionButtonStyle())
             .disabled(isRefreshingProfile || isWarmingProfile || isLoggingIn || isLaunching)
             .help(language.text("只刷新这个账号的额度、重置时间和快照", "Refresh this account's limits, reset times and snapshot. Does not send a warm-up request."))
             .accessibilityLabel(isRefreshingProfile ? language.text("正在刷新此账号", "Refreshing this account") : language.text("刷新此账号", "Refresh account"))
@@ -5553,7 +5586,7 @@ private struct ProfileRow: View {
                 }
                 .frame(maxWidth: .infinity)
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(AccountActionButtonStyle())
             .disabled(isRefreshingProfile || isWarmingProfile || isLoggingIn || isLaunching)
             .help(language.text("只为这个账号发送一次最小请求，完成后刷新额度", "Send one minimal request for this account, then refresh its limits. Uses quota; does not resume a task."))
             .accessibilityLabel(isWarmingProfile ? language.text("正在暖号此账号", "Warming up this account") : language.text("暖号此账号", "Warm up account"))
@@ -5634,7 +5667,7 @@ private struct ProfileRow: View {
             } label: {
                 Image(systemName: "terminal")
                     .font(.system(size: 11, weight: .semibold))
-                    .frame(width: 30, height: 20)
+                    .frame(maxWidth: .infinity).frame(height: AccountActionRowLayout.height)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -5660,7 +5693,7 @@ private struct ProfileRow: View {
             } label: {
                 Image(systemName: "chevron.down")
                     .font(.system(size: 9, weight: .bold))
-                    .frame(width: 20, height: 20)
+                    .frame(width: 18, height: AccountActionRowLayout.height)
                     .contentShape(Rectangle())
             }
             .menuStyle(.borderlessButton)
@@ -5673,6 +5706,7 @@ private struct ProfileRow: View {
             )
             .accessibilityLabel(language.text("终端更多选项", "More CLI options"))
         }
+        .frame(maxWidth: .infinity).frame(height: AccountActionRowLayout.height)
         .foregroundStyle(.white)
         .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
         .overlay {
@@ -5684,7 +5718,7 @@ private struct ProfileRow: View {
     }
 
     private var monitorAndDesktopControls: some View {
-        HStack(spacing: 4) {
+        Group {
             if linkedAccountName != nil {
                 Button {
                     guard !cliTaskStatus.blocksLocalCLI else { return }
@@ -5693,7 +5727,7 @@ private struct ProfileRow: View {
                     Label(isLoggingIn ? language.text("登录中…", "Signing in…") : language.text("登录", "Sign in"), systemImage: "person.badge.key")
                         .frame(maxWidth: .infinity)
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(AccountActionButtonStyle())
                 .disabled(isLoggingIn || isLaunching || isRefreshingStatistics || cliTaskStatus.blocksLocalCLI)
                 .help(
                     cliTaskStatus.blocksLocalCLI
@@ -5709,7 +5743,7 @@ private struct ProfileRow: View {
                     Label(isMonitoring ? language.text("已监控", "Monitoring") : language.text("监控", "Monitor"), systemImage: isMonitoring ? "checkmark.circle.fill" : "eye")
                         .frame(maxWidth: .infinity)
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(AccountActionButtonStyle())
                 .disabled(isMonitoring)
                 .help(isMonitoring ? language.text("正在监控此账号", "This account is being monitored") : language.text("监控此账号", "Monitor this account without switching Desktop"))
             }
@@ -5725,7 +5759,7 @@ private struct ProfileRow: View {
                         .frame(maxWidth: .infinity)
                 }
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(AccountActionButtonStyle())
             .disabled(linkedAccountName != nil)
             .help(
                 isCurrentCodexAccount
