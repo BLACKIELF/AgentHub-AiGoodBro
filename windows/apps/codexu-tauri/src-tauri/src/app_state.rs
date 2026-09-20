@@ -11,13 +11,15 @@ use tracing::{error, info, warn};
 
 use codexu_core::models::CodexDashboardSnapshot;
 use codexu_core::readers::{
-    apply_official_quota, read_installed_codex_quota, retain_last_verified_quota,
-    CodexAppServerQuotaSnapshot, CodexDashboardProvider,
+    apply_official_quota, retain_last_verified_quota, CodexAppServerQuotaSnapshot,
+    CodexDashboardProvider,
 };
 
 /// User-configurable app settings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
+    #[serde(default)]
+    pub profiles: codexu_core::profiles::ProfileCatalog,
     /// Path to Codex data root (e.g. ~/.codex).
     pub codex_root: PathBuf,
     /// Path to the Codex Account Manager Next cache directory.
@@ -43,6 +45,7 @@ impl Default for AppConfig {
     fn default() -> Self {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
         Self {
+            profiles: Default::default(),
             codex_root: home.join(".codex"),
             cache_dir: dirs::cache_dir()
                 .unwrap_or_else(|| home.join(".cache"))
@@ -127,10 +130,14 @@ impl AppConfig {
     }
 
     pub fn save(&self, app_data_dir: &Path) -> anyhow::Result<()> {
-        std::fs::create_dir_all(app_data_dir)?;
+        self.profiles.validate()?;
         let path = app_data_dir.join("settings.json");
         let text = serde_json::to_string_pretty(self)?;
-        std::fs::write(&path, text)?;
+        codexu_core::atomic_settings::write_json(&path, text.as_bytes(), |prior| {
+            // Valid JSON with an incompatible schema also needs explicit recovery.
+            let old: Self = serde_json::from_slice(prior)?;
+            old.profiles.validate()
+        })?;
         Ok(())
     }
 }
@@ -276,9 +283,11 @@ impl AppState {
             let now = Utc::now();
             let snapshot = match provider.load_dashboard_snapshot(now).await? {
                 Some(dashboard) => {
-                    let quota = read_installed_codex_quota()
-                        .await
-                        .unwrap_or_else(|_| CodexAppServerQuotaSnapshot::unavailable());
+                    let quota = codexu_core::readers::codex_app_server::read_codex_quota_for_home(
+                        &source.codex_root,
+                    )
+                    .await
+                    .unwrap_or_else(|_| CodexAppServerQuotaSnapshot::unavailable());
                     Some(retain_last_verified_quota(
                         previous_dashboard.as_ref(),
                         apply_official_quota(dashboard, quota),
@@ -348,13 +357,24 @@ impl AppState {
     where
         F: FnOnce(&mut AppConfig),
     {
+        self.try_update_config(|config| {
+            f(config);
+            Ok(())
+        })
+        .await
+    }
+
+    pub async fn try_update_config<F>(self: &Arc<Self>, f: F) -> anyhow::Result<AppConfig>
+    where
+        F: FnOnce(&mut AppConfig) -> anyhow::Result<()>,
+    {
         let mut config = self.config.write().await;
         let previous_source = DashboardSourceKey::from_config(&config);
         // Apply the patch to a candidate first. Persisting the candidate
         // before replacing the in-memory config keeps a failed write from
         // silently changing the active source or refresh generation.
         let mut candidate = config.clone();
-        f(&mut candidate);
+        f(&mut candidate)?;
         let current_source = DashboardSourceKey::from_config(&candidate);
         candidate.save(&self.app_data_dir)?;
         if current_source != previous_source {
@@ -601,6 +621,7 @@ mod tests {
                 dashboard: None,
                 refreshed_at: Utc::now() - Duration::seconds(120),
                 source_key: DashboardSourceKey::from_config(&AppConfig {
+                    profiles: Default::default(),
                     codex_root: old_root.clone(),
                     cache_dir: cache_dir.clone(),
                     theme: ThemeMode::System,
@@ -725,6 +746,11 @@ mod tests {
         let app_data_dir = unique_temp_path("codexu-tauri-retry-exhaustion");
         let state = Arc::new(AppState::new(app_data_dir));
         {
+            let mut config = state.config.write().await;
+            config.codex_root = state.app_data_dir.join("synthetic-codex");
+            config.cache_dir = state.app_data_dir.join("synthetic-cache");
+        }
+        {
             let mut hook = state.refresh_attempt_hook.lock().await;
             *hook = Some(std::sync::Arc::new(|state, _attempt| {
                 state.source_generation.fetch_add(1, Ordering::SeqCst);
@@ -737,5 +763,65 @@ mod tests {
             "Failed to refresh dashboard snapshot due to concurrent config source changes"
         ));
         assert_eq!(state.refresh_call_count.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn failed_profile_mutation_or_save_keeps_memory_and_generation() {
+        let dir = unique_temp_path("codexu-profile-transaction");
+        std::fs::create_dir_all(&dir).unwrap();
+        let state = Arc::new(AppState::new(dir.clone()));
+        let before = serde_json::to_value(&*state.config.read().await).unwrap();
+        let rejected = state
+            .try_update_config(|config| {
+                config
+                    .profiles
+                    .add("Candidate".into(), dir.join("linked"))?;
+                anyhow::bail!("Synthetic validation failure");
+            })
+            .await;
+        assert!(rejected.is_err());
+        assert!(!dir.join("settings.json").exists());
+        // A malformed prior file must never be silently replaced with defaults.
+        std::fs::write(dir.join("settings.json"), b"corrupt").unwrap();
+        let failed = state
+            .try_update_config(|config| {
+                config
+                    .profiles
+                    .add("Candidate".into(), dir.join("linked"))?;
+                config.codex_root = dir.join("new-source");
+                Ok(())
+            })
+            .await;
+        assert!(failed.is_err());
+        assert_eq!(
+            serde_json::to_value(&*state.config.read().await).unwrap(),
+            before
+        );
+        assert_eq!(state.source_generation.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            std::fs::read(dir.join("settings.json")).unwrap(),
+            b"corrupt"
+        );
+        std::fs::write(
+            dir.join("settings.json"),
+            br#"{"profiles":"invalid schema"}"#,
+        )
+        .unwrap();
+        assert!(state
+            .try_update_config(|config| {
+                config.profiles.add("Candidate".into(), dir.join("linked"))
+            })
+            .await
+            .is_err());
+        assert_eq!(
+            std::fs::read(dir.join("settings.json")).unwrap(),
+            br#"{"profiles":"invalid schema"}"#
+        );
+        assert_eq!(
+            serde_json::to_value(&*state.config.read().await).unwrap(),
+            before
+        );
+        std::fs::remove_file(dir.join("settings.json")).unwrap();
+        std::fs::remove_dir(dir).unwrap();
     }
 }

@@ -8,8 +8,13 @@
 - Tauri IPC、额度状态、用量、任务、项目、Skills 和 AI Leadership Dashboard
 - 中英文设置、Light/Dark/System 外观和六套语义 palette catalog
 - Windows 原生 exact-HWND、后台不抢前台的视觉采集 workflow
+- 0921v4：关联已有账号目录、备注、逐位排序、移除关联及切换查看来源
 
-当前实现仍是只读 Dashboard，没有账号档案、登录或账号切换命令。后续不再以模糊的“下一阶段”追赶移动目标；功能所有权、固定基线和 P0–P5 顺序见 [Windows 功能对齐路线图](../docs/windows-port/WINDOWS_PARITY_ROADMAP_0919v1.md)。
+当前实现是只读 Dashboard 加本机目录关联管理，尚无受管凭据、登录或系统账号切换命令。
+“正在查看”只表示数据来源，不是已验证登录身份；移除关联不删除文件、不注销登录。
+本切片按单个 app 实例使用，跨进程写保护在受管账号阶段实现。
+本次实现与验证边界见 [0921v4 集成说明](../docs/windows-port/INTEGRATION_0921v3.md)；
+功能所有权、固定基线和 P0–P5 顺序见 [Windows 功能对齐路线图](../docs/windows-port/WINDOWS_PARITY_ROADMAP_0919v1.md)。
 
 任务快照读取并展示：
 

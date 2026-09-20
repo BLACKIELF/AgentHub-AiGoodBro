@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import { Activity, CircleDashed } from 'lucide-react';
 import { Header } from '../components/Header';
 import { DashboardHome } from '../components/DashboardHome';
+import { ProfilesPanel } from '../components/ProfilesPanel';
 import { useSettings } from '../hooks/useSettings';
 import { useUsage } from '../hooks/useUsage';
 import { applyAppTheme } from '../utils/appTheme';
@@ -10,7 +11,7 @@ import { useI18n } from '../i18n/I18nProvider';
 
 export function Dashboard() {
   const { t } = useI18n();
-  const { dashboard, loading, error, refresh } = useUsage();
+  const { dashboard, loading, error, refresh, changeSource } = useUsage();
   const { settings, update } = useSettings();
 
   useEffect(() => {
@@ -50,7 +51,8 @@ export function Dashboard() {
           onRefresh={refresh}
           refreshing={loading}
         />
-        <div className="flex-1 flex items-center justify-center p-6">
+        <div className="flex-1 overflow-auto p-6 space-y-4">
+          <ProfilesPanel onSourceChange={changeSource} />
           <div className="glass-panel p-6 max-w-md border-status-error/30 bg-status-error/8">
             <h2 className="text-lg font-semibold text-status-error mb-2">{t('dashboard.errors.failedToLoadUsage')}</h2>
             <p className="text-sm opacity-90 text-status-error/90">{error}</p>
@@ -102,6 +104,7 @@ export function Dashboard() {
         )}
 
         <div className="max-w-6xl mx-auto w-full space-y-6">
+          <ProfilesPanel onSourceChange={changeSource} />
           <div className="flex items-center justify-between gap-2">
             <div className="flex items-center gap-2">
               <span className={`inline-flex items-center gap-1.5 chip-like ${quotaStatusClass}`}>

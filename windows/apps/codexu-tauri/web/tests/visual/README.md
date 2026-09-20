@@ -38,9 +38,15 @@ npm run test:visual:update    # (re)write baselines after an intended UI change
 The config starts its own Vite server on `127.0.0.1:1421`; it does not reuse or
 disturb a dev server on the default `1420`.
 
-The browser comes from the OS (`channel: 'msedge'`), so `npm ci` stays cheap and
-no bundled Chromium is downloaded. If the project later needs byte-identical
-rendering across contributor machines, pin a bundled browser instead.
+The default browser comes from the OS (`channel: 'msedge'`). On a machine without
+Edge, install the locked Playwright Chromium and set `CODEXU_VISUAL_BROWSER=chromium`.
+Keep each machine/browser's baselines local; do not compare Edge baselines to Chromium.
+
+```bash
+npx playwright install chromium
+CODEXU_VISUAL_BROWSER=chromium npx playwright test --config tests/visual/playwright.config.mjs --update-snapshots=all profiles.visual.spec.mjs
+CODEXU_VISUAL_BROWSER=chromium npm run test:visual -- profiles.visual.spec.mjs
+```
 
 ## Artifacts stay local
 
@@ -54,6 +60,7 @@ regenerated from these synthetic fixtures — see `docs/windows-port/README.md`.
 | Assertion | Locator |
 |---|---|
 | Header region | `header` |
+| Account directories: selected, failed save, confirmed unlink | region `Account directories` |
 | Overview (leadership + quota + metrics + monthly value) | `.dashboard-home-overview` |
 | Tasks panel | `#dashboard-home-panel-tasks` |
 | AI Leadership panel | `#dashboard-home-panel-leadership` |
@@ -63,6 +70,8 @@ regenerated from these synthetic fixtures — see `docs/windows-port/README.md`.
 
 A guard test also asserts that the synthetic bridge actually fed data into the
 dashboard, so a blank or error shell cannot silently pass as a baseline.
+Account-directory interactions also cover one-step stable ordering, cancelled folder selection,
+draft retention on save failure, unlink confirmation, and late old-source responses.
 
 ## Not covered yet
 

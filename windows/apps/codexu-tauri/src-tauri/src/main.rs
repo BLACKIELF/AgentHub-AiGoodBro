@@ -148,6 +148,8 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            commands::profiles::list_profiles,
+            commands::profiles::update_profile,
             commands::usage::get_local_usage,
             commands::usage::refresh_usage,
             commands::usage::clear_cache,

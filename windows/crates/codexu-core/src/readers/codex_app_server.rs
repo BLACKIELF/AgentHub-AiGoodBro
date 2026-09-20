@@ -125,8 +125,24 @@ pub trait AppServerTransport {
 /// Reads the installed Codex CLI through a short-lived loopback-only
 /// app-server. The API calls themselves are read-only account lookups.
 pub async fn read_installed_codex_quota() -> anyhow::Result<CodexAppServerQuotaSnapshot> {
+    read_quota_with_home(None).await
+}
+
+pub async fn read_codex_quota_for_home(
+    home: &std::path::Path,
+) -> anyhow::Result<CodexAppServerQuotaSnapshot> {
+    anyhow::ensure!(
+        home.is_absolute() && home.is_dir(),
+        "Codex directory unavailable"
+    );
+    read_quota_with_home(Some(home)).await
+}
+
+async fn read_quota_with_home(
+    home: Option<&std::path::Path>,
+) -> anyhow::Result<CodexAppServerQuotaSnapshot> {
     let port = reserve_loopback_port().await?;
-    let mut child = launch_app_server(port)?;
+    let mut child = launch_app_server(port, home)?;
     let endpoint = format!("ws://127.0.0.1:{port}");
 
     let result = timeout(APP_SERVER_REQUEST_TIMEOUT, async {
@@ -267,17 +283,60 @@ fn selected_rate_limits(response: &Value) -> Option<&Value> {
         .filter(|value| value.is_object())
 }
 
-fn launch_app_server(port: u16) -> anyhow::Result<Child> {
+fn launch_app_server(port: u16, home: Option<&std::path::Path>) -> anyhow::Result<Child> {
     let executable = resolve_codex_executable()
         .ok_or_else(|| anyhow::anyhow!("Could not locate the installed Codex CLI executable"))?;
-    Command::new(executable)
+    app_server_command(&executable, port, home)
+        .spawn()
+        .map_err(|_| anyhow::anyhow!("Could not launch the installed Codex CLI"))
+}
+
+fn app_server_command(
+    executable: &std::path::Path,
+    port: u16,
+    home: Option<&std::path::Path>,
+) -> Command {
+    let mut command = Command::new(executable);
+    if let Some(home) = home {
+        command.env("CODEX_HOME", home);
+    }
+    command
         .args(["app-server", "--listen", &format!("ws://127.0.0.1:{port}")])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(|_| anyhow::anyhow!("Could not launch the installed Codex CLI"))
+        .kill_on_drop(true);
+    command
+}
+
+#[cfg(test)]
+mod command_tests {
+    use super::*;
+
+    #[test]
+    fn selected_home_is_child_only_and_listener_is_loopback() {
+        let prior = env::var_os("CODEX_HOME");
+        let home = env::temp_dir().join("synthetic-selected-codex");
+        let command = app_server_command(
+            std::path::Path::new("synthetic-codex.exe"),
+            12345,
+            Some(&home),
+        );
+        let envs: Vec<_> = command.as_std().get_envs().collect();
+        assert_eq!(
+            envs,
+            vec![(std::ffi::OsStr::new("CODEX_HOME"), Some(home.as_os_str()))]
+        );
+        let args: Vec<_> = command
+            .as_std()
+            .get_args()
+            .map(|arg| arg.to_str().unwrap())
+            .collect();
+        assert_eq!(args, ["app-server", "--listen", "ws://127.0.0.1:12345"]);
+        assert_eq!(env::var_os("CODEX_HOME"), prior);
+        let default = app_server_command(std::path::Path::new("synthetic-codex.exe"), 12345, None);
+        assert_eq!(default.as_std().get_envs().count(), 0);
+    }
 }
 
 fn resolve_codex_executable() -> Option<PathBuf> {

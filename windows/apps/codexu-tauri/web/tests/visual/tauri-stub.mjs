@@ -22,6 +22,7 @@ export async function installTauriStub(page, { settings, dashboard, windowLabel 
       let nextCallbackId = 1;
 
       const responses = {
+        list_profiles: [],
         get_settings: settingsPayload,
         set_settings: settingsPayload,
         get_local_usage: dashboardPayload,
