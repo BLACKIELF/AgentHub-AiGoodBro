@@ -241,6 +241,14 @@ final class AppSettings: ObservableObject {
         }
     }
 
+    @Published var tokenUsageHomeRange: TokenUsageHomeRange {
+        didSet { defaults.set(tokenUsageHomeRange.rawValue, forKey: TokenUsageHomeRange.storageKey) }
+    }
+
+    @Published var tokenUsageHomeCustomStart: Date {
+        didSet { defaults.set(tokenUsageHomeCustomStart, forKey: TokenUsageHomeRange.customStartKey) }
+    }
+
     @Published var accountMenuTransparency: AccountMenuTransparency {
         didSet {
             accountMenuTransparency.persist(defaults: defaults)
@@ -387,6 +395,11 @@ final class AppSettings: ObservableObject {
         themeMode = WidgetThemeMode.storedOrAutomatic(defaults: defaults)
         particleAnimationMode = ParticleAnimationMode.storedOrDefault(defaults: defaults)
         usageTrendWindow = UsageTrendWindow.storedOrDefault(defaults: defaults)
+        tokenUsageHomeRange = TokenUsageHomeRange.storedOrDefault(defaults: defaults)
+        tokenUsageHomeCustomStart =
+            (defaults.object(forKey: TokenUsageHomeRange.customStartKey) as? Date)
+            ?? Calendar.current.date(byAdding: .day, value: -29, to: Date())
+            ?? Date()
         accountMenuTransparency = AccountMenuTransparency.storedOrDefault(defaults: defaults)
         homeModuleArrangement = WorkspaceModuleArrangement.load(defaults.data(forKey: WorkspaceModuleArrangement.storageKey))
         var navigationBackup: Data?

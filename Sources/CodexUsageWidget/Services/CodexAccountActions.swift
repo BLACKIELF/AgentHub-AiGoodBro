@@ -267,13 +267,14 @@ enum ChromeProfileBrowser {
 
 private final class CodexLoginSession {
     private let profile: CodexProfile
+    private let browserChoice: CodexDeviceBrowserChoice
     private let executableURL: URL
     private let fileManager: FileManager
-    private let stagingHomeURL: URL
+    let stagingHomeURL: URL
     private let completion: (Result<Void, Error>) -> Void
     private let onPhaseChange: (CodexDeviceLoginPhase) -> Void
     private let completionQueue: DispatchQueue
-    private let browserOpener: ((CodexProfile, URL) -> Bool)?
+    private let browserOpener: ((CodexProfile, URL, CodexDeviceBrowserChoice) -> Bool)?
     private let queue = DispatchQueue(label: "com.blackielf.codex-account-manager-next.account-login", qos: .userInitiated)
     private let worker = DispatchQueue(label: "com.blackielf.codex-account-manager-next.account-login.process", qos: .utility)
     private var parser = CodexDeviceCodeParser()
@@ -286,15 +287,17 @@ private final class CodexLoginSession {
 
     init(
         profile: CodexProfile,
+        browserChoice: CodexDeviceBrowserChoice,
         executableURL: URL,
         fileManager: FileManager = .default,
         completionQueue: DispatchQueue = .main,
-        browserOpener: ((CodexProfile, URL) -> Bool)? = nil,
+        browserOpener: ((CodexProfile, URL, CodexDeviceBrowserChoice) -> Bool)? = nil,
         onPhaseChange: @escaping (CodexDeviceLoginPhase) -> Void = { _ in },
         completion: @escaping (Result<Void, Error>) -> Void
     ) throws {
         guard !profile.isSystemProfile else { throw CodexLoginError.identityMismatch }
         self.profile = profile
+        self.browserChoice = browserChoice
         self.executableURL = executableURL
         self.fileManager = fileManager
         self.completion = completion
@@ -378,24 +381,33 @@ private final class CodexLoginSession {
         }
     }
 
-    func reopenPage() { queue.async { self.openPageOnQueue() } }
+    func reopenPage() {
+        queue.async {
+            guard !self.isFinished, self.cancellation == nil, !self.browserOpening,
+                let authorization = self.authorization, authorization.isValid()
+            else { return }
+            self.emit(.waiting(authorization, .opening))
+            self.openPageOnQueue()
+        }
+    }
 
     private func openPageOnQueue() {
         guard !isFinished, cancellation == nil, !browserOpening,
             let authorization, authorization.isValid()
         else { return }
         browserOpening = true
+        let choice = browserChoice
         let browserQueue = browserOpener == nil ? DispatchQueue.main : completionQueue
         browserQueue.async {
             guard self.queue.sync(execute: { !self.isFinished && self.cancellation == nil && authorization.isValid() }) else { return }
             let opened: Bool
             if let browserOpener = self.browserOpener {
-                opened = browserOpener(self.profile, authorization.url)
+                opened = browserOpener(self.profile, authorization.url, choice)
             } else {
-                let binding = self.profile.chromeProfile ?? ChromeProfileBrowser.matchingProfile(for: self.profile.lastSnapshot?.email)
-                let directory = binding == nil ? self.profile.codexHomeURL.appendingPathComponent("chrome-session", isDirectory: true) : nil
+                let plan = CodexDeviceBrowserRouting.launchPlan(choice: choice, profile: self.profile)
                 do {
-                    try ChromeProfileBrowser.open(authorization.url, binding: binding, managedUserDataDirectory: directory)
+                    try ChromeProfileBrowser.open(
+                        authorization.url, binding: plan.binding, managedUserDataDirectory: plan.managedUserDataDirectory)
                     opened = true
                 } catch { opened = false }
             }
@@ -534,10 +546,12 @@ private final class CodexLoginSession {
                 var wrongTarget = false
                 var completionError: Error?
                 let session = try CodexLoginSession(
-                    profile: profile, executableURL: executable, completionQueue: callbacks,
-                    browserOpener: { frozenProfile, url in
+                    profile: profile, browserChoice: .dedicatedChrome, executableURL: executable, completionQueue: callbacks,
+                    browserOpener: { frozenProfile, url, choice in
                         openCount += 1
-                        wrongTarget = wrongTarget || frozenProfile.id != "synthetic-A" || url != CodexDeviceCodeParser.officialURL
+                        wrongTarget =
+                            wrongTarget || frozenProfile.id != "synthetic-A" || url != CodexDeviceCodeParser.officialURL
+                            || choice != .dedicatedChrome
                         return false
                     },
                     onPhaseChange: { phase in
@@ -580,6 +594,50 @@ private final class CodexLoginSession {
                     guard case CodexLoginError.timedOut? = callbacks.sync(execute: { completionError as? CodexLoginError }) else { return false }
                 }
             }
+            let boundProfile = CodexProfile(
+                id: "synthetic-A", name: "Demo A", codexHomePath: target.path, isSystemProfile: false, createdAt: Date(),
+                chromeProfile: ChromeProfileBinding(directoryName: "Default", displayName: "Personal"))
+            guard let personalBinding = boundProfile.chromeProfile else { return false }
+            let dedicatedPlan = CodexDeviceBrowserRouting.launchPlan(choice: .dedicatedChrome, profile: boundProfile)
+            let defaultPlan = CodexDeviceBrowserRouting.launchPlan(choice: .systemDefault, profile: boundProfile)
+            guard dedicatedPlan.binding == nil,
+                dedicatedPlan.managedUserDataDirectory == boundProfile.codexHomeURL.appendingPathComponent("chrome-session", isDirectory: true),
+                defaultPlan.binding == nil,
+                defaultPlan.managedUserDataDirectory == nil,
+                personalBinding.directoryName == "Default"
+            else { return false }
+            var frozenChoices: [CodexDeviceBrowserChoice] = []
+            let freezeExecutable = root.appendingPathComponent("freeze")
+            try "#!/bin/sh\nprintf '%s\\n' 'https://auth.openai.com/codex/device' 'Enter this one-time code (expires in 15 minutes)' 'DEMO-ONLY' >&2\nexec /bin/sleep 30\n"
+                .write(to: freezeExecutable, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: freezeExecutable.path)
+            let freezeReady = DispatchSemaphore(value: 0)
+            let freezeDone = DispatchSemaphore(value: 0)
+            let freezeSession = try CodexLoginSession(
+                profile: boundProfile, browserChoice: .systemDefault, executableURL: freezeExecutable, completionQueue: callbacks,
+                browserOpener: { _, _, choice in
+                    frozenChoices.append(choice)
+                    return true
+                },
+                onPhaseChange: { phase in
+                    if case .waiting(_, .opened) = phase { freezeReady.signal() }
+                },
+                completion: { _ in freezeDone.signal() }
+            )
+            try freezeSession.start()
+            guard freezeReady.wait(timeout: .now() + 3) == .success else {
+                freezeSession.cancel()
+                return false
+            }
+            freezeSession.reopenPage()
+            guard freezeReady.wait(timeout: .now() + 3) == .success else {
+                freezeSession.cancel()
+                return false
+            }
+            freezeSession.cancel()
+            guard freezeDone.wait(timeout: .now() + 5) == .success,
+                callbacks.sync(execute: { frozenChoices }) == [.systemDefault, .systemDefault]
+            else { return false }
             print("device session cancellation, expiry, browser retry, exit and credential-preservation self-test passed")
             return true
         } catch { return false }
@@ -600,7 +658,9 @@ private final class CodexLoginSession {
             let profile = CodexProfile(
                 id: "cleanup-fixture", name: "Fixture", codexHomePath: root.appendingPathComponent("profile").path, isSystemProfile: false, createdAt: Date())
             var count = 0
-            let session = try CodexLoginSession(profile: profile, executableURL: executable, completionQueue: callbacks) { _ in
+            let session = try CodexLoginSession(
+                profile: profile, browserChoice: .systemDefault, executableURL: executable, completionQueue: callbacks
+            ) { _ in
                 count += 1
                 completed.signal()
             }
@@ -618,7 +678,10 @@ private final class CodexLoginSession {
                 !FileManager.default.fileExists(atPath: session.stagingHomeURL.path)
             else { return false }
             let failed = DispatchSemaphore(value: 0)
-            let missing = try CodexLoginSession(profile: profile, executableURL: root.appendingPathComponent("missing"), completionQueue: callbacks) { result in
+            let missing = try CodexLoginSession(
+                profile: profile, browserChoice: .dedicatedChrome, executableURL: root.appendingPathComponent("missing"),
+                completionQueue: callbacks
+            ) { result in
                 if case .failure = result { failed.signal() }
             }
             try missing.start()
@@ -1088,6 +1151,7 @@ final class CodexAccountActions {
 
     func login(
         profile: CodexProfile,
+        browserChoice: CodexDeviceBrowserChoice,
         onPhaseChange: @escaping (CodexDeviceLoginPhase) -> Void = { _ in },
         completion: @escaping (Result<Void, Error>) -> Void
     ) throws {
@@ -1096,10 +1160,11 @@ final class CodexAccountActions {
             throw CodexLoginError.message(WidgetLanguage.storedOrAutomatic().text("账号暖号正在执行；完成后再登录", "A warm-up is running. Wait for it to finish before signing in."))
         }
         guard let executable = TerminalAppLauncher.codexExecutable() else {
-            throw CocoaError(.fileNoSuchFile)
+            throw CodexDeviceLoginFailure.cliUnavailable
         }
         let session = try CodexLoginSession(
             profile: profile,
+            browserChoice: browserChoice,
             executableURL: URL(fileURLWithPath: executable),
             onPhaseChange: onPhaseChange
         ) { [weak self] result in
@@ -3324,6 +3389,19 @@ enum CodexAccountSwitchSafetySelfTest {
                 ]
             else {
                 print("Codex account switch safety self-test failed: Chrome profile routing")
+                return false
+            }
+            let routed = CodexProfile(
+                id: "chrome-route", name: "Demo", codexHomePath: managedChrome.path, isSystemProfile: false, createdAt: Date(),
+                chromeProfile: boundChrome)
+            let dedicatedRoute = CodexDeviceBrowserRouting.launchPlan(choice: .dedicatedChrome, profile: routed)
+            let defaultRoute = CodexDeviceBrowserRouting.launchPlan(choice: .systemDefault, profile: routed)
+            guard dedicatedRoute.binding == nil,
+                dedicatedRoute.managedUserDataDirectory == routed.codexHomeURL.appendingPathComponent("chrome-session", isDirectory: true),
+                defaultRoute.binding == nil,
+                defaultRoute.managedUserDataDirectory == nil
+            else {
+                print("Codex account switch safety self-test failed: frozen browser routing")
                 return false
             }
             print("Codex account switch safety self-test passed")

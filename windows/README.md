@@ -72,6 +72,13 @@ Git 忽略的 `.local-artifacts/`；不得提交、上传、复制进公开报�
 2. `Test-NativeVisualCaptureWorkflow.ps1` 检查采集 workflow 的静态契约，包括最大化、non-activating、保留前台窗口、后台 Z-order、tool window、任务栏/Alt-Tab 排除和精确 capture 参数。
 3. `Test-NativeVisualCaptureCoverage.ps1` 构建并启动真实 Tauri release 应用，覆盖各 Dashboard surface，验证 exact HWND、真实截图、前台窗口未改变和最终进程清理。
 
+0921v3：窗口等待改为枚举任务 PID 下可见、无 owner 的 `Tauri Window`；
+不再使用可能指向 `Tao Thread Event Target` 的 .NET MainWindowHandle。
+冷启动主窗隐藏时继续等待；多个候选直接报错，不猜测窗口，不延长 60 秒期限。
+`Test-NativeWindowSelection.ps1` 使用生产 C# 判断逻辑测试冷启动、PID、可见性、
+owner、类名和歧义，并在 Windows PowerShell 5.1 / PowerShell 7 CI 中执行。
+这只解决 issue #8 的 HWND 选择层；WebView2 的 UIA Document 缺失仍须真机复验。
+
 若 preflight 失败，它会分别说明 `cargo` 未加入 `PATH`，或已找到 `cargo` 但缺少固定的
 `1.97.1-x86_64-pc-windows-msvc` 工具链，并给出对应的 `rustup toolchain install` 命令；
 两种情况仍保持非零退出并阻止后续构建。

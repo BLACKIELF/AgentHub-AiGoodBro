@@ -84,6 +84,10 @@ struct CodexAccountManagerNextMain {
             exit(NextSetupPreviewRenderer.render(to: outputURL) ? 0 : 1)
         }
 
+        if CommandLine.arguments.contains("--self-test-webview-bridge") {
+            exit(WKWebViewBridgeSelfTest.run() ? 0 : 1)
+        }
+
         if CommandLine.arguments.contains("--self-test-particle-animation") {
             exit(QuotaParticleAnimationSelfTest.run() ? 0 : 1)
         }
@@ -123,6 +127,7 @@ struct CodexAccountManagerNextMain {
                     && CodexAccountLoginProtocolSelfTest.run()
                     && CodexDeviceLoginSelfTest.run()
                     && UsageStore.deviceLoginTargetSelfTest()
+                    && UsageStore.deviceLoginEscapeShortcutSelfTest()
                     ? 0 : 1
             )
         }
@@ -241,7 +246,7 @@ struct CodexAccountManagerNextMain {
         }
 
         if CommandLine.arguments.contains("--self-test-codex-session-link") {
-            exit(CodexSessionLinkSelfTest.run() ? 0 : 1)
+            exit(CodexSessionLinkSelfTest.run() && BundledSkill.selfTest() ? 0 : 1)
         }
 
         if CommandLine.arguments.contains("--self-test-performance-monitor") {

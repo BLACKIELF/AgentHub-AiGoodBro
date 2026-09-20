@@ -21,6 +21,10 @@ enum TokenMonitorUISelfTest {
         reproduceTrendRendererBoundaries(expect: expect)
         reproduceResetAnnouncementPresentation(expect: expect)
         reproducePublicResetCalendar(expect: expect)
+        expect(ResetCardPresentation.savedOrder(["a", "b", "c"], pinnedAccountID: nil) == ["a", "b", "c"], "account order remains saved without a pin")
+        expect(ResetCardPresentation.savedOrder(["a", "b", "c"], pinnedAccountID: "c") == ["c", "a", "b"], "only an explicit pin changes presentation order")
+        expect(HomeMessageInboxStore.visibleAnnouncementLimit == 3, "homepage shows only three reset messages")
+        expect(PublisherMessageSelfTest.run(), "publisher announcements respect delivery and URL boundaries")
         expect(OnboardingModesSelfTest.run(), "onboarding modes, 6pt track and skip/back fixtures")
 
         if failures.isEmpty {
@@ -563,13 +567,31 @@ enum TokenMonitorUISelfTest {
         )
         let event = ISO8601DateFormatter().date(from: "2026-09-12T08:09:17Z")!
         let compactTime = PublicResetAnnouncementPresentation.compactEventTime(event, language: .zh)
-        expect(compactTime.contains("9月12日") && compactTime.contains("4:09") && compactTime.contains("下午"), "home announcement converts UTC into the Beijing afternoon clock")
+        expect(compactTime.contains("2026-09-12 16:09"), "home announcement keeps the full Beijing year and clock")
         expect(
             PublicResetAnnouncementPresentation.relativeEventTime(event, now: event.addingTimeInterval(7 * 3600), language: .zh).contains("7"),
             "home announcement age uses its event time")
         expect(
             PublicResetAnnouncementPresentation.relativeEventTime(event, now: event.addingTimeInterval(-30), language: .zh) == "刚刚",
             "allowed source clock skew does not create a future reset claim")
+        let now = ISO8601DateFormatter().date(from: "2026-09-19T00:00:00Z")!
+        let recent = PublicResetAnnouncement(
+            id: "456", resetType: .regular, announcedAt: now.addingTimeInterval(-86_400), text: "recent",
+            source: .init(type: "x_post", author: "thsottiaux", url: URL(string: "https://x.com/thsottiaux/status/456")))
+        let old = PublicResetAnnouncement(
+            id: "457", resetType: .regular, announcedAt: now.addingTimeInterval(-31 * 86_400), text: "old",
+            source: .init(type: "x_post", author: "thsottiaux", url: URL(string: "https://x.com/thsottiaux/status/457")))
+        let future = PublicResetAnnouncement(
+            id: "458", resetType: .regular, announcedAt: now.addingTimeInterval(60), text: "future",
+            source: .init(type: "x_post", author: "thsottiaux", url: URL(string: "https://x.com/thsottiaux/status/458")))
+        expect(
+            PublicResetAnnouncementPresentation.recentVerifiableAnnouncement([old, future, recent], now: now)?.id == "456",
+            "homepage announcements use only verifiable, non-future items from the last 30 days"
+        )
+        expect(
+            PublicResetAnnouncementPresentation.recentVerifiableAnnouncement([old, future], now: now) == nil,
+            "old and future announcements stay out of the homepage current-message slot"
+        )
     }
 
     private static func solidPNG(color: NSColor) -> Data {

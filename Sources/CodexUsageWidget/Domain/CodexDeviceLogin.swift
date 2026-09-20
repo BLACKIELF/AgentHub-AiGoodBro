@@ -10,9 +10,119 @@ struct CodexDeviceAuthorization: Equatable, CustomStringConvertible, CustomDebug
     func isValid(at date: Date = Date()) -> Bool { date < expiresAt }
 }
 
+enum CodexDeviceBrowserChoice: Equatable {
+    case dedicatedChrome
+    case systemDefault
+}
+
 enum CodexDeviceBrowserState: Equatable { case opening, opened, unavailable }
 
+enum CodexDeviceLoginIdentityCaption {
+    static func text(_ language: WidgetLanguage) -> String {
+        language.text("目标账号：", "Target account: ")
+    }
+}
+
+enum CodexDeviceLoginHost: Equatable {
+    case workbench
+    case setupGuide
+    case menu
+}
+
+enum CodexLoginStartResult: Equatable {
+    case accepted(UUID)
+    case blocked(CodexLoginBlockReason)
+}
+
+enum CodexLoginBlockReason: Equatable {
+    case preview
+    case shuttingDown
+    case loginInProgress
+    case launchingCodex
+    case switchInProgress
+    case warmingUp
+    case readingAccounts
+    case busy
+    case systemProfile
+    case profileMissing
+    case cliUnavailable
+    case mappingUnconfirmed
+
+    var presentsPanel: Bool {
+        switch self {
+        case .cliUnavailable, .mappingUnconfirmed, .systemProfile: return true
+        default: return false
+        }
+    }
+
+    var loginFailure: CodexDeviceLoginFailure {
+        switch self {
+        case .cliUnavailable: return .cliUnavailable
+        case .mappingUnconfirmed: return .mappingUnconfirmed
+        case .systemProfile: return .systemProfile
+        case .busy, .warmingUp, .readingAccounts, .loginInProgress, .launchingCodex, .switchInProgress:
+            return .busy
+        case .preview, .shuttingDown, .profileMissing:
+            return .unavailable
+        }
+    }
+
+    func message(_ language: WidgetLanguage) -> String {
+        switch self {
+        case .preview:
+            return language.text("预览不会启动真实授权。", "Preview does not start a real authorization.")
+        case .shuttingDown:
+            return language.text("应用正在退出，已停止开始新的授权。", "The app is quitting. A new authorization was not started.")
+        case .loginInProgress:
+            return language.text("已有授权正在进行。请先完成或关闭当前登录面板。", "An authorization is already in progress. Finish or close the current sign-in panel first.")
+        case .launchingCodex:
+            return language.text("正在切换 Desktop 账号。完成后再添加或重新登录。", "Desktop is switching accounts. Add or sign in again after it finishes.")
+        case .switchInProgress:
+            return language.text("账号切换尚未完成。完成后再添加或重新登录。", "An account switch is still finishing. Add or sign in again after it completes.")
+        case .warmingUp:
+            return language.text("账号暖号正在执行；完成后再添加或重新登录。", "Wait for the current warm-up to finish before adding an account or signing in again.")
+        case .readingAccounts:
+            return language.text("账号数据仍在读取；完成后再添加或重新登录。", "Wait for account data to finish loading before adding an account or signing in again.")
+        case .busy:
+            return CodexDeviceLoginFailure.busy.message(language)
+        case .systemProfile:
+            return CodexDeviceLoginFailure.systemProfile.message(language)
+        case .profileMissing:
+            return language.text("找不到这张账号卡。请刷新列表后再试。", "This account card was not found. Refresh the list and try again.")
+        case .cliUnavailable:
+            return CodexDeviceLoginFailure.cliUnavailable.message(language)
+        case .mappingUnconfirmed:
+            return CodexDeviceLoginFailure.mappingUnconfirmed.message(language)
+        }
+    }
+}
+
+enum CodexDeviceCopyKind: Equatable { case code, url }
+
+enum CodexDeviceCopyFeedback: Equatable {
+    case codeCopied
+    case urlCopied
+    case failed
+
+    static func from(wrote: Bool, kind: CodexDeviceCopyKind) -> CodexDeviceCopyFeedback {
+        guard wrote else { return .failed }
+        return kind == .code ? .codeCopied : .urlCopied
+    }
+
+    func message(_ language: WidgetLanguage) -> String {
+        switch self {
+        case .codeCopied:
+            return language.text("授权代码已复制。", "Authorization code copied.")
+        case .urlCopied:
+            return language.text("官方网址已复制。", "Official URL copied.")
+        case .failed:
+            return language.text("无法写入剪贴板，请重试。", "Could not write to the clipboard. Try again.")
+        }
+    }
+}
+
 enum CodexDeviceLoginPhase: Equatable {
+    case choosingBrowser
     case preparing
     case waiting(CodexDeviceAuthorization, CodexDeviceBrowserState)
     case cancelling
@@ -34,10 +144,27 @@ enum CodexDeviceLoginPhase: Equatable {
         default: return true
         }
     }
+
+    var canCancelAuthorization: Bool {
+        switch self {
+        case .preparing, .waiting: return true
+        default: return false
+        }
+    }
 }
 
 enum CodexDeviceLoginFailure: Error, Equatable {
-    case busy, unavailable, invalidResponse, identityMismatch, missingCredentials, verification, save
+    case busy
+    case unavailable
+    case invalidResponse
+    case identityMismatch
+    case missingCredentials
+    case verification
+    case save
+    case cliUnavailable
+    case mappingUnconfirmed
+    case systemProfile
+    case accountAlreadyExists
 
     func message(_ language: WidgetLanguage) -> String {
         switch self {
@@ -50,24 +177,68 @@ enum CodexDeviceLoginFailure: Error, Equatable {
                 "未能读取有效的授权代码。请重新生成代码；若仍失败，请检查 Codex 更新。", "A valid authorization code could not be read. Generate a new code; if it fails again, check for a Codex update.")
         case .identityMismatch:
             return language.text(
-                "Chrome 登录的账号和这张账号卡不一致。原账号没有被覆盖，请在 Chrome 切换到正确账号，再重新开始。",
-                "The Chrome account does not match this card. Nothing was overwritten. Choose the correct account in Chrome, then start again.")
+                "浏览器登录的账号和这张账号卡不一致。原账号没有被覆盖，请切换到正确账号，再重新开始。",
+                "The signed-in account does not match this card. Nothing was overwritten. Choose the correct account, then start again.")
         case .missingCredentials:
             return language.text("网页授权结束，但未收到有效的登录结果。请重新开始。", "Web authorization ended without a valid sign-in result. Please start again.")
         case .verification:
             return language.text("网页授权已结束，账号验证暂未完成。请重新检查身份和额度。", "Web authorization ended, but account verification is incomplete. Check identity and limits again.")
         case .save:
             return language.text("账号结果未能保存。请重新检查身份和额度。", "The account result could not be saved. Check identity and limits again.")
+        case .cliUnavailable:
+            return language.text("未找到 Codex CLI，无法开始设备授权。请安装官方 Codex 后再试。", "The Codex CLI was not found. Install official Codex, then try again.")
+        case .mappingUnconfirmed:
+            return language.text(
+                "账号映射未确认，不能开始重新登录。请先检查该账号的独立资料和调度映射。", "Account mapping is unconfirmed. Check this isolated profile and its dispatch mapping before signing in again.")
+        case .systemProfile:
+            return language.text(
+                "系统资料不能直接重新登录。请使用“设置独立 CLI”创建独立账号环境。", "The system profile cannot use isolated re-sign-in. Use “Set up isolated CLI” to create an isolated account.")
+        case .accountAlreadyExists:
+            return language.text("该账号已存在，请在原账号卡片重新登录。本次没有改动原账号。", "This account already exists. Sign in again from the original card. The original account was not changed.")
         }
     }
 }
 
 struct CodexDeviceLoginPresentation: Identifiable, Equatable {
     let id: UUID
-    let profileID: String
-    let targetName: String
+    var profileID: String
+    var targetName: String
     var phase: CodexDeviceLoginPhase
-    var copiedUntil: Date?
+    var browserChoice: CodexDeviceBrowserChoice? = nil
+    var copyFeedback: CodexDeviceCopyFeedback? = nil
+    var copyFeedbackUntil: Date? = nil
+    var notice: String? = nil
+    var existingProfileID: String? = nil
+}
+
+enum CodexAddedProfileResolution: Equatable {
+    case continueIndependent
+    case duplicateIndependent(existingID: String)
+}
+
+enum CodexAddedProfileMatcher {
+    static func resolve(accountID: String, newProfileID: String, profiles: [CodexProfile]) -> CodexAddedProfileResolution {
+        if let existing = profiles.first(where: {
+            $0.id != newProfileID && !$0.isSystemProfile && $0.lastSnapshot?.accountID == accountID
+        }) {
+            return .duplicateIndependent(existingID: existing.id)
+        }
+        return .continueIndependent
+    }
+}
+
+enum CodexDeviceBrowserRouting {
+    static func launchPlan(
+        choice: CodexDeviceBrowserChoice,
+        profile: CodexProfile
+    ) -> (binding: ChromeProfileBinding?, managedUserDataDirectory: URL?) {
+        switch choice {
+        case .dedicatedChrome:
+            return (nil, profile.codexHomeURL.appendingPathComponent("chrome-session", isDirectory: true))
+        case .systemDefault:
+            return (nil, nil)
+        }
+    }
 }
 
 /// The selected CLI prints a contextual full-line code and a 15-minute lifetime.

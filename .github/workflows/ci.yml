@@ -76,6 +76,14 @@ jobs:
           python3 scripts/test-message-channels.py
           bash scripts/test-grok-reset-cards.sh
           python3 -m unittest tests.test_local_cli_quota tests.test_additional_cli_quota tests.test_zcode_cli_quota
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Run dashboard DOM acceptance (real Chromium)
+        run: |
+          npm install --no-save --no-package-lock --no-audit --no-fund playwright@1.62.1
+          npx playwright install chromium
+          node scripts/test-upstream-dashboard-dom-0918v1.js
 
   windows-rust-format:
     needs: changes
@@ -95,10 +103,14 @@ jobs:
         run: cargo test --workspace --locked
       - name: Test native visual script contracts with Windows PowerShell 5.1
         shell: powershell
-        run: .\windows\scripts\tests\Test-NativeVisualCaptureWorkflow.ps1
+        run: |
+          .\windows\scripts\tests\Test-NativeWindowSelection.ps1
+          .\windows\scripts\tests\Test-NativeVisualCaptureWorkflow.ps1
       - name: Test native visual script contracts with PowerShell 7
         shell: pwsh
-        run: .\windows\scripts\tests\Test-NativeVisualCaptureWorkflow.ps1
+        run: |
+          .\windows\scripts\tests\Test-NativeWindowSelection.ps1
+          .\windows\scripts\tests\Test-NativeVisualCaptureWorkflow.ps1
 
   windows-web:
     needs: changes

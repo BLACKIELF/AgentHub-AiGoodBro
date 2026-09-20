@@ -56,6 +56,8 @@ struct NextSetupGuideView: View {
         }
         .environment(\.widgetLanguage, language)
         .environment(\.locale, language.locale)
+        .environment(\.codexDeviceLoginHost, .setupGuide)
+        .modifier(CodexDeviceLoginSheet(store: store, language: language, host: .setupGuide))
         .onAppear {
             if !store.isPreview { store.refreshLocalNotificationAuthorization() }
             if step == .runtime { runtime.refresh() }
@@ -454,11 +456,16 @@ struct NextSetupGuideView: View {
     private var footer: some View {
         HStack(spacing: 10) {
             Button(language.text("以后再说", "Not now")) {
+                if store.isLoggingIn, store.deviceLogin?.phase.canCancelAuthorization == true {
+                    store.cancelLogin()
+                }
+                store.migrateDeviceLoginHostIfNeeded(from: .setupGuide)
                 settings.setupProgress.dismissed = true
                 if settings.onboarding.shouldPresent { settings.onboarding.skip() }
                 dismiss()
             }
             .keyboardShortcut(.cancelAction)
+            .disabled(store.isLoggingIn && store.deviceLogin?.phase.canCancelAuthorization == false)
             Spacer()
             if step != NextSetupStep.allCases.first {
                 Button(language.text("上一步", "Back")) { go(to: step.previous) }

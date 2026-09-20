@@ -103,7 +103,6 @@ struct AccountOrderSheet: View {
     let onCancel: () -> Void
     @State private var draft: AccountOrderSheetDraft
     @State private var saveFailed = false
-    @State private var dropTargetID: String?
 
     init(
         items: [Item], originalAllIDs: [String], language: WidgetLanguage,
@@ -120,7 +119,7 @@ struct AccountOrderSheet: View {
         VStack(alignment: .leading, spacing: 16) {
             Text(language.text("调整 Codex 账号顺序", "Reorder Codex accounts"))
                 .font(.title3.weight(.semibold))
-            Text(language.text("拖动整行调整，保存后生效。", "Drag a row to reorder. Changes take effect when saved."))
+            Text(language.text("点击箭头，每次移动一位；保存后生效。置顶账号仍优先显示。", "Move one position per click, then save. Pinned accounts still appear first."))
                 .font(.callout)
                 .foregroundStyle(.secondary)
             if !draft.isValid {
@@ -174,52 +173,35 @@ struct AccountOrderSheet: View {
             .padding(.horizontal, 12)
             .frame(maxWidth: .infinity, minHeight: 40)
             .contentShape(Rectangle())
-            .onDrag {
-                guard let token = draft.beginDragging(id) else { return NSItemProvider() }
-                return NSItemProvider(object: token as NSString)
-            }
             .accessibilityElement(children: .combine)
             .accessibilityLabel(items.first(where: { $0.id == id })?.title ?? language.text("账号", "Account"))
             .accessibilityIdentifier("account-order-" + id)
-            .accessibilityHint(language.text("拖动调整顺序", "Drag to reorder"))
+            .accessibilityHint(language.text("使用上移或下移按钮调整顺序", "Use the move up or move down buttons"))
             .accessibilityAction(named: Text(language.text("向上移动", "Move up"))) { draft.move(id, by: -1) }
             .accessibilityAction(named: Text(language.text("向下移动", "Move down"))) { draft.move(id, by: 1) }
-            Menu {
-                Button(language.text("向上移动", "Move up")) { draft.move(id, by: -1) }
-                    .disabled(draft.orderedVisibleIDs.first == id)
-                Button(language.text("向下移动", "Move down")) { draft.move(id, by: 1) }
-                    .disabled(draft.orderedVisibleIDs.last == id)
-            } label: {
-                Image(systemName: "ellipsis")
+            HStack(spacing: 6) {
+                Button {
+                    draft.move(id, by: -1)
+                    saveFailed = false
+                } label: {
+                    Image(systemName: "arrow.up")
+                }
+                .disabled(draft.orderedVisibleIDs.first == id)
+                .accessibilityLabel(language.text("向上移动", "Move up"))
+                Button {
+                    draft.move(id, by: 1)
+                    saveFailed = false
+                } label: {
+                    Image(systemName: "arrow.down")
+                }
+                .disabled(draft.orderedVisibleIDs.last == id)
+                .accessibilityLabel(language.text("向下移动", "Move down"))
             }
-            .menuStyle(.borderlessButton)
-            .frame(width: 22)
+            .buttonStyle(.bordered)
             .padding(.trailing, 10)
-            .accessibilityLabel(language.text("调整此账号位置", "Move this account"))
         }
         .frame(height: 40)
-        .background(dropTargetID == id ? Color.accentColor.opacity(0.14) : Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
-        .onDrop(
-            of: [UTType.utf8PlainText],
-            isTargeted: Binding(
-                get: { dropTargetID == id },
-                set: { targeted in
-                    if targeted { dropTargetID = id } else if dropTargetID == id { dropTargetID = nil }
-                }
-            )
-        ) { providers, location in
-            guard providers.count == 1, let provider = providers.first,
-                provider.canLoadObject(ofClass: NSString.self), draft.isDragging
-            else { return false }
-            provider.loadObject(ofClass: NSString.self) { object, error in
-                guard error == nil, let token = object as? String else { return }
-                DispatchQueue.main.async {
-                    if draft.drop(token: token, targetID: id, after: location.y >= 20) { saveFailed = false }
-                    dropTargetID = nil
-                }
-            }
-            return true
-        }
+        .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
     }
 
     private func save() {

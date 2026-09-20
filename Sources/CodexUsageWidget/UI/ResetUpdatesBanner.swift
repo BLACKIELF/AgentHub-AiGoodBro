@@ -43,8 +43,23 @@ enum PublicResetAnnouncementPresentation {
         formatter.locale = language.locale
         formatter.calendar = Calendar(identifier: .gregorian)
         formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")!
-        formatter.dateFormat = language.text("M月d日 ah:mm", "MMM d, h:mm a")
+        formatter.dateFormat = "yyyy-MM-dd HH:mm"
         return formatter.string(from: date) + language.text(" · 北京时间", " · Beijing time")
+    }
+
+    /// A homepage notice is current only when its validated source is inside
+    /// the past 30 days. The feed's five-minute clock-skew allowance is not a
+    /// permission to present a future item as today's message.
+    static func recentVerifiableAnnouncement(
+        _ announcements: [PublicResetAnnouncement], now: Date, window: TimeInterval = 30 * 24 * 60 * 60
+    ) -> PublicResetAnnouncement? {
+        let lowerBound = now.addingTimeInterval(-window)
+        return
+            announcements
+            .filter { $0.announcedAt >= lowerBound && $0.announcedAt <= now && $0.isValid(now: now) }
+            .max {
+                $0.announcedAt == $1.announcedAt ? $0.id < $1.id : $0.announcedAt < $1.announcedAt
+            }
     }
 
     static func relativeEventTime(_ date: Date, now: Date, language: WidgetLanguage) -> String {
@@ -121,15 +136,12 @@ struct AnnouncementOriginalText: View {
                     .lineLimit(Self.collapsedLineLimit)
                     .textSelection(.enabled)
             } else {
-                ScrollView(.vertical) {
-                    Text(verbatim: PublicResetAnnouncementPresentation.readableText(text))
-                        .font(.callout.weight(.semibold))
-                        .foregroundStyle(.primary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .textSelection(.enabled)
-                }
-                .frame(minHeight: compact ? 80 : 120, maxHeight: compact ? 220 : 320)
+                Text(verbatim: PublicResetAnnouncementPresentation.readableText(text))
+                    .font(.callout.weight(.semibold))
+                    .foregroundStyle(.primary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
             }
             if compact {
                 Button(isExpanded ? language.text("收起原文", "Show less") : language.text("更多原文", "Show more")) {
@@ -196,6 +208,10 @@ struct ResetUpdatesBanner: View {
     var announcements: [PublicResetAnnouncement] = []
     var announcementsHasMore: Bool?
     var showsHistory = false
+    var compactSummary = false
+    @ObservedObject var inbox: HomeMessageInboxStore = .shared
+    @State private var summaryExpanded = false
+    @State private var historyExpanded = false
     @State private var selectedCalendarDay: Date?
     @State private var showsExplanation = false
 
@@ -203,12 +219,16 @@ struct ResetUpdatesBanner: View {
         PublicResetCalendarModel.normalized(announcements + (announcement.map { [$0] } ?? []))
     }
 
+    private var recentAnnouncement: PublicResetAnnouncement? {
+        PublicResetAnnouncementPresentation.recentVerifiableAnnouncement(calendarAnnouncements, now: Date())
+    }
+
     private var resetCalendar: some View {
         VStack(alignment: .leading, spacing: 8) {
             PublicResetCalendarView(announcements: calendarAnnouncements, language: language, hasMore: nil, selectedDay: $selectedCalendarDay)
             Divider()
             PublicResetRecentView(
-                announcements: calendarAnnouncements, language: language, featuredID: announcement?.id,
+                announcements: calendarAnnouncements, language: language, featuredID: recentAnnouncement?.id,
                 integratedInCalendar: true, selectedDay: $selectedCalendarDay)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -218,7 +238,7 @@ struct ResetUpdatesBanner: View {
     }
 
     private var recentAnnouncements: some View {
-        PublicResetRecentView(announcements: calendarAnnouncements, language: language, featuredID: announcement?.id, selectedDay: $selectedCalendarDay)
+        PublicResetRecentView(announcements: calendarAnnouncements, language: language, featuredID: recentAnnouncement?.id, selectedDay: $selectedCalendarDay)
     }
 
     @MainActor
@@ -226,13 +246,12 @@ struct ResetUpdatesBanner: View {
         ResetDashboardLayout {
             announcementCard
             resetCalendar
-            AIHotTopicsView(language: language)
             accountSummary
         }
     }
 
     private var hasAttention: Bool {
-        announcement != nil || confirmedResetCardAccounts > 0
+        recentAnnouncement != nil || confirmedResetCardAccounts > 0
     }
 
     private var confirmedResetCardAccounts: Int {
@@ -243,15 +262,16 @@ struct ResetUpdatesBanner: View {
     @MainActor
     @ViewBuilder
     private var announcementCard: some View {
+        let current = recentAnnouncement
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
                 Button(action: onOpenAnnouncements) {
                     HStack(spacing: 8) {
                         Image(systemName: "megaphone.fill")
                             .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(announcement == nil ? Color.secondary : FixedVisualPalette.statusInfo)
+                            .foregroundStyle(current == nil ? Color.secondary : FixedVisualPalette.statusInfo)
                         Text(
-                            announcement.map {
+                            current.map {
                                 $0.title(language)
                             } ?? PublicResetAnnouncementPresentation.title(language)
                         )
@@ -278,7 +298,7 @@ struct ResetUpdatesBanner: View {
                 .disabled(isRefreshing)
                 .fixedSize(horizontal: true, vertical: true)
             }
-            if let ann = announcement {
+            if let ann = current {
                 TimelineView(.periodic(from: .now, by: 60)) { context in
                     Text(
                         language.text("最新消息 · ", "Latest update · ")
@@ -327,11 +347,69 @@ struct ResetUpdatesBanner: View {
                 .accessibilityLabel(language.text("公告与个人额度说明", "Announcement and account limit details"))
                 .popover(isPresented: $showsExplanation) { explanation }
             }
-            if showsHistory {
+            if compactSummary {
+                let current = recentAnnouncement
+                HStack(alignment: .top, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(current?.title(language) ?? language.text("重置消息", "Reset updates"))
+                            .font(.callout.weight(.medium)).lineLimit(1)
+                        Text(
+                            current.map { PublicResetAnnouncementPresentation.readableText($0.text) }
+                                ?? language.text("暂无近期可验证的新公告", "No recent verifiable notices")
+                        )
+                        .font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                    }
+                    Spacer(minLength: 0)
+                    if let current {
+                        Text(PublicResetAnnouncementPresentation.compactEventTime(current.announcedAt, language: language))
+                            .font(.caption2).foregroundStyle(.secondary)
+                    }
+                    Button(action: onRefresh) {
+                        Label(isRefreshing ? language.text("检查中…", "Checking…") : language.text("刷新", "Refresh"), systemImage: "arrow.clockwise")
+                    }
+                    .buttonStyle(.plain).disabled(isRefreshing)
+                    .accessibilityLabel(language.text("刷新重置消息", "Refresh reset updates"))
+                }
+                if let refreshStatus, !refreshStatus.isEmpty {
+                    Text(isRefreshing ? language.text("正在检查新公告…", "Checking for new announcements…") : PublicResetAnnouncementPresentation.readableText(refreshStatus))
+                        .font(.caption2).foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .help(
+                            refreshStatus
+                                + (checkedAt.map {
+                                    "\n" + language.text("上次成功检查：", "Last successful check: ") + PublicResetAnnouncementPresentation.compactEventTime($0, language: language)
+                                } ?? ""))
+                }
+                HStack(spacing: 12) {
+                    Text(resetCardDetail).foregroundStyle(.secondary)
+                    Spacer()
+                    Button(
+                        language.text("最近 3 条消息", "Latest 3 messages")
+                    ) {
+                        historyExpanded.toggle()
+                        summaryExpanded = false
+                    }
+                    Button(language.text("展开日历与详情", "Calendar and details")) {
+                        summaryExpanded.toggle()
+                        historyExpanded = false
+                    }
+                }
+                .font(.caption2).buttonStyle(.plain)
+                if historyExpanded { inlineHistory }
+                if summaryExpanded { announcementDashboard }
+            } else if showsHistory {
                 announcementDashboard
+                inlineHistory
             } else {
                 announcementCard
                 accountSummary
+            }
+            if compactSummary && (summaryExpanded || historyExpanded) {
+                Button(language.text("收起，仅显示概要", "Collapse to summary")) {
+                    summaryExpanded = false
+                    historyExpanded = false
+                }
+                .font(.caption).buttonStyle(.plain)
             }
         }
         .padding(embedded ? 0 : 12)
@@ -389,7 +467,7 @@ struct ResetUpdatesBanner: View {
         VStack(alignment: .leading, spacing: 12) {
             Text(language.text("公告与个人额度", "Announcements and account limits")).font(.headline)
             Text(language.text("日历标记公开公告的发布日期；个人窗口和重置卡以账号读取结果为准。", "The calendar marks public announcement dates. Account readings determine personal windows and reset cards."))
-            if let announcement { Text(announcement.meaning(language)) }
+            if let recentAnnouncement { Text(recentAnnouncement.meaning(language)) }
             if let refreshStatus, !refreshStatus.isEmpty {
                 Text(PublicResetAnnouncementPresentation.readableText(refreshStatus)).foregroundStyle(.secondary)
             }
@@ -426,15 +504,68 @@ struct ResetUpdatesBanner: View {
     }
 
     private var announcementDetail: String {
-        if let announcement {
-            let when = PublicResetAnnouncementPresentation.eventTime(announcement.announcedAt, language: language)
-            return "\(when) · \(PublicResetAnnouncementPresentation.sourceLabel(announcement.source, language: language))"
+        if let recentAnnouncement {
+            let when = PublicResetAnnouncementPresentation.eventTime(recentAnnouncement.announcedAt, language: language)
+            return "\(when) · \(PublicResetAnnouncementPresentation.sourceLabel(recentAnnouncement.source, language: language))"
         }
         if let checkedAt {
             let clock = PublicResetAnnouncementPresentation.eventTime(checkedAt, language: language)
-            return language.text("暂无公告 · 检查于 \(clock)", "No announcement · checked \(clock)")
+            return language.text("暂无近期可验证的新公告 · 检查于 \(clock)", "No recent verifiable notice · checked \(clock)")
         }
-        return language.text("暂无公告", "No announcement")
+        return language.text("暂无近期可验证的新公告", "No recent verifiable notice")
+    }
+
+    private var inlineHistory: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text(language.text("最近 3 条消息", "Latest 3 messages"))
+                    .font(.caption.weight(.semibold))
+                Spacer(minLength: 4)
+                Text(language.text("由新到旧", "Newest first"))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            if calendarAnnouncements.isEmpty {
+                Text(language.text("暂无已载入的公告。", "No announcements loaded yet."))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    ForEach(calendarAnnouncements.prefix(HomeMessageInboxStore.visibleAnnouncementLimit)) { item in
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack(spacing: 6) {
+                                Circle()
+                                    .fill(item.resetType == .banked ? Color.purple : Color.blue)
+                                    .frame(width: 5, height: 5)
+                                Text(PublicResetAnnouncementPresentation.compactEventTime(item.announcedAt, language: language))
+                                    .font(.caption2.weight(.medium))
+                                Spacer(minLength: 0)
+                                Text(PublicResetAnnouncementPresentation.sourceLabel(item.source, language: language))
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Text(verbatim: PublicResetAnnouncementPresentation.readableText(item.text))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(2)
+                                .fixedSize(horizontal: false, vertical: true)
+                            if let url = HomeMessageLinkPolicy.allowedURL(item.source.url) {
+                                Link(PublicResetAnnouncementPresentation.sourceLinkTitle(item.source, language: language), destination: url)
+                                    .font(.caption2)
+                            }
+                        }
+                        .padding(.vertical, 6)
+                        .onAppear { inbox.markSeen([item]) }
+                        Divider()
+                    }
+                }
+            }
+            if announcementsHasMore == true || calendarAnnouncements.count > HomeMessageInboxStore.visibleAnnouncementLimit {
+                Link(language.text("查看完整记录", "Browse full history"), destination: PublicResetClient.siteURL)
+                    .font(.caption2)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var resetCardDetail: String {

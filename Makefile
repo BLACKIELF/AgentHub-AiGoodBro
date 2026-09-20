@@ -73,6 +73,7 @@ build:
 	cp Resources/THIRD_PARTY_NOTICES.txt "$(RESOURCES_DIR)/"
 	cp docs/third-party-cli-notices.md "$(RESOURCES_DIR)/CLI_PROVIDER_NOTICES.md"
 	cp -R Resources/Palettes "$(RESOURCES_DIR)/Palettes"
+	cp -R Resources/SkillLibrary "$(RESOURCES_DIR)/SkillLibrary"
 	mkdir -p "$(RESOURCES_DIR)/UpstreamCharts"
 	cp -R Resources/UpstreamCharts/ "$(RESOURCES_DIR)/UpstreamCharts/"
 	/usr/bin/xattr -dr com.apple.quarantine "$(APP_DIR)" 2>/dev/null || true

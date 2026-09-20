@@ -178,11 +178,122 @@ enum HomeEngineProjection {
             return PeriodSummary(key: key, tokens: recorded > 0 && !overflowed ? total : nil, recordedDays: invalid ? 0 : recorded, calendarDays: count)
         }
     }
+
+    static func window(
+        _ response: TokenMonitorResponse?,
+        range: TokenUsageHomeRange,
+        customStart: Date,
+        now: Date = Date()
+    ) -> PeriodSummary {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = response.flatMap { TimeZone(identifier: $0.timezone) } ?? TimeZone(identifier: "Asia/Shanghai")!
+        let end = calendar.startOfDay(for: now)
+        let start: Date
+        switch range {
+        case .sevenDays:
+            start = calendar.date(byAdding: .day, value: -6, to: end) ?? end
+        case .thirtyDays:
+            start = calendar.date(byAdding: .day, value: -29, to: end) ?? end
+        case .ninetyDays:
+            start = calendar.date(byAdding: .day, value: -89, to: end) ?? end
+        case .all:
+            return PeriodSummary(key: "all", tokens: total(response), recordedDays: 0, calendarDays: 0)
+        case .custom:
+            let chosen = calendar.startOfDay(for: min(customStart, now))
+            start = min(chosen, end)
+        }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = calendar
+        formatter.timeZone = calendar.timeZone
+        formatter.dateFormat = "yyyy-MM-dd"
+        var daily: [String: Int64] = [:]
+        var seen = Set<String>()
+        var invalid = false
+        let canonical = response?.payload["aggregate"] ?? response?.payload["usage"]
+        let history = canonical?["history"] ?? response?.payload["history"] ?? response?.payload["usage"]?["history"]
+        for row in history?["daily"]?.array ?? [] {
+            guard let date = row["date"]?.string, let parsed = formatter.date(from: date),
+                formatter.string(from: parsed) == date
+            else { continue }
+            guard seen.insert(date).inserted else {
+                invalid = true
+                break
+            }
+            if let value = exactTokens(row["tokens"]) { daily[date] = value }
+        }
+        let count = max(1, (calendar.dateComponents([.day], from: start, to: end).day ?? 0) + 1)
+        var totalTokens: Int64 = 0
+        var recorded = 0
+        var overflowed = invalid
+        for offset in 0..<count {
+            guard let date = calendar.date(byAdding: .day, value: offset, to: start),
+                let value = daily[formatter.string(from: date)]
+            else { continue }
+            let result = totalTokens.addingReportingOverflow(value)
+            if result.overflow { overflowed = true } else { totalTokens = result.partialValue }
+            recorded += 1
+        }
+        return PeriodSummary(
+            key: range.rawValue,
+            tokens: recorded > 0 && !overflowed ? totalTokens : nil,
+            recordedDays: invalid ? 0 : recorded,
+            calendarDays: count)
+    }
+
+    struct ChartWindow: Equatable {
+        let from: String
+        let to: String
+    }
+
+    /// Display window for the heatmap and bars. Does not change lifetime totals.
+    static func chartWindow(
+        _ response: TokenMonitorResponse?,
+        range: TokenUsageHomeRange,
+        customStart: Date,
+        now: Date = Date()
+    ) -> ChartWindow? {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = response.flatMap { TimeZone(identifier: $0.timezone) } ?? TimeZone(identifier: "Asia/Shanghai")!
+        let end = calendar.startOfDay(for: now)
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = calendar
+        formatter.timeZone = calendar.timeZone
+        formatter.dateFormat = "yyyy-MM-dd"
+        let to = formatter.string(from: end)
+        switch range {
+        case .sevenDays:
+            let start = calendar.date(byAdding: .day, value: -6, to: end) ?? end
+            return ChartWindow(from: formatter.string(from: start), to: to)
+        case .thirtyDays:
+            let start = calendar.date(byAdding: .day, value: -29, to: end) ?? end
+            return ChartWindow(from: formatter.string(from: start), to: to)
+        case .ninetyDays:
+            let start = calendar.date(byAdding: .day, value: -89, to: end) ?? end
+            return ChartWindow(from: formatter.string(from: start), to: to)
+        case .custom:
+            let start = min(calendar.startOfDay(for: min(customStart, now)), end)
+            return ChartWindow(from: formatter.string(from: start), to: to)
+        case .all:
+            var earliest: String?
+            let canonical = response?.payload["aggregate"] ?? response?.payload["usage"]
+            let history = canonical?["history"] ?? response?.payload["history"] ?? response?.payload["usage"]?["history"]
+            for row in history?["daily"]?.array ?? [] {
+                guard let date = row["date"]?.string, formatter.date(from: date) != nil else { continue }
+                if earliest == nil || date < earliest! { earliest = date }
+            }
+            guard let earliest else { return nil }
+            return ChartWindow(from: min(earliest, to), to: to)
+        }
+    }
 }
 
 private struct UpstreamHomeStatistics: View {
     let state: TokenMonitorEngineState
     let language: WidgetLanguage
+    @Binding var range: TokenUsageHomeRange
+    @Binding var customStart: Date
     @Binding var detailsExpanded: Bool
     let refresh: () -> Void
 
@@ -225,14 +336,30 @@ private struct UpstreamHomeStatistics: View {
                 .buttonStyle(.borderless)
                 .disabled(state.phase == .loading)
             }
+            Picker(language.text("期间", "Range"), selection: $range) {
+                ForEach(TokenUsageHomeRange.allCases) { option in
+                    Text(option.title(language)).tag(option)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            if range == .custom {
+                DatePicker(
+                    language.text("开始日期", "Start date"),
+                    selection: $customStart,
+                    in: ...Date(),
+                    displayedComponents: .date
+                )
+                .datePickerStyle(.compact)
+            }
             ViewThatFits(in: .horizontal) {
-                HStack(alignment: .center, spacing: 28) {
-                    lifetimeTotal.frame(minWidth: 240, maxWidth: .infinity, alignment: .leading)
-                    recentPeriodSummaries.frame(minWidth: 340, maxWidth: .infinity)
+                HStack(alignment: .top, spacing: 28) {
+                    windowTotal.frame(minWidth: 240, maxWidth: .infinity, alignment: .leading)
+                    lifetimeTotal.frame(minWidth: 200, maxWidth: .infinity, alignment: .leading)
                 }
                 VStack(alignment: .leading, spacing: 16) {
+                    windowTotal
                     lifetimeTotal
-                    recentPeriodSummaries
                 }
             }
             if let statusText {
@@ -243,8 +370,11 @@ private struct UpstreamHomeStatistics: View {
                     .help(statusText)
             }
             if let dashboardJSON = state.dashboardJSON {
-                UpstreamTrendView(dashboardJSON: dashboardJSON, height: 320)
-                    .environment(\.widgetLanguage, language)
+                let window = HomeEngineProjection.chartWindow(state.lastGood, range: range, customStart: customStart)
+                UpstreamTrendView(
+                    dashboardJSON: dashboardJSON, height: 320, chartFrom: window?.from, chartTo: window?.to
+                )
+                .environment(\.widgetLanguage, language)
             }
             DisclosureGroup(language.text("统计详情", "Statistics details"), isExpanded: $detailsExpanded) {
                 VStack(alignment: .leading, spacing: 5) {
@@ -270,39 +400,39 @@ private struct UpstreamHomeStatistics: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
+    private var windowTotal: some View {
+        let summary = HomeEngineProjection.window(state.lastGood, range: range, customStart: customStart)
+        return VStack(alignment: .leading, spacing: 7) {
+            Text(language.text("所选期间已记录", "Recorded in selected range"))
+                .font(.caption).foregroundStyle(.secondary)
+            Text(summary.tokens.map(language.tokens) ?? language.text("暂无记录", "No record"))
+                .font(.system(size: 28, weight: .semibold)).monospacedDigit()
+                .lineLimit(1).minimumScaleFactor(0.7)
+            if range != .all, summary.calendarDays > 0 {
+                Text(language.text("\(summary.recordedDays)/\(summary.calendarDays) 天有记录", "\(summary.recordedDays)/\(summary.calendarDays) days recorded"))
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
+        }
+    }
+
     private var lifetimeTotal: some View {
         VStack(alignment: .leading, spacing: 7) {
+            Text(language.text("已记录累计 · 全部", "Recorded total · all time"))
+                .font(.caption).foregroundStyle(.secondary)
             Text(total.map(language.tokens) ?? language.text("暂不可确认", "Temporarily unavailable"))
-                .font(.system(size: total == nil ? 20 : 34, weight: .semibold))
+                .font(.system(size: total == nil ? 20 : 28, weight: .semibold))
                 .foregroundStyle(total == nil ? Color.secondary : Color.primary)
                 .monospacedDigit()
                 .lineLimit(1)
                 .minimumScaleFactor(0.72)
                 .help(total.map { String($0) } ?? language.text("尚未取得可确认的 Token 记录", "No confirmed token records yet"))
             Text(
-                language.text("自 2024-01-01", "Since 2024-01-01")
-                    + (state.lastGood.map(HomeEngineProjection.partial) == true
-                        ? language.text(" · 部分记录", " · Partial records") : "")
+                (state.lastGood.map(HomeEngineProjection.partial) == true
+                    ? language.text("部分来源未确认", "Some sources unconfirmed")
+                    : language.text("不随所选期间改变", "Does not follow the selected range"))
             )
             .font(.caption2.weight(.medium))
             .foregroundStyle(.secondary)
-        }
-    }
-
-    private var recentPeriodSummaries: some View {
-        HStack(alignment: .top, spacing: 16) {
-            ForEach(HomeEngineProjection.recentPeriods(state.lastGood), id: \.key) { period in
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(period.key == "today" ? language.text("今日", "Today") : period.key == "week" ? language.text("近 7 天", "Last 7 days") : language.text("本月", "This month"))
-                        .font(.caption).foregroundStyle(.secondary)
-                    Text(period.tokens.map(language.tokens) ?? language.text("未采集", "Not recorded"))
-                        .font(.system(size: 21, weight: .semibold)).monospacedDigit()
-                        .lineLimit(1).minimumScaleFactor(0.7)
-                    Text(language.text("\(period.recordedDays)/\(period.calendarDays) 天有记录", "\(period.recordedDays)/\(period.calendarDays) days recorded"))
-                        .font(.caption2).foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
         }
     }
 }
@@ -481,7 +611,8 @@ struct CodexAccountManagerView: View {
         .onChange(of: usesHomeAccountCards) { compact in
             if compact { directReorder.cancel() }
         }
-        .modifier(CodexDeviceLoginSheet(store: store, language: language))
+        .environment(\.codexDeviceLoginHost, .workbench)
+        .modifier(CodexDeviceLoginSheet(store: store, language: language, host: .workbench, isEnabled: !isSetupGuidePresented))
         .sheet(isPresented: $isAutomationCenterPresented) {
             AccountAutomationCenterView(store: store)
                 .environment(\.widgetLanguage, language)
@@ -503,6 +634,7 @@ struct CodexAccountManagerView: View {
         .sheet(
             isPresented: $isSetupGuidePresented,
             onDismiss: {
+                store.migrateDeviceLoginHostIfNeeded(from: .setupGuide)
                 settings.setupProgress.dismissed = true
                 if openAutomationAfterGuide {
                     openAutomationAfterGuide = false
@@ -628,12 +760,18 @@ struct CodexAccountManagerView: View {
 
     private var homeOverview: some View {
         VStack(alignment: .leading, spacing: 20) {
-            AutomationMaintenanceNotice(features: store.pausedAutomationFeatures, language: language)
             resetUpdatesBanner
-                .padding(18)
+                .padding(14)
                 .sectionBackground()
-            homeTokenTotalsCard
+            PublisherMessagesView(monitor: store.publisherMessages, language: language)
+                .padding(14)
+                .sectionBackground()
+            HomeSkillShelf(language: language)
+                .padding(14)
+                .sectionBackground()
+            AutomationMaintenanceNotice(features: store.pausedAutomationFeatures, language: language)
             homeUnifiedAccounts
+            homeTokenTotalsCard
         }
     }
 
@@ -742,7 +880,8 @@ struct CodexAccountManagerView: View {
             embedded: true,
             announcements: resetAnnouncementMonitor.announcements,
             announcementsHasMore: resetAnnouncementMonitor.announcementsHasMore,
-            showsHistory: true
+            showsHistory: true,
+            compactSummary: true
         )
     }
 
@@ -1001,6 +1140,8 @@ struct CodexAccountManagerView: View {
         case .upstream:
             UpstreamHomeStatistics(
                 state: store.engineState, language: language,
+                range: $settings.tokenUsageHomeRange,
+                customStart: $settings.tokenUsageHomeCustomStart,
                 detailsExpanded: $statisticsDetailsExpanded,
                 refresh: { store.refresh() })
         case .custom:
@@ -1247,19 +1388,8 @@ struct CodexAccountManagerView: View {
         let entries =
             presentedProfiles.filter { homeEligibility($0).isLoggedIn }.map(HomeAccountEntry.codex)
             + localCLIAccounts.profiles.filter { homeEligibility($0).isLoggedIn }.map(HomeAccountEntry.local)
-        let expiring = Set(
-            entries.filter { entry in
-                switch entry {
-                case .codex(let profile): return codexCardExpiring(profile, now: now)
-                case .local(let profile):
-                    let result = localCLIAccounts.quotas[profile.id]
-                    return ResetCardPresentation.isExpiringSoon(
-                        result?.resetCards, now: now,
-                        evidenceFresh: !localCLIAccounts.stale.contains(profile.id) && ResetCardPresentation.isFresh(result?.fetchedAt, now: now))
-                }
-            }.map(\.id))
         let byID = Dictionary(uniqueKeysWithValues: entries.map { ($0.id, $0) })
-        return ResetCardPresentation.prioritizedOrder(entries.map(\.id), expiring: expiring, pinnedAccountID: settings.pinnedAccountKey).compactMap { byID[$0] }
+        return ResetCardPresentation.savedOrder(entries.map(\.id), pinnedAccountID: settings.pinnedAccountKey).compactMap { byID[$0] }
     }
 
     private func homeEligibility(_ profile: CodexProfile) -> HomeLoginEligibility {
@@ -1903,9 +2033,12 @@ struct CodexAccountManagerView: View {
                     .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: 8)
-                Button(language.text("设置独立 CLI", "Set up isolated CLI")) { store.addProfile() }
+                Button(language.text("设置独立 CLI", "Set up isolated CLI")) { _ = store.addProfile() }
                     .buttonStyle(.bordered)
-                    .disabled(store.isLoggingIn)
+                    .disabled(store.canBeginAddingProfile() != nil)
+                    .help(
+                        store.canBeginAddingProfile()?.message(language)
+                            ?? language.text("创建独立 CLI 环境；系统资料不会被直接重新登录。", "Create an isolated CLI profile. The system profile is not re-signed in directly."))
             }
             .padding(20)
             .sectionBackground()
@@ -2221,10 +2354,9 @@ struct CodexAccountManagerView: View {
     private var orderedProfiles: [CodexProfile] {
         let current = presentedProfiles
         if isEditingDisplayedProfiles { return current }
-        let expiring = Set(current.filter { codexCardExpiring($0, now: Date()) }.map { ResetCardPresentation.codexKey($0.id) })
         let byID = Dictionary(uniqueKeysWithValues: current.map { (ResetCardPresentation.codexKey($0.id), $0) })
-        return ResetCardPresentation.prioritizedOrder(
-            current.map { ResetCardPresentation.codexKey($0.id) }, expiring: expiring,
+        return ResetCardPresentation.savedOrder(
+            current.map { ResetCardPresentation.codexKey($0.id) },
             pinnedAccountID: settings.pinnedAccountKey
         ).compactMap { byID[$0] }
     }
@@ -2297,19 +2429,22 @@ struct CodexAccountManagerView: View {
                 }
                 .buttonStyle(.bordered)
                 .accessibilityValue(isEditingProfiles ? language.text("编辑模式已开启", "Editing enabled") : language.text("编辑模式已关闭", "Editing disabled"))
-                Menu {
-                    Button(language.text("账号专属 Chrome（推荐）", "Dedicated Chrome profile (recommended)")) { store.addProfile() }
-                    if !store.availableChromeProfiles.isEmpty { Divider() }
-                    ForEach(store.availableChromeProfiles) { chromeProfile in
-                        Button(chromeProfile.displayName) {
-                            store.addProfile(using: chromeProfile)
-                        }
-                    }
+                Button {
+                    _ = store.addProfile()
                 } label: {
-                    Label(store.isLoggingIn ? language.text("登录中…", "Signing in…") : language.text("添加账号", "Add account"), systemImage: "plus")
+                    Label(
+                        store.deviceLogin != nil || store.isLoggingIn
+                            ? language.text("登录中…", "Signing in…")
+                            : language.text("添加账号", "Add account"),
+                        systemImage: "plus")
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(store.isLoggingIn)
+                .disabled(store.canBeginAddingProfile() != nil)
+                .help(
+                    store.canBeginAddingProfile()?.message(language)
+                        ?? language.text("添加独立 Codex 账号", "Add an isolated Codex account")
+                )
+                .accessibilityLabel(language.text("添加账号", "Add account"))
             }
 
             TextField(language.text("搜索账号", "Search accounts"), text: $accountSearch)
@@ -2356,8 +2491,8 @@ struct CodexAccountManagerView: View {
                 .disabled(store.pausedAutomationFeatures.contains(.sevenDay))
                 .help(
                     language.text(
-                        "所有账号按自己的 7 天窗口维护，不受参与调度开关影响；失败 5 分钟后自动复核重试。",
-                        "Maintains every account on its weekly schedule regardless of dispatch participation. Failed requests are rechecked for retry after 5 minutes.")
+                        "所有账号按自己的 7 天窗口维护，不受参与调度开关影响；失败后同一窗口不再自动重试。",
+                        "Maintains every account on its weekly schedule regardless of dispatch participation. Failed requests do not retry automatically in the same window.")
                 )
             }
 
@@ -2379,30 +2514,9 @@ struct CodexAccountManagerView: View {
                 codexProfileRows
             }
 
-            HStack {
-                Text(language.text("账号凭据独立保存；切换 Codex 时沿用当前电脑的项目与对话。", "Account sign-ins stay isolated. Desktop switching retains this Mac's projects and conversations."))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Button(store.isLoggingIn ? language.text("取消登录", "Cancel sign-in") : language.text("重新登录所选账号", "Sign in again")) {
-                    if store.isLoggingIn {
-                        store.cancelLogin()
-                    } else if store.selectedMonitorProfile?.isSystemProfile == false {
-                        store.loginSelectedMonitorProfile()
-                    }
-                }
-                .buttonStyle(.bordered)
-                .disabled(!store.isLoggingIn && (selectedMonitorHubTaskStatus.blocksLocalCLI || store.selectedMonitorProfile?.isSystemProfile != false))
-                .help(
-                    store.isLoggingIn
-                        ? language.text("取消正在进行的登录", "Cancel the current sign-in")
-                        : selectedMonitorHubTaskStatus.blocksLocalCLI
-                            ? (selectedMonitorHubTaskStatus.blockingReason(language)
-                                ?? language.text(
-                                    "Hub 状态未确认或同账号有活跃任务，暂不能重新登录所选账号",
-                                    "Sign-in is blocked while Hub status is unverified or this account has an active task."))
-                            : language.text("重新登录当前监控账号", "Sign in to the monitored account again"))
-            }
+            Text(language.text("账号凭据独立保存；切换 Codex 时沿用当前电脑的项目与对话。", "Account sign-ins stay isolated. Desktop switching retains this Mac's projects and conversations."))
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
         .padding(.vertical, 4)
     }
@@ -2456,7 +2570,8 @@ struct CodexAccountManagerView: View {
             prioritizesDispatch: store.dispatchPriority(for: profile),
             isEditing: isEditingDisplayedProfiles,
             layout: displayedAccountLayout,
-            isLoggingIn: store.isLoggingIn,
+            isLoggingIn: store.isLoggingIn || store.deviceLogin != nil,
+            needsCredentialRelogin: homeEligibility(profile) == .needsLogin,
             isLaunching: store.isLaunchingCodex,
             isSwitchTarget: store.desktopSwitchTargetID == profile.id,
             isRefreshingStatistics: store.isRefreshing,
@@ -2484,9 +2599,9 @@ struct CodexAccountManagerView: View {
             onWarmUp: { store.warmUpProfile(profile.id) },
             onRelogin: {
                 if linkedProfile != nil {
-                    store.loginProfileIndependently(profile.id)
+                    _ = store.loginProfileIndependently(profile.id)
                 } else {
-                    store.loginProfile(profile.id)
+                    _ = store.loginProfile(profile.id)
                 }
             },
             onLaunch: {
@@ -3533,7 +3648,8 @@ struct CodexAccountMenuView: View {
         }
         .environment(\.accountAvatarSettings, settings)
         .environment(\.accountAvatarEdit, { menuAvatarEditor = $0 })
-        .modifier(CodexDeviceLoginSheet(store: store, language: language))
+        .environment(\.codexDeviceLoginHost, .menu)
+        .modifier(CodexDeviceLoginSheet(store: store, language: language, host: .menu))
         .sheet(item: $menuAvatarEditor) { target in
             AccountAvatarEditor(
                 target: target,
@@ -3561,7 +3677,10 @@ struct CodexAccountMenuView: View {
                 localCLIAccounts.discover()
             }
         }
-        .onDisappear { hubTaskStatusModel.stopPolling() }
+        .onDisappear {
+            hubTaskStatusModel.stopPolling()
+            store.migrateDeviceLoginHostIfNeeded(from: .menu)
+        }
         .alert(
             store.forcedAccountSwitchProfileID == nil ? language.text("未切换账号", "Account not switched") : language.text("强制切换账号？", "Force account switch?"),
             isPresented: Binding(
@@ -3840,7 +3959,8 @@ struct CodexAccountMenuView: View {
                     Image(systemName: "person.2")
                 }
                 .buttonStyle(AccountMenuIconButtonStyle())
-                .help(text("管理账号", "Manage accounts"))
+                .help(text("查看已保存账号", "View saved accounts"))
+                .accessibilityLabel(text("查看已保存账号", "View saved accounts"))
 
                 Button {
                     changeScreen(.settings)
@@ -3861,13 +3981,17 @@ struct CodexAccountMenuView: View {
                 .buttonStyle(AccountGlassButtonStyle(tint: .clear, foreground: .primary, compact: true))
 
                 Button {
-                    store.addProfile()
+                    _ = store.addProfile(host: .menu)
                 } label: {
                     Image(systemName: "plus")
                 }
                 .buttonStyle(AccountMenuIconButtonStyle())
-                .disabled(store.isLoggingIn)
-                .help(text("添加账号", "Add account"))
+                .disabled(store.canBeginAddingProfile() != nil)
+                .help(
+                    store.canBeginAddingProfile()?.message(language)
+                        ?? text("添加账号", "Add account")
+                )
+                .accessibilityLabel(text("添加账号", "Add account"))
             }
 
             if isFloatingPanel {
@@ -3907,6 +4031,8 @@ struct CodexAccountMenuView: View {
 
     private var home: some View {
         VStack(spacing: 10) {
+            officialQuotaShortBars
+            menuMessageEntry
             if menuPresentation.isSingleAccount {
                 singleAccountActions
                 Spacer(minLength: 0)
@@ -3934,6 +4060,91 @@ struct CodexAccountMenuView: View {
 
     private var menuQuota: (fiveHour: RateWindow?, sevenDay: RateWindow?, readSucceeded: Bool) {
         menuPresentation.quotaSummary(monitored: store.snapshot)
+    }
+
+    private var officialQuotaShortBars: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text(
+                selectedProfile.map { AccountDisplay.profileName($0, allProfiles: store.profiles) }
+                    ?? text("当前账号官方额度", "Focused account official quota")
+            )
+            .font(.system(size: 10.5, weight: .semibold))
+            .lineLimit(1)
+            menuQuotaBar(
+                title: text("5h 剩余", "5h remaining"),
+                remaining: menuQuota.fiveHour?.remainingPercent,
+                succeeded: menuQuota.readSucceeded
+            )
+            menuQuotaBar(
+                title: text("7d 剩余", "7d remaining"),
+                remaining: menuQuota.sevenDay?.remainingPercent,
+                succeeded: menuQuota.readSucceeded
+            )
+            Text(
+                menuQuota.readSucceeded
+                    ? (selectedProfile?.lastSnapshot?.fetchedAt).map { text("更新于 ", "Updated ") + language.dateTime($0) }
+                        ?? text("官方额度已连接", "Official quota connected")
+                    : text("官方额度未知", "Official quota unknown")
+            )
+            .font(.system(size: 9.5))
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .cardBackground(cornerRadius: 14)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(text("当前账号官方额度", "Focused account official quota"))
+    }
+
+    private func menuQuotaBar(title: String, remaining: Double?, succeeded: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack {
+                Text(title).font(.system(size: 10, weight: .medium)).foregroundStyle(.secondary)
+                Spacer()
+                Text(succeeded ? QuotaAvailabilityPresentation.percentText(remaining) : "—")
+                    .font(.system(size: 11, weight: .semibold, design: .rounded))
+                    .monospacedDigit()
+            }
+            QuotaProgressTrack(percent: succeeded ? remaining : nil)
+        }
+    }
+
+    private var menuMessageEntry: some View {
+        let latest = PublicResetAnnouncementPresentation.recentVerifiableAnnouncement(
+            store.publicResetAnnouncements.announcements, now: Date())
+        return Group {
+            if let latest {
+                Button {
+                    // The full workspace owns the inline history disclosure;
+                    // this compact menu entry never creates a second message window.
+                    openFullWindow()
+                } label: {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Image(systemName: "envelope")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(latest.title(language))
+                                .font(.system(size: 11, weight: .medium))
+                                .lineLimit(1)
+                            Text(text("受控公告 · 所有人同一条", "Public notices · same for everyone"))
+                                .font(.system(size: 9.5))
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer(minLength: 4)
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(.tertiary)
+                    }
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .cardBackground(cornerRadius: 14)
+            }
+        }
     }
 
     @ViewBuilder
@@ -3978,9 +4189,12 @@ struct CodexAccountMenuView: View {
                 )
                 .font(.caption)
                 .foregroundStyle(.secondary)
-                Button(text("设置独立 CLI", "Set Up Isolated CLI")) { store.addProfile() }
+                Button(text("设置独立 CLI", "Set Up Isolated CLI")) { _ = store.addProfile(host: .menu) }
                     .buttonStyle(.bordered)
-                    .disabled(store.isLoggingIn)
+                    .disabled(store.canBeginAddingProfile() != nil)
+                    .help(
+                        store.canBeginAddingProfile()?.message(language)
+                            ?? text("创建独立 CLI 环境；系统资料不会被直接重新登录。", "Create an isolated CLI profile. The system profile is not re-signed in directly."))
             }
             .padding(14)
             .cardBackground(cornerRadius: 18)
@@ -4383,12 +4597,6 @@ struct CodexAccountMenuView: View {
             }
 
             HStack(spacing: 9) {
-                if store.isLoggingIn {
-                    Button(text("取消登录", "Cancel Login")) {
-                        store.cancelLogin()
-                    }
-                    .buttonStyle(AccountGlassButtonStyle(tint: .clear, foreground: .primary))
-                }
                 Button(text("打开完整窗口", "Open Full Window")) { openFullWindow() }
                     .buttonStyle(AccountGlassButtonStyle(tint: .accentColor, foreground: .white))
             }
@@ -4610,20 +4818,32 @@ struct CodexAccountMenuView: View {
             .font(.system(size: 9.5, weight: .semibold))
 
             HStack(spacing: 7) {
-                if isEditingAccounts {
-                    Button(text("重新登录", "Log In Again")) {
-                        guard !cliTaskStatus.blocksLocalCLI else { return }
-                        store.loginProfile(profile.id)
+                if profile.isSystemProfile {
+                    Button(text("设置独立 CLI", "Set Up Isolated CLI")) {
+                        _ = store.loginProfileIndependently(profile.id, host: .menu)
                     }
                     .buttonStyle(AccountGlassButtonStyle(tint: .accentColor, foreground: .white, compact: true))
-                    .disabled(store.isLoggingIn || store.isLaunchingCodex || cliTaskStatus.blocksLocalCLI)
+                    .disabled(store.canBeginAddingProfile() != nil)
                     .help(
-                        cliTaskStatus.blocksLocalCLI
-                            ? (cliTaskStatus.blockingReason(language)
-                                ?? text(
-                                    "Hub 状态未确认或同账号有活跃任务，暂不能重新登录",
-                                    "Hub status is unverified or this account has an active task; login is disabled"))
-                            : text("重新登录此账号", "Log in to this account again"))
+                        store.canBeginAddingProfile()?.message(language)
+                            ?? text("系统资料不能直接重新登录，请设置独立 CLI。", "The system profile cannot re-sign in directly. Set up an isolated CLI."))
+                } else {
+                    Button(text("重新登录", "Log In Again")) {
+                        guard !cliTaskStatus.blocksLocalCLI else { return }
+                        _ = store.loginProfile(profile.id, host: .menu)
+                    }
+                    .buttonStyle(AccountGlassButtonStyle(tint: .accentColor, foreground: .white, compact: true))
+                    .disabled(store.isLoggingIn || store.deviceLogin != nil || store.isLaunchingCodex || cliTaskStatus.blocksLocalCLI)
+                    .help(
+                        store.canLoginProfile(profile.id)?.message(language)
+                            ?? (cliTaskStatus.blocksLocalCLI
+                                ? (cliTaskStatus.blockingReason(language)
+                                    ?? text(
+                                        "Hub 状态未确认或同账号有活跃任务，暂不能重新登录",
+                                        "Hub status is unverified or this account has an active task; login is disabled"))
+                                : text("重新登录此账号", "Log in to this account again")))
+                }
+                if isEditingAccounts {
                     if !profile.isSystemProfile {
                         Button(role: .destructive) {
                             profilePendingDeletion = profile
@@ -5114,6 +5334,7 @@ private struct ProfileRow: View {
     let isEditing: Bool
     let layout: AccountWorkspaceLayout
     let isLoggingIn: Bool
+    var needsCredentialRelogin: Bool = false
     let isLaunching: Bool
     var isSwitchTarget: Bool = false
     let isRefreshingStatistics: Bool
@@ -5145,8 +5366,8 @@ private struct ProfileRow: View {
     let onSetDispatchPriority: (Bool) -> Void
     let onSetDispatchParticipationWindow: (DispatchParticipationWindow) -> Bool
     let onSetProTierMultiplier: (Int?) -> Void
-    let onSetExecutionPreference: (CodexExecutionPreference, Bool) -> Void
-    let onRename: (String) -> Void
+    let onSetExecutionPreference: (CodexExecutionPreference, Bool) -> Result<Void, Error>
+    let onRename: (String) -> Result<Void, Error>
     let onSetChromeProfile: (ChromeProfileBinding?) -> Void
     let onDelete: () -> Void
     let onAdjustResetCount: (Int) -> Void
@@ -5154,8 +5375,10 @@ private struct ProfileRow: View {
     @State private var isEditingRemark = false
     @State private var isConfirmingDelete = false
     @State private var remarkDraft = ""
+    @State private var remarkSaveError: String?
     @State private var isShowingDetails = false
     @State private var isEditingDispatchWindow = false
+    @State private var modelAndSchedulingExpanded = true
     @State private var dispatchWindowDraft = DispatchParticipationWindow()
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
@@ -5192,21 +5415,36 @@ private struct ProfileRow: View {
                 .allowsHitTesting(false)
         )
         .accessibilityElement(children: .contain)
-        .alert(language.text("修改账号备注", "Edit account label"), isPresented: $isEditingRemark) {
-            TextField(language.text("例如：工作账号", "For example: Work"), text: $remarkDraft)
-            Button(language.text("取消", "Cancel"), role: .cancel) {}
-            Button(language.text("保存", "Save")) { onRename(remarkDraft) }
-        } message: {
-            Text(language.text("最多 40 个字符；留空会恢复脱敏账号名。", "Up to 40 characters. Leave blank to use the masked account name."))
+        .sheet(isPresented: $isEditingRemark) {
+            VStack(alignment: .leading, spacing: 12) {
+                Text(language.text("修改账号备注", "Edit account label")).font(.headline)
+                TextField(language.text("例如：工作账号", "For example: Work"), text: $remarkDraft)
+                    .textFieldStyle(.roundedBorder)
+                Text(language.text("最多 40 个字符；留空会恢复脱敏账号名。", "Up to 40 characters. Leave blank to use the masked account name."))
+                    .font(.caption).foregroundStyle(.secondary)
+                if let remarkSaveError { Text(remarkSaveError).font(.caption).foregroundStyle(.red) }
+                HStack {
+                    Spacer()
+                    Button(language.text("取消", "Cancel")) { isEditingRemark = false }.keyboardShortcut(.cancelAction)
+                    Button(language.text("保存", "Save")) {
+                        switch onRename(remarkDraft) {
+                        case .success: isEditingRemark = false
+                        case .failure(let error): remarkSaveError = error.localizedDescription
+                        }
+                    }.keyboardShortcut(.defaultAction)
+                }
+            }.padding(20).frame(width: 360)
+                .onAppear { remarkSaveError = nil }
         }
     }
 
-    /// Keep primary actions visible and less frequent model controls expandable.
+    /// Primary actions and model/scheduling controls are visible by default.
     private var cardFooter: some View {
         VStack(alignment: .leading, spacing: 10) {
             Divider()
             cardActionRow
-            DisclosureGroup(language.text("模型与调度", "Model and scheduling")) {
+            credentialActions
+            DisclosureGroup(language.text("模型与调度", "Model and scheduling"), isExpanded: $modelAndSchedulingExpanded) {
                 VStack(alignment: .leading, spacing: 10) {
                     cardPreferenceRow
                     dispatchControls
@@ -5524,7 +5762,8 @@ private struct ProfileRow: View {
     private var primaryControls: some View {
         VStack(alignment: .leading, spacing: 10) {
             cardActionRow
-            DisclosureGroup(language.text("模型与调度", "Model and scheduling")) {
+            credentialActions
+            DisclosureGroup(language.text("模型与调度", "Model and scheduling"), isExpanded: $modelAndSchedulingExpanded) {
                 VStack(alignment: .leading, spacing: 10) {
                     cardPreferenceRow
                     dispatchControls
@@ -5721,21 +5960,20 @@ private struct ProfileRow: View {
         Group {
             if linkedAccountName != nil {
                 Button {
-                    guard !cliTaskStatus.blocksLocalCLI else { return }
                     onRelogin()
                 } label: {
-                    Label(isLoggingIn ? language.text("登录中…", "Signing in…") : language.text("登录", "Sign in"), systemImage: "person.badge.key")
-                        .frame(maxWidth: .infinity)
+                    Label(
+                        isLoggingIn ? language.text("登录中…", "Signing in…") : language.text("独立 CLI", "Isolated CLI"),
+                        systemImage: "person.badge.key"
+                    )
+                    .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(AccountActionButtonStyle())
-                .disabled(isLoggingIn || isLaunching || isRefreshingStatistics || cliTaskStatus.blocksLocalCLI)
+                .disabled(isLoggingIn || isLaunching || isRefreshingStatistics)
                 .help(
-                    cliTaskStatus.blocksLocalCLI
-                        ? (cliTaskStatus.blockingReason(language)
-                            ?? language.text(
-                                "Hub 状态未确认或同账号有活跃任务，暂不能登录",
-                                "Sign-in is blocked while Hub status is unverified or this account has an active task."))
-                        : language.text("登录为独立账号，不修改当前 Codex 登录", "Sign in to this isolated profile without changing the current Codex sign-in."))
+                    language.text(
+                        "系统资料不能直接重新登录。设置独立 CLI 后，再在新账号卡片完成设备授权。",
+                        "The system profile cannot use isolated re-sign-in. Set up an isolated CLI, then finish device authorization on that card."))
             } else {
                 Button {
                     onMonitor()
@@ -5784,23 +6022,68 @@ private struct ProfileRow: View {
         onOpenTerminal(directory)
     }
 
+    @ViewBuilder
+    private var credentialActions: some View {
+        let isolatedSetup = linkedAccountName != nil || profile.isSystemProfile
+        if isolatedSetup || needsCredentialRelogin {
+            reloginControl
+        } else {
+            Menu {
+                Button(language.text("重新登录", "Sign in again"), action: onRelogin)
+                    .disabled(isLoggingIn || isLaunching || cliTaskStatus.blocksLocalCLI)
+            } label: {
+                Text(language.text("更多", "More"))
+                    .frame(minWidth: 72, minHeight: AccountActionRowLayout.height)
+            }
+            .menuStyle(.borderlessButton)
+            .controlSize(.small)
+            .help(reloginHelp(isolatedSetup: false))
+        }
+    }
+
+    private var reloginControl: some View {
+        let isolatedSetup = linkedAccountName != nil || profile.isSystemProfile
+        return Button {
+            guard isolatedSetup || !cliTaskStatus.blocksLocalCLI else { return }
+            onRelogin()
+        } label: {
+            Text(
+                isLoggingIn
+                    ? language.text("登录中…", "Signing in…")
+                    : isolatedSetup
+                        ? language.text("设置独立 CLI", "Set up isolated CLI")
+                        : language.text("重新登录", "Sign in again")
+            )
+            .frame(minWidth: 132, minHeight: AccountActionRowLayout.height)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .disabled(isLoggingIn || isLaunching || (!isolatedSetup && cliTaskStatus.blocksLocalCLI))
+        .help(reloginHelp(isolatedSetup: isolatedSetup))
+        .accessibilityLabel(
+            isolatedSetup
+                ? language.text("设置独立 CLI", "Set up isolated CLI")
+                : language.text("重新登录", "Sign in again"))
+    }
+
+    private func reloginHelp(isolatedSetup: Bool) -> String {
+        if isolatedSetup {
+            return language.text(
+                "系统资料不能直接重新登录。设置独立 CLI 后，再在新账号卡片完成设备授权。",
+                "The system profile cannot use isolated re-sign-in. Set up an isolated CLI, then finish device authorization on that card.")
+        }
+        if cliTaskStatus.blocksLocalCLI {
+            return cliTaskStatus.blockingReason(language)
+                ?? language.text(
+                    "Hub 状态未确认或同账号有活跃任务，暂不能重新登录",
+                    "Sign-in is blocked while Hub status is unverified or this account has an active task.")
+        }
+        return language.text("重新登录此账号", "Sign in to this account again")
+    }
+
     private var editControls: some View {
         HStack(spacing: 10) {
-            if linkedAccountName == nil {
-                Button(isLoggingIn ? language.text("登录中…", "Signing in…") : language.text("重新登录", "Sign in again")) {
-                    guard !cliTaskStatus.blocksLocalCLI else { return }
-                    onRelogin()
-                }
-                .buttonStyle(.bordered)
-                .disabled(isLoggingIn || isLaunching || cliTaskStatus.blocksLocalCLI)
-                .help(
-                    cliTaskStatus.blocksLocalCLI
-                        ? (cliTaskStatus.blockingReason(language)
-                            ?? language.text(
-                                "Hub 状态未确认或同账号有活跃任务，暂不能重新登录",
-                                "Sign-in is blocked while Hub status is unverified or this account has an active task."))
-                        : language.text("重新登录此账号", "Sign in to this account again"))
-            }
             if isProPlan {
                 Picker(
                     language.text("Pro 档位", "Pro tier label"),
@@ -6324,35 +6607,36 @@ private struct CodexDirectReorderCard: ViewModifier {
         safe && session.begin(source: profileID, original: store.profiles.map(\.id), visible: visibleIDs)
     }
 
+    private func moveOnePosition(_ offset: Int) {
+        guard begin() else { return }
+        session.step(offset)
+        _ = session.commit(current: store.profiles.map(\.id), visible: visibleIDs, write: write)
+    }
+
     func body(content: Content) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             content
-                .padding(.trailing, safe ? 28 : 0)
+                .padding(.trailing, safe ? 56 : 0)
                 .overlay(alignment: .topTrailing) {
                     if safe {
-                        DirectReorderGrip(
-                            label: language.text("拖动排序；空格或回车开始/提交，方向键移动，Esc 取消", "Reorder: Space/Return to start or commit, arrows to move, Escape to cancel"),
-                            position: position, active: active,
-                            onActivate: {
-                                if active {
-                                    _ = session.commit(current: store.profiles.map(\.id), visible: visibleIDs, write: write)
-                                } else {
-                                    _ = begin()
-                                }
-                            },
-                            onMove: { if safe && active { session.step($0) } },
-                            onCancel: { session.cancel() },
-                            onDragStart: {
-                                guard begin(), let payload = session.payload else { return NSItemProvider() }
-                                return NSItemProvider(object: payload as NSString)
-                            })
+                        HStack(spacing: 2) {
+                            Button {
+                                moveOnePosition(-1)
+                            } label: {
+                                Image(systemName: "arrow.up").frame(width: 24, height: 24)
+                            }
+                            .disabled(visibleIDs.first == profileID)
+                            .accessibilityLabel(language.text("向上移动", "Move up"))
+                            Button {
+                                moveOnePosition(1)
+                            } label: {
+                                Image(systemName: "arrow.down").frame(width: 24, height: 24)
+                            }
+                            .disabled(visibleIDs.last == profileID)
+                            .accessibilityLabel(language.text("向下移动", "Move down"))
+                        }
+                        .buttonStyle(.plain)
                     }
-                }
-                .dropDestination(for: String.self) { items, _ in
-                    guard safe, items.count == 1 else { return false }
-                    return session.drop(
-                        items[0], target: profileID, current: store.profiles.map(\.id),
-                        visible: visibleIDs, write: write)
                 }
             if session.owner == profileID {
                 HStack(spacing: 6) {
@@ -6377,7 +6661,7 @@ private struct CodexDirectReorderCard: ViewModifier {
         switch session.result {
         case .idle: return ""
         case .draft: return language.text("排序草稿 · 位置 \(position) · 尚未保存", "Draft order · position \(position) · not saved")
-        case .saved: return language.text("Codex 顺序已保存；临期和置顶展示规则仍适用", "Codex order saved; expiry and pin display rules still apply")
+        case .saved: return language.text("Codex 顺序已保存；仅主动置顶优先显示", "Codex order saved; only explicitly pinned accounts appear first")
         case .failed: return language.text("排序未写入：状态已变化或保存失败。可取消草稿后重试。", "Order not written: state changed or save failed. Cancel the draft to retry.")
         case .undone: return language.text("已撤销排序", "Reorder undone")
         case .cancelled: return language.text("草稿已取消，未保存", "Draft cancelled, not saved")

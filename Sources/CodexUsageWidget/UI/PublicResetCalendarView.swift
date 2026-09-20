@@ -179,7 +179,7 @@ struct PublicResetRecentView: View {
     private var visibleEvents: [PublicResetAnnouncement] {
         let day = selectedDay ?? (integratedInCalendar ? Date() : nil)
         return day.map { PublicResetCalendarModel.events(on: $0, from: announcements) }
-            ?? Array(announcements.filter { $0.id != featuredID }.prefix(4))
+            ?? Array(announcements.filter { $0.id != featuredID }.prefix(3))
     }
 
     var body: some View {
@@ -204,7 +204,7 @@ struct PublicResetRecentView: View {
                 .padding(.vertical, 2)
             } else {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 250), alignment: .topLeading)], alignment: .leading, spacing: 10) {
-                    ForEach(visibleEvents.prefix(5)) { event in
+                    ForEach(visibleEvents.prefix(3)) { event in
                         VStack(alignment: .leading, spacing: 8) {
                             Button {
                                 selectedAnnouncement = event

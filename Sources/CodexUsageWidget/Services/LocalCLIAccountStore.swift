@@ -402,16 +402,17 @@ final class LocalCLIAccountStore: ObservableObject {
         save(next)
     }
 
-    func rename(_ profile: LocalCLIProfile, name: String) {
+    @discardableResult
+    func rename(_ profile: LocalCLIProfile, name: String) -> Bool {
         guard profiles.contains(profile), validName(name) else {
             fail(Failure.invalid)
-            return
+            return false
         }
-        var next = saved.filter { $0.id != profile.id }
+        var next = saved
         var value = profile
         value.displayName = name
-        next.append(value)
-        save(next)
+        if let index = next.firstIndex(where: { $0.id == profile.id }) { next[index] = value } else { next.append(value) }
+        return save(next)
     }
 
     func unlink(_ profile: LocalCLIProfile) {

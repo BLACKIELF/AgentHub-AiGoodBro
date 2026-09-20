@@ -15,6 +15,7 @@ struct LocalCLIWorkspaceView: View {
     @State private var preparationProfile: LocalCLIProfile?
     @State private var editing: LocalCLIProfile?
     @State private var nameDraft = ""
+    @State private var nameSaveFailed = false
     @State private var addingGrok = false
     @State private var newAccountName = ""
     @State private var avatarEditor: AccountAvatarTarget?
@@ -132,36 +133,31 @@ struct LocalCLIWorkspaceView: View {
                 Text(language.text("账号名称", "Account name")).font(.headline)
                 TextField(language.text("例如：工作账号", "For example: Work"), text: $nameDraft)
                     .textFieldStyle(.roundedBorder)
+                if nameSaveFailed {
+                    Text(model.message ?? language.text("名称未保存，请重试。", "Name was not saved. Try again."))
+                        .font(.caption).foregroundStyle(.red)
+                }
                 HStack {
                     Spacer()
                     Button(language.text("取消", "Cancel")) { editing = nil }
                     Button(language.text("保存", "Save")) {
-                        model.rename(profile, name: nameDraft)
-                        editing = nil
+                        if model.rename(profile, name: nameDraft) { editing = nil } else { nameSaveFailed = true }
                     }
                     .keyboardShortcut(.defaultAction)
                 }
-            }.padding(24).frame(width: 360)
+            }.padding(24).frame(width: 360).onAppear { nameSaveFailed = false }
         }
     }
 
-    /// The same pin and expiry rule is used in a provider's own account view.
+    /// Keep the saved order across refreshes, with only explicit pins first.
     private var orderedWorkspaceProfiles: [LocalCLIProfile] {
         let profiles = model.profiles(for: kind).filter { onlyProfileID == nil || $0.id == onlyProfileID }
-        let now = Date()
-        let expiring = Set(
-            profiles.filter { profile in
-                ResetCardPresentation.isExpiringSoon(
-                    model.quotas[profile.id]?.resetCards,
-                    now: now,
-                    evidenceFresh: !model.stale.contains(profile.id) && ResetCardPresentation.isFresh(model.quotas[profile.id]?.fetchedAt, now: now))
-            }.map(\.id))
         let pinned = profiles.first {
             ResetCardPresentation.localKey(kind: kind.rawValue, profileID: $0.id) == settings.pinnedAccountKey
         }?.id
         var byID: [String: LocalCLIProfile] = [:]
         for profile in profiles { byID[profile.id] = profile }
-        return ResetCardPresentation.prioritizedOrder(profiles.map(\.id), expiring: expiring, pinnedAccountID: pinned)
+        return ResetCardPresentation.savedOrder(profiles.map(\.id), pinnedAccountID: pinned)
             .compactMap { byID[$0] }
     }
 

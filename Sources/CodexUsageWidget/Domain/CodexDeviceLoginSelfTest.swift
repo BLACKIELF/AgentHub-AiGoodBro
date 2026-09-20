@@ -64,6 +64,22 @@ enum CodexDeviceLoginSelfTest {
             guard CodexDeviceLoginVerification.hasFreshQuota(snapshot, since: now),
                 !CodexDeviceLoginVerification.hasFreshQuota(snapshot, since: now.addingTimeInterval(1))
             else { return fail("stale limits") }
+            guard CodexDeviceLoginPhase.choosingBrowser.canDismiss,
+                CodexDeviceLoginPhase.choosingBrowser.canCancelAuthorization == false,
+                CodexDeviceLoginPhase.preparing.canCancelAuthorization,
+                !CodexDeviceLoginPhase.verifying.canCancelAuthorization
+            else { return fail("chooser and cancel states") }
+            guard CodexLoginBlockReason.cliUnavailable.presentsPanel,
+                CodexLoginBlockReason.mappingUnconfirmed.loginFailure == .mappingUnconfirmed,
+                CodexLoginBlockReason.warmingUp.presentsPanel == false,
+                !CodexLoginBlockReason.cliUnavailable.message(.zh).contains(sample)
+            else { return fail("block reasons") }
+            guard TokenUsageHomeRange.storedOrDefault(defaults: UserDefaults(suiteName: "token-range-fixture-\(UUID().uuidString)")!) == .thirtyDays
+            else { return fail("token range default") }
+            guard CodexDeviceLoginIdentityCaption.text(.zh) == "目标账号：",
+                CodexDeviceLoginIdentityCaption.text(.en) == "Target account: ",
+                !CodexDeviceLoginIdentityCaption.text(.zh).contains("正在授权")
+            else { return fail("identity caption") }
         } catch { return fail("unexpected parser failure") }
         print("device login parser and verification self-test passed")
         return true
@@ -80,9 +96,12 @@ enum CodexDeviceLoginSelfTest {
         let now = Date()
         let authorization = CodexDeviceAuthorization(code: "DEMO-ONLY", url: CodexDeviceCodeParser.officialURL, expiresAt: now.addingTimeInterval(872))
         let states: [(String, CodexDeviceLoginPhase)] = [
+            ("choose-browser", .choosingBrowser),
             ("ready", .waiting(authorization, .opened)), ("browser-unavailable", .waiting(authorization, .unavailable)),
+            ("opening", .waiting(authorization, .opening)),
             ("expired", .expired), ("verifying", .verifying), ("quota-pending", .quotaPending),
-            ("mismatch", .failed(.identityMismatch)), ("cancelled", .cancelled), ("completed", .completed),
+            ("mismatch", .failed(.identityMismatch)), ("duplicate", .failed(.accountAlreadyExists)),
+            ("cli-unavailable", .failed(.cliUnavailable)), ("cancelled", .cancelled), ("completed", .completed),
         ]
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -125,7 +144,7 @@ enum CodexDeviceLoginSelfTest {
                     }
                 }
             }
-            print("Rendered 32 device login panels and 8 account layouts with synthetic data only")
+            print("Rendered device login panels and account layouts with synthetic data only")
             return true
         } catch {
             print("Device login preview render failed")
@@ -170,7 +189,8 @@ private struct DeviceLoginInteractionFixture: View {
                 presentation: presentation, language: .zh, isBusy: !presentation.phase.canDismiss,
                 copy: {
                     copies += 1
-                    presentation.copiedUntil = Date().addingTimeInterval(3)
+                    presentation.copyFeedback = .codeCopied
+                    presentation.copyFeedbackUntil = Date().addingTimeInterval(3)
                 },
                 reopen: { reopens += 1 }, copyURL: {},
                 retry: {

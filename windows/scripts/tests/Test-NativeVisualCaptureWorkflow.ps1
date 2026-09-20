@@ -60,9 +60,9 @@ function Import-EntryFunction {
   Invoke-Expression $definition.Extent.Text
 }
 
-Import-EntryFunction -Name 'Assert-PreflightReady'
-Import-EntryFunction -Name 'Get-WindowsSdkRootCandidates'
-Import-EntryFunction -Name 'Get-CaptureCompiler'
+. Import-EntryFunction -Name 'Assert-PreflightReady'
+. Import-EntryFunction -Name 'Get-WindowsSdkRootCandidates'
+. Import-EntryFunction -Name 'Get-CaptureCompiler'
 
 $sdkFixtureRoot = Join-Path $repositoryRoot (
   '.local-artifacts\windows-visual-captures\sdk-fixture-' + [guid]::NewGuid().ToString('N')

@@ -440,7 +440,7 @@ enum WorkspacePreviewRenderer {
                 try renderView(toolbar, size: CGSize(width: 320, height: 44), scheme: scheme, to: directory.appendingPathComponent("toolbar-\(theme).png"))
                 let editor = ExecutionPreferenceControl(
                     preference: .init(model: .astra, reasoningEffort: .max, serviceTier: .standard),
-                    inlineEditor: true, onSave: { _, _ in }
+                    inlineEditor: true, onSave: { _, _ in .success(()) }
                 )
                 .environment(\.widgetLanguage, language)
                 .environment(\.locale, language.locale)

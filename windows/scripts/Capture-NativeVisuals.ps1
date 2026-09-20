@@ -273,6 +273,7 @@ function Initialize-NativeVisualDriver {
 
   Add-Type -TypeDefinition @'
 using System;
+using System.Collections.Generic;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -311,6 +312,55 @@ public static class NativeVisualCaptureDriver
     }
 
     private delegate bool EnumChildProc(IntPtr hwnd, IntPtr lParam);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool EnumWindows(EnumChildProc callback, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint processId);
+
+    [DllImport("user32.dll")]
+    private static extern bool IsWindowVisible(IntPtr hwnd);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetWindow(IntPtr hwnd, uint command);
+
+    public static bool IsTaskMainWindowCandidate(
+        int expectedProcessId, uint processId, bool visible, IntPtr owner, string className)
+    {
+        return expectedProcessId > 0
+            && processId == (uint)expectedProcessId
+            && visible
+            && owner == IntPtr.Zero
+            && String.Equals(className, "Tauri Window", StringComparison.Ordinal);
+    }
+
+    public static IntPtr SelectUniqueTaskWindow(IntPtr[] candidates)
+    {
+        if (candidates.Length > 1)
+            throw new InvalidOperationException("Multiple visible Tauri windows belong to the task process; refusing ambiguous capture.");
+        return candidates.Length == 1 ? candidates[0] : IntPtr.Zero;
+    }
+
+    public static IntPtr FindTaskMainWindow(int expectedProcessId)
+    {
+        var candidates = new List<IntPtr>();
+        EnumChildProc callback = delegate(IntPtr hwnd, IntPtr ignored)
+        {
+            uint processId;
+            GetWindowThreadProcessId(hwnd, out processId);
+            var className = new StringBuilder(256);
+            GetClassName(hwnd, className, className.Capacity);
+            // GW_OWNER = 4. Tao's visible message window is not the Tauri UI.
+            if (IsTaskMainWindowCandidate(expectedProcessId, processId,
+                IsWindowVisible(hwnd), GetWindow(hwnd, 4), className.ToString()))
+                candidates.Add(hwnd);
+            return true;
+        };
+        if (!EnumWindows(callback, IntPtr.Zero))
+            throw new Win32Exception(Marshal.GetLastWin32Error());
+        return SelectUniqueTaskWindow(candidates.ToArray());
+    }
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern bool GetWindowRect(IntPtr hwnd, out RECT rect);
@@ -1137,6 +1187,7 @@ function Wait-TaskWindow {
     [IntPtr] $ExpectedForeground
   )
   $deadline = (Get-Date).AddSeconds(60)
+  $taskWindow = [IntPtr]::Zero
   do {
     if ($Process.HasExited) {
       throw 'The task application exited before its main window was ready.'
@@ -1146,11 +1197,12 @@ function Wait-TaskWindow {
       -ExpectedForeground $ExpectedForeground `
       -Stage 'startup polling before window preparation'
     $Process.Refresh()
-  } while ($Process.MainWindowHandle -eq [IntPtr]::Zero -and (Get-Date) -lt $deadline)
-  if ($Process.MainWindowHandle -eq [IntPtr]::Zero) {
-    throw 'Timed out waiting for the task application main window.'
+    $taskWindow = [NativeVisualCaptureDriver]::FindTaskMainWindow($Process.Id)
+  } while ($taskWindow -eq [IntPtr]::Zero -and (Get-Date) -lt $deadline)
+  if ($taskWindow -eq [IntPtr]::Zero) {
+    throw 'Timed out waiting for a visible, unowned Tauri Window belonging to the task process.'
   }
-  return $Process.MainWindowHandle
+  return $taskWindow
 }
 
 function Assert-ForegroundPreserved {

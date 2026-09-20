@@ -29,3 +29,4 @@
 --self-test-main-window-layout
 --self-test-account-floating-panel
 --self-test-brand-assets
+--self-test-webview-bridge

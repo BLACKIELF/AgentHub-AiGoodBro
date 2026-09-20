@@ -291,7 +291,9 @@ enum WorkspaceScreenshotSelfTest {
                         "the ninth account row must increase the complete export height at every layout"
                     )
                     let rowHeight = captured.plan.size.height - eightAccountCapture.plan.size.height
-                    expect(rowHeight <= 118, "each comfortably spaced compact row must remain under 118 points including its gap at all supported widths")
+                    // 0921v2 intentionally exposes model and dispatch controls
+                    // by default; the old 118pt folded-row budget hid them.
+                    expect(rowHeight >= 150 && rowHeight <= 208, "expanded model/scheduling rows must remain visible and bounded to 208 points including the gap")
                     print("Compact layout: width=\(Int(width)), scheme=\(scheme), row=\(Int(rowHeight))pt")
                     expect(NSBitmapImageRep(data: captured.png)?.pixelsHigh == captured.plan.pixelsHigh, "long PNG must retain its full planned height")
                     expect(store.isPreview && store.profiles.count == 9, "export must retain all nine fixture accounts")
