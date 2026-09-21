@@ -61,6 +61,7 @@ regenerated from these synthetic fixtures — see `docs/windows-port/README.md`.
 |---|---|
 | Header region | `header` |
 | Account directories: selected, failed save, confirmed unlink | region `Account directories` |
+| Directory quota: reading, available, failed, old record, narrow layout | region `Account directories` |
 | Overview (leadership + quota + metrics + monthly value) | `.dashboard-home-overview` |
 | Tasks panel | `#dashboard-home-panel-tasks` |
 | AI Leadership panel | `#dashboard-home-panel-leadership` |
@@ -72,6 +73,8 @@ A guard test also asserts that the synthetic bridge actually fed data into the
 dashboard, so a blank or error shell cannot silently pass as a baseline.
 Account-directory interactions also cover one-step stable ordering, cancelled folder selection,
 draft retention on save failure, unlink confirmation, and late old-source responses.
+Quota tests cover manual-only reads, row isolation across reordering, no local sessions,
+missing windows, true 0% vs unavailable, mismatched IDs and unlink while a read is pending.
 
 ## Not covered yet
 

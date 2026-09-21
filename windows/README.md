@@ -9,11 +9,12 @@
 - 中英文设置、Light/Dark/System 外观和六套语义 palette catalog
 - Windows 原生 exact-HWND、后台不抢前台的视觉采集 workflow
 - 0921v4：关联已有账号目录、备注、逐位排序、移除关联及切换查看来源
+- 0921v5：每个目录手动读取官方额度，不依赖本地聊天记录；失败保留带时间的旧记录，不自动轮询或重试
 
 当前实现是只读 Dashboard 加本机目录关联管理，尚无受管凭据、登录或系统账号切换命令。
 “正在查看”只表示数据来源，不是已验证登录身份；移除关联不删除文件、不注销登录。
 本切片按单个 app 实例使用，跨进程写保护在受管账号阶段实现。
-本次实现与验证边界见 [0921v4 集成说明](../docs/windows-port/INTEGRATION_0921v3.md)；
+本次实现与验证边界见 [0921v5 集成说明](../docs/windows-port/INTEGRATION_0921v3.md)；
 功能所有权、固定基线和 P0–P5 顺序见 [Windows 功能对齐路线图](../docs/windows-port/WINDOWS_PARITY_ROADMAP_0919v1.md)。
 
 任务快照读取并展示：

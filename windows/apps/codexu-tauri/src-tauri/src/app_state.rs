@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, Semaphore};
 use tracing::{error, info, warn};
 
 use codexu_core::models::CodexDashboardSnapshot;
@@ -172,6 +172,8 @@ pub struct AppState {
     pub runtime_language: RwLock<ResolvedLanguage>,
     pub snapshot: RwLock<Option<CachedSnapshot>>,
     pub refresh_lock: Mutex<()>,
+    /// Manual row reads are bounded, never queued for all linked accounts.
+    pub profile_quota_slots: Semaphore,
     pub app_data_dir: PathBuf,
     source_generation: AtomicU64,
     #[cfg(test)]
@@ -190,6 +192,7 @@ impl AppState {
             runtime_language: RwLock::new(runtime_language),
             snapshot: RwLock::new(None),
             refresh_lock: Mutex::new(()),
+            profile_quota_slots: Semaphore::new(2),
             app_data_dir,
             source_generation: AtomicU64::new(0),
             #[cfg(test)]

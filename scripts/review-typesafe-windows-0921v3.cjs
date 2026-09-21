@@ -4,6 +4,8 @@ const path = require('node:path');
 const { createHash } = require('node:crypto');
 const { TypeSafeClient, choice } = require('@typesafe-ai/sdk');
 const root = path.resolve(__dirname, '..');
+// Keep this entry path stable for the terminal command already shared with the user.
+const review = 'windows-0921v5';
 function excerpt(file, start, end) {
   const source = fs.readFileSync(path.join(root, file), 'utf8');
   const a = source.indexOf(start), b = source.indexOf(end, a + start.length);
@@ -33,6 +35,22 @@ const cases = {
     claim: 'A rejected update_profile promise keeps the alias editor and confirmation state; it does not take the success cleanup path.',
     code: excerpt('windows/apps/codexu-tauri/web/src/components/ProfilesPanel.tsx', '  async function perform', '  return ('),
   },
+  quota_scope: {
+    claim: 'The manual row quota function reads the root associated with the requested profile ID, rechecks that association after the reader completes, and does not assign the active codex_root.',
+    code: excerpt(native + 'commands/profile_quota.rs', 'async fn read_with', '#[cfg(test)]'),
+  },
+  quota_unknown: {
+    claim: 'This quota projection rejects unavailable, empty and invalid percentage results rather than substituting zero; absent windows are not fabricated.',
+    code: excerpt(native + 'commands/profile_quota.rs', 'fn project', 'async fn check_root'),
+  },
+  quota_disclosure: {
+    claim: 'The row quota DTO contains only the profile ID, read time and typed window percentages/reset times; it does not serialize account metadata or paths.',
+    code: excerpt(native + 'commands/profile_quota.rs', '#[derive(Debug, serde::Serialize)]', 'async fn check_root'),
+  },
+  quota_cleanup: {
+    claim: 'The row quota component increments its generation when unmounted and only applies a completed request when its generation still matches; its interval changes time state rather than making quota requests.',
+    code: excerpt('windows/apps/codexu-tauri/web/src/components/ProfileQuota.tsx', 'export function ProfileQuota', '  const formatTime'),
+  },
   negative_control: {
     claim: 'The following synthetic code retains the editor after a failed save.',
     code: 'try { await persist() } catch {} finally { closeEditor() }',
@@ -50,11 +68,11 @@ async function main() {
   const bytes = Buffer.byteLength(json);
   if (bytes > 32 * 1024) throw new Error('Review exceeds 32 KiB; no request sent.');
   const sha256 = createHash('sha256').update(json).digest('hex');
-  console.log('Windows 0921v3 review: 6 questions, bytes=' + bytes + ', source_sha256=' + sha256);
+  console.log(review + ': questions=' + Object.keys(cases).length + ', bytes=' + bytes + ', source_sha256=' + sha256);
   if (mode === '--dry-run') { console.log('OFFLINE; no model verdict.'); return; }
   if (!process.env.TYPESAFE_API_KEY?.trim()) throw new Error('TYPESAFE_API_KEY unavailable; use the terminal where it is loaded.');
   const folder = path.join(root, '.local-artifacts', 'typesafe');
-  const receipt = path.join(folder, 'windows-0921v3-' + sha256 + '.json');
+  const receipt = path.join(folder, review + '-' + sha256 + '.json');
   if (fs.existsSync(receipt)) {
     console.log('Existing receipt for this exact snapshot; no repeat API call: ' + receipt); return;
   }
@@ -69,15 +87,22 @@ async function main() {
   const result = await client.systemOne(payload);
   const answers = {};
   const labels = { supported: '支持', contradicted: '不支持', insufficient: '证据不够' };
+  const names = {
+    catalog_scope: '目录管理不冒充登录切换', persist_failure: '保存失败保留旧状态',
+    private_path: '列表不暴露目录路径', quota_home: '额度读取绑定子进程目录',
+    ui_failure: '保存失败保留编辑输入', quota_scope: '按目录查额度，不改变当前来源',
+    quota_unknown: '查不到的额度不显示成零', quota_disclosure: '额度回执不带账号私密信息',
+    quota_cleanup: '移除后的旧结果不再更新界面', negative_control: '故意放入的错误说法（应判不支持）',
+  };
   for (const id of Object.keys(cases)) {
     const answer = result.answers[id];
     if (answer?.type !== 'choice' || !Object.hasOwn(labels, answer.choice)
       || !Number.isFinite(answer.confidence) || answer.confidence < 0 || answer.confidence > 1) throw new Error('Invalid result; do not use as approval.');
     answers[id] = { choice: answer.choice, confidence: answer.confidence };
-    console.log(id + '：' + labels[answer.choice] + '（' + answer.confidence.toFixed(2) + '）');
+    console.log(names[id] + '：' + labels[answer.choice] + '（判断置信度 ' + answer.confidence.toFixed(2) + '，不是正确率）');
   }
   fs.mkdirSync(folder, { recursive: true, mode: 0o700 });
-  fs.writeFileSync(receipt, JSON.stringify({ review: 'windows-0921v3', sha256, model: result.model, usage: result.usage, answers }, null, 2), { flag: 'wx', mode: 0o600 });
+  fs.writeFileSync(receipt, JSON.stringify({ review, sha256, model: result.model, usage: result.usage, answers }, null, 2), { flag: 'wx', mode: 0o600 });
   console.log('Summary saved: ' + receipt);
   console.log('仅辅助复核，不代表 Windows 已运行通过，也不修改代码或账号。');
 }

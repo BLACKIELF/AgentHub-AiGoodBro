@@ -150,6 +150,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             commands::profiles::list_profiles,
             commands::profiles::update_profile,
+            commands::profile_quota::read_profile_quota,
             commands::usage::get_local_usage,
             commands::usage::refresh_usage,
             commands::usage::clear_cache,

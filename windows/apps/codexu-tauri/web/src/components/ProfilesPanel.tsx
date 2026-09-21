@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useI18n } from '../i18n/I18nProvider';
+import { ProfileQuota } from './ProfileQuota';
 
 type Profile = { id: string; label: string; selected: boolean };
 
@@ -73,6 +74,7 @@ export function ProfilesPanel({ onSourceChange }: { onSourceChange: () => void }
             <button className="glass-button px-2 py-1 text-xs" aria-label={text('上移', 'Move up')} disabled={busy || index === 0} onClick={() => void perform({ kind: 'move', id: profile.id, delta: -1 })}>↑</button>
             <button className="glass-button px-2 py-1 text-xs" aria-label={text('下移', 'Move down')} disabled={busy || index === profiles.length - 1} onClick={() => void perform({ kind: 'move', id: profile.id, delta: 1 })}>↓</button>
             <button className="glass-button px-2 py-1 text-xs" disabled={busy} onClick={() => { setRemoving(profile.id); setEditing(null); }}>{text('移除', 'Remove')}</button>
+            <ProfileQuota profileId={profile.id} disabled={busy} />
           </li>
         ))}
       </ul>

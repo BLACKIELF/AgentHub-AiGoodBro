@@ -11,13 +11,34 @@ test.beforeEach(async ({ page }) => {
     window.failProfileSave = false;
     window.cancelProfilePick = false;
     window.holdNextUsage = false;
+    window.quotaCalls = [];
+    window.quotaMode = 'success';
+    window.wrongQuotaId = false;
     let selected = '1';
     let rows = [
       { id: '1', label: 'Synthetic A', selected: true },
       { id: '2', label: 'Synthetic B', selected: false },
     ];
     window.__TAURI_INTERNALS__.invoke = async (cmd, args) => {
+      if (cmd === 'read_profile_quota') {
+        window.quotaCalls.push(args.id);
+        if (window.quotaMode === 'fail') throw new Error('Synthetic private failure');
+        const result = {
+          profile_id: window.wrongQuotaId ? '999' : args.id,
+          checked_at: Date.now(),
+          windows: [{ kind: 'seven_day', remaining_percent: args.id === '1' ? 59 : 80, resets_at: null }],
+        };
+        if (window.quotaMode === 'old') result.checked_at -= 600000;
+        if (window.quotaMode === 'all') result.windows = [
+          { kind: 'five_hour', remaining_percent: 100, resets_at: Date.now() + 18000000 },
+          { kind: 'seven_day', remaining_percent: 59, resets_at: Date.now() + 604800000 },
+          { kind: 'monthly', remaining_percent: 0, resets_at: Date.now() + 2592000000 },
+        ];
+        if (window.quotaMode === 'pending') return new Promise(resolve => { window.releaseProfileQuota = () => resolve(result); });
+        return result;
+      }
       if (cmd === 'get_local_usage' || cmd === 'refresh_usage') {
+        if (window.noLocalUsage) return null;
         const snapshot = structuredClone(await invoke(cmd, args));
         snapshot.messages = [selected === '1' ? 'Synthetic source A' : 'Synthetic source B'];
         if (window.holdNextUsage) {
@@ -103,4 +124,93 @@ test('link cancellation does not write; remove requires confirmation', async ({ 
   await page.getByTestId('profile-3').getByRole('button', { name: 'Remove', exact: true }).click();
   await panel(page).getByRole('button', { name: 'Confirm removal', exact: true }).click();
   await expect(page.getByTestId('profile-3')).toHaveCount(0);
+});
+
+test('quota is manual, scoped to its row, and stable across reorder', async ({ page }) => {
+  const first = page.getByTestId('profile-1'), second = page.getByTestId('profile-2');
+  expect(await page.evaluate(() => window.quotaCalls)).toEqual([]);
+  await expect(first).toContainText('Not read yet');
+  await first.getByRole('button', { name: 'Read quota', exact: true }).click();
+  await expect(first).toContainText('Weekly remaining 59%');
+  await expect(first).toContainText('Reset time unknown');
+  await expect(first).not.toContainText('5-hour');
+  await expect(first).not.toContainText('Monthly');
+  await expect(second).toContainText('Not read yet');
+  await second.getByRole('button', { name: 'Read quota', exact: true }).click();
+  await expect(second).toContainText('Weekly remaining 80%');
+  await second.getByRole('button', { name: 'Move up' }).click();
+  await expect(panel(page).locator('li').first()).toContainText('Synthetic B');
+  await expect(first).toContainText('Weekly remaining 59%');
+  expect(await page.evaluate(() => window.quotaCalls)).toEqual(['1', '2']);
+  expect(await page.evaluate(() => window.profileCalls.some(call => call.kind === 'view'))).toBe(false);
+  await expect(panel(page)).toHaveScreenshot('profiles-quota-rows.png');
+});
+
+test('quota failures never become zero and preserve only explicitly old records', async ({ page }) => {
+  const first = page.getByTestId('profile-1');
+  await page.evaluate(() => { window.quotaMode = 'fail'; });
+  await first.getByRole('button', { name: 'Read quota', exact: true }).click();
+  await expect(first).toContainText('Read failed');
+  await expect(first).not.toContainText('0%');
+  await expect(panel(page)).toHaveScreenshot('profiles-quota-unavailable.png');
+  await page.evaluate(() => { window.quotaMode = 'success'; });
+  await first.getByRole('button', { name: 'Read quota', exact: true }).click();
+  await expect(first).toContainText('Weekly remaining 59%');
+  await page.evaluate(() => { window.quotaMode = 'fail'; });
+  await first.getByRole('button', { name: 'Read quota', exact: true }).click();
+  await expect(first).toContainText('Previous record; read again');
+  await expect(first).toContainText('Weekly remaining 59%');
+  await expect(panel(page)).toHaveScreenshot('profiles-quota-stale.png');
+  await page.evaluate(() => { window.quotaMode = 'old'; });
+  await first.getByRole('button', { name: 'Read quota', exact: true }).click();
+  await expect(first).not.toContainText('Read failed');
+  await expect(first).toContainText('Previous record; read again');
+});
+
+test('pending quota cannot be duplicated or restored after unlink', async ({ page }) => {
+  const first = page.getByTestId('profile-1');
+  await page.evaluate(() => { window.quotaMode = 'pending'; });
+  await first.getByRole('button', { name: 'Read quota', exact: true }).click();
+  await expect(first.getByRole('button', { name: 'Reading…', exact: true })).toBeDisabled();
+  expect(await page.evaluate(() => window.quotaCalls)).toEqual(['1']);
+  await expect(panel(page)).toHaveScreenshot('profiles-quota-reading.png');
+  await first.getByRole('button', { name: 'Remove', exact: true }).click();
+  await panel(page).getByRole('button', { name: 'Confirm removal', exact: true }).click();
+  await expect(first).toHaveCount(0);
+  await page.evaluate(() => window.releaseProfileQuota());
+  await expect(first).toHaveCount(0);
+  await expect(page.getByTestId('profile-2')).toContainText('Not read yet');
+  await expect(panel(page)).not.toContainText('Weekly remaining 59%');
+});
+
+test('mismatched quota identity is rejected rather than displayed on the wrong row', async ({ page }) => {
+  await page.evaluate(() => { window.wrongQuotaId = true; });
+  const first = page.getByTestId('profile-1');
+  await first.getByRole('button', { name: 'Read quota', exact: true }).click();
+  await expect(first).toContainText('Read failed');
+  await expect(first).not.toContainText('remaining');
+  expect(await page.evaluate(() => window.quotaCalls)).toEqual(['1']);
+});
+
+test('quota remains accessible with no local usage snapshot', async ({ page }) => {
+  await page.evaluate(() => { window.noLocalUsage = true; });
+  await page.locator('header').first().getByRole('button', { name: 'Refresh', exact: true }).click();
+  await expect(page.getByText('Synthetic source A', { exact: false })).toHaveCount(0);
+  const first = page.getByTestId('profile-1');
+  await first.getByRole('button', { name: 'Read quota', exact: true }).click();
+  await expect(first).toContainText('Weekly remaining 59%');
+  expect(await page.evaluate(() => window.profileCalls.length)).toBe(0);
+});
+
+test('all quota windows wrap within a narrow desktop without an inner scroller', async ({ page }) => {
+  await page.setViewportSize({ width: 900, height: 900 });
+  await page.evaluate(() => { window.quotaMode = 'all'; });
+  await page.getByTestId('profile-1').getByRole('button', { name: 'Read quota', exact: true }).click();
+  const first = page.getByTestId('profile-1');
+  await expect(first).toContainText('5-hour remaining 100%');
+  await expect(first).toContainText('Weekly remaining 59%');
+  await expect(first).toContainText('Monthly remaining 0%');
+  expect(await panel(page).evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+  expect(await panel(page).evaluate(element => ['auto', 'scroll'].includes(getComputedStyle(element).overflowY))).toBe(false);
+  await expect(panel(page)).toHaveScreenshot('profiles-quota-narrow.png');
 });
