@@ -96,7 +96,8 @@ Web ProfilesPanel/useUsage；下一批先补 Windows 凭据安全存储及身份
 - 0921v4：本机通过 Rust workspace 69 项测试、Web 24 项测试、生产构建和浏览器 12 项测试（包含 4 项账号目录交互及 3 个新定位器截图断言）。截图仅保存在本地 .local-artifacts。
 - 0921v4 提交 2a64418：PR #11 的 Mac、Windows Rust/Web、PowerShell 5.1/7 与 CI required 全部通过。
 - 0921v5：本机通过 Rust 74 项、Web 24 项、生产构建和浏览器 18 项测试；新增读取中、成功、失败、旧记录、窄窗口的 5 个定位器截图断言。无真实账号请求，后端测试使用合成目录与替身读取器，不能代替真实 Windows 额度归属验收。
-- Windows CI 的最终结果以本次 PR 为准；在 Mac 编译和测试通过不冒充 Windows 实机结果。
+- 0921v5 提交 4eea51d：PR #11 的 Mac、Windows Rust/Web、PowerShell 5.1/7 与 CI required 全部通过，运行记录为 https://github.com/BLACKIELF/AgentHub-AiGoodBro/actions/runs/35546599951 。同提交的 push 运行被 PR 运行按并发规则替代，显示 cancelled 不代表失败。
 - 未在 Windows 原生窗口验证目录选择器、真实账号官方额度、安装/升级，以及 issue #8 的 UIA Document。
-- TypeSafe 复核入口：`node scripts/review-typesafe-windows-0921v3.cjs --run`，在已有密钥的终端显式调用。0921v5 扩为一次 10 个窄问题，含反例，保留旧入口路径；默认 dry-run、不自动重试、不进入 app/CI。尚无本轮模型回执时，不标为模型审查通过。
-- TypeSafe 按技能用于“源码是否支持某个具体说法”的辅助判断；编译、回归、身份安全和放行仍由确定性检查负责。
+- TypeSafe 复核入口：`node scripts/review-typesafe-windows-0921v3.cjs --run`，在已有密钥的终端显式调用。0921v5 保留旧入口路径，默认 dry-run、不自动重试、不进入 app/CI。
+- Jev 1.13.0 已对源码快照 `52176f5…b3fa4f` 一次回答 10 个窄问题：9 个预期约束均判定支持，故意加入的错误说法判定不支持，判断置信度为 0.87–1.00；回执仅存本机忽略目录且权限为 0600。
+- TypeSafe 只用于“给定源码证据是否支持某个具体说法”的辅助判断；其置信度不是正确率，也不证明 Windows 已运行。编译、回归、身份安全、真机验收和放行仍由确定性检查与人工负责。
