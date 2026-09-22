@@ -35,6 +35,19 @@ function Import-TestedFunction {
 $fixture = Join-Path $root ('.local-artifacts\release-readiness-test-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $fixture -Force | Out-Null
 try {
+    # Test persistence directly, so failures before the second synthetic step
+    # cannot be misdiagnosed as executing beyond that step.
+    $replacePath = Join-Path $fixture 'replace-report.json'
+    $replaceReport = [ordered]@{ generation = 1 }
+    Save-ReadinessReport -Report $replaceReport -Path $replacePath
+    foreach ($generation in @(2, 3)) {
+        $replaceReport.generation = $generation
+        Save-ReadinessReport -Report $replaceReport -Path $replacePath
+        $readBack = Get-Content -LiteralPath $replacePath -Raw -Encoding UTF8 | ConvertFrom-Json
+        Assert-True ($readBack.generation -eq $generation) 'Atomic report replacement did not preserve the new generation.'
+    }
+    Assert-True (@(Get-ChildItem -LiteralPath $fixture -Filter 'replace-report.json.*' -File).Count -eq 0) 'Successful report replacement left temporary or backup files.'
+
     $plan = @(Get-ReleaseReadinessPlan -Root $root -ReleaseVersion '9.6.9' -Output $fixture -Preflight (Join-Path $fixture 'preflight.json') -PowerShell51 'powershell.exe' -PowerShell7 'pwsh.exe' -Package $true)
     Assert-True ($plan[0].name -eq 'native-preflight' -and '-PreflightOnly' -in $plan[0].arguments) 'Default native step must only preflight.'
     Assert-True (@($plan | Where-Object { $_.name -like 'ps51:*' }).Count -eq 4) 'PowerShell 5.1 contract coverage incomplete.'
@@ -59,10 +72,12 @@ try {
     $reportPath = Join-Path $fixture 'report.json'
     $runner = { param($step) if ($step.name -eq 'second') { return [int]23 }; return [int]0 }
     $failed = $false
+    $failureDiagnostic = 'none'
     try { Invoke-ReleasePlan -Plan $shortPlan -Report $report -ReportPath $reportPath -Runner $runner }
-    catch { $failed = $true }
+    catch { $failed = $true; $failureDiagnostic = $_.Exception.GetType().FullName + ': ' + $_.Exception.Message }
     Assert-True $failed 'A failed child process did not stop the release plan.'
-    Assert-True ($report.steps.Count -eq 2) 'Execution continued beyond the failing step.'
+    $stepDiagnostic = @($report.steps | ForEach-Object { $_.name + ':' + $_.status + ':exit=' + $_.exit_code }) -join ', '
+    Assert-True ($report.steps.Count -eq 2) ('Expected exactly first and second step records; actual count=' + $report.steps.Count + '; records=[' + $stepDiagnostic + ']; caught=' + $failureDiagnostic)
     Assert-True ($report.steps[0].status -eq 'passed' -and $report.steps[1].status -eq 'failed') 'Step outcomes were not recorded honestly.'
     $saved = Get-Content -LiteralPath $reportPath -Raw -Encoding UTF8 | ConvertFrom-Json
     Assert-True ($saved.steps[1].exit_code -eq 23 -and $null -ne $saved.steps[1].finished_utc) 'Actual failure code/timing missing from durable report.'

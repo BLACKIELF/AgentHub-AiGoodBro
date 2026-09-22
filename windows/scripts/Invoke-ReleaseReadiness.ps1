@@ -39,13 +39,29 @@ function Get-ReleaseReadinessPlan {
 
 function Save-ReadinessReport {
     param([Collections.IDictionary] $Report, [string] $Path)
-    $temporary = $Path + '.' + [guid]::NewGuid().ToString('N') + '.tmp'
+    $writeId = [guid]::NewGuid().ToString('N')
+    $temporary = $Path + '.' + $writeId + '.tmp'
+    $backup = $Path + '.' + $writeId + '.bak'
+    $replaced = $false
+    $phase = 'serialize'
     try {
         [IO.File]::WriteAllText($temporary, ($Report | ConvertTo-Json -Depth 10), [Text.UTF8Encoding]::new($false))
-        if (Test-Path -LiteralPath $Path) { [IO.File]::Replace($temporary, $Path, $null) }
-        else { [IO.File]::Move($temporary, $Path) }
+        if (Test-Path -LiteralPath $Path) {
+            $phase = 'replace'
+            # A PowerShell null can bind to an empty .NET string path. Supply
+            # a unique real backup path instead; retain it if replacement fails.
+            [IO.File]::Replace($temporary, $Path, $backup)
+            $replaced = $true
+        } else {
+            $phase = 'create'
+            [IO.File]::Move($temporary, $Path)
+        }
+    } catch {
+        $cause = $_.Exception.GetBaseException()
+        throw ('Readiness report write failed: phase=' + $phase + '; type=' + $cause.GetType().FullName + '; hresult=' + $cause.HResult)
     } finally {
         if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Force }
+        if ($replaced -and (Test-Path -LiteralPath $backup)) { Remove-Item -LiteralPath $backup -Force }
     }
 }
 

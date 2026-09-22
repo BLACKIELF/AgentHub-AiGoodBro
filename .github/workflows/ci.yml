@@ -112,10 +112,6 @@ jobs:
           path: .local-artifacts/windows-rustfmt.patch
           if-no-files-found: ignore
           retention-days: 3
-      - name: Test Windows Rust workspace
-        if: ${{ !cancelled() }}
-        working-directory: windows
-        run: cargo test --workspace --locked
       - name: Test native visual script contracts with Windows PowerShell 5.1
         if: ${{ !cancelled() }}
         shell: powershell
@@ -132,6 +128,11 @@ jobs:
           .\windows\scripts\tests\Test-NativeWindowSelection.ps1
           .\windows\scripts\tests\Test-NativeVisualCaptureWorkflow.ps1
           .\windows\scripts\tests\Test-ReleaseReadiness.ps1
+
+      - name: Test Windows Rust workspace
+        if: ${{ !cancelled() }}
+        working-directory: windows
+        run: cargo test --workspace --locked
 
   windows-web:
     needs: changes

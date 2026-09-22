@@ -72,7 +72,9 @@ pub fn validate_official_config(response: &Value) -> anyhow::Result<()> {
             "CLI subscription configuration mismatch"
         );
     }
-    let providers = config.get("model_providers").filter(|value| !value.is_null());
+    let providers = config
+        .get("model_providers")
+        .filter(|value| !value.is_null());
     if let Some(providers) = providers {
         let map = providers
             .as_object()
