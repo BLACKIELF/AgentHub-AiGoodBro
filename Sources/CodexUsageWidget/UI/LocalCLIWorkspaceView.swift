@@ -271,12 +271,16 @@ struct LocalCLIWorkspaceView: View {
                     }
                 } else if let balance = result?.balance {
                     Text(language.text("余额 ", "Balance ") + balance.formatted()).font(.callout.monospacedDigit())
+                    Text(language.text("周期额度与重置时间：暂不可确认", "Periodic limits and reset time: unavailable"))
+                        .font(.caption2).foregroundStyle(.secondary)
                 } else {
-                    Text(language.text("暂无额度数据", "No quota data")).font(.caption).foregroundStyle(.secondary)
+                    Text(language.text("已用 / 剩余 / 重置时间：暂不可确认", "Used / remaining / reset time: unavailable"))
+                        .font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
             .frame(width: layout == .rows ? 168 : nil)
-            .frame(maxWidth: layout == .cards ? .infinity : nil, maxHeight: layout == .cards ? .infinity : nil, alignment: .topLeading)
+            .frame(maxWidth: layout == .cards ? .infinity : nil, alignment: .topLeading)
             VStack(alignment: .leading, spacing: 10) {
                 if layout == .cards { Divider() }
                 HStack(spacing: 6) {
@@ -357,9 +361,7 @@ struct LocalCLIWorkspaceView: View {
                     .frame(minHeight: layout == .cards ? 28 : nil, alignment: .bottom)
             }
             QuotaProgressTrack(percent: 100 - window.usedPercent)
-            if let date = window.resetsAt {
-                Text(language.dateTime(date)).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
-            }
+            LocalCLIQuotaWindowDetails(window: window, language: language)
         }
     }
 
@@ -447,9 +449,7 @@ struct LocalCLIWorkspaceView: View {
                             }
                             ProgressView(value: 100 - window.usedPercent, total: 100)
                                 .tint(isStale ? .secondary : .accentColor)
-                            if let reset = window.resetsAt {
-                                Text(reset, style: .relative).font(.caption2).foregroundStyle(.secondary)
-                            }
+                            LocalCLIQuotaWindowDetails(window: window, language: language)
                         }.frame(maxWidth: .infinity)
                     }
                 }
@@ -485,11 +485,7 @@ struct LocalCLIWorkspaceView: View {
                                 HStack {
                                     Text(window.label).lineLimit(2)
                                     Spacer()
-                                    Text("\(Int((100 - window.usedPercent).rounded()))%")
-                                        .monospacedDigit()
-                                    if let reset = window.resetsAt {
-                                        Text(reset, style: .relative).foregroundStyle(.secondary)
-                                    }
+                                    LocalCLIQuotaWindowDetails(window: window, language: language)
                                 }.font(.caption)
                             }
                         }.padding(.top, 6)

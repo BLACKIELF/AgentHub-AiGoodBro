@@ -123,6 +123,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     private var window: MainAppWindow?
     private var paletteLibraryWindow: NSWindow?
     private var settingsWindow: NSWindow?
+    private let settingsNavigation = SettingsWindowNavigation()
     private var taskOverviewController: TaskOverviewPanelController?
     private var accountFloatingPanelController: AccountFloatingPanelController?
     /// token-monitor 风格悬浮窗。此前视图已编译进 App 但无人创建，这里负责真正挂到桌面浮层。
@@ -563,7 +564,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     }
 
     @objc private func showAboutPanel() {
-        NSApp.orderFrontStandardAboutPanel(nil)
+        openSettingsWindow(page: .about)
     }
 
     @objc private func quitFromMenu() {
@@ -706,8 +707,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         NSApp.mainMenu = mainMenu
     }
 
-    private func openSettingsWindow() {
+    private func openSettingsWindow(page: SettingsPage? = nil) {
         closeStatusPopover()
+        if let page { settingsNavigation.page = page }
         if settingsWindow == nil {
             let panel = NSWindow(
                 contentRect: NSRect(x: 0, y: 0, width: 780, height: 640),
@@ -719,6 +721,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             panel.contentViewController = NSHostingController(
                 rootView: SettingsWindowContent(
                     settings: settings, store: store, updateStore: updateStore, localAccounts: localCLIAccounts,
+                    navigation: settingsNavigation,
                     onOpenPaletteLibrary: { [weak self] in self?.openPaletteLibraryWindow() }
                 ))
             panel.center()

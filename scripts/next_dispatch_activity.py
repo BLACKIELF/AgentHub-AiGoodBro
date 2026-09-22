@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """Cooperative Next dispatch reservations and one append-only incident journal.
 
-No daemon, account switch, credential reads, or process termination. A reservation
-is occupied before launch; it is never presented as evidence of model execution.
+No daemon or account switch. Explicit profile launches verify local identity;
+optional deadlines only stop their owned process group. A reservation is
+occupied before launch, not evidence of model execution.
 """
 
 from __future__ import annotations
 
 import argparse
+import base64
 import contextlib
 import fcntl
 import hashlib
@@ -18,6 +20,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import signal
 import stat
 import subprocess
 import sys
@@ -406,11 +409,72 @@ def account_context(pre, code: str):
     return mapping, snapshot, account, profile
 
 
+def profile_context(pre, profile_id: str):
+    checked_identifier(profile_id)
+    mapping, _, _ = pre.mapping_source(None)
+    snapshot = pre.load_json(pre.DEFAULT_SNAPSHOT)
+    profile = pre.profile_index(snapshot).get(profile_id)
+    if profile is None:
+        raise ActivityError("selected_profile_missing")
+    matched = [a for a in mapping["accounts"] if a["profileId"] == profile_id]
+    if len(matched) > 1:
+        raise ActivityError("selected_profile_ambiguous")
+    policy = pre.load_json(pre.DEFAULT_POLICY)
+    rules = [r for r in policy.get("accountRules", []) if r.get("profileId") == profile_id]
+    account = matched[0] if matched else {
+        "code": None, "alias": rules[0]["alias"] if len(rules) == 1 else "profile-" + profile_id,
+        "profileId": profile_id, "priority": 0, "active": True,
+    }
+    selected = {**mapping, "accounts": [account], "profileSelectionUnmapped": not matched}
+    selected = pre.apply_local_policy(selected, policy)
+    account = selected["accounts"][0]
+    if pre.participation_reasons(profile, account, selected, datetime.now(timezone.utc)):
+        raise ActivityError("account_not_in_dispatch_pool")
+    home = Path(profile.get("codexHomePath", "")).expanduser().resolve()
+    if not profile.get("codexHomePath") or home == (Path.home() / ".codex").resolve() or not home.is_dir():
+        raise ActivityError("isolated_profile_required")
+    expected = account.get("email")
+    if expected and (profile.get("name") != expected or (profile.get("lastSnapshot") or {}).get("email") != expected):
+        raise ActivityError("account_identity_mismatch")
+    identity_key(profile)
+    return selected, snapshot, account, profile
+
+
+def verify_profile_credentials(profile: dict):
+    """Compare bounded local credentials in memory; never expose their values."""
+    try:
+        home = Path(profile["codexHomePath"]).expanduser().resolve()
+        if profile.get("isSystemProfile") or home == (Path.home() / ".codex").resolve():
+            raise ValueError()
+        auth = json.loads(read_file(home / "auth.json", 256 * 1024))
+        if auth.get("auth_mode") != "chatgpt" or auth.get("OPENAI_API_KEY"):
+            raise ValueError()
+        tokens = auth["tokens"]
+        token = tokens["id_token"]
+        if not isinstance(token, str) or len(token.split(".")) != 3:
+            raise ValueError()
+        payload = token.split(".")[1]
+        claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+        snapshot = profile["lastSnapshot"]
+        email = snapshot["email"].strip().lower()
+        if (not email or claims.get("email", "").strip().lower() != email
+                or not snapshot.get("accountID") or tokens.get("account_id") != snapshot["accountID"]):
+            raise ValueError()
+    except (KeyError, TypeError, ValueError, AttributeError, OSError, InvocationError):
+        raise ActivityError("selected_profile_credentials_mismatch") from None
+
+
+def selected_context(pre, args):
+    return profile_context(pre, args.profile_id) if args.profile_id else account_context(pre, args.code)
+
+
 def hub_gate(pre, mapping: dict, alias: str, cwd: Path):
     overview, _ = pre.fetch_hub(pre.DEFAULT_HUB_URL, 2)
     if overview is None or pre.hub_overview_error(overview):
         raise ActivityError("hub_evidence_unavailable")
     accounts, projects = pre.active_hub_work(overview, datetime.now(timezone.utc))
+    if mapping.get("profileSelectionUnmapped") and accounts:
+        raise ActivityError("unmapped_profile_hub_identity_unverified")
     if accounts.get(alias) or not pre.route_for(cwd, mapping, overview, projects).get("ready"):
         raise ActivityError("hub_account_or_project_busy")
     return overview
@@ -483,8 +547,12 @@ def read_capability_report(path: Path) -> dict:
 
 def supervise(registry: Registry, lease: dict, command: list[str], cwd: Path,
               *, env: dict | None = None, stdin=None, stdout=None, stderr=None, before_start=None, on_started=None,
-              on_exited=None, verify_result=None) -> int:
+              on_exited=None, verify_result=None, max_runtime_seconds: float | None = None) -> int:
     """Keep reservation visible while preflight runs and until the child exits."""
+    if max_runtime_seconds is not None and (isinstance(max_runtime_seconds, bool)
+            or not isinstance(max_runtime_seconds, (int, float))
+            or not math.isfinite(max_runtime_seconds) or not 0 < max_runtime_seconds <= 86400):
+        raise ActivityError("invalid_runtime_deadline")
     stop = threading.Event()
     heartbeat_errors = []
     owner, lease_id = lease["ownerThreadId"], lease["leaseId"]
@@ -529,7 +597,28 @@ def supervise(registry: Registry, lease: dict, command: list[str], cwd: Path,
                 registry.update(lease_id, owner, None, childPID=child.pid, childPIDBirth=birth)
             if on_started:
                 on_started()
-        result = child.wait()
+        try:
+            result = child.wait(timeout=max_runtime_seconds)
+        except subprocess.TimeoutExpired:
+            current = next(x for x in registry.read()["leases"] if x["leaseId"] == lease_id)
+            if (current.get("ownerThreadId") != owner or current.get("childPID") != child.pid
+                    or not current.get("childPIDBirth")
+                    or process_birth(child.pid) != current["childPIDBirth"]
+                    or current.get("processGroupID") != child.pid):
+                raise ActivityError("deadline_process_identity_unverified")
+            registry.update(lease_id, owner, "cancel_requested")
+            try:
+                os.killpg(child.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            registry.issue(issue_id="cli-runtime-deadline", component="cli", phase="observed",
+                           summary="Owned invocation reached its runtime deadline. Graceful stop requested; existing artifacts require inspection.",
+                           code=lease.get("code"), owner=owner)
+            try:
+                result = child.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                # Do not escalate to a broad kill or free unverified work.
+                return 4
         if on_exited:
             on_exited(result)
         stop.set()
@@ -601,7 +690,9 @@ def parser():
     result = commands.add_parser("result")
     result.add_argument("--output", type=Path, required=True)
     reserve = commands.add_parser("reserve")
-    reserve.add_argument("--code", required=True)
+    select = reserve.add_mutually_exclusive_group(required=True)
+    select.add_argument("--code")
+    select.add_argument("--profile-id")
     reserve.add_argument("--cwd", type=Path, required=True)
     reserve.add_argument("--owner", required=True)
     reserve.add_argument("--task-id", required=True)
@@ -621,7 +712,10 @@ def parser():
             sub.add_argument("--outcome", choices=sorted(TERMINAL), required=True)
     for name in ("plan", "run"):
         run = commands.add_parser(name)
-        for key in ("code", "brief-file", "output"):
+        select = run.add_mutually_exclusive_group(required=True)
+        select.add_argument("--code")
+        select.add_argument("--profile-id")
+        for key in ("brief-file", "output"):
             run.add_argument("--" + key, required=True)
         run.add_argument("--codex-bin", help="Defaults to the executable verified in Next setup, then the installed CLI")
         run.add_argument("--cwd", type=Path, required=True)
@@ -630,6 +724,10 @@ def parser():
         run.add_argument("--service-tier", choices=["default", "fast"])
         run.add_argument("--subagent-mode", choices=sorted(SUBAGENT_MODES))
         run.add_argument("--sandbox", choices=["read-only", "workspace-write"], default="workspace-write")
+        run.add_argument("--allow-unreported-five-hour", action="store_true",
+                         help="Explicit selected Pro 5x only; successful weekly quota and zero reported credits remain required")
+        run.add_argument("--max-runtime-seconds", type=positive_runtime,
+                         help="Optional owned-process deadline, 1 to 86400 seconds; partial work still needs review")
         if name == "run":
             for key in ("lease-id", "owner", "capability-report"):
                 run.add_argument("--" + key, required=True)
@@ -653,6 +751,16 @@ def bounded_wait(value: str) -> float:
         raise argparse.ArgumentTypeError("wait seconds must be a number from 0 to 60") from None
     if not math.isfinite(seconds) or not 0 <= seconds <= 60:
         raise argparse.ArgumentTypeError("wait seconds must be a number from 0 to 60")
+    return seconds
+
+
+def positive_runtime(value: str) -> float:
+    try:
+        seconds = float(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError("runtime must be from 1 to 86400 seconds") from None
+    if not math.isfinite(seconds) or not 1 <= seconds <= 86400:
+        raise argparse.ArgumentTypeError("runtime must be from 1 to 86400 seconds")
     return seconds
 
 
@@ -697,21 +805,26 @@ def execute(args, registry):
             time.sleep(min(20, remaining))
     elif args.command == "reserve":
         pre = preflight_module()
-        mapping, _, account, profile = account_context(pre, args.code)
+        mapping, _, account, profile = selected_context(pre, args)
+        if args.profile_id and args.route != "direct":
+            raise ActivityError("profile_selection_requires_direct_route")
         result = registry.reserve(account_key=identity_key(profile), alias_key=digest(account["alias"].strip().lower()),
-                                  code=args.code, project=project_key(args.cwd), owner=args.owner,
+                                  code=account["code"], project=project_key(args.cwd), owner=args.owner,
                                   task=args.task_id, route=args.route,
                                   gate=lambda: hub_gate(pre, mapping, account["alias"], args.cwd))
     else:
         pre = preflight_module()
-        mapping, snapshot, account, profile = account_context(pre, args.code)
+        mapping, snapshot, account, profile = selected_context(pre, args)
+        if args.allow_unreported_five_hour and not args.profile_id:
+            raise ActivityError("quota_exception_requires_explicit_profile")
+        selected_code = account["code"]
         lease = None
         if args.command == "run":
             lease = next((x for x in registry.read()["leases"] if x["leaseId"] == args.lease_id
                           and x["ownerThreadId"] == args.owner), None)
             if lease is None or lease["state"] != "preparing" or effective_state(lease) != "preparing":
                 raise ActivityError("preparing_reservation_required")
-            if (lease["route"] != "direct" or lease.get("code") != args.code
+            if (lease["route"] != "direct" or lease.get("code") != selected_code
                     or lease["accountKey"] != identity_key(profile) or lease["projectKey"] != project_key(args.cwd)):
                 raise ActivityError("reservation_target_mismatch")
             # Validate the launch input before the reservation is claimed. A
@@ -756,8 +869,11 @@ def execute(args, registry):
         if home == (Path.home() / ".codex").resolve() or not home.is_dir():
             raise ActivityError("isolated_profile_required")
         invocation = Invocation(brief=Path(args.brief_file), output=Path(args.output), executable=executable,
-                                preference=preference, sandbox=args.sandbox, code=args.code, lease=lease,
+                                preference=preference, sandbox=args.sandbox, code=selected_code, lease=lease,
                                 effective_preference=effective)
+        invocation.record.update(profileId=args.profile_id,
+                                 allowUnreportedFiveHour=args.allow_unreported_five_hour,
+                                 maxRuntimeSeconds=args.max_runtime_seconds)
         if args.command == "plan":
             preview = invocation.preview()
             if args.capability_report is not None:
@@ -774,6 +890,9 @@ def execute(args, registry):
                    "-c", 'service_tier="' + effective["serviceTier"] + '"',
                    "--enable" if effective["serviceTier"] == "fast" else "--disable", "fast_mode",
                    "--output-last-message", str(invocation.output), "-"]
+        if args.profile_id:
+            command[2:2] = ["--ignore-user-config", "--ignore-rules", "--ephemeral", "--json", "--color", "never",
+                            "-c", 'model_provider="openai"']
         if effective["subagentsEnabled"]:
             insertion = command.index("--output-last-message")
             command[insertion:insertion] = [
@@ -804,19 +923,27 @@ def execute(args, registry):
             at = pre.parse_request_start(capability.get("checkedAt", ""))
             if not 0 <= (datetime.now(timezone.utc) - at).total_seconds() <= 3600:
                 raise ActivityError("capability_check_stale")
-            current_mapping, current_snapshot, current_account, current_profile = account_context(pre, args.code)
+            current_mapping, current_snapshot, current_account, current_profile = selected_context(pre, args)
             if identity_key(current_profile) != lease["accountKey"] or current_profile["codexHomePath"] != profile["codexHomePath"]:
                 raise ActivityError("reservation_identity_changed")
             refresh = None
             if args.refresh:
                 start = pre.request_next_refresh()
-                current_snapshot, refresh = pre.wait_for_refresh(pre.DEFAULT_SNAPSHOT, current_mapping, start, 240, 0.5, args.code)
+                current_snapshot, refresh = pre.wait_for_refresh(pre.DEFAULT_SNAPSHOT, current_mapping, start, 240, 0.5, selected_code)
+            if args.profile_id:
+                current_profile = pre.profile_index(current_snapshot).get(args.profile_id)
+                if (current_profile is None or identity_key(current_profile) != lease["accountKey"]
+                        or current_profile["codexHomePath"] != profile["codexHomePath"]):
+                    raise ActivityError("reservation_identity_changed")
+                verify_profile_credentials(current_profile)
             overview = hub_gate(pre, current_mapping, current_account["alias"], args.cwd)
             report = pre.build_report(current_snapshot, current_mapping, overview, datetime.now(timezone.utc), args.cwd, 45,
-                                      {"hubAvailable": True}, refresh, args.code)
+                                      {"hubAvailable": True}, refresh, selected_code,
+                                      allow_unreported_five_hour=args.allow_unreported_five_hour)
             report = merge_preflight(report, current_snapshot, registry.read(), args.cwd, own_lease=args.lease_id, owner=args.owner)
             if not report["preflightPassed"]:
                 raise ActivityError("fresh_preflight_failed")
+            invocation.record["quotaException"] = report["selected"].get("quotaException")
             invocation.begin()
 
         try:
@@ -826,7 +953,7 @@ def execute(args, registry):
                 return supervise(registry, lease, command, args.cwd, env=environment, stdin=brief, before_start=before_start,
                                  on_started=lambda: invocation.update(phase="running"),
                                  on_exited=lambda code: invocation.update(processEndedAt=invocation_timestamp(), exitCode=code),
-                                 verify_result=invocation.verify_success)
+                                 verify_result=invocation.verify_success, max_runtime_seconds=args.max_runtime_seconds)
         finally:
             current = next((x for x in registry.read()["leases"] if x["leaseId"] == args.lease_id), None)
             if current:

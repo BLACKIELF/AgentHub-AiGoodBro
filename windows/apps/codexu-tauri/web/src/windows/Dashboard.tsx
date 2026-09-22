@@ -3,6 +3,9 @@ import { Activity, CircleDashed } from 'lucide-react';
 import { Header } from '../components/Header';
 import { DashboardHome } from '../components/DashboardHome';
 import { ProfilesPanel } from '../components/ProfilesPanel';
+import { HomeSection } from '../components/HomeSection';
+import { PublicResetPanel, PublisherMessagePanel } from '../components/PublicResetPanel';
+import { RecommendedSkills } from '../components/RecommendedSkills';
 import { useSettings } from '../hooks/useSettings';
 import { useUsage } from '../hooks/useUsage';
 import { applyAppTheme } from '../utils/appTheme';
@@ -10,7 +13,7 @@ import { DEFAULT_PALETTE_ID } from '../utils/paletteCatalog';
 import { useI18n } from '../i18n/I18nProvider';
 
 export function Dashboard() {
-  const { t } = useI18n();
+  const { t, language } = useI18n();
   const { dashboard, loading, error, refresh, changeSource } = useUsage();
   const { settings, update } = useSettings();
 
@@ -52,7 +55,10 @@ export function Dashboard() {
           refreshing={loading}
         />
         <div className="flex-1 overflow-auto p-6 space-y-4">
-          <ProfilesPanel onSourceChange={changeSource} />
+          <PublicResetPanel />
+          <PublisherMessagePanel />
+          <HomeSection id="recommendations" title={language === 'zh-Hans' ? '推荐 Skills 与应用' : 'Recommended Skills and apps'}><RecommendedSkills /></HomeSection>
+          <HomeSection id="accounts" title={language === 'zh-Hans' ? '已登录账号' : 'Linked accounts'}><ProfilesPanel onSourceChange={changeSource} /></HomeSection>
           <div className="glass-panel p-6 max-w-md border-status-error/30 bg-status-error/8">
             <h2 className="text-lg font-semibold text-status-error mb-2">{t('dashboard.errors.failedToLoadUsage')}</h2>
             <p className="text-sm opacity-90 text-status-error/90">{error}</p>
@@ -104,7 +110,10 @@ export function Dashboard() {
         )}
 
         <div className="max-w-6xl mx-auto w-full space-y-6">
-          <ProfilesPanel onSourceChange={changeSource} />
+          <PublicResetPanel />
+          <PublisherMessagePanel />
+          <HomeSection id="recommendations" title={language === 'zh-Hans' ? '推荐 Skills 与应用' : 'Recommended Skills and apps'}><RecommendedSkills /></HomeSection>
+          <HomeSection id="accounts" title={language === 'zh-Hans' ? '已登录账号' : 'Linked accounts'}><ProfilesPanel onSourceChange={changeSource} /></HomeSection>
           <div className="flex items-center justify-between gap-2">
             <div className="flex items-center gap-2">
               <span className={`inline-flex items-center gap-1.5 chip-like ${quotaStatusClass}`}>

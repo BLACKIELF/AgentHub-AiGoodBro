@@ -57,6 +57,9 @@ export async function installTauriStub(page, { settings, dashboard, windowLabel 
           if (cmd === 'plugin:event|unlisten') {
             return undefined;
           }
+          if (cmd === 'get_account_workflow') {
+            return { profile_id: args.id, preference: { participating: false, model: null, effort: null, revision: 0 }, phase: 'idle', started_at: null, supported: true };
+          }
           if (Object.prototype.hasOwnProperty.call(responses, cmd)) {
             return responses[cmd];
           }

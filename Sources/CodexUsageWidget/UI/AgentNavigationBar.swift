@@ -176,36 +176,48 @@ struct AgentNavigationBar: View {
     private var addSheet: some View {
         let added = Set(navigation.orderedVisibleProviderIDs)
         return VStack(alignment: .leading, spacing: 16) {
-            Text(language.text("添加 Agent", "Add Agent")).font(.headline)
+            HStack {
+                Text(language.text("添加 Agent", "Add Agent")).font(.headline)
+                Spacer()
+                Button(language.text("关闭", "Close")) { isAdding = false }
+                    .keyboardShortcut(.cancelAction)
+                    .accessibilityLabel(language.text("关闭添加 Agent", "Close Add Agent"))
+            }
             Text(language.text("只加入导航入口，不会安装、登录或发起调用。", "This only adds a navigation tab. It does not install, sign in or call a model."))
                 .font(.caption).foregroundStyle(.secondary)
-            Group {
-                Text(language.text("已添加", "Added")).font(.subheadline.weight(.semibold))
-                ForEach(navigation.renderableIDs(), id: \.self) { id in
-                    catalogRow(id: id, added: true)
-                }
-                if navigation.renderableIDs().isEmpty {
-                    Text(language.text("导航里还没有 Agent，主页和添加入口仍可用。", "No agents are in the navigation yet. Home and Add stay available."))
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-            }
-            Divider()
-            Text(language.text("可添加", "Available")).font(.subheadline.weight(.semibold))
-            ForEach(AgentNavCatalog.workspaceProviders.filter { !added.contains($0.id) }) { provider in
-                catalogRow(id: provider.id, added: false, detected: detectedIDs.contains(provider.id) || provider.id == AgentNavCatalog.codexID)
-            }
-            Divider()
-            Text(language.text("尚未作为工作台 Agent 支持", "Not a workspace Agent yet")).font(.subheadline.weight(.semibold))
-            ForEach(AgentNavCatalog.upcomingProviders) { provider in
-                HStack {
-                    ProviderMark(providerID: provider.id, slot: .navigation)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(provider.displayName)
-                        Text(language.text("可在目录中查看，当前不能加入导航。", "Listed for reference and cannot be added yet."))
-                            .font(.caption).foregroundStyle(.secondary)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    Group {
+                        Text(language.text("已添加", "Added")).font(.subheadline.weight(.semibold))
+                        ForEach(navigation.renderableIDs(), id: \.self) { id in
+                            catalogRow(id: id, added: true)
+                        }
+                        if navigation.renderableIDs().isEmpty {
+                            Text(language.text("导航里还没有 Agent，主页和添加入口仍可用。", "No agents are in the navigation yet. Home and Add stay available."))
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                    Divider()
+                    Text(language.text("可添加", "Available")).font(.subheadline.weight(.semibold))
+                    ForEach(AgentNavCatalog.workspaceProviders.filter { !added.contains($0.id) }) { provider in
+                        catalogRow(id: provider.id, added: false, detected: detectedIDs.contains(provider.id) || provider.id == AgentNavCatalog.codexID)
+                    }
+                    Divider()
+                    Text(language.text("尚未作为工作台 Agent 支持", "Not a workspace Agent yet")).font(.subheadline.weight(.semibold))
+                    ForEach(AgentNavCatalog.upcomingProviders) { provider in
+                        HStack {
+                            ProviderMark(providerID: provider.id, slot: .navigation)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(provider.displayName)
+                                Text(language.text("可在目录中查看，当前不能加入导航。", "Listed for reference and cannot be added yet."))
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
                     }
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             HStack {
                 Spacer()
                 Button(language.text("完成", "Done")) { isAdding = false }.keyboardShortcut(.defaultAction)
@@ -213,6 +225,7 @@ struct AgentNavigationBar: View {
         }
         .padding(24)
         .frame(width: 480, height: 560)
+        .onExitCommand { isAdding = false }
     }
 
     private func catalogRow(id: String, added: Bool, detected: Bool = false) -> some View {

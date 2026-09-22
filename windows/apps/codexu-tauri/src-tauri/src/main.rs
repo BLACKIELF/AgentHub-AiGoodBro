@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 use tracing::info;
 
 mod app_state;
@@ -104,6 +104,7 @@ fn main() {
         .init();
 
     tauri::Builder::default()
+        .manage(commands::cli_workflow::WorkflowState::default())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let app_data_dir = app.path().app_data_dir().map_err(|e| {
@@ -148,7 +149,13 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            commands::cli_workflow::get_account_workflow,
+            commands::cli_workflow::set_account_workflow,
+            commands::cli_workflow::read_workflow_models,
+            commands::cli_workflow::start_account_terminal,
+            commands::cli_workflow::stop_account_terminal,
             commands::profiles::list_profiles,
+            commands::public_feed::read_public_feed,
             commands::profiles::update_profile,
             commands::profile_quota::read_profile_quota,
             commands::usage::get_local_usage,
@@ -160,8 +167,20 @@ fn main() {
             commands::settings::sync_runtime_language,
             tray_show_main_window,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            if let tauri::RunEvent::ExitRequested { api, .. } = event {
+                if commands::cli_workflow::should_block_exit(&app.state::<commands::cli_workflow::WorkflowState>()) {
+                    api.prevent_exit();
+                    if let Some(window) = app.get_webview_window("main") {
+                        let _ = window.show();
+                        let _ = window.set_focus();
+                    }
+                    let _ = app.emit("workflow:exit-blocked", ());
+                }
+            }
+        });
 }
 
 #[tauri::command]

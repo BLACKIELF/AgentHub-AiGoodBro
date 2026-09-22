@@ -11,6 +11,7 @@ import { UsagePanel } from './UsagePanel';
 import { StatCard } from './StatCard';
 import { useI18n } from '../i18n/I18nProvider';
 import type { MessageKey } from '../i18n/messages';
+import { HomeSection } from './HomeSection';
 
 interface DashboardHomeProps {
   snapshot: UsageSnapshot | null | undefined;
@@ -35,7 +36,7 @@ const formatUSD = (value: unknown): string => {
 };
 
 export function DashboardHome({ snapshot, quotaSourceLabel, leadershipSignal, onQuotaRefresh }: DashboardHomeProps) {
-  const { t } = useI18n();
+  const { t, language } = useI18n();
   const usage = snapshot?.local ?? null;
   const signal = leadershipSignal ?? null;
   const detailed = usage?.detailed_usage ?? null;
@@ -79,6 +80,7 @@ export function DashboardHome({ snapshot, quotaSourceLabel, leadershipSignal, on
 
   return (
     <div className="space-y-4 dashboard-home">
+      <HomeSection id="overview" title={language === 'zh-Hans' ? '用量与额度概览' : 'Usage and quota overview'}>
       <div className="dashboard-home-overview">
         <LeadershipOverviewCard
           signal={signal}
@@ -132,6 +134,7 @@ export function DashboardHome({ snapshot, quotaSourceLabel, leadershipSignal, on
         </div>
       </div>
 
+      </HomeSection>
       <div
         onKeyDown={handleLowerTabKeyDown}
         role="tablist"
@@ -165,7 +168,7 @@ export function DashboardHome({ snapshot, quotaSourceLabel, leadershipSignal, on
           id="dashboard-home-panel-tasks"
           aria-labelledby="dashboard-home-tab-tasks"
         >
-          <TaskBoardPanel taskBoard={snapshot?.task_board ?? null} />
+          <HomeSection id="tasks" title={t('dashboard.tabs.tasks')}><TaskBoardPanel taskBoard={snapshot?.task_board ?? null} /></HomeSection>
         </section>
       )}
 
@@ -175,7 +178,7 @@ export function DashboardHome({ snapshot, quotaSourceLabel, leadershipSignal, on
           id="dashboard-home-panel-leadership"
           aria-labelledby="dashboard-home-tab-leadership"
         >
-          <LeadershipPanel signal={signal} />
+          <HomeSection id="leadership" title={t('dashboard.tabs.leadership')}><LeadershipPanel signal={signal} /></HomeSection>
         </section>
       )}
 
@@ -185,7 +188,7 @@ export function DashboardHome({ snapshot, quotaSourceLabel, leadershipSignal, on
           id="dashboard-home-panel-usage"
           aria-labelledby="dashboard-home-tab-usage"
         >
-          <UsagePanel usage={usage} />
+          <HomeSection id="usage" title={t('dashboard.tabs.usage')}><UsagePanel usage={usage} /></HomeSection>
         </section>
       )}
 
@@ -195,10 +198,10 @@ export function DashboardHome({ snapshot, quotaSourceLabel, leadershipSignal, on
           id="dashboard-home-panel-projects"
           aria-labelledby="dashboard-home-tab-projects"
         >
-          <ProjectsPanel
+          <HomeSection id="projects" title={t('dashboard.tabs.projects')}><ProjectsPanel
             projectBoard={usage?.project_board ?? null}
             tools={usage?.tool_usages ?? []}
-          />
+          /></HomeSection>
         </section>
       )}
 
@@ -208,7 +211,7 @@ export function DashboardHome({ snapshot, quotaSourceLabel, leadershipSignal, on
           id="dashboard-home-panel-skills"
           aria-labelledby="dashboard-home-tab-skills"
         >
-          <SkillsPanel skills={usage?.skill_usages ?? []} />
+          <HomeSection id="skills" title={t('dashboard.tabs.skills')}><SkillsPanel skills={usage?.skill_usages ?? []} /></HomeSection>
         </section>
       )}
     </div>

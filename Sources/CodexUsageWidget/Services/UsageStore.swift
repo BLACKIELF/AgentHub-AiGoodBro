@@ -1067,8 +1067,8 @@ final class UsageStore: ObservableObject {
                 ? WidgetLanguage.storedOrAutomatic().text(
                     "该账号已加入调度；Next、Hub 配置与编号已同步", "Account added to the pool. Next, Hub config and pool code are synced.")
                 : WidgetLanguage.storedOrAutomatic().text(
-                    "该账号已退出调度并保留原编号；Next 与 Hub 配置已同步，额度刷新和两种暖号照常",
-                    "Account excluded from the pool with its code retained. Next and Hub config are synced; limit refresh and both warm-up windows continue.")
+                    "已关闭后续调度，原编号保留；正在运行的任务不受影响，额度刷新和暖号仍按原设置执行",
+                    "Future dispatch is off and any existing code is retained. Running tasks, quota refresh and configured warm-up continue.")
             debugLog("dispatch participation: three-source sync succeeded")
             refreshWarmUpProfilesThenSchedule()
         } catch {

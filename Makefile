@@ -70,6 +70,7 @@ build:
 	cp "$(APP_ICON_SOURCE)" "$(RESOURCES_DIR)/$(APP_ICON)"
 	cp $(ICON_VARIANTS) "$(RESOURCES_DIR)/"
 	cp $(RUNTIME_PNG_RESOURCES) "$(RESOURCES_DIR)/"
+	cp Resources/AiGoodBro-wechat.jpg "$(RESOURCES_DIR)/"
 	cp Resources/THIRD_PARTY_NOTICES.txt "$(RESOURCES_DIR)/"
 	cp docs/third-party-cli-notices.md "$(RESOURCES_DIR)/CLI_PROVIDER_NOTICES.md"
 	cp -R Resources/Palettes "$(RESOURCES_DIR)/Palettes"

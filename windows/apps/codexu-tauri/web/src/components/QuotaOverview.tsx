@@ -1,6 +1,8 @@
 import { CheckCircle2, Gauge, RefreshCw, ShieldAlert } from 'lucide-react';
 import { type RateWindow, type UsageSnapshot } from '../types/models';
 import { useI18n } from '../i18n/I18nProvider';
+import { useEffect, useState } from 'react';
+import { ResetCountdown } from './ResetCountdown';
 
 interface QuotaOverviewProps {
   snapshot: UsageSnapshot | null | undefined;
@@ -16,18 +18,20 @@ function formatDuration(value: number | null | undefined, t: ReturnType<typeof u
   return value == null ? t('common.notAvailable') : t('quota.windowMinutes', { value });
 }
 
-function clampPercent(value: number | null | undefined): number {
-  if (typeof value !== 'number' || !Number.isFinite(value)) return 0;
-  return Math.max(0, Math.min(100, Math.round(value)));
+function clampPercent(value: number | null | undefined): number | null {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > 100) return null;
+  return Math.round(value * 10) / 10;
 }
 
-function QuotaWindow({ label, window, t }: { label: string; window: RateWindow; t: ReturnType<typeof useI18n>['t'] }) {
+function QuotaWindow({ label, window, current, t }: { label: string; window: RateWindow; current: boolean; t: ReturnType<typeof useI18n>['t'] }) {
+  const { language } = useI18n();
+  const zh = language === 'zh-Hans';
   const percent = clampPercent(window.used_percent);
   return (
     <article className="quota-overview-window">
       <div className="quota-overview-window-heading">
         <span>{label}</span>
-        <strong>{t('quota.used', { value: percent })}</strong>
+        <strong>{percent === null ? '—' : current ? t('quota.used', { value: percent }) : (zh ? '上次已用 ' : 'Previously used ') + percent + '%'}</strong>
       </div>
       <div
         className="quota-overview-track"
@@ -35,9 +39,13 @@ function QuotaWindow({ label, window, t }: { label: string; window: RateWindow; 
         aria-label={label}
         aria-valuemin={0}
         aria-valuemax={100}
-        aria-valuenow={percent}
+        aria-valuenow={percent ?? undefined}
       >
-        <span className="quota-overview-fill" style={{ width: `${percent}%` }} />
+        <span className="quota-overview-fill" style={{ width: `${percent ?? 0}%`, opacity: current ? 1 : 0.35 }} />
+      </div>
+      <div className="text-xs text-secondary space-y-1">
+        <p>{zh ? (current ? '剩余 ' : '上次剩余 ') : (current ? 'Remaining ' : 'Previously remaining ')}{percent === null ? '—' : `${Math.round((100 - percent) * 10) / 10}%`}</p>
+        <ResetCountdown deadline={window.resets_at} />
       </div>
       <div className="quota-overview-window-meta">
         <span>{formatDuration(window.window_duration_mins, t)}</span>
@@ -48,7 +56,11 @@ function QuotaWindow({ label, window, t }: { label: string; window: RateWindow; 
 }
 
 export function QuotaOverview({ snapshot, sourceLabel, onRefresh }: QuotaOverviewProps) {
-  const { t } = useI18n();
+  const { t, language } = useI18n();
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => { const timer = window.setInterval(() => setNow(Date.now()), 1000); return () => window.clearInterval(timer); }, []);
+  const current = snapshot?.quota_read_succeeded === true && Number.isFinite(snapshot.refreshed_at)
+    && now >= snapshot.refreshed_at && now - snapshot.refreshed_at < 300000;
   const quotaWindows = [
     { label: t('quota.fiveHour'), window: snapshot?.five_hour_quota },
     { label: t('quota.sevenDay'), window: snapshot?.seven_day_quota },
@@ -58,7 +70,7 @@ export function QuotaOverview({ snapshot, sourceLabel, onRefresh }: QuotaOvervie
   const hasQuota = quotaWindows.length > 0;
 
   return (
-    <section className="dashboard-home-quota dashboard-home-primary-card glass-panel p-4" aria-label={t('quota.availability')} aria-live="polite">
+    <section className="dashboard-home-quota dashboard-home-primary-card glass-panel p-4" aria-label={t('quota.availability')}>
       <div className="dashboard-overview-header">
         <div className="dashboard-overview-heading">
           <span className="dashboard-overview-icon" aria-hidden="true">
@@ -70,7 +82,7 @@ export function QuotaOverview({ snapshot, sourceLabel, onRefresh }: QuotaOvervie
           </div>
         </div>
         <span className={`dashboard-overview-status ${hasQuota ? 'dashboard-overview-status-confirmed' : ''}`}>
-          {hasQuota ? t('quota.officialSource') : hasAuthoritativeEmptyQuota ? t('quota.noActive') : t('quota.checking')}
+          {hasQuota ? (current ? t('quota.officialSource') : language === 'zh-Hans' ? '上次记录 · 请刷新' : 'Previous record · refresh') : hasAuthoritativeEmptyQuota ? t('quota.noActive') : t('quota.checking')}
         </span>
       </div>
 
@@ -87,7 +99,7 @@ export function QuotaOverview({ snapshot, sourceLabel, onRefresh }: QuotaOvervie
           </div>
           <div className="quota-overview-windows">
             {quotaWindows.map(({ label, window }) => (
-              <QuotaWindow key={label} label={label} window={window} t={t} />
+              <QuotaWindow key={label} label={label} window={window} current={current && (window.resets_at === null || window.resets_at > now)} t={t} />
             ))}
           </div>
         </>

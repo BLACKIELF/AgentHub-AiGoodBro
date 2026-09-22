@@ -20,7 +20,30 @@ enum TokenMonitorUISelfTest {
         reproduceLocalUsageCoverage(expect: expect)
         reproduceTrendRendererBoundaries(expect: expect)
         reproduceResetAnnouncementPresentation(expect: expect)
+        reproduceResetCountdown(expect: expect)
+        expect(PublicResetForecastSelfTest.persistenceSelfTest(), "forecast withdrawal commits atomically and survives restart; failed writes preserve explicitly cached state")
+        let quotaNow = Date()
+        var quotaProfile = CodexProfile(
+            id: "quota-fixture", name: "Fixture", codexHomePath: "", isSystemProfile: false,
+            createdAt: quotaNow,
+            lastSnapshot: CodexAccountSnapshot(
+                accountType: "chatgpt", planType: "plus", email: nil,
+                limitId: nil, limitName: nil, fiveHour: nil, sevenDay: nil, monthly: nil,
+                fetchedAt: quotaNow, appServerVersion: nil))
+        let activeWindow = CodexQuotaWindowSnapshot(RateWindow(usedPercent: 100, windowDurationMins: 300, resetsAt: quotaNow.addingTimeInterval(3600)))
+        let expiredWindow = CodexQuotaWindowSnapshot(RateWindow(usedPercent: 100, windowDurationMins: 300, resetsAt: quotaNow.addingTimeInterval(-1)))
+        expect(AccountInformationView.shouldShowQuota(activeWindow, profile: quotaProfile, now: quotaNow), "fresh exhausted allowance is still an accurate zero")
+        expect(!AccountInformationView.shouldShowQuota(expiredWindow, profile: quotaProfile, now: quotaNow), "expired exhausted allowance is not displayed as a current zero")
+        expect(!AccountInformationView.shouldShowQuota(activeWindow, profile: quotaProfile, now: quotaNow.addingTimeInterval(901)), "stale allowance loses actionable percentages")
+        quotaProfile.lastQuotaReadFailureAt = quotaNow.addingTimeInterval(1)
+        expect(!AccountInformationView.shouldShowQuota(activeWindow, profile: quotaProfile, now: quotaNow), "a failed newer read does not make the old quota current")
         reproducePublicResetCalendar(expect: expect)
+        reproduceResetDashboardLayout(expect: expect)
+        let quotaPair = LocalCLIQuotaWindowDetails.percentages(usedPercent: 23.5, language: .en)
+        expect(quotaPair.used == "23.5%" && quotaPair.remaining == "76.5%", "used and remaining quota preserve precision and total 100 percent")
+        let emptyQuota = LocalCLIQuotaWindowDetails.percentages(usedPercent: .nan, language: .en)
+        expect(emptyQuota.used == "—" && emptyQuota.remaining == "—", "invalid quota is not presented as zero or full availability")
+        expect(LocalCLIQuotaWindowDetails.percentages(usedPercent: 100, language: .zh).remaining == "0%", "exhausted quota remains zero")
         expect(ResetCardPresentation.savedOrder(["a", "b", "c"], pinnedAccountID: nil) == ["a", "b", "c"], "account order remains saved without a pin")
         expect(ResetCardPresentation.savedOrder(["a", "b", "c"], pinnedAccountID: "c") == ["c", "a", "b"], "only an explicit pin changes presentation order")
         expect(HomeMessageInboxStore.visibleAnnouncementLimit == 3, "homepage shows only three reset messages")
@@ -33,6 +56,44 @@ enum TokenMonitorUISelfTest {
         }
         failures.forEach { print("token-monitor UI self-test failed: \($0)") }
         return false
+    }
+
+    private static func reproduceResetCountdown(expect: (Bool, String) -> Void) {
+        let start = Date(timeIntervalSince1970: 1_790_000_000)
+        func countdown(_ seconds: TimeInterval, now: Date? = nil, kind: ResetCountdownPresentation.Kind = .publicForecast, language: WidgetLanguage = .zh) -> String {
+            ResetCountdownPresentation.label(deadline: start.addingTimeInterval(seconds), now: now ?? start, kind: kind, language: language)
+        }
+        expect(countdown(90_061) == "最晚还有 1 天 01:01:01", "countdown includes days, hours, minutes and seconds")
+        expect(countdown(90_061, language: .en) == "Due within 1d 01:01:01", "English countdown retains day precision")
+        expect(countdown(60.1) == "最晚还有 00:01:01", "fractional seconds do not report zero early")
+        expect(countdown(0.1) == "最晚还有 00:00:01", "last fraction of a second is still pending")
+        expect(countdown(0).contains("等待来源确认"), "deadline never claims public delivery")
+        expect(countdown(-10, kind: .accountWindow).contains("等待额度更新"), "expired account window never implies restored quota")
+        expect(countdown(3_661, now: start.addingTimeInterval(3_600)) == "最晚还有 00:01:01", "sleep or missed ticks cannot accumulate drift")
+        expect(countdown(60, now: start.addingTimeInterval(-60)) == "最晚还有 00:02:00", "clock corrections rederive the remaining duration")
+        expect(countdown(.infinity).contains("待公开来源公布"), "invalid timestamps do not trap or create a fake timer")
+        expect(ResetCountdownPresentation.label(deadline: nil, now: start, kind: .accountWindow, language: .zh) == "重置时间未知", "missing reset time stays unknown")
+    }
+
+    private static func reproduceResetDashboardLayout(expect: (Bool, String) -> Void) {
+        // Regression: the production dashboard now has three children, not four.
+        // A mismatched count previously returned no frames and a zero height.
+        for width: CGFloat in [1, 320, 619, 620, 820, 939, 940, 1600] {
+            for count in 0...4 {
+                let frames = ResetDashboardLayout.frames(width: width, count: count) { index, proposedWidth in
+                    CGFloat(index + 1) * 80 + (proposedWidth < 300 ? 140 : 0)
+                }
+                expect(frames.count == count, "every reset dashboard child gets a frame")
+                for (index, frame) in frames.enumerated() {
+                    expect(frame.height > 0 && frame.width > 0, "reset dashboard never collapses visible content to zero")
+                    expect(frame.minX >= 0 && frame.maxX <= width + 0.01, "reset dashboard stays within its proposed width")
+                    for other in frames.dropFirst(index + 1) {
+                        expect(!frame.intersects(other), "announcement, calendar and account windows never overlap")
+                    }
+                }
+            }
+        }
+        expect(Set(HomeSection.allCases.map(\.storageKey)).count == HomeSection.allCases.count, "home section preferences are independent")
     }
 
     private static func reproducePublicResetCalendar(expect: (Bool, String) -> Void) {
@@ -549,7 +610,7 @@ enum TokenMonitorUISelfTest {
             PublicResetAnnouncementPresentation.sourceLinkTitle(observedSource, language: .zh).contains("来源"),
             "an aggregator URL is labeled as its source"
         )
-        expect(PublicResetAnnouncementPresentation.title(.zh) == "额度重置公告", "announcement section uses the critical label")
+        expect(PublicResetAnnouncementPresentation.title(.zh) == "历史重置记录", "completed history stays distinct from pending forecasts")
         expect(
             PublicResetAnnouncementPresentation.typeTitle(.regular, language: .zh).contains("常规额度"),
             "regular quota announcements stay distinct from reset cards"

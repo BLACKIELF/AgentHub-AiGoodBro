@@ -1,6 +1,8 @@
 import SwiftUI
 
-/// Calendar dates refer to public announcement times in Beijing, never account delivery.
+/// Calendar dates refer only to historical public announcement times in Beijing.
+/// Scheduled forecasts are displayed separately and never become calendar events
+/// until the authoritative history feed records them.
 enum PublicResetCalendarModel {
     static var calendar: Calendar {
         var value = Calendar(identifier: .gregorian)
@@ -54,7 +56,7 @@ struct PublicResetCalendarView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Label(language.text("重置日历", "Reset calendar"), systemImage: "calendar")
+                Label(language.text("历史重置日历", "Historical reset calendar"), systemImage: "calendar")
                     .font(.subheadline.weight(.semibold))
                 Spacer(minLength: 4)
                 Text(language.text("北京时间", "Beijing time"))
@@ -98,16 +100,20 @@ struct PublicResetCalendarView: View {
                 Text(language.text("本月 \(monthEvents.count) 条", "\(monthEvents.count) this month"))
                     .font(.caption2).foregroundStyle(.secondary)
             }
-            Text(language.text("标记公告发布日期；不表示账号已到账。", "Marks announcement dates, not receipt by your account."))
-                .font(.caption2).foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            Text(
+                language.text(
+                    "仅标记历史公告发布日期；不包含未确认预告，也不表示账号已到账。",
+                    "Marks historical announcement dates only; excludes unconfirmed forecasts and does not indicate receipt by your account.")
+            )
+            .font(.caption2).foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
             if hasMore == true {
                 Link(language.text("更早记录见来源网站", "Earlier history on the source site"), destination: PublicResetClient.siteURL)
                     .font(.caption2)
             }
         }
         .accessibilityElement(children: .contain)
-        .accessibilityLabel(language.text("重置公告日历", "Reset announcement calendar"))
+        .accessibilityLabel(language.text("历史重置公告日历", "Historical reset announcement calendar"))
         .onAppear {
             if let selectedDay { month = PublicResetCalendarModel.monthStart(selectedDay) }
         }
@@ -229,8 +235,8 @@ struct PublicResetRecentView: View {
                     }
                 }
             }
-            if visibleEvents.count > 5 {
-                Text(language.text("另有 \(visibleEvents.count - 5) 条，见完整历史。", "\(visibleEvents.count - 5) more on the full history page."))
+            if visibleEvents.count > 3 {
+                Text(language.text("另有 \(visibleEvents.count - 3) 条，见完整历史。", "\(visibleEvents.count - 3) more on the full history page."))
                     .font(.caption2).foregroundStyle(.secondary)
             }
             HStack {

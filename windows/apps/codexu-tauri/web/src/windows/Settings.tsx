@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { AssistantContact } from '../components/AssistantContact';
 import { open } from '@tauri-apps/plugin-dialog';
 import { FolderOpen, Palette, RefreshCw, Trash2 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
@@ -322,6 +323,7 @@ export function Settings() {
 
           {saved && <p className="text-center text-sm text-status-ok">{t('common.saved')}</p>}
           {error && <p className="text-center text-sm text-status-error">{t('settings.failed', { error })}</p>}
+          <AssistantContact />
         </div>
       </main>
     </div>

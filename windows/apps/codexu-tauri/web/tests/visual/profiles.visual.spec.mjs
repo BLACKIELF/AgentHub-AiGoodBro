@@ -28,6 +28,10 @@ test.beforeEach(async ({ page }) => {
           checked_at: Date.now(),
           windows: [{ kind: 'seven_day', remaining_percent: args.id === '1' ? 59 : 80, resets_at: null }],
         };
+        if (window.quotaMode === 'metadata' || window.quotaMode === 'invalid-metadata') {
+          result.account = { account_type: 'chatgpt', plan_type: 'prolite', email_present: true };
+          result.credits = { usd: null, points: window.quotaMode === 'metadata' ? 0 : -1, reset_cards: 2 };
+        }
         if (window.quotaMode === 'old') result.checked_at -= 600000;
         if (window.quotaMode === 'all') result.windows = [
           { kind: 'five_hour', remaining_percent: 100, resets_at: Date.now() + 18000000 },
@@ -159,7 +163,7 @@ test('quota failures never become zero and preserve only explicitly old records'
   await page.evaluate(() => { window.quotaMode = 'fail'; });
   await first.getByRole('button', { name: 'Read quota', exact: true }).click();
   await expect(first).toContainText('Previous record; read again');
-  await expect(first).toContainText('Weekly remaining 59%');
+  await expect(first).toContainText('Weekly previously remaining 59%');
   await expect(panel(page)).toHaveScreenshot('profiles-quota-stale.png');
   await page.evaluate(() => { window.quotaMode = 'old'; });
   await first.getByRole('button', { name: 'Read quota', exact: true }).click();
@@ -213,4 +217,39 @@ test('all quota windows wrap within a narrow desktop without an inner scroller',
   expect(await panel(page).evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
   expect(await panel(page).evaluate(element => ['auto', 'scroll'].includes(getComputedStyle(element).overflowY))).toBe(false);
   await expect(panel(page)).toHaveScreenshot('profiles-quota-narrow.png');
+});
+
+
+test('account metadata shows official units, details close and guide focuses correctly', async ({ page }) => {
+  await page.evaluate(() => { window.quotaMode = 'metadata'; });
+  const first = page.getByTestId('profile-1');
+  await first.getByRole('button', { name: 'Read quota', exact: true }).click();
+  await expect(first).toContainText('Pro 5x');
+  await expect(first).toContainText('USD —');
+  await expect(first).toContainText('Points 0');
+  await expect(first).toContainText('Reset cards 2');
+  await first.getByRole('button', { name: 'Account details', exact: true }).click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog).toBeVisible();
+  await expect(dialog).not.toContainText('@');
+  await expect(dialog.getByRole('button', { name: 'Close', exact: true })).toBeFocused();
+  await expect(dialog).toHaveScreenshot('account-details.png');
+  await page.keyboard.press('Escape');
+  await expect(dialog).toHaveCount(0);
+  await expect(first.getByRole('button', { name: 'Account details', exact: true })).toBeFocused();
+  await page.getByRole('button', { name: 'Add account guide', exact: true }).click();
+  await expect(page.getByRole('dialog')).toContainText('codex login');
+  await expect(page.getByRole('dialog')).toHaveScreenshot('account-guide.png');
+  await page.getByRole('dialog').getByRole('button', { name: 'Close', exact: true }).click();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+});
+
+test('malformed official credits do not erase the previous observation', async ({ page }) => {
+  const first = page.getByTestId('profile-1');
+  await first.getByRole('button', { name: 'Read quota', exact: true }).click();
+  await page.evaluate(() => { window.quotaMode = 'invalid-metadata'; });
+  await first.getByRole('button', { name: 'Read quota', exact: true }).click();
+  await expect(first).toContainText('Read failed');
+  await expect(first).toContainText('Weekly previously remaining 59%');
+  await expect(first).not.toContainText('Points -1');
 });

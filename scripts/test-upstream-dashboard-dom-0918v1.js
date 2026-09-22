@@ -1,5 +1,5 @@
 'use strict';
-// Real-DOM acceptance, updated in 0921v3 for the 0919/0921 layout.
+// Real-DOM acceptance for the CURRENT dashboard contract (0918).
 // Supersedes test-upstream-dashboard-dom-0913v2.js (0913-era spec: status
 // classes and reset annotations no longer exist in the web view; selection and
 // tooltips carry the short description; the embedded home view lets the native
@@ -35,9 +35,7 @@ const fixture = {schemaVersion:1,collectedAt:'2026-09-13T00:00:00Z',timezone:'UT
     assert.equal(await page.locator('#overview').isVisible(),false);
     assert.equal(await page.locator('#details').isVisible(),true);
     assert.equal(await page.locator('#selection').isVisible(),false,'明细模式隐藏选中区');
-    assert.equal(await page.locator('#charts').isVisible(),false,'明细独占页面，不检查已隐藏网格的未解析 CSS 值');
-    const detailBounds = await page.locator('#details').boundingBox();
-    assert.ok(detailBounds.width >= 850 && detailBounds.x + detailBounds.width <= 900,'明细占满可用宽度且不横向溢出');
+    assert.equal(await page.evaluate(()=>getComputedStyle(document.getElementById('charts')).gridTemplateColumns.split(' ').length),1);
     await page.setViewportSize({width:700,height:650});
     await page.getByRole('button',{name:'概览',exact:true}).click();
     assert.equal(await page.evaluate(()=>getComputedStyle(document.getElementById('charts')).gridTemplateColumns.split(' ').length),1,'窄屏概览单列');

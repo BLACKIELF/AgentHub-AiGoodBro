@@ -4,17 +4,21 @@ import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useI18n } from '../i18n/I18nProvider';
 import { ProfileQuota } from './ProfileQuota';
+import { AccountWorkflow } from './AccountWorkflow';
+import { CodexAccountGuide } from './CodexAccountGuide';
 
 type Profile = { id: string; label: string; selected: boolean };
 
 export function ProfilesPanel({ onSourceChange }: { onSourceChange: () => void }) {
   const { language } = useI18n();
   const text = (zh: string, en: string) => language === 'zh-Hans' ? zh : en;
+  const [guide, setGuide] = useState(false);
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [busy, setBusy] = useState(false);
   const inFlight = useRef(false);
   const request = useRef(0);
   const [error, setError] = useState(false);
+  const [activeTerminalError, setActiveTerminalError] = useState(false);
   const [editing, setEditing] = useState<string | null>(null);
   const [label, setLabel] = useState('');
   const [removing, setRemoving] = useState<string | null>(null);
@@ -38,7 +42,7 @@ export function ProfilesPanel({ onSourceChange }: { onSourceChange: () => void }
   async function perform(action: Record<string, unknown>) {
     if (inFlight.current) return;
     inFlight.current = true;
-    setBusy(true); setError(false); request.current++;
+    setBusy(true); setError(false); setActiveTerminalError(false); request.current++;
     try {
       let actual = action;
       if (action.kind === 'link') {
@@ -51,14 +55,15 @@ export function ProfilesPanel({ onSourceChange }: { onSourceChange: () => void }
       setEditing(null); setRemoving(null); setLabel('');
       await reload();
       if (action.kind === 'view') onSourceChange();
-    } catch { setError(true); }
+    } catch (failure) { setError(true); setActiveTerminalError(failure === "Stop this account's terminal before unlinking"); }
     finally { inFlight.current = false; setBusy(false); }
   }
 
   return (
     <section className="glass-panel p-4 space-y-3" aria-label={text('账号目录', 'Account directories')}>
-      <header className="flex items-center justify-between gap-3">
+      <header className="flex flex-wrap items-center justify-between gap-3">
         <h2 className="text-sm font-semibold text-primary">{text('账号目录', 'Account directories')}</h2>
+        <button className="glass-button px-3 py-1.5 text-sm" onClick={() => setGuide(true)}>{text('添加账号指引', 'Add account guide')}</button>
         <button className="glass-button px-3 py-1.5 text-sm" disabled={busy} onClick={() => { setEditing('new'); setLabel(''); setRemoving(null); }}>
           {text('关联已有目录', 'Link existing directory')}
         </button>
@@ -75,6 +80,7 @@ export function ProfilesPanel({ onSourceChange }: { onSourceChange: () => void }
             <button className="glass-button px-2 py-1 text-xs" aria-label={text('下移', 'Move down')} disabled={busy || index === profiles.length - 1} onClick={() => void perform({ kind: 'move', id: profile.id, delta: 1 })}>↓</button>
             <button className="glass-button px-2 py-1 text-xs" disabled={busy} onClick={() => { setRemoving(profile.id); setEditing(null); }}>{text('移除', 'Remove')}</button>
             <ProfileQuota profileId={profile.id} disabled={busy} />
+            <AccountWorkflow profileId={profile.id} />
           </li>
         ))}
       </ul>
@@ -88,7 +94,8 @@ export function ProfilesPanel({ onSourceChange }: { onSourceChange: () => void }
         <button className="glass-button px-3 py-1" disabled={busy} onClick={() => void perform({ kind: 'remove', id: removing })}>{text('确认移除', 'Confirm removal')}</button>
         <button className="glass-button px-3 py-1" disabled={busy} onClick={() => setRemoving(null)}>{text('取消', 'Cancel')}</button>
       </div>}
-      {error && <div role="alert" className="text-xs text-status-error">{text('操作失败，未确认保存。请检查重复目录、备注或目录可用性后重试。', 'Operation failed; save not confirmed. Check duplicate folders, alias or availability and retry.')} <button className="underline" onClick={() => void reload()} disabled={busy}>{text('重新读取', 'Reload')}</button></div>}
+      {error && <div role="alert" className="text-xs text-status-error">{activeTerminalError ? text('此账号还有正在打开或运行的终端，请先结束该终端再移除。', 'This account has a starting or running terminal. Stop it before removing the directory.') : text('操作失败，未确认保存。请检查重复目录、备注或目录可用性后重试。', 'Operation failed; save not confirmed. Check duplicate folders, alias or availability and retry.')} <button className="underline" onClick={() => void reload()} disabled={busy}>{text('重新读取', 'Reload')}</button></div>}
+      {guide && <CodexAccountGuide onClose={() => setGuide(false)} />}
     </section>
   );
 }

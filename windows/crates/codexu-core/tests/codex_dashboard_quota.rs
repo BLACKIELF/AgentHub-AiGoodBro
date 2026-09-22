@@ -56,6 +56,9 @@ fn applies_a_weekly_official_quota_without_inventing_a_five_hour_window() {
             }),
             limit_id: Some("codex".to_string()),
             limit_name: Some("Codex".to_string()),
+            credit_balance_usd: None,
+            credit_balance_points: None,
+            reset_credit_count: None,
             quota_read_succeeded: true,
             five_hour_quota: None,
             seven_day_quota: Some(RateWindow {
@@ -90,6 +93,9 @@ fn keeps_a_previous_official_window_visible_as_stale_after_a_refresh_failure() {
             account: None,
             limit_id: Some("codex".to_string()),
             limit_name: Some("Codex".to_string()),
+            credit_balance_usd: None,
+            credit_balance_points: None,
+            reset_credit_count: None,
             quota_read_succeeded: true,
             five_hour_quota: None,
             seven_day_quota: Some(RateWindow {

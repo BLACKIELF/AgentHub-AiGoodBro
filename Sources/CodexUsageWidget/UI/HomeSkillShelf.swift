@@ -100,41 +100,54 @@ enum BundledSkill: String, CaseIterable, Identifiable {
 struct HomeSkillShelf: View {
     let language: WidgetLanguage
     @State private var selected: BundledSkill?
+    @AppStorage(HomeSection.recommendations.storageKey) private var isExpanded = true
     static let quickToggleURL = URL(string: "https://github.com/BLACKIELF/QuickToggle/releases")!
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Label(language.text("推荐 Skills 与应用", "Recommended skills and apps"), systemImage: "square.stack.3d.up")
-                    .font(.subheadline.weight(.semibold))
-                Spacer()
+                HomeSectionToggle(
+                    title: language.text("推荐 Skills 与应用", "Recommended skills and apps"),
+                    systemImage: "square.stack.3d.up", language: language, isExpanded: $isExpanded
+                )
+                .font(.subheadline.weight(.semibold))
                 Text(language.text("精选工具 · 按需安装", "Selected tools · install as needed"))
                     .font(.caption2).foregroundStyle(.secondary)
             }
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 240), spacing: 12)], spacing: 10) {
-                ForEach(BundledSkill.allCases) { skill in
-                    Button {
-                        selected = skill
-                    } label: {
-                        HStack(spacing: 10) {
-                            Image(systemName: skill.symbol).foregroundStyle(.tint).font(.title3)
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(skill.title).font(.callout.weight(.semibold))
-                                Text(skill.summary(language)).font(.caption).foregroundStyle(.secondary).lineLimit(2)
-                            }
-                            Spacer(minLength: 0)
-                            Image(systemName: "arrow.up.forward").font(.caption).foregroundStyle(.secondary)
-                        }
-                        .padding(12).frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color.accentColor.opacity(0.05), in: RoundedRectangle(cornerRadius: 10))
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(language.text("查看 \(skill.title) 安装指令", "View \(skill.title) installation instructions"))
+            if isExpanded {
+                ViewThatFits(in: .horizontal) {
+                    recommendationGrid(columns: 4).frame(minWidth: 996)
+                    recommendationGrid(columns: 2).frame(minWidth: 492)
+                    recommendationGrid(columns: 1)
                 }
             }
         }
         .sheet(item: $selected) { skill in SkillInstallSheet(skill: skill, language: language) }
+    }
+
+    private func recommendationGrid(columns: Int) -> some View {
+        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: columns), spacing: 10) {
+            ForEach(BundledSkill.allCases) { skill in
+                Button {
+                    selected = skill
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: skill.symbol).foregroundStyle(.tint).font(.title3)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(skill.title).font(.callout.weight(.semibold))
+                            Text(skill.summary(language)).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                        }
+                        Spacer(minLength: 0)
+                        Image(systemName: "arrow.up.forward").font(.caption).foregroundStyle(.secondary)
+                    }
+                    .padding(12).frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.accentColor.opacity(0.05), in: RoundedRectangle(cornerRadius: 10))
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(language.text("查看 \(skill.title) 安装指令", "View \(skill.title) installation instructions"))
+            }
+        }
     }
 }
 

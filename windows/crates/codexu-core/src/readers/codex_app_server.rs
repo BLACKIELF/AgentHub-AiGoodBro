@@ -25,6 +25,9 @@ pub struct CodexAppServerQuotaSnapshot {
     pub account: Option<AccountInfo>,
     pub limit_id: Option<String>,
     pub limit_name: Option<String>,
+    pub credit_balance_usd: Option<f64>,
+    pub credit_balance_points: Option<f64>,
+    pub reset_credit_count: Option<u32>,
     pub quota_read_succeeded: bool,
     pub five_hour_quota: Option<RateWindow>,
     pub seven_day_quota: Option<RateWindow>,
@@ -94,6 +97,9 @@ impl CodexAppServerQuotaSnapshot {
                 .get("limitName")
                 .and_then(Value::as_str)
                 .map(str::to_owned),
+            credit_balance_usd: parse_credit_balance(limits).0,
+            credit_balance_points: parse_credit_balance(limits).1,
+            reset_credit_count: parse_reset_credit_count(response),
             quota_read_succeeded,
             five_hour_quota: single_window(five_hour_matches),
             seven_day_quota: single_window(seven_day_matches),
@@ -106,6 +112,9 @@ impl CodexAppServerQuotaSnapshot {
             account: None,
             limit_id: None,
             limit_name: None,
+            credit_balance_usd: None,
+            credit_balance_points: None,
+            reset_credit_count: None,
             quota_read_succeeded: false,
             five_hour_quota: None,
             seven_day_quota: None,
@@ -246,6 +255,17 @@ pub async fn read_quota_from_transport<T: AppServerTransport>(
 
     let mut quota = CodexAppServerQuotaSnapshot::from_rate_limit_response(&rate_limits_result);
     quota.account = parse_account(&account_result);
+    // rateLimits is the fresh subscription observation; account/read may still
+    // carry the previous plan following an upgrade or downgrade.
+    if let Some(account) = quota.account.as_mut() {
+        if let Some(plan) = selected_rate_limits(&rate_limits_result)
+            .and_then(|limits| limits.get("planType"))
+            .and_then(Value::as_str)
+            .and_then(canonical_plan)
+        {
+            account.plan_type = Some(plan);
+        }
+    }
     Ok(quota)
 }
 
@@ -263,16 +283,84 @@ async fn request_result<T: AppServerTransport>(
         .ok_or_else(|| anyhow::anyhow!("Codex app-server returned no result for a quota request"))
 }
 
+fn canonical_plan(value: &str) -> Option<String> {
+    let value = value.trim().to_ascii_lowercase().replace(['_', '-'], " ");
+    let plan = match value.as_str() {
+        "prolite" | "pro lite" | "codex pro lite" | "openai codex pro lite" => "prolite",
+        "pro" | "codex pro" | "openai codex pro" => "pro",
+        "free" => "free",
+        "plus" => "plus",
+        "team" | "teams" => "team",
+        "business" => "business",
+        "enterprise" => "enterprise",
+        "edu" => "edu",
+        _ => return None,
+    };
+    Some(plan.to_owned())
+}
+
 fn parse_account(value: &Value) -> Option<AccountInfo> {
     let account = value.get("account")?;
     Some(AccountInfo {
-        r#type: account.get("type")?.as_str()?.to_owned(),
-        plan_type: account
-            .get("planType")
-            .and_then(Value::as_str)
-            .map(str::to_owned),
-        email_present: account.get("email").is_some_and(|email| !email.is_null()),
+        r#type: match account.get("type")?.as_str()? {
+            "chatgpt" => "chatgpt",
+            "apiKey" => "apiKey",
+            _ => return None,
+        }.to_owned(),
+        plan_type: account.get("planType").and_then(Value::as_str).and_then(canonical_plan),
+        email_present: account.get("email").and_then(Value::as_str).is_some_and(|email| !email.trim().is_empty()),
     })
+}
+
+fn parse_reset_credit_count(value: &Value) -> Option<u32> {
+    let count = value
+        .get("rateLimitResetCredits")?
+        .get("availableCount")?
+        .as_u64()?;
+    (count <= 1_000_000).then(|| count as u32)
+}
+
+/// `credits.balance` is a points number or a currency-labelled string. A
+/// unitless value is deliberately never promoted to money.
+fn parse_credit_balance(limits: &Value) -> (Option<f64>, Option<f64>) {
+    let Some(balance) = limits.get("credits").and_then(|value| value.get("balance")) else {
+        return (None, None);
+    };
+    if let Some(points) = balance.as_f64().filter(|value| valid_balance(*value)) {
+        return (None, Some(points));
+    }
+    let Some(raw) = balance.as_str().map(str::trim).filter(|value| !value.is_empty()) else {
+        return (None, None);
+    };
+    let upper = raw.to_ascii_uppercase();
+    let usd = upper
+        .strip_prefix("USD ")
+        .or_else(|| upper.strip_prefix('$'))
+        .or_else(|| upper.strip_suffix(" USD"))
+        .and_then(parse_balance_number);
+    if let Some(value) = usd {
+        return (Some(value), None);
+    }
+    let points = upper
+        .strip_suffix(" POINTS")
+        .unwrap_or(&upper)
+        .trim()
+        .parse::<f64>()
+        .ok()
+        .filter(|value| valid_balance(*value));
+    (None, points)
+}
+
+fn parse_balance_number(value: &str) -> Option<f64> {
+    value
+        .trim()
+        .parse::<f64>()
+        .ok()
+        .filter(|value| valid_balance(*value))
+}
+
+fn valid_balance(value: f64) -> bool {
+    value.is_finite() && (0.0..=1_000_000_000.0).contains(&value)
 }
 
 fn selected_rate_limits(response: &Value) -> Option<&Value> {

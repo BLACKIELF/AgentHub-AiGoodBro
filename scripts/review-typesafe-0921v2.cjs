@@ -68,7 +68,7 @@ function request() {
     contradicted: 'The shown code directly conflicts with this claim.',
     insufficient: 'The shown evidence is insufficient or materially ambiguous.',
   })]));
-  return { model: 'jev-latest', state: { cases: Object.fromEntries(cases.map(item => [item.id, item])) }, questions };
+  return { model: 'jev-1.13.0', state: { cases: Object.fromEntries(cases.map(item => [item.id, item])) }, questions };
 }
 
 async function main() {

@@ -64,6 +64,11 @@ struct CodexAccountManagerNextMain {
             exit(WorkspacePreviewRenderer.render(to: outputURL, language: language) ? 0 : 1)
         }
 
+        if CommandLine.arguments.contains("--preview-home-interaction") {
+            HomeInteractionPreview.show()
+            return
+        }
+
         if CommandLine.arguments.contains("--preview-device-login-interaction") {
             CodexDeviceLoginPreviewRenderer.showInteractive()
             return

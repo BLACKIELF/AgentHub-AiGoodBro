@@ -1,6 +1,12 @@
 # AiGoodBro — Source handoff
 
-## Current entry · 0915v1
+## Current entry · 0922v4
+
+相较 0915v1：当前源码已集成 Mac **9.6.9（58）**、0919–0921 Windows 目录/额度基线及本轮两端修复。Mac 9.6.9 已本机安装并通过 32 项原生自检；Windows 原生运行与安装结果另行记录。入口是本分支最新 HEAD、[版本说明](docs/release-notes-v9.6.9.md)及[Windows AI 一次执行交接](docs/windows-port/WINDOWS_AI_HANDOFF_0922v4.md)；不要用下方历史版本覆盖当前源码。
+
+已有本任务授权覆盖必要修复、复验、GitHub 推送；真实账号登录/系统切换/重置兑换仍不是代码测试步骤。Windows 执行者可修改所有完成对齐所需的 Windows 模块，不受历史“只做目录”描述限制。
+
+## Historical source entry · 0915v1
 
 Changes since the historical 0828v2 handoff: the accepted macOS implementation is the rebuilt **V1.0 / 0915v5 / 9.6.1 (50)** at `517f2daeccca54fe9c388660c52889aef48f54dd`. Use the current `main` source and [version notes](docs/release-notes-v9.6.1.md), together with [branch and verification guidance](CONTRIBUTING.md) and [current security boundaries](SECURITY.md).
 

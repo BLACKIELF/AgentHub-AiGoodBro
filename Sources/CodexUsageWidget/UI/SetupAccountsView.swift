@@ -28,7 +28,11 @@ struct SetupAccountsView: View {
     }
     private func installed(_ id: String) -> Bool { id == "codex" || LocalCLIKind(rawValue: id).map { localAccounts.installed[$0] != nil } == true }
     private func verified(_ id: String) -> Bool {
-        if id == "codex" { return signedInCodex }
+        if id == "codex" {
+            return store.profiles.contains {
+                !$0.isSystemProfile && $0.lastSnapshot?.accountID?.isEmpty == false && AccountRecoveryGuide.quotaVerified($0)
+            }
+        }
         // Coding Plan evidence cannot confirm the ZCode desktop session.
         if id == "zcode" || id == "trae" { return false }
         return profiles(id).contains { localAccounts.hasConfiguredAuthentication($0) }
@@ -51,7 +55,9 @@ struct SetupAccountsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text(language.text("一次配置常用工具", "Connect your tools in one place")).font(.title2.weight(.semibold))
+            Text(language.text("先添加 Codex 账号", "Start by adding a Codex account")).font(.title2.weight(.semibold))
+            codexQuickStart
+            Text(language.text("再连接其他常用工具", "Then connect your other tools")).font(.headline)
             Text(
                 language.text(
                     "勾选要用的工具，依次完成官方登录。已有账号直接复用，返回后检查结果；不需要的可以留到以后。",
@@ -93,6 +99,14 @@ struct SetupAccountsView: View {
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             if !store.isPreview { scan() }
         }
+        .onChange(of: store.isLoggingIn) { isLoggingIn in
+            guard !isLoggingIn, launchedTool == "codex" else { return }
+            launchedTool = nil
+            feedback =
+                signedInCodex
+                ? language.text("登录流程已结束，请检查账号额度后继续。", "Sign-in finished. Check the account limits, then continue.")
+                : language.text("登录尚未完成，可重试或稍后处理。", "Sign-in is incomplete. Retry or leave it for later.")
+        }
         .onChange(of: localAccounts.authentication) { _ in
             if let launchedTool, launchedTool != "codex", verified(launchedTool) {
                 self.launchedTool = nil
@@ -106,6 +120,35 @@ struct SetupAccountsView: View {
                 self.launchedTool = nil
             }
         }
+    }
+
+    private var codexQuickStart: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label(language.text("添加 → 授权 → 查看额度", "Add → Authorize → Check limits"), systemImage: "person.crop.circle.badge.plus")
+                .font(.headline)
+            Text(language.text("1. 点击“添加 Codex 账号”，为新账号创建独立登录位置。", "1. Choose Add Codex account to create a separate sign-in profile."))
+            Text(language.text("2. 复制弹窗里的授权码，在官方页面登录目标账号并确认授权。", "2. Copy the code shown in the dialog, sign in to the intended account on the official page and authorize it."))
+            Text(
+                language.text(
+                    "3. 返回这里等待登录完成；在首页账号卡片查看剩余额度与重置时间。额度待确认时点击“检查额度”。",
+                    "3. Return and wait for sign-in to finish. The home account card shows remaining limits and reset times. Choose Check limits if quota is still pending."))
+            Button(language.text(signedInCodex ? "添加另一个 Codex 账号" : "添加 Codex 账号", signedInCodex ? "Add another Codex account" : "Add Codex account")) {
+                pendingTool = "codex"
+                applyCodexStart(store.addProfile(host: loginHost), markLaunched: true)
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(store.isPreview || store.canBeginAddingProfile() != nil || !localAccounts.signingIn.isEmpty || launchedTool != nil)
+            Text(
+                language.text(
+                    "已有账号失效：展开下方“管理已有 Codex 账号”，选中原账号重新登录。", "For an expired existing account, expand Manage existing Codex accounts below and sign in to the same profile.")
+            )
+            .font(.caption).foregroundStyle(.secondary)
+        }
+        .font(.callout)
+        .fixedSize(horizontal: false, vertical: true)
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.accentColor.opacity(0.07), in: RoundedRectangle(cornerRadius: 12))
     }
 
     private func toolRow(_ id: String) -> some View {
@@ -124,7 +167,7 @@ struct SetupAccountsView: View {
                 .font(.caption2).foregroundStyle(.secondary)
             Spacer(minLength: 4)
             Text(phase(id).title(language)).font(.caption).foregroundStyle(phase(id).isReady ? Color.green : Color.secondary)
-            Button(phase(id).actionTitle(language)) { performPrimaryAction(id) }
+            Button(id == "codex" && phase(id) == .verified ? language.text("检查额度", "Check limits") : phase(id).actionTitle(language)) { performPrimaryAction(id) }
                 .controlSize(.small)
                 .disabled(store.isPreview || primaryActionDisabled(id))
         }
@@ -132,7 +175,7 @@ struct SetupAccountsView: View {
     }
 
     private enum Phase: Equatable {
-        case notInstalled, notConfigured, signingIn, configured, verified, credentialInvalid, unverifiable
+        case notInstalled, notConfigured, signingIn, configured, verified, quotaPending, credentialInvalid, unverifiable
 
         var isReady: Bool { self == .verified || self == .configured }
 
@@ -143,6 +186,7 @@ struct SetupAccountsView: View {
             case .signingIn: return language.text("登录流程进行中", "Sign-in in progress")
             case .configured: return language.text("已发现认证配置", "Sign-in configuration found")
             case .verified: return language.text("已验证可用", "Verified available")
+            case .quotaPending: return language.text("已登录 · 额度待确认", "Signed in · limits pending")
             case .credentialInvalid: return language.text("凭据失效", "Credentials invalid")
             case .unverifiable: return language.text("无法自动核验", "Cannot auto-verify")
             }
@@ -155,6 +199,7 @@ struct SetupAccountsView: View {
             case .signingIn: return language.text("查看当前登录步骤", "View current step")
             case .configured: return language.text("检查可用状态", "Check availability")
             case .verified: return language.text("打开工具", "Open tool")
+            case .quotaPending: return language.text("检查额度", "Check limits")
             case .credentialInvalid: return language.text("重新登录", "Sign in again")
             case .unverifiable: return language.text("查看官方工具", "View official tool")
             }
@@ -167,6 +212,7 @@ struct SetupAccountsView: View {
             return .signingIn
         }
         if verified(id) { return id == "codex" ? .verified : .configured }
+        if id == "codex", signedInCodex { return .quotaPending }
         if id == "codex", store.profiles.contains(where: { !$0.isSystemProfile && $0.lastQuotaReadFailureReason == "oauth-invalidated" }) {
             return .credentialInvalid
         }
@@ -178,7 +224,7 @@ struct SetupAccountsView: View {
     private func primaryActionDisabled(_ id: String) -> Bool {
         switch phase(id) {
         case .signingIn: return false
-        case .verified, .configured, .notConfigured, .credentialInvalid:
+        case .verified, .configured, .notConfigured, .credentialInvalid, .quotaPending:
             return store.isLoggingIn || !localAccounts.signingIn.isEmpty || launchedTool != nil
         case .notInstalled, .unverifiable:
             return false
@@ -220,12 +266,20 @@ struct SetupAccountsView: View {
                     "有多个账号凭据失效，请在下方“管理已有 Codex 账号”里选择对应卡片重新登录。",
                     "Several accounts have invalid credentials. Pick the matching card under \"Manage existing Codex accounts\" to sign in again.")
             }
+        case .quotaPending:
+            for profile in store.profiles where !profile.isSystemProfile && profile.lastQuotaReadFailureReason != "oauth-invalidated" {
+                store.refreshProfile(profile.id)
+            }
+            feedback = language.text("正在检查已登录账号的额度，完成后可继续。", "Checking limits for signed-in accounts. Continue when the check finishes.")
         case .configured:
             for profile in profiles(id) { localAccounts.checkInteractiveSignIn(profile) }
             feedback = language.text("正在检查可用状态；配置存在不等于在线认证成功。", "Checking availability. A saved configuration is not a live session.")
         case .verified:
             if id == "codex" {
-                feedback = language.text("已验证可用。打开工作台选择账号后再启动。", "Verified. Open the workspace, choose an account, then start.")
+                for profile in store.profiles where !profile.isSystemProfile && profile.lastSnapshot?.accountID?.isEmpty == false {
+                    store.refreshProfile(profile.id)
+                }
+                feedback = language.text("正在更新账号额度，最新结果会显示在首页账号卡片。", "Updating account limits. The latest result will appear on the home account card.")
             } else if let profile = profiles(id).first {
                 localAccounts.openCLI(profile, workingDirectory: FileManager.default.homeDirectoryForCurrentUser)
             }

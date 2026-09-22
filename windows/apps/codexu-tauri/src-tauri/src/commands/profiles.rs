@@ -57,6 +57,7 @@ fn parse_id(id: &str) -> anyhow::Result<u64> {
 pub async fn update_profile(
     app: AppHandle,
     state: State<'_, Arc<AppState>>,
+    workflow: State<'_, crate::commands::cli_workflow::WorkflowState>,
     action: ProfileAction,
 ) -> Result<Vec<ProfileDto>, String> {
     // Canonicalize only explicit user-selected input. Return no path or OS error to the UI.
@@ -70,7 +71,14 @@ pub async fn update_profile(
         action
     };
     let source_changed = matches!(&action, ProfileAction::View { .. });
-    let config = state.try_update_config(move |config| {
+    let removing = match &action {
+        ProfileAction::Remove { id } => Some(id.parse::<u64>().map_err(|_| "Invalid profile ID")?),
+        _ => None,
+    };
+    if let Some(id) = removing {
+        crate::commands::cli_workflow::begin_remove(&workflow, id).await?;
+    }
+    let result = state.try_update_config(move |config| {
         match action {
             ProfileAction::Link { label, root } => config.profiles.add(label, root)?,
             ProfileAction::Rename { id, label } => config.profiles.rename(parse_id(&id)?, label)?,
@@ -83,7 +91,11 @@ pub async fn update_profile(
             }
         }
         Ok(())
-    }).await.map_err(|_| "Could not save: check alias, duplicate directory or stale profile; prior settings retained".to_string())?;
+    }).await;
+    if let Some(id) = removing {
+        crate::commands::cli_workflow::end_remove(&workflow, id).await;
+    }
+    let config = result.map_err(|_| "Could not save: check alias, duplicate directory or stale profile; prior settings retained".to_string())?;
     let _ = app.emit("profiles:changed", ());
     if source_changed {
         let _ = app.emit("usage:source-changed", ());

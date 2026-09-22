@@ -1,3 +1,4 @@
+import CoreFoundation
 import Foundation
 
 struct CodexQuotaWindowSnapshot: Codable, Equatable {
@@ -516,9 +517,20 @@ struct CodexProfile: Codable, Equatable, Identifiable {
     }
 
     var displayedProTierMultiplier: Int? {
+        if resolvedPlanType == "prolite" { return 5 }
         guard let proTierMultiplier, proTierMultiplier == 5 || proTierMultiplier == 20 else { return nil }
         return proTierMultiplier
     }
+
+    /// Quota responses report the current plan; profile metadata derives its
+    /// plan from a sign-in token, which can outlive a subscription change.
+    var resolvedPlanType: String? {
+        let candidates = [lastSnapshot?.quotaReadSucceeded == true ? lastSnapshot?.planType : nil, officialProfile?.planType]
+        return candidates.compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+            .first(where: { !$0.isEmpty })
+    }
+
+    var isProPlan: Bool { resolvedPlanType == "pro" || resolvedPlanType == "prolite" }
 
     var effectiveExecutionPreference: CodexExecutionPreference {
         executionPreference ?? .defaultValue
@@ -1017,8 +1029,8 @@ enum CodexOfficialProfileReader {
             accountEmail: email(fromIDToken: idToken),
             displayName: nonEmpty(profile["display_name"] as? String),
             username: nonEmpty(profile["username"] as? String),
-            lifetimeTokens: (stats["lifetime_tokens"] as? NSNumber)?.int64Value,
-            peakDailyTokens: (stats["peak_daily_tokens"] as? NSNumber)?.int64Value,
+            lifetimeTokens: reportedTokenCount(stats["lifetime_tokens"]),
+            peakDailyTokens: reportedTokenCount(stats["peak_daily_tokens"]),
             planType: subscription?.planType,
             subscriptionActiveUntil: subscription?.activeUntil,
             statsAsOf: parseDate(metadata?["stats_as_of"] as? String),
@@ -1034,6 +1046,13 @@ enum CodexOfficialProfileReader {
             nonEmpty(auth["chatgpt_plan_type"] as? String),
             parseDate(auth["chatgpt_subscription_active_until"] as? String)
         )
+    }
+
+    static func reportedTokenCount(_ value: Any?) -> Int64? {
+        guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
+            let count = Int64(number.stringValue), count >= 0
+        else { return nil }
+        return count
     }
 
     static func email(fromIDToken idToken: String?) -> String? {
@@ -1535,10 +1554,15 @@ final class CodexProfileStore {
         let credentialIdentity = CodexOfficialProfileReader.credentialIdentity(
             codexHomeURL: profile.codexHomeURL
         )
+        let requiresFreshQuota: Bool
+        switch change {
+        case .participation(let enabled), .priority(let enabled): requiresFreshQuota = enabled
+        }
         let identity = try Self.validatedDispatchIdentity(
             for: profile,
             credentialIdentity: credentialIdentity,
-            now: validationNow
+            now: validationNow,
+            requiresFreshQuota: requiresFreshQuota
         )
         let sync = DispatchParticipationSync(paths: try DispatchParticipationPaths.live(snapshot: stateURL))
         var updatedState = state
@@ -1553,6 +1577,7 @@ final class CodexProfileStore {
                 for: identity,
                 in: decoded.profiles,
                 now: validationNow,
+                requiresFreshQuota: requiresFreshQuota,
                 credentialReader: { CodexOfficialProfileReader.credentialIdentity(codexHomeURL: $0) }
             )
             updatedState = decoded
@@ -1564,19 +1589,25 @@ final class CodexProfileStore {
     static func validatedDispatchIdentity(
         for profile: CodexProfile,
         credentialIdentity: CodexCredentialIdentity?,
-        now: Date = Date()
+        now: Date = Date(),
+        requiresFreshQuota: Bool = true
     ) throws -> DispatchParticipationSync.Identity {
-        guard CodexWarmUpPolicy.hasFreshQuotaEvidence(profile, now: now),
-            let snapshot = profile.lastSnapshot,
-            snapshot.quotaReadSucceeded == true,
-            snapshot.fiveHour != nil || snapshot.sevenDay != nil || snapshot.monthly != nil,
-            profile.lastQuotaReadFailureAt.map({ $0 < snapshot.fetchedAt }) ?? true,
+        guard let snapshot = profile.lastSnapshot,
             let accountID = snapshot.accountID,
             !accountID.isEmpty,
             let credentialIdentity,
             profile.matchesRecordedCredential(credentialIdentity),
             credentialIdentity.accountID == accountID
         else { throw DispatchParticipationError.identityMismatch }
+        // Opting out only reduces future dispatch. Keep credential checks but
+        // never require an available quota service in order to stop participation.
+        if requiresFreshQuota {
+            guard CodexWarmUpPolicy.hasFreshQuotaEvidence(profile, now: now),
+                snapshot.quotaReadSucceeded == true,
+                snapshot.fiveHour != nil || snapshot.sevenDay != nil || snapshot.monthly != nil,
+                profile.lastQuotaReadFailureAt.map({ $0 < snapshot.fetchedAt }) ?? true
+            else { throw DispatchParticipationError.identityMismatch }
+        }
         return .init(
             profileID: profile.id,
             homePath: profile.codexHomePath,
@@ -1589,6 +1620,7 @@ final class CodexProfileStore {
         for clickedIdentity: DispatchParticipationSync.Identity,
         in profiles: [CodexProfile],
         now: Date = Date(),
+        requiresFreshQuota: Bool = true,
         credentialReader: (URL) -> CodexCredentialIdentity?
     ) throws {
         guard let clicked = profiles.first(where: { $0.id == clickedIdentity.profileID }),
@@ -1603,7 +1635,8 @@ final class CodexProfileStore {
             let current = try validatedDispatchIdentity(
                 for: mirror,
                 credentialIdentity: credentialReader(mirror.codexHomeURL),
-                now: now
+                now: now,
+                requiresFreshQuota: requiresFreshQuota
             )
             guard current.accountID == clickedIdentity.accountID,
                 current.email?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == expectedEmail
@@ -4687,6 +4720,20 @@ enum CodexProfileStoreSelfTest {
             ],
             "failed mirror quota read"
         )
+        do {
+            _ = try CodexProfileStore.validatedDispatchIdentity(
+                for: staleIdentityProfile, credentialIdentity: currentIdentity, now: identityNow, requiresFreshQuota: false)
+            _ = try CodexProfileStore.validatedDispatchIdentity(
+                for: failedIdentityProfile, credentialIdentity: currentIdentity, now: identityNow, requiresFreshQuota: false)
+            try CodexProfileStore.validateDispatchMirrorCredentials(
+                for: clickedDispatchIdentity, in: [identityProfile, staleMirror], now: identityNow,
+                requiresFreshQuota: false, credentialReader: { _ in currentIdentity })
+        } catch { expect(false, "opting out must not require fresh quota when identity still matches") }
+        do {
+            _ = try CodexProfileStore.validatedDispatchIdentity(
+                for: staleIdentityProfile, credentialIdentity: nil, now: identityNow, requiresFreshQuota: false)
+            expect(false, "opting out still validates account identity")
+        } catch DispatchParticipationError.identityMismatch {} catch { expect(false, "opt-out identity returned wrong error") }
         for (candidate, credential, label) in [
             (staleIdentityProfile, currentIdentity as CodexCredentialIdentity?, "stale snapshot"),
             (failedIdentityProfile, currentIdentity as CodexCredentialIdentity?, "failed quota snapshot"),

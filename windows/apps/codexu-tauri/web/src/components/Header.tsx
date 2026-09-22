@@ -43,7 +43,7 @@ export function Header({
           />
         </div>
         <div>
-          <h1 className="text-lg font-semibold text-primary leading-tight">Codex Account Manager Next</h1>
+          <h1 className="text-lg font-semibold text-primary leading-tight">AiGoodBro</h1>
           {lastUpdated && (
             <p className="text-xs text-tertiary">
               {t('header.updated', { time: new Date(lastUpdated).toLocaleTimeString() })}

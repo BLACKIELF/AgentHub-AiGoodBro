@@ -106,7 +106,7 @@ enum WorkspaceScreenshotSelfTest {
         expect(AccountCardGridLayout.columnCount(width: 1_064, itemCount: 9) == 3, "the 1100pt window content fits three cards")
         expect(AccountCardGridLayout.columnCount(width: 1_404, itemCount: 9) == 4, "the 1440pt window content fits four cards")
         expect(AccountCardGridLayout.columnCount(width: .infinity, itemCount: 9) == 1, "nonfinite probes must be safe")
-        expect(AccountCardGridLayout.selfTest(), "all card rows must share one global measured size at 720 and 980 points")
+        expect(AccountCardGridLayout.selfTest(), "cards align within each row without inheriting unrelated rows' height at 720 and 980 points")
         expect(CrossProviderQuotaSummary.selfTest(), "provider summaries must preserve unknown values and never add unrelated percentages")
         expect(ProfileReorderMotion.animation(reduceMotion: true) == nil, "reordering must respect reduced motion")
         let originalOrder = ["one", "two", "three", "four"]

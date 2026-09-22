@@ -295,8 +295,6 @@ private struct UpstreamHomeStatistics: View {
     @Binding var range: TokenUsageHomeRange
     @Binding var customStart: Date
     @Binding var detailsExpanded: Bool
-    let refresh: () -> Void
-
     private var total: Int64? { HomeEngineProjection.total(state.lastGood) }
 
     private var statusText: String? {
@@ -324,18 +322,6 @@ private struct UpstreamHomeStatistics: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
-            HStack(alignment: .firstTextBaseline) {
-                Label(language.text("Token 用量", "Token usage"), systemImage: "chart.bar.xaxis")
-                    .font(.headline)
-                    .accessibilityAddTraits(.isHeader)
-                Spacer()
-                Button(action: refresh) {
-                    Label(language.text("刷新", "Refresh"), systemImage: "arrow.clockwise")
-                        .font(.caption)
-                }
-                .buttonStyle(.borderless)
-                .disabled(state.phase == .loading)
-            }
             Picker(language.text("期间", "Range"), selection: $range) {
                 ForEach(TokenUsageHomeRange.allCases) { option in
                     Text(option.title(language)).tag(option)
@@ -476,6 +462,8 @@ struct CodexAccountManagerView: View {
     @State private var openAutomationAfterGuide = false
     @State private var isAccountDetailsExpanded = true
     @State private var isUsageDetailsExpanded = true
+    @AppStorage(HomeSection.accounts.storageKey) private var homeAccountsExpanded = true
+    @AppStorage(HomeSection.usage.storageKey) private var homeUsageExpanded = true
     @State private var isSavingScreenshot = false
     @State private var screenshotFeedback: String?
     @StateObject private var hubTaskStatusModel = HubAccountTaskStatusModel()
@@ -1128,10 +1116,29 @@ struct CodexAccountManagerView: View {
     }
 
     private var homeTokenTotalsCard: some View {
-        homeTokenTotals
-            .padding(18)
-            .sectionBackground()
-            .accessibilityElement(children: .contain)
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                HomeSectionToggle(
+                    title: language.text("Token 用量", "Token usage"), systemImage: "chart.bar.xaxis",
+                    language: language, isExpanded: $homeUsageExpanded
+                )
+                .font(.headline)
+                if store.statisticsEngineChoice == .upstream {
+                    Button {
+                        store.refresh()
+                    } label: {
+                        Label(language.text("刷新", "Refresh"), systemImage: "arrow.clockwise").font(.caption)
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled(store.engineState.phase == .loading)
+                    .accessibilityLabel(language.text("刷新 Token 用量", "Refresh token usage"))
+                }
+            }
+            if homeUsageExpanded { homeTokenTotals }
+        }
+        .padding(18)
+        .sectionBackground()
+        .accessibilityElement(children: .contain)
     }
 
     @ViewBuilder
@@ -1142,8 +1149,7 @@ struct CodexAccountManagerView: View {
                 state: store.engineState, language: language,
                 range: $settings.tokenUsageHomeRange,
                 customStart: $settings.tokenUsageHomeCustomStart,
-                detailsExpanded: $statisticsDetailsExpanded,
-                refresh: { store.refresh() })
+                detailsExpanded: $statisticsDetailsExpanded)
         case .custom:
             VStack(alignment: .leading, spacing: 10) {
                 Text(language.text("自定义已记录累计", "Custom recorded cumulative")).font(.headline)
@@ -1472,7 +1478,11 @@ struct CodexAccountManagerView: View {
     private var homeUnifiedAccounts: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Label(language.text("已登录账号", "Signed-in accounts"), systemImage: "person.2").font(.headline)
+                HomeSectionToggle(
+                    title: language.text("已登录账号", "Signed-in accounts"), systemImage: "person.2",
+                    language: language, isExpanded: $homeAccountsExpanded
+                )
+                .font(.headline)
                 savedAccountsMenu(title: language.text("管理账号", "Manage accounts"))
                 Spacer()
                 AccountCardDensityPicker()
@@ -1484,33 +1494,35 @@ struct CodexAccountManagerView: View {
                     }.pickerStyle(.segmented).labelsHidden().frame(width: 136)
                 }
             }
-            if let monitored = store.selectedMonitorProfile {
-                Text(language.text("正在监控：", "Monitoring: ") + AccountDisplay.profileName(monitored, allProfiles: store.profiles))
-                    .font(.caption)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
-            if homeAccounts(now: Date()).isEmpty { emptyHomeAccounts }
-            TimelineView(.periodic(from: .now, by: 60)) { timeline in
-                profilesLayout {
-                    ForEach(
-                        directReorder.preview(
-                            homeAccounts(now: timeline.date),
-                            id: { entry in
-                                if case .codex(let profile) = entry { return profile.id }
-                                return nil
-                            })
-                    ) { entry in
-                        switch entry {
-                        case .codex(let profile):
-                            codexAccountRow(
-                                profile, index: presentedProfiles.firstIndex(where: { $0.id == profile.id }) ?? 0, now: timeline.date,
-                                reorderVisibleIDs: homeAccounts(now: timeline.date).compactMap { entry in
-                                    if case .codex(let item) = entry { return item.id }
+            if homeAccountsExpanded {
+                if let monitored = store.selectedMonitorProfile {
+                    Text(language.text("正在监控：", "Monitoring: ") + AccountDisplay.profileName(monitored, allProfiles: store.profiles))
+                        .font(.caption)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                if homeAccounts(now: Date()).isEmpty { emptyHomeAccounts }
+                TimelineView(.periodic(from: .now, by: 60)) { timeline in
+                    profilesLayout {
+                        ForEach(
+                            directReorder.preview(
+                                homeAccounts(now: timeline.date),
+                                id: { entry in
+                                    if case .codex(let profile) = entry { return profile.id }
                                     return nil
                                 })
-                        case .local(let profile):
-                            homeLocalAccountCard(profile)
+                        ) { entry in
+                            switch entry {
+                            case .codex(let profile):
+                                codexAccountRow(
+                                    profile, index: presentedProfiles.firstIndex(where: { $0.id == profile.id }) ?? 0, now: timeline.date,
+                                    reorderVisibleIDs: homeAccounts(now: timeline.date).compactMap { entry in
+                                        if case .codex(let item) = entry { return item.id }
+                                        return nil
+                                    })
+                            case .local(let profile):
+                                homeLocalAccountCard(profile)
+                            }
                         }
                     }
                 }
@@ -2866,6 +2878,7 @@ private struct HomeOverviewProviderRow<Icon: View>: View {
 private struct AutomationMaintenanceNotice: View {
     let features: [PausedAutomationFeature]
     let language: WidgetLanguage
+    @AppStorage(HomeSection.maintenance.storageKey) private var isExpanded = true
 
     var body: some View {
         if !features.isEmpty {
@@ -2874,19 +2887,21 @@ private struct AutomationMaintenanceNotice: View {
                     .foregroundStyle(.orange)
                     .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(language.text("维护期间暂停", "Paused for maintenance"))
+                    HomeSectionToggle(title: language.text("维护期间暂停", "Paused for maintenance"), language: language, isExpanded: $isExpanded)
                         .font(.subheadline.weight(.semibold))
-                    Text(features.map { $0.name(language) }.joined(separator: " · "))
-                        .font(.caption)
-                    Text(language.text("原设置已保留；普通启动后恢复。", "Your saved settings are preserved and resume on a normal launch."))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    if isExpanded {
+                        Text(features.map { $0.name(language) }.joined(separator: " · "))
+                            .font(.caption)
+                        Text(language.text("原设置已保留；普通启动后恢复。", "Your saved settings are preserved and resume on a normal launch."))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
                 Spacer(minLength: 0)
             }
             .padding(12)
             .background(FixedVisualPalette.statusWarning.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
-            .accessibilityElement(children: .combine)
+            .accessibilityElement(children: .contain)
         }
     }
 }
@@ -4982,7 +4997,7 @@ struct CodexAccountMenuView: View {
     }
 
     private var planName: String {
-        AccountDisplay.planLabel(selectedProfile, fallbackPlan: store.snapshot.account?.planType ?? "PLUS")
+        AccountDisplay.planLabel(selectedProfile, fallbackPlan: store.snapshot.account?.planType)
     }
 
     private var officialAccountsTotal: Int64? {
@@ -5389,7 +5404,6 @@ private struct ProfileRow: View {
         VStack(alignment: .leading, spacing: layout == .cards ? 6 : 8) {
             if layout == .cards {
                 identitySummary
-                Spacer(minLength: 0)
                 quotaSummary.padding(.vertical, 2)
                 cardFooter
             } else {
@@ -5557,7 +5571,7 @@ private struct ProfileRow: View {
                 )
                 .controlSize(.small)
             }
-            if linkedAccountName == nil, creditBalance.value != .unavailable {
+            if linkedAccountName == nil {
                 CreditBalanceView(presentation: creditBalance)
             }
             if let resetReminder = SevenDayResetReminder.message(resetsAt: resetsAt, now: currentDate, language: language) {
@@ -5571,43 +5585,62 @@ private struct ProfileRow: View {
     }
 
     private var accountDetails: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(AccountDisplay.profileName(profile, allProfiles: allProfiles))
-                .font(.headline)
-            Text(
-                linkedAccountName.map { language.text("本机 Codex 当前登录 \($0)；此卡尚未独立登录", "Codex is signed in as \($0). This profile still needs an isolated sign-in.") } ?? profile
-                    .lastSnapshot.map {
-                        language.text("更新于 ", "Updated ") + language.dateTime($0.fetchedAt)
-                    } ?? language.text("等待账号验证", "Waiting for verification")
-            )
-            ProfileSnapshotNotice(profile: profile)
-            resetCreditSummary
-            CreditBalanceView(presentation: creditBalance)
-            officialResetSummary
-            if linkedAccountName == nil, let official = profile.officialProfile {
-                Text(officialAccountDetail(official))
-                if let activeUntil = official.subscriptionActiveUntil {
-                    Text(membershipDetail(activeUntil))
-                        .foregroundStyle(membershipTint(activeUntil))
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(AccountDisplay.profileName(profile, allProfiles: allProfiles)).font(.headline)
+                    Text(language.text("账号信息", "Account information")).font(.caption).foregroundStyle(.secondary)
                 }
+                Spacer()
+                Button {
+                    isShowingDetails = false
+                } label: {
+                    Image(systemName: "xmark")
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(language.text("关闭账号信息", "Close account information"))
+                .keyboardShortcut(.cancelAction)
             }
-            if let warmUpStatus {
-                Divider()
-                Text(WarmUpStatusText.attributed(warmUpStatus))
-                Text(language.text("暖号成功表示最小请求已完成；额度窗口以官方刷新结果为准。", "Warm-up success means the minimal request completed; quota windows use the official refresh result."))
-                    .foregroundStyle(.secondary)
-                if let history = profile.warmUpHistory, history.count > 1 {
-                    ForEach(Array(history.dropLast().suffix(4).reversed().enumerated()), id: \.offset) { _, attempt in
-                        Text((attempt.succeeded ? language.text("暖号成功 ", "Warm-up succeeded ") : language.text("暖号失败 ", "Warm-up failed ")) + language.dateTime(attempt.at))
+            .padding(16)
+            Divider()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    if let linkedAccountName {
+                        Text(language.text("本机 Codex 当前登录 \(linkedAccountName)；此卡尚未独立登录", "Codex is signed in as \(linkedAccountName). This profile needs its own sign-in."))
+                    } else {
+                        ProfileSnapshotNotice(profile: profile)
+                        AccountInformationView(profile: profile)
+                        Divider()
+                        resetCreditSummary
+                        CreditBalanceView(presentation: creditBalance)
+                        officialResetSummary
+                    }
+                    if let warmUpStatus {
+                        Divider()
+                        Text(WarmUpStatusText.attributed(warmUpStatus))
+                        Text(language.text("暖号成功表示最小请求已完成；额度窗口以官方刷新结果为准。", "Warm-up success means the minimal request completed; quota windows use the official refresh result."))
+                            .foregroundStyle(.secondary)
+                        if let history = profile.warmUpHistory, history.count > 1 {
+                            ForEach(Array(history.dropLast().suffix(4).reversed().enumerated()), id: \.offset) { _, attempt in
+                                Text((attempt.succeeded ? language.text("暖号成功 ", "Warm-up succeeded ") : language.text("暖号失败 ", "Warm-up failed ")) + language.dateTime(attempt.at))
+                            }
+                        }
                     }
                 }
+                .font(.caption)
+                .padding(16)
             }
+            .frame(maxHeight: 470)
+            Divider()
+            HStack {
+                Text(language.text("缺失信息显示 —", "Missing information is —")).font(.caption2).foregroundStyle(.secondary)
+                Spacer()
+                Button(language.text("刷新资料", "Refresh information"), action: onRefresh)
+                    .controlSize(.small)
+            }
+            .padding(12)
         }
-        .font(.caption)
-        .foregroundStyle(.secondary)
-        .fixedSize(horizontal: false, vertical: true)
-        .padding(16)
-        .frame(width: 360, alignment: .leading)
+        .frame(width: 430)
     }
 
     private var identityEditButtons: some View {
@@ -5756,6 +5789,10 @@ private struct ProfileRow: View {
             .foregroundStyle(.secondary)
             .lineLimit(1)
             .help(resetsAt.map { language.text("官方窗口重置 ", "Reported window reset: ") + language.dateTime($0) } ?? language.text("官方窗口重置时间未知", "Window reset time unknown"))
+            if let resetsAt, !weeklyLimitExhausted {
+                ResetCountdownText(deadline: resetsAt, kind: .accountWindow, language: language)
+                    .font(.caption2)
+            }
         }
     }
 
@@ -6084,7 +6121,7 @@ private struct ProfileRow: View {
 
     private var editControls: some View {
         HStack(spacing: 10) {
-            if isProPlan {
+            if isProPlan && profile.resolvedPlanType != "prolite" {
                 Picker(
                     language.text("Pro 档位", "Pro tier label"),
                     selection: Binding(
@@ -6146,30 +6183,22 @@ private struct ProfileRow: View {
         if linkedAccountName != nil {
             return (language.text("未登录", "Signed out"), "person.crop.circle.badge.xmark")
         }
-        return isProPlan
-            ? (AccountDisplay.planLabel(profile, fallbackPlan: "PRO"), "crown.fill")
-            : ("PLUS", "plus.circle.fill")
+        let icon = isProPlan ? "crown.fill" : profile.resolvedPlanType == "plus" ? "plus.circle.fill" : "person.crop.circle"
+        return (AccountDisplay.planLabel(profile, empty: "—"), icon)
     }
 
     private var isProPlan: Bool {
-        (profile.officialProfile?.planType ?? profile.lastSnapshot?.planType)?.lowercased() == "pro"
-    }
-
-    private func officialAccountDetail(_ official: CodexOfficialProfileSnapshot) -> String {
-        var parts: [String] = []
-        if let total = official.lifetimeTokens {
-            parts.append(language.text("官方累计 \(language.tokens(total)) Token", "Reported total: \(language.tokens(total)) tokens"))
-        }
-        if let statsAsOf = official.statsAsOf {
-            parts.append(language.text("统计至 ", "As of ") + statsAsOf.formatted(.dateTime.month().day().locale(language.locale)))
-        }
-        return parts.isEmpty ? language.text("官方账号资料已连接", "Account details connected") : parts.joined(separator: " · ")
+        profile.isProPlan
     }
 
     private func membershipDetail(_ activeUntil: Date) -> String {
         let remainingDays = membershipRemainingDays(activeUntil)
         let date = activeUntil.formatted(.dateTime.month().day().locale(language.locale))
-        if remainingDays >= 0 {
+        if activeUntil > currentDate {
+            if remainingDays == 0 {
+                let time = activeUntil.formatted(.dateTime.hour().minute().locale(language.locale))
+                return language.text("会员记录今日 \(time) 到期", "Subscription record expires today at \(time)")
+            }
             return language.text("会员有效期还有 \(remainingDays) 天 · 至 \(date)", "Subscription: \(remainingDays) days left · until \(date)")
         }
         if let checkedAt = profile.lastMembershipRefreshAt, checkedAt >= activeUntil {
@@ -6182,14 +6211,14 @@ private struct ProfileRow: View {
 
     private func membershipTint(_ activeUntil: Date) -> Color {
         let remainingDays = membershipRemainingDays(activeUntil)
-        return remainingDays < 0 ? .orange : (remainingDays <= 7 ? .red : .secondary)
+        return activeUntil <= currentDate ? .orange : (remainingDays <= 7 ? .red : .secondary)
     }
 
     private func membershipRemainingDays(_ activeUntil: Date) -> Int {
         let calendar = Calendar.current
         return calendar.dateComponents(
             [.day],
-            from: calendar.startOfDay(for: Date()),
+            from: calendar.startOfDay(for: currentDate),
             to: calendar.startOfDay(for: activeUntil)
         ).day ?? 0
     }
@@ -6333,11 +6362,12 @@ enum AccountDisplay {
     static func planLabel(
         _ profile: CodexProfile?,
         fallbackPlan: String? = nil,
-        empty: String = "PLUS"
+        empty: String = "—"
     ) -> String {
-        let plan = profile?.officialProfile?.planType ?? profile?.lastSnapshot?.planType ?? fallbackPlan
+        let plan = profile?.resolvedPlanType ?? fallbackPlan
         guard let plan, !plan.isEmpty else { return empty }
-        let normalized = plan.uppercased()
+        let normalized = plan.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        if normalized == "PROLITE" { return "PRO 5x" }
         guard normalized == "PRO", let multiplier = profile?.displayedProTierMultiplier else {
             return normalized
         }
@@ -6390,6 +6420,30 @@ enum AccountDisplay {
             masked("name@") == "name@"
         else {
             print("Account display self-test failed: raw email masking")
+            return false
+        }
+        var planProfile = profile
+        for (rawPlan, label) in [("prolite", "PRO 5x"), ("pro", "PRO 20x"), ("plus", "PLUS"), ("business", "BUSINESS"), ("free", "FREE")] {
+            planProfile.proTierMultiplier = 20
+            planProfile.lastSnapshot = CodexAccountSnapshot(
+                accountType: "chatgpt", planType: rawPlan, email: nil,
+                limitId: nil, limitName: nil, fiveHour: nil, sevenDay: nil, monthly: nil,
+                fetchedAt: Date(), appServerVersion: nil)
+            guard planLabel(planProfile) == label else {
+                print("Account display self-test failed: plan family and multiplier")
+                return false
+            }
+        }
+        planProfile.lastSnapshot = nil
+        guard planLabel(planProfile) == "—", planLabel(nil) == "—",
+            AccountInformationView.maskedID(nil) == "—",
+            AccountInformationView.maskedID("account-fixture") == "acco…ture",
+            CodexOfficialProfileReader.reportedTokenCount(NSNumber(value: true)) == nil,
+            CodexOfficialProfileReader.reportedTokenCount(NSNumber(value: -1)) == nil,
+            CodexOfficialProfileReader.reportedTokenCount(NSNumber(value: 1.5)) == nil,
+            CodexOfficialProfileReader.reportedTokenCount(NSNumber(value: Int64.max)) == Int64.max
+        else {
+            print("Account display self-test failed: unknown plan and private identifier")
             return false
         }
         print("Account display self-test passed")

@@ -14,13 +14,13 @@ struct NextSetupGuideView: View {
 
     init(
         store: UsageStore, settings: AppSettings, localAccounts: LocalCLIAccountStore? = nil, openAutomation: @escaping () -> Void,
-        runtime: NextRuntimeSetupModel = NextRuntimeSetupModel()
+        runtime: NextRuntimeSetupModel? = nil
     ) {
         self.store = store
         self.settings = settings
         self.localAccounts = localAccounts ?? LocalCLIAccountStore()
         self.openAutomation = openAutomation
-        _runtime = StateObject(wrappedValue: runtime)
+        _runtime = StateObject(wrappedValue: runtime ?? NextRuntimeSetupModel(preview: store.isPreview))
     }
 
     private var language: WidgetLanguage { settings.language }
@@ -66,6 +66,7 @@ struct NextSetupGuideView: View {
             if settings.onboarding.shouldPresent { settings.onboarding.skip() }
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            guard !store.isPreview else { return }
             store.refreshLocalNotificationAuthorization()
             if step == .runtime { runtime.refresh() }
         }

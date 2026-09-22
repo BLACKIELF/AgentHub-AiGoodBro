@@ -22,15 +22,41 @@ enum WindowKind {
 #[derive(Debug, serde::Serialize)]
 struct QuotaWindowDto {
     kind: WindowKind,
+    used_percent: f64,
     remaining_percent: f64,
     resets_at: Option<i64>,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct SafeAccountDto {
+    account_type: String,
+    plan_type: Option<String>,
+    email_present: bool,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct OfficialCreditsDto {
+    usd: Option<f64>,
+    points: Option<f64>,
+    reset_cards: Option<u32>,
 }
 
 #[derive(Debug, serde::Serialize)]
 pub struct ProfileQuotaDto {
     profile_id: String,
     checked_at: i64,
+    account: Option<SafeAccountDto>,
+    credits: OfficialCreditsDto,
     windows: Vec<QuotaWindowDto>,
+}
+
+fn safe_label(value: &str) -> Option<String> {
+    let value = value.trim();
+    (!value.is_empty()
+        && value.len() <= 64
+        && !value.contains(['@', '/', '\\', ':'])
+        && !value.chars().any(char::is_control))
+    .then(|| value.to_owned())
 }
 
 fn project(id: u64, quota: CodexAppServerQuotaSnapshot) -> Result<ProfileQuotaDto, String> {
@@ -50,6 +76,7 @@ fn project(id: u64, quota: CodexAppServerQuotaSnapshot) -> Result<ProfileQuotaDt
             }
             windows.push(QuotaWindowDto {
                 kind,
+                used_percent: window.used_percent,
                 remaining_percent: 100.0 - window.used_percent,
                 resets_at: window.resets_at.map(|date| date.timestamp_millis()),
             });
@@ -61,6 +88,18 @@ fn project(id: u64, quota: CodexAppServerQuotaSnapshot) -> Result<ProfileQuotaDt
     Ok(ProfileQuotaDto {
         profile_id: id.to_string(),
         checked_at: chrono::Utc::now().timestamp_millis(),
+        account: quota.account.and_then(|account| {
+            Some(SafeAccountDto {
+                account_type: safe_label(&account.r#type)?,
+                plan_type: account.plan_type.as_deref().and_then(safe_label),
+                email_present: account.email_present,
+            })
+        }),
+        credits: OfficialCreditsDto {
+            usd: quota.credit_balance_usd,
+            points: quota.credit_balance_points,
+            reset_cards: quota.reset_credit_count,
+        },
         windows,
     })
 }
@@ -192,8 +231,13 @@ mod tests {
         assert_eq!(json["profile_id"], "7");
         assert_eq!(json["windows"].as_array().unwrap().len(), 1);
         assert_eq!(json["windows"][0]["kind"], "seven_day");
+        assert_eq!(json["windows"][0]["used_percent"], 41.0);
         assert_eq!(json["windows"][0]["remaining_percent"], 59.0);
-        assert_eq!(json.as_object().unwrap().len(), 3);
+        assert_eq!(json["account"], serde_json::Value::Null);
+        assert_eq!(json["credits"]["usd"], serde_json::Value::Null);
+        assert_eq!(json["credits"]["points"], serde_json::Value::Null);
+        assert_eq!(json["credits"]["reset_cards"], serde_json::Value::Null);
+        assert_eq!(json.as_object().unwrap().len(), 5);
         assert!(!json.to_string().contains("synthetic-private"));
         assert!(project(7, CodexAppServerQuotaSnapshot::unavailable()).is_err());
         let mut no_windows = quota(0.0);
@@ -206,6 +250,26 @@ mod tests {
             project(7, quota(100.0)).unwrap().windows[0].remaining_percent,
             0.0
         );
+    }
+
+    #[test]
+    fn projection_exposes_only_safe_official_account_and_credit_fields() {
+        let mut value = quota(12.5);
+        value.account = Some(codexu_core::models::AccountInfo {
+            r#type: "chatgpt".into(),
+            plan_type: Some("prolite".into()),
+            email_present: true,
+        });
+        value.credit_balance_usd = Some(8.25);
+        value.reset_credit_count = Some(2);
+        let json = serde_json::to_value(project(9, value).unwrap()).unwrap();
+        assert_eq!(json["account"]["account_type"], "chatgpt");
+        assert_eq!(json["account"]["plan_type"], "prolite");
+        assert_eq!(json["account"]["email_present"], true);
+        assert_eq!(json["credits"]["usd"], 8.25);
+        assert_eq!(json["credits"]["points"], serde_json::Value::Null);
+        assert_eq!(json["credits"]["reset_cards"], 2);
+        assert!(!json.to_string().contains('@'));
     }
 
     #[tokio::test]
