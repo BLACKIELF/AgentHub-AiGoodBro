@@ -24,7 +24,7 @@ const fixture = {schemaVersion:1,collectedAt:'2026-09-13T00:00:00Z',timezone:'UT
     const text = id => page.locator('#'+id).textContent();
     const cell = date => page.locator(`[data-d="${date}"]`);
 
-    // ── 布局：宽屏概览同时显示日历和柱图；模式切换；窄屏与明细单列 ──
+    // ── 布局：宽屏概览双列，窄屏单列；明细模式隐藏概览容器 ──
     await render(fixture);
     assert.equal(await page.locator('html').getAttribute('lang'),'zh');
     assert.equal(await page.getByRole('button',{name:'概览',exact:true}).getAttribute('aria-pressed'),'true');
@@ -35,7 +35,8 @@ const fixture = {schemaVersion:1,collectedAt:'2026-09-13T00:00:00Z',timezone:'UT
     assert.equal(await page.locator('#overview').isVisible(),false);
     assert.equal(await page.locator('#details').isVisible(),true);
     assert.equal(await page.locator('#selection').isVisible(),false,'明细模式隐藏选中区');
-    assert.equal(await page.evaluate(()=>getComputedStyle(document.getElementById('charts')).gridTemplateColumns.split(' ').length),1);
+    assert.equal(await page.locator('#charts').isVisible(),false,'明细模式隐藏概览图表容器');
+    assert.equal(await page.locator('#day-summary').isVisible(),false,'明细模式隐藏所选日期概览');
     await page.setViewportSize({width:700,height:650});
     await page.getByRole('button',{name:'概览',exact:true}).click();
     assert.equal(await page.evaluate(()=>getComputedStyle(document.getElementById('charts')).gridTemplateColumns.split(' ').length),1,'窄屏概览单列');

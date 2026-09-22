@@ -27,6 +27,17 @@
 
 ## 执行顺序与命令
 
+完成依赖预检后，优先使用已写好的统一入口，一条命令跑完可自动化的测试与双格式打包：
+
+```powershell
+pwsh -NoProfile -File windows/scripts/Invoke-ReleaseReadiness.ps1 -Version 9.6.9
+if ($LASTEXITCODE -ne 0) { throw 'Release readiness failed; repair the reported step and rerun.' }
+```
+
+它依次运行原生环境预检、Windows PowerShell 5.1/7 契约、Rust 格式与测试、Web 构建和两轮视觉验证、MSI/NSIS 打包；失败立即停止。每次使用新输出目录，`report.json` 记录 Git 提交号、工作树状态、源码指纹、实际步骤与退出码、安装包 SHA-256。只需检查而不打包时加 `-SkipPackaging`；只查看执行清单时加 `-PlanOnly`。报告中的原生交互及覆盖安装保持 `not_run`，须按下方第 4–8 项实际完成后补齐；脚本不会代替用户登录、切号或关闭现有应用。
+
+下面保留分步命令，供失败定位和必要补测使用，不必在统一入口全部通过后重复运行同一组检查。
+
 1. 检查当前分支、已有修改与依赖版本。保留他人的修改；从包含本交付的最新提交创建 `codex/windows-native-0922v4` 或同类分支。不要在过期的 Windows 移植快照上打包。
 2. 检查 Windows 10/11、MSVC/Windows SDK、Rust 1.97.1、Node 22、npm、WebView2 Runtime 和 Tauri 2 CLI。使用仓库现有预检与原生验收入口，不新建重复工具链。终端功能的真实验收还需要官方 Codex CLI 原生 exe。
 3. 从仓库根目录执行以下 PowerShell 命令，任一步失败立即修复并重跑该步骤；不要忽略退出码继续打包。
@@ -39,9 +50,11 @@ cargo +1.97.1 fmt --all -- --check; Check-Exit
 cargo +1.97.1 test --workspace --locked; Check-Exit
 Pop-Location
 powershell -NoProfile -File windows/scripts/tests/Test-PublicFeedSyntax.ps1; Check-Exit
+powershell -NoProfile -File windows/scripts/tests/Test-ReleaseReadiness.ps1; Check-Exit
 powershell -NoProfile -File windows/scripts/tests/Test-NativeWindowSelection.ps1; Check-Exit
 powershell -NoProfile -File windows/scripts/tests/Test-NativeVisualCaptureWorkflow.ps1; Check-Exit
 pwsh -NoProfile -File windows/scripts/tests/Test-PublicFeedSyntax.ps1; Check-Exit
+pwsh -NoProfile -File windows/scripts/tests/Test-ReleaseReadiness.ps1; Check-Exit
 pwsh -NoProfile -File windows/scripts/tests/Test-NativeWindowSelection.ps1; Check-Exit
 pwsh -NoProfile -File windows/scripts/tests/Test-NativeVisualCaptureWorkflow.ps1; Check-Exit
 Push-Location windows/apps/codexu-tauri/web
@@ -88,4 +101,4 @@ Get-ChildItem dist/windows -File | Get-FileHash -Algorithm SHA256
 
 ## 官方调用入口核对
 
-交互终端与只读探测使用同一份官方订阅覆盖项。模型服务为 `https://chatgpt.com/backend-api/codex`，账号服务根为 `https://chatgpt.com/backend-api/`；不要把订阅令牌发到 API-key 模型入口。核对依据：[OpenAI provider 实现](https://github.com/openai/codex/blob/main/codex-rs/model-provider-info/src/lib.rs)、[默认账号服务配置](https://github.com/openai/codex/blob/main/codex-rs/core/src/config/mod.rs)。后续 CLI 升级以安装版本能力和官方来源复核，不凭模型名称推断兼容。
+交互终端与只读探测使用同一份官方订阅配置：选择内置 `model_provider="openai"`，通过标量 `openai_base_url` 固定模型服务为 `https://chatgpt.com/backend-api/codex`，通过 `chatgpt_base_url` 固定账号服务根为 `https://chatgpt.com/backend-api/`。不要重定义 `model_providers.openai`：实际 CLI 0.154.0 会拒绝覆盖这个保留的内置名称。探测在启动终端的同一工作目录中，先用 `config/read` 检查生效配置，再读取账号和额度；未匹配则不继续。不要把订阅令牌发到 API-key 模型入口。核对依据：[OpenAI provider 实现](https://github.com/openai/codex/blob/main/codex-rs/model-provider-info/src/lib.rs)、[默认账号服务配置](https://github.com/openai/codex/blob/main/codex-rs/core/src/config/mod.rs)。后续 CLI 升级以安装版本能力和官方来源复核，不凭模型名称推断兼容。

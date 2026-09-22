@@ -306,9 +306,16 @@ fn parse_account(value: &Value) -> Option<AccountInfo> {
             "chatgpt" => "chatgpt",
             "apiKey" => "apiKey",
             _ => return None,
-        }.to_owned(),
-        plan_type: account.get("planType").and_then(Value::as_str).and_then(canonical_plan),
-        email_present: account.get("email").and_then(Value::as_str).is_some_and(|email| !email.trim().is_empty()),
+        }
+        .to_owned(),
+        plan_type: account
+            .get("planType")
+            .and_then(Value::as_str)
+            .and_then(canonical_plan),
+        email_present: account
+            .get("email")
+            .and_then(Value::as_str)
+            .is_some_and(|email| !email.trim().is_empty()),
     })
 }
 
@@ -329,7 +336,11 @@ fn parse_credit_balance(limits: &Value) -> (Option<f64>, Option<f64>) {
     if let Some(points) = balance.as_f64().filter(|value| valid_balance(*value)) {
         return (None, Some(points));
     }
-    let Some(raw) = balance.as_str().map(str::trim).filter(|value| !value.is_empty()) else {
+    let Some(raw) = balance
+        .as_str()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
         return (None, None);
     };
     let upper = raw.to_ascii_uppercase();

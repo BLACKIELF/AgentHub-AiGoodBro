@@ -117,17 +117,21 @@ jobs:
         working-directory: windows
         run: cargo test --workspace --locked
       - name: Test native visual script contracts with Windows PowerShell 5.1
+        if: ${{ !cancelled() }}
         shell: powershell
         run: |
           .\windows\scripts\tests\Test-PublicFeedSyntax.ps1
           .\windows\scripts\tests\Test-NativeWindowSelection.ps1
           .\windows\scripts\tests\Test-NativeVisualCaptureWorkflow.ps1
+          .\windows\scripts\tests\Test-ReleaseReadiness.ps1
       - name: Test native visual script contracts with PowerShell 7
+        if: ${{ !cancelled() }}
         shell: pwsh
         run: |
           .\windows\scripts\tests\Test-PublicFeedSyntax.ps1
           .\windows\scripts\tests\Test-NativeWindowSelection.ps1
           .\windows\scripts\tests\Test-NativeVisualCaptureWorkflow.ps1
+          .\windows\scripts\tests\Test-ReleaseReadiness.ps1
 
   windows-web:
     needs: changes

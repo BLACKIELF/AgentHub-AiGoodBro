@@ -171,7 +171,9 @@ fn main() {
         .expect("error while building tauri application")
         .run(|app, event| {
             if let tauri::RunEvent::ExitRequested { api, .. } = event {
-                if commands::cli_workflow::should_block_exit(&app.state::<commands::cli_workflow::WorkflowState>()) {
+                if commands::cli_workflow::should_block_exit(
+                    &app.state::<commands::cli_workflow::WorkflowState>(),
+                ) {
                     api.prevent_exit();
                     if let Some(window) = app.get_webview_window("main") {
                         let _ = window.show();

@@ -78,20 +78,26 @@ pub async fn update_profile(
     if let Some(id) = removing {
         crate::commands::cli_workflow::begin_remove(&workflow, id).await?;
     }
-    let result = state.try_update_config(move |config| {
-        match action {
-            ProfileAction::Link { label, root } => config.profiles.add(label, root)?,
-            ProfileAction::Rename { id, label } => config.profiles.rename(parse_id(&id)?, label)?,
-            ProfileAction::Move { id, delta } => config.profiles.move_one(parse_id(&id)?, delta)?,
-            ProfileAction::Remove { id } => config.profiles.remove(parse_id(&id)?)?,
-            ProfileAction::View { id } => {
-                let root = config.profiles.get(parse_id(&id)?)?.root.clone();
-                anyhow::ensure!(normalize_root(&root)? == root, "Linked directory changed");
-                config.codex_root = root;
+    let result = state
+        .try_update_config(move |config| {
+            match action {
+                ProfileAction::Link { label, root } => config.profiles.add(label, root)?,
+                ProfileAction::Rename { id, label } => {
+                    config.profiles.rename(parse_id(&id)?, label)?
+                }
+                ProfileAction::Move { id, delta } => {
+                    config.profiles.move_one(parse_id(&id)?, delta)?
+                }
+                ProfileAction::Remove { id } => config.profiles.remove(parse_id(&id)?)?,
+                ProfileAction::View { id } => {
+                    let root = config.profiles.get(parse_id(&id)?)?.root.clone();
+                    anyhow::ensure!(normalize_root(&root)? == root, "Linked directory changed");
+                    config.codex_root = root;
+                }
             }
-        }
-        Ok(())
-    }).await;
+            Ok(())
+        })
+        .await;
     if let Some(id) = removing {
         crate::commands::cli_workflow::end_remove(&workflow, id).await;
     }

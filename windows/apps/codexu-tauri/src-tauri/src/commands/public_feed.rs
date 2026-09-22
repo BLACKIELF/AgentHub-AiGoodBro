@@ -53,8 +53,7 @@ pub async fn read_public_feed(feed: PublicFeed) -> Result<String, String> {
         if !output.status.success() || output.stdout.len() > 1_048_576 {
             return Err("Public response could not be verified".into());
         }
-        String::from_utf8(output.stdout)
-            .map_err(|_| "Public response encoding is invalid".into())
+        String::from_utf8(output.stdout).map_err(|_| "Public response encoding is invalid".into())
     }
 }
 
@@ -63,7 +62,11 @@ mod tests {
     use super::*;
     #[test]
     fn only_fixed_urls_and_no_redirect_or_cookies() {
-        for feed in [PublicFeed::Forecast, PublicFeed::History, PublicFeed::Messages] {
+        for feed in [
+            PublicFeed::Forecast,
+            PublicFeed::History,
+            PublicFeed::Messages,
+        ] {
             let source = script(feed);
             assert!(source.contains("AllowAutoRedirect = $false"));
             assert!(source.contains("UseCookies = $false"));
