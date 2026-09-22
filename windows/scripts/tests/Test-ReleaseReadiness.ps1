@@ -46,7 +46,18 @@ try {
         $readBack = Get-Content -LiteralPath $replacePath -Raw -Encoding UTF8 | ConvertFrom-Json
         Assert-True ($readBack.generation -eq $generation) 'Atomic report replacement did not preserve the new generation.'
     }
-    Assert-True (@(Get-ChildItem -LiteralPath $fixture -Filter 'replace-report.json.*' -File).Count -eq 0) 'Successful report replacement left temporary or backup files.'
+    # Windows wildcard filtering can match the report itself for a trailing .*.
+    $replaceResidualPattern = '^replace-report\.json\.[0-9a-f]{32}\.(tmp|bak)$'
+    $replaceLeftovers = @(Get-ChildItem -LiteralPath $fixture -File | Where-Object { $_.Name -match $replaceResidualPattern })
+    Assert-True ($replaceLeftovers.Count -eq 0) ('Successful report replacement left temporary or backup files: ' + (@($replaceLeftovers | ForEach-Object { $_.Name }) -join ', '))
+    $syntheticLeftoverName = 'replace-report.json.' + [guid]::NewGuid().ToString('N') + '.tmp'
+    $syntheticLeftoverPath = Join-Path $fixture $syntheticLeftoverName
+    [IO.File]::WriteAllText($syntheticLeftoverPath, 'synthetic residual fixture')
+    $replaceLeftovers = @(Get-ChildItem -LiteralPath $fixture -File | Where-Object { $_.Name -match $replaceResidualPattern })
+    Assert-True ($replaceLeftovers.Count -eq 1 -and $replaceLeftovers[0].Name -eq $syntheticLeftoverName) ('Residual detection missed its synthetic file or included the report: ' + (@($replaceLeftovers | ForEach-Object { $_.Name }) -join ', '))
+    Remove-Item -LiteralPath $syntheticLeftoverPath -Force
+    $replaceLeftovers = @(Get-ChildItem -LiteralPath $fixture -File | Where-Object { $_.Name -match $replaceResidualPattern })
+    Assert-True ($replaceLeftovers.Count -eq 0) ('Residual detection did not return to empty after fixture cleanup: ' + (@($replaceLeftovers | ForEach-Object { $_.Name }) -join ', '))
 
     $plan = @(Get-ReleaseReadinessPlan -Root $root -ReleaseVersion '9.6.9' -Output $fixture -Preflight (Join-Path $fixture 'preflight.json') -PowerShell51 'powershell.exe' -PowerShell7 'pwsh.exe' -Package $true)
     Assert-True ($plan[0].name -eq 'native-preflight' -and '-PreflightOnly' -in $plan[0].arguments) 'Default native step must only preflight.'
