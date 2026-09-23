@@ -2,7 +2,7 @@
 
 ## Current entry · 0923v9
 
-相较 0923v8：修复 Grok 已有余额／周期时间被空窗口遮蔽、OpenCode 打包桥接误判和 Kimi 新旧额度格式兼容；增加 Antigravity 与非 Codex 统一多账号入口。首页用量统计独立放在推荐／重置公告下方、账号区之前，默认折叠，保留热力图、趋势及工具明细。Jev 与可调度账号参与判断和对抗审查。实现、验证、安装及边界见 [CLI 额度与多账号修复 0923v9](docs/cli-quota-repair-0923v9.md)。Windows 已补余额／重置卡独立显示及用量模块，但非 Codex 原生适配并未完整移植；接手者须按 [Windows 交接](docs/windows-port/WINDOWS_AI_HANDOFF_0922v4.md) 继续，不能只做打包。
+相较 0923v8：修复 Grok 已有余额／周期时间被空窗口遮蔽、OpenCode 打包桥接误判和 Kimi 新旧额度格式兼容；增加 Antigravity 与非 Codex 统一多账号入口。首页用量统计独立放在推荐／重置公告下方、账号区之前，默认折叠，保留热力图、趋势及工具明细。Jev 与可调度账号参与判断和对抗审查。源码统一从 [草稿 PR #12](https://github.com/BLACKIELF/AgentHub-AiGoodBro/pull/12) 的最新提交接手；旧 PR #3、#10、#11 的提交已包含，重复入口已关闭。实现、验证、安装及边界见 [CLI 额度与多账号修复 0923v9](docs/cli-quota-repair-0923v9.md)。Windows 已补余额／重置卡独立显示及用量模块，但非 Codex 原生适配并未完整移植；接手者须按 [Windows 交接](docs/windows-port/WINDOWS_AI_HANDOFF_0922v4.md) 继续，不能只做打包。
 
 ## Previous entry · 0923v8
 
