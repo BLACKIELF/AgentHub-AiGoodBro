@@ -28,13 +28,20 @@ enum LocalCLIAccountPresentation {
         case "local_cli_antigravity_live_unavailable":
             return language.text("Antigravity 正在运行，但未读到当前账号额度，请稍后刷新。", "Antigravity is running, but the current account's quota could not be read. Refresh again shortly.")
         case "local_cli_antigravity_account_changed":
-            return language.text("读取期间 Antigravity 账号发生变化，未合并不同账号的额度，请重新刷新。", "The Antigravity account changed during the read. Quotas were not merged across accounts; refresh again.")
+            return language.text(
+                "读取期间 Antigravity 账号发生变化，未合并不同账号的额度，请重新刷新。", "The Antigravity account changed during the read. Quotas were not merged across accounts; refresh again.")
         case "local_cli_antigravity_cache_unavailable":
-            return language.text("所选 Antigravity 配置的额度缓存不可读或格式不匹配，请在对应官方应用中更新后再刷新。", "The selected Antigravity quota cache is unreadable or incompatible. Update it in the matching official app, then refresh.")
+            return language.text(
+                "所选 Antigravity 配置的额度缓存不可读或格式不匹配，请在对应官方应用中更新后再刷新。",
+                "The selected Antigravity quota cache is unreadable or incompatible. Update it in the matching official app, then refresh.")
         case "local_cli_antigravity_linked_cache_only":
-            return language.text("关联账号只读取其已保存的额度记录；请选择包含官方应用登录数据的独立配置文件夹。", "Linked accounts only read saved quota. Select a separate configuration folder containing the official app's sign-in data.")
+            return language.text(
+                "关联账号只读取其已保存的额度记录；请选择包含官方应用登录数据的独立配置文件夹。",
+                "Linked accounts only read saved quota. Select a separate configuration folder containing the official app's sign-in data.")
         case "local_cli_antigravity_cached_quota":
-            return language.text("这是 Antigravity IDE 的历史额度记录；额度记录时间未提供。请打开 Antigravity 刷新核实。", "This is historical Antigravity IDE quota; its observation time was not provided. Open Antigravity and refresh to verify.")
+            return language.text(
+                "这是 Antigravity IDE 的历史额度记录；额度记录时间未提供。请打开 Antigravity 刷新核实。",
+                "This is historical Antigravity IDE quota; its observation time was not provided. Open Antigravity and refresh to verify.")
         case "local_cli_opencode_go_not_connected", "local_cli_upstream_provider_missing", "local_cli_upstream_unsupported_go_plan":
             return language.text(
                 "未连接 OpenCode Go 额度；其他服务商的登录状态和余额需分别核对。",
@@ -46,9 +53,11 @@ enum LocalCLIAccountPresentation {
         case "local_cli_mimo_native_quota_unsupported":
             return language.text("已识别 MiMo 配置，当前未提供可读取的官方额度接口。", "MiMo configuration is recognized; a readable official quota endpoint is not available.")
         case "local_cli_zcode_native_quota_unsupported", "local_cli_zcode_coding_plan_unsupported":
-            return language.text("当前配置未提供可读取的 Coding Plan 额度；桌面订阅状态需在官方应用内查看。", "This configuration has no readable Coding Plan quota. Check the desktop subscription in the official app.")
+            return language.text(
+                "当前配置未提供可读取的 Coding Plan 额度；桌面订阅状态需在官方应用内查看。", "This configuration has no readable Coding Plan quota. Check the desktop subscription in the official app.")
         case "local_cli_authorization_unverified":
-            return language.text("服务商未确认额度查询权限，请在官方账号页核对；这不表示账号已退出。", "The provider did not confirm quota access. Check the official account page; this does not mean the account signed out.")
+            return language.text(
+                "服务商未确认额度查询权限，请在官方账号页核对；这不表示账号已退出。", "The provider did not confirm quota access. Check the official account page; this does not mean the account signed out.")
         case "local_cli_invalid_credentials":
             return language.text("已保存的认证无法通过额度校验，请在官方登录流程中更新后刷新。", "Saved authentication did not pass quota validation. Update it through the official sign-in flow, then refresh.")
         case "local_cli_keychain_unavailable":
@@ -57,7 +66,8 @@ enum LocalCLIAccountPresentation {
             return language.text("查询期间账号配置发生变化，已停止合并额度，请刷新当前账号。", "Account configuration changed during the read. Quota was not merged; refresh the current account.")
         case "local_cli_upstream_invalid_auth_file":
             return language.text("已关联的认证配置无法安全读取，请重新选择有效的官方配置。", "The linked authentication cannot be read safely. Select a valid official configuration again.")
-        case "local_cli_invalid_response", "local_cli_upstream_invalid_response", "local_cli_upstream_malformed_bundle", "local_cli_upstream_ambiguous_json", "local_cli_upstream_body_limit":
+        case "local_cli_invalid_response", "local_cli_upstream_invalid_response", "local_cli_upstream_malformed_bundle", "local_cli_upstream_ambiguous_json",
+            "local_cli_upstream_body_limit":
             return language.text("服务商返回的数据暂时无法识别，未把未知额度记为 0。", "The provider response could not be interpreted. Unknown quota is not recorded as zero.")
         case "local_cli_upstream_timeout", "local_cli_upstream_transport_failed", "local_cli_upstream_collection_failed":
             return language.text("额度请求超时或连接失败，请检查网络后刷新。", "The quota request timed out or could not connect. Check the network and refresh.")

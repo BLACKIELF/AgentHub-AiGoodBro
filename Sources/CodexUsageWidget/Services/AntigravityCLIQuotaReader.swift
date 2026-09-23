@@ -51,9 +51,12 @@ struct AntigravityCLIQuotaReader {
             return Self.result(state: .unsupported, at: now, code: "local_cli_adapter_not_owned")
         }
         let root = URL(fileURLWithPath: profile.configDirectory, isDirectory: true)
-        let isShared = profile.isDefault && profile.id == "local-antigravity"
-            && root.standardizedFileURL == LocalCLIKind.antigravity.defaultConfigDirectory(
-                home: FileManager.default.homeDirectoryForCurrentUser).standardizedFileURL
+        let isShared =
+            profile.isDefault && profile.id == "local-antigravity"
+            && root.standardizedFileURL
+                == LocalCLIKind.antigravity.defaultConfigDirectory(
+                    home: FileManager.default.homeDirectoryForCurrentUser
+                ).standardizedFileURL
         if isShared {
             var discoveredLiveEndpoint = false
             do {
@@ -68,7 +71,9 @@ struct AntigravityCLIQuotaReader {
                         var windows = identity.windows
                         if let summary = try? await request("RetrieveUserQuotaSummary", endpoint: endpoint),
                             let richer = try? Self.parseSummary(summary, now: now), !richer.isEmpty
-                        { windows = richer }
+                        {
+                            windows = richer
+                        }
                         try Task.checkCancellation()
                         // The user can switch accounts in Antigravity during a refresh.
                         // Never combine one account's identity with another's summary.
@@ -129,7 +134,8 @@ struct AntigravityCLIQuotaReader {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("1", forHTTPHeaderField: "Connect-Protocol-Version")
         request.setValue(endpoint.csrf, forHTTPHeaderField: "X-Codeium-Csrf-Token")
-        let body: [String: Any] = method == "RetrieveUserQuotaSummary"
+        let body: [String: Any] =
+            method == "RetrieveUserQuotaSummary"
             ? ["forceRefresh": true]
             : ["metadata": ["ideName": "antigravity", "extensionName": "antigravity", "locale": "en"]]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
@@ -151,7 +157,8 @@ struct AntigravityCLIQuotaReader {
             let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
         else { throw Failure.invalid }
         if let code = object["code"] {
-            let accepted = (code as? String).map { ["ok", "success", "0"].contains($0.lowercased()) }
+            let accepted =
+                (code as? String).map { ["ok", "success", "0"].contains($0.lowercased()) }
                 ?? (number(code) == 0)
             guard accepted else { throw Failure.invalid }
         }
@@ -193,7 +200,8 @@ struct AntigravityCLIQuotaReader {
             for (bucketIndex, bucket) in buckets.enumerated() {
                 guard bucket["disabled"] as? Bool != true else { continue }
                 let remainingObject = bucket["remaining"] as? [String: Any] ?? [:]
-                let raw = bucket["remainingFraction"] ?? remainingObject["remainingFraction"]
+                let raw =
+                    bucket["remainingFraction"] ?? remainingObject["remainingFraction"]
                     ?? ((remainingObject["case"] as? String) == "remainingFraction" ? remainingObject["value"] : nil)
                 guard let remaining = fraction(raw),
                     let name = LocalCLIQuotaPresentation.boundedLabel(
@@ -201,10 +209,11 @@ struct AntigravityCLIQuotaReader {
                 else { continue }
                 let reset = date(bucket["resetTime"])
                 guard reset.map({ $0 > now }) ?? true else { continue }
-                windows.append(LocalCLIQuotaWindow(
-                    id: "group-\(groupIndex)-bucket-\(bucketIndex)",
-                    label: String("\(groupName) · \(name)".prefix(100)),
-                    usedPercent: (1 - remaining) * 100, resetsAt: reset))
+                windows.append(
+                    LocalCLIQuotaWindow(
+                        id: "group-\(groupIndex)-bucket-\(bucketIndex)",
+                        label: String("\(groupName) · \(name)".prefix(100)),
+                        usedPercent: (1 - remaining) * 100, resetsAt: reset))
             }
         }
         guard LocalCLIQuotaPresentation.validWindows(windows) else { throw Failure.invalid }
@@ -290,12 +299,13 @@ struct AntigravityCLIQuotaReader {
             arguments: ["-nP", "-a", "-p", String(pid), "-iTCP", "-sTCP:LISTEN", "-Fn"],
             maximumOutputBytes: 64 * 1024, timeout: 2, allowedExitCodes: [0, 1])
         let text = String(data: output, encoding: .utf8) ?? ""
-        return Set(text.split(separator: "\n").compactMap { line in
-            guard line.hasPrefix("n127.0.0.1:") || line.hasPrefix("n*:") || line.hasPrefix("n[::1]:"),
-                let last = line.split(separator: ":").last, let port = Int(last), (1...65535).contains(port)
-            else { return nil }
-            return port
-        })
+        return Set(
+            text.split(separator: "\n").compactMap { line in
+                guard line.hasPrefix("n127.0.0.1:") || line.hasPrefix("n*:") || line.hasPrefix("n[::1]:"),
+                    let last = line.split(separator: ":").last, let port = Int(last), (1...65535).contains(port)
+                else { return nil }
+                return port
+            })
     }
 
     static func csrfArgument(_ command: String) -> String? {
@@ -303,8 +313,9 @@ struct AntigravityCLIQuotaReader {
     }
 
     private static func flag(_ flag: String, in command: String) -> String? {
-        guard let expression = try? NSRegularExpression(
-            pattern: #"(?:^|\s)"# + NSRegularExpression.escapedPattern(for: flag) + #"(?:=|\s+)([A-Za-z0-9._-]{1,512})(?:\s|$)"#),
+        guard
+            let expression = try? NSRegularExpression(
+                pattern: #"(?:^|\s)"# + NSRegularExpression.escapedPattern(for: flag) + #"(?:=|\s+)([A-Za-z0-9._-]{1,512})(?:\s|$)"#),
             let match = expression.firstMatch(in: command, range: NSRange(command.startIndex..., in: command)),
             let range = Range(match.range(at: 1), in: command)
         else { return nil }
@@ -363,7 +374,9 @@ struct AntigravityCLIQuotaReader {
             let path = url.path + suffix
             if lstat(path, &sidecar) == 0 {
                 guard sidecar.st_mode & S_IFMT == S_IFREG, sidecar.st_uid == geteuid(), sidecar.st_nlink == 1 else { return nil }
-            } else if errno != ENOENT { return nil }
+            } else if errno != ENOENT {
+                return nil
+            }
         }
         return url
     }
@@ -372,8 +385,10 @@ struct AntigravityCLIQuotaReader {
         guard let file = cacheFile(root) else { return nil }
         let output = try BoundedLocalProcess.run(
             executable: URL(fileURLWithPath: "/usr/bin/sqlite3"),
-            arguments: ["-readonly", "-json", file.path,
-                "PRAGMA query_only=ON; SELECT CAST(value AS TEXT) AS auth FROM ItemTable WHERE key='antigravityAuthStatus' AND length(value)<=1048576 LIMIT 1;"],
+            arguments: [
+                "-readonly", "-json", file.path,
+                "PRAGMA query_only=ON; SELECT CAST(value AS TEXT) AS auth FROM ItemTable WHERE key='antigravityAuthStatus' AND length(value)<=1048576 LIMIT 1;",
+            ],
             maximumOutputBytes: 2 * maximumBytes, timeout: 3)
         guard !output.isEmpty else { return nil }
         guard let rows = try JSONSerialization.jsonObject(with: output) as? [[String: String]],
@@ -396,7 +411,9 @@ struct AntigravityCLIQuotaReader {
         else { throw Failure.invalid }
         if let embeddedIdentity, let outer = object["email"] as? String,
             embeddedIdentity.lowercased() != outer.lowercased()
-        { throw Failure.identityChanged }
+        {
+            throw Failure.identityChanged
+        }
         var windows: [LocalCLIQuotaWindow] = []
         for group in root[33] ?? [] {
             guard let bytes = group.bytes else { continue }
@@ -445,7 +462,8 @@ struct AntigravityCLIQuotaReader {
             var value: UInt64 = 0
             for index in 0..<10 {
                 guard offset < bytes.count else { throw Failure.invalid }
-                let byte = bytes[offset]; offset += 1
+                let byte = bytes[offset]
+                offset += 1
                 guard index != 9 || byte <= 1 else { throw Failure.invalid }
                 value |= UInt64(byte & 0x7f) << (index * 7)
                 if byte < 128 { return value }
@@ -458,7 +476,7 @@ struct AntigravityCLIQuotaReader {
             count += 1
             guard count <= 4096 else { throw Failure.invalid }
             let key = try varint()
-            guard key >> 3 > 0, key >> 3 <= 0x1fffffff else { throw Failure.invalid }
+            guard key >> 3 > 0, key >> 3 <= 0x1fff_ffff else { throw Failure.invalid }
             let field = Int(key >> 3)
             let value: ProtoValue
             switch key & 7 {
@@ -534,7 +552,10 @@ private final class AntigravityLoopbackDelegate: NSObject, URLSessionTaskDelegat
             challenge.protectionSpace.host == "127.0.0.1", challenge.protectionSpace.port == port,
             task.currentRequest?.url?.host == "127.0.0.1", task.currentRequest?.url?.port == port,
             let trust = challenge.protectionSpace.serverTrust
-        else { completionHandler(.cancelAuthenticationChallenge, nil); return }
+        else {
+            completionHandler(.cancelAuthenticationChallenge, nil)
+            return
+        }
         completionHandler(.useCredential, URLCredential(trust: trust))
     }
 }

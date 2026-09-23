@@ -294,9 +294,15 @@ mod tests {
         assert_eq!(project(9, value.clone()).unwrap().credits.points, Some(0.0));
         value.credit_balance_points = None;
         value.reset_credit_count = Some(0);
-        assert_eq!(project(9, value.clone()).unwrap().credits.reset_cards, Some(0));
+        assert_eq!(
+            project(9, value.clone()).unwrap().credits.reset_cards,
+            Some(0)
+        );
         value.reset_credit_count = Some(2);
-        assert_eq!(project(9, value.clone()).unwrap().credits.reset_cards, Some(2));
+        assert_eq!(
+            project(9, value.clone()).unwrap().credits.reset_cards,
+            Some(2)
+        );
         value.quota_read_succeeded = false;
         assert!(project(9, value).is_err());
     }

@@ -77,18 +77,22 @@ struct WorkspaceGlassSurface: View {
             .fill(opaque ? AnyShapeStyle(Color(nsColor: .controlBackgroundColor)) : AnyShapeStyle(.ultraThinMaterial))
             .overlay {
                 if !opaque {
-                    shape.fill(colorScheme == .dark
-                        ? Color(red: 0.12, green: 0.14, blue: 0.18).opacity(0.48)
-                        : Color.white.opacity(0.24))
+                    shape.fill(
+                        colorScheme == .dark
+                            ? Color(red: 0.12, green: 0.14, blue: 0.18).opacity(0.48)
+                            : Color.white.opacity(0.24))
                     shape.fill(tokens.surfaceTint.color.color.opacity(tokens.surfaceTint.maximumOpacity * 0.45))
-                    shape.fill(LinearGradient(
-                        colors: [Color.white.opacity(colorScheme == .dark ? 0.045 : 0.28), .clear],
-                        startPoint: .topLeading, endPoint: .bottomTrailing))
+                    shape.fill(
+                        LinearGradient(
+                            colors: [Color.white.opacity(colorScheme == .dark ? 0.045 : 0.28), .clear],
+                            startPoint: .topLeading, endPoint: .bottomTrailing))
                 }
             }
             .overlay {
-                shape.strokeBorder(selected ? tokens.selection.stroke.color
-                    : Color.primary.opacity(contrast == .increased ? 0.35 : colorScheme == .dark ? 0.12 : 0.10),
+                shape.strokeBorder(
+                    selected
+                        ? tokens.selection.stroke.color
+                        : Color.primary.opacity(contrast == .increased ? 0.35 : colorScheme == .dark ? 0.12 : 0.10),
                     lineWidth: selected ? 1 : 0.7)
             }
             .shadow(color: .black.opacity(opaque ? 0 : colorScheme == .dark ? 0.08 : 0.035), radius: 7, y: 3)

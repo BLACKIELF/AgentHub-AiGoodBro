@@ -72,7 +72,9 @@ enum TokenMonitorUISelfTest {
         expect(LocalCLIAccountPresentation.balanceText(kind: .grok, result: zero, language: .en) == "0 USD", "a confirmed zero purchased balance stays visible with its currency")
         expect(LocalCLIAccountPresentation.balanceText(kind: .grok, result: result(balance: nil), language: .en) == nil, "missing balance is never replaced with zero")
         expect(LocalCLIAccountPresentation.balanceText(kind: .grok, result: result(balance: .nan), language: .en) == nil, "invalid balance is never displayed as a number")
-        expect(LocalCLIAccountPresentation.balanceText(kind: .kimi, result: result(balance: 12.5, currency: "CNY"), language: .en) == "12.5 CNY", "known provider currency is preserved")
+        expect(
+            LocalCLIAccountPresentation.balanceText(kind: .kimi, result: result(balance: 12.5, currency: "CNY"), language: .en) == "12.5 CNY",
+            "known provider currency is preserved")
         expect(zero.windows.isEmpty && zero.periodResetsAt != nil, "a reset boundary does not require a fabricated quota window")
         expect(LocalCLIReadiness.resolve(installed: true, result: zero) != .available, "balance and reset metadata do not promote unsupported quota to available")
         let missingUsage = LocalCLIAccountPresentation.quotaExplanation(kind: .grok, result: zero, language: .zh)
@@ -132,9 +134,11 @@ enum TokenMonitorUISelfTest {
         let older = PublicResetAnnouncement(
             id: "fixture-reset-history-older", resetType: .regular, announcedAt: date.addingTimeInterval(-60),
             text: "An earlier announcement", source: .init(type: "observed", author: nil, url: nil))
-        expect(PublicResetAnnouncementPresentation.normalized([older, event, event]).map(\.id) == [event.id, older.id],
+        expect(
+            PublicResetAnnouncementPresentation.normalized([older, event, event]).map(\.id) == [event.id, older.id],
             "history stays newest-first and does not duplicate the latest announcement")
-        expect(PublicResetAnnouncementPresentation.compactEventTime(date, language: .zh).contains("2026-09-04 07:12"),
+        expect(
+            PublicResetAnnouncementPresentation.compactEventTime(date, language: .zh).contains("2026-09-04 07:12"),
             "history timestamps preserve Beijing time across UTC date boundaries")
         expect(PublicResetAnnouncementPresentation.normalized([]).isEmpty, "missing history is not invented")
     }

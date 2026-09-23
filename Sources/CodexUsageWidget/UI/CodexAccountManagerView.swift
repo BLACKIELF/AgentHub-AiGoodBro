@@ -868,9 +868,11 @@ struct CodexAccountManagerView: View {
             } label: {
                 HStack(spacing: 6) {
                     Circle().fill(paletteTokens.accent.primary.color).frame(width: 7, height: 7)
-                    Text(paletteCatalog.descriptors(language: language.rawValue, includingDeprecatedID: settings.paletteID).first { $0.id == settings.paletteID }?.displayName
-                        ?? language.text("主题配色", "Palette"))
-                        .lineLimit(1)
+                    Text(
+                        paletteCatalog.descriptors(language: language.rawValue, includingDeprecatedID: settings.paletteID).first { $0.id == settings.paletteID }?.displayName
+                            ?? language.text("主题配色", "Palette")
+                    )
+                    .lineLimit(1)
                 }
             }
             .font(.system(size: 11))
@@ -898,8 +900,10 @@ struct CodexAccountManagerView: View {
                     Label(language.text(homeUsageExpanded ? "收起用量统计" : "用量统计", homeUsageExpanded ? "Hide usage" : "Usage statistics"), systemImage: "chart.bar.xaxis")
                 }
                 Spacer(minLength: 8)
-                Text(store.isPreview ? language.text("示例数据 · 北京时间", "Sample data · Beijing time")
-                    : language.text("北京时间", "Beijing time"))
+                Text(
+                    store.isPreview
+                        ? language.text("示例数据 · 北京时间", "Sample data · Beijing time")
+                        : language.text("北京时间", "Beijing time"))
             }
             .font(.system(size: 11))
             .foregroundStyle(.secondary)
@@ -1193,9 +1197,10 @@ struct CodexAccountManagerView: View {
                         _ = NSApp.sendAction(NSSelectorFromString("openSettingsFromMenu"), to: NSApp.delegate, from: nil)
                     }
                 } label: {
-                    Label(store.isPreview
-                        ? language.text("选择主题配色", "Choose palette")
-                        : language.text("打开完整设置", "Open full settings"), systemImage: "gearshape")
+                    Label(
+                        store.isPreview
+                            ? language.text("选择主题配色", "Choose palette")
+                            : language.text("打开完整设置", "Open full settings"), systemImage: "gearshape")
                 }
                 .buttonStyle(.borderedProminent)
             }
@@ -1624,7 +1629,9 @@ struct CodexAccountManagerView: View {
                     Text(language.text("卡片", "Cards")).tag(AccountWorkspaceLayout.cards)
                     Text(language.text("列表", "List")).tag(AccountWorkspaceLayout.rows)
                 }.pickerStyle(.segmented).labelsHidden().frame(width: 136)
-                Button { openPrimaryGuide() } label: {
+                Button {
+                    openPrimaryGuide()
+                } label: {
                     Label(language.text("添加账号", "Add account"), systemImage: "plus")
                 }
                 .buttonStyle(.borderedProminent)
@@ -1672,10 +1679,10 @@ struct CodexAccountManagerView: View {
                     (displayedAccountLayout == .cards
                         ? AnyLayout(AccountCardGridLayout(minimumWidth: 285))
                         : AnyLayout(VStackLayout(spacing: 8))) {
-                        ForEach(orderedHomeLocalProfiles) { profile in
-                            homeLocalAccountCard(profile)
+                            ForEach(orderedHomeLocalProfiles) { profile in
+                                homeLocalAccountCard(profile)
+                            }
                         }
-                    }
                 } else {
                     homeLocalCLICompactStrip
                 }
@@ -1685,9 +1692,10 @@ struct CodexAccountManagerView: View {
 
     private var orderedHomeLocalProfiles: [LocalCLIProfile] {
         let profiles = homeOrderedKinds.flatMap { localCLIAccounts.profiles(for: $0) }
-        let byKey = Dictionary(uniqueKeysWithValues: profiles.map {
-            (ResetCardPresentation.localKey(kind: $0.kind.rawValue, profileID: $0.id), $0)
-        })
+        let byKey = Dictionary(
+            uniqueKeysWithValues: profiles.map {
+                (ResetCardPresentation.localKey(kind: $0.kind.rawValue, profileID: $0.id), $0)
+            })
         return ResetCardPresentation.savedOrder(
             profiles.map { ResetCardPresentation.localKey(kind: $0.kind.rawValue, profileID: $0.id) },
             pinnedAccountID: settings.pinnedAccountKey
@@ -1702,7 +1710,9 @@ struct CodexAccountManagerView: View {
     private var homeLocalCLICompactStrip: some View {
         AccountCardGridLayout(minimumWidth: 285) {
             ForEach(homeOrderedKinds.filter { !localCLIAccounts.profiles(for: $0).isEmpty }) { kind in
-                Button { openLocalCLITab(kind) } label: {
+                Button {
+                    openLocalCLITab(kind)
+                } label: {
                     VStack(alignment: .leading, spacing: 4) {
                         HStack(spacing: 6) {
                             LocalCLIIcon(kind: kind).frame(width: 18, height: 18)
@@ -1722,15 +1732,19 @@ struct CodexAccountManagerView: View {
                         if profiles.count == 1,
                             let window = localCLIAccounts.quotas[profiles[0].id]?.windows.first
                         {
-                            Text(language.text("已用 ", "Used ")
-                                + QuotaAvailabilityPresentation.percentText(window.usedPercent)
-                                + language.text(" · 剩余 ", " · Left ")
-                                + QuotaAvailabilityPresentation.percentText(100 - window.usedPercent))
-                                .lineLimit(1)
-                            Text(window.resetsAt.map {
-                                language.text("重置 ", "Resets ") + language.dateTime($0)
-                            } ?? language.text("重置 —", "Reset —"))
-                                .lineLimit(1)
+                            Text(
+                                language.text("已用 ", "Used ")
+                                    + QuotaAvailabilityPresentation.percentText(window.usedPercent)
+                                    + language.text(" · 剩余 ", " · Left ")
+                                    + QuotaAvailabilityPresentation.percentText(100 - window.usedPercent)
+                            )
+                            .lineLimit(1)
+                            Text(
+                                window.resetsAt.map {
+                                    language.text("重置 ", "Resets ") + language.dateTime($0)
+                                } ?? language.text("重置 —", "Reset —")
+                            )
+                            .lineLimit(1)
                             if let result = localCLIAccounts.quotas[profiles[0].id],
                                 let balance = LocalCLIAccountPresentation.balanceText(kind: kind, result: result, language: language)
                             {
@@ -2812,121 +2826,124 @@ struct CodexAccountManagerView: View {
     private func codexAccountRow(_ profile: CodexProfile, index: Int, now: Date, reorderVisibleIDs: [String]? = nil) -> some View {
         let linkedProfile = linkedManagedProfile(for: profile)
         if showingHome {
-            return AnyView(HomeCodexAccountSummary(
+            return AnyView(
+                HomeCodexAccountSummary(
+                    profile: profile,
+                    allProfiles: store.profiles,
+                    displayNumber: index + 1,
+                    layout: displayedAccountLayout,
+                    loginEligibility: homeEligibility(profile),
+                    isCurrentCodexAccount: isCurrentCodexAccount(profile),
+                    isMonitoring: profile.id == store.selectedMonitorProfileID,
+                    fiveHourRemaining: fiveHourRemaining(for: profile),
+                    fiveHourReset: fiveHourReset(for: profile),
+                    sevenDayRemaining: sevenDayRemaining(for: profile),
+                    sevenDayReset: sevenDayReset(for: profile),
+                    creditBalance: store.creditBalancePresentation(for: profile),
+                    currentDate: now,
+                    isRefreshing: store.refreshingProfileIDs.contains(profile.id),
+                    canCopyTerminalCommand: !store.isPreview,
+                    canOpenTerminal: !profile.isSystemProfile && linkedProfile == nil
+                        && profile.lastSnapshot != nil && !store.isPreview
+                        && !hubTaskStatusModel.status(
+                            forAccountAlias: store.accountTaskAlias(for: profile),
+                            accountKey: profile.lastSnapshot?.email.map {
+                                DispatchActivityStore.hash($0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+                            }
+                        ).blocksLocalCLI,
+                    onRefresh: { store.refreshProfile(profile.id) },
+                    onOpenTerminal: { store.openTerminal(for: profile.id, workingDirectory: nil) },
+                    onCopyTerminalCommand: { store.copyTerminalCommand(for: profile.id) },
+                    onManage: { openAccountManagement(profileID: profile.id) }
+                ))
+        }
+        return AnyView(
+            ProfileRow(
                 profile: profile,
                 allProfiles: store.profiles,
-                displayNumber: index + 1,
-                layout: displayedAccountLayout,
-                loginEligibility: homeEligibility(profile),
-                isCurrentCodexAccount: isCurrentCodexAccount(profile),
+                executionPreference: profile.effectiveExecutionPreference,
+                dispatchIdentity: DispatchCodeCatalog.displayState(for: profile.id, allowsLocalRead: !store.isPreview),
+                cliTaskStatus: hubTaskStatusModel.status(
+                    forAccountAlias: store.accountTaskAlias(for: profile),
+                    accountKey: profile.lastSnapshot?.email.map { DispatchActivityStore.hash($0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()) }
+                ),
                 isMonitoring: profile.id == store.selectedMonitorProfileID,
-                fiveHourRemaining: fiveHourRemaining(for: profile),
-                fiveHourReset: fiveHourReset(for: profile),
-                sevenDayRemaining: sevenDayRemaining(for: profile),
-                sevenDayReset: sevenDayReset(for: profile),
-                creditBalance: store.creditBalancePresentation(for: profile),
+                isLaunchProfile: profile.id == store.selectedLaunchProfileID,
+                isDuplicateAccount: isDuplicateAccount(profile),
+                isCurrentCodexAccount: isCurrentCodexAccount(profile),
+                displayNumber: (orderedProfiles.firstIndex(where: { $0.id == profile.id }) ?? index) + 1,
+                linkedAccountName: linkedProfile.map { AccountDisplay.profileName($0) },
+                participatesInAutomaticSwitch: store.automaticSwitchParticipation(for: profile),
+                prioritizesDispatch: store.dispatchPriority(for: profile),
+                isEditing: isEditingDisplayedProfiles,
+                layout: displayedAccountLayout,
+                isLoggingIn: store.isLoggingIn || store.deviceLogin != nil,
+                needsCredentialRelogin: homeEligibility(profile) == .needsLogin,
+                isLaunching: store.isLaunchingCodex,
+                isSwitchTarget: store.desktopSwitchTargetID == profile.id,
+                isRefreshingStatistics: store.isRefreshing,
+                isRefreshingProfile: store.refreshingProfileIDs.contains(profile.id),
+                isWarmingProfile: store.warmingProfileID == profile.id,
+                quotaReadSucceeded: linkedProfile == nil
+                    && profile.lastSnapshot != nil
+                    && profile.lastQuotaReadFailureAt == nil,
+                fiveHourRemainingPercent: fiveHourRemaining(for: profile),
+                fiveHourResetsAt: fiveHourReset(for: profile),
+                remainingPercent: sevenDayRemaining(for: profile),
+                resetsAt: sevenDayReset(for: profile),
                 currentDate: now,
-                isRefreshing: store.refreshingProfileIDs.contains(profile.id),
-                canCopyTerminalCommand: !store.isPreview,
-                canOpenTerminal: !profile.isSystemProfile && linkedProfile == nil
-                    && profile.lastSnapshot != nil && !store.isPreview
-                    && !hubTaskStatusModel.status(
-                        forAccountAlias: store.accountTaskAlias(for: profile),
-                        accountKey: profile.lastSnapshot?.email.map {
-                            DispatchActivityStore.hash($0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
-                        }).blocksLocalCLI,
+                warmUpStatus: linkedProfile == nil ? store.warmUpStatus(for: profile, language: language) : nil,
+                creditBalance: store.creditBalancePresentation(for: profile),
+                allowsResetCreditAction: !store.isPreview && linkedProfile == nil,
+                hubAccountAlias: store.accountTaskAlias(for: profile),
+                availableResetCredits: store.availableResetCredits(for: profile),
+                resetCreditExpiries: store.resetCreditExpiries(for: profile),
+                resetCardsExpiring: codexCardExpiring(profile, now: now),
+                localResetHistoryCount: store.localResetHistoryCount(for: profile),
+                chromeProfiles: store.availableChromeProfiles,
+                onMonitor: { store.selectMonitorProfile(profile.id) },
                 onRefresh: { store.refreshProfile(profile.id) },
-                onOpenTerminal: { store.openTerminal(for: profile.id, workingDirectory: nil) },
+                onWarmUp: { store.warmUpProfile(profile.id) },
+                onRelogin: {
+                    if linkedProfile != nil {
+                        _ = store.loginProfileIndependently(profile.id)
+                    } else {
+                        _ = store.loginProfile(profile.id)
+                    }
+                },
+                onLaunch: {
+                    store.requestDesktopSwitch(
+                        with: profile.id,
+                        status: hubTaskStatusModel.status(
+                            forAccountAlias: store.accountTaskAlias(for: profile),
+                            accountKey: DispatchActivityStore.hash(profile.recordedAccountKey)))
+                },
+                onOpenTerminal: { store.openTerminal(for: profile.id, workingDirectory: $0) },
                 onCopyTerminalCommand: { store.copyTerminalCommand(for: profile.id) },
-                onManage: { openAccountManagement(profileID: profile.id) }
-            ))
-        }
-        return AnyView(ProfileRow(
-            profile: profile,
-            allProfiles: store.profiles,
-            executionPreference: profile.effectiveExecutionPreference,
-            dispatchIdentity: DispatchCodeCatalog.displayState(for: profile.id, allowsLocalRead: !store.isPreview),
-            cliTaskStatus: hubTaskStatusModel.status(
-                forAccountAlias: store.accountTaskAlias(for: profile),
-                accountKey: profile.lastSnapshot?.email.map { DispatchActivityStore.hash($0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()) }
-            ),
-            isMonitoring: profile.id == store.selectedMonitorProfileID,
-            isLaunchProfile: profile.id == store.selectedLaunchProfileID,
-            isDuplicateAccount: isDuplicateAccount(profile),
-            isCurrentCodexAccount: isCurrentCodexAccount(profile),
-            displayNumber: (orderedProfiles.firstIndex(where: { $0.id == profile.id }) ?? index) + 1,
-            linkedAccountName: linkedProfile.map { AccountDisplay.profileName($0) },
-            participatesInAutomaticSwitch: store.automaticSwitchParticipation(for: profile),
-            prioritizesDispatch: store.dispatchPriority(for: profile),
-            isEditing: isEditingDisplayedProfiles,
-            layout: displayedAccountLayout,
-            isLoggingIn: store.isLoggingIn || store.deviceLogin != nil,
-            needsCredentialRelogin: homeEligibility(profile) == .needsLogin,
-            isLaunching: store.isLaunchingCodex,
-            isSwitchTarget: store.desktopSwitchTargetID == profile.id,
-            isRefreshingStatistics: store.isRefreshing,
-            isRefreshingProfile: store.refreshingProfileIDs.contains(profile.id),
-            isWarmingProfile: store.warmingProfileID == profile.id,
-            quotaReadSucceeded: linkedProfile == nil
-                && profile.lastSnapshot != nil
-                && profile.lastQuotaReadFailureAt == nil,
-            fiveHourRemainingPercent: fiveHourRemaining(for: profile),
-            fiveHourResetsAt: fiveHourReset(for: profile),
-            remainingPercent: sevenDayRemaining(for: profile),
-            resetsAt: sevenDayReset(for: profile),
-            currentDate: now,
-            warmUpStatus: linkedProfile == nil ? store.warmUpStatus(for: profile, language: language) : nil,
-            creditBalance: store.creditBalancePresentation(for: profile),
-            allowsResetCreditAction: !store.isPreview && linkedProfile == nil,
-            hubAccountAlias: store.accountTaskAlias(for: profile),
-            availableResetCredits: store.availableResetCredits(for: profile),
-            resetCreditExpiries: store.resetCreditExpiries(for: profile),
-            resetCardsExpiring: codexCardExpiring(profile, now: now),
-            localResetHistoryCount: store.localResetHistoryCount(for: profile),
-            chromeProfiles: store.availableChromeProfiles,
-            onMonitor: { store.selectMonitorProfile(profile.id) },
-            onRefresh: { store.refreshProfile(profile.id) },
-            onWarmUp: { store.warmUpProfile(profile.id) },
-            onRelogin: {
-                if linkedProfile != nil {
-                    _ = store.loginProfileIndependently(profile.id)
-                } else {
-                    _ = store.loginProfile(profile.id)
+                onSetAutomaticSwitchParticipation: {
+                    store.setAutomaticSwitchParticipation($0, for: profile.id)
+                },
+                onSetDispatchPriority: {
+                    store.setDispatchPriority($0, for: profile.id)
+                },
+                onSetDispatchParticipationWindow: {
+                    store.setDispatchParticipationWindow($0, for: profile.id)
+                },
+                onSetProTierMultiplier: { store.setProTierMultiplier($0, for: profile.id) },
+                onSetExecutionPreference: { preference, applyToAll in
+                    store.setExecutionPreference(preference, for: profile.id, applyToAll: applyToAll)
+                },
+                onRename: { store.setProfileRemark($0, for: profile.id) },
+                onSetChromeProfile: { store.setChromeProfile($0, for: profile.id) },
+                onDelete: { store.deleteProfile(profile.id) },
+                onAdjustResetCount: { store.adjustResetCount(for: profile, delta: $0) }
+            )
+            .contextMenu {
+                let key = ResetCardPresentation.codexKey(profile.id)
+                Button(settings.pinnedAccountKey == key ? language.text("取消置顶", "Unpin") : language.text("固定第一位", "Pin first")) {
+                    settings.pinnedAccountKey = settings.pinnedAccountKey == key ? nil : key
                 }
-            },
-            onLaunch: {
-                store.requestDesktopSwitch(
-                    with: profile.id,
-                    status: hubTaskStatusModel.status(
-                        forAccountAlias: store.accountTaskAlias(for: profile),
-                        accountKey: DispatchActivityStore.hash(profile.recordedAccountKey)))
-            },
-            onOpenTerminal: { store.openTerminal(for: profile.id, workingDirectory: $0) },
-            onCopyTerminalCommand: { store.copyTerminalCommand(for: profile.id) },
-            onSetAutomaticSwitchParticipation: {
-                store.setAutomaticSwitchParticipation($0, for: profile.id)
-            },
-            onSetDispatchPriority: {
-                store.setDispatchPriority($0, for: profile.id)
-            },
-            onSetDispatchParticipationWindow: {
-                store.setDispatchParticipationWindow($0, for: profile.id)
-            },
-            onSetProTierMultiplier: { store.setProTierMultiplier($0, for: profile.id) },
-            onSetExecutionPreference: { preference, applyToAll in
-                store.setExecutionPreference(preference, for: profile.id, applyToAll: applyToAll)
-            },
-            onRename: { store.setProfileRemark($0, for: profile.id) },
-            onSetChromeProfile: { store.setChromeProfile($0, for: profile.id) },
-            onDelete: { store.deleteProfile(profile.id) },
-            onAdjustResetCount: { store.adjustResetCount(for: profile, delta: $0) }
-        )
-        .contextMenu {
-            let key = ResetCardPresentation.codexKey(profile.id)
-            Button(settings.pinnedAccountKey == key ? language.text("取消置顶", "Unpin") : language.text("固定第一位", "Pin first")) {
-                settings.pinnedAccountKey = settings.pinnedAccountKey == key ? nil : key
-            }
-        })
+            })
 
     }
 
@@ -5563,8 +5580,11 @@ struct QuotaProgressTrack: View {
                     let role = paletteRole == .primary ? visualTokens.quota.primary : visualTokens.quota.secondary
                     GeometryReader { geometry in
                         Capsule()
-                            .fill(LinearGradient(colors: [role.start.color, role.end.color],
-                                startPoint: .leading, endPoint: .trailing))
+                            .fill(
+                                LinearGradient(
+                                    colors: [role.start.color, role.end.color],
+                                    startPoint: .leading, endPoint: .trailing)
+                            )
                             .frame(width: geometry.size.width * CGFloat(remaining / 100))
                     }
                     .allowsHitTesting(false)
@@ -6647,8 +6667,9 @@ enum DispatchCodeCatalog {
     }
 
     private static func load() -> [String: Entry]? {
-        guard let data = try? DispatchParticipationSync.readBoundedRegularFile(
-            DispatchParticipationPaths.codesURL, maximumBytes: maximumCatalogBytes)
+        guard
+            let data = try? DispatchParticipationSync.readBoundedRegularFile(
+                DispatchParticipationPaths.codesURL, maximumBytes: maximumCatalogBytes)
         else { return nil }
         return decode(data)
     }
@@ -6901,10 +6922,11 @@ enum AccountDisplay {
             let accountID = profile.lastSnapshot?.accountID?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty,
             let email = profile.lastSnapshot?.email?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().nilIfEmpty
         else { return nil }
-        let remarks = Set(profiles.filter {
-            !$0.isSystemProfile && $0.lastSnapshot?.accountID == accountID
-                && $0.lastSnapshot?.email?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == email
-        }.compactMap { $0.remark?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty })
+        let remarks = Set(
+            profiles.filter {
+                !$0.isSystemProfile && $0.lastSnapshot?.accountID == accountID
+                    && $0.lastSnapshot?.email?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == email
+            }.compactMap { $0.remark?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty })
         // Same email can own distinct workspaces. Conflicting local labels must
         // not silently change the system profile's name when rows are reordered.
         return remarks.count == 1 ? remarks.first : nil

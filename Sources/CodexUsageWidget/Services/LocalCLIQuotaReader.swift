@@ -643,7 +643,9 @@ extension LocalCLIQuotaReader {
             percent = nil
         }
         let periodType = (config["currentPeriod"] as? [String: Any])?["type"] as? String
-        let label = periodType == "USAGE_PERIOD_TYPE_WEEKLY" ? "7-day"
+        let label =
+            periodType == "USAGE_PERIOD_TYPE_WEEKLY"
+            ? "7-day"
             : periodType == "USAGE_PERIOD_TYPE_MONTHLY" ? "Monthly" : "Credits"
         let windows =
             percent.map {
@@ -680,8 +682,9 @@ extension LocalCLIQuotaReader {
                 guard let pool = raw as? [String: Any] else { throw LocalCLIReaderFailure.invalidResponse }
                 guard let rawRatio = pool["used_ratio"], !(rawRatio is NSNull) else { continue }
                 guard let ratio = strictDouble(rawRatio), ratio >= 0 else { throw LocalCLIReaderFailure.invalidResponse }
-                windows.append(LocalCLIQuotaWindow(
-                    id: id, label: label, usedPercent: min(1, ratio) * 100, resetsAt: parseDate(pool["reset_time"])))
+                windows.append(
+                    LocalCLIQuotaWindow(
+                        id: id, label: label, usedPercent: min(1, ratio) * 100, resetsAt: parseDate(pool["reset_time"])))
             }
         }
         guard !windows.isEmpty || root.keys.contains("usage") || root.keys.contains("limits") else {

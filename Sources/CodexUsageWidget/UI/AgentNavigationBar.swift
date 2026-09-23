@@ -143,7 +143,8 @@ struct AgentNavigationBar: View {
     private func agentButton(id: String, selected: Bool) -> some View {
         navButton(
             id: id, title: AgentNavCatalog.displayName(id), selected: selected,
-            providerID: id, action: {
+            providerID: id,
+            action: {
                 showsOverflow = false
                 onSelect(id)
             }

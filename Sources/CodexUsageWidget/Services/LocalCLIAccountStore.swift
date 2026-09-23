@@ -191,9 +191,11 @@ final class LocalCLIAccountStore: ObservableObject {
             fail(Failure.invalid)
             return nil
         }
-        guard !profiles.contains(where: {
-            $0.kind == kind && $0.displayName.caseInsensitiveCompare(name) == .orderedSame
-        }) else {
+        guard
+            !profiles.contains(where: {
+                $0.kind == kind && $0.displayName.caseInsensitiveCompare(name) == .orderedSame
+            })
+        else {
             message = language.text("该平台已有同名账号，请换一个名称。", "This provider already has an account with that name. Choose another name.")
             return nil
         }
@@ -373,11 +375,12 @@ final class LocalCLIAccountStore: ObservableObject {
         else { return }
         if profile.kind.isDesktopApplication {
             let app = URL(fileURLWithPath: executable, isDirectory: true)
-            let verified = switch profile.kind {
-            case .zcode: isOfficialZCode(app)
-            case .antigravity: isOfficialAntigravity(app)
-            default: isOfficialTRAESOLO(app)
-            }
+            let verified =
+                switch profile.kind {
+                case .zcode: isOfficialZCode(app)
+                case .antigravity: isOfficialAntigravity(app)
+                default: isOfficialTRAESOLO(app)
+                }
             guard verified else { return }
             Task { [weak self] in
                 do {

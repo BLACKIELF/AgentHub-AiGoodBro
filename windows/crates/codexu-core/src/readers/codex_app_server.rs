@@ -434,7 +434,9 @@ mod command_tests {
             assert!(value.five_hour_quota.is_none());
             assert!(value.seven_day_quota.is_none());
             assert!(value.monthly_quota.is_none());
-            assert!(value.credit_balance_usd == Some(0.0) || value.credit_balance_points == Some(0.0));
+            assert!(
+                value.credit_balance_usd == Some(0.0) || value.credit_balance_points == Some(0.0)
+            );
             assert!(value.reset_credit_count.is_none());
         }
         let cards = CodexAppServerQuotaSnapshot::from_rate_limit_response(&serde_json::json!({
@@ -444,9 +446,10 @@ mod command_tests {
         assert!(!cards.window_topology_reported);
         assert_eq!(cards.reset_credit_count, Some(0));
         assert!(cards.credit_balance_usd.is_none() && cards.credit_balance_points.is_none());
-        let explicit_empty = CodexAppServerQuotaSnapshot::from_rate_limit_response(&serde_json::json!({
-            "rateLimits": { "primary": null, "secondary": null }
-        }));
+        let explicit_empty =
+            CodexAppServerQuotaSnapshot::from_rate_limit_response(&serde_json::json!({
+                "rateLimits": { "primary": null, "secondary": null }
+            }));
         assert!(explicit_empty.quota_read_succeeded);
         assert!(explicit_empty.window_topology_reported);
     }
@@ -465,7 +468,11 @@ mod command_tests {
             assert!(!value.quota_read_succeeded);
             assert!(value.credit_balance_usd.is_none());
         }
-        for balance in [serde_json::json!(-1), serde_json::json!("NaN"), serde_json::json!(null)] {
+        for balance in [
+            serde_json::json!(-1),
+            serde_json::json!("NaN"),
+            serde_json::json!(null),
+        ] {
             let value = CodexAppServerQuotaSnapshot::from_rate_limit_response(&serde_json::json!({
                 "rateLimits": { "credits": { "balance": balance } }
             }));

@@ -35,7 +35,8 @@ enum PaletteCatalogSelfTest {
         }
         let discoveredDescriptors = catalog.descriptors(language: "zh-Hans")
         expect(Set(builtInPaletteIDs).isSubset(of: Set(discoveredDescriptors.map(\.id))), "required built-in palettes should remain discoverable")
-        expect(discoveredDescriptors.first?.id == PaletteCatalog.initialPaletteID,
+        expect(
+            discoveredDescriptors.first?.id == PaletteCatalog.initialPaletteID,
             "the new initial palette should lead the picker")
         for descriptor in discoveredDescriptors {
             for appearance in PaletteAppearance.allCases {

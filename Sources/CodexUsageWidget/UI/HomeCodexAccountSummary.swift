@@ -78,9 +78,11 @@ struct HomeCodexAccountSummary: View {
                 .font(.system(size: 11))
             Divider().opacity(0.55)
             HStack(alignment: .top, spacing: 15) {
-                quotaWindow(language.text("5 小时剩余", "5h left"), remaining: fiveHourRemaining, reset: fiveHourReset,
+                quotaWindow(
+                    language.text("5 小时剩余", "5h left"), remaining: fiveHourRemaining, reset: fiveHourReset,
                     constrainedByWeekly: QuotaAvailabilityPresentation.isWeeklyExhausted(sevenDayRemaining))
-                quotaWindow(language.text("7 天剩余", "7d left"), remaining: sevenDayRemaining, reset: sevenDayReset,
+                quotaWindow(
+                    language.text("7 天剩余", "7d left"), remaining: sevenDayRemaining, reset: sevenDayReset,
                     paletteRole: .secondary)
             }
             Divider().opacity(0.65)
@@ -109,9 +111,11 @@ struct HomeCodexAccountSummary: View {
                 listIdentity.frame(width: 230, alignment: .leading)
                 listMembership.frame(width: 108, alignment: .leading)
                 listBalance.frame(width: 130, alignment: .leading)
-                listQuota(remaining: fiveHourRemaining, reset: fiveHourReset,
-                    constrainedByWeekly: QuotaAvailabilityPresentation.isWeeklyExhausted(sevenDayRemaining))
-                    .frame(minWidth: 210, maxWidth: .infinity, alignment: .leading)
+                listQuota(
+                    remaining: fiveHourRemaining, reset: fiveHourReset,
+                    constrainedByWeekly: QuotaAvailabilityPresentation.isWeeklyExhausted(sevenDayRemaining)
+                )
+                .frame(minWidth: 210, maxWidth: .infinity, alignment: .leading)
                 listQuota(remaining: sevenDayRemaining, reset: sevenDayReset, paletteRole: .secondary)
                     .frame(minWidth: 210, maxWidth: .infinity, alignment: .leading)
                 listActions.frame(width: 150, alignment: .trailing)
@@ -144,8 +148,10 @@ struct HomeCodexAccountSummary: View {
                 .help(AccountDisplay.profileName(profile, allProfiles: allProfiles))
                 HStack(spacing: 4) {
                     Circle()
-                        .fill(isCurrentCodexAccount && loginEligibility == .loggedIn
-                            ? FixedVisualPalette.statusSuccess : Color.secondary)
+                        .fill(
+                            isCurrentCodexAccount && loginEligibility == .loggedIn
+                                ? FixedVisualPalette.statusSuccess : Color.secondary
+                        )
                         .frame(width: 5, height: 5)
                     Text(accountStatus).lineLimit(1)
                     if profile.lastQuotaReadFailureAt != nil
@@ -157,16 +163,20 @@ struct HomeCodexAccountSummary: View {
                     }
                 }
                 .font(.system(size: 10))
-                .foregroundStyle(isCurrentCodexAccount && loginEligibility == .loggedIn
-                    ? FixedVisualPalette.statusSuccess : Color.secondary)
-                .help(profile.lastSnapshot.map {
-                    language.text("额度更新于 ", "Usage updated ") + language.dateTime($0.fetchedAt)
-                } ?? "")
+                .foregroundStyle(
+                    isCurrentCodexAccount && loginEligibility == .loggedIn
+                        ? FixedVisualPalette.statusSuccess : Color.secondary
+                )
+                .help(
+                    profile.lastSnapshot.map {
+                        language.text("额度更新于 ", "Usage updated ") + language.dateTime($0.fetchedAt)
+                    } ?? "")
             }
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel(language.text("第 \(displayNumber) 位，", "Position \(displayNumber), ")
-            + AccountDisplay.profileName(profile, allProfiles: allProfiles))
+        .accessibilityLabel(
+            language.text("第 \(displayNumber) 位，", "Position \(displayNumber), ")
+                + AccountDisplay.profileName(profile, allProfiles: allProfiles))
     }
 
     private var listMembership: some View {
@@ -174,10 +184,11 @@ struct HomeCodexAccountSummary: View {
             if let until = profile.officialProfile?.subscriptionActiveUntil {
                 Text(until > currentDate ? shortDate(until) : language.text("待核实", "Verify expiry"))
                     .foregroundStyle(until > currentDate ? Color.secondary : FixedVisualPalette.statusWarningForeground(colorScheme))
-                    .help(until > currentDate
-                        ? fullBeijingDateTime(until)
-                        : language.text("原记录至 ", "Recorded until ") + fullBeijingDateTime(until)
-                            + language.text(" · 待核实", " · verify"))
+                    .help(
+                        until > currentDate
+                            ? fullBeijingDateTime(until)
+                            : language.text("原记录至 ", "Recorded until ") + fullBeijingDateTime(until)
+                                + language.text(" · 待核实", " · verify"))
             } else {
                 Text(language.text("未提供", "Unknown")).foregroundStyle(.secondary)
             }
@@ -197,7 +208,9 @@ struct HomeCodexAccountSummary: View {
             .foregroundStyle(.secondary)
             .lineLimit(1)
             Spacer(minLength: 0)
-            Button { showingListBalanceDetails.toggle() } label: {
+            Button {
+                showingListBalanceDetails.toggle()
+            } label: {
                 Image(systemName: "info.circle")
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
@@ -248,8 +261,10 @@ struct HomeCodexAccountSummary: View {
         }
     }
 
-    private func listQuota(remaining: Double?, reset: Date?, constrainedByWeekly: Bool = false,
-        paletteRole: QuotaPaletteRole = .primary) -> some View {
+    private func listQuota(
+        remaining: Double?, reset: Date?, constrainedByWeekly: Bool = false,
+        paletteRole: QuotaPaletteRole = .primary
+    ) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 10) {
                 Text(QuotaAvailabilityPresentation.percentText(remaining))
@@ -281,8 +296,9 @@ struct HomeCodexAccountSummary: View {
                     .foregroundStyle(FixedVisualPalette.statusWarningForeground(colorScheme))
             }
         }
-        .help((reset.map(fullBeijingDateTime) ?? language.text("官方未提供重置时间", "Official reset time unavailable"))
-            + (constrainedByWeekly ? language.text(" · 受 7 天额度限制", " · Limited by 7-day quota") : ""))
+        .help(
+            (reset.map(fullBeijingDateTime) ?? language.text("官方未提供重置时间", "Official reset time unavailable"))
+                + (constrainedByWeekly ? language.text(" · 受 7 天额度限制", " · Limited by 7-day quota") : ""))
     }
 
     private var listActions: some View {
@@ -342,9 +358,11 @@ struct HomeCodexAccountSummary: View {
                 actions
             }
             HStack(alignment: .top, spacing: 16) {
-                quotaWindow(language.text("5 小时剩余", "5h left"), remaining: fiveHourRemaining, reset: fiveHourReset,
+                quotaWindow(
+                    language.text("5 小时剩余", "5h left"), remaining: fiveHourRemaining, reset: fiveHourReset,
                     constrainedByWeekly: QuotaAvailabilityPresentation.isWeeklyExhausted(sevenDayRemaining))
-                quotaWindow(language.text("7 天剩余", "7d left"), remaining: sevenDayRemaining, reset: sevenDayReset,
+                quotaWindow(
+                    language.text("7 天剩余", "7d left"), remaining: sevenDayRemaining, reset: sevenDayReset,
                     paletteRole: .secondary)
             }
         }
@@ -377,9 +395,11 @@ struct HomeCodexAccountSummary: View {
 
     private var status: some View {
         HStack(spacing: 4) {
-            Circle().fill(isCurrentCodexAccount && loginEligibility == .loggedIn
-                ? FixedVisualPalette.statusSuccess : Color.secondary)
-                .frame(width: 5, height: 5)
+            Circle().fill(
+                isCurrentCodexAccount && loginEligibility == .loggedIn
+                    ? FixedVisualPalette.statusSuccess : Color.secondary
+            )
+            .frame(width: 5, height: 5)
             Text(accountStatus)
             if profile.lastQuotaReadFailureAt != nil && loginEligibility != .temporarilyUnavailable {
                 Text(language.text("· 读取失败，显示上次快照", "· Last snapshot; refresh failed"))
@@ -398,11 +418,13 @@ struct HomeCodexAccountSummary: View {
         Group {
             if let until = profile.officialProfile?.subscriptionActiveUntil {
                 let date = shortDate(until)
-                Text(until > currentDate
-                    ? language.text("到期 \(date)", "Expires \(date)")
-                    : language.text("到期 待核实", "Expiry unverified"))
-                    .foregroundStyle(until > currentDate ? Color.secondary : FixedVisualPalette.statusWarningForeground(colorScheme))
-                    .help((until > currentDate ? "" : language.text("原记录至 ", "Recorded until ")) + fullBeijingDateTime(until))
+                Text(
+                    until > currentDate
+                        ? language.text("到期 \(date)", "Expires \(date)")
+                        : language.text("到期 待核实", "Expiry unverified")
+                )
+                .foregroundStyle(until > currentDate ? Color.secondary : FixedVisualPalette.statusWarningForeground(colorScheme))
+                .help((until > currentDate ? "" : language.text("原记录至 ", "Recorded until ")) + fullBeijingDateTime(until))
             } else {
                 Text(language.text("到期 未提供", "Expiry unknown")).foregroundStyle(.secondary)
             }
@@ -424,8 +446,10 @@ struct HomeCodexAccountSummary: View {
         }
     }
 
-    private func quotaWindow(_ title: String, remaining: Double?, reset: Date?, constrainedByWeekly: Bool = false,
-        paletteRole: QuotaPaletteRole = .primary) -> some View {
+    private func quotaWindow(
+        _ title: String, remaining: Double?, reset: Date?, constrainedByWeekly: Bool = false,
+        paletteRole: QuotaPaletteRole = .primary
+    ) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(alignment: .firstTextBaseline, spacing: 3) {
                 Text(title).font(.system(size: 11, weight: .medium))
@@ -440,15 +464,18 @@ struct HomeCodexAccountSummary: View {
             } else {
                 Color.clear.frame(height: 11)
             }
-            Text(reset.map { language.text("重置 ", "Resets ") + shortDateTime($0) }
-                ?? language.text("重置时间 —", "Reset time —"))
-                .help(reset.map(fullBeijingDateTime) ?? "")
+            Text(
+                reset.map { language.text("重置 ", "Resets ") + shortDateTime($0) }
+                    ?? language.text("重置时间 —", "Reset time —")
+            )
+            .help(reset.map(fullBeijingDateTime) ?? "")
             if let reset {
                 countdown(deadline: reset)
             } else {
-                Text(remaining == nil
-                    ? language.text("官方未提供", "Not provided")
-                    : language.text("倒计时 —", "Countdown —"))
+                Text(
+                    remaining == nil
+                        ? language.text("官方未提供", "Not provided")
+                        : language.text("倒计时 —", "Countdown —"))
             }
             if constrainedByWeekly {
                 Text(language.text("受 7 天额度限制", "Limited by 7-day quota"))

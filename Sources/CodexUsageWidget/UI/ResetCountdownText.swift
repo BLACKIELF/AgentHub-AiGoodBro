@@ -58,7 +58,8 @@ struct ResetCountdownText: View {
         Text(ResetCountdownPresentation.label(deadline: deadline, now: now, kind: kind, language: language))
             .monospacedDigit()
             .fixedSize(horizontal: false, vertical: true)
-            .foregroundStyle(kind == .publicForecast && deadline > now
-                ? FixedVisualPalette.statusWarningForeground(colorScheme) : Color.secondary)
+            .foregroundStyle(
+                kind == .publicForecast && deadline > now
+                    ? FixedVisualPalette.statusWarningForeground(colorScheme) : Color.secondary)
     }
 }

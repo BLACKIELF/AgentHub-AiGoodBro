@@ -180,14 +180,15 @@ enum WorkspacePreviewRenderer {
                 quotaReadSucceeded: true),
         ]
         for position in 4...8 {
-            codexProfiles.append(codexProfile(
-                id: "acceptance-codex-\(position)",
-                name: language.text("演示账号 \(position)", "Demo account \(position)"),
-                fiveHour: window(usedPercent: Double(position * 9), minutes: 300, resetOffset: 7_200),
-                sevenDay: window(usedPercent: Double(position * 7), minutes: 10_080, resetOffset: 5 * 86_400),
-                resetCredits: 0,
-                resetExpiries: [],
-                quotaReadSucceeded: true))
+            codexProfiles.append(
+                codexProfile(
+                    id: "acceptance-codex-\(position)",
+                    name: language.text("演示账号 \(position)", "Demo account \(position)"),
+                    fiveHour: window(usedPercent: Double(position * 9), minutes: 300, resetOffset: 7_200),
+                    sevenDay: window(usedPercent: Double(position * 7), minutes: 10_080, resetOffset: 5 * 86_400),
+                    resetCredits: 0,
+                    resetExpiries: [],
+                    quotaReadSucceeded: true))
         }
 
         do {
@@ -661,13 +662,14 @@ enum WorkspacePreviewRenderer {
                 let viewport = CodexAccountManagerView(
                     store: store, settings: settings,
                     paletteCatalog: catalog, localCLIAccounts: local,
-                    previewReferenceDate: referenceDate, previewForecastBy: forecastBy)
-                    .defaultAppStorage(defaults)
-                    .environment(\.workspacePreviewDate, referenceDate)
-                    .environment(\.workspacePreviewForecastDeadline, forecastBy)
-                    .environment(\.workspacePreviewOpaqueSurface, reduceTransparency)
-                    .environment(\.colorScheme, scheme)
-                    .frame(width: width, height: 980)
+                    previewReferenceDate: referenceDate, previewForecastBy: forecastBy
+                )
+                .defaultAppStorage(defaults)
+                .environment(\.workspacePreviewDate, referenceDate)
+                .environment(\.workspacePreviewForecastDeadline, forecastBy)
+                .environment(\.workspacePreviewOpaqueSurface, reduceTransparency)
+                .environment(\.colorScheme, scheme)
+                .frame(width: width, height: 980)
                 try renderView(
                     viewport, size: CGSize(width: width, height: 980), scheme: scheme,
                     to: directory.appendingPathComponent(filename))
@@ -704,12 +706,12 @@ enum WorkspacePreviewRenderer {
                 reduceTransparency: true,
                 filename: "home-cards-light-liquid-keycap-1440-reduce-transparency-viewport.png")
             let note = """
-            AiGoodBro 0923v8 design review, synthetic data only.
-            Shared fixture: eight named accounts from docs/ui-preview-0923v7/index.html.
-            Reference clock: 2026-09-23 03:00 Asia/Shanghai.
-            Production CodexAccountManagerView: full-height 1440-point cards/rows,
-            1440- and 820-point dark viewports, plus a light reduced-transparency viewport.
-            """
+                AiGoodBro 0923v8 design review, synthetic data only.
+                Shared fixture: eight named accounts from docs/ui-preview-0923v7/index.html.
+                Reference clock: 2026-09-23 03:00 Asia/Shanghai.
+                Production CodexAccountManagerView: full-height 1440-point cards/rows,
+                1440- and 820-point dark viewports, plus a light reduced-transparency viewport.
+                """
             try note.write(
                 to: directory.appendingPathComponent("README.txt"),
                 atomically: true, encoding: .utf8)

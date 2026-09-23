@@ -138,12 +138,14 @@ struct AccountOrderSheet: View {
         VStack(alignment: .leading, spacing: 16) {
             Text(language.text("调整 Codex 账号顺序", "Reorder Codex accounts"))
                 .font(.title3.weight(.semibold))
-            Text(language.text(
-                "序号是当前展示顺序。点击序号输入目标位置，也可用箭头；保存后按新顺序展示，额度刷新不会改变顺序。",
-                "Numbers show the current display order. Click one to enter a new position, or use the arrows. The saved order remains stable when usage refreshes."
-            ))
-                .font(.callout)
-                .foregroundStyle(.secondary)
+            Text(
+                language.text(
+                    "序号是当前展示顺序。点击序号输入目标位置，也可用箭头；保存后按新顺序展示，额度刷新不会改变顺序。",
+                    "Numbers show the current display order. Click one to enter a new position, or use the arrows. The saved order remains stable when usage refreshes."
+                )
+            )
+            .font(.callout)
+            .foregroundStyle(.secondary)
             if !draft.isValid {
                 Text(language.text("账号列表无效，请取消后重新打开。", "The account list is invalid. Cancel and reopen this sheet."))
                     .foregroundStyle(.red)
@@ -161,10 +163,12 @@ struct AccountOrderSheet: View {
                 .frame(minHeight: 180, idealHeight: 280, maxHeight: 420)
             }
             if positionError {
-                Text(language.text(
-                    "请输入 1 到 \(draft.orderedVisibleIDs.count) 之间的序号。",
-                    "Enter a position from 1 to \(draft.orderedVisibleIDs.count)."
-                ))
+                Text(
+                    language.text(
+                        "请输入 1 到 \(draft.orderedVisibleIDs.count) 之间的序号。",
+                        "Enter a position from 1 to \(draft.orderedVisibleIDs.count)."
+                    )
+                )
                 .font(.callout)
                 .foregroundStyle(.red)
             }
@@ -211,10 +215,12 @@ struct AccountOrderSheet: View {
                 Button(positionLabel(for: id)) { beginPositionEdit(id) }
                     .font(.callout.monospacedDigit().weight(.semibold))
                     .buttonStyle(.bordered)
-                    .accessibilityLabel(language.text(
-                        "\(items.first(where: { $0.id == id })?.title ?? "账号")：第 \(draft.position(of: id) ?? 0) 位，点击输入目标序号",
-                        "\(items.first(where: { $0.id == id })?.title ?? "Account"): position \(draft.position(of: id) ?? 0), click to enter a target position"
-                    ))
+                    .accessibilityLabel(
+                        language.text(
+                            "\(items.first(where: { $0.id == id })?.title ?? "账号")：第 \(draft.position(of: id) ?? 0) 位，点击输入目标序号",
+                            "\(items.first(where: { $0.id == id })?.title ?? "Account"): position \(draft.position(of: id) ?? 0), click to enter a target position"
+                        )
+                    )
                     .accessibilityIdentifier("account-order-position-" + id)
             }
             HStack {

@@ -387,7 +387,8 @@ final class AppSettings: ObservableObject {
         self.paletteCatalog = paletteCatalog
         setupProgress = .load(from: defaults)
         let storedPaletteID = defaults.string(forKey: Self.paletteIDKey)
-        let initialPaletteID = paletteCatalog.contains(PaletteCatalog.initialPaletteID)
+        let initialPaletteID =
+            paletteCatalog.contains(PaletteCatalog.initialPaletteID)
             ? PaletteCatalog.initialPaletteID : PaletteCatalog.defaultPaletteID
         if let storedPaletteID, paletteCatalog.contains(storedPaletteID) {
             paletteID = storedPaletteID
@@ -425,9 +426,10 @@ final class AppSettings: ObservableObject {
             defaults.set(onboardingBackup, forKey: WorkspaceOnboardingState.backupKey)
         }
         appIconStyle = AppIconStyle.storedOrDefault(defaults: defaults)
-        let avatarRoot = previewAvatarRoot
+        let avatarRoot =
+            previewAvatarRoot
             ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
-                .appendingPathComponent("AiGoodBro/avatars", isDirectory: true)
+            .appendingPathComponent("AiGoodBro/avatars", isDirectory: true)
             ?? FileManager.default.temporaryDirectory.appendingPathComponent("AiGoodBro-avatars")
         avatarAssetStore = AccountAvatarAssetStore(root: avatarRoot)
         accountWorkspaceLayout = AccountWorkspaceLayout.storedOrDefault(defaults: defaults)
@@ -501,8 +503,9 @@ final class AppSettings: ObservableObject {
     }
 
     func resetPalette() {
-        _ = selectPalette(paletteCatalog.contains(PaletteCatalog.initialPaletteID)
-            ? PaletteCatalog.initialPaletteID : PaletteCatalog.defaultPaletteID)
+        _ = selectPalette(
+            paletteCatalog.contains(PaletteCatalog.initialPaletteID)
+                ? PaletteCatalog.initialPaletteID : PaletteCatalog.defaultPaletteID)
     }
 
     func isRuntimeVisible(_ scope: RuntimeScope) -> Bool {

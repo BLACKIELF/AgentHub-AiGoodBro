@@ -34,7 +34,8 @@ enum HomeInteractionPreview {
             )
             .defaultAppStorage(defaults)
             .environment(\.workspacePreviewDate, DesignHomePreviewFixture.referenceDate)
-            .environment(\.workspacePreviewForecastDeadline,
+            .environment(
+                \.workspacePreviewForecastDeadline,
                 DesignHomePreviewFixture.referenceDate.addingTimeInterval(12 * 3_600)))
         window.center()
         window.makeKeyAndOrderFront(nil)

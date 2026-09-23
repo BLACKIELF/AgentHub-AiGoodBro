@@ -46,7 +46,8 @@ struct LocalCLIWorkspaceView: View {
                     Spacer()
                     AccountCardDensityPicker()
                     Button {
-                        newAccountName = language.text("\(kind.displayName) 账号 \(model.profiles(for: kind).count + 1)", "\(kind.displayName) account \(model.profiles(for: kind).count + 1)")
+                        newAccountName = language.text(
+                            "\(kind.displayName) 账号 \(model.profiles(for: kind).count + 1)", "\(kind.displayName) account \(model.profiles(for: kind).count + 1)")
                         linkedAccountDirectory = nil
                         newWorkBuddyEdition = model.workBuddyInstalled[.domestic] != nil ? .domestic : .international
                         accountAdditionMethod = model.canCreateAccount(kind: kind) ? .create : .link
@@ -156,27 +157,41 @@ struct LocalCLIWorkspaceView: View {
                             Text(language.text("国际版", "International")).tag(WorkBuddyEdition.international)
                         }.pickerStyle(.segmented)
                     }
-                    Text(language.text(
-                        "为这个账号建立独立配置，并打开官方登录流程。已有账号会保留，可分别查看额度与重命名。",
-                        "Create a separate configuration and open the official sign-in flow. Existing accounts remain available with their own quota and name."))
-                        .font(.callout).foregroundStyle(.secondary)
+                    Text(
+                        language.text(
+                            "为这个账号建立独立配置，并打开官方登录流程。已有账号会保留，可分别查看额度与重命名。",
+                            "Create a separate configuration and open the official sign-in flow. Existing accounts remain available with their own quota and name.")
+                    )
+                    .font(.callout).foregroundStyle(.secondary)
                 } else {
-                    Text(kind.requiresDefaultEnvironmentForLaunch
-                        ? language.text("选择另一个已登录账号的官方配置文件夹。关联后只读展示；不会替你切换官方工具的当前账号。", "Select another signed-in account's official configuration folder. It will be read only; the official tool's current account will not be switched.")
-                        : language.text("选择另一个已登录账号的配置文件夹，各账号分别保留、命名和刷新。", "Select another signed-in account's configuration folder. Each account keeps its own name and refreshes separately."))
-                        .font(.callout).foregroundStyle(.secondary)
-                    Button { chooseLinkedAccountDirectory() } label: {
-                        Label(linkedAccountDirectory == nil
-                            ? language.text("选择已登录的配置文件夹", "Choose a signed-in configuration folder")
-                            : language.text("已选择配置文件夹 · 更换", "Configuration selected · Change"),
+                    Text(
+                        kind.requiresDefaultEnvironmentForLaunch
+                            ? language.text(
+                                "选择另一个已登录账号的官方配置文件夹。关联后只读展示；不会替你切换官方工具的当前账号。",
+                                "Select another signed-in account's official configuration folder. It will be read only; the official tool's current account will not be switched.")
+                            : language.text(
+                                "选择另一个已登录账号的配置文件夹，各账号分别保留、命名和刷新。",
+                                "Select another signed-in account's configuration folder. Each account keeps its own name and refreshes separately.")
+                    )
+                    .font(.callout).foregroundStyle(.secondary)
+                    Button {
+                        chooseLinkedAccountDirectory()
+                    } label: {
+                        Label(
+                            linkedAccountDirectory == nil
+                                ? language.text("选择已登录的配置文件夹", "Choose a signed-in configuration folder")
+                                : language.text("已选择配置文件夹 · 更换", "Configuration selected · Change"),
                             systemImage: linkedAccountDirectory == nil ? "folder" : "folder.badge.checkmark")
                     }.buttonStyle(.bordered)
                 }
             } else {
-                Text(language.text(
-                    "此桌面平台目前提供本机活动账号，尚无经过验证的独立账号配置。可先在官方应用中切换账号，再刷新这里的额度。",
-                    "This desktop platform currently provides its active local account. Separate account configurations are not verified yet. Switch accounts in the official app, then refresh quota here."))
-                    .font(.callout).foregroundStyle(.secondary)
+                Text(
+                    language.text(
+                        "此桌面平台目前提供本机活动账号，尚无经过验证的独立账号配置。可先在官方应用中切换账号，再刷新这里的额度。",
+                        "This desktop platform currently provides its active local account. Separate account configurations are not verified yet. Switch accounts in the official app, then refresh quota here."
+                    )
+                )
+                .font(.callout).foregroundStyle(.secondary)
             }
             if model.installed[kind] == nil {
                 Text(language.text("请先安装官方工具，再添加或关联账号。", "Install the official tool before creating or linking an account."))
@@ -316,10 +331,13 @@ struct LocalCLIWorkspaceView: View {
 
     private var compactHomeSurface: some View {
         RoundedRectangle(cornerRadius: 9, style: .continuous)
-            .fill(reduceTransparency ? Color(nsColor: .controlBackgroundColor)
-                : colorScheme == .dark
-                    ? Color(red: 0.135, green: 0.143, blue: 0.158)
-                    : Color(red: 0.980, green: 0.982, blue: 0.990))
+            .fill(
+                reduceTransparency
+                    ? Color(nsColor: .controlBackgroundColor)
+                    : colorScheme == .dark
+                        ? Color(red: 0.135, green: 0.143, blue: 0.158)
+                        : Color(red: 0.980, green: 0.982, blue: 0.990)
+            )
             .overlay {
                 if !reduceTransparency {
                     RoundedRectangle(cornerRadius: 9, style: .continuous)
@@ -415,22 +433,28 @@ struct LocalCLIWorkspaceView: View {
             QuotaProgressTrack(percent: 100 - window.usedPercent)
             Text(language.text("已用 ", "Used ") + percentages.used)
                 .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
-            Text(window.resetsAt.map { language.text("重置 ", "Reset ") + language.dateTime($0) }
-                ?? language.text("重置 —", "Reset —"))
-                .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+            Text(
+                window.resetsAt.map { language.text("重置 ", "Reset ") + language.dateTime($0) }
+                    ?? language.text("重置 —", "Reset —")
+            )
+            .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
         }
     }
 
     private func compactHomeActions(_ profile: LocalCLIProfile, layout: AccountWorkspaceLayout) -> some View {
         HStack(spacing: 6) {
-            Button { model.refresh(profile) } label: {
+            Button {
+                model.refresh(profile)
+            } label: {
                 Image(systemName: "arrow.clockwise")
             }
             .help(language.text("刷新额度", "Refresh limits"))
             .accessibilityLabel(language.text("刷新额度", "Refresh limits"))
             .disabled(model.refreshing.contains(profile.id))
             if model.canOpen(profile) {
-                Button { openNative(profile) } label: {
+                Button {
+                    openNative(profile)
+                } label: {
                     Image(systemName: profile.kind.isDesktopApplication ? "macwindow" : "terminal")
                 }
                 .help(openTitle)
@@ -438,7 +462,9 @@ struct LocalCLIWorkspaceView: View {
             }
             if layout == .cards { Spacer(minLength: 0) }
             if let onOpenDetails {
-                Button { onOpenDetails() } label: {
+                Button {
+                    onOpenDetails()
+                } label: {
                     HStack(spacing: 3) {
                         Text(language.text("管理", "Manage"))
                         Image(systemName: "chevron.right").font(.caption2)
@@ -558,8 +584,9 @@ struct LocalCLIWorkspaceView: View {
                             Text(
                                 (result?.messageCode == "local_cli_antigravity_cached_quota"
                                     ? language.text("缓存文件更新于 ", "Cache file updated ") : language.text("更新于 ", "Updated "))
-                                    + language.dateTime(date))
-                                .font(.caption2).foregroundStyle(.secondary)
+                                    + language.dateTime(date)
+                            )
+                            .font(.caption2).foregroundStyle(.secondary)
                         }
                     }.padding(.top, 8)
                 }.font(.caption)
@@ -850,10 +877,12 @@ struct LocalCLIWorkspaceView: View {
     }
 
     private func periodReset(_ result: LocalCLIQuotaResult?) -> some View {
-        Text(result?.periodResetsAt.map { language.text("重置：", "Resets: ") + language.dateTime($0) }
-            ?? language.text("重置时间：暂不可确认", "Reset time: unavailable"))
-            .font(.caption2).foregroundStyle(.secondary)
-            .fixedSize(horizontal: false, vertical: true)
+        Text(
+            result?.periodResetsAt.map { language.text("重置：", "Resets: ") + language.dateTime($0) }
+                ?? language.text("重置时间：暂不可确认", "Reset time: unavailable")
+        )
+        .font(.caption2).foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
     }
 
     private func workspaceDisplayNumber(_ profile: LocalCLIProfile) -> String {
@@ -971,7 +1000,8 @@ struct LocalCLIWorkspaceView: View {
         case .antigravity:
             language.text(
                 "读取 Antigravity 官方桌面应用的活动账号和额度。在官方应用内登录或切换后刷新；关联配置只用于读取，不代替桌面账号切换。",
-                "Reads the active account and quota from the official Antigravity desktop app. Sign in or switch accounts there, then refresh; linked configurations are read only and do not switch the desktop account.")
+                "Reads the active account and quota from the official Antigravity desktop app. Sign in or switch accounts there, then refresh; linked configurations are read only and do not switch the desktop account."
+            )
         case .mimo:
             language.text(
                 "本机登录会自动显示；已有其他独立环境时，可关联该 CLI 的配置目录。",
