@@ -57,6 +57,11 @@ struct ZCodeCLIQuotaReader {
     func load(profile: LocalCLIProfile) async -> LocalCLIQuotaResult { unsupportedQuota(profile) }
 }
 
+struct AntigravityCLIQuotaReader {
+    func load(profile: LocalCLIProfile) async -> LocalCLIQuotaResult { unsupportedQuota(profile) }
+    static func hasLinkedCache(at root: URL) -> Bool { false }
+}
+
 private func expect(_ condition: @autoclosure () -> Bool, _ message: String) throws {
     if !condition() { throw FixtureFailure.failed(message) }
 }

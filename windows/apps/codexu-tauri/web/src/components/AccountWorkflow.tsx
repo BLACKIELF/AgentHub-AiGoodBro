@@ -5,13 +5,13 @@ import { open } from '@tauri-apps/plugin-dialog';
 import { useI18n } from '../i18n/I18nProvider';
 import { acceptWorkflowState, parseWorkflowModels, parseWorkflowState, workflowError, type AccountWorkflowState, type WorkflowModel } from '../utils/accountWorkflow';
 
-export function AccountWorkflow({ profileId }: { profileId: string }) {
+export function AccountWorkflow({ profileId, initiallyExpanded = true }: { profileId: string; initiallyExpanded?: boolean }) {
   const { language } = useI18n();
   const chinese = language === 'zh-Hans';
   const text = (zh: string, en: string) => chinese ? zh : en;
   const [state, setState] = useState<AccountWorkflowState | null>(null);
   const [models, setModels] = useState<WorkflowModel[]>([]);
-  const [expanded, setExpanded] = useState(true);
+  const [expanded, setExpanded] = useState(initiallyExpanded);
   const [saving, setSaving] = useState(false);
   const [starting, setStarting] = useState(false);
   const [readingModels, setReadingModels] = useState(false);

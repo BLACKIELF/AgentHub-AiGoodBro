@@ -162,7 +162,7 @@ enum LocalCLITerminalLauncher {
             // ZCode is a desktop product; never run its private bundled script.
             throw Failure.unsupported
 
-        case .trae, .mimo:
+        case .trae, .mimo, .antigravity:
             throw Failure.unsupported
         }
     }

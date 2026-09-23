@@ -52,7 +52,7 @@ struct LocalCLIQuotaFixture {
 
     private static func testPublicModel() throws {
         let home = URL(fileURLWithPath: "/synthetic-home", isDirectory: true)
-        try expect(LocalCLIKind.allCases.count == 9, "kind count")
+        try expect(LocalCLIKind.allCases.count == 10, "kind count")
         try expect(LocalCLIKind.openCode.commandName == "opencode", "OpenCode command")
         try expect(
             LocalCLIKind.openCode.defaultConfigDirectory(home: home).path == "/synthetic-home/.local/share/opencode",
@@ -83,11 +83,17 @@ struct LocalCLIQuotaFixture {
         try expect(grok.plan == "super", "Grok plan")
         let disabledOnDemand = try LocalCLIQuotaReader.parseGrok(data(#"{"config":{"onDemandCap":{"val":0},"onDemandUsed":{"val":0},"currentPeriod":{"end":"2026-10-01T00:00:00Z"}}}"#))
         try expect(disabledOnDemand.windows.isEmpty, "Grok disabled on-demand is valid unknown subscription usage")
-        do {
-            _ = try LocalCLIQuotaReader.parseGrok(data(#"{"config":{"onDemandCap":{"val":0},"onDemandUsed":{"val":1}}}"#))
-            throw FixtureFailure.assertion("Grok inconsistent on-demand usage accepted")
-        } catch is FixtureFailure { throw FixtureFailure.assertion("Grok inconsistent on-demand usage accepted") }
-        catch { }
+        try expect(disabledOnDemand.periodResetsAt != nil, "Grok period date survives missing percentage")
+        let separateOnDemand = try LocalCLIQuotaReader.parseGrok(data(#"{"config":{"onDemandCap":{"val":100},"onDemandUsed":{"val":30}}}"#))
+        try expect(separateOnDemand.windows.isEmpty, "Grok on-demand is not subscription percentage")
+        let legacyGrok = try LocalCLIQuotaReader.parseGrok(data(#"{"config":{"monthlyLimit":{"val":2000},"used":{"val":500},"prepaidBalance":{"val":-500}}}"#))
+        try expect(legacyGrok.windows.first?.usedPercent == 25 && legacyGrok.balanceUSD == 5, "Grok included budget and USD ledger cents")
+        let zeroBalance = try LocalCLIQuotaReader.parseGrok(data(#"{"config":{"prepaidBalance":{}}}"#))
+        try expect(zeroBalance.balanceUSD == 0 && zeroBalance.windows.isEmpty, "Grok proto3 zero is known without inferred usage")
+        try expect(grok.balanceUSD == nil, "Grok omitted balance stays unknown")
+        try expectThrows("invalid money is not a balance") {
+            _ = try LocalCLIQuotaReader.parseGrok(data(#"{"config":{"prepaidBalance":{"val":true}}}"#))
+        }
 
         let kimi = try LocalCLIQuotaReader.parseKimi(data(#"""
         {
@@ -97,6 +103,20 @@ struct LocalCLIQuotaFixture {
         """#))
         try expect(kimi.windows.map(\.usedPercent) == [25, 25], "Kimi windows")
         try expect(kimi.windows[1].label == "5-hour", "Kimi window label")
+        let pools = try LocalCLIQuotaReader.parseKimi(data(#"{"usages":{"limit_5h":{"used_ratio":0.625,"reset_time":"2026-09-24T00:00:00Z"},"limit_7d":{"used_ratio":0.125},"limit_month_total":{"used_ratio":0.0056}}}"#))
+        try expect(pools.windows.count == 3 && zip(pools.windows.map(\.usedPercent), [62.5, 12.5, 0.56]).allSatisfy { abs($0 - $1) < 0.000001 }, "Kimi ratio pools use percentages and keep monthly")
+        try expect(pools.windows.first?.resetsAt != nil, "Kimi ratio pool reset date")
+        let partialPools = try LocalCLIQuotaReader.parseKimi(data(#"{"usages":{"limit_5h":{"used_ratio":0},"limit_7d":{"reset_time":"2026-09-24T00:00:00Z"}}}"#))
+        try expect(partialPools.windows.count == 1 && partialPools.windows[0].usedPercent == 0, "Kimi distinguishes missing from zero")
+        let mixedPools = try LocalCLIQuotaReader.parseKimi(data(#"{"usages":{"limit_month_total":{"used_ratio":0.25},"limit_7d":{"used_ratio":0.3}},"usage":{"limit":100,"used":75},"limits":[{"window":{"duration":300,"timeUnit":"TIME_UNIT_MINUTE"},"detail":{"limit":100,"used":10}},{"window":{"duration":10080,"timeUnit":"TIME_UNIT_MINUTE"},"detail":{"limit":100,"used":75}}]}"#))
+        let mixedByID = Dictionary(uniqueKeysWithValues: mixedPools.windows.map { ($0.id, $0.usedPercent) })
+        try expect(mixedByID == ["session":10, "weekly":30, "monthly":25], "Kimi mixed schemas retain missing legacy pools and prefer new kinds without duplicates")
+        try expectThrows("empty Kimi pools are not a successful refresh") {
+            _ = try LocalCLIQuotaReader.parseKimi(data(#"{"usages":{}}"#))
+        }
+        try expectThrows("invalid Kimi ratio") {
+            _ = try LocalCLIQuotaReader.parseKimi(data(#"{"usages":{"limit_5h":{"used_ratio":true}}}"#))
+        }
         do {
             _ = try LocalCLIQuotaReader.parseKimi(data(#"{"limits":[{"window":{"duration":9223372036854775808,"timeUnit":"TIME_UNIT_MINUTE"},"detail":{"limit":10,"used":1}}]}"#))
             throw FixtureFailure.assertion("Kimi overflowing window accepted")
@@ -111,6 +131,8 @@ struct LocalCLIQuotaFixture {
         }
         """#))
         try expect(claude.map(\.usedPercent) == [10, 20, 30], "Claude windows")
+        let partialClaude = try LocalCLIQuotaReader.parseClaude(data(#"{"five_hour":{"utilization":10},"seven_day":{"resets_at":"2026-09-24T00:00:00Z"},"seven_day_opus":{"utilization":null}}"#))
+        try expect(partialClaude.count == 1 && partialClaude[0].usedPercent == 10, "missing Claude window does not discard valid usage")
 
         let openCode = try LocalCLIQuotaReader.parseOpenCode(data(#"""
         {
@@ -177,6 +199,12 @@ struct LocalCLIQuotaFixture {
             try expect(result.identityFingerprint?.count == 64, "Grok identity fingerprint")
             try expect(transport.request?.url?.absoluteString == "https://cli-chat-proxy.grok.com/v1/billing?format=credits", "Grok endpoint")
             try expect(transport.request?.value(forHTTPHeaderField: "x-xai-token-auth") == "xai-grok-cli", "Grok auth header")
+
+            let currentShape = MockTransport(data: data(#"{"config":{"currentPeriod":{"type":"USAGE_PERIOD_TYPE_WEEKLY","end":"2026-09-29T09:55:31.379657+00:00"},"onDemandCap":{"val":0},"onDemandUsed":{"val":0},"prepaidBalance":{"val":0},"isUnifiedBillingUser":true}}"#))
+            let current = await LocalCLIQuotaReader(transport: currentShape).load(profile: profile(.grok, directory))
+            try expect(current.state == .available && current.balance == 0 && current.balanceCurrency == "USD", "current Grok response keeps purchased USD balance")
+            try expect(current.periodResetsAt != nil && current.windows.isEmpty, "current Grok period survives absent usage")
+            try expect(current.messageCode == "local_cli_usage_not_reported" && current.resetCards == nil, "Grok unavailable usage and reset card stay distinct")
 
             try data(#"{"https://unofficial.example/sign-in":{"key":"synthetic-token"}}"#)
                 .write(to: directory.appendingPathComponent("auth.json"))
@@ -263,6 +291,21 @@ struct LocalCLIQuotaFixture {
             now: Date(timeIntervalSince1970: 1_800_000_000))
         try expect(keychainResult.state == .available, "Claude default noninteractive Keychain fixture")
         try expect(keychainReads == 1, "Claude default Keychain query is scoped")
+
+        var recoveryReads = 0
+        let recoveryTransport = MockTransport(data: data(#"{"five_hour":{"utilization":29}}"#))
+        let recoveryReader = LocalCLIQuotaReader(
+            transport: recoveryTransport,
+            fileReader: { _, _, _ in data(#"{"claudeAiOauth":{"accessToken":"synthetic-expired-file","expiresAt":1000}}"#) },
+            claudeKeychainReader: {
+                recoveryReads += 1
+                return data(#"{"claudeAiOauth":{"accessToken":"synthetic-fresh-keychain","expiresAt":2000000000000}}"#)
+            })
+        let recovered = await recoveryReader.load(profile: defaultProfile, now: Date(timeIntervalSince1970: 1_800_000_000))
+        try expect(recovered.state == .available && recoveryReads == 1, "expired default Claude file recovers current Keychain login")
+        try expect(recoveryTransport.request?.value(forHTTPHeaderField: "Authorization") == "Bearer synthetic-fresh-keychain", "recovery uses the fresh same-scope token")
+        let isolated = await recoveryReader.load(profile: profile(.claudeCode, URL(fileURLWithPath: "/synthetic-linked")), now: Date(timeIntervalSince1970: 1_800_000_000))
+        try expect(isolated.state == .needsLogin && recoveryReads == 1, "expired linked Claude account never reads global Keychain")
     }
 
     private static func testOpenCodeProviderIsolation() async throws {

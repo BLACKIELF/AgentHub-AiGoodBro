@@ -612,6 +612,12 @@ final class UsageStore: ObservableObject {
     }
 
     func copyTerminalCommand(for profileID: String) {
+        guard !isPreview else {
+            accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
+                "预览账号仅用于检查界面，不能复制调用命令。",
+                "Preview accounts are for UI review; their launch commands cannot be copied.")
+            return
+        }
         guard let profile = profiles.first(where: { $0.id == profileID }), !profile.isSystemProfile else {
             accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
                 "请选择已隔离的账号环境；不会生成指向 ~/.codex 的启动命令", "Select an isolated account profile. A launch command for the system Codex profile will not be generated.")
@@ -5775,6 +5781,7 @@ final class UsageStore: ObservableObject {
     }
 
     private func syncProfiles() {
+        if !isPreview { DispatchCodeCatalog.reload() }
         profiles = profileStore.profiles
         let activeProfileIDs = Set(profiles.map(\.id))
         quotaResetRefreshAttempts = quotaResetRefreshAttempts.filter { activeProfileIDs.contains($0.key) }

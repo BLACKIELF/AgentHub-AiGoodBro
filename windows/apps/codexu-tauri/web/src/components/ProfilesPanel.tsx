@@ -14,6 +14,10 @@ export function ProfilesPanel({ onSourceChange }: { onSourceChange: () => void }
   const text = (zh: string, en: string) => language === 'zh-Hans' ? zh : en;
   const [guide, setGuide] = useState(false);
   const [profiles, setProfiles] = useState<Profile[]>([]);
+  const [layout, setLayout] = useState<'cards' | 'list'>(() => {
+    try { return localStorage.getItem('aigoodbro.home.accounts.layout') === 'list' ? 'list' : 'cards'; }
+    catch { return 'cards'; }
+  });
   const [busy, setBusy] = useState(false);
   const inFlight = useRef(false);
   const request = useRef(0);
@@ -22,6 +26,10 @@ export function ProfilesPanel({ onSourceChange }: { onSourceChange: () => void }
   const [editing, setEditing] = useState<string | null>(null);
   const [label, setLabel] = useState('');
   const [removing, setRemoving] = useState<string | null>(null);
+  const changeLayout = (next: 'cards' | 'list') => {
+    setLayout(next);
+    try { localStorage.setItem('aigoodbro.home.accounts.layout', next); } catch { /* Keep the current session layout. */ }
+  };
   const reload = useCallback(async () => {
     const epoch = ++request.current;
     try {
@@ -60,9 +68,13 @@ export function ProfilesPanel({ onSourceChange }: { onSourceChange: () => void }
   }
 
   return (
-    <section className="glass-panel p-4 space-y-3" aria-label={text('账号目录', 'Account directories')}>
+    <section className="glass-panel account-directory-panel p-4 space-y-3" aria-label={text('账号目录', 'Account directories')}>
       <header className="flex flex-wrap items-center justify-between gap-3">
-        <h2 className="text-sm font-semibold text-primary">{text('账号目录', 'Account directories')}</h2>
+        <h2 className="text-sm font-semibold text-primary">{text('账号目录', 'Account directories')} <span className="text-tertiary font-normal">{profiles.length}</span></h2>
+        <div className="account-layout-switch" role="group" aria-label={text('账号布局', 'Account layout')}>
+          <button type="button" className={layout === 'cards' ? 'is-active' : ''} aria-pressed={layout === 'cards'} onClick={() => changeLayout('cards')}>{text('卡片', 'Cards')}</button>
+          <button type="button" className={layout === 'list' ? 'is-active' : ''} aria-pressed={layout === 'list'} onClick={() => changeLayout('list')}>{text('列表', 'List')}</button>
+        </div>
         <button className="glass-button px-3 py-1.5 text-sm" onClick={() => setGuide(true)}>{text('添加账号指引', 'Add account guide')}</button>
         <button className="glass-button px-3 py-1.5 text-sm" disabled={busy} onClick={() => { setEditing('new'); setLabel(''); setRemoving(null); }}>
           {text('关联已有目录', 'Link existing directory')}
@@ -70,17 +82,19 @@ export function ProfilesPanel({ onSourceChange }: { onSourceChange: () => void }
       </header>
       <p className="text-xs text-secondary">{text('切换查看不同目录的用量，不切换 Codex 登录身份；目录存在不代表身份已验证。', 'View usage from different directories; does not switch Codex login. A linked folder is not a verified identity.')}</p>
       {profiles.length === 0 && <p className="text-sm text-tertiary">{text('尚未关联账号目录，仍显示设置中的数据来源。', 'No linked directories. The configured data source is still displayed.')}</p>}
-      <ul className="space-y-2">
+      <ul className={`account-directory-grid ${layout === 'list' ? 'is-list' : 'is-cards'}`}>
         {profiles.map((profile, index) => (
-          <li key={profile.id} data-testid={'profile-' + profile.id} className="flex flex-wrap items-center gap-2 border border-theme rounded-xl p-2">
-            <span className="flex-1 text-sm text-primary">{profile.label}</span>
-            <button className="glass-button px-2 py-1 text-xs" disabled={busy || profile.selected} onClick={() => void perform({ kind: 'view', id: profile.id })}>{profile.selected ? text('正在查看', 'Viewing') : text('查看用量', 'View usage')}</button>
-            <button className="glass-button px-2 py-1 text-xs" disabled={busy} onClick={() => { setEditing(profile.id); setLabel(profile.label); setRemoving(null); }}>{text('备注', 'Rename')}</button>
-            <button className="glass-button px-2 py-1 text-xs" aria-label={text('上移', 'Move up')} disabled={busy || index === 0} onClick={() => void perform({ kind: 'move', id: profile.id, delta: -1 })}>↑</button>
-            <button className="glass-button px-2 py-1 text-xs" aria-label={text('下移', 'Move down')} disabled={busy || index === profiles.length - 1} onClick={() => void perform({ kind: 'move', id: profile.id, delta: 1 })}>↓</button>
-            <button className="glass-button px-2 py-1 text-xs" disabled={busy} onClick={() => { setRemoving(profile.id); setEditing(null); }}>{text('移除', 'Remove')}</button>
-            <ProfileQuota profileId={profile.id} disabled={busy} />
-            <AccountWorkflow profileId={profile.id} />
+          <li key={profile.id} data-testid={'profile-' + profile.id} className={`account-directory-card ${profile.selected ? 'is-selected' : ''}`}>
+            <div className="account-directory-heading"><span className="account-directory-number">{String(index + 1).padStart(2, '0')}</span><span className="min-w-0 flex-1 truncate text-sm font-semibold text-primary" title={profile.label}>{profile.label}</span>{profile.selected && <span className="account-current-mark">{text('当前', 'Current')}</span>}</div>
+            <ProfileQuota profileId={profile.id} profileLabel={profile.label} disabled={busy} />
+            <div className="account-directory-actions">
+              <button className="glass-button px-2 py-1 text-xs" disabled={busy || profile.selected} onClick={() => void perform({ kind: 'view', id: profile.id })}>{profile.selected ? text('正在查看', 'Viewing') : text('查看用量', 'View usage')}</button>
+              <button className="glass-button px-2 py-1 text-xs" disabled={busy} onClick={() => { setEditing(profile.id); setLabel(profile.label); setRemoving(null); }}>{text('备注', 'Rename')}</button>
+              <button className="glass-button px-2 py-1 text-xs" aria-label={text('上移', 'Move up')} disabled={busy || index === 0} onClick={() => void perform({ kind: 'move', id: profile.id, delta: -1 })}>↑</button>
+              <button className="glass-button px-2 py-1 text-xs" aria-label={text('下移', 'Move down')} disabled={busy || index === profiles.length - 1} onClick={() => void perform({ kind: 'move', id: profile.id, delta: 1 })}>↓</button>
+              <button className="glass-button px-2 py-1 text-xs" disabled={busy} onClick={() => { setRemoving(profile.id); setEditing(null); }}>{text('移除', 'Remove')}</button>
+            </div>
+            <AccountWorkflow profileId={profile.id} initiallyExpanded={false} />
           </li>
         ))}
       </ul>

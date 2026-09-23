@@ -29,6 +29,10 @@ pub struct CodexAppServerQuotaSnapshot {
     pub credit_balance_points: Option<f64>,
     pub reset_credit_count: Option<u32>,
     pub quota_read_succeeded: bool,
+    /// The official response included period-window fields, even if both were
+    /// explicitly null. Credit-only reads must not certify the dashboard's
+    /// period quota or erase a previously verified window.
+    pub window_topology_reported: bool,
     pub five_hour_quota: Option<RateWindow>,
     pub seven_day_quota: Option<RateWindow>,
     pub monthly_quota: Option<RateWindow>,
@@ -76,7 +80,12 @@ impl CodexAppServerQuotaSnapshot {
             ) && !is_monthly_duration(window.window_duration_mins)
         });
 
-        let quota_read_succeeded = has_window_fields
+        let (credit_balance_usd, credit_balance_points) = parse_credit_balance(limits);
+        let reset_credit_count = parse_reset_credit_count(response);
+        let has_verified_credits = credit_balance_usd.is_some()
+            || credit_balance_points.is_some()
+            || reset_credit_count.is_some();
+        let quota_read_succeeded = (has_window_fields || has_verified_credits)
             && !has_malformed_window
             && five_hour_matches.len() <= 1
             && seven_day_matches.len() <= 1
@@ -97,10 +106,11 @@ impl CodexAppServerQuotaSnapshot {
                 .get("limitName")
                 .and_then(Value::as_str)
                 .map(str::to_owned),
-            credit_balance_usd: parse_credit_balance(limits).0,
-            credit_balance_points: parse_credit_balance(limits).1,
-            reset_credit_count: parse_reset_credit_count(response),
+            credit_balance_usd,
+            credit_balance_points,
+            reset_credit_count,
             quota_read_succeeded,
+            window_topology_reported: has_window_fields,
             five_hour_quota: single_window(five_hour_matches),
             seven_day_quota: single_window(seven_day_matches),
             monthly_quota: single_window(monthly_matches),
@@ -116,6 +126,7 @@ impl CodexAppServerQuotaSnapshot {
             credit_balance_points: None,
             reset_credit_count: None,
             quota_read_succeeded: false,
+            window_topology_reported: false,
             five_hour_quota: None,
             seven_day_quota: None,
             monthly_quota: None,
@@ -413,6 +424,56 @@ mod command_tests {
     use super::*;
 
     #[test]
+    fn preserves_verified_credit_only_payloads_without_inventing_windows() {
+        for balance in [serde_json::json!("USD 0"), serde_json::json!(0)] {
+            let value = CodexAppServerQuotaSnapshot::from_rate_limit_response(&serde_json::json!({
+                "rateLimits": { "credits": { "balance": balance } }
+            }));
+            assert!(value.quota_read_succeeded);
+            assert!(!value.window_topology_reported);
+            assert!(value.five_hour_quota.is_none());
+            assert!(value.seven_day_quota.is_none());
+            assert!(value.monthly_quota.is_none());
+            assert!(value.credit_balance_usd == Some(0.0) || value.credit_balance_points == Some(0.0));
+            assert!(value.reset_credit_count.is_none());
+        }
+        let cards = CodexAppServerQuotaSnapshot::from_rate_limit_response(&serde_json::json!({
+            "rateLimits": {}, "rateLimitResetCredits": { "availableCount": 0 }
+        }));
+        assert!(cards.quota_read_succeeded);
+        assert!(!cards.window_topology_reported);
+        assert_eq!(cards.reset_credit_count, Some(0));
+        assert!(cards.credit_balance_usd.is_none() && cards.credit_balance_points.is_none());
+        let explicit_empty = CodexAppServerQuotaSnapshot::from_rate_limit_response(&serde_json::json!({
+            "rateLimits": { "primary": null, "secondary": null }
+        }));
+        assert!(explicit_empty.quota_read_succeeded);
+        assert!(explicit_empty.window_topology_reported);
+    }
+
+    #[test]
+    fn credit_metadata_never_accepts_malformed_or_unknown_window_topology() {
+        for primary in [
+            serde_json::json!({ "usedPercent": -1, "windowDurationMins": 300 }),
+            serde_json::json!({ "usedPercent": 101, "windowDurationMins": 300 }),
+            serde_json::json!({ "usedPercent": 10, "windowDurationMins": 123 }),
+            serde_json::json!("invalid"),
+        ] {
+            let value = CodexAppServerQuotaSnapshot::from_rate_limit_response(&serde_json::json!({
+                "rateLimits": { "primary": primary, "credits": { "balance": "USD 12" } }
+            }));
+            assert!(!value.quota_read_succeeded);
+            assert!(value.credit_balance_usd.is_none());
+        }
+        for balance in [serde_json::json!(-1), serde_json::json!("NaN"), serde_json::json!(null)] {
+            let value = CodexAppServerQuotaSnapshot::from_rate_limit_response(&serde_json::json!({
+                "rateLimits": { "credits": { "balance": balance } }
+            }));
+            assert!(!value.quota_read_succeeded);
+        }
+    }
+
+    #[test]
     fn selected_home_is_child_only_and_listener_is_loopback() {
         let prior = env::var_os("CODEX_HOME");
         let home = env::temp_dir().join("synthetic-selected-codex");
@@ -492,6 +553,9 @@ async fn stop_child(child: &mut Child) {
 
 fn parse_rate_window(value: &Value) -> Option<RateWindow> {
     let used_percent = value.get("usedPercent")?.as_f64()?;
+    if !used_percent.is_finite() || !(0.0..=100.0).contains(&used_percent) {
+        return None;
+    }
     let resets_at = value
         .get("resetsAt")
         .and_then(Value::as_i64)

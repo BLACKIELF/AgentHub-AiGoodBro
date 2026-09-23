@@ -10,6 +10,7 @@ enum LocalCLIKind: String, Codable, CaseIterable, Identifiable {
     case mimo
     case zcode
     case gemini
+    case antigravity
 
     var id: String { rawValue }
 
@@ -24,6 +25,7 @@ enum LocalCLIKind: String, Codable, CaseIterable, Identifiable {
         case .mimo: "MiMo"
         case .zcode: "ZCode"
         case .gemini: "Gemini CLI"
+        case .antigravity: "Antigravity"
         }
     }
 
@@ -38,6 +40,7 @@ enum LocalCLIKind: String, Codable, CaseIterable, Identifiable {
         case .mimo: "mimo"
         case .zcode: "zcode"
         case .gemini: "gemini"
+        case .antigravity: "antigravity"
         }
     }
 
@@ -61,21 +64,23 @@ enum LocalCLIKind: String, Codable, CaseIterable, Identifiable {
             home.appendingPathComponent(".zcode", isDirectory: true)
         case .gemini:
             home.appendingPathComponent(".gemini", isDirectory: true)
+        case .antigravity:
+            home.appendingPathComponent("Library/Application Support/Antigravity", isDirectory: true)
         }
     }
 
     var supportsTerminalSignIn: Bool {
         switch self {
         case .claudeCode, .grok, .openCode, .workBuddy, .kimi, .gemini: true
-        case .zcode, .trae, .mimo: false
+        case .zcode, .trae, .mimo, .antigravity: false
         }
     }
 
-    var isDesktopApplication: Bool { self == .zcode || self == .trae }
+    var isDesktopApplication: Bool { self == .zcode || self == .trae || self == .antigravity }
 
     var supportsNativeOpen: Bool {
         switch self {
-        case .claudeCode, .grok, .openCode, .trae, .workBuddy, .zcode, .kimi, .gemini: true
+        case .claudeCode, .grok, .openCode, .trae, .workBuddy, .zcode, .kimi, .gemini, .antigravity: true
         case .mimo: false
         }
     }
@@ -85,7 +90,7 @@ enum LocalCLIKind: String, Codable, CaseIterable, Identifiable {
     // These providers may keep authentication outside their config folder.
     // Linked folders stay read-only until their complete isolation is supported.
     var requiresDefaultEnvironmentForLaunch: Bool {
-        self == .claudeCode || self == .gemini || self == .zcode || self == .trae
+        self == .claudeCode || self == .gemini || self == .zcode || self == .trae || self == .antigravity
     }
 }
 
@@ -512,6 +517,9 @@ struct LocalCLIQuotaResult: Equatable {
     /// the official Usage modal can say that a reset is available without
     /// exposing a count or an exact expiry timestamp.
     var grokResetObservation: GrokResetStatusObservation? = nil
+    /// The provider may return a billing-period boundary without a usage
+    /// percentage. Preserve it independently; it is not a reset-card expiry.
+    var periodResetsAt: Date? = nil
 }
 
 enum LocalCLIQuotaPresentation {

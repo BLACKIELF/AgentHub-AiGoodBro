@@ -3,6 +3,13 @@ import SwiftUI
 /// Presentation-only labels for the validated announcement DTO. These helpers
 /// preserve source and reset type without inferring delivery to this account.
 enum PublicResetAnnouncementPresentation {
+    static func normalized(_ events: [PublicResetAnnouncement]) -> [PublicResetAnnouncement] {
+        var seen = Set<String>()
+        return events.sorted {
+            $0.announcedAt == $1.announcedAt ? $0.id < $1.id : $0.announcedAt > $1.announcedAt
+        }.filter { seen.insert($0.id).inserted }
+    }
+
     static func title(_ language: WidgetLanguage) -> String {
         language.text("历史重置记录", "Historical reset record")
     }
@@ -225,73 +232,21 @@ struct ResetUpdatesBanner: View {
     @ObservedObject var inbox: HomeMessageInboxStore = .shared
     @ObservedObject private var forecastStore = PublicResetForecastStore.shared
     @AppStorage(HomeSection.reset.storageKey) private var sectionExpanded = true
-    @State private var summaryExpanded = false
     @State private var historyExpanded = false
-    @State private var selectedCalendarDay: Date?
     @State private var showsExplanation = false
 
-    private var calendarAnnouncements: [PublicResetAnnouncement] {
-        PublicResetCalendarModel.normalized(announcements + (announcement.map { [$0] } ?? []))
+    private var historicalAnnouncements: [PublicResetAnnouncement] {
+        PublicResetAnnouncementPresentation.normalized(announcements + (announcement.map { [$0] } ?? []))
     }
 
     private var recentAnnouncement: PublicResetAnnouncement? {
-        PublicResetAnnouncementPresentation.recentVerifiableAnnouncement(calendarAnnouncements, now: Date())
-    }
-
-    private var resetCalendar: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            calendarGrid
-            Divider()
-            selectedDayAnnouncements
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private var calendarGrid: some View {
-        PublicResetCalendarView(announcements: calendarAnnouncements, language: language, hasMore: nil, selectedDay: $selectedCalendarDay)
-            .onAppear {
-                if selectedCalendarDay == nil { selectedCalendarDay = PublicResetCalendarModel.calendar.startOfDay(for: Date()) }
-            }
-    }
-
-    private var selectedDayAnnouncements: some View {
-        PublicResetRecentView(
-            announcements: calendarAnnouncements, language: language, featuredID: recentAnnouncement?.id,
-            integratedInCalendar: true, selectedDay: $selectedCalendarDay)
-    }
-
-    /// Keep the selected date and its information together instead of putting
-    /// all detail below the calendar and leaving the neighboring columns empty.
-    private var homeCalendarDetails: some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(alignment: .top, spacing: 20) {
-                calendarGrid.frame(width: 300)
-                calendarContext.frame(minWidth: 280, maxWidth: .infinity, alignment: .topLeading)
-            }
-            VStack(alignment: .leading, spacing: 14) {
-                calendarGrid
-                calendarContext
-            }
-        }
-        .padding(.top, 6)
-    }
-
-    private var calendarContext: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            selectedDayAnnouncements
-            accountSummary
-        }
-    }
-
-    private var recentAnnouncements: some View {
-        PublicResetRecentView(announcements: calendarAnnouncements, language: language, featuredID: recentAnnouncement?.id, selectedDay: $selectedCalendarDay)
+        PublicResetAnnouncementPresentation.recentVerifiableAnnouncement(historicalAnnouncements, now: Date())
     }
 
     @MainActor
     private var announcementDashboard: some View {
         ResetDashboardLayout {
             announcementCard
-            resetCalendar
             accountSummary
         }
     }
@@ -522,16 +477,10 @@ struct ResetUpdatesBanner: View {
                             language.text(historyExpanded ? "收起历史消息" : "最近 3 条历史", historyExpanded ? "Collapse history" : "Latest 3 historical records")
                         ) {
                             historyExpanded.toggle()
-                            summaryExpanded = false
-                        }
-                        Button(language.text(summaryExpanded ? "收起日历与详情" : "展开日历与详情", summaryExpanded ? "Collapse calendar and details" : "Calendar and details")) {
-                            summaryExpanded.toggle()
-                            historyExpanded = false
                         }
                     }
                     .font(.caption2).buttonStyle(.plain)
                     if historyExpanded { inlineHistory }
-                    if summaryExpanded { homeCalendarDetails }
                 } else if showsHistory {
                     announcementDashboard
                     inlineHistory
@@ -539,9 +488,8 @@ struct ResetUpdatesBanner: View {
                     announcementCard
                     accountSummary
                 }
-                if compactSummary && (summaryExpanded || historyExpanded) {
+                if compactSummary && historyExpanded {
                     Button(language.text("收起，仅显示概要", "Collapse to summary")) {
-                        summaryExpanded = false
                         historyExpanded = false
                     }
                     .font(.caption).buttonStyle(.plain)
@@ -608,8 +556,8 @@ struct ResetUpdatesBanner: View {
             Text(language.text("公告与个人额度", "Announcements and account limits")).font(.headline)
             Text(
                 language.text(
-                    "顶部预告来自公开网站横幅，与历史公告分别获取；预告到期仍不算完成。日历只标记历史公告发布日期，个人窗口和重置卡以账号读取结果为准。",
-                    "The top forecast is fetched separately from the public site banner and remains unconfirmed after its deadline. The calendar marks only historical announcement dates. Account readings determine personal windows and reset cards."
+                    "顶部预告来自公开网站横幅，与历史公告分别获取；预告到期仍不算完成。历史公告不代表个人已到账，窗口和重置卡以账号读取结果为准。",
+                    "The top forecast is fetched separately from the public site banner and remains unconfirmed after its deadline. Historical announcements do not confirm personal delivery. Account readings determine personal windows and reset cards."
                 ))
             if let forecast = forecastStore.forecast {
                 Text(
@@ -679,13 +627,13 @@ struct ResetUpdatesBanner: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
-            if calendarAnnouncements.isEmpty {
+            if historicalAnnouncements.isEmpty {
                 Text(language.text("暂无已载入的公告。", "No announcements loaded yet."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
                 LazyVStack(alignment: .leading, spacing: 0) {
-                    ForEach(calendarAnnouncements.prefix(HomeMessageInboxStore.visibleAnnouncementLimit)) { item in
+                    ForEach(historicalAnnouncements.prefix(HomeMessageInboxStore.visibleAnnouncementLimit)) { item in
                         VStack(alignment: .leading, spacing: 4) {
                             HStack(spacing: 6) {
                                 Circle()
@@ -698,11 +646,7 @@ struct ResetUpdatesBanner: View {
                                     .font(.caption2)
                                     .foregroundStyle(.secondary)
                             }
-                            Text(verbatim: PublicResetAnnouncementPresentation.readableText(item.text))
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(2)
-                                .fixedSize(horizontal: false, vertical: true)
+                            PublicResetTranslatedText(eventID: item.id, original: item.text, language: language, compact: true)
                             if let url = HomeMessageLinkPolicy.allowedURL(item.source.url) {
                                 Link(PublicResetAnnouncementPresentation.sourceLinkTitle(item.source, language: language), destination: url)
                                     .font(.caption2)
@@ -714,10 +658,8 @@ struct ResetUpdatesBanner: View {
                     }
                 }
             }
-            if announcementsHasMore == true || calendarAnnouncements.count > HomeMessageInboxStore.visibleAnnouncementLimit {
-                Link(language.text("查看完整记录", "Browse full history"), destination: PublicResetClient.siteURL)
-                    .font(.caption2)
-            }
+            Link(language.text("查看完整记录", "Browse full history"), destination: PublicResetClient.siteURL)
+                .font(.caption2)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }

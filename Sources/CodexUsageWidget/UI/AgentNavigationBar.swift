@@ -2,6 +2,11 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct AgentNavigationBar: View {
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.colorSchemeContrast) private var colorSchemeContrast
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.visualTokens) private var visualTokens
+
     @Binding var navigation: AgentNavigationState
     let language: WidgetLanguage
     let detectedIDs: [String]
@@ -28,14 +33,14 @@ struct AgentNavigationBar: View {
         let overflow = AgentNavigationOverflow.layout(
             orderedIDs: visible,
             availableWidth: Double(availableWidth),
-            trailingChromeWidth: showsGettingStarted ? 244 : 128,
+            trailingChromeWidth: showsGettingStarted ? 262 : 146,
             itemWidth: {
-                let font = NSFont.systemFont(ofSize: NSFont.preferredFont(forTextStyle: .callout).pointSize, weight: .medium)
+                let font = NSFont.systemFont(ofSize: 12, weight: .medium)
                 let labelWidth = (AgentNavCatalog.displayName($0) as NSString).size(withAttributes: [.font: font]).width
                 return Double(labelWidth + ProviderIconSlot.navigation.container + 7 + 24)
             }
         )
-        HStack(spacing: 6) {
+        HStack(spacing: 5) {
             navButton(
                 id: AgentNavCatalog.homeID,
                 title: language.text("主页", "Home"),
@@ -50,13 +55,21 @@ struct AgentNavigationBar: View {
                 Button {
                     showsOverflow.toggle()
                 } label: {
-                    Label(
-                        !showingHome && overflow.overflowIDs.contains(selectedID ?? "")
-                            ? AgentNavCatalog.displayName(selectedID ?? "")
-                            : language.text("更多", "More"), systemImage: "ellipsis"
-                    )
-                    .padding(.horizontal, 12).padding(.vertical, 8)
-                    .background(!showingHome && overflow.overflowIDs.contains(selectedID ?? "") ? Color.accentColor.opacity(0.12) : .clear, in: Capsule())
+                    let selectedOverflowID = !showingHome && overflow.overflowIDs.contains(selectedID ?? "") ? selectedID : nil
+                    HStack(spacing: 7) {
+                        if let selectedOverflowID {
+                            ProviderMark(providerID: selectedOverflowID, slot: .navigation)
+                        } else {
+                            Image(systemName: "ellipsis")
+                                .font(.system(size: 13, weight: .medium))
+                                .frame(width: ProviderIconSlot.navigation.container, height: ProviderIconSlot.navigation.container)
+                        }
+                        Text(selectedOverflowID.map(AgentNavCatalog.displayName) ?? language.text("更多", "More"))
+                            .font(.system(size: 12, weight: .medium))
+                            .fixedSize()
+                    }
+                    .padding(.horizontal, 10).frame(height: 32)
+                    .background(selectionFill(selectedOverflowID != nil), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                 }
                 .buttonStyle(.plain)
                 .popover(isPresented: $showsOverflow) {
@@ -77,6 +90,7 @@ struct AgentNavigationBar: View {
                 Image(systemName: "plus")
                     .font(.system(size: 14, weight: .medium))
                     .frame(width: 32, height: 32)
+                    .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             }
             .buttonStyle(.plain)
             .accessibilityLabel(language.text("添加 Agent", "Add Agent"))
@@ -86,17 +100,24 @@ struct AgentNavigationBar: View {
                 dropTargetID = nil
                 isManaging = true
             } label: {
-                Text(language.text("管理", "Manage")).padding(.horizontal, 10).padding(.vertical, 8)
+                Text(language.text("管理", "Manage"))
+                    .font(.system(size: 12, weight: .medium))
+                    .padding(.horizontal, 10).frame(height: 32)
             }
             .buttonStyle(.plain)
             if showsGettingStarted {
                 Button(language.text("使用引导", "Getting started"), action: onGettingStarted)
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
+                    .font(.system(size: 12, weight: .medium))
+                    .padding(.horizontal, 8)
+                    .frame(height: 32)
+                    .buttonStyle(.plain)
             }
         }
+        .padding(.horizontal, 5)
+        .padding(.vertical, 3)
+        .background(WorkspaceGlassSurface(cornerRadius: 9))
         .background(widthReader)
-        .frame(minHeight: 38)
+        .frame(minHeight: 40)
         .onAppear {
             navigation.bootstrapIfNeeded(existingUser: existingUser, currentVisible: defaultVisible)
         }
@@ -122,7 +143,10 @@ struct AgentNavigationBar: View {
     private func agentButton(id: String, selected: Bool) -> some View {
         navButton(
             id: id, title: AgentNavCatalog.displayName(id), selected: selected,
-            providerID: id, action: { onSelect(id) }
+            providerID: id, action: {
+                showsOverflow = false
+                onSelect(id)
+            }
         )
         .contextMenu {
             Button(language.text("从导航移除", "Remove from navigation")) { remove(id) }
@@ -146,17 +170,24 @@ struct AgentNavigationBar: View {
                 } else if let providerID {
                     ProviderMark(providerID: providerID, slot: .navigation)
                 }
-                Text(title).font(.callout.weight(.medium)).fixedSize()
+                Text(title).font(.system(size: 12, weight: selected ? .semibold : .medium)).fixedSize()
             }
-            .padding(.horizontal, 12).padding(.vertical, 8)
-            .background(selected ? Color.accentColor.opacity(0.12) : .clear, in: RoundedRectangle(cornerRadius: 8))
-            .overlay(alignment: .bottom) {
-                if selected { Capsule().fill(Color.accentColor).frame(height: 2).padding(.horizontal, 12) }
+            .padding(.horizontal, 10).frame(height: 32)
+            .background(selectionFill(selected), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay {
+                if selected {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .strokeBorder(visualTokens.selection.stroke.color.opacity(colorSchemeContrast == .increased ? 0.85 : 0.55), lineWidth: 0.7)
+                }
             }
         }
         .buttonStyle(.plain)
         .accessibilityLabel(title)
         .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+
+    private func selectionFill(_ selected: Bool) -> Color {
+        selected ? visualTokens.selection.fill.color : .clear
     }
 
     private func remove(_ id: String) {
@@ -253,7 +284,12 @@ struct AgentNavigationBar: View {
 
     private var manageSheet: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text(language.text("管理导航", "Manage navigation")).font(.headline)
+            HStack {
+                Text(language.text("管理导航", "Manage navigation")).font(.headline)
+                Spacer()
+                Button(language.text("关闭", "Close"), action: cancelManagement)
+                    .accessibilityLabel(language.text("关闭导航管理", "Close navigation management"))
+            }
             Text(
                 language.text(
                     "拖动 Agent 图标或名称调整顺序，完成后保存。移除仅隐藏入口，账号与任务保留。", "Drag an Agent icon or name to reorder, then choose Done to save. Removing a tab keeps its accounts and tasks.")
@@ -293,7 +329,7 @@ struct AgentNavigationBar: View {
         HStack(spacing: 12) {
             HStack(spacing: 10) {
                 ProviderMark(providerID: id, slot: .navigation)
-                Text(AgentNavCatalog.displayName(id)).font(.callout.weight(.medium))
+                Text(AgentNavCatalog.displayName(id)).font(.system(size: 12, weight: .medium))
                 Spacer(minLength: 0)
             }
             .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)

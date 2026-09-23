@@ -51,7 +51,7 @@ struct LocalCLILoginTarget: Identifiable, Codable, Equatable, Sendable {
         case .openCode: .openCode
         case .workBuddy: .workBuddy
         case .zcode: .zcode
-        case .claudeCode, .trae, .kimi, .mimo, .gemini: nil
+        case .claudeCode, .trae, .kimi, .mimo, .gemini, .antigravity: nil
         }
     }
 }

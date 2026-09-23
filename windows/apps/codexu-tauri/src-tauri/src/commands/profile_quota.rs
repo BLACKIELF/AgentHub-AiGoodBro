@@ -82,7 +82,17 @@ fn project(id: u64, quota: CodexAppServerQuotaSnapshot) -> Result<ProfileQuotaDt
             });
         }
     }
-    if windows.is_empty() {
+    let valid_balance = |value: &f64| value.is_finite() && (0.0..=1e9).contains(value);
+    let credits = OfficialCreditsDto {
+        usd: quota.credit_balance_usd.filter(valid_balance),
+        points: quota.credit_balance_points.filter(valid_balance),
+        reset_cards: quota.reset_credit_count.filter(|value| *value <= 1_000_000),
+    };
+    if windows.is_empty()
+        && credits.usd.is_none()
+        && credits.points.is_none()
+        && credits.reset_cards.is_none()
+    {
         return Err(READ_FAILED.into());
     }
     Ok(ProfileQuotaDto {
@@ -95,11 +105,7 @@ fn project(id: u64, quota: CodexAppServerQuotaSnapshot) -> Result<ProfileQuotaDt
                 email_present: account.email_present,
             })
         }),
-        credits: OfficialCreditsDto {
-            usd: quota.credit_balance_usd,
-            points: quota.credit_balance_points,
-            reset_cards: quota.reset_credit_count,
-        },
+        credits,
         windows,
     })
 }
@@ -270,6 +276,47 @@ mod tests {
         assert_eq!(json["credits"]["points"], serde_json::Value::Null);
         assert_eq!(json["credits"]["reset_cards"], 2);
         assert!(!json.to_string().contains('@'));
+    }
+
+    #[test]
+    fn projection_keeps_verified_zero_balances_and_reset_cards_without_windows() {
+        let mut value = quota(0.0);
+        value.seven_day_quota = None;
+        value.credit_balance_usd = Some(0.0);
+        let json = serde_json::to_value(project(9, value.clone()).unwrap()).unwrap();
+        assert!(json["windows"].as_array().unwrap().is_empty());
+        assert_eq!(json["credits"]["usd"], 0.0);
+        assert_eq!(json["credits"]["points"], serde_json::Value::Null);
+        assert_eq!(json["credits"]["reset_cards"], serde_json::Value::Null);
+
+        value.credit_balance_usd = None;
+        value.credit_balance_points = Some(0.0);
+        assert_eq!(project(9, value.clone()).unwrap().credits.points, Some(0.0));
+        value.credit_balance_points = None;
+        value.reset_credit_count = Some(0);
+        assert_eq!(project(9, value.clone()).unwrap().credits.reset_cards, Some(0));
+        value.reset_credit_count = Some(2);
+        assert_eq!(project(9, value.clone()).unwrap().credits.reset_cards, Some(2));
+        value.quota_read_succeeded = false;
+        assert!(project(9, value).is_err());
+    }
+
+    #[test]
+    fn projection_does_not_use_invalid_credit_values_to_authorize_a_snapshot() {
+        for balance in [-1.0, f64::NAN, f64::INFINITY, 1e9 + 1.0] {
+            let mut value = quota(0.0);
+            value.seven_day_quota = None;
+            value.credit_balance_usd = Some(balance);
+            value.credit_balance_points = Some(balance);
+            assert!(project(9, value).is_err());
+        }
+        let mut value = quota(0.0);
+        value.seven_day_quota = None;
+        value.reset_credit_count = Some(1_000_001);
+        assert!(project(9, value).is_err());
+        let mut malformed = quota(f64::NAN);
+        malformed.credit_balance_usd = Some(10.0);
+        assert!(project(9, malformed).is_err());
     }
 
     #[tokio::test]

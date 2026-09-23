@@ -39,7 +39,7 @@ pub fn apply_official_quota(
     mut dashboard: CodexDashboardSnapshot,
     quota: CodexAppServerQuotaSnapshot,
 ) -> CodexDashboardSnapshot {
-    if !quota.quota_read_succeeded {
+    if !quota.quota_read_succeeded || !quota.window_topology_reported {
         dashboard.codex.quota_source_label = "Checking official Codex quota".to_string();
         return dashboard;
     }

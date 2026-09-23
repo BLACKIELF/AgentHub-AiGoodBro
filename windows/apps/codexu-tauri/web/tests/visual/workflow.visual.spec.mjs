@@ -43,9 +43,10 @@ test.beforeEach(async ({ page }) => {
   });
   await page.goto('/');
   await expect(page.getByTestId('account-workflow-1')).toBeVisible();
+  await page.getByTestId('account-workflow-1').getByRole('button', { name: /Model and scheduling/ }).click();
 });
 
-test('defaults expanded, saves opt-out without quota and retains it after reload', async ({ page }) => {
+test('compact card reveals scheduling, saves opt-out without quota and retains it after reload', async ({ page }) => {
   const section = page.getByTestId('account-workflow-1');
   await expect(section.getByRole('button', { name: /Model and scheduling/ })).toHaveAttribute('aria-expanded', 'true');
   const toggle = section.getByRole('switch', { name: 'Participate in scheduling' });
@@ -55,6 +56,7 @@ test('defaults expanded, saves opt-out without quota and retains it after reload
   await expect(section.getByRole('button', { name: 'Choose workspace and open Codex' })).toBeDisabled();
   expect(await page.evaluate(() => window.workflowCalls)).toEqual([{ cmd: 'set_account_workflow', action: { kind: 'participation', value: false } }]);
   await page.reload();
+  await page.getByTestId('account-workflow-1').getByRole('button', { name: /Model and scheduling/ }).click();
   await expect(page.getByTestId('account-workflow-1').getByRole('switch')).not.toBeChecked();
   await expect(page.getByTestId('account-workflow-1')).toHaveScreenshot('workflow-opted-out.png');
 });

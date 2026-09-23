@@ -50,7 +50,7 @@ impl Default for AppConfig {
             cache_dir: dirs::cache_dir()
                 .unwrap_or_else(|| home.join(".cache"))
                 .join("CodexAccountManagerNext"),
-            theme: ThemeMode::System,
+            theme: ThemeMode::Dark,
             palette_id: default_palette_id(),
             refresh_interval_secs: default_refresh_interval_secs(),
             tray_density: TrayDensity::Classic,
@@ -64,15 +64,15 @@ fn default_refresh_interval_secs() -> u64 {
 }
 
 fn default_palette_id() -> String {
-    "codexu.default".to_string()
+    "codexu.liquid-keycap".to_string()
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ThemeMode {
-    #[default]
     System,
     Light,
+    #[default]
     Dark,
 }
 
@@ -465,7 +465,31 @@ mod tests {
 
         let config = AppConfig::load(&app_data_dir);
         assert_eq!(config.language, InterfaceLanguage::Auto);
-        assert_eq!(config.palette_id, "codexu.default");
+        assert_eq!(config.theme, ThemeMode::System);
+        assert_eq!(config.palette_id, "codexu.liquid-keycap");
+    }
+
+    #[test]
+    fn new_defaults_do_not_replace_explicit_legacy_theme() {
+        let fresh = AppConfig::default();
+        assert_eq!(fresh.theme, ThemeMode::Dark);
+        assert_eq!(fresh.palette_id, "codexu.liquid-keycap");
+
+        let app_data_dir = unique_temp_path("codexu-tauri-explicit-theme");
+        std::fs::create_dir_all(&app_data_dir).unwrap();
+        std::fs::write(
+            app_data_dir.join("settings.json"),
+            r#"{
+                "codex_root": "C:\\Users\\example\\.codex",
+                "cache_dir": "C:\\Users\\example\\AppData\\Local\\CodexAccountManagerNext",
+                "theme": "system",
+                "palette_id": "codexu.default"
+            }"#,
+        )
+        .unwrap();
+        let existing = AppConfig::load(&app_data_dir);
+        assert_eq!(existing.theme, ThemeMode::System);
+        assert_eq!(existing.palette_id, "codexu.default");
     }
 
     #[tokio::test]
@@ -476,13 +500,13 @@ mod tests {
 
         let result = state
             .update_config(|config| {
-                config.theme = ThemeMode::Dark;
+                config.theme = ThemeMode::Light;
                 config.codex_root = unique_temp_path("codexu-tauri-unsaved-root");
             })
             .await;
 
         assert!(result.is_err());
-        assert_eq!(state.config.read().await.theme, ThemeMode::System);
+        assert_eq!(state.config.read().await.theme, ThemeMode::Dark);
         assert_eq!(state.source_generation.load(Ordering::SeqCst), 0);
     }
 

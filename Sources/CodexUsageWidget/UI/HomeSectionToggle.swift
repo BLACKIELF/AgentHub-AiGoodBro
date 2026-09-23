@@ -10,6 +10,7 @@ enum HomeSection: String, CaseIterable {
 struct HomeSectionToggle: View {
     let title: String
     var systemImage: String? = nil
+    var fillsWidth = true
     let language: WidgetLanguage
     @Binding var isExpanded: Bool
 
@@ -26,7 +27,7 @@ struct HomeSectionToggle: View {
                     Image(systemName: systemImage).accessibilityHidden(true)
                 }
                 Text(title)
-                Spacer(minLength: 0)
+                if fillsWidth { Spacer(minLength: 0) }
             }
             .frame(minHeight: 24)
             .contentShape(Rectangle())

@@ -741,8 +741,8 @@ struct SettingsPanelView: View {
             acknowledgement(
                 "Codex Resets", url: "https://codex-resets.com/",
                 detail: language.text(
-                    "感谢持续追踪和整理公开重置公告，为消息时间线与重置日历提供可核对的来源。",
-                    "Thank you for tracking and preserving public reset announcements, providing verifiable sources for the update timeline and calendar."
+                    "感谢持续追踪和整理公开重置公告，为重置消息提供可核对的来源。",
+                    "Thank you for tracking and preserving public reset announcements, providing verifiable sources for reset updates."
                 ))
             acknowledgement(
                 "AIHOT · Tibo 重置监控", url: "https://aihot.news/codex-reset",

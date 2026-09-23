@@ -12,14 +12,21 @@ test.beforeEach(async ({ page }) => {
       if (cmd !== 'read_public_feed') return base(cmd, args);
       window.feedCalls++;
       if (args.feed === 'forecast') return '<html><div class="hero-figure">codex-resets</div><div data-role="scheduled-reset" data-scheduled-for="2026-09-22T12:00:10Z"><a href="https://x.com/thsottiaux/status/2102254445082116335">source</a></div></html>';
-      if (args.feed === 'history') return JSON.stringify({ data: [], meta: { api_version: 'v1', generated_at: new Date().toISOString() } });
-      return JSON.stringify({ version: 1, messages: [] });
+      if (args.feed === 'history') return JSON.stringify({ data: window.publicHistoryRows ?? [], meta: { api_version: 'v1', generated_at: new Date().toISOString() } });
+      return JSON.stringify({ version: 1, messages: window.publicMessageRows ?? [] });
     };
   });
 });
 
+const openNotices = async page => {
+  const section = page.locator('[data-home-section="notices"]');
+  await section.getByRole('button', { name: 'Recommended Skills and official notices' }).click();
+  await expect(section.getByRole('button', { name: 'Recommended Skills and official notices' })).toHaveAttribute('aria-expanded', 'true');
+};
+
 test('live forecast ticks without network calls, catches up and waits for confirmation at zero', async ({ page }) => {
   await page.goto('/');
+  await openNotices(page);
   const timer = page.getByTestId('forecast-reset-countdown');
   await expect(timer).toContainText('00:00:10');
   const calls = await page.evaluate(() => window.feedCalls);
@@ -33,6 +40,7 @@ test('live forecast ticks without network calls, catches up and waits for confir
 
 test('home categories collapse independently and persist after reload', async ({ page }) => {
   await page.goto('/');
+  await openNotices(page);
   const recommendations = page.locator('[data-home-section="recommendations"]');
   await recommendations.getByRole('button', { name: 'Recommended Skills and apps', exact: true }).click();
   await expect(recommendations.getByText('Oracle', { exact: true })).toHaveCount(0);
@@ -82,17 +90,44 @@ test('About bundles the full QR, copy feedback, enlargement and Escape close', a
 });
 
 
-test('reset history calendar has explicit empty dates and independent close', async ({ page }) => {
+test('reset updates retain the latest three notices and complete sources without a calendar', async ({ page }) => {
+  await page.clock.setFixedTime(new Date('2026-09-22T12:00:00Z'));
+  await page.addInitScript(() => {
+    window.publicHistoryRows = [1, 3, 2, 4].map(index => ({
+      id: `200${index}`, reset_type: 'regular', announced_at: `2026-09-${17 + index}T10:00:00Z`,
+      text: `Synthetic public reset ${index}. Full announcement body.`,
+      source: { type: 'x_post', author: 'thsottiaux', url: `https://x.com/thsottiaux/status/200${index}` },
+    }));
+    window.publicMessageRows = [1, 3, 2, 4].map(index => ({
+      id: `message-${index}`, title: `Synthetic publisher notice ${index}`, body: `Full publisher body ${index}.`,
+      publishedAt: `2026-09-${17 + index}T10:00:00Z`, expiresAt: '2026-09-23T10:00:00Z',
+      url: `https://aigoodbro.com/notices/synthetic-${index}`,
+    }));
+  });
   await page.goto('/');
+  await openNotices(page);
   const region = page.getByRole('region', { name: 'Public reset updates' });
-  await region.getByText('Calendar and details', { exact: true }).click();
-  const calendar = region.getByLabel('Reset history calendar', { exact: true });
-  await expect(calendar).toContainText('September 2026');
-  await calendar.getByRole('button', { name: '2026-09-21', exact: true }).click();
-  await expect(calendar).toContainText('No recorded announcements on this date.');
-  await expect(calendar.getByRole('button', { name: '2026-09-21', exact: true })).toHaveAttribute('aria-pressed', 'true');
-  await expect(calendar.getByRole('button', { name: '2026-09-23', exact: true })).toBeDisabled();
-  await expect(calendar).toHaveScreenshot('reset-calendar.png');
-  await region.getByText('Calendar and details', { exact: true }).click();
-  await expect(calendar).not.toBeVisible();
+  await expect(region.getByTestId('forecast-reset-countdown')).toContainText('00:00:10');
+  await expect(region.getByRole('link', { name: 'Source announcement', exact: true })).toHaveAttribute('href', 'https://x.com/thsottiaux/status/2102254445082116335');
+  await expect(region.getByText('Calendar and details', { exact: true })).toHaveCount(0);
+  await expect(page.getByLabel('Reset history calendar', { exact: true })).toHaveCount(0);
+  await expect(region).toHaveScreenshot('public-reset-compact.png');
+  await region.getByText('Latest 3 historical records', { exact: true }).click();
+  await expect(region.locator('li p')).toHaveText([4, 3, 2].map(index => `Synthetic public reset ${index}. Full announcement body.`));
+  const historySources = region.getByRole('link', { name: 'Original source', exact: true });
+  await expect(historySources).toHaveCount(3);
+  for (const [position, index] of [4, 3, 2].entries()) {
+    await expect(historySources.nth(position)).toHaveAttribute('href', `https://x.com/thsottiaux/status/200${index}`);
+  }
+  await expect(region).toHaveScreenshot('public-reset-recent-history.png');
+  const messages = page.getByRole('region', { name: 'Publisher announcements' });
+  await expect(messages.locator('li p')).toHaveText([4, 3, 2].map(index => `Full publisher body ${index}.`));
+  const messageSources = messages.getByRole('link', { name: 'Original source', exact: true });
+  await expect(messageSources).toHaveCount(3);
+  for (const [position, index] of [4, 3, 2].entries()) {
+    await expect(messageSources.nth(position)).toHaveAttribute('href', `https://aigoodbro.com/notices/synthetic-${index}`);
+  }
+  await region.getByText('Latest 3 historical records', { exact: true }).click();
+  await expect(historySources.first()).not.toBeVisible();
+  await expect(messages).toBeVisible();
 });

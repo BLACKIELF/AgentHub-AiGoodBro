@@ -128,7 +128,7 @@ enum AgentNavCatalog {
 
     /// Upstream quota providers that are not yet first-class workspace Agents.
     static let upcomingProviders: [AgentNavProvider] = [
-        "cursor", "antigravity", "copilot", "zed", "commandcode", "kiro", "qoder",
+        "cursor", "copilot", "zed", "commandcode", "kiro", "qoder",
         "deepseek", "openrouter", "minimax", "volcengine", "ollama", "alibaba", "thirdparty", "zaiteam",
     ].map { AgentNavProvider(id: $0, displayName: $0, localKind: nil, addable: false) }
 

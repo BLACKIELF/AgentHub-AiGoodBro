@@ -4,6 +4,7 @@ import SwiftUI
 /// are identified separately; missing provider fields are not inferred.
 struct AccountInformationView: View {
     let profile: CodexProfile
+    let dispatchIdentity: DispatchCodeCatalog.DisplayState
     @Environment(\.widgetLanguage) private var language
 
     var body: some View {
@@ -44,6 +45,7 @@ struct AccountInformationView: View {
                 row(language.text("资料更新", "Profile fetched"), date(profile.officialProfile?.fetchedAt))
             }
             section(language.text("本机设置", "Local settings")) {
+                row(language.text("调度编号", "Dispatch code"), dispatchIdentity.label(language))
                 row(language.text("加入本机", "Added locally"), date(profile.createdAt))
                 row(language.text("后续任务模型", "Model for future tasks"), profile.effectiveExecutionPreference.model.displayName)
                 row(language.text("思考强度", "Reasoning effort"), profile.effectiveExecutionPreference.reasoningEffort.displayName)

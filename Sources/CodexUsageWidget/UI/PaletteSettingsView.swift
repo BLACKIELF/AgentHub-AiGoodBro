@@ -117,8 +117,8 @@ struct PaletteLibraryView: View {
                     .buttonStyle(.plain)
                     .frame(width: 40, height: 34)
                     .contentShape(Rectangle())
-                    .disabled(settings.paletteID == PaletteCatalog.defaultPaletteID)
-                    .opacity(settings.paletteID == PaletteCatalog.defaultPaletteID ? 0.34 : 1)
+                    .disabled(settings.paletteID == PaletteCatalog.initialPaletteID)
+                    .opacity(settings.paletteID == PaletteCatalog.initialPaletteID ? 0.34 : 1)
                     .help(settings.language.text("恢复默认配色", "Restore Default Palette"))
                     .accessibilityLabel(settings.language.text("恢复默认配色", "Restore Default Palette"))
                 }

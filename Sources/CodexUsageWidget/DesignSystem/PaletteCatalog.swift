@@ -1,6 +1,9 @@
 import Foundation
 
 struct PaletteCatalog {
+    /// The palette selected for new settings and the Reset action.
+    static let initialPaletteID = "codexu.liquid-keycap"
+    /// Keep this legacy ID as the resolver's compiled-token safety fallback.
     static let defaultPaletteID = "codexu.default"
 
     private let definitions: [String: ValidatedPaletteDefinition]
@@ -84,7 +87,7 @@ struct PaletteCatalog {
                 sourceType: manifest.source.type,
                 lifecycle: manifest.lifecycle,
                 isOfficial: manifest.id.hasPrefix("codexu."),
-                isDefault: manifest.id == Self.defaultPaletteID
+                isDefault: manifest.id == Self.initialPaletteID
             )
         }.sorted {
             if $0.isDefault != $1.isDefault { return $0.isDefault }

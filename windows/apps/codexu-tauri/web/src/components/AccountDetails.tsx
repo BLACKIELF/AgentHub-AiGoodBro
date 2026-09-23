@@ -27,7 +27,8 @@ export const accountPlanLabel = (plan: string | null) => {
   return known[normalized] ?? (plan?.trim() || '—');
 };
 
-export function AccountDetails({ details, current, onClose }: {
+export function AccountDetails({ profileLabel, details, current, onClose }: {
+  profileLabel: string;
   details: AccountQuotaDetails | null;
   current: boolean;
   onClose: () => void;
@@ -56,8 +57,8 @@ export function AccountDetails({ details, current, onClose }: {
     <dialog ref={dialog} aria-labelledby="account-details-title" onCancel={onClose} className="m-auto w-[calc(100%-2rem)] max-w-lg max-h-[90vh] overflow-auto rounded-2xl bg-surface text-primary p-0 backdrop:bg-black/50">
       <section aria-labelledby="account-details-title" className="glass-panel w-full max-w-lg space-y-4 p-5 shadow-2xl">
         <header className="flex items-center justify-between gap-3">
-          <div>
-            <h3 id="account-details-title" className="font-semibold text-primary">{text('账号详情', 'Account details')}</h3>
+          <div className="min-w-0">
+            <h3 id="account-details-title" className="font-semibold text-primary break-words">{text('账号详情', 'Account details')} · {profileLabel}</h3>
             <p className="mt-1 text-xs text-secondary">{text('来源：Codex 官方账号信息', 'Source: Codex account information')}</p>
           </div>
           <button className="glass-button px-3 py-1.5 text-sm" onClick={onClose}>{text('关闭', 'Close')}</button>

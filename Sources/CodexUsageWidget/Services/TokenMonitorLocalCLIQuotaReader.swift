@@ -108,7 +108,9 @@ struct TokenMonitorLocalCLIQuotaReader: Sendable {
     }
 
     static func map(_ response: TokenMonitorResponse, sourceID: String, accountID: String, now: Date) throws -> LocalCLIQuotaResult {
-        guard response.status != .error, response.operation == .collectLimits,
+        // The pinned bridge omits operation. The response decoder already binds
+        // it to the request; reject an explicitly different operation here too.
+        guard response.status != .error, response.operation == nil || response.operation == .collectLimits,
             response.sources.count == 1, response.sources[0].id == sourceID, response.sources[0].providerId == "opencode",
             response.sources[0].status == .ok || response.sources[0].status == .unavailable,
             let targets = response.payload["limits"]?["targets"]?.array, targets.count == 1,

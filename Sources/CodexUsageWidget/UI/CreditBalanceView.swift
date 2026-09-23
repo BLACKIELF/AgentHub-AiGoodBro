@@ -2,6 +2,7 @@ import SwiftUI
 
 struct CreditBalanceView: View {
     let presentation: CreditBalancePresentation
+    var compact = false
     @Environment(\.widgetLanguage) private var language
     @State private var showingDetails = false
 
@@ -36,7 +37,22 @@ struct CreditBalanceView: View {
     }
 
     private var creditText: String {
-        presentation.value == .unavailable ? "—" : presentation.primaryText(language)
+        guard presentation.value != .unavailable else { return "—" }
+        guard compact, case .reported(let raw) = presentation.value else {
+            return presentation.primaryText(language)
+        }
+        let normalized = raw.replacingOccurrences(of: ",", with: "")
+        guard let decimal = Decimal(string: normalized) else {
+            return CreditBalanceNumberText.compact(raw, locale: language.locale)
+        }
+        if decimal > 0 && decimal < Decimal(string: "0.005")! { return "<0.01" }
+        let formatter = NumberFormatter()
+        formatter.locale = language.locale
+        formatter.numberStyle = .decimal
+        formatter.maximumFractionDigits = 2
+        formatter.minimumFractionDigits = 0
+        return formatter.string(from: NSDecimalNumber(decimal: decimal))
+            ?? CreditBalanceNumberText.compact(raw, locale: language.locale)
     }
 
     private var balanceDetails: some View {

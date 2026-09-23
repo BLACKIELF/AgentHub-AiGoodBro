@@ -38,14 +38,27 @@ struct ResetCountdownText: View {
     let deadline: Date
     let kind: ResetCountdownPresentation.Kind
     let language: WidgetLanguage
+    @Environment(\.workspacePreviewDate) private var previewDate
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        TimelineView(.periodic(from: .now, by: 1)) { context in
-            Text(ResetCountdownPresentation.label(deadline: deadline, now: context.date, kind: kind, language: language))
-                .monospacedDigit()
-                .fixedSize(horizontal: false, vertical: true)
-                .foregroundStyle(kind == .publicForecast && deadline > context.date ? FixedVisualPalette.statusWarning : Color.secondary)
+        Group {
+            if let previewDate {
+                label(now: previewDate)
+            } else {
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    label(now: context.date)
+                }
+            }
         }
         .accessibilityIdentifier(kind == .publicForecast ? "public-reset-countdown" : "account-reset-countdown")
+    }
+
+    private func label(now: Date) -> some View {
+        Text(ResetCountdownPresentation.label(deadline: deadline, now: now, kind: kind, language: language))
+            .monospacedDigit()
+            .fixedSize(horizontal: false, vertical: true)
+            .foregroundStyle(kind == .publicForecast && deadline > now
+                ? FixedVisualPalette.statusWarningForeground(colorScheme) : Color.secondary)
     }
 }

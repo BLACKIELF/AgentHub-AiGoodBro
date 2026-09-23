@@ -160,7 +160,7 @@ enum WorkspacePreviewRenderer {
         // Absence of a snapshot is the production representation for an account
         // whose quota and reset-credit evidence are both still unknown.
         codexUnknown.lastSnapshot = nil
-        let codexProfiles = [
+        var codexProfiles = [
             codexUnknown,
             codexProfile(
                 id: "acceptance-codex-long",
@@ -179,6 +179,16 @@ enum WorkspacePreviewRenderer {
                 resetExpiries: [now.addingTimeInterval(24 * 3_600)],
                 quotaReadSucceeded: true),
         ]
+        for position in 4...8 {
+            codexProfiles.append(codexProfile(
+                id: "acceptance-codex-\(position)",
+                name: language.text("演示账号 \(position)", "Demo account \(position)"),
+                fiveHour: window(usedPercent: Double(position * 9), minutes: 300, resetOffset: 7_200),
+                sevenDay: window(usedPercent: Double(position * 7), minutes: 10_080, resetOffset: 5 * 86_400),
+                resetCredits: 0,
+                resetExpiries: [],
+                quotaReadSucceeded: true))
+        }
 
         do {
             let support = root.appendingPathComponent("support").appendingPathComponent(DispatchParticipationPaths.supportDirectoryName)
@@ -346,6 +356,9 @@ enum WorkspacePreviewRenderer {
     }
 
     @MainActor static func render(to directory: URL, language: WidgetLanguage = .zh) -> Bool {
+        if CommandLine.arguments.contains("--preview-design-home-only") {
+            return renderDesignHome(to: directory)
+        }
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("next-ui-preview-\(UUID().uuidString)")
         let suiteName = "CodexManagerNext.workspace-preview.\(UUID().uuidString)"
         guard let defaults = UserDefaults(suiteName: suiteName) else { return false }
@@ -356,8 +369,18 @@ enum WorkspacePreviewRenderer {
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             let catalog = PaletteCatalog.loadFromMainBundle()
-            let settings = AppSettings(defaults: defaults, paletteCatalog: catalog)
+            let settings = AppSettings(
+                defaults: defaults, paletteCatalog: catalog,
+                previewAvatarRoot: root.appendingPathComponent("avatars"))
             settings.language = language
+            settings.agentNavigation = AgentNavigationState(
+                initialized: true, customized: true,
+                orderedVisibleProviderIDs: [
+                    AgentNavCatalog.codexID, LocalCLIKind.kimi.rawValue, LocalCLIKind.workBuddy.rawValue,
+                    LocalCLIKind.trae.rawValue, LocalCLIKind.openCode.rawValue, LocalCLIKind.grok.rawValue,
+                    LocalCLIKind.gemini.rawValue, LocalCLIKind.mimo.rawValue,
+                    LocalCLIKind.claudeCode.rawValue, LocalCLIKind.zcode.rawValue,
+                ])
             for scheme in [ColorScheme.dark, .light] {
                 settings.themeMode = scheme == .dark ? .dark : .light
                 let theme = scheme == .dark ? "dark" : "light"
@@ -569,6 +592,12 @@ enum WorkspacePreviewRenderer {
                         to: directory.appendingPathComponent(
                             "acceptance-matrix-\(layout.rawValue)-\(theme)-full.png"),
                         options: .atomic)
+                    let wideCapture = try WorkspaceScreenshotExporter.render(
+                        matrix.screenshotContent, width: 1280, scheme: scheme)
+                    try wideCapture.png.write(
+                        to: directory.appendingPathComponent(
+                            "acceptance-matrix-\(layout.rawValue)-\(theme)-wide.png"),
+                        options: .atomic)
                 }
 
                 for kind in [LocalCLIKind.grok, .openCode, .workBuddy] {
@@ -595,6 +624,98 @@ enum WorkspacePreviewRenderer {
             return true
         } catch {
             print("workspace preview render failed")
+            return false
+        }
+    }
+
+    /// A quick, focused visual check of the approved eight-account home design.
+    /// Invoke through the existing --render-workspace-previews entry point with
+    /// --preview-design-home-only; the full acceptance matrix remains unchanged.
+    @MainActor static func renderDesignHome(to directory: URL) -> Bool {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("aigoodbro-design-home-\(UUID().uuidString)")
+        let suite = "AiGoodBro.design-home-render.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suite) else { return false }
+        defer {
+            defaults.removePersistentDomain(forName: suite)
+            try? FileManager.default.removeItem(at: root)
+        }
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let catalog = PaletteCatalog.loadFromMainBundle()
+            let settings = AppSettings(
+                defaults: defaults, paletteCatalog: catalog,
+                previewAvatarRoot: root.appendingPathComponent("avatars"))
+            DesignHomePreviewFixture.configure(settings)
+            let store = DesignHomePreviewFixture.makeStore(root: root)
+            let local = DesignHomePreviewFixture.makeLocalCLIStore(root: root)
+            let referenceDate = DesignHomePreviewFixture.referenceDate
+            let forecastBy = referenceDate.addingTimeInterval(12 * 3_600)
+            func renderViewport(
+                layout: AccountWorkspaceLayout, scheme: ColorScheme,
+                width: CGFloat, reduceTransparency: Bool = false,
+                filename: String
+            ) throws {
+                settings.accountWorkspaceLayout = layout
+                settings.themeMode = scheme == .dark ? .dark : .light
+                let viewport = CodexAccountManagerView(
+                    store: store, settings: settings,
+                    paletteCatalog: catalog, localCLIAccounts: local,
+                    previewReferenceDate: referenceDate, previewForecastBy: forecastBy)
+                    .defaultAppStorage(defaults)
+                    .environment(\.workspacePreviewDate, referenceDate)
+                    .environment(\.workspacePreviewForecastDeadline, forecastBy)
+                    .environment(\.workspacePreviewOpaqueSurface, reduceTransparency)
+                    .environment(\.colorScheme, scheme)
+                    .frame(width: width, height: 980)
+                try renderView(
+                    viewport, size: CGSize(width: width, height: 980), scheme: scheme,
+                    to: directory.appendingPathComponent(filename))
+            }
+            for layout in [AccountWorkspaceLayout.cards, .rows] {
+                settings.accountWorkspaceLayout = layout
+                let view = CodexAccountManagerView(
+                    store: store, settings: settings,
+                    paletteCatalog: catalog, localCLIAccounts: local,
+                    previewReferenceDate: referenceDate, previewForecastBy: forecastBy)
+                let content = view.screenshotContent
+                    .defaultAppStorage(defaults)
+                    .environment(\.workspacePreviewDate, referenceDate)
+                    .environment(\.workspacePreviewForecastDeadline, forecastBy)
+                    .environment(\.colorScheme, ColorScheme.dark)
+                let capture = try WorkspaceScreenshotExporter.render(
+                    content, width: 1_440, scheme: .dark)
+                try capture.png.write(
+                    to: directory.appendingPathComponent(
+                        "home-\(layout.rawValue)-dark-liquid-keycap-1440-full.png"),
+                    options: .atomic)
+                try renderViewport(
+                    layout: layout, scheme: .dark, width: 1_440,
+                    filename: "home-\(layout.rawValue)-dark-liquid-keycap-1440-viewport.png")
+            }
+            try renderViewport(
+                layout: .cards, scheme: .dark, width: 820,
+                filename: "home-cards-dark-liquid-keycap-820-viewport.png")
+            try renderViewport(
+                layout: .rows, scheme: .dark, width: 820,
+                filename: "home-rows-dark-liquid-keycap-820-viewport.png")
+            try renderViewport(
+                layout: .cards, scheme: .light, width: 1_440,
+                reduceTransparency: true,
+                filename: "home-cards-light-liquid-keycap-1440-reduce-transparency-viewport.png")
+            let note = """
+            AiGoodBro 0923v8 design review, synthetic data only.
+            Shared fixture: eight named accounts from docs/ui-preview-0923v7/index.html.
+            Reference clock: 2026-09-23 03:00 Asia/Shanghai.
+            Production CodexAccountManagerView: full-height 1440-point cards/rows,
+            1440- and 820-point dark viewports, plus a light reduced-transparency viewport.
+            """
+            try note.write(
+                to: directory.appendingPathComponent("README.txt"),
+                atomically: true, encoding: .utf8)
+            return true
+        } catch {
+            print("design-home preview render failed: \(error.localizedDescription)")
             return false
         }
     }

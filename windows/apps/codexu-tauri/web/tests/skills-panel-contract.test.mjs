@@ -36,5 +36,5 @@ test('activates the Dashboard Skills tab with safe local-read metadata only', as
 test('keeps long Skills panels inside the Dashboard scroll container', async () => {
   const dashboard = await readFile(dashboardPath, 'utf8');
 
-  assert.match(dashboard, /<main className="flex-1 min-h-0 overflow-auto p-6 md:p-7">/);
+  assert.match(dashboard, /<main[^>]*className="[^"]*flex-1 min-h-0 overflow-auto[^"]*"/);
 });

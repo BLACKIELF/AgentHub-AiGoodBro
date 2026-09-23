@@ -13,12 +13,14 @@ const safeLabel = (value: unknown): value is string => typeof value === 'string'
 const balance = (value: unknown) => value === null || (typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1e9);
 function validQuota(value: Quota, id: string): boolean {
   if (!value || value.profile_id !== id || !validTime(value.checked_at) || !Array.isArray(value.windows)
-    || value.windows.length === 0 || value.windows.length > 3
+    || value.windows.length > 3
     || new Set(value.windows.map(window => window?.kind)).size !== value.windows.length) return false;
   if (value.account !== undefined && value.account !== null && (!safeLabel(value.account.account_type)
     || !(value.account.plan_type === null || safeLabel(value.account.plan_type)) || typeof value.account.email_present !== 'boolean')) return false;
   if (value.credits !== undefined && (!value.credits || !balance(value.credits.usd) || !balance(value.credits.points)
     || !(value.credits.reset_cards === null || (Number.isSafeInteger(value.credits.reset_cards) && value.credits.reset_cards >= 0 && value.credits.reset_cards <= 1e6)))) return false;
+  if (value.windows.length === 0 && (!value.credits
+    || (value.credits.usd === null && value.credits.points === null && value.credits.reset_cards === null))) return false;
   return value.windows.every(window => window && kinds.includes(window.kind)
     && Number.isFinite(window.remaining_percent) && window.remaining_percent >= 0 && window.remaining_percent <= 100
     && (window.used_percent === undefined || (Number.isFinite(window.used_percent) && Math.abs(window.used_percent + window.remaining_percent - 100) < 0.001))
@@ -26,7 +28,7 @@ function validQuota(value: Quota, id: string): boolean {
 }
 
 /** Explicit row-local official read. The clock ages labels without making API requests. */
-export function ProfileQuota({ profileId, disabled }: { profileId: string; disabled: boolean }) {
+export function ProfileQuota({ profileId, profileLabel, disabled }: { profileId: string; profileLabel: string; disabled: boolean }) {
   const { language } = useI18n();
   const text = (zh: string, en: string) => language === 'zh-Hans' ? zh : en;
   const [quota, setQuota] = useState<Quota | null>(null);
@@ -59,7 +61,7 @@ export function ProfileQuota({ profileId, disabled }: { profileId: string; disab
   const labels: Record<Kind, string> = { five_hour: text('5 小时', '5-hour'), seven_day: text('每周', 'Weekly'), monthly: text('每月', 'Monthly') };
   const credits = quota?.credits ?? { usd: null, points: null, reset_cards: null };
   const num = (value: number | null) => value === null ? '—' : new Intl.NumberFormat(language === 'zh-Hans' ? 'zh-CN' : 'en-US', { maximumFractionDigits: 2 }).format(value);
-  return <div className="basis-full space-y-2 text-xs text-secondary" aria-label={text('目录额度', 'Directory quota')}>
+  return <div className="account-quota space-y-2 text-xs text-secondary" aria-label={text('目录额度', 'Directory quota')}>
     <div className="flex flex-wrap items-center gap-2">
       <button className="glass-button rounded-lg px-2 py-1" disabled={disabled || busy} onClick={() => void readQuota()}>{busy ? text('正在读取…', 'Reading…') : text('读取额度', 'Read quota')}</button>
       {!quota && !failed && !busy && <span>{text('尚未读取', 'Not read yet')}</span>}
@@ -68,23 +70,27 @@ export function ProfileQuota({ profileId, disabled }: { profileId: string; disab
         <button className="glass-button px-2 py-1" onClick={() => setDetails(true)}>{text('账号详情', 'Account details')}</button></>}
     </div>
     {quota && <>
-      <div className="flex flex-wrap gap-x-4 gap-y-1">
-        <strong className="text-primary">{text('套餐 ', 'Plan ')}{accountPlanLabel(quota.account?.plan_type ?? null)}</strong>
-        <span>{text('美元 ', 'USD ')}{num(credits.usd)}</span><span>{text('点数 ', 'Points ')}{num(credits.points)}</span><span>{text('重置卡 ', 'Reset cards ')}{num(credits.reset_cards)}</span>
+      <div className="flex flex-wrap gap-x-3 gap-y-1">
+        {quota.account?.plan_type && <strong className="text-primary">{accountPlanLabel(quota.account.plan_type)}</strong>}
+        {credits.usd !== null && <span>{text('美元 ', 'USD ')}{num(credits.usd)}</span>}{credits.points !== null && <span>{text('点数 ', 'Points ')}{num(credits.points)}</span>}{credits.reset_cards !== null && <span>{text('重置卡 ', 'Reset cards ')}{num(credits.reset_cards)}</span>}
       </div>
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+      <div className="account-quota-windows">
         {quota.windows.map(window => {
           const remaining = Number(window.remaining_percent.toFixed(1));
           const used = Number((100 - remaining).toFixed(1));
-          return <div key={window.kind} className="min-w-0 rounded-lg border border-theme p-2.5 space-y-1.5">
+          return <div key={window.kind} className="account-quota-window min-w-0 space-y-1.5">
             <div className="flex flex-wrap justify-between gap-x-3 gap-y-1"><span>{labels[window.kind]} {old ? text('上次剩余', 'previously remaining') : text('剩余', 'remaining')} <strong className="text-primary">{remaining}%</strong></span><span>{old ? text('上次已用', 'previously used') : text('已用', 'used')} {used}%</span></div>
-            <div className="h-1 rounded-full bg-surface-inset overflow-hidden" aria-hidden="true"><div className={`h-full rounded-full ${old ? 'bg-gray-400' : 'bg-blue-500'}`} style={{ width: `${remaining}%` }} /></div>
+            <div className="h-1 rounded-full bg-surface-inset overflow-hidden" aria-hidden="true"><div className="h-full rounded-full" style={{ width: `${remaining}%`, background: old ? 'var(--text-tertiary)' : remaining <= 20 ? 'var(--status-error)' : remaining <= 50 ? 'var(--status-warn)' : window.kind === 'seven_day' ? 'linear-gradient(90deg, var(--quota-secondary-start), var(--quota-secondary-end))' : 'linear-gradient(90deg, var(--quota-primary-start), var(--quota-primary-end))' }} /></div>
             <p className="text-tertiary">{window.resets_at === null ? text('重置时间未知', 'Reset time unknown') : text('重置 ', 'Reset ') + formatTime(window.resets_at)}</p>
             {window.resets_at !== null && <ResetCountdown deadline={window.resets_at} />}
           </div>;
         })}
       </div>
+      {quota.windows.length === 0 && <p className="text-tertiary">{text('官方未提供周期百分比与重置时间，余额和重置卡分别显示。', 'The provider did not report period percentages or reset times. Balances and reset cards are shown separately.')}</p>}
     </>}
-    {details && <AccountDetails details={quota ? { account: quota.account ?? null, credits, checked_at: quota.checked_at } : null} current={!old} onClose={() => setDetails(false)} />}
+    {!quota && <div className="account-quota-windows" aria-label={text('额度尚未读取', 'Quota not read yet')}>
+      {(['five_hour', 'seven_day'] as Kind[]).map(kind => <div key={kind} className="account-quota-window space-y-1.5"><div className="flex justify-between gap-2"><span>{labels[kind]}</span><strong className="text-primary">—</strong></div><div className="h-1 rounded-full bg-surface-inset" /><p className="text-tertiary">{text('重置时间待读取', 'Read for reset time')}</p></div>)}
+    </div>}
+    {details && <AccountDetails profileLabel={profileLabel} details={quota ? { account: quota.account ?? null, credits, checked_at: quota.checked_at } : null} current={!old} onClose={() => setDetails(false)} />}
   </div>;
 }

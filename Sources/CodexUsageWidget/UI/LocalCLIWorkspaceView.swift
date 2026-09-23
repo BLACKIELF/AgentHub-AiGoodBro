@@ -9,16 +9,29 @@ struct LocalCLIWorkspaceView: View {
     var onlyProfileID: String? = nil
     var showsAccounts = true
     var embeddedLayout: AccountWorkspaceLayout? = nil
+    var compactHomeSummary = false
+    var homeDisplayNumber: String? = nil
     var onOpenDetails: (() -> Void)? = nil
     var onOpenSetup: (() -> Void)? = nil
     @Environment(\.accountCardDensity) private var cardDensity
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.visualTokens) private var visualTokens
     @State private var preparationProfile: LocalCLIProfile?
     @State private var editing: LocalCLIProfile?
     @State private var nameDraft = ""
     @State private var nameSaveFailed = false
-    @State private var addingGrok = false
+    @State private var addingAccount = false
     @State private var newAccountName = ""
+    @State private var accountAdditionMethod = AccountAdditionMethod.create
+    @State private var newWorkBuddyEdition = WorkBuddyEdition.domestic
+    @State private var linkedAccountDirectory: URL?
     @State private var avatarEditor: AccountAvatarTarget?
+
+    private enum AccountAdditionMethod: String, CaseIterable, Identifiable {
+        case create, link
+        var id: Self { self }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -27,28 +40,22 @@ struct LocalCLIWorkspaceView: View {
                     LocalCLIIcon(kind: kind).frame(width: 30, height: 30)
                     VStack(alignment: .leading, spacing: 3) {
                         Text(kind.displayName).font(.title2.weight(.semibold))
-                        Text(language.text("账号与额度", "Accounts and limits")).font(.caption).foregroundStyle(.secondary)
+                        Text(language.text("\(model.profiles(for: kind).count) 个账号 · 账号与额度", "\(model.profiles(for: kind).count) accounts · Accounts and limits"))
+                            .font(.caption).foregroundStyle(.secondary)
                     }
                     Spacer()
                     AccountCardDensityPicker()
-                    if kind == .grok {
-                        Button {
-                            newAccountName = language.text("Grok 账号 \(model.profiles(for: kind).count + 1)", "Grok account \(model.profiles(for: kind).count + 1)")
-                            addingGrok = true
-                        } label: {
-                            Label(language.text("新增账号并登录", "Add account and sign in"), systemImage: "person.badge.plus")
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(!model.signingIn.isEmpty)
+                    Button {
+                        newAccountName = language.text("\(kind.displayName) 账号 \(model.profiles(for: kind).count + 1)", "\(kind.displayName) account \(model.profiles(for: kind).count + 1)")
+                        linkedAccountDirectory = nil
+                        newWorkBuddyEdition = model.workBuddyInstalled[.domestic] != nil ? .domestic : .international
+                        accountAdditionMethod = model.canCreateAccount(kind: kind) ? .create : .link
+                        addingAccount = true
+                    } label: {
+                        Label(language.text("添加账号", "Add account"), systemImage: "person.badge.plus")
                     }
-                    if kind.supportsLinkedEnvironments {
-                        Button {
-                            linkAccount()
-                        } label: {
-                            Label(language.text("关联已有配置", "Link existing configuration"), systemImage: "folder")
-                        }
-                        .buttonStyle(.bordered)
-                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!model.signingIn.isEmpty)
                 }
                 DisclosureGroup(language.text("平台说明", "Provider details")) { Text(workspaceSummary) }
                     .font(.callout).foregroundStyle(.secondary)
@@ -95,26 +102,7 @@ struct LocalCLIWorkspaceView: View {
                 }
             }.padding(24).frame(width: 420)
         }
-        .sheet(isPresented: $addingGrok) {
-            VStack(alignment: .leading, spacing: 16) {
-                Text(language.text("添加 Grok 账号", "Add a Grok account")).font(.headline)
-                Text(language.text("填写便于区分的名称，然后在官方浏览器页面完成登录。", "Choose a name, then complete sign-in in the official browser page."))
-                    .font(.callout).foregroundStyle(.secondary)
-                TextField(language.text("账号名称", "Account name"), text: $newAccountName).textFieldStyle(.roundedBorder)
-                HStack {
-                    Spacer()
-                    Button(language.text("取消", "Cancel")) { addingGrok = false }
-                    Button(language.text("继续登录", "Continue to sign in")) {
-                        if let profile = model.createGrokAccount(name: newAccountName.trimmingCharacters(in: .whitespacesAndNewlines)) {
-                            addingGrok = false
-                            model.signIn(profile)
-                        }
-                    }.keyboardShortcut(.defaultAction)
-                        .disabled(newAccountName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                }
-                if let message = model.message { Text(message).font(.caption).foregroundStyle(.secondary) }
-            }.padding(24).frame(width: 400)
-        }
+        .sheet(isPresented: $addingAccount) { addAccountSheet }
         .sheet(item: $avatarEditor) { target in
             AccountAvatarEditor(
                 target: target, language: language,
@@ -147,6 +135,87 @@ struct LocalCLIWorkspaceView: View {
                 }
             }.padding(24).frame(width: 360).onAppear { nameSaveFailed = false }
         }
+    }
+
+    private var addAccountSheet: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text(language.text("添加 \(kind.displayName) 账号", "Add a \(kind.displayName) account")).font(.headline)
+            if model.canCreateAccount(kind: kind) || kind.supportsLinkedEnvironments {
+                TextField(language.text("账号名称，例如：工作账号", "Account name, for example: Work"), text: $newAccountName)
+                    .textFieldStyle(.roundedBorder)
+                if model.canCreateAccount(kind: kind), kind.supportsLinkedEnvironments {
+                    Picker(language.text("添加方式", "Add method"), selection: $accountAdditionMethod) {
+                        Text(language.text("新建并登录", "Create and sign in")).tag(AccountAdditionMethod.create)
+                        Text(language.text("关联已有账号", "Link an existing account")).tag(AccountAdditionMethod.link)
+                    }.pickerStyle(.segmented)
+                }
+                if accountAdditionMethod == .create, model.canCreateAccount(kind: kind) {
+                    if kind == .workBuddy, model.workBuddyInstalled.count > 1 {
+                        Picker(language.text("WorkBuddy 版本", "WorkBuddy edition"), selection: $newWorkBuddyEdition) {
+                            Text(language.text("国内版", "China")).tag(WorkBuddyEdition.domestic)
+                            Text(language.text("国际版", "International")).tag(WorkBuddyEdition.international)
+                        }.pickerStyle(.segmented)
+                    }
+                    Text(language.text(
+                        "为这个账号建立独立配置，并打开官方登录流程。已有账号会保留，可分别查看额度与重命名。",
+                        "Create a separate configuration and open the official sign-in flow. Existing accounts remain available with their own quota and name."))
+                        .font(.callout).foregroundStyle(.secondary)
+                } else {
+                    Text(kind.requiresDefaultEnvironmentForLaunch
+                        ? language.text("选择另一个已登录账号的官方配置文件夹。关联后只读展示；不会替你切换官方工具的当前账号。", "Select another signed-in account's official configuration folder. It will be read only; the official tool's current account will not be switched.")
+                        : language.text("选择另一个已登录账号的配置文件夹，各账号分别保留、命名和刷新。", "Select another signed-in account's configuration folder. Each account keeps its own name and refreshes separately."))
+                        .font(.callout).foregroundStyle(.secondary)
+                    Button { chooseLinkedAccountDirectory() } label: {
+                        Label(linkedAccountDirectory == nil
+                            ? language.text("选择已登录的配置文件夹", "Choose a signed-in configuration folder")
+                            : language.text("已选择配置文件夹 · 更换", "Configuration selected · Change"),
+                            systemImage: linkedAccountDirectory == nil ? "folder" : "folder.badge.checkmark")
+                    }.buttonStyle(.bordered)
+                }
+            } else {
+                Text(language.text(
+                    "此桌面平台目前提供本机活动账号，尚无经过验证的独立账号配置。可先在官方应用中切换账号，再刷新这里的额度。",
+                    "This desktop platform currently provides its active local account. Separate account configurations are not verified yet. Switch accounts in the official app, then refresh quota here."))
+                    .font(.callout).foregroundStyle(.secondary)
+            }
+            if model.installed[kind] == nil {
+                Text(language.text("请先安装官方工具，再添加或关联账号。", "Install the official tool before creating or linking an account."))
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            HStack {
+                Spacer()
+                Button(language.text("取消", "Cancel")) { addingAccount = false }.keyboardShortcut(.cancelAction)
+                if accountAdditionMethod == .create, model.canCreateAccount(kind: kind) {
+                    Button(language.text("创建并登录", "Create and sign in")) {
+                        if let profile = model.createAccount(
+                            kind: kind, name: trimmedNewAccountName,
+                            workBuddyEdition: kind == .workBuddy ? newWorkBuddyEdition : nil)
+                        {
+                            addingAccount = false
+                            model.signIn(profile)
+                        }
+                    }.keyboardShortcut(.defaultAction).disabled(trimmedNewAccountName.isEmpty || !model.signingIn.isEmpty)
+                } else if kind.supportsLinkedEnvironments {
+                    Button(language.text("添加关联账号", "Add linked account")) {
+                        guard let directory = linkedAccountDirectory else { return }
+                        let previousCount = model.profiles(for: kind).count
+                        model.link(kind: kind, directory: directory, name: trimmedNewAccountName)
+                        if model.profiles(for: kind).count > previousCount { addingAccount = false }
+                    }.keyboardShortcut(.defaultAction)
+                        .disabled(trimmedNewAccountName.isEmpty || linkedAccountDirectory == nil || model.installed[kind] == nil)
+                } else if let profile = model.profiles(for: kind).first(where: \.isDefault), model.canOpen(profile) {
+                    Button(language.text("打开官方应用", "Open official app")) {
+                        addingAccount = false
+                        openNative(profile)
+                    }.keyboardShortcut(.defaultAction)
+                }
+            }
+            if let message = model.message { Text(message).font(.caption).foregroundStyle(.secondary) }
+        }.padding(24).frame(width: 450)
+    }
+
+    private var trimmedNewAccountName: String {
+        newAccountName.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// Keep the saved order across refreshes, with only explicit pins first.
@@ -206,7 +275,9 @@ struct LocalCLIWorkspaceView: View {
     }
 
     @ViewBuilder private func accountCard(_ profile: LocalCLIProfile) -> some View {
-        if let layout = embeddedLayout {
+        if compactHomeSummary {
+            compactHomeAccount(profile, layout: embeddedLayout ?? .cards)
+        } else if let layout = embeddedLayout {
             embeddedAccount(profile, layout: layout)
         } else {
             VStack(alignment: .leading, spacing: 8) {
@@ -218,6 +289,168 @@ struct LocalCLIWorkspaceView: View {
         }
     }
 
+    /// The home surface shows the account and provider's observed limits. Full
+    /// authentication, model, source, and setup controls remain on its provider page.
+    @ViewBuilder private func compactHomeAccount(_ profile: LocalCLIProfile, layout: AccountWorkspaceLayout) -> some View {
+        if layout == .rows {
+            HStack(alignment: .center, spacing: 14) {
+                compactHomeIdentity(profile, layout: layout)
+                    .frame(minWidth: 150, maxWidth: 220, alignment: .leading)
+                compactHomeQuota(profile)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                compactHomeActions(profile, layout: layout)
+            }
+            .padding(11)
+            .background { compactHomeSurface }
+        } else {
+            VStack(alignment: .leading, spacing: 9) {
+                compactHomeIdentity(profile, layout: layout)
+                compactHomeQuota(profile)
+                compactHomeActions(profile, layout: layout)
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background { compactHomeSurface }
+        }
+    }
+
+    private var compactHomeSurface: some View {
+        RoundedRectangle(cornerRadius: 9, style: .continuous)
+            .fill(reduceTransparency ? Color(nsColor: .controlBackgroundColor)
+                : colorScheme == .dark
+                    ? Color(red: 0.135, green: 0.143, blue: 0.158)
+                    : Color(red: 0.980, green: 0.982, blue: 0.990))
+            .overlay {
+                if !reduceTransparency {
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .fill(visualTokens.surfaceTint.color.color.opacity(visualTokens.surfaceTint.maximumOpacity))
+                }
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .strokeBorder(FixedVisualPalette.cardStroke(colorScheme, elevated: false), lineWidth: 0.7)
+            }
+    }
+
+    private func compactHomeIdentity(_ profile: LocalCLIProfile, layout: AccountWorkspaceLayout) -> some View {
+        let result = model.quotas[profile.id]
+        let state = readiness(profile)
+        return HStack(alignment: .top, spacing: 8) {
+            profileAvatar(profile, slot: .list)
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 5) {
+                    if let homeDisplayNumber {
+                        Text(homeDisplayNumber)
+                            .font(.caption2.monospacedDigit().weight(.semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                    Text(profile.displayName)
+                        .font(.subheadline.weight(.semibold))
+                        .lineLimit(1)
+                    if layout == .cards { Spacer(minLength: 0) }
+                }
+                HStack(spacing: 5) {
+                    Text(kind.displayName)
+                    if let plan = result?.planLabel { Text("· " + plan).lineLimit(1) }
+                }
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                Text(state.title(language))
+                    .font(.caption2)
+                    .foregroundStyle(state.color)
+                    .lineLimit(1)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder private func compactHomeQuota(_ profile: LocalCLIProfile) -> some View {
+        let result = model.quotas[profile.id]
+        if result?.state == .available, let windows = result?.windows, !windows.isEmpty {
+            HStack(alignment: .top, spacing: 10) {
+                ForEach(windows.prefix(2)) { window in
+                    compactHomeQuotaWindow(window)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            if windows.count > 2 {
+                Text(language.text("另有 \(windows.count - 2) 项额度 · 管理中查看", "\(windows.count - 2) more limits · View in Manage"))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            if let result, let amount = LocalCLIAccountPresentation.balanceText(kind: kind, result: result, language: language) {
+                Text(LocalCLIAccountPresentation.balanceTitle(kind: kind, language: language) + " " + amount)
+                    .font(.caption.weight(.semibold).monospacedDigit())
+            }
+        } else if let result, let amount = LocalCLIAccountPresentation.balanceText(kind: kind, result: result, language: language) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(LocalCLIAccountPresentation.balanceTitle(kind: kind, language: language) + " " + amount)
+                    .font(.subheadline.weight(.semibold).monospacedDigit())
+                Text(language.text("周期已用 / 剩余：—", "Period used / remaining: —"))
+                    .font(.caption2).foregroundStyle(.secondary)
+                periodReset(result)
+            }
+        } else {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(language.text("已用 —  ·  剩余 —", "Used —  ·  Remaining —"))
+                    .font(.caption2).foregroundStyle(.secondary)
+                periodReset(result)
+            }
+        }
+        if let explanation = LocalCLIAccountPresentation.quotaExplanation(kind: kind, result: result, language: language) {
+            Text(explanation).font(.caption2).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func compactHomeQuotaWindow(_ window: LocalCLIQuotaWindow) -> some View {
+        let percentages = LocalCLIQuotaWindowDetails.percentages(usedPercent: window.usedPercent, language: language)
+        return VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 4) {
+                Text(window.label).fontWeight(.semibold).lineLimit(1)
+                Spacer(minLength: 2)
+                Text(percentages.remaining).fontWeight(.semibold).monospacedDigit().lineLimit(1)
+            }
+            .font(.caption2)
+            QuotaProgressTrack(percent: 100 - window.usedPercent)
+            Text(language.text("已用 ", "Used ") + percentages.used)
+                .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+            Text(window.resetsAt.map { language.text("重置 ", "Reset ") + language.dateTime($0) }
+                ?? language.text("重置 —", "Reset —"))
+                .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+        }
+    }
+
+    private func compactHomeActions(_ profile: LocalCLIProfile, layout: AccountWorkspaceLayout) -> some View {
+        HStack(spacing: 6) {
+            Button { model.refresh(profile) } label: {
+                Image(systemName: "arrow.clockwise")
+            }
+            .help(language.text("刷新额度", "Refresh limits"))
+            .accessibilityLabel(language.text("刷新额度", "Refresh limits"))
+            .disabled(model.refreshing.contains(profile.id))
+            if model.canOpen(profile) {
+                Button { openNative(profile) } label: {
+                    Image(systemName: profile.kind.isDesktopApplication ? "macwindow" : "terminal")
+                }
+                .help(openTitle)
+                .accessibilityLabel(openTitle)
+            }
+            if layout == .cards { Spacer(minLength: 0) }
+            if let onOpenDetails {
+                Button { onOpenDetails() } label: {
+                    HStack(spacing: 3) {
+                        Text(language.text("管理", "Manage"))
+                        Image(systemName: "chevron.right").font(.caption2)
+                    }
+                }
+                .accessibilityLabel(language.text("打开完整账号管理", "Open full account management"))
+            }
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+    }
+
     private func embeddedAccount(_ profile: LocalCLIProfile, layout: AccountWorkspaceLayout) -> some View {
         let state = readiness(profile)
         let result = model.quotas[profile.id]
@@ -227,10 +460,12 @@ struct LocalCLIWorkspaceView: View {
         return arrangement {
             VStack(alignment: .leading, spacing: 5) {
                 HStack(spacing: 8) {
+                    Text(workspaceDisplayNumber(profile)).font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
                     profileAvatar(profile, slot: layout == .cards ? .card : .list)
                     Text(profile.displayName).font(.subheadline.weight(.semibold)).lineLimit(1)
                     Text(kind.displayName).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                 }
+                Text(environmentLabel(profile)).font(.caption2).foregroundStyle(.secondary)
                 if let plan = result?.planLabel { Text(plan).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
                 if layout == .rows {
                     if kind == .grok, result?.resetCards == nil, let officialUsageURL {
@@ -256,6 +491,10 @@ struct LocalCLIWorkspaceView: View {
                 Label(state.title(language), systemImage: state.symbol)
                     .font(.caption.weight(.medium)).foregroundStyle(state.color)
                     .fixedSize(horizontal: false, vertical: true)
+                if let explanation = LocalCLIAccountPresentation.quotaExplanation(kind: kind, result: result, language: language) {
+                    Text(explanation).font(.caption2).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 if let result, !result.windows.isEmpty {
                     if layout == .cards {
                         HStack(alignment: .top, spacing: 12) {
@@ -269,14 +508,23 @@ struct LocalCLIWorkspaceView: View {
                             embeddedQuotaWindow(window, layout: layout)
                         }
                     }
-                } else if let balance = result?.balance {
-                    Text(language.text("余额 ", "Balance ") + balance.formatted()).font(.callout.monospacedDigit())
-                    Text(language.text("周期额度与重置时间：暂不可确认", "Periodic limits and reset time: unavailable"))
+                } else if let result, let amount = LocalCLIAccountPresentation.balanceText(kind: kind, result: result, language: language) {
+                    Text(LocalCLIAccountPresentation.balanceTitle(kind: kind, language: language) + " " + amount)
+                        .font(.callout.monospacedDigit())
+                    Text(language.text("周期已用 / 剩余：暂不可确认", "Period used / remaining: unavailable"))
                         .font(.caption2).foregroundStyle(.secondary)
+                    periodReset(result)
                 } else {
-                    Text(language.text("已用 / 剩余 / 重置时间：暂不可确认", "Used / remaining / reset time: unavailable"))
+                    Text(language.text("已用 / 剩余：暂不可确认", "Used / remaining: unavailable"))
                         .font(.caption).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
+                    periodReset(result)
+                }
+                if let result, !result.windows.isEmpty,
+                    let amount = LocalCLIAccountPresentation.balanceText(kind: kind, result: result, language: language)
+                {
+                    Text(LocalCLIAccountPresentation.balanceTitle(kind: kind, language: language) + " " + amount)
+                        .font(.caption.monospacedDigit())
                 }
             }
             .frame(width: layout == .rows ? 168 : nil)
@@ -289,7 +537,7 @@ struct LocalCLIWorkspaceView: View {
                         if let onOpenDetails { onOpenDetails() } else { preparationProfile = profile }
                     }
                     AnchoredActionMenu(
-                        request: moreMenuRequest(for: profile),
+                        request: moreMenuRequest(for: profile, includeUnlink: !profile.isDefault),
                         language: language,
                         onSelect: { handleMoreMenu($0, profile: profile) }
                     )
@@ -307,7 +555,10 @@ struct LocalCLIWorkspaceView: View {
                             Label(language.text("调用准备", "Call preparation"), systemImage: "checklist")
                         }.buttonStyle(.bordered).controlSize(.small)
                         if let date = result?.fetchedAt {
-                            Text(language.text("更新于 ", "Updated ") + language.dateTime(date))
+                            Text(
+                                (result?.messageCode == "local_cli_antigravity_cached_quota"
+                                    ? language.text("缓存文件更新于 ", "Cache file updated ") : language.text("更新于 ", "Updated "))
+                                    + language.dateTime(date))
                                 .font(.caption2).foregroundStyle(.secondary)
                         }
                     }.padding(.top, 8)
@@ -378,9 +629,7 @@ struct LocalCLIWorkspaceView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(spacing: 8) {
                         Text(profile.displayName).font(.headline).lineLimit(2)
-                        if profile.isDefault {
-                            Text(language.text("默认环境", "Default")).font(.caption2).foregroundStyle(.secondary)
-                        }
+                        Text(environmentLabel(profile)).font(.caption2).foregroundStyle(.secondary)
                     }
                     if let identity = result?.maskedIdentity { Text(identity).font(.caption).foregroundStyle(.secondary) }
                     if let plan = result?.planLabel { Text(plan).font(.caption).foregroundStyle(.secondary) }
@@ -431,8 +680,8 @@ struct LocalCLIWorkspaceView: View {
             } else if profile.kind.requiresDefaultEnvironmentForLaunch, !profile.isDefault {
                 Label(
                     language.text(
-                        "此关联环境用于读取额度；请在对应的官方 CLI 中登录。",
-                        "This linked environment is for quota reads. Sign in through its matching official CLI."),
+                        "此关联配置用于读取额度；请在对应的官方工具中登录。",
+                        "This linked configuration is for quota reads. Sign in through its matching official tool."),
                     systemImage: "lock.shield"
                 )
                 .font(.caption).foregroundStyle(.secondary)
@@ -496,12 +745,18 @@ struct LocalCLIWorkspaceView: View {
                 Link(language.text("打开官方用量页", "Open official usage page"), destination: officialUsageURL)
                     .font(.caption)
             }
-            if let balance = result?.balance {
+            if let result, let amount = LocalCLIAccountPresentation.balanceText(kind: kind, result: result, language: language) {
                 HStack {
-                    Text(language.text("余额", "Balance")).foregroundStyle(.secondary)
-                    Text(balance, format: .number.precision(.fractionLength(0...4)))
-                    if let currency = result?.balanceCurrency { Text(currency).foregroundStyle(.secondary) }
+                    Text(LocalCLIAccountPresentation.balanceTitle(kind: kind, language: language)).foregroundStyle(.secondary)
+                    Text(amount).monospacedDigit()
                 }.font(.callout)
+            }
+            if result?.windows.isEmpty != false { periodReset(result) }
+            if let result, !result.windows.isEmpty || result.balance != nil,
+                let explanation = LocalCLIAccountPresentation.quotaExplanation(kind: kind, result: result, language: language)
+            {
+                Text(explanation).font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             if let result {
                 HStack(spacing: 6) {
@@ -515,6 +770,9 @@ struct LocalCLIWorkspaceView: View {
                         Text(result.sourceLabel)
                     }
                     Spacer()
+                    if result.messageCode == "local_cli_antigravity_cached_quota" {
+                        Text(language.text("缓存文件更新于", "Cache file updated"))
+                    }
                     Text(result.fetchedAt, style: .time)
                 }.font(.caption2).foregroundStyle(.secondary)
             }
@@ -574,22 +832,39 @@ struct LocalCLIWorkspaceView: View {
 
     private func statusText(_ result: LocalCLIQuotaResult?) -> String {
         guard let result else { return language.text("点击刷新，读取已登录账号的额度", "Refresh to read limits for the signed-in account") }
+        if let explanation = LocalCLIAccountPresentation.quotaExplanation(kind: kind, result: result, language: language) { return explanation }
         switch result.state {
         case .available:
             return language.text(
                 "当前额度配置已验证 · 官方接口暂未返回用量百分比",
                 "The current quota configuration was verified, but the official endpoint returned no usage percentage.")
-        case .needsLogin: return language.text("等待登录 · 点击登录继续", "Sign-in needed · Choose Sign in to continue")
+        case .needsLogin:
+            return kind.isDesktopApplication
+                ? language.text("等待登录 · 请在官方桌面应用中登录后刷新", "Sign-in needed · Sign in through the official desktop app, then refresh")
+                : language.text("等待登录 · 点击登录继续", "Sign-in needed · Choose Sign in to continue")
         case .unsupported:
-            if result.messageCode == "local_cli_opencode_go_not_connected" {
-                return language.text(
-                    "未连接 OpenCode Go 额度；其他服务商登录状态不受此结论影响",
-                    "OpenCode Go quota is not connected. This does not describe other provider sign-ins.")
-            }
             return language.text("该账号的额度接口暂未接通", "The quota interface for this account is not available yet")
         case .rateLimited: return language.text("服务商暂时限流，请稍后刷新", "The provider is rate limiting requests. Refresh later")
         case .unavailable: return language.text("暂未读到额度，请稍后刷新", "Limits could not be read. Refresh later")
         }
+    }
+
+    private func periodReset(_ result: LocalCLIQuotaResult?) -> some View {
+        Text(result?.periodResetsAt.map { language.text("重置：", "Resets: ") + language.dateTime($0) }
+            ?? language.text("重置时间：暂不可确认", "Reset time: unavailable"))
+            .font(.caption2).foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private func workspaceDisplayNumber(_ profile: LocalCLIProfile) -> String {
+        String(format: "%02d", (orderedWorkspaceProfiles.firstIndex(where: { $0.id == profile.id }) ?? 0) + 1)
+    }
+
+    private func environmentLabel(_ profile: LocalCLIProfile) -> String {
+        if profile.isDefault { return language.text("本机默认", "Local default") }
+        return profile.kind.requiresDefaultEnvironmentForLaunch
+            ? language.text("关联配置 · 只读", "Linked configuration · Read only")
+            : language.text("独立配置", "Separate configuration")
     }
 
     private func modelAvailabilitySummary(for profile: LocalCLIProfile) -> some View {
@@ -622,7 +897,7 @@ struct LocalCLIWorkspaceView: View {
         }
     }
 
-    private func linkAccount() {
+    private func chooseLinkedAccountDirectory() {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
@@ -630,12 +905,11 @@ struct LocalCLIWorkspaceView: View {
         panel.canCreateDirectories = false
         panel.showsHiddenFiles = true
         panel.directoryURL = kind.defaultConfigDirectory(home: FileManager.default.homeDirectoryForCurrentUser)
-        panel.title = language.text("选择已登录账号的 CLI 配置目录", "Choose a signed-in CLI configuration directory")
-        panel.message = language.text("请选择已登录 CLI 的配置文件夹，无需查找应用。", "Select the signed-in CLI configuration folder. You do not need to find an application.")
-        panel.prompt = language.text("关联", "Link")
+        panel.title = language.text("选择已登录账号的配置目录", "Choose a signed-in account configuration directory")
+        panel.message = language.text("请选择官方工具已登录的配置文件夹，无需查找应用。", "Select the official tool's signed-in configuration folder. You do not need to find an application.")
+        panel.prompt = language.text("选择", "Choose")
         guard panel.runModal() == .OK, let directory = panel.url else { return }
-        let count = model.profiles(for: kind).count + 1
-        model.link(kind: kind, directory: directory, name: language.text("账号 \(count)", "Account \(count)"))
+        linkedAccountDirectory = directory
     }
 
     private func openNative(_ profile: LocalCLIProfile) {
@@ -694,6 +968,10 @@ struct LocalCLIWorkspaceView: View {
                 "支持已配置的 Google 登录或 API Key。打开终端即可使用，/auth 可更换方式；API Key 不使用 Code Assist 订阅额度接口。",
                 "Use the configured Google sign-in or API key. Open Terminal to continue, or /auth to change methods. API keys do not use the Code Assist subscription quota endpoint."
             )
+        case .antigravity:
+            language.text(
+                "读取 Antigravity 官方桌面应用的活动账号和额度。在官方应用内登录或切换后刷新；关联配置只用于读取，不代替桌面账号切换。",
+                "Reads the active account and quota from the official Antigravity desktop app. Sign in or switch accounts there, then refresh; linked configurations are read only and do not switch the desktop account.")
         case .mimo:
             language.text(
                 "本机登录会自动显示；已有其他独立环境时，可关联该 CLI 的配置目录。",
@@ -754,6 +1032,10 @@ struct LocalCLIIcon: View {
                 case .zcode: Text("Z").font(.system(size: size * 1.05, weight: .black, design: .monospaced))
                 case .gemini:
                     Image(systemName: "sparkle")
+                        .resizable().scaledToFit()
+                        .frame(width: box, height: box)
+                case .antigravity:
+                    Image(systemName: "a.circle")
                         .resizable().scaledToFit()
                         .frame(width: box, height: box)
                 }

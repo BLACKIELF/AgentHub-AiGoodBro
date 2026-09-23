@@ -6,20 +6,22 @@ import { ProfilesPanel } from '../components/ProfilesPanel';
 import { HomeSection } from '../components/HomeSection';
 import { PublicResetPanel, PublisherMessagePanel } from '../components/PublicResetPanel';
 import { RecommendedSkills } from '../components/RecommendedSkills';
+import { UsagePanel } from '../components/UsagePanel';
+import { ToolUsageList } from '../components/ToolUsageList';
 import { useSettings } from '../hooks/useSettings';
 import { useUsage } from '../hooks/useUsage';
 import { applyAppTheme } from '../utils/appTheme';
-import { DEFAULT_PALETTE_ID } from '../utils/paletteCatalog';
+import { DEFAULT_PALETTE_ID, type PaletteId } from '../utils/paletteCatalog';
 import { useI18n } from '../i18n/I18nProvider';
 
 export function Dashboard() {
   const { t, language } = useI18n();
   const { dashboard, loading, error, refresh, changeSource } = useUsage();
-  const { settings, update } = useSettings();
+  const { settings, update, error: settingsError, paletteFallbackNotice } = useSettings();
 
   useEffect(() => {
     applyAppTheme(
-      settings?.config.theme ?? 'system',
+      settings?.config.theme ?? 'dark',
       settings?.config.palette_id ?? DEFAULT_PALETTE_ID,
     );
   }, [settings?.config.theme, settings?.config.palette_id]);
@@ -40,25 +42,43 @@ export function Dashboard() {
       : 'bg-status-warn/12 text-status-warn border-status-warn/30';
 
   const handleThemeChange = async (theme: 'system' | 'light' | 'dark') => {
-    await update({ theme });
-    applyAppTheme(theme, settings?.config.palette_id ?? DEFAULT_PALETTE_ID);
+    try {
+      await update({ theme });
+      applyAppTheme(theme, settings?.config.palette_id ?? DEFAULT_PALETTE_ID);
+    } catch { applyAppTheme(settings?.config.theme ?? 'dark', settings?.config.palette_id ?? DEFAULT_PALETTE_ID); }
   };
+  const handlePaletteChange = async (palette: PaletteId) => {
+    try {
+      await update({ palette_id: palette });
+      applyAppTheme(settings?.config.theme ?? 'dark', palette);
+    } catch { applyAppTheme(settings?.config.theme ?? 'dark', settings?.config.palette_id ?? DEFAULT_PALETTE_ID); }
+  };
+  const noticeTitle = language === 'zh-Hans' ? '推荐 Skills 与官方公告' : 'Recommended Skills and official notices';
+  const notices = <HomeSection id="notices" title={noticeTitle} initialOpen={false}>
+    <div className="space-y-3 pt-1"><PublicResetPanel /><PublisherMessagePanel /><HomeSection id="recommendations" title={language === 'zh-Hans' ? '推荐 Skills 与应用' : 'Recommended Skills and apps'}><RecommendedSkills /></HomeSection></div>
+  </HomeSection>;
+  const usageStatistics = <div id="windows-usage"><HomeSection id="usage-summary" title={language === 'zh-Hans' ? '用量统计' : 'Usage statistics'} initialOpen={false}>
+    <div className="space-y-3"><UsagePanel usage={localUsage} /><ToolUsageList tools={localUsage?.tool_usages ?? []} /></div>
+  </HomeSection></div>;
 
   if (error) {
     return (
       <div className="h-full flex flex-col">
         <Header
           lastUpdated={null}
-          theme={settings?.config.theme ?? 'system'}
+          theme={settings?.config.theme ?? 'dark'}
           onThemeChange={handleThemeChange}
+          paletteId={settings?.config.palette_id ?? DEFAULT_PALETTE_ID}
+          onPaletteChange={handlePaletteChange}
           onRefresh={refresh}
           refreshing={loading}
         />
-        <div className="flex-1 overflow-auto p-6 space-y-4">
-          <PublicResetPanel />
-          <PublisherMessagePanel />
-          <HomeSection id="recommendations" title={language === 'zh-Hans' ? '推荐 Skills 与应用' : 'Recommended Skills and apps'}><RecommendedSkills /></HomeSection>
-          <HomeSection id="accounts" title={language === 'zh-Hans' ? '已登录账号' : 'Linked accounts'}><ProfilesPanel onSourceChange={changeSource} /></HomeSection>
+        <div className="flex-1 overflow-auto p-4 space-y-4">
+          {settingsError && <p role="alert" className="text-xs text-status-warn">{language === 'zh-Hans' ? '外观设置暂不可用，请重试。' : 'Appearance settings are unavailable. Try again.'}</p>}
+          {paletteFallbackNotice && <p role="status" className="text-xs text-status-warn">{language === 'zh-Hans' ? '原配色不可用，已使用经典默认配色。' : 'Saved palette is unavailable; the classic default is in use.'}</p>}
+          {notices}
+          {usageStatistics}
+          <div id="windows-accounts"><HomeSection id="accounts" title={language === 'zh-Hans' ? '已登录账号' : 'Linked accounts'}><ProfilesPanel onSourceChange={changeSource} /></HomeSection></div>
           <div className="glass-panel p-6 max-w-md border-status-error/30 bg-status-error/8">
             <h2 className="text-lg font-semibold text-status-error mb-2">{t('dashboard.errors.failedToLoadUsage')}</h2>
             <p className="text-sm opacity-90 text-status-error/90">{error}</p>
@@ -78,13 +98,15 @@ export function Dashboard() {
     <div className="h-full flex flex-col">
       <Header
         lastUpdated={lastUpdated}
-        theme={settings?.config.theme ?? 'system'}
+        theme={settings?.config.theme ?? 'dark'}
         onThemeChange={handleThemeChange}
+        paletteId={settings?.config.palette_id ?? DEFAULT_PALETTE_ID}
+        onPaletteChange={handlePaletteChange}
         onRefresh={refresh}
         refreshing={loading}
       />
 
-      <main className="flex-1 min-h-0 overflow-auto p-6 md:p-7">
+      <main id="windows-home" className="flex-1 min-h-0 overflow-auto p-4 md:p-5">
         {!dashboard && (
           <div className="glass-panel p-6 mb-6" role="status" aria-live="polite">
             {loading ? (
@@ -109,11 +131,12 @@ export function Dashboard() {
           </div>
         )}
 
-        <div className="max-w-6xl mx-auto w-full space-y-6">
-          <PublicResetPanel />
-          <PublisherMessagePanel />
-          <HomeSection id="recommendations" title={language === 'zh-Hans' ? '推荐 Skills 与应用' : 'Recommended Skills and apps'}><RecommendedSkills /></HomeSection>
-          <HomeSection id="accounts" title={language === 'zh-Hans' ? '已登录账号' : 'Linked accounts'}><ProfilesPanel onSourceChange={changeSource} /></HomeSection>
+        <div className="max-w-7xl mx-auto w-full space-y-4">
+          {settingsError && <p role="alert" className="text-xs text-status-warn">{language === 'zh-Hans' ? '外观设置暂不可用，请重试。' : 'Appearance settings are unavailable. Try again.'}</p>}
+          {paletteFallbackNotice && <p role="status" className="text-xs text-status-warn">{language === 'zh-Hans' ? '原配色不可用，已使用经典默认配色。' : 'Saved palette is unavailable; the classic default is in use.'}</p>}
+          <div className="home-notice-strip">{notices}</div>
+          {usageStatistics}
+          <div id="windows-accounts"><HomeSection id="accounts" title={language === 'zh-Hans' ? '已登录账号' : 'Linked accounts'}><ProfilesPanel onSourceChange={changeSource} /></HomeSection></div>
           <div className="flex items-center justify-between gap-2">
             <div className="flex items-center gap-2">
               <span className={`inline-flex items-center gap-1.5 chip-like ${quotaStatusClass}`}>

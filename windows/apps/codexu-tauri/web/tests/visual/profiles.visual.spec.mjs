@@ -32,6 +32,12 @@ test.beforeEach(async ({ page }) => {
           result.account = { account_type: 'chatgpt', plan_type: 'prolite', email_present: true };
           result.credits = { usd: null, points: window.quotaMode === 'metadata' ? 0 : -1, reset_cards: 2 };
         }
+        if (window.quotaMode === 'credits-only' || window.quotaMode === 'empty-credits') {
+          result.windows = [];
+          result.credits = window.quotaMode === 'credits-only'
+            ? { usd: 0, points: null, reset_cards: 0 }
+            : { usd: null, points: null, reset_cards: null };
+        }
         if (window.quotaMode === 'old') result.checked_at -= 600000;
         if (window.quotaMode === 'all') result.windows = [
           { kind: 'five_hour', remaining_percent: 100, resets_at: Date.now() + 18000000 },
@@ -85,6 +91,41 @@ test('late response from previous source cannot overwrite the selected source', 
 });
 
 const panel = page => page.getByRole('region', { name: 'Account directories', exact: true });
+test('credit-only quota preserves true zero without inventing a percentage or reset time', async ({ page }) => {
+  const first = page.getByTestId('profile-1');
+  await page.evaluate(() => { window.quotaMode = 'credits-only'; });
+  await first.getByRole('button', { name: 'Read quota', exact: true }).click();
+  await expect(first).toContainText('USD 0');
+  await expect(first).toContainText('Reset cards 0');
+  await expect(first).not.toContainText('Points 0');
+  await expect(first).not.toContainText('0%');
+  await expect(first).not.toContainText('Read failed');
+  await expect(first).toContainText('did not report period percentages or reset times');
+  await expect(first).toHaveScreenshot('profile-quota-credits-only.png');
+});
+
+test('missing windows and wholly unknown credits stay an unavailable result', async ({ page }) => {
+  const first = page.getByTestId('profile-1');
+  await page.evaluate(() => { window.quotaMode = 'empty-credits'; });
+  await first.getByRole('button', { name: 'Read quota', exact: true }).click();
+  await expect(first).toContainText('Read failed');
+  await expect(first).not.toContainText('USD 0');
+  await expect(first).not.toContainText('Reset cards 0');
+});
+
+test('card and list layouts keep account controls and the saved preference', async ({ page }) => {
+  const region = panel(page);
+  await expect(region.locator('ul.account-directory-grid')).toHaveClass(/is-cards/);
+  await region.getByRole('button', { name: 'List', exact: true }).click();
+  await expect(region.locator('ul.account-directory-grid')).toHaveClass(/is-list/);
+  await expect(region.getByTestId('profile-1').getByRole('button', { name: 'Read quota' })).toBeVisible();
+  await expect(region).toHaveScreenshot('profiles-list.png');
+  await page.reload();
+  await expect(panel(page).locator('ul.account-directory-grid')).toHaveClass(/is-list/);
+  await panel(page).getByRole('button', { name: 'Cards', exact: true }).click();
+  await expect(panel(page).locator('ul.account-directory-grid')).toHaveClass(/is-cards/);
+});
+
 test('stable order, one-step move, view selection and no paths', async ({ page }) => {
   const region = panel(page);
   await expect(region).toContainText('does not switch Codex login');
@@ -225,12 +266,13 @@ test('account metadata shows official units, details close and guide focuses cor
   const first = page.getByTestId('profile-1');
   await first.getByRole('button', { name: 'Read quota', exact: true }).click();
   await expect(first).toContainText('Pro 5x');
-  await expect(first).toContainText('USD —');
+  await expect(first).not.toContainText('USD —');
   await expect(first).toContainText('Points 0');
   await expect(first).toContainText('Reset cards 2');
   await first.getByRole('button', { name: 'Account details', exact: true }).click();
   const dialog = page.getByRole('dialog');
   await expect(dialog).toBeVisible();
+  await expect(dialog).toHaveAccessibleName('Account details · Synthetic A');
   await expect(dialog).not.toContainText('@');
   await expect(dialog.getByRole('button', { name: 'Close', exact: true })).toBeFocused();
   await expect(dialog).toHaveScreenshot('account-details.png');
@@ -242,6 +284,32 @@ test('account metadata shows official units, details close and guide focuses cor
   await expect(page.getByRole('dialog')).toHaveScreenshot('account-guide.png');
   await page.getByRole('dialog').getByRole('button', { name: 'Close', exact: true }).click();
   await expect(page.getByRole('dialog')).toHaveCount(0);
+});
+
+test('account details keep the matching alias after reorder and rename', async ({ page }) => {
+  const first = page.getByTestId('profile-1'), second = page.getByTestId('profile-2');
+  await first.getByRole('button', { name: 'Read quota', exact: true }).click();
+  await second.getByRole('button', { name: 'Read quota', exact: true }).click();
+  await second.getByRole('button', { name: 'Move up', exact: true }).click();
+  await second.getByRole('button', { name: 'Rename', exact: true }).click();
+  await page.getByRole('textbox', { name: 'Alias (not email)' }).fill('Renamed B');
+  await panel(page).getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(panel(page).locator('li').first()).toContainText('Renamed B');
+  await expect(second).toContainText('Weekly remaining 80%');
+  await second.getByRole('button', { name: 'Account details', exact: true }).click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog).toHaveAccessibleName('Account details · Renamed B');
+  await expect(dialog).not.toContainText('Synthetic A');
+  await expect(dialog).toHaveScreenshot('account-details-renamed.png');
+  await dialog.getByRole('button', { name: 'Close', exact: true }).click();
+  await first.getByRole('button', { name: 'Account details', exact: true }).click();
+  await expect(dialog).toHaveAccessibleName('Account details · Synthetic A');
+  await expect(dialog).not.toContainText('Renamed B');
+  expect(await page.evaluate(() => window.quotaCalls)).toEqual(['1', '2']);
+  expect(await page.evaluate(() => window.profileCalls)).toEqual([
+    { kind: 'move', id: '2', delta: -1 },
+    { kind: 'rename', id: '2', label: 'Renamed B' },
+  ]);
 });
 
 test('malformed official credits do not erase the previous observation', async ({ page }) => {

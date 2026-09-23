@@ -3,11 +3,15 @@ import { invoke } from '@tauri-apps/api/core';
 import { isTauriRuntimeAvailable } from '../utils/tauri';
 import type { ThemeMode } from '../types/settings';
 import { useI18n } from '../i18n/I18nProvider';
+import { PALETTE_CATALOG, type PaletteId } from '../utils/paletteCatalog';
+import { useState } from 'react';
 
 interface HeaderProps {
   lastUpdated: number | null;
   theme: ThemeMode;
   onThemeChange: (theme: ThemeMode) => void;
+  paletteId: PaletteId;
+  onPaletteChange: (palette: PaletteId) => void;
   onRefresh: () => void;
   refreshing: boolean;
 }
@@ -16,10 +20,14 @@ export function Header({
   lastUpdated,
   theme,
   onThemeChange,
+  paletteId,
+  onPaletteChange,
   onRefresh,
   refreshing,
 }: HeaderProps) {
-  const { t } = useI18n();
+  const { t, language } = useI18n();
+  const text = (zh: string, en: string) => language === 'zh-Hans' ? zh : en;
+  const [activeNavigation, setActiveNavigation] = useState<'home' | 'accounts' | 'usage'>('home');
   const openSettings = async () => {
     if (!isTauriRuntimeAvailable()) {
       return;
@@ -33,9 +41,9 @@ export function Header({
   };
 
   return (
-    <header className="mx-4 mt-4 glass-toolbar px-5 py-3 rounded-2xl flex items-center justify-between">
+    <header className="mx-4 mt-4 glass-toolbar px-4 py-2.5 rounded-xl flex flex-wrap items-center justify-between gap-3">
       <div className="flex items-center gap-3">
-        <div className="w-8 h-8 rounded-xl glass-button-solid flex items-center justify-center overflow-hidden">
+        <div className="w-8 h-8 rounded-lg glass-button flex items-center justify-center overflow-hidden">
           <img
             src="/icons/icon.png"
             alt={t('header.codexIcon')}
@@ -43,7 +51,7 @@ export function Header({
           />
         </div>
         <div>
-          <h1 className="text-lg font-semibold text-primary leading-tight">AiGoodBro</h1>
+          <h1 className="text-base font-semibold text-primary leading-tight">AiGoodBro</h1>
           {lastUpdated && (
             <p className="text-xs text-tertiary">
               {t('header.updated', { time: new Date(lastUpdated).toLocaleTimeString() })}
@@ -52,7 +60,17 @@ export function Header({
         </div>
       </div>
 
+      <nav className="home-navigation" aria-label={text('首页导航', 'Home navigation')}>
+        <a href="#windows-home" className={activeNavigation === 'home' ? 'is-active' : ''} aria-current={activeNavigation === 'home' ? 'page' : undefined} onClick={() => setActiveNavigation('home')}>{text('概览', 'Overview')}</a>
+        <a href="#windows-accounts" className={activeNavigation === 'accounts' ? 'is-active' : ''} aria-current={activeNavigation === 'accounts' ? 'page' : undefined} onClick={() => setActiveNavigation('accounts')}>Codex</a>
+        <a href="#windows-usage" className={activeNavigation === 'usage' ? 'is-active' : ''} aria-current={activeNavigation === 'usage' ? 'page' : undefined} onClick={() => setActiveNavigation('usage')}>{text('使用额度', 'Usage')}</a>
+      </nav>
+
       <div className="flex items-center gap-2">
+        <label className="sr-only" htmlFor="home-palette">{text('主题配色', 'Theme palette')}</label>
+        <select id="home-palette" className="theme-palette-picker" value={paletteId} onChange={event => onPaletteChange(event.target.value as PaletteId)}>
+          {PALETTE_CATALOG.map(palette => <option key={palette.id} value={palette.id}>{palette.displayName[language]}</option>)}
+        </select>
         <div className="flex items-center glass-toolbar rounded-full p-0.5">
           <button
             onClick={() => onThemeChange('light')}

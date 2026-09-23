@@ -1,10 +1,20 @@
-# Windows 一次执行交接 · 0922v4
+# Windows 一次执行交接 · 0923v9
 
-相较 0921v5：不再只交付账号目录和额度读取。此分支带齐 Mac 9.6.6–9.6.9 源码，并新增 Windows 公开重置预告/日历、真实秒级计时、账号详情、独立折叠、引导、About、模型偏好和交互式 CLI 工作流。
+0923v9 相较 0923v8：官方额度解析、DTO 与前端三层均能保留没有百分比窗口时的有效余额／重置卡，明确区分零与未知；余额仅有值时不会误报全局周期额度可用或抹掉上次已核实的窗口，畸形百分比继续拒绝。首页“用量统计”是推荐／重置公告下方的**独立模块**，在账号区之前，默认折叠；展开保留热力图、趋势和工具用量明细，原 Usage 标签继续存在。Web 构建、31 项单元／契约测试以及新增额度、位置、折叠与偏好持久化交互已通过。本机没有 Rust/Cargo 或 Windows 原生环境，新增 Rust 测试、Tauri 运行和安装包均待 Windows 验收。
+
+Mac 本轮还增加 Antigravity、独立 CLI 多账号入口及 Grok／OpenCode／Kimi／Claude 的额度修复，见 [0923v9 实现与依据](../cli-quota-repair-0923v9.md)。Windows 当前运行模型仍以 Codex 为中心，尚无完整的非 Codex 原生适配；接手后须先完成这部分移植，再做原生验收和打包。
+
+相较 0923v1：深色「液态键帽」默认值、7 套既有主题、毛玻璃首页、紧凑推荐与公告、账号卡片／列表切换及统一编号已写入 Windows Web 实现；保留模型与调度、详情、引导、截图及 About。有效的用户主题选择继续保留，损坏的主题 ID 回退到原有安全主题。Web 构建、31 项单元／契约检查、31 项视觉／交互检查及后续 12 项 Dashboard 补测通过；本机没有 Rust/Cargo 和 Windows 原生环境，新增 Rust 默认值测试及 Tauri 构建、安装均尚未在 Windows 执行。
+
+这轮增量最初在本地 `codex/full-parity-0922v4` 工作树，不能仅凭旧 PR #11 或旧分支名称断言 GitHub 已包含它。接手时必须核对下方新增代码及本版本说明确实存在；缺失时先取得包含 0923v9 的提交，再开始封装。Mac 原生界面基线与证据边界见 [0923v8 实现记录](../ui-implementation-0923v8.md)。
+
+0923v1 相较 0922v4：移除所有重置日历；账号详情透传所属目录备注，并验证重排和改备注后的对应关系。保留近期记录、来源、倒计时、截图、引导、全部致谢及关于 AiGoodBro（微信复制与二维码）。视觉沿用原版图标、头像、配色、额度条与图表，采用新版信息骨架。除日历外，后续删除功能需先逐项与用户确认。
+
+0922v4 基线：不再只交付账号目录和额度读取。此分支带齐 Mac 9.6.6–9.6.9 源码，并新增 Windows 公开重置预告/近期记录、真实秒级计时、账号详情、独立折叠、引导、About、模型偏好和交互式 CLI 工作流。
 
 ## 可直接交给 Windows AI 的任务
 
-接手 AiGoodBro 最新 `codex/release-windows-0921v3` 分支（PR #11；合并后改从包含这些提交的 main 开始）。先读当前根目录及 windows/AGENTS.md 和本文，以本分支代码为准，不要回退到旧交接所写的 Mac 9.6.1 / Windows 仅目录阶段。
+接手 AiGoodBro 包含本页 0923v9 增量的最新提交。`codex/release-windows-0921v3`（PR #11）是此前交付入口，不能替代本轮源码核验；合并后可从包含这些改动的 main 开始。先读当前根目录及 windows/AGENTS.md 和本文，以实际代码为准，不要回退到旧交接所写的 Mac 9.6.1 / Windows 仅目录阶段。
 
 你负责把 Windows 原生构建、验证、修复、安装包和交付完整跑完。可以修改完成目标所必需的任何 Windows Rust、Tauri、React、PowerShell、测试、CI、资源和文档；不限定文件数量，不必为普通修复反复询问。自行修复所有发现的错误并复测，完成前进行第二轮对抗审查。已有功能要保留；遇到环境缺失先检查已有安装，再用官方来源补齐必要构建依赖。不要把“可以构建”当作“已安装验证”，也不要只返回计划。
 
@@ -16,9 +26,12 @@
 | --- | --- | --- |
 | 账号目录、备注、顺序、查看、移除 | `commands/profiles.rs`、`ProfilesPanel.tsx` | 中文/空格路径、重复目录、关联变化、保存失败 |
 | 官方套餐与额度 | `readers/codex_app_server.rs`、`commands/profile_quota.rs`、`ProfileQuota.tsx`、`AccountDetails.tsx` | 新鲜 rateLimits 套餐优先；Pro 5x / Pro 20x；美元、原始点数分别显示，未知为 —；缺少窗口不是 0 |
+| 0923v9 额度仅返回余额／重置卡 | 同一官方解析、DTO、前端三层；另查 `readers/codex_dashboard.rs` | 窗口百分比未知时仍显示已核实金额／卡数；不能把仅余额误报为周期额度可用或清除上次已核实的窗口；显式空窗口和畸形窗口分别判定 |
 | 倒计时 | `utils/resetTime.ts`、`ResetCountdown.tsx`、`QuotaOverview.tsx` | 按绝对时间每秒计算；睡眠恢复/漏帧追上；到点等待额度或来源确认；不每秒请求网络 |
-| 公开预告、历史、日历、维护者消息 | `commands/public_feed.rs/.ps1`、`publicFeeds.ts`、`PublicResetPanel.tsx`、`ResetHistory.tsx` | PS 5.1/7 UTF-8、WebView2；限时/限大小；缓存过期和坏响应；来源变更不伪报完成 |
+| 公开预告、历史、维护者消息 | `commands/public_feed.rs/.ps1`、`publicFeeds.ts`、`PublicResetPanel.tsx` | PS 5.1/7 UTF-8、WebView2；限时/限大小；缓存过期和坏响应；来源变更不伪报完成 |
 | 首页独立折叠、推荐入口 | `HomeSection.tsx`、`DashboardHome.tsx`、`RecommendedSkills.tsx` | 各区块分别记住状态；窄窗口无水平溢出 |
+| 0923v9 首页用量统计 | `windows/Dashboard.tsx`、`DashboardHome.tsx`、`UsagePanel.tsx`、`ToolUsageList.tsx` | 紧接公告的独立区块，默认折叠；展开有热力图、趋势、工具明细；重开保留显式偏好；原 Usage 标签仍可用 |
+| 0923v8 毛玻璃、默认主题、卡片／列表 | `windows/Dashboard.tsx`、`Header.tsx`、`ProfilesPanel.tsx`、`ProfileQuota.tsx`、`utils/paletteCatalog.ts`、`app_state.rs` | 新用户深色液态键帽；旧有效主题保留；7 主题可选；卡片／列表状态持久化；窄屏重排、未知与零区分；高对比度／减少透明度实色回退 |
 | 引导与联系方式 | `CodexAccountGuide.tsx`、`AssistantContact.tsx`、`public/assistant-wechat.jpg` | 添加 Codex 独立账号的清晰引导；微信 AiGoodBro 一键复制；完整二维码；弹窗 Close/Esc 与焦点返回 |
 | 模型与调度、真实终端 | `workflow.rs`、`workflow_reader.rs`、`commands/cli_workflow*.rs`、`AccountWorkflow.tsx` | 默认展开；开关保存后读回；关闭不依赖额度；官方模型/强度；独立 CODEX_HOME；只有交互式终端，不自动发任务 |
 | 启动/取消/移除/退出 | `main.rs`、`commands/profiles.rs`、`cli_workflow*.rs` | 同一账号重复启动被阻止；移除与启动竞态；只停止自己的进程树；还有终端时普通退出不杀会话 |
@@ -70,7 +83,7 @@ Pop-Location
 
 首次生成基准必须检查截图，不等于视觉回归已通过；随后不更新基准的复跑必须通过。基准、实际图和差异图保留在 `.local-artifacts/visual/`，不要提交真实账号截图。
 
-4. 启动当前构建做原生验收：中文与英文、100%/125%/150% 缩放、窄窗口、键盘 Tab/Shift-Tab/Esc、切换主题、主页所有折叠、账号详情/引导、About 复制/二维码、公开预告秒数、日历选择、网络失败和恢复。
+4. 启动当前构建做原生验收：中文与英文、100%/125%/150% 缩放、窄窗口、键盘 Tab/Shift-Tab/Esc、7 套主题、深浅模式、新设置的深色液态键帽默认值与旧主题保留、卡片／列表切换和重开持久化、减少透明度／高对比度、主页所有折叠、账号详情/引导、About 复制/二维码、公开预告秒数、近期记录全文/来源、确认所有页面无重置日历、网络失败和恢复。
 5. 对交互式 CLI 用隔离 fixture 先验证进程与偏好，再让测试者选择已登录的独立 Codex home：只读额度、官方模型列表、选择工作目录、打开终端、从终端正常退出、应用内明确结束、启动过程中关闭参与、拒绝重复启动、运行中尝试移除、运行中尝试退出应用、重新打开应用后偏好仍正确。没有真实成功回执就继续修复；不要伪造终端状态。
 6. 对抗审查后再次执行受影响测试。确认工作目录和实际账户绑定一致，未改写全局认证。每个坏值、过期快照和失败保存都应保持明确的失败/旧记录状态，不可显示绿色成功。
 7. 使用已有打包脚本，不另起一套打包链：
@@ -91,6 +104,7 @@ Get-ChildItem dist/windows -File | Get-FileHash -Algorithm SHA256
 - Windows 内托管的新增/重新登录流程目前是清晰指引与已有目录关联；可按 Mac `AccountLoginProtocol`、`DeviceAuth*` 和 `NextSetupGuideView` 对齐取消、超时、回调归属与写后身份核验，接原生凭据保护。
 - 自动后台派单、跨应用任务恢复与 Desktop 身份切换尚不是 Windows 此次交互式终端切片。按 Mac `DispatchParticipationSync`、`CodexProfileStore` 和 `scripts/next_dispatch_*` 的行为设计 Windows 实现，不能直接运行依赖 macOS 的终端脚本；已有 profile ID、模型偏好、进程持有、原子保存与额度解析可复用。
 - 其他 CLI 的真实余额/消耗/剩余/重置适配需要用 Windows 安装与官方返回验证。参考 Mac `LocalCLIAccountStore`、`LocalCLIQuotaWindowDetails` 及对应 `tests/test_*cli_quota.py`；已有记录量与官方剩余额度应分别标注，不以 token 消耗推算套餐余量。CLI 不提供某项时明示未知。
+- 0923v9 已写好 Mac 的独立 Grok、OpenCode、Kimi、WorkBuddy 配置创建及其他平台的已有配置关联入口。Windows 需要扩展当前 Codex 专用目录／运行模型，逐平台实现账号隔离、登录、读取与来源标注；Antigravity 优先沿用官方已运行桌面的只读状态查询及不同账号不能互借缓存的边界。新建账号不要通过改写全局 CLI 凭据伪造隔离；平台未提供当前余额时显示未知，不以“已登录”替代额度成功。
 - 维护者消息已经可以读取；Windows 原生新消息通知、系统授权、首次基线与去重还需接线并做 Windows 通知验证。参考 Mac `PublisherMessages`，避免初次启动把历史消息全部推送。
 
 这些事项是诚实的剩余能力清单，不是禁止实现。继续工作时以用户的完整产品目标为准，可以完成它们后再统一打包。真实用户凭据、未完成工作、付费回退和不可逆操作仍按实际授权处理。

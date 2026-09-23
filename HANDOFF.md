@@ -1,6 +1,14 @@
 # AiGoodBro — Source handoff
 
-## Current entry · 0922v4
+## Current entry · 0923v9
+
+相较 0923v8：修复 Grok 已有余额／周期时间被空窗口遮蔽、OpenCode 打包桥接误判和 Kimi 新旧额度格式兼容；增加 Antigravity 与非 Codex 统一多账号入口。首页用量统计独立放在推荐／重置公告下方、账号区之前，默认折叠，保留热力图、趋势及工具明细。Jev 与可调度账号参与判断和对抗审查。实现、验证、安装及边界见 [CLI 额度与多账号修复 0923v9](docs/cli-quota-repair-0923v9.md)。Windows 已补余额／重置卡独立显示及用量模块，但非 Codex 原生适配并未完整移植；接手者须按 [Windows 交接](docs/windows-port/WINDOWS_AI_HANDOFF_0922v4.md) 继续，不能只做打包。
+
+## Previous entry · 0923v8
+
+相较 0922v4：完成毛玻璃首页、紧凑卡片／列表、统一编号与深色液态键帽默认值。用户先要求独立安装，随后明确要求覆盖安装；现已更新 `/Applications/AiGoodBro.app`，原生启动读回 11 个账号，主题为深色液态键帽，旧应用已保留备份。源码仍在本地工作树，不能将旧 PR 视为已含此增量。具体构建、自检、界面验收范围、安装回执与剩余项见 [0923v8 实现记录](docs/ui-implementation-0923v8.md)。Windows Web 同步完成，本机没有验证 Windows 原生打包。
+
+## Previous entry · 0922v4
 
 相较 0915v1：当前源码已集成 Mac **9.6.9（58）**、0919–0921 Windows 目录/额度基线及本轮两端修复。Mac 9.6.9 已本机安装并通过 32 项原生自检；Windows 原生运行与安装结果另行记录。入口是本分支最新 HEAD、[版本说明](docs/release-notes-v9.6.9.md)及[Windows AI 一次执行交接](docs/windows-port/WINDOWS_AI_HANDOFF_0922v4.md)；不要用下方历史版本覆盖当前源码。
 

@@ -4,7 +4,6 @@ import { useI18n } from '../i18n/I18nProvider';
 import { parseForecast, parseNotices, type Forecast, type Notice } from '../utils/publicFeeds';
 import { ResetCountdown } from './ResetCountdown';
 import { HomeSection } from './HomeSection';
-import { ResetHistory } from './ResetHistory';
 
 type Feed = 'forecast' | 'history' | 'messages';
 type State = { checkedAt: number; forecast: Forecast | null; notices: Notice[]; cached: boolean; failed: boolean };
@@ -83,7 +82,6 @@ export function PublicResetPanel() {
     </div> : <p className="text-sm text-secondary">{forecast.busy ? text('正在读取公开预告…', 'Checking public forecast…') : forecast.checkedAt ? text('暂无待确认的重置预告', 'No pending forecast') : text('公开预告暂不可用', 'Public forecast unavailable')}</p>}
     {forecast.failed && <p className="text-xs text-status-warn" role="status">{text('本次预告无法确认；保留有效的上次记录。', 'Forecast could not be verified; the last valid record is retained.')}</p>}
     <details><summary className="text-xs text-secondary cursor-pointer">{text('最近 3 条历史记录', 'Latest 3 historical records')}</summary><NoticeList notices={history.notices.slice(0, 3)} />{history.failed && <p className="text-xs text-status-warn">{text('历史读取失败，可刷新重试。', 'History unavailable. Refresh to retry.')}</p>}</details>
-    <details><summary className="text-xs text-secondary cursor-pointer">{text('展开日历与详情', 'Calendar and details')}</summary><ResetHistory notices={history.notices} /></details>
     {forecast.checkedAt > 0 && <p className="text-xs text-tertiary">{text('预告检查：', 'Forecast checked: ')}{new Date(forecast.checkedAt).toLocaleString()}</p>}
   </section></HomeSection>;
 }
