@@ -17,10 +17,24 @@ const artifactRoot = path.join(repoRoot, '.local-artifacts', 'visual').replace(/
 // is kept in the operating-system temp directory: a repository volume with no
 // usable recycle bin, or a locked file left by an interrupted run, must not be
 // able to break the whole visual suite before a single assertion runs.
-const scratchRoot = (process.env.CODEXU_VISUAL_SCRATCH_ROOT || path.join(os.tmpdir(), 'codexu-visual'))
+//
+// The leaf is unique per run. Playwright empties `outputDir` when a run starts,
+// so a fixed path lets a second run wipe the first one's traces — and on Windows
+// a still-open file turns that delete into a hard failure before any assertion
+// runs. An explicit `CODEXU_VISUAL_SCRATCH_ROOT` still wins, for a caller that
+// needs a known path.
+const scratchRoot = (process.env.CODEXU_VISUAL_SCRATCH_ROOT
+    || path.join(os.tmpdir(), 'codexu-visual', `${process.pid}-${Date.now()}`))
     .replace(/\\/g, '/');
 
-const PORT = 1421;
+// The port is fixed by default so a local run is reproducible, but a machine that
+// already uses it (a leftover dev server, a second worktree) can move the suite
+// instead of failing on `--strictPort`. Anything outside the usable range is
+// ignored rather than handed to the dev server.
+const requestedPort = Number.parseInt(process.env.CODEXU_VISUAL_PORT || '', 10);
+const PORT = Number.isInteger(requestedPort) && requestedPort > 0 && requestedPort <= 65535
+    ? requestedPort
+    : 1421;
 
 export default defineConfig({
   testDir: here,
