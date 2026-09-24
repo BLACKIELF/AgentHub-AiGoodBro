@@ -7,6 +7,7 @@ const source = await readFile(new URL('../src/utils/localCliQuota.ts', import.me
 const code = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.ES2020 } }).outputText;
 const {
   parsePlatforms, parseLocalQuota, localQuotaStateLabel, localQuotaMessage, localIsolationNotice,
+  isLocalQuotaLive, localQuotaExpiryNotice, LOCAL_QUOTA_FRESHNESS_MS,
 } = await import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}`);
 
 const platform = {
@@ -75,4 +76,48 @@ test('isolation wording never promises isolation a platform cannot provide', () 
   assert.match(localIsolationNotice('default_only', 'en'), /only supports its default directory/);
   assert.match(localIsolationNotice('unsupported', 'en'), /cannot be isolated on Windows/);
   assert.ok(localIsolationNotice('unsupported', 'zh-Hans').length > 0);
+});
+
+test('an expired reading is never presented as the current quota', () => {
+  const at = (now) => ({ ...quota, checked_at: now });
+  const now = 1_700_000_000_000;
+
+  // Fresh, `available`, with no known reset: this is the only live case.
+  assert.equal(isLocalQuotaLive(at(now), now), true);
+  // Exactly at the bound the reading is already history.
+  assert.equal(isLocalQuotaLive(at(now - LOCAL_QUOTA_FRESHNESS_MS + 1), now), true);
+  assert.equal(isLocalQuotaLive(at(now - LOCAL_QUOTA_FRESHNESS_MS), now), false);
+  assert.equal(isLocalQuotaLive(at(now - LOCAL_QUOTA_FRESHNESS_MS - 1), now), false);
+  // A timestamp in the future makes the age meaningless, so it is not live.
+  assert.equal(isLocalQuotaLive(at(now + 1), now), false);
+  assert.equal(isLocalQuotaLive(at(now), Number.NaN), false);
+
+  // A reported reading whose period already ended is history even when fresh.
+  const ended = {
+    ...quota, checked_at: now,
+    windows: [{ id: 'model-0', label: 'Gemini', used_percent: 25, remaining_percent: 75, resets_at: now - 1 }],
+  };
+  assert.equal(isLocalQuotaLive(ended, now), false);
+  // One window still ahead of its reset keeps the reading live.
+  const partly = {
+    ...quota, checked_at: now,
+    windows: [
+      { id: 'model-0', label: 'Gemini', used_percent: 25, remaining_percent: 75, resets_at: now - 1 },
+      { id: 'model-1', label: 'Claude', used_percent: 10, remaining_percent: 90, resets_at: now + 1 },
+    ],
+  };
+  assert.equal(isLocalQuotaLive(partly, now), true);
+
+  // A non-`available` state is never live, however recent it is.
+  for (const state of ['unavailable', 'needs_login', 'unsupported', 'rate_limited']) {
+    assert.equal(isLocalQuotaLive({ ...quota, state, checked_at: now }, now), false, state);
+  }
+
+  // Only an expired `available` reading gets the extra explanation; every other
+  // state already carries its own wording.
+  assert.match(localQuotaExpiryNotice('available', 'en'), /has expired/);
+  assert.match(localQuotaExpiryNotice('available', 'zh-Hans'), /已过期/);
+  for (const state of ['unavailable', 'needs_login', 'unsupported', 'rate_limited']) {
+    assert.equal(localQuotaExpiryNotice(state, 'en'), null, state);
+  }
 });

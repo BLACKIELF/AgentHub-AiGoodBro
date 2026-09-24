@@ -103,6 +103,40 @@ export function parseLocalQuota(value: unknown, profileId: string): LocalQuota {
   return row as unknown as LocalQuota;
 }
 
+/** How long a read may be presented as the current quota before it is history. */
+export const LOCAL_QUOTA_FRESHNESS_MS = 300_000;
+
+/**
+ * Whether a reading may still be shown as the current quota.
+ *
+ * A reading stops being live when the platform did not report `available`, when
+ * it is older than the freshness bound, when its timestamp is in the future (a
+ * clock change makes the age meaningless), or when every window it carries has
+ * already passed its reset moment — after that the percentages describe a period
+ * that has ended. A window with no known reset never expires the reading.
+ */
+export function isLocalQuotaLive(quota: LocalQuota, now: number): boolean {
+  if (quota.state !== 'available') return false;
+  if (!Number.isFinite(now) || now < quota.checked_at) return false;
+  if (now - quota.checked_at >= LOCAL_QUOTA_FRESHNESS_MS) return false;
+  const dated = quota.windows.filter(window => window.resets_at !== null);
+  if (dated.length > 0 && dated.every(window => (window.resets_at as number) <= now)) return false;
+  return true;
+}
+
+/**
+ * Why a reading that the platform did report is no longer the current quota.
+ *
+ * Only `available` needs the explanation: every other state already carries its
+ * own wording, so `null` is returned and nothing extra is rendered.
+ */
+export function localQuotaExpiryNotice(state: LocalQuotaState, language: string): string | null {
+  if (state !== 'available') return null;
+  return language === 'zh-Hans'
+    ? '该读数已过期，仅作历史参考，请重新读取。'
+    : 'This reading has expired. It is history only; read again.';
+}
+
 export function localQuotaStateLabel(state: LocalQuotaState, language: string): string {
   const zh = language === 'zh-Hans';
   switch (state) {

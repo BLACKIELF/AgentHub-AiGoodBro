@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useI18n } from '../i18n/I18nProvider';
 import { ResetCountdown } from './ResetCountdown';
-import { parseLocalQuota, localQuotaStateLabel, localQuotaMessage, type LocalQuota } from '../utils/localCliQuota';
+import { parseLocalQuota, localQuotaStateLabel, localQuotaMessage, localQuotaExpiryNotice, isLocalQuotaLive, type LocalQuota } from '../utils/localCliQuota';
 
 /**
  * Manual, row-local read for a non-Codex account.
@@ -38,9 +38,14 @@ export function LocalProfileQuota({ profileId, disabled }: { profileId: string; 
   const formatTime = (value: number) => new Intl.DateTimeFormat(language === 'zh-Hans' ? 'zh-CN' : 'en-GB',
     { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(value);
   const num = (value: number) => new Intl.NumberFormat(language === 'zh-Hans' ? 'zh-CN' : 'en-US', { maximumFractionDigits: 2 }).format(value);
-  const stale = quota !== null && (failed || now < quota.checked_at || now - quota.checked_at >= 300000);
-  const history = quota !== null && quota.state !== 'available';
+  // A reading the platform did report still stops being current once it ages out
+  // or its period has ended, so freshness — not just the state — decides whether
+  // the panel may present live percentages.
+  const live = quota !== null && isLocalQuotaLive(quota, now);
+  const history = quota !== null && !live;
+  const expired = quota !== null && quota.state === 'available' && !live;
   const message = quota ? localQuotaMessage(quota.message_code, language) : null;
+  const expiryNotice = quota ? localQuotaExpiryNotice(quota.state, language) : null;
   return <div className="account-quota account-local-quota space-y-2 text-xs text-secondary" aria-label={text('平台额度', 'Platform quota')}>
     <div className="flex flex-wrap items-center gap-2">
       <button className="glass-button rounded-lg px-2 py-1" disabled={disabled || busy} onClick={() => void readQuota()}>
@@ -48,11 +53,12 @@ export function LocalProfileQuota({ profileId, disabled }: { profileId: string; 
       </button>
       {!quota && !failed && !busy && <span>{text('尚未读取', 'Not read yet')}</span>}
       {failed && <span role="status" className="text-status-warn">{text('读取失败，可重试。', 'Read failed. You can retry.')}</span>}
-      {quota && <span className={history || stale ? 'text-status-warn' : ''} data-state={quota.state}>
+      {quota && <span className={history || failed ? 'text-status-warn' : ''} data-state={quota.state} data-live={live ? 'true' : 'false'}>
         {localQuotaStateLabel(quota.state, language)}{' · '}{formatTime(quota.checked_at)}
       </span>}
     </div>
     {quota && <>
+      {expired && expiryNotice && <p className="text-status-warn" role="status" data-expired-note>{expiryNotice}</p>}
       <p className="text-tertiary" data-source-label>{quota.source_label}</p>
       {message && <p className={history ? 'text-status-warn' : 'text-tertiary'}>{message}</p>}
       <div className="flex flex-wrap gap-x-3 gap-y-1">
