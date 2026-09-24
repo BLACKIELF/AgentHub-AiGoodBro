@@ -2723,6 +2723,80 @@ mod tests {
         assert_eq!(publisher_of(&temp.path().join("missing.exe")), None);
     }
 
+    /// Real-machine honesty check.
+    ///
+    /// Ignored by default because the second half depends on what this machine has
+    /// installed; run it with `--ignored` on the machine under test. The first half
+    /// is deterministic everywhere: a linked directory that does not exist can
+    /// never produce a quota, must not borrow the running application's account,
+    /// and must not fall back to the default directory's cache.
+    #[cfg(windows)]
+    #[ignore = "depends on what this machine has installed; run with --ignored"]
+    #[test]
+    fn a_real_machine_read_never_invents_a_quota() {
+        use crate::local_cli::PlatformDirectories;
+        use crate::readers::read_local_cli_quota;
+
+        let directories = PlatformDirectories::detect();
+        let now = Utc::now();
+        let absent = directories.home.join("antigravity-does-not-exist");
+
+        // The shared dispatcher refuses a directory it cannot recognise, before
+        // any platform reader runs.
+        let dispatched = read_local_cli_quota(LocalCliKind::Antigravity, &absent, false, now);
+        assert_eq!(dispatched.state, LocalCliQuotaState::Unavailable);
+        assert!(dispatched.windows.is_empty());
+        assert!(dispatched.masked_identity.is_none());
+        assert_eq!(
+            dispatched.message_code.as_deref(),
+            Some("local_cli_directory_not_recognized")
+        );
+
+        // Asked directly, the adapter says it has nothing rather than borrowing the
+        // default directory's cache or the running application's account.
+        let linked = AntigravityReader::native().load(&absent, false, now);
+        assert_eq!(linked.state, LocalCliQuotaState::Unavailable);
+        assert!(linked.windows.is_empty());
+        assert!(linked.masked_identity.is_none());
+        assert_eq!(
+            linked.message_code.as_deref(),
+            Some("local_cli_antigravity_linked_cache_only")
+        );
+
+        // Whatever this machine has, the result must describe itself honestly.
+        let shared_root = directories.default_directory(LocalCliKind::Antigravity);
+        let shared = read_local_cli_quota(LocalCliKind::Antigravity, &shared_root, true, now);
+        eprintln!(
+            "[antigravity] root={} exists={} state={:?} code={:?} windows={} source={:?}",
+            shared_root.display(),
+            shared_root.is_dir(),
+            shared.state,
+            shared.message_code,
+            shared.windows.len(),
+            shared.source_label,
+        );
+
+        if shared.state == LocalCliQuotaState::Available {
+            // Only a live read may be available, and it must carry both a window
+            // and the masked identity that window belongs to.
+            assert!(!shared.windows.is_empty(), "available without a window");
+            assert!(
+                shared.masked_identity.is_some(),
+                "available without an identity"
+            );
+            assert!(
+                !shared.source_label.contains("cached"),
+                "a cached source must not be reported as available: {}",
+                shared.source_label
+            );
+        }
+        // A default directory that does not exist cannot be a quota.
+        if !shared_root.is_dir() {
+            assert_ne!(shared.state, LocalCliQuotaState::Available);
+            assert!(shared.windows.is_empty());
+        }
+    }
+
     fn base64_of(bytes: &[u8]) -> String {
         const TABLE: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
         let mut text = String::new();

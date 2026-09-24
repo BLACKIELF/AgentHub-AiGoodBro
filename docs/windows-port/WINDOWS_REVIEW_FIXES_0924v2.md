@@ -67,6 +67,33 @@ cd windows/apps/codexu-tauri/web; npm test; npm run build; npm run test:visual
   所以第 5 项的链接拒绝用例会真正走到拒绝分支，而不是被跳过。
 - 本机 `System32` 下的镜像全部是目录签名，因此第 11 项一定会在本机复现。
 
+## 实机读取结果
+
+`a_real_machine_read_never_invents_a_quota`（`#[ignore]`，需显式 `--ignored` 运行）在本机
+实测：
+
+```
+[antigravity] root=C:\Users\Dengz\AppData\Roaming\Antigravity exists=true
+              state=Unavailable code=Some("local_cli_directory_not_recognized")
+              windows=0 source="Antigravity · linked directory"
+```
+
+同一次运行还断言了两条与机器状态无关的性质：不存在的关联目录由分发器在更早一层以
+`local_cli_directory_not_recognized` 拒绝（比适配器自身的 `linked_cache_only` 更严格），
+而直接问适配器本身时它回 `local_cli_antigravity_linked_cache_only`，两者都**不借用**默认目录
+的缓存或运行中应用的账号。若某台机器上真读到 `available`，用例要求它必须同时带窗口与掩码
+身份，且来源不能是缓存。
+
+### 顺带发现：旧测试在真实用户目录留下的空目录
+
+本机 `%APPDATA%\Antigravity` 是一个**空目录**，修改时间为 11:29，早于本次会话。它来自第 8 项
+修掉的那个副作用——旧测试为了有东西可比较，会往调用者真实的 `%APPDATA%\Antigravity` 写目录。
+本机未安装 Antigravity（`Program Files` / `Local\Programs` 下无安装目录、无卸载项、
+无 `language_server.exe` 进程），所以这个空目录不是应用的 profile。
+
+修复后的测试跑在临时根集合上：它已在本机运行两次，该目录的修改时间未变，说明不再被触碰。
+该空目录本身尚未删除，留给用户决定。
+
 ## 未完成 / 未验证
 
 - 未对真实安装的 Antigravity 桌面端做在线额度实测；真实账号登录由用户操作。
