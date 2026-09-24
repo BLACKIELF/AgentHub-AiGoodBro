@@ -38,7 +38,13 @@ export default defineConfig({
       animations: 'disabled',
       caret: 'hide',
       scale: 'css',
-      maxDiffPixelRatio: 0,
+      // Text-heavy panels cannot be byte-identical: a sub-pixel line box rounds
+      // differently between runs and shifts glyph antialiasing plus the rounded
+      // panel corners. Measured noise on a 1280x391 panel is 8 pixels with
+      // Playwright's default colour threshold; the allowance below is ~100 pixels
+      // there, still far below any real regression (a moved row, a missing badge
+      // or a changed colour differs by hundreds to thousands of pixels).
+      maxDiffPixelRatio: 0.0002,
     },
   },
 
