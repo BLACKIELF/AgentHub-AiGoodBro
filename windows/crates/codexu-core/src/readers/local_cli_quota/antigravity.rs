@@ -2398,7 +2398,17 @@ mod tests {
         let storage = temp.path().join("User").join("globalStorage");
         std::fs::create_dir_all(&storage).unwrap();
         std::fs::write(storage.join("state.vscdb"), b"sqlite").unwrap();
-        assert_eq!(cache_file(temp.path()), Some(storage.join("state.vscdb")));
+
+        let found = cache_file(temp.path()).expect("the cache inside the root must be found");
+        // `cache_file` returns the resolved path, and resolving also expands an
+        // 8.3 short name — a CI runner's `%TEMP%` is `RUNNER~1`, not
+        // `runneradmin`. Compare the resolved forms so the assertion is about the
+        // file rather than about how the temp directory happens to be spelled.
+        assert_eq!(
+            std::fs::canonicalize(&found).unwrap(),
+            std::fs::canonicalize(storage.join("state.vscdb")).unwrap()
+        );
+        assert_eq!(found.file_name().unwrap(), "state.vscdb");
         assert_eq!(cache_file(Path::new("relative")), None);
     }
 
