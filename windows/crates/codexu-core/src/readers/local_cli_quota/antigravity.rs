@@ -1295,24 +1295,101 @@ mod win32 {
         Some((buffer, sid.0 as usize))
     }
 
-    /// Signer of a signed image, or `None` when the file has no valid, trusted
-    /// Authenticode signature.
-    ///
-    /// Revocation checking and URL retrieval are switched off, so the probe never
-    /// reaches the network; the state data is released on both paths.
-    pub(super) fn signature_publisher(path: &Path) -> Option<String> {
-        use windows::Win32::Foundation::HWND;
+    /// Releases a catalog admin context on every path, including an early return.
+    struct CatalogAdmin(isize);
+
+    impl Drop for CatalogAdmin {
+        fn drop(&mut self) {
+            if self.0 != 0 {
+                unsafe {
+                    let _ = windows::Win32::Security::Cryptography::Catalog::
+                        CryptCATAdminReleaseContext(self.0, 0);
+                }
+            }
+        }
+    }
+
+    /// Releases a catalog enumeration context; the admin context outlives it.
+    struct CatalogContext {
+        admin: isize,
+        context: isize,
+    }
+
+    impl Drop for CatalogContext {
+        fn drop(&mut self) {
+            if self.context != 0 {
+                unsafe {
+                    let _ = windows::Win32::Security::Cryptography::Catalog::
+                        CryptCATAdminReleaseCatalogContext(self.admin, self.context, 0);
+                }
+            }
+        }
+    }
+
+    /// Publisher named by a verification state, or `None` when it cannot be read.
+    unsafe fn state_publisher(state: HANDLE) -> Option<String> {
         use windows::Win32::Security::Cryptography::CertGetNameStringW;
         use windows::Win32::Security::WinTrust::{
             WTHelperGetProvCertFromChain, WTHelperGetProvSignerFromChain,
-            WTHelperProvDataFromStateData, WinVerifyTrust, WINTRUST_ACTION_GENERIC_VERIFY_V2,
-            WINTRUST_DATA, WINTRUST_DATA_0, WINTRUST_FILE_INFO, WTD_CACHE_ONLY_URL_RETRIEVAL,
-            WTD_CHOICE_FILE, WTD_DISABLE_MD2_MD4, WTD_REVOKE_NONE, WTD_STATEACTION_CLOSE,
-            WTD_STATEACTION_VERIFY, WTD_UI_NONE,
+            WTHelperProvDataFromStateData,
         };
 
         // CERT_NAME_SIMPLE_DISPLAY_NAME; the crate only exports the issuer flag.
         const CERT_NAME_SIMPLE_DISPLAY_NAME: u32 = 4;
+
+        let provider = WTHelperProvDataFromStateData(state);
+        if provider.is_null() {
+            return None;
+        }
+        let signer = WTHelperGetProvSignerFromChain(provider, 0, false, 0);
+        if signer.is_null() {
+            return None;
+        }
+        let certificate = WTHelperGetProvCertFromChain(signer, 0);
+        if certificate.is_null() || (*certificate).pCert.is_null() {
+            return None;
+        }
+        let mut buffer = [0u16; 256];
+        let written = CertGetNameStringW(
+            (*certificate).pCert,
+            CERT_NAME_SIMPLE_DISPLAY_NAME,
+            0,
+            None,
+            Some(&mut buffer),
+        );
+        if written <= 1 {
+            return None;
+        }
+        let text = String::from_utf16_lossy(&buffer[..(written as usize - 1).min(buffer.len())]);
+        let text = text.trim().to_string();
+        (!text.is_empty()).then_some(text)
+    }
+
+    /// Signer of an image, whether the signature is embedded in it or lives in a
+    /// system catalog.
+    ///
+    /// Windows has two Authenticode forms and both are in use. An *embedded*
+    /// signature travels inside the image. A *catalog* signature lives in a
+    /// catalog file and references the image by hash; `WinVerifyTrust` answers
+    /// `TRUST_E_NOSIGNATURE` for it when asked with `WTD_CHOICE_FILE`. That was
+    /// measured on this machine, where every `System32` image is catalog-signed,
+    /// so checking only the embedded form would reject a genuine Google-signed
+    /// install. The embedded form is tried first because it needs no lookup.
+    ///
+    /// Revocation checking and URL retrieval are switched off, so a probe never
+    /// reaches the network.
+    pub(super) fn signature_publisher(path: &Path) -> Option<String> {
+        embedded_publisher(path).or_else(|| catalog_publisher(path))
+    }
+
+    /// Signer of the signature embedded in the image, if there is one.
+    pub(super) fn embedded_publisher(path: &Path) -> Option<String> {
+        use windows::Win32::Foundation::HWND;
+        use windows::Win32::Security::WinTrust::{
+            WinVerifyTrust, WINTRUST_ACTION_GENERIC_VERIFY_V2, WINTRUST_DATA, WINTRUST_DATA_0,
+            WINTRUST_FILE_INFO, WTD_CACHE_ONLY_URL_RETRIEVAL, WTD_CHOICE_FILE, WTD_DISABLE_MD2_MD4,
+            WTD_REVOKE_NONE, WTD_STATEACTION_CLOSE, WTD_STATEACTION_VERIFY, WTD_UI_NONE,
+        };
 
         let wide: Vec<u16> = path
             .as_os_str()
@@ -1340,53 +1417,156 @@ mod win32 {
         };
 
         let mut action = WINTRUST_ACTION_GENERIC_VERIFY_V2;
-        let verified = unsafe {
+        let status = unsafe {
             WinVerifyTrust(
                 HWND::default(),
                 &mut action,
                 &mut data as *mut WINTRUST_DATA as *mut core::ffi::c_void,
-            ) == 0
+            )
         };
-        let publisher = if verified {
-            unsafe {
-                let provider = WTHelperProvDataFromStateData(data.hWVTStateData);
-                let signer = if provider.is_null() {
-                    std::ptr::null_mut()
-                } else {
-                    WTHelperGetProvSignerFromChain(provider, 0, false, 0)
-                };
-                let certificate = if signer.is_null() {
-                    std::ptr::null_mut()
-                } else {
-                    WTHelperGetProvCertFromChain(signer, 0)
-                };
-                if certificate.is_null() || (*certificate).pCert.is_null() {
-                    None
-                } else {
-                    let mut buffer = [0u16; 256];
-                    let written = CertGetNameStringW(
-                        (*certificate).pCert,
-                        CERT_NAME_SIMPLE_DISPLAY_NAME,
-                        0,
-                        None,
-                        Some(&mut buffer),
-                    );
-                    if written <= 1 {
-                        None
-                    } else {
-                        let text = String::from_utf16_lossy(
-                            &buffer[..(written as usize - 1).min(buffer.len())],
-                        );
-                        let text = text.trim().to_string();
-                        (!text.is_empty()).then_some(text)
-                    }
-                }
-            }
+        let publisher = if status == 0 {
+            unsafe { state_publisher(data.hWVTStateData) }
         } else {
             None
         };
 
         // The state data is allocated even for a failed verification.
+        data.dwStateAction = WTD_STATEACTION_CLOSE;
+        let mut action = WINTRUST_ACTION_GENERIC_VERIFY_V2;
+        unsafe {
+            let _ = WinVerifyTrust(
+                HWND::default(),
+                &mut action,
+                &mut data as *mut WINTRUST_DATA as *mut core::ffi::c_void,
+            );
+        }
+        publisher
+    }
+
+    /// Signer named by a catalog that covers the image.
+    ///
+    /// The catalog is located by the file's own hash, and the same hash is used as
+    /// the member tag, so the signature that is verified is the one the catalog
+    /// holds for exactly this image.
+    pub(super) fn catalog_publisher(path: &Path) -> Option<String> {
+        use std::os::windows::io::AsRawHandle;
+        use windows::Win32::Foundation::HWND;
+        use windows::Win32::Security::Cryptography::Catalog::{
+            CryptCATAdminAcquireContext2, CryptCATAdminCalcHashFromFileHandle2,
+            CryptCATAdminEnumCatalogFromHash, CryptCATCatalogInfoFromContext, CATALOG_INFO,
+        };
+        use windows::Win32::Security::WinTrust::{
+            WinVerifyTrust, WINTRUST_ACTION_GENERIC_VERIFY_V2, WINTRUST_CATALOG_INFO,
+            WINTRUST_DATA, WINTRUST_DATA_0, WTD_CACHE_ONLY_URL_RETRIEVAL, WTD_CHOICE_CATALOG,
+            WTD_DISABLE_MD2_MD4, WTD_REVOKE_NONE, WTD_STATEACTION_CLOSE, WTD_STATEACTION_VERIFY,
+            WTD_UI_NONE,
+        };
+
+        let file = std::fs::File::open(path).ok()?;
+        let handle = HANDLE(file.as_raw_handle());
+
+        let mut raw_admin: isize = 0;
+        // A null hash algorithm selects the default, and the subsystem and
+        // strong-signature policy are left to theirs.
+        unsafe {
+            CryptCATAdminAcquireContext2(&mut raw_admin, None, PCWSTR::null(), None, None).ok()?;
+        }
+        let admin = CatalogAdmin(raw_admin);
+
+        // The first call only measures the hash the catalog indexes the file by.
+        let mut hash_length = 0u32;
+        unsafe {
+            let _ =
+                CryptCATAdminCalcHashFromFileHandle2(admin.0, handle, &mut hash_length, None, None);
+        }
+        if hash_length == 0 || hash_length > 128 {
+            return None;
+        }
+        let mut hash = vec![0u8; hash_length as usize];
+        unsafe {
+            CryptCATAdminCalcHashFromFileHandle2(
+                admin.0,
+                handle,
+                &mut hash_length,
+                Some(hash.as_mut_ptr()),
+                None,
+            )
+            .ok()?;
+        }
+        hash.truncate(hash_length as usize);
+
+        let context = unsafe { CryptCATAdminEnumCatalogFromHash(admin.0, &hash, None, None) };
+        if context == 0 {
+            return None;
+        }
+        let _context = CatalogContext {
+            admin: admin.0,
+            context,
+        };
+
+        let mut info = CATALOG_INFO {
+            cbStruct: std::mem::size_of::<CATALOG_INFO>() as u32,
+            ..Default::default()
+        };
+        unsafe { CryptCATCatalogInfoFromContext(context, &mut info, 0).ok()? };
+        let catalog_length = info.wszCatalogFile.iter().position(|unit| *unit == 0)?;
+        let catalog_path: Vec<u16> = info.wszCatalogFile[..=catalog_length].to_vec();
+
+        // The member tag is the uppercase hexadecimal spelling of the hash the
+        // catalog was located by.
+        let tag: Vec<u16> = hash
+            .iter()
+            .map(|byte| format!("{byte:02X}"))
+            .collect::<String>()
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        let file_path: Vec<u16> = path
+            .as_os_str()
+            .to_string_lossy()
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+
+        let mut catalog_info = WINTRUST_CATALOG_INFO {
+            cbStruct: std::mem::size_of::<WINTRUST_CATALOG_INFO>() as u32,
+            dwCatalogVersion: 0,
+            pcwszCatalogFilePath: PCWSTR(catalog_path.as_ptr()),
+            pcwszMemberTag: PCWSTR(tag.as_ptr()),
+            pcwszMemberFilePath: PCWSTR(file_path.as_ptr()),
+            hMemberFile: handle,
+            pbCalculatedFileHash: hash.as_mut_ptr(),
+            cbCalculatedFileHash: hash.len() as u32,
+            pcCatalogContext: std::ptr::null_mut(),
+            hCatAdmin: admin.0,
+        };
+        let mut data = WINTRUST_DATA {
+            cbStruct: std::mem::size_of::<WINTRUST_DATA>() as u32,
+            dwUIChoice: WTD_UI_NONE,
+            fdwRevocationChecks: WTD_REVOKE_NONE,
+            dwUnionChoice: WTD_CHOICE_CATALOG,
+            Anonymous: WINTRUST_DATA_0 {
+                pCatalog: &mut catalog_info,
+            },
+            dwStateAction: WTD_STATEACTION_VERIFY,
+            dwProvFlags: WTD_CACHE_ONLY_URL_RETRIEVAL | WTD_DISABLE_MD2_MD4,
+            ..Default::default()
+        };
+
+        let mut action = WINTRUST_ACTION_GENERIC_VERIFY_V2;
+        let status = unsafe {
+            WinVerifyTrust(
+                HWND::default(),
+                &mut action,
+                &mut data as *mut WINTRUST_DATA as *mut core::ffi::c_void,
+            )
+        };
+        let publisher = if status == 0 {
+            unsafe { state_publisher(data.hWVTStateData) }
+        } else {
+            None
+        };
+
         data.dwStateAction = WTD_STATEACTION_CLOSE;
         let mut action = WINTRUST_ACTION_GENERIC_VERIFY_V2;
         unsafe {
@@ -2486,6 +2666,61 @@ mod tests {
         };
         assert_eq!(unknown.summary(), "failed");
         assert!(!unknown.requests_resend());
+    }
+
+    /// Real-machine Authenticode check.
+    ///
+    /// The pure tests cannot reach the WinTrust plumbing: it needs a genuinely
+    /// signed image and a chain this machine trusts. Windows has two Authenticode
+    /// forms — embedded, which travels inside the image, and catalog, which lives
+    /// in a system catalog and references the image by hash — and a check that
+    /// knows only the first rejects the second with `TRUST_E_NOSIGNATURE`. That is
+    /// exactly what this test caught: every `System32` image on a current Windows
+    /// install is catalog-signed, so the publisher came back empty for all of them.
+    #[cfg(windows)]
+    #[test]
+    fn a_trusted_signer_is_read_in_either_authenticode_form() {
+        let system_root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_string());
+        let system32 = Path::new(&system_root).join("System32");
+        let image = ["notepad.exe", "cmd.exe", "where.exe"]
+            .into_iter()
+            .map(|name| system32.join(name))
+            .find(|path| path.is_file())
+            .expect("no System32 image was available to check");
+
+        // The two forms are tried in order, and the second is reached exactly when
+        // the first has nothing to say.
+        let publisher = match win32::embedded_publisher(&image) {
+            Some(embedded) => embedded,
+            None => win32::catalog_publisher(&image)
+                .expect("a System32 image carries an embedded or a catalog signature"),
+        };
+        assert_eq!(
+            publisher_of(&image).as_deref(),
+            Some(publisher.as_str()),
+            "the dispatcher disagreed with the form that answered"
+        );
+
+        // Whichever form answered, the signer must not pass as an official
+        // publisher. This is the property that keeps a binary merely dropped under
+        // an install root from being accepted.
+        assert!(
+            !publisher.to_lowercase().contains("google"),
+            "{publisher} must not be treated as an official publisher"
+        );
+        assert!(!is_officially_signed(&image));
+
+        // An unsigned file has no publisher in either form, and is therefore never
+        // accepted either.
+        let temp = tempfile::tempdir().unwrap();
+        let unsigned = temp.path().join("unsigned.exe");
+        std::fs::write(&unsigned, b"not a signed image").unwrap();
+        assert_eq!(publisher_of(&unsigned), None);
+        assert_eq!(win32::catalog_publisher(&unsigned), None);
+        assert!(!is_officially_signed(&unsigned));
+
+        // A path that does not exist is handled the same way.
+        assert_eq!(publisher_of(&temp.path().join("missing.exe")), None);
     }
 
     fn base64_of(bytes: &[u8]) -> String {
