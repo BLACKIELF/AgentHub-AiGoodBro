@@ -1,7 +1,7 @@
 //! Manual per-directory quota reads, independent of local transcript availability.
 //! No credentials, raw account metadata or source paths cross the WebView boundary.
 use crate::app_state::AppState;
-use codexu_core::local_cli::LocalCliKind;
+use codexu_core::local_cli::{LocalCliKind, PlatformDirectories};
 use codexu_core::profiles::normalize_root_for;
 use codexu_core::readers::codex_app_server::{
     read_codex_quota_for_home, CodexAppServerQuotaSnapshot,
@@ -239,11 +239,18 @@ fn project_local(id: u64, kind: LocalCliKind, quota: LocalCliQuotaResult) -> Loc
 }
 
 fn is_platform_default_directory(kind: LocalCliKind, root: &std::path::Path) -> bool {
-    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-    let roaming = dirs::config_dir().unwrap_or_else(|| home.join("AppData").join("Roaming"));
-    let local = dirs::data_local_dir().unwrap_or_else(|| home.join("AppData").join("Local"));
-    let expected = kind.default_config_directory(&home, &roaming, &local);
-    let alternate = kind.alternate_config_directory(&home, &roaming, &local);
+    is_platform_default_directory_in(&PlatformDirectories::detect(), kind, root)
+}
+
+/// Same test against an explicit root set, so a test never has to touch the
+/// caller's real `%USERPROFILE%` / `%APPDATA%`.
+fn is_platform_default_directory_in(
+    directories: &PlatformDirectories,
+    kind: LocalCliKind,
+    root: &std::path::Path,
+) -> bool {
+    let expected = directories.default_directory(kind);
+    let alternate = directories.alternate_directory(kind);
     let canonical_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     let matches = |candidate: PathBuf| {
         candidate
@@ -522,19 +529,33 @@ mod tests {
 
     #[test]
     fn only_the_platform_default_directory_may_be_queried_live() {
-        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-        let roaming = dirs::config_dir().unwrap_or_else(|| home.join("AppData").join("Roaming"));
-        let local = dirs::data_local_dir().unwrap_or_else(|| home.join("AppData").join("Local"));
-        let antigravity =
-            LocalCliKind::Antigravity.default_config_directory(&home, &roaming, &local);
+        let sandbox = tempfile::tempdir().unwrap();
+        let directories = PlatformDirectories {
+            home: sandbox.path().join("home"),
+            roaming: sandbox.path().join("roaming"),
+            local_app_data: sandbox.path().join("local"),
+        };
+        let antigravity = directories.default_directory(LocalCliKind::Antigravity);
         std::fs::create_dir_all(&antigravity).unwrap();
-        assert!(is_platform_default_directory(
+        assert!(is_platform_default_directory_in(
+            &directories,
             LocalCliKind::Antigravity,
             &antigravity
         ));
-        assert!(!is_platform_default_directory(
+        assert!(!is_platform_default_directory_in(
+            &directories,
             LocalCliKind::Antigravity,
-            &home.join("linked-antigravity")
+            &directories.home.join("linked-antigravity")
+        ));
+        // A platform whose directory is relocated is never treated as default.
+        let workbuddy = directories
+            .alternate_directory(LocalCliKind::WorkBuddy)
+            .unwrap();
+        std::fs::create_dir_all(&workbuddy).unwrap();
+        assert!(is_platform_default_directory_in(
+            &directories,
+            LocalCliKind::WorkBuddy,
+            &workbuddy
         ));
     }
 

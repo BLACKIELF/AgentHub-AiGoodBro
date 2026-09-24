@@ -1,5 +1,5 @@
 use crate::app_state::{AppConfig, AppState};
-use codexu_core::local_cli::LocalCliKind;
+use codexu_core::local_cli::{LocalCliKind, PlatformDirectories};
 use codexu_core::profiles::{normalize_root_for, same_root};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -51,16 +51,9 @@ fn project(config: &AppConfig) -> Result<Vec<ProfileDto>, String> {
         .collect())
 }
 
-fn home_directories() -> (PathBuf, PathBuf, PathBuf) {
-    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-    let roaming = dirs::config_dir().unwrap_or_else(|| home.join("AppData").join("Roaming"));
-    let local = dirs::data_local_dir().unwrap_or_else(|| home.join("AppData").join("Local"));
-    (home, roaming, local)
-}
-
 #[tauri::command]
 pub async fn list_platforms() -> Result<Vec<PlatformDto>, String> {
-    let (home, roaming, local) = home_directories();
+    let directories = PlatformDirectories::detect();
     Ok(LocalCliKind::ALL
         .iter()
         .map(|kind| PlatformDto {
@@ -68,7 +61,8 @@ pub async fn list_platforms() -> Result<Vec<PlatformDto>, String> {
             name: kind.display_name().to_string(),
             command: kind.command_name().to_string(),
             default_directory: Some(
-                kind.default_config_directory(&home, &roaming, &local)
+                directories
+                    .default_directory(*kind)
                     .to_string_lossy()
                     .to_string(),
             ),

@@ -20,6 +20,43 @@ use std::path::{Path, PathBuf};
 /// Bounded read used by every marker and evidence check in this module.
 const MAX_EVIDENCE_BYTES: u64 = 1024 * 1024;
 
+/// The three Windows roots every platform mapping is derived from.
+///
+/// Resolved in exactly one place so the UI commands and the quota reader can
+/// never drift apart: `%USERPROFILE%`, `%APPDATA%` and `%LOCALAPPDATA%`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlatformDirectories {
+    pub home: PathBuf,
+    pub roaming: PathBuf,
+    pub local_app_data: PathBuf,
+}
+
+impl PlatformDirectories {
+    /// Reads the process environment, falling back to the conventional
+    /// `%USERPROFILE%\AppData\...` layout when a variable is missing.
+    pub fn detect() -> Self {
+        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+        let roaming = dirs::config_dir().unwrap_or_else(|| home.join("AppData").join("Roaming"));
+        let local_app_data =
+            dirs::data_local_dir().unwrap_or_else(|| home.join("AppData").join("Local"));
+        Self {
+            home,
+            roaming,
+            local_app_data,
+        }
+    }
+
+    /// Account directory the platform uses when the user never relocated it.
+    pub fn default_directory(&self, kind: LocalCliKind) -> PathBuf {
+        kind.default_config_directory(&self.home, &self.roaming, &self.local_app_data)
+    }
+
+    /// Alternate account directory a platform may also use, when it has one.
+    pub fn alternate_directory(&self, kind: LocalCliKind) -> Option<PathBuf> {
+        kind.alternate_config_directory(&self.home, &self.roaming, &self.local_app_data)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LocalCliKind {
@@ -607,6 +644,62 @@ mod tests {
             LocalCliKind::WorkBuddy.alternate_config_directory(home, roaming, local),
             Some(PathBuf::from(r"C:\Users\example\.workbuddy-ai"))
         );
+    }
+
+    #[test]
+    fn the_directory_root_set_is_the_single_source_of_truth() {
+        let directories = PlatformDirectories {
+            home: PathBuf::from(r"C:\Users\example"),
+            roaming: PathBuf::from(r"C:\Users\example\AppData\Roaming"),
+            local_app_data: PathBuf::from(r"C:\Users\example\AppData\Local"),
+        };
+        // Every mapping must agree with the raw three-argument form, so a
+        // caller that resolves the roots once cannot drift from one that
+        // resolves them per platform.
+        for kind in LocalCliKind::ALL {
+            assert_eq!(
+                directories.default_directory(kind),
+                kind.default_config_directory(
+                    &directories.home,
+                    &directories.roaming,
+                    &directories.local_app_data
+                ),
+                "default directory drifted for {}",
+                kind.id()
+            );
+            assert_eq!(
+                directories.alternate_directory(kind),
+                kind.alternate_config_directory(
+                    &directories.home,
+                    &directories.roaming,
+                    &directories.local_app_data
+                ),
+                "alternate directory drifted for {}",
+                kind.id()
+            );
+        }
+        assert_eq!(
+            directories.default_directory(LocalCliKind::Antigravity),
+            PathBuf::from(r"C:\Users\example\AppData\Roaming\Antigravity")
+        );
+        assert_eq!(
+            directories.alternate_directory(LocalCliKind::WorkBuddy),
+            Some(PathBuf::from(r"C:\Users\example\.workbuddy-ai"))
+        );
+        assert_eq!(directories.alternate_directory(LocalCliKind::Codex), None);
+    }
+
+    #[test]
+    fn detected_roots_are_absolute_and_never_empty() {
+        let directories = PlatformDirectories::detect();
+        for root in [
+            &directories.home,
+            &directories.roaming,
+            &directories.local_app_data,
+        ] {
+            assert!(!root.as_os_str().is_empty());
+            assert!(root.is_absolute(), "{root:?} must be absolute");
+        }
     }
 
     #[test]

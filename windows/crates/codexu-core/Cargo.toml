@@ -12,6 +12,7 @@ serde.workspace = true
 serde_json.workspace = true
 chrono.workspace = true
 chrono-tz = "0.10"
+dirs.workspace = true
 thiserror.workspace = true
 anyhow.workspace = true
 tokio.workspace = true
@@ -31,6 +32,11 @@ windows = { version = "0.61.3", features = [
     "Win32_NetworkManagement_IpHelper",
     "Win32_Networking_WinHttp",
     "Win32_Networking_WinSock",
+    "Win32_Security",
+    "Win32_Security_Cryptography",
+    "Win32_Security_Cryptography_Catalog",
+    "Win32_Security_Cryptography_Sip",
+    "Win32_Security_WinTrust",
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_LibraryLoader",
     "Win32_System_Threading",
