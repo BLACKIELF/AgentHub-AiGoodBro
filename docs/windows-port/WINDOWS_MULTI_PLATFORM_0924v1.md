@@ -82,10 +82,10 @@ cd windows/apps/codexu-tauri/web; npm test; npm run build
 报告 `dirty=false`、`source_unchanged=true`，宿主机 Windows PowerShell 5.1.26100.7920 与
 PowerShell 7.6.5。Rust 工作区 129 项测试、Web 36 项契约、视觉基线 + 复跑各 38/38 通过。
 
-| 安装包 | 字节 | SHA-256 |
-| --- | --- | --- |
-| `CodexAccountManagerNext-9.6.9-windows-x86_64.msi` | 11,358,208 | `9b9ff80a8fec4c621df3990618339c845e0fac6c54aecc933bb23a0f255bf946` |
-| `CodexAccountManagerNext-9.6.9-windows-x86_64-setup.exe` | 9,575,812 | `49bba271dad95a9425f958b8754f6ec40b87b2de596955740b7d01bda118d01b` |
+两个安装包（MSI 与 NSIS）由该入口的 `package` 步骤产出，连同 `.sha256` 与 `manifest.json`
+一起写在 `.local-artifacts/windows-release-readiness/<run-id>/packages/`。**具体摘要不写进仓库**：
+包内嵌构建时间戳，同一份源码两次构建的摘要不同，写死会立刻过期；每次运行的
+`report.json` 里记录了当次两个包的字节数与 SHA-256，交付时随包一起给出。
 
 **NSIS（按用户）**：静默安装 exit 0 → 安装目录含 `codexu-tauri.exe` 与 `uninstall.exe`、
 开始菜单快捷方式、卸载注册项 `Codex Account Manager Next 9.6.9`；覆盖安装 exit 0；
