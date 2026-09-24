@@ -92,11 +92,13 @@ PowerShell 7.6.5。Rust 工作区 129 项测试、Web 36 项契约、视觉基�
 卸载 exit 0 → 目录、快捷方式、注册项全部清理。安装与卸载前后用户 `~/.codex` 的内容未变
 （用户在应用打开后仅新增了 SQLite 的 `-shm`/`-wal` 伴生文件，数据文件本身未变）。
 
-**MSI（按用户，`INSTALLDIR = %LOCALAPPDATA%\Codex Account Manager Next`）**：
-安装 / 覆盖安装 / 卸载 **exit 全 0**，Windows Installer 引擎日志记录
-`Product: Codex Account Manager Next -- Installation completed successfully.`。
-需要提权执行（包会写机器级安装器键）。已知残留：`/x` 之后仍会留下 `uninstall.exe`、
-开始菜单快捷方式与一个 HKCU 卸载项。
+**MSI（文件按用户安装，`INSTALLDIR = %LOCALAPPDATA%\Codex Account Manager Next`）**：
+需要提权执行（包会写机器级安装器键）。从干净状态走完整循环
+安装 → 覆盖安装 → 卸载，**exit 全 0**，Windows Installer 引擎日志记录
+`Product: Codex Account Manager Next -- Installation completed successfully.`；
+结束后安装目录、开始菜单快捷方式与卸载注册项**全部消失，无残留**。
+（早期一次测试看到过 `uninstall.exe` 与 HKCU 卸载项残留，复核确认那是当时机器上已存在的
+旧状态，不是本包卸载产生的。）
 
 **原生界面**：由用户在本机交互启动安装后的应用确认界面正常渲染（概览、用量与额度概览、
 AI 领导力、任务/项目/Skills 标签、设置窗口、账号目录面板均可见，且新加入的多平台说明文案
