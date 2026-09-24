@@ -148,9 +148,9 @@ impl AntigravityReader {
             let candidates = discover_with(&endpoints, |pid| (self.ports)(pid));
             let discovered_live_endpoint = !candidates.is_empty();
             for endpoint in candidates.iter().take(6) {
-                if !verify_with(&endpoints, |pid| (self.ports)(pid), endpoint) {
-                    continue;
-                }
+                // `request` re-checks the endpoint against the live process and
+                // TCP tables on both sides of every exchange, so no stale
+                // discovery snapshot is trusted here.
                 let status = match self.request("GetUserStatus", endpoint) {
                     Ok(response) => response,
                     Err(_) => continue,
@@ -271,6 +271,13 @@ impl AntigravityReader {
                 "metadata": { "ideName": "antigravity", "extensionName": "antigravity", "locale": "en" }
             })
         };
+        // The identity is re-checked on both sides of the exchange, so a reused
+        // PID, a moved port or a replaced image cannot receive the CSRF token and
+        // a result cannot be attributed to an endpoint that has since changed.
+        anyhow::ensure!(
+            self.verify(endpoint),
+            "Endpoint is no longer the verified process"
+        );
         let response = (self.transport)(&LoopbackRequest {
             scheme: endpoint.scheme,
             port: endpoint.port,
@@ -278,10 +285,29 @@ impl AntigravityReader {
             csrf: endpoint.csrf.clone(),
             body: serde_json::to_vec(&body)?,
         })?;
+        anyhow::ensure!(
+            self.verify(endpoint),
+            "Endpoint changed while the request was in flight"
+        );
         if response.status != 200 || response.body.len() > MAX_BYTES {
             anyhow::bail!("Antigravity endpoint returned an unusable response");
         }
         Ok(response.body)
+    }
+
+    /// Re-check an endpoint against the *current* process and TCP tables.
+    ///
+    /// The discovery snapshot is deliberately not reused: it ages while the read
+    /// runs, and a process that exited and had its PID reassigned must not be
+    /// treated as the one that was verified.
+    pub fn verify(&self, endpoint: &AntigravityEndpoint) -> bool {
+        let Ok(processes) = (self.processes)() else {
+            return false;
+        };
+        let Ok(listening) = (self.ports)(endpoint.pid) else {
+            return false;
+        };
+        verify_lists(&processes, &listening, endpoint)
     }
 }
 
@@ -381,10 +407,11 @@ where
 
 /// Re-check path, start time and port ownership immediately before and after a
 /// request, so a reused PID cannot receive the CSRF token.
-pub fn verify_with<F>(processes: &[ProcessEntry], ports: F, endpoint: &AntigravityEndpoint) -> bool
-where
-    F: Fn(u32) -> anyhow::Result<Vec<u16>>,
-{
+pub fn verify_lists(
+    processes: &[ProcessEntry],
+    listening: &[u16],
+    endpoint: &AntigravityEndpoint,
+) -> bool {
     let Some(entry) = processes.iter().find(|entry| entry.pid == endpoint.pid) else {
         return false;
     };
@@ -394,8 +421,15 @@ where
     if !is_language_server(&entry.executable) {
         return false;
     }
-    match ports(entry.pid) {
-        Ok(listening) => listening.contains(&endpoint.port),
+    listening.contains(&endpoint.port)
+}
+
+pub fn verify_with<F>(processes: &[ProcessEntry], ports: F, endpoint: &AntigravityEndpoint) -> bool
+where
+    F: Fn(u32) -> anyhow::Result<Vec<u16>>,
+{
+    match ports(endpoint.pid) {
+        Ok(listening) => verify_lists(processes, &listening, endpoint),
         Err(_) => false,
     }
 }
@@ -424,21 +458,123 @@ pub fn is_language_server(executable: &Path) -> bool {
     is_under_install_root(executable)
 }
 
-fn is_under_install_root(executable: &Path) -> bool {
-    let lower = executable
-        .to_string_lossy()
-        .to_lowercase()
-        .replace('/', "\\");
-    let mut roots: Vec<String> = Vec::new();
-    for key in ["LOCALAPPDATA", "ProgramFiles", "PROGRAMFILES(X86)"] {
-        if let Ok(value) = std::env::var(key) {
-            roots.push(value.to_lowercase());
+/// Publishers whose signature makes an Antigravity language server official.
+///
+/// The macOS reader pins Google's designated requirement for the application
+/// bundle; the Windows analogue is the Authenticode signer. A binary that is
+/// merely placed under an install root is not accepted.
+const OFFICIAL_PUBLISHERS: [&str; 1] = ["google"];
+
+/// True when the image carries a valid, trusted signature from an official publisher.
+pub fn is_officially_signed(executable: &Path) -> bool {
+    publisher_of(executable)
+        .map(|publisher| {
+            let publisher = publisher.to_lowercase();
+            OFFICIAL_PUBLISHERS
+                .iter()
+                .any(|official| publisher.contains(official))
+        })
+        .unwrap_or(false)
+}
+
+/// Authenticode signer of an image, or `None` when it is unsigned or the
+/// signature does not verify.
+#[cfg(windows)]
+pub fn publisher_of(executable: &Path) -> Option<String> {
+    win32::signature_publisher(executable)
+}
+
+#[cfg(not(windows))]
+pub fn publisher_of(_executable: &Path) -> Option<String> {
+    None
+}
+
+/// Install roots this adapter accepts.
+///
+/// The environment variables are the fast path; a curated shell can define none
+/// of them, so the documented per-user and system-drive layouts are used as
+/// fallbacks. Nothing here trusts a caller-supplied string.
+pub fn install_roots() -> Vec<PathBuf> {
+    let mut roots: Vec<PathBuf> = Vec::new();
+    let mut add = |candidate: PathBuf| {
+        if candidate.is_absolute() && !roots.iter().any(|existing| same_path(existing, &candidate))
+        {
+            roots.push(candidate);
+        }
+    };
+    let profile = std::env::var("USERPROFILE").ok();
+    let system_drive = std::env::var("SystemDrive").unwrap_or_else(|_| "C:".to_string());
+    let local_app_data_fallback = profile
+        .as_deref()
+        .map(|value| Path::new(value).join("AppData").join("Local"));
+    for (key, fallback) in [
+        ("LOCALAPPDATA", local_app_data_fallback),
+        (
+            "ProgramFiles",
+            Some(Path::new(&system_drive).join("Program Files")),
+        ),
+        (
+            "ProgramFiles(x86)",
+            Some(Path::new(&system_drive).join("Program Files (x86)")),
+        ),
+    ] {
+        match std::env::var(key) {
+            Ok(value) => add(PathBuf::from(value)),
+            Err(_) => {
+                if let Some(value) = fallback {
+                    add(value);
+                }
+            }
         }
     }
-    if roots.is_empty() {
-        return false;
+    roots
+}
+
+fn same_path(left: &Path, right: &Path) -> bool {
+    left.as_os_str()
+        .to_string_lossy()
+        .eq_ignore_ascii_case(&right.as_os_str().to_string_lossy())
+}
+
+/// Compare by whole path components, case-insensitively.
+///
+/// A string prefix test accepts `C:\Program Files Elsewhere` for the root
+/// `C:\Program Files`, so any directory whose name merely starts like an install
+/// root would pass. Components also fold `\` and `/` correctly.
+fn path_starts_with(path: &Path, root: &Path) -> bool {
+    let mut path_components = path.components();
+    for root_component in root.components() {
+        match path_components.next() {
+            Some(component)
+                if component
+                    .as_os_str()
+                    .to_string_lossy()
+                    .eq_ignore_ascii_case(
+                        root_component.as_os_str().to_string_lossy().as_ref(),
+                    ) => {}
+            _ => return false,
+        }
     }
-    roots.iter().any(|root| lower.starts_with(root.as_str()))
+    true
+}
+
+fn is_under_install_root(executable: &Path) -> bool {
+    install_roots()
+        .iter()
+        .any(|root| path_starts_with(executable, root))
+}
+
+/// Whether a listener bound to `local_address` can be reached at 127.0.0.1.
+///
+/// The value arrives in network byte order, so 127.0.0.1 reads back as
+/// `0x0100_007F`. Only that exact address and the IPv4 wildcard qualify: accepting
+/// the whole 127/8 range would yield endpoints that cannot be reached at
+/// 127.0.0.1 at all, and the wildcard mirrors the macOS reader, which accepts a
+/// `*:` listener. Requests are still only ever sent to 127.0.0.1.
+pub fn reachable_at_loopback(local_address: u32) -> bool {
+    const LOOPBACK: u32 = 0x0100_007f;
+    const WILDCARD: u32 = 0;
+    local_address == LOOPBACK || local_address == WILDCARD
 }
 
 /// Read `--flag value` or `--flag=value` from a command line.
@@ -637,8 +773,10 @@ pub fn parse_summary(bytes: &[u8], now: DateTime<Utc>) -> anyhow::Result<Vec<Loc
             if reset.map(|value| value <= now).unwrap_or(false) {
                 continue;
             }
-            let mut label = format!("{} · {}", group_name, name);
-            label.truncate(100);
+            // Bounded by characters, not bytes: `String::truncate` panics when the
+            // offset lands inside a multi-byte character, and these labels come
+            // from the provider.
+            let label = truncate_chars(&format!("{} · {}", group_name, name), 100);
             windows.push(LocalCliQuotaWindow {
                 id: format!("group-{}-bucket-{}", group_index, bucket_index),
                 label,
@@ -649,6 +787,12 @@ pub fn parse_summary(bytes: &[u8], now: DateTime<Utc>) -> anyhow::Result<Vec<Loc
     }
     anyhow::ensure!(valid_windows(&windows), "Invalid windows");
     Ok(windows)
+}
+
+/// Keep at most `maximum` characters. Slicing a `str` by byte offset panics when
+/// the offset is not a character boundary, which provider-supplied labels can hit.
+pub fn truncate_chars(value: &str, maximum: usize) -> String {
+    value.chars().take(maximum).collect()
 }
 
 fn fraction(value: Option<&Json>) -> Option<f64> {
@@ -669,16 +813,82 @@ fn timestamp(value: Option<&Json>) -> Option<DateTime<Utc>> {
 // Legacy IDE cache
 // ---------------------------------------------------------------------------
 
+/// The legacy IDE cache inside an explicitly selected directory.
+///
+/// The file must stay inside that directory. `User` or `globalStorage` can be a
+/// junction or symlink pointing anywhere, and following one would read a cache
+/// belonging to a different installation than the one the user selected, so every
+/// link in the chain is rejected and the resolved path must still be under the
+/// resolved root.
 pub fn cache_file(root: &Path) -> Option<PathBuf> {
     if !root.is_absolute() {
         return None;
     }
-    let file = root.join("User").join("globalStorage").join("state.vscdb");
-    let metadata = std::fs::metadata(&file).ok()?;
+    let canonical_root = root.canonicalize().ok()?;
+    let user = canonical_root.join("User");
+    let storage = user.join("globalStorage");
+    if is_linked(&user) || is_linked(&storage) {
+        return None;
+    }
+    let resolved = storage.join("state.vscdb").canonicalize().ok()?;
+    // Containment is decided on the fully resolved form, the only one a link
+    // anywhere in the chain cannot fool.
+    if !resolved.starts_with(&canonical_root) {
+        return None;
+    }
+    let metadata = std::fs::metadata(&resolved).ok()?;
     if !metadata.is_file() || metadata.len() > 512 * 1024 * 1024 {
         return None;
     }
-    Some(file)
+    // Callers get the user-facing spelling, without the `\\?\` prefix that
+    // `canonicalize` adds on Windows.
+    Some(without_verbatim_prefix(resolved))
+}
+
+/// Drops the verbatim (`\\?\`) prefix `canonicalize` adds on Windows.
+///
+/// The prefix is required by the Win32 APIs but is an implementation detail for
+/// a caller that only compares or displays the path. A verbatim volume path
+/// (`\\?\Volume{...}`) has no plain spelling and is left untouched, as is any
+/// path that is not valid UTF-8.
+fn without_verbatim_prefix(path: PathBuf) -> PathBuf {
+    #[cfg(windows)]
+    {
+        if let Some(text) = path.to_str() {
+            if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+                return PathBuf::from(format!(r"\\{rest}"));
+            }
+            if let Some(rest) = text.strip_prefix(r"\\?\") {
+                if !rest.starts_with("Volume{") {
+                    return PathBuf::from(rest);
+                }
+            }
+        }
+    }
+    path
+}
+
+/// True when the entry is a symlink or a Windows reparse point (junction).
+fn is_linked(path: &Path) -> bool {
+    let Ok(metadata) = std::fs::symlink_metadata(path) else {
+        // A missing entry is not a link; the caller treats it as "no cache".
+        return false;
+    };
+    if metadata.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        // FILE_ATTRIBUTE_REPARSE_POINT, which also covers junctions that
+        // `is_symlink` does not report.
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
 }
 
 /// Read the cached auth status blob. `Ok(None)` means the selected directory is
@@ -949,8 +1159,11 @@ fn protobuf(data: &[u8]) -> anyhow::Result<BTreeMap<u64, Vec<ProtoValue>>> {
 
 #[cfg(windows)]
 mod win32 {
-    use super::{EndpointScheme, LoopbackRequest, LoopbackResponse, ProcessEntry, MAX_BYTES};
-    use std::path::PathBuf;
+    use super::{
+        reachable_at_loopback, EndpointScheme, LoopbackRequest, LoopbackResponse, ProcessEntry,
+        MAX_BYTES,
+    };
+    use std::path::{Path, PathBuf};
     use windows::core::PCWSTR;
     use windows::Win32::Foundation::{CloseHandle, FILETIME, HANDLE};
     use windows::Win32::NetworkManagement::IpHelper::{
@@ -989,16 +1202,23 @@ mod win32 {
             let mut has_entry = Process32FirstW(snapshot, &mut entry).is_ok();
             while has_entry {
                 let pid = entry.th32ProcessID;
-                // OpenProcess fails for another user's process unless this one
-                // holds debug privilege, so success already constrains ownership.
                 if pid != 0 {
                     if let Ok(process) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
                     {
-                        // Read the command line and start time only for the one
-                        // executable family this adapter may talk to, instead of
-                        // querying every process on the machine.
+                        // Cheapest checks first: the image path is read for every
+                        // process, while the token comparison and the Authenticode
+                        // probe only run for the one executable family this adapter
+                        // may talk to.
                         if let Some(executable) = image_name(process) {
-                            if super::is_language_server(&executable) {
+                            if super::is_language_server(&executable)
+                                // Ownership is compared through the process token,
+                                // the Windows equivalent of the macOS
+                                // `pbi_uid == geteuid()` test: an elevated caller can
+                                // open another user's process, so a successful
+                                // OpenProcess is not evidence of ownership.
+                                && same_user(process)
+                                && super::is_officially_signed(&executable)
+                            {
                                 entries.push(ProcessEntry {
                                     pid,
                                     executable,
@@ -1017,6 +1237,166 @@ mod win32 {
             let _ = CloseHandle(snapshot);
             Ok(entries)
         }
+    }
+
+    /// True when the process runs under the same user as this process.
+    unsafe fn same_user(handle: HANDLE) -> bool {
+        use windows::Win32::Security::{EqualSid, PSID};
+
+        let current = token_user_sid(windows::Win32::System::Threading::GetCurrentProcess());
+        let target = token_user_sid(handle);
+        let (Some((current_buffer, current_sid)), Some((target_buffer, target_sid))) =
+            (current, target)
+        else {
+            return false;
+        };
+        // Both buffers stay alive for the comparison, which is what the raw
+        // SID pointers inside them refer to.
+        let _keep_alive = (&current_buffer, &target_buffer);
+        // `EqualSid` reports a mismatch as an error, not as `FALSE`.
+        EqualSid(
+            PSID(current_sid as *mut core::ffi::c_void),
+            PSID(target_sid as *mut core::ffi::c_void),
+        )
+        .is_ok()
+    }
+
+    /// Buffer plus the address of the SID inside it.
+    unsafe fn token_user_sid(handle: HANDLE) -> Option<(Vec<u8>, usize)> {
+        use windows::Win32::Security::{GetTokenInformation, TokenUser, TOKEN_QUERY, TOKEN_USER};
+        use windows::Win32::System::Threading::OpenProcessToken;
+
+        let mut token = HANDLE::default();
+        OpenProcessToken(handle, TOKEN_QUERY, &mut token).ok()?;
+        let mut length = 0u32;
+        // The first call only measures the buffer it needs.
+        let _ = GetTokenInformation(token, TokenUser, None, 0, &mut length);
+        if length == 0 || length > 64 * 1024 {
+            let _ = CloseHandle(token);
+            return None;
+        }
+        let mut buffer = vec![0u8; length as usize];
+        let measured = GetTokenInformation(
+            token,
+            TokenUser,
+            Some(buffer.as_mut_ptr() as *mut core::ffi::c_void),
+            length,
+            &mut length,
+        )
+        .is_ok();
+        let _ = CloseHandle(token);
+        if !measured {
+            return None;
+        }
+        let sid = (*(buffer.as_ptr() as *const TOKEN_USER)).User.Sid;
+        if sid.0.is_null() {
+            return None;
+        }
+        Some((buffer, sid.0 as usize))
+    }
+
+    /// Signer of a signed image, or `None` when the file has no valid, trusted
+    /// Authenticode signature.
+    ///
+    /// Revocation checking and URL retrieval are switched off, so the probe never
+    /// reaches the network; the state data is released on both paths.
+    pub(super) fn signature_publisher(path: &Path) -> Option<String> {
+        use windows::Win32::Foundation::HWND;
+        use windows::Win32::Security::Cryptography::CertGetNameStringW;
+        use windows::Win32::Security::WinTrust::{
+            WTHelperGetProvCertFromChain, WTHelperGetProvSignerFromChain,
+            WTHelperProvDataFromStateData, WinVerifyTrust, WINTRUST_ACTION_GENERIC_VERIFY_V2,
+            WINTRUST_DATA, WINTRUST_DATA_0, WINTRUST_FILE_INFO, WTD_CACHE_ONLY_URL_RETRIEVAL,
+            WTD_CHOICE_FILE, WTD_DISABLE_MD2_MD4, WTD_REVOKE_NONE, WTD_STATEACTION_CLOSE,
+            WTD_STATEACTION_VERIFY, WTD_UI_NONE,
+        };
+
+        // CERT_NAME_SIMPLE_DISPLAY_NAME; the crate only exports the issuer flag.
+        const CERT_NAME_SIMPLE_DISPLAY_NAME: u32 = 4;
+
+        let wide: Vec<u16> = path
+            .as_os_str()
+            .to_string_lossy()
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        let mut file_info = WINTRUST_FILE_INFO {
+            cbStruct: std::mem::size_of::<WINTRUST_FILE_INFO>() as u32,
+            pcwszFilePath: PCWSTR(wide.as_ptr()),
+            hFile: HANDLE::default(),
+            pgKnownSubject: std::ptr::null_mut(),
+        };
+        let mut data = WINTRUST_DATA {
+            cbStruct: std::mem::size_of::<WINTRUST_DATA>() as u32,
+            dwUIChoice: WTD_UI_NONE,
+            fdwRevocationChecks: WTD_REVOKE_NONE,
+            dwUnionChoice: WTD_CHOICE_FILE,
+            Anonymous: WINTRUST_DATA_0 {
+                pFile: &mut file_info,
+            },
+            dwStateAction: WTD_STATEACTION_VERIFY,
+            dwProvFlags: WTD_CACHE_ONLY_URL_RETRIEVAL | WTD_DISABLE_MD2_MD4,
+            ..Default::default()
+        };
+
+        let mut action = WINTRUST_ACTION_GENERIC_VERIFY_V2;
+        let verified = unsafe {
+            WinVerifyTrust(
+                HWND::default(),
+                &mut action,
+                &mut data as *mut WINTRUST_DATA as *mut core::ffi::c_void,
+            ) == 0
+        };
+        let publisher = if verified {
+            unsafe {
+                let provider = WTHelperProvDataFromStateData(data.hWVTStateData);
+                let signer = if provider.is_null() {
+                    std::ptr::null_mut()
+                } else {
+                    WTHelperGetProvSignerFromChain(provider, 0, false, 0)
+                };
+                let certificate = if signer.is_null() {
+                    std::ptr::null_mut()
+                } else {
+                    WTHelperGetProvCertFromChain(signer, 0)
+                };
+                if certificate.is_null() || (*certificate).pCert.is_null() {
+                    None
+                } else {
+                    let mut buffer = [0u16; 256];
+                    let written = CertGetNameStringW(
+                        (*certificate).pCert,
+                        CERT_NAME_SIMPLE_DISPLAY_NAME,
+                        0,
+                        None,
+                        Some(&mut buffer),
+                    );
+                    if written <= 1 {
+                        None
+                    } else {
+                        let text = String::from_utf16_lossy(
+                            &buffer[..(written as usize - 1).min(buffer.len())],
+                        );
+                        let text = text.trim().to_string();
+                        (!text.is_empty()).then_some(text)
+                    }
+                }
+            }
+        } else {
+            None
+        };
+
+        // The state data is allocated even for a failed verification.
+        data.dwStateAction = WTD_STATEACTION_CLOSE;
+        let mut action = WINTRUST_ACTION_GENERIC_VERIFY_V2;
+        unsafe {
+            let _ = WinVerifyTrust(
+                HWND::default(),
+                &mut action,
+                &mut data as *mut WINTRUST_DATA as *mut core::ffi::c_void,
+            );
+        }
+        publisher
     }
 
     unsafe fn image_name(handle: HANDLE) -> Option<PathBuf> {
@@ -1135,11 +1515,11 @@ mod win32 {
                 let local_address = u32::from_le_bytes([row[4], row[5], row[6], row[7]]);
                 let local_port = u32::from_le_bytes([row[8], row[9], row[10], row[11]]);
                 let owning_pid = u32::from_le_bytes([row[20], row[21], row[22], row[23]]);
-                // Network byte order: the first address byte is 127 for loopback
-                // and the port occupies the low 16 bits, byte-swapped.
-                let is_loopback = local_address & 0xff == 0x7f;
+                // The address and port are stored in network byte order: for
+                // 127.0.0.1 the first address byte is 0x7F and the port occupies
+                // the low 16 bits, byte-swapped.
                 let port = u16::from_be((local_port & 0xffff) as u16);
-                if owning_pid == pid && is_loopback && port != 0 {
+                if owning_pid == pid && reachable_at_loopback(local_address) && port != 0 {
                     ports.push(port);
                 }
             }
@@ -1156,21 +1536,49 @@ mod win32 {
     /// A WinHTTP call failure that keeps the stage and the HRESULT, so a caller
     /// can tell a retryable resend signal from a real failure.
     #[derive(Debug)]
-    struct WinHttpFailure {
-        stage: &'static str,
-        code: u32,
+    pub(super) struct WinHttpFailure {
+        pub(super) stage: &'static str,
+        pub(super) code: u32,
     }
 
+    /// The documented WinHTTP failures this adapter distinguishes.
+    ///
+    /// WinHTTP reports `ERROR_WINHTTP_*` (12000..12200); the HRESULT form is
+    /// `0x8007_0000 | code`, so the numeric value alone says nothing.
+    const ERROR_WINHTTP_TIMEOUT: u32 = 0x8007_2EE2; // 12002
+    const ERROR_WINHTTP_NAME_NOT_RESOLVED: u32 = 0x8007_2EE7; // 12007
+    const ERROR_WINHTTP_CANNOT_CONNECT: u32 = 0x8007_2EFD; // 12029
+    const ERROR_WINHTTP_RESEND_REQUEST: u32 = 0x8007_2EFE; // 12030
+    const ERROR_WINHTTP_SECURE_FAILURE: u32 = 0x8007_2F8F; // 12175
+
     impl WinHttpFailure {
-        /// ERROR_WINHTTP_RESEND_REQUEST (12030): resend the request.
-        fn requests_resend(&self) -> bool {
-            self.code == 0x8007_2EFE
+        /// The server retired the connection before the response completed, so the
+        /// request may be sent again unchanged.
+        pub(super) fn requests_resend(&self) -> bool {
+            self.code == ERROR_WINHTTP_RESEND_REQUEST
+        }
+
+        pub(super) fn summary(&self) -> &'static str {
+            match self.code {
+                ERROR_WINHTTP_TIMEOUT => "timed out",
+                ERROR_WINHTTP_CANNOT_CONNECT => "could not connect",
+                ERROR_WINHTTP_NAME_NOT_RESOLVED => "name not resolved",
+                ERROR_WINHTTP_RESEND_REQUEST => "asked for a resend",
+                ERROR_WINHTTP_SECURE_FAILURE => "TLS negotiation failed",
+                _ => "failed",
+            }
         }
     }
 
     impl std::fmt::Display for WinHttpFailure {
         fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            write!(formatter, "{} failed: 0x{:08X}", self.stage, self.code)
+            write!(
+                formatter,
+                "{} {} (0x{:08X})",
+                self.stage,
+                self.summary(),
+                self.code
+            )
         }
     }
 
@@ -1937,6 +2345,147 @@ mod tests {
         assert!(!is_language_server(&PathBuf::from(
             r"C:\Users\example\AppData\Local\Programs\Antigravity\other.exe"
         )));
+    }
+
+    #[test]
+    fn loopback_matching_accepts_only_the_wildcard_and_127_0_0_1() {
+        // 127.0.0.1 in network byte order.
+        assert!(reachable_at_loopback(0x0100_007f));
+        // The IPv4 wildcard, which mirrors a `*:` listener on macOS.
+        assert!(reachable_at_loopback(0));
+        // 127.0.0.2 and any other host in 127/8 cannot be reached at 127.0.0.1.
+        assert!(!reachable_at_loopback(0x0200_007f));
+        // A LAN address, in network byte order.
+        assert!(!reachable_at_loopback(0x0100_a8c0));
+        // An IPv6-mapped or otherwise unrelated value must not slip through.
+        assert!(!reachable_at_loopback(0xffff_ffff));
+    }
+
+    #[test]
+    fn install_root_matching_uses_path_components_not_string_prefixes() {
+        let root = Path::new(r"C:\Program Files");
+        assert!(path_starts_with(
+            Path::new(r"C:\Program Files\Antigravity\language_server.exe"),
+            root
+        ));
+        // Separators and case do not matter.
+        assert!(path_starts_with(
+            Path::new("c:/program files/Antigravity/language_server.exe"),
+            root
+        ));
+        // A sibling directory whose name merely starts like the root must fail.
+        assert!(!path_starts_with(
+            Path::new(r"C:\Program Files Elsewhere\Antigravity\language_server.exe"),
+            root
+        ));
+        assert!(!path_starts_with(Path::new(r"C:\Program"), root));
+        // The root itself matches, but nothing above it does.
+        assert!(path_starts_with(root, root));
+        assert!(!path_starts_with(
+            root,
+            Path::new(r"C:\Program Files\Antigravity")
+        ));
+    }
+
+    #[test]
+    fn character_truncation_never_splits_a_code_point() {
+        // Four-byte characters, where a byte-offset slice would panic.
+        let value = "🛰️🛰️🛰️🛰️";
+        let truncated = truncate_chars(value, 2);
+        assert_eq!(truncated.chars().count(), 2);
+        assert!(value.starts_with(&truncated));
+        assert_eq!(truncate_chars(value, 0), "");
+        assert_eq!(truncate_chars(value, 99), value);
+        // Mixed-width input stays valid UTF-8.
+        assert_eq!(truncate_chars("aé漢🛰️b", 3), "aé漢");
+    }
+
+    #[test]
+    fn canonical_paths_are_returned_without_the_verbatim_prefix() {
+        // Only Windows adds the prefix, so the assertion is Windows-only.
+        #[cfg(windows)]
+        {
+            assert_eq!(
+                without_verbatim_prefix(PathBuf::from(r"\\?\C:\Users\example\.codex")),
+                PathBuf::from(r"C:\Users\example\.codex")
+            );
+            assert_eq!(
+                without_verbatim_prefix(PathBuf::from(r"\\?\UNC\server\share\dir")),
+                PathBuf::from(r"\\server\share\dir")
+            );
+            // A verbatim volume path has no plain spelling and stays as it is.
+            assert_eq!(
+                without_verbatim_prefix(PathBuf::from(r"\\?\Volume{9f0d}\dir")),
+                PathBuf::from(r"\\?\Volume{9f0d}\dir")
+            );
+        }
+        // A path that never had the prefix is returned unchanged.
+        assert_eq!(
+            without_verbatim_prefix(PathBuf::from(r"C:\Users\example")),
+            PathBuf::from(r"C:\Users\example")
+        );
+    }
+
+    #[test]
+    fn a_linked_cache_directory_is_never_followed() {
+        let temp = tempfile::tempdir().unwrap();
+        let real = temp.path().join("real");
+        let storage = real.join("globalStorage");
+        std::fs::create_dir_all(&storage).unwrap();
+        std::fs::write(storage.join("state.vscdb"), b"sqlite").unwrap();
+
+        // A junction or symlink named `User` must be refused even though the
+        // file behind it exists and is a real file.
+        #[cfg(windows)]
+        let linked = std::os::windows::fs::symlink_dir(&real, temp.path().join("User"));
+        #[cfg(not(windows))]
+        let linked = std::os::unix::fs::symlink(&real, temp.path().join("User"));
+
+        match linked {
+            Ok(()) => assert_eq!(
+                cache_file(temp.path()),
+                None,
+                "a link in the chain must not be followed"
+            ),
+            // Creating a link needs a privilege this account may not hold, and
+            // the check itself is still exercised by the happy path below.
+            Err(_) => eprintln!("skipping the link case: the account cannot create links"),
+        }
+
+        // Without the link the same tree is accepted.
+        std::fs::remove_dir_all(temp.path().join("User")).ok();
+        std::fs::rename(&real, temp.path().join("User")).unwrap();
+        assert!(cache_file(temp.path()).is_some());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn named_winhttp_failures_explain_themselves() {
+        for (code, expected, resend) in [
+            (0x8007_2EE2, "timed out", false),
+            (0x8007_2EE7, "name not resolved", false),
+            (0x8007_2EFD, "could not connect", false),
+            (0x8007_2EFE, "asked for a resend", true),
+            (0x8007_2F8F, "TLS negotiation failed", false),
+        ] {
+            let failure = win32::WinHttpFailure {
+                stage: "receive response",
+                code,
+            };
+            assert_eq!(failure.summary(), expected, "code {code:#010x}");
+            assert_eq!(failure.requests_resend(), resend, "code {code:#010x}");
+            // The rendered message keeps both the stage and the reason.
+            let message = failure.to_string();
+            assert!(message.contains("receive response"), "{message}");
+            assert!(message.contains(expected), "{message}");
+        }
+        // An unrecognised HRESULT still reports the stage.
+        let unknown = win32::WinHttpFailure {
+            stage: "send request",
+            code: 0x8007_0001,
+        };
+        assert_eq!(unknown.summary(), "failed");
+        assert!(!unknown.requests_resend());
     }
 
     fn base64_of(bytes: &[u8]) -> String {
