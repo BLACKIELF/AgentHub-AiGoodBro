@@ -76,6 +76,38 @@ cd windows/apps/codexu-tauri/web; npm test; npm run build
 窗口校验、指纹稳定性、Antigravity 发现／校验／账号切换／缓存边界、base64 与 protobuf 边界。
 新增前端契约测试覆盖：平台目录校验、额度结果校验、历史／不支持状态文案、隔离说明文案。
 
+## 本轮实机验收结果（2026-09-24，Windows 11 / x64）
+
+发布入口 `windows/scripts/Invoke-ReleaseReadiness.ps1 -Version 9.6.9` **18/18 步通过**，
+报告 `dirty=false`、`source_unchanged=true`，宿主机 Windows PowerShell 5.1.26100.7920 与
+PowerShell 7.6.5。Rust 工作区 129 项测试、Web 36 项契约、视觉基线 + 复跑各 38/38 通过。
+
+| 安装包 | 字节 | SHA-256 |
+| --- | --- | --- |
+| `CodexAccountManagerNext-9.6.9-windows-x86_64.msi` | 11,358,208 | `9b9ff80a8fec4c621df3990618339c845e0fac6c54aecc933bb23a0f255bf946` |
+| `CodexAccountManagerNext-9.6.9-windows-x86_64-setup.exe` | 9,575,812 | `49bba271dad95a9425f958b8754f6ec40b87b2de596955740b7d01bda118d01b` |
+
+**NSIS（按用户）**：静默安装 exit 0 → 安装目录含 `codexu-tauri.exe` 与 `uninstall.exe`、
+开始菜单快捷方式、卸载注册项 `Codex Account Manager Next 9.6.9`；覆盖安装 exit 0；
+卸载 exit 0 → 目录、快捷方式、注册项全部清理。安装与卸载前后用户 `~/.codex` 的内容未变
+（用户在应用打开后仅新增了 SQLite 的 `-shm`/`-wal` 伴生文件，数据文件本身未变）。
+
+**MSI（按用户，`INSTALLDIR = %LOCALAPPDATA%\Codex Account Manager Next`）**：
+安装 / 覆盖安装 / 卸载 **exit 全 0**，Windows Installer 引擎日志记录
+`Product: Codex Account Manager Next -- Installation completed successfully.`。
+需要提权执行（包会写机器级安装器键）。已知残留：`/x` 之后仍会留下 `uninstall.exe`、
+开始菜单快捷方式与一个 HKCU 卸载项。
+
+**原生界面**：由用户在本机交互启动安装后的应用确认界面正常渲染（概览、用量与额度概览、
+AI 领导力、任务/项目/Skills 标签、设置窗口、账号目录面板均可见，且新加入的多平台说明文案
+在真实应用中显示）。本机 agent 会话内无法自动采集该原生画面：该会话中 WebView2 不合成、
+不暴露无障碍树（`msedgewebview2.exe` browser 进程在启动数秒内产生一个
+`SubCode=0x80000003` 转储，UIA 树里只有 `WRY_WEBVIEW` 无子节点，激活并最大化后屏幕截取得到
+“黑底 + 上次合成区域”），因此 `windows/scripts/Capture-NativeVisuals.ps1` 会在等待
+`dashboard-home-tab-tasks` 时超时。该现象与本轮改动无关：应用默认 profile 的 Crashpad 目录里
+存在一个 **2026-09-17** 的同签名转储（当时运行时为 153.0.4234.32），且本机其它 WebView2 宿主
+应用的转储数均为 0。
+
 ## 尚未在 Windows 完成的边界
 
 - Antigravity 的 Google 代码签名校验未在 Windows 侧实现（改为安装根目录 + 同用户可打开进程 +
@@ -83,3 +115,4 @@ cd windows/apps/codexu-tauri/web; npm test; npm run build
 - 未对真实安装的 Antigravity 桌面端做在线额度实测：本机未运行该应用，真实账号登录由用户完成。
 - 非 Codex 平台的交互式终端启动仍只到“隔离环境计划”一层，尚未接入交互式终端。
 - 维护者消息的 Windows 原生通知、首次基线与去重仍未接线。
+- 原生视觉采集工作流需要在一个可正常合成 WebView2 的交互式桌面会话中复跑。
