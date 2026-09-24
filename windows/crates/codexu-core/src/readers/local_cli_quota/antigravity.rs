@@ -1153,6 +1153,117 @@ mod win32 {
         text.encode_utf16().chain(std::iter::once(0)).collect()
     }
 
+    /// A WinHTTP call failure that keeps the stage and the HRESULT, so a caller
+    /// can tell a retryable resend signal from a real failure.
+    #[derive(Debug)]
+    struct WinHttpFailure {
+        stage: &'static str,
+        code: u32,
+    }
+
+    impl WinHttpFailure {
+        /// ERROR_WINHTTP_RESEND_REQUEST (12030): resend the request.
+        fn requests_resend(&self) -> bool {
+            self.code == 0x8007_2EFE
+        }
+    }
+
+    impl std::fmt::Display for WinHttpFailure {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(formatter, "{} failed: 0x{:08X}", self.stage, self.code)
+        }
+    }
+
+    impl std::error::Error for WinHttpFailure {}
+
+    fn call<T>(stage: &'static str, result: windows::core::Result<T>) -> anyhow::Result<T> {
+        result.map_err(|error| {
+            anyhow::Error::new(WinHttpFailure {
+                stage,
+                code: error.code().0 as u32,
+            })
+        })
+    }
+
+    /// One request/response exchange. Headers are set on every attempt so a retry
+    /// is indistinguishable from the first try.
+    unsafe fn exchange_loopback(
+        handle: *mut core::ffi::c_void,
+        request: &LoopbackRequest,
+        content_type: &[u16],
+        protocol: &[u16],
+        csrf: &[u16],
+    ) -> anyhow::Result<LoopbackResponse> {
+        // ADD|REPLACE is "set this header": REPLACE alone fails with
+        // ERROR_WINHTTP_HEADER_NOT_FOUND when the header is not present.
+        let set_header = WINHTTP_ADDREQ_FLAG_ADD | WINHTTP_ADDREQ_FLAG_REPLACE;
+        call(
+            "WinHttpAddRequestHeaders",
+            WinHttpAddRequestHeaders(handle, content_type, set_header),
+        )?;
+        call(
+            "WinHttpAddRequestHeaders",
+            WinHttpAddRequestHeaders(handle, protocol, set_header),
+        )?;
+        call(
+            "WinHttpAddRequestHeaders",
+            WinHttpAddRequestHeaders(handle, csrf, set_header),
+        )?;
+        call(
+            "WinHttpSendRequest",
+            WinHttpSendRequest(
+                handle,
+                None,
+                Some(request.body.as_ptr() as *const core::ffi::c_void),
+                request.body.len() as u32,
+                request.body.len() as u32,
+                0,
+            ),
+        )?;
+        call(
+            "WinHttpReceiveResponse",
+            WinHttpReceiveResponse(handle, std::ptr::null_mut()),
+        )?;
+        let mut status = 0u32;
+        let mut status_length = std::mem::size_of::<u32>() as u32;
+        call(
+            "WinHttpQueryHeaders",
+            WinHttpQueryHeaders(
+                handle,
+                WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                PCWSTR::null(),
+                Some(&mut status as *mut u32 as *mut core::ffi::c_void),
+                &mut status_length,
+                std::ptr::null_mut(),
+            ),
+        )?;
+        let mut body = Vec::new();
+        let mut chunk = [0u8; 8192];
+        loop {
+            let mut read = 0u32;
+            call(
+                "WinHttpReadData",
+                WinHttpReadData(
+                    handle,
+                    chunk.as_mut_ptr() as *mut core::ffi::c_void,
+                    chunk.len() as u32,
+                    &mut read,
+                ),
+            )?;
+            if read == 0 {
+                break;
+            }
+            body.extend_from_slice(&chunk[..read as usize]);
+            if body.len() > MAX_BYTES {
+                break;
+            }
+        }
+        Ok(LoopbackResponse {
+            status: status as u16,
+            body,
+        })
+    }
+
     pub(super) fn native_transport_call(
         request: &LoopbackRequest,
     ) -> anyhow::Result<LoopbackResponse> {
@@ -1205,78 +1316,49 @@ mod win32 {
                 let _ = WinHttpCloseHandle(session);
                 anyhow::bail!("WinHttpOpenRequest failed");
             }
-            let outcome = (|| -> anyhow::Result<LoopbackResponse> {
-                // Redirects, cookies and automatic authentication are never used.
-                let disabled = WINHTTP_DISABLE_REDIRECTS
-                    | WINHTTP_DISABLE_COOKIES
-                    | WINHTTP_DISABLE_AUTHENTICATION;
+            // Redirects, cookies and automatic authentication are never used.
+            let disabled = WINHTTP_DISABLE_REDIRECTS
+                | WINHTTP_DISABLE_COOKIES
+                | WINHTTP_DISABLE_AUTHENTICATION;
+            let _ = WinHttpSetOption(
+                Some(handle),
+                WINHTTP_OPTION_DISABLE_FEATURE,
+                Some(&disabled.to_le_bytes()),
+            );
+            let _ = WinHttpSetTimeouts(handle, 3000, 3000, 3000, 4000);
+            if request.scheme == EndpointScheme::Https {
+                // Self-signed TLS is accepted only for the verified loopback
+                // endpoint whose owning official process was checked first.
+                let security = windows::Win32::Networking::WinHttp::SECURITY_FLAG_IGNORE_UNKNOWN_CA
+                    | windows::Win32::Networking::WinHttp::SECURITY_FLAG_IGNORE_CERT_CN_INVALID
+                    | windows::Win32::Networking::WinHttp::SECURITY_FLAG_IGNORE_CERT_DATE_INVALID
+                    | windows::Win32::Networking::WinHttp::SECURITY_FLAG_IGNORE_CERT_WRONG_USAGE;
                 let _ = WinHttpSetOption(
                     Some(handle),
-                    WINHTTP_OPTION_DISABLE_FEATURE,
-                    Some(&disabled.to_le_bytes()),
+                    WINHTTP_OPTION_SECURITY_FLAGS,
+                    Some(&security.to_le_bytes()),
                 );
-                let _ = WinHttpSetTimeouts(handle, 3000, 3000, 3000, 4000);
-                if request.scheme == EndpointScheme::Https {
-                    // Self-signed TLS is accepted only for the verified loopback
-                    // endpoint whose owning official process was checked first.
-                    let security = windows::Win32::Networking::WinHttp::SECURITY_FLAG_IGNORE_UNKNOWN_CA
-                        | windows::Win32::Networking::WinHttp::SECURITY_FLAG_IGNORE_CERT_CN_INVALID
-                        | windows::Win32::Networking::WinHttp::SECURITY_FLAG_IGNORE_CERT_DATE_INVALID
-                        | windows::Win32::Networking::WinHttp::SECURITY_FLAG_IGNORE_CERT_WRONG_USAGE;
-                    let _ = WinHttpSetOption(
-                        Some(handle),
-                        WINHTTP_OPTION_SECURITY_FLAGS,
-                        Some(&security.to_le_bytes()),
-                    );
-                }
-                // ADD|REPLACE is "set this header": REPLACE alone fails with
-                // ERROR_WINHTTP_HEADER_NOT_FOUND when the header is not present.
-                let set_header = WINHTTP_ADDREQ_FLAG_ADD | WINHTTP_ADDREQ_FLAG_REPLACE;
-                WinHttpAddRequestHeaders(handle, &content_type, set_header)?;
-                WinHttpAddRequestHeaders(handle, &protocol, set_header)?;
-                WinHttpAddRequestHeaders(handle, &csrf, set_header)?;
-                WinHttpSendRequest(
-                    handle,
-                    None,
-                    Some(request.body.as_ptr() as *const core::ffi::c_void),
-                    request.body.len() as u32,
-                    request.body.len() as u32,
-                    0,
-                )?;
-                WinHttpReceiveResponse(handle, std::ptr::null_mut())?;
-                let mut status = 0u32;
-                let mut status_length = std::mem::size_of::<u32>() as u32;
-                WinHttpQueryHeaders(
-                    handle,
-                    WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
-                    PCWSTR::null(),
-                    Some(&mut status as *mut u32 as *mut core::ffi::c_void),
-                    &mut status_length,
-                    std::ptr::null_mut(),
-                )?;
-                let mut body = Vec::new();
-                let mut chunk = [0u8; 8192];
-                loop {
-                    let mut read = 0u32;
-                    WinHttpReadData(
-                        handle,
-                        chunk.as_mut_ptr() as *mut core::ffi::c_void,
-                        chunk.len() as u32,
-                        &mut read,
-                    )?;
-                    if read == 0 {
-                        break;
-                    }
-                    body.extend_from_slice(&chunk[..read as usize]);
-                    if body.len() > MAX_BYTES {
-                        break;
+            }
+            // ERROR_WINHTTP_RESEND_REQUEST is a documented outcome, not a
+            // failure: the server retired the connection and WinHTTP asks for the
+            // request again. Retry once before reporting anything to the caller.
+            let mut attempt = 0u32;
+            let outcome = loop {
+                attempt += 1;
+                match exchange_loopback(handle, request, &content_type, &protocol, &csrf) {
+                    Ok(response) => break Ok(response),
+                    Err(error) => {
+                        let resend = error
+                            .downcast_ref::<WinHttpFailure>()
+                            .map(WinHttpFailure::requests_resend)
+                            .unwrap_or(false);
+                        if resend && attempt < 2 {
+                            continue;
+                        }
+                        break Err(error);
                     }
                 }
-                Ok(LoopbackResponse {
-                    status: status as u16,
-                    body,
-                })
-            })();
+            };
             let _ = WinHttpCloseHandle(handle);
             let _ = WinHttpCloseHandle(connect);
             let _ = WinHttpCloseHandle(session);
@@ -1760,6 +1842,12 @@ mod tests {
         );
     }
 
+    fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+        haystack
+            .windows(needle.len())
+            .position(|window| window == needle)
+    }
+
     #[cfg(windows)]
     #[test]
     fn native_transport_speaks_http_to_a_verified_loopback_endpoint() {
@@ -1769,8 +1857,31 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         let server = std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().expect("accept");
-            let mut buffer = [0u8; 8192];
-            let _ = stream.read(&mut buffer);
+            // Consume the whole request (headers plus the declared body) before
+            // answering. Answering after a single partial read leaves the client
+            // with an unfinished send, and WinHTTP then reports
+            // ERROR_WINHTTP_RESEND_REQUEST instead of the response.
+            let mut request = Vec::new();
+            let mut chunk = [0u8; 1024];
+            loop {
+                let read = stream.read(&mut chunk).expect("read request");
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&chunk[..read]);
+                let Some(headers_end) = find_subsequence(&request, b"\r\n\r\n") else {
+                    continue;
+                };
+                let head = String::from_utf8_lossy(&request[..headers_end]).to_lowercase();
+                let expected = head
+                    .lines()
+                    .find_map(|line| line.strip_prefix("content-length:"))
+                    .and_then(|value| value.trim().parse::<usize>().ok())
+                    .unwrap_or(0);
+                if request.len() >= headers_end + 4 + expected {
+                    break;
+                }
+            }
             let body = br#"{"userStatus":{"email":"synthetic@example.invalid"}}"#;
             let head = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
