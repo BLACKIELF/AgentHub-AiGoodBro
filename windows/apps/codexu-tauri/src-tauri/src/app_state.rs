@@ -9,6 +9,8 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock, Semaphore};
 use tracing::{error, info, warn};
 
+#[cfg(test)]
+use codexu_core::local_cli::LocalCliKind;
 use codexu_core::models::CodexDashboardSnapshot;
 use codexu_core::readers::{
     apply_official_quota, retain_last_verified_quota, CodexAppServerQuotaSnapshot,
@@ -802,7 +804,7 @@ mod tests {
             .try_update_config(|config| {
                 config
                     .profiles
-                    .add("Candidate".into(), dir.join("linked"))?;
+                    .add(LocalCliKind::Codex, "Candidate".into(), dir.join("linked"))?;
                 anyhow::bail!("Synthetic validation failure");
             })
             .await;
@@ -814,7 +816,7 @@ mod tests {
             .try_update_config(|config| {
                 config
                     .profiles
-                    .add("Candidate".into(), dir.join("linked"))?;
+                    .add(LocalCliKind::Codex, "Candidate".into(), dir.join("linked"))?;
                 config.codex_root = dir.join("new-source");
                 Ok(())
             })
@@ -836,7 +838,9 @@ mod tests {
         .unwrap();
         assert!(state
             .try_update_config(|config| {
-                config.profiles.add("Candidate".into(), dir.join("linked"))
+                config
+                    .profiles
+                    .add(LocalCliKind::Codex, "Candidate".into(), dir.join("linked"))
             })
             .await
             .is_err());

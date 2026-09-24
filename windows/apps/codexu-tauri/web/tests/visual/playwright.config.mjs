@@ -1,4 +1,5 @@
 import { defineConfig } from '@playwright/test';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -11,12 +12,20 @@ const repoRoot = path.resolve(here, '..', '..', '..', '..', '..', '..');
 // is Git-ignored at the repository root, so nothing here can be committed.
 const artifactRoot = path.join(repoRoot, '.local-artifacts', 'visual').replace(/\\/g, '/');
 
+// Baselines, actuals and diffs stay under `artifactRoot/snapshots`. Only the
+// per-run scratch directory (traces, videos, error context) is transient, and it
+// is kept in the operating-system temp directory: a repository volume with no
+// usable recycle bin, or a locked file left by an interrupted run, must not be
+// able to break the whole visual suite before a single assertion runs.
+const scratchRoot = (process.env.CODEXU_VISUAL_SCRATCH_ROOT || path.join(os.tmpdir(), 'codexu-visual'))
+    .replace(/\\/g, '/');
+
 const PORT = 1421;
 
 export default defineConfig({
   testDir: here,
   testMatch: '**/*.visual.spec.mjs',
-  outputDir: `${artifactRoot}/test-results`,
+  outputDir: `${scratchRoot}/test-results`,
   fullyParallel: false,
   workers: 1,
   forbidOnly: true,

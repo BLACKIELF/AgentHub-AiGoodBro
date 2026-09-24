@@ -14,12 +14,41 @@ test.beforeEach(async ({ page }) => {
     window.quotaCalls = [];
     window.quotaMode = 'success';
     window.wrongQuotaId = false;
+    window.localQuotaCalls = [];
+    window.localQuotaMode = 'available';
+    const codex = (id, label, selected) => ({ id, label, selected, platform: 'codex', platform_name: 'Codex', can_view_usage: true });
     let selected = '1';
     let rows = [
-      { id: '1', label: 'Synthetic A', selected: true },
-      { id: '2', label: 'Synthetic B', selected: false },
+      codex('1', 'Synthetic A', true),
+      codex('2', 'Synthetic B', false),
     ];
     window.__TAURI_INTERNALS__.invoke = async (cmd, args) => {
+      if (cmd === 'read_profile_local_quota') {
+        window.localQuotaCalls.push(args.id);
+        const base = {
+          profile_id: args.id,
+          platform: 'antigravity',
+          platform_name: 'Antigravity',
+          state: 'available',
+          checked_at: Date.now(),
+          masked_identity: 'u***@example.invalid',
+          plan_label: 'Pro',
+          windows: [{ id: 'model-0', label: 'Gemini', used_percent: 25, remaining_percent: 75, resets_at: Date.now() + 3600000 }],
+          balance: null,
+          balance_currency: null,
+          source_label: 'Antigravity · official desktop quota',
+          message_code: null,
+          period_resets_at: null,
+        };
+        if (window.localQuotaMode === 'unsupported') {
+          return { ...base, state: 'unsupported', windows: [], masked_identity: null, plan_label: null, source_label: 'Gemini CLI · quota not exposed locally', message_code: 'local_cli_quota_not_exposed_by_platform' };
+        }
+        if (window.localQuotaMode === 'cached') {
+          return { ...base, state: 'unavailable', source_label: 'Antigravity · cached IDE quota', message_code: 'local_cli_antigravity_cached_quota', checked_at: Date.now() - 7200000 };
+        }
+        if (window.localQuotaMode === 'fail') throw new Error('Synthetic private failure');
+        return base;
+      }
       if (cmd === 'read_profile_quota') {
         window.quotaCalls.push(args.id);
         if (window.quotaMode === 'fail') throw new Error('Synthetic private failure');
@@ -70,7 +99,12 @@ test.beforeEach(async ({ page }) => {
         rows = rows.map(p => ({ ...p, selected: p.id === a.id }));
       }
       if (a.kind === 'remove') rows = rows.filter(p => p.id !== a.id);
-      if (a.kind === 'link') rows.push({ id: '3', label: a.label, selected: false });
+      if (a.kind === 'link') {
+        const linked = a.platform === 'antigravity'
+          ? { id: '3', label: a.label, selected: false, platform: 'antigravity', platform_name: 'Antigravity', can_view_usage: false }
+          : codex('3', a.label, false);
+        rows.push(linked);
+      }
       return structuredClone(rows);
     };
   });
@@ -310,6 +344,45 @@ test('account details keep the matching alias after reorder and rename', async (
     { kind: 'move', id: '2', delta: -1 },
     { kind: 'rename', id: '2', label: 'Renamed B' },
   ]);
+});
+
+test('a non-Codex account reports its own state and never fabricates a success', async ({ page }) => {
+  const region = panel(page);
+  await region.getByRole('button', { name: 'Link existing directory' }).click();
+  await page.getByRole('combobox', { name: 'Platform' }).selectOption('antigravity');
+  await expect(region).toContainText('cannot be isolated on Windows');
+  await page.getByRole('textbox', { name: 'Alias (not email)' }).fill('Gravity');
+  await region.getByRole('button', { name: 'Choose directory and link' }).click();
+  const third = page.getByTestId('profile-3');
+  await expect(third).toHaveAttribute('data-platform', 'antigravity');
+  // A non-Codex directory can never become the dashboard source.
+  await expect(third.getByRole('button', { name: 'View usage' })).toHaveCount(0);
+
+  await third.getByRole('button', { name: 'Read quota', exact: true }).click();
+  await expect(third).toContainText('Gemini remaining 75%');
+  await expect(third).toContainText('u***@example.invalid');
+  await expect(third).toContainText('official desktop quota');
+  await expect(region).toHaveScreenshot('profiles-local-quota.png');
+
+  await page.evaluate(() => { window.localQuotaMode = 'unsupported'; });
+  await third.getByRole('button', { name: 'Read quota', exact: true }).click();
+  await expect(third).toContainText('Platform does not expose quota');
+  await expect(third).toContainText('stays unknown');
+  await expect(third).not.toContainText('0%');
+  await expect(third).not.toContainText('100%');
+
+  await page.evaluate(() => { window.localQuotaMode = 'cached'; });
+  await third.getByRole('button', { name: 'Read quota', exact: true }).click();
+  await expect(third).toContainText('Unavailable');
+  await expect(third).toContainText('history remaining 75%');
+  await expect(third).toContainText('not the current quota or proof of sign-in');
+  await expect(region).toHaveScreenshot('profiles-local-quota-cached.png');
+
+  await page.evaluate(() => { window.localQuotaMode = 'fail'; });
+  await third.getByRole('button', { name: 'Read quota', exact: true }).click();
+  await expect(third).toContainText('Read failed');
+  expect(await page.evaluate(() => window.localQuotaCalls)).toEqual(['3', '3', '3', '3']);
+  expect(await page.evaluate(() => window.quotaCalls)).toEqual([]);
 });
 
 test('malformed official credits do not erase the previous observation', async ({ page }) => {

@@ -79,7 +79,7 @@ try {
     $syntheticCompiler.windows_sdk_source -eq 'parameter'
   ) 'An explicit Windows SDK root did not record its discovery source.'
 } finally {
-  Remove-Item -LiteralPath $sdkFixtureRoot -Recurse -Force
+  [IO.Directory]::Delete($sdkFixtureRoot, $true)
 }
 
 function New-SyntheticPrerequisites {
@@ -311,7 +311,7 @@ try {
 Assert-True $invalidRejected 'An output path outside .local-artifacts was accepted.'
 Assert-True (-not (Test-Path -LiteralPath $outsideRoot)) 'The rejected output path was created.'
 
-Remove-Item -LiteralPath $preflightResult -Force
-Remove-Item -LiteralPath $blockedPreflightResult -Force
+[IO.File]::Delete($preflightResult)
+[IO.File]::Delete($blockedPreflightResult)
 
 Write-Output 'PASS: native visual capture preflight and local-artifact boundary'

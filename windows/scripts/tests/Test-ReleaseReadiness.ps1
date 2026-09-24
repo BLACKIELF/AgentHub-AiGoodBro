@@ -55,7 +55,7 @@ try {
     [IO.File]::WriteAllText($syntheticLeftoverPath, 'synthetic residual fixture')
     $replaceLeftovers = @(Get-ChildItem -LiteralPath $fixture -File | Where-Object { $_.Name -match $replaceResidualPattern })
     Assert-True ($replaceLeftovers.Count -eq 1 -and $replaceLeftovers[0].Name -eq $syntheticLeftoverName) ('Residual detection missed its synthetic file or included the report: ' + (@($replaceLeftovers | ForEach-Object { $_.Name }) -join ', '))
-    Remove-Item -LiteralPath $syntheticLeftoverPath -Force
+    [IO.File]::Delete($syntheticLeftoverPath)
     $replaceLeftovers = @(Get-ChildItem -LiteralPath $fixture -File | Where-Object { $_.Name -match $replaceResidualPattern })
     Assert-True ($replaceLeftovers.Count -eq 0) ('Residual detection did not return to empty after fixture cleanup: ' + (@($replaceLeftovers | ForEach-Object { $_.Name }) -join ', '))
 
@@ -123,6 +123,6 @@ try {
     Assert-True ($null -eq (Select-FreshBundle -Files @($old, $wrong, $arm) -ReleaseVersion $version -StartedUtc $start)) 'Stale, wrong-version or wrong-architecture package was selected.'
     Assert-True ((Select-FreshBundle -Files @($old, $wrong, $arm, $fresh) -ReleaseVersion $version -StartedUtc $start).LastWriteTimeUtc -eq $fresh.LastWriteTimeUtc) 'The current matching bundle was not selected.'
 } finally {
-    Remove-Item -LiteralPath $fixture -Recurse -Force
+    [IO.Directory]::Delete($fixture, $true)
 }
 Write-Host 'PASS: release readiness ordering, two hosts, fail-fast reports, hashes and fresh bundle selection.'
