@@ -45,11 +45,12 @@ Windows 版把 macOS 的内核级校验逐条映射：
 
 | macOS | Windows |
 | --- | --- |
-| `proc_pidpath` + bundle id | `CreateToolhelp32Snapshot` + `QueryFullProcessImageNameW`，要求 `language_server*.exe` 且位于 `Antigravity` 安装根 |
-| `pbi_uid == geteuid()` | `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)` 成功（他人进程在无调试权限时失败） |
+| `proc_pidpath` + bundle id | `CreateToolhelp32Snapshot` + `QueryFullProcessImageNameW`，要求 `language_server*.exe` 且位于 `Antigravity` 安装根（按路径分量比较，非字符串前缀） |
+| `pbi_uid == geteuid()` | 进程令牌的用户 SID 与本进程用 `EqualSid` 比较（`OpenProcess` 成功不等于同用户，提权调用方也能打开他人进程） |
 | `pbi_start_tvsec` | `GetProcessTimes` 创建的 100ns 计数换算秒 |
-| `lsof` 监听端口 | `GetExtendedTcpTable(TCP_TABLE_OWNER_PID_LISTENER)`，只接受该 PID 拥有的 `127.0.0.1` 端口 |
+| `lsof` 监听端口 | `GetExtendedTcpTable(TCP_TABLE_OWNER_PID_LISTENER)`，只接受该 PID 拥有的 `127.0.0.1` 或 IPv4 通配监听 |
 | 命令行 `--csrf_token` | `NtQueryInformationProcess(ProcessCommandLineInformation)` |
+| 代码签名校验 | `WinVerifyTrust`，内嵌签名与目录（catalog）签名两种形式都接受，要求受信任且签发者含 `google` |
 | `URLSession` + 自签名信任 | WinHTTP，`NO_PROXY`、禁重定向／Cookie／自动认证，仅对已验证环回端点放宽证书 |
 
 行为与 macOS 一致：请求前后各读一次 `GetUserStatus` 核对账号，不一致直接返回
@@ -57,12 +58,17 @@ Windows 版把 macOS 的内核级校验逐条映射：
 **不用历史缓存替代当前账号**；仅当没有任何运行端点时才读
 `User/globalStorage/state.vscdb`（`rusqlite` 只读 + 最小 protobuf 解析），且结果标记为
 历史缓存（`state = unavailable`、来源 `Antigravity · cached IDE quota`），不构成额度或登录证明。
+端点在使用前会**按当前**进程表与端口表重新核对一次（不复用发现阶段的快照），CSRF 令牌在
+交换前后各核对一次，避免 PID 复用或端口迁移后把令牌发给错误的进程。
 
 ## 界面
 
 - 账号卡片显示平台徽标；关联目录时可选择平台，并显示该平台的隔离说明。
 - 非 Codex 账号使用独立的只读额度区块：手动读取、逐行隔离、失败可重试。
 - 历史缓存与不支持状态使用警示色和明确文案，`data-state` 属性可供测试断言。
+- 读数的“新鲜度”不只由 `state` 决定：超过 300 秒、时间戳在未来、或窗口都已过重置时刻时，
+  即使平台报 `available` 也按历史展示（灰条 + “历史剩余/历史已用” + 过期说明），
+  `data-live` 属性可供测试断言。
 - 非 Codex 目录不会出现在“查看用量”入口里：只有 Codex 目录可以成为仪表盘数据源。
 
 ## 验证入口
@@ -80,7 +86,8 @@ cd windows/apps/codexu-tauri/web; npm test; npm run build
 
 发布入口 `windows/scripts/Invoke-ReleaseReadiness.ps1 -Version 9.6.9` **18/18 步通过**，
 报告 `dirty=false`、`source_unchanged=true`，宿主机 Windows PowerShell 5.1.26100.7920 与
-PowerShell 7.6.5。Rust 工作区 129 项测试、Web 36 项契约、视觉基线 + 复跑各 38/38 通过。
+PowerShell 7.6.5。Rust 工作区 138 项测试、Web 42 项契约、视觉基线 + 复跑各 38/38 通过。
+复审修复与其实机验证另见 `WINDOWS_REVIEW_FIXES_0924v2.md`。
 
 两个安装包（MSI 与 NSIS）由该入口的 `package` 步骤产出，连同 `.sha256` 与 `manifest.json`
 一起写在 `.local-artifacts/windows-release-readiness/<run-id>/packages/`。**具体摘要不写进仓库**：
@@ -112,9 +119,8 @@ AI 领导力、任务/项目/Skills 标签、设置窗口、账号目录面板�
 
 ## 尚未在 Windows 完成的边界
 
-- Antigravity 的 Google 代码签名校验未在 Windows 侧实现（改为安装根目录 + 同用户可打开进程 +
-  端口归属三重校验）；Authenticode 验证需要额外的信任链实现。
 - 未对真实安装的 Antigravity 桌面端做在线额度实测：本机未运行该应用，真实账号登录由用户完成。
+  代码签名、进程归属、端口归属与安装根校验都已在实机上验证（见 0924v2）。
 - 非 Codex 平台的交互式终端启动仍只到“隔离环境计划”一层，尚未接入交互式终端。
 - 维护者消息的 Windows 原生通知、首次基线与去重仍未接线。
 - 原生视觉采集工作流需要在一个可正常合成 WebView2 的交互式桌面会话中复跑。
