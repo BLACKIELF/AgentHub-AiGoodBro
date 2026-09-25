@@ -23,7 +23,7 @@ enum CodexCredentialAccessGate {
     }
 }
 
-private enum CodexLoginError: LocalizedError {
+enum CodexLoginError: LocalizedError {
     case browserUnavailable
     case cancelled
     case credentialsUnavailable
@@ -267,226 +267,193 @@ enum ChromeProfileBrowser {
 
 private final class CodexLoginSession {
     private let profile: CodexProfile
+    private let browserChoice: CodexDeviceBrowserChoice
     private let executableURL: URL
     private let fileManager: FileManager
-    private let stagingHomeURL: URL
+    let stagingHomeURL: URL
     private let completion: (Result<Void, Error>) -> Void
-    private let queue = DispatchQueue(label: "com.blackielf.codex-account-manager-next.account-login", qos: .userInitiated)
-    private let readerQueue = DispatchQueue(label: "com.blackielf.codex-account-manager-next.account-login.reader", qos: .utility)
-    private var state: CodexLoginProtocolState = .initializing
-    private var process: Process?
-    private var inputHandle: FileHandle?
-    private var outputHandle: FileHandle?
-    private var outputBuffer = Data()
-    private var timeout: DispatchWorkItem?
-    private var isFinished = false
-    private var pendingCompletion: Result<Void, Error>?
-    private var cleanupRetry: DispatchWorkItem?
-    private var cleanupRetryDelay: TimeInterval = 1
-    private let stopProcess: (Process) -> Bool
+    private let onPhaseChange: (CodexDeviceLoginPhase) -> Void
     private let completionQueue: DispatchQueue
+    private let browserOpener: ((CodexProfile, URL, CodexDeviceBrowserChoice) -> Bool)?
+    private let queue = DispatchQueue(label: "com.blackielf.codex-account-manager-next.account-login", qos: .userInitiated)
+    private let worker = DispatchQueue(label: "com.blackielf.codex-account-manager-next.account-login.process", qos: .utility)
+    private var parser = CodexDeviceCodeParser()
+    private var authorization: CodexDeviceAuthorization?
+    private var cancellation: CodexLoginError?
+    private var browserOpening = false
+    private var isFinished = false
+    private var started = false
+    private var startedAt = Date()
 
     init(
         profile: CodexProfile,
+        browserChoice: CodexDeviceBrowserChoice,
         executableURL: URL,
         fileManager: FileManager = .default,
-        stopProcess: @escaping (Process) -> Bool = CodexLoginSession.stopChild,
         completionQueue: DispatchQueue = .main,
+        browserOpener: ((CodexProfile, URL, CodexDeviceBrowserChoice) -> Bool)? = nil,
+        onPhaseChange: @escaping (CodexDeviceLoginPhase) -> Void = { _ in },
         completion: @escaping (Result<Void, Error>) -> Void
     ) throws {
+        guard !profile.isSystemProfile else { throw CodexLoginError.identityMismatch }
         self.profile = profile
+        self.browserChoice = browserChoice
         self.executableURL = executableURL
         self.fileManager = fileManager
         self.completion = completion
-        self.stopProcess = stopProcess
         self.completionQueue = completionQueue
+        self.onPhaseChange = onPhaseChange
+        self.browserOpener = browserOpener
         stagingHomeURL = fileManager.temporaryDirectory
             .appendingPathComponent("camnext-login-\(UUID().uuidString)", isDirectory: true)
-        try fileManager.createDirectory(
-            at: stagingHomeURL,
-            withIntermediateDirectories: true,
-            attributes: [.posixPermissions: 0o700]
-        )
+        try fileManager.createDirectory(at: stagingHomeURL, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: stagingHomeURL.path)
     }
 
     func start() throws {
-        queue.async { self.startOnQueue() }
+        queue.async {
+            guard !self.started, !self.isFinished else { return }
+            self.started = true
+            self.startedAt = Date()
+            self.parser = CodexDeviceCodeParser(startedAt: self.startedAt)
+            self.worker.async { self.run() }
+        }
     }
 
-    private func startOnQueue() {
-        guard !isFinished else { return }
-        let process = Process()
-        process.executableURL = executableURL
-        process.arguments = ["app-server", "-c", "cli_auth_credentials_store=\"file\"", "--stdio"]
+    private func run() {
         var environment = ProcessInfo.processInfo.environment
         for key in ["OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN", "CODEX_THREAD_ID", "CODEX_INTERNAL_ORIGINATOR_OVERRIDE"] {
             environment.removeValue(forKey: key)
         }
         environment["CODEX_HOME"] = stagingHomeURL.path
-        process.environment = environment
-        let input = Pipe()
-        let output = Pipe()
-        process.standardInput = input
-        process.standardOutput = output
-        process.standardError = FileHandle.nullDevice
-        process.terminationHandler = { [weak self] _ in
-            self?.queue.async {
-                guard let self, !self.isFinished else { return }
-                self.finish(.failure(CodexLoginError.message(WidgetLanguage.storedOrAutomatic().text("官方登录服务已退出", "The sign-in service has exited."))))
+        environment["RUST_LOG"] = "off"
+        let result: Result<Void, Error>
+        do {
+            _ = try BoundedLocalProcess.run(
+                executable: executableURL,
+                arguments: ["login", "--device-auth", "-c", "cli_auth_credentials_store=\"file\""],
+                environment: environment, maximumOutputBytes: CodexDeviceCodeParser.maximumBytes, timeout: 15 * 60,
+                stream: { data in
+                    try self.queue.sync {
+                        guard self.cancellation == nil else { throw CodexLoginError.cancelled }
+                        try self.parser.consume(data)
+                        if self.authorization == nil, let authorization = self.parser.authorization {
+                            self.authorization = authorization
+                            self.emit(.waiting(authorization, .opening))
+                            self.openPageOnQueue()
+                        }
+                    }
+                },
+                isCancelled: {
+                    self.queue.sync {
+                        let deadline = self.authorization?.expiresAt ?? self.startedAt.addingTimeInterval(120)
+                        if self.cancellation == nil, Date() >= deadline {
+                            self.cancellation = .timedOut
+                            self.authorization = nil
+                            self.emit(.cancelling)
+                        }
+                        return self.cancellation != nil
+                    }
+                },
+                includeStandardError: true, awaitCleanup: true
+            )
+            result = .success(())
+        } catch {
+            // Raw CLI text and generic system errors never reach the UI or logs.
+            if error is CodexDeviceLoginFailure {
+                result = .failure(CodexDeviceLoginFailure.invalidResponse)
+            } else if case BoundedLocalProcessError.outputTooLarge = error {
+                result = .failure(CodexDeviceLoginFailure.invalidResponse)
+            } else {
+                result = .failure(CodexDeviceLoginFailure.unavailable)
             }
         }
-        do {
-            try process.run()
-            self.process = process
-            inputHandle = input.fileHandleForWriting
-            outputHandle = output.fileHandleForReading
-            try startReadLoop(output.fileHandleForReading)
-            guard
-                writeJSON([
-                    "id": 1,
-                    "method": "initialize",
-                    "params": [
-                        "clientInfo": [
-                            "name": "codex-account-manager-next",
-                            "title": "Codex Account Manager Next",
-                            "version": Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0",
-                        ],
-                        "capabilities": ["experimentalApi": false, "optOutNotificationMethods": []],
-                    ],
-                ])
-            else { throw CodexLoginError.message(WidgetLanguage.storedOrAutomatic().text("无法连接官方登录服务", "Could not connect to the sign-in service.")) }
-        } catch {
-            finish(.failure(error))
-            return
-        }
-
-        let timeout = DispatchWorkItem { [weak self] in
-            guard let self, !self.isFinished else { return }
-            self.sendCancelIfPossible()
-            self.finish(.failure(CodexLoginError.timedOut))
-        }
-        self.timeout = timeout
-        queue.asyncAfter(deadline: .now() + 10 * 60, execute: timeout)
+        // run returns only after its owned process group is gone, including cancellation.
+        queue.async { self.completeAfterChildStops(result) }
     }
 
     func cancel() {
-        queue.async { [weak self] in
-            guard let self, !self.isFinished else { return }
-            self.sendCancelIfPossible()
-            self.finish(.failure(CodexLoginError.cancelled))
+        queue.async {
+            guard !self.isFinished else { return }
+            self.cancellation = .cancelled
+            self.authorization = nil
+            self.emit(.cancelling)
         }
     }
 
-    private func startReadLoop(_ handle: FileHandle) throws {
-        let descriptor = try POSIXPipeReader.duplicateDescriptor(for: handle)
-        readerQueue.async { [weak self] in
-            defer { Darwin.close(descriptor) }
-            while let self {
-                let chunk: Data
-                do {
-                    guard let data = try POSIXPipeReader.readChunk(from: descriptor, maximumBytes: 64 * 1_024)
-                    else { break }
-                    chunk = data
-                } catch {
-                    break
-                }
-                var accepted = false
-                self.queue.sync {
-                    guard !self.isFinished else { return }
-                    accepted = self.consume(chunk)
-                }
-                if !accepted { break }
-            }
+    func reopenPage() {
+        queue.async {
+            guard !self.isFinished, self.cancellation == nil, !self.browserOpening,
+                let authorization = self.authorization, authorization.isValid()
+            else { return }
+            self.emit(.waiting(authorization, .opening))
+            self.openPageOnQueue()
         }
     }
 
-    private func consume(_ data: Data) -> Bool {
-        let maximumBytes = 1 * 1_024 * 1_024
-        guard !data.isEmpty,
-            data.count <= maximumBytes,
-            outputBuffer.count <= maximumBytes - data.count
-        else {
-            finish(.failure(CodexLoginError.message(WidgetLanguage.storedOrAutomatic().text("官方登录响应过大", "The sign-in response exceeded the safety limit."))))
-            return false
-        }
-        outputBuffer.append(data)
-        while let newline = outputBuffer.firstIndex(of: 10) {
-            let line = outputBuffer.subdata(in: outputBuffer.startIndex..<newline)
-            outputBuffer.removeSubrange(outputBuffer.startIndex...newline)
-            guard !line.isEmpty,
-                let object = try? JSONSerialization.jsonObject(with: line) as? [String: Any]
-            else { continue }
-            handle(CodexLoginProtocolParser.event(from: object, state: state))
-            if isFinished { return false }
-        }
-        return true
-    }
-
-    private func handle(_ event: CodexLoginProtocolEvent) {
-        switch event {
-        case .none:
-            break
-        case .initialized:
-            state = .starting
-            guard writeJSON(["method": "initialized"]),
-                writeJSON(["id": 2, "method": "account/login/start", "params": ["type": "chatgpt"]])
-            else { return finish(.failure(CodexLoginError.message(WidgetLanguage.storedOrAutomatic().text("无法启动官方登录", "Could not start sign-in.")))) }
-        case .loginStarted(let loginID, let authURL):
-            state = .waiting(loginID: loginID)
-            guard let url = URL(string: authURL), url.scheme?.lowercased() == "https" else {
-                return finish(.failure(CodexLoginError.browserUnavailable))
-            }
-            DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
-                let binding =
-                    self.profile.chromeProfile
-                    ?? ChromeProfileBrowser.matchingProfile(for: self.profile.lastSnapshot?.email)
-                let managedUserDataDirectory =
-                    self.profile.isSystemProfile || binding != nil
-                    ? nil
-                    : self.profile.codexHomeURL.appendingPathComponent("chrome-session", isDirectory: true)
+    private func openPageOnQueue() {
+        guard !isFinished, cancellation == nil, !browserOpening,
+            let authorization, authorization.isValid()
+        else { return }
+        browserOpening = true
+        let choice = browserChoice
+        let browserQueue = browserOpener == nil ? DispatchQueue.main : completionQueue
+        browserQueue.async {
+            guard self.queue.sync(execute: { !self.isFinished && self.cancellation == nil && authorization.isValid() }) else { return }
+            let opened: Bool
+            if let browserOpener = self.browserOpener {
+                opened = browserOpener(self.profile, authorization.url, choice)
+            } else {
+                let plan = CodexDeviceBrowserRouting.launchPlan(choice: choice, profile: self.profile)
                 do {
                     try ChromeProfileBrowser.open(
-                        url,
-                        binding: binding,
-                        managedUserDataDirectory: managedUserDataDirectory
-                    )
-                } catch {
-                    self.queue.async {
-                        guard !self.isFinished else { return }
-                        self.finish(.failure(error))
-                    }
-                }
+                        authorization.url, binding: plan.binding, managedUserDataDirectory: plan.managedUserDataDirectory)
+                    opened = true
+                } catch { opened = false }
             }
-        case .loginCompleted:
-            state = .readingAccount
-            guard writeJSON(["id": 3, "method": "account/read", "params": ["refreshToken": false]])
-            else {
-                return finish(
-                    .failure(CodexLoginError.message(WidgetLanguage.storedOrAutomatic().text("登录完成，但无法读取账号身份", "Sign-in completed, but the account identity could not be read."))))
+            self.queue.async {
+                self.browserOpening = false
+                guard !self.isFinished, self.cancellation == nil, authorization.isValid() else { return }
+                self.emit(.waiting(authorization, opened ? .opened : .unavailable))
             }
-        case .authenticated(let email):
-            state = .finished
-            promoteCredentials(authenticatedEmail: email)
-        case .failed(let message):
-            state = .finished
-            finish(.failure(CodexLoginError.message(message)))
         }
     }
 
-    private func promoteCredentials(authenticatedEmail: String) {
-        do {
-            try Self.promoteCredentials(
-                from: stagingHomeURL,
-                to: profile,
-                authenticatedEmail: authenticatedEmail,
-                fileManager: fileManager
-            )
-            finish(.success(()))
-        } catch {
-            finish(.failure(error))
+    private func emit(_ phase: CodexDeviceLoginPhase) {
+        completionQueue.async { [onPhaseChange] in onPhaseChange(phase) }
+    }
+
+    private func completeAfterChildStops(_ processResult: Result<Void, Error>) {
+        guard !isFinished else { return }
+        var result = processResult
+        if let cancellation {
+            result = .failure(cancellation)
+        } else if case .success = result {
+            parser.finish()
+            do {
+                guard parser.authorization != nil else { throw CodexDeviceLoginFailure.invalidResponse }
+                emit(.verifying)
+                let authURL = stagingHomeURL.appendingPathComponent("auth.json")
+                guard let data = try? DispatchParticipationSync.readBoundedRegularFile(authURL, maximumBytes: 1024 * 1024),
+                    let identity = CodexOfficialProfileReader.credentialIdentity(fromAuthData: data)
+                else { throw CodexLoginError.credentialsUnavailable }
+                try Self.promoteCredentials(from: stagingHomeURL, to: profile, authenticatedEmail: identity.email, fileManager: fileManager)
+            } catch { result = .failure(error) }
         }
+        isFinished = true
+        authorization = nil
+        parser = CodexDeviceCodeParser()
+        finishCleanup(result)
+    }
+
+    private func finishCleanup(_ result: Result<Void, Error>) {
+        do {
+            if fileManager.fileExists(atPath: stagingHomeURL.path) { try fileManager.removeItem(at: stagingHomeURL) }
+        } catch {
+            queue.asyncAfter(deadline: .now() + 1) { self.finishCleanup(result) }
+            return
+        }
+        completionQueue.async { [completion] in completion(result) }
     }
 
     fileprivate static func promoteCredentials(
@@ -555,131 +522,172 @@ private final class CodexLoginSession {
         return normalized.isEmpty ? nil : normalized
     }
 
-    private func sendCancelIfPossible() {
-        guard case .waiting(let loginID) = state else {
-            state = .finished
-            return
-        }
-        _ = writeJSON(["id": 4, "method": "account/login/cancel", "params": ["loginId": loginID]])
-        state = .finished
-    }
-
-    private func writeJSON(_ object: [String: Any]) -> Bool {
-        guard let inputHandle,
-            let data = try? JSONSerialization.data(withJSONObject: object)
-        else { return false }
+    static func deviceSessionSelfTest() -> Bool {
+        let callbacks = DispatchQueue(label: "next.device-session-test.callback")
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("device-session-fixture-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
         do {
-            try inputHandle.write(contentsOf: data)
-            try inputHandle.write(contentsOf: Data("\n".utf8))
+            let target = root.appendingPathComponent("profile")
+            try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+            let authURL = target.appendingPathComponent("auth.json")
+            let original = Data("original-fixture-credentials".utf8)
+            try original.write(to: authURL)
+            let profile = CodexProfile(id: "synthetic-A", name: "Demo A", codexHomePath: target.path, isSystemProfile: false, createdAt: Date())
+            for scenario in ["cancel", "expire", "early-exit", "missing-credentials"] {
+                let executable = root.appendingPathComponent(scenario)
+                let lifetime = scenario == "expire" ? "1 second" : "15 minutes"
+                let ending = scenario == "early-exit" ? "exit 7" : scenario == "missing-credentials" ? "exit 0" : "exec /bin/sleep 30"
+                let script = "#!/bin/sh\nprintf '%s\\n' 'https://auth.openai.com/codex/device' 'Enter this one-time code (expires in \(lifetime))' 'DEMO-ONLY' >&2\n\(ending)\n"
+                try script.write(to: executable, atomically: true, encoding: .utf8)
+                try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
+                let ready = DispatchSemaphore(value: 0)
+                let completed = DispatchSemaphore(value: 0)
+                var openCount = 0
+                var wrongTarget = false
+                var completionError: Error?
+                let session = try CodexLoginSession(
+                    profile: profile, browserChoice: .dedicatedChrome, executableURL: executable, completionQueue: callbacks,
+                    browserOpener: { frozenProfile, url, choice in
+                        openCount += 1
+                        wrongTarget =
+                            wrongTarget || frozenProfile.id != "synthetic-A" || url != CodexDeviceCodeParser.officialURL
+                            || choice != .dedicatedChrome
+                        return false
+                    },
+                    onPhaseChange: { phase in
+                        if case .waiting(_, .unavailable) = phase { ready.signal() }
+                    },
+                    completion: { result in
+                        if case .failure(let error) = result { completionError = error }
+                        completed.signal()
+                    }
+                )
+                try session.start()
+                if scenario == "cancel" {
+                    guard ready.wait(timeout: .now() + 3) == .success else {
+                        session.cancel()
+                        return false
+                    }
+                    session.reopenPage()
+                    guard ready.wait(timeout: .now() + 3) == .success else {
+                        session.cancel()
+                        return false
+                    }
+                    session.reopenPage()
+                    guard ready.wait(timeout: .now() + 3) == .success,
+                        callbacks.sync(execute: { openCount == 3 && !wrongTarget })
+                    else {
+                        session.cancel()
+                        return false
+                    }
+                    session.cancel()
+                }
+                guard completed.wait(timeout: .now() + 5) == .success,
+                    callbacks.sync(execute: { completionError != nil }),
+                    !FileManager.default.fileExists(atPath: session.stagingHomeURL.path),
+                    try Data(contentsOf: authURL) == original
+                else {
+                    session.cancel()
+                    return false
+                }
+                if scenario == "expire" {
+                    guard case CodexLoginError.timedOut? = callbacks.sync(execute: { completionError as? CodexLoginError }) else { return false }
+                }
+            }
+            let boundProfile = CodexProfile(
+                id: "synthetic-A", name: "Demo A", codexHomePath: target.path, isSystemProfile: false, createdAt: Date(),
+                chromeProfile: ChromeProfileBinding(directoryName: "Default", displayName: "Personal"))
+            guard let personalBinding = boundProfile.chromeProfile else { return false }
+            let dedicatedPlan = CodexDeviceBrowserRouting.launchPlan(choice: .dedicatedChrome, profile: boundProfile)
+            let defaultPlan = CodexDeviceBrowserRouting.launchPlan(choice: .systemDefault, profile: boundProfile)
+            guard dedicatedPlan.binding == nil,
+                dedicatedPlan.managedUserDataDirectory == boundProfile.codexHomeURL.appendingPathComponent("chrome-session", isDirectory: true),
+                defaultPlan.binding == nil,
+                defaultPlan.managedUserDataDirectory == nil,
+                personalBinding.directoryName == "Default"
+            else { return false }
+            var frozenChoices: [CodexDeviceBrowserChoice] = []
+            let freezeExecutable = root.appendingPathComponent("freeze")
+            try "#!/bin/sh\nprintf '%s\\n' 'https://auth.openai.com/codex/device' 'Enter this one-time code (expires in 15 minutes)' 'DEMO-ONLY' >&2\nexec /bin/sleep 30\n"
+                .write(to: freezeExecutable, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: freezeExecutable.path)
+            let freezeReady = DispatchSemaphore(value: 0)
+            let freezeDone = DispatchSemaphore(value: 0)
+            let freezeSession = try CodexLoginSession(
+                profile: boundProfile, browserChoice: .systemDefault, executableURL: freezeExecutable, completionQueue: callbacks,
+                browserOpener: { _, _, choice in
+                    frozenChoices.append(choice)
+                    return true
+                },
+                onPhaseChange: { phase in
+                    if case .waiting(_, .opened) = phase { freezeReady.signal() }
+                },
+                completion: { _ in freezeDone.signal() }
+            )
+            try freezeSession.start()
+            guard freezeReady.wait(timeout: .now() + 3) == .success else {
+                freezeSession.cancel()
+                return false
+            }
+            freezeSession.reopenPage()
+            guard freezeReady.wait(timeout: .now() + 3) == .success else {
+                freezeSession.cancel()
+                return false
+            }
+            freezeSession.cancel()
+            guard freezeDone.wait(timeout: .now() + 5) == .success,
+                callbacks.sync(execute: { frozenChoices }) == [.systemDefault, .systemDefault]
+            else { return false }
+            print("device session cancellation, expiry, browser retry, exit and credential-preservation self-test passed")
             return true
-        } catch {
-            return false
-        }
-    }
-
-    private func finish(_ result: Result<Void, Error>) {
-        guard !isFinished else { return }
-        isFinished = true
-        state = .finished
-        timeout?.cancel()
-        timeout = nil
-        pendingCompletion = result
-        completeAfterChildStops()
-    }
-
-    private func completeAfterChildStops() {
-        guard let result = pendingCompletion else { return }
-        guard cleanup() else {
-            guard cleanupRetry == nil else { return }
-            // Keep the session and its reservation alive until the actual child
-            // exits. A failed terminate/kill must never become "sign-in done".
-            let retry = DispatchWorkItem { [self] in
-                cleanupRetry = nil
-                completeAfterChildStops()
-            }
-            cleanupRetry = retry
-            queue.asyncAfter(deadline: .now() + cleanupRetryDelay, execute: retry)
-            cleanupRetryDelay = min(cleanupRetryDelay * 2, 30)
-            return
-        }
-        pendingCompletion = nil
-        cleanupRetry?.cancel()
-        cleanupRetry = nil
-        completionQueue.async { [completion] in completion(result) }
-    }
-
-    private func cleanup() -> Bool {
-        try? inputHandle?.close()
-        try? outputHandle?.close()
-        inputHandle = nil
-        outputHandle = nil
-        outputBuffer.removeAll(keepingCapacity: false)
-        if let process, !stopProcess(process) { return false }
-        process = nil
-        try? fileManager.removeItem(at: stagingHomeURL)
-        return true
-    }
-
-    private static func stopChild(_ loginProcess: Process) -> Bool {
-        // Reap only this session's child before removing its isolated files.
-        // Otherwise a late OAuth callback could recreate credentials after cleanup.
-        if loginProcess.isRunning {
-            loginProcess.terminate()
-            let gracefulDeadline = Date().addingTimeInterval(1)
-            while loginProcess.isRunning && Date() < gracefulDeadline { Thread.sleep(forTimeInterval: 0.02) }
-            if loginProcess.isRunning {
-                Darwin.kill(loginProcess.processIdentifier, SIGKILL)
-                let finalDeadline = Date().addingTimeInterval(1)
-                while loginProcess.isRunning && Date() < finalDeadline { Thread.sleep(forTimeInterval: 0.02) }
-            }
-        }
-        return !loginProcess.isRunning
+        } catch { return false }
     }
 
     static func cleanupSelfTest() -> Bool {
         let callbacks = DispatchQueue(label: "next.login-cleanup-test.callback")
         let completed = DispatchSemaphore(value: 0)
-        let profile = CodexProfile(id: "cleanup-fixture", name: "Fixture", codexHomePath: "/nonexistent-next-test", isSystemProfile: false, createdAt: Date())
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("device-login-cleanup-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
         do {
-            var stopped = false
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            let executable = root.appendingPathComponent("fixture")
+            let pidFile = root.appendingPathComponent("pid")
+            let script = "#!/bin/sh\nprintf '%s' $$ > '\(pidFile.path)'\nexec /bin/sleep 30\n"
+            try script.write(to: executable, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
+            let profile = CodexProfile(
+                id: "cleanup-fixture", name: "Fixture", codexHomePath: root.appendingPathComponent("profile").path, isSystemProfile: false, createdAt: Date())
             var count = 0
             let session = try CodexLoginSession(
-                profile: profile, executableURL: URL(fileURLWithPath: "/nonexistent-next-test"),
-                stopProcess: { _ in stopped }, completionQueue: callbacks,
-                completion: { _ in
-                    count += 1
-                    completed.signal()
-                })
-            let retained = session.queue.sync { () -> Bool in
-                session.process = Process()
-                session.finish(.failure(CodexLoginError.cancelled))
-                return session.process != nil && session.pendingCompletion != nil
-                    && FileManager.default.fileExists(atPath: session.stagingHomeURL.path)
+                profile: profile, browserChoice: .systemDefault, executableURL: executable, completionQueue: callbacks
+            ) { _ in
+                count += 1
+                completed.signal()
             }
-            guard retained, completed.wait(timeout: .now() + 0.02) == .timedOut else { return false }
-            session.queue.sync {
-                session.cleanupRetry?.cancel()
-                session.cleanupRetry = nil
-                stopped = true
-                session.completeAfterChildStops()
-                session.finish(.failure(CodexLoginError.timedOut))
+            try session.start()
+            let deadline = Date().addingTimeInterval(2)
+            while !FileManager.default.fileExists(atPath: pidFile.path), Date() < deadline { Thread.sleep(forTimeInterval: 0.01) }
+            guard let pid = Int32(try String(contentsOf: pidFile, encoding: .utf8)), Darwin.kill(pid, 0) == 0 else {
+                session.cancel()
+                return false
             }
-            guard completed.wait(timeout: .now() + 2) == .success,
+            session.cancel()
+            guard completed.wait(timeout: .now() + 5) == .success,
                 callbacks.sync(execute: { count }) == 1,
+                Darwin.kill(pid, 0) != 0, errno == ESRCH,
                 !FileManager.default.fileExists(atPath: session.stagingHomeURL.path)
             else { return false }
-            // A start failure uses the same completion path and cleans staging.
             let failed = DispatchSemaphore(value: 0)
             let missing = try CodexLoginSession(
-                profile: profile, executableURL: URL(fileURLWithPath: "/nonexistent-next-test"),
-                completionQueue: callbacks,
-                completion: { result in if case .failure = result { failed.signal() } })
+                profile: profile, browserChoice: .dedicatedChrome, executableURL: root.appendingPathComponent("missing"),
+                completionQueue: callbacks
+            ) { result in
+                if case .failure = result { failed.signal() }
+            }
             try missing.start()
-            return failed.wait(timeout: .now() + 2) == .success
-                && !FileManager.default.fileExists(atPath: missing.stagingHomeURL.path)
+            return failed.wait(timeout: .now() + 3) == .success && !FileManager.default.fileExists(atPath: missing.stagingHomeURL.path)
         } catch { return false }
     }
-
 }
 
 private enum CodexWarmUpFailure: LocalizedError, Equatable {
@@ -1143,6 +1151,8 @@ final class CodexAccountActions {
 
     func login(
         profile: CodexProfile,
+        browserChoice: CodexDeviceBrowserChoice,
+        onPhaseChange: @escaping (CodexDeviceLoginPhase) -> Void = { _ in },
         completion: @escaping (Result<Void, Error>) -> Void
     ) throws {
         guard !isLoginRunning else { throw CodexLoginError.message(WidgetLanguage.storedOrAutomatic().text("已有账号正在登录", "Another account is signing in.")) }
@@ -1150,11 +1160,13 @@ final class CodexAccountActions {
             throw CodexLoginError.message(WidgetLanguage.storedOrAutomatic().text("账号暖号正在执行；完成后再登录", "A warm-up is running. Wait for it to finish before signing in."))
         }
         guard let executable = TerminalAppLauncher.codexExecutable() else {
-            throw CocoaError(.fileNoSuchFile)
+            throw CodexDeviceLoginFailure.cliUnavailable
         }
         let session = try CodexLoginSession(
             profile: profile,
-            executableURL: URL(fileURLWithPath: executable)
+            browserChoice: browserChoice,
+            executableURL: URL(fileURLWithPath: executable),
+            onPhaseChange: onPhaseChange
         ) { [weak self] result in
             self?.loginSession = nil
             completion(result)
@@ -1171,6 +1183,8 @@ final class CodexAccountActions {
     func cancelLogin() {
         loginSession?.cancel()
     }
+
+    func reopenDeviceAuthPage() { loginSession?.reopenPage() }
 
     func currentSystemAuthFingerprint(
         expectedEmail: String,
@@ -2808,9 +2822,20 @@ final class CodexAccountActions {
     }
 }
 
+private final class LoginPromotionFailureFileManager: FileManager, @unchecked Sendable {
+    var failPath: String?
+    override func setAttributes(_ attributes: [FileAttributeKey: Any], ofItemAtPath path: String) throws {
+        if path == failPath {
+            failPath = nil
+            throw CocoaError(.fileWriteNoPermission)
+        }
+        try super.setAttributes(attributes, ofItemAtPath: path)
+    }
+}
+
 enum CodexAccountLoginProtocolSelfTest {
     static func run() -> Bool {
-        guard CodexLoginSession.cleanupSelfTest() else {
+        guard CodexLoginSession.cleanupSelfTest(), CodexLoginSession.deviceSessionSelfTest() else {
             print("account login cleanup self-test failed")
             return false
         }
@@ -2943,6 +2968,16 @@ enum CodexAccountLoginProtocolSelfTest {
                 print("account login protocol self-test failed: verified auth was not promoted")
                 return false
             }
+            let failedPromotionAuth = Data(String(decoding: stagedAuth, as: UTF8.self).replacingOccurrences(of: "test-only", with: "changed-test-only").utf8)
+            try failedPromotionAuth.write(to: staging.appendingPathComponent("auth.json"))
+            let failingManager = LoginPromotionFailureFileManager()
+            failingManager.failPath = target.appendingPathComponent("auth.json").path
+            do {
+                try CodexLoginSession.promoteCredentials(from: staging, to: profile, authenticatedEmail: "person@example.com", fileManager: failingManager)
+                return false
+            } catch {}
+            guard try Data(contentsOf: target.appendingPathComponent("auth.json")) == stagedAuth else { return false }
+            try stagedAuth.write(to: staging.appendingPathComponent("auth.json"))
             var legacyObject = try JSONSerialization.jsonObject(with: JSONEncoder().encode(profile)) as! [String: Any]
             var legacySnapshot = legacyObject["lastSnapshot"] as! [String: Any]
             legacySnapshot.removeValue(forKey: "accountID")
@@ -3354,6 +3389,19 @@ enum CodexAccountSwitchSafetySelfTest {
                 ]
             else {
                 print("Codex account switch safety self-test failed: Chrome profile routing")
+                return false
+            }
+            let routed = CodexProfile(
+                id: "chrome-route", name: "Demo", codexHomePath: managedChrome.path, isSystemProfile: false, createdAt: Date(),
+                chromeProfile: boundChrome)
+            let dedicatedRoute = CodexDeviceBrowserRouting.launchPlan(choice: .dedicatedChrome, profile: routed)
+            let defaultRoute = CodexDeviceBrowserRouting.launchPlan(choice: .systemDefault, profile: routed)
+            guard dedicatedRoute.binding == nil,
+                dedicatedRoute.managedUserDataDirectory == routed.codexHomeURL.appendingPathComponent("chrome-session", isDirectory: true),
+                defaultRoute.binding == nil,
+                defaultRoute.managedUserDataDirectory == nil
+            else {
+                print("Codex account switch safety self-test failed: frozen browser routing")
                 return false
             }
             print("Codex account switch safety self-test passed")

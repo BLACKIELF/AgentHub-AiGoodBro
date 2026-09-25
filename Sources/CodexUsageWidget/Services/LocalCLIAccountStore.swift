@@ -25,6 +25,7 @@ final class LocalCLIAccountStore: ObservableObject {
     private var saved: [LocalCLIProfile] = []
     private var savedDigest: Data?
     private var storageValid = true
+    private var previewOnly = false
     private let home: URL
     private let support: URL
     private let applicationsDirectory: URL
@@ -42,6 +43,8 @@ final class LocalCLIAccountStore: ObservableObject {
                 await AdditionalCLIQuotaReader().load(profile: profile)
             case .zcode:
                 await ZCodeCLIQuotaReader().load(profile: profile)
+            case .antigravity:
+                await AntigravityCLIQuotaReader().load(profile: profile)
             case .claudeCode, .grok, .openCode, .kimi, .trae, .workBuddy:
                 await LocalCLIQuotaReader().load(profile: profile)
             }
@@ -59,6 +62,7 @@ final class LocalCLIAccountStore: ObservableObject {
 
     static func preview(profiles: [LocalCLIProfile], quotas: [String: LocalCLIQuotaResult], root: URL) -> LocalCLIAccountStore {
         let model = LocalCLIAccountStore(home: root, support: root, applicationsDirectory: root)
+        model.previewOnly = true
         model.profiles = profiles
         model.quotas = quotas
         for profile in profiles {
@@ -120,6 +124,14 @@ final class LocalCLIAccountStore: ObservableObject {
                 }
                 continue
             }
+            if kind == .antigravity {
+                if let app = applicationRoots.map({ $0.appendingPathComponent("Antigravity.app", isDirectory: true) })
+                    .first(where: isOfficialAntigravity)
+                {
+                    found[kind] = app.path
+                }
+                continue
+            }
             var candidates = [
                 home.appendingPathComponent(".local/bin/\(kind.commandName)").path,
                 "/opt/homebrew/bin/\(kind.commandName)", "/usr/local/bin/\(kind.commandName)",
@@ -152,34 +164,110 @@ final class LocalCLIAccountStore: ObservableObject {
 
     func profiles(for kind: LocalCLIKind) -> [LocalCLIProfile] { profiles.filter { $0.kind == kind } }
 
+    /// Only expose creation where the official launcher isolates credentials,
+    /// configuration and runtime state without replacing the user's HOME.
+    func canCreateAccount(kind: LocalCLIKind) -> Bool {
+        guard !previewOnly, storageValid, saved.count < 64 else { return false }
+        switch kind {
+        case .grok, .openCode, .kimi:
+            return installed[kind] != nil
+        case .workBuddy:
+            return !workBuddyInstalled.isEmpty
+        default:
+            return false
+        }
+    }
+
     func createGrokAccount(name: String) -> LocalCLIProfile? {
-        guard storageValid, validName(name), installed[.grok] != nil, saved.count < 64 else {
+        createAccount(kind: .grok, name: name)
+    }
+
+    func createAccount(
+        kind: LocalCLIKind,
+        name: String,
+        workBuddyEdition: WorkBuddyEdition? = nil
+    ) -> LocalCLIProfile? {
+        guard canCreateAccount(kind: kind), validName(name) else {
             fail(Failure.invalid)
             return nil
         }
+        guard
+            !profiles.contains(where: {
+                $0.kind == kind && $0.displayName.caseInsensitiveCompare(name) == .orderedSame
+            })
+        else {
+            message = language.text("该平台已有同名账号，请换一个名称。", "This provider already has an account with that name. Choose another name.")
+            return nil
+        }
+        let edition: WorkBuddyEdition?
+        if kind == .workBuddy {
+            edition = workBuddyEdition ?? WorkBuddyEdition.allCases.first { workBuddyInstalled[$0] != nil }
+            guard let edition, workBuddyInstalled[edition] != nil else {
+                fail(Failure.invalid)
+                return nil
+            }
+        } else {
+            guard workBuddyEdition == nil else {
+                fail(Failure.invalid)
+                return nil
+            }
+            edition = nil
+        }
         let id = UUID().uuidString.lowercased()
-        let root = home.appendingPathComponent(".codex-account-manager-next/grok", isDirectory: true)
-        let directory = root.appendingPathComponent(id.replacingOccurrences(of: "-", with: ""), isDirectory: true)
+        let managedRoot = home.appendingPathComponent(".codex-account-manager-next", isDirectory: true)
+        let root = managedRoot.appendingPathComponent(kind.rawValue, isDirectory: true)
+        let accountRoot = root.appendingPathComponent(id.replacingOccurrences(of: "-", with: ""), isDirectory: true)
+        let directory: URL
+        switch kind {
+        case .openCode:
+            // Must match the launcher's XDG suffix contract. All four XDG roots
+            // are then derived inside this account's unique root.
+            directory = accountRoot.appendingPathComponent(".local/share/opencode", isDirectory: true)
+        case .workBuddy:
+            guard let edition else { return nil }
+            directory = accountRoot.appendingPathComponent(edition.directoryName, isDirectory: true)
+        default:
+            directory = accountRoot
+        }
+        var createdAccountRoot = false
         do {
-            guard validDirectory(root.path), directory.appendingPathComponent("leader.sock").path.utf8.count < 104 else {
+            guard validDirectory(directory.path),
+                kind != .grok || directory.appendingPathComponent("leader.sock").path.utf8.count < 104
+            else {
                 throw Failure.invalid
             }
-            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-            var info = stat()
-            guard lstat(root.path, &info) == 0, info.st_mode & S_IFMT == S_IFDIR,
-                info.st_uid == geteuid(), info.st_mode & 0o077 == 0
-            else { throw Failure.invalid }
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
-            let profile = LocalCLIProfile(id: id, kind: .grok, displayName: name, configDirectory: directory.path, isDefault: false)
+            try prepareManagedAccountDirectory(managedRoot)
+            try prepareManagedAccountDirectory(root)
+            // A preexisting or replaced slot is never adopted or deleted.
+            guard mkdir(accountRoot.path, 0o700) == 0 else { throw Failure.invalid }
+            createdAccountRoot = true
+            if kind == .openCode {
+                for relative in [".local", ".local/share", ".local/share/opencode", ".config", ".local/state", ".cache"] {
+                    try prepareManagedAccountDirectory(accountRoot.appendingPathComponent(relative, isDirectory: true))
+                }
+            } else if directory != accountRoot {
+                try prepareManagedAccountDirectory(directory)
+            }
+            let profile = LocalCLIProfile(id: id, kind: kind, displayName: name, configDirectory: directory.path, isDefault: false)
             guard save(saved + [profile]) else {
-                try? FileManager.default.removeItem(at: directory)
+                try? FileManager.default.removeItem(at: accountRoot)
                 return nil
             }
             return profile
         } catch {
+            if createdAccountRoot { try? FileManager.default.removeItem(at: accountRoot) }
             fail(error)
             return nil
         }
+    }
+
+    private func prepareManagedAccountDirectory(_ directory: URL) throws {
+        guard validDirectory(directory.path) else { throw Failure.invalid }
+        if mkdir(directory.path, 0o700) != 0, errno != EEXIST { throw Failure.invalid }
+        var info = stat()
+        guard lstat(directory.path, &info) == 0, info.st_mode & S_IFMT == S_IFDIR,
+            info.st_uid == geteuid(), info.st_mode & 0o077 == 0
+        else { throw Failure.invalid }
     }
 
     func signIn(_ profile: LocalCLIProfile, updateProvider: Bool = false) {
@@ -225,10 +313,10 @@ final class LocalCLIAccountStore: ObservableObject {
                 language.text(
                     "请在 WorkBuddy 内置 CLI 中输入 /login 完成登录，再选择账号可用的模型。",
                     "Enter /login in WorkBuddy's bundled CLI, then choose a model available to your account.")
-            case .zcode:
+            case .zcode, .antigravity:
                 language.text(
-                    "请在 ZCode 桌面应用中完成登录。",
-                    "Complete sign-in in the ZCode desktop app.")
+                    "请在 \(profile.kind.displayName) 桌面应用中完成登录。",
+                    "Complete sign-in in the \(profile.kind.displayName) desktop app.")
             case .gemini:
                 language.text(
                     "在 Gemini CLI 中使用 Google 登录或 API Key；已有配置会复用。需要更换方式时输入 /auth。完成后自动检测，不必退出终端；额度单独读取。",
@@ -287,7 +375,13 @@ final class LocalCLIAccountStore: ObservableObject {
         else { return }
         if profile.kind.isDesktopApplication {
             let app = URL(fileURLWithPath: executable, isDirectory: true)
-            guard profile.kind == .zcode ? isOfficialZCode(app) : isOfficialTRAESOLO(app) else { return }
+            let verified =
+                switch profile.kind {
+                case .zcode: isOfficialZCode(app)
+                case .antigravity: isOfficialAntigravity(app)
+                default: isOfficialTRAESOLO(app)
+                }
+            guard verified else { return }
             Task { [weak self] in
                 do {
                     _ = try await NSWorkspace.shared.openApplication(
@@ -363,7 +457,7 @@ final class LocalCLIAccountStore: ObservableObject {
     }
 
     func canOpen(_ profile: LocalCLIProfile) -> Bool {
-        profile.kind.supportsNativeOpen && profiles.contains(profile)
+        !previewOnly && profile.kind.supportsNativeOpen && profiles.contains(profile)
             && executable(for: profile) != nil
             && (!profile.kind.requiresDefaultEnvironmentForLaunch || profile.isDefault)
     }
@@ -393,6 +487,12 @@ final class LocalCLIAccountStore: ObservableObject {
                 return
             }
         }
+        if kind == .antigravity, !AntigravityCLIQuotaReader.hasLinkedCache(at: directory) {
+            message = language.text(
+                "请选择包含 User/globalStorage/state.vscdb 的 Antigravity 独立配置目录。关联只读取该档案，不切换桌面当前账号。",
+                "Choose an Antigravity profile containing User/globalStorage/state.vscdb. Linking reads that profile only; it never changes the desktop account.")
+            return
+        }
         guard !profiles.contains(where: { $0.kind == kind && $0.configDirectory == path }) else {
             message = language.text("这个账号目录已经关联。", "This account directory is already linked.")
             return
@@ -402,16 +502,17 @@ final class LocalCLIAccountStore: ObservableObject {
         save(next)
     }
 
-    func rename(_ profile: LocalCLIProfile, name: String) {
+    @discardableResult
+    func rename(_ profile: LocalCLIProfile, name: String) -> Bool {
         guard profiles.contains(profile), validName(name) else {
             fail(Failure.invalid)
-            return
+            return false
         }
-        var next = saved.filter { $0.id != profile.id }
+        var next = saved
         var value = profile
         value.displayName = name
-        next.append(value)
-        save(next)
+        if let index = next.firstIndex(where: { $0.id == profile.id }) { next[index] = value } else { next.append(value) }
+        return save(next)
     }
 
     func unlink(_ profile: LocalCLIProfile) {
@@ -430,6 +531,7 @@ final class LocalCLIAccountStore: ObservableObject {
     }
 
     func refresh(_ profile: LocalCLIProfile) {
+        guard !previewOnly else { return }
         authentication[profile.id] = LocalCLIAuthenticationReader().read(profile)
         guard !refreshing.contains(profile.id), profiles.contains(profile) else { return }
         let request = UUID()
@@ -589,6 +691,17 @@ final class LocalCLIAccountStore: ObservableObject {
             let identifier = Bundle(url: app)?.bundleIdentifier?.lowercased()
         else { return false }
         return identifier == "cn.trae.solo.app" || identifier == "com.trae.solo.app"
+    }
+
+    private func isOfficialAntigravity(_ app: URL) -> Bool {
+        guard app.lastPathComponent == "Antigravity.app", validDirectory(app.path),
+            regularFile(app.appendingPathComponent("Contents/MacOS/Antigravity"), executable: true),
+            let data = try? DispatchParticipationSync.readBoundedRegularFile(
+                app.appendingPathComponent("Contents/Info.plist"), maximumBytes: 256 * 1024, allowMissing: false),
+            let info = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any]
+        else { return false }
+        return info["CFBundleIdentifier"] as? String == "com.google.antigravity"
+            && info["CFBundleExecutable"] as? String == "Antigravity"
     }
 
     private func validProfile(_ profile: LocalCLIProfile) -> Bool {

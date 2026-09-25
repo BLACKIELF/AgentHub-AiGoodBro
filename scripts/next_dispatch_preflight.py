@@ -383,9 +383,9 @@ def rank_key(row: dict[str, Any]) -> tuple[Any, ...]:
     return (
         not row.get("prioritizeDispatch", False),
         row["_sevenReset"],
-        row["_fiveReset"],
+        row.get("_fiveReset", row["_sevenReset"]),
         -row["sevenDay"]["remainingPercent"],
-        -row["fiveHour"]["remainingPercent"],
+        -(row.get("fiveHour") or {}).get("remainingPercent", -1),
         row["priority"],
         row["alias"],
     )
@@ -746,6 +746,7 @@ def build_report(
     sources: dict[str, Any],
     refresh: dict[str, Any] | None = None,
     requested_code: str | None = None,
+    allow_unreported_five_hour: bool = False,
 ) -> dict[str, Any]:
     if overview is not None:
         hub_error = hub_overview_error(overview)
@@ -832,7 +833,24 @@ def build_report(
         seven, seven_reasons, seven_reset = quota_window(profile_snapshot, "sevenDay", now)
         row["fiveHour"] = five
         row["sevenDay"] = seven
-        row["reasons"].extend(five_reasons)
+        # Explicit per-invocation allowance for a selected weekly-only Pro 5x.
+        # It never invents a missing window, changes pool defaults, or admits
+        # a present-but-invalid/exhausted five-hour window.
+        balance = profile_snapshot.get("creditBalance")
+        weekly_only = (
+            allow_unreported_five_hour and len(mapping["accounts"]) == 1
+            and isinstance(profile_snapshot.get("planType"), str)
+            and profile_snapshot["planType"].lower() == "prolite"
+            and profile_snapshot.get("fiveHour") is None
+            and profile_snapshot.get("quotaReadSucceeded") is True
+            and not profile_snapshot.get("failure")
+            and profile_snapshot.get("creditBalanceUnlimited") is not True
+            and not isinstance(balance, bool) and balance in (0, 0.0, "0", "0.0")
+            and seven is not None and not seven_reasons and seven["remainingPercent"] > min_seven
+        )
+        row["quotaException"] = "explicit_prolite_unreported_five_hour" if weekly_only else None
+        if not weekly_only:
+            row["reasons"].extend(five_reasons)
         row["reasons"].extend(seven_reasons)
         if five is not None and five["remainingPercent"] <= min_five:
             row["reasons"].append("five_hour_below_reserve")
@@ -852,7 +870,7 @@ def build_report(
     eligible = [
         row
         for row in rows
-        if not row["reasons"] and "_fiveReset" in row and "_sevenReset" in row
+        if not row["reasons"] and ("_fiveReset" in row or row.get("quotaException")) and "_sevenReset" in row
     ]
     eligible.sort(key=rank_key)
     for rank, row in enumerate(eligible, 1):
@@ -945,10 +963,10 @@ def human_report(report: dict[str, Any]) -> str:
             "\t".join(
                 [
                     str(row["rank"]),
-                    row["code"],
+                    row["code"] or "—",
                     row["alias"],
-                    percent(row["fiveHour"]["remainingPercent"]),
-                    row["fiveHour"]["resetAtShanghai"],
+                    percent((row["fiveHour"] or {}).get("remainingPercent")),
+                    (row["fiveHour"] or {}).get("resetAtShanghai", "暂无"),
                     percent(row["sevenDay"]["remainingPercent"]),
                     row["sevenDay"]["resetAtShanghai"],
                 ]

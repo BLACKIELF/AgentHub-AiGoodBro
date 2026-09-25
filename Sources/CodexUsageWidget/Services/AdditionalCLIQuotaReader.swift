@@ -64,7 +64,7 @@ struct AdditionalCLIQuotaReader {
                     now: now,
                     source: sourceLabel(for: profile.kind),
                     messageCode: "local_cli_unsupported")
-            case .claudeCode, .grok, .openCode, .kimi:
+            case .claudeCode, .grok, .openCode, .kimi, .antigravity:
                 return result(
                     state: .unsupported,
                     now: now,
@@ -304,7 +304,7 @@ struct AdditionalCLIQuotaReader {
         case .zcode: "ZCode native account"
         case .workBuddy: "WorkBuddy CLI"
         case .trae: "TRAE SOLO"
-        case .claudeCode, .grok, .openCode, .kimi: kind.displayName
+        case .claudeCode, .grok, .openCode, .kimi, .antigravity: kind.displayName
         }
     }
 }

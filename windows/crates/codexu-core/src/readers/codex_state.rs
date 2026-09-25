@@ -185,10 +185,11 @@ fn load_parent_edges(conn: &rusqlite::Connection) -> anyhow::Result<HashMap<Stri
 
 /// Returns the basename of a rollout path as the lookup key.
 fn normalize_rollout_key(path: &str) -> String {
-    Path::new(path)
-        .file_name()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_else(|| path.to_string())
+    // Imported state can contain either platform's separator.
+    path.rsplit(['/', '\\'])
+        .find(|part| !part.is_empty())
+        .unwrap_or(path)
+        .to_string()
 }
 
 #[cfg(test)]

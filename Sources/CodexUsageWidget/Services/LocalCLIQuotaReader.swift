@@ -247,7 +247,7 @@ struct LocalCLIQuotaReader {
                 return try await loadClaude(profile: profile, now: now)
             case .openCode:
                 return try await loadOpenCode(profile: profile, now: now)
-            case .mimo, .zcode, .gemini, .trae, .workBuddy:
+            case .mimo, .zcode, .gemini, .trae, .workBuddy, .antigravity:
                 return result(
                     state: .unsupported,
                     now: now,
@@ -305,8 +305,12 @@ struct LocalCLIQuotaReader {
             fingerprintKind: .grok,
             plan: parsed.plan,
             windows: parsed.windows,
+            balance: parsed.balanceUSD,
+            currency: parsed.balanceUSD == nil ? nil : "USD",
             source: sourceLabel(for: .grok),
-            resetCards: parsed.resetCards)
+            messageCode: parsed.windows.isEmpty ? "local_cli_usage_not_reported" : nil,
+            resetCards: parsed.resetCards,
+            periodResetsAt: parsed.periodResetsAt)
     }
 
     private func loadKimi(profile: LocalCLIProfile, now: Date) async throws -> LocalCLIQuotaResult {
@@ -367,7 +371,8 @@ struct LocalCLIQuotaReader {
         // Selected directories are isolated deliberately. This adapter never falls back to
         // Claude Code's default Keychain identity or prompts for Keychain access.
         let credentialsURL = directoryURL(profile).appendingPathComponent(".credentials.json")
-        let credentialsData: Data
+        var credentialsData: Data
+        var loadedKeychain = false
         if let fileData = try fileReader(credentialsURL, Self.maximumCredentialBytes, true) {
             credentialsData = fileData
         } else if isDefaultClaudeDirectory(profile) {
@@ -379,6 +384,7 @@ struct LocalCLIQuotaReader {
                     throw LocalCLIReaderFailure.invalidCredentials
                 }
                 credentialsData = keychainData
+                loadedKeychain = true
             } catch let failure as LocalCLIReaderFailure {
                 throw failure
             } catch {
@@ -387,17 +393,26 @@ struct LocalCLIQuotaReader {
         } else {
             throw LocalCLIReaderFailure.credentialsMissing
         }
-        let root = try Self.object(credentialsData)
-        guard let oauth = root["claudeAiOauth"] as? [String: Any],
-            let token = Self.nonempty(oauth["accessToken"])
-        else {
-            throw LocalCLIReaderFailure.invalidCredentials
+        var oauth = try Self.claudeOAuth(credentialsData)
+        if !Self.claudeTokenIsFresh(oauth, now: now), !loadedKeychain, isDefaultClaudeDirectory(profile) {
+            // An old credentials file can outlive the CLI's current Keychain
+            // login. Only the actual default environment may use that identity.
+            do {
+                if let freshData = try claudeKeychainReader() {
+                    guard freshData.count <= Self.maximumCredentialBytes else {
+                        throw LocalCLIReaderFailure.invalidCredentials
+                    }
+                    credentialsData = freshData
+                    oauth = try Self.claudeOAuth(credentialsData)
+                }
+            } catch let failure as LocalCLIReaderFailure {
+                throw failure
+            } catch {
+                throw LocalCLIReaderFailure.keychainUnavailable
+            }
         }
-        guard let expiryMilliseconds = Self.strictDouble(oauth["expiresAt"], allowString: false),
-            expiryMilliseconds > now.timeIntervalSince1970 * 1_000
-        else {
-            throw LocalCLIReaderFailure.credentialsExpired
-        }
+        guard Self.claudeTokenIsFresh(oauth, now: now) else { throw LocalCLIReaderFailure.credentialsExpired }
+        guard let token = Self.nonempty(oauth["accessToken"]) else { throw LocalCLIReaderFailure.invalidCredentials }
         var request = fixedRequest("https://api.anthropic.com/api/oauth/usage")
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -528,7 +543,8 @@ struct LocalCLIQuotaReader {
         currency: String? = nil,
         source: String,
         messageCode: String? = nil,
-        resetCards: [LocalCLIResetCard]? = nil
+        resetCards: [LocalCLIResetCard]? = nil,
+        periodResetsAt: Date? = nil
     ) -> LocalCLIQuotaResult {
         let safeIdentity = LocalCLIQuotaPresentation.validIdentity(identity)
         let validWindows = LocalCLIQuotaPresentation.validWindows(windows)
@@ -546,7 +562,8 @@ struct LocalCLIQuotaReader {
             sourceLabel: source,
             messageCode: validWindows ? messageCode : "local_cli_invalid_response",
             resetCards: resetCards,
-            resetCardsObservedAt: resetCards == nil ? nil : now)
+            resetCardsObservedAt: resetCards == nil ? nil : now,
+            periodResetsAt: periodResetsAt)
     }
 
     private func sourceLabel(for kind: LocalCLIKind) -> String {
@@ -555,7 +572,7 @@ struct LocalCLIQuotaReader {
         case .kimi: "Kimi Code API"
         case .claudeCode: "Anthropic OAuth usage"
         case .openCode: "OpenCode Go API"
-        case .mimo, .zcode, .gemini, .trae, .workBuddy: kind.displayName
+        case .mimo, .zcode, .gemini, .trae, .workBuddy, .antigravity: kind.displayName
         }
     }
 
@@ -583,13 +600,28 @@ struct LocalCLIQuotaReader {
 }
 
 extension LocalCLIQuotaReader {
+    private static func claudeOAuth(_ data: Data) throws -> [String: Any] {
+        guard let oauth = try object(data)["claudeAiOauth"] as? [String: Any],
+            nonempty(oauth["accessToken"]) != nil
+        else { throw LocalCLIReaderFailure.invalidCredentials }
+        return oauth
+    }
+
+    private static func claudeTokenIsFresh(_ oauth: [String: Any], now: Date) -> Bool {
+        guard let expiry = strictDouble(oauth["expiresAt"]) else { return false }
+        return expiry > now.timeIntervalSince1970 * 1_000
+    }
+
     /// Parses the official `GET /v1/billing?format=credits` response. Per
     /// review-inputs/grok-reset-schema-0911v1.json, the current response carries
     /// no reset-card fields, so resetCards remains nil (unknown). Website reset
     /// status is merged separately after an exact account-fingerprint match.
     /// `currentPeriod.end`, `billingPeriodEnd` and quota reset values feed quota
-    /// windows only; mapping them to a reset-card expiry is prohibited.
-    static func parseGrok(_ data: Data) throws -> (plan: String?, windows: [LocalCLIQuotaWindow], resetCards: [LocalCLIResetCard]?) {
+    /// windows and the independently known period boundary only; mapping them
+    /// to a reset-card expiry is prohibited.
+    static func parseGrok(_ data: Data) throws -> (
+        plan: String?, windows: [LocalCLIQuotaWindow], resetCards: [LocalCLIResetCard]?, balanceUSD: Double?, periodResetsAt: Date?
+    ) {
         let root = try object(data)
         guard let config = root["config"] as? [String: Any] else {
             throw LocalCLIReaderFailure.invalidResponse
@@ -601,57 +633,88 @@ extension LocalCLIQuotaReader {
         let percent: Double?
         if let rawPercent = config["creditUsagePercent"], !(rawPercent is NSNull) {
             percent = try requiredPercent(rawPercent)
-        } else if let cap = config["onDemandCap"] as? [String: Any],
-            let used = config["onDemandUsed"] as? [String: Any]
+        } else if let cap = try grokCents(config["monthlyLimit"]), cap > 0,
+            let used = try grokCents(config["used"]), used >= 0
         {
-            guard let capValue = strictDouble(cap["val"]), capValue >= 0,
-                let usedValue = strictDouble(used["val"]), usedValue >= 0
-            else { throw LocalCLIReaderFailure.invalidResponse }
-            // A disabled on-demand allowance is valid. It says nothing about
-            // subscription usage when the credits percentage is absent.
-            if capValue == 0 {
-                guard usedValue == 0 else { throw LocalCLIReaderFailure.invalidResponse }
-                percent = nil
-            } else {
-                percent = try validatedPercent(usedValue / capValue * 100)
-            }
-        } else if config["onDemandCap"] != nil || config["onDemandUsed"] != nil {
-            throw LocalCLIReaderFailure.invalidResponse
+            // Only the legacy included budget describes subscription usage.
+            // onDemandCap/onDemandUsed are a different balance entirely.
+            percent = try validatedPercent(used / cap * 100)
         } else {
             percent = nil
         }
+        let periodType = (config["currentPeriod"] as? [String: Any])?["type"] as? String
+        let label =
+            periodType == "USAGE_PERIOD_TYPE_WEEKLY"
+            ? "7-day"
+            : periodType == "USAGE_PERIOD_TYPE_MONTHLY" ? "Monthly" : "Credits"
         let windows =
             percent.map {
-                [LocalCLIQuotaWindow(id: "credits", label: "Credits", usedPercent: $0, resetsAt: resetsAt)]
+                [LocalCLIQuotaWindow(id: "credits", label: label, usedPercent: $0, resetsAt: resetsAt)]
             } ?? []
-        return (plan, windows, nil)
+        // xai-org/grok-build's credit bar displays the absolute prepaid ledger
+        // balance in dollars. Zero is a known balance, not a missing field.
+        let balance = try grokCents(config["prepaidBalance"]).map { abs($0) / 100 }
+        return (plan, windows, nil, balance, resetsAt)
+    }
+
+    private static func grokCents(_ raw: Any?) throws -> Double? {
+        guard let raw, !(raw is NSNull) else { return nil }
+        guard let amount = raw as? [String: Any] else { throw LocalCLIReaderFailure.invalidResponse }
+        // Proto3 JSON represents a present zero-valued Cent as {}.
+        guard let rawValue = amount["val"] else { return 0 }
+        guard let value = strictDouble(rawValue), value.rounded() == value,
+            abs(value) <= 9_007_199_254_740_991
+        else { throw LocalCLIReaderFailure.invalidResponse }
+        return value
     }
 
     static func parseKimi(_ data: Data) throws -> (plan: String?, windows: [LocalCLIQuotaWindow]) {
         let root = try object(data)
-        guard root.keys.contains("usage") || root.keys.contains("limits") else {
+        let plan = nonempty(root["planName"]) ?? nonempty(root["plan_name"])
+        var windows: [LocalCLIQuotaWindow] = []
+        // The current endpoint also returns named ratio pools. Keep all three
+        // independent windows, including the monthly pool, and never fill a
+        // missing usage ratio with zero.
+        if let rawPools = root["usages"], !(rawPools is NSNull) {
+            guard let pools = rawPools as? [String: Any] else { throw LocalCLIReaderFailure.invalidResponse }
+            for (key, id, label) in [("limit_5h", "session", "5-hour"), ("limit_7d", "weekly", "7-day"), ("limit_month_total", "monthly", "Monthly")] {
+                guard let raw = pools[key], !(raw is NSNull) else { continue }
+                guard let pool = raw as? [String: Any] else { throw LocalCLIReaderFailure.invalidResponse }
+                guard let rawRatio = pool["used_ratio"], !(rawRatio is NSNull) else { continue }
+                guard let ratio = strictDouble(rawRatio), ratio >= 0 else { throw LocalCLIReaderFailure.invalidResponse }
+                windows.append(
+                    LocalCLIQuotaWindow(
+                        id: id, label: label, usedPercent: min(1, ratio) * 100, resetsAt: parseDate(pool["reset_time"])))
+            }
+        }
+        guard !windows.isEmpty || root.keys.contains("usage") || root.keys.contains("limits") else {
             throw LocalCLIReaderFailure.invalidResponse
         }
-        var windows: [LocalCLIQuotaWindow] = []
-        if let usage = root["usage"] as? [String: Any] {
-            windows.append(try quotaWindow(id: "weekly", label: "7-day", detail: usage))
-        } else if root["usage"] != nil && !(root["usage"] is NSNull) {
-            throw LocalCLIReaderFailure.invalidResponse
+        // A migration response may provide only one new pool. Fill the other
+        // kinds from legacy windows; a new pool wins only for its own kind.
+        if !windows.contains(where: { $0.id == "weekly" }) {
+            if let usage = root["usage"] as? [String: Any] {
+                windows.append(try quotaWindow(id: "weekly", label: "7-day", detail: usage))
+            } else if root["usage"] != nil && !(root["usage"] is NSNull) {
+                throw LocalCLIReaderFailure.invalidResponse
+            }
         }
         if let rawLimits = root["limits"] {
             guard let limits = rawLimits as? [[String: Any]] else {
                 if !(rawLimits is NSNull) { throw LocalCLIReaderFailure.invalidResponse }
-                return (nonempty(root["planName"]) ?? nonempty(root["plan_name"]), windows)
+                return (plan, windows)
             }
             for (index, item) in limits.enumerated() {
                 let detail = (item["detail"] as? [String: Any]) ?? item
                 let minutes = try kimiWindowMinutes(item["window"])
                 let label: String
                 if minutes == 300 { label = "5-hour" } else if minutes == 10_080 { label = "7-day" } else { label = "Usage" }
-                windows.append(try quotaWindow(id: "limit-\(index)-\(minutes ?? 0)", label: label, detail: detail))
+                let id = minutes == 300 ? "session" : minutes == 10_080 ? "weekly" : "limit-\(index)-\(minutes ?? 0)"
+                guard !windows.contains(where: { $0.id == id }) else { continue }
+                windows.append(try quotaWindow(id: id, label: label, detail: detail))
             }
         }
-        return (nonempty(root["planName"]) ?? nonempty(root["plan_name"]), windows)
+        return (plan, windows)
     }
 
     static func parseClaude(_ data: Data) throws -> [LocalCLIQuotaWindow] {
@@ -668,11 +731,12 @@ extension LocalCLIQuotaReader {
             guard let raw = root[key] else { continue }
             if raw is NSNull { continue }
             guard let window = raw as? [String: Any] else { throw LocalCLIReaderFailure.invalidResponse }
+            guard let utilization = window["utilization"], !(utilization is NSNull) else { continue }
             windows.append(
                 LocalCLIQuotaWindow(
                     id: key,
                     label: label,
-                    usedPercent: try requiredPercent(window["utilization"]),
+                    usedPercent: try requiredPercent(utilization),
                     resetsAt: parseDate(window["resets_at"])))
         }
         if let rawLimits = root["limits"] {
@@ -689,11 +753,12 @@ extension LocalCLIQuotaReader {
                 }
                 let model = ((limit["scope"] as? [String: Any])?["model"] as? [String: Any])
                 let label = nonempty(model?["display_name"]) ?? nonempty(limit["kind"]) ?? "Scoped usage"
+                guard let percent = limit["percent"], !(percent is NSNull) else { continue }
                 windows.append(
                     LocalCLIQuotaWindow(
                         id: "limit-\(index)",
                         label: label,
-                        usedPercent: try requiredPercent(limit["percent"]),
+                        usedPercent: try requiredPercent(percent),
                         resetsAt: parseDate(limit["resets_at"])))
             }
         }
@@ -750,7 +815,8 @@ extension LocalCLIQuotaReader {
             id: id,
             label: label,
             usedPercent: try validatedPercent(used / limit * 100),
-            resetsAt: parseDate(detail["resetTime"]))
+            resetsAt: parseDate(detail["resetTime"]) ?? parseDate(detail["resetAt"])
+                ?? parseDate(detail["reset_time"]) ?? parseDate(detail["reset_at"]))
     }
 
     private static func kimiWindowMinutes(_ raw: Any?) throws -> Int? {

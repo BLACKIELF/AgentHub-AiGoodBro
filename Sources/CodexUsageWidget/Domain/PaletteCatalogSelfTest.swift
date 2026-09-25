@@ -23,6 +23,7 @@ enum PaletteCatalogSelfTest {
 
         let builtInPaletteIDs = [
             PaletteCatalog.defaultPaletteID,
+            PaletteCatalog.initialPaletteID,
             "codexu.blue-white-porcelain",
             "codexu.forbidden-city-red",
             "codexu.thousand-li-landscape",
@@ -34,6 +35,9 @@ enum PaletteCatalogSelfTest {
         }
         let discoveredDescriptors = catalog.descriptors(language: "zh-Hans")
         expect(Set(builtInPaletteIDs).isSubset(of: Set(discoveredDescriptors.map(\.id))), "required built-in palettes should remain discoverable")
+        expect(
+            discoveredDescriptors.first?.id == PaletteCatalog.initialPaletteID,
+            "the new initial palette should lead the picker")
         for descriptor in discoveredDescriptors {
             for appearance in PaletteAppearance.allCases {
                 let tokens = catalog.resolve(id: descriptor.id, appearance: appearance)
@@ -92,14 +96,14 @@ enum PaletteCatalogSelfTest {
             defer { defaults.removePersistentDomain(forName: suiteName) }
             defaults.set("community.missing", forKey: "CodexManagerNext.paletteID")
             let normalized = AppSettings(defaults: defaults, paletteCatalog: catalog)
-            expect(normalized.paletteID == PaletteCatalog.defaultPaletteID, "invalid stored ID should normalize to default")
+            expect(normalized.paletteID == PaletteCatalog.defaultPaletteID, "invalid stored ID should normalize to the legacy safety fallback")
             expect(normalized.paletteFallbackNotice != nil, "invalid stored ID should expose a fallback notice")
             expect(normalized.selectPalette("codexu.blue-white-porcelain") == .selected, "valid selection should succeed")
             expect(defaults.string(forKey: "CodexManagerNext.paletteID") == "codexu.blue-white-porcelain", "selection should persist")
             expect(normalized.selectPalette("codexu.thousand-li-landscape") == .selected, "new token palette selection should succeed")
             expect(defaults.string(forKey: "CodexManagerNext.paletteID") == "codexu.thousand-li-landscape", "new token palette selection should persist")
             normalized.resetPalette()
-            expect(normalized.paletteID == PaletteCatalog.defaultPaletteID, "reset should select default")
+            expect(normalized.paletteID == PaletteCatalog.initialPaletteID, "reset should select the initial palette")
         } else {
             failures.append("could not create UserDefaults suite")
         }

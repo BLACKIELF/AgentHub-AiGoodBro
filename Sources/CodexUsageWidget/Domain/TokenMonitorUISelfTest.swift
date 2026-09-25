@@ -20,34 +20,127 @@ enum TokenMonitorUISelfTest {
         reproduceLocalUsageCoverage(expect: expect)
         reproduceTrendRendererBoundaries(expect: expect)
         reproduceResetAnnouncementPresentation(expect: expect)
-        reproducePublicResetCalendar(expect: expect)
+        reproduceResetCountdown(expect: expect)
+        reproduceLocalCLIQuotaPresentation(expect: expect)
+        expect(PublicResetForecastSelfTest.persistenceSelfTest(), "forecast withdrawal commits atomically and survives restart; failed writes preserve explicitly cached state")
+        let quotaNow = Date()
+        var quotaProfile = CodexProfile(
+            id: "quota-fixture", name: "Fixture", codexHomePath: "", isSystemProfile: false,
+            createdAt: quotaNow,
+            lastSnapshot: CodexAccountSnapshot(
+                accountType: "chatgpt", planType: "plus", email: nil,
+                limitId: nil, limitName: nil, fiveHour: nil, sevenDay: nil, monthly: nil,
+                fetchedAt: quotaNow, appServerVersion: nil))
+        let activeWindow = CodexQuotaWindowSnapshot(RateWindow(usedPercent: 100, windowDurationMins: 300, resetsAt: quotaNow.addingTimeInterval(3600)))
+        let expiredWindow = CodexQuotaWindowSnapshot(RateWindow(usedPercent: 100, windowDurationMins: 300, resetsAt: quotaNow.addingTimeInterval(-1)))
+        expect(AccountInformationView.shouldShowQuota(activeWindow, profile: quotaProfile, now: quotaNow), "fresh exhausted allowance is still an accurate zero")
+        expect(!AccountInformationView.shouldShowQuota(expiredWindow, profile: quotaProfile, now: quotaNow), "expired exhausted allowance is not displayed as a current zero")
+        expect(!AccountInformationView.shouldShowQuota(activeWindow, profile: quotaProfile, now: quotaNow.addingTimeInterval(901)), "stale allowance loses actionable percentages")
+        quotaProfile.lastQuotaReadFailureAt = quotaNow.addingTimeInterval(1)
+        expect(!AccountInformationView.shouldShowQuota(activeWindow, profile: quotaProfile, now: quotaNow), "a failed newer read does not make the old quota current")
+        reproducePublicResetHistory(expect: expect)
+        reproduceResetDashboardLayout(expect: expect)
+        let quotaPair = LocalCLIQuotaWindowDetails.percentages(usedPercent: 23.5, language: .en)
+        expect(quotaPair.used == "23.5%" && quotaPair.remaining == "76.5%", "used and remaining quota preserve precision and total 100 percent")
+        let emptyQuota = LocalCLIQuotaWindowDetails.percentages(usedPercent: .nan, language: .en)
+        expect(emptyQuota.used == "—" && emptyQuota.remaining == "—", "invalid quota is not presented as zero or full availability")
+        expect(LocalCLIQuotaWindowDetails.percentages(usedPercent: 100, language: .zh).remaining == "0%", "exhausted quota remains zero")
+        expect(ResetCardPresentation.savedOrder(["a", "b", "c"], pinnedAccountID: nil) == ["a", "b", "c"], "account order remains saved without a pin")
+        expect(ResetCardPresentation.savedOrder(["a", "b", "c"], pinnedAccountID: "c") == ["c", "a", "b"], "only an explicit pin changes presentation order")
+        expect(HomeMessageInboxStore.visibleAnnouncementLimit == 3, "homepage shows only three reset messages")
+        expect(PublisherMessageSelfTest.run(), "publisher announcements respect delivery and URL boundaries")
         expect(OnboardingModesSelfTest.run(), "onboarding modes, 6pt track and skip/back fixtures")
 
         if failures.isEmpty {
-            print("token-monitor UI self-test passed: floating geometry, navigation, avatars, icons, menu/model, responsive totals, calendar, chart states, announcements")
+            print("token-monitor UI self-test passed: floating geometry, navigation, avatars, icons, menu/model, responsive totals, reset history, chart states, announcements")
             return true
         }
         failures.forEach { print("token-monitor UI self-test failed: \($0)") }
         return false
     }
 
-    private static func reproducePublicResetCalendar(expect: (Bool, String) -> Void) {
+    private static func reproduceLocalCLIQuotaPresentation(expect: (Bool, String) -> Void) {
+        let now = Date(timeIntervalSince1970: 1_790_000_000)
+        func result(balance: Double?, currency: String? = nil, code: String? = nil) -> LocalCLIQuotaResult {
+            LocalCLIQuotaResult(
+                state: .unsupported, fetchedAt: now, maskedIdentity: nil, identityFingerprint: nil,
+                planLabel: nil, windows: [], balance: balance, balanceCurrency: currency,
+                sourceLabel: "Fixture", messageCode: code, periodResetsAt: now.addingTimeInterval(3_600))
+        }
+        let zero = result(balance: 0, code: "local_cli_usage_not_reported")
+        expect(LocalCLIAccountPresentation.balanceTitle(kind: .grok, language: .zh) == "购入余额", "Grok credits are identified as purchased balance, not points")
+        expect(LocalCLIAccountPresentation.balanceText(kind: .grok, result: zero, language: .en) == "0 USD", "a confirmed zero purchased balance stays visible with its currency")
+        expect(LocalCLIAccountPresentation.balanceText(kind: .grok, result: result(balance: nil), language: .en) == nil, "missing balance is never replaced with zero")
+        expect(LocalCLIAccountPresentation.balanceText(kind: .grok, result: result(balance: .nan), language: .en) == nil, "invalid balance is never displayed as a number")
+        expect(
+            LocalCLIAccountPresentation.balanceText(kind: .kimi, result: result(balance: 12.5, currency: "CNY"), language: .en) == "12.5 CNY",
+            "known provider currency is preserved")
+        expect(zero.windows.isEmpty && zero.periodResetsAt != nil, "a reset boundary does not require a fabricated quota window")
+        expect(LocalCLIReadiness.resolve(installed: true, result: zero) != .available, "balance and reset metadata do not promote unsupported quota to available")
+        let missingUsage = LocalCLIAccountPresentation.quotaExplanation(kind: .grok, result: zero, language: .zh)
+        expect(missingUsage?.contains("官方未提供") == true && missingUsage?.contains("登录") == false, "missing percentages do not become a login failure")
+        let goCodes = ["local_cli_opencode_go_not_connected", "local_cli_upstream_provider_missing", "local_cli_upstream_unsupported_go_plan"]
+        let explanations = goCodes.compactMap {
+            LocalCLIAccountPresentation.quotaExplanation(kind: .openCode, result: result(balance: nil, code: $0), language: .zh)
+        }
+        expect(explanations.count == goCodes.count && Set(explanations).count == 1, "native and upstream OpenCode Go missing-provider states have one explanation")
+        expect(explanations.first?.contains("其他服务商") == true, "OpenCode Go availability never stands in for every provider's login or balance")
+    }
+
+    private static func reproduceResetCountdown(expect: (Bool, String) -> Void) {
+        let start = Date(timeIntervalSince1970: 1_790_000_000)
+        func countdown(_ seconds: TimeInterval, now: Date? = nil, kind: ResetCountdownPresentation.Kind = .publicForecast, language: WidgetLanguage = .zh) -> String {
+            ResetCountdownPresentation.label(deadline: start.addingTimeInterval(seconds), now: now ?? start, kind: kind, language: language)
+        }
+        expect(countdown(90_061) == "最晚还有 1 天 01:01:01", "countdown includes days, hours, minutes and seconds")
+        expect(countdown(90_061, language: .en) == "Due within 1d 01:01:01", "English countdown retains day precision")
+        expect(countdown(60.1) == "最晚还有 00:01:01", "fractional seconds do not report zero early")
+        expect(countdown(0.1) == "最晚还有 00:00:01", "last fraction of a second is still pending")
+        expect(countdown(0).contains("等待来源确认"), "deadline never claims public delivery")
+        expect(countdown(-10, kind: .accountWindow).contains("等待额度更新"), "expired account window never implies restored quota")
+        expect(countdown(3_661, now: start.addingTimeInterval(3_600)) == "最晚还有 00:01:01", "sleep or missed ticks cannot accumulate drift")
+        expect(countdown(60, now: start.addingTimeInterval(-60)) == "最晚还有 00:02:00", "clock corrections rederive the remaining duration")
+        expect(countdown(.infinity).contains("待公开来源公布"), "invalid timestamps do not trap or create a fake timer")
+        expect(ResetCountdownPresentation.label(deadline: nil, now: start, kind: .accountWindow, language: .zh) == "重置时间未知", "missing reset time stays unknown")
+    }
+
+    private static func reproduceResetDashboardLayout(expect: (Bool, String) -> Void) {
+        // Regression: the production dashboard has two children after calendar removal.
+        // A mismatched count previously returned no frames and a zero height.
+        for width: CGFloat in [1, 320, 619, 620, 820, 939, 940, 1600] {
+            for count in 0...4 {
+                let frames = ResetDashboardLayout.frames(width: width, count: count) { index, proposedWidth in
+                    CGFloat(index + 1) * 80 + (proposedWidth < 300 ? 140 : 0)
+                }
+                expect(frames.count == count, "every reset dashboard child gets a frame")
+                for (index, frame) in frames.enumerated() {
+                    expect(frame.height > 0 && frame.width > 0, "reset dashboard never collapses visible content to zero")
+                    expect(frame.minX >= 0 && frame.maxX <= width + 0.01, "reset dashboard stays within its proposed width")
+                    for other in frames.dropFirst(index + 1) {
+                        expect(!frame.intersects(other), "announcement and account windows never overlap")
+                    }
+                }
+            }
+        }
+        expect(Set(HomeSection.allCases.map(\.storageKey)).count == HomeSection.allCases.count, "home section preferences are independent")
+    }
+
+    private static func reproducePublicResetHistory(expect: (Bool, String) -> Void) {
         let parser = ISO8601DateFormatter()
-        let lateUTC = parser.date(from: "2026-09-03T23:12:00Z")!
-        let beijingDay = parser.date(from: "2026-09-03T16:00:00Z")!
-        let earlierDay = parser.date(from: "2026-09-02T16:00:00Z")!
+        let date = parser.date(from: "2026-09-03T23:12:00Z")!
         let event = PublicResetAnnouncement(
-            id: "fixture-reset-calendar", resetType: .banked, announcedAt: lateUTC, text: "A public reset announcement", source: .init(type: "observed", author: nil, url: nil))
-        expect(PublicResetCalendarModel.events(on: beijingDay, from: [event]).count == 1, "reset calendar uses Beijing day boundaries")
-        expect(PublicResetCalendarModel.events(on: earlierDay, from: [event]).isEmpty, "UTC date is not incorrectly used as Beijing calendar day")
-        expect(PublicResetCalendarModel.normalized([event, event]).count == 1, "latest announcement and API page do not duplicate calendar counts")
-        let leap = PublicResetCalendarModel.days(in: parser.date(from: "2024-02-12T00:00:00Z")!)
-        expect(leap.compactMap { $0 }.count == 29 && leap.count.isMultiple(of: 7), "reset calendar preserves leap days and complete weeks")
-        let september = PublicResetCalendarModel.days(in: lateUTC)
-        expect(september.first! == nil && september[1] != nil, "calendar starts Monday with correct leading empty cells")
-        let january = PublicResetCalendarModel.days(in: parser.date(from: "2027-01-12T00:00:00Z")!)
-        expect(january.compactMap { $0 }.count == 31, "calendar month navigation crosses year boundaries")
-        expect(PublicResetCalendarModel.events(on: beijingDay, from: []).isEmpty, "missing historical records are not invented")
+            id: "fixture-reset-history", resetType: .banked, announcedAt: date,
+            text: "A public reset announcement", source: .init(type: "observed", author: nil, url: nil))
+        let older = PublicResetAnnouncement(
+            id: "fixture-reset-history-older", resetType: .regular, announcedAt: date.addingTimeInterval(-60),
+            text: "An earlier announcement", source: .init(type: "observed", author: nil, url: nil))
+        expect(
+            PublicResetAnnouncementPresentation.normalized([older, event, event]).map(\.id) == [event.id, older.id],
+            "history stays newest-first and does not duplicate the latest announcement")
+        expect(
+            PublicResetAnnouncementPresentation.compactEventTime(date, language: .zh).contains("2026-09-04 07:12"),
+            "history timestamps preserve Beijing time across UTC date boundaries")
+        expect(PublicResetAnnouncementPresentation.normalized([]).isEmpty, "missing history is not invented")
     }
 
     private static func reproduceFloatingBubble(expect: (Bool, String) -> Void) {
@@ -545,7 +638,7 @@ enum TokenMonitorUISelfTest {
             PublicResetAnnouncementPresentation.sourceLinkTitle(observedSource, language: .zh).contains("来源"),
             "an aggregator URL is labeled as its source"
         )
-        expect(PublicResetAnnouncementPresentation.title(.zh) == "额度重置公告", "announcement section uses the critical label")
+        expect(PublicResetAnnouncementPresentation.title(.zh) == "历史重置记录", "completed history stays distinct from pending forecasts")
         expect(
             PublicResetAnnouncementPresentation.typeTitle(.regular, language: .zh).contains("常规额度"),
             "regular quota announcements stay distinct from reset cards"
@@ -563,13 +656,31 @@ enum TokenMonitorUISelfTest {
         )
         let event = ISO8601DateFormatter().date(from: "2026-09-12T08:09:17Z")!
         let compactTime = PublicResetAnnouncementPresentation.compactEventTime(event, language: .zh)
-        expect(compactTime.contains("9月12日") && compactTime.contains("4:09") && compactTime.contains("下午"), "home announcement converts UTC into the Beijing afternoon clock")
+        expect(compactTime.contains("2026-09-12 16:09"), "home announcement keeps the full Beijing year and clock")
         expect(
             PublicResetAnnouncementPresentation.relativeEventTime(event, now: event.addingTimeInterval(7 * 3600), language: .zh).contains("7"),
             "home announcement age uses its event time")
         expect(
             PublicResetAnnouncementPresentation.relativeEventTime(event, now: event.addingTimeInterval(-30), language: .zh) == "刚刚",
             "allowed source clock skew does not create a future reset claim")
+        let now = ISO8601DateFormatter().date(from: "2026-09-19T00:00:00Z")!
+        let recent = PublicResetAnnouncement(
+            id: "456", resetType: .regular, announcedAt: now.addingTimeInterval(-86_400), text: "recent",
+            source: .init(type: "x_post", author: "thsottiaux", url: URL(string: "https://x.com/thsottiaux/status/456")))
+        let old = PublicResetAnnouncement(
+            id: "457", resetType: .regular, announcedAt: now.addingTimeInterval(-31 * 86_400), text: "old",
+            source: .init(type: "x_post", author: "thsottiaux", url: URL(string: "https://x.com/thsottiaux/status/457")))
+        let future = PublicResetAnnouncement(
+            id: "458", resetType: .regular, announcedAt: now.addingTimeInterval(60), text: "future",
+            source: .init(type: "x_post", author: "thsottiaux", url: URL(string: "https://x.com/thsottiaux/status/458")))
+        expect(
+            PublicResetAnnouncementPresentation.recentVerifiableAnnouncement([old, future, recent], now: now)?.id == "456",
+            "homepage announcements use only verifiable, non-future items from the last 30 days"
+        )
+        expect(
+            PublicResetAnnouncementPresentation.recentVerifiableAnnouncement([old, future], now: now) == nil,
+            "old and future announcements stay out of the homepage current-message slot"
+        )
     }
 
     private static func solidPNG(color: NSColor) -> Data {

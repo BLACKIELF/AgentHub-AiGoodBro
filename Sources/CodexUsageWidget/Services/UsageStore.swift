@@ -1,5 +1,6 @@
 import Cocoa
 import Combine
+import SwiftUI
 
 enum VisualEnergyMode: Equatable {
     // This describes visibility and system energy pressure. Components that
@@ -205,6 +206,15 @@ final class UsageStore: ObservableObject {
     @Published private(set) var accountSwitchAlertMessage: String?
     @Published private(set) var forcedAccountSwitchProfileID: String?
     @Published private(set) var isLoggingIn = false
+    @Published private(set) var deviceLogin: CodexDeviceLoginPresentation?
+    @Published private(set) var deviceLoginHost: CodexDeviceLoginHost = .workbench
+    private var deviceLoginTarget: CodexProfile?
+    private var deviceLoginIsAdding = false
+    private var deviceLoginAddedSourceID: String?
+    private var deviceLoginBrowserChoice: CodexDeviceBrowserChoice?
+    private var deviceLoginChromeProfile: ChromeProfileBinding?
+    private var activeLoginMaintenanceLeases = Set<String>()
+    private var loginShuttingDown = false
     @Published private(set) var isLaunchingCodex = false {
         didSet {
             if !isLaunchingCodex {
@@ -242,6 +252,7 @@ final class UsageStore: ObservableObject {
     private var localNotificationPermissionRequestID: UUID?
     @Published private(set) var automationEvents: [AccountAutomationEvent]
     let publicResetAnnouncements: PublicResetAnnouncementMonitor
+    let publisherMessages: PublisherMessageMonitor
 
     var automaticWarmUpEnabled: Bool { warmUpSelection.isEnabled }
 
@@ -340,6 +351,7 @@ final class UsageStore: ObservableObject {
     init() {
         isPreview = false
         publicResetAnnouncements = PublicResetAnnouncementMonitor()
+        publisherMessages = PublisherMessageMonitor()
         statisticsPreference = StatisticsTimeZonePreferenceStore.load()
         automaticAccountSwitchEnabled = UserDefaults.standard.bool(forKey: CodexAutomaticSwitchPolicy.enabledDefaultsKey)
         lowQuotaAlertThresholds = .load()
@@ -375,6 +387,7 @@ final class UsageStore: ObservableObject {
     init(previewProfiles: [CodexProfile], snapshot: UsageSnapshot, isolatedRoot: URL) {
         isPreview = true
         publicResetAnnouncements = PublicResetAnnouncementMonitor(preview: true)
+        publisherMessages = PublisherMessageMonitor(preview: true)
         statisticsPreference = .default
         profileStore = CodexProfileStore(
             homeDirectory: isolatedRoot.appendingPathComponent("home"),
@@ -599,6 +612,12 @@ final class UsageStore: ObservableObject {
     }
 
     func copyTerminalCommand(for profileID: String) {
+        guard !isPreview else {
+            accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
+                "预览账号仅用于检查界面，不能复制调用命令。",
+                "Preview accounts are for UI review; their launch commands cannot be copied.")
+            return
+        }
         guard let profile = profiles.first(where: { $0.id == profileID }), !profile.isSystemProfile else {
             accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
                 "请选择已隔离的账号环境；不会生成指向 ~/.codex 的启动命令", "Select an isolated account profile. A launch command for the system Codex profile will not be generated.")
@@ -627,34 +646,102 @@ final class UsageStore: ObservableObject {
         }
     }
 
-    func addProfile() {
-        beginAddingProfile(copyingRemarkFrom: nil, chromeProfile: nil)
+    func canBeginAddingProfile() -> CodexLoginBlockReason? { addProfileBlockReason() }
+
+    func canLoginProfile(_ profileID: String) -> CodexLoginBlockReason? { loginProfileBlockReason(profileID) }
+
+    @discardableResult
+    func addProfile(host: CodexDeviceLoginHost = .workbench) -> CodexLoginStartResult {
+        requestAddProfile(copyingRemarkFrom: nil, chromeProfile: nil, host: host)
     }
 
-    func addProfile(using chromeProfile: ChromeProfileBinding) {
-        beginAddingProfile(copyingRemarkFrom: nil, chromeProfile: chromeProfile)
+    @discardableResult
+    func addProfile(using chromeProfile: ChromeProfileBinding, host: CodexDeviceLoginHost = .workbench) -> CodexLoginStartResult {
+        requestAddProfile(copyingRemarkFrom: nil, chromeProfile: chromeProfile, host: host)
     }
 
-    func loginProfileIndependently(_ profileID: String) {
-        guard let profile = profiles.first(where: { $0.id == profileID }),
-            profile.isSystemProfile
-        else { return }
-        beginAddingProfile(copyingRemarkFrom: profile.id, chromeProfile: profile.chromeProfile)
+    @discardableResult
+    func loginProfileIndependently(_ profileID: String, host: CodexDeviceLoginHost = .workbench) -> CodexLoginStartResult {
+        guard let profile = profiles.first(where: { $0.id == profileID }), profile.isSystemProfile else {
+            return blockLoginStart(.profileMissing, host: host)
+        }
+        return requestAddProfile(copyingRemarkFrom: profile.id, chromeProfile: profile.chromeProfile, host: host)
+    }
+
+    private func addProfileBlockReason() -> CodexLoginBlockReason? {
+        if isPreview { return .preview }
+        if loginShuttingDown { return .shuttingDown }
+        if deviceLogin != nil || isLoggingIn || accountActions.isLoginRunning || !activeLoginMaintenanceLeases.isEmpty {
+            return .loginInProgress
+        }
+        if isLaunchingCodex { return .launchingCodex }
+        if isAccountSwitchTransactionActive { return .switchInProgress }
+        if warmingProfileID != nil { return .warmingUp }
+        if isRefreshingWarmUpProfiles { return .readingAccounts }
+        if TerminalAppLauncher.codexExecutable() == nil { return .cliUnavailable }
+        return nil
+    }
+
+    private func loginProfileBlockReason(_ profileID: String) -> CodexLoginBlockReason? {
+        if let shared = addProfileBlockReason() { return shared }
+        guard let profile = profiles.first(where: { $0.id == profileID }) else { return .profileMissing }
+        if profile.isSystemProfile { return .systemProfile }
+        if configuredHubAccountAlias(for: profile) == nil { return .mappingUnconfirmed }
+        return nil
+    }
+
+    private func blockLoginStart(
+        _ reason: CodexLoginBlockReason,
+        host: CodexDeviceLoginHost,
+        profile: CodexProfile? = nil,
+        adding: Bool = false
+    ) -> CodexLoginStartResult {
+        let language = WidgetLanguage.storedOrAutomatic()
+        accountManagerMessage = reason.message(language)
+        if reason.presentsPanel {
+            if deviceLogin == nil {
+                let name =
+                    profile.map { AccountDisplay.profileName($0) }
+                    ?? language.text("新 Codex 账号", "New Codex account")
+                presentDeviceLogin(
+                    profile, adding: adding, sourceID: nil, host: host, phase: .failed(reason.loginFailure), targetName: name)
+            } else {
+                deviceLoginHost = host
+                deviceLogin?.phase = .failed(reason.loginFailure)
+                deviceLogin?.notice = reason.message(language)
+            }
+        }
+        return .blocked(reason)
+    }
+
+    private func requestAddProfile(
+        copyingRemarkFrom sourceProfileID: String?,
+        chromeProfile: ChromeProfileBinding?,
+        host: CodexDeviceLoginHost
+    ) -> CodexLoginStartResult {
+        if let reason = addProfileBlockReason() {
+            return blockLoginStart(reason, host: host, adding: true)
+        }
+        let language = WidgetLanguage.storedOrAutomatic()
+        deviceLoginChromeProfile = chromeProfile
+        presentDeviceLogin(
+            nil, adding: true, sourceID: sourceProfileID, host: host, phase: .choosingBrowser,
+            targetName: language.text("新 Codex 账号", "New Codex account"))
+        accountManagerMessage = language.text("请先选择这次登录使用的浏览器。", "Choose the browser for this sign-in first.")
+        return .accepted(deviceLogin!.id)
     }
 
     private func beginAddingProfile(
         copyingRemarkFrom sourceProfileID: String?,
-        chromeProfile: ChromeProfileBinding?
+        chromeProfile: ChromeProfileBinding?,
+        browserChoice: CodexDeviceBrowserChoice,
+        requestID: UUID
     ) {
-        guard warmingProfileID == nil else {
-            accountManagerMessage = WidgetLanguage.storedOrAutomatic().text("账号暖号正在执行；完成后再添加账号", "Wait for the current warm-up to finish before adding an account.")
+        if let reason = addProfileBlockReasonMatchingCurrentRequest() {
+            deviceLogin?.phase = .failed(reason.loginFailure)
+            accountManagerMessage = reason.message(WidgetLanguage.storedOrAutomatic())
             return
         }
-        guard !isRefreshingWarmUpProfiles else {
-            accountManagerMessage = WidgetLanguage.storedOrAutomatic().text("账号数据仍在读取；完成后再添加账号", "Wait for account data to finish loading before adding an account.")
-            return
-        }
-        guard !isLoggingIn, !isLaunchingCodex, !isAccountSwitchTransactionActive, captureCurrentProfile() else { return }
         let profile: CodexProfile
         do {
             profile = try profileStore.addManagedProfile(
@@ -662,29 +749,77 @@ final class UsageStore: ObservableObject {
                 chromeProfile: chromeProfile
             )
         } catch {
-            accountManagerMessage = WidgetLanguage.storedOrAutomatic().text("创建账号失败：\(error.localizedDescription)", "Could not create the profile: \(error.localizedDescription)")
+            deviceLogin?.phase = .failed(.save)
+            accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
+                "创建账号失败：\(error.localizedDescription)", "Could not create the profile: \(error.localizedDescription)")
             return
         }
+        attachDeviceLoginTarget(profile, adding: true, sourceID: sourceProfileID, requestID: requestID, browserChoice: browserChoice)
+        startAddedProfileLogin(
+            profile: profile, sourceProfileID: sourceProfileID, browserChoice: browserChoice, requestID: requestID)
+    }
 
+    private func addProfileBlockReasonMatchingCurrentRequest() -> CodexLoginBlockReason? {
+        if isPreview { return .preview }
+        if loginShuttingDown { return .shuttingDown }
+        if isLoggingIn || accountActions.isLoginRunning || !activeLoginMaintenanceLeases.isEmpty { return .loginInProgress }
+        if isLaunchingCodex { return .launchingCodex }
+        if isAccountSwitchTransactionActive { return .switchInProgress }
+        if warmingProfileID != nil { return .warmingUp }
+        if isRefreshingWarmUpProfiles { return .readingAccounts }
+        if TerminalAppLauncher.codexExecutable() == nil { return .cliUnavailable }
+        return nil
+    }
+
+    private func startAddedProfileLogin(
+        profile: CodexProfile,
+        sourceProfileID: String?,
+        browserChoice: CodexDeviceBrowserChoice,
+        requestID: UUID
+    ) {
         isLoggingIn = true
+        deviceLogin?.phase = .preparing
         accountManagerMessage = WidgetLanguage.storedOrAutomatic().text("请在浏览器中登录新账号…", "Sign in to the new account in your browser…")
         do {
-            try accountActions.login(profile: profile) { [weak self] result in
-                guard let self else { return }
-                switch result {
-                case .success:
-                    self.verifyAddedProfile(profile, replacingSystemProfileID: sourceProfileID)
-                case .failure(let error):
-                    self.discardAddedProfile(profile, message: error.localizedDescription)
-                }
-            }
+            try accountActions.login(
+                profile: profile,
+                browserChoice: browserChoice,
+                onPhaseChange: { [weak self] phase in
+                    self?.receiveDeviceLoginPhase(phase, requestID: requestID)
+                },
+                completion: { [weak self] result in
+                    guard let self else { return }
+                    guard self.deviceLogin?.id == requestID else {
+                        if let cleanupWarning = self.temporaryProfileCleanupWarning(for: profile.id) {
+                            self.accountManagerMessage = [self.accountManagerMessage, cleanupWarning].compactMap { $0 }.joined(separator: " ")
+                        }
+                        self.syncProfiles()
+                        return
+                    }
+                    switch result {
+                    case .success:
+                        self.verifyAddedProfile(profile, replacingSystemProfileID: sourceProfileID, requestID: requestID)
+                    case .failure(let error):
+                        let phase = self.deviceLoginFailurePhase(error)
+                        self.discardAddedProfile(profile, message: self.safeDeviceLoginMessage(phase), phase: phase, requestID: requestID)
+                    }
+                })
         } catch {
-            discardAddedProfile(
-                profile, message: WidgetLanguage.storedOrAutomatic().text("无法启动登录：\(error.localizedDescription)", "Could not start sign-in: \(error.localizedDescription)"))
+            let phase = deviceLoginFailurePhase(error)
+            discardAddedProfile(profile, message: safeDeviceLoginMessage(phase), phase: phase, requestID: requestID)
         }
     }
 
-    private func verifyAddedProfile(_ profile: CodexProfile, replacingSystemProfileID: String?) {
+    private func verifyAddedProfile(_ profile: CodexProfile, replacingSystemProfileID: String?, requestID: UUID) {
+        guard deviceLogin?.id == requestID else {
+            if let cleanupWarning = temporaryProfileCleanupWarning(for: profile.id) {
+                accountManagerMessage = [accountManagerMessage, cleanupWarning].compactMap { $0 }.joined(separator: " ")
+            }
+            syncProfiles()
+            return
+        }
+        deviceLogin?.phase = .verifying
+        let startedAt = Date()
         accountManagerMessage = WidgetLanguage.storedOrAutomatic().text("登录完成，正在验证账号…", "Sign-in complete. Verifying the account…")
         let preference = statisticsPreference
         DispatchQueue.global(qos: .utility).async {
@@ -698,25 +833,54 @@ final class UsageStore: ObservableObject {
                 codexHomeURL: profile.codexHomeURL
             )
             DispatchQueue.main.async {
-                guard let email = verifiedSnapshot.account?.email,
-                    !email.isEmpty,
-                    credentialIdentity?.email == email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-                else {
-                    self.discardAddedProfile(profile, message: WidgetLanguage.storedOrAutomatic().text("没有识别到有效账号，本次未添加", "No valid account was found. Nothing was added."))
+                guard self.deviceLogin?.id == requestID else {
+                    if let cleanupWarning = self.temporaryProfileCleanupWarning(for: profile.id) {
+                        self.accountManagerMessage = [self.accountManagerMessage, cleanupWarning].compactMap { $0 }.joined(separator: " ")
+                    }
+                    self.syncProfiles()
                     return
                 }
-                if let existing = self.profiles.first(where: {
-                    $0.lastSnapshot?.accountID == credentialIdentity?.accountID
-                }) {
-                    try? self.profileStore.discardManagedProfile(profile.id)
-                    try? self.profileStore.selectMonitor(existing.id)
-                    self.syncProfiles()
-                    self.configureAuthMonitoring()
-                    self.isLoggingIn = false
-                    self.accountManagerMessage = WidgetLanguage.storedOrAutomatic().text("这个账号已经在列表中", "This account is already in the list.")
-                    self.clearDisplayedAccount()
-                    self.refresh(queueIfBusy: true)
+                guard let email = verifiedSnapshot.account?.email,
+                    !email.isEmpty,
+                    let accountID = credentialIdentity?.accountID,
+                    credentialIdentity?.email == email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                else {
+                    self.discardAddedProfile(
+                        profile,
+                        message: WidgetLanguage.storedOrAutomatic().text("没有识别到有效账号，本次未添加", "No valid account was found. Nothing was added."),
+                        requestID: requestID)
                     return
+                }
+                switch CodexAddedProfileMatcher.resolve(accountID: accountID, newProfileID: profile.id, profiles: self.profiles) {
+                case .duplicateIndependent(let existingID):
+                    let existingName =
+                        self.profiles.first(where: { $0.id == existingID }).map {
+                            AccountDisplay.profileName($0, allProfiles: self.profiles)
+                        }
+                        ?? WidgetLanguage.storedOrAutomatic().text("原账号", "original account")
+                    let cleanupWarning = self.temporaryProfileCleanupWarning(for: profile.id)
+                    self.syncProfiles()
+                    self.isLoggingIn = false
+                    self.deviceLoginIsAdding = false
+                    self.deviceLogin?.profileID = ""
+                    self.deviceLoginTarget = nil
+                    self.deviceLogin?.existingProfileID = existingID
+                    self.deviceLogin?.phase = .failed(.accountAlreadyExists)
+                    self.accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
+                        "该账号已存在，请在原账号卡片重新登录。", "This account already exists. Sign in again from the original card.")
+                    if let cleanupWarning {
+                        self.accountManagerMessage?.append(" \(cleanupWarning)")
+                        self.deviceLogin?.notice = WidgetLanguage.storedOrAutomatic().text(
+                            "已有账号：\(existingName)。原账号没有改动，但本次新增的临时记录未能清理，请在账号列表手动移除。",
+                            "Existing account: \(existingName). The original account was not changed, but the temporary record added this time could not be cleaned up. Remove it from the account list manually."
+                        )
+                    } else {
+                        self.deviceLogin?.notice = WidgetLanguage.storedOrAutomatic().text(
+                            "已有账号：\(existingName)。本次没有改动原账号。", "Existing account: \(existingName). The original account was not changed.")
+                    }
+                    return
+                case .continueIndependent:
+                    break
                 }
                 do {
                     try self.profileStore.record(verifiedSnapshot, for: profile.id, allowAccountOnly: true)
@@ -730,23 +894,84 @@ final class UsageStore: ObservableObject {
                     self.syncProfiles()
                     self.configureAuthMonitoring()
                     self.isLoggingIn = false
+                    self.deviceLoginIsAdding = false
+                    self.deviceLogin?.phase =
+                        CodexDeviceLoginVerification.hasFreshQuota(verifiedSnapshot, since: startedAt)
+                            && self.profiles.first(where: { $0.id == profile.id })?.lastSnapshot?.fetchedAt == verifiedSnapshot.refreshedAt
+                            && self.profiles.first(where: { $0.id == profile.id })?.lastQuotaReadFailureAt == nil
+                        ? .completed : .quotaPending
                     self.accountManagerMessage = WidgetLanguage.storedOrAutomatic().text("已添加 \(AccountDisplay.masked(email))", "Added \(AccountDisplay.masked(email)).")
                     self.clearDisplayedAccount()
                     self.refresh(queueIfBusy: true)
                 } catch {
                     self.discardAddedProfile(
                         profile,
-                        message: WidgetLanguage.storedOrAutomatic().text("账号保存失败：\(error.localizedDescription)", "Could not save the account: \(error.localizedDescription)"))
+                        message: CodexDeviceLoginFailure.save.message(WidgetLanguage.storedOrAutomatic()),
+                        phase: .failed(.save),
+                        requestID: requestID)
                 }
             }
         }
     }
 
-    private func discardAddedProfile(_ profile: CodexProfile, message: String) {
-        try? profileStore.discardManagedProfile(profile.id)
+    private func discardAddedProfile(
+        _ profile: CodexProfile,
+        message: String,
+        phase: CodexDeviceLoginPhase = .failed(.missingCredentials),
+        requestID: UUID? = nil
+    ) {
+        let cleanupWarning = temporaryProfileCleanupWarning(for: profile.id)
         syncProfiles()
+        if let requestID, deviceLogin?.id != requestID {
+            // Stale request: leave the active session alone, but a failed
+            // cleanup must still reach the status banner.
+            if let cleanupWarning {
+                accountManagerMessage = [accountManagerMessage, cleanupWarning].compactMap { $0 }.joined(separator: " ")
+            }
+            return
+        }
         isLoggingIn = false
         accountManagerMessage = message
+        deviceLogin?.phase = phase
+        if let cleanupWarning {
+            accountManagerMessage = "\(message) \(cleanupWarning)"
+            deviceLogin?.notice = "\(message) \(Self.cleanupPanelNoticeFixed())"
+        }
+        if deviceLoginIsAdding {
+            deviceLogin?.profileID = ""
+            deviceLoginTarget = nil
+        }
+    }
+
+    /// Returns nil when the temporary profile record was discarded. When the
+    /// record cannot be removed (persistence blocked) returns a warning so
+    /// callers surface the failure instead of a silent `try?`; the
+    /// home-directory removal inside discardManagedProfile stays best-effort.
+    private func temporaryProfileCleanupWarning(for profileID: String) -> String? {
+        do {
+            try profileStore.discardManagedProfile(profileID, removingHomeWithCredentials: true)
+            return nil
+        } catch {
+            return Self.cleanupBannerWarning(for: error)
+        }
+    }
+
+    /// Banner warning: carries the failure reason. The review contract keeps
+    /// the reason out of the panel notice, which stays a fixed copy.
+    static func cleanupBannerWarning(for error: Error) -> String {
+        let reason =
+            (error as NSError).userInfo[NSLocalizedDescriptionKey] as? String
+            ?? WidgetLanguage.storedOrAutomatic().text("状态文件无法写入", "the state file could not be written")
+        return WidgetLanguage.storedOrAutomatic().text(
+            "临时账号记录可能仍保留，请在账号列表手动移除（\(reason)）。",
+            "The temporary account record may still be listed; remove it manually from the account list (\(reason)).")
+    }
+
+    /// Fixed panel notice: deliberately excludes the failure reason.
+    static func cleanupPanelNoticeFixed() -> String {
+        WidgetLanguage.storedOrAutomatic().text(
+            "本次新增的临时账号记录未能清理，请在账号列表手动移除。",
+            "The temporary account record added this time could not be cleaned up. Remove it manually from the account list.")
     }
 
     func localResetHistoryCount(for profile: CodexProfile) -> Int {
@@ -809,7 +1034,8 @@ final class UsageStore: ObservableObject {
         }
     }
 
-    func setProfileRemark(_ remark: String, for id: String) {
+    @discardableResult
+    func setProfileRemark(_ remark: String, for id: String) -> Result<Void, Error> {
         do {
             try profileStore.setRemark(remark, for: id)
             syncProfiles()
@@ -817,8 +1043,10 @@ final class UsageStore: ObservableObject {
                 remark.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 ? WidgetLanguage.storedOrAutomatic().text("已恢复账号默认名称", "Restored the default account label.")
                 : WidgetLanguage.storedOrAutomatic().text("账号备注已保存", "Account label saved.")
+            return .success(())
         } catch {
             accountManagerMessage = WidgetLanguage.storedOrAutomatic().text("保存备注失败：\(error.localizedDescription)", "Could not save the label: \(error.localizedDescription)")
+            return .failure(error)
         }
     }
 
@@ -845,8 +1073,8 @@ final class UsageStore: ObservableObject {
                 ? WidgetLanguage.storedOrAutomatic().text(
                     "该账号已加入调度；Next、Hub 配置与编号已同步", "Account added to the pool. Next, Hub config and pool code are synced.")
                 : WidgetLanguage.storedOrAutomatic().text(
-                    "该账号已退出调度并保留原编号；Next 与 Hub 配置已同步，额度刷新和两种暖号照常",
-                    "Account excluded from the pool with its code retained. Next and Hub config are synced; limit refresh and both warm-up windows continue.")
+                    "已关闭后续调度，原编号保留；正在运行的任务不受影响，额度刷新和暖号仍按原设置执行",
+                    "Future dispatch is off and any existing code is retained. Running tasks, quota refresh and configured warm-up continue.")
             debugLog("dispatch participation: three-source sync succeeded")
             refreshWarmUpProfilesThenSchedule()
         } catch {
@@ -906,22 +1134,26 @@ final class UsageStore: ObservableObject {
         }
     }
 
+    @discardableResult
     func setExecutionPreference(
         _ preference: CodexExecutionPreference,
         for id: String,
         applyToAll: Bool
-    ) {
+    ) -> Result<Void, Error> {
         do {
             try profileStore.setExecutionPreference(preference, for: id, applyToAll: applyToAll)
             syncProfiles()
-            let summary = "\(preference.model.displayName) · \(preference.reasoningEffort.displayName) · \(preference.serviceTier.displayName)"
+            let strategy = preference.effectiveStrategy
+            let summary = "\(strategy.mainModel.displayName) · \(strategy.mainReasoningEffort.displayName) · \(preference.serviceTier.displayName)"
             accountManagerMessage =
                 applyToAll
                 ? WidgetLanguage.storedOrAutomatic().text("已将 \(summary) 应用到所有独立账号", "Applied \(summary) to all isolated profiles.")
                 : WidgetLanguage.storedOrAutomatic().text("该账号后续 CLI 与任务派单将使用 \(summary)", "New CLI sessions and dispatched tasks for this profile will use \(summary).")
+            return .success(())
         } catch {
             accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
                 "执行偏好保存失败：\(error.localizedDescription)", "Could not save model settings: \(error.localizedDescription)")
+            return .failure(error)
         }
     }
 
@@ -988,93 +1220,586 @@ final class UsageStore: ObservableObject {
         }
     }
 
-    func loginSelectedMonitorProfile() {
-        loginProfile(selectedMonitorProfileID)
+    func loginSelectedMonitorProfile(host: CodexDeviceLoginHost = .workbench) {
+        _ = loginProfile(selectedMonitorProfileID, host: host)
     }
 
     private var loginPreflightID: UUID?
     private var loginMaintenanceFinishes: [String: Task<Void, Never>] = [:]
 
-    func cancelLogin() {
-        guard isLoggingIn else { return }
-        if loginPreflightID != nil {
-            loginPreflightID = nil
-            isLoggingIn = false
-            accountManagerMessage = WidgetLanguage.storedOrAutomatic().text("登录已取消", "Sign-in cancelled.")
-            return
-        }
-        accountManagerMessage = WidgetLanguage.storedOrAutomatic().text("正在取消登录…", "Cancelling sign-in…")
-        accountActions.cancelLogin()
+    func setDeviceLoginLayoutPreview() {
+        guard isPreview else { return }
+        refreshingProfileIDs = Set(profiles.prefix(1).map(\.id))
+        warmingProfileID = profiles.dropFirst().first?.id
     }
 
-    func loginProfile(_ profileID: String) {
-        guard warmingProfileID == nil else {
-            accountManagerMessage = WidgetLanguage.storedOrAutomatic().text("账号暖号正在执行；完成后再登录", "Wait for the current warm-up to finish before signing in.")
+    static func deviceLoginTargetSelfTest() -> Bool {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("device-target-fixture-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = WorkspacePreviewRenderer.fixtureStore(accountCount: 2, root: root)
+        store.presentDeviceLogin(store.profiles[0])
+        let originalID = store.deviceLogin!.id
+        store.selectedMonitorProfileID = store.profiles[1].id
+        store.receiveDeviceLoginPhase(.verifying, requestID: originalID)
+        guard store.deviceLogin?.profileID == store.profiles[0].id,
+            store.deviceLogin?.phase == .verifying
+        else { return false }
+        store.presentDeviceLogin(store.profiles[1])
+        store.receiveDeviceLoginPhase(.completed, requestID: originalID)
+        guard store.deviceLogin?.profileID == store.profiles[1].id,
+            store.deviceLogin?.phase == .preparing
+        else { return false }
+        guard case .blocked(.preview) = store.addProfile(),
+            store.canBeginAddingProfile() == .preview
+        else { return false }
+        let independent = store.profiles[0]
+        let duplicate = CodexAddedProfileMatcher.resolve(
+            accountID: independent.lastSnapshot?.accountID ?? "missing",
+            newProfileID: "new-profile",
+            profiles: store.profiles)
+        let systemOnly = CodexProfile(
+            id: "system-fixture", name: "System",
+            codexHomePath: root.appendingPathComponent("system").path,
+            isSystemProfile: true, createdAt: Date(),
+            lastSnapshot: independent.lastSnapshot)
+        guard case .duplicateIndependent(let existingID) = duplicate, existingID == independent.id,
+            CodexAddedProfileMatcher.resolve(
+                accountID: independent.lastSnapshot?.accountID ?? "missing",
+                newProfileID: "new-profile",
+                profiles: [systemOnly]) == .continueIndependent
+        else { return false }
+        guard CodexDeviceCopyFeedback.from(wrote: true, kind: .code) == .codeCopied,
+            CodexDeviceCopyFeedback.from(wrote: true, kind: .url) == .urlCopied,
+            CodexDeviceCopyFeedback.from(wrote: false, kind: .code) == .failed,
+            !CodexDeviceCopyFeedback.codeCopied.message(.zh).contains("DEMO"),
+            !CodexDeviceCopyFeedback.failed.message(.en).contains("DEMO")
+        else { return false }
+        var boundWithChrome = independent
+        boundWithChrome.chromeProfile = ChromeProfileBinding(directoryName: "Default", displayName: "Personal")
+        let dedicated = CodexDeviceBrowserRouting.launchPlan(choice: .dedicatedChrome, profile: boundWithChrome)
+        let systemDefault = CodexDeviceBrowserRouting.launchPlan(choice: .systemDefault, profile: boundWithChrome)
+        guard dedicated.binding == nil,
+            dedicated.managedUserDataDirectory == boundWithChrome.codexHomeURL.appendingPathComponent("chrome-session", isDirectory: true),
+            systemDefault.binding == nil,
+            systemDefault.managedUserDataDirectory == nil
+        else { return false }
+        // Production host-teardown entry: mid-login dismissal must migrate
+        // the panel to the workbench without cancelling and without the test
+        // calling migrate itself.
+        guard let tearingDown = store.deviceLogin else { return false }
+        store.isLoggingIn = true
+        store.deviceLoginHost = .setupGuide
+        store.receiveDeviceLoginPhase(
+            .waiting(
+                CodexDeviceAuthorization(
+                    code: "DEMO-ONLY",
+                    url: CodexDeviceCodeParser.officialURL,
+                    expiresAt: Date().addingTimeInterval(900)),
+                .opened),
+            requestID: tearingDown.id)
+        store.handleDeviceLoginSheetDismiss(from: .setupGuide)
+        guard store.deviceLogin?.id == tearingDown.id,
+            store.deviceLogin?.phase.canCancelAuthorization == true,
+            store.isLoggingIn,
+            store.deviceLoginHost == .workbench
+        else { return false }
+        store.handleDeviceLoginSheetDismiss(from: .setupGuide)
+        guard store.deviceLogin?.id == tearingDown.id,
+            store.deviceLoginHost == .workbench
+        else { return false }
+        // Without an active login the dismissal closes the panel.
+        store.isLoggingIn = false
+        store.receiveDeviceLoginPhase(.failed(.unavailable), requestID: tearingDown.id)
+        store.handleDeviceLoginSheetDismiss(from: .workbench)
+        guard store.deviceLogin == nil,
+            !store.migrateDeviceLoginHostIfNeeded(from: .workbench)
+        else { return false }
+        // Save failure with no candidate: the record is discarded, profileID
+        // is cleared and the target dropped, so the panel can only offer
+        // regeneration — never re-verification of a removed account.
+        store.presentDeviceLogin(store.profiles[0], adding: true)
+        guard let failing = store.deviceLogin else { return false }
+        store.isLoggingIn = true
+        store.deviceLoginIsAdding = true
+        store.discardAddedProfile(
+            store.profiles[0],
+            message: CodexDeviceLoginFailure.save.message(.zh),
+            phase: .failed(.save),
+            requestID: failing.id)
+        guard store.deviceLogin?.id == failing.id,
+            store.deviceLogin?.phase == .failed(.save),
+            store.deviceLogin?.profileID == "",
+            store.deviceLoginTarget == nil,
+            !store.isLoggingIn
+        else { return false }
+        // Failure-injection contract: the banner warning carries the injected
+        // reason; the fixed panel notice must stay free of it.
+        let bannerWarning = Self.cleanupBannerWarning(
+            for: NSError(
+                domain: "CodexAccountManagerNext.ProfileStore", code: 3,
+                userInfo: [NSLocalizedDescriptionKey: "INJECTED-REASON-0918"]))
+        let panelNotice = Self.cleanupPanelNoticeFixed()
+        guard bannerWarning.contains("INJECTED-REASON-0918"),
+            !panelNotice.contains("INJECTED-REASON-0918"),
+            !panelNotice.contains("（")
+        else { return false }
+        print("device login frozen target and stale callback self-test passed")
+        return true
+    }
+
+    /// Synthetic event-level check: Escape reaches the panel's own cancel
+    /// button in a cancellable phase and reaches nothing while verifying.
+    static func deviceLoginEscapeShortcutSelfTest() -> Bool {
+        _ = NSApplication.shared
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("device-escape-fixture-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = WorkspacePreviewRenderer.fixtureStore(accountCount: 1, root: root)
+
+        func waitingPresentation() -> CodexDeviceLoginPresentation? {
+            store.presentDeviceLogin(store.profiles[0])
+            guard let id = store.deviceLogin?.id else { return nil }
+            store.isLoggingIn = true
+            store.receiveDeviceLoginPhase(
+                .waiting(
+                    CodexDeviceAuthorization(
+                        code: "DEMO-ONLY",
+                        url: CodexDeviceCodeParser.officialURL,
+                        expiresAt: Date().addingTimeInterval(900)),
+                    .opened),
+                requestID: id)
+            return store.deviceLogin
+        }
+
+        func hostingView(_ presentation: CodexDeviceLoginPresentation) -> NSHostingView<CodexDeviceLoginView> {
+            NSHostingView(
+                rootView: CodexDeviceLoginView(
+                    presentation: presentation, language: .zh, isBusy: true,
+                    copy: {}, reopen: {}, copyURL: {}, retry: {}, verify: {},
+                    cancel: { store.cancelLogin() }, close: {},
+                    chooseBrowser: { _ in }, revealExisting: {}))
+        }
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 480, height: 620),
+            styleMask: [.titled], backing: .buffered, defer: false)
+        let escape = NSEvent.keyEvent(
+            with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+            windowNumber: window.windowNumber, context: nil, characters: "\u{1B}",
+            charactersIgnoringModifiers: "\u{1B}", isARepeat: false, keyCode: 53)
+        guard let escape else { return false }
+
+        guard let waiting = waitingPresentation() else {
+            print("device login Escape self-test failed: no waiting presentation")
+            return false
+        }
+        let cancellableView = hostingView(waiting)
+        window.contentView = cancellableView
+        var handled = cancellableView.performKeyEquivalent(with: escape)
+        if !handled {
+            // A non-key window may skip key-equivalent routing; retry with the
+            // window made key (the self-test window is never shown to a user).
+            window.makeKeyAndOrderFront(nil)
+            NSApplication.shared.activate(ignoringOtherApps: true)
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+            handled = cancellableView.performKeyEquivalent(with: escape)
+        }
+        guard handled, store.deviceLogin?.phase == .cancelling, store.isLoggingIn else {
+            print("device login Escape self-test failed: handled=\(handled) phase=\(String(describing: store.deviceLogin?.phase))")
+            return false
+        }
+
+        store.isLoggingIn = false
+        store.presentDeviceLogin(store.profiles[0])
+        guard let verifyingID = store.deviceLogin?.id else { return false }
+        store.receiveDeviceLoginPhase(.verifying, requestID: verifyingID)
+        guard let verifying = store.deviceLogin, store.deviceLogin?.phase == .verifying else { return false }
+        let verifyingView = hostingView(verifying)
+        window.contentView = verifyingView
+        guard !verifyingView.performKeyEquivalent(with: escape),
+            store.deviceLogin?.phase == .verifying
+        else { return false }
+        print("device login Escape shortcut self-test passed")
+        return true
+    }
+
+    private func presentDeviceLogin(
+        _ profile: CodexProfile?,
+        adding: Bool = false,
+        sourceID: String? = nil,
+        host: CodexDeviceLoginHost = .workbench,
+        phase: CodexDeviceLoginPhase = .preparing,
+        browserChoice: CodexDeviceBrowserChoice? = nil,
+        targetName: String? = nil
+    ) {
+        deviceLoginHost = host
+        deviceLoginTarget = profile
+        deviceLoginIsAdding = adding
+        deviceLoginAddedSourceID = sourceID
+        deviceLoginBrowserChoice = browserChoice
+        let name: String
+        if let targetName {
+            name = targetName
+        } else if let profile {
+            let code = DispatchCodeCatalog.code(for: profile.id, allowsLocalRead: !isPreview)
+            name = AccountDisplay.profileName(profile) + (code.map { " · \($0)" } ?? "")
+        } else {
+            name = WidgetLanguage.storedOrAutomatic().text("新 Codex 账号", "New Codex account")
+        }
+        deviceLogin = CodexDeviceLoginPresentation(
+            id: UUID(),
+            profileID: profile?.id ?? "",
+            targetName: name,
+            phase: phase,
+            browserChoice: browserChoice
+        )
+    }
+
+    private func attachDeviceLoginTarget(
+        _ profile: CodexProfile,
+        adding: Bool,
+        sourceID: String?,
+        requestID: UUID,
+        browserChoice: CodexDeviceBrowserChoice
+    ) {
+        guard deviceLogin?.id == requestID else { return }
+        deviceLoginTarget = profile
+        deviceLoginIsAdding = adding
+        deviceLoginAddedSourceID = sourceID
+        deviceLoginBrowserChoice = browserChoice
+        let code = DispatchCodeCatalog.code(for: profile.id, allowsLocalRead: !isPreview)
+        deviceLogin?.profileID = profile.id
+        deviceLogin?.targetName = AccountDisplay.profileName(profile) + (code.map { " · \($0)" } ?? "")
+        deviceLogin?.browserChoice = browserChoice
+    }
+
+    private func receiveDeviceLoginPhase(_ phase: CodexDeviceLoginPhase, requestID: UUID?) {
+        guard let requestID, deviceLogin?.id == requestID else { return }
+        if deviceLogin?.phase == .cancelling { return }
+        deviceLogin?.phase = phase
+        if phase.authorization == nil {
+            deviceLogin?.copyFeedback = nil
+            deviceLogin?.copyFeedbackUntil = nil
+        }
+    }
+
+    private func deviceLoginFailurePhase(_ error: Error) -> CodexDeviceLoginPhase {
+        if let failure = error as? CodexDeviceLoginFailure { return .failed(failure) }
+        if let error = error as? CodexLoginError {
+            switch error {
+            case .cancelled: return .cancelled
+            case .timedOut: return .expired
+            case .identityMismatch: return .failed(.identityMismatch)
+            case .credentialsUnavailable: return .failed(.missingCredentials)
+            default: return .failed(.unavailable)
+            }
+        }
+        return .failed(.unavailable)
+    }
+
+    func copyDeviceCode() {
+        guard !isPreview, let authorization = deviceLogin?.phase.authorization, authorization.isValid() else { return }
+        NSPasteboard.general.clearContents()
+        let wrote = NSPasteboard.general.setString(authorization.code, forType: .string)
+        applyDeviceCopyFeedback(.from(wrote: wrote, kind: .code))
+    }
+
+    func copyDeviceAuthURL() {
+        guard !isPreview, let authorization = deviceLogin?.phase.authorization, authorization.isValid() else { return }
+        NSPasteboard.general.clearContents()
+        let wrote = NSPasteboard.general.setString(authorization.url.absoluteString, forType: .string)
+        applyDeviceCopyFeedback(.from(wrote: wrote, kind: .url))
+    }
+
+    private func applyDeviceCopyFeedback(_ feedback: CodexDeviceCopyFeedback) {
+        deviceLogin?.copyFeedback = feedback
+        deviceLogin?.copyFeedbackUntil = Date().addingTimeInterval(3)
+    }
+
+    func reopenDeviceAuthPage() {
+        guard !isPreview, deviceLogin?.phase.authorization?.isValid() == true else { return }
+        accountActions.reopenDeviceAuthPage()
+    }
+
+    func dismissDeviceLogin() {
+        guard !isLoggingIn, deviceLogin?.phase.canDismiss == true else { return }
+        deviceLogin = nil
+        deviceLoginTarget = nil
+        deviceLoginIsAdding = false
+        deviceLoginAddedSourceID = nil
+        deviceLoginBrowserChoice = nil
+        deviceLoginChromeProfile = nil
+    }
+
+    @discardableResult
+    func migrateDeviceLoginHostIfNeeded(from host: CodexDeviceLoginHost) -> Bool {
+        guard deviceLogin != nil, deviceLoginHost == host else { return false }
+        deviceLoginHost = .workbench
+        return true
+    }
+
+    func handleDeviceLoginSheetDismiss(from host: CodexDeviceLoginHost) {
+        guard deviceLogin != nil else { return }
+        if deviceLoginHost != host {
             return
         }
-        guard !isRefreshingWarmUpProfiles else {
-            accountManagerMessage = WidgetLanguage.storedOrAutomatic().text("账号数据仍在读取；完成后再登录", "Wait for account data to finish loading before signing in.")
+        if isLoggingIn {
+            // Interactive dismissal is disabled while signing in, so a
+            // dismissal event mid-login is host teardown (guide or menu
+            // closed), not user intent: hand the running login back to the
+            // workbench panel. Cancellation stays with the sheet's cancel
+            // button and the guide's "not now" action, which call
+            // cancelLogin() directly.
+            if host != .workbench {
+                migrateDeviceLoginHostIfNeeded(from: host)
+            }
             return
         }
-        guard !isLoggingIn, !isLaunchingCodex, !isAccountSwitchTransactionActive,
-            captureCurrentProfile(),
-            let profile = profiles.first(where: { $0.id == profileID })
+        dismissDeviceLogin()
+    }
+
+    func confirmDeviceBrowserChoice(_ choice: CodexDeviceBrowserChoice) {
+        guard let presentation = deviceLogin, presentation.phase == .choosingBrowser else { return }
+        let requestID = presentation.id
+        deviceLogin?.browserChoice = choice
+        deviceLoginBrowserChoice = choice
+        if deviceLoginIsAdding {
+            beginAddingProfile(
+                copyingRemarkFrom: deviceLoginAddedSourceID,
+                chromeProfile: deviceLoginChromeProfile,
+                browserChoice: choice,
+                requestID: requestID)
+            return
+        }
+        guard let target = deviceLoginTarget else {
+            deviceLogin?.phase = .failed(.unavailable)
+            return
+        }
+        startExistingProfileLogin(target, browserChoice: choice, requestID: requestID)
+    }
+
+    func revealDeviceLoginExistingAccount() {
+        guard let id = deviceLogin?.existingProfileID, deviceLogin?.phase.canDismiss == true, !isLoggingIn else { return }
+        dismissDeviceLogin()
+        guard profiles.contains(where: { $0.id == id }) else { return }
+        selectMonitorProfile(id)
+        accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
+            "已定位到原账号卡片。请在该卡片重新登录。", "Located the original account card. Sign in again from that card.")
+    }
+
+    func regenerateDeviceCode() {
+        guard !isPreview, !isLoggingIn, !accountActions.isLoginRunning,
+            activeLoginMaintenanceLeases.isEmpty,
+            let choice = deviceLogin?.browserChoice ?? deviceLoginBrowserChoice
         else { return }
-        guard let alias = configuredHubAccountAlias(for: profile) else {
-            accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
-                "无法确认此账号的隔离映射；请先添加独立账号或修复账号映射", "This account's isolated mapping is unverified. Add an isolated profile or repair its mapping first.")
+        let host = deviceLoginHost
+        if deviceLoginIsAdding {
+            let sourceID = deviceLoginAddedSourceID
+            let chromeProfile = deviceLoginChromeProfile
+            presentDeviceLogin(
+                nil, adding: true, sourceID: sourceID, host: host, phase: .preparing, browserChoice: choice)
+            beginAddingProfile(
+                copyingRemarkFrom: sourceID,
+                chromeProfile: chromeProfile,
+                browserChoice: choice,
+                requestID: deviceLogin!.id)
+            return
+        }
+        guard let target = deviceLoginTarget else { return }
+        presentDeviceLogin(target, adding: false, host: host, phase: .preparing, browserChoice: choice)
+        startExistingProfileLogin(target, browserChoice: choice, requestID: deviceLogin!.id)
+    }
+
+    func retryDeviceLoginVerification() {
+        guard !isPreview, !isLoggingIn, let target = deviceLoginTarget,
+            profiles.contains(where: { $0.id == target.id })
+        else {
+            deviceLogin?.phase = .failed(.save)
+            deviceLogin?.profileID = ""
+            deviceLogin?.notice = WidgetLanguage.storedOrAutomatic().text(
+                "这次添加的账号已不在列表中，请重新生成代码后再试。", "That added account is no longer in the list. Generate a new code and try again.")
+            return
+        }
+        _ = loginProfile(target.id, verificationOnly: true, host: deviceLoginHost)
+    }
+
+    func cancelLogin() {
+        guard isLoggingIn, deviceLogin?.phase.canCancelAuthorization == true else { return }
+        deviceLogin?.phase = .cancelling
+        deviceLogin?.copyFeedback = nil
+        deviceLogin?.copyFeedbackUntil = nil
+        accountManagerMessage = WidgetLanguage.storedOrAutomatic().text("正在取消登录…", "Cancelling sign-in…")
+        if loginPreflightID != nil {
+            // Keep the reservation until the pending preflight returns and releases it.
+            loginPreflightID = nil
+        } else {
+            accountActions.cancelLogin()
+        }
+    }
+
+    func finishLoginForTermination() async {
+        loginShuttingDown = true
+        cancelLogin()
+        while isLoggingIn || accountActions.isLoginRunning || !activeLoginMaintenanceLeases.isEmpty {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+    }
+
+    @discardableResult
+    func loginProfile(
+        _ profileID: String,
+        verificationOnly: Bool = false,
+        host: CodexDeviceLoginHost = .workbench
+    ) -> CodexLoginStartResult {
+        if verificationOnly {
+            if let reason = executeLoginBlockReason(profileID) {
+                return blockLoginStart(reason, host: host, profile: profiles.first(where: { $0.id == profileID }))
+            }
+            guard let profile = profiles.first(where: { $0.id == profileID }) else {
+                return blockLoginStart(.profileMissing, host: host)
+            }
+            let choice = deviceLogin?.browserChoice ?? deviceLoginBrowserChoice
+            presentDeviceLogin(profile, host: host, phase: .verifying, browserChoice: choice)
+            startExistingProfileLogin(profile, browserChoice: choice ?? .dedicatedChrome, requestID: deviceLogin!.id, verificationOnly: true)
+            return .accepted(deviceLogin!.id)
+        }
+        if let reason = loginProfileBlockReason(profileID) {
+            return blockLoginStart(reason, host: host, profile: profiles.first(where: { $0.id == profileID }))
+        }
+        guard let profile = profiles.first(where: { $0.id == profileID }) else {
+            return blockLoginStart(.profileMissing, host: host)
+        }
+        presentDeviceLogin(profile, host: host, phase: .choosingBrowser)
+        accountManagerMessage = WidgetLanguage.storedOrAutomatic().text("请先选择这次登录使用的浏览器。", "Choose the browser for this sign-in first.")
+        return .accepted(deviceLogin!.id)
+    }
+
+    private func executeLoginBlockReason(_ profileID: String) -> CodexLoginBlockReason? {
+        if isPreview { return .preview }
+        if loginShuttingDown { return .shuttingDown }
+        if isLoggingIn || accountActions.isLoginRunning || !activeLoginMaintenanceLeases.isEmpty { return .loginInProgress }
+        if isLaunchingCodex { return .launchingCodex }
+        if isAccountSwitchTransactionActive { return .switchInProgress }
+        if warmingProfileID != nil { return .warmingUp }
+        if isRefreshingWarmUpProfiles { return .readingAccounts }
+        if TerminalAppLauncher.codexExecutable() == nil { return .cliUnavailable }
+        guard let profile = profiles.first(where: { $0.id == profileID }) else { return .profileMissing }
+        if profile.isSystemProfile { return .systemProfile }
+        if configuredHubAccountAlias(for: profile) == nil { return .mappingUnconfirmed }
+        return nil
+    }
+
+    private func startExistingProfileLogin(
+        _ profile: CodexProfile,
+        browserChoice: CodexDeviceBrowserChoice,
+        requestID: UUID,
+        verificationOnly: Bool = false
+    ) {
+        if let reason = executeLoginBlockReason(profile.id) {
+            deviceLogin?.phase = .failed(reason.loginFailure)
+            accountManagerMessage = reason.message(WidgetLanguage.storedOrAutomatic())
+            return
+        }
+        guard let current = profiles.first(where: { $0.id == profile.id }), !current.isSystemProfile,
+            let alias = configuredHubAccountAlias(for: current)
+        else {
+            deviceLogin?.phase = .failed(.mappingUnconfirmed)
+            accountManagerMessage = CodexDeviceLoginFailure.mappingUnconfirmed.message(WidgetLanguage.storedOrAutomatic())
             return
         }
         let lease: String
-        do { lease = try DispatchActivityStore.live.reserveMaintenance(account: profile.recordedAccountKey, alias: alias) } catch {
-            accountManagerMessage = WidgetLanguage.storedOrAutomatic().text("此账号已有任务或占用待核实，暂不重新登录", "This account has an active or unverified reservation. Sign-in is blocked.")
+        do { lease = try DispatchActivityStore.live.reserveMaintenance(account: current.recordedAccountKey, alias: alias) } catch {
+            deviceLogin?.phase = .failed(.busy)
+            accountManagerMessage = CodexDeviceLoginFailure.busy.message(WidgetLanguage.storedOrAutomatic())
             return
         }
-        let requestID = UUID()
+        activeLoginMaintenanceLeases.insert(lease)
         loginPreflightID = requestID
         isLoggingIn = true
+        deviceLogin?.phase = verificationOnly ? .verifying : .preparing
         accountManagerMessage = WidgetLanguage.storedOrAutomatic().text("正在核对账号占用…", "Checking account availability…")
         Task { @MainActor in
             let availability = await HubConsoleModel.warmUpAvailability(for: alias, excludingLocalLease: lease)
-            guard loginPreflightID == requestID else {
-                finishAccountMaintenance(lease, succeeded: false)
+            guard loginPreflightID == requestID, deviceLogin?.id == requestID else {
+                finishAccountMaintenance(lease, succeeded: false) {
+                    if self.deviceLogin?.id == requestID {
+                        self.isLoggingIn = false
+                        self.deviceLogin?.phase = .cancelled
+                        self.accountManagerMessage = CodexLoginError.cancelled.localizedDescription
+                    }
+                }
                 return
             }
             loginPreflightID = nil
             guard availability == .idle, !isLaunchingCodex, !isAccountSwitchTransactionActive,
-                let current = profiles.first(where: { $0.id == profile.id }), current.recordedAccountKey == profile.recordedAccountKey
+                let latest = profiles.first(where: { $0.id == current.id }), latest.recordedAccountKey == current.recordedAccountKey
             else {
-                isLoggingIn = false
-                accountManagerMessage = WidgetLanguage.storedOrAutomatic().text("账号忙碌或状态未确认，未启动登录", "The account is busy or unverified. Sign-in was not started.")
-                finishAccountMaintenance(lease, succeeded: false)
+                finishAccountMaintenance(lease, succeeded: false) {
+                    guard self.deviceLogin?.id == requestID else { return }
+                    self.isLoggingIn = false
+                    self.deviceLogin?.phase = .failed(.busy)
+                    self.accountManagerMessage = CodexDeviceLoginFailure.busy.message(WidgetLanguage.storedOrAutomatic())
+                }
                 return
             }
-            performProfileLogin(current, maintenanceLease: lease)
-        }
-    }
-
-    private func performProfileLogin(_ profile: CodexProfile, maintenanceLease: String) {
-        accountManagerMessage = WidgetLanguage.storedOrAutomatic().text("正在登录 \(AccountDisplay.profileName(profile))…", "Signing in to \(AccountDisplay.profileName(profile))…")
-        do {
-            try accountActions.login(profile: profile) { [weak self] result in
-                guard let self else { return }
-                switch result {
-                case .success:
-                    self.verifyReloggedProfile(profile, maintenanceLease: maintenanceLease)
-                case .failure(let error):
-                    self.isLoggingIn = false
-                    self.accountManagerMessage = error.localizedDescription
-                    self.finishAccountMaintenance(maintenanceLease, succeeded: false)
-                }
+            if verificationOnly {
+                verifyReloggedProfile(latest, maintenanceLease: lease, requestID: requestID)
+            } else {
+                performProfileLogin(latest, maintenanceLease: lease, browserChoice: browserChoice, requestID: requestID)
             }
-        } catch {
-            isLoggingIn = false
-            accountManagerMessage = WidgetLanguage.storedOrAutomatic().text("无法启动登录：\(error.localizedDescription)", "Could not start sign-in: \(error.localizedDescription)")
-            finishAccountMaintenance(maintenanceLease, succeeded: false)
         }
     }
 
-    private func finishAccountMaintenance(_ lease: String, succeeded: Bool) {
+    private func performProfileLogin(
+        _ profile: CodexProfile,
+        maintenanceLease: String,
+        browserChoice: CodexDeviceBrowserChoice,
+        requestID: UUID
+    ) {
+        accountManagerMessage = WidgetLanguage.storedOrAutomatic().text("正在生成授权代码…", "Generating an authorization code…")
+        do {
+            try accountActions.login(
+                profile: profile,
+                browserChoice: browserChoice,
+                onPhaseChange: { [weak self] phase in
+                    self?.receiveDeviceLoginPhase(phase, requestID: requestID)
+                },
+                completion: { [weak self] result in
+                    guard let self else { return }
+                    guard self.deviceLogin?.id == requestID else { return }
+                    switch result {
+                    case .success:
+                        self.verifyReloggedProfile(profile, maintenanceLease: maintenanceLease, requestID: requestID)
+                    case .failure(let error):
+                        let phase = self.deviceLoginFailurePhase(error)
+                        self.finishAccountMaintenance(maintenanceLease, succeeded: false) {
+                            guard self.deviceLogin?.id == requestID else { return }
+                            self.isLoggingIn = false
+                            self.deviceLogin?.phase = phase
+                            self.accountManagerMessage = self.safeDeviceLoginMessage(phase)
+                        }
+                    }
+                })
+        } catch {
+            let phase = deviceLoginFailurePhase(error)
+            finishAccountMaintenance(maintenanceLease, succeeded: false) {
+                guard self.deviceLogin?.id == requestID else { return }
+                self.isLoggingIn = false
+                self.deviceLogin?.phase = phase
+                self.accountManagerMessage = self.safeDeviceLoginMessage(phase)
+            }
+        }
+    }
+
+    private func safeDeviceLoginMessage(_ phase: CodexDeviceLoginPhase) -> String {
+        switch phase {
+        case .cancelled: return CodexLoginError.cancelled.localizedDescription
+        case .expired: return CodexLoginError.timedOut.localizedDescription
+        case .failed(let failure): return failure.message(WidgetLanguage.storedOrAutomatic())
+        default: return WidgetLanguage.storedOrAutomatic().text("正在验证登录结果…", "Verifying sign-in…")
+        }
+    }
+
+    private func finishAccountMaintenance(_ lease: String, succeeded: Bool, completion: (() -> Void)? = nil) {
         guard loginMaintenanceFinishes[lease] == nil else { return }
         loginMaintenanceFinishes[lease] = Task { @MainActor [weak self] in
             defer { self?.loginMaintenanceFinishes.removeValue(forKey: lease) }
@@ -1083,10 +1808,14 @@ final class UsageStore: ObservableObject {
                 guard let self else { return }
                 do {
                     try DispatchActivityStore.live.finishMaintenance(lease, succeeded: succeeded)
+                    self.activeLoginMaintenanceLeases.remove(lease)
+                    completion?()
                     return
                 } catch {
-                    self.accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
+                    let notice = WidgetLanguage.storedOrAutomatic().text(
                         "账号维护占用尚未保存完成，正在重试；账号暂不派单", "Finishing the account reservation is pending. Retrying; dispatch remains blocked.")
+                    self.accountManagerMessage = notice
+                    self.deviceLogin?.notice = notice
                 }
                 do { try await Task.sleep(nanoseconds: delay) } catch { return }
                 delay = min(delay * 2, 30_000_000_000)
@@ -1094,64 +1823,60 @@ final class UsageStore: ObservableObject {
         }
     }
 
-    private func verifyReloggedProfile(_ profile: CodexProfile, maintenanceLease: String) {
-        accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
-            "登录完成，正在验证 \(AccountDisplay.profileName(profile))…", "Sign-in complete. Verifying \(AccountDisplay.profileName(profile))…")
+    private func verifyReloggedProfile(_ profile: CodexProfile, maintenanceLease: String, requestID: UUID) {
+        guard deviceLogin?.id == requestID else {
+            finishAccountMaintenance(maintenanceLease, succeeded: false)
+            return
+        }
+        deviceLogin?.phase = .verifying
+        let startedAt = Date()
+        accountManagerMessage = WidgetLanguage.storedOrAutomatic().text("网页授权已完成，正在确认账号身份和额度…", "Web authorization completed. Checking identity and limits…")
         let preference = statisticsPreference
         DispatchQueue.global(qos: .utility).async {
-            let context = RuntimeLoadContext.live(
-                statisticsPreference: preference,
-                codexHomeDirectory: profile.codexHomeURL
-            )
+            let context = RuntimeLoadContext.live(statisticsPreference: preference, codexHomeDirectory: profile.codexHomeURL)
             let verifiedSnapshot = CodexUsageReader().load(context: context)
             let officialProfile = CodexOfficialProfileReader.load(codexHomeURL: profile.codexHomeURL)
-            let credentialIdentity = CodexOfficialProfileReader.credentialIdentity(
-                codexHomeURL: profile.codexHomeURL
-            )
+            let credentialIdentity = CodexOfficialProfileReader.credentialIdentity(codexHomeURL: profile.codexHomeURL)
             DispatchQueue.main.async {
                 var verified = false
-                defer { self.finishAccountMaintenance(maintenanceLease, succeeded: verified) }
-                guard let verifiedAccount = verifiedSnapshot.account else {
-                    self.isLoggingIn = false
-                    self.accountManagerMessage = WidgetLanguage.storedOrAutomatic().text("没有识别到有效账号，请重新登录", "No valid account was found. Please sign in again.")
-                    return
+                var phase: CodexDeviceLoginPhase = .failed(.verification)
+                defer {
+                    self.finishAccountMaintenance(maintenanceLease, succeeded: verified) {
+                        guard self.deviceLogin?.id == requestID else { return }
+                        self.isLoggingIn = false
+                        self.deviceLogin?.phase = phase
+                    }
                 }
-                guard
-                    profile.isSystemProfile
-                        || (profile.matchesRecordedAccount(email: verifiedAccount.email)
-                            && profile.matchesRecordedCredential(credentialIdentity))
+                guard self.deviceLogin?.id == requestID,
+                    let current = self.profiles.first(where: { $0.id == profile.id }), current.recordedAccountKey == profile.recordedAccountKey,
+                    let verifiedAccount = verifiedSnapshot.account,
+                    profile.matchesRecordedAccount(email: verifiedAccount.email),
+                    profile.matchesRecordedCredential(credentialIdentity)
                 else {
-                    self.isLoggingIn = false
-                    self.accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
-                        "登录账号与这张账号卡不一致，已阻止额度串号", "The signed-in account does not match this profile. Its limits were not saved.")
+                    self.accountManagerMessage = CodexDeviceLoginFailure.verification.message(WidgetLanguage.storedOrAutomatic())
                     return
                 }
                 do {
-                    try self.profileStore.record(
-                        verifiedSnapshot,
-                        for: profile.id,
-                        allowAccountOnly: true,
-                        allowSystemAccountChange: profile.isSystemProfile
-                    )
-                    if let officialProfile {
-                        try self.profileStore.recordOfficialProfile(officialProfile, for: profile.id)
-                    }
+                    try self.profileStore.record(verifiedSnapshot, for: profile.id, allowAccountOnly: true)
+                    if let officialProfile { try self.profileStore.recordOfficialProfile(officialProfile, for: profile.id) }
                     try self.profileStore.selectMonitor(profile.id)
                     self.syncProfiles()
                     self.configureAuthMonitoring()
                     self.clearDisplayedAccount()
-                    self.isLoggingIn = false
                     verified = true
+                    phase =
+                        CodexDeviceLoginVerification.hasFreshQuota(verifiedSnapshot, since: startedAt)
+                            && self.profiles.first(where: { $0.id == profile.id })?.lastSnapshot?.fetchedAt == verifiedSnapshot.refreshedAt
+                            && self.profiles.first(where: { $0.id == profile.id })?.lastQuotaReadFailureAt == nil
+                        ? .completed : .quotaPending
                     self.accountManagerMessage =
-                        verifiedSnapshot.quotaReadSucceeded
-                        ? WidgetLanguage.storedOrAutomatic().text(
-                            "已登录并验证 \(AccountDisplay.profileName(profile)) 的身份与额度", "Sign-in, identity and limits verified for \(AccountDisplay.profileName(profile)).")
-                        : WidgetLanguage.storedOrAutomatic().text("登录身份已验证，额度尚未读取成功，正在重新刷新", "Sign-in identity verified. Limits are not yet available; refreshing again.")
+                        phase == .completed
+                        ? WidgetLanguage.storedOrAutomatic().text("登录完成，身份与额度已验证。", "Sign-in complete. Identity and limits verified.")
+                        : WidgetLanguage.storedOrAutomatic().text("账号身份已确认，额度暂未读到。", "Account identity confirmed. Limits are not yet available.")
                     self.refresh(queueIfBusy: true)
                 } catch {
-                    self.isLoggingIn = false
-                    self.accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
-                        "登录账号保存失败：\(error.localizedDescription)", "Could not save the signed-in account: \(error.localizedDescription)")
+                    phase = .failed(.save)
+                    self.accountManagerMessage = CodexDeviceLoginFailure.save.message(WidgetLanguage.storedOrAutomatic())
                 }
             }
         }
@@ -3480,17 +4205,14 @@ final class UsageStore: ObservableObject {
         successfulInterval: TimeInterval,
         language: WidgetLanguage
     ) -> String {
+        if CodexWarmUpPolicy.hasUnresolvedFailure(profile, selection: warmUpSelection) {
+            return language.text("\(label)上次结果未确认；等待新窗口证据或手动处理", "\(label) previous result unconfirmed; awaiting verified new windows or manual recovery")
+        }
         if CodexWarmUpPolicy.isWindowIdle(window) {
             if profile.lastWarmUpSucceeded == true, let lastWarmUpAt = profile.lastWarmUpAt {
                 let next = lastWarmUpAt.addingTimeInterval(successfulInterval + CodexWarmUpPolicy.resetGrace)
                 if next > Date() {
                     return language.text("下次暖号 \(label) ", "Next \(label) warm-up ") + language.dateTime(next)
-                }
-            }
-            if profile.lastWarmUpSucceeded == false, let attemptedAt = profile.lastWarmUpAt {
-                let retryAt = attemptedAt.addingTimeInterval(CodexWarmUpPolicy.failureRetryInterval)
-                if retryAt > Date() {
-                    return language.text("\(label)自动复核重试 ", "\(label) recheck and retry ") + language.dateTime(retryAt)
                 }
             }
             return language.text("\(label)等待额度刷新后自动继续", "\(label) continues after limit refresh")
@@ -3628,22 +4350,36 @@ final class UsageStore: ObservableObject {
         }
         accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
             "正在为 \(AccountDisplay.profileName(currentProfile)) 发送最小请求…", "Sending a minimal request for \(AccountDisplay.profileName(currentProfile))…")
+        let expectedAccountID = currentProfile.lastSnapshot?.accountID ?? ""
+        var requestWasPersisted = false
         do {
+            let currentUnexpected = warmUpResetTracker.kinds(for: currentProfile.recordedAccountKey)
+            try profileStore.beginWarmUp(
+                requestID: activityLease, for: profile.id, expectedAccountID: expectedAccountID,
+                selection: effectiveWarmUpSelection(for: currentProfile, unexpected: currentUnexpected),
+                unexpected: currentUnexpected, manual: manual)
+            requestWasPersisted = true
             try accountActions.warmUp(profile: currentProfile) { [weak self] result in
                 guard let self else { return }
                 switch result {
                 case .success:
                     var saved = true
                     do {
-                        try self.profileStore.recordWarmUp(at: Date(), succeeded: true, for: profile.id)
+                        try self.profileStore.recordWarmUp(
+                            at: Date(), succeeded: true, for: profile.id,
+                            requestID: activityLease, expectedAccountID: expectedAccountID)
                     } catch {
                         saved = false
-                        self.hubWarmUpDeferredUntilByAccount[accountKey] = Date().addingTimeInterval(CodexWarmUpPolicy.failureRetryInterval)
+                        self.hubWarmUpDeferredUntilByAccount[accountKey] = Date().addingTimeInterval(
+                            CodexWarmUpPolicy.sevenDaySuccessInterval)
                         self.recordOperationsIssue(
-                            id: "warmup-state-save-failed", summary: "Warm-up returned successfully but its saved state could not be updated. Automatic retry was deferred.")
+                            id: "warmup-state-save-failed",
+                            summary:
+                                "Warm-up returned successfully but its saved state could not be updated. The durable reservation remains occupied; manual verification is required."
+                        )
                     }
                     self.warmUpResetTracker.acknowledge(resetTicket, for: accountKey)
-                    self.finishWarmUpActivity(activityLease, succeeded: true)
+                    if saved { self.finishWarmUpActivity(activityLease, succeeded: true) }
                     self.syncProfiles()
                     self.warmingProfileID = nil
                     self.accountManagerMessage =
@@ -3652,52 +4388,68 @@ final class UsageStore: ObservableObject {
                             "\(AccountDisplay.profileName(profile)) 已发送最小请求，正在确认窗口是否开始…",
                             "Minimal request sent for \(AccountDisplay.profileName(profile)). Checking whether a usage window started…")
                         : WidgetLanguage.storedOrAutomatic().text(
-                            "最小请求已成功，但暖号记录保存失败；已延后重试，请核实账号历史",
-                            "The minimal request succeeded, but its history could not be saved. Retry was deferred; verify account history.")
+                            "最小请求已成功，但记录保存失败；已保留持久占用，重启也不会自动重试，请核实账号历史",
+                            "The request succeeded but saving failed. The durable reservation remains occupied across restarts; verify account history.")
                     self.refreshProfileAfterWarmUp(profile, manual: manual)
                 case .failure(let error):
-                    self.finishWarmUpActivity(activityLease, succeeded: false)
                     self.recordOperationsIssue(
                         id: "warmup-request-failed",
-                        summary: "An automatic or manual warm-up request failed. The account retains its bounded retry plan; inspect the account detail for its failure category.")
-                    self.recordWarmUpFailure(
+                        summary:
+                            "An automatic or manual warm-up request failed. Automatic retry waits for the next selected quota window; inspect the account detail for its failure category."
+                    )
+                    let saved = self.recordWarmUpFailure(
                         at: Date(),
                         succeeded: false,
                         failureReason: CodexAccountActions.warmUpFailureReason(for: error),
-                        for: profile.id
+                        for: profile.id, requestID: activityLease, expectedAccountID: expectedAccountID
                     )
+                    if saved { self.finishWarmUpActivity(activityLease, succeeded: false) }
                     self.syncProfiles()
                     self.warmingProfileID = nil
                     self.accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
-                        "\(AccountDisplay.profileName(profile)) 暖号失败：\(error.localizedDescription)；5 分钟后自动复核重试",
-                        "Warm-up failed for \(AccountDisplay.profileName(profile)): \(error.localizedDescription). Rechecking for retry in 5 minutes.")
+                        "\(AccountDisplay.profileName(profile)) 暖号失败：\(error.localizedDescription)；本窗口不再自动重试",
+                        "Warm-up failed for \(AccountDisplay.profileName(profile)): \(error.localizedDescription). It will not retry automatically in this window.")
                     self.scheduleWarmUpTimer()
                 }
             }
         } catch {
-            finishWarmUpActivity(activityLease, succeeded: false)
-            recordOperationsIssue(id: "warmup-start-failed", summary: "A warm-up request could not start. The account retains its bounded retry plan.")
-            recordWarmUpFailure(
-                at: Date(),
-                succeeded: false,
-                failureReason: CodexAccountActions.warmUpFailureReason(for: error),
-                for: profile.id
-            )
+            recordOperationsIssue(id: "warmup-start-failed", summary: "A warm-up request could not start. Automatic retry waits for the next selected quota window.")
+            if !requestWasPersisted {
+                hubWarmUpDeferredUntilByAccount[accountKey] = Date().addingTimeInterval(hubWarmUpRetryDelay)
+            }
+            let saved =
+                !requestWasPersisted
+                || recordWarmUpFailure(
+                    at: Date(),
+                    succeeded: false,
+                    failureReason: CodexAccountActions.warmUpFailureReason(for: error),
+                    for: profile.id, requestID: activityLease, expectedAccountID: expectedAccountID
+                )
+            if saved { finishWarmUpActivity(activityLease, succeeded: false, cancelled: !requestWasPersisted) }
             syncProfiles()
             warmingProfileID = nil
             accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
-                "暖号启动失败：\(error.localizedDescription)；5 分钟后自动复核重试", "Could not start warm-up: \(error.localizedDescription). Rechecking for retry in 5 minutes.")
+                "暖号启动失败：\(error.localizedDescription)；本窗口不再自动重试", "Could not start warm-up: \(error.localizedDescription). It will not retry automatically in this window.")
             scheduleWarmUpTimer()
         }
     }
 
-    private func recordWarmUpFailure(at date: Date, succeeded: Bool, failureReason: String?, for profileID: String) {
-        do { try profileStore.recordWarmUp(at: date, succeeded: succeeded, failureReason: failureReason, for: profileID) } catch {
+    private func recordWarmUpFailure(
+        at date: Date, succeeded: Bool, failureReason: String?, for profileID: String,
+        requestID: String, expectedAccountID: String
+    ) -> Bool {
+        do {
+            try profileStore.recordWarmUp(
+                at: date, succeeded: succeeded, failureReason: failureReason, for: profileID,
+                requestID: requestID, expectedAccountID: expectedAccountID)
+            return true
+        } catch {
             hubWarmUpDeferredUntilByAccount[profiles.first(where: { $0.id == profileID })?.recordedAccountKey ?? profileID] = Date().addingTimeInterval(
-                CodexWarmUpPolicy.failureRetryInterval)
+                CodexWarmUpPolicy.sevenDaySuccessInterval)
             recordOperationsIssue(
                 id: "warmup-failure-save-failed",
-                summary: "A warm-up failed and its failure record could not be saved. Retry is deferred; verify account history before further maintenance.")
+                summary: "A warm-up failed and its failure record could not be saved. The durable reservation remains occupied; verify account history before further maintenance.")
+            return false
         }
     }
 
@@ -4193,6 +4945,20 @@ final class UsageStore: ObservableObject {
     @MainActor
     private func startAfterPendingSwitchRecovery() {
         guard hasStarted else { return }
+        publisherMessages.start { [weak self] message, admission in
+            await withCheckedContinuation { continuation in
+                NextLocalNotificationService.shared.submitPublisherMessage(
+                    message,
+                    shouldSend: { [weak self] in
+                        guard let self else { return false }
+                        return admission() && self.hasStarted && self.localNotificationsEnabled
+                            && !self.pausedAutomationFeatures.contains(.localNotification)
+                    }
+                ) { result in
+                    if case .success = result { continuation.resume(returning: true) } else { continuation.resume(returning: false) }
+                }
+            }
+        }
         publicResetAnnouncements.configure(
             notifyLocally: { [weak self] announcement in
                 guard let self, self.hasStarted, self.publicResetAnnouncements.enabled,
@@ -4483,6 +5249,7 @@ final class UsageStore: ObservableObject {
         desktopSwitchPreparationTask?.cancel()
         finishDesktopSwitchPreparation()
         publicResetAnnouncements.stop()
+        publisherMessages.stop()
         terminalMonitors.values.forEach { $0.cancel() }
         terminalMonitors.removeAll()
         loginPreflightID = nil
@@ -5014,6 +5781,7 @@ final class UsageStore: ObservableObject {
     }
 
     private func syncProfiles() {
+        if !isPreview { DispatchCodeCatalog.reload() }
         profiles = profileStore.profiles
         let activeProfileIDs = Set(profiles.map(\.id))
         quotaResetRefreshAttempts = quotaResetRefreshAttempts.filter { activeProfileIDs.contains($0.key) }

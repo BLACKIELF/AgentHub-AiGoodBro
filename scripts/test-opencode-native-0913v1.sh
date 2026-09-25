@@ -21,4 +21,4 @@ xcrun swiftc -swift-version 5 -module-cache-path "$fixture_dir/modules" \
   Sources/CodexUsageWidget/Services/LocalCLIQuotaReader.swift \
   Sources/CodexUsageWidget/Services/TokenMonitorLocalCLIQuotaReader.swift \
   "$fixture_dir/BoundedFile.swift" scripts/test-opencode-native-0913v1.swift -o "$fixture_dir/fixture"
-"$fixture_dir/fixture"
+"$fixture_dir/fixture" "$@"

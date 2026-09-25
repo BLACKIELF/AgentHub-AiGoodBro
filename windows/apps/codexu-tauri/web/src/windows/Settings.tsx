@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { AssistantContact } from '../components/AssistantContact';
 import { open } from '@tauri-apps/plugin-dialog';
 import { FolderOpen, Palette, RefreshCw, Trash2 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
@@ -15,13 +16,13 @@ import { useI18n } from '../i18n/I18nProvider';
 
 export function Settings() {
   const canInvokeTauri = isTauriRuntimeAvailable();
-  const { settings, update, error } = useSettings();
+  const { settings, update, error, paletteFallbackNotice } = useSettings();
   const { t, language, preference, setPreference } = useI18n();
   const [saved, setSaved] = useState(false);
 
   useEffect(() => {
     applyAppTheme(
-      settings?.config.theme ?? 'system',
+      settings?.config.theme ?? 'dark',
       settings?.config.palette_id ?? DEFAULT_PALETTE_ID,
     );
   }, [settings?.config.theme, settings?.config.palette_id]);
@@ -181,6 +182,7 @@ export function Settings() {
           </Section>
 
           <Section title={t('settings.appearance')}>
+            {paletteFallbackNotice && <p role="status" className="mb-3 text-xs text-status-warn">{language === 'zh-Hans' ? '原配色不可用，已使用经典默认配色。' : 'Saved palette is unavailable; the classic default is in use.'}</p>}
             <div className="grid grid-cols-3 gap-2">
               {(['light', 'dark', 'system'] as ThemeMode[]).map((themeValue) => (
                 <button
@@ -322,6 +324,7 @@ export function Settings() {
 
           {saved && <p className="text-center text-sm text-status-ok">{t('common.saved')}</p>}
           {error && <p className="text-center text-sm text-status-error">{t('settings.failed', { error })}</p>}
+          <AssistantContact />
         </div>
       </main>
     </div>

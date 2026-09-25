@@ -11,6 +11,7 @@ DOMAIN = ROOT / "Sources/CodexUsageWidget/Domain/LocalCLIModelAvailability.swift
 BRIDGE = ROOT / "Sources/CodexUsageWidget/Domain/LocalCLIModelReceiptBridge.swift"
 STORE = ROOT / "Sources/CodexUsageWidget/Services/LocalCLIModelAvailabilityStore.swift"
 VIEW = ROOT / "Sources/CodexUsageWidget/UI/LocalCLIModelAvailabilityView.swift"
+PALETTE = ROOT / "Sources/CodexUsageWidget/DesignSystem/FixedVisualPalette.swift"
 FIXTURE = ROOT / "tests/LocalCLIModelAvailabilityFixture.swift"
 SDK = pathlib.Path("/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk")
 
@@ -56,7 +57,7 @@ class LocalCLIModelAvailabilityTests(unittest.TestCase):
                 [
                     "xcrun", "swiftc", "-typecheck", "-target", f"{platform.machine()}-apple-macos13.0",
                     "-sdk", str(sdk), "-module-cache-path", str(pathlib.Path(directory) / "ModuleCache"),
-                    str(DOMAIN_ACCOUNT), str(DOMAIN), str(VIEW), str(stub_path),
+                    str(DOMAIN_ACCOUNT), str(DOMAIN), str(VIEW), str(PALETTE), str(stub_path),
                 ],
                 cwd=ROOT, text=True, capture_output=True, timeout=180, check=False,
             )

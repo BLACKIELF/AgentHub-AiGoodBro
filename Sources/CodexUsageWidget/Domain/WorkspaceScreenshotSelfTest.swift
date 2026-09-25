@@ -106,7 +106,7 @@ enum WorkspaceScreenshotSelfTest {
         expect(AccountCardGridLayout.columnCount(width: 1_064, itemCount: 9) == 3, "the 1100pt window content fits three cards")
         expect(AccountCardGridLayout.columnCount(width: 1_404, itemCount: 9) == 4, "the 1440pt window content fits four cards")
         expect(AccountCardGridLayout.columnCount(width: .infinity, itemCount: 9) == 1, "nonfinite probes must be safe")
-        expect(AccountCardGridLayout.selfTest(), "all card rows must share one global measured size at 720 and 980 points")
+        expect(AccountCardGridLayout.selfTest(), "cards align within each row without inheriting unrelated rows' height at 720 and 980 points")
         expect(CrossProviderQuotaSummary.selfTest(), "provider summaries must preserve unknown values and never add unrelated percentages")
         expect(ProfileReorderMotion.animation(reduceMotion: true) == nil, "reordering must respect reduced motion")
         let originalOrder = ["one", "two", "three", "four"]
@@ -291,7 +291,9 @@ enum WorkspaceScreenshotSelfTest {
                         "the ninth account row must increase the complete export height at every layout"
                     )
                     let rowHeight = captured.plan.size.height - eightAccountCapture.plan.size.height
-                    expect(rowHeight <= 118, "each comfortably spaced compact row must remain under 118 points including its gap at all supported widths")
+                    // 0921v2 intentionally exposes model and dispatch controls
+                    // by default; the old 118pt folded-row budget hid them.
+                    expect(rowHeight >= 150 && rowHeight <= 208, "expanded model/scheduling rows must remain visible and bounded to 208 points including the gap")
                     print("Compact layout: width=\(Int(width)), scheme=\(scheme), row=\(Int(rowHeight))pt")
                     expect(NSBitmapImageRep(data: captured.png)?.pixelsHigh == captured.plan.pixelsHigh, "long PNG must retain its full planned height")
                     expect(store.isPreview && store.profiles.count == 9, "export must retain all nine fixture accounts")

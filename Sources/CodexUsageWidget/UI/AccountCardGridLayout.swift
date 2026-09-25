@@ -1,8 +1,8 @@
 import SwiftUI
 
 /// Eager native layout keeps every account in full-content screenshots, including offscreen rows.
-/// Every card uses the same width and the same height — the tallest measured card — so later
-/// rows cannot shrink below the first row.
+/// Cards align within each row. A detailed card must not inflate every other
+/// row or separate a short card's identity from its quota and controls.
 struct AccountCardGridLayout: Layout {
     /// Account cards contain identity, model disclosure, quota windows, and
     /// primary actions. The old 250pt minimum fit three cards at the 822pt
@@ -15,15 +15,14 @@ struct AccountCardGridLayout: Layout {
     /// The resolved dimensions for one complete grid pass.
     ///
     /// Keeping this value independent from `Layout.Subviews` makes the sizing
-    /// contract testable without rendering a window. In particular, the
-    /// height is intentionally global to the whole collection, not a maximum
-    /// calculated independently for each row.
+    /// contract testable without rendering a window.
     struct Metrics: Equatable {
         let width: CGFloat
         let columns: Int
         let rows: Int
         let cardWidth: CGFloat
-        let cardHeight: CGFloat
+        let rowHeights: [CGFloat]
+        let rowOffsets: [CGFloat]
         let totalHeight: CGFloat
         let itemCount: Int
         let spacing: CGFloat
@@ -41,9 +40,9 @@ struct AccountCardGridLayout: Layout {
             let column = index % columns
             return CGRect(
                 x: CGFloat(column) * (cardWidth + spacing),
-                y: CGFloat(row) * (cardHeight + spacing),
+                y: rowOffsets[row],
                 width: cardWidth,
-                height: cardHeight
+                height: rowHeights[row]
             )
         }
     }
@@ -70,7 +69,7 @@ struct AccountCardGridLayout: Layout {
         return (itemCount - 1) / columns + 1
     }
 
-    /// Computes one global card size for all rows at a given width.
+    /// Computes equal widths and the natural maximum height of each row.
     ///
     /// `intrinsicHeights` are the unconstrained heights returned by each
     /// subview for the resolved card width. Invalid heights are treated as
@@ -79,15 +78,24 @@ struct AccountCardGridLayout: Layout {
         let resolvedWidth = Self.resolvedWidth(width)
         let columns = columnCount(width: resolvedWidth, itemCount: intrinsicHeights.count, minimumWidth: minimumWidth)
         let cardWidth = Self.cardWidth(width: resolvedWidth, columns: columns)
-        let cardHeight = sharedCardHeight(intrinsicHeights)
         let rows = rowCount(itemCount: intrinsicHeights.count, columns: columns)
-        let totalHeight = cardHeight * CGFloat(rows) + CGFloat(max(0, rows - 1)) * spacing
+        let rowHeights = (0..<rows).map { row in
+            sharedCardHeight(Array(intrinsicHeights[(row * columns)..<min((row + 1) * columns, intrinsicHeights.count)]))
+        }
+        var nextY: CGFloat = 0
+        let rowOffsets = rowHeights.map { height in
+            let offset = nextY
+            nextY += height + spacing
+            return offset
+        }
+        let totalHeight = rows == 0 ? 0 : nextY - spacing
         return Metrics(
             width: resolvedWidth,
             columns: columns,
             rows: rows,
             cardWidth: cardWidth,
-            cardHeight: cardHeight,
+            rowHeights: rowHeights,
+            rowOffsets: rowOffsets,
             totalHeight: totalHeight,
             itemCount: intrinsicHeights.count,
             spacing: spacing
@@ -164,8 +172,8 @@ struct AccountCardGridLayout: Layout {
             let measured = metrics(width: width, intrinsicHeights: heights)
             guard measured.rows >= 3,
                 measured.cardWidth > 0,
-                measured.cardHeight == shared,
-                measured.totalHeight == measured.cardHeight * CGFloat(measured.rows)
+                measured.rowHeights.max() == shared,
+                measured.totalHeight == measured.rowHeights.reduce(0, +)
                     + CGFloat(measured.rows - 1) * spacing,
                 measured.frame(for: -1) == nil,
                 measured.frame(for: heights.count) == nil
@@ -176,11 +184,18 @@ struct AccountCardGridLayout: Layout {
 
             let frames = heights.indices.compactMap { measured.frame(for: $0) }
             guard frames.count == heights.count,
-                frames.allSatisfy({ $0.width == measured.cardWidth && $0.height == measured.cardHeight }),
+                frames.enumerated().allSatisfy({ index, frame in
+                    frame.width == measured.cardWidth && frame.height == measured.rowHeights[index / measured.columns]
+                        && frame.height >= heights[index]
+                }),
                 Set(frames.map(\.minY)).count == measured.rows,
-                frames.last?.maxY == measured.totalHeight
+                frames.last?.maxY == measured.totalHeight,
+                measured.totalHeight < shared * CGFloat(measured.rows) + CGFloat(measured.rows - 1) * spacing,
+                frames.enumerated().allSatisfy({ index, frame in
+                    frames.dropFirst(index + 1).allSatisfy { !frame.intersects($0) }
+                })
             else {
-                print("account card grid layout self-test failed: non-uniform \(Int(width))pt frames")
+                print("account card grid layout self-test failed: invalid row alignment at \(Int(width))pt")
                 return false
             }
         }

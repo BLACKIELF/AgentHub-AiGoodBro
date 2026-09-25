@@ -334,7 +334,7 @@ struct DispatchParticipationSync {
         }
 
         var hubObject = try object(hub, error: .invalidHub)
-        guard var accounts = hubObject["accounts"] as? [[String: Any]], !accounts.isEmpty,
+        guard var accounts = hubObject["accounts"] as? [[String: Any]],
             accounts.allSatisfy({
                 nonempty($0["alias"]) != nil && canonicalHome($0["home"]) != nil
                     && ($0["dispatchDisabled"] == nil || boolean($0["dispatchDisabled"]) != nil)
@@ -343,6 +343,27 @@ struct DispatchParticipationSync {
         else { throw DispatchParticipationError.invalidHub }
         let matches = accounts.indices.filter { index in
             group.contains { canonicalHome($0["codexHomePath"]) == canonicalHome(accounts[index]["home"]) }
+        }
+        // An account absent from Hub still needs a working opt-out. No new Hub
+        // identity is created, and entries belonging to other homes stay intact.
+        if !enabled && matches.isEmpty {
+            var catalog = try codes.map { try object($0, error: .invalidCodes) } ?? ["schemaVersion": 1, "accounts": []]
+            try normalizeCatalog(&catalog, profiles: profiles, hub: hubObject, accounts: accounts)
+            var entries = try validatedEntries(catalog)
+            for index in entries.indices where groupIDs.contains(nonempty(entries[index]["profileId"]) ?? "") {
+                guard entries[index]["email"] == nil || normalized(entries[index]["email"]) == email,
+                    !accounts.contains(where: { normalized($0["alias"]) == normalized(entries[index]["alias"]) })
+                else { throw DispatchParticipationError.ambiguousAccount }
+                entries[index]["active"] = false
+            }
+            for index in profiles.indices where groupIDs.contains(nonempty(profiles[index]["id"]) ?? "") {
+                profiles[index]["automaticSwitchParticipation"] = false
+                if let priority { profiles[index]["prioritizeDispatch"] = priority }
+            }
+            next["profiles"] = profiles
+            catalog["accounts"] = entries
+            try validatePreflightCatalog(catalog)
+            return [try encode(next), hub, try encode(catalog)]
         }
         // Exclusion can safely cover every validated home of the same identity.
         // Joining still requires one unambiguous execution home.

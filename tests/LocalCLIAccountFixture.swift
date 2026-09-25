@@ -57,6 +57,11 @@ struct ZCodeCLIQuotaReader {
     func load(profile: LocalCLIProfile) async -> LocalCLIQuotaResult { unsupportedQuota(profile) }
 }
 
+struct AntigravityCLIQuotaReader {
+    func load(profile: LocalCLIProfile) async -> LocalCLIQuotaResult { unsupportedQuota(profile) }
+    static func hasLinkedCache(at root: URL) -> Bool { false }
+}
+
 private func expect(_ condition: @autoclosure () -> Bool, _ message: String) throws {
     if !condition() { throw FixtureFailure.failed(message) }
 }
@@ -469,9 +474,36 @@ private func testOpenCodeReusesSavedProviderUnlessUpdateRequested() async throws
     try expect(after == credentials, "reuse and provider-update launch never rewrite stored credentials")
 }
 
+@MainActor
+private func testRenameKeepsOrderAndReportsFailure() throws {
+    let paths = try makeRoot("rename-order")
+    defer { try? FileManager.default.removeItem(at: paths.root) }
+    let store = makeStore(home: paths.home, support: paths.support)
+    store.discover()
+    for name in ["first", "second"] {
+        let directory = paths.root.appendingPathComponent(name)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        store.link(kind: .zcode, directory: directory, name: name)
+    }
+    let before = store.profiles(for: .zcode).filter { !$0.isDefault }
+    guard before.count == 2 else { throw FixtureFailure.failed("rename fixtures missing") }
+    try expect(store.rename(before[0], name: "renamed"), "successful rename reports success")
+    let after = store.profiles(for: .zcode).filter { !$0.isDefault }
+    try expect(after.map(\.id) == before.map(\.id), "renaming first account cannot move it to the end")
+    let saved = try Data(contentsOf: storage(paths.support))
+    try expect(!store.rename(after[0], name: ""), "invalid rename reports failure")
+    try expect(tryData(storage(paths.support)) == saved, "invalid rename leaves persisted bytes unchanged")
+    try Data("corrupt".utf8).write(to: storage(paths.support))
+    try expect(!store.rename(after[0], name: "must-not-save"), "write conflict reports failure")
+    try expect(store.profiles(for: .zcode).filter { !$0.isDefault } == after, "failed rename cannot change visible state")
+}
+
+private func tryData(_ url: URL) -> Data? { try? Data(contentsOf: url) }
+
 @main enum Main {
     @MainActor static func main() async throws {
         try await testDiscoveryLinkRenameUnlinkAndPermissions()
+        try testRenameKeepsOrderAndReportsFailure()
         try testWorkBuddyInternationalOnlyDiscovery()
         try await testStaleWriterConflictPreservesWinner()
         try await testInvalidStoredProfilesRemainUntouched()

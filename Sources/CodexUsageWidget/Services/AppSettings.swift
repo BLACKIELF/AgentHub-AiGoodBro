@@ -68,10 +68,10 @@ enum WidgetThemeMode: String, CaseIterable, Equatable {
 
     static let storageKey = "CodexManagerNext.interfaceThemeMode"
 
-    static func storedOrAutomatic(defaults: UserDefaults = .standard) -> WidgetThemeMode {
+    static func storedOrDefault(defaults: UserDefaults = .standard) -> WidgetThemeMode {
         guard let rawValue = defaults.string(forKey: storageKey),
             let mode = WidgetThemeMode(rawValue: rawValue)
-        else { return .system }
+        else { return .dark }
         return mode
     }
 
@@ -241,6 +241,14 @@ final class AppSettings: ObservableObject {
         }
     }
 
+    @Published var tokenUsageHomeRange: TokenUsageHomeRange {
+        didSet { defaults.set(tokenUsageHomeRange.rawValue, forKey: TokenUsageHomeRange.storageKey) }
+    }
+
+    @Published var tokenUsageHomeCustomStart: Date {
+        didSet { defaults.set(tokenUsageHomeCustomStart, forKey: TokenUsageHomeRange.customStartKey) }
+    }
+
     @Published var accountMenuTransparency: AccountMenuTransparency {
         didSet {
             accountMenuTransparency.persist(defaults: defaults)
@@ -369,24 +377,40 @@ final class AppSettings: ObservableObject {
     var globalShortcutRegistration: ((GlobalShortcut) -> Result<Void, GlobalShortcutRegistrationFailure>)?
     var globalShortcutUnregistration: (() -> Result<Void, GlobalShortcutRegistrationFailure>)?
 
-    init(defaults: UserDefaults = .standard, paletteCatalog: PaletteCatalog = .loadFromMainBundle()) {
+    init(
+        defaults: UserDefaults = .standard,
+        paletteCatalog: PaletteCatalog = .loadFromMainBundle(),
+        previewAvatarRoot: URL? = nil
+    ) {
         self.defaults = defaults
         statisticsEngine = .stored(defaults: defaults)
         self.paletteCatalog = paletteCatalog
         setupProgress = .load(from: defaults)
         let storedPaletteID = defaults.string(forKey: Self.paletteIDKey)
+        let initialPaletteID =
+            paletteCatalog.contains(PaletteCatalog.initialPaletteID)
+            ? PaletteCatalog.initialPaletteID : PaletteCatalog.defaultPaletteID
         if let storedPaletteID, paletteCatalog.contains(storedPaletteID) {
             paletteID = storedPaletteID
             paletteFallbackNotice = nil
-        } else {
+        } else if let storedPaletteID {
             paletteID = PaletteCatalog.defaultPaletteID
-            paletteFallbackNotice = storedPaletteID.map(PaletteFallbackNotice.init(unavailableID:))
+            paletteFallbackNotice = PaletteFallbackNotice(unavailableID: storedPaletteID)
             defaults.set(PaletteCatalog.defaultPaletteID, forKey: Self.paletteIDKey)
+        } else {
+            paletteID = initialPaletteID
+            paletteFallbackNotice = nil
+            defaults.set(initialPaletteID, forKey: Self.paletteIDKey)
         }
         language = WidgetLanguage.storedOrAutomatic(defaults: defaults)
-        themeMode = WidgetThemeMode.storedOrAutomatic(defaults: defaults)
+        themeMode = WidgetThemeMode.storedOrDefault(defaults: defaults)
         particleAnimationMode = ParticleAnimationMode.storedOrDefault(defaults: defaults)
         usageTrendWindow = UsageTrendWindow.storedOrDefault(defaults: defaults)
+        tokenUsageHomeRange = TokenUsageHomeRange.storedOrDefault(defaults: defaults)
+        tokenUsageHomeCustomStart =
+            (defaults.object(forKey: TokenUsageHomeRange.customStartKey) as? Date)
+            ?? Calendar.current.date(byAdding: .day, value: -29, to: Date())
+            ?? Date()
         accountMenuTransparency = AccountMenuTransparency.storedOrDefault(defaults: defaults)
         homeModuleArrangement = WorkspaceModuleArrangement.load(defaults.data(forKey: WorkspaceModuleArrangement.storageKey))
         var navigationBackup: Data?
@@ -403,7 +427,8 @@ final class AppSettings: ObservableObject {
         }
         appIconStyle = AppIconStyle.storedOrDefault(defaults: defaults)
         let avatarRoot =
-            FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
+            previewAvatarRoot
+            ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
             .appendingPathComponent("AiGoodBro/avatars", isDirectory: true)
             ?? FileManager.default.temporaryDirectory.appendingPathComponent("AiGoodBro-avatars")
         avatarAssetStore = AccountAvatarAssetStore(root: avatarRoot)
@@ -478,7 +503,9 @@ final class AppSettings: ObservableObject {
     }
 
     func resetPalette() {
-        _ = selectPalette(PaletteCatalog.defaultPaletteID)
+        _ = selectPalette(
+            paletteCatalog.contains(PaletteCatalog.initialPaletteID)
+                ? PaletteCatalog.initialPaletteID : PaletteCatalog.defaultPaletteID)
     }
 
     func isRuntimeVisible(_ scope: RuntimeScope) -> Bool {

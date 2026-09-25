@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AiGoodBro · 原有主题与毛玻璃提案 · 0923v8</title>
+  <style>
+    :root { font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "SF Pro Text", sans-serif; font-synthesis: none; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--canvas); color: var(--text); -webkit-font-smoothing: antialiased; }
+    button, select { font: inherit; cursor: pointer; }
+    button:focus-visible, select:focus-visible { outline: 2px solid var(--accent-text); outline-offset: 3px; }
+    body[data-appearance="dark"] {
+      color-scheme: dark; --canvas:#15171e; --surface:#292c34; --surface-2:#252831; --text:#f4f5f8;
+      --muted:#bdc1cd; --dim:#a0a6b5; --line:#ffffff19; --track:#ffffff17;
+      --warm:#ffbe55; --danger:#ff746b; --good:#59c77d; --shadow:#05081066;
+      --window-glass:#16181e99; --header-glass:#34374066; --card-glass:#35384182;
+      --nav-glass:#43475447; --control:#ffffff0c; --selected:#ffffff17;
+      --edge:#ffffff26; --shine:#ffffff09; --card-shadow:#070b161a;
+    }
+    body[data-appearance="light"] {
+      color-scheme: light; --canvas:#e9ecf2; --surface:#fafbfe; --surface-2:#f0f2f7; --text:#202532;
+      --muted:#555e6e; --dim:#656e7f; --line:#23365521; --track:#24375a14;
+      --warm:#855300; --danger:#b42318; --good:#147039; --shadow:#202b4930;
+      --window-glass:#f0f2f890; --header-glass:#ffffff70; --card-glass:#ffffffa8;
+      --nav-glass:#ffffff73; --control:#ffffff70; --selected:#ffffffdc;
+      --edge:#ffffffee; --shine:#ffffff70; --card-shadow:#30476b0b;
+    }
+    .canvas { min-height: 100vh; padding: 28px; background: radial-gradient(ellipse at 4% 0%, color-mix(in srgb, var(--accent) 28%, transparent), transparent 56%), radial-gradient(ellipse at 98% 90%, color-mix(in srgb, var(--secondary) 24%, transparent), transparent 60%), var(--canvas); }
+    .window { width: min(100%, 1600px); margin: 0 auto; background: var(--window-glass); border: 1px solid var(--line); border-top-color: var(--edge); border-radius: 14px; overflow: hidden; box-shadow: 0 24px 60px var(--shadow), 0 1px 2px var(--shadow); }
+    .titlebar { height: 65px; display: flex; align-items: center; padding: 0 25px; gap: 15px; border-bottom: 1px solid var(--line); background: linear-gradient(var(--shine), transparent), var(--header-glass); backdrop-filter: blur(28px) saturate(125%); -webkit-backdrop-filter: blur(28px) saturate(125%); }
+    .traffic { display: flex; gap: 8px; margin-right: 12px; }
+    .traffic i { display: block; width: 11px; height: 11px; border-radius: 50%; background: #ee625c; }
+    .traffic i:nth-child(2) { background: #f2bf4f; } .traffic i:nth-child(3) { background: #5fc66b; }
+    .brand-icon { width: 28px; height: 28px; object-fit: contain; border-radius: 7px; }
+    .brand { display: flex; align-items: baseline; gap: 12px; min-width: 0; }
+    .brand strong { font-size: 20px; font-weight: 700; letter-spacing: -.02em; white-space: nowrap; }
+    .brand span { font-size: 12px; font-weight: 550; color: var(--dim); white-space: nowrap; }
+    .spacer { flex: 1; }
+    .sample { font-size: 11px; color: var(--dim); border: 1px solid var(--line); border-radius: 5px; padding: 4px 7px; }
+    .theme-picker { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
+    .theme-picker select { max-width: 140px; height: 28px; padding: 0 25px 0 9px; border: 1px solid var(--line); border-radius: 6px; background: var(--control); color: var(--text); font-size: 12px; }
+    .theme-picker select option { background: var(--surface); color: var(--text); }
+    .theme-swatch { width: 9px; height: 9px; background: var(--accent); border-radius: 50%; box-shadow: 0 0 0 3px var(--selection-fill); }
+    .topnav { margin: 12px 24px 0; height: 43px; display: flex; align-items: center; gap: 4px; padding: 3px 6px; background: linear-gradient(var(--shine), transparent), var(--nav-glass); border: 1px solid var(--line); border-top-color: var(--edge); border-radius: 9px; backdrop-filter: blur(20px) saturate(120%); -webkit-backdrop-filter: blur(20px) saturate(120%); box-shadow: 0 3px 10px var(--card-shadow); }
+    .navitem { height: 33px; padding: 0 12px; display: flex; align-items: center; gap: 8px; border: 0; border-radius: 6px; background: transparent; color: var(--muted); white-space: nowrap; font-size: 12px; font-weight: 600; }
+    .navitem.active { color: var(--accent-text); background: var(--selection-fill); box-shadow: inset 0 0 0 1px var(--selection-stroke); }
+    .navitem:hover { color: var(--text); }
+    .navitem img { width: 18px; height: 18px; object-fit: contain; }
+    .navglyph { width: 17px; text-align: center; color: var(--muted); font-weight: 700; font-size: 16px; }
+    .navitem.active .navglyph { color: var(--accent-text); }
+    .navmanage { margin-left: auto; }
+    main { padding: 18px 26px 12px; }
+    .notice { min-height: 43px; display: flex; align-items: center; gap: 16px; padding: 9px 13px; border: 1px solid var(--line); border-radius: 8px; background: var(--control); font-size: 12px; color: var(--muted); }
+    .notice .label { color: var(--text); font-weight: 700; font-size: 13px; white-space: nowrap; }
+    .notice .label b { color: var(--accent-text); margin-right: 8px; }
+    .notice .state { color: var(--warm); font-weight: 700; }
+    .notice .count { color: var(--warm); font-weight: 750; font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .notice .side { margin-left: auto; white-space: nowrap; }
+    .sectionhead { display: flex; align-items: center; margin: 21px 0 11px; gap: 14px; min-height: 32px; }
+    .sectionhead h1 { font-size: 16px; margin: 0; letter-spacing: -.015em; font-weight: 700; }
+    .sectionhead h1 span { margin-left: 7px; color: var(--dim); font-size: 13px; }
+    .sectmark { width: 23px; height: 23px; object-fit: contain; }
+    .textbutton, .switcher button { color: var(--muted); border: 1px solid var(--line); background: var(--control); border-radius: 6px; height: 28px; padding: 0 9px; font-size: 12px; font-weight: 600; }
+    .textbutton:hover, .switcher button:hover { color: var(--text); }
+    .textbutton.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+    .switcher { display: flex; border: 1px solid var(--line); border-radius: 7px; background: var(--control); padding: 2px; gap: 1px; }
+    .switcher button { border: 0; background: transparent; height: 24px; padding: 0 10px; }
+    .switcher button[aria-pressed="true"] { color: var(--text); background: var(--selected); box-shadow: 0 1px 3px var(--card-shadow), inset 0 1px var(--edge); }
+    .accounts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 11px; }
+    .account { min-width: 0; min-height: 265px; display: flex; flex-direction: column; padding: 14px 15px 13px; border: 1px solid var(--line); border-top-color: var(--edge); border-radius: 10px; background: linear-gradient(145deg, var(--shine), transparent 65%), var(--card-glass); backdrop-filter: blur(22px) saturate(115%); -webkit-backdrop-filter: blur(22px) saturate(115%); box-shadow: 0 4px 14px var(--card-shadow), inset 0 1px 0 var(--shine); }
+    .account.featured { border-color: var(--selection-stroke); box-shadow: 0 4px 14px var(--card-shadow), inset 0 1px 0 var(--shine); }
+    .accthead { display: flex; align-items: center; gap: 8px; min-width: 0; }
+    .num { color: var(--dim); font: 700 12px ui-monospace, SFMono-Regular, monospace; letter-spacing: .02em; }
+    .accticon { width: 22px; height: 22px; border-radius: 5px; object-fit: contain; }
+    .acctname { font-size: 14px; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .tier { margin-left: auto; flex: 0 0 auto; background: var(--selection-fill); color: var(--accent-text); border-radius: 5px; padding: 3px 7px; font-size: 10px; font-weight: 700; letter-spacing: .03em; }
+    .meta { display: flex; align-items: center; justify-content: space-between; margin-top: 8px; color: var(--muted); font-size: 11px; }
+    .status { display: inline-flex; align-items: center; gap: 5px; }
+    .status::before { content: ""; width: 5px; height: 5px; background: var(--dim); border-radius: 50%; }
+    .status.current::before { background: var(--good); }
+    .balance { margin-top: 10px; padding-bottom: 10px; border-bottom: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; color: var(--dim); font-size: 11px; }
+    .balance strong { color: var(--text); font-weight: 650; }
+    .limits { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 15px; margin-top: 10px; }
+    .limit { min-width: 0; }
+    .limit-top { display: flex; align-items: baseline; justify-content: space-between; gap: 5px; }
+    .limit-top span { color: var(--muted); font-size: 11px; font-weight: 600; }
+    .limit-top strong { color: var(--text); font-size: 21px; line-height: 1.1; font-weight: 650; letter-spacing: -.025em; font-variant-numeric: tabular-nums; }
+    .track { height: 5px; overflow: hidden; border-radius: 3px; margin: 7px 0 9px; background: var(--quota-track); }
+    .track i { height: 100%; display: block; border-radius: inherit; background: linear-gradient(90deg, var(--quota-start), var(--quota-end)); width: var(--pct); }
+    .limit.secondary .track { background: var(--quota-secondary-track); }
+    .limit.secondary .track i { background: linear-gradient(90deg, var(--quota-secondary-start), var(--quota-secondary-end)); }
+    .limit.low .track i { background: var(--danger); }
+    .limit.warn .track i { background: var(--warm); }
+    .when { color: var(--muted); font-size: 10.5px; line-height: 1.5; white-space: nowrap; font-variant-numeric: tabular-nums; }
+    .when b { color: var(--text); font-weight: 620; }
+    .acctactions { margin-top: auto; padding-top: 10px; display: flex; align-items: center; border-top: 1px solid var(--line); gap: 6px; }
+    .iconbtn { min-width: 29px; height: 26px; border: 1px solid var(--line); border-radius: 5px; background: var(--control); color: var(--muted); font-size: 16px; line-height: 1; }
+    .iconbtn.terminal { color: var(--accent-text); font-size: 15px; font-weight: 700; }
+    .manage { margin-left: auto; color: var(--text); font-size: 11px; font-weight: 650; border: 0; background: transparent; padding: 4px 2px; }
+    .accounts.rows { display: block; border: 1px solid var(--line); border-top-color: var(--edge); border-radius: 9px; overflow-x: auto; background: var(--card-glass); backdrop-filter: blur(22px) saturate(115%); -webkit-backdrop-filter: blur(22px) saturate(115%); }
+    .list-header { display: none; }
+    .rows .list-header { display: grid; grid-template-columns: minmax(220px, 1.25fr) minmax(135px, .65fr) minmax(200px, .9fr) minmax(280px, 1.3fr) minmax(280px, 1.3fr) 110px; gap: 12px; padding: 9px 14px; background: var(--surface-2); border-bottom: 1px solid var(--line); color: var(--dim); font-size: 10.5px; font-weight: 650; }
+    .rows .account { display: grid; grid-template-columns: minmax(220px, 1.25fr) minmax(135px, .65fr) minmax(200px, .9fr) minmax(280px, 1.3fr) minmax(280px, 1.3fr) 110px; min-height: 76px; padding: 11px 14px; gap: 12px; align-items: center; border: 0; border-radius: 0; border-bottom: 1px solid var(--line); background: transparent; backdrop-filter: none; -webkit-backdrop-filter: none; box-shadow: none; }
+    .rows .account, .rows .list-header { min-width: 1320px; }
+    .rows .account:nth-child(odd) { background: var(--control); }
+    .rows .account:last-child { border-bottom: 0; }
+    .rows .account.featured { box-shadow: inset 2px 0 var(--accent); }
+    .rows .accthead { grid-column: 1; }
+    .rows .meta { grid-column: 2; display: block; margin: 0; }
+    .rows .meta > span { display: block; margin: 3px 0; }
+    .rows .balance { grid-column: 3; display: block; margin: 0; padding: 0; border: 0; }
+    .rows .balance > span { display: block; margin: 3px 0; }
+    .rows .limits { display: contents; }
+    .rows .limit { padding: 0 5px; }
+    .rows .limit-top strong { font-size: 15px; }
+    .rows .track { margin: 4px 0; }
+    .rows .acctactions { grid-column: 6; margin: 0; padding: 0; border: 0; }
+    .rows .manage { white-space: nowrap; }
+    .clihead { display: flex; align-items: baseline; margin: 19px 0 10px; gap: 9px; }
+    .clihead strong { font-size: 13px; } .clihead span { color: var(--dim); font-size: 11px; }
+    .cli-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+    .cli-item { display: flex; align-items: center; gap: 11px; border-top: 1px solid var(--line); padding-top: 10px; font-size: 12px; }
+    .cli-logo { font-weight: 700; font-size: 16px; color: var(--muted); width: 18px; text-align: center; }
+    .cli-name { font-weight: 650; }
+    .cli-state { margin-left: auto; color: var(--dim); font-size: 11px; }
+    footer { height: 44px; display: flex; align-items: center; gap: 20px; padding: 0 26px; border-top: 1px solid var(--line); color: var(--dim); font-size: 11px; background: var(--control); }
+    footer .right { margin-left: auto; }
+    @media(max-width:1200px) { .topnav .hide-medium, .sample { display: none; } .accounts:not(.rows) { grid-template-columns: repeat(2, minmax(0, 1fr)); } .notice { flex-wrap: wrap; gap: 8px 14px; } .notice .side { margin-left: 0; } }
+    @media(max-width:760px) { .canvas { padding: 0; } .window { border: 0; border-radius: 0; } .brand span, .sample, .topnav .hide-small, .notice .side, .traffic, .theme-picker label { display: none; } .titlebar { height: auto; min-height: 65px; padding: 12px 14px; flex-wrap: wrap; gap: 10px; } .brand strong { font-size: 17px; } .titlebar .spacer { display: none; } .theme-picker { margin-left: auto; } .theme-picker select { max-width: 105px; } .topnav { margin: 8px 10px 0; overflow-x: auto; } .navitem { padding: 0 9px; } main { padding: 14px 12px; } .sectionhead { gap: 7px; flex-wrap: wrap; } .sectionhead > .textbutton:not(.primary) { display: none; } .accounts:not(.rows) { grid-template-columns: 1fr; } .cli-grid { grid-template-columns: repeat(2, 1fr); } footer { padding: 0 12px; gap: 9px; } footer .right { display: none; } }
+    @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) { .window, .titlebar, .topnav, .account, .accounts.rows { background: var(--surface); } }
+    @media(prefers-reduced-transparency:reduce), (prefers-contrast:more) { .canvas { background: var(--canvas); } .window, .titlebar, .topnav, .account, .accounts.rows { background: var(--surface); backdrop-filter: none; -webkit-backdrop-filter: none; box-shadow: none; } .rows .account { background: var(--surface); } .window, .account, .topnav { border-color: var(--dim); } }
+  </style>
+</head>
+<body data-theme="codexu.liquid-keycap" data-appearance="dark">
+  <div class="canvas"><div class="window">
+    <header class="titlebar">
+      <div class="traffic" aria-hidden="true"><i></i><i></i><i></i></div>
+      <img class="brand-icon" src="../../Resources/AiGoodBro-icon.png" alt="">
+      <div class="brand"><strong>AiGoodBro</strong><span>账号、额度与使用记录</span></div>
+      <span class="spacer"></span><span class="sample">示例数据 · 设计预览</span>
+      <div class="theme-picker"><span class="theme-swatch" aria-hidden="true"></span><label for="theme-select">原有主题</label><select id="theme-select" aria-label="原有主题"></select></div>
+      <div class="switcher appearance-switch" aria-label="外观"><button data-appearance-choice="light" aria-pressed="false">浅色</button><button data-appearance-choice="dark" aria-pressed="true">深色</button></div>
+    </header>
+    <nav class="topnav" aria-label="工作区">
+      <button class="navitem active"><span class="navglyph">⌂</span>主页</button>
+      <button class="navitem"><img src="../../Resources/codex-color.png" alt="">Codex</button>
+      <button class="navitem"><span class="navglyph">K</span>Kimi Code</button>
+      <button class="navitem"><span class="navglyph">▣</span>WorkBuddy</button>
+      <button class="navitem"><span class="navglyph">T</span>TRAE</button>
+      <button class="navitem hide-small"><span class="navglyph">⌘</span>OpenCode</button>
+      <button class="navitem hide-small"><span class="navglyph">◌</span>Grok</button>
+      <button class="navitem hide-medium"><span class="navglyph">✦</span>Gemini CLI</button>
+      <button class="navitem hide-medium"><span class="navglyph">mi</span>MiMo</button>
+      <button class="navitem navmanage"><span class="navglyph">＋</span>管理</button>
+    </nav>
+    <main>
+      <div class="notice"><span class="label"><b>⌄</b>推荐与公告</span><span>公开重置预告</span><span class="state">待确认</span><span>预计 9 月 23 日 15:00 前</span><span class="side">最晚还有 <span class="count">12:00:00</span> · AiGoodBro 公告 · 推荐 Skills</span></div>
+      <div class="sectionhead"><img class="sectmark" src="../../Resources/codex-color.png" alt=""><h1>Codex 账号 <span>8</span></h1><span class="spacer"></span><button class="textbutton">编号与排序 ⌄</button><div class="switcher"><button data-view="cards" aria-pressed="true">卡片</button><button data-view="rows" aria-pressed="false">列表</button></div><button class="textbutton primary">＋ 添加账号</button></div>
+      <section class="accounts" id="accounts" aria-label="Codex 账号"></section>
+      <div class="clihead"><strong>⌄　其他 CLI</strong><span>服务未提供的额度保持未知</span></div>
+      <section class="cli-grid" aria-label="其他 CLI"><div class="cli-item"><img class="accticon" src="../../Resources/claudecode-color.png" alt=""><span class="cli-name">Claude Code</span><span class="cli-state">额度未知</span></div><div class="cli-item"><span class="cli-logo">K</span><span class="cli-name">Kimi Code</span><span class="cli-state">额度未知</span></div><div class="cli-item"><span class="cli-logo">◌</span><span class="cli-name">Grok</span><span class="cli-state">额度未知</span></div><div class="cli-item"><span class="cli-logo">✦</span><span class="cli-name">Gemini CLI</span><span class="cli-state">额度未知</span></div></section>
+    </main>
+    <footer><span>添加账号指南</span><span>关于 AiGoodBro</span><span>致谢</span><span class="right">0923v8 · 原有主题 × 毛玻璃　｜　示例数据</span></footer>
+  </div></div>
+  <script>
+    const accounts = [
+      {name:'pro20x', tier:'PRO 20x', status:'当前 Codex', current:true, expiry:'09/25', points:'499.96', five:null, seven:62, fiveReset:'官方未提供', sevenReset:'09/26 20:51', fiveLeft:'—', sevenLeft:'3 天 17:51:00'},
+      {name:'pro5x', tier:'PRO 5x', status:'已保存账号', expiry:'09/30', points:'—', five:null, seven:98, fiveReset:'官方未提供', sevenReset:'09/28 16:36', fiveLeft:'—', sevenLeft:'5 天 13:36:00'},
+      {name:'工作号', tier:'PLUS', status:'已保存账号', expiry:'未提供', points:'0', five:100, seven:32, fiveReset:'09/23 06:00', sevenReset:'09/27 13:29', fiveLeft:'03:00:00', sevenLeft:'4 天 10:29:00'},
+      {name:'协作号', tier:'PLUS', status:'已保存账号', expiry:'09/26', points:'0', five:95, seven:82, fiveReset:'09/23 05:03', sevenReset:'09/28 08:09', fiveLeft:'02:03:00', sevenLeft:'5 天 05:09:00'},
+      {name:'日常号', tier:'PLUS', status:'已保存账号', expiry:'待核实', points:'0', five:100, seven:20, fiveReset:'09/23 06:00', sevenReset:'09/27 02:06', fiveLeft:'03:00:00', sevenLeft:'3 天 23:06:00'},
+      {name:'美国号', tier:'PLUS', status:'已保存账号', expiry:'待核实', points:'0', five:100, seven:45, fiveReset:'09/23 06:00', sevenReset:'09/28 07:18', fiveLeft:'03:00:00', sevenLeft:'5 天 04:18:00'},
+      {name:'个人号', tier:'PLUS', status:'已保存账号', expiry:'未提供', points:'0', five:98, seven:16, fiveReset:'09/23 05:30', sevenReset:'09/24 11:03', fiveLeft:'02:30:00', sevenLeft:'1 天 08:03:00'},
+      {name:'MGR', tier:'PLUS', status:'已保存账号', expiry:'09/30', points:'2646.31', five:100, seven:35, fiveReset:'09/23 06:00', sevenReset:'09/25 15:06', fiveLeft:'03:00:00', sevenLeft:'2 天 12:06:00'}
+    ];
+    const escapeHTML = value => String(value).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    const limit = (label, pct, reset, remaining) => `<div class="limit ${label === '7 天' ? 'secondary' : 'primary'} ${pct != null && pct <= 20 ? 'low' : pct != null && pct <= 50 ? 'warn' : ''}"><div class="limit-top"><span>${label}剩余</span><strong>${pct == null ? '—' : pct + '%'}</strong></div><div class="track"><i style="--pct:${pct == null ? 0 : pct}%"></i></div><div class="when">重置 <b>${escapeHTML(reset)}</b><br>还有 <b>${escapeHTML(remaining)}</b></div></div>`;
+    document.getElementById('accounts').innerHTML = '<div class="list-header"><span>账号</span><span>状态 · 会员到期</span><span>余额 · 点数</span><span>5 小时剩余 · 重置</span><span>7 天剩余 · 重置</span><span>操作</span></div>' + accounts.map((a,i) => `<article class="account ${a.current ? 'featured' : ''}"><div class="accthead"><span class="num">${String(i+1).padStart(2,'0')}</span><img class="accticon" src="../../Resources/codex-color.png" alt=""><span class="acctname">${escapeHTML(a.name)}</span><span class="tier">${escapeHTML(a.tier)}</span></div><div class="meta"><span class="status ${a.current ? 'current' : ''}">${escapeHTML(a.status)}</span><span>会员到期 ${escapeHTML(a.expiry)}</span></div><div class="balance"><span>美元 <strong>—</strong></span><span>点数 <strong>${escapeHTML(a.points)}</strong></span></div><div class="limits">${limit('5 小时',a.five,a.fiveReset,a.fiveLeft)}${limit('7 天',a.seven,a.sevenReset,a.sevenLeft)}</div><div class="acctactions"><button class="iconbtn" aria-label="刷新 ${escapeHTML(a.name)}">↻</button><button class="iconbtn terminal" aria-label="打开 ${escapeHTML(a.name)} 的终端">▣⌄</button><button class="manage">管理 ›</button></div></article>`).join('');
+    const params = new URLSearchParams(location.search);
+    // Exact built-in palette tokens are embedded below for reliable local-file previews.
+    const palettes = {"codexu.default":{"name":"默认","light":{"accent":{"primary":"#2866F7","primaryStrong":"#1F59ED","primaryLight":"#7BA0FF","secondary":"#8B6DFF","secondaryStrong":"#6D45E8","highlight":"#DAA3FA"},"selection":{"foreground":"#2866F7","fill":"#2866F71F","stroke":"#2866F757","focusRing":"#2866F7A6"},"quota":{"primary":{"start":"#7BA0FF","end":"#2866F7","track":"#2866F71A","label":"#2866F7"},"secondary":{"start":"#DAA3FA","end":"#8B6DFF","track":"#8B6DFF1A","label":"#8B6DFF"}}},"dark":{"accent":{"primary":"#2866F7","primaryStrong":"#1F59ED","primaryLight":"#7BA0FF","secondary":"#8B6DFF","secondaryStrong":"#6D45E8","highlight":"#DAA3FA"},"selection":{"foreground":"#2866F7","fill":"#2866F71F","stroke":"#2866F757","focusRing":"#2866F7A6"},"quota":{"primary":{"start":"#7BA0FF","end":"#2866F7","track":"#2866F71A","label":"#2866F7"},"secondary":{"start":"#DAA3FA","end":"#8B6DFF","track":"#8B6DFF1A","label":"#8B6DFF"}}}},"codexu.liquid-keycap":{"name":"液态键帽","light":{"accent":{"primary":"#2F7DE5","primaryStrong":"#1558BD","primaryLight":"#79B8FF","secondary":"#F3BD12","secondaryStrong":"#D99B00","highlight":"#2DA74C"},"selection":{"foreground":"#1558BD","fill":"#2F7DE51F","stroke":"#2F7DE55C","focusRing":"#2F7DE5A6"},"quota":{"primary":{"start":"#79B8FF","end":"#2F7DE5","track":"#2F7DE51F","label":"#1558BD"},"secondary":{"start":"#FFD75A","end":"#F3A712","track":"#F3BD1224","label":"#9C6800"}}},"dark":{"accent":{"primary":"#4E9AFF","primaryStrong":"#2475DB","primaryLight":"#8CC5FF","secondary":"#FFD24A","secondaryStrong":"#E8AD12","highlight":"#42C963"},"selection":{"foreground":"#8CC5FF","fill":"#4E9AFF24","stroke":"#4E9AFF66","focusRing":"#4E9AFFB3"},"quota":{"primary":{"start":"#8CC5FF","end":"#2475DB","track":"#4E9AFF24","label":"#8CC5FF"},"secondary":{"start":"#FFE173","end":"#E8AD12","track":"#FFD24A24","label":"#FFD24A"}}}},"codexu.blue-white-porcelain":{"name":"青花瓷","light":{"accent":{"primary":"#164F86","primaryStrong":"#082F59","primaryLight":"#4E86B5","secondary":"#4F7774","secondaryStrong":"#365E5D","highlight":"#8A6A43"},"selection":{"foreground":"#164F86","fill":"#164F861F","stroke":"#164F8657","focusRing":"#164F86A6"},"quota":{"primary":{"start":"#4E86B5","end":"#164F86","track":"#164F861A","label":"#164F86"},"secondary":{"start":"#B9D0C7","end":"#4F7774","track":"#4F77741A","label":"#4F7774"}}},"dark":{"accent":{"primary":"#69A4D1","primaryStrong":"#A7CBE4","primaryLight":"#8AB9D9","secondary":"#86AAA3","secondaryStrong":"#B4CEC7","highlight":"#D2B27B"},"selection":{"foreground":"#A7CBE4","fill":"#69A4D129","stroke":"#69A4D170","focusRing":"#A7CBE4C2"},"quota":{"primary":{"start":"#A7CBE4","end":"#3978AA","track":"#8AB9D929","label":"#A7CBE4"},"secondary":{"start":"#B4CEC7","end":"#5E8983","track":"#86AAA329","label":"#B4CEC7"}}}},"codexu.orchid-dawn":{"name":"蒙特雷曙霞","light":{"accent":{"primary":"#6A4BB1","primaryStrong":"#50368D","primaryLight":"#9276CE","secondary":"#B7498B","secondaryStrong":"#91366D","highlight":"#D87755"},"selection":{"foreground":"#6A4BB1","fill":"#6A4BB11F","stroke":"#6A4BB157","focusRing":"#6A4BB1A6"},"quota":{"primary":{"start":"#9276CE","end":"#6A4BB1","track":"#6A4BB11A","label":"#6A4BB1"},"secondary":{"start":"#D57AAF","end":"#B7498B","track":"#B7498B1A","label":"#B7498B"}}},"dark":{"accent":{"primary":"#B79AF4","primaryStrong":"#9877DE","primaryLight":"#D0BCFA","secondary":"#EF82BD","secondaryStrong":"#D260A1","highlight":"#E9A071"},"selection":{"foreground":"#D0BCFA","fill":"#B79AF429","stroke":"#B79AF470","focusRing":"#D0BCFAC2"},"quota":{"primary":{"start":"#D0BCFA","end":"#B79AF4","track":"#B79AF429","label":"#D0BCFA"},"secondary":{"start":"#F5ACD2","end":"#EF82BD","track":"#EF82BD29","label":"#F5ACD2"}}}},"codexu.thousand-li-landscape":{"name":"千里江山","light":{"accent":{"primary":"#1F5F83","primaryStrong":"#164562","primaryLight":"#4D8CAF","secondary":"#3E7B5D","secondaryStrong":"#2D6047","highlight":"#B08A38"},"selection":{"foreground":"#1F5F83","fill":"#1F5F831F","stroke":"#1F5F8357","focusRing":"#1F5F83A6"},"quota":{"primary":{"start":"#4D8CAF","end":"#1F5F83","track":"#1F5F831A","label":"#1F5F83"},"secondary":{"start":"#6DA17E","end":"#3E7B5D","track":"#3E7B5D1A","label":"#3E7B5D"}}},"dark":{"accent":{"primary":"#65A9CF","primaryStrong":"#4B8FB7","primaryLight":"#91C5DE","secondary":"#78B98E","secondaryStrong":"#5A9A70","highlight":"#D7B85F"},"selection":{"foreground":"#91C5DE","fill":"#65A9CF29","stroke":"#65A9CF70","focusRing":"#91C5DEC2"},"quota":{"primary":{"start":"#91C5DE","end":"#65A9CF","track":"#65A9CF29","label":"#91C5DE"},"secondary":{"start":"#A1D0AA","end":"#78B98E","track":"#78B98E29","label":"#A1D0AA"}}}},"codexu.dunhuang-apsara":{"name":"敦煌飞天","light":{"accent":{"primary":"#2D6C6C","primaryStrong":"#1E5353","primaryLight":"#579394","secondary":"#944737","secondaryStrong":"#733428","highlight":"#B98738"},"selection":{"foreground":"#2D6C6C","fill":"#2D6C6C1F","stroke":"#2D6C6C57","focusRing":"#2D6C6CA6"},"quota":{"primary":{"start":"#5B9895","end":"#2D6C6C","track":"#2D6C6C1A","label":"#2D6C6C"},"secondary":{"start":"#B96B55","end":"#944737","track":"#9447371A","label":"#944737"}}},"dark":{"accent":{"primary":"#6CB4AE","primaryStrong":"#4E9995","primaryLight":"#9BCFC9","secondary":"#D3836D","secondaryStrong":"#B76555","highlight":"#DDBB61"},"selection":{"foreground":"#9BCFC9","fill":"#6CB4AE29","stroke":"#6CB4AE70","focusRing":"#9BCFC9C2"},"quota":{"primary":{"start":"#9BCFC9","end":"#6CB4AE","track":"#6CB4AE29","label":"#9BCFC9"},"secondary":{"start":"#E7AA92","end":"#D3836D","track":"#D3836D29","label":"#E7AA92"}}}},"codexu.forbidden-city-red":{"name":"故宫红墙","light":{"accent":{"primary":"#982F28","primaryStrong":"#74231F","primaryLight":"#C65342","secondary":"#B07A24","secondaryStrong":"#815719","highlight":"#3F464B"},"selection":{"foreground":"#982F28","fill":"#982F281F","stroke":"#982F2857","focusRing":"#982F28A6"},"quota":{"primary":{"start":"#C65342","end":"#982F28","track":"#982F281A","label":"#982F28"},"secondary":{"start":"#D5A64D","end":"#B07A24","track":"#B07A241A","label":"#8B5F1C"}}},"dark":{"accent":{"primary":"#D97663","primaryStrong":"#C95F4F","primaryLight":"#E5A06F","secondary":"#E1B85F","secondaryStrong":"#B98C38","highlight":"#AAB1B5"},"selection":{"foreground":"#E5A06F","fill":"#D9766329","stroke":"#D9766370","focusRing":"#E5A06FC2"},"quota":{"primary":{"start":"#E5A06F","end":"#C95F4F","track":"#D9766329","label":"#E5A06F"},"secondary":{"start":"#F0D78B","end":"#D2A74F","track":"#E1B85F29","label":"#E1B85F"}}}}};
+    const themeSelect = document.getElementById('theme-select');
+    themeSelect.innerHTML = Object.entries(palettes).map(([id, palette]) => `<option value="${escapeHTML(id)}">${escapeHTML(palette.name)}</option>`).join('');
+    const luminance = color => {
+      const channels = color.slice(1,7).match(/../g).map(value => parseInt(value,16) / 255).map(value => value <= .04045 ? value / 12.92 : ((value + .055) / 1.055) ** 2.4);
+      return channels[0] * .2126 + channels[1] * .7152 + channels[2] * .0722;
+    };
+    const setTheme = (theme, appearance = document.body.dataset.appearance) => {
+      if (!Object.hasOwn(palettes, theme)) theme = 'codexu.default';
+      if (!['light','dark'].includes(appearance)) appearance = 'dark';
+      const tokens = palettes[theme][appearance];
+      document.body.dataset.theme = theme;
+      document.body.dataset.appearance = appearance;
+      themeSelect.value = theme;
+      const variables = {
+        accent: tokens.accent.primary, secondary: tokens.accent.secondary,
+        'accent-text': appearance === 'dark' ? tokens.accent.primaryLight : tokens.accent.primary,
+        'accent-ink': (1.05 / (luminance(tokens.accent.primary) + .05)) >= 4.5 ? '#ffffff' : '#10131a',
+        'selection-fill': tokens.selection.fill, 'selection-stroke': tokens.selection.stroke,
+        'quota-start': tokens.quota.primary.start, 'quota-end': tokens.quota.primary.end, 'quota-track': tokens.quota.primary.track,
+        'quota-secondary-start': tokens.quota.secondary.start, 'quota-secondary-end': tokens.quota.secondary.end, 'quota-secondary-track': tokens.quota.secondary.track
+      };
+      Object.entries(variables).forEach(([name,value]) => document.body.style.setProperty('--' + name, value));
+      document.querySelectorAll('[data-appearance-choice]').forEach(button => button.setAttribute('aria-pressed', String(button.dataset.appearanceChoice === appearance)));
+    };
+    setTheme(params.get('theme') || 'codexu.liquid-keycap', params.get('appearance') || 'dark');
+    themeSelect.addEventListener('change', () => setTheme(themeSelect.value));
+    document.querySelectorAll('[data-appearance-choice]').forEach(button => button.addEventListener('click', () => setTheme(document.body.dataset.theme, button.dataset.appearanceChoice)));
+    const setView = view => { document.getElementById('accounts').classList.toggle('rows', view === 'rows'); document.querySelectorAll('[data-view]').forEach(button => button.setAttribute('aria-pressed', String(button.dataset.view === view))); };
+    setView(params.get('view') === 'rows' ? 'rows' : 'cards');
+    document.querySelectorAll('[data-view]').forEach(button => button.addEventListener('click', () => setView(button.dataset.view)));
+  </script>
+</body>
+</html>

@@ -5,8 +5,11 @@
 <link rel="stylesheet" href="standalone.css"></head><body>
 <nav aria-label="用量视图"><button data-mode="overview">概览</button><button data-mode="trends">趋势</button><button data-mode="details">明细</button></nav>
 <p id="context"></p>
-<section id="overview"><div class="activity-main"><div id="calendar"></div><p id="month"></p></div><aside id="day-summary" aria-label="所选日期用量"><p id="day-total"></p><div id="day-tools"></div></aside></section>
-<section id="trends" hidden><label><span data-label="group">分组</span> <select id="group"><option value="client">工具</option><option value="model">模型</option></select></label> <label><span data-label="from">起始日期</span> <input id="from" type="date"></label> <label><span data-label="to">结束日期</span> <input id="to" type="date"></label><div id="bars"></div><p id="legend"></p></section>
+<div id="charts">
+<section id="overview"><div class="activity-main"><div class="panel-head"><div><h2 data-label="activity">每日活跃</h2><p data-label="activityHint">悬停看数值，点击切换下方详情</p></div><div class="legend-mini" aria-label="热力图图例"><span data-label="less">少</span><i class="mini-cell lvl-1"></i><i class="mini-cell lvl-2"></i><i class="mini-cell lvl-3"></i><i class="mini-cell lvl-4"></i><span data-label="more">多</span></div></div><div id="calendar"></div><p id="month"></p></div></section>
+<section id="trends" hidden><div class="panel-head"><div><h2 data-label="trendTitle">趋势</h2><p data-label="trendHint">按工具堆叠，缺失日期保持空白</p></div><div class="bar-toolbar"><label><span data-label="group">分组</span> <select id="group"><option value="client">工具</option><option value="model">模型</option></select></label> <label><span data-label="from">起始日期</span> <input id="from" type="date"></label> <label><span data-label="to">结束日期</span> <input id="to" type="date"></label></div></div><div id="bars"></div><p id="legend"></p></section>
+</div>
+<section id="day-summary" aria-label="所选日期用量"><div class="day-summary-main"><div class="subpanel-title"><h2 data-label="selectedDate">所选日期</h2><span data-label="dailyTools">当天工具用量</span></div><p id="day-total"></p><div id="day-tools"></div></div><div class="day-composition"><div class="subpanel-title"><h2 data-label="composition">工具构成</h2><span data-label="selectedDay">所选日期</span></div><div id="day-donut"></div></div></section>
 <section id="details" hidden><label><span data-label="date">日期</span> <input id="date" type="date"></label><label><span data-label="period">期间</span> <select id="period"><option value="day">所选日</option><option value="today">今天</option><option value="month">本月</option><option value="allTime">全部时间</option></select></label><div id="dimensions"></div></section>
 <p id="selection" role="status" aria-live="polite"></p>
 <div id="hover-tooltip" role="tooltip" hidden></div>

@@ -24,6 +24,8 @@ AiGoodBro 把额度提醒与消息放在前面，让你及时知道什么时候�
 
 **当前 macOS 源码基线：V1.0 · 0915v5 · 9.6.1 (50)。** 手动切换桌面不再等待额度刷新，增加刷新频率设置和额度不足自动换号；首页补充用量摘要、热力图明细、重置日历与 AI 热点，保留竖向堆叠趋势图。补充 CLI 登录入口和 Claude Code 图标主题适配。0915v5 让 OpenCode 直接复用保存的服务商配置，保留主动添加或更新入口；该轮 CLI 修复未改动此前已完成的 Codex 切换实现。本版尚无 Release 安装包。[版本记录与验证边界](docs/release-notes-v9.6.1.md)
 
+**0916v1 更新：** Codex 重新登录改为设备授权码引导，支持复制、重开 Chrome、到期重试和登录后校验；账号行的五个操作按钮统一宽高，加载时不再缩小。内部版本号仍为 9.6.1 (50)，V1.0 标签保持原基线。详见[版本记录与验证边界](docs/release-notes-v9.6.1.md)。
+
 一句话安装口令和 4 个调用模板都在下面。9.6.1 尚未发布到 GitHub Releases；当前请从源码构建。
 
 [![CI](https://github.com/BLACKIELF/AgentHub-AiGoodBro/actions/workflows/ci.yml/badge.svg)](https://github.com/BLACKIELF/AgentHub-AiGoodBro/actions/workflows/ci.yml)

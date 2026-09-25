@@ -1,3 +1,4 @@
+import CoreFoundation
 import Foundation
 
 struct CodexQuotaWindowSnapshot: Codable, Equatable {
@@ -417,6 +418,21 @@ extension CodexExecutionPreference {
     }
 }
 
+/// Shared save boundary: validate every action (including apply-to-all), and
+/// only publish a new draft after persistence has acknowledged success.
+enum ExecutionPreferenceSave {
+    static func save(
+        _ preference: CodexExecutionPreference, applyToAll: Bool,
+        persist: (CodexExecutionPreference, Bool) -> Result<Void, Error>
+    ) -> Result<CodexExecutionPreference, Error> {
+        Result {
+            let validated = try preference.validated()
+            try persist(validated, applyToAll).get()
+            return validated
+        }
+    }
+}
+
 enum CodexExecutionPreferenceError: LocalizedError, Equatable {
     case unsupportedExecutionMode
     case unsupportedReasoningEffort(model: String, reasoningEffort: String)
@@ -424,6 +440,7 @@ enum CodexExecutionPreferenceError: LocalizedError, Equatable {
     case unsupportedCustomPreset
     case invalidPresetName
     case systemProfileUnsupported
+    case profileMissing
 
     var errorDescription: String? {
         switch self {
@@ -440,6 +457,8 @@ enum CodexExecutionPreferenceError: LocalizedError, Equatable {
                 "档位名称需为 1–64 个 UTF-8 字节，且不能含首尾空白或控制字符", "Preset names must be 1–64 UTF-8 bytes with no surrounding whitespace or control characters.")
         case .systemProfileUnsupported:
             return WidgetLanguage.storedOrAutomatic().text("系统账号不保存执行偏好", "Execution preferences cannot be saved for the system account.")
+        case .profileMissing:
+            return WidgetLanguage.storedOrAutomatic().text("账号已不存在，请关闭设置后重新选择账号", "This profile no longer exists. Close settings and select a profile again.")
         }
     }
 }
@@ -448,6 +467,19 @@ struct CodexWarmUpAttempt: Codable, Equatable {
     let at: Date
     let succeeded: Bool
     let failureReason: String?
+    var attemptID: String? = nil
+    var source: String? = nil
+}
+
+/// Saved before sending; an interrupted process must not erase an ambiguous request.
+struct CodexWarmUpRequest: Codable, Equatable {
+    let id: String
+    let accountID: String
+    let startedAt: Date
+    let limitID: String?
+    let fiveHourResetAt: Date?
+    let sevenDayResetAt: Date?
+    let source: String
 }
 
 struct CodexProfile: Codable, Equatable, Identifiable {
@@ -466,6 +498,7 @@ struct CodexProfile: Codable, Equatable, Identifiable {
     var lastWarmUpSucceeded: Bool? = nil
     var lastWarmUpFailureReason: String? = nil
     var warmUpHistory: [CodexWarmUpAttempt]? = nil
+    var warmUpRequest: CodexWarmUpRequest? = nil
     var lastQuotaReadFailureAt: Date? = nil
     var lastQuotaReadFailureReason: String? = nil
     var chromeProfile: ChromeProfileBinding? = nil
@@ -484,9 +517,20 @@ struct CodexProfile: Codable, Equatable, Identifiable {
     }
 
     var displayedProTierMultiplier: Int? {
+        if resolvedPlanType == "prolite" { return 5 }
         guard let proTierMultiplier, proTierMultiplier == 5 || proTierMultiplier == 20 else { return nil }
         return proTierMultiplier
     }
+
+    /// Quota responses report the current plan; profile metadata derives its
+    /// plan from a sign-in token, which can outlive a subscription change.
+    var resolvedPlanType: String? {
+        let candidates = [lastSnapshot?.quotaReadSucceeded == true ? lastSnapshot?.planType : nil, officialProfile?.planType]
+        return candidates.compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+            .first(where: { !$0.isEmpty })
+    }
+
+    var isProPlan: Bool { resolvedPlanType == "pro" || resolvedPlanType == "prolite" }
 
     var effectiveExecutionPreference: CodexExecutionPreference {
         executionPreference ?? .defaultValue
@@ -578,29 +622,35 @@ struct CodexWarmUpSelection: Equatable {
 
     static func load(
         from defaults: UserDefaults = .standard,
-        hasExistingInstallation _: Bool = false
+        hasExistingInstallation _: Bool = false,
+        persistentDomainName: String? = Bundle.main.bundleIdentifier
     ) -> CodexWarmUpSelection {
-        if defaults.object(forKey: fiveHourKey) != nil || defaults.object(forKey: sevenDayKey) != nil {
-            return CodexWarmUpSelection(
-                fiveHour: NextFeatureDefaults.isEnabled(fiveHourKey, in: defaults),
-                sevenDay: NextFeatureDefaults.isEnabled(sevenDayKey, in: defaults)
-            )
+        // Registration/global/argument domains are not durable user consent.
+        let persisted = persistentDomainName.flatMap { defaults.persistentDomain(forName: $0) } ?? [:]
+        func bool(_ value: Any?) -> Bool {
+            if let number = value as? NSNumber { return number.boolValue }
+            return (value as? NSString)?.boolValue ?? false
         }
-        let selection: CodexWarmUpSelection
-        if defaults.object(forKey: legacyKey) != nil {
-            selection = CodexWarmUpSelection(fiveHour: true, sevenDay: defaults.bool(forKey: legacyKey))
-        } else {
-            // Explicit saved choices remain authoritative; missing controls default on.
-            selection = .all
+        let hasNewKeys = persisted[fiveHourKey] != nil || persisted[sevenDayKey] != nil
+        var selection = CodexWarmUpSelection(
+            fiveHour: bool(persisted[fiveHourKey]),
+            sevenDay: bool(persisted[hasNewKeys ? sevenDayKey : legacyKey]))
+        if !hasNewKeys, persistentDomainName != nil {
+            defaults.set(selection.fiveHour, forKey: fiveHourKey)
+            defaults.set(selection.sevenDay, forKey: sevenDayKey)
+            defaults.removeObject(forKey: legacyKey)
         }
-        selection.save(to: defaults)
+        // Apply temporary launch controls only AFTER persisting the real migration.
+        let arguments = defaults.volatileDomain(forName: UserDefaults.argumentDomain)
+        if let value = arguments[fiveHourKey] { selection.fiveHour = bool(value) }
+        if let value = arguments[sevenDayKey] { selection.sevenDay = bool(value) } else if !hasNewKeys, let value = arguments[legacyKey] { selection.sevenDay = bool(value) }
         return selection
     }
 
     func save(to defaults: UserDefaults = .standard) {
         let launchOverrides = defaults.volatileDomain(forName: UserDefaults.argumentDomain)
         if launchOverrides[Self.fiveHourKey] == nil { defaults.set(fiveHour, forKey: Self.fiveHourKey) }
-        if launchOverrides[Self.sevenDayKey] == nil { defaults.set(sevenDay, forKey: Self.sevenDayKey) }
+        if launchOverrides[Self.sevenDayKey] == nil && launchOverrides[Self.legacyKey] == nil { defaults.set(sevenDay, forKey: Self.sevenDayKey) }
         if launchOverrides[Self.legacyKey] == nil { defaults.removeObject(forKey: Self.legacyKey) }
     }
 }
@@ -637,7 +687,6 @@ enum CodexWarmUpPolicy {
     static let resetGrace: TimeInterval = 8
     static let fiveHourSuccessInterval: TimeInterval = 5 * 60 * 60
     static let sevenDaySuccessInterval: TimeInterval = 7 * 24 * 60 * 60
-    static let failureRetryInterval: TimeInterval = 5 * 60
     static let maximumQuotaAge: TimeInterval = 15 * 60
     static let idleUsedPercentThreshold = 0.5
     static let unexpectedResetDrop = 8.0
@@ -776,7 +825,7 @@ enum CodexWarmUpPolicy {
             let email = profile.lastSnapshot?.email?.trimmingCharacters(in: .whitespacesAndNewlines),
             !email.isEmpty
         else { return nil }
-        let unresolvedFailure = hasUnresolvedFailure(profile, selection: selection, now: now)
+        guard !hasUnresolvedFailure(profile, selection: selection, now: now) else { return nil }
 
         var dates: [Date] = []
         if selection.fiveHour, !shouldSkipFiveHourToProtectWeekly(profile, now: now) {
@@ -786,7 +835,6 @@ enum CodexWarmUpPolicy {
                 lastWarmUpSucceeded: profile.lastWarmUpSucceeded,
                 successfulInterval: fiveHourSuccessInterval,
                 unexpected: unexpected.contains(.fiveHour),
-                blockIdleRetry: unresolvedFailure,
                 now: now
             ) {
                 dates.append(date)
@@ -799,7 +847,6 @@ enum CodexWarmUpPolicy {
                 lastWarmUpSucceeded: profile.lastWarmUpSucceeded,
                 successfulInterval: sevenDaySuccessInterval,
                 unexpected: unexpected.contains(.sevenDay),
-                blockIdleRetry: unresolvedFailure,
                 now: now
             ) {
                 dates.append(date)
@@ -813,12 +860,25 @@ enum CodexWarmUpPolicy {
         selection: CodexWarmUpSelection,
         now: Date = Date()
     ) -> Bool {
-        guard profile.lastWarmUpSucceeded == false,
-            let attemptedAt = profile.lastWarmUpAt
-        else { return false }
-        guard let snapshot = profile.lastSnapshot, snapshot.fetchedAt > attemptedAt else { return true }
-        return (selection.fiveHour && isWindowIdle(snapshot.fiveHour, now: now))
-            || (selection.sevenDay && isWindowIdle(snapshot.sevenDay, now: now))
+        guard selection.isEnabled, profile.lastWarmUpSucceeded == false, profile.lastWarmUpAt != nil else { return false }
+        // Legacy failures have no trustworthy generation baseline: manual recovery only.
+        guard selection.isEnabled, let request = profile.warmUpRequest,
+            let snapshot = profile.lastSnapshot,
+            snapshot.accountID == request.accountID, snapshot.limitId == request.limitID,
+            hasFreshQuotaEvidence(profile, now: now)
+        else { return true }
+        func advanced(_ window: CodexQuotaWindowSnapshot?, _ oldReset: Date?, _ duration: TimeInterval) -> Bool {
+            guard let window, let reset = window.resetsAt, let oldReset,
+                oldReset > request.startedAt, now >= oldReset.addingTimeInterval(resetGrace),
+                snapshot.fetchedAt >= oldReset.addingTimeInterval(resetGrace), reset > oldReset,
+                window.windowDurationMins.map({ TimeInterval($0) * 60 == duration }) == true
+            else { return false }
+            return reset.addingTimeInterval(-duration) >= oldReset.addingTimeInterval(-60)
+        }
+        // Every selected window must advance; percentage changes/reset tickets alone
+        // cannot prove that an ambiguous request did not already consume this window.
+        return (selection.fiveHour && !advanced(snapshot.fiveHour, request.fiveHourResetAt, fiveHourSuccessInterval))
+            || (selection.sevenDay && !advanced(snapshot.sevenDay, request.sevenDayResetAt, sevenDaySuccessInterval))
     }
 
     static func isDue(
@@ -878,16 +938,17 @@ enum CodexWarmUpPolicy {
         lastWarmUpSucceeded: Bool?,
         successfulInterval: TimeInterval,
         unexpected: Bool,
-        blockIdleRetry: Bool,
         now: Date
     ) -> Date? {
         // A different reported window is not evidence that this selected window
         // is idle. Missing selected-window data stays fail closed.
         guard let window else { return nil }
-        if blockIdleRetry, let lastWarmUpAt, unexpected || isWindowIdle(window, now: now) {
-            return max(now, lastWarmUpAt.addingTimeInterval(failureRetryInterval))
+        if unexpected {
+            if lastWarmUpSucceeded == true, let lastWarmUpAt {
+                return max(now, lastWarmUpAt.addingTimeInterval(successfulInterval + resetGrace))
+            }
+            return now
         }
-        if unexpected { return now }
         if isWindowIdle(window, now: now) {
             if lastWarmUpSucceeded == true, let lastWarmUpAt {
                 let retryAt = lastWarmUpAt.addingTimeInterval(successfulInterval + resetGrace)
@@ -968,8 +1029,8 @@ enum CodexOfficialProfileReader {
             accountEmail: email(fromIDToken: idToken),
             displayName: nonEmpty(profile["display_name"] as? String),
             username: nonEmpty(profile["username"] as? String),
-            lifetimeTokens: (stats["lifetime_tokens"] as? NSNumber)?.int64Value,
-            peakDailyTokens: (stats["peak_daily_tokens"] as? NSNumber)?.int64Value,
+            lifetimeTokens: reportedTokenCount(stats["lifetime_tokens"]),
+            peakDailyTokens: reportedTokenCount(stats["peak_daily_tokens"]),
             planType: subscription?.planType,
             subscriptionActiveUntil: subscription?.activeUntil,
             statsAsOf: parseDate(metadata?["stats_as_of"] as? String),
@@ -985,6 +1046,13 @@ enum CodexOfficialProfileReader {
             nonEmpty(auth["chatgpt_plan_type"] as? String),
             parseDate(auth["chatgpt_subscription_active_until"] as? String)
         )
+    }
+
+    static func reportedTokenCount(_ value: Any?) -> Int64? {
+        guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
+            let count = Int64(number.stringValue), count >= 0
+        else { return nil }
+        return count
     }
 
     static func email(fromIDToken idToken: String?) -> String? {
@@ -1341,6 +1409,7 @@ final class CodexProfileStore {
                     lastWarmUpSucceeded: system.lastWarmUpSucceeded,
                     lastWarmUpFailureReason: system.lastWarmUpFailureReason,
                     warmUpHistory: system.warmUpHistory,
+                    warmUpRequest: system.warmUpRequest,
                     chromeProfile: system.chromeProfile,
                     automaticSwitchParticipation: system.automaticSwitchParticipation,
                     prioritizeDispatch: system.prioritizeDispatch,
@@ -1420,7 +1489,7 @@ final class CodexProfileStore {
     func setRemark(_ remark: String, for id: String) throws {
         let trimmed = remark.trimmingCharacters(in: .whitespacesAndNewlines)
         try mutateState {
-            guard let index = self.state.profiles.firstIndex(where: { $0.id == id }) else { return false }
+            guard let index = self.state.profiles.firstIndex(where: { $0.id == id }) else { throw CodexExecutionPreferenceError.profileMissing }
             let next = trimmed.isEmpty ? nil : String(trimmed.prefix(40))
             guard self.state.profiles[index].remark != next else { return false }
             self.state.profiles[index].remark = next
@@ -1485,10 +1554,15 @@ final class CodexProfileStore {
         let credentialIdentity = CodexOfficialProfileReader.credentialIdentity(
             codexHomeURL: profile.codexHomeURL
         )
+        let requiresFreshQuota: Bool
+        switch change {
+        case .participation(let enabled), .priority(let enabled): requiresFreshQuota = enabled
+        }
         let identity = try Self.validatedDispatchIdentity(
             for: profile,
             credentialIdentity: credentialIdentity,
-            now: validationNow
+            now: validationNow,
+            requiresFreshQuota: requiresFreshQuota
         )
         let sync = DispatchParticipationSync(paths: try DispatchParticipationPaths.live(snapshot: stateURL))
         var updatedState = state
@@ -1503,6 +1577,7 @@ final class CodexProfileStore {
                 for: identity,
                 in: decoded.profiles,
                 now: validationNow,
+                requiresFreshQuota: requiresFreshQuota,
                 credentialReader: { CodexOfficialProfileReader.credentialIdentity(codexHomeURL: $0) }
             )
             updatedState = decoded
@@ -1514,19 +1589,25 @@ final class CodexProfileStore {
     static func validatedDispatchIdentity(
         for profile: CodexProfile,
         credentialIdentity: CodexCredentialIdentity?,
-        now: Date = Date()
+        now: Date = Date(),
+        requiresFreshQuota: Bool = true
     ) throws -> DispatchParticipationSync.Identity {
-        guard CodexWarmUpPolicy.hasFreshQuotaEvidence(profile, now: now),
-            let snapshot = profile.lastSnapshot,
-            snapshot.quotaReadSucceeded == true,
-            snapshot.fiveHour != nil || snapshot.sevenDay != nil || snapshot.monthly != nil,
-            profile.lastQuotaReadFailureAt.map({ $0 < snapshot.fetchedAt }) ?? true,
+        guard let snapshot = profile.lastSnapshot,
             let accountID = snapshot.accountID,
             !accountID.isEmpty,
             let credentialIdentity,
             profile.matchesRecordedCredential(credentialIdentity),
             credentialIdentity.accountID == accountID
         else { throw DispatchParticipationError.identityMismatch }
+        // Opting out only reduces future dispatch. Keep credential checks but
+        // never require an available quota service in order to stop participation.
+        if requiresFreshQuota {
+            guard CodexWarmUpPolicy.hasFreshQuotaEvidence(profile, now: now),
+                snapshot.quotaReadSucceeded == true,
+                snapshot.fiveHour != nil || snapshot.sevenDay != nil || snapshot.monthly != nil,
+                profile.lastQuotaReadFailureAt.map({ $0 < snapshot.fetchedAt }) ?? true
+            else { throw DispatchParticipationError.identityMismatch }
+        }
         return .init(
             profileID: profile.id,
             homePath: profile.codexHomePath,
@@ -1539,6 +1620,7 @@ final class CodexProfileStore {
         for clickedIdentity: DispatchParticipationSync.Identity,
         in profiles: [CodexProfile],
         now: Date = Date(),
+        requiresFreshQuota: Bool = true,
         credentialReader: (URL) -> CodexCredentialIdentity?
     ) throws {
         guard let clicked = profiles.first(where: { $0.id == clickedIdentity.profileID }),
@@ -1553,7 +1635,8 @@ final class CodexProfileStore {
             let current = try validatedDispatchIdentity(
                 for: mirror,
                 credentialIdentity: credentialReader(mirror.codexHomeURL),
-                now: now
+                now: now,
+                requiresFreshQuota: requiresFreshQuota
             )
             guard current.accountID == clickedIdentity.accountID,
                 current.email?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == expectedEmail
@@ -1603,7 +1686,9 @@ final class CodexProfileStore {
     ) throws {
         let validated = try preference.validated()
         try mutateState {
-            guard let profile = self.state.profiles.first(where: { $0.id == id }) else { return false }
+            guard let profile = self.state.profiles.first(where: { $0.id == id }) else {
+                throw CodexExecutionPreferenceError.profileMissing
+            }
             guard !profile.isSystemProfile else {
                 throw CodexExecutionPreferenceError.systemProfileUnsupported
             }
@@ -1731,6 +1816,7 @@ final class CodexProfileStore {
                 self.state.profiles[index].lastWarmUpSucceeded = nil
                 self.state.profiles[index].lastWarmUpFailureReason = nil
                 self.state.profiles[index].warmUpHistory = nil
+                self.state.profiles[index].warmUpRequest = nil
                 self.state.profiles[index].dispatchParticipationWindow = nil
                 self.state.profiles[index].proTierMultiplier = nil
                 if self.state.profiles[index].isSystemProfile {
@@ -1844,25 +1930,113 @@ final class CodexProfileStore {
         }
     }
 
+    enum WarmUpStateError: Error { case unverifiedIdentityOrState }
+
+    /// Re-read the shared state under its lock, then persist BEFORE starting HTTP.
+    func beginWarmUp(
+        requestID: String, for profileID: String, expectedAccountID: String,
+        selection: CodexWarmUpSelection, unexpected: Set<CodexWarmUpWindowKind>,
+        manual: Bool, at date: Date = Date()
+    ) throws {
+        try mutateState {
+            guard let profile = self.state.profiles.first(where: { $0.id == profileID }),
+                let snapshot = profile.lastSnapshot, snapshot.accountID == expectedAccountID,
+                !expectedAccountID.isEmpty,
+                let identity = CodexOfficialProfileReader.credentialIdentity(codexHomeURL: profile.codexHomeURL),
+                profile.matchesRecordedCredential(identity),
+                CodexWarmUpPolicy.canSendWarmUpRequest(profile, now: date)
+            else { throw WarmUpStateError.unverifiedIdentityOrState }
+            let indices = self.state.profiles.indices.filter {
+                self.state.profiles[$0].recordedAccountKey == profile.recordedAccountKey
+            }
+            guard
+                manual
+                    || indices.allSatisfy({
+                        CodexWarmUpPolicy.isDue(self.state.profiles[$0], selection: selection, unexpected: unexpected, now: date)
+                    })
+            else { throw WarmUpStateError.unverifiedIdentityOrState }
+            let request = CodexWarmUpRequest(
+                id: requestID, accountID: expectedAccountID, startedAt: date, limitID: snapshot.limitId,
+                fiveHourResetAt: snapshot.fiveHour?.resetsAt, sevenDayResetAt: snapshot.sevenDay?.resetsAt,
+                source: manual ? "manual" : "automatic")
+            for index in indices where self.state.profiles[index].lastSnapshot?.accountID == expectedAccountID {
+                let previous = self.state.profiles[index]
+                if (previous.warmUpHistory ?? []).isEmpty,
+                    let at = previous.lastWarmUpAt, let succeeded = previous.lastWarmUpSucceeded
+                {
+                    self.state.profiles[index].warmUpHistory = [
+                        .init(
+                            at: at, succeeded: succeeded,
+                            failureReason: Self.safeWarmUpFailureCode(previous.lastWarmUpFailureReason))
+                    ]
+                }
+                self.state.profiles[index].warmUpRequest = request
+                self.state.profiles[index].lastWarmUpAt = date
+                self.state.profiles[index].lastWarmUpSucceeded = false
+                self.state.profiles[index].lastWarmUpFailureReason = "pending"
+            }
+            return true
+        }
+    }
+
+    static func safeWarmUpFailureCode(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let allowed: Set<String> = [
+            "pending", "credentials-unavailable", "identity-mismatch", "invalid-request", "redirected", "timeout", "network", "http-5xx", "stream-failed", "stream-incomplete",
+            "stream-oversized", "unknown",
+        ]
+        if allowed.contains(value) || value.range(of: #"^http-[1-5][0-9]{2}$"#, options: .regularExpression) != nil { return value }
+        return "unknown"
+    }
+
     func recordWarmUp(
         at date: Date,
         succeeded: Bool,
         failureReason: String? = nil,
-        for profileID: String
+        for profileID: String,
+        requestID: String? = nil,
+        expectedAccountID: String? = nil
     ) throws {
         try mutateState {
             guard let index = self.state.profiles.firstIndex(where: { $0.id == profileID }) else { return false }
-            guard date >= (self.state.profiles[index].lastWarmUpAt ?? .distantPast) else { return false }
-            var history = self.state.profiles[index].warmUpHistory ?? []
-            if history.isEmpty, let at = self.state.profiles[index].lastWarmUpAt, let succeeded = self.state.profiles[index].lastWarmUpSucceeded {
-                history.append(.init(at: at, succeeded: succeeded, failureReason: self.state.profiles[index].lastWarmUpFailureReason))
+            let current = self.state.profiles[index]
+            if let requestID {
+                guard let expectedAccountID,
+                    current.lastSnapshot?.accountID == expectedAccountID,
+                    current.warmUpRequest?.id == requestID,
+                    current.warmUpRequest?.accountID == expectedAccountID,
+                    current.matchesRecordedCredential(CodexOfficialProfileReader.credentialIdentity(codexHomeURL: current.codexHomeURL))
+                else { throw WarmUpStateError.unverifiedIdentityOrState }
             }
-            let attempt = CodexWarmUpAttempt(at: date, succeeded: succeeded, failureReason: succeeded ? nil : failureReason)
-            if history.last != attempt { history.append(attempt) }
-            self.state.profiles[index].warmUpHistory = Array(history.suffix(20))
-            self.state.profiles[index].lastWarmUpAt = date
-            self.state.profiles[index].lastWarmUpSucceeded = succeeded
-            self.state.profiles[index].lastWarmUpFailureReason = succeeded ? nil : failureReason
+            let indices =
+                requestID == nil
+                ? [index]
+                : self.state.profiles.indices.filter {
+                    self.state.profiles[$0].warmUpRequest?.id == requestID
+                        && self.state.profiles[$0].lastSnapshot?.accountID == expectedAccountID
+                }
+            for target in indices {
+                let previous = self.state.profiles[target]
+                guard date >= (previous.lastWarmUpAt ?? .distantPast) else { continue }
+                // A duplicate/late callback cannot downgrade a completed request.
+                if previous.lastWarmUpSucceeded == true && (requestID != nil || date == previous.lastWarmUpAt) { continue }
+                var history = previous.warmUpHistory ?? []
+                if history.isEmpty, previous.lastWarmUpFailureReason != "pending",
+                    let at = previous.lastWarmUpAt, let succeeded = previous.lastWarmUpSucceeded
+                {
+                    history.append(.init(at: at, succeeded: succeeded, failureReason: Self.safeWarmUpFailureCode(previous.lastWarmUpFailureReason)))
+                }
+                let reason = succeeded ? nil : Self.safeWarmUpFailureCode(failureReason)
+                let attempt = CodexWarmUpAttempt(
+                    at: date, succeeded: succeeded, failureReason: reason,
+                    attemptID: requestID, source: requestID == nil ? nil : previous.warmUpRequest?.source)
+                if let requestID { history.removeAll { $0.attemptID == requestID } }
+                if history.last != attempt { history.append(attempt) }
+                self.state.profiles[target].warmUpHistory = Array(history.suffix(20))
+                self.state.profiles[target].lastWarmUpAt = date
+                self.state.profiles[target].lastWarmUpSucceeded = succeeded
+                self.state.profiles[target].lastWarmUpFailureReason = reason
+            }
             return true
         }
     }
@@ -1997,10 +2171,10 @@ final class CodexProfileStore {
         }
     }
 
-    func discardManagedProfile(_ id: String) throws {
+    func discardManagedProfile(_ id: String, removingHomeWithCredentials: Bool = false) throws {
         guard let profile = try removeManagedProfileRecord(id) else { return }
         let authURL = profile.codexHomeURL.appendingPathComponent("auth.json")
-        if !fileManager.fileExists(atPath: authURL.path) {
+        if removingHomeWithCredentials || !fileManager.fileExists(atPath: authURL.path) {
             try? fileManager.removeItem(at: profile.codexHomeURL)
         }
     }
@@ -2132,11 +2306,12 @@ final class CodexProfileStore {
                     codexHomeURL: state.profiles[index].codexHomeURL
                 ),
                 state.profiles[index].matchesRecordedAccount(email: identity.email),
-                current.accountID != identity.accountID
+                current.accountID == nil
             else { continue }
             state.profiles[index].lastSnapshot = Self.snapshotByReplacingAccountID(
                 current,
-                accountID: identity.accountID
+                accountID: identity.accountID,
+                invalidateQuota: true
             )
             changed = true
         }
@@ -2145,7 +2320,8 @@ final class CodexProfileStore {
 
     static func snapshotByReplacingAccountID(
         _ snapshot: CodexAccountSnapshot,
-        accountID: String?
+        accountID: String?,
+        invalidateQuota: Bool = false
     ) -> CodexAccountSnapshot {
         CodexAccountSnapshot(
             accountType: snapshot.accountType,
@@ -2163,7 +2339,7 @@ final class CodexProfileStore {
             creditBalanceUnlimited: snapshot.creditBalanceUnlimited,
             fetchedAt: snapshot.fetchedAt,
             appServerVersion: snapshot.appServerVersion,
-            quotaReadSucceeded: snapshot.quotaReadSucceeded
+            quotaReadSucceeded: invalidateQuota ? false : snapshot.quotaReadSucceeded
         )
     }
 
@@ -2259,6 +2435,16 @@ enum CodexProfileStoreSelfTest {
                 print("Codex profile store self-test failed: corrupt state mutation was accepted")
                 return false
             } catch {}
+            do {
+                try blocked.discardManagedProfile("system", removingHomeWithCredentials: true)
+                print("Codex profile store self-test failed: corrupt state discard was accepted")
+                return false
+            } catch let error as NSError {
+                guard error.domain == "CodexAccountManagerNext.ProfileStore", error.code == 3 else {
+                    print("Codex profile store self-test failed: discard error is not the blocked-write failure")
+                    return false
+                }
+            }
             guard try Data(contentsOf: corruptStateURL) == corruptState else {
                 print("Codex profile store self-test failed: corrupt state was overwritten")
                 return false
@@ -2542,6 +2728,32 @@ enum CodexProfileStoreSelfTest {
             guard !invalidPreference.isValid else {
                 print("Codex profile store self-test failed: invalid execution preference accepted")
                 return false
+            }
+            // Both single-profile and bulk actions must report persistence
+            // failures; a failed callback must never produce a saved draft.
+            for bulk in [false, true] {
+                var called = false
+                let failed = ExecutionPreferenceSave.save(.defaultValue, applyToAll: bulk) { _, all in
+                    called = all == bulk
+                    return .failure(CodexExecutionPreferenceError.profileMissing)
+                }
+                guard called, case .failure(let error) = failed,
+                    error as? CodexExecutionPreferenceError == .profileMissing
+                else { return false }
+                let saved = ExecutionPreferenceSave.save(.defaultValue, applyToAll: bulk) { _, all in
+                    all == bulk ? .success(()) : .failure(CodexExecutionPreferenceError.profileMissing)
+                }
+                guard try saved.get() == .defaultValue else { return false }
+                var invalidWasPersisted = false
+                let invalid = ExecutionPreferenceSave.save(invalidPreference, applyToAll: bulk) { _, _ in
+                    invalidWasPersisted = true
+                    return .success(())
+                }
+                guard !invalidWasPersisted, case .failure = invalid else { return false }
+                do {
+                    try first.setExecutionPreference(.defaultValue, for: "missing-profile", applyToAll: bulk)
+                    return false
+                } catch CodexExecutionPreferenceError.profileMissing {}
             }
             do {
                 try first.setExecutionPreference(.defaultValue, for: "system")
@@ -3295,7 +3507,7 @@ enum CodexProfileStoreSelfTest {
                     selection: fiveHourOnly,
                     unexpected: [.fiveHour],
                     now: now
-                ) == now
+                ) == Date(timeIntervalSince1970: 980 + CodexWarmUpPolicy.fiveHourSuccessInterval + CodexWarmUpPolicy.resetGrace)
             else {
                 print("Codex profile store self-test failed: successful warm-up interval")
                 return false
@@ -3337,12 +3549,13 @@ enum CodexProfileStoreSelfTest {
             var retry = cold
             retry.lastWarmUpAt = now.addingTimeInterval(-20)
             retry.lastWarmUpSucceeded = false
-            let retryAt = retry.lastWarmUpAt!.addingTimeInterval(CodexWarmUpPolicy.failureRetryInterval)
-            guard CodexWarmUpPolicy.nextEligibleDate(for: retry, selection: bothWindows, unexpected: [.fiveHour], now: now) == retryAt,
+            let retryAt = retry.lastWarmUpAt!.addingTimeInterval(
+                CodexWarmUpPolicy.fiveHourSuccessInterval + CodexWarmUpPolicy.resetGrace)
+            guard CodexWarmUpPolicy.nextEligibleDate(for: retry, selection: bothWindows, unexpected: [.fiveHour], now: now) == nil,
                 !CodexWarmUpPolicy.isDue(retry, selection: bothWindows, now: now),
-                CodexWarmUpPolicy.isDue(retry, selection: bothWindows, now: retryAt)
+                !CodexWarmUpPolicy.isDue(retry, selection: bothWindows, now: retryAt)
             else {
-                print("Codex profile store self-test failed: failed warm-up retries after a bounded cooldown")
+                print("Codex profile store self-test failed: failed warm-up waits for the next selected window")
                 return false
             }
             let exhaustedRetry = try changedQuota(retry) { snapshot in
@@ -4507,6 +4720,20 @@ enum CodexProfileStoreSelfTest {
             ],
             "failed mirror quota read"
         )
+        do {
+            _ = try CodexProfileStore.validatedDispatchIdentity(
+                for: staleIdentityProfile, credentialIdentity: currentIdentity, now: identityNow, requiresFreshQuota: false)
+            _ = try CodexProfileStore.validatedDispatchIdentity(
+                for: failedIdentityProfile, credentialIdentity: currentIdentity, now: identityNow, requiresFreshQuota: false)
+            try CodexProfileStore.validateDispatchMirrorCredentials(
+                for: clickedDispatchIdentity, in: [identityProfile, staleMirror], now: identityNow,
+                requiresFreshQuota: false, credentialReader: { _ in currentIdentity })
+        } catch { expect(false, "opting out must not require fresh quota when identity still matches") }
+        do {
+            _ = try CodexProfileStore.validatedDispatchIdentity(
+                for: staleIdentityProfile, credentialIdentity: nil, now: identityNow, requiresFreshQuota: false)
+            expect(false, "opting out still validates account identity")
+        } catch DispatchParticipationError.identityMismatch {} catch { expect(false, "opt-out identity returned wrong error") }
         for (candidate, credential, label) in [
             (staleIdentityProfile, currentIdentity as CodexCredentialIdentity?, "stale snapshot"),
             (failedIdentityProfile, currentIdentity as CodexCredentialIdentity?, "failed quota snapshot"),
@@ -4632,37 +4859,68 @@ enum CodexWarmUpPolicySelfTest {
         let suite = "CodexAccountManagerNext.warm-up-defaults-self-test.\(UUID().uuidString)"
         guard let defaults = UserDefaults(suiteName: suite) else { return false }
         defer { defaults.removePersistentDomain(forName: suite) }
-        let enabled = CodexWarmUpSelection(fiveHour: true, sevenDay: true)
-        guard expect(CodexWarmUpSelection.load(from: defaults) == enabled, "first install enables both windows"),
-            expect(CodexWarmUpSelection.load(from: defaults, hasExistingInstallation: true) == enabled, "first install choice persists")
+        guard expect(CodexWarmUpSelection.load(from: defaults, persistentDomainName: suite) == .none, "first install stays off until the user opts in"),
+            expect(CodexWarmUpSelection.load(from: defaults, hasExistingInstallation: true, persistentDomainName: suite) == .none, "missing controls stay off on upgrade as well")
         else { return false }
         for five in [false, true] {
             for seven in [false, true] {
                 let saved = CodexWarmUpSelection(fiveHour: five, sevenDay: seven)
                 saved.save(to: defaults)
-                guard expect(CodexWarmUpSelection.load(from: defaults, hasExistingInstallation: true) == saved, "upgrade preserves each saved switch") else { return false }
+                guard expect(CodexWarmUpSelection.load(from: defaults, hasExistingInstallation: true, persistentDomainName: suite) == saved, "upgrade preserves each saved switch")
+                else { return false }
             }
         }
         for legacy in [false, true] {
             defaults.removePersistentDomain(forName: suite)
             defaults.set(legacy, forKey: "CodexManagerNext.automaticWarmUp")
-            let expected = CodexWarmUpSelection(fiveHour: true, sevenDay: legacy)
-            guard expect(CodexWarmUpSelection.load(from: defaults) == expected, "legacy weekly choices persist while the missing five-hour control defaults on"),
-                expect(CodexWarmUpSelection.load(from: defaults) == expected, "legacy migration persists")
+            let expected = CodexWarmUpSelection(fiveHour: false, sevenDay: legacy)
+            guard expect(CodexWarmUpSelection.load(from: defaults, persistentDomainName: suite) == expected, "legacy weekly choices persist without enabling five-hour warm-up"),
+                expect(CodexWarmUpSelection.load(from: defaults, persistentDomainName: suite) == expected, "legacy migration persists")
             else { return false }
         }
         defaults.removePersistentDomain(forName: suite)
-        guard expect(CodexWarmUpSelection.load(from: defaults, hasExistingInstallation: true) == .all, "missing upgrade preferences default on") else { return false }
+        guard
+            expect(CodexWarmUpSelection.load(from: defaults, hasExistingInstallation: true, persistentDomainName: suite) == .none, "missing upgrade preferences stay off (opt-in)")
+        else { return false }
         defaults.removePersistentDomain(forName: suite)
         defaults.set(false, forKey: "CodexManagerNext.automaticWarmUp.fiveHour")
         guard
             expect(
-                CodexWarmUpSelection.load(from: defaults) == CodexWarmUpSelection(fiveHour: false, sevenDay: true),
-                "partial preferences preserve explicit off and default the missing window on")
+                CodexWarmUpSelection.load(from: defaults, persistentDomainName: suite) == .none,
+                "partial preferences preserve explicit off without enabling the missing window")
         else { return false }
-        enabled.save(to: defaults)
+        defaults.removePersistentDomain(forName: suite)
+        defaults.set(true, forKey: "CodexManagerNext.automaticWarmUp.fiveHour")
+        guard
+            expect(
+                CodexWarmUpSelection.load(from: defaults, persistentDomainName: suite) == CodexWarmUpSelection(fiveHour: true, sevenDay: false),
+                "an explicit five-hour opt-in does not enable the missing weekly window")
+        else { return false }
+        defaults.removePersistentDomain(forName: suite)
+        defaults.set(true, forKey: "CodexManagerNext.automaticWarmUp.sevenDay")
+        guard
+            expect(
+                CodexWarmUpSelection.load(from: defaults, persistentDomainName: suite) == CodexWarmUpSelection(fiveHour: false, sevenDay: true),
+                "an explicit weekly opt-in does not enable the missing five-hour window")
+        else { return false }
+        for persistent in [false, true] {
+            defaults.removePersistentDomain(forName: suite)
+            defaults.set(persistent, forKey: "CodexManagerNext.automaticWarmUp")
+            defaults.setVolatileDomain(["CodexManagerNext.automaticWarmUp": !persistent], forName: UserDefaults.argumentDomain)
+            let temporary = CodexWarmUpSelection.load(from: defaults, persistentDomainName: suite)
+            temporary.save(to: defaults)
+            let durable = defaults.persistentDomain(forName: suite) ?? [:]
+            guard expect(temporary.sevenDay == !persistent && !temporary.fiveHour, "legacy launch override applies only in memory"),
+                expect(durable["CodexManagerNext.automaticWarmUp.sevenDay"] as? Bool == persistent, "legacy override never leaks into migration")
+            else { return false }
+        }
+        defaults.setVolatileDomain([:], forName: UserDefaults.argumentDomain)
+        defaults.removePersistentDomain(forName: suite)
+        defaults.register(defaults: ["CodexManagerNext.automaticWarmUp.fiveHour": true, "CodexManagerNext.automaticWarmUp.sevenDay": true])
+        guard expect(CodexWarmUpSelection.load(from: defaults, persistentDomainName: suite) == .none, "registration defaults never grant inference consent") else { return false }
+        CodexWarmUpSelection(fiveHour: true, sevenDay: true).save(to: defaults)
         defaults.setVolatileDomain(["CodexManagerNext.automaticWarmUp.fiveHour": "NO"], forName: UserDefaults.argumentDomain)
-        let temporary = CodexWarmUpSelection.load(from: defaults)
+        let temporary = CodexWarmUpSelection.load(from: defaults, persistentDomainName: suite)
         guard expect(temporary == CodexWarmUpSelection(fiveHour: false, sevenDay: true), "maintenance override affects this launch") else { return false }
         CodexWarmUpSelection.none.save(to: defaults)
         // NSArgumentDomain can remain cached for the life of the process on macOS.
@@ -5007,8 +5265,9 @@ enum CodexWarmUpPolicySelfTest {
         failed.lastWarmUpAt = now.addingTimeInterval(-600)
         guard
             expect(
-                CodexWarmUpPolicy.nextEligibleDate(for: failed, selection: fiveHourOnly, now: now) == now,
-                "failed warm-up resumes automatically after the retry interval"
+                CodexWarmUpPolicy.nextEligibleDate(for: failed, selection: fiveHourOnly, now: now)
+                    == nil,
+                "legacy ambiguous failure requires evidence or manual recovery, not a timer"
             )
         else { return false }
         guard
@@ -5027,7 +5286,7 @@ enum CodexWarmUpPolicySelfTest {
         supersededFailure.lastWarmUpAt = now.addingTimeInterval(-600)
         guard
             expect(
-                !CodexWarmUpPolicy.hasUnresolvedFailure(
+                CodexWarmUpPolicy.hasUnresolvedFailure(
                     supersededFailure,
                     selection: fiveHourOnly,
                     now: now
@@ -5036,8 +5295,8 @@ enum CodexWarmUpPolicySelfTest {
                         for: supersededFailure,
                         selection: fiveHourOnly,
                         now: now
-                    ) == now.addingTimeInterval(608),
-                "new active window supersedes an old failure"
+                    ) == nil,
+                "fresh active percentages cannot clear an ambiguous request"
             )
         else { return false }
         guard
@@ -5047,8 +5306,8 @@ enum CodexWarmUpPolicySelfTest {
                     selection: fiveHourOnly,
                     unexpected: [.fiveHour],
                     now: now
-                ) == now,
-                "new reset may retry a previous failure once"
+                ) == nil,
+                "duplicate reset observations cannot retry an ambiguous request"
             )
         else { return false }
         guard
@@ -5057,6 +5316,23 @@ enum CodexWarmUpPolicySelfTest {
                 "unexpected reset warms up immediately"
             )
         else { return false }
+        var uncertain = profile(snapshot(five: window(used: 0, resetsIn: 18_000)))
+        uncertain.lastWarmUpAt = now.addingTimeInterval(-18_020)
+        uncertain.lastWarmUpSucceeded = false
+        uncertain.warmUpRequest = CodexWarmUpRequest(
+            id: "attempt-fixture", accountID: "acct-warm", startedAt: now.addingTimeInterval(-18_020),
+            limitID: uncertain.lastSnapshot?.limitId, fiveHourResetAt: now.addingTimeInterval(-20),
+            sevenDayResetAt: nil, source: "automatic")
+        guard expect(CodexWarmUpPolicy.isDue(uncertain, selection: fiveHourOnly, now: now), "verified new generation permits recovery"),
+            expect(!CodexWarmUpPolicy.isDue(uncertain, selection: fiveHourOnly, now: now.addingTimeInterval(901)), "expired evidence cannot recover an uncertain request"),
+            expect(!CodexWarmUpPolicy.isDue(uncertain, selection: .all, now: now), "missing selected generation stays blocked"),
+            expect(!CodexWarmUpPolicy.isDue(succeeded, selection: fiveHourOnly, unexpected: [.fiveHour], now: now), "duplicate reset after success respects cooldown")
+        else { return false }
+        var invalidDuration = uncertain
+        invalidDuration.lastSnapshot = snapshot(five: window(used: 0, resetsIn: 18_000, durationMins: Int.max))
+        guard expect(!CodexWarmUpPolicy.isDue(invalidDuration, selection: fiveHourOnly, now: now), "untrusted extreme duration fails closed without integer overflow") else {
+            return false
+        }
         guard
             expect(
                 CodexWarmUpPolicy.nextEligibleDate(for: activeProfile, selection: fiveHourOnly, now: now)
@@ -5187,6 +5463,65 @@ enum CodexWarmUpPolicySelfTest {
                 for: profileID
             )
             guard expect(store.profiles.first?.lastQuotaReadFailureAt == nil, "quota success clears failure") else { return false }
+            // All credentials below are synthetic and remain under the isolated test root.
+            let authURL = home.appendingPathComponent(".codex/auth.json")
+            try fileManager.createDirectory(at: authURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            func auth(_ account: String) throws -> Data {
+                let payload = try JSONSerialization.data(withJSONObject: ["email": "f@example.com"])
+                    .base64EncodedString().replacingOccurrences(of: "=", with: "")
+                return try JSONSerialization.data(withJSONObject: [
+                    "tokens": [
+                        "account_id": account, "id_token": "x.\(payload).y", "access_token": "synthetic-only",
+                    ]
+                ])
+            }
+            try auth("fixture-A").write(to: authURL, options: .atomic)
+            try store.record(testWindowSnapshot(email: "f@example.com", at: now.addingTimeInterval(1)), for: profileID)
+            try store.beginWarmUp(
+                requestID: "request-1", for: profileID, expectedAccountID: "fixture-A",
+                selection: fiveHourOnly, unexpected: [], manual: true, at: now.addingTimeInterval(2))
+            let restarted = CodexProfileStore(homeDirectory: home, applicationSupportDirectory: support)
+            guard let pending = restarted.profiles.first,
+                expect(pending.warmUpRequest?.id == "request-1" && pending.lastWarmUpFailureReason == "pending", "in-flight request survives restart"),
+                expect(
+                    !CodexWarmUpPolicy.isDue(pending, selection: .all, unexpected: [.sevenDay], now: now.addingTimeInterval(3)),
+                    "restart and reset ticket cannot replay pending inference")
+            else { return false }
+            try restarted.recordWarmUp(
+                at: now.addingTimeInterval(3), succeeded: true, for: profileID,
+                requestID: "request-1", expectedAccountID: "fixture-A")
+            try restarted.recordWarmUp(
+                at: now.addingTimeInterval(4), succeeded: false, failureReason: "timeout", for: profileID,
+                requestID: "request-1", expectedAccountID: "fixture-A")
+            guard expect(restarted.profiles.first?.lastWarmUpSucceeded == true, "late failure cannot downgrade request success"),
+                expect(restarted.profiles.first?.warmUpHistory?.filter { $0.attemptID == "request-1" }.count == 1, "request ID deduplicates history")
+            else { return false }
+            try auth("fixture-B").write(to: authURL, options: .atomic)
+            let changedCredentials = CodexProfileStore(homeDirectory: home, applicationSupportDirectory: support)
+            guard expect(changedCredentials.profiles.first?.lastSnapshot?.accountID == "fixture-A", "startup must not relabel A quota as B") else { return false }
+            do {
+                try changedCredentials.recordWarmUp(
+                    at: now.addingTimeInterval(5), succeeded: false, for: profileID,
+                    requestID: "request-1", expectedAccountID: "fixture-A")
+                return expect(false, "rebound credentials reject old completion")
+            } catch CodexProfileStore.WarmUpStateError.unverifiedIdentityOrState {}
+            guard expect(CodexProfileStore.safeWarmUpFailureCode("raw response with sensitive material") == "unknown", "persistence accepts only closed failure categories") else {
+                return false
+            }
+            let stateURL = support.appendingPathComponent("CodexAccountManagerNext/account-manager-next-v1.json")
+            var legacy = try JSONSerialization.jsonObject(with: Data(contentsOf: stateURL)) as! [String: Any]
+            var rows = legacy["profiles"] as! [[String: Any]]
+            var oldSnapshot = rows[0]["lastSnapshot"] as! [String: Any]
+            oldSnapshot.removeValue(forKey: "accountID")
+            rows[0]["lastSnapshot"] = oldSnapshot
+            legacy["profiles"] = rows
+            try JSONSerialization.data(withJSONObject: legacy).write(to: stateURL, options: .atomic)
+            let migrated = CodexProfileStore(homeDirectory: home, applicationSupportDirectory: support)
+            guard
+                expect(
+                    migrated.profiles.first?.lastSnapshot?.accountID == "fixture-B"
+                        && migrated.profiles.first?.lastSnapshot?.quotaReadSucceeded == false, "missing ID backfill invalidates old quota evidence")
+            else { return false }
         } catch {
             print("Codex warm-up policy self-test failed: \(error.localizedDescription)")
             return false

@@ -38,8 +38,14 @@ enum SettingsPresentationSelfTest {
 
         let catalog = PaletteCatalog.loadFromMainBundle()
         let settings = AppSettings(defaults: defaults, paletteCatalog: catalog)
-        expect(settings.language == .zh && settings.themeMode == .system, "fresh installs use Chinese and follow system appearance")
-        expect(settings.accountWorkspaceLayout == .rows && settings.paletteID == PaletteCatalog.defaultPaletteID, "fresh installs use the list and standard palette")
+        expect(settings.language == .zh && settings.themeMode == .dark, "fresh installs use Chinese and dark appearance")
+        expect(
+            settings.accountWorkspaceLayout == .rows && settings.paletteID == PaletteCatalog.initialPaletteID,
+            "fresh installs use the list and liquid-keycap palette")
+        expect(
+            settings.paletteFallbackNotice == nil
+                && defaults.string(forKey: "CodexManagerNext.paletteID") == PaletteCatalog.initialPaletteID,
+            "an absent palette ID becomes the new initial palette without a warning")
         expect(settings.statusItemPreferences == .accountRing && settings.globalShortcut == .default, "fresh installs show weekly remaining quota and enable Command-U")
         expect(settings.setupProgress.shouldPresentAutomatically, "general defaults must not copy another user's completed setup")
         expect(
@@ -47,7 +53,7 @@ enum SettingsPresentationSelfTest {
             "new account task defaults use Astra Low at standard speed")
         for mode in WidgetThemeMode.allCases {
             settings.themeMode = mode
-            expect(WidgetThemeMode.storedOrAutomatic(defaults: defaults) == mode, "theme tiles preserve existing persistence")
+            expect(WidgetThemeMode.storedOrDefault(defaults: defaults) == mode, "theme tiles preserve existing persistence")
         }
         for language in WidgetLanguage.allCases {
             settings.language = language
@@ -71,6 +77,34 @@ enum SettingsPresentationSelfTest {
         expect(!restored.automaticUpdateChecksEnabled, "update opt-out survives reopen")
         expect(restored.themeMode == settings.themeMode && restored.language == settings.language, "appearance and language survive reopen")
         expect(restored.globalShortcut == nil, "a saved shortcut opt-out survives the new defaults")
+
+        let existingSuite = "CodexManagerNext.settings-existing-self-test.\(UUID().uuidString)"
+        if let existingDefaults = UserDefaults(suiteName: existingSuite) {
+            defer { existingDefaults.removePersistentDomain(forName: existingSuite) }
+            existingDefaults.set(WidgetThemeMode.system.rawValue, forKey: WidgetThemeMode.storageKey)
+            existingDefaults.set(PaletteCatalog.defaultPaletteID, forKey: "CodexManagerNext.paletteID")
+            let existing = AppSettings(defaults: existingDefaults, paletteCatalog: catalog)
+            expect(
+                existing.themeMode == .system && existing.paletteID == PaletteCatalog.defaultPaletteID
+                    && existing.paletteFallbackNotice == nil,
+                "explicitly saved appearance and legacy palette survive the new defaults")
+        } else {
+            failures.append("could not create an existing-settings UserDefaults suite")
+        }
+
+        let invalidSuite = "CodexManagerNext.settings-invalid-self-test.\(UUID().uuidString)"
+        if let invalidDefaults = UserDefaults(suiteName: invalidSuite) {
+            defer { invalidDefaults.removePersistentDomain(forName: invalidSuite) }
+            invalidDefaults.set("missing.palette", forKey: "CodexManagerNext.paletteID")
+            let invalid = AppSettings(defaults: invalidDefaults, paletteCatalog: catalog)
+            expect(
+                invalid.paletteID == PaletteCatalog.defaultPaletteID
+                    && invalid.paletteFallbackNotice == PaletteFallbackNotice(unavailableID: "missing.palette")
+                    && invalidDefaults.string(forKey: "CodexManagerNext.paletteID") == PaletteCatalog.defaultPaletteID,
+                "an unavailable saved palette falls back to the legacy safe palette and shows a notice")
+        } else {
+            failures.append("could not create an invalid-settings UserDefaults suite")
+        }
 
         let outputRoot = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
             .appendingPathComponent("review-outputs/0911v11", isDirectory: true)

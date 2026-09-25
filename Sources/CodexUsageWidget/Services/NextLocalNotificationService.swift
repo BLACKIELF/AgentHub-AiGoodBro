@@ -169,6 +169,19 @@ final class NextLocalNotificationService: NSObject, UNUserNotificationCenterDele
         submitReset(identifier: Self.resetIdentifierPrefix + UUID().uuidString, title: title, body: body, completion: completion)
     }
 
+    func submitPublisherMessage(
+        _ message: PublisherMessage,
+        shouldSend: @escaping @MainActor () -> Bool,
+        completion: @escaping (Result<SubmissionReceipt, ServiceError>) -> Void
+    ) {
+        submitReset(
+            identifier: Self.resetIdentifierPrefix + "publisher." + message.id,
+            title: "AiGoodBro · " + message.title,
+            body: String(message.body.prefix(500)),
+            shouldSend: shouldSend,
+            completion: completion)
+    }
+
     /// Authorized integration ping. Copy is fixed and contains no account, path or quota numbers.
     func submitAuthorizedIntegrationPing(
         language: WidgetLanguage = .storedOrAutomatic(),
@@ -184,6 +197,7 @@ final class NextLocalNotificationService: NSObject, UNUserNotificationCenterDele
 
     private func submitReset(
         identifier: String, title: String, body: String,
+        shouldSend: @escaping @MainActor () -> Bool = { true },
         completion: @escaping (Result<SubmissionReceipt, ServiceError>) -> Void
     ) {
         center.getNotificationSettings { [center] settings in
@@ -203,12 +217,18 @@ final class NextLocalNotificationService: NSObject, UNUserNotificationCenterDele
                         Self.completeOnMain(.success(.init(identifier: identifier)), completion: completion)
                         return
                     }
-                    let content = UNMutableNotificationContent()
-                    content.title = title
-                    content.body = body
-                    content.sound = nil
-                    center.add(UNNotificationRequest(identifier: identifier, content: content, trigger: nil)) { error in
-                        Self.completeOnMain(error == nil ? .success(.init(identifier: identifier)) : .failure(.notificationSubmissionFailed), completion: completion)
+                    DispatchQueue.main.async {
+                        guard shouldSend() else {
+                            completion(.failure(.notificationSubmissionFailed))
+                            return
+                        }
+                        let content = UNMutableNotificationContent()
+                        content.title = title
+                        content.body = body
+                        content.sound = nil
+                        center.add(UNNotificationRequest(identifier: identifier, content: content, trigger: nil)) { error in
+                            Self.completeOnMain(error == nil ? .success(.init(identifier: identifier)) : .failure(.notificationSubmissionFailed), completion: completion)
+                        }
                     }
                 }
             }

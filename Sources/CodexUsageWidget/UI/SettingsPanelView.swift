@@ -172,7 +172,7 @@ enum SettingsPage: String, CaseIterable, Identifiable {
         case .floatingBubble: return language.text("选择桌面上持续显示的账号、用量与外观。", "Choose the account, usage and appearance shown on the desktop.")
         case .automation: return language.text("按各账号的额度窗口安排自动维护。", "Schedule automatic maintenance around each account’s quota windows.")
         case .workspace: return language.text("数据口径、窗口行为与快捷入口。", "Data, window behavior and shortcuts.")
-        case .about: return language.text("版本、更新与开源来源。", "Version, updates and open-source attribution.")
+        case .about: return language.text("版本、联系小助理与开源来源。", "Version, contact and open-source attribution.")
         }
     }
 
@@ -230,17 +230,23 @@ struct NextSettingsHeader: View {
     }
 }
 
+final class SettingsWindowNavigation: ObservableObject {
+    @Published var page: SettingsPage = .appearance
+}
+
 struct SettingsWindowContent: View {
     @ObservedObject var settings: AppSettings
     @ObservedObject var store: UsageStore
     @ObservedObject var updateStore: AppUpdateStore
     @ObservedObject var localAccounts: LocalCLIAccountStore
+    @ObservedObject var navigation: SettingsWindowNavigation
     let onOpenPaletteLibrary: () -> Void
 
     var body: some View {
         SettingsPanelView(
             settings: settings, store: store, updateStore: updateStore,
             onOpenPaletteLibrary: onOpenPaletteLibrary,
+            pageSelection: $navigation.page,
             floatingBubbleSources: FloatingBubbleEvidence.make(store: store, localAccounts: localAccounts, language: settings.language)
         )
         .environment(\.widgetLanguage, settings.language)
@@ -260,8 +266,16 @@ struct SettingsPanelView: View {
     var floatingBubbleSources: [TokenMonitorFloatingBubbleAccount]
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.visualTokens) private var visualTokens
-    @State private var selectedPage: SettingsPage
+    @State private var localSelectedPage: SettingsPage
+    private let pageSelection: Binding<SettingsPage>?
     @State private var showsAutomationCenter = false
+
+    private var selectedPage: SettingsPage {
+        get { pageSelection?.wrappedValue ?? localSelectedPage }
+        nonmutating set {
+            if let pageSelection { pageSelection.wrappedValue = newValue } else { localSelectedPage = newValue }
+        }
+    }
 
     init(
         settings: AppSettings,
@@ -271,6 +285,7 @@ struct SettingsPanelView: View {
         compact: Bool = false,
         showsHeader: Bool = true,
         initialPage: SettingsPage = .appearance,
+        pageSelection: Binding<SettingsPage>? = nil,
         floatingBubbleSources: [TokenMonitorFloatingBubbleAccount] = []
     ) {
         self.settings = settings
@@ -280,7 +295,8 @@ struct SettingsPanelView: View {
         self.compact = compact
         self.showsHeader = showsHeader
         self.floatingBubbleSources = floatingBubbleSources
-        _selectedPage = State(initialValue: initialPage)
+        _localSelectedPage = State(initialValue: initialPage)
+        self.pageSelection = pageSelection
     }
 
     private var language: WidgetLanguage { settings.language }
@@ -365,7 +381,7 @@ struct SettingsPanelView: View {
     }
 
     private var pageNavigation: some View {
-        Picker(language.text("设置分类", "Settings category"), selection: $selectedPage) {
+        Picker(language.text("设置分类", "Settings category"), selection: Binding(get: { selectedPage }, set: { selectedPage = $0 })) {
             ForEach(SettingsPage.allCases) { page in
                 Label(page.title(language), systemImage: page.symbol).tag(page)
             }
@@ -669,6 +685,8 @@ struct SettingsPanelView: View {
             }
             .font(.callout.weight(.medium))
             .padding(.vertical, 8)
+            AssistantContactCard(language: language, compact: compact)
+                .padding(.bottom, 14)
             SettingsValueRow(
                 title: language.text("当前 Runtime", "Current runtime"),
                 detail: language.text("当前工作台的数据范围", "Data scope of the current workspace"),
@@ -723,8 +741,8 @@ struct SettingsPanelView: View {
             acknowledgement(
                 "Codex Resets", url: "https://codex-resets.com/",
                 detail: language.text(
-                    "感谢持续追踪和整理公开重置公告，为消息时间线与重置日历提供可核对的来源。",
-                    "Thank you for tracking and preserving public reset announcements, providing verifiable sources for the update timeline and calendar."
+                    "感谢持续追踪和整理公开重置公告，为重置消息提供可核对的来源。",
+                    "Thank you for tracking and preserving public reset announcements, providing verifiable sources for reset updates."
                 ))
             acknowledgement(
                 "AIHOT · Tibo 重置监控", url: "https://aihot.news/codex-reset",

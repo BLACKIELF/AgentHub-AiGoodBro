@@ -8,6 +8,14 @@
 - Tauri IPC、额度状态、用量、任务、项目、Skills 和 AI Leadership Dashboard
 - 中英文设置、Light/Dark/System 外观和六套语义 palette catalog
 - Windows 原生 exact-HWND、后台不抢前台的视觉采集 workflow
+- 0921v4：关联已有账号目录、备注、逐位排序、移除关联及切换查看来源
+- 0921v5：每个目录手动读取官方额度，不依赖本地聊天记录；失败保留带时间的旧记录，不自动轮询或重试
+
+当前实现是只读 Dashboard 加本机目录关联管理，尚无受管凭据、登录或系统账号切换命令。
+“正在查看”只表示数据来源，不是已验证登录身份；移除关联不删除文件、不注销登录。
+本切片按单个 app 实例使用，跨进程写保护在受管账号阶段实现。
+本次实现与验证边界见 [0921v5 集成说明](../docs/windows-port/INTEGRATION_0921v3.md)；
+功能所有权、固定基线和 P0–P5 顺序见 [Windows 功能对齐路线图](../docs/windows-port/WINDOWS_PARITY_ROADMAP_0919v1.md)。
 
 任务快照读取并展示：
 
@@ -70,11 +78,29 @@ Git 忽略的 `.local-artifacts/`；不得提交、上传、复制进公开报�
 2. `Test-NativeVisualCaptureWorkflow.ps1` 检查采集 workflow 的静态契约，包括最大化、non-activating、保留前台窗口、后台 Z-order、tool window、任务栏/Alt-Tab 排除和精确 capture 参数。
 3. `Test-NativeVisualCaptureCoverage.ps1` 构建并启动真实 Tauri release 应用，覆盖各 Dashboard surface，验证 exact HWND、真实截图、前台窗口未改变和最终进程清理。
 
+0921v3：窗口等待改为枚举任务 PID 下可见、无 owner 的 `Tauri Window`；
+不再使用可能指向 `Tao Thread Event Target` 的 .NET MainWindowHandle。
+冷启动主窗隐藏时继续等待；多个候选直接报错，不猜测窗口，不延长 60 秒期限。
+`Test-NativeWindowSelection.ps1` 使用生产 C# 判断逻辑测试冷启动、PID、可见性、
+owner、类名和歧义，并在 Windows PowerShell 5.1 / PowerShell 7 CI 中执行。
+这只解决 issue #8 的 HWND 选择层；WebView2 的 UIA Document 缺失仍须真机复验。
+
+若 preflight 失败，它会分别说明 `cargo` 未加入 `PATH`，或已找到 `cargo` 但缺少固定的
+`1.97.1-x86_64-pc-windows-msvc` 工具链，并给出对应的 `rustup toolchain install` 命令；
+两种情况仍保持非零退出并阻止后续构建。
+
+正常终端仍输出唯一的 `NATIVE_VISUAL_PREFLIGHT=` JSON。受限 Agent 宿主若无法可靠回传
+stdout，可显式传入 `-PreflightResultPath`，将同一份结果原子写入 `.local-artifacts` 下的新
+JSON 文件；成功和依赖阻塞都会写入，既有文件不会覆盖。该诊断写入与截图/运行时产物分开
+记录，默认不启用。Windows SDK 优先接受 `-WindowsSdkRoot`，未指定时依次检查注册表
+`KitsRoot10`、系统 `ProgramFilesX86` 和同名环境变量，不修改机器环境。
+
 ```powershell
 cd ..
 
 # 不启动 app 的快速检查
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\windows\scripts\Capture-NativeVisuals.ps1 -PreflightOnly
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\windows\scripts\Capture-NativeVisuals.ps1 -PreflightOnly -PreflightResultPath .\.local-artifacts\windows-visual-captures\preflight.json
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\windows\scripts\tests\Test-NativeVisualCaptureWorkflow.ps1
 
 # 真实窗口覆盖测试（会构建、启动、截图并清理）

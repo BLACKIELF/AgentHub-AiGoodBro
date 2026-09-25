@@ -38,6 +38,8 @@ struct UpstreamTrendView: View {
     let points: [Point]
     let dashboardJSON: String?
     let resetAnnotations: [ResetAnnotation]
+    let chartFrom: String?
+    let chartTo: String?
     var height: CGFloat = 40
     @StateObject private var renderer: Renderer
     @Environment(\.widgetLanguage) private var language
@@ -84,21 +86,30 @@ struct UpstreamTrendView: View {
         self.points = points
         self.dashboardJSON = nil
         self.resetAnnotations = []
+        self.chartFrom = nil
+        self.chartTo = nil
         self.height = height
         _renderer = StateObject(wrappedValue: Renderer())
     }
 
-    init(dashboardJSON: String, resetAnnotations: [ResetAnnotation] = [], height: CGFloat = 260) {
+    init(
+        dashboardJSON: String, resetAnnotations: [ResetAnnotation] = [], height: CGFloat = 260,
+        chartFrom: String? = nil, chartTo: String? = nil
+    ) {
         self.points = []
         self.dashboardJSON = dashboardJSON
         self.resetAnnotations = resetAnnotations
+        self.chartFrom = chartFrom
+        self.chartTo = chartTo
         self.height = height
         _renderer = StateObject(wrappedValue: Renderer())
     }
 
     private func updateRenderer() {
         if let dashboardJSON {
-            renderer.update(dashboardJSON: dashboardJSON, resetAnnotations: resetAnnotations, height: height, language: language)
+            renderer.update(
+                dashboardJSON: dashboardJSON, resetAnnotations: resetAnnotations, height: height, language: language,
+                from: chartFrom, to: chartTo)
         } else {
             renderer.update(points: points, height: height)
         }
@@ -141,6 +152,8 @@ struct UpstreamTrendView: View {
         .onChange(of: language) { _ in updateRenderer() }
         .onChange(of: dashboardJSON) { _ in updateRenderer() }
         .onChange(of: resetAnnotations) { _ in updateRenderer() }
+        .onChange(of: chartFrom) { _ in updateRenderer() }
+        .onChange(of: chartTo) { _ in updateRenderer() }
         .onChange(of: height) { updated in
             updateRenderer()
         }
@@ -366,15 +379,23 @@ struct UpstreamTrendView: View {
         private var renderPending = false
         private var resetAnnotations: [ResetAnnotation] = []
         private var language: WidgetLanguage = .zh
+        private var chartFrom: String?
+        private var chartTo: String?
 
         func permitsNavigation(_ url: URL?) -> Bool {
             guard let url, let resourceURL else { return false }
             return url.isFileURL && url.standardizedFileURL == resourceURL.standardizedFileURL
         }
 
-        func update(dashboardJSON incoming: String, resetAnnotations: [ResetAnnotation], height incomingHeight: CGFloat, language: WidgetLanguage = .zh) {
+        func update(
+            dashboardJSON incoming: String, resetAnnotations: [ResetAnnotation], height incomingHeight: CGFloat,
+            language: WidgetLanguage = .zh, from: String? = nil, to: String? = nil
+        ) {
             let nextHeight = incomingHeight.isFinite ? min(600, max(24, incomingHeight)) : 260
-            guard self.language != language || dashboardJSON != incoming || self.resetAnnotations != resetAnnotations || height != nextHeight else {
+            guard
+                self.language != language || dashboardJSON != incoming || self.resetAnnotations != resetAnnotations
+                    || height != nextHeight || chartFrom != from || chartTo != to
+            else {
                 return
             }
             if dashboardJSON != incoming {
@@ -393,6 +414,8 @@ struct UpstreamTrendView: View {
             self.language = language
             dashboardJSON = incoming
             self.resetAnnotations = resetAnnotations
+            chartFrom = from
+            chartTo = to
             height = nextHeight
             inputStatus = nextStatus
             lifecycle.updateInput(nextStatus)
@@ -546,6 +569,8 @@ struct UpstreamTrendView: View {
             }
             let width = web.bounds.width.isFinite && web.bounds.width > 0 ? min(4_096, web.bounds.width) : 650
             var options: [String: Any] = ["width": width, "height": height, "resetAnnotations": annotationObject, "language": language.rawValue]
+            if let chartFrom { options["from"] = chartFrom }
+            if let chartTo { options["to"] = chartTo }
             let snapshotID: String?
             let input: Any
             if let dashboardJSON {
@@ -775,6 +800,7 @@ private struct TrendWebView: NSViewRepresentable {
         web.renderer = renderer
         web.navigationDelegate = context.coordinator
         web.setValue(false, forKey: "drawsBackground")
+        web.startScrollWheelForwarding()
         web.onSizeChange = { [weak renderer, weak web] in
             guard let renderer, let web else { return }
             Task { @MainActor in
@@ -786,6 +812,7 @@ private struct TrendWebView: NSViewRepresentable {
     }
 
     static func dismantleNSView(_ web: ResizeAwareTrendWebView, coordinator: Coordinator) {
+        web.stopScrollWheelForwarding()
         web.configuration.userContentController.removeScriptMessageHandler(forName: "chartSize")
         web.onSizeChange = nil
         web.navigationDelegate = nil
@@ -798,10 +825,66 @@ private struct TrendWebView: NSViewRepresentable {
 }
 
 @MainActor
-private final class ResizeAwareTrendWebView: WKWebView {
+final class ResizeAwareTrendWebView: WKWebView {
     weak var renderer: UpstreamTrendView.Renderer?
     var onSizeChange: (() -> Void)?
+    var onScrollWheelForwardedForTest: (() -> Void)?
     private var previousSize: CGSize = .zero
+    private var scrollWheelMonitor: Any?
+
+    func startScrollWheelForwarding() {
+        guard scrollWheelMonitor == nil else { return }
+        scrollWheelMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
+            guard let self, self.contains(event: event), self.forwardScrollWheel(event) else { return event }
+            return nil
+        }
+    }
+
+    func stopScrollWheelForwarding() {
+        if let scrollWheelMonitor {
+            NSEvent.removeMonitor(scrollWheelMonitor)
+            self.scrollWheelMonitor = nil
+        }
+    }
+
+    func outerScrollViewForRegression() -> NSScrollView? {
+        var ancestor = superview
+        while let view = ancestor {
+            if let scroll = view as? NSScrollView { return scroll }
+            ancestor = view.superview
+        }
+        return nil
+    }
+
+    override func scrollWheel(with event: NSEvent) {
+        // A direct responder callback is the fallback for events that bypass
+        // the local monitor (for example, an AppKit responder-chain dispatch).
+        // Do not call super: that would restore WKWebView's inner ownership.
+        _ = forwardScrollWheel(event)
+    }
+
+    private func contains(event: NSEvent) -> Bool {
+        containsScrollLocation(event.locationInWindow, in: event.window)
+    }
+
+    fileprivate func containsScrollLocation(_ location: NSPoint, in eventWindow: NSWindow?) -> Bool {
+        guard let window, eventWindow === window, !isHiddenOrHasHiddenAncestor,
+            visibleRect.contains(convert(location, from: nil)),
+            let content = window.contentView,
+            let target = content.hitTest(content.convert(location, from: nil))
+        else { return false }
+        // The monitor observes every window. Only intercept a hit on this
+        // chart, not a covered/clipped chart or a different window's content.
+        return target === self || target.isDescendant(of: self)
+    }
+
+    @discardableResult
+    private func forwardScrollWheel(_ event: NSEvent) -> Bool {
+        guard let outer = outerScrollViewForRegression() else { return false }
+        onScrollWheelForwardedForTest?()
+        outer.scrollWheel(with: event)
+        return true
+    }
 
     override func setFrameSize(_ newSize: NSSize) {
         let changed = previousSize.width != newSize.width
@@ -810,6 +893,70 @@ private final class ResizeAwareTrendWebView: WKWebView {
         if changed {
             onSizeChange?()
         }
+    }
+}
+
+/// Executable geometry/ownership regression for the embedded chart. A real
+/// synthetic wheel exercises the responder route; hosted AppKit geometry tests
+/// the monitor's hit test without injecting any user input into the desktop.
+@MainActor
+enum UpstreamTrendWebViewScrollSelfTest {
+    private final class RecordingScrollView: NSScrollView {
+        private(set) var forwardedEvents = 0
+
+        override func scrollWheel(with event: NSEvent) {
+            forwardedEvents += 1
+        }
+    }
+
+    static func run() -> Bool {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 320, height: 180),
+            styleMask: .borderless, backing: .buffered, defer: false)
+        let other = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 320, height: 180),
+            styleMask: .borderless, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        other.isReleasedWhenClosed = false
+        defer {
+            window.close()
+            other.close()
+        }
+        let outer = RecordingScrollView(frame: NSRect(x: 0, y: 0, width: 320, height: 180))
+        window.contentView = outer
+        let host = NSView(frame: NSRect(x: 0, y: 0, width: 320, height: 720))
+        outer.documentView = host
+        let web = ResizeAwareTrendWebView(
+            frame: NSRect(x: 0, y: 0, width: 320, height: 420), configuration: WKWebViewConfiguration())
+        host.addSubview(web)
+        outer.contentView.scroll(to: .zero)
+        let visible = web.visibleRect
+        guard !visible.isEmpty else { return false }
+        let point = web.convert(NSPoint(x: visible.midX, y: visible.midY), to: nil)
+        guard web.containsScrollLocation(point, in: window),
+            !web.containsScrollLocation(point, in: other),
+            !web.containsScrollLocation(point, in: nil)
+        else { return false }
+        let clipped = web.convert(NSPoint(x: 20, y: visible.maxY + 20), to: nil)
+        guard !web.containsScrollLocation(clipped, in: window) else { return false }
+        web.isHidden = true
+        guard !web.containsScrollLocation(point, in: window) else { return false }
+        web.isHidden = false
+        let cover = NSView(frame: web.frame)
+        host.addSubview(cover, positioned: .above, relativeTo: web)
+        guard !web.containsScrollLocation(point, in: window) else { return false }
+        cover.removeFromSuperview()
+        let target = web.outerScrollViewForRegression()
+        guard
+            let cgEvent = CGEvent(
+                scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1,
+                wheel1: 12, wheel2: 0, wheel3: 0),
+            let event = NSEvent(cgEvent: cgEvent)
+        else { return false }
+        web.scrollWheel(with: event)
+        let passed = target === outer && outer.forwardedEvents == 1
+        web.removeFromSuperview()
+        return passed
     }
 }
 

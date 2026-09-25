@@ -2,19 +2,21 @@ import SwiftUI
 
 struct CreditBalanceView: View {
     let presentation: CreditBalancePresentation
+    var compact = false
     @Environment(\.widgetLanguage) private var language
     @State private var showingDetails = false
 
     var body: some View {
         HStack(spacing: 6) {
-            Text(language.text("官方余额", "Official balance"))
+            Text(language.text("美元 —", "USD —"))
                 .foregroundStyle(.secondary)
             Spacer(minLength: 8)
-            Text(compactPrimaryText)
+            Text(language.text("点数 ", "Credits ") + creditText)
                 .fontWeight(.semibold)
                 .foregroundStyle(.secondary)
                 .monospacedDigit()
                 .lineLimit(1)
+                .minimumScaleFactor(0.75)
             Button {
                 showingDetails.toggle()
             } label: {
@@ -34,13 +36,23 @@ struct CreditBalanceView: View {
         .help(helpText)
     }
 
-    private var compactPrimaryText: String {
-        switch presentation.value {
-        case .unlimited, .unavailable:
+    private var creditText: String {
+        guard presentation.value != .unavailable else { return "—" }
+        guard compact, case .reported(let raw) = presentation.value else {
             return presentation.primaryText(language)
-        case .reported(let raw):
-            return compactReportedText(raw)
         }
+        let normalized = raw.replacingOccurrences(of: ",", with: "")
+        guard let decimal = Decimal(string: normalized) else {
+            return CreditBalanceNumberText.compact(raw, locale: language.locale)
+        }
+        if decimal > 0 && decimal < Decimal(string: "0.005")! { return "<0.01" }
+        let formatter = NumberFormatter()
+        formatter.locale = language.locale
+        formatter.numberStyle = .decimal
+        formatter.maximumFractionDigits = 2
+        formatter.minimumFractionDigits = 0
+        return formatter.string(from: NSDecimalNumber(decimal: decimal))
+            ?? CreditBalanceNumberText.compact(raw, locale: language.locale)
     }
 
     private var balanceDetails: some View {
@@ -49,6 +61,8 @@ struct CreditBalanceView: View {
                 .font(.body.weight(.semibold).monospacedDigit())
                 .foregroundStyle(.primary)
                 .textSelection(.enabled)
+            Text(language.text("美元余额未提供，不从点数推算。", "USD balance is not provided and is not inferred from credits."))
+                .foregroundStyle(.secondary)
             Text(presentation.sourceText(language))
                 .foregroundStyle(.secondary)
             if let snapshotAt = presentation.snapshotAt {
@@ -76,14 +90,4 @@ struct CreditBalanceView: View {
         return lines.joined(separator: "\n")
     }
 
-    private func compactReportedText(_ raw: String) -> String {
-        guard let normalized = CreditBalancePresentation.normalizedBalance(raw) else {
-            return truncatedUnparsed(raw)
-        }
-        return CreditBalanceNumberText.compact(normalized, locale: language.locale)
-    }
-
-    private func truncatedUnparsed(_ raw: String) -> String {
-        raw.count <= 10 ? raw : String(raw.prefix(9)) + "…"
-    }
 }

@@ -71,11 +71,19 @@ jobs:
       - name: Check shared dispatch coordination and Swift interoperability
         run: |
           python3 scripts/next_dispatch_preflight.py --self-test
-          python3 -m unittest tests.test_dispatch_activity tests.test_dispatch_invocation tests.test_cancel_authority tests.test_agent_cli
+          python3 -m unittest tests.test_dispatch_activity tests.test_dispatch_invocation tests.test_dispatch_profile_workflow tests.test_cancel_authority tests.test_agent_cli
           python3 tests/test-dispatch-activity-interop.py
           python3 scripts/test-message-channels.py
           bash scripts/test-grok-reset-cards.sh
           python3 -m unittest tests.test_local_cli_quota tests.test_additional_cli_quota tests.test_zcode_cli_quota
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Run dashboard DOM acceptance (real Chromium)
+        run: |
+          npm install --no-save --no-package-lock --no-audit --no-fund playwright@1.62.1
+          npx playwright install chromium
+          node scripts/test-upstream-dashboard-dom-0918v1.js
 
   windows-rust-format:
     needs: changes
@@ -90,7 +98,39 @@ jobs:
       - name: Check Windows Rust formatting
         working-directory: windows
         run: cargo fmt --all -- --check
+      - name: Save Rust formatting diagnostics
+        if: ${{ failure() && !cancelled() }}
+        working-directory: windows
+        run: |
+          cargo fmt --all
+          New-Item -ItemType Directory -Force ../.local-artifacts | Out-Null
+          git diff --output=../.local-artifacts/windows-rustfmt.patch -- .
+      - uses: actions/upload-artifact@v4
+        if: ${{ failure() && !cancelled() }}
+        with:
+          name: windows-rustfmt-diagnostic
+          path: .local-artifacts/windows-rustfmt.patch
+          if-no-files-found: ignore
+          retention-days: 3
+      - name: Test native visual script contracts with Windows PowerShell 5.1
+        if: ${{ !cancelled() }}
+        shell: powershell
+        run: |
+          .\windows\scripts\tests\Test-PublicFeedSyntax.ps1
+          .\windows\scripts\tests\Test-NativeWindowSelection.ps1
+          .\windows\scripts\tests\Test-NativeVisualCaptureWorkflow.ps1
+          .\windows\scripts\tests\Test-ReleaseReadiness.ps1
+      - name: Test native visual script contracts with PowerShell 7
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          .\windows\scripts\tests\Test-PublicFeedSyntax.ps1
+          .\windows\scripts\tests\Test-NativeWindowSelection.ps1
+          .\windows\scripts\tests\Test-NativeVisualCaptureWorkflow.ps1
+          .\windows\scripts\tests\Test-ReleaseReadiness.ps1
+
       - name: Test Windows Rust workspace
+        if: ${{ !cancelled() }}
         working-directory: windows
         run: cargo test --workspace --locked
 
@@ -115,6 +155,14 @@ jobs:
         run: npm test
       - name: Build Windows web frontend
         run: npm run build
+      - name: Render and verify Windows UI fixtures twice
+        env:
+          CODEXU_VISUAL_BROWSER: chromium
+        run: |
+          npx playwright install chromium
+          npm run test:visual -- --update-snapshots
+          npm run test:visual
+
 
   required:
     name: CI required

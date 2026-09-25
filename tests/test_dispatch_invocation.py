@@ -73,6 +73,16 @@ class InvocationTests(unittest.TestCase):
         self.assertFalse(changed['resultVerified'])
         self.assertFalse(changed['executionSucceeded'])
 
+    def test_pending_cancellation_receipt_remains_readable_and_never_succeeds(self):
+        run = self.make(); run.begin()
+        run.update(phase='cancel_requested', exitCode=None, maxRuntimeSeconds=10)
+        result = invocation.inspect_result(self.output)
+        self.assertEqual(result['phase'], 'cancel_requested')
+        self.assertEqual(result['maxRuntimeSeconds'], 10)
+        self.assertFalse(result['executionSucceeded'])
+        self.assertFalse(result['resultVerified'])
+        self.assertEqual(result['nextAction'], 'inspect_existing_run_before_retry')
+
     def test_output_and_receipt_replacement_are_detected_without_overwrite(self):
         run = self.make(); run.begin()
         old_output = self.root / 'old-output'

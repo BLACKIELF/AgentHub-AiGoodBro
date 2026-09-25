@@ -3,15 +3,17 @@
 @tailwind utilities;
 
 :root {
-  --page-bg: #ffffff;
+  --page-bg: #e9ecf2;
   --accent: #2866f7;
   --accent-secondary: #8b6dff;
   --accent-strong: #1f59ed;
   --accent-light: #7ba0ff;
-  --surface: #ffffff;
-  --surface-elevated: rgba(255, 255, 255, 0.8);
-  --surface-elevated-strong: rgba(255, 255, 255, 0.94);
-  --surface-inset: rgba(255, 255, 255, 0.6);
+  --surface: #fafbfe;
+  --surface-elevated: rgba(250, 251, 254, 0.88);
+  --surface-elevated-strong: rgba(250, 251, 254, 0.96);
+  --surface-inset: rgba(233, 236, 242, 0.68);
+  --palette-surface-tint: #c8d5d9;
+  --palette-tint-strength: 5%;
   --text-primary: #111827;
   --text-secondary: #4b5563;
   --text-tertiary: #6b7280;
@@ -48,19 +50,19 @@
 }
 
 .dark {
-  --page-bg: #0f172a;
+  --page-bg: #15171e;
   --accent: #2866f7;
   --accent-secondary: #8b6dff;
   --accent-strong: #1f59ed;
   --accent-light: #7ba0ff;
-  --surface: #0f172a;
-  --surface-elevated: rgba(15, 23, 42, 0.86);
-  --surface-elevated-strong: rgba(15, 23, 42, 0.96);
-  --surface-inset: rgba(15, 23, 42, 0.64);
-  --text-primary: #f8fafc;
-  --text-secondary: #cbd5e1;
-  --text-tertiary: #94a3b8;
-  --border: rgba(148, 163, 184, 0.32);
+  --surface: #292c34;
+  --surface-elevated: rgba(53, 56, 65, 0.72);
+  --surface-elevated-strong: rgba(53, 56, 65, 0.9);
+  --surface-inset: rgba(18, 20, 26, 0.52);
+  --text-primary: #f4f5f8;
+  --text-secondary: #c6cad3;
+  --text-tertiary: #969ba7;
+  --border: rgba(255, 255, 255, 0.10);
   --status-ok: #30d158;
   --status-warn: #f59e0b;
   --status-error: #ff453a;
@@ -105,7 +107,8 @@ body,
 
 body {
   font-family: 'SF Pro Text', 'Inter', ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  background: var(--page-bg);
+  background: radial-gradient(900px 480px at 48% -220px, color-mix(in srgb, var(--accent) 12%, transparent), transparent),
+    color-mix(in srgb, var(--page-bg) 96%, var(--palette-surface-tint) var(--palette-tint-strength));
   color: var(--text-primary);
   transition: background-color 150ms ease, color 150ms ease;
   min-height: 100vh;
@@ -156,17 +159,17 @@ body {
 
 @layer components {
   .glass-panel {
-    background: var(--surface-elevated);
+    background: color-mix(in srgb, var(--surface-elevated) 96%, var(--palette-surface-tint) var(--palette-tint-strength));
     border: 1px solid var(--border);
-    border-radius: 18px;
+    border-radius: 12px;
     box-shadow: var(--shadow-soft);
-    backdrop-filter: saturate(170%) blur(20px);
+    backdrop-filter: saturate(130%) blur(16px);
   }
 
   .glass-panel-strong {
     background: var(--surface-elevated-strong);
     border: 1px solid var(--border);
-    border-radius: 18px;
+    border-radius: 12px;
     box-shadow: var(--shadow-soft);
     backdrop-filter: saturate(180%) blur(24px);
   }
@@ -174,15 +177,15 @@ body {
   .glass-toolbar {
     background: color-mix(in oklab, var(--surface-elevated) 72%, transparent);
     border: 1px solid color-mix(in oklab, var(--border) 80%, transparent);
-    backdrop-filter: saturate(200%) blur(26px);
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.25);
+    backdrop-filter: saturate(135%) blur(18px);
+    box-shadow: inset 0 1px 0 color-mix(in srgb, var(--text-primary) 8%, transparent);
   }
 
   .glass-button {
     background: color-mix(in oklab, var(--surface-elevated) 78%, transparent);
     border: 1px solid var(--border);
     backdrop-filter: blur(16px);
-    box-shadow: 0 10px 22px -16px rgba(15, 23, 42, 0.35);
+    box-shadow: none;
   }
 
   .glass-button-solid {
@@ -1123,6 +1126,210 @@ body {
     outline: 2px solid var(--selection-stroke);
     outline-offset: 2px;
   }
+}
+
+.home-navigation {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.2rem;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--surface-elevated) 76%, transparent);
+}
+
+.home-navigation a {
+  color: var(--text-secondary);
+  text-decoration: none;
+  padding: 0.35rem 0.65rem;
+  border-radius: 6px;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.home-navigation a.is-active,
+.home-navigation a:hover,
+.home-navigation a:focus-visible {
+  background: var(--selection-fill);
+  color: var(--selection-foreground);
+  outline-color: var(--selection-focus-ring);
+}
+
+.theme-palette-picker {
+  max-width: 9rem;
+  min-height: 2rem;
+  padding: 0 0.55rem;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface-elevated);
+  color: var(--text-primary);
+  font-size: 0.75rem;
+}
+
+.theme-palette-picker:focus-visible {
+  outline: 2px solid var(--selection-focus-ring);
+}
+
+.home-notice-strip {
+  padding: 0.65rem 0.85rem;
+  border: 1px solid var(--border);
+  border-left: 2px solid var(--accent);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--surface-elevated) 90%, transparent);
+  backdrop-filter: blur(14px);
+}
+
+.home-notice-strip > section,
+.home-notice-strip > section > button {
+  width: 100%;
+}
+
+.account-directory-panel {
+  background: color-mix(in srgb, var(--surface-elevated) 94%, var(--palette-surface-tint) var(--palette-tint-strength));
+}
+
+.account-layout-switch {
+  display: inline-flex;
+  gap: 0.15rem;
+  padding: 0.16rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-inset);
+}
+
+.account-layout-switch button {
+  padding: 0.3rem 0.6rem;
+  border-radius: 6px;
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+}
+
+.account-layout-switch button.is-active {
+  background: var(--selection-fill);
+  color: var(--selection-foreground);
+  box-shadow: inset 0 0 0 1px var(--selection-stroke);
+}
+
+.account-directory-grid {
+  display: grid;
+  gap: 0.65rem;
+  align-items: start;
+}
+
+.account-directory-grid.is-cards {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 270px), 1fr));
+}
+
+.account-directory-grid.is-list {
+  grid-template-columns: 1fr;
+}
+
+.account-directory-card {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 0.7rem;
+  padding: 0.85rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--surface-elevated) 94%, var(--palette-surface-tint) var(--palette-tint-strength));
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--text-primary) 5%, transparent);
+}
+
+.account-directory-card.is-selected {
+  border-color: var(--selection-stroke);
+}
+
+.account-directory-heading,
+.account-directory-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
+}
+
+.account-directory-number,
+.account-current-mark {
+  flex: none;
+  color: var(--text-tertiary);
+  font-size: 0.67rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.account-directory-number {
+  color: var(--accent-light);
+  font-weight: 700;
+}
+
+.account-current-mark {
+  padding: 0.12rem 0.38rem;
+  border-radius: 999px;
+  background: var(--selection-fill);
+  color: var(--selection-foreground);
+}
+
+.account-directory-actions {
+  flex-wrap: wrap;
+  padding-top: 0.55rem;
+  border-top: 1px solid var(--border);
+}
+
+.account-directory-actions button {
+  border-radius: 6px;
+}
+
+.account-quota-windows {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.5rem;
+}
+
+.account-quota-window {
+  padding: 0.5rem 0.55rem;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface-inset);
+}
+
+.account-directory-grid.is-list .account-directory-card {
+  display: grid;
+  grid-template-columns: minmax(7rem, 0.7fr) minmax(14rem, 2fr) auto;
+  align-items: center;
+}
+
+.account-directory-grid.is-list .account-directory-actions {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.account-directory-grid.is-list .account-quota-windows {
+  gap: 0.6rem;
+}
+
+.account-directory-grid.is-list .account-quota-window {
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.account-directory-grid.is-list .account-quota-window p {
+  display: none;
+}
+
+.account-directory-grid.is-list .account-directory-card {
+  gap: 0.45rem;
+  padding: 0.65rem 0.8rem;
+}
+
+.account-directory-grid.is-list [data-testid^="account-workflow-"] {
+  grid-column: 1 / -1;
+  margin-top: 0;
+}
+
+@media (max-width: 850px) {
+  .home-navigation { order: 3; width: 100%; }
+  .account-directory-grid.is-list .account-directory-card { grid-template-columns: 1fr; }
+  .account-directory-grid.is-list [data-testid^="account-workflow-"] { grid-column: auto; }
 }
 
 @media (min-width: 930px) {

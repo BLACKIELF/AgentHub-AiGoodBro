@@ -136,7 +136,7 @@ enum PublicResetFailure: LocalizedError {
     }
 }
 
-private final class PublicResetRedirectGuard: NSObject, URLSessionTaskDelegate {
+final class PublicResetRedirectGuard: NSObject, URLSessionTaskDelegate {
     func urlSession(
         _ session: URLSession, task: URLSessionTask,
         willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest,
@@ -631,6 +631,10 @@ final class PublicResetAnnouncementMonitor: ObservableObject {
     @MainActor
     func check() {
         guard !preview || fixtureScheduling, !stopped, !checking else { return }
+        // Forecast state is intentionally fetched and cached on its own path.
+        // It never enters announcement delivery, and a failure here cannot
+        // erase or block an otherwise valid historical feed refresh.
+        if !preview { PublicResetForecastStore.shared.check() }
         let epoch = generation
         guard Date() >= notBefore else {
             status = PublicResetFailure.retryLater(max(1, Int(ceil(notBefore.timeIntervalSinceNow)))).localizedDescription
@@ -1192,6 +1196,8 @@ extension PublicResetAnnouncementMonitor {
 
 enum PublicResetAnnouncementSelfTest {
     static func run() -> Bool {
+        guard HomeMessageLinkPolicy.selfTest() else { return false }
+        guard PublicResetForecastSelfTest.run() else { return false }
         let now = Date()
         let date = ISO8601DateFormatter().string(from: now.addingTimeInterval(-60))
         func item(_ id: String) -> [String: Any] {
@@ -1339,7 +1345,10 @@ enum PublicResetAnnouncementSelfTest {
                 let optionalPassed = await PublicResetAnnouncementMonitor.optionalFeishuRecoverySelfTest(now: now)
                 let mainActorPassed = await PublicResetAnnouncementMonitor.mainActorDeliverySelfTest(now: now)
                 let pagePublicationPassed = await PublicResetAnnouncementMonitor.pagePublicationSelfTest(now: now)
-                result.set(historyPassed && localPassed && optionalPassed && mainActorPassed && pagePublicationPassed)
+                let inboxPassed = await MainActor.run {
+                    HomeMessageInboxStore.visibleLimitSelfTest(now: now)
+                }
+                result.set(historyPassed && localPassed && optionalPassed && mainActorPassed && pagePublicationPassed && inboxPassed)
                 completed.signal()
             }
             // The self-test entry point runs on MainActor. Pump its run loop

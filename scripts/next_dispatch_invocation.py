@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 MAX_BRIEF_BYTES = 1024 * 1024
 MAX_RECEIPT_BYTES = 64 * 1024
 MAX_OUTPUT_BYTES = 8 * 1024 * 1024
-RECEIPT_PHASES = {"starting", "running", "awaiting_acceptance", "accepted", "rejected", "failed", "cancelled", "uncertain"}
+RECEIPT_PHASES = {"starting", "running", "cancel_requested", "awaiting_acceptance", "accepted", "rejected", "failed", "cancelled", "uncertain"}
 SUBAGENT_MODES = {"standard", "sol_luna", "luna_direct"}
 PRESET_ROLE_NAME = "next_preset_worker"
 
@@ -172,6 +172,8 @@ def inspect_result(path: Path) -> dict:
     return {
         "schemaVersion": 1, "leaseId": receipt.get("leaseId"), "taskId": receipt.get("taskId"),
         "phase": receipt.get("phase"), "exitCode": receipt.get("exitCode"),
+        "profileId": receipt.get("profileId"), "quotaException": receipt.get("quotaException"),
+        "maxRuntimeSeconds": receipt.get("maxRuntimeSeconds"),
         "executionPreference": preference, "updatedAt": receipt.get("updatedAt"),
         "effectiveExecutionPreference": receipt.get("effectiveExecutionPreference", preference),
         "inputHashes": receipt.get("inputHashes"), "workerRole": receipt.get("workerRole"),

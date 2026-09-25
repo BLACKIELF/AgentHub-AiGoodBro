@@ -13,6 +13,7 @@ const readIfExists = (relativePath) => {
 };
 
 const paletteIds = [
+  'codexu.liquid-keycap',
   'codexu.default',
   'codexu.blue-white-porcelain',
   'codexu.dunhuang-apsara',
@@ -26,7 +27,7 @@ test('Windows palette catalog registers every macOS Palette Package v1', () => {
   for (const paletteId of paletteIds) {
     assert.match(source, new RegExp(paletteId.replaceAll('.', '\\.'), 'u'));
   }
-  assert.match(source, /DEFAULT_PALETTE_ID(?:\s*:\s*PaletteId)?\s*=\s*['"]codexu\.default['"]/u);
+  assert.match(source, /DEFAULT_PALETTE_ID(?:\s*:\s*PaletteId)?\s*=\s*['"]codexu\.liquid-keycap['"]/u);
   assert.match(source, /resolvePalette\(/u);
 });
 

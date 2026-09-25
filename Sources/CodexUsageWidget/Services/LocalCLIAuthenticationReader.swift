@@ -89,7 +89,7 @@ struct LocalCLIAuthenticationReader {
             }
             let env = object("settings.json")["env"] as? [String: Any] ?? [:]
             if Self.nonempty(env["ANTHROPIC_API_KEY"]) || Self.nonempty(env["ANTHROPIC_AUTH_TOKEN"]) { return .apiKey }
-        case .workBuddy, .zcode, .trae: break
+        case .workBuddy, .zcode, .trae, .antigravity: break
         }
         return .unknown
     }
