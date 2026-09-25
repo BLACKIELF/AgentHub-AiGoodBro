@@ -2395,6 +2395,81 @@ mod tests {
         assert!(parse_summary(b"{}", now).is_err());
     }
 
+    /// The macOS fixture, replayed here.
+    ///
+    /// `tests/AntigravityCLIQuotaFixture.swift` drives the other platform's reader
+    /// with these exact payloads, at the same fixed instant, and asserts these exact
+    /// numbers. Feeding the same input through this parser is what separates "the
+    /// rules read the same" from "the two produce the same answer".
+    #[test]
+    fn the_macos_fixture_produces_the_same_answer_here() {
+        // The instant the macOS fixture pins, so the reset-time comparisons line up.
+        let now = Utc.timestamp_opt(1_800_000_000, 0).single().unwrap();
+
+        // `status(includeQuota: true)`.
+        let status = serde_json::json!({
+            "userStatus": {
+                "email": "fixture@example.invalid",
+                "userTier": { "name": "AI Pro" },
+                "cascadeModelConfigData": { "clientModelConfigs": [{
+                    "label": "Gemini Pro",
+                    "quotaInfo": { "remainingFraction": 0.65, "resetTime": "2030-01-02T03:04:05Z" }
+                }] }
+            }
+        })
+        .to_string()
+        .into_bytes();
+        let parsed = parse_status(&status, now).unwrap();
+        assert_eq!(parsed.identity.as_deref(), Some("fixture@example.invalid"));
+        assert_eq!(parsed.plan.as_deref(), Some("AI Pro"));
+        assert_eq!(parsed.windows.len(), 1);
+        assert_eq!(parsed.windows[0].id, "model-0");
+        assert_eq!(parsed.windows[0].label, "Gemini Pro");
+        assert!((parsed.windows[0].used_percent - 35.0).abs() < 1e-9);
+        assert!(parsed.windows[0].resets_at.is_some());
+        // The other side asserts this mask for the same identity.
+        assert_eq!(
+            crate::local_cli::masked_identity("fixture@example.invalid"),
+            "f***@example.invalid"
+        );
+
+        // `summary()`.
+        let summary = serde_json::json!({
+            "response": { "groups": [{
+                "displayName": "Gemini Models",
+                "buckets": [
+                    { "bucketId": "five-hour", "displayName": "5-hour",
+                      "remainingFraction": 0.72, "resetTime": "2030-01-02T03:04:05.123Z" },
+                    { "bucketId": "weekly", "displayName": "Weekly",
+                      "remaining": { "case": "remainingFraction", "value": 0.31 } },
+                    { "bucketId": "missing", "displayName": "Unknown" },
+                    { "bucketId": "disabled", "displayName": "Disabled",
+                      "remainingFraction": 0.0, "disabled": true }
+                ]
+            }] }
+        })
+        .to_string()
+        .into_bytes();
+        let windows = parse_summary(&summary, now).unwrap();
+        assert_eq!(
+            windows.len(),
+            2,
+            "the bucket with no fraction and the disabled one are both excluded"
+        );
+        assert_eq!(windows[0].id, "group-0-bucket-0");
+        assert_eq!(windows[0].label, "Gemini Models · 5-hour");
+        assert!((windows[0].used_percent - 28.0).abs() < 0.001);
+        assert!(windows[0].resets_at.is_some());
+        assert_eq!(windows[1].id, "group-0-bucket-1");
+        assert_eq!(windows[1].label, "Gemini Models · Weekly");
+        // The `oneof` spelling of the same field has to read identically.
+        assert_eq!(windows[1].used_percent, 69.0);
+        assert!(
+            windows[1].resets_at.is_none(),
+            "a bucket with no reset time stays unknown"
+        );
+    }
+
     #[test]
     fn base64_and_protobuf_helpers_stay_bounded() {
         assert_eq!(decode_base64("Cgdwcm90bw==").unwrap(), b"\n\x07proto");
