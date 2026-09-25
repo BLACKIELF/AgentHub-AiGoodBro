@@ -12,7 +12,7 @@
 | 3 | 用户身份：以 `OpenProcess` 成功推断同用户，提权调用方对他人进程同样成功 | 进程令牌的用户 SID 与本进程用 `EqualSid` 比较（不匹配以错误返回，故读 `.is_ok()`） | `antigravity.rs` | 实机 `native_process_snapshot_only_returns_language_server_candidates` |
 | 4 | 安装来源：字符串前缀判断，`C:\Program Files Elsewhere` 会被当成 `C:\Program Files` | `path_starts_with` 按路径分量、忽略大小写比较；`install_roots()` 在环境变量缺失时回退到 `%USERPROFILE%` / `%SystemDrive%` 布局；新增 Authenticode 签发者校验（签发者须含 `google`） | `antigravity.rs` | `install_root_matching_uses_path_components_not_string_prefixes`、实机 `a_trusted_signer_is_read_in_either_authenticode_form` |
 | 5 | 缓存越界：`User` / `globalStorage` 是 junction 时会读到别的安装的缓存 | `cache_file` 规范化根目录、两级都拒绝 symlink / reparse point、要求解析后的文件仍在解析后的根之下 | `antigravity.rs` | `cache_file_lookup_stays_inside_the_selected_directory`、`a_linked_cache_directory_is_never_followed` |
-| 6 | WinHTTP 错误码：只留原始 HRESULT，数字本身无意义 | 该适配器区分的 `ERROR_WINHTTP_*` 成为具名常量，配 `summary()`，可重试信号由 `requests_resend()` 显式判断 | `antigravity.rs` | `named_winhttp_failures_explain_themselves` |
+| 6 | WinHTTP 错误码：只留原始 HRESULT，数字本身无意义 | 该适配器区分的 `ERROR_WINHTTP_*` 成为具名常量，配 `summary()`，可重试信号由 `requests_resend()` 显式判断（**12032 的取值于 0925 修正，见下**） | `antigravity.rs` | `named_winhttp_failures_explain_themselves`、`a_connection_error_is_not_a_resend_request`、`a_resend_signal_is_repeated_once_and_can_succeed` |
 | 7 | UTF-8 截断：按字节切片，落在字符边界外会 panic | `truncate_chars` 按字符计数 | `antigravity.rs` | `character_truncation_never_splits_a_code_point` |
 | 8 | 跨平台目录调用：三处各自重算 `%USERPROFILE%` / `%APPDATA%` / `%LOCALAPPDATA%` | 收敛到 `PlatformDirectories`（`detect()` 只读一次环境，`default_directory` / `alternate_directory` 委托同一套映射） | `local_cli.rs`、`profiles.rs`、`profile_quota.rs` | `the_directory_root_set_is_the_single_source_of_truth`、`detected_roots_are_absolute_and_never_empty` |
 | 9 | 过期额度展示：只看 `state`，报过 `available` 的旧读数会一直按实时展示（绿条、实时倒计时） | `isLocalQuotaLive` 同时看 `state`、300 秒新鲜度、时间戳是否在未来、窗口是否都已过重置时刻；过期读数加显式说明，`data-live` 可供断言 | `localCliQuota.ts`、`LocalProfileQuota.tsx` | `an expired reading is never presented as the current quota`、视觉用例 |
@@ -92,11 +92,41 @@ cd windows/apps/codexu-tauri/web; npm test; npm run build; npm run test:visual
 无 `language_server.exe` 进程），所以这个空目录不是应用的 profile。
 
 修复后的测试跑在临时根集合上：它已在本机运行两次，该目录的修改时间未变，说明不再被触碰。
-该空目录本身尚未删除，留给用户决定。
+该空目录经用户确认后已删除（送入回收站，可恢复）。
+
+## 后续修正：WinHTTP 重发错误码写错了（0925）
+
+第 6 项把 `ERROR_WINHTTP_RESEND_REQUEST` 写成了 **12030 / `0x80072EFE`**，而那个值实际是
+`ERROR_WINHTTP_CONNECTION_ERROR`。正确的对应关系：
+
+| 常量 | 十进制 | HRESULT | 含义 | 可重发 |
+| --- | --- | --- | --- | --- |
+| `ERROR_WINHTTP_CONNECTION_ERROR` | 12030 | `0x80072EFE` | 连接失败，请求没发出去 | 否 |
+| `ERROR_WINHTTP_RESEND_REQUEST` | **12032** | **`0x80072F00`** | 服务器在请求发出后断开，要求重发 | **是** |
+
+两个码相邻，是本适配器里最容易混淆的一对。修正内容：
+
+- 常量拆成两个，`requests_resend()` 只对 **12032** 返回真；
+- 新增 `"connection failed"` 文案，让 12030 与 12032 在日志里可区分；
+- 把重试循环抽成 `exchange_with_resend_retry`，交换过程由调用方注入，
+  于是「重试」本身可以被测，而不必依赖真实 WinHTTP；
+- 新增两个用例：`a_connection_error_is_not_a_resend_request` 钉住两个码的取值、文案与可重发性；
+  `a_resend_signal_is_repeated_once_and_can_succeed` 覆盖「首次要求重发 → 重发成功」
+  「首次即成功不重发」「连续两次要求重发就上报，不循环」「12030 立刻上报，不重发」。
+
+**仍未在真实 Antigravity 登录环境验证**：本机没有已登录的 Antigravity 桌面端，重发路径只在
+注入式交换下被测过，真实服务器何时返回 12032 未经实测。这一段结论在拿到真实登录环境前
+都不算证实。
 
 ## 未完成 / 未验证
 
-- 未对真实安装的 Antigravity 桌面端做在线额度实测；真实账号登录由用户操作。
+- **未对真实安装的 Antigravity 桌面端做在线额度实测**；真实账号登录由用户操作。
+  重发（12032）与超时/连接失败（12002 / 12029 / 12030）在真实端点上的出现频率与分布同样未验证。
 - 非 Codex 平台的交互式终端启动仍只到「隔离环境计划」一层。
 - 维护者消息的 Windows 原生通知、首次基线与去重仍未接线。
-- 原生视觉采集工作流需要在一个可正常合成 WebView2 的交互式桌面会话中复跑。
+- 原生视觉采集工作流需要在一个 WebView2 不崩溃的交互式桌面会话中复跑。本机空白窗口的成因
+  已定位为 **WebView2 的 browser 进程死亡**，窗口里那个
+  「msedgewebview2 has stopped working / Error launching CrashSender.exe」是**腾讯微信输入法
+  WeType 的 CrashRpt 组件**在播报（`CrashSender1500.exe` 名字对不上），不是病因也不是本产品。
+  最小环境与脱离沙箱均复现，IFEO / `AppInit_DLLs` / WebView2 策略均无劫持。
+  退出该输入法后重跑是待验证的下一步。

@@ -1725,15 +1725,25 @@ mod win32 {
     ///
     /// WinHTTP reports `ERROR_WINHTTP_*` (12000..12200); the HRESULT form is
     /// `0x8007_0000 | code`, so the numeric value alone says nothing.
+    ///
+    /// `CONNECTION_ERROR` (12030) and `RESEND_REQUEST` (12032) are adjacent and
+    /// easy to swap. They are not interchangeable: 12030 is a connection that
+    /// failed, while 12032 is the server retiring a connection *after* the request
+    /// went out, which is the only one worth sending again.
     const ERROR_WINHTTP_TIMEOUT: u32 = 0x8007_2EE2; // 12002
     const ERROR_WINHTTP_NAME_NOT_RESOLVED: u32 = 0x8007_2EE7; // 12007
     const ERROR_WINHTTP_CANNOT_CONNECT: u32 = 0x8007_2EFD; // 12029
-    const ERROR_WINHTTP_RESEND_REQUEST: u32 = 0x8007_2EFE; // 12030
+    const ERROR_WINHTTP_CONNECTION_ERROR: u32 = 0x8007_2EFE; // 12030
+    const ERROR_WINHTTP_RESEND_REQUEST: u32 = 0x8007_2F00; // 12032
     const ERROR_WINHTTP_SECURE_FAILURE: u32 = 0x8007_2F8F; // 12175
 
     impl WinHttpFailure {
         /// The server retired the connection before the response completed, so the
         /// request may be sent again unchanged.
+        ///
+        /// Only `RESEND_REQUEST` qualifies. `CONNECTION_ERROR` looks similar and is
+        /// a different thing: the connection never carried the request, so
+        /// resending it is not the documented remedy and is not attempted here.
         pub(super) fn requests_resend(&self) -> bool {
             self.code == ERROR_WINHTTP_RESEND_REQUEST
         }
@@ -1742,6 +1752,7 @@ mod win32 {
             match self.code {
                 ERROR_WINHTTP_TIMEOUT => "timed out",
                 ERROR_WINHTTP_CANNOT_CONNECT => "could not connect",
+                ERROR_WINHTTP_CONNECTION_ERROR => "connection failed",
                 ERROR_WINHTTP_NAME_NOT_RESOLVED => "name not resolved",
                 ERROR_WINHTTP_RESEND_REQUEST => "asked for a resend",
                 ERROR_WINHTTP_SECURE_FAILURE => "TLS negotiation failed",
@@ -1927,30 +1938,53 @@ mod win32 {
                     Some(&security.to_le_bytes()),
                 );
             }
-            // ERROR_WINHTTP_RESEND_REQUEST is a documented outcome, not a
-            // failure: the server retired the connection and WinHTTP asks for the
-            // request again. Retry once before reporting anything to the caller.
-            let mut attempt = 0u32;
-            let outcome = loop {
-                attempt += 1;
-                match exchange_loopback(handle, request, &content_type, &protocol, &csrf) {
-                    Ok(response) => break Ok(response),
-                    Err(error) => {
-                        let resend = error
-                            .downcast_ref::<WinHttpFailure>()
-                            .map(WinHttpFailure::requests_resend)
-                            .unwrap_or(false);
-                        if resend && attempt < 2 {
-                            continue;
-                        }
-                        break Err(error);
-                    }
-                }
-            };
+            let outcome = exchange_with_resend_retry(|_| {
+                exchange_loopback(handle, request, &content_type, &protocol, &csrf)
+            });
             let _ = WinHttpCloseHandle(handle);
             let _ = WinHttpCloseHandle(connect);
             let _ = WinHttpCloseHandle(session);
             outcome
+        }
+    }
+
+    /// Attempts one request is allowed before a resend signal is reported.
+    const RESEND_ATTEMPTS: u32 = 2;
+
+    /// Send the request, repeating it once when WinHTTP asks for a resend.
+    ///
+    /// `ERROR_WINHTTP_RESEND_REQUEST` is a documented outcome rather than a
+    /// failure: the server retired the connection after the request went out and
+    /// WinHTTP asks for the request again, so the same request handle is reused.
+    /// One repeat is enough — a second signal means the endpoint is not answering
+    /// and looping would only hold the read open.
+    ///
+    /// Every other failure is returned at once, including the neighbouring
+    /// `ERROR_WINHTTP_CONNECTION_ERROR`: that connection never carried the request,
+    /// so resending it is not the documented remedy.
+    ///
+    /// The repeat itself has only ever been exercised against an injected exchange,
+    /// not against a real Antigravity. Nothing here has been verified in a signed-in
+    /// Antigravity environment.
+    pub(super) fn exchange_with_resend_retry<F>(mut attempt: F) -> anyhow::Result<LoopbackResponse>
+    where
+        F: FnMut(u32) -> anyhow::Result<LoopbackResponse>,
+    {
+        let mut taken = 0u32;
+        loop {
+            taken += 1;
+            match attempt(taken) {
+                Ok(response) => return Ok(response),
+                Err(error) => {
+                    let resend = error
+                        .downcast_ref::<WinHttpFailure>()
+                        .map(WinHttpFailure::requests_resend)
+                        .unwrap_or(false);
+                    if !resend || taken >= RESEND_ATTEMPTS {
+                        return Err(error);
+                    }
+                }
+            }
         }
     }
 }
@@ -2655,7 +2689,8 @@ mod tests {
             (0x8007_2EE2, "timed out", false),
             (0x8007_2EE7, "name not resolved", false),
             (0x8007_2EFD, "could not connect", false),
-            (0x8007_2EFE, "asked for a resend", true),
+            (0x8007_2EFE, "connection failed", false),
+            (0x8007_2F00, "asked for a resend", true),
             (0x8007_2F8F, "TLS negotiation failed", false),
         ] {
             let failure = win32::WinHttpFailure {
@@ -2676,6 +2711,105 @@ mod tests {
         };
         assert_eq!(unknown.summary(), "failed");
         assert!(!unknown.requests_resend());
+    }
+
+    /// `CONNECTION_ERROR` and `RESEND_REQUEST` are adjacent codes that were once
+    /// swapped here, so the distinction is pinned rather than assumed.
+    #[cfg(windows)]
+    #[test]
+    fn a_connection_error_is_not_a_resend_request() {
+        // The HRESULT form is `0x8007_0000 | code`, and the two codes are 12030 and
+        // 12032 — one apart, which is what made the mistake easy.
+        assert_eq!(0x8007_0000u32 | 12030u32, 0x8007_2EFEu32);
+        assert_eq!(0x8007_0000u32 | 12032u32, 0x8007_2F00u32);
+        assert_ne!(12030u32, 12032u32);
+
+        let connection = win32::WinHttpFailure {
+            stage: "receive response",
+            code: 0x8007_2EFE,
+        };
+        let resend = win32::WinHttpFailure {
+            stage: "receive response",
+            code: 0x8007_2F00,
+        };
+        assert_eq!(connection.summary(), "connection failed");
+        assert_eq!(resend.summary(), "asked for a resend");
+        // 12030 is a connection that never carried the request; only 12032 asks for
+        // the request to be sent again.
+        assert!(!connection.requests_resend());
+        assert!(resend.requests_resend());
+    }
+
+    /// The resend path end to end, with the exchange injected so it is the retry
+    /// that is under test rather than WinHTTP.
+    #[cfg(windows)]
+    #[test]
+    fn a_resend_signal_is_repeated_once_and_can_succeed() {
+        let answered = || LoopbackResponse {
+            status: 200,
+            body: b"ok".to_vec(),
+        };
+        let failure = |code: u32| {
+            anyhow::Error::new(win32::WinHttpFailure {
+                stage: "receive response",
+                code,
+            })
+        };
+
+        // The first attempt is asked for a resend, the repeat is answered.
+        let mut calls = 0u32;
+        let outcome = win32::exchange_with_resend_retry(|attempt| {
+            calls += 1;
+            assert!(attempt <= 2, "the retry loop ran {attempt} times");
+            if attempt == 1 {
+                Err(failure(0x8007_2F00))
+            } else {
+                Ok(answered())
+            }
+        })
+        .expect("the repeated request must be accepted");
+        assert_eq!(calls, 2, "a resend signal must be repeated exactly once");
+        assert_eq!(outcome.status, 200);
+        assert_eq!(outcome.body, b"ok");
+
+        // A first-attempt success is never repeated.
+        let mut calls = 0u32;
+        win32::exchange_with_resend_retry(|_| {
+            calls += 1;
+            Ok(answered())
+        })
+        .unwrap();
+        assert_eq!(calls, 1);
+
+        // A second resend signal is reported instead of looping.
+        let mut calls = 0u32;
+        let error = win32::exchange_with_resend_retry(|_| {
+            calls += 1;
+            Err(failure(0x8007_2F00))
+        })
+        .expect_err("a second resend signal must be reported");
+        assert_eq!(calls, 2, "the loop must stop after one repeat");
+        assert_eq!(
+            error
+                .downcast_ref::<win32::WinHttpFailure>()
+                .map(win32::WinHttpFailure::summary),
+            Some("asked for a resend")
+        );
+
+        // The neighbouring connection error is reported at once, not repeated.
+        let mut calls = 0u32;
+        let error = win32::exchange_with_resend_retry(|_| {
+            calls += 1;
+            Err(failure(0x8007_2EFE))
+        })
+        .expect_err("a connection error must be reported at once");
+        assert_eq!(calls, 1, "a connection error must not be repeated");
+        assert_eq!(
+            error
+                .downcast_ref::<win32::WinHttpFailure>()
+                .map(win32::WinHttpFailure::summary),
+            Some("connection failed")
+        );
     }
 
     /// Real-machine Authenticode check.
