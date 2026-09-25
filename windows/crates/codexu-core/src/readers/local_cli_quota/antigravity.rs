@@ -2194,6 +2194,9 @@ mod tests {
     #[test]
     fn a_failed_live_read_never_substitutes_another_accounts_cache() {
         let now = Utc::now();
+        // Counted, not merely checked: the cache must not even be consulted.
+        let cache_reads = Arc::new(AtomicUsize::new(0));
+        let counter = cache_reads.clone();
         let reader = AntigravityReader::synthetic(
             Arc::new(|_| anyhow::bail!("synthetic failure")),
             Arc::new(|| {
@@ -2204,6 +2207,7 @@ mod tests {
             }),
             Arc::new(|_| Ok(vec![31337])),
             Arc::new(move |_| {
+                counter.fetch_add(1, Ordering::SeqCst);
                 Ok(Some(cache_with(
                     br#"{"email":"cached@example.com"}"#.to_vec(),
                     now,
@@ -2217,6 +2221,47 @@ mod tests {
             Some("local_cli_antigravity_live_unavailable")
         );
         assert_eq!(result.masked_identity, None);
+        assert_eq!(
+            cache_reads.load(Ordering::SeqCst),
+            0,
+            "a failed live read must not read another account's cache"
+        );
+    }
+
+    /// A failure to enumerate processes is not evidence that no live account
+    /// exists, so the cache must not be consulted — not merely left unused. The
+    /// macOS fixture asserts the same property by counting its cache reads.
+    #[test]
+    fn a_failed_process_inspection_never_falls_back_to_the_cache() {
+        let now = Utc::now();
+        let cache_reads = Arc::new(AtomicUsize::new(0));
+        let counter = cache_reads.clone();
+        let reader = AntigravityReader::synthetic(
+            Arc::new(|_| anyhow::bail!("no request may be sent")),
+            Arc::new(|| anyhow::bail!("synthetic process inspection failure")),
+            Arc::new(|_| Ok(Vec::new())),
+            Arc::new(move |_| {
+                counter.fetch_add(1, Ordering::SeqCst);
+                Ok(Some(cache_with(
+                    br#"{"email":"cached@example.com"}"#.to_vec(),
+                    now,
+                )))
+            }),
+        );
+
+        let result = reader.load(Path::new(r"C:\Antigravity"), true, now);
+        assert_eq!(result.state, LocalCliQuotaState::Unavailable);
+        assert_eq!(
+            result.message_code.as_deref(),
+            Some("local_cli_antigravity_live_unavailable")
+        );
+        assert!(result.windows.is_empty());
+        assert_eq!(result.masked_identity, None);
+        assert_eq!(
+            cache_reads.load(Ordering::SeqCst),
+            0,
+            "the cache must not be read when process inspection failed"
+        );
     }
 
     #[test]
