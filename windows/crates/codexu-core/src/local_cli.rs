@@ -702,6 +702,43 @@ mod tests {
         }
     }
 
+    /// The isolation mapping is a documented table, and it decides whether the app
+    /// may launch a platform with a directory of its own. A wrong row means either
+    /// launching with a directory the CLI silently ignores, or refusing an account
+    /// that would have worked.
+    ///
+    /// The match is over every kind rather than the five that happen to be
+    /// interesting, so adding a platform forces a decision instead of inheriting one.
+    #[test]
+    fn the_isolation_modes_match_the_documented_table() {
+        for kind in LocalCliKind::ALL {
+            let expected = match kind {
+                LocalCliKind::Codex
+                | LocalCliKind::ClaudeCode
+                | LocalCliKind::Grok
+                | LocalCliKind::Kimi
+                | LocalCliKind::WorkBuddy => IsolationMode::Managed,
+                LocalCliKind::Gemini => IsolationMode::DefaultOnly,
+                LocalCliKind::OpenCode
+                | LocalCliKind::Trae
+                | LocalCliKind::ZCode
+                | LocalCliKind::Mimo
+                | LocalCliKind::Antigravity => IsolationMode::Unsupported,
+            };
+            assert_eq!(kind.isolation_mode(), expected, "{}", kind.id());
+            // Anything the app cannot isolate must not be handed an environment the
+            // platform would ignore.
+            if expected != IsolationMode::Managed {
+                assert!(
+                    kind.isolation_environment(Path::new(r"C:\accounts\one"))
+                        .is_none(),
+                    "{}",
+                    kind.id()
+                );
+            }
+        }
+    }
+
     #[test]
     fn isolation_never_pretends_an_ignored_variable_works() {
         let directory = Path::new(r"C:\accounts\one");
