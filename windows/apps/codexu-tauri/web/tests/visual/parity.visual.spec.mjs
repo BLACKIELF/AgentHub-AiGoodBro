@@ -30,9 +30,14 @@ test('live forecast ticks without network calls, catches up and waits for confir
   const timer = page.getByTestId('forecast-reset-countdown');
   await expect(timer).toContainText('00:00:10');
   const calls = await page.evaluate(() => window.feedCalls);
-  await page.clock.fastForward(3000);
+  // `pauseAt` rather than `fastForward`: fast-forwarding leaves the clock ticking, so
+  // the polling assertion below lets real time leak in and the countdown can run past
+  // the second being asserted before it is ever read. That is why this missed
+  // `00:00:07` on a busy runner while passing on an idle machine.
+  await page.clock.pauseAt(new Date('2026-09-22T12:00:03Z'));
   await expect(timer).toContainText('00:00:07');
-  await page.clock.fastForward(10000);
+  // Same reasoning at the other end: pause at the instant rather than run past it.
+  await page.clock.pauseAt(new Date('2026-09-22T12:00:13Z'));
   await expect(timer).toContainText('awaiting confirmation');
   expect(await page.evaluate(() => window.feedCalls)).toBe(calls);
   await expect(page.getByRole('region', { name: 'Public reset updates' })).toHaveScreenshot('public-reset-expired.png');
