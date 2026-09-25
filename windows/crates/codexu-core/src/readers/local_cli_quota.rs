@@ -283,6 +283,25 @@ mod tests {
         assert_ne!(one, fingerprint(LocalCliKind::Grok, "user@example.com"));
     }
 
+    /// The fingerprint has to come out the same here as on macOS, because it is the
+    /// same account being described. The macOS reader hashes
+    /// `"next-local-cli:v1:\(kind):\(identity.lowercased())"`; these are those
+    /// digests, computed independently, so a change to the prefix, the kind id or
+    /// the casing is caught rather than silently forking the two platforms.
+    #[test]
+    fn fingerprints_match_the_macos_pre_image() {
+        assert_eq!(
+            fingerprint(LocalCliKind::Antigravity, "fixture@example.invalid"),
+            "626314a2f09aa0589a5cab316bba1c72fa3dcaca2ab7e5ca3b062ec676ec709a"
+        );
+        // The same digest the macOS reader would produce for a mixed-case identity,
+        // since it lowercases before hashing.
+        assert_eq!(
+            fingerprint(LocalCliKind::Antigravity, "User@Example.com"),
+            "f8a7e65e668cf8eb6f4f278a9eb3fdadb14009b7d2b1b162c2ea0e533765d7ab"
+        );
+    }
+
     #[test]
     fn result_helpers_attach_only_masked_identities() {
         let now = Utc::now();
