@@ -1328,14 +1328,13 @@ mod win32 {
 
     /// Publisher named by a verification state, or `None` when it cannot be read.
     unsafe fn state_publisher(state: HANDLE) -> Option<String> {
-        use windows::Win32::Security::Cryptography::CertGetNameStringW;
+        use windows::Win32::Security::Cryptography::{
+            CertGetNameStringW, CERT_NAME_SIMPLE_DISPLAY_TYPE,
+        };
         use windows::Win32::Security::WinTrust::{
             WTHelperGetProvCertFromChain, WTHelperGetProvSignerFromChain,
             WTHelperProvDataFromStateData,
         };
-
-        // CERT_NAME_SIMPLE_DISPLAY_NAME; the crate only exports the issuer flag.
-        const CERT_NAME_SIMPLE_DISPLAY_NAME: u32 = 4;
 
         let provider = WTHelperProvDataFromStateData(state);
         if provider.is_null() {
@@ -1352,7 +1351,7 @@ mod win32 {
         let mut buffer = [0u16; 256];
         let written = CertGetNameStringW(
             (*certificate).pCert,
-            CERT_NAME_SIMPLE_DISPLAY_NAME,
+            CERT_NAME_SIMPLE_DISPLAY_TYPE,
             0,
             None,
             Some(&mut buffer),
