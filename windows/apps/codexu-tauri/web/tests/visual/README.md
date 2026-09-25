@@ -25,7 +25,19 @@ Determinism comes from:
 - an explicit `theme` in the fixture (no `prefers-color-scheme` dependency);
 - an explicit `language` in the fixture (no `navigator.language` dependency);
 - a fixed viewport, `timezoneId: 'UTC'` and `locale: 'en-US'`;
-- `animations: 'disabled'` plus a zero pixel-diff tolerance.
+- `animations: 'disabled'` plus a small pixel tolerance rather than zero
+  (`maxDiffPixelRatio: 0.0002`): a sub-pixel line box rounds differently between
+  runs, shifting glyph antialiasing and the rounded panel corners. Measured noise on
+  a text-heavy panel is 8 pixels and the allowance is about 100 there, far below a
+  real regression, which differs by hundreds to thousands.
+
+**Pause the clock before asserting on it.** `page.clock.fastForward()` advances time
+and leaves it running, while `expect(...).toContainText()` polls — so a countdown can
+run past the value being asserted before the assertion ever reads it. That is
+invisible on an idle machine and reproduces on a loaded one, which is the worst way
+for a test to fail. Use `page.clock.pauseAt(instant)`, which advances to the instant
+and stops there, so polling cannot move the clock. `install` and `setFixedTime`
+already leave it still and are safe to assert against directly.
 
 ## Running
 
