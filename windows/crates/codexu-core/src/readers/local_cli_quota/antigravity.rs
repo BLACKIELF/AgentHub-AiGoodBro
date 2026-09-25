@@ -2470,6 +2470,117 @@ mod tests {
         );
     }
 
+    /// The macOS fixture's protobuf builders, so the payload below is byte for byte
+    /// the one the other platform's `cacheTest()` builds.
+    fn proto_varint(mut value: u64) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        loop {
+            let byte = (value & 0x7f) as u8;
+            value >>= 7;
+            bytes.push(if value > 0 { byte | 0x80 } else { byte });
+            if value == 0 {
+                return bytes;
+            }
+        }
+    }
+
+    /// `field(number, data)`: a length-delimited field.
+    fn proto_field(number: u64, data: &[u8]) -> Vec<u8> {
+        let mut output = proto_varint(number * 8 + 2);
+        output.extend_from_slice(&proto_varint(data.len() as u64));
+        output.extend_from_slice(data);
+        output
+    }
+
+    /// `fractionField(value)`: field 1 with the 32-bit wire type.
+    fn proto_fraction(value: f32) -> Vec<u8> {
+        let mut output = vec![0x0d];
+        output.extend_from_slice(&value.to_le_bytes());
+        output
+    }
+
+    /// `cacheTest()` from the macOS fixture: a float fraction and a nested timestamp
+    /// inside the protobuf blob, next to a model that carries no quota at all.
+    #[test]
+    fn the_macos_cache_fixture_produces_the_same_answer_here() {
+        let now = Utc.timestamp_opt(1_800_000_000, 0).single().unwrap();
+
+        let mut expiry = proto_varint(8);
+        expiry.extend_from_slice(&proto_varint(1_893_553_200));
+        let mut quota = proto_fraction(0.75);
+        quota.extend_from_slice(&proto_field(2, &expiry));
+        let mut model = proto_field(1, b"Gemini Pro");
+        model.extend_from_slice(&proto_field(15, &quota));
+        let missing = proto_field(1, b"No Quota");
+
+        let mut models = proto_field(1, &model);
+        models.extend_from_slice(&proto_field(1, &missing));
+        let mut payload = proto_field(7, b"fixture@example.invalid");
+        payload.extend_from_slice(&proto_field(33, &models));
+
+        let saved = now - Duration::hours(1);
+        let cache = cache_with(
+            serde_json::json!({
+                "email": "fixture@example.invalid",
+                "userStatusProtoBinaryBase64": base64_of(&payload)
+            })
+            .to_string()
+            .into_bytes(),
+            saved,
+        );
+
+        let parsed = parse_cache(&cache, now).unwrap();
+        assert_eq!(
+            parsed.windows.len(),
+            1,
+            "the model with no quota field is skipped"
+        );
+        assert_eq!(parsed.windows[0].id, "cache-model-0");
+        assert_eq!(parsed.windows[0].label, "Gemini Pro");
+        assert_eq!(parsed.windows[0].used_percent, 25.0);
+        assert!(parsed.windows[0].resets_at.is_some());
+        // A cache cannot prove fresh quota or a sign-in, and its mtime is not a
+        // refresh time.
+        assert_eq!(parsed.state, LocalCliQuotaState::Unavailable);
+        assert_eq!(parsed.fetched_at, saved);
+        assert!(parsed.source_label.contains("cached"));
+        assert_eq!(
+            parsed.message_code.as_deref(),
+            Some("local_cli_antigravity_cached_quota")
+        );
+    }
+
+    /// `parserBoundaries()` from the macOS fixture. The point of the set is that an
+    /// out-of-range or non-numeric fraction is dropped rather than clamped, while a
+    /// legitimate zero survives.
+    #[test]
+    fn the_macos_boundary_fixture_produces_the_same_answer_here() {
+        let now = Utc.timestamp_opt(1_800_000_000, 0).single().unwrap();
+        let bytes = serde_json::json!({
+            "groups": [{ "name": "Models", "buckets": [
+                { "id": "zero", "name": "Empty", "remainingFraction": 0.0 },
+                { "id": "full", "name": "Full", "remaining": { "remainingFraction": 1.0 } },
+                { "id": "negative", "name": "Bad", "remainingFraction": -0.2 },
+                { "id": "high", "name": "Bad", "remainingFraction": 2.0 },
+                { "id": "bool", "name": "Bad", "remainingFraction": true },
+                { "id": "past", "name": "Old", "remainingFraction": 0.3,
+                  "resetTime": "2020-01-01T00:00:00Z" }
+            ] }]
+        })
+        .to_string()
+        .into_bytes();
+
+        let windows = parse_summary(&bytes, now).unwrap();
+        let used: Vec<f64> = windows.iter().map(|window| window.used_percent).collect();
+        assert_eq!(
+            used,
+            vec![100.0, 0.0],
+            "invalid fractions are dropped, not clamped, and an explicit zero survives"
+        );
+        assert_eq!(windows[0].label, "Models · Empty");
+        assert_eq!(windows[1].label, "Models · Full");
+    }
+
     #[test]
     fn base64_and_protobuf_helpers_stay_bounded() {
         assert_eq!(decode_base64("Cgdwcm90bw==").unwrap(), b"\n\x07proto");
