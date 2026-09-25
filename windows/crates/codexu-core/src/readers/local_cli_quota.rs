@@ -246,6 +246,42 @@ mod tests {
         );
     }
 
+    /// The recognition gate sits in front of the Antigravity reader, so it applies to
+    /// the platform default directory too: a default directory that exists but carries
+    /// no marker never reaches the live probe, and the caller is told the directory is
+    /// unrecognised rather than that the application is not running.
+    ///
+    /// That is what a real machine showed — `%APPDATA%\Antigravity` exists and is
+    /// empty — and it was only pinned by the ignored real-machine test. It is pinned
+    /// here so that changing it is a decision rather than an accident.
+    #[test]
+    fn the_recognition_gate_also_applies_to_the_antigravity_default_directory() {
+        let now = Utc::now();
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("Antigravity");
+        std::fs::create_dir(&root).unwrap();
+
+        // No marker yet: the dispatcher answers, the reader is never consulted.
+        let bare = read_local_cli_quota(LocalCliKind::Antigravity, &root, true, now);
+        assert_eq!(bare.state, LocalCliQuotaState::Unavailable);
+        assert_eq!(
+            bare.message_code.as_deref(),
+            Some("local_cli_directory_not_recognized")
+        );
+        assert!(bare.windows.is_empty());
+
+        // `User` is one of the two markers, and it opens the gate. What the reader
+        // then answers depends on what this machine has installed, so only the gate
+        // is asserted here.
+        std::fs::create_dir_all(root.join("User")).unwrap();
+        let recognized = read_local_cli_quota(LocalCliKind::Antigravity, &root, true, now);
+        assert_ne!(
+            recognized.message_code.as_deref(),
+            Some("local_cli_directory_not_recognized"),
+            "the marker must open the gate"
+        );
+    }
+
     #[test]
     fn codex_keeps_using_its_official_reader() {
         let now = Utc::now();
