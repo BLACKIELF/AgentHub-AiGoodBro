@@ -407,6 +407,15 @@ where
 
 /// Re-check path, start time and port ownership immediately before and after a
 /// request, so a reused PID cannot receive the CSRF token.
+/// Re-check an endpoint against a process and port snapshot.
+///
+/// The macOS transport compares the image path, the process start time and port
+/// ownership, and deliberately does not repeat the code-signature check there.
+/// This one repeats everything, signature included, because the install roots are
+/// broader than macOS': the other side accepts only `/Applications` and
+/// `~/Applications`, while here the image may sit anywhere under `%LOCALAPPDATA%`
+/// or either `Program Files` tree. The signature is what keeps that breadth from
+/// being a weakness, so it is not dropped on the second look.
 pub fn verify_lists(
     processes: &[ProcessEntry],
     listening: &[u16],
@@ -1161,7 +1170,7 @@ fn protobuf(data: &[u8]) -> anyhow::Result<BTreeMap<u64, Vec<ProtoValue>>> {
 mod win32 {
     use super::{
         reachable_at_loopback, EndpointScheme, LoopbackRequest, LoopbackResponse, ProcessEntry,
-        MAX_BYTES,
+        ALLOWED_METHODS, MAX_BYTES, SERVICE_PATH,
     };
     use std::path::{Path, PathBuf};
     use windows::core::PCWSTR;
@@ -1862,13 +1871,23 @@ mod win32 {
         })
     }
 
+    /// The only paths this transport will ever request.
+    ///
+    /// The macOS transport validates the same thing on the URL it is handed: the
+    /// last path component has to be one of the two methods. A prefix test is
+    /// broader than that contract — it would accept any sibling under the service
+    /// root — so the match is exact.
+    pub(super) fn allowed_service_path(path: &str) -> bool {
+        ALLOWED_METHODS
+            .iter()
+            .any(|method| path == format!("{}{}", SERVICE_PATH, method))
+    }
+
     pub(super) fn native_transport_call(
         request: &LoopbackRequest,
     ) -> anyhow::Result<LoopbackResponse> {
         anyhow::ensure!(
-            request
-                .path
-                .starts_with("/exa.language_server_pb.LanguageServerService/"),
+            allowed_service_path(&request.path),
             "Refusing a non-Antigravity path"
         );
         anyhow::ensure!(request.port != 0, "Refusing an unspecified port");
@@ -1883,7 +1902,10 @@ mod win32 {
             let session = WinHttpOpen(
                 PCWSTR(agent.as_ptr()),
                 WINHTTP_ACCESS_TYPE_NO_PROXY,
-                PCWSTR(host.as_ptr()),
+                // With NO_PROXY the proxy name is unused, and the documented value
+                // is WINHTTP_NO_PROXY_NAME. Passing the host here would read as a
+                // proxy being configured.
+                PCWSTR::null(),
                 PCWSTR::null(),
                 0,
             );
@@ -2546,6 +2568,41 @@ mod tests {
             scheme: EndpointScheme::Http,
             port: 1,
             path: "/etc/passwd".to_string(),
+            csrf: "synthetic-token".to_string(),
+            body: Vec::new(),
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("non-Antigravity path"));
+    }
+
+    /// The transport used to accept anything under the service root, which is
+    /// broader than the macOS contract: that side requires the last path component
+    /// to be one of the two methods.
+    #[cfg(windows)]
+    #[test]
+    fn only_the_two_service_methods_are_accepted() {
+        for method in ALLOWED_METHODS {
+            let path = format!("{}{}", SERVICE_PATH, method);
+            assert!(win32::allowed_service_path(&path), "{path}");
+        }
+        for path in [
+            // A sibling under the same prefix is not one of the two methods.
+            format!("{}SomethingElse", SERVICE_PATH),
+            // Neither is the bare service root, nor a deeper path.
+            SERVICE_PATH.to_string(),
+            format!("{}GetUserStatus/extra", SERVICE_PATH),
+            // Nor a look-alike service name.
+            "/exa.language_server_pb.LanguageServerServiceOther/GetUserStatus".to_string(),
+            "/etc/passwd".to_string(),
+            String::new(),
+        ] {
+            assert!(!win32::allowed_service_path(&path), "{path}");
+        }
+        // The refusal reaches the transport, not just the helper.
+        let error = native_transport(&LoopbackRequest {
+            scheme: EndpointScheme::Http,
+            port: 1,
+            path: format!("{}SomethingElse", SERVICE_PATH),
             csrf: "synthetic-token".to_string(),
             body: Vec::new(),
         })
