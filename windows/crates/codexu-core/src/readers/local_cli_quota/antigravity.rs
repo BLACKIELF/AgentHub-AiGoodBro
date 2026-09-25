@@ -2377,6 +2377,18 @@ mod tests {
             ),
             None
         );
+        // The macOS fixture pins these two, and both are security-relevant: a token
+        // must not be smuggled through shell syntax, and a look-alike flag name must
+        // not be mistaken for this one.
+        assert_eq!(flag("--csrf_token", "app --csrf_token abc;evil"), None);
+        assert_eq!(flag("--csrf_token", "app --different_csrf_token abc"), None);
+        // Both sides accept exactly `[A-Za-z0-9._-]{1,512}`, so a separator is
+        // rejected wherever it appears, and the punctuation that is allowed is not.
+        assert_eq!(flag("--csrf_token", "app --csrf_token=abc,def"), None);
+        assert_eq!(
+            flag("--csrf_token", "app --csrf_token a.b_c-d"),
+            Some("a.b_c-d".to_string())
+        );
     }
 
     #[test]
