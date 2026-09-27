@@ -525,29 +525,37 @@ enum TokenMonitorNativePreviewRenderer {
         let totalTokens: Int64 = largeNumbers ? Int64.max : 482_137_009
         let totalCost = largeNumbers ? 1_234_567_890.12 : 184.72
         let activeIndices = fixtureActiveIndices(dayCount: dayCount)
-        let daily = dates.enumerated().map { index, date -> TokenMonitorJSON in
+        let daily: [TokenMonitorJSON] = dates.enumerated().map { index, date -> TokenMonitorJSON in
             let active = activeIndices.contains(index)
-            let tokens =
-                largeNumbers
-                ? Int64.max / Int64(dayCount)
-                : active ? (index == dayCount - 9 ? 11_824_400 : Int64(2_700_000 + ((index * 37) % 91) * 65_000)) : 0
-            let cost = largeNumbers ? 12_345.67 : Double(tokens) * 0.000000383
+            let tokens: Int64
+            if largeNumbers {
+                tokens = Int64.max / Int64(dayCount)
+            } else if active {
+                tokens = index == dayCount - 9 ? 11_824_400 : Int64(2_700_000 + ((index * 37) % 91) * 65_000)
+            } else {
+                tokens = 0
+            }
+            let cost: Double = largeNumbers ? 12_345.67 : Double(tokens) * 0.000000383
+            let messages: Int = tokens > 0 ? 60 + (index % 45) : 0
+            let activeTimeMs: Int = tokens > 0 ? (3 + index % 7) * 60 * 60 * 1_000 : 0
+            let perClient: [String: TokenMonitorJSON] = [
+                "Codex": .number(Decimal(scaled(tokens, percent: 58))),
+                "Claude Code": .number(Decimal(scaled(tokens, percent: 29))),
+                "OpenCode": .number(Decimal(scaled(tokens, percent: 13))),
+            ]
+            let perModel: [String: TokenMonitorJSON] = [
+                "GPT-6 Luna": .number(Decimal(scaled(tokens, percent: 49))),
+                "Claude Sonnet": .number(Decimal(scaled(tokens, percent: 32))),
+                "GPT-6 Sol": .number(Decimal(scaled(tokens, percent: 19))),
+            ]
             return .object([
                 "date": .string(date),
                 "tokens": .number(Decimal(tokens)),
                 "cost": decimal(cost),
-                "messages": .number(Decimal(tokens > 0 ? 60 + (index % 45) : 0)),
-                "activeTimeMs": .number(Decimal(tokens > 0 ? (3 + index % 7) * 60 * 60 * 1_000 : 0)),
-                "perClient": .object([
-                    "Codex": .number(Decimal(scaled(tokens, percent: 58))),
-                    "Claude Code": .number(Decimal(scaled(tokens, percent: 29))),
-                    "OpenCode": .number(Decimal(scaled(tokens, percent: 13))),
-                ]),
-                "perModel": .object([
-                    "GPT-6 Luna": .number(Decimal(scaled(tokens, percent: 49))),
-                    "Claude Sonnet": .number(Decimal(scaled(tokens, percent: 32))),
-                    "GPT-6 Sol": .number(Decimal(scaled(tokens, percent: 19))),
-                ]),
+                "messages": .number(Decimal(messages)),
+                "activeTimeMs": .number(Decimal(activeTimeMs)),
+                "perClient": .object(perClient),
+                "perModel": .object(perModel),
             ])
         }
         let peakTokens = largeNumbers ? Int64.max : 11_824_400
