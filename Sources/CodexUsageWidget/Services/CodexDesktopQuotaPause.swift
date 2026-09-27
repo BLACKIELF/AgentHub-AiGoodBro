@@ -82,13 +82,23 @@ enum CodexDesktopQuotaPause {
         client: CodexAppServerTaskClient, allowedIDs: Set<String>,
         shouldContinue: @escaping @MainActor () -> Bool
     ) async -> Bool {
+        await confirmStopped(
+            request: { method, params in await client.desktopPauseRequest(method, params: params) },
+            allowedIDs: allowedIDs, shouldContinue: shouldContinue)
+    }
+
+    @MainActor
+    static func confirmStopped(
+        request: @escaping (String, [String: Any]) async -> [String: Any]?,
+        allowedIDs: Set<String>, shouldContinue: @escaping @MainActor () -> Bool
+    ) async -> Bool {
         guard !Task.isCancelled, shouldContinue(),
-            let response = await client.desktopPauseRequest("thread/loaded/list", params: ["limit": 128]),
-            let ids = loadedIDs(response), ids.isSubset(of: allowedIDs)
+            let response = await request("thread/loaded/list", ["limit": 128]),
+            let ids = loadedIDs(response), ids == allowedIDs
         else { return false }
         for id in ids.sorted() {
             guard !Task.isCancelled, shouldContinue(),
-                let response = await client.desktopPauseRequest("thread/read", params: ["threadId": id, "includeTurns": false]),
+                let response = await request("thread/read", ["threadId": id, "includeTurns": false]),
                 let state = threadState(response, expectedID: id), !state.active
             else { return false }
         }
@@ -154,11 +164,12 @@ enum CodexDesktopQuotaPause {
                 await request("turn/interrupt", ["threadId": turn.threadID, "turnId": turn.turnID]) != nil
             else { return false }
         }
-        // An interrupt acknowledgement only confirms receipt. Poll fresh state,
-        // including workers, and refuse a newly loaded thread instead of stopping it.
+        // An interrupt acknowledgement only confirms receipt. Every original
+        // root and worker must still be observable and idle; a missing or newly
+        // loaded thread is unknown state, not proof that it stopped.
         while allowed() {
             guard let response = await request("thread/loaded/list", ["limit": 128]),
-                let current = loadedIDs(response), current.isSubset(of: ids)
+                let current = loadedIDs(response), current == ids
             else { return false }
             var active = false
             for id in current.sorted() {
