@@ -15,6 +15,8 @@ SKILL_FILES = (
     'SKILL.md', '使用说明.md', 'bin/next-dispatch',
     'config/dispatch-codes-v1.json', 'config/dispatch-policy-v1.json',
     'references/coordination.md', 'references/dispatch-brief.md',
+    'references/cli-validation.md', 'references/grok-cli.md',
+    'references/jev-coordination.md', 'references/update-0927v1.md',
     'references/local-runtime.md', 'references/runtime-setup.md', 'references/luna-presets.md', 'references/onboarding-login.md',
     'scripts/next_dispatch_activity.py', 'scripts/next_dispatch_invocation.py',
     'scripts/next_dispatch_preflight.py',

@@ -269,7 +269,7 @@ final class NextLocalNotificationService: NSObject, UNUserNotificationCenterDele
 
         let safeText = [chinese?.title, chinese?.body, english?.title, english?.body].compactMap { $0 }.joined(separator: " ")
         let allowedCharacters = CharacterSet.letters.union(.decimalDigits).union(.whitespaces).union(CharacterSet(charactersIn: "%％，。：:,."))
-        expect(safeText.unicodeScalars.allSatisfy(allowedCharacters.contains), "payload contains material outside the fixed copy and percentages")
+        expect(safeText.unicodeScalars.allSatisfy { allowedCharacters.contains($0) }, "payload contains material outside the fixed copy and percentages")
         expect(!safeText.contains("\n") && !safeText.contains("@") && !safeText.contains("/"), "payload contains an unexpected extra field")
 
         let authorized = AuthorizationState(status: .authorized, alertsEnabled: true)

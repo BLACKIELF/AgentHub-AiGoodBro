@@ -25,7 +25,7 @@ struct PublicResetAnnouncement: Codable, Equatable, Identifiable {
 
     func isValid(now: Date) -> Bool {
         let safeID = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_"))
-        guard (1...64).contains(id.count), id.unicodeScalars.allSatisfy(safeID.contains),
+        guard (1...64).contains(id.count), id.unicodeScalars.allSatisfy({ safeID.contains($0) }),
             !text.isEmpty, text.utf8.count <= 16_384, announcedAt.timeIntervalSince1970.isFinite,
             announcedAt <= now.addingTimeInterval(300), announcedAt.timeIntervalSince1970 > 1_700_000_000
         else { return false }

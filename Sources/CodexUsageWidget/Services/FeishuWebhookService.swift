@@ -90,7 +90,7 @@ struct FeishuMaskedAccount: Equatable {
         )
         guard !trimmed.isEmpty,
             trimmed.count <= 64,
-            trimmed.unicodeScalars.allSatisfy(allowed.contains),
+            trimmed.unicodeScalars.allSatisfy { allowed.contains($0) },
             trimmed.contains("***") || trimmed.contains("•••")
         else {
             throw FeishuWebhookError.invalidMaskedAccount
@@ -745,7 +745,7 @@ final class FeishuWebhookService {
         let token = String(components.percentEncodedPath.dropFirst(webhookPathPrefix.count))
         let tokenCharacters = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_"))
         guard (16...256).contains(token.count),
-            token.unicodeScalars.allSatisfy(tokenCharacters.contains),
+            token.unicodeScalars.allSatisfy { tokenCharacters.contains($0) },
             let endpoint = components.url
         else {
             throw FeishuWebhookError.invalidWebhook
