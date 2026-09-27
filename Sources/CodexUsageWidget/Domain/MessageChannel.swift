@@ -142,7 +142,7 @@ struct MessageChannelAccountLabel: Equatable {
         let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: " ._-*•()（）"))
         guard !name.isEmpty,
             name.count <= 64,
-            name.unicodeScalars.allSatisfy(allowed.contains),
+            name.unicodeScalars.allSatisfy({ allowed.contains($0) }),
             name.contains("***") || name.contains("•••")
         else {
             throw MessageChannelError.invalidStatus
@@ -161,7 +161,7 @@ struct MessageChannelTaskLabel: Equatable {
         let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: " .-_·()（）"))
         guard !name.isEmpty,
             name.count <= 48,
-            name.unicodeScalars.allSatisfy(allowed.contains)
+            name.unicodeScalars.allSatisfy({ allowed.contains($0) })
         else {
             throw MessageChannelError.invalidStatus
         }

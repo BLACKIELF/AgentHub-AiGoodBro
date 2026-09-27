@@ -160,7 +160,12 @@ enum MessageChannelsControllerSelfTest {
         settle()
         controller.setEnabled(false, for: .weChat)
         for _ in 0..<5 {
-            controller.send(try! MessageTaskStatus(eventKind: .taskStateChange, taskLabel: MessageChannelTaskLabel("Codex"), taskState: .completed, occurredAt: Date()))
+            guard let status = try? MessageTaskStatus(eventKind: .taskStateChange, taskLabel: MessageChannelTaskLabel("Codex"), taskState: .completed, occurredAt: Date()) else {
+                failures.append("valid task label creates a sendable status")
+                failures.forEach { print("Message channel controller self-test failed: \($0)") }
+                return false
+            }
+            controller.send(status)
         }
         spin { transport.count >= 11 }
         expect(transport.count == 11, "in-flight sends bounded to four")

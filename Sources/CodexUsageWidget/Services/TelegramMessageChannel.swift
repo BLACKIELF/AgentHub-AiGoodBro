@@ -193,7 +193,7 @@ final class TelegramMessageChannel {
             let botID = parts.first,
             let hash = parts.last,
             (5...12).contains(botID.count),
-            botID.unicodeScalars.allSatisfy(CharacterSet.decimalDigits.contains),
+            botID.unicodeScalars.allSatisfy({ CharacterSet.decimalDigits.contains($0) }),
             (30...64).contains(hash.count),
             hash.unicodeScalars.allSatisfy({ CharacterSet.alphanumerics.contains($0) || $0 == "_" || $0 == "-" })
         else {
@@ -220,7 +220,7 @@ final class TelegramMessageChannel {
         guard (4...32).contains(username.count),
             let first = username.unicodeScalars.first,
             CharacterSet.letters.contains(first),
-            username.unicodeScalars.allSatisfy(allowed.contains)
+            username.unicodeScalars.allSatisfy({ allowed.contains($0) })
         else {
             throw MessageChannelError.invalidTarget
         }
