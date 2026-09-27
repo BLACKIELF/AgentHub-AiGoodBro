@@ -208,7 +208,7 @@ final class TelegramMessageChannel {
         if target.hasPrefix("-") || target.first?.isNumber == true {
             let digits = target.hasPrefix("-") ? String(target.dropFirst()) : target
             guard (1...15).contains(digits.count),
-                digits.unicodeScalars.allSatisfy(CharacterSet.decimalDigits.contains),
+                digits.unicodeScalars.allSatisfy({ CharacterSet.decimalDigits.contains($0) }),
                 digits != "0"
             else {
                 throw MessageChannelError.invalidTarget

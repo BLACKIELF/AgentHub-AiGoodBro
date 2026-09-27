@@ -10,7 +10,9 @@ final class UserDefaults {
     init() {}
     convenience init?(suiteName: String) { self.init() }
     func object(forKey key: String) -> Any? { values[key] }
+    func stringArray(forKey key: String) -> [String]? { values[key] as? [String] }
     func set(_ value: Any?, forKey key: String) { values[key] = value }
+    func synchronize() -> Bool { true }
     func removeObject(forKey key: String) { values.removeValue(forKey: key) }
     func removePersistentDomain(forName name: String) { values.removeAll() }
 }
@@ -20,7 +22,7 @@ struct WidgetLanguage {
     func text(_ zh: String, _ en: String) -> String { en }
 }
 struct RateWindow { let usedPercent: Double }
-struct AccountInfo { let email: String? }
+struct AccountInfo { let email: String?; var planType: String? = "plus" }
 struct UsageSnapshot {
     var account: AccountInfo? = .init(email: "fixture-source")
     var refreshedAt = Date()
@@ -48,6 +50,7 @@ struct CodexTaskLiveSnapshot {
 struct CodexAccountSnapshot {
     var accountID: String? = "source-id"
     var email: String? = "fixture-source"
+    var planType: String? = "plus"
     var fiveHour: RateWindow? = .init(usedPercent: 20)
     var sevenDay: RateWindow? = .init(usedPercent: 20)
     var quotaReadSucceeded: Bool? = true
@@ -57,9 +60,14 @@ struct CodexProfile {
     var id: String
     var isSystemProfile = false
     var recordedAccountKey = "fixture-source"
+    var displayedProTierMultiplier: Int? = nil
     var lastSnapshot: CodexAccountSnapshot? = .init()
     var lastQuotaReadFailureAt: Date? = nil
     var codexHomeURL: URL
+    var codexHomePath: String { codexHomeURL.path }
+    func matchesRecordedCredential(_ identity: CodexCredentialIdentity) -> Bool {
+        recordedAccountKey == identity.email && lastSnapshot?.accountID == identity.accountID
+    }
 }
 struct FeishuMaskedAccount { var value = "masked" }
 struct CodexCredentialIdentity { let email: String; let accountID: String }
@@ -68,7 +76,7 @@ enum Event { case lowQuotaDetected, switchSucceeded, switchFailed(FeishuSwitchNo
 enum Level { case warning, success, failure }
 enum Scope { case codex }
 enum AccountDisplay {
-    static func profileName(_ profile: CodexProfile, allProfiles: [CodexProfile]) -> String { profile.id }
+    static func profileName(_ profile: CodexProfile, allProfiles: [CodexProfile] = []) -> String { profile.id }
 }
 enum NSRunningApplication {
     static var desktopRunning = false
@@ -91,6 +99,67 @@ final class FakeTaskClient: @unchecked Sendable {
     func start(reason: Reason) {}
     func stop() {}
     func refreshThreads() {}
+    func desktopPauseRequest(_ method: String, params: [String: Any]) async -> [String: Any]? { nil }
+}
+struct CodexPausedDesktopTurn { let threadID: String; let turnID: String }
+enum CodexThreadHistoryProbe {
+    enum Failure: Error { case unavailable }
+    static func capture(threadID: String) -> Result<Int, Failure> { .failure(.unavailable) }
+}
+enum CodexDesktopQuotaPause {
+    @MainActor static var pauseAttempts = 0
+    static func isCritical(_ quota: AutomaticSwitchQuotaState) -> Bool {
+        guard quota.hasCompleteApplicableWindows, let week = quota.sevenDayRemaining else { return false }
+        if quota.fiveHourNotApplicable { return week <= 1 }
+        guard let five = quota.fiveHourRemaining else { return false }
+        return min(five, week) <= 1
+    }
+    static func canPrepare(_ snapshot: CodexTaskLiveSnapshot, legacyManagerRunning: Bool, now: Date) -> Bool {
+        let age = now.timeIntervalSince(snapshot.refreshedAt)
+        return !legacyManagerRunning && snapshot.connectionMode == .sharedDaemon && age >= -5 && age <= 45
+            && !snapshot.records.values.contains { $0.state == .recorded || $0.state == .disconnected }
+    }
+    static func activeTurnID(_ result: [String: Any]) -> String? { nil }
+    @MainActor static func pause(
+        client: FakeTaskClient, requiredThreadID: String?,
+        onLoadedThreads: (@MainActor (Set<String>) -> Void)?,
+        preflightHistory: @escaping @MainActor ([CodexPausedDesktopTurn]) async -> Bool,
+        prepareInterrupts: @escaping @MainActor ([CodexPausedDesktopTurn]) -> Bool,
+        shouldContinue: @escaping @MainActor () -> Bool
+    ) async -> Bool {
+        pauseAttempts += 1
+        return false // No IPC in the fixture: an unavailable pause must block switching.
+    }
+}
+enum CodexOfficialProfileReader {
+    static func credentialIdentity(codexHomeURL: URL) -> CodexCredentialIdentity? {
+        .init(email: "fixture-target", accountID: "target-id")
+    }
+}
+enum TokenMonitorHostIdentity {
+    static func accountKey(email: String?, accountID: String?) -> String? {
+        guard let email, let accountID else { return nil }
+        return email + ":" + accountID
+    }
+    static func uniqueProfile(for key: String, profiles: [CodexProfile]) -> CodexProfile? {
+        let matches = profiles.filter { accountKey(email: $0.lastSnapshot?.email, accountID: $0.lastSnapshot?.accountID) == key }
+        return matches.count == 1 ? matches[0] : nil
+    }
+}
+struct TokenMonitorManagedCodexAccount {
+    let id: String; let accountKey: String; let workspaceAccountId: String
+    let homePath: String; let alias: String; let enabled: Bool
+}
+final class FakeProfileStore {
+    func effectiveCredentialHome(for profileID: String) -> URL? { nil }
+}
+final class FakeQuotaResume {
+    var isReady = false
+    var expectedAccountKey: String?
+    var oneShotQuotaPolicy: CodexOneShotSwitchIntent.QuotaPolicy?
+    func canBeginAutomaticSwitch() -> Bool { true }
+    func stage(_ turns: [CodexPausedDesktopTurn], targetAccountKey: String,
+               oneShotQuotaPolicy: CodexOneShotSwitchIntent.QuotaPolicy?) -> Bool { false }
 }
 enum CodexSessionOpener {
     static var visible: String?
@@ -106,7 +175,7 @@ struct HubAccountTaskStatus {
 }
 enum CodexSwitchSnapshotProjection {
     static func snapshot(saved: CodexAccountSnapshot?, identity: CodexCredentialIdentity?) -> UsageSnapshot {
-        UsageSnapshot(account: identity.map { AccountInfo(email: $0.email) },
+        UsageSnapshot(account: identity.map { AccountInfo(email: $0.email, planType: saved?.planType) },
             refreshedAt: saved?.fetchedAt ?? .distantPast,
             quotaReadSucceeded: saved?.quotaReadSucceeded == true,
             fiveHourQuota: saved?.fiveHour, sevenDayQuota: saved?.sevenDay)
@@ -158,6 +227,13 @@ final class UsageStore {
     var canCancelDesktopSwitch = false
     var accountManagerMessage: String?
     var desktopSwitchPreparationTask: Task<Void, Never>?
+    var quotaResumeTask: Task<Void, Never>?
+    let quotaResume = FakeQuotaResume()
+    let profileStore = FakeProfileStore()
+    var pauseDesktopTasksAtOnePercent = false
+    var pausedAutomationFeatures: Set<PausedAutomationFeature> = []
+    var resumeDesktopTasksAfterSwitch = false
+    var oneShotResumeAuthorization: (accountKey: String, policy: CodexOneShotSwitchIntent.QuotaPolicy)?
     let accountActions = FakeActions()
     let taskClient = FakeTaskClient()
     var reserved = true
@@ -175,7 +251,14 @@ final class UsageStore {
     func sendFeishuNotification(event: Event, source: FeishuMaskedAccount, target: FeishuMaskedAccount?, quota: AutomaticSwitchQuotaState, factsSnapshot: UsageSnapshot? = nil, eventID: UUID, switchOrigin: Origin? = nil) { events.append(event) }
     enum Origin { case lowQuota }
     func recordAutomationEvent(level: Level, title: String, detail: String) {}
-    func reserveDesktopSwitchMaintenance(for profileID: String) async -> Bool { reserved }
+    func reserveDesktopSwitchMaintenance(for profileID: String) async -> Bool {
+        if reserved { desktopSwitchMaintenanceLeases = [1] }
+        return reserved
+    }
+    func finishDesktopSwitchMaintenance() { desktopSwitchMaintenanceLeases.removeAll() }
+    func resumePausedDesktopTasks(automatically: Bool) {}
+    static func confirmReadyQuotaResume(_ resume: FakeQuotaResume, switchSucceeded: Bool,
+        pausedTasksConfirmed: Bool, historyConfirmed: Bool, accountKey: String) {}
     func finishDesktopSwitchPreparation() { desktopSwitchPreparationTask = nil; canCancelDesktopSwitch = false }
     func finalAutomaticGate() -> Bool {
         let profile = profiles[2]
@@ -184,6 +267,7 @@ final class UsageStore {
         let currentSystemSnapshot = snapshot
         let threadIDToRestore = restorableThreadID
         var verifiedSnapshot = UsageSnapshot()
+        verifiedSnapshot.account = .init(email: profile.lastSnapshot?.email, planType: profile.lastSnapshot?.planType)
         verifiedSnapshot.fiveHourQuota = profile.lastSnapshot?.fiveHour
         verifiedSnapshot.sevenDayQuota = profile.lastSnapshot?.sevenDay
         verifiedSnapshot.refreshedAt = profile.lastSnapshot?.fetchedAt ?? .distantPast
@@ -194,6 +278,7 @@ final class UsageStore {
     }
     // Injected transaction boundary: no credentials or process actions.
     func beginCodexSwitch(with profileID: String, forceWithoutSessionRestore: Bool, visibleThreadID: String?) {
+        defer { finishDesktopSwitchMaintenance() }
         if automaticSwitchTargetID != profileID {
             manualEntries += 1
             if forceWithoutSessionRestore { forcedManualEntries += 1 }
@@ -265,6 +350,8 @@ final class AtomicProbeFixture {
             s.profiles[0].lastSnapshot?.fiveHour = .init(usedPercent: 82)
             s.profiles[1].lastSnapshot?.fiveHour = .init(usedPercent: 82)
             s.profiles[2].lastSnapshot?.accountID = "target-id"
+            s.profiles[2].lastSnapshot?.email = "fixture-target"
+            s.profiles[2].recordedAccountKey = "fixture-target"
             return s
         }
         func settle(_ s: UsageStore) async {
@@ -277,7 +364,69 @@ final class AtomicProbeFixture {
         await settle(valid)
         check("shared entry once under duplicate evaluation", valid.transactions == 1 && valid.taskClient.reads == 1)
         check("successful context completion", valid.automaticSwitchContext == nil && valid.automaticSwitchTargetID == nil)
-        for name in ["disabled", "expired", "future", "read-failed", "failed-after", "partial-source", "exhausted-target", "partial-target", "tasks-nil", "active-task", "desktop", "busy", "cooldown", "identity", "reservation"] {
+        let proWeeklySource = store()
+        proWeeklySource.profiles[0].lastSnapshot?.planType = "pro"
+        proWeeklySource.profiles[1].lastSnapshot?.planType = "pro"
+        proWeeklySource.profiles[0].lastSnapshot?.fiveHour = nil
+        proWeeklySource.profiles[1].lastSnapshot?.fiveHour = nil
+        proWeeklySource.profiles[0].lastSnapshot?.sevenDay = .init(usedPercent: 95)
+        proWeeklySource.profiles[1].lastSnapshot?.sevenDay = .init(usedPercent: 95)
+        proWeeklySource.snapshot.account?.planType = "pro"
+        proWeeklySource.snapshot.fiveHourQuota = nil
+        proWeeklySource.snapshot.sevenDayQuota = .init(usedPercent: 95)
+        proWeeklySource.evaluateAutomaticAccountSwitch(); await settle(proWeeklySource)
+        check("Pro source with applicable weekly window can switch", proWeeklySource.transactions == 1)
+        let criticalPause = store()
+        criticalPause.pauseDesktopTasksAtOnePercent = true
+        criticalPause.profiles[0].lastSnapshot?.fiveHour = .init(usedPercent: 99.5)
+        criticalPause.profiles[1].lastSnapshot?.fiveHour = .init(usedPercent: 99.5)
+        criticalPause.snapshot.fiveHourQuota = .init(usedPercent: 99.5)
+        CodexDesktopQuotaPause.pauseAttempts = 0
+        criticalPause.evaluateAutomaticAccountSwitch(); await settle(criticalPause)
+        check("critical quota enters pause branch and fails closed without IPC",
+              CodexDesktopQuotaPause.pauseAttempts == 1 && criticalPause.transactions == 0
+                && criticalPause.automaticSwitchContext == nil && criticalPause.desktopSwitchMaintenanceLeases.isEmpty)
+        func weeklyFinalGate(
+            sourcePlan: String, policy: CodexOneShotSwitchIntent.QuotaPolicy?,
+            targetMultiplier: Int? = 20, targetHasWeek: Bool = true
+        ) -> Bool {
+            let s = store()
+            s.snapshot.account?.planType = sourcePlan
+            s.snapshot.fiveHourQuota = nil
+            s.snapshot.sevenDayQuota = .init(usedPercent: policy == nil ? 95 : 20)
+            s.profiles[2].lastSnapshot?.planType = "pro"
+            s.profiles[2].lastSnapshot?.fiveHour = nil
+            s.profiles[2].lastSnapshot?.sevenDay = targetHasWeek ? .init(usedPercent: 20) : nil
+            s.profiles[2].displayedProTierMultiplier = targetMultiplier
+            s.automaticSwitchContext = .init(
+                sourceProfileID: "source", sourceIdentityKey: "fixture-source",
+                sourceAccountID: "source-id", sourceAuthFingerprint: Data([0]),
+                sourceAccount: .init(), targetAccount: .init(),
+                sourceQuota: .init(snapshot: s.snapshot), eventID: UUID(),
+                thresholds: s.lowQuotaAlertThresholds, pauseAtOnePercent: false,
+                completeTasks: s.codexLiveTasks)
+            if let policy {
+                s.automaticSwitchContext?.oneShotIntent = .init(
+                    profileID: "target", quotaPolicy: policy,
+                    operationID: UUID(), simulateLowQuota: false)
+            }
+            s.automaticSwitchTargetID = "target"
+            return s.finalAutomaticGate()
+        }
+        check("ordinary Plus missing 5h remains incomplete at final gate",
+              !weeklyFinalGate(sourcePlan: "plus", policy: nil))
+        check("ordinary Pro weekly-only source passes final applicable-window gate",
+              weeklyFinalGate(sourcePlan: "pro", policy: nil))
+        check("one-shot reported-week accepts fresh Pro weekly-only windows",
+              weeklyFinalGate(sourcePlan: "pro", policy: .reportedWeek))
+        check("one-shot complete still requires the 5h window",
+              !weeklyFinalGate(sourcePlan: "pro", policy: .complete))
+        check("one-shot weekly-only rejects Plus and mismatched Pro tier",
+              !weeklyFinalGate(sourcePlan: "plus", policy: .reportedWeek)
+                && !weeklyFinalGate(sourcePlan: "pro", policy: .reportedWeek, targetMultiplier: 5))
+        check("one-shot weekly-only still requires the reported week",
+              !weeklyFinalGate(sourcePlan: "pro", policy: .reportedWeek, targetHasWeek: false))
+        for name in ["disabled", "expired", "future", "read-failed", "failed-after", "partial-source", "plus-missing-five", "exhausted-target", "partial-target", "tasks-nil", "active-task", "desktop", "busy", "cooldown", "identity", "reservation"] {
             let s = store()
             switch name {
             case "disabled": s.automaticAccountSwitchEnabled = false
@@ -286,6 +435,11 @@ final class AtomicProbeFixture {
             case "read-failed": s.profiles[2].lastSnapshot?.quotaReadSucceeded = false
             case "failed-after": s.profiles[2].lastQuotaReadFailureAt = Date().addingTimeInterval(1)
             case "partial-source": s.snapshot.sevenDayQuota = nil; s.profiles[1].lastSnapshot?.sevenDay = nil
+            case "plus-missing-five":
+                s.profiles[0].lastSnapshot?.fiveHour = nil; s.profiles[1].lastSnapshot?.fiveHour = nil
+                s.profiles[0].lastSnapshot?.sevenDay = .init(usedPercent: 95)
+                s.profiles[1].lastSnapshot?.sevenDay = .init(usedPercent: 95)
+                s.snapshot.fiveHourQuota = nil; s.snapshot.sevenDayQuota = .init(usedPercent: 95)
             case "exhausted-target": s.profiles[2].lastSnapshot?.sevenDay = .init(usedPercent: 100)
             case "partial-target": s.profiles[2].lastSnapshot?.sevenDay = nil
             case "tasks-nil": s.taskClient.result = nil

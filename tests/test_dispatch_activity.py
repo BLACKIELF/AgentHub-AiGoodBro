@@ -206,7 +206,7 @@ class ActivityTests(unittest.TestCase):
             "model": "gpt-5.2", "reasoningEffort": "xhigh", "serviceTier": "fast",
             "subagentMode": "sol_luna"}})
         self.assertIsNotNone(fast_saved_unsupported)
-        self.assertEqual(preflight.effective_strategy(fast_saved_unsupported)["model"], "gpt-5.6-sol")
+        self.assertEqual(preflight.effective_strategy(fast_saved_unsupported)["model"], "gpt-6-sol")
 
     def test_directory_aliases_have_same_key(self):
         link = self.root / "linked"

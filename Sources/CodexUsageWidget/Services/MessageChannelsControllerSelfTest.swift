@@ -103,6 +103,10 @@ enum MessageChannelsControllerSelfTest {
         controller.sendTest(.telegram)
         settle()
         expect(transport.count == 2, "no send during credential write")
+        guard storage.saves.count == 1 else {
+            failures.forEach { print("Message channel controller self-test failed: \($0)") }
+            return false
+        }
         storage.saves.removeFirst().2(.success(()))
         expect(saved && !controller.actionInFlight && controller.telegramPhase == .pendingVerification, "saved configuration requires verification")
         controller.sendTest(.telegram)
