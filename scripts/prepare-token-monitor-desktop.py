@@ -80,6 +80,61 @@ def run(*command: str) -> str:
     return result.stdout
 
 
+def select_manifest(manifest: dict, architecture: str) -> dict:
+    require(architecture in ("arm64", "x86_64"), f"Unsupported desktop runtime architecture: {architecture}")
+    if architecture == "arm64":
+        require(manifest["runtime"]["architecture"] == architecture, "Arm64 runtime pin changed")
+        return manifest
+    override = manifest["architectures"][architecture]
+    require(set(override["runtime"]) == {
+        "architecture", "officialDMGURL", "officialDMGSHA256",
+        "officialAsarHeaderSHA256", "officialUnpackedTreeSHA256", "officialNodeModulesMembers",
+    }, "Intel runtime pin is incomplete")
+    require(set(override["widget"]) == {
+        "originalTreeSHA256", "originalConfigSHA256",
+    }, "Intel Widget pin is incomplete")
+    require(override["runtime"]["architecture"] == architecture, "Intel runtime architecture pin changed")
+    return {
+        **manifest,
+        "runtime": {**manifest["runtime"], **override["runtime"]},
+        "widget": {**manifest["widget"], **override["widget"]},
+    }
+
+
+MACHO_MAGICS = {bytes.fromhex(value) for value in (
+    "feedface", "cefaedfe", "feedfacf", "cffaedfe",
+    "cafebabe", "bebafeca", "cafebabf", "bfbafeca",
+)}
+
+
+def verify_architecture(app: Path, architecture: str) -> int:
+    count = 0
+    seen: set[str] = set()
+    for path in app.rglob("*"):
+        if not path.is_file():
+            continue
+        with path.open("rb") as stream:
+            magic = stream.read(4)
+        if magic not in MACHO_MAGICS:
+            continue
+        actual = run("lipo", "-archs", str(path)).split()
+        require(actual == [architecture], f"Embedded Mach-O architecture mismatch: {path.relative_to(app)}")
+        seen.add(path.relative_to(app).as_posix())
+        count += 1
+    info = plistlib.loads((app / "Contents/Info.plist").read_bytes())
+    name = info["CFBundleName"]
+    required = {
+        f"Contents/MacOS/{info['CFBundleExecutable']}",
+        "Contents/Frameworks/Electron Framework.framework/Versions/A/Electron Framework",
+        *(f"Contents/Frameworks/{name} Helper{suffix}.app/Contents/MacOS/{name} Helper{suffix}"
+          for suffix in ("", " (GPU)", " (Plugin)", " (Renderer)")),
+    }
+    require(required.issubset(seen), "Desktop runtime executable closure is incomplete")
+    require(any(path.endswith(".node") for path in seen), "Desktop runtime native module is missing")
+    require(count >= 15, "Desktop runtime native closure is incomplete")
+    return count
+
+
 def entries(tree: dict, prefix: str = ""):
     for name, entry in tree["files"].items():
         relative = f"{prefix}/{name}" if prefix else name
@@ -361,6 +416,7 @@ def verify_bundle(app: Path, manifest: dict, *, check_signature: bool) -> dict:
     require(info.get("LSUIElement") is True, "Embedded helper must not register a second Dock icon")
     require(info["CFBundleExecutable"] == manifest["helper"]["displayName"], "Electron main executable name mismatch")
     require((app / "Contents/MacOS" / info["CFBundleExecutable"]).is_file(), "Electron main executable is missing")
+    mach_o_files = verify_architecture(app, manifest["runtime"]["architecture"])
     for suffix in ("", " (GPU)", " (Plugin)", " (Renderer)"):
         name = f"{manifest['helper']['displayName']} Helper{suffix}"
         helper = app / "Contents/Frameworks" / f"{name}.app"
@@ -391,14 +447,16 @@ def verify_bundle(app: Path, manifest: dict, *, check_signature: bool) -> dict:
     if check_signature:
         run("codesign", "--verify", "--deep", "--strict", "--verbose=2", str(app))
     result["bundleID"] = info["CFBundleIdentifier"]
+    result["architecture"] = manifest["runtime"]["architecture"]
+    result["machOFiles"] = mach_o_files
     result["signatureVerified"] = check_signature
     result["widgetFunctionality"] = "archived-inert-unavailable-without-AiGoodBro-Team-and-App-Group"
     result["asarSHA256"] = digest_file(asar)
     return result
 
 
-def build(runtime: Path, output: Path, *, replace: bool, skip_sign: bool, source_dmg: Path | None, receipt: Path) -> dict:
-    manifest = json.loads(MANIFEST.read_text())
+def build(runtime: Path, output: Path, *, architecture: str, replace: bool, skip_sign: bool, source_dmg: Path | None, receipt: Path) -> dict:
+    manifest = select_manifest(json.loads(MANIFEST.read_text()), architecture)
     if source_dmg:
         require(digest_file(source_dmg) == manifest["runtime"]["officialDMGSHA256"], "Official source DMG SHA256 mismatch")
     require(runtime.resolve() != output.resolve(), "Output cannot overwrite official runtime")
@@ -411,8 +469,7 @@ def build(runtime: Path, output: Path, *, replace: bool, skip_sign: bool, source
     run("codesign", "--verify", "--deep", "--strict", str(runtime))
     signature = subprocess.run(("codesign", "-dv", str(runtime)), capture_output=True, text=True, check=True)
     require(f"TeamIdentifier={manifest['runtime']['sourceTeamID']}" in signature.stderr, "Official runtime signing Team changed")
-    executable = runtime / "Contents/MacOS" / original_info["CFBundleExecutable"]
-    require(manifest["runtime"]["architecture"] in run("lipo", "-archs", str(executable)).split(), "Official runtime architecture changed")
+    verify_architecture(runtime, architecture)
     original_asar = runtime / "Contents/Resources/app.asar"
     _, _, official_header = asar_header(original_asar)
     require(official_header == manifest["runtime"]["officialAsarHeaderSHA256"], "Official runtime ASAR pin mismatch")
@@ -449,6 +506,7 @@ def build(runtime: Path, output: Path, *, replace: bool, skip_sign: bool, source
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--arch", choices=("arm64", "x86_64"), default="arm64")
     parser.add_argument("--runtime-app", type=Path, default=Path("/Applications/Token Monitor.app"))
     parser.add_argument("--source-dmg", type=Path, help="Optional SHA256 check of the downloaded official release image")
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
@@ -457,8 +515,8 @@ def main() -> None:
     parser.add_argument("--skip-sign", action="store_true", help="For ASAR tests only; never install this output")
     parser.add_argument("--verify-only", action="store_true")
     args = parser.parse_args()
-    manifest = json.loads(MANIFEST.read_text())
-    result = verify_bundle(args.output, manifest, check_signature=not args.skip_sign) if args.verify_only else build(args.runtime_app, args.output, replace=args.replace, skip_sign=args.skip_sign, source_dmg=args.source_dmg, receipt=args.receipt)
+    manifest = select_manifest(json.loads(MANIFEST.read_text()), args.arch)
+    result = verify_bundle(args.output, manifest, check_signature=not args.skip_sign) if args.verify_only else build(args.runtime_app, args.output, architecture=args.arch, replace=args.replace, skip_sign=args.skip_sign, source_dmg=args.source_dmg, receipt=args.receipt)
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
 

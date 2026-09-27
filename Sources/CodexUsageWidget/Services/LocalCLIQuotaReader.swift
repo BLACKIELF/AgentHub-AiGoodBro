@@ -319,6 +319,13 @@ struct LocalCLIQuotaReader {
                 profile: profile,
                 relativePath: "credentials/kimi-code.json"))
         guard let token = Self.nonempty(root["access_token"]) else {
+            if Self.nonempty(root["refresh_token"]) != nil {
+                return result(
+                    state: .unavailable,
+                    now: now,
+                    source: sourceLabel(for: .kimi),
+                    messageCode: "local_cli_kimi_token_refresh_required")
+            }
             throw LocalCLIReaderFailure.credentialsMissing
         }
         guard let expiry = Self.strictDouble(root["expires_at"], allowString: true) else {

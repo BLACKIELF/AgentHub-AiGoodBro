@@ -84,6 +84,14 @@ struct KimiCLIQuotaFixture {
         try expect(expired.messageCode == "local_cli_kimi_token_refresh_required", "refreshable expiry reason")
         try expect(expiredTransport.requests.isEmpty, "expired token must not be sent")
 
+        try Data(#"{"refresh_token":"synthetic-refresh","expires_at":1799999999}"#.utf8)
+            .write(to: directory.appendingPathComponent("credentials/kimi-code.json"))
+        let refreshOnlyTransport = KimiMockTransport()
+        let refreshOnly = await LocalCLIQuotaReader(transport: refreshOnlyTransport).load(profile: profile, now: now)
+        try expect(refreshOnly.state == .unavailable, "refresh-only credentials must not request sign-in")
+        try expect(refreshOnly.messageCode == "local_cli_kimi_token_refresh_required", "refresh-only reason")
+        try expect(refreshOnlyTransport.requests.isEmpty, "refresh-only credentials must not send a quota request")
+
         try saveCredentials(expiry: 1_799_999_999, refreshToken: nil)
         let noRefresh = await LocalCLIQuotaReader(transport: KimiMockTransport()).load(profile: profile, now: now)
         try expect(noRefresh.state == .needsLogin, "expiry without refresh credential needs sign-in")

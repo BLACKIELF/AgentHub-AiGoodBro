@@ -13,9 +13,29 @@ SCRIPT = Path(__file__).with_name("prepare-token-monitor-desktop.py")
 SPEC = importlib.util.spec_from_file_location("desktop_package", SCRIPT)
 PACKAGE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(PACKAGE)
+OFFICIAL_RUNTIME_APP = Path(os.environ.get("TOKEN_MONITOR_DESKTOP_RUNTIME") or "/Applications/Token Monitor.app")
 
 
 class AsarPackageTests(unittest.TestCase):
+    def test_official_runtime_architecture_pins_are_distinct(self):
+        manifest = json.loads(PACKAGE.MANIFEST.read_text())
+        arm = PACKAGE.select_manifest(manifest, "arm64")
+        intel = PACKAGE.select_manifest(manifest, "x86_64")
+        self.assertEqual(arm["runtime"]["architecture"], "arm64")
+        self.assertEqual(intel["runtime"]["architecture"], "x86_64")
+        self.assertEqual(arm["runtime"]["officialNodeModulesMembers"], 1857)
+        self.assertEqual(intel["runtime"]["officialNodeModulesMembers"], 1856)
+        for selected, asset in ((arm, "arm64"), (intel, "x64")):
+            runtime = selected["runtime"]
+            self.assertEqual(runtime["officialDMGURL"], f"https://github.com/Javis603/token-monitor/releases/download/v0.62.0/Token-Monitor-0.62.0-{asset}.dmg")
+            self.assertEqual(len(runtime["officialDMGSHA256"]), 64)
+        for key in ("officialDMGSHA256", "officialAsarHeaderSHA256", "officialUnpackedTreeSHA256"):
+            self.assertNotEqual(arm["runtime"][key], intel["runtime"][key])
+        for key in ("originalTreeSHA256", "originalConfigSHA256"):
+            self.assertNotEqual(arm["widget"][key], intel["widget"][key])
+        with self.assertRaisesRegex(ValueError, "Unsupported desktop runtime architecture"):
+            PACKAGE.select_manifest(manifest, "i386")
+
     def test_round_trip_and_integrity_detection(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "app.asar"
@@ -42,8 +62,10 @@ class AsarPackageTests(unittest.TestCase):
                 PACKAGE.verify_asar(path, header)
 
     def test_official_runtime_pin_and_package_entry(self):
-        runtime = Path("/Applications/Token Monitor.app/Contents/Resources/app.asar")
+        runtime = OFFICIAL_RUNTIME_APP / "Contents/Resources/app.asar"
         if not runtime.is_file():
+            if "TOKEN_MONITOR_DESKTOP_RUNTIME" in os.environ:
+                self.fail("Configured official runtime ASAR is missing")
             self.skipTest("Official local runtime is not installed")
         manifest = json.loads(PACKAGE.MANIFEST.read_text())
         tree, start, header = PACKAGE.asar_header(runtime)
@@ -51,6 +73,22 @@ class AsarPackageTests(unittest.TestCase):
         self.assertEqual(PACKAGE.official_unpacked_tree_digest(runtime, tree), manifest["runtime"]["officialUnpackedTreeSHA256"])
         self.assertEqual(sum(path.startswith("node_modules/") for path, _ in PACKAGE.entries(tree)), manifest["runtime"]["officialNodeModulesMembers"])
         self.assertEqual(json.loads(PACKAGE.asar_content(runtime, tree, start, "package.json"))["version"], "0.62.0")
+
+    def test_official_intel_runtime_pin_when_supplied(self):
+        app = Path(os.environ.get("TOKEN_MONITOR_DESKTOP_RUNTIME_X86_64", "/nonexistent"))
+        if not app.is_dir():
+            self.skipTest("Official x64 runtime was not supplied")
+        manifest = PACKAGE.select_manifest(json.loads(PACKAGE.MANIFEST.read_text()), "x86_64")
+        asar = app / "Contents/Resources/app.asar"
+        tree, _, header = PACKAGE.asar_header(asar)
+        self.assertEqual(header, manifest["runtime"]["officialAsarHeaderSHA256"])
+        self.assertEqual(PACKAGE.official_unpacked_tree_digest(asar, tree), manifest["runtime"]["officialUnpackedTreeSHA256"])
+        self.assertEqual(sum(path.startswith("node_modules/") for path, _ in PACKAGE.entries(tree)), manifest["runtime"]["officialNodeModulesMembers"])
+        self.assertEqual(PACKAGE.widget_tree_digest(app / "Contents/PlugIns/TokenMonitorWidget.appex"), manifest["widget"]["originalTreeSHA256"])
+        self.assertEqual(PACKAGE.digest_file(app / "Contents/Resources/token-monitor-widget.json"), manifest["widget"]["originalConfigSHA256"])
+        self.assertGreaterEqual(PACKAGE.verify_architecture(app, "x86_64"), 15)
+        with self.assertRaisesRegex(ValueError, "architecture mismatch"):
+            PACKAGE.verify_architecture(app, "arm64")
 
     def test_staging_keeps_original_assets_and_sets_companion_entry(self):
         manifest = json.loads(PACKAGE.MANIFEST.read_text())
@@ -89,8 +127,10 @@ class AsarPackageTests(unittest.TestCase):
         if not helper.is_dir():
             self.skipTest("Packaged helper candidate is not present")
         packaged = helper / "Contents/Resources/app.asar"
-        official = Path("/Applications/Token Monitor.app/Contents/Resources/app.asar")
+        official = OFFICIAL_RUNTIME_APP / "Contents/Resources/app.asar"
         if not official.is_file():
+            if "TOKEN_MONITOR_DESKTOP_RUNTIME" in os.environ:
+                self.fail("Configured official runtime ASAR is missing")
             self.skipTest("Official local runtime is not installed")
         tree, start, _ = PACKAGE.asar_header(packaged)
         original, original_start, _ = PACKAGE.asar_header(official)

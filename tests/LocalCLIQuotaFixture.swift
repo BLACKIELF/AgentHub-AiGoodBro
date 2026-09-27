@@ -45,6 +45,7 @@ struct LocalCLIQuotaFixture {
         try await testKimiLoadAndDeviceIsolation()
         try await testClaudeLoadAndProfileIsolation()
         try await testOpenCodeProviderIsolation()
+        try await testOpenCodeAuthorizationStates()
         try await testUnsupportedKindsRemainUnknown()
         try await testHTTPStatesAndResponseBound()
         print("PASS local-cli-quota fixture")
@@ -338,6 +339,57 @@ struct LocalCLIQuotaFixture {
             let empty = await LocalCLIQuotaReader(transport: transport).load(
                 profile: profile(.openCode, directory))
             try expect(empty.state == .needsLogin, "empty OpenCode auth remains signed out")
+        }
+    }
+
+    private static func testOpenCodeAuthorizationStates() async throws {
+        try await withDirectory { directory in
+            let selected = profile(.openCode, directory)
+            try data(#"{"opencode-go":{"type":"api","key":"synthetic-go-key"}}"#)
+                .write(to: directory.appendingPathComponent("auth.json"))
+            func upstreamResponse(status: String, reason: String? = nil) -> TokenMonitorResponse {
+                var snapshot: [String: TokenMonitorJSON] = [
+                    "providers": .array([.object([
+                        "provider": .string("opencode"),
+                        "source": .string(TokenMonitorLocalCLIQuotaReader.sourceLabel),
+                        "balanceUsd": .null,
+                        "status": .string(status),
+                    ])]),
+                ]
+                if let reason { snapshot["reasonCode"] = .string(reason) }
+                return TokenMonitorResponse(
+                    schemaVersion: 1, requestId: "synthetic", operation: .collectLimits,
+                    engine: .init(repository: "synthetic", commit: "synthetic", version: "synthetic"),
+                    collectedAt: ISO8601DateFormatter().string(from: Date()), timezone: "UTC", status: .partial,
+                    sources: [.init(id: selected.id, providerId: "opencode", status: .unavailable,
+                                    coverage: .unknown, reasonCode: nil)],
+                    payload: .object(["limits": .object(["targets": .array([.object([
+                        "sourceId": .string(selected.id), "providerId": .string("opencode"),
+                        "accountId": .string(selected.id), "snapshot": .object(snapshot),
+                    ])])])]),
+                    coverage: .init(entries: [], days: [], cost: .unknown), errors: [])
+            }
+            let now = Date(timeIntervalSince1970: 1_800_000_000)
+            let unauthorized = try TokenMonitorLocalCLIQuotaReader.map(
+                upstreamResponse(status: "unauthorized"), sourceID: selected.id, accountID: selected.id, now: now)
+            let upstreamTransport = MockTransport(status: 401, data: Data())
+            let upstream = await LocalCLIQuotaReader(
+                transport: upstreamTransport, upstreamReader: { _, _ in unauthorized })
+                .load(profile: selected, now: now)
+            try expect(upstream.state == .unavailable && upstream.messageCode == "local_cli_authorization_unverified",
+                       "upstream OpenCode 401 is unverified quota access")
+            try expect(upstreamTransport.request == nil, "accepted upstream 401 does not call native fallback")
+            let native = await LocalCLIQuotaReader(transport: MockTransport(status: 401, data: Data()))
+                .load(profile: selected, now: now)
+            try expect(native.state == .unavailable && native.messageCode == upstream.messageCode,
+                       "upstream and native OpenCode 401 agree")
+            let noGoPlan = try TokenMonitorLocalCLIQuotaReader.map(
+                upstreamResponse(status: "notConfigured", reason: "unsupported_go_plan"),
+                sourceID: selected.id, accountID: selected.id, now: now)
+            try expect(noGoPlan.state == .unsupported, "confirmed absence of Go subscription remains unsupported")
+            let forbidden = await LocalCLIQuotaReader(transport: MockTransport(status: 403, data: Data()))
+                .load(profile: selected, now: now)
+            try expect(forbidden.state == .unavailable, "generic OpenCode 403 does not imply sign-out")
         }
     }
 

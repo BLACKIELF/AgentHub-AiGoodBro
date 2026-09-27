@@ -327,12 +327,18 @@ final class PublicResetForecastStore: ObservableObject {
     }
 
     func check(
+        now: Date = Date(),
         onSuccessfulFetch: (@MainActor (PublicResetForecastPageState) async -> Void)? = nil
     ) {
+        // A rate-limit cooldown must not keep an expired forecast on screen.
+        if forecast?.isRetainableCache(at: now) == false {
+            forecast = nil
+            isShowingCache = false
+        }
         guard !checking else { return }
         let language = WidgetLanguage.storedOrAutomatic()
-        guard Date() >= retryNotBefore else {
-            let seconds = max(1, Int(ceil(retryNotBefore.timeIntervalSinceNow)))
+        guard now >= retryNotBefore else {
+            let seconds = max(1, Int(ceil(retryNotBefore.timeIntervalSince(now))))
             status = PublicResetForecastFailure.retryLater(seconds).localizedDescription
             return
         }

@@ -270,6 +270,13 @@ final class UsageStore: ObservableObject {
         }
     }
 
+    private struct StatisticsSnapshotCacheKey: Hashable {
+        let profileID: String
+        let accountKey: String?
+        let accountID: String?
+        let timeZoneIdentifier: String
+    }
+
     private struct StatisticsSnapshotCacheEntry {
         let snapshot: MultiRuntimeUsageSnapshot
         let cachedAt: Date
@@ -423,8 +430,8 @@ final class UsageStore: ObservableObject {
     private var hubWarmUpUnavailableUntil: Date?
     private var refreshGeneration: UInt64 = 0
     private var hasPendingRefresh = false
-    private var statisticsSnapshotCache: [String: StatisticsSnapshotCacheEntry] = [:]
-    private var statisticsSnapshotCacheOrder: [String] = []
+    private var statisticsSnapshotCache: [StatisticsSnapshotCacheKey: StatisticsSnapshotCacheEntry] = [:]
+    private var statisticsSnapshotCacheOrder: [StatisticsSnapshotCacheKey] = []
     private var statisticsFeedbackTimer: Timer?
     private var authDirectorySource: DispatchSourceFileSystemObject?
     private var authFileSource: DispatchSourceFileSystemObject?
@@ -4317,14 +4324,19 @@ final class UsageStore: ObservableObject {
         else { return }
 
         let candidates = profiles.filter { profile in
-            !profile.isSystemProfile
-                && automaticSwitchParticipation(for: profile)
-                && profile.lastSnapshot?.accountID != sourceAccountID
-                && profile.lastSnapshot?.email?.isEmpty == false
-                && profile.lastSnapshot?.accountID?.isEmpty == false
-                && FileManager.default.fileExists(
-                    atPath: profile.codexHomeURL.appendingPathComponent("auth.json").path
-                )
+            guard
+                !profile.isSystemProfile
+                    && automaticSwitchParticipation(for: profile)
+                    && profile.lastSnapshot?.accountID != sourceAccountID
+                    && profile.lastSnapshot?.email?.isEmpty == false
+                    && profile.lastSnapshot?.accountID?.isEmpty == false
+                    && FileManager.default.fileExists(
+                        atPath: profile.codexHomeURL.appendingPathComponent("auth.json").path
+                    )
+            else { return false }
+            guard let identity = CodexOfficialProfileReader.credentialIdentity(codexHomeURL: profile.codexHomeURL)
+            else { return false }
+            return profile.matchesRecordedCredential(identity)
         }
         let staleCandidateIDs = Set(
             candidates.filter { profile in
@@ -6281,10 +6293,13 @@ final class UsageStore: ObservableObject {
                             "检测到 CODEX_HOME 已登录另一个账号，已阻止额度串号", "This profile is signed in to a different account. Its limits were not saved.")
                     } else {
                         self.apply(multiSnapshot)
-                        self.captureCurrentProfile()
+                        let captured = self.captureCurrentProfile()
                         if let officialProfile {
                             try? self.profileStore.recordOfficialProfile(officialProfile, for: profileID)
                             self.syncProfiles()
+                        }
+                        if captured {
+                            self.cacheStatisticsSnapshot(multiSnapshot)
                         }
                         if let duplicate, !duplicate.isSystemProfile, let profile {
                             self.accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
@@ -6292,7 +6307,6 @@ final class UsageStore: ObservableObject {
                                 "\(AccountDisplay.profileName(profile)) and \(AccountDisplay.profileName(duplicate)) use the same account.")
                         }
                     }
-                    self.cacheStatisticsSnapshot(multiSnapshot)
                     if self.isSwitchingStatisticsTimeZone {
                         self.finishStatisticsTimeZoneSwitch()
                     }
@@ -6394,18 +6408,28 @@ final class UsageStore: ObservableObject {
                 statisticsIdentity: identity
             )
             apply(rebound)
-            cacheStatisticsSnapshot(rebound)
+            // Preserve the original cache age. A cancelled in-flight generation still needs a replacement.
+            if isRefreshing { hasPendingRefresh = true }
             finishStatisticsTimeZoneSwitch(cached: true)
             return
         }
         refresh(queueIfBusy: true)
     }
 
-    private func statisticsCacheKey(for preference: StatisticsTimeZonePreference) -> String {
-        StatisticsContext(preference: preference, now: Date()).resolvedIdentifier
+    private func statisticsCacheKey(for preference: StatisticsTimeZonePreference) -> StatisticsSnapshotCacheKey {
+        statisticsCacheKey(timeZoneIdentifier: StatisticsContext(preference: preference, now: Date()).resolvedIdentifier)
     }
 
-    private func validCachedStatisticsSnapshot(forKey key: String) -> MultiRuntimeUsageSnapshot? {
+    private func statisticsCacheKey(timeZoneIdentifier: String) -> StatisticsSnapshotCacheKey {
+        StatisticsSnapshotCacheKey(
+            profileID: selectedMonitorProfileID,
+            accountKey: selectedMonitorProfile?.recordedAccountKey,
+            accountID: selectedMonitorProfile?.lastSnapshot?.accountID,
+            timeZoneIdentifier: timeZoneIdentifier
+        )
+    }
+
+    private func validCachedStatisticsSnapshot(forKey key: StatisticsSnapshotCacheKey) -> MultiRuntimeUsageSnapshot? {
         guard let entry = statisticsSnapshotCache[key],
             Date().timeIntervalSince(entry.cachedAt) <= statisticsSnapshotCacheTTL
         else {
@@ -6419,7 +6443,7 @@ final class UsageStore: ObservableObject {
     }
 
     private func cacheStatisticsSnapshot(_ snapshot: MultiRuntimeUsageSnapshot) {
-        let key = snapshot.statisticsIdentity.resolvedIdentifier
+        let key = statisticsCacheKey(timeZoneIdentifier: snapshot.statisticsIdentity.resolvedIdentifier)
         statisticsSnapshotCache[key] = StatisticsSnapshotCacheEntry(snapshot: snapshot, cachedAt: Date())
         statisticsSnapshotCacheOrder.removeAll { $0 == key }
         statisticsSnapshotCacheOrder.append(key)

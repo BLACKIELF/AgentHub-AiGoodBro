@@ -12,11 +12,22 @@ TOKEN_MONITOR_CACHE="${TOKEN_MONITOR_CACHE:-$HOME/Library/Caches/AiGoodBro/Next/
 TOKEN_MONITOR_RECEIPT_DIR="${TOKEN_MONITOR_RECEIPT_DIR:-.build-receipts/AiGoodBro/Next}"
 SIGN_IDENTITY="${SIGN_IDENTITY:--}"
 export TOKEN_MONITOR_CACHE TOKEN_MONITOR_RECEIPT_DIR SIGN_IDENTITY
+ARM_RUNTIME="${TOKEN_MONITOR_DESKTOP_RUNTIME_ARM64:-${TOKEN_MONITOR_DESKTOP_RUNTIME:-}}"
+ARM_DMG="${TOKEN_MONITOR_DESKTOP_DMG_ARM64:-${TOKEN_MONITOR_DESKTOP_DMG:-}}"
+INTEL_RUNTIME="${TOKEN_MONITOR_DESKTOP_RUNTIME_X86_64:-}"
+INTEL_DMG="${TOKEN_MONITOR_DESKTOP_DMG_X86_64:-}"
 
 if [[ "$VERSION" != "$PLIST_VERSION" ]]; then
   echo "Requested version $VERSION does not match Info.plist version $PLIST_VERSION" >&2
   exit 1
 fi
+[[ "$(uname -m)" == arm64 ]] || { echo "Dual-architecture release tests require an arm64 Mac" >&2; exit 1; }
+for input in "$ARM_DMG" "$INTEL_DMG"; do
+  [[ -f "$input" ]] || { echo "Pinned official desktop runtime DMG is missing: $input" >&2; exit 1; }
+done
+for input in "$ARM_RUNTIME" "$INTEL_RUNTIME"; do
+  [[ -d "$input" ]] || { echo "Read-only mounted desktop runtime is missing: $input" >&2; exit 1; }
+done
 
 make memory-risk-check BUILD_DIR="$BUILD_DIR"
 python3 tests/test_health_boundaries.py
@@ -25,10 +36,14 @@ plutil -lint Resources/Info.plist
 git diff --check
 
 make test-macos-compatibility
-make test
+make test TOKEN_MONITOR_DESKTOP_RUNTIME="$ARM_RUNTIME" TOKEN_MONITOR_DESKTOP_DMG="$ARM_DMG"
 CAMNEXT_SKIP_BUILD=1 ./scripts/test-parsers.sh
 
-make release-all BUILD_DIR="$BUILD_DIR" DIST_DIR="$DIST_DIR" BUNDLE_COMPANION=1
+make clean-dist DIST_DIR="$DIST_DIR"
+make release-arm64 BUILD_DIR="$BUILD_DIR" DIST_DIR="$DIST_DIR" BUNDLE_COMPANION=1 \
+  TOKEN_MONITOR_DESKTOP_RUNTIME="$ARM_RUNTIME" TOKEN_MONITOR_DESKTOP_DMG="$ARM_DMG"
+make release-intel BUILD_DIR="$BUILD_DIR" DIST_DIR="$DIST_DIR" BUNDLE_COMPANION=1 \
+  TOKEN_MONITOR_DESKTOP_RUNTIME="$INTEL_RUNTIME" TOKEN_MONITOR_DESKTOP_DMG="$INTEL_DMG"
 
 verify_asset() {
   local arch="$1"
@@ -44,15 +59,17 @@ verify_asset() {
 
   mount_dir="$(mktemp -d)"
   hdiutil attach -nobrowse -readonly -mountpoint "$mount_dir" "$dmg" >/dev/null
-  file "$mount_dir/AiGoodBro.app/Contents/MacOS/AiGoodBro" | grep -q "$expected_arch"
+  [[ "$(lipo -archs "$mount_dir/AiGoodBro.app/Contents/MacOS/AiGoodBro")" == "$expected_arch" ]] || { echo "Native app architecture mismatch: $arch" >&2; exit 1; }
   codesign --verify --deep --strict "$mount_dir/AiGoodBro.app"
+  python3 scripts/prepare-token-monitor-desktop.py --arch "$arch" \
+    --output "$mount_dir/AiGoodBro.app/Contents/Helpers/AiGoodBro Token Core.app" --verify-only
   local resources="$mount_dir/AiGoodBro.app/Contents/Resources"
   python3 scripts/prepare-token-monitor-resources.py --verify --resources "$resources" \
     --bundle "$mount_dir/AiGoodBro.app" --arch "$arch" --cache "$TOKEN_MONITOR_CACHE" \
     --trusted-receipt "$TOKEN_MONITOR_RECEIPT_DIR/token-monitor-${arch}.json" --sign-identity "$SIGN_IDENTITY"
   local hub="$resources/CompanionHub/agent-remote-control"
   [[ -x "$hub" ]] || { echo "Missing bundled Companion Hub" >&2; exit 1; }
-  file "$hub" | grep -q "$expected_arch"
+  [[ "$(lipo -archs "$hub")" == "$expected_arch" ]] || { echo "Companion Hub architecture mismatch: $arch" >&2; exit 1; }
   codesign --verify --strict "$hub"
   cmp scripts/next_runtime_setup.py "$resources/SupportTools/next_runtime_setup.py"
   python3 - "$resources" "$arch" <<'PY'

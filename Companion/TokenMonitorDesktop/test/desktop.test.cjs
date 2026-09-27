@@ -242,6 +242,105 @@ test('Codex switch reaches only the private native guard socket with an opaque i
   assert.equal(calls[1].cmd, 'getManagedCodexAccounts');
 });
 
+test('host managed roster failures revoke stale accounts and quotas without removing independent accounts', async (t) => {
+  const stage = fs.mkdtempSync(path.join(os.tmpdir(), 'agb-tm-roster-'));
+  t.after(() => fs.rmSync(stage, { recursive: true, force: true }));
+  for (const relativePath of Object.keys(INPUT_SHA256)) {
+    const target = path.join(stage, relativePath);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.copyFileSync(path.join(upstreamRoot, relativePath), target);
+  }
+  transformStage(stage);
+  const main = fs.readFileSync(path.join(stage, 'src/electron/main.js'), 'utf8');
+  const begin = main.indexOf('// Host-managed profiles stay in memory.');
+  const end = main.indexOf('function hydrateCodexManagedAccounts(value) {', begin);
+  assert.ok(begin >= 0 && end > begin);
+  const injectedFunctions = main.slice(begin, end);
+
+  const host = {
+    id: 'aigoodbro-fixture', accountKey: `sha256:${'a'.repeat(64)}`,
+    workspaceAccountId: 'workspace-fixture', homePath: '/fixture/managed', alias: 'Managed fixture'
+  };
+  const own = { id: 'own-fixture', accountKey: `sha256:${'b'.repeat(64)}`, homePath: '/fixture/own' };
+  const calls = { host: 0, settings: 0, reconfigure: 0, invalidations: [] };
+  let nextReply = () => ({ ok: true, accounts: [host] });
+  let localAccountKey = host.accountKey;
+  const bridge = { requestHost: async () => { calls.host += 1; return nextReply(); } };
+  const context = {
+    IS_AIGOODBRO_EMBEDDED: true,
+    settings: { codexManagedAccounts: [own] },
+    normalizeCodexManagedAccounts: (value) => value || [],
+    normalizeWorkspaceId: (value) => typeof value === 'string' && value.length > 0 ? value : null,
+    path, Buffer,
+    process: { getuid: () => 501 },
+    fs: { lstatSync: () => ({ isDirectory: () => true, isSymbolicLink: () => false, uid: 501 }) },
+    readRegularFileNoFollow: () => JSON.stringify({
+      accountKey: localAccountKey, workspaceAccountId: host.workspaceAccountId
+    }),
+    codexAuthIdentity: (auth) => auth,
+    mainWindow: { isDestroyed: () => false },
+    pushSettingsToRenderer: () => { calls.settings += 1; },
+    deviceRuntimeHandle: { reconfigureLimits: () => { calls.reconfigure += 1; } },
+    electronLimitsConfig: () => ({}),
+    queueLimitInvalidation: (scope, reason, options) => {
+      calls.invalidations.push({ scope, reason, options });
+      return Promise.resolve();
+    },
+    globalThis: { __AIGOODBRO_TOKEN_MONITOR_BRIDGE__: bridge }
+  };
+  vm.runInNewContext(`${injectedFunctions}\nglobalThis.fixture = {
+    refreshAiGoodBroManagedCodexAccounts, effectiveCodexManagedAccounts
+  };`, context);
+  const { refreshAiGoodBroManagedCodexAccounts: refresh, effectiveCodexManagedAccounts: effective } = context.globalThis.fixture;
+  const ids = () => Array.from(effective(), (account) => account.id);
+  const lastInvalidation = () => calls.invalidations.at(-1);
+
+  for (const failure of [
+    { name: 'timeout', reply: () => { throw new Error('fixture timeout'); } },
+    { name: 'invalid reply', reply: () => ({ ok: true, accounts: {} }) },
+    { name: 'duplicate identity', reply: () => ({ ok: true, accounts: [host, host] }) },
+    { name: 'local credential mismatch', reply: () => ({ ok: true, accounts: [host] }), key: `sha256:${'c'.repeat(64)}` }
+  ]) {
+    nextReply = () => ({ ok: true, accounts: [host] });
+    localAccountKey = host.accountKey;
+    assert.equal(await refresh(), true, `${failure.name}: setup`);
+    assert.deepEqual(ids(), [host.id, own.id], `${failure.name}: setup roster`);
+    const invalidationsBefore = calls.invalidations.length;
+    nextReply = failure.reply;
+    localAccountKey = failure.key || host.accountKey;
+    assert.equal(await refresh(), false, failure.name);
+    assert.deepEqual(ids(), [own.id], `${failure.name}: stale host account revoked`);
+    assert.equal(calls.invalidations.length, invalidationsBefore + 1, `${failure.name}: stale quota invalidated`);
+    assert.equal(lastInvalidation().scope.provider, 'codex');
+    assert.equal(lastInvalidation().options.clear, true);
+    assert.equal(await refresh(), false, `${failure.name}: repeated failure`);
+    assert.equal(calls.invalidations.length, invalidationsBefore + 1, `${failure.name}: no repeated invalidation`);
+  }
+
+  nextReply = () => ({ ok: true, accounts: [host] });
+  localAccountKey = host.accountKey;
+  assert.equal(await refresh(), true);
+  const beforeEmpty = calls.invalidations.length;
+  nextReply = () => ({ ok: true, accounts: [] });
+  assert.equal(await refresh(), true, 'successful empty roster');
+  assert.deepEqual(ids(), [own.id]);
+  assert.equal(calls.invalidations.length, beforeEmpty + 1, 'empty roster invalidates removed host quota');
+  assert.equal(await refresh(), true, 'unchanged empty roster');
+  assert.equal(calls.invalidations.length, beforeEmpty + 1, 'unchanged roster does not repeat invalidation');
+
+  let resolveHost;
+  nextReply = () => new Promise((resolve) => { resolveHost = resolve; });
+  const hostCallsBefore = calls.host;
+  const first = refresh();
+  const second = refresh();
+  assert.equal(calls.host, hostCallsBefore + 1, 'concurrent refreshes share one host request');
+  resolveHost({ ok: true, accounts: [host] });
+  assert.deepEqual(await Promise.all([first, second]), [true, true]);
+  assert.deepEqual(ids(), [host.id, own.id], 'successful recovery restores host account');
+  assert.equal(calls.reconfigure, calls.invalidations.length, 'each roster change reconfigures limits exactly once');
+  assert.equal(calls.settings, calls.invalidations.length, 'each roster change updates the renderer exactly once');
+});
+
 test('staging patch preserves vendor source and disables its independent updater', (t) => {
   const stage = fs.mkdtempSync(path.join(os.tmpdir(), 'agb-tm-stage-'));
   t.after(() => fs.rmSync(stage, { recursive: true, force: true }));

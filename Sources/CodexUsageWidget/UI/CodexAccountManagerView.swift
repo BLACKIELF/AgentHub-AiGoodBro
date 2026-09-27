@@ -2139,7 +2139,8 @@ struct CodexAccountManagerView: View {
                 return QuotaProviderHostAccount(
                     workspaceKindID: kind.rawValue,
                     available: result?.state == .available && (!windows.isEmpty || result?.balance != nil),
-                    windows: windows
+                    windows: windows,
+                    stale: localCLIAccounts.stale.contains(profile.id)
                 )
             }
         }

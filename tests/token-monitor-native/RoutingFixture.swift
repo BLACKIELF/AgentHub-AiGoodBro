@@ -114,6 +114,21 @@ enum Harness {
         Harness.events = []
         _ = reader.readQuotaSnapshot(context: context, quotaOnly: true, messages: &messages)
         try check(Harness.events == ["rpc"], "missing managed context preserves old login RPC route")
+        let systemHome = context.homeDirectory.appendingPathComponent(".codex", isDirectory: true)
+        try FileManager.default.createDirectory(at: systemHome, withIntermediateDirectories: true)
+        let systemContext = RuntimeLoadContext(
+            homeDirectory: context.homeDirectory, codexHomeDirectory: systemHome, cacheDirectory: root)
+        var systemProfile = CodexProfile(codexHomeURL: systemHome)
+        systemProfile.isSystemProfile = true
+        Harness.events = []; messages = []
+        _ = reader.readQuotaSnapshot(
+            context: systemContext, quotaOnly: true, messages: &messages, managedProfile: systemProfile)
+        try check(Harness.events == ["rpc"] && !messages.contains(TokenMonitorFailure.invalidSource.rawValue),
+            "explicit system profile uses original system-home RPC route")
+        Harness.events = []; messages = []
+        _ = reader.readQuotaSnapshot(context: context, quotaOnly: true, messages: &messages, managedProfile: systemProfile)
+        try check(Harness.events.isEmpty && messages.contains(TokenMonitorFailure.invalidSource.rawValue),
+            "system profile cannot route an unrelated managed home to RPC")
         Harness.events = []
         _ = reader.readQuotaSnapshot(context: context, quotaOnly: true, messages: &messages, refreshingMembershipFor: profile, managedProfile: profile)
         try check(Harness.events == ["membership"], "membership preserves explicit refresh route")
@@ -130,6 +145,13 @@ enum Harness {
         let cancellation = TokenMonitorCancellation(); cancellation.cancel()
         result = reader.readQuotaSnapshot(context: context, quotaOnly: true, messages: &messages, managedProfile: profile, cancellation: cancellation)
         try check(!result.quotaReadSucceeded && Harness.events.isEmpty, "cancelled route performs no transport")
+        var cancelledContext = context
+        let contextCancellation = TokenMonitorCancellation(); contextCancellation.cancel()
+        cancelledContext.quotaCancellation = contextCancellation
+        Harness.events = []
+        result = reader.readQuotaSnapshot(context: cancelledContext, quotaOnly: true, messages: &messages, managedProfile: profile)
+        try check(!result.quotaReadSucceeded && Harness.events.isEmpty,
+            "managed context cancellation performs no transport")
         Harness.events = []
         var wrong = profile; wrong.codexHomeURL = root.appendingPathComponent("other")
         result = reader.readQuotaSnapshot(context: context, quotaOnly: true, messages: &messages, managedProfile: wrong)
@@ -153,6 +175,16 @@ enum Harness {
         result = reader.readQuotaSnapshot(context: context, quotaOnly: true, messages: &messages,
             managedProfile: profile, cancellation: midCancellation)
         try check(!result.quotaReadSucceeded && Harness.events == ["http"], "cancellation after HTTP blocks publish and RPC")
+        let lateContextCancellation = TokenMonitorCancellation()
+        var lateContext = context
+        lateContext.quotaCancellation = lateContextCancellation
+        Harness.events = []; messages = []
+        Harness.http = { request in lateContextCancellation.cancel(); return try response(request) }
+        result = reader.readQuotaSnapshot(context: lateContext, quotaOnly: true, messages: &messages,
+            managedProfile: profile)
+        try check(!result.quotaReadSucceeded && Harness.events == ["http"]
+            && messages.contains(TokenMonitorFailure.cancelled.rawValue),
+            "managed context cancellation after HTTP blocks publish and RPC")
         let store = UsageStore()
         try check(store.reorderProfiles(["b", "a"], expectedCurrentOrder: ["a", "b"])
             && store.profileStore.calls == 1 && store.profiles == ["b", "a"]

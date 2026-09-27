@@ -69,7 +69,10 @@ jobs:
       - name: Verify Token Monitor and credential integration
         run: |
           python3 -m unittest tests.test_token_monitor_packaging
+          AIGOODBRO_TOKEN_CORE_APP="build/AiGoodBro.app/Contents/Helpers/AiGoodBro Token Core.app" python3 scripts/test-token-monitor-desktop-package.py
+          python3 scripts/test-token-monitor-desktop-lifecycle.py
           python3 scripts/test-statistics-integration.py
+          python3 scripts/test-statistics-cache-identity.py
           python3 tests/token-monitor-native/run.py
           build/AiGoodBro.app/Contents/Resources/TokenMonitorEngine/runtime/node tests/token-monitor-native/protocol-boundaries.cjs
           python3 tests/token-monitor-home/run.py
@@ -85,6 +88,7 @@ jobs:
           python3 scripts/test-automatic-switch-wiring.py
           python3 -m unittest tests.test_account_refresh_frequency
           python3 scripts/test-public-reset-translation.py
+          python3 tests/test_public_reset_forecast_boundaries.py
       - name: Check shared dispatch coordination and Swift interoperability
         run: |
           python3 scripts/next_dispatch_preflight.py --self-test

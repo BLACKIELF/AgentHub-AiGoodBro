@@ -441,6 +441,8 @@ final class PublicResetAnnouncementMonitor: ObservableObject {
     private var timer: Timer?
     private var task: Task<Void, Never>?
     private var generation: UInt64 = 0
+    private var historyCheckSequence: UInt64 = 0
+    private var verifiedCompletedIDs: Set<String>?
     private var stopped = false
     private let fixtureScheduling: Bool
     private let fetchPage: () async throws -> PublicResetPage
@@ -621,20 +623,40 @@ final class PublicResetAnnouncementMonitor: ObservableObject {
     }
 
     @MainActor
-    private func deliverForecast(_ state: PublicResetForecastPageState, epoch: UInt64) async {
-        guard enabled, isCurrent(epoch), canSend(), let sendForecast else { return }
+    private func deliverForecast(
+        _ state: PublicResetForecastPageState, epoch: UInt64, checkSequence: UInt64? = nil
+    ) async {
+        let sequence = checkSequence ?? historyCheckSequence
+        guard enabled, isCurrent(epoch), sequence == historyCheckSequence,
+            canSend(), let sendForecast
+        else { return }
         do {
             guard let lock = try PublicResetDeliveryLock.acquire(in: forecastDeliveryDirectory) else { return }
             defer { lock.release() }
-            guard enabled, isCurrent(epoch), canSend() else { return }
+            guard enabled, isCurrent(epoch), sequence == historyCheckSequence, canSend() else { return }
             var ledger = try loadForecastLedger()
             let event = try ledger.observe(state, now: Date())
             try saveForecastLedger(ledger)
             guard let event else { return }
 
+            // A forecast may arrive before the completed-history request. Keep
+            // it pending until this check has a validated completed page.
+            guard let verifiedCompletedIDs else { return }
+            let completedLedger = try load()
+            let alreadyCompleted =
+                verifiedCompletedIDs.contains(event.id)
+                || completedLedger.records[event.id] != nil
+                || (completedLedger.retiredThrough.map { event.announcedAt <= $0 } ?? false)
+            if alreadyCompleted {
+                // Baseline is terminal without falsely claiming a forecast send.
+                try ledger.setPhase(.baseline, for: event.id)
+                try saveForecastLedger(ledger)
+                return
+            }
+
             let notification = try PublicResetForecastNotification(event)
             guard ledger.records[event.id] == .pending,
-                enabled, isCurrent(epoch), canSend()
+                enabled, isCurrent(epoch), sequence == historyCheckSequence, canSend()
             else { return }
 
             // Reserve durably before Keychain access or network I/O. A crash
@@ -642,7 +664,7 @@ final class PublicResetAnnouncementMonitor: ObservableObject {
             try ledger.setPhase(.sending, for: event.id)
             try saveForecastLedger(ledger)
             let result = await sendForecast(notification)
-            guard isCurrent(epoch) else {
+            guard isCurrent(epoch), sequence == historyCheckSequence else {
                 try ledger.setPhase(.uncertain, for: event.id)
                 try saveForecastLedger(ledger)
                 return
@@ -715,12 +737,15 @@ final class PublicResetAnnouncementMonitor: ObservableObject {
     func check() {
         guard !preview || fixtureScheduling, !stopped, !checking else { return }
         let epoch = generation
+        historyCheckSequence &+= 1
+        let sequence = historyCheckSequence
+        verifiedCompletedIDs = nil
         // Forecast state is fetched through its own parser and cache. Its
         // delivery ledger remains stage-specific and independent of history.
         if !preview {
             PublicResetForecastStore.shared.check { [weak self] state in
                 guard let self else { return }
-                await self.deliverForecast(state, epoch: epoch)
+                await self.deliverForecast(state, epoch: epoch, checkSequence: sequence)
             }
         }
         guard Date() >= notBefore else {
@@ -747,9 +772,17 @@ final class PublicResetAnnouncementMonitor: ObservableObject {
                 announcementsHasMore = page.pagination.hasMore
                 latest = page.data.max { $0.announcedAt < $1.announcedAt }
                 checkedAt = Date()
+                verifiedCompletedIDs = Set(page.data.map(\.id))
                 let language = WidgetLanguage.storedOrAutomatic()
                 status = language.text("公告已更新；来源为第三方汇总，账号额度以官方刷新结果为准", "Announcements updated from a third-party feed. Account limits use official refresh results.")
                 guard enabled else { return }
+                // If the forecast callback arrived first, a validated cached
+                // forecast can now drain its pending record without another poll.
+                if let forecast = PublicResetForecastStore.shared.forecast,
+                    forecast.isRetainableCache(at: Date())
+                {
+                    await deliverForecast(.forecast(forecast), epoch: epoch, checkSequence: sequence)
+                }
                 let channelTasks = MessageChannelKind.allCases.map { kind in
                     Task { @MainActor in await self.deliverChannel(page, kind: kind, epoch: epoch) }
                 }
@@ -1290,6 +1323,7 @@ extension PublicResetAnnouncementMonitor {
         defer { try? FileManager.default.removeItem(at: root) }
         let monitor = PublicResetAnnouncementMonitor(preview: true, supportDirectory: root)
         monitor.enabled = false
+        monitor.verifiedCompletedIDs = []
         monitor.canSend = { true }
         var submitted: [String] = []
         monitor.sendForecast = { message in
@@ -1314,6 +1348,7 @@ extension PublicResetAnnouncementMonitor {
 
             let restarted = PublicResetAnnouncementMonitor(preview: true, supportDirectory: root)
             restarted.enabled = true
+            restarted.verifiedCompletedIDs = []
             restarted.canSend = { true }
             var replayed: [String] = []
             restarted.sendForecast = { message in
@@ -1327,6 +1362,7 @@ extension PublicResetAnnouncementMonitor {
             defer { try? FileManager.default.removeItem(at: unknownRoot) }
             let unknown = PublicResetAnnouncementMonitor(preview: true, supportDirectory: unknownRoot)
             unknown.enabled = true
+            unknown.verifiedCompletedIDs = []
             unknown.canSend = { true }
             var attempts = 0
             unknown.sendForecast = { _ in
@@ -1337,6 +1373,7 @@ extension PublicResetAnnouncementMonitor {
             await unknown.deliverForecast(.forecast(later), epoch: unknown.generation)
             let afterUnknown = PublicResetAnnouncementMonitor(preview: true, supportDirectory: unknownRoot)
             afterUnknown.enabled = true
+            afterUnknown.verifiedCompletedIDs = []
             afterUnknown.canSend = { true }
             afterUnknown.sendForecast = { _ in
                 attempts += 1
@@ -1349,6 +1386,7 @@ extension PublicResetAnnouncementMonitor {
             defer { try? FileManager.default.removeItem(at: lifecycleRoot) }
             let lifecycle = PublicResetAnnouncementMonitor(preview: true, supportDirectory: lifecycleRoot)
             lifecycle.enabled = true
+            lifecycle.verifiedCompletedIDs = []
             lifecycle.canSend = { true }
             lifecycle.sendForecast = { _ in
                 lifecycle.stop()
@@ -1358,6 +1396,7 @@ extension PublicResetAnnouncementMonitor {
             await lifecycle.deliverForecast(.forecast(later), epoch: lifecycle.generation)
             let afterStop = PublicResetAnnouncementMonitor(preview: true, supportDirectory: lifecycleRoot)
             afterStop.enabled = true
+            afterStop.verifiedCompletedIDs = []
             afterStop.canSend = { true }
             var afterStopAttempts = 0
             afterStop.sendForecast = { _ in

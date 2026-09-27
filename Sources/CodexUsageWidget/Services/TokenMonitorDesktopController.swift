@@ -29,13 +29,32 @@ final class TokenMonitorDesktopController: ObservableObject {
     private var process: Process?
     private var hostServer: TokenMonitorHostServer?
     private var starting: Task<Void, Error>?
+    private var startingID: UUID?
     private var statusPolling: Task<Void, Never>?
     private var socketDirectory: URL?
     private var socketPath: String?
+    private var isShuttingDown = false
+    private let executableOverride: URL?
+    private let supportDirectoryOverride: URL?
+    private let startupAttempts: Int
+    private let childExitGraceSeconds: Double
+
+    init(
+        executableOverride: URL? = nil,
+        supportDirectoryOverride: URL? = nil,
+        startupAttempts: Int = 100,
+        childExitGraceSeconds: Double = 1
+    ) {
+        self.executableOverride = executableOverride
+        self.supportDirectoryOverride = supportDirectoryOverride
+        self.startupAttempts = startupAttempts
+        self.childExitGraceSeconds = childExitGraceSeconds
+    }
 
     var isBundled: Bool { executableURL != nil }
 
     private var executableURL: URL? {
+        if let executableOverride { return executableOverride }
         let helper = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/AiGoodBro Token Core.app", isDirectory: true)
         guard let bundle = Bundle(url: helper), let executable = bundle.executableURL,
             executable.standardizedFileURL.path.hasPrefix(helper.standardizedFileURL.path + "/Contents/MacOS/"),
@@ -65,32 +84,103 @@ final class TokenMonitorDesktopController: ObservableObject {
             }.value
             guard reply.ok else { throw DesktopError.unavailable }
             lastError = nil
-        } catch { recordFailure() }
+        } catch {
+            isReady = false
+            hasVisibleTray = false
+            recordFailure()
+        }
     }
 
     private func ensureStarted() async throws {
-        if isReady, process?.isRunning == true { return }
+        guard !isShuttingDown else { throw DesktopError.unavailable }
         if let starting { return try await starting.value }
-        if process?.isRunning == true, let socketPath {
-            let reply = try await Task.detached {
-                try DesktopSocket.request(DesktopRequest(cmd: "status"), path: socketPath)
-            }.value
-            guard reply.ok, reply.ready == true else { throw DesktopError.unavailable }
-            isReady = true
-            hasVisibleTray = reply.trayVisible == true
-            return
-        }
-        let task = Task { @MainActor in try await launchAndWait() }
+        if isReady, process?.isRunning == true { return }
+        let id = UUID()
+        let task = Task { @MainActor in try await startOrRecover() }
         starting = task
-        defer { starting = nil }
+        startingID = id
+        defer {
+            if startingID == id {
+                starting = nil
+                startingID = nil
+            }
+        }
         try await task.value
     }
 
+    private func startOrRecover() async throws {
+        try Task.checkCancellation()
+        guard !isShuttingDown else { throw DesktopError.unavailable }
+        if let child = process, child.isRunning {
+            if let socketPath {
+                let reply = try? await Task.detached {
+                    try DesktopSocket.request(DesktopRequest(cmd: "status"), path: socketPath, timeout: 0.4)
+                }.value
+                try Task.checkCancellation()
+                guard !isShuttingDown else { throw DesktopError.unavailable }
+                if process === child, child.isRunning, reply?.ok == true, reply?.ready == true {
+                    isReady = true
+                    hasVisibleTray = reply?.trayVisible == true
+                    lastError = nil
+                    startStatusPolling(path: socketPath, child: child)
+                    return
+                }
+            }
+            guard await stopOwnedChild(child) else { throw DesktopError.unavailable }
+        }
+        try Task.checkCancellation()
+        guard !isShuttingDown else { throw DesktopError.unavailable }
+        try await launchAndWait()
+    }
+
+    private func stopOwnedChild(_ child: Process) async -> Bool {
+        statusPolling?.cancel()
+        statusPolling = nil
+        isReady = false
+        hasVisibleTray = false
+        if child.isRunning, process === child, let socketPath {
+            _ = try? await Task.detached {
+                try DesktopSocket.request(DesktopRequest(cmd: "quit"), path: socketPath, timeout: 0.4)
+            }.value
+        }
+        if !(await waitForExit(child, seconds: childExitGraceSeconds)), child.isRunning {
+            child.terminate()
+        }
+        guard await waitForExit(child, seconds: childExitGraceSeconds) else { return false }
+        if process === child {
+            process = nil
+            cleanupSocketDirectory()
+        }
+        return true
+    }
+
+    private func waitForExit(_ child: Process, seconds: Double) async -> Bool {
+        let deadline = ProcessInfo.processInfo.systemUptime + seconds
+        while child.isRunning, ProcessInfo.processInfo.systemUptime < deadline {
+            await Task.detached { try? await Task.sleep(nanoseconds: 50_000_000) }.value
+        }
+        return !child.isRunning
+    }
+
+    func processDidTerminate(_ child: Process) {
+        guard process === child else { return }
+        isReady = false
+        hasVisibleTray = false
+        statusPolling?.cancel()
+        statusPolling = nil
+        process = nil
+        cleanupSocketDirectory()
+        recordFailure()
+    }
+
     private func launchAndWait() async throws {
+        try Task.checkCancellation()
+        guard !isShuttingDown else { throw DesktopError.unavailable }
         guard let executableURL else { throw DesktopError.unavailable }
         let manager = FileManager.default
         cleanupSocketDirectory()
-        let support = DispatchParticipationPaths.supportDirectory().appendingPathComponent("TokenMonitorDesktop", isDirectory: true)
+        let support = (supportDirectoryOverride ?? DispatchParticipationPaths.supportDirectory())
+            .appendingPathComponent("TokenMonitorDesktop", isDirectory: true)
         let shared = support.appendingPathComponent("shared", isDirectory: true)
         for directory in [support, shared] {
             var before = stat()
@@ -154,14 +244,7 @@ final class TokenMonitorDesktopController: ObservableObject {
         child.standardError = FileHandle.nullDevice
         child.terminationHandler = { [weak self] child in
             Task { @MainActor [weak self] in
-                guard let self, self.process === child else { return }
-                self.isReady = false
-                self.hasVisibleTray = false
-                self.statusPolling?.cancel()
-                self.statusPolling = nil
-                self.process = nil
-                self.cleanupSocketDirectory()
-                self.recordFailure()
+                self?.processDidTerminate(child)
             }
         }
         process = child
@@ -171,31 +254,39 @@ final class TokenMonitorDesktopController: ObservableObject {
             throw DesktopError.unavailable
         }
 
-        for _ in 0..<100 {
-            try Task.checkCancellation()
-            guard child.isRunning else { throw DesktopError.unavailable }
-            if manager.fileExists(atPath: path) {
-                let response = try? await Task.detached {
-                    try DesktopSocket.request(DesktopRequest(cmd: "status"), path: path, timeout: 0.3)
-                }.value
-                if response?.ok == true, response?.ready == true {
-                    isReady = true
-                    hasVisibleTray = response?.trayVisible == true
-                    lastError = nil
-                    startStatusPolling(path: path, child: child)
-                    return
+        do {
+            for _ in 0..<startupAttempts {
+                try Task.checkCancellation()
+                guard !isShuttingDown, child.isRunning else { throw DesktopError.unavailable }
+                if manager.fileExists(atPath: path) {
+                    let response = try? await Task.detached {
+                        try DesktopSocket.request(DesktopRequest(cmd: "status"), path: path, timeout: 0.3)
+                    }.value
+                    try Task.checkCancellation()
+                    guard !isShuttingDown, process === child, child.isRunning else { throw DesktopError.unavailable }
+                    if response?.ok == true, response?.ready == true {
+                        isReady = true
+                        hasVisibleTray = response?.trayVisible == true
+                        lastError = nil
+                        startStatusPolling(path: path, child: child)
+                        return
+                    }
                 }
+                try await Task.sleep(nanoseconds: 150_000_000)
             }
-            try await Task.sleep(nanoseconds: 150_000_000)
+            throw DesktopError.unavailable
+        } catch {
+            // Cleanup waits asynchronously so a failed launch cannot block the app's main actor.
+            _ = await stopOwnedChild(child)
+            throw error
         }
-        // Do not strand a second desktop runtime after an unsuccessful launch.
-        shutdown()
-        throw DesktopError.unavailable
     }
 
     func shutdown() {
+        isShuttingDown = true
         starting?.cancel()
         starting = nil
+        startingID = nil
         statusPolling?.cancel()
         statusPolling = nil
         if let socketPath {
@@ -203,8 +294,10 @@ final class TokenMonitorDesktopController: ObservableObject {
         }
         // Let upstream persist settings and stop collectors before terminating
         // an unresponsive child. Only the process owned by this host is touched.
-        let deadline = Date().addingTimeInterval(2)
-        while process?.isRunning == true, Date() < deadline { Thread.sleep(forTimeInterval: 0.025) }
+        let deadline = ProcessInfo.processInfo.systemUptime + 2
+        while process?.isRunning == true, ProcessInfo.processInfo.systemUptime < deadline {
+            Thread.sleep(forTimeInterval: 0.025)
+        }
         if let process, process.isRunning { process.terminate() }
         process = nil
         isReady = false

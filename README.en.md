@@ -28,9 +28,9 @@ A single account can use read-only monitoring. A public announcement, an account
 
 **Installed build: AiGoodBro 2.0 · 0927v5, version 9.6.17 (66).** Local CLI quota checks now detect credential changes, refresh on activation and retry failed reads, with an explicit Refresh limits button. Kimi five-hour and weekly limits were verified in the installed app. OpenCode Go, WorkBuddy and TRAE explain missing connection requirements accurately. Selected-day tool composition is collapsed by default. AiGoodBro still owns the single Dock icon, and the current 20x account is unchanged. See the [latest integration record](docs/ai-goodbro-2.0-0927v5.md). No public 2.0 release has been published.
 
-**Mainline version: AiGoodBro 2.0 · 0927v6.** This update includes the 2.0 interface integration, reset-forecast notifications, local quota fixes, Pro weekly-quota handling, and the low-quota simulation entry point. The internal build version remains 9.6.18 (67) to preserve update ordering. The real Desktop pause → account switch → continuation flow is still being validated. This mainline update is not a binary release. [Update notes](docs/source-snapshot-0927v6.md).
+**Candidate awaiting acceptance: AiGoodBro 2.0 · 0927v6.** This update includes the 2.0 interface integration, reset-forecast notifications, local quota fixes, Pro weekly-quota handling, and the low-quota simulation entry point. The internal build version remains 9.6.18 (67) to preserve update ordering. The full build and CI passed, but the real Desktop pause → account switch → continuation flow remains unverified. The candidate has not been merged into main or released. [Acceptance record](docs/source-snapshot-0927v6.md).
 
-Get the 2.0 source from `main`. Check the version before building; an installation prompt and four task prompts are below.
+The 2.0 candidate source is in [PR #13](https://github.com/BLACKIELF/AgentHub-AiGoodBro/pull/13); `main` does not yet include this integration. Check the version before building; an installation prompt and four task prompts are below.
 
 [![CI](https://github.com/BLACKIELF/AgentHub-AiGoodBro/actions/workflows/ci.yml/badge.svg)](https://github.com/BLACKIELF/AgentHub-AiGoodBro/actions/workflows/ci.yml)
 ![macOS 13+](https://img.shields.io/badge/macOS-13%2B-111111?logo=apple)

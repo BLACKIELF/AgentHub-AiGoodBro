@@ -28,9 +28,9 @@ AiGoodBro 把额度提醒与消息放在前面，让你及时知道什么时候�
 
 **当前安装版：AiGoodBro 2.0 · 0927v5，9.6.17 (66)。** 本机 CLI 额度支持重新激活时刷新、登录变化检测和失败重试，并提供“刷新额度”按钮。Kimi 已实机显示 5 小时与 7 天额度；OpenCode Go、WorkBuddy、TRAE 等按真实连接条件说明缺少的信息。“所选日期与工具构成”明细默认收起。Dock 仍只保留主程序图标，当前 20 倍账号保持不变。详见 [最新集成记录](docs/ai-goodbro-2.0-0927v5.md)。2.0 尚未发布 GitHub 下载包。
 
-**主线版本：AiGoodBro 2.0 · 0927v6。** 包含 2.0 界面整合、重置预告推送、本机额度修复，以及 Pro 周额度和低额度模拟入口。内部构建版本沿用 9.6.18 (67)，保持已有升级顺序。Desktop 暂停→切号→续做的真实全流程仍在验证，本次主线更新不是安装包发布。[本次更新说明](docs/source-snapshot-0927v6.md)。
+**待验收候选：AiGoodBro 2.0 · 0927v6。** 包含 2.0 界面整合、重置预告推送、本机额度修复，以及 Pro 周额度和低额度模拟入口。内部构建版本沿用 9.6.18 (67)，保持已有升级顺序。完整构建与 CI 已通过；Desktop 暂停→切号→续做的真实全流程仍未验收，因此尚未合入主线或发布正式版。[验收记录](docs/source-snapshot-0927v6.md)。
 
-一句话安装口令和 4 个调用模板都在下面。2.0 源码统一从 `main` 获取；下载或构建前请核对版本。
+一句话安装口令和 4 个调用模板都在下面。2.0 候选源码见 [PR #13](https://github.com/BLACKIELF/AgentHub-AiGoodBro/pull/13)；`main` 尚未包含这次整合，下载或构建前请核对版本。
 
 [![CI](https://github.com/BLACKIELF/AgentHub-AiGoodBro/actions/workflows/ci.yml/badge.svg)](https://github.com/BLACKIELF/AgentHub-AiGoodBro/actions/workflows/ci.yml)
 ![macOS 13+](https://img.shields.io/badge/macOS-13%2B-111111?logo=apple)

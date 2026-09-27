@@ -77,12 +77,27 @@ function effectiveCodexManagedAccounts() {
   return [...aigoodbroManagedCodexAccounts, ...own.filter((account) => !hostKeys.has(account.accountKey) && !hostIDs.has(account.id))];
 }
 
+function applyAiGoodBroManagedCodexAccounts(accounts) {
+  const changed = JSON.stringify(accounts) !== JSON.stringify(aigoodbroManagedCodexAccounts);
+  if (!changed) return;
+  aigoodbroManagedCodexAccounts = accounts;
+  if (mainWindow && !mainWindow.isDestroyed()) pushSettingsToRenderer();
+  if (deviceRuntimeHandle) {
+    deviceRuntimeHandle.reconfigureLimits(electronLimitsConfig());
+    void queueLimitInvalidation({ provider: 'codex' }, 'aigoodbro-managed-accounts', { clear: true, refresh: true });
+  }
+}
+
 async function refreshAiGoodBroManagedCodexAccounts() {
   if (!IS_AIGOODBRO_EMBEDDED) return true;
   if (aigoodbroManagedCodexSync) return aigoodbroManagedCodexSync;
   aigoodbroManagedCodexSync = (async () => {
-    const reply = await globalThis.__AIGOODBRO_TOKEN_MONITOR_BRIDGE__?.requestHost('getManagedCodexAccounts', {}, 5000);
-    if (!reply?.ok || !Array.isArray(reply.accounts) || reply.accounts.length > 128) return false;
+    const fail = () => { applyAiGoodBroManagedCodexAccounts([]); return false; };
+    let reply;
+    try {
+      reply = await globalThis.__AIGOODBRO_TOKEN_MONITOR_BRIDGE__?.requestHost('getManagedCodexAccounts', {}, 5000);
+    } catch (_) { return fail(); }
+    if (!reply?.ok || !Array.isArray(reply.accounts) || reply.accounts.length > 128) return fail();
     const accounts = [];
     const seenIDs = new Set();
     const seenKeys = new Set();
@@ -93,28 +108,22 @@ async function refreshAiGoodBroManagedCodexAccounts() {
       const workspaceAccountId = normalizeWorkspaceId(item?.workspaceAccountId);
       if (!/^aigoodbro-[A-Za-z0-9._-]{1,100}$/.test(id) || !/^sha256:[a-f0-9]{64}$/.test(accountKey)
         || !workspaceAccountId || !path.isAbsolute(homePath) || homePath.includes('\\0')
-        || Buffer.byteLength(homePath) > 1024 || seenIDs.has(id) || seenKeys.has(accountKey)) return false;
+        || Buffer.byteLength(homePath) > 1024 || seenIDs.has(id) || seenKeys.has(accountKey)) return fail();
       const authPath = path.join(homePath, 'auth.json');
       try {
         const directory = fs.lstatSync(homePath);
-        if (!directory.isDirectory() || directory.isSymbolicLink() || directory.uid !== process.getuid()) return false;
+        if (!directory.isDirectory() || directory.isSymbolicLink() || directory.uid !== process.getuid()) return fail();
         const auth = JSON.parse(readRegularFileNoFollow(authPath, { fs, description: 'AiGoodBro Codex auth', encoding: 'utf8' }));
         const identity = codexAuthIdentity(auth);
-        if (identity.accountKey !== accountKey || identity.workspaceAccountId !== workspaceAccountId) return false;
-      } catch (_) { return false; }
+        if (identity.accountKey !== accountKey || identity.workspaceAccountId !== workspaceAccountId) return fail();
+      } catch (_) { return fail(); }
       seenIDs.add(id);
       seenKeys.add(accountKey);
       const hostAlias = String(item.alias || '').replace(/[\\u0000-\\u001f\\u007f]/g, ' ').trim().slice(0, 100) || 'AiGoodBro account';
       accounts.push({ id, email: '', accountKey, accountLabel: '', workspaceAccountId,
         workspaceLabel: '', workspaceKind: '', homePath, authPath, hostAlias, hostManaged: true, enabled: true });
     }
-    const changed = JSON.stringify(accounts) !== JSON.stringify(aigoodbroManagedCodexAccounts);
-    aigoodbroManagedCodexAccounts = accounts;
-    if (changed && mainWindow && !mainWindow.isDestroyed()) pushSettingsToRenderer();
-    if (changed && deviceRuntimeHandle) {
-      deviceRuntimeHandle.reconfigureLimits(electronLimitsConfig());
-      void queueLimitInvalidation({ provider: 'codex' }, 'aigoodbro-managed-accounts', { clear: true, refresh: true });
-    }
+    applyAiGoodBroManagedCodexAccounts(accounts);
     return true;
   })().finally(() => { aigoodbroManagedCodexSync = null; });
   return aigoodbroManagedCodexSync;

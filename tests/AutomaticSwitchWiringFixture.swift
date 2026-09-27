@@ -132,8 +132,12 @@ enum CodexDesktopQuotaPause {
     }
 }
 enum CodexOfficialProfileReader {
+    static var identitiesByPath: [String: CodexCredentialIdentity] = [:]
+    static var unreadablePaths: Set<String> = []
     static func credentialIdentity(codexHomeURL: URL) -> CodexCredentialIdentity? {
-        .init(email: "fixture-target", accountID: "target-id")
+        if unreadablePaths.contains(codexHomeURL.path) { return nil }
+        return identitiesByPath[codexHomeURL.path]
+            ?? .init(email: "fixture-target", accountID: "target-id")
     }
 }
 enum TokenMonitorHostIdentity {
@@ -347,6 +351,8 @@ final class AtomicProbeFixture {
             fixtureDefaults.removePersistentDomain(forName: fixtureSuite)
             NSRunningApplication.desktopRunning = false
             CodexSessionOpener.visible = nil
+            CodexOfficialProfileReader.identitiesByPath = [:]
+            CodexOfficialProfileReader.unreadablePaths = []
             let s = UsageStore()
             s.profiles = [.init(id: "source", codexHomeURL: root), .init(id: "system", isSystemProfile: true, codexHomeURL: root), .init(id: "target", codexHomeURL: root)]
             s.profiles[0].lastSnapshot?.fiveHour = .init(usedPercent: 82)
@@ -366,6 +372,34 @@ final class AtomicProbeFixture {
         await settle(valid)
         check("shared entry once under duplicate evaluation", valid.transactions == 1 && valid.taskClient.reads == 1)
         check("successful context completion", valid.automaticSwitchContext == nil && valid.automaticSwitchTargetID == nil)
+        let mismatchedHome = root.appendingPathComponent("misbound", isDirectory: true)
+        try FileManager.default.createDirectory(at: mismatchedHome, withIntermediateDirectories: true)
+        try Data().write(to: mismatchedHome.appendingPathComponent("auth.json"))
+        let misbound = store()
+        var highScore = CodexProfile(id: "misbound", codexHomeURL: mismatchedHome)
+        highScore.lastSnapshot?.accountID = "old-id"
+        highScore.lastSnapshot?.email = "old@example.invalid"
+        highScore.lastSnapshot?.fiveHour = .init(usedPercent: 1)
+        highScore.recordedAccountKey = "old@example.invalid"
+        misbound.profiles.append(highScore)
+        CodexOfficialProfileReader.identitiesByPath[mismatchedHome.path] = .init(
+            email: "other@example.invalid", accountID: "other-id")
+        misbound.evaluateAutomaticAccountSwitch()
+        check(
+            "misbound high-score candidate does not displace valid backup",
+            misbound.automaticSwitchTargetID == "target")
+        await settle(misbound)
+        check(
+            "valid backup completes after misbound candidate is skipped",
+            misbound.transactions == 1
+                && fixtureDefaults.object(forKey: CodexAutomaticSwitchPolicy.lastSuccessDefaultsKey) != nil)
+        let unreadable = store()
+        CodexOfficialProfileReader.unreadablePaths.insert(root.path)
+        unreadable.evaluateAutomaticAccountSwitch()
+        check(
+            "unreadable-only pool does not switch or record success",
+            unreadable.automaticSwitchTargetID == nil
+                && fixtureDefaults.object(forKey: CodexAutomaticSwitchPolicy.lastSuccessDefaultsKey) == nil)
         let proWeeklySource = store()
         proWeeklySource.profiles[0].lastSnapshot?.planType = "pro"
         proWeeklySource.profiles[1].lastSnapshot?.planType = "pro"

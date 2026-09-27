@@ -90,11 +90,11 @@ build:
 		-framework UserNotifications
 	python3 scripts/prepare-companion-resources.py --resources "$(RESOURCES_DIR)" --arch "$(ARCH_NAME)" --sign-identity "$(SIGN_IDENTITY)" $(if $(filter 1,$(BUNDLE_COMPANION)),--include-hub,)
 	python3 scripts/prepare-token-monitor-resources.py --resources "$(RESOURCES_DIR)" --arch "$(ARCH_NAME)" --cache "$(TOKEN_MONITOR_CACHE)" --trusted-receipt "$(TOKEN_MONITOR_RECEIPT)" --sign-identity "$(SIGN_IDENTITY)" $(if $(filter 1,$(TOKEN_MONITOR_OFFLINE)),--offline,) $(if $(TOKEN_MONITOR_NODE_ARCHIVE),--node-archive "$(TOKEN_MONITOR_NODE_ARCHIVE)",)
-	$(if $(filter 1,$(BUNDLE_TOKEN_MONITOR_DESKTOP)),python3 scripts/prepare-token-monitor-desktop.py --runtime-app "$(TOKEN_MONITOR_DESKTOP_RUNTIME)" --output "$(TOKEN_MONITOR_DESKTOP_APP)" --replace $(if $(TOKEN_MONITOR_DESKTOP_DMG),--source-dmg "$(TOKEN_MONITOR_DESKTOP_DMG)",),@true)
+	$(if $(filter 1,$(BUNDLE_TOKEN_MONITOR_DESKTOP)),python3 scripts/prepare-token-monitor-desktop.py --arch "$(ARCH_NAME)" --runtime-app "$(TOKEN_MONITOR_DESKTOP_RUNTIME)" --output "$(TOKEN_MONITOR_DESKTOP_APP)" --replace $(if $(TOKEN_MONITOR_DESKTOP_DMG),--source-dmg "$(TOKEN_MONITOR_DESKTOP_DMG)",),@true)
 	codesign $(filter-out --deep,$(CODESIGN_FLAGS)) "$(APP_DIR)"
 	codesign --verify --deep --strict "$(APP_DIR)"
 	python3 scripts/prepare-token-monitor-resources.py --verify --resources "$(RESOURCES_DIR)" --bundle "$(APP_DIR)" --sign-identity "$(SIGN_IDENTITY)" --arch "$(ARCH_NAME)" --cache "$(TOKEN_MONITOR_CACHE)" --trusted-receipt "$(TOKEN_MONITOR_RECEIPT)"
-	$(if $(filter 1,$(BUNDLE_TOKEN_MONITOR_DESKTOP)),python3 scripts/prepare-token-monitor-desktop.py --output "$(TOKEN_MONITOR_DESKTOP_APP)" --verify-only,@true)
+	$(if $(filter 1,$(BUNDLE_TOKEN_MONITOR_DESKTOP)),python3 scripts/prepare-token-monitor-desktop.py --arch "$(ARCH_NAME)" --output "$(TOKEN_MONITOR_DESKTOP_APP)" --verify-only,@true)
 
 debug:
 	$(MAKE) build BUILD_DIR=build-debug SWIFT_OPTIMIZATION=-Onone
@@ -110,7 +110,7 @@ lint:
 
 verify-runtime-resources:
 	@python3 scripts/prepare-companion-resources.py --verify --resources "$(RESOURCES_DIR)" --arch "$(ARCH_NAME)" $(if $(filter 1,$(BUNDLE_COMPANION)),--include-hub,)
-	$(if $(filter 1,$(BUNDLE_TOKEN_MONITOR_DESKTOP)),@python3 scripts/prepare-token-monitor-desktop.py --output "$(TOKEN_MONITOR_DESKTOP_APP)" --verify-only,@true)
+	$(if $(filter 1,$(BUNDLE_TOKEN_MONITOR_DESKTOP)),@python3 scripts/prepare-token-monitor-desktop.py --arch "$(ARCH_NAME)" --output "$(TOKEN_MONITOR_DESKTOP_APP)" --verify-only,@true)
 	@for resource in $(RUNTIME_PNG_RESOURCES); do \
 		bundled="$(RESOURCES_DIR)/$$(basename "$$resource")"; \
 		test -s "$$bundled" || { echo "missing runtime resource: $$bundled"; exit 1; }; \
