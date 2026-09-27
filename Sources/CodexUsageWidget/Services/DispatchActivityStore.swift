@@ -155,6 +155,71 @@ struct DispatchActivityStore {
         }
     }
 
+    /// A proxy lease is bound to one run/request/profile, never a renewable account credential.
+    func reserveProxy(account: String, alias: String, runID: String, requestID: String, profileID: String, childPID: pid_t, now: Date = Date()) throws -> String {
+        guard UUID(uuidString: runID) != nil, UUID(uuidString: requestID) != nil, childPID > 1 else { throw Failure.invalidState }
+        let id = UUID().uuidString.lowercased()
+        let accountKey = Self.hash(account)
+        let aliasKey = Self.hash(alias.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+        try mutate { records in
+            guard
+                !records.contains(where: {
+                    Self.activeStates.contains($0["state"] as? String ?? "") && ($0["accountKey"] as? String == accountKey || $0["aliasKey"] as? String == aliasKey)
+                })
+            else { throw Failure.busy }
+            records.append([
+                "leaseId": id, "ownerThreadId": "next-\(getpid())", "taskId": "proxy-\(runID)-\(requestID)",
+                "accountKey": accountKey, "aliasKey": aliasKey, "projectKey": Self.hash("proxy:" + profileID),
+                "route": "proxy", "state": "preparing", "proxyRunID": runID, "proxyRequestID": requestID,
+                "proxyProfileKey": Self.hash(profileID), "pid": Int(childPID),
+                "createdAt": now.timeIntervalSince1970, "updatedAt": now.timeIntervalSince1970,
+                "heartbeatDueAt": now.timeIntervalSince1970 + 60,
+            ])
+        }
+        return id
+    }
+
+    func updateProxy(_ id: String, runID: String, requestID: String, profileID: String, state: String, now: Date = Date()) throws {
+        guard ["running", "uncertain", "accepted", "cancelled"].contains(state) else { throw Failure.invalidState }
+        try mutate { records in
+            guard
+                let index = records.firstIndex(where: {
+                    $0["leaseId"] as? String == id && $0["ownerThreadId"] as? String == "next-\(getpid())"
+                        && $0["route"] as? String == "proxy" && $0["proxyRunID"] as? String == runID
+                        && $0["proxyRequestID"] as? String == requestID && $0["proxyProfileKey"] as? String == Self.hash(profileID)
+                        && Self.activeStates.contains($0["state"] as? String ?? "")
+                })
+            else { throw Failure.invalidState }
+            records[index]["state"] = state
+            records[index]["updatedAt"] = now.timeIntervalSince1970
+            records[index]["heartbeatDueAt"] = now.timeIntervalSince1970 + (Self.activeStates.contains(state) ? 60 : 0)
+            records = records.filter { Self.activeStates.contains($0["state"] as? String ?? "") } + Self.recentEndedRecords(records)
+        }
+    }
+
+    /// Recovery requires both recorded owner and child PIDs to be proven gone.
+    /// PID reuse or permission errors retain the uncertain reservation.
+    func finishStoppedProxyRuns(now: Date = Date()) throws {
+        try mutate { records in
+            for i in records.indices {
+                guard records[i]["route"] as? String == "proxy",
+                    Self.activeStates.contains(records[i]["state"] as? String ?? ""),
+                    let owner = records[i]["ownerThreadId"] as? String, owner.hasPrefix("next-"),
+                    let parent = pid_t(owner.dropFirst(5)), parent > 1, parent != getpid(),
+                    let child = records[i]["pid"] as? Int, child > 1, child <= Int(Int32.max),
+                    let run = records[i]["proxyRunID"] as? String, UUID(uuidString: run) != nil,
+                    let request = records[i]["proxyRequestID"] as? String, UUID(uuidString: request) != nil,
+                    records[i]["taskId"] as? String == "proxy-\(run)-\(request)",
+                    kill(parent, 0) != 0, errno == ESRCH,
+                    kill(pid_t(child), 0) != 0, errno == ESRCH
+                else { continue }
+                records[i]["state"] = "cancelled"
+                records[i]["updatedAt"] = now.timeIntervalSince1970
+                records[i]["heartbeatDueAt"] = now.timeIntervalSince1970
+            }
+        }
+    }
+
     func reserveWarmUp(account: String, alias: String, now: Date = Date()) throws -> String {
         try reserveAccountActivity(account: account, alias: alias, route: "warmup", now: now)
     }

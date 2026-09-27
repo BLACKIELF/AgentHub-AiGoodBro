@@ -43,7 +43,7 @@ jobs:
       - name: Prepare companion build toolchain
         uses: actions/setup-go@v5
         with:
-          go-version-file: Companion/Hub/go.mod
+          go-version-file: Companion/LocalProxy/go.mod
           cache: false
       - name: Lint Swift sources
         run: make lint
@@ -97,6 +97,14 @@ jobs:
           python3 scripts/test-message-channels.py
           bash scripts/test-grok-reset-cards.sh
           python3 -m unittest tests.test_local_cli_quota tests.test_additional_cli_quota tests.test_zcode_cli_quota
+      - name: Validate independent local proxy with synthetic accounts
+        run: |
+          python3 scripts/test-local-proxy-host.py
+          python3 scripts/test-local-proxy-quota-refresh.py
+          python3 Companion/LocalProxy/fixtures/test-cross-language.py --helper build/AiGoodBro.app/Contents/Resources/LocalProxy/aigoodbro-local-proxy
+          cd Companion/LocalProxy
+          go test -mod=readonly -race -timeout=90s ./...
+          go vet -mod=readonly ./...
       - uses: actions/setup-node@v4
         with:
           node-version: 22

@@ -1,0 +1,30 @@
+# AiGoodBro Local Proxy · 0928v1
+
+Optional macOS sidecar, using CLIProxyAPI v8.0.2 commit recorded in SOURCE.json. It embeds the auth scheduler, Codex HTTP executor and Responses handlers, not the upstream service. It does not start OAuth refresh, plugins, watchers, management routes, service discovery, model updaters, login or account switching.
+
+Build from this directory with Go 1.26 or later:
+
+```
+CGO_ENABLED=0 go build -mod=readonly -trimpath -buildvcs=false -ldflags='-s -w' -o aigoodbro-local-proxy .
+go test -mod=readonly -race ./...
+```
+
+`--version` prints the component and upstream versions without reading stdin or opening sockets. The packaged native helper needs no Go/Python/Node runtime. Include SOURCE.json, LICENSE.CLIProxyAPI, LICENSE.Hazmat and THIRD-PARTY-NOTICES.txt when distributing it. The module deliberately uses a child import namespace to consume upstream internal executor and registry APIs; upgrades require rerunning the adapter tests. AiGoodBro's proxy feature is intended for personal use with the owner's accounts on their own machine; upstream licenses remain applicable.
+
+The first stdin line is the version 1 startup JSON specified by the host: runID, Unix controlSocket/controlKey, independent clientKey, port 0, isolated stateDirectory, ordered accounts (id only) and explicit models. Optional `networkProxy` carries the native parent’s read-only system proxy choice: `http://host:port` (HTTPS CONNECT) or `socks5://host:port`; absent/empty means direct. User info, paths, query/fragment, invalid host/port and other schemes are rejected. The helper never reads proxy environment variables. No credentials are passed at startup. Further `{ "command": "stop" }`, stdin EOF, SIGTERM or SIGINT stops the helper. Stdout is JSONL using the `event` key. Ready includes the actual loopback port; account events contain only profile ID and safe state; error events contain fixed codes. Stopped follows request cancellation and attempted lease cleanup. Upstream logs are discarded.
+
+Only POST /v1/responses, /responses, /v1/responses/compact and /responses/compact, and GET /v1/models are exposed, with bearer authentication. WebSocket upgrades and all other routes are rejected. Requests are capped at 15 minutes and 32 MiB. Each upstream selection acquires a fresh lease and access-token snapshot from the host through a separate Unix socket connection. The host remains responsible for identity, quota, shared lock atomicity and token generation checks. The helper imports no refresh token and never writes tokens. Its custom selector uses the supplied order among currently eligible same-priority accounts. Queue changes require stop/start.
+
+Control messages contain schemaVersion, runID, key, command, internally generated requestID and profileID; release/heartbeat also carry leaseID. Successful acquire returns leaseID, accessToken, accountID and expiresAt (actual token expiry, Unix seconds). Each bridge call is bounded by 25 seconds. Leases heartbeat every 20 seconds and remain held until the full HTTP response finishes/cancels. Ambiguous acquire/release and failed heartbeat emit fixed errors; the host must stop the child and only reclaim its reservations after confirmed exit. A failed release is never represented as success.
+
+Only sanitized cooldown fields are persisted, with a directory handle anchored after rejecting symlink path components, directory mode 0700 and file mode 0600. This state is separate from credentials and legacy account/dispatch configuration. Store IDs remain stable across helper restarts. Disabling or editing the queue requires stopping the helper first.
+
+Tests use synthetic Unix-bridge replies and loopback HTTP fixtures. They cover lease before upstream transmission; ordered quota failover; cooldown across restart; 401 without refresh or retained manager credentials; busy pool failure; endpoint/auth restrictions; concurrent request exclusion; cancellation cleanup; partial SSE output followed by failure without replay; redirects; state symlinks and permissions; ambiguous release reporting. They do not validate real OAuth, real account quota, live ChatGPT interoperability or desktop installation.
+
+## Desktop adapter
+
+When the native host supplies `AIGOODBRO_PROXY_CONNECTION_FILE`, the same binary wraps the bundled Codex executable instead of starting another HTTP listener. The connection file is regular, owner-only 0600 inside an owner-only 0700 directory and contains only the per-run local key, loopback endpoint and executable metadata. It is validated before execution; symlinks, malformed fields and self-recursion are rejected.
+
+The wrapper selects the `aigoodbro_local` Responses provider for app-server thread start, resume and fork, and allows history listing across providers. Model, effort, tools and other request fields are preserved. Credentials are passed in the child environment, not command-line arguments; system auth and global config files are not changed. Child exit, input EOF and termination signals are handled. Non-app-server commands pass through to the original executable. The entry-point approach references Hazmat as recorded in SOURCE.json; its sandbox and server are not included.
+
+The native Connect Desktop button requires Codex to be closed before launching it with this wrapper. Running tasks cannot adopt new launch parameters. Restarting the proxy invalidates its previous connection, so Desktop must be reopened through the button again. `scripts/test-local-proxy-desktop.py` exercises the real app-server against a local mock provider, including cold resume, history and two turns. This is protocol verification, not live Desktop UI acceptance.

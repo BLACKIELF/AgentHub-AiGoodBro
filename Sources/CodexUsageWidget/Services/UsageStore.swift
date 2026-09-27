@@ -424,6 +424,9 @@ final class UsageStore: ObservableObject {
     private var foregroundCodexThread: (id: String, capturedAt: Date)?
     private var isRefreshingWarmUpProfiles = false
     private var hasPendingDispatchQuotaRefresh = false
+    private var localProxyQuotaPendingIDs = Set<String>()
+    private var localProxyQuotaRefreshes: [String: TokenMonitorCancellation] = [:]
+    private var localProxyQuotaRetry: DispatchWorkItem?
     private var warmUpRefreshStartedAt: Date?
     private var warmUpResetTracker = CodexWarmUpResetTracker()
     private var hubWarmUpDeferredUntilByAccount: [String: Date] = [:]
@@ -5949,8 +5952,12 @@ final class UsageStore: ObservableObject {
                 forName: Self.dispatchQuotaRefreshNotification,
                 object: nil,
                 queue: .main
-            ) { [weak self] _ in
-                self?.requestDispatchQuotaRefresh()
+            ) { [weak self] notification in
+                if let ids = notification.userInfo?["profileIDs"] as? [String], !ids.isEmpty, ids.count <= 100 {
+                    self?.refreshLocalProxyQuotas(profileIDs: Set(ids))
+                } else {
+                    self?.requestDispatchQuotaRefresh()
+                }
             }
         }
         refreshStaleOfficialProfiles()
@@ -6183,6 +6190,11 @@ final class UsageStore: ObservableObject {
         isRefreshingWarmUpProfiles = false
         refreshingProfileIDs.removeAll()
         hasPendingDispatchQuotaRefresh = false
+        localProxyQuotaRetry?.cancel()
+        localProxyQuotaRetry = nil
+        localProxyQuotaPendingIDs.removeAll()
+        localProxyQuotaRefreshes.values.forEach { $0.cancel() }
+        localProxyQuotaRefreshes.removeAll()
         accountActions.cancelLogin()
         stopAuthMonitoring()
         if let wakeObserver {
@@ -6332,6 +6344,81 @@ final class UsageStore: ObservableObject {
     func refreshQuotas() {
         refreshWarmUpProfilesThenSchedule(performWarmUpAfterRefresh: false)
         refresh(scheduleWarmUpAfterRefresh: false)
+    }
+
+    /// The independent proxy refreshes only participating managed accounts.
+    /// It never starts membership, statistics, warm-up, or system-profile work.
+    func refreshLocalProxyQuotas(profileIDs: Set<String>) {
+        guard !isPreview, hasStarted else { return }
+        let centralKey = profiles.first(where: \.isSystemProfile)?.recordedAccountKey
+        let ids = profiles.filter {
+            !$0.isSystemProfile && $0.recordedAccountKey != centralKey && profileIDs.contains($0.id)
+        }.map(\.id)
+        localProxyQuotaPendingIDs.formUnion(ids)
+        drainLocalProxyQuotaRefreshes()
+    }
+
+    /// A proxy request must not wait for unrelated accounts or a whole-pool retry.
+    /// Keep the actual read-start timestamp and publish each completed observation.
+    private func drainLocalProxyQuotaRefreshes() {
+        guard hasStarted, !localProxyQuotaPendingIDs.isEmpty else { return }
+        guard !isLoggingIn, !isLaunchingCodex, !isAccountSwitchTransactionActive else {
+            if localProxyQuotaRetry == nil {
+                let work = DispatchWorkItem { [weak self] in
+                    self?.localProxyQuotaRetry = nil
+                    self?.drainLocalProxyQuotaRefreshes()
+                }
+                localProxyQuotaRetry = work
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1, execute: work)
+            }
+            return
+        }
+        let centralKey = profiles.first(where: \.isSystemProfile)?.recordedAccountKey
+        while localProxyQuotaRefreshes.count < 4,
+            let id = localProxyQuotaPendingIDs.sorted().first(where: { localProxyQuotaRefreshes[$0] == nil })
+        {
+            localProxyQuotaPendingIDs.remove(id)
+            guard let profile = profiles.first(where: { $0.id == id }), !profile.isSystemProfile,
+                profile.recordedAccountKey != centralKey
+            else { continue }
+            let cancellation = TokenMonitorCancellation()
+            localProxyQuotaRefreshes[id] = cancellation
+            let preference = statisticsPreference
+            let selector = engineLimitsSelector
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                let context = RuntimeLoadContext.live(statisticsPreference: preference, codexHomeDirectory: profile.codexHomeURL)
+                let reader = CodexUsageReader()
+                var messages: [String] = []
+                let quota = reader.readQuotaSnapshot(
+                    context: context, quotaOnly: true, messages: &messages,
+                    managedProfile: profile, cancellation: cancellation, selectLimitsProvider: selector)
+                let snapshot = reader.finishingLoad(appServer: quota, messages: messages, context: context, quotaOnly: true)
+                DispatchQueue.main.async {
+                    guard let self, self.localProxyQuotaRefreshes[id] === cancellation else { return }
+                    self.localProxyQuotaRefreshes.removeValue(forKey: id)
+                    defer { self.drainLocalProxyQuotaRefreshes() }
+                    guard self.hasStarted, !cancellation.isCancelled,
+                        let current = self.profiles.first(where: { $0.id == id }), !current.isSystemProfile,
+                        current.codexHomeURL == profile.codexHomeURL,
+                        current.recordedAccountKey == profile.recordedAccountKey,
+                        current.lastSnapshot?.accountID == profile.lastSnapshot?.accountID
+                    else { return }
+                    guard !self.isLoggingIn, !self.isLaunchingCodex, !self.isAccountSwitchTransactionActive else {
+                        self.localProxyQuotaPendingIDs.insert(id)
+                        return
+                    }
+                    do {
+                        try self.profileStore.record(snapshot, for: id)
+                        if let envelope = quota.engineLimits { self.engineLimitsByProfileID[id] = envelope }
+                        self.observeOfficialQuotaChanges(snapshot, profileID: id)
+                        self.syncProfiles()
+                    } catch {
+                        self.accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
+                            "额度已读取但未能保存，请重试刷新。", "Limits were read but could not be saved. Refresh again.")
+                    }
+                }
+            }
+        }
     }
 
     private func updateCodexForegroundState(frontmostBundleID: String? = nil) {

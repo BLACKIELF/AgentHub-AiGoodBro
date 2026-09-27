@@ -26,9 +26,15 @@ AiGoodBro puts quota alerts and reset news first, so you can see when work can c
 
 A single account can use read-only monitoring. A public announcement, an account's recovered quota and its available reset credits are separate facts: an announcement neither spends a credit nor replaces an account refresh. The WeChat integration is a **WeCom group bot**; personal WeChat is not connected.
 
-**Installed build: AiGoodBro 2.0 · 0927v5, version 9.6.17 (66).** Local CLI quota checks now detect credential changes, refresh on activation and retry failed reads, with an explicit Refresh limits button. Kimi five-hour and weekly limits were verified in the installed app. OpenCode Go, WorkBuddy and TRAE explain missing connection requirements accurately. Selected-day tool composition is collapsed by default. AiGoodBro still owns the single Dock icon, and the current 20x account is unchanged. See the [latest integration record](docs/ai-goodbro-2.0-0927v5.md). No public 2.0 release has been published.
+**Installed candidate: AiGoodBro 2.0 · 0928v1, version 9.6.22 (72).** Installed on September 28. The installed native proxy completed a live GPT-6 Sol / Max request with the expected model and verification response. All 33 app self-tests and 106 isolated host checks passed; desktop authentication and global configuration hashes remained unchanged. The earlier quota repair build refreshed all 12 accounts through the UI. See the [0927v5 record](docs/ai-goodbro-2.0-0927v5.md) for the local CLI and floating-window integration. No public 2.0 release has been published.
 
-**Candidate awaiting acceptance: AiGoodBro 2.0 · 0927v6.** This update includes the 2.0 interface integration, reset-forecast notifications, local quota fixes, Pro weekly-quota handling, and the low-quota simulation entry point. The internal build version remains 9.6.18 (67) to preserve update ordering. The full build and CI passed, but the real Desktop pause → account switch → continuation flow remains unverified. The candidate has not been merged into main or released. [Acceptance record](docs/source-snapshot-0927v6.md).
+**Local proxy and Desktop connection.** The optional proxy supports participation, priority and account ordering, reserves accounts per request and tries the next available account after quota exhaustion. Quit Codex, then choose Connect Desktop in the proxy panel to reopen and resume tasks with each conversation's model and reasoning effort. Already-running Desktop tasks are not redirected automatically. Cold resume, history listing and two turns passed isolated tests using the real app-server with a local mock provider. Full Desktop UI integration and the earlier pause → account switch → continuation flow still require live acceptance, so this candidate has not been merged into main or released. [Proxy integration record](docs/local-proxy-0928v1.md) · [Previous acceptance record](docs/source-snapshot-0927v6.md).
+
+### Local proxy: personal use only
+
+The local proxy is for personal use only, with your own accounts and tasks on your own machine. It does not provide credential sharing, quota resale, or a public proxy service for others.
+
+On July 12, 2026, Tibo (@thsottiaux) wrote **“Step 1: Install CLIProxyAPI”** while explaining how to use GPT through Claude Code. [Original post](https://x.com/thsottiaux/status/2076119366647894371). This citation documents the technical background; it is not OpenAI's authorization of AiGoodBro or of other uses. Dependencies retain their own licenses and attribution.
 
 The 2.0 candidate source is in [PR #13](https://github.com/BLACKIELF/AgentHub-AiGoodBro/pull/13); `main` does not yet include this integration. Check the version before building; an installation prompt and four task prompts are below.
 
@@ -52,7 +58,7 @@ cd AgentHub-AiGoodBro
 make build
 ```
 
-The complete desktop build also needs the verified official Token Monitor v0.62.0 macOS arm64 runtime, read from `/Applications/Token Monitor.app` by default. See the [integration record](docs/ai-goodbro-2.0-0927v5.md) for configuration and limitations.
+Source builds also require Go 1.26+ to compile the local proxy against pinned CLIProxyAPI v8.0.2. The installed helper needs no external Go runtime. The complete desktop build also needs the verified official Token Monitor v0.62.0 macOS arm64 runtime, read from `/Applications/Token Monitor.app` by default. See the [integration record](docs/ai-goodbro-2.0-0927v5.md) for configuration and limitations.
 
 The build result should be `build/AiGoodBro.app`. Building does not install or launch it. Back up the old build, then migrate to one `AiGoodBro.app` without leaving a second launchable copy. See the [compatibility map](docs/brand-compat-0911v1.md). Local builds use ad-hoc signing; no Apple-notarized 2.0 download has been published.
 

@@ -140,6 +140,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     private let startupPerformanceSpan = PerformanceMonitor.shared.begin(.appStartup)
     private let store = UsageStore()
     private let localCLIAccounts = LocalCLIAccountStore()
+    private lazy var localProxy = LocalProxyQueueStore(usageStore: store)
+    private var terminationTask: Task<Void, Never>?
     private let paletteCatalog = PaletteCatalog.loadFromMainBundle()
     private lazy var settings = AppSettings(paletteCatalog: paletteCatalog)
     private lazy var updateStore = AppUpdateStore(settings: settings)
@@ -316,7 +318,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
                 paletteCatalog: paletteCatalog,
                 screenshotRequests: screenshotRequests.eraseToAnyPublisher(),
                 guideRequests: guideRequests.eraseToAnyPublisher(),
-                localCLIAccounts: localCLIAccounts
+                localCLIAccounts: localCLIAccounts,
+                localProxy: localProxy
             ),
             cornerRadius: CodexAccountManagerView.windowCornerRadius
         )
@@ -584,14 +587,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         if store.isLaunchingCodex { return .terminateCancel }
-        if store.isLoggingIn {
-            Task { @MainActor in
+        guard terminationTask == nil else { return .terminateLater }
+        terminationTask = Task { @MainActor in
+            if store.isLoggingIn {
                 await store.finishLoginForTermination()
-                sender.reply(toApplicationShouldTerminate: true)
             }
-            return .terminateLater
+            await localProxy.finishForTermination()
+            let canTerminate = localProxy.canFinishTermination
+            if !canTerminate { terminationTask = nil }
+            sender.reply(toApplicationShouldTerminate: canTerminate)
+            if !canTerminate {
+                let alert = NSAlert()
+                alert.messageText = settings.language.text("本地代理尚未停止", "Local proxy has not stopped")
+                alert.informativeText =
+                    localProxy.issue
+                    ?? settings.language.text(
+                        "暂未退出应用。请在本地代理面板重试停止，账号占用会保留至进程确认退出。",
+                        "The app will stay open. Retry Stop in the Local proxy panel. Account reservations remain until the process is confirmed stopped."
+                    )
+                alert.addButton(withTitle: settings.language.text("知道了", "OK"))
+                if let window { await alert.beginSheetModal(for: window) } else { alert.runModal() }
+            }
         }
-        return .terminateNow
+        return .terminateLater
     }
 
     func applicationWillTerminate(_ notification: Notification) {

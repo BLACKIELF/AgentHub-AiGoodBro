@@ -462,6 +462,7 @@ struct CodexAccountManagerView: View {
     @State private var customSourceTokensDraft = ""
     @State private var isAgentBreakdownExpanded = true
     @State private var isAutomationCenterPresented = false
+    @State private var isLocalProxyPresented = false
     @State private var isSetupGuidePresented = false
     @State private var isPreviewPaletteLibraryPresented = false
     @State private var isHomeAboutPresented = false
@@ -481,6 +482,7 @@ struct CodexAccountManagerView: View {
     }
 
     @StateObject private var localCLIAccounts: LocalCLIAccountStore
+    @StateObject private var localProxy: LocalProxyQueueStore
     @State private var selectedLocalCLI: LocalCLIKind?
     @AppStorage("AiGoodBro.accountCardDensity") private var savedCardDensity = AccountCardDensity.compact.rawValue
     private var cardDensity: AccountCardDensity { AccountCardDensity(rawValue: savedCardDensity) ?? .compact }
@@ -539,6 +541,7 @@ struct CodexAccountManagerView: View {
         screenshotRequests: AnyPublisher<NSWindow, Never> = Empty().eraseToAnyPublisher(),
         guideRequests: AnyPublisher<Void, Never> = Empty().eraseToAnyPublisher(),
         localCLIAccounts: LocalCLIAccountStore? = nil,
+        localProxy: LocalProxyQueueStore? = nil,
         previewOpenCodexWorkspace: Bool = false, previewEditingModules: Bool = false,
         previewReferenceDate: Date? = nil, previewForecastBy: Date? = nil
     ) {
@@ -551,6 +554,7 @@ struct CodexAccountManagerView: View {
         self.screenshotRequests = screenshotRequests
         self.guideRequests = guideRequests
         _localCLIAccounts = StateObject(wrappedValue: localCLIAccounts ?? LocalCLIAccountStore())
+        _localProxy = StateObject(wrappedValue: localProxy ?? LocalProxyQueueStore(usageStore: store))
         _showingHome = State(initialValue: !previewOpenCodexWorkspace)
         _isEditingModules = State(initialValue: previewEditingModules)
         _moduleEditOriginal = State(initialValue: previewEditingModules ? settings.homeModuleArrangement : nil)
@@ -635,6 +639,12 @@ struct CodexAccountManagerView: View {
         .modifier(CodexDeviceLoginSheet(store: store, language: language, host: .workbench, isEnabled: !isSetupGuidePresented))
         .sheet(isPresented: $isAutomationCenterPresented) {
             AccountAutomationCenterView(store: store)
+                .environment(\.widgetLanguage, language)
+                .environment(\.locale, language.locale)
+        }
+        .sheet(isPresented: $isLocalProxyPresented) {
+            LocalProxyQueueView(model: localProxy, language: language)
+                .environment(\.visualTokens, paletteTokens)
                 .environment(\.widgetLanguage, language)
                 .environment(\.locale, language.locale)
         }
@@ -863,6 +873,16 @@ struct CodexAccountManagerView: View {
     private var homeHeader: some View {
         HStack(spacing: 12) {
             HomeHeaderView(language: language)
+            Button {
+                isLocalProxyPresented = true
+            } label: {
+                Label(language.text("反代模式", "Reverse proxy"), systemImage: "network")
+            }
+            .font(.system(size: 11))
+            .controlSize(.small)
+            .fixedSize()
+            .disabled(store.isPreview)
+            .accessibilityIdentifier("next.local-proxy.open")
             Menu {
                 ForEach(paletteCatalog.descriptors(language: language.rawValue, includingDeprecatedID: settings.paletteID)) { descriptor in
                     Button {
