@@ -298,6 +298,7 @@ final class UsageStore: ObservableObject {
         var historyConfirmed = false
         var pausedLoadedThreadIDs: Set<String>?
         var resumeAccountKey: String?
+        var resumeBatchID: String?
         var completeTasks: CodexTaskLiveSnapshot?
     }
 
@@ -2366,9 +2367,11 @@ final class UsageStore: ObservableObject {
                                 accountID: target.lastSnapshot?.accountID),
                             self.quotaResume.stage(
                                 turns, targetAccountKey: key,
-                                oneShotQuotaPolicy: self.automaticSwitchContext?.oneShotIntent?.quotaPolicy)
+                                oneShotQuotaPolicy: self.automaticSwitchContext?.oneShotIntent?.quotaPolicy),
+                            let batchID = self.quotaResume.expectedBatchID
                         else { return false }
                         self.automaticSwitchContext?.resumeAccountKey = key
+                        self.automaticSwitchContext?.resumeBatchID = batchID
                         return true
                     }
                 ) { [weak self] in
@@ -3776,10 +3779,10 @@ final class UsageStore: ObservableObject {
     static func confirmReadyQuotaResume(
         _ store: CodexQuotaResumeStore,
         switchSucceeded: Bool, pausedTasksConfirmed: Bool, historyConfirmed: Bool,
-        accountKey: String
+        accountKey: String, batchID: String?
     ) {
         guard switchSucceeded, pausedTasksConfirmed, historyConfirmed else { return }
-        store.markSwitchSucceeded(accountKey: accountKey)
+        store.markSwitchSucceeded(accountKey: accountKey, batchID: batchID)
     }
 
     @MainActor
@@ -4477,7 +4480,8 @@ final class UsageStore: ObservableObject {
                 Self.confirmReadyQuotaResume(
                     self.quotaResume,
                     switchSucceeded: succeeded, pausedTasksConfirmed: context.pausedTasksConfirmed,
-                    historyConfirmed: context.historyConfirmed, accountKey: expected)
+                    historyConfirmed: context.historyConfirmed, accountKey: expected,
+                    batchID: context.resumeBatchID)
                 if let intent = context.oneShotIntent, succeeded, self.quotaResume.isReady,
                     self.quotaResume.expectedAccountKey == expected,
                     self.quotaResume.oneShotQuotaPolicy == intent.quotaPolicy

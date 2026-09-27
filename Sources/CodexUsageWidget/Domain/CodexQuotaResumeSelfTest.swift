@@ -36,7 +36,11 @@ enum CodexQuotaResumeSelfTest {
                 passed =
                     passed && store.stage([turn], targetAccountKey: account)
                     && store.expectedAccountKey == account && store.pending == [turn]
-                if scenario != 0 { store.markSwitchSucceeded(accountKey: scenario == 1 ? otherAccount : account) }
+                if scenario != 0 {
+                    store.markSwitchSucceeded(
+                        accountKey: scenario == 1 ? otherAccount : account,
+                        batchID: store.expectedBatchID)
+                }
                 let allowed = scenario != 2
                 await store.resume(
                     request: { method, params in
@@ -92,7 +96,7 @@ enum CodexQuotaResumeSelfTest {
             let second = CodexPausedDesktopTurn(threadID: "thread-2", turnID: "turn-2")
             var mixedStarts = 0
             passed = passed && mixed.stage([turn, second], targetAccountKey: account)
-            mixed.markSwitchSucceeded(accountKey: account)
+            mixed.markSwitchSucceeded(accountKey: account, batchID: mixed.expectedBatchID)
             await mixed.resume(
                 request: { method, params in
                     let id = params["threadId"] as? String ?? ""
@@ -139,7 +143,8 @@ enum CodexQuotaResumeSelfTest {
                 restartedUnready, request: admittedRequest,
                 beforeStart: { _ in true }, shouldContinue: { true })
             passed = passed && admissionCalls == 0 && restartedUnready.pending == [turn]
-            restartedUnready.markSwitchSucceeded(accountKey: account)
+            restartedUnready.markSwitchSucceeded(
+                accountKey: account, batchID: restartedUnready.expectedBatchID)
             let restartedReady = CodexQuotaResumeStore(supportDirectory: admissionRoot)
             await UsageStore.runReadyQuotaResume(
                 restartedReady, request: admittedRequest,
@@ -153,13 +158,15 @@ enum CodexQuotaResumeSelfTest {
             passed = passed && historyGate.stage([turn], targetAccountKey: account)
             UsageStore.confirmReadyQuotaResume(
                 historyGate, switchSucceeded: true,
-                pausedTasksConfirmed: true, historyConfirmed: false, accountKey: account)
+                pausedTasksConfirmed: true, historyConfirmed: false,
+                accountKey: account, batchID: historyGate.expectedBatchID)
             passed =
                 passed && !historyGate.isReady
                 && !CodexQuotaResumeStore(supportDirectory: historyRoot).isReady
             UsageStore.confirmReadyQuotaResume(
                 historyGate, switchSucceeded: true,
-                pausedTasksConfirmed: true, historyConfirmed: true, accountKey: account)
+                pausedTasksConfirmed: true, historyConfirmed: true,
+                accountKey: account, batchID: historyGate.expectedBatchID)
             passed = passed && historyGate.isReady
 
             // The one-shot weekly policy survives an app restart, but a ready
@@ -180,7 +187,7 @@ enum CodexQuotaResumeSelfTest {
                 && oneShot.stage(
                     [turn], targetAccountKey: oneShotKey,
                     oneShotQuotaPolicy: .reportedWeek)
-            oneShot.markSwitchSucceeded(accountKey: oneShotKey)
+            oneShot.markSwitchSucceeded(accountKey: oneShotKey, batchID: oneShot.expectedBatchID)
             let restartedOneShot = CodexQuotaResumeStore(supportDirectory: oneShotRoot)
             let quotaTime = Date()
             func quota(
@@ -308,7 +315,7 @@ enum CodexQuotaResumeSelfTest {
             let raceRoot = root.appendingPathComponent("new-external-task")
             let raceStore = CodexQuotaResumeStore(supportDirectory: raceRoot)
             passed = passed && raceStore.stage([turn, second], targetAccountKey: account)
-            raceStore.markSwitchSucceeded(accountKey: account)
+            raceStore.markSwitchSucceeded(accountKey: account, batchID: raceStore.expectedBatchID)
             var raceStarts = 0
             await UsageStore.runReadyQuotaResume(
                 raceStore,
@@ -348,7 +355,7 @@ enum CodexQuotaResumeSelfTest {
             let newerRoot = root.appendingPathComponent("newer-active-turn")
             let newer = CodexQuotaResumeStore(supportDirectory: newerRoot)
             passed = passed && newer.stage([turn, second], targetAccountKey: account)
-            newer.markSwitchSucceeded(accountKey: account)
+            newer.markSwitchSucceeded(accountKey: account, batchID: newer.expectedBatchID)
             var newerStarts = 0
             await UsageStore.runReadyQuotaResume(
                 newer,
@@ -379,7 +386,7 @@ enum CodexQuotaResumeSelfTest {
             let lateRoot = root.appendingPathComponent("changed-during-preflight")
             let late = CodexQuotaResumeStore(supportDirectory: lateRoot)
             passed = passed && late.stage([turn], targetAccountKey: account)
-            late.markSwitchSucceeded(accountKey: account)
+            late.markSwitchSucceeded(accountKey: account, batchID: late.expectedBatchID)
             var lateChanged = false
             var lateStarts = 0
             await UsageStore.runReadyQuotaResume(
@@ -415,7 +422,7 @@ enum CodexQuotaResumeSelfTest {
                 passed && abandoned.canBeginAutomaticSwitch()
                 && abandoned.stage([turn], targetAccountKey: account)
                 && !abandoned.canBeginAutomaticSwitch()
-            abandoned.markSwitchSucceeded(accountKey: account)
+            abandoned.markSwitchSucceeded(accountKey: account, batchID: abandoned.expectedBatchID)
             abandoned.abandonStaged()
             passed =
                 passed && abandoned.pending.isEmpty && !abandoned.isReady

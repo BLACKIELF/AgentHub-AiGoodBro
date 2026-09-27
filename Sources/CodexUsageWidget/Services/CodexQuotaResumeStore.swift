@@ -11,6 +11,7 @@ final class CodexQuotaResumeStore: ObservableObject {
     @Published private(set) var message: String?
 
     var expectedAccountKey: String? { journal?.targetAccountKey }
+    var expectedBatchID: String? { journal?.batchID }
     var isReady: Bool { journal?.ready == true && !pending.isEmpty }
     var oneShotQuotaPolicy: CodexOneShotSwitchIntent.QuotaPolicy? { journal?.oneShotQuotaPolicy }
 
@@ -113,15 +114,18 @@ final class CodexQuotaResumeStore: ObservableObject {
         }
     }
 
-    /// Only the owner of a confirmed target identity should call this method.
-    func markSwitchSucceeded(accountKey: String) {
-        guard Self.validAccountKey(accountKey), accountKey == expectedAccountKey else {
+    /// The caller must carry the batch captured before pausing, not read a newer one at completion.
+    func markSwitchSucceeded(accountKey: String, batchID: String?) {
+        guard Self.validAccountKey(accountKey), accountKey == expectedAccountKey,
+            let batchID, batchID == expectedBatchID
+        else {
             message = WidgetLanguage.storedOrAutomatic().text(
                 "目标账号未核实；续做请求未发送。", "The target account was not verified. No resume request was sent.")
             return
         }
         _ = mutate { state in
             guard var current = state, current.targetAccountKey == accountKey,
+                current.batchID == batchID,
                 current.entries.contains(where: { $0.batchID == current.batchID && $0.status == .awaiting })
             else { return false }
             current.ready = true

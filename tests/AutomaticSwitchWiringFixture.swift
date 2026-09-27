@@ -156,6 +156,7 @@ final class FakeProfileStore {
 final class FakeQuotaResume {
     var isReady = false
     var expectedAccountKey: String?
+    var expectedBatchID: String?
     var oneShotQuotaPolicy: CodexOneShotSwitchIntent.QuotaPolicy?
     func canBeginAutomaticSwitch() -> Bool { true }
     func stage(_ turns: [CodexPausedDesktopTurn], targetAccountKey: String,
@@ -258,7 +259,8 @@ final class UsageStore {
     func finishDesktopSwitchMaintenance() { desktopSwitchMaintenanceLeases.removeAll() }
     func resumePausedDesktopTasks(automatically: Bool) {}
     static func confirmReadyQuotaResume(_ resume: FakeQuotaResume, switchSucceeded: Bool,
-        pausedTasksConfirmed: Bool, historyConfirmed: Bool, accountKey: String) {}
+        pausedTasksConfirmed: Bool, historyConfirmed: Bool,
+        accountKey: String, batchID: String?) {}
     func finishDesktopSwitchPreparation() { desktopSwitchPreparationTask = nil; canCancelDesktopSwitch = false }
     func finalAutomaticGate() -> Bool {
         let profile = profiles[2]
