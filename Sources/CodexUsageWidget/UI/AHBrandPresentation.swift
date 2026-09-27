@@ -86,7 +86,7 @@ struct AHBrandSymbol: View {
                 case .template(let color):
                     Image(nsImage: artwork).renderingMode(.original).resizable().scaledToFit()
                         .saturation(0)
-                        .overlay(color.blendMode(.color))
+                        .overlay(Rectangle().fill(color).blendMode(.color))
                         .compositingGroup()
                         .mask(Image(nsImage: artwork).resizable().scaledToFit())
                 }
