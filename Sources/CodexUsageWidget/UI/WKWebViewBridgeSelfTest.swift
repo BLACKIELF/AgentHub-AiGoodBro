@@ -75,6 +75,11 @@ enum WKWebViewBridgeSelfTest {
                 return height;
               };
               const svg = window.__renderTrend(JSON.stringify(fixture),{snapshotID:'test:1',from:'2026-09-12',to:'2026-09-13'});
+              // The day details are collapsed by default. Open them as a user
+              // would so the two tool counts exercise the content-size bridge.
+              const disclosure = document.getElementById('day-disclosure');
+              disclosure.open = true;
+              const detailsVisible = getComputedStyle(document.querySelector('.day-summary-content')).display !== 'none';
               const tall = window.flushChartSizeForTest();
               document.querySelector('#calendar [data-d="2026-09-12"]').dispatchEvent(new MouseEvent('click'));
               const short = window.flushChartSizeForTest();
@@ -92,7 +97,7 @@ enum WKWebViewBridgeSelfTest {
                 svg: typeof svg === 'string' && svg.startsWith('<svg'),
                 cell: !!document.querySelector('#calendar [data-d="2026-09-13"]'),
                 nativeOwned: document.getElementById('from').disabled === true && document.getElementById('to').disabled === true,
-                noPadding, selectionInRange, trendUsesWidth, tall, short, expected
+                noPadding, selectionInRange, trendUsesWidth, detailsVisible, tall, short, expected
               };
             })()
             """
@@ -113,6 +118,7 @@ enum WKWebViewBridgeSelfTest {
             probe["noPadding"] as? Bool == true,
             probe["selectionInRange"] as? Bool == true,
             probe["trendUsesWidth"] as? Bool == true,
+            probe["detailsVisible"] as? Bool == true,
             let tall = probe["tall"] as? Double, let short = probe["short"] as? Double,
             tall > short + 40, tall < 1400,
             let expected = probe["expected"] as? [Double], !expected.isEmpty,
