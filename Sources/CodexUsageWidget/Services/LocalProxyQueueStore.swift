@@ -120,8 +120,10 @@ import Security
         else { throw LocalProxyFailure.unavailable }
         let bundled = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.openai.codex")?
             .appendingPathComponent("Contents/Resources/codex").path
-        guard let selected = [bundled, CodexExecutable.path()].compactMap({ $0 })
-            .first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else { return }
+        guard
+            let selected = [bundled, CodexExecutable.path()].compactMap({ $0 })
+                .first(where: { FileManager.default.isExecutableFile(atPath: $0) })
+        else { return }
         let executable = URL(fileURLWithPath: selected).resolvingSymlinksInPath().path
         let connection: [String: Any] = [
             "schemaVersion": 1, "runID": runID, "endpoint": endpoint,
