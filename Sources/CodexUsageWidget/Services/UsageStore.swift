@@ -2396,7 +2396,7 @@ final class UsageStore: ObservableObject {
             let canRestore =
                 !forceWithoutSessionRestore
                 && CodexAutomaticSwitchPolicy.hasNoActiveTasks(codexLiveTasks, legacyManagerRunning: false)
-            let visibleThread = await Task.detached(priority: .userInitiated) {
+            let visibleThread = await Task.detached(priority: .userInitiated) { [pausedVisibleThread] in
                 pausedVisibleThread ?? (canRestore ? CodexSessionOpener.visibleThreadID(in: board) : nil)
             }.value
             guard !Task.isCancelled else { return }
