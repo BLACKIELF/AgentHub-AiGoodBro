@@ -47,6 +47,23 @@ jobs:
           cache: false
       - name: Lint Swift sources
         run: make lint
+      - name: Mount pinned Token Monitor desktop runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = arm64
+          dmg="$RUNNER_TEMP/Token-Monitor-0.62.0-arm64.dmg"
+          mountpoint="$RUNNER_TEMP/token-monitor-0.62.0"
+          curl --fail --location --retry 3 --silent --show-error \
+            --output "$dmg" \
+            https://github.com/Javis603/token-monitor/releases/download/v0.62.0/Token-Monitor-0.62.0-arm64.dmg
+          expected="$(python3 -c 'import json; print(json.load(open("Companion/TokenMonitorDesktop/SOURCE.json"))["runtime"]["officialDMGSHA256"])')"
+          printf '%s  %s\n' "$expected" "$dmg" | shasum -a 256 --check -
+          mkdir -p "$mountpoint"
+          hdiutil attach -readonly -nobrowse -mountpoint "$mountpoint" "$dmg"
+          test -d "$mountpoint/Token Monitor.app"
+          printf 'TOKEN_MONITOR_DESKTOP_RUNTIME=%s/Token Monitor.app\n' "$mountpoint" >> "$GITHUB_ENV"
+          printf 'TOKEN_MONITOR_DESKTOP_DMG=%s\n' "$dmg" >> "$GITHUB_ENV"
       - name: Build, verify runtime resources, and run self-tests
         run: make test
       - name: Verify Token Monitor and credential integration
@@ -84,6 +101,15 @@ jobs:
           npm install --no-save --no-package-lock --no-audit --no-fund playwright@1.62.1
           npx playwright install chromium
           node scripts/test-upstream-dashboard-dom-0918v1.js
+      - name: Unmount pinned Token Monitor desktop runtime
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mountpoint="$RUNNER_TEMP/token-monitor-0.62.0"
+          if mount | grep -F " on $mountpoint (" >/dev/null; then
+            hdiutil detach "$mountpoint"
+          fi
 
   windows-rust-format:
     needs: changes

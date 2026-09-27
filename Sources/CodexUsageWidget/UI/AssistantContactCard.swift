@@ -80,9 +80,7 @@ struct AssistantContactCard: View {
                 showsQRCode = true
             } label: {
                 VStack(spacing: 7) {
-                    Image(nsImage: image).resizable().scaledToFit()
-                        .frame(width: 160, height: 204)
-                        .background(.white)
+                    brandedQRImage(image, width: 160, height: 204)
                     Text(language.text("点击放大二维码", "Enlarge QR code"))
                         .font(.caption).foregroundStyle(.secondary)
                 }
@@ -111,9 +109,7 @@ struct AssistantContactCard: View {
                 .accessibilityLabel(language.text("关闭二维码", "Close QR code"))
             }
             if let image = AssistantContact.qrImage {
-                Image(nsImage: image).resizable().scaledToFit()
-                    .frame(width: 320, height: 408)
-                    .background(.white)
+                brandedQRImage(image, width: 320, height: 408)
                     .accessibilityLabel(language.text("微信扫一扫，添加小助理", "Scan with WeChat to add our assistant"))
             }
             Text(language.text("微信号：AiGoodBro", "WeChat ID: AiGoodBro"))
@@ -121,5 +117,30 @@ struct AssistantContactCard: View {
         }
         .padding(20)
         .frame(width: 360)
+    }
+
+    private func brandedQRImage(_ image: NSImage, width: CGFloat, height: CGFloat) -> some View {
+        GeometryReader { geometry in
+            // The source JPEG is 888×1131. Its retired mark occupies only
+            // x=144…264, y=96…216; the QR code begins well below this area.
+            let scale = min(geometry.size.width / 888, geometry.size.height / 1131)
+            let left = (geometry.size.width - 888 * scale) / 2
+            let top = (geometry.size.height - 1131 * scale) / 2
+            ZStack(alignment: .topLeading) {
+                Color.clear.frame(width: geometry.size.width, height: geometry.size.height)
+                Image(nsImage: image)
+                    .resizable()
+                    .frame(width: 888 * scale, height: 1131 * scale)
+                    .offset(x: left, y: top)
+                Color.white
+                    .frame(width: 124 * scale, height: 124 * scale)
+                    .offset(x: left + 142 * scale, y: top + 94 * scale)
+                AHBrandSymbol(size: 120 * scale)
+                    .offset(x: left + 144 * scale, y: top + 96 * scale)
+            }
+            .frame(width: geometry.size.width, height: geometry.size.height)
+        }
+        .frame(width: width, height: height)
+        .background(.white)
     }
 }

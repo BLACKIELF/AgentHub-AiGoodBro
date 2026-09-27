@@ -46,6 +46,12 @@ struct LocalCLIWorkspaceView: View {
                     Spacer()
                     AccountCardDensityPicker()
                     Button {
+                        for profile in model.profiles(for: kind) { model.refresh(profile) }
+                    } label: {
+                        Label(language.text("刷新额度", "Refresh limits"), systemImage: "arrow.clockwise")
+                    }
+                    .disabled(model.profiles(for: kind).isEmpty || model.profiles(for: kind).allSatisfy { model.refreshing.contains($0.id) })
+                    Button {
                         newAccountName = language.text(
                             "\(kind.displayName) 账号 \(model.profiles(for: kind).count + 1)", "\(kind.displayName) account \(model.profiles(for: kind).count + 1)")
                         linkedAccountDirectory = nil
@@ -69,9 +75,9 @@ struct LocalCLIWorkspaceView: View {
             }
         }
         .padding(.vertical, onlyProfileID == nil ? 8 : 0)
-        .onAppear { model.checkLocalSignIns() }
+        .onAppear { model.refreshIfNeeded(kind: kind) }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
-            model.checkLocalSignIns()
+            model.refreshIfNeeded(kind: kind)
         }
         .sheet(item: $preparationProfile) { profile in
             let state = readiness(profile)
@@ -1038,36 +1044,40 @@ struct LocalCLIIcon: View {
             let size = min(proxy.size.width, proxy.size.height)
             let box = size * 0.78
             ZStack {
-                switch kind {
-                case .claudeCode:
-                    RuntimeLogoView(scope: .claudeCode, size: size)
-                case .grok:
-                    Circle().trim(from: 0.08, to: 0.86).stroke(lineWidth: size * 0.10)
-                        .padding(size * 0.11).rotationEffect(.degrees(-30))
-                    Capsule().frame(width: size * 0.10, height: size * 1.04).rotationEffect(.degrees(39))
-                case .openCode:
-                    Image(systemName: "chevron.left.forwardslash.chevron.right")
-                        .resizable().scaledToFit()
-                        .frame(width: box, height: box)
-                case .trae:
-                    Text("T").font(.system(size: size * 1.05, weight: .black, design: .rounded))
-                case .workBuddy:
-                    Image(systemName: "bubble.left.and.bubble.right.fill")
-                        .resizable().scaledToFit()
-                        .frame(width: box, height: box)
-                case .kimi: Text("K").font(.system(size: size * 1.05, weight: .black, design: .rounded))
-                case .mimo:
-                    RoundedRectangle(cornerRadius: size * 0.24).stroke(lineWidth: size * 0.085).padding(size * 0.11)
-                    Text("mi").font(.system(size: size * 0.48, weight: .bold, design: .rounded))
-                case .zcode: Text("Z").font(.system(size: size * 1.05, weight: .black, design: .monospaced))
-                case .gemini:
-                    Image(systemName: "sparkle")
-                        .resizable().scaledToFit()
-                        .frame(width: box, height: box)
-                case .antigravity:
-                    Image(systemName: "a.circle")
-                        .resizable().scaledToFit()
-                        .frame(width: box, height: box)
+                if let image = UpstreamProviderArtwork.image(for: kind.rawValue) {
+                    UpstreamProviderIcon(image: image, size: box)
+                } else {
+                    switch kind {
+                    case .claudeCode:
+                        RuntimeLogoView(scope: .claudeCode, size: size)
+                    case .grok:
+                        Circle().trim(from: 0.08, to: 0.86).stroke(lineWidth: size * 0.10)
+                            .padding(size * 0.11).rotationEffect(.degrees(-30))
+                        Capsule().frame(width: size * 0.10, height: size * 1.04).rotationEffect(.degrees(39))
+                    case .openCode:
+                        Image(systemName: "chevron.left.forwardslash.chevron.right")
+                            .resizable().scaledToFit()
+                            .frame(width: box, height: box)
+                    case .trae:
+                        Text("T").font(.system(size: size * 1.05, weight: .black, design: .rounded))
+                    case .workBuddy:
+                        Image(systemName: "bubble.left.and.bubble.right.fill")
+                            .resizable().scaledToFit()
+                            .frame(width: box, height: box)
+                    case .kimi: Text("K").font(.system(size: size * 1.05, weight: .black, design: .rounded))
+                    case .mimo:
+                        RoundedRectangle(cornerRadius: size * 0.24).stroke(lineWidth: size * 0.085).padding(size * 0.11)
+                        Text("mi").font(.system(size: size * 0.48, weight: .bold, design: .rounded))
+                    case .zcode: Text("Z").font(.system(size: size * 1.05, weight: .black, design: .monospaced))
+                    case .gemini:
+                        Image(systemName: "sparkle")
+                            .resizable().scaledToFit()
+                            .frame(width: box, height: box)
+                    case .antigravity:
+                        Image(systemName: "a.circle")
+                            .resizable().scaledToFit()
+                            .frame(width: box, height: box)
+                    }
                 }
             }.frame(width: proxy.size.width, height: proxy.size.height)
         }.accessibilityHidden(true)

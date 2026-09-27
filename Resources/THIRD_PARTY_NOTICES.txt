@@ -29,9 +29,9 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-token-monitor statistics engine, charts and dashboard resources
+token-monitor desktop companion, statistics engine, charts and dashboard resources
 Source: https://github.com/Javis603/token-monitor
-Current revision: ef079b6fb494e1cfcb24736cfcf4d4e591222eaf
+Current desktop revision: dcccfb01557e2786888fd5479552f392ac6c0d32 (v0.62.0)
 Earlier chart reference: 2f60827e3028d283969dd74cde5b3f5664220442
 
 MIT License
@@ -92,4 +92,8 @@ Revision: 8ef7aa98add33f5ff65b495cf30807ce89b78e69
 Original project: https://github.com/junhoyeo/tokscale
 Pinned package versions and each original package license are retained in
 TokenMonitorEngine/vendor/node_modules. Build provenance is in TokenMonitorEngine/SOURCE.json.
-The app does not run Electron or the upstream self-hosted Hub.
+The AiGoodBro Token Core companion embeds the upstream Electron runtime and
+desktop modules. Electron and Chromium notices remain in the companion's
+Contents/Resources directory. Hub modules are retained; remote synchronization
+is not enabled by bundling them. The original signed macOS WidgetKit extension
+is archived and disabled pending an AiGoodBro signing identity and App Group.

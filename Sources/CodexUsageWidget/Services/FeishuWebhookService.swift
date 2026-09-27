@@ -491,6 +491,30 @@ final class FeishuWebhookService {
             })
     }
 
+    func sendPublicResetForecast(
+        _ forecast: PublicResetForecastNotification,
+        shouldSend: @escaping () -> Bool,
+        completion: @escaping (Result<Void, FeishuWebhookError>) -> Void
+    ) {
+        let body: Data
+        do { body = try Self.publicResetForecastPayload(forecast) } catch {
+            completion(.failure(.invalidNotification))
+            return
+        }
+        readCredential(
+            { try self.loadStoredWebhook() },
+            completion: { result in
+                guard shouldSend() else {
+                    completion(.failure(.cancelled))
+                    return
+                }
+                switch result {
+                case .success(let endpoint): self.send(body: body, to: endpoint, completion: completion)
+                case .failure(let error): completion(.failure(error))
+                }
+            })
+    }
+
     static func publicResetPayload(
         _ announcement: PublicResetAnnouncement,
         language: WidgetLanguage = .storedOrAutomatic()
@@ -509,6 +533,36 @@ final class FeishuWebhookService {
                 "elements": [["tag": "div", "text": ["tag": "lark_md", "content": message]]],
             ],
         ])
+    }
+
+    static func publicResetForecastPayload(
+        _ forecast: PublicResetForecastNotification,
+        language: WidgetLanguage = .storedOrAutomatic()
+    ) throws -> Data {
+        guard forecast.isValid(now: Date()) else { throw FeishuWebhookError.invalidNotification }
+        var lines = [
+            language.text("**状态**：公开重置预告，待来源确认", "**Status**: Public reset forecast; awaiting source confirmation"),
+            language.text("**发布时间**：", "**Published**: ") + language.dateTime(forecast.announcedAt),
+        ]
+        if let latestBy = forecast.latestBy {
+            lines.append(language.text("**预计最晚时间**：", "**Expected by**: ") + language.dateTime(latestBy))
+        } else {
+            lines.append(language.text("**预计重置时间**：待确认", "**Expected reset time**: To be confirmed"))
+        }
+        lines.append(language.text("这只是公开预告，不代表重置已完成或额度已到账。", "This is only a public forecast; it does not confirm completion or credited quota."))
+        lines.append(language.text("来源：Codex Resets（公开预告）", "Source: Codex Resets (public forecast)"))
+        lines.append("[" + language.text("查看来源帖文", "View source post") + "](\(forecast.sourceURL.absoluteString))")
+        let payload: [String: Any] = [
+            "msg_type": "interactive",
+            "card": [
+                "header": [
+                    "template": "turquoise",
+                    "title": ["tag": "plain_text", "content": language.text("重置预告 · 待确认", "Reset forecast · unconfirmed")],
+                ],
+                "elements": [["tag": "div", "text": ["tag": "lark_md", "content": lines.joined(separator: "\n\n")]]],
+            ],
+        ]
+        return try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
     }
 
     /// Sends an observer-confirmed task-completion card. The DTO itself fails

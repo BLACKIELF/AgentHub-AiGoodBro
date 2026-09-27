@@ -1,39 +1,23 @@
 import AppKit
 
 enum AppIconStyle: String, CaseIterable, Identifiable {
-    case warmWhite
-    case deepPlum
-    case sageGreen
-    case graphite
-    case champagne
+    case mascot
 
     static let storageKey = "AiGoodBro.appIconStyle.v1"
-    static let `default` = AppIconStyle.warmWhite
+    static let `default` = AppIconStyle.mascot
 
     var id: String { rawValue }
 
-    var resourceName: String {
-        switch self {
-        case .warmWhite: return "AiGoodBro"
-        case .deepPlum: return "AiGoodBro-02-deep-plum"
-        case .sageGreen: return "AiGoodBro-03-sage-green"
-        case .graphite: return "AiGoodBro-04-graphite"
-        case .champagne: return "AiGoodBro-05-champagne"
-        }
-    }
+    var resourceName: String { "AiGoodBro" }
 
-    func title(_ language: WidgetLanguage) -> String {
-        switch self {
-        case .warmWhite: return language.text("暖白", "Warm white")
-        case .deepPlum: return language.text("深梅紫", "Deep plum")
-        case .sageGreen: return language.text("鼠尾草绿", "Sage green")
-        case .graphite: return language.text("石墨灰", "Graphite")
-        case .champagne: return language.text("浅香槟", "Champagne")
-        }
-    }
+    func title(_ language: WidgetLanguage) -> String { "AiGoodBro" }
 
     static func storedOrDefault(defaults: UserDefaults = .standard) -> Self {
-        defaults.string(forKey: storageKey).flatMap(Self.init(rawValue:)) ?? .default
+        // Retired palette selections migrate to the approved brand asset.
+        if defaults.string(forKey: storageKey) != Self.default.rawValue {
+            Self.default.persist(defaults: defaults)
+        }
+        return .default
     }
 
     func persist(defaults: UserDefaults = .standard) {
@@ -62,16 +46,16 @@ enum AppIconStyleSelfTest {
         func expect(_ condition: Bool, _ message: String) {
             if !condition { failures.append(message) }
         }
-        expect(AppIconStyle.allCases.count == 5, "five icon palettes")
-        expect(AppIconStyle.default == .warmWhite, "default is warm white")
-        expect(Set(AppIconStyle.allCases.map(\.resourceName)).count == 5, "resource names are unique")
+        expect(AppIconStyle.allCases.count == 1, "one approved brand icon")
+        expect(AppIconStyle.default == .mascot, "default is approved mascot")
         let defaults = UserDefaults(suiteName: "AiGoodBro.appIconStyle.self-test")!
         defaults.removePersistentDomain(forName: "AiGoodBro.appIconStyle.self-test")
-        expect(AppIconStyle.storedOrDefault(defaults: defaults) == .warmWhite, "missing key falls back to warm white")
-        AppIconStyle.graphite.persist(defaults: defaults)
-        expect(AppIconStyle.storedOrDefault(defaults: defaults) == .graphite, "persisted style reloads")
-        defaults.set("not-a-style", forKey: AppIconStyle.storageKey)
-        expect(AppIconStyle.storedOrDefault(defaults: defaults) == .warmWhite, "corrupt value falls back")
+        defer { defaults.removePersistentDomain(forName: "AiGoodBro.appIconStyle.self-test") }
+        for oldValue in ["warmWhite", "deepPlum", "sageGreen", "graphite", "champagne", "not-a-style"] {
+            defaults.set(oldValue, forKey: AppIconStyle.storageKey)
+            expect(AppIconStyle.storedOrDefault(defaults: defaults) == .mascot, "retired style migrates")
+            expect(defaults.string(forKey: AppIconStyle.storageKey) == "mascot", "migration persists")
+        }
         if NSApp == nil {
             expect(!AppIconStyle.default.applyToRunningApp(), "headless icon apply safely reports no running app")
         }

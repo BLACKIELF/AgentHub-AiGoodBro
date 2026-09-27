@@ -7,7 +7,14 @@ struct RuntimeLogoView: View {
 
     var body: some View {
         Group {
-            if let image = RuntimeLogo.image(for: scope) {
+            if let image = UpstreamProviderArtwork.image(for: scope == .codex ? "codex" : "claude") {
+                Image(nsImage: image)
+                    .renderingMode(image.isTemplate ? .template : .original)
+                    .resizable()
+                    .scaledToFit()
+                    .padding(size * 0.10)
+                    .foregroundStyle(Color.primary)
+            } else if let image = RuntimeLogo.image(for: scope) {
                 Image(nsImage: image)
                     .renderingMode(scope == .claudeCode ? .template : .original)
                     .resizable()

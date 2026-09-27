@@ -47,6 +47,10 @@ indirect enum TokenMonitorJSON: Codable, Equatable, Sendable {
         if case .array(let v) = self { return v }
         return nil
     }
+    var object: [String: Self]? {
+        if case .object(let v) = self { return v }
+        return nil
+    }
     var double: Double? {
         if case .number(let v) = self { return NSDecimalNumber(decimal: v).doubleValue }
         return nil
@@ -202,7 +206,8 @@ struct TokenMonitorRequest: Codable, Sendable {
         guard schemaVersion == 1, TokenMonitorSource.safeID(requestId), TimeZone(identifier: timezone) != nil,
             TokenMonitorResponse.timestamp(now) != nil,
             cacheDirectory.hasPrefix("/"), !cacheDirectory.contains("\0"),
-            (1...60_000).contains(options.timeoutMs), !options.allowPriceNetwork, !options.allowSelfSync,
+            (1...(operation == .collectUsage ? 180_000 : 60_000)).contains(options.timeoutMs),
+            !options.allowPriceNetwork, !options.allowSelfSync,
             !options.allowCredentialRefresh, !options.includeLiveCodexAccount
         else { throw TokenMonitorFailure.invalidRequest }
         guard (customSources?.count ?? 0) <= 256 else { throw TokenMonitorFailure.inputTooLarge }
@@ -274,7 +279,7 @@ struct TokenMonitorResponse: Codable, Sendable {
     var payload: TokenMonitorJSON
     var coverage: Coverage
     var errors: [Diagnostic]
-    static let commit = "ef079b6fb494e1cfcb24736cfcf4d4e591222eaf"
+    static let commit = "dcccfb01557e2786888fd5479552f392ac6c0d32"
     func metricCoverage(sourceIDs: [String], date: String, metric: String) -> TokenMonitorCoverageStatus {
         let eligible = sourceIDs.filter { id in sources.first(where: { $0.id == id })?.status != .excluded }
         guard !eligible.isEmpty else { return .unknown }

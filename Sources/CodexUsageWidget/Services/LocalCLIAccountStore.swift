@@ -22,6 +22,9 @@ final class LocalCLIAccountStore: ObservableObject {
     private var loginTasks: [String: Task<Void, Never>] = [:]
     private var authenticationTasks: [String: Task<Void, Never>] = [:]
     private var loginVerification: Set<String> = []
+    private var quotaAttemptedAt: [String: Date] = [:]
+    private var quotaAttemptState: [String: LocalCLIQuotaState] = [:]
+    private var quotaCredentialVersions: [String: CredentialVersion] = [:]
     private var saved: [LocalCLIProfile] = []
     private var savedDigest: Data?
     private var storageValid = true
@@ -39,13 +42,13 @@ final class LocalCLIAccountStore: ObservableObject {
         applicationsDirectory: URL = URL(fileURLWithPath: "/Applications", isDirectory: true),
         quotaLoader: @escaping QuotaLoader = { profile in
             switch profile.kind {
-            case .gemini, .mimo:
+            case .gemini, .mimo, .trae, .workBuddy:
                 await AdditionalCLIQuotaReader().load(profile: profile)
             case .zcode:
                 await ZCodeCLIQuotaReader().load(profile: profile)
             case .antigravity:
                 await AntigravityCLIQuotaReader().load(profile: profile)
-            case .claudeCode, .grok, .openCode, .kimi, .trae, .workBuddy:
+            case .claudeCode, .grok, .openCode, .kimi:
                 await LocalCLIQuotaReader().load(profile: profile)
             }
         },
@@ -432,6 +435,42 @@ final class LocalCLIAccountStore: ObservableObject {
         for profile in profiles { checkLocalSignIn(profile) }
     }
 
+    /// Recheck the visible provider after an external CLI may have changed its
+    /// credentials. File metadata is only a change signal; quota and identity
+    /// still come from the profile's own official reader.
+    func refreshIfNeeded(kind: LocalCLIKind? = nil) {
+        guard !previewOnly else { return }
+        let now = clock()
+        for profile in profiles where kind == nil || profile.kind == kind {
+            let previousAuthentication = authentication[profile.id]
+            checkLocalSignIn(profile)
+            guard !refreshing.contains(profile.id) else { continue }
+
+            let version = credentialVersion(for: profile)
+            let credentialsChanged = quotaCredentialVersions[profile.id].map { $0 != version } ?? false
+            let authenticationChanged =
+                previousAuthentication != nil
+                && previousAuthentication != authentication[profile.id]
+            if credentialsChanged || authenticationChanged {
+                quotas.removeValue(forKey: profile.id)
+                stale.remove(profile.id)
+            }
+            if let attemptedAt = quotaAttemptedAt[profile.id] {
+                let elapsed = max(0, now.timeIntervalSince(attemptedAt))
+                if quotaAttemptState[profile.id] == .rateLimited, elapsed < 15 * 60 { continue }
+                if !credentialsChanged && !authenticationChanged, elapsed < 60 { continue }
+            }
+            if !credentialsChanged && !authenticationChanged,
+                let quota = quotas[profile.id], quota.state == .available,
+                !stale.contains(profile.id),
+                (0..<5 * 60).contains(now.timeIntervalSince(quota.fetchedAt))
+            {
+                continue
+            }
+            refresh(profile)
+        }
+    }
+
     private func checkLocalSignIn(_ profile: LocalCLIProfile) {
         let evidence = LocalCLIAuthenticationReader().read(profile)
         authentication[profile.id] = evidence
@@ -527,13 +566,27 @@ final class LocalCLIAccountStore: ObservableObject {
             loginVerification.remove(profile.id)
             authentication.removeValue(forKey: profile.id)
             authenticationTasks.removeValue(forKey: profile.id)?.cancel()
+            quotaAttemptedAt.removeValue(forKey: profile.id)
+            quotaAttemptState.removeValue(forKey: profile.id)
+            quotaCredentialVersions.removeValue(forKey: profile.id)
         }
     }
 
     func refresh(_ profile: LocalCLIProfile) {
         guard !previewOnly else { return }
-        authentication[profile.id] = LocalCLIAuthenticationReader().read(profile)
+        let previousAuthentication = authentication[profile.id]
+        let currentAuthentication = LocalCLIAuthenticationReader().read(profile)
+        authentication[profile.id] = currentAuthentication
         guard !refreshing.contains(profile.id), profiles.contains(profile) else { return }
+        let requestCredentialVersion = credentialVersion(for: profile)
+        if quotaCredentialVersions[profile.id].map({ $0 != requestCredentialVersion }) == true
+            || (previousAuthentication != nil && previousAuthentication != currentAuthentication)
+        {
+            quotas.removeValue(forKey: profile.id)
+            stale.remove(profile.id)
+        }
+        quotaAttemptedAt[profile.id] = clock()
+        quotaCredentialVersions[profile.id] = requestCredentialVersion
         let request = UUID()
         requests[profile.id] = request
         refreshing.insert(profile.id)
@@ -545,6 +598,15 @@ final class LocalCLIAccountStore: ObservableObject {
             else { return }
             self.refreshing.remove(profile.id)
             self.tasks.removeValue(forKey: profile.id)
+            if self.credentialVersion(for: profile) != requestCredentialVersion {
+                self.requests.removeValue(forKey: profile.id)
+                self.quotas.removeValue(forKey: profile.id)
+                self.stale.remove(profile.id)
+                self.quotaAttemptedAt.removeValue(forKey: profile.id)
+                self.quotaAttemptState.removeValue(forKey: profile.id)
+                self.quotaCredentialVersions.removeValue(forKey: profile.id)
+                return
+            }
             let previous = self.quotas[profile.id]
             let now = self.clock()
             let observation =
@@ -557,6 +619,8 @@ final class LocalCLIAccountStore: ObservableObject {
                 profileKind: profile.kind,
                 observation: observation,
                 now: now)
+            self.quotaAttemptedAt[profile.id] = now
+            self.quotaAttemptState[profile.id] = loaded.state
             if self.loginVerification.remove(profile.id) != nil {
                 self.loginMessages[profile.id] =
                     result.state == .available
@@ -585,6 +649,49 @@ final class LocalCLIAccountStore: ObservableObject {
     private var language: WidgetLanguage { WidgetLanguage.storedOrAutomatic() }
     private enum Failure: Error, Equatable { case invalid, conflict }
 
+    private struct CredentialVersion: Equatable {
+        struct File: Equatable {
+            let device: dev_t
+            let inode: ino_t
+            let size: off_t
+            let modified: timespec
+            let changed: timespec
+
+            static func == (lhs: Self, rhs: Self) -> Bool {
+                lhs.device == rhs.device && lhs.inode == rhs.inode && lhs.size == rhs.size
+                    && lhs.modified.tv_sec == rhs.modified.tv_sec && lhs.modified.tv_nsec == rhs.modified.tv_nsec
+                    && lhs.changed.tv_sec == rhs.changed.tv_sec && lhs.changed.tv_nsec == rhs.changed.tv_nsec
+            }
+        }
+
+        let directory: String
+        let files: [File?]
+    }
+
+    private func credentialVersion(for profile: LocalCLIProfile) -> CredentialVersion {
+        let names: [String] =
+            switch profile.kind {
+            case .kimi: ["credentials/kimi-code.json"]
+            case .grok, .openCode, .mimo: ["auth.json"]
+            case .claudeCode: [".credentials.json"]
+            case .gemini: ["settings.json", "oauth_creds.json", ".env"]
+            case .zcode: ["v2/setting.json", "v2/config.json", "v2/credentials.json"]
+            case .trae, .workBuddy, .antigravity: []
+            }
+        let directory = URL(fileURLWithPath: profile.configDirectory, isDirectory: true)
+        let files = names.map { name -> CredentialVersion.File? in
+            var info = stat()
+            let path = directory.appendingPathComponent(name).path
+            guard lstat(path, &info) == 0, info.st_mode & S_IFMT == S_IFREG,
+                info.st_uid == geteuid(), info.st_nlink == 1
+            else { return nil }
+            return CredentialVersion.File(
+                device: info.st_dev, inode: info.st_ino, size: info.st_size,
+                modified: info.st_mtimespec, changed: info.st_ctimespec)
+        }
+        return CredentialVersion(directory: profile.configDirectory, files: files)
+    }
+
     private func mergeImportedGrokObservation() {
         let now = clock()
         guard let observation = grokObservationReader.load(from: support, now: now) else { return }
@@ -600,6 +707,7 @@ final class LocalCLIAccountStore: ObservableObject {
     }
 
     private func rebuildProfiles() {
+        let previousScopes = Dictionary(uniqueKeysWithValues: profiles.map { ($0.id, $0) })
         var result: [LocalCLIProfile] = []
         for kind in LocalCLIKind.allCases where installed[kind] != nil {
             if kind == .workBuddy {
@@ -628,24 +736,30 @@ final class LocalCLIAccountStore: ObservableObject {
             result += saved.filter { $0.kind == kind && !$0.isDefault }
         }
         profiles = result
-        let activeIDs = Set(result.map(\.id))
-        for id in Array(tasks.keys) where !activeIDs.contains(id) {
+        let retainedIDs = Set(
+            result.filter {
+                previousScopes[$0.id]?.kind == $0.kind && previousScopes[$0.id]?.configDirectory == $0.configDirectory
+            }.map(\.id))
+        for id in Array(tasks.keys) where !retainedIDs.contains(id) {
             tasks.removeValue(forKey: id)?.cancel()
         }
-        requests = requests.filter { activeIDs.contains($0.key) }
-        quotas = quotas.filter { activeIDs.contains($0.key) }
-        stale.formIntersection(activeIDs)
-        refreshing.formIntersection(activeIDs)
-        for id in Array(loginTasks.keys) where !activeIDs.contains(id) {
+        requests = requests.filter { retainedIDs.contains($0.key) }
+        quotas = quotas.filter { retainedIDs.contains($0.key) }
+        stale.formIntersection(retainedIDs)
+        refreshing.formIntersection(retainedIDs)
+        for id in Array(loginTasks.keys) where !retainedIDs.contains(id) {
             loginTasks.removeValue(forKey: id)?.cancel()
         }
-        for id in Array(authenticationTasks.keys) where !activeIDs.contains(id) {
+        for id in Array(authenticationTasks.keys) where !retainedIDs.contains(id) {
             authenticationTasks.removeValue(forKey: id)?.cancel()
         }
-        authentication = authentication.filter { activeIDs.contains($0.key) }
-        signingIn.formIntersection(activeIDs)
-        loginVerification.formIntersection(activeIDs)
-        loginMessages = loginMessages.filter { activeIDs.contains($0.key) }
+        authentication = authentication.filter { retainedIDs.contains($0.key) }
+        signingIn.formIntersection(retainedIDs)
+        loginVerification.formIntersection(retainedIDs)
+        loginMessages = loginMessages.filter { retainedIDs.contains($0.key) }
+        quotaAttemptedAt = quotaAttemptedAt.filter { retainedIDs.contains($0.key) }
+        quotaAttemptState = quotaAttemptState.filter { retainedIDs.contains($0.key) }
+        quotaCredentialVersions = quotaCredentialVersions.filter { retainedIDs.contains($0.key) }
     }
 
     private func validName(_ value: String) -> Bool {

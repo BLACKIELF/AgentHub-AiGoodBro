@@ -1,10 +1,26 @@
-# AiGoodBro 使用说明 · 0911v1
+# AiGoodBro 使用说明 · 0927v4
 
 本页保留 README 之外的配置和行为说明。当前源码预览见 README 版本行，macOS 13+；没有已发布安装包时不要编造下载链接。多 CLI 登录和真实调用尚未全部通过，不能用离线检查替代。
 
+原版浮窗设置顶部可直接打开 AiGoodBro 工作台、账号与自动续做、应用设置；产品官网和仓库入口分别为 [aigoodbro.com](https://aigoodbro.com/) 与 [GitHub 主页](https://github.com/BLACKIELF/AgentHub-AiGoodBro)。单次指定 Pro 的试切与长期自动化分开，不会为试切修改全局开关。当前安装和验证状态见 [0927v4 集成记录](ai-goodbro-2.0-0927v4.md)。
+
+Dock 只显示 AiGoodBro 主程序图标。点击右侧边栏的额度或用量项可打开统计首页浮窗，悬停查看详情。
+
+## 2.0 用量入口
+
+点击菜单栏打开原版用量面板；从工作台点击“用量看板”打开完整 Dashboard。原版 Edge Dock、九个视图及用量设置与 AiGoodBro 一起启动、退出，账号管理、任务和更新仍由 AiGoodBro 负责。已有账号会经过身份核对后接到额度面板，来源账号的修改返回工作台处理。中英文、玻璃样式、图标大小和圆环沿用原版。当前验证和 WidgetKit／Antigravity OAuth 限制见 [0927v1 集成记录](ai-goodbro-2.0-0927v1.md)。
+
+## 1% 暂停、换号与续做
+
+在账号自动化或设置中启用“剩余 1% 自动暂停并换号”。任一官方额度窗口剩余不超过 1% 时，软件先保存当前任务与轮次，再通过官方接口暂停；确认所有任务停止、备用账号有足够额度后才切换。旧版的低额度提醒设置不会自动开启暂停权限。
+
+“换号成功后自动继续原任务”默认随新流程可用：账号、历史及任务状态核验成功后，在原对话发送续做指令。关闭后可点击“继续原任务”。已经完成或被手动继续的任务会跳过；发送结果不明时不重试。软件重启只读取恢复记录，不会自行续做。暂停或切号失败时保留记录，可处理后继续或明确清除记录；清除记录不删除原对话。
+
+本轮使用隔离协议模拟验证保护逻辑，不以真实账号切换或中断工作来测试。详细来源与边界见 [实现记录](desktop-quota-pause-0927v1.md)。
+
 ## 安装与配置
 
-需要 Xcode Command Line Tools、Swift、Git、Make 和能正常登录的 Codex。缺少编译工具时，由用户完成 `xcode-select --install`。源码构建：
+需要 Xcode Command Line Tools、Swift、Git、Make 和能正常登录的 Codex。完整桌面模块还需已校验的 Token Monitor v0.62.0 macOS arm64 官方运行时，默认从 `/Applications/Token Monitor.app` 只读打包；安装后运行不依赖该独立 App。缺少编译工具时，由用户完成 `xcode-select --install`。源码构建：
 
 ```sh
 git clone https://github.com/BLACKIELF/AgentHub-AiGoodBro.git

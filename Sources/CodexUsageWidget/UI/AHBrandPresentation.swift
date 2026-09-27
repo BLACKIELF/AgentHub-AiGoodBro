@@ -2,11 +2,22 @@ import SwiftUI
 
 enum AHBrandIdentity {
     static let displayName = "AiGoodBro"
+    static let publicVersion = "2.0"
     static let shortName = "AH"
     static let workspaceName = "AgentHub"
-    /// 官网地址，供主界面图标处的隐藏跳转按钮使用。
-    static let siteURL = URL(string: "https://AiGoodBro.com")!
+
+    static func productDescription(_ language: WidgetLanguage) -> String {
+        language.text(
+            "多账号与 AI 用量工作台：公开重置预告自动推送至已配置的飞书，帮助安排任务；集中查看用量看板、额度、趋势和右侧浮窗，支持中英文与毛玻璃主题。",
+            "A multi-account AI usage workspace: receive public reset forecasts in your configured Feishu, explore usage, limits and trends, and keep an Edge Dock at hand, with Chinese and English and frosted-glass themes."
+        )
+    }
+
+    /// Product links shared by the workspace and its settings.
+    static let siteURL = URL(string: "https://aigoodbro.com/")!
     static let repositoryURL = URL(string: "https://github.com/BLACKIELF/AgentHub-AiGoodBro")!
+    static let helpURL = URL(string: "https://github.com/BLACKIELF/AgentHub-AiGoodBro/blob/main/docs/usage-guide.md")!
+    static let feedbackURL = repositoryURL.appendingPathComponent("issues")
     /// 兼容旧命名，值同 siteURL，勿再新增第三个。
     static var brandSiteURL: URL { siteURL }
 

@@ -1,10 +1,12 @@
-# AiGoodBro · AgentHub
+# AiGoodBro 2.0 · AgentHub
 
-**AiGoodBro** is a native macOS workspace for multiple Codex accounts, with **AgentHub** as its Home view. Check quota and multi-agent token usage, receive reset announcements, switch accounts from one place, and dispatch isolated CLI tasks to other accounts. Upgrades preserve existing accounts and settings.
+**AiGoodBro 2.0** is a macOS workspace for Codex accounts, with **AgentHub** as its Home view. It brings account quota, token usage, and service health together, with an edge dock for checking today's usage and limits at a glance. Enable reset-message delivery and configure a Feishu bot to receive new public reset forecasts automatically, so you can plan tasks sooner and check the website less often. The menu bar opens usage, limits, trends and service health, with links back to account management and isolated CLIs. Upgrades preserve existing accounts and settings.
 
 [中文](README.md) | **English**
 
-![AiGoodBro: quota, warm-up and accounts in one workspace](docs/images/0909v4/01-readme-cover-en.png)
+![AiGoodBro 2.0 usage dashboard](docs/images/0927v6/dashboard.jpg)
+
+> Captured from the installed app on 2026-09-27, showing token activity and model/tool rankings. Costs are estimates, not bills. [View the new workspace and screenshot notes](docs/images/0927v6/README.md).
 
 Before starting work, answer four questions: how much quota remains, when it resets, whether the account is usable now, and how far the task has progressed.
 
@@ -13,17 +15,22 @@ AiGoodBro puts quota alerts and reset news first, so you can see when work can c
 | What you need | What AiGoodBro provides |
 |---|---|
 | Check remaining quota | Officially returned windows, including five-hour and weekly limits, with remaining percentages, reset times and snapshot timestamps. Alert thresholds are adjustable; unknown values stay “—”. |
-| Hear about resets | Public announcements from [Codex Resets](https://codex-resets.com/), distinguishing regular resets from banked reset credits, with event times and original-source links. Account-specific reset countdowns remain separate. |
+| Review multi-agent usage | The pinned [Token Monitor v0.62.0](https://github.com/Javis603/token-monitor) desktop module provides its original Dashboard, heatmap, trends, model/tool rankings, icons, dimensions, fonts and glass styling. |
+| Glance at usage and limits | Enable Edge Dock for today's tokens, estimated cost and provider quota rings at the screen edge. Hover for details, auto-hide or pin the rail, and drag it to move. The rate appears when measured performance samples are available. |
+| Hear about resets | Public forecasts and completed announcements from [Codex Resets](https://codex-resets.com/), with publication times and source links. New forecasts can be sent automatically to a configured Feishu bot; account quota still needs its own refresh. |
+| Check service health | The menu-bar Status view reads public Claude and OpenAI service summaries and marks stale snapshots. |
 | Receive notifications | Native macOS notifications, optional Feishu alerts, and configurable Telegram / WeCom group bots. Permissions, configuration and supported event types apply to each channel; see below. |
 | Switch accounts | Start a Desktop switch from an account card and follow preparation, graceful exit, write, relaunch and verification. Isolated CLIs can use other accounts independently. |
-| Continue after low quota | Quota alerts, account recommendations and automatic switching. The automatic path requires its setting to be enabled, Codex to have exited, safe task state, and freshly rechecked identity and both quota windows before writing. Manual and automatic switching share transaction protection. |
+| Continue after low quota (in validation) | Controls for pausing at 1%, switching and continuing the original task are implemented. Integration and real end-to-end validation with the current Desktop are still in progress. Unknown task state blocks switching, and uncertain submissions are not repeated. |
 | Coordinate and troubleshoot | Per-account CLI environments and model preferences, reservations before launch, task states, execution receipts and operational issue logs. |
 
 A single account can use read-only monitoring. A public announcement, an account's recovered quota and its available reset credits are separate facts: an announcement neither spends a credit nor replaces an account refresh. The WeChat integration is a **WeCom group bot**; personal WeChat is not connected.
 
-**Current macOS source baseline: V1.0 · 0915v5 · 9.6.1 (50).** This is the rebuilt application baseline, with saved OpenCode provider reuse, CLI configuration detection, shared onboarding, compact cards, daily token summaries, the existing stacked-column trend, reset calendar and AI hotspots. Earlier Desktop-switch and refresh-frequency fixes are retained. The final CLI repair did not change the previously completed Codex switching implementation. There is no binary Release for this version. [Version notes and validation boundaries](docs/release-notes-v9.6.1.md)
+**Installed build: AiGoodBro 2.0 · 0927v5, version 9.6.17 (66).** Local CLI quota checks now detect credential changes, refresh on activation and retry failed reads, with an explicit Refresh limits button. Kimi five-hour and weekly limits were verified in the installed app. OpenCode Go, WorkBuddy and TRAE explain missing connection requirements accurately. Selected-day tool composition is collapsed by default. AiGoodBro still owns the single Dock icon, and the current 20x account is unchanged. See the [latest integration record](docs/ai-goodbro-2.0-0927v5.md). No public 2.0 release has been published.
 
-An installation prompt and four practical task prompts are below. Version 9.6.1 has not been published to GitHub Releases; build it from source for now.
+**Mainline version: AiGoodBro 2.0 · 0927v6.** This update includes the 2.0 interface integration, reset-forecast notifications, local quota fixes, Pro weekly-quota handling, and the low-quota simulation entry point. The internal build version remains 9.6.18 (67) to preserve update ordering. The real Desktop pause → account switch → continuation flow is still being validated. This mainline update is not a binary release. [Update notes](docs/source-snapshot-0927v6.md).
+
+Get the 2.0 source from `main`. Check the version before building; an installation prompt and four task prompts are below.
 
 [![CI](https://github.com/BLACKIELF/AgentHub-AiGoodBro/actions/workflows/ci.yml/badge.svg)](https://github.com/BLACKIELF/AgentHub-AiGoodBro/actions/workflows/ci.yml)
 ![macOS 13+](https://img.shields.io/badge/macOS-13%2B-111111?logo=apple)
@@ -40,18 +47,24 @@ Requires macOS 13+, a working Codex sign-in and Xcode Command Line Tools. A sing
 To build yourself:
 
 ```sh
-git clone https://github.com/BLACKIELF/AgentHub-AiGoodBro.git
+git clone --branch main https://github.com/BLACKIELF/AgentHub-AiGoodBro.git
 cd AgentHub-AiGoodBro
 make build
 ```
 
-The build result should be `build/AiGoodBro.app`. Building does not install or launch it. Back up the old build, then migrate to one `AiGoodBro.app` without leaving a second launchable copy. See the [compatibility map](docs/brand-compat-0911v1.md). Local builds use ad-hoc signing; no Apple-notarized 9.6.0 download has been published.
+The complete desktop build also needs the verified official Token Monitor v0.62.0 macOS arm64 runtime, read from `/Applications/Token Monitor.app` by default. See the [integration record](docs/ai-goodbro-2.0-0927v5.md) for configuration and limitations.
 
-Future installer assets should use `AiGoodBro-<version>-mac-<arch>.dmg`. No 9.6.0 installer is currently available.
+The build result should be `build/AiGoodBro.app`. Building does not install or launch it. Back up the old build, then migrate to one `AiGoodBro.app` without leaving a second launchable copy. See the [compatibility map](docs/brand-compat-0911v1.md). Local builds use ad-hoc signing; no Apple-notarized 2.0 download has been published.
+
+Future installer assets should use `AiGoodBro-<version>-mac-<arch>.dmg`. No 2.0 installer is currently available.
 
 ## Start with the workspace
 
-Choose **Professional** or **Simple** at the top of Home. Professional starts with the full interface expanded. Simple offers Overview, Account cards, or Custom with four optional modules. These preferences affect presentation only; provider tabs retain their full controls. Overview preserves per-account status and shows “—” for unavailable quota.
+![AiGoodBro 2.0 workspace with reset forecasts](docs/images/0927v6/workspace.jpg)
+
+*Installed app, with account cards collapsed. Cache and unconfirmed states are shown as captured.*
+
+Choose **Professional** or **Simple** at the top of Home. Professional starts with the full interface expanded. Simple offers Overview, Account cards, or Custom with four optional modules. These preferences affect presentation only; provider tabs retain their full controls. Overview preserves per-account status and shows “—” for unavailable quota. The native Settings window has Display & Icons, Menu Bar, Floating window, Automation, Workspace, Usage dashboard, and About sections.
 
 ![Current account cards rendered with synthetic data](docs/images/0910v1/02-workspace-cards-en-dark@2x.png)
 
@@ -63,19 +76,23 @@ Refresh each account, set its model and open an isolated CLI environment. Saved 
 
 > Workspace screenshots are retained native renders of the 0910v1 production SwiftUI views using synthetic accounts, quota and dates. “Unverified” means that the demo is not connected to a Hub. The English header illustration is retained from 0909v4. [Image provenance and prompts](docs/images/0910v1/README.md)
 
-> Images may show an earlier layout and are included only to introduce the interface. This update adds no images.
+> Images may show an earlier layout and are included only to introduce the interface. The [2.0 integration record](docs/ai-goodbro-2.0-0927v5.md) tracks current source and runtime verification.
 
-## Token Monitor statistics
+## Usage Dashboard
 
-The 0913v1 Home view places editable Agent navigation first, followed by public reset news, Token totals and signed-in accounts. Reset news retains the original text, Beijing event time and Chinese translation status. Daily chart hints include the retrieved reset announcements using the statistics time zone.
+Home places Agent navigation first, followed by public reset news, Token totals and signed-in accounts. Forecasts and completed announcements remain distinct, with publication time, explanation and source link. A forecast does not prove that an account's quota has returned. The menu bar opens Home, Tool, Status, Device, Model, Project, Session, Limits and Trends; service health uses public status summaries.
 
-The statistics engine and chart code come from pinned Token Monitor v0.56.0. Its catalog contains 28 clients, with 26 enabled by upstream default; MiMo Code and Qoder CN are optional. Keep the previous custom mode for unsupported sources via Settings → Workspace → Statistics mode. Modes do not combine their totals. Historical account ownership and unavailable values remain unassigned rather than guessed.
+The default statistics mode uses pinned Token Monitor v0.62.0 collection and aggregation, shown in the bundled upstream dashboard with eight metrics, a 365-day heatmap, trends, and model and tool rankings. USD costs are estimates derived from local usage, not provider bills. Keep the previous custom mode for unsupported sources via Settings → Workspace → Statistics mode. Modes do not combine their totals. Historical account ownership and unavailable values remain unassigned rather than guessed.
 
-Node.js is bundled with the app. Source builds download pinned dependencies; installed statistics do not require a developer Node installation or build cache. See the [integration notes](docs/token-monitor-integration-0913v1.md) for scope and update procedure.
+The app bundles its statistics runtime and verified dependencies; installed statistics do not require a separate Node.js installation. A first source build must prepare the verified dependency cache. See the [2.0 integration record](docs/ai-goodbro-2.0-0927v5.md) for current integration and validation boundaries. Hub reading and publishing local usage are separate opt-in choices, both off by default; publishing also requires scope confirmation.
+
+The default interface uses native frosted glass, supports Chinese and English, and respects the system's Reduce Transparency setting.
+
+Settings → Edge Dock provides an independent screen-edge rail, showing Today, up to three connected limit providers, and `tok/s` by default. Hover for a detail card, click to pin the rail, or drag its top to move it. Auto-hide and always-visible modes are available. Add Total and other items in Settings; usage cards show exact token counts and tool/model breakdowns. Rates use actual output and duration increments from newly collected performance records; between collections, the dock may show the last sample or a dash.
 
 ## Choose a CLI, preset and message fields
 
-The workspace can show installed Codex, Grok, Kimi Code, Claude Code, OpenCode, Gemini CLI, MiMo and ZCode environments. Link existing signed-in directories, name them and refresh their individual quota. See the [coverage table](docs/local-cli-accounts.md); native MiMo and ZCode subscription quota is not connected yet.
+The workspace can show installed Codex, Grok, Kimi Code, Claude Code, OpenCode, Gemini CLI, MiMo and ZCode environments. Link existing signed-in directories, name them and refresh their individual quota. See the [coverage table](docs/local-cli-accounts.md); ZCode supports the currently enabled, identity-matched personal Coding Plan. MiMo quota and unreadable WorkBuddy/TRAE desktop sessions remain explicit limitations; an installed tool alone does not prove a quota connection.
 
 Three presets start with the saved model, Sol High with Luna Max children, and Luna Max directly. Names, main model, reasoning effort and child configuration are editable. Launches validate the effective settings and keep configuration separate from observed execution.
 
@@ -112,7 +129,7 @@ AiGoodBro's Terminal button registers occupancy and waits for a private launch r
 
 ## Receive public reset announcements
 
-“Receive reset updates” is on by default. While AiGoodBro is running, it checks [Codex Resets](https://codex-resets.com/) every five minutes without consuming account quota, choosing an account or configuring Feishu. The first check establishes a baseline without sending old announcements. Later updates use macOS notifications, subject to system permission.
+“Receive reset updates” is on by default. While AiGoodBro is running, it checks [Codex Resets](https://codex-resets.com/) every five minutes without consuming account quota, choosing an account or configuring Feishu. The first check establishes a baseline without sending old announcements. Later updates use macOS notifications, subject to system permission. With Feishu forwarding enabled and a bot configured, AiGoodBro also sends newly published forecasts automatically, helping you plan tasks and check the website less often.
 
 “Reset updates” is the first section in the workspace's Automation center. Read the latest update there even without notification permission. Expand “Also send to Feishu (optional)” only if you want that delivery channel. Upgrades preserve an existing off setting.
 
@@ -176,15 +193,15 @@ Record AiGoodBro's settings, account order, participation and model preferences 
 
 Saved choices take precedence, including disabled features. New users still receive onboarding. Local notifications require macOS authorization; Feishu requires a configured robot. An enabled switch does not prove delivery. New accounts participate in dispatch by default; existing participation choices are preserved.
 
-## What changed
+## Version 2.0 and validation
 
-0910v1 enables local reset updates by default, with optional Feishu forwarding, and moves Desktop switching into the background with visible stage progress. It fixes Terminal executable and directory selection, adds private launch receipts and dispatch schedules, and preserves warm-up history. Sign-in reservations remain occupied until the login child process has actually stopped.
+Version 2.0 integrates the original Usage Dashboard, all nine menu-bar views, and Edge Dock for usage and quota, public Claude and OpenAI status views, and optional automatic Feishu delivery for new public reset forecasts. Agent and tool marks reuse upstream artwork consistently while the application keeps its AiGoodBro name and icon. It pins Token Monitor v0.62.0 source and runtime dependencies while retaining account, switching, CLI, and automation workflows. The interface supports Chinese and English, native frosted glass, and Reduce Transparency.
 
-V1.0 identifies the source for macOS 9.6.1 (50), not a GitHub binary Release. The [version notes](docs/release-notes-v9.6.1.md) distinguish configuration detection, native launch and model-call evidence. Some provider setup and real calls remain unverified; source integration does not complete those checks. Windows acceptance is tracked separately.
+The [0927v5 record](docs/ai-goodbro-2.0-0927v5.md) distinguishes local tests, installation, and runtime behavior still unverified. A full official reset cycle, multiple CLI sign-ins and real calls, Desktop switching, and notification delivery need separate evidence. No real notification or account switch was performed for this validation.
 
-The existing packaging flow adds `Companion Skill/multi-agent-management` and Chinese instructions to both Mac installers. Version 9.6.0 has not been packaged, so this must be confirmed by the release wrapper. Compare and back up an existing Skill, preserving personal configuration. Installing the Skill does not configure a Hub.
+The existing packaging flow plans to include `Companion Skill/multi-agent-management` and Chinese instructions in both Mac installers. There is no 2.0 Release installer; the release wrapper must verify its contents if one is made. Compare and back up an existing Skill, preserving personal configuration. Installing the Skill does not configure a Hub.
 
-[9.6.0 candidate notes](docs/release-notes-v9.6.0.md) · [Changelog](CHANGELOG.md) · [Dispatch Skill instructions (Chinese)](.agents/skills/multi-agent-management/使用说明.md) · [Detailed guide (Chinese)](docs/usage-guide.md)
+[2.0 integration record](docs/ai-goodbro-2.0-0927v5.md) · [V1.0 history](docs/release-notes-v9.6.1.md) · [Changelog](CHANGELOG.md) · [Dispatch Skill instructions (Chinese)](.agents/skills/multi-agent-management/使用说明.md) · [Detailed guide (Chinese)](docs/usage-guide.md)
 
 ## The rest of the workspace
 

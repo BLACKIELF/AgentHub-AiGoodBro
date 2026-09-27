@@ -1,22 +1,25 @@
 import CoreFoundation
+import CryptoKit
 import Foundation
 
 #if canImport(FoundationNetworking)
     import FoundationNetworking
 #endif
 
-/// Read-only quota adapter for ZCode's configured GLM/Z.AI Coding Plan provider.
-/// This is deliberately separate from ZCode's encrypted native-app subscription account.
-/// The credential key and quota schema are adapted from QuotaBar at 8834af6 (MIT); this is an
-/// original bounded implementation. zcode-acp at e515987 (Apache-2.0) was consulted for protocol
-/// corroboration only, and no Apache implementation code is copied here.
+/// Read-only quota adapter for the selected native ZCode coding-plan account.
+/// Selection and account-key binding follow the pinned Token Monitor ZCode discovery contract;
+/// this adapter never falls back to a config mirror that may belong to another account.
 struct ZCodeCLIQuotaReader {
     private enum Failure: Error {
         case unsupportedConfiguration
+        case inactiveProvider
         case credentialsMissing
+        case credentialsUnreadable
         case invalidConfiguration
         case invalidResponse
         case unauthorized
+        case forbidden
+        case accountChanged
         case rateLimited
         case unavailable
     }
@@ -24,15 +27,16 @@ struct ZCodeCLIQuotaReader {
     private struct Credential {
         let apiKey: String
         let host: String
+        let accountID: String
     }
 
     private static let maximumBytes = 1_048_576
-    private static let providerID = "builtin:zai-coding-plan"
     private static let quotaPath = "/api/monitor/usage/quota/limit"
     private static let officialHosts: Set<String> = ["open.bigmodel.cn", "api.z.ai"]
 
     private let transport: any LocalCLIQuotaTransport
     private let fileReader: LocalCLIQuotaReader.FileReader
+    private let decryptor: (String) -> String?
 
     init(
         transport: any LocalCLIQuotaTransport = LocalCLIURLSessionTransport(),
@@ -41,10 +45,12 @@ struct ZCodeCLIQuotaReader {
                 url,
                 maximumBytes: maximumBytes,
                 allowMissing: allowMissing)
-        }
+        },
+        decryptor: @escaping (String) -> String? = { ZCodeCLIQuotaReader.decryptStoredCredential($0) }
     ) {
         self.transport = transport
         self.fileReader = fileReader
+        self.decryptor = decryptor
     }
 
     func load(profile: LocalCLIProfile, now: Date = Date()) async -> LocalCLIQuotaResult {
@@ -75,11 +81,17 @@ struct ZCodeCLIQuotaReader {
             guard response.data.count <= Self.maximumBytes else { throw Failure.invalidResponse }
             switch response.statusCode {
             case 200: break
-            case 401, 403: throw Failure.unauthorized
+            case 401: throw Failure.unauthorized
+            case 403: throw Failure.forbidden
             case 429: throw Failure.rateLimited
             default: throw Failure.unavailable
             }
             let parsed = try Self.parse(response.data, now: now)
+            guard let current = try? self.credential(profile: profile),
+                current.accountID == credential.accountID,
+                current.apiKey == credential.apiKey,
+                current.host == credential.host
+            else { throw Failure.accountChanged }
             return result(
                 state: .available,
                 now: now,
@@ -91,8 +103,18 @@ struct ZCodeCLIQuotaReader {
                 return result(
                     state: .unsupported, now: now,
                     messageCode: "local_cli_zcode_coding_plan_unsupported")
-            case .credentialsMissing, .unauthorized:
+            case .inactiveProvider:
+                return result(state: .unsupported, now: now, messageCode: "local_cli_zcode_inactive_provider")
+            case .credentialsMissing:
                 return result(state: .needsLogin, now: now, messageCode: "local_cli_needs_login")
+            case .credentialsUnreadable:
+                return result(state: .unavailable, now: now, messageCode: "local_cli_zcode_account_unverified")
+            case .unauthorized:
+                return result(state: .unavailable, now: now, messageCode: "local_cli_remote_unauthorized")
+            case .forbidden:
+                return result(state: .unavailable, now: now, messageCode: "local_cli_remote_forbidden")
+            case .accountChanged:
+                return result(state: .unavailable, now: now, messageCode: "local_cli_zcode_account_changed")
             case .rateLimited:
                 return result(state: .rateLimited, now: now, messageCode: "local_cli_rate_limited")
             case .invalidConfiguration:
@@ -113,34 +135,103 @@ struct ZCodeCLIQuotaReader {
 
     private func credential(profile: LocalCLIProfile) throws -> Credential {
         let directory = URL(fileURLWithPath: profile.configDirectory, isDirectory: true).standardizedFileURL
-        guard
-            let data = try fileReader(
-                directory.appendingPathComponent("v2/config.json"), Self.maximumBytes, true)
+        let expected = LocalCLIKind.zcode.defaultConfigDirectory(home: FileManager.default.homeDirectoryForCurrentUser)
+            .standardizedFileURL
+        guard profile.isDefault, directory == expected else { throw Failure.unsupportedConfiguration }
+        let base = directory.appendingPathComponent("v2", isDirectory: true)
+        guard let settingsData = try fileReader(base.appendingPathComponent("setting.json"), Self.maximumBytes, true),
+            let configData = try fileReader(base.appendingPathComponent("config.json"), Self.maximumBytes, true)
         else { throw Failure.unsupportedConfiguration }
-        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-            let providers = root["provider"] as? [String: Any]
-        else { throw Failure.invalidConfiguration }
-
-        let enabled = providers.compactMap { key, raw -> String? in
-            guard let entry = raw as? [String: Any], Self.strictBool(entry["enabled"]) == true else { return nil }
-            return key
+        guard let settings = try? JSONSerialization.jsonObject(with: settingsData) as? [String: Any],
+            let config = try? JSONSerialization.jsonObject(with: configData) as? [String: Any],
+            let family = Self.nonempty(settings["providerFamilyDomain"]),
+            ["zai", "bigmodel"].contains(family),
+            let selections = settings["providerFamilyConnectionSelections"] as? [String: Any],
+            let selected = selections[family] as? [String: Any],
+            let kind = Self.nonempty(selected["kind"]),
+            kind == "individual-coding-plan"
+        else { throw Failure.unsupportedConfiguration }
+        let providerID = "builtin:\(family)-coding-plan"
+        guard let providers = config["provider"] as? [String: Any],
+            let entry = providers[providerID] as? [String: Any]
+        else { throw Failure.unsupportedConfiguration }
+        if let rawEnabled = entry["enabled"] {
+            guard let enabled = Self.strictBool(rawEnabled) else { throw Failure.invalidConfiguration }
+            if !enabled {
+                let reason = Self.nonempty(entry["systemDisabledReason"])
+                guard reason != nil, reason != "oauth_provider_inactive" else { throw Failure.inactiveProvider }
+            }
         }
-        guard enabled == [Self.providerID],
-            let entry = providers[Self.providerID] as? [String: Any],
-            let options = entry["options"] as? [String: Any]
-        else { throw Failure.unsupportedConfiguration }
-        guard let apiKey = Self.nonempty(options["apiKey"]) else { throw Failure.credentialsMissing }
-        guard apiKey.utf8.count <= 16 * 1_024,
-            !apiKey.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains)
-        else { throw Failure.invalidConfiguration }
+        guard let options = entry["options"] as? [String: Any] else { throw Failure.invalidConfiguration }
         guard let rawBaseURL = Self.nonempty(options["baseURL"]),
             let components = URLComponents(string: rawBaseURL),
             components.scheme?.lowercased() == "https",
             let host = components.host?.lowercased(), Self.officialHosts.contains(host),
+            host == (family == "zai" ? "api.z.ai" : "open.bigmodel.cn"),
             components.user == nil, components.password == nil, components.port == nil,
             components.query == nil, components.fragment == nil
         else { throw Failure.unsupportedConfiguration }
-        return Credential(apiKey: apiKey, host: host)
+
+        guard let storeData = try fileReader(base.appendingPathComponent("credentials.json"), Self.maximumBytes, true)
+        else { throw Failure.credentialsMissing }
+        guard let store = try? JSONSerialization.jsonObject(with: storeData) as? [String: Any],
+            let encryptedProfile = store["oauth:\(family):user_info"] as? String,
+            let profileJSON = decryptor(encryptedProfile),
+            let profileData = profileJSON.data(using: .utf8),
+            let account = try? JSONSerialization.jsonObject(with: profileData) as? [String: Any]
+        else { throw Failure.credentialsUnreadable }
+        let identity: String?
+        if let id = Self.nonempty(account["id"]),
+            account["username"] is String,
+            account["displayName"] is String
+        {
+            identity = id
+        } else {
+            identity = family == "zai" ? Self.nonempty(account["user_id"]) : nil
+        }
+        guard let identity, identity.utf8.count <= 512,
+            !identity.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains)
+        else { throw Failure.credentialsUnreadable }
+        let keyName = "account-provider:coding-plan:account:\(family)-\(kind):account:\(Self.encodeURIComponent(identity)):api-key"
+        guard let encryptedKey = store[keyName] as? String,
+            let apiKey = decryptor(encryptedKey).flatMap(Self.nonempty),
+            apiKey.utf8.count <= 16 * 1_024,
+            !apiKey.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains)
+        else { throw Failure.credentialsUnreadable }
+        return Credential(apiKey: apiKey, host: host, accountID: identity)
+    }
+
+    private static func encodeURIComponent(_ value: String) -> String {
+        let safe = Set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.!~*'()".utf8)
+        return value.utf8.map { safe.contains($0) ? String(UnicodeScalar($0)) : String(format: "%%%02X", $0) }.joined()
+    }
+
+    static func decryptStoredCredential(_ value: String, secretOverride: String? = nil) -> String? {
+        guard value.hasPrefix("enc:v1:"), value.utf8.count <= maximumBytes else { return nil }
+        let fields = value.dropFirst("enc:v1:".count).split(separator: ".", omittingEmptySubsequences: false)
+        guard fields.count == 3,
+            let nonceData = base64URL(fields[0]), nonceData.count == 12,
+            let tagData = base64URL(fields[1]), tagData.count == 16,
+            let ciphertext = base64URL(fields[2]), ciphertext.count <= maximumBytes
+        else { return nil }
+        let explicit = (secretOverride ?? ProcessInfo.processInfo.environment["ZCODE_CREDENTIAL_SECRET"])?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let secret =
+            (explicit?.isEmpty == false ? explicit : nil)
+            ?? "zcode-credential-fallback:darwin:\(FileManager.default.homeDirectoryForCurrentUser.path):\(NSUserName())"
+        let key = SymmetricKey(data: SHA256.hash(data: Data(secret.utf8)))
+        guard let nonce = try? AES.GCM.Nonce(data: nonceData),
+            let box = try? AES.GCM.SealedBox(nonce: nonce, ciphertext: ciphertext, tag: tagData),
+            let plaintext = try? AES.GCM.open(box, using: key),
+            let decoded = String(data: plaintext, encoding: .utf8), !decoded.isEmpty
+        else { return nil }
+        return decoded
+    }
+
+    private static func base64URL(_ value: Substring) -> Data? {
+        var encoded = value.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+        encoded += String(repeating: "=", count: (4 - encoded.count % 4) % 4)
+        return Data(base64Encoded: encoded)
     }
 
     private static func parse(_ data: Data, now: Date) throws -> (plan: String?, windows: [LocalCLIQuotaWindow]) {
@@ -220,7 +311,7 @@ struct ZCodeCLIQuotaReader {
             windows: windows,
             balance: nil,
             balanceCurrency: nil,
-            sourceLabel: "GLM/Z.AI Coding Plan (ZCode configuration)",
+            sourceLabel: "ZCode selected GLM/Z.AI Coding Plan",
             messageCode: messageCode)
     }
 

@@ -9,16 +9,17 @@ import Foundation
 /// Read-only adapters for locally selected Gemini CLI, MiMo Code, ZCode, WorkBuddy, and TRAE profiles.
 ///
 /// Gemini uses the native, already-fresh OAuth access token. This reader never refreshes or writes it.
-/// MiMo, ZCode native, WorkBuddy, and TRAE stop at the source-backed support boundary described in
-/// `docs/additional-cli-provider-sources.md` instead of treating API balances, desktop membership,
-/// or local tokens as CLI quota.
+/// MiMo, ZCode native, WorkBuddy, and TRAE stop at their selected-profile credential boundary
+/// instead of treating API balances, desktop membership, or local tokens as CLI quota.
 struct AdditionalCLIQuotaReader {
     private enum Failure: Error {
         case credentialsMissing
         case credentialsExpired
+        case credentialsRefreshRequired
         case invalidCredentials
         case invalidResponse
         case unauthorized
+        case forbidden
         case rateLimited
         case unavailable
     }
@@ -57,13 +58,18 @@ struct AdditionalCLIQuotaReader {
                     now: now,
                     source: "ZCode native account",
                     messageCode: "local_cli_zcode_native_quota_unsupported")
-            case .workBuddy, .trae:
-                // No confirmed official quota interface. Unknown, not needsLogin, and no I/O.
+            case .workBuddy:
                 return result(
                     state: .unsupported,
                     now: now,
-                    source: sourceLabel(for: profile.kind),
-                    messageCode: "local_cli_unsupported")
+                    source: sourceLabel(for: .workBuddy),
+                    messageCode: "local_cli_workbuddy_app_session_read_limited")
+            case .trae:
+                return result(
+                    state: .unsupported,
+                    now: now,
+                    source: sourceLabel(for: .trae),
+                    messageCode: "local_cli_trae_app_session_read_limited")
             case .claudeCode, .grok, .openCode, .kimi, .antigravity:
                 return result(
                     state: .unsupported,
@@ -103,13 +109,14 @@ struct AdditionalCLIQuotaReader {
         let credentials = try Self.object(
             credentialData(profile: profile, relativePath: "oauth_creds.json"),
             failure: .invalidCredentials)
+        let hasRefreshToken = Self.nonempty(credentials["refresh_token"]) != nil
         guard let accessToken = Self.nonempty(credentials["access_token"]) else {
-            throw Failure.credentialsMissing
+            throw hasRefreshToken ? Failure.credentialsRefreshRequired : Failure.credentialsMissing
         }
         guard let expiryMilliseconds = Self.strictDouble(credentials["expiry_date"]),
             expiryMilliseconds > now.addingTimeInterval(60).timeIntervalSince1970 * 1_000
         else {
-            throw Failure.credentialsExpired
+            throw hasRefreshToken ? Failure.credentialsRefreshRequired : Failure.credentialsExpired
         }
 
         let claims = Self.geminiClaims(fromIDToken: Self.nonempty(credentials["id_token"]))
@@ -197,7 +204,8 @@ struct AdditionalCLIQuotaReader {
         guard response.data.count <= Self.maximumBytes else { throw Failure.invalidResponse }
         switch response.statusCode {
         case 200: return response
-        case 401, 403: throw Failure.unauthorized
+        case 401: throw Failure.unauthorized
+        case 403: throw Failure.forbidden
         case 429: throw Failure.rateLimited
         default: throw Failure.unavailable
         }
@@ -237,12 +245,30 @@ struct AdditionalCLIQuotaReader {
 
     private func failureResult(_ failure: Failure, kind: LocalCLIKind, now: Date) -> LocalCLIQuotaResult {
         switch failure {
-        case .credentialsMissing, .credentialsExpired, .unauthorized:
+        case .credentialsMissing, .credentialsExpired:
             result(
                 state: .needsLogin,
                 now: now,
                 source: sourceLabel(for: kind),
                 messageCode: "local_cli_needs_login")
+        case .credentialsRefreshRequired:
+            result(
+                state: .unavailable,
+                now: now,
+                source: sourceLabel(for: kind),
+                messageCode: "local_cli_gemini_access_refresh_required")
+        case .unauthorized:
+            result(
+                state: .unavailable,
+                now: now,
+                source: sourceLabel(for: kind),
+                messageCode: "local_cli_remote_unauthorized")
+        case .forbidden:
+            result(
+                state: .unavailable,
+                now: now,
+                source: sourceLabel(for: kind),
+                messageCode: "local_cli_remote_forbidden")
         case .rateLimited:
             result(
                 state: .rateLimited,

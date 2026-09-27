@@ -40,16 +40,16 @@ struct WorkspaceGlassBackdrop: View {
     var body: some View {
         GeometryReader { geometry in
             ZStack {
-                (colorScheme == .dark
-                    ? Color(red: 0.082, green: 0.090, blue: 0.118)
-                    : Color(red: 0.914, green: 0.925, blue: 0.949))
-                if !reduceTransparency && !previewOpaque && contrast != .increased {
+                if reduceTransparency || previewOpaque || contrast == .increased {
+                    Color(nsColor: .windowBackgroundColor)
+                } else {
+                    Color.clear
                     RadialGradient(
-                        colors: [tokens.accent.primary.color.opacity(colorScheme == .dark ? 0.17 : 0.12), .clear],
+                        colors: [tokens.accent.primary.color.opacity(colorScheme == .dark ? 0.14 : 0.10), .clear],
                         center: .topLeading, startRadius: 0,
                         endRadius: max(geometry.size.width * 0.8, 1))
                     RadialGradient(
-                        colors: [tokens.accent.secondary.color.opacity(colorScheme == .dark ? 0.09 : 0.07), .clear],
+                        colors: [tokens.accent.secondary.color.opacity(colorScheme == .dark ? 0.075 : 0.055), .clear],
                         center: .bottomTrailing, startRadius: 0,
                         endRadius: max(geometry.size.width * 0.65, 1))
                 }
@@ -74,17 +74,20 @@ struct WorkspaceGlassSurface: View {
 
     var body: some View {
         shape
-            .fill(opaque ? AnyShapeStyle(Color(nsColor: .controlBackgroundColor)) : AnyShapeStyle(.ultraThinMaterial))
+            // The containing AppKit visual effect view (or system NSPopover) owns
+            // the single backdrop blur. A second SwiftUI material turns the
+            // glass into a flat grey sheet, especially in Dark Mode.
+            .fill(opaque ? Color(nsColor: .controlBackgroundColor) : .clear)
             .overlay {
                 if !opaque {
                     shape.fill(
                         colorScheme == .dark
-                            ? Color(red: 0.12, green: 0.14, blue: 0.18).opacity(0.48)
-                            : Color.white.opacity(0.24))
-                    shape.fill(tokens.surfaceTint.color.color.opacity(tokens.surfaceTint.maximumOpacity * 0.45))
+                            ? Color.white.opacity(0.018)
+                            : Color.white.opacity(0.065))
+                    shape.fill(tokens.surfaceTint.color.color.opacity(tokens.surfaceTint.maximumOpacity * 0.22))
                     shape.fill(
                         LinearGradient(
-                            colors: [Color.white.opacity(colorScheme == .dark ? 0.045 : 0.28), .clear],
+                            colors: [Color.white.opacity(colorScheme == .dark ? 0.055 : 0.14), .clear],
                             startPoint: .topLeading, endPoint: .bottomTrailing))
                 }
             }
@@ -92,10 +95,10 @@ struct WorkspaceGlassSurface: View {
                 shape.strokeBorder(
                     selected
                         ? tokens.selection.stroke.color
-                        : Color.primary.opacity(contrast == .increased ? 0.35 : colorScheme == .dark ? 0.12 : 0.10),
-                    lineWidth: selected ? 1 : 0.7)
+                        : Color.primary.opacity(contrast == .increased ? 0.35 : colorScheme == .dark ? 0.10 : 0.06),
+                    lineWidth: selected ? 1 : 0.6)
             }
-            .shadow(color: .black.opacity(opaque ? 0 : colorScheme == .dark ? 0.08 : 0.035), radius: 7, y: 3)
+            .shadow(color: .black.opacity(opaque ? 0 : colorScheme == .dark ? 0.05 : 0.025), radius: 6, y: 2)
             .allowsHitTesting(false)
     }
 }

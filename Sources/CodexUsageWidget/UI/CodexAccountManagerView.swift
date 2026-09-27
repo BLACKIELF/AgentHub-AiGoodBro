@@ -594,6 +594,18 @@ struct CodexAccountManagerView: View {
         .preferredColorScheme(settings.themeMode.preferredColorScheme)
         .onReceive(screenshotRequests) { saveLongScreenshot(for: $0) }
         .onReceive(guideRequests) { openPrimaryGuide() }
+        .onReceive(NotificationCenter.default.publisher(for: TokenMonitorWorkspaceNavigation.notification)) { notification in
+            switch notification.object as? String {
+            case "openAccounts": openAccountManagement()
+            case "openTasks":
+                store.setTaskBoardSelected(true)
+                showingHome = false
+            case "openWorkbench":
+                showingHome = true
+                professionalSection = .overview
+            default: break
+            }
+        }
         .environment(\.accountAvatarEdit, { avatarEditor = $0 })
         .environment(\.accountAvatarSettings, settings)
         .environment(\.accountCardDensity, cardDensity)
@@ -936,7 +948,11 @@ struct CodexAccountManagerView: View {
         HStack(spacing: 4) {
             ForEach(ProfessionalWorkspaceSection.allCases) { section in
                 Button {
-                    professionalSection = section
+                    if section == .usage, !store.isPreview, TokenMonitorDesktopController.shared.isBundled {
+                        TokenMonitorDesktopController.shared.open(.dashboard)
+                    } else {
+                        professionalSection = section
+                    }
                 } label: {
                     Label(section.title(language), systemImage: section.symbol)
                         .font(.system(size: 11.5, weight: professionalSection == section ? .semibold : .medium))
@@ -1141,21 +1157,25 @@ struct CodexAccountManagerView: View {
         }
     }
 
+    @ViewBuilder
     private var professionalUsageContent: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            quotaOverview
-            agentBreakdownPanel
-            QuotaProviderCatalogView(rows: quotaProviders.rows, compact: false, language: language)
-                .padding(14)
-                .sectionBackground()
-            UsageSurfaceTableView(
-                table: projectedUsageSurface,
+        if !store.isPreview, TokenMonitorDesktopController.shared.isBundled {
+            TokenMonitorDesktopEntryView(language: language, route: .dashboard)
+        } else {
+            TokenMonitorDashboardView(
+                snapshot: TokenMonitorDashboardSnapshot(state: store.engineState, hub: store.tokenMonitorHubSync),
                 language: language,
-                query: $usageQuery,
-                dimension: $usageDimension
+                onRefresh: {
+                    if store.tokenMonitorHubSync.isEnabled {
+                        Task { await store.tokenMonitorHubSync.refresh() }
+                    } else {
+                        store.refresh(queueIfBusy: true)
+                    }
+                },
+                isRefreshing: store.tokenMonitorHubSync.isEnabled
+                    ? store.tokenMonitorHubSync.connectionState == .connecting
+                    : store.engineState.phase == .loading
             )
-            .padding(14)
-            .sectionBackground()
         }
     }
 
@@ -1257,6 +1277,15 @@ struct CodexAccountManagerView: View {
                     language: language, isExpanded: $homeUsageExpanded
                 )
                 .font(.system(size: 12, weight: .semibold))
+                if !store.isPreview, TokenMonitorDesktopController.shared.isBundled {
+                    Button {
+                        TokenMonitorDesktopController.shared.open(.dashboard)
+                    } label: {
+                        Label(language.text("用量看板", "Dashboard"), systemImage: "arrow.up.right.square").font(.caption)
+                    }
+                    .buttonStyle(.borderless)
+                    .accessibilityIdentifier("next.usage.openDashboard")
+                }
                 if store.statisticsEngineChoice == .upstream {
                     Button {
                         store.refresh()
@@ -2119,11 +2148,7 @@ struct CodexAccountManagerView: View {
 
     private func refreshMissingLocalCLIQuotas() {
         guard !store.isPreview else { return }
-        for kind in LocalCLIKind.allCases where localCLIAccounts.installed[kind] != nil {
-            for profile in localCLIAccounts.profiles(for: kind) where localCLIAccounts.quotas[profile.id] == nil {
-                localCLIAccounts.refresh(profile)
-            }
-        }
+        localCLIAccounts.refreshIfNeeded()
     }
 
     /// Share the exact content tree with the screen, without its viewport or polling hooks.
@@ -3410,6 +3435,17 @@ struct AccountAutomationCenterView: View {
 
                 Divider()
 
+                Toggle(
+                    language.text("剩余 1% 自动暂停桌面任务并换号", "Pause Desktop tasks and switch at 1%"),
+                    isOn: Binding(
+                        get: { store.pauseDesktopTasksAtOnePercent },
+                        set: { store.setPauseDesktopTasksAtOnePercent($0) })
+                )
+                .toggleStyle(.switch)
+                .disabled(store.pausedAutomationFeatures.contains(.lowQuota))
+
+                CodexQuotaResumeControls(store: store)
+
                 HStack(spacing: 10) {
                     automationMetric(title: language.text("触发", "Trigger"), value: "5h ≤\(store.lowQuotaAlertThresholds.fiveHour)%", icon: "exclamationmark.triangle.fill")
                     automationMetric(title: language.text("备用", "Candidate"), value: "≥ 30%", icon: "battery.75percent")
@@ -3433,10 +3469,11 @@ struct AccountAutomationCenterView: View {
                             set: { store.setLowQuotaAlertThresholds(fiveHour: store.lowQuotaAlertThresholds.fiveHour, sevenDay: $0) }
                         )
                     ) {
-                        ForEach(LowQuotaAlertThresholds.choices, id: \.self) { Text("<\($0)%").tag($0) }
+                        ForEach(LowQuotaAlertThresholds.choices, id: \.self) { Text("\($0 == 1 ? "≤" : "<")\($0)%").tag($0) }
                     }
                 }
                 .pickerStyle(.menu)
+                .disabled(store.pauseDesktopTasksAtOnePercent)
                 Text(language.text("只调整提醒时间；候选额度、状态核验及提醒间隔保持不变。", "Changes when alerts trigger. Candidate limits, status checks and alert intervals stay unchanged."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -3444,11 +3481,20 @@ struct AccountAutomationCenterView: View {
                 VStack(alignment: .leading, spacing: 8) {
                     safetyRule(
                         language.text(
-                            "官方 5 小时剩余 ≤\(store.lowQuotaAlertThresholds.fiveHour)%，或 7 天剩余严格低于 \(store.lowQuotaAlertThresholds.sevenDay)%",
-                            "5h remaining at \(store.lowQuotaAlertThresholds.fiveHour)% or less, or weekly remaining below \(store.lowQuotaAlertThresholds.sevenDay)%."))
-                    safetyRule(language.text("实时任务状态已连接、数据新鲜，且没有运行或等待输入的任务", "Requires fresh task status with no running tasks or pending input."))
+                            "官方 5 小时剩余 ≤\(store.lowQuotaAlertThresholds.fiveHour)%，或 7 天剩余 \(store.lowQuotaAlertThresholds.sevenDay == 1 ? "≤" : "<")\(store.lowQuotaAlertThresholds.sevenDay)%",
+                            "5h remaining ≤\(store.lowQuotaAlertThresholds.fiveHour)%, or weekly remaining \(store.lowQuotaAlertThresholds.sevenDay == 1 ? "≤" : "<")\(store.lowQuotaAlertThresholds.sevenDay)%."
+                        ))
+                    safetyRule(
+                        store.pauseDesktopTasksAtOnePercent
+                            ? language.text("通过官方接口暂停运行中的任务，重新读取确认已停止后才切号", "Interrupts active turns through the official API, then rereads task state before switching.")
+                            : language.text("实时任务状态已连接、数据新鲜，且没有运行或等待输入的任务", "Requires fresh task status with no running tasks or pending input."))
                     safetyRule(language.text("重新核对候选额度：两个窗口均可用，触发窗口至少剩余 30%", "Rechecks candidates: both windows available and at least 30% in the affected window."))
-                    safetyRule(language.text("空闲两分钟后切换；有任务或无法确认状态时保持当前账号", "Switches after two idle minutes. Active or unverified tasks keep the current account."))
+                    safetyRule(
+                        store.pauseDesktopTasksAtOnePercent
+                            ? language.text(
+                                "换号与历史核验成功后可在原任务续做；暂停失败、出现新任务或身份无法核实时保留暂停状态",
+                                "Continue in the original tasks after switch and history checks succeed. Failed pauses, new tasks or unverified identity keep work paused.")
+                            : language.text("空闲两分钟后切换；有任务或无法确认状态时保持当前账号", "Switches after two idle minutes. Active or unverified tasks keep the current account."))
                 }
 
                 Label(
@@ -3796,8 +3842,8 @@ struct CodexAccountMenuView: View {
         }
     }
 
-    static let preferredSize = CGSize(width: 380, height: 550)
-    static let compactSize = CGSize(width: 380, height: 64)
+    static let preferredSize = CGSize(width: 420, height: 640)
+    static let compactSize = CGSize(width: 420, height: 64)
 
     @ObservedObject var store: UsageStore
     @ObservedObject var settings: AppSettings
@@ -3808,6 +3854,7 @@ struct CodexAccountMenuView: View {
     let quit: () -> Void
     let initialSettingsPage: SettingsPage
     let isFloatingPanel: Bool
+    private let preferredContentSize: CGSize
     let onOpenFloatingPanel: (Screen) -> Void
     let onClose: () -> Void
     let onTogglePinned: () -> Void
@@ -3842,7 +3889,8 @@ struct CodexAccountMenuView: View {
         quit: @escaping () -> Void,
         onOpenFloatingPanel: @escaping (Screen) -> Void = { _ in },
         onClose: @escaping () -> Void = {},
-        onTogglePinned: @escaping () -> Void = {}
+        onTogglePinned: @escaping () -> Void = {},
+        preferredContentSize: CGSize = Self.preferredSize
     ) {
         self.store = store
         self.settings = settings
@@ -3853,6 +3901,7 @@ struct CodexAccountMenuView: View {
         self.quit = quit
         self.initialSettingsPage = initialSettingsPage
         self.isFloatingPanel = isFloatingPanel
+        self.preferredContentSize = preferredContentSize
         self.onOpenFloatingPanel = onOpenFloatingPanel
         self.onClose = onClose
         self.onTogglePinned = onTogglePinned
@@ -3895,6 +3944,24 @@ struct CodexAccountMenuView: View {
         Group {
             if isFloatingPanel && panelModel.isCollapsed {
                 compactStatusStrip
+            } else if screen == .home {
+                TokenMonitorPopoverView(
+                    snapshot: TokenMonitorDashboardSnapshot(state: store.engineState, hub: store.tokenMonitorHubSync),
+                    serviceStatus: TokenMonitorServiceStatusPresentation(store: store.serviceStatus),
+                    hub: TokenMonitorHubPresentation(store: store.tokenMonitorHubSync),
+                    language: language,
+                    onRefresh: { store.refresh(queueIfBusy: true) },
+                    onRefreshStatus: { Task { await store.serviceStatus.refresh(force: true) } },
+                    onRefreshHub: { Task { await store.tokenMonitorHubSync.refresh() } },
+                    onOpenAccounts: { changeScreen(.accounts) },
+                    onOpenRunningTasks: { changeScreen(.runningTasks) },
+                    onOpenSettings: { changeScreen(.settings) },
+                    onOpenWorkbench: openFullWindow,
+                    onTogglePinned: isFloatingPanel ? onTogglePinned : { onOpenFloatingPanel(.home) },
+                    onCollapse: isFloatingPanel ? { panelModel.isCollapsed = true } : nil,
+                    onClose: isFloatingPanel ? onClose : nil,
+                    isRefreshing: store.engineState.phase == .loading
+                )
             } else {
                 ZStack {
                     menuBackdrop
@@ -3933,8 +4000,8 @@ struct CodexAccountMenuView: View {
             }
         }
         .frame(
-            width: Self.preferredSize.width,
-            height: isFloatingPanel && panelModel.isCollapsed ? Self.compactSize.height : Self.preferredSize.height
+            width: preferredContentSize.width,
+            height: isFloatingPanel && panelModel.isCollapsed ? Self.compactSize.height : preferredContentSize.height
         )
         .overlay(alignment: .bottom) {
             if !panelModel.isCollapsed && store.isAwaitingCodexHistoryConfirmation {

@@ -3,7 +3,7 @@ import Darwin
 
 @main
 struct CodexAccountManagerNextMain {
-    @MainActor static func main() {
+    @MainActor static func main() async {
         if CommandLine.arguments.contains("--self-test-global-shortcut") {
             exit(GlobalShortcutSelfTest.run() ? 0 : 1)
         }
@@ -53,6 +53,14 @@ struct CodexAccountManagerNextMain {
         {
             _ = NSApplication.shared
             exit(WorkspacePreviewRenderer.renderWorkbench(to: URL(fileURLWithPath: CommandLine.arguments[previewIndex + 1], isDirectory: true)) ? 0 : 1)
+        }
+
+        if let previewIndex = CommandLine.arguments.firstIndex(of: "--render-token-monitor-native-previews"),
+            CommandLine.arguments.indices.contains(previewIndex + 1)
+        {
+            _ = NSApplication.shared
+            let outputURL = URL(fileURLWithPath: CommandLine.arguments[previewIndex + 1], isDirectory: true)
+            exit(TokenMonitorNativePreviewRenderer.render(to: outputURL) ? 0 : 1)
         }
 
         if let previewIndex = CommandLine.arguments.firstIndex(of: "--render-workspace-previews"),
@@ -190,6 +198,11 @@ struct CodexAccountManagerNextMain {
         if CommandLine.arguments.contains("--self-test-token-monitor-ui") {
             _ = NSApplication.shared
             exit(TokenMonitorUISelfTest.run() ? 0 : 1)
+        }
+
+        if CommandLine.arguments.contains("--self-test-token-monitor-integration") {
+            let passed = await TokenMonitorIntegrationSelfTest.run()
+            exit(passed ? 0 : 1)
         }
 
         if CommandLine.arguments == [CommandLine.arguments[0], "--send-authorized-public-reset-update"] {

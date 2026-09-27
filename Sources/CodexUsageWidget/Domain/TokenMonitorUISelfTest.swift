@@ -11,6 +11,9 @@ enum TokenMonitorUISelfTest {
         }
 
         reproduceFloatingBubble(expect: expect)
+        expect(TokenMonitorEdgeDockNativeGeometrySelfTest.run(), "native Edge Dock keeps the rail and detail card inside right, left, dragged and short multi-display work areas")
+        expect(TokenMonitorEdgeDockSelfTest.run(), "edge dock composition, exact data and sampled rate")
+        expect(TokenMonitorHostSelfTest.run(), "embedded desktop IPC and account identity boundaries")
         reproduceNavigation(expect: expect)
         reproduceAvatars(expect: expect)
         reproduceIcons(expect: expect)
@@ -22,6 +25,10 @@ enum TokenMonitorUISelfTest {
         reproduceResetAnnouncementPresentation(expect: expect)
         reproduceResetCountdown(expect: expect)
         reproduceLocalCLIQuotaPresentation(expect: expect)
+        expect(
+            TokenMonitorNativePreviewRenderer.fixtureSelfTest(),
+            "native Token Monitor preview fixtures preserve normal, empty and Int64-max snapshots without account data"
+        )
         expect(PublicResetForecastSelfTest.persistenceSelfTest(), "forecast withdrawal commits atomically and survives restart; failed writes preserve explicitly cached state")
         let quotaNow = Date()
         var quotaProfile = CodexProfile(
@@ -680,6 +687,36 @@ enum TokenMonitorUISelfTest {
         expect(
             PublicResetAnnouncementPresentation.recentVerifiableAnnouncement([old, future], now: now) == nil,
             "old and future announcements stay out of the homepage current-message slot"
+        )
+
+        let iso = ISO8601DateFormatter()
+        let todaysForecastPost = iso.date(from: "2026-09-26T00:07:13Z")!
+        let beijingNoon = iso.date(from: "2026-09-26T04:00:00Z")!
+        let yesterdayInBeijing = iso.date(from: "2026-09-25T15:00:00Z")!
+        let tomorrowInBeijing = iso.date(from: "2026-09-26T16:00:00Z")!
+        let laterTodayInBeijing = iso.date(from: "2026-09-26T05:00:00Z")!
+        expect(
+            PublicResetAnnouncementPresentation.wasAnnouncedToday(todaysForecastPost, now: beijingNoon),
+            "the site's forecast post is marked new from announcedAt in Beijing time"
+        )
+        expect(
+            !PublicResetAnnouncementPresentation.wasAnnouncedToday(yesterdayInBeijing, now: beijingNoon),
+            "yesterday's Beijing announcement is not highlighted today"
+        )
+        expect(
+            !PublicResetAnnouncementPresentation.wasAnnouncedToday(tomorrowInBeijing, now: beijingNoon),
+            "a future Beijing date is not highlighted as today's message"
+        )
+        expect(
+            !PublicResetAnnouncementPresentation.wasAnnouncedToday(laterTodayInBeijing, now: beijingNoon),
+            "a future post within today's Beijing date is not highlighted early"
+        )
+        let minuteBeforeBeijingMidnight = iso.date(from: "2026-09-26T15:59:59Z")!
+        let beijingMidnight = iso.date(from: "2026-09-26T16:00:00Z")!
+        expect(
+            PublicResetAnnouncementPresentation.wasAnnouncedToday(minuteBeforeBeijingMidnight, now: minuteBeforeBeijingMidnight)
+                && !PublicResetAnnouncementPresentation.wasAnnouncedToday(minuteBeforeBeijingMidnight, now: beijingMidnight),
+            "a message highlight rolls off at Beijing midnight without relying on the local timezone"
         )
     }
 

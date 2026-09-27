@@ -271,6 +271,10 @@ final class AppSettings: ObservableObject {
         didSet { defaults.set(try? JSONEncoder().encode(floatingBubble), forKey: TokenMonitorFloatingBubblePreferences.storageKey) }
     }
 
+    @Published var edgeDock: TokenMonitorEdgeDockPreferences {
+        didSet { defaults.set(try? JSONEncoder().encode(edgeDock.normalized()), forKey: TokenMonitorEdgeDockPreferences.storageKey) }
+    }
+
     @Published var onboarding: WorkspaceOnboardingState {
         didSet { defaults.set(onboarding.encoded(), forKey: WorkspaceOnboardingState.storageKey) }
     }
@@ -420,6 +424,7 @@ final class AppSettings: ObservableObject {
         }
         accountAvatars = AccountAvatarTable.load(defaults.data(forKey: AccountAvatarTable.storageKey))
         floatingBubble = TokenMonitorFloatingBubblePreferences.load(defaults.data(forKey: TokenMonitorFloatingBubblePreferences.storageKey))
+        edgeDock = TokenMonitorEdgeDockPreferences.load(defaults.data(forKey: TokenMonitorEdgeDockPreferences.storageKey))
         var onboardingBackup: Data?
         onboarding = WorkspaceOnboardingState.load(defaults.data(forKey: WorkspaceOnboardingState.storageKey), backupRaw: &onboardingBackup)
         if let onboardingBackup {

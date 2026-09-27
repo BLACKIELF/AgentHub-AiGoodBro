@@ -115,6 +115,8 @@ struct CodexOfficialProfileSnapshot: Codable, Equatable {
 struct CodexExecutionPreference: Codable, Equatable {
     enum Model: String, Codable, CaseIterable {
         case astra = "gpt-6-astra"
+        case gpt6Sol = "gpt-6-sol"
+        case gpt6Luna = "gpt-6-luna"
         case sol = "gpt-5.6-sol"
         case terra = "gpt-5.6-terra"
         case luna = "gpt-5.6-luna"
@@ -124,6 +126,8 @@ struct CodexExecutionPreference: Codable, Equatable {
         var displayName: String {
             switch self {
             case .astra: return "GPT-6 Astra"
+            case .gpt6Sol: return "GPT-6 Sol"
+            case .gpt6Luna: return "GPT-6 Luna"
             case .sol: return "5.6 Sol"
             case .terra: return "5.6 Terra"
             case .luna: return "5.6 Luna"
@@ -134,9 +138,9 @@ struct CodexExecutionPreference: Codable, Equatable {
 
         var supportedReasoningEfforts: [ReasoningEffort] {
             switch self {
-            case .astra, .sol, .terra:
+            case .astra, .gpt6Sol, .sol, .terra:
                 return ReasoningEffort.allCases
-            case .luna:
+            case .gpt6Luna, .luna:
                 return [.low, .medium, .high, .xhigh, .max]
             case .gpt55, .gpt52:
                 return [.low, .medium, .high, .xhigh]
@@ -243,30 +247,30 @@ struct CodexExecutionPreference: Codable, Equatable {
             return CustomPreset(
                 name: nil,
                 useSavedModel: true,
-                model: .astra,
+                model: .gpt6Sol,
                 reasoningEffort: .low,
                 subagentsEnabled: false,
-                subagentModel: .luna,
+                subagentModel: .gpt6Luna,
                 subagentReasoningEffort: .max
             )
         case .solLuna:
             return CustomPreset(
                 name: nil,
                 useSavedModel: false,
-                model: .sol,
+                model: .gpt6Sol,
                 reasoningEffort: .high,
                 subagentsEnabled: true,
-                subagentModel: .luna,
+                subagentModel: .gpt6Luna,
                 subagentReasoningEffort: .max
             )
         case .lunaDirect:
             return CustomPreset(
                 name: nil,
                 useSavedModel: false,
-                model: .luna,
+                model: .gpt6Luna,
                 reasoningEffort: .max,
                 subagentsEnabled: false,
-                subagentModel: .luna,
+                subagentModel: .gpt6Luna,
                 subagentReasoningEffort: .max
             )
         default:
@@ -2641,6 +2645,21 @@ enum CodexProfileStoreSelfTest {
             func expectsInvalid(_ preference: CodexExecutionPreference) -> Bool {
                 (try? preference.validated()) == nil
             }
+            let unsupportedLunaEffort = CodexExecutionPreference(
+                model: .gpt6Luna,
+                reasoningEffort: .ultra,
+                serviceTier: .standard
+            )
+            let supportedSolEffort = CodexExecutionPreference(
+                model: .gpt6Sol,
+                reasoningEffort: .ultra,
+                serviceTier: .standard
+            )
+            guard expectsInvalid(unsupportedLunaEffort), (try? supportedSolEffort.validated()) != nil
+            else {
+                print("Codex profile store self-test failed: GPT-6 reasoning effort bounds")
+                return false
+            }
             var invalidCustom = singleOverride
             invalidCustom.customPresets[CodexExecutionPreference.SubagentMode.solLuna.rawValue]?.name = String(repeating: "a", count: 65)
             guard expectsInvalid(invalidCustom) else {
@@ -2708,6 +2727,65 @@ enum CodexProfileStoreSelfTest {
                 print("Codex profile store self-test failed: unknown subagent mode accepted")
                 return false
             } catch CodexExecutionPreferenceError.unsupportedExecutionMode {}
+            let legacyCustomPreferenceJSON = Data(
+                #"""
+                {
+                    "model": "gpt-5.6-terra",
+                    "reasoningEffort": "high",
+                    "serviceTier": "default",
+                    "subagentMode": "sol_luna",
+                    "customPresets": {
+                        "sol_luna": {
+                            "name": "Saved legacy",
+                            "useSavedModel": false,
+                            "model": "gpt-5.6-sol",
+                            "reasoningEffort": "high",
+                            "subagentsEnabled": true,
+                            "subagentModel": "gpt-5.6-luna",
+                            "subagentReasoningEffort": "max"
+                        }
+                    }
+                }
+                """#.utf8
+            )
+            let legacyCustomPreference = try JSONDecoder().decode(
+                CodexExecutionPreference.self,
+                from: legacyCustomPreferenceJSON
+            )
+            guard legacyCustomPreference.model == .terra,
+                legacyCustomPreference.customPresets[CodexExecutionPreference.SubagentMode.solLuna.rawValue]?.model == .sol,
+                legacyCustomPreference.customPresets[CodexExecutionPreference.SubagentMode.solLuna.rawValue]?.subagentModel == .luna,
+                legacyCustomPreference.effectiveStrategy
+                    == .init(
+                        mainModel: .sol,
+                        mainReasoningEffort: .high,
+                        subagentModel: .luna,
+                        subagentReasoningEffort: .max,
+                        maximumConcurrentSubagents: 1
+                    ),
+                try JSONDecoder().decode(
+                    CodexExecutionPreference.self,
+                    from: JSONEncoder().encode(legacyCustomPreference)
+                ) == legacyCustomPreference
+            else {
+                print("Codex profile store self-test failed: saved 5.6 models must remain unchanged")
+                return false
+            }
+            guard Array(CodexExecutionPreference.Model.allCases.prefix(3)) == [.astra, .gpt6Sol, .gpt6Luna],
+                CodexExecutionPreference.Model.gpt6Sol.displayName == "GPT-6 Sol",
+                CodexExecutionPreference.Model.gpt6Luna.displayName == "GPT-6 Luna",
+                CodexExecutionPreference.Model.gpt6Sol.supportedReasoningEfforts == CodexExecutionPreference.ReasoningEffort.allCases,
+                CodexExecutionPreference.Model.gpt6Luna.supportedReasoningEfforts
+                    == [.low, .medium, .high, .xhigh, .max],
+                CodexExecutionPreference.defaultPreset(for: .standard)?.model == .gpt6Sol,
+                CodexExecutionPreference.defaultPreset(for: .standard)?.subagentModel == .gpt6Luna,
+                CodexExecutionPreference.defaultPreset(for: .solLuna)?.model == .gpt6Sol,
+                CodexExecutionPreference.defaultPreset(for: .solLuna)?.subagentModel == .gpt6Luna,
+                CodexExecutionPreference.defaultPreset(for: .lunaDirect)?.model == .gpt6Luna
+            else {
+                print("Codex profile store self-test failed: GPT-6 model catalog or preset defaults")
+                return false
+            }
             for mode in CodexExecutionPreference.SubagentMode.allCases {
                 for effort in CodexExecutionPreference.ReasoningEffort.allCases {
                     for tier in CodexExecutionPreference.ServiceTier.allCases {
@@ -2785,9 +2863,9 @@ enum CodexProfileStoreSelfTest {
             guard
                 fastPreference.effectiveStrategy
                     == .init(
-                        mainModel: .sol,
+                        mainModel: .gpt6Sol,
                         mainReasoningEffort: .high,
-                        subagentModel: .luna,
+                        subagentModel: .gpt6Luna,
                         subagentReasoningEffort: .max,
                         maximumConcurrentSubagents: 1
                     )
@@ -2833,7 +2911,7 @@ enum CodexProfileStoreSelfTest {
             guard
                 standardPreference.effectiveStrategy
                     == .init(
-                        mainModel: .luna,
+                        mainModel: .gpt6Luna,
                         mainReasoningEffort: .max,
                         subagentModel: nil,
                         subagentReasoningEffort: nil,
@@ -2897,9 +2975,9 @@ enum CodexProfileStoreSelfTest {
                 standardCommand.contains("'agents.default_subagent_reasoning_effort=\"low\"'"),
                 standardCommand.contains("'service_tier=\"default\"'"), standardCommand.contains("--disable fast_mode"),
                 standardCommand.contains("'agents.enabled=false'"),
-                fastCommand.contains("--model 'gpt-5.6-sol'"),
+                fastCommand.contains("--model 'gpt-6-sol'"),
                 fastCommand.contains("'model_reasoning_effort=\"high\"'"),
-                fastCommand.contains("'agents.default_subagent_model=\"gpt-5.6-luna\"'"),
+                fastCommand.contains("'agents.default_subagent_model=\"gpt-6-luna\"'"),
                 fastCommand.contains("'agents.default_subagent_reasoning_effort=\"max\"'"),
                 fastCommand.contains("'service_tier=\"fast\"'"), fastCommand.contains("--enable fast_mode")
             else {

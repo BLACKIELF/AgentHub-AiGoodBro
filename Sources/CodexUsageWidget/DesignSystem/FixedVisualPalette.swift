@@ -48,14 +48,16 @@ enum FixedVisualPalette {
         if reduceTransparency {
             return Color(nsColor: .controlBackgroundColor)
         }
-        return colorScheme == .dark ? Color.white.opacity(0.035) : Color.black.opacity(0.024)
+        // Keep section groups translucent so the host window's single glass layer
+        // remains visible through them. The accessibility fallback stays opaque.
+        return colorScheme == .dark ? Color.white.opacity(0.020) : Color.black.opacity(0.008)
     }
 
     static func sectionStroke(_ colorScheme: ColorScheme, increasedContrast: Bool = false) -> Color {
         if colorScheme == .dark {
-            return Color.white.opacity(increasedContrast ? 0.240 : 0.120)
+            return Color.white.opacity(increasedContrast ? 0.240 : 0.085)
         }
-        return Color.black.opacity(increasedContrast ? 0.180 : 0.080)
+        return Color.black.opacity(increasedContrast ? 0.180 : 0.055)
     }
 
     static func cardFill(
@@ -67,9 +69,9 @@ enum FixedVisualPalette {
             return Color(nsColor: .controlBackgroundColor)
         }
         if colorScheme == .dark {
-            return Color.white.opacity(elevated ? 0.065 : 0.035)
+            return Color.white.opacity(elevated ? 0.045 : 0.025)
         }
-        return Color.white.opacity(elevated ? 1.0 : 0.86)
+        return Color.white.opacity(elevated ? 0.26 : 0.16)
     }
 
     static func leadershipPlaqueFill(_ colorScheme: ColorScheme) -> Color {
@@ -82,10 +84,10 @@ enum FixedVisualPalette {
         increasedContrast: Bool = false
     ) -> Color {
         if colorScheme == .dark {
-            let base = elevated ? 0.140 : 0.100
+            let base = elevated ? 0.115 : 0.075
             return Color.white.opacity(increasedContrast ? base + 0.100 : base)
         }
-        let base = elevated ? 0.100 : 0.070
+        let base = elevated ? 0.080 : 0.050
         return Color.black.opacity(increasedContrast ? base + 0.100 : base)
     }
 

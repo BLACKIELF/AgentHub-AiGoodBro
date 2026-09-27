@@ -3,6 +3,7 @@ import SwiftUI
 
 /// UI reorganization must keep the existing preference keys and round trips.
 enum SettingsPresentationSelfTest {
+    @MainActor
     static func run() -> Bool {
         let application = NSApplication.shared
         let previousAppearance = application.appearance
@@ -15,7 +16,9 @@ enum SettingsPresentationSelfTest {
             if !condition { failures.append(message) }
         }
 
-        expect(SettingsPage.allCases == [.appearance, .menuBar, .floatingBubble, .automation, .workspace, .about], "all six settings categories remain reachable")
+        expect(
+            SettingsPage.allCases == [.appearance, .menuBar, .floatingBubble, .edgeDock, .automation, .workspace, .tokenMonitor, .about],
+            "all eight settings categories remain reachable")
         expect(AHBrandIdentity.displayName == "AiGoodBro", "settings chrome uses the AiGoodBro display name")
         expect(AHBrandIdentity.shortName == "AH", "settings chrome uses the AH short name")
         expect(AHBrandIdentity.workspaceName == "AgentHub", "the in-app workspace name remains AgentHub")

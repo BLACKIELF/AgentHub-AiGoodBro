@@ -13,6 +13,7 @@ DOMAIN = ROOT / "Sources/CodexUsageWidget/Domain/LocalCLIAccount.swift"
 READER = ROOT / "Sources/CodexUsageWidget/Services/LocalCLIQuotaReader.swift"
 BOUNDED_READER = ROOT / "Sources/CodexUsageWidget/Services/DispatchParticipationSync.swift"
 FIXTURE = ROOT / "tests/LocalCLIQuotaFixture.swift"
+KIMI_FIXTURE = ROOT / "tests/KimiCLIQuotaFixture.swift"
 MODELS = ROOT / "Sources/CodexUsageWidget/Domain/TokenMonitorEngineModels.swift"
 ENGINE = ROOT / "Sources/CodexUsageWidget/Services/TokenMonitorEngine.swift"
 UPSTREAM_READER = ROOT / "Sources/CodexUsageWidget/Services/TokenMonitorLocalCLIQuotaReader.swift"
@@ -25,47 +26,51 @@ class LocalCLIQuotaTests(unittest.TestCase):
         ).strip()
         self.assertTrue(Path(sdk).is_dir(), f"synthetic-test SDK missing: {sdk}")
         with tempfile.TemporaryDirectory(prefix="local-cli-quota-test-") as temporary:
-            output = Path(temporary) / "fixture"
             cache = Path(temporary) / "module-cache"
             cache.mkdir()
-            guard = subprocess.run(
-                ["python3", str(ROOT / "scripts/check-build-target-idle.py"), str(output)],
-                cwd=ROOT, text=True, capture_output=True, timeout=30, check=False,
-            )
-            self.assertEqual(guard.returncode, 0, guard.stdout + guard.stderr)
-            compile_result = subprocess.run(
-                [
-                    "xcrun", "swiftc",
-                    "-sdk", sdk,
-                    "-target", f"{platform.machine()}-apple-macos13.0",
-                    "-module-cache-path", str(cache),
-                    str(DOMAIN),
-                    str(MODELS),
-                    str(ENGINE),
-                    str(UPSTREAM_READER),
-                    str(BOUNDED_READER),
-                    str(READER),
-                    str(FIXTURE),
-                    "-o", str(output),
-                ],
-                cwd=ROOT,
-                text=True,
-                capture_output=True,
-                timeout=90,
-                check=False,
-            )
-            self.assertEqual(compile_result.returncode, 0, compile_result.stderr)
-            run_result = subprocess.run(
-                [str(output)],
-                cwd=ROOT,
-                text=True,
-                capture_output=True,
-                timeout=30,
-                check=False,
-                env={"PATH": os.environ.get("PATH", "/usr/bin:/bin")},
-            )
-            self.assertEqual(run_result.returncode, 0, run_result.stderr)
-            self.assertEqual(run_result.stdout.strip(), "PASS local-cli-quota fixture")
+            for fixture, expected in (
+                (FIXTURE, "PASS local-cli-quota fixture"),
+                (KIMI_FIXTURE, "PASS kimi-cli-quota fixture"),
+            ):
+                output = Path(temporary) / fixture.stem
+                guard = subprocess.run(
+                    ["python3", str(ROOT / "scripts/check-build-target-idle.py"), str(output)],
+                    cwd=ROOT, text=True, capture_output=True, timeout=30, check=False,
+                )
+                self.assertEqual(guard.returncode, 0, guard.stdout + guard.stderr)
+                compile_result = subprocess.run(
+                    [
+                        "xcrun", "swiftc",
+                        "-sdk", sdk,
+                        "-target", f"{platform.machine()}-apple-macos13.0",
+                        "-module-cache-path", str(cache),
+                        str(DOMAIN),
+                        str(MODELS),
+                        str(ENGINE),
+                        str(UPSTREAM_READER),
+                        str(BOUNDED_READER),
+                        str(READER),
+                        str(fixture),
+                        "-o", str(output),
+                    ],
+                    cwd=ROOT,
+                    text=True,
+                    capture_output=True,
+                    timeout=90,
+                    check=False,
+                )
+                self.assertEqual(compile_result.returncode, 0, compile_result.stderr)
+                run_result = subprocess.run(
+                    [str(output)],
+                    cwd=ROOT,
+                    text=True,
+                    capture_output=True,
+                    timeout=30,
+                    check=False,
+                    env={"PATH": os.environ.get("PATH", "/usr/bin:/bin")},
+                )
+                self.assertEqual(run_result.returncode, 0, run_result.stderr)
+                self.assertEqual(run_result.stdout.strip(), expected)
 
     def test_fixed_protocol_and_privacy_contracts(self):
         source = READER.read_text(encoding="utf-8")
@@ -87,14 +92,15 @@ class LocalCLIQuotaTests(unittest.TestCase):
         self.assertIn('kSecAttrService: "Claude Code-credentials"', source)
 
     def test_fixture_contains_only_synthetic_credentials(self):
-        fixture = FIXTURE.read_bytes()
-        digest = hashlib.sha256(fixture).hexdigest()
-        self.assertEqual(len(digest), 64)
-        text = fixture.decode("utf-8")
-        self.assertNotIn("sk-ant-", text)
-        self.assertNotIn("sk-proj-", text)
-        self.assertNotIn("/Users/", text)
-        self.assertGreaterEqual(text.count("synthetic"), 10)
+        for fixture in (FIXTURE, KIMI_FIXTURE):
+            content = fixture.read_bytes()
+            digest = hashlib.sha256(content).hexdigest()
+            self.assertEqual(len(digest), 64)
+            text = content.decode("utf-8")
+            self.assertNotIn("sk-ant-", text)
+            self.assertNotIn("sk-proj-", text)
+            self.assertNotIn("/Users/", text)
+            self.assertGreaterEqual(text.count("synthetic"), 10)
 
 
 if __name__ == "__main__":

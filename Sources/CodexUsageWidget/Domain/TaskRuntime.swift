@@ -593,7 +593,8 @@ struct TaskRuntimeReducer {
         case "notLoaded":
             return .idle
         case "systemError":
-            return .failed
+            // A daemon/system error is not a verified terminal turn failure.
+            return .recorded
         default:
             return .recorded
         }

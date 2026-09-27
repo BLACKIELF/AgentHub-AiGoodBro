@@ -50,7 +50,11 @@ body[data-mode="trends"] #charts { grid-template-columns: minmax(0, 1fr); }
 .bar-hover:hover { fill: #8882; }
 .axis-base { stroke: GrayText; }
 #legend { font-size: 11px; line-height: 1.45; margin: 6px 0 0; color: var(--secondary); }
-#day-summary { margin-top: 16px; display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(280px, .95fr); gap: 16px; border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; background: var(--panel); }
+#day-summary { margin-top: 16px; border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; background: var(--panel); }
+#day-disclosure > summary { cursor: pointer; font-weight: 600; color: var(--secondary); }
+#day-disclosure[open] > summary { margin-bottom: 14px; }
+.day-summary-content { display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(280px, .95fr); gap: 16px; }
+#day-disclosure:not([open]) .day-summary-content { display: none; }
 .subpanel-title { display: flex; align-items: baseline; gap: 9px; }
 .subpanel-title h2 { font-size: 13px; font-weight: 650; }
 .subpanel-title span { color: var(--secondary); font-size: 11px; }
@@ -92,7 +96,7 @@ h3 { font-size: 12px; margin: 10px 0 3px; }
 #dimensions table { margin-bottom: 10px; }
 @media (max-width: 800px) {
   #charts { grid-template-columns: 1fr; gap: 10px; }
-  #day-summary { grid-template-columns: 1fr; gap: 14px; }
+  .day-summary-content { grid-template-columns: 1fr; gap: 14px; }
   #day-donut { grid-template-columns: minmax(128px, 150px) minmax(0, 1fr); }
   .detail-charts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .breakdown:last-child { grid-column: 1 / -1; }

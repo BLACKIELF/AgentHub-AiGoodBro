@@ -324,7 +324,14 @@ struct LocalCLIQuotaReader {
         guard let expiry = Self.strictDouble(root["expires_at"], allowString: true) else {
             throw LocalCLIReaderFailure.invalidCredentials
         }
-        guard expiry > now.addingTimeInterval(60).timeIntervalSince1970 else {
+        guard expiry > now.timeIntervalSince1970 else {
+            if Self.nonempty(root["refresh_token"]) != nil {
+                return result(
+                    state: .unavailable,
+                    now: now,
+                    source: sourceLabel(for: .kimi),
+                    messageCode: "local_cli_kimi_token_refresh_required")
+            }
             throw LocalCLIReaderFailure.credentialsExpired
         }
         guard

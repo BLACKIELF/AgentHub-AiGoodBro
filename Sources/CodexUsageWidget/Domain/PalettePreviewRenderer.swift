@@ -2,6 +2,7 @@ import AppKit
 import SwiftUI
 
 enum PalettePreviewRenderer {
+    @MainActor
     static func renderSettingsCatalog(to directory: URL) -> Bool {
         let suiteName = "CodexManagerNext.settings-catalog.\(UUID().uuidString)"
         let fixtureRoot = FileManager.default.temporaryDirectory.appendingPathComponent("next-settings-catalog-\(UUID().uuidString)")
@@ -81,6 +82,7 @@ enum PalettePreviewRenderer {
         }
     }
 
+    @MainActor
     static func renderDocumentationSettings(to outputURL: URL) -> Bool {
         let suiteName = "CodexManagerNext.documentation-screenshot.\(UUID().uuidString)"
         guard let defaults = UserDefaults(suiteName: suiteName) else { return false }

@@ -2,8 +2,8 @@ import Combine
 import Foundation
 
 /// A scheduled public reset claim from the tracker banner. This is deliberately
-/// not a `PublicResetAnnouncement`: forecasts never enter delivery ledgers,
-/// notification queues, historical counts, or account quota state.
+/// not a `PublicResetAnnouncement`: forecasts use a separate delivery ledger
+/// and never enter completed history, history counts, or account quota state.
 struct PublicResetForecast: Codable, Equatable, Identifiable {
     enum Phase: Equatable { case scheduled, awaitingConfirmation }
 
@@ -53,6 +53,23 @@ struct PublicResetForecast: Codable, Equatable, Identifiable {
         let id = String(parts.path.dropFirst(prefix.count))
         return (1...20).contains(id.count) && id.allSatisfy(\.isNumber)
             && (expectedID == nil || expectedID == id)
+    }
+
+    static func sourcePostDate(for id: String) -> Date? {
+        guard id.allSatisfy(\.isNumber), let snowflake = UInt64(id) else { return nil }
+        let twitterEpochMilliseconds: UInt64 = 1_288_834_974_657
+        let milliseconds = (snowflake >> 22) + twitterEpochMilliseconds
+        let date = Date(timeIntervalSince1970: TimeInterval(milliseconds) / 1000)
+        return date.timeIntervalSince1970.isFinite ? date : nil
+    }
+
+    static func sourcePostID(at date: Date) -> String? {
+        let milliseconds = date.timeIntervalSince1970 * 1000
+        let twitterEpochMilliseconds: Double = 1_288_834_974_657
+        guard milliseconds.isFinite, milliseconds >= twitterEpochMilliseconds,
+            milliseconds < Double(UInt64.max)
+        else { return nil }
+        return String((UInt64(milliseconds) - UInt64(twitterEpochMilliseconds)) << 22)
     }
 }
 
@@ -135,10 +152,14 @@ enum PublicResetForecastParser {
         let latestBy: Date?
         let deadlineAttribute = role == "scheduled-reset" ? "data-scheduled-for" : "data-expires-at"
         if let rawDeadline = attributes[deadlineAttribute] {
-            guard !rawDeadline.isEmpty, let parsed = parseISO8601(rawDeadline) else {
-                throw PublicResetForecastFailure.invalidResponse
+            if role == "scheduled-reset", rawDeadline.isEmpty {
+                latestBy = nil
+            } else {
+                guard !rawDeadline.isEmpty, let parsed = parseISO8601(rawDeadline) else {
+                    throw PublicResetForecastFailure.invalidResponse
+                }
+                latestBy = parsed
             }
-            latestBy = parsed
         } else if role == "reset-watch" {
             latestBy = nil
         } else {
@@ -190,11 +211,7 @@ enum PublicResetForecastParser {
     }
 
     private static func dateFromXPostID(_ value: String) -> Date? {
-        guard let snowflake = UInt64(value) else { return nil }
-        let twitterEpochMilliseconds: UInt64 = 1_288_834_974_657
-        let milliseconds = (snowflake >> 22) + twitterEpochMilliseconds
-        let date = Date(timeIntervalSince1970: TimeInterval(milliseconds) / 1000)
-        return date.timeIntervalSince1970.isFinite ? date : nil
+        PublicResetForecast.sourcePostDate(for: value)
     }
 
     private static func regex(_ pattern: String, dotMatchesLineSeparators: Bool = false) throws -> NSRegularExpression {
@@ -309,7 +326,9 @@ final class PublicResetForecastStore: ObservableObject {
         }
     }
 
-    func check() {
+    func check(
+        onSuccessfulFetch: (@MainActor (PublicResetForecastPageState) async -> Void)? = nil
+    ) {
         guard !checking else { return }
         let language = WidgetLanguage.storedOrAutomatic()
         guard Date() >= retryNotBefore else {
@@ -328,6 +347,8 @@ final class PublicResetForecastStore: ObservableObject {
                 let state = try await fetchForecast()
                 guard !Task.isCancelled else { return }
                 try applyPage(state, now: Date())
+                guard !Task.isCancelled else { return }
+                await onSuccessfulFetch?(state)
             } catch let failure as PublicResetForecastFailure {
                 if case .retryLater(let seconds) = failure {
                     retryNotBefore = Date().addingTimeInterval(Double(seconds))
@@ -400,10 +421,16 @@ enum PublicResetForecastSelfTest {
         guard let fetchedAt = formatter.date(from: "2026-09-22T10:00:00Z"),
             let announcedAt = formatter.date(from: "2026-09-22T05:00:00Z"),
             let deadline = formatter.date(from: "2026-09-23T06:59:00Z")
-        else { return false }
+        else { return fail(#line) }
         let postID = xPostID(for: announcedAt)
         func page(watch: String) -> Data {
             Data("<html><head><title>Codex-Resets</title></head><body><div class=\"hero-figure\" data-datetime=\"2026-09-12T08:09:00Z\"></div>\(watch)</body></html>".utf8)
+        }
+        func makeForecast(announcedAt: Date, fetchedAt: Date, latestBy: Date? = nil) -> PublicResetForecast {
+            let id = xPostID(for: announcedAt)
+            return PublicResetForecast(
+                id: id, latestBy: latestBy, announcedAt: announcedAt,
+                sourceURL: URL(string: "https://x.com/thsottiaux/status/\(id)")!, fetchedAt: fetchedAt)
         }
         let futureHTML = page(
             watch: """
@@ -416,7 +443,7 @@ enum PublicResetForecastSelfTest {
                 future.latestBy == deadline, future.phase(at: fetchedAt) == .scheduled,
                 future.phase(at: deadline.addingTimeInterval(1)) == .awaitingConfirmation,
                 future.sourceURL.host == "x.com"
-            else { return false }
+            else { return fail(#line) }
 
             let scheduledHTML = page(
                 watch: """
@@ -427,16 +454,34 @@ enum PublicResetForecastSelfTest {
                     """)
             guard case .forecast(let scheduled) = try PublicResetForecastParser.parse(scheduledHTML, fetchedAt: fetchedAt),
                 scheduled.latestBy == deadline, scheduled.id == postID
-            else { return false }
+            else { return fail(#line) }
+
+            let scheduledTimeUnknownHTML = page(
+                watch: "<section data-role=\"scheduled-reset\" data-scheduled-for=\"\"><a href=\"https://x.com/thsottiaux/status/\(postID)\">x</a></section>")
+            guard
+                case .forecast(let scheduledTimeUnknown) = try PublicResetForecastParser.parse(
+                    scheduledTimeUnknownHTML, fetchedAt: fetchedAt
+                ), scheduledTimeUnknown.latestBy == nil,
+                scheduledTimeUnknown.phase(at: fetchedAt) == .awaitingConfirmation
+            else { return fail(#line) }
+
+            let resetWatchWithoutTimeHTML = page(
+                watch: "<section data-role=\"reset-watch\"><a href=\"https://x.com/thsottiaux/status/\(postID)\">x</a></section>")
+            guard
+                case .forecast(let resetWatchWithoutTime) = try PublicResetForecastParser.parse(
+                    resetWatchWithoutTimeHTML, fetchedAt: fetchedAt
+                ), resetWatchWithoutTime.latestBy == nil
+            else { return fail(#line) }
 
             guard case .none = try PublicResetForecastParser.parse(page(watch: "<div data-role=\"pending-reset\"> </div>"), fetchedAt: fetchedAt) else {
-                return false
+                return fail(#line)
             }
 
             let malformed = [
                 page(watch: ""),
                 page(watch: "<div data-role=\"pending-reset\"><section data-role=\"new-format\">待重置</section></div>"),
                 page(watch: "<section data-role=\"scheduled-reset\"><a href=\"https://x.com/thsottiaux/status/\(postID)\">x</a></section>"),
+                page(watch: "<section data-role=\"scheduled-reset\" data-scheduled-for=\"not-a-date\"><a href=\"https://x.com/thsottiaux/status/\(postID)\">x</a></section>"),
                 page(watch: "<section data-role=\"reset-watch\" data-expires-at=\"not-a-date\"><a href=\"https://x.com/thsottiaux/status/\(postID)\">x</a></section>"),
                 page(
                     watch:
@@ -450,14 +495,14 @@ enum PublicResetForecastSelfTest {
             for fixture in malformed {
                 do {
                     _ = try PublicResetForecastParser.parse(fixture, fetchedAt: fetchedAt)
-                    return false
-                } catch PublicResetForecastFailure.invalidResponse {} catch { return false }
+                    return fail(#line)
+                } catch PublicResetForecastFailure.invalidResponse {} catch { return fail(#line) }
             }
             let oversized = Data(repeating: 0x20, count: PublicResetForecastParser.maximumPayloadBytes + 1)
             do {
                 _ = try PublicResetForecastParser.parse(oversized, fetchedAt: fetchedAt)
-                return false
-            } catch PublicResetForecastFailure.invalidResponse {} catch { return false }
+                return fail(#line)
+            } catch PublicResetForecastFailure.invalidResponse {} catch { return fail(#line) }
 
             let source = URL(string: "https://x.com/thsottiaux/status/\(postID)")!
             let cached = PublicResetForecast(
@@ -465,7 +510,7 @@ enum PublicResetForecastSelfTest {
                 sourceURL: source, fetchedAt: fetchedAt)
             guard cached.isRetainableCache(at: fetchedAt.addingTimeInterval(71 * 60 * 60)),
                 !cached.isRetainableCache(at: fetchedAt.addingTimeInterval(73 * 60 * 60))
-            else { return false }
+            else { return fail(#line) }
             let beijing = PublicResetAnnouncementPresentation.forecastTime(deadline, language: .zh)
             guard beijing.contains("2026年9月23日"), beijing.contains("14:59"),
                 beijing.contains("北京时间"),
@@ -473,15 +518,117 @@ enum PublicResetForecastSelfTest {
                 PublicResetAnnouncementPresentation.forecastCountdown(
                     cached, now: deadline.addingTimeInterval(1), language: .zh
                 ).contains("等待来源确认")
-            else { return false }
+            else { return fail(#line) }
             let cacheData = try JSONEncoder().encode(PublicResetForecastCache(checkedAt: fetchedAt, forecast: cached))
             guard try PublicResetForecastCache.decode(cacheData, now: fetchedAt.addingTimeInterval(60 * 60)).forecast == cached else {
-                return false
+                return fail(#line)
             }
             do {
                 _ = try PublicResetForecastCache.decode(cacheData, now: fetchedAt.addingTimeInterval(73 * 60 * 60))
-                return false
+                return fail(#line)
             } catch {}
+
+            let firstPost = makeForecast(
+                announcedAt: fetchedAt.addingTimeInterval(-300), fetchedAt: fetchedAt, latestBy: nil)
+            let laterPost = makeForecast(
+                announcedAt: fetchedAt.addingTimeInterval(-60), fetchedAt: fetchedAt, latestBy: nil)
+            var deliveryLedger = PublicResetForecastDeliveryLedger()
+            guard try deliveryLedger.observe(.forecast(firstPost), now: fetchedAt) == nil,
+                deliveryLedger.initialized, deliveryLedger.records[firstPost.id] == .baseline,
+                try deliveryLedger.observe(.forecast(laterPost), now: fetchedAt) == laterPost,
+                deliveryLedger.records[laterPost.id] == .pending
+            else { return fail(#line) }
+
+            var interrupted = deliveryLedger
+            try interrupted.setPhase(.sending, for: laterPost.id)
+            interrupted = try JSONDecoder().decode(
+                PublicResetForecastDeliveryLedger.self, from: JSONEncoder().encode(interrupted))
+            interrupted.recoverInterruptedSends()
+            guard interrupted.records[laterPost.id] == .uncertain,
+                try interrupted.observe(.forecast(laterPost), now: fetchedAt) == nil
+            else { return fail(#line) }
+            do {
+                try interrupted.reserveAuthorizedDelivery(laterPost, now: fetchedAt)
+                return fail(#line)
+            } catch PublicResetFailure.localState {} catch { return fail(#line) }
+
+            var restarted = deliveryLedger
+            try restarted.setPhase(.sent, for: laterPost.id)
+            restarted = try JSONDecoder().decode(
+                PublicResetForecastDeliveryLedger.self, from: JSONEncoder().encode(restarted))
+            guard try restarted.observe(.forecast(laterPost), now: fetchedAt) == nil,
+                restarted.records[laterPost.id] == .sent
+            else { return fail(#line) }
+
+            var emptyBaseline = PublicResetForecastDeliveryLedger()
+            guard try emptyBaseline.observe(.none(fetchedAt: fetchedAt), now: fetchedAt) == nil,
+                try emptyBaseline.observe(.forecast(laterPost), now: fetchedAt) == laterPost
+            else { return fail(#line) }
+
+            let legacyLedgerJSON = try JSONSerialization.data(withJSONObject: [
+                "schemaVersion": 1, "initialized": true, "records": [postID: "sent"],
+            ])
+            let legacyLedger = try JSONDecoder().decode(PublicResetDeliveryLedger.self, from: legacyLedgerJSON)
+            guard legacyLedger.records[postID] == .sent else { return fail(#line) }
+
+            var completedStage = PublicResetDeliveryLedger()
+            let samePostCompletion = PublicResetAnnouncement(
+                id: laterPost.id, resetType: .regular, announcedAt: laterPost.announcedAt,
+                text: "completion fixture",
+                source: .init(type: "x_post", author: "thsottiaux", url: laterPost.sourceURL))
+            try completedStage.reserveAuthorizedDelivery(samePostCompletion)
+            guard completedStage.records[laterPost.id] == .sending,
+                restarted.records[laterPost.id] == .sent
+            else { return fail(#line) }
+
+            let oldCompleted = PublicResetAnnouncement(
+                id: "101", resetType: .regular, announcedAt: fetchedAt.addingTimeInterval(-600), text: "old fixture",
+                source: .init(type: "x_post", author: "thsottiaux", url: URL(string: "https://x.com/thsottiaux/status/101")))
+            let latestForecastCandidate = PublicResetMessageCandidate.latest(
+                completed: [oldCompleted], forecast: .forecast(laterPost), now: fetchedAt)
+            guard let latestForecastCandidate,
+                case .forecast(let latestForecast) = latestForecastCandidate,
+                latestForecast.id == laterPost.id
+            else { return fail(#line) }
+            let recentFetchOldPost = makeForecast(
+                announcedAt: fetchedAt.addingTimeInterval(-1_200), fetchedAt: fetchedAt)
+            let latestCompletedCandidate = PublicResetMessageCandidate.latest(
+                completed: [oldCompleted], forecast: .forecast(recentFetchOldPost), now: fetchedAt)
+            guard let latestCompletedCandidate,
+                case .completed(let latestCompleted) = latestCompletedCandidate,
+                latestCompleted.id == oldCompleted.id
+            else { return fail(#line) }
+
+            let forecastCard = try PublicResetForecastNotification(laterPost, referenceDate: fetchedAt)
+            let forecastPayload = try FeishuWebhookService.publicResetForecastPayload(forecastCard, language: .zh)
+            let forecastRoot = try JSONSerialization.jsonObject(with: forecastPayload) as? [String: Any]
+            let forecastCardJSON = forecastRoot?["card"] as? [String: Any]
+            let forecastTitleJSON = forecastCardJSON?["header"] as? [String: Any]
+            let forecastTitle = (forecastTitleJSON?["title"] as? [String: Any])?["content"] as? String
+            let forecastElements = forecastCardJSON?["elements"] as? [[String: Any]]
+            let forecastText = (forecastElements?.first?["text"] as? [String: Any])?["content"] as? String
+            guard let forecastTitle, let forecastBody = forecastText,
+                forecastTitle == "重置预告 · 待确认", forecastBody.contains("预计重置时间"),
+                forecastBody.contains("待确认"), forecastBody.contains(forecastCard.sourceURL.absoluteString),
+                forecastBody.contains(WidgetLanguage.zh.dateTime(laterPost.announcedAt)),
+                !forecastBody.contains(WidgetLanguage.zh.dateTime(laterPost.fetchedAt))
+            else { return fail(#line) }
+
+            let mismatchedDate = PublicResetForecast(
+                id: laterPost.id, latestBy: nil, announcedAt: laterPost.announcedAt.addingTimeInterval(1),
+                sourceURL: laterPost.sourceURL, fetchedAt: laterPost.fetchedAt)
+            do {
+                _ = try PublicResetForecastNotification(mismatchedDate, referenceDate: fetchedAt)
+                return fail(#line)
+            } catch FeishuWebhookError.invalidNotification {} catch { return fail(#line) }
+            let hostileURL = PublicResetForecast(
+                id: laterPost.id, latestBy: nil, announcedAt: laterPost.announcedAt,
+                sourceURL: URL(string: "https://x.com.attacker.invalid/thsottiaux/status/\(laterPost.id)")!,
+                fetchedAt: laterPost.fetchedAt)
+            do {
+                _ = try PublicResetForecastNotification(hostileURL, referenceDate: fetchedAt)
+                return fail(#line)
+            } catch FeishuWebhookError.invalidNotification {} catch { return fail(#line) }
 
             let historical = PublicResetAnnouncement(
                 id: "101", resetType: .regular, announcedAt: fetchedAt.addingTimeInterval(-86_400),
@@ -490,12 +637,17 @@ enum PublicResetForecastSelfTest {
             let unchangedHistory = [historical]
             _ = try PublicResetForecastParser.parse(futureHTML, fetchedAt: fetchedAt)
             guard unchangedHistory == [historical], cached.phase(at: deadline.addingTimeInterval(1)) == .awaitingConfirmation else {
-                return false
+                return fail(#line)
             }
             return true
         } catch {
-            return false
+            return fail(#line)
         }
+    }
+
+    private static func fail(_ line: Int) -> Bool {
+        print("Public reset forecast self-test failed at line \(line)")
+        return false
     }
 
     @MainActor
@@ -530,8 +682,6 @@ enum PublicResetForecastSelfTest {
     }
 
     private static func xPostID(for date: Date) -> String {
-        let twitterEpochMilliseconds: UInt64 = 1_288_834_974_657
-        let milliseconds = UInt64(date.timeIntervalSince1970 * 1000)
-        return String((milliseconds - twitterEpochMilliseconds) << 22)
+        PublicResetForecast.sourcePostID(at: date)!
     }
 }

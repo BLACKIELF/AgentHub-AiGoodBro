@@ -10,38 +10,41 @@ private func fourCharCode(_ value: String) -> OSType {
 }
 
 final class DraggableHostingView<Content: View>: NSHostingView<Content> {
-    override var mouseDownCanMoveWindow: Bool { true }
+    var allowsWindowDragging = true
+    override var mouseDownCanMoveWindow: Bool { allowsWindowDragging }
 }
 
 final class GlassHostingContainer<Content: View>: NSView {
     private let cornerRadius: CGFloat
+    private let reduceTransparency: Bool
+    private let allowsWindowDragging: Bool
+    private var glassTint: NSView?
 
-    init(rootView: Content, cornerRadius: CGFloat) {
+    init(rootView: Content, cornerRadius: CGFloat, reduceTransparency: Bool = false, allowsWindowDragging: Bool = true) {
         self.cornerRadius = cornerRadius
+        self.reduceTransparency = reduceTransparency
+        self.allowsWindowDragging = allowsWindowDragging
         super.init(frame: .zero)
 
         wantsLayer = true
         layer?.cornerRadius = cornerRadius
+        layer?.masksToBounds = true
 
         let host = DraggableHostingView(rootView: rootView)
         host.frame = bounds
         host.autoresizingMask = [.width, .height]
+        host.allowsWindowDragging = allowsWindowDragging
 
-        #if compiler(>=6.2) && CAMNEXT_HAS_LIQUID_GLASS
-            if #available(macOS 26.0, *) {
-                let glass = NSGlassEffectView(frame: bounds)
-                glass.autoresizingMask = [.width, .height]
-                glass.cornerRadius = cornerRadius
-                glass.style = .regular
-                glass.tintColor = nil
-                glass.contentView = host
-                addSubview(glass)
-            } else {
-                installMaterialFallback(host: host)
-            }
-        #else
-            installMaterialFallback(host: host)
-        #endif
+        if reduceTransparency {
+            installOpaqueFallback(host: host)
+            return
+        }
+
+        // AppKit HUD vibrancy is the single window-wide glass pass. The
+        // macOS 26 clear glass style washed out light desktops behind white
+        // labels; regular glass flattened the backdrop to grey. HUD retains
+        // the underlying desktop color and readable native contrast.
+        installMaterialFallback(host: host)
     }
 
     private func installMaterialFallback(host: NSView) {
@@ -49,19 +52,45 @@ final class GlassHostingContainer<Content: View>: NSView {
         material.autoresizingMask = [.width, .height]
         material.material = .hudWindow
         material.blendingMode = .behindWindow
-        material.state = .followsWindowActiveState
+        material.state = .active
         material.wantsLayer = true
         material.layer?.cornerRadius = cornerRadius
         material.layer?.masksToBounds = true
+        let tint = NSView(frame: bounds)
+        tint.autoresizingMask = [.width, .height]
+        tint.wantsLayer = true
+        material.addSubview(tint)
+        glassTint = tint
+        updateGlassTint()
         material.addSubview(host)
         addSubview(material)
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        updateGlassTint()
+    }
+
+    private func updateGlassTint() {
+        let isDark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        // One native tint over the HUD blur matches the source shell's 68%
+        // neutral base; translucent cards must not each add another blur pass.
+        glassTint?.layer?.backgroundColor =
+            isDark
+            ? NSColor(srgbRed: 48 / 255, green: 52 / 255, blue: 56 / 255, alpha: 0.68).cgColor
+            : NSColor(srgbRed: 246 / 255, green: 247 / 255, blue: 250 / 255, alpha: 0.54).cgColor
+    }
+
+    private func installOpaqueFallback(host: NSView) {
+        layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+        addSubview(host)
     }
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
     }
 
-    override var mouseDownCanMoveWindow: Bool { true }
+    override var mouseDownCanMoveWindow: Bool { allowsWindowDragging }
 
     /// Native fullscreen fills the screen, so the rounded floating-panel frame
     /// must flatten on entry and restore on exit. Keep every subview layer in
@@ -69,12 +98,6 @@ final class GlassHostingContainer<Content: View>: NSView {
     func updateCornerRadius(_ radius: CGFloat) {
         layer?.cornerRadius = radius
         for subview in subviews {
-            #if compiler(>=6.2) && CAMNEXT_HAS_LIQUID_GLASS
-                if #available(macOS 26.0, *), let glass = subview as? NSGlassEffectView {
-                    glass.cornerRadius = radius
-                    continue
-                }
-            #endif
             if let material = subview as? NSVisualEffectView {
                 material.layer?.cornerRadius = radius
                 material.layer?.masksToBounds = radius > 0
@@ -128,6 +151,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     private var accountFloatingPanelController: AccountFloatingPanelController?
     /// token-monitor 风格悬浮窗。此前视图已编译进 App 但无人创建，这里负责真正挂到桌面浮层。
     private let floatingBubbleController = TokenMonitorFloatingBubbleController()
+    private let edgeDockController = TokenMonitorEdgeDockController()
+    private let edgeDockRateTracker = TokenMonitorEdgeDockRateTracker()
+    private let tokenDesktop = TokenMonitorDesktopController.shared
+    private var edgeDockLastObservedRequestID: String?
+    private var edgeDockRateExpiryTimer: Timer?
     private var floatingBubbleEditorWindow: NSWindow?
     private var floatingBubbleEnabled = false
     private var floatingBubbleShuttingDown = false
@@ -137,6 +165,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     private let guideRequests = PassthroughSubject<Void, Never>()
     private var statusItem: NSStatusItem?
     private var statusPopover: NSPopover?
+    private var statusPopoverSize = CodexAccountMenuView.preferredSize
     private var statusPopoverEventMonitors: [Any] = []
     private var statusItemAppearanceObservation: NSKeyValueObservation?
     private var activeSpaceObserver: NSObjectProtocol?
@@ -198,9 +227,71 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         store.updateVisibleRuntimeScopes(settings.visibleRuntimeScopes)
         setupStatisticsSources()
         store.start()
-        setupFloatingBubbleSync()
+        if let oneShot = CodexOneShotSwitchIntent.parse(CommandLine.arguments) {
+            store.startOneShotDesktopSwitch(oneShot)
+        }
+        if tokenDesktop.isBundled {
+            setupTokenMonitorDesktop()
+        } else {
+            setupFloatingBubbleSync()
+            setupEdgeDockSync()
+        }
         showMainWindow()
         PerformanceMonitor.shared.end(startupPerformanceSpan)
+    }
+
+    private func setupTokenMonitorDesktop() {
+        tokenDesktop.hostAction = { [weak self] request in
+            guard let self else { return .failure(request.id, "host-unavailable") }
+            switch request.cmd {
+            case .openWorkbench, .openAccounts, .openTasks:
+                self.showMainWindow()
+                NotificationCenter.default.post(name: TokenMonitorWorkspaceNavigation.notification, object: request.cmd.rawValue)
+            case .openSettings:
+                self.openSettingsWindow()
+            case .checkForUpdates:
+                self.openSettingsWindow(page: .about)
+                self.updateStore.checkNow()
+            case .getManagedCodexAccounts:
+                return TokenMonitorHostReply(id: request.id, ok: true, accounts: self.store.tokenMonitorManagedCodexAccounts())
+            case .quitHost:
+                // Let the helper receive its acknowledgment before shutting
+                // down the private connection and both app processes.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { NSApp.terminate(nil) }
+            case .switchCodexAccount:
+                guard let key = request.recordedAccountKey, let vendorID = request.vendorAccountId else {
+                    return .failure(request.id, "invalid-account")
+                }
+                self.showMainWindow()
+                NotificationCenter.default.post(name: TokenMonitorWorkspaceNavigation.notification, object: "openAccounts")
+                if let failure = await self.store.requestTokenMonitorDesktopSwitch(accountKey: key) {
+                    return .failure(request.id, failure)
+                }
+                return TokenMonitorHostReply(id: request.id, ok: true, accountId: vendorID)
+            }
+            return TokenMonitorHostReply(id: request.id, ok: true)
+        }
+        tokenDesktop.$isReady
+            .combineLatest(tokenDesktop.$hasVisibleTray)
+            .map { $0 && $1 }
+            .removeDuplicates()
+            .receive(on: RunLoop.main)
+            .sink { [weak self] ready in
+                guard let self else { return }
+                if ready {
+                    self.closeStatusPopover()
+                    self.statusItemAppearanceObservation = nil
+                    if let item = self.statusItem { NSStatusBar.system.removeStatusItem(item) }
+                    self.statusItem = nil
+                } else {
+                    self.lastRenderedStatusItemPresentation = nil
+                    self.lastRenderedStatusItemAppearanceName = nil
+                    self.lastRenderedStatusItemPaletteIdentity = nil
+                    self.setupStatusItemIfNeeded()
+                }
+            }
+            .store(in: &cancellables)
+        tokenDesktop.startIfBundled()
     }
 
     private func createMainWindow() {
@@ -297,6 +388,100 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in self?.syncFloatingBubble() }
             .store(in: &cancellables)
+    }
+
+    private func setupEdgeDockSync() {
+        syncEdgeDock()
+        settings.$edgeDock
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.syncEdgeDock() }
+            .store(in: &cancellables)
+        settings.$language
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.syncEdgeDock() }
+            .store(in: &cancellables)
+        store.objectWillChange
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.syncEdgeDock() }
+            .store(in: &cancellables)
+        localCLIAccounts.objectWillChange
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.syncEdgeDock() }
+            .store(in: &cancellables)
+    }
+
+    private func syncEdgeDock() {
+        guard !floatingBubbleShuttingDown else { return }
+        let prefs = settings.edgeDock
+        edgeDockRateExpiryTimer?.invalidate()
+        edgeDockRateExpiryTimer = nil
+        if !prefs.enabled {
+            edgeDockRateTracker.reset()
+            edgeDockLastObservedRequestID = nil
+            edgeDockController.configure(
+                preferences: prefs, cells: [], language: settings.language,
+                onPreferencesChange: { [weak self] next in
+                    guard let self, self.settings.edgeDock != next else { return }
+                    self.settings.edgeDock = next
+                },
+                onOpenDashboard: { [weak self] in self?.showMainWindow() }
+            )
+            return
+        }
+        let response = store.engineState.lastGood
+        if response?.requestId != edgeDockLastObservedRequestID {
+            edgeDockLastObservedRequestID = response?.requestId
+            _ = edgeDockRateTracker.observe(response: response)
+        }
+        let rateSample = edgeDockRateTracker.current()
+        if let expiry = edgeDockRateTracker.nextExpiryAt() {
+            let interval = max(0.05, expiry.timeIntervalSinceNow + 0.02)
+            edgeDockRateExpiryTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: false) { [weak self] _ in
+                MainActor.assumeIsolated { self?.syncEdgeDock() }
+            }
+        }
+        let quotaSources = FloatingBubbleEvidence.make(
+            store: store, localAccounts: localCLIAccounts, language: settings.language
+        )
+        let usage = TokenMonitorDashboardSnapshot(state: store.engineState, hub: store.tokenMonitorHubSync)
+        // The system profile names the current Codex identity, but only a
+        // fresh, successful managed-profile quota read confirms the matching
+        // account for the dock's "active" rail value.
+        func hasFreshQuota(_ profile: CodexProfile) -> Bool {
+            guard let snapshot = profile.lastSnapshot, snapshot.quotaReadSucceeded == true,
+                Date().timeIntervalSince(snapshot.fetchedAt) <= 300
+            else { return false }
+            return profile.lastQuotaReadFailureAt.map { $0 < snapshot.fetchedAt } ?? true
+        }
+        let systemProfile = store.profiles.first(where: \.isSystemProfile)
+        let activeID: String?
+        if let systemProfile, hasFreshQuota(systemProfile) {
+            let managed = store.profiles.filter {
+                !$0.isSystemProfile && $0.recordedAccountKey == systemProfile.recordedAccountKey
+            }
+            if managed.count == 1, let profile = managed.first, hasFreshQuota(profile) {
+                activeID = profile.id
+            } else if managed.isEmpty {
+                activeID = systemProfile.id
+            } else {
+                activeID = nil
+            }
+        } else {
+            activeID = nil
+        }
+        let cells = TokenMonitorEdgeDockProjection.make(
+            preferences: prefs, quotaSources: quotaSources, usage: usage,
+            language: settings.language, activeCodexAccountID: activeID,
+            liveRateSample: rateSample
+        )
+        edgeDockController.configure(
+            preferences: prefs, cells: cells, language: settings.language,
+            onPreferencesChange: { [weak self] next in
+                guard let self, self.settings.edgeDock != next else { return }
+                self.settings.edgeDock = next
+            },
+            onOpenDashboard: { [weak self] in self?.showMainWindow() }
+        )
     }
 
     private func syncFloatingBubble(reveal: Bool = false) {
@@ -410,12 +595,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        tokenDesktop.hostAction = nil
+        tokenDesktop.shutdown()
         floatingBubbleShuttingDown = true
         if TokenMonitorFloatingBubbleSession.owner === self {
             TokenMonitorFloatingBubbleSession.owner = nil
         }
         closeFloatingBubbleEditor()
         floatingBubbleController.shutdown()
+        edgeDockController.shutdown()
+        edgeDockRateExpiryTimer?.invalidate()
+        edgeDockRateExpiryTimer = nil
+        edgeDockRateTracker.reset()
         taskOverviewController?.shutdown()
         taskOverviewController = nil
         accountFloatingPanelController?.shutdown()
@@ -618,6 +809,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
                 action: #selector(openSettingsFromMenu),
                 keyEquivalent: ","
             ))
+        appMenu.addItem(
+            NSMenuItem(
+                title: language.text("打开菜单栏面板", "Open Menu Bar Panel"),
+                action: #selector(statusItemClicked),
+                keyEquivalent: ""
+            ))
         appMenu.addItem(.separator())
 
         let hideItem = NSMenuItem(
@@ -713,17 +910,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         if settingsWindow == nil {
             let panel = NSWindow(
                 contentRect: NSRect(x: 0, y: 0, width: 780, height: 640),
-                styleMask: [.titled, .closable, .miniaturizable, .resizable],
+                styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
                 backing: .buffered, defer: false
             )
             panel.isReleasedWhenClosed = false
             panel.contentMinSize = NSSize(width: 740, height: 520)
-            panel.contentViewController = NSHostingController(
+            panel.isOpaque = false
+            panel.backgroundColor = .clear
+            panel.titlebarAppearsTransparent = true
+            panel.contentView = GlassHostingContainer(
                 rootView: SettingsWindowContent(
                     settings: settings, store: store, updateStore: updateStore, localAccounts: localCLIAccounts,
                     navigation: settingsNavigation,
                     onOpenPaletteLibrary: { [weak self] in self?.openPaletteLibraryWindow() }
-                ))
+                ),
+                cornerRadius: 12,
+                reduceTransparency: NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency,
+                allowsWindowDragging: false
+            )
             panel.center()
             settingsWindow = panel
         }
@@ -833,6 +1037,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     }
 
     @objc private func statusItemClicked() {
+        if tokenDesktop.isBundled {
+            closeStatusPopover()
+            tokenDesktop.open(.home)
+            return
+        }
         toggleStatusPopover()
     }
 
@@ -858,10 +1067,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             return
         }
         store.refreshIfStale(maximumAge: 5 * 60)
+        statusPopoverSize = preferredStatusPopoverSize(for: button)
         let popover = NSPopover()
         popover.behavior = .applicationDefined
         popover.animates = !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-        popover.contentSize = CodexAccountMenuView.preferredSize
+        popover.contentSize = statusPopoverSize
         popover.delegate = self
         popover.contentViewController = NSHostingController(
             rootView: CodexAccountMenuView(
@@ -882,7 +1092,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
                 },
                 onOpenFloatingPanel: { [weak self] initialScreen in
                     self?.openFloatingAccountPanel(initialScreen: initialScreen)
-                }
+                },
+                preferredContentSize: statusPopoverSize
             )
         )
         statusPopover = popover
@@ -967,7 +1178,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
 
     private func updateStatusPopoverSize() {
         guard statusPopover?.isShown == true else { return }
-        statusPopover?.contentSize = CodexAccountMenuView.preferredSize
+        statusPopover?.contentSize = statusPopoverSize
+    }
+
+    private func preferredStatusPopoverSize(for button: NSStatusBarButton) -> CGSize {
+        let availableHeight = button.window?.screen?.visibleFrame.height ?? NSScreen.main?.visibleFrame.height ?? 800
+        return CGSize(width: 420, height: max(1, min(640, availableHeight - 28)))
     }
 
     func popoverDidClose(_ notification: Notification) {
@@ -1080,6 +1296,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     }
 
     private func setupStatusItemIfNeeded() {
+        guard !(tokenDesktop.isReady && tokenDesktop.hasVisibleTray) else { return }
         guard statusItem == nil else {
             updateStatusItem()
             return
@@ -1128,16 +1345,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         lastRenderedStatusItemPaletteIdentity = visualTokens.identity
 
         let performanceSpan = PerformanceMonitor.shared.begin(.statusRender)
-        statusItem?.length = presentation.itemLength
-        button.image = statusItemRenderer.render(
+        let baseImage = statusItemRenderer.render(
             presentation,
             tokens: visualTokens,
             appearance: appearance
         )
-        button.toolTip = presentation.tooltip
-        button.setAccessibilityLabel("AiGoodBro")
+        button.image = statusItemImageWithMonitorBadge(baseImage)
+        statusItem?.length = presentation.itemLength + 17
+        button.toolTip = "\(presentation.tooltip) · \(AHBrandIdentity.displayName)"
+        button.setAccessibilityLabel(settings.language.text("AiGoodBro 用量统计", "AiGoodBro usage dashboard"))
         button.setAccessibilityValue(presentation.accessibilityValue)
         PerformanceMonitor.shared.end(performanceSpan)
+    }
+
+    private func statusItemImageWithMonitorBadge(_ baseImage: NSImage) -> NSImage {
+        let badgeSide: CGFloat = 14
+        let gap: CGFloat = 3
+        let size = CGSize(width: baseImage.size.width + badgeSide + gap, height: max(baseImage.size.height, badgeSide))
+        let result = NSImage(size: size)
+        result.lockFocus()
+        baseImage.draw(
+            in: NSRect(x: badgeSide + gap, y: (size.height - baseImage.size.height) / 2, width: baseImage.size.width, height: baseImage.size.height),
+            from: .zero,
+            operation: .sourceOver,
+            fraction: 1
+        )
+        let badge = NSRect(x: 0, y: (size.height - badgeSide) / 2, width: badgeSide, height: badgeSide)
+        let brandURL = Bundle.main.url(forResource: "AiGoodBro-icon", withExtension: "png")
+        if let brandImage = brandURL.flatMap(NSImage.init(contentsOf:)) ?? NSApp.applicationIconImage {
+            brandImage.draw(in: badge, from: .zero, operation: .sourceOver, fraction: 1)
+        }
+        result.unlockFocus()
+        result.isTemplate = false
+        return result
     }
 
     private func selectedRuntimeSummary() -> RuntimeMenuSummary? {

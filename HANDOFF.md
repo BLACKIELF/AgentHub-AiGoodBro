@@ -1,6 +1,64 @@
 # AiGoodBro — Source handoff
 
-## Current entry · 0923v9
+## Current entry · 0927v6 (in progress)
+
+用户追加要求优先将当前源码与新界面图片推送 GitHub，并合并 main 成为 AiGoodBro 2.0 大版本。本次说明见 [0927v6](docs/source-snapshot-0927v6.md)，中英文 README 已放置已安装 9.6.17 的真实首页和用量看板截图。产品版本为 2.0，内部 9.6.18 (67) 保持升级顺序。源码冻结后 252 个 Swift 文件语法通过，安装版四项纯自测及当前桌面适配层六项测试通过，Swift lint 通过；这些结果不替代 9.6.18 全构建和真实自动切换验收。通过必需 CI 后正常合并，不绕过 main 保护。
+
+用户最新明确授权本机实测：“模拟额度不足 → 自动暂停当前任务 → 切换有额度账号 → 自动继续原任务”。此授权覆盖早先保留 20 倍账号的选择。本次候选范围为现有 Prolite 5 倍账号；真实身份、实时额度、任务归属、互斥及回滚仍须通过，不手工修改全局 auth/config。主页卡片改版排在此实测后。
+
+当前安装仍为 9.6.17 (66) / 0927v5；源码候选版本已设 9.6.18 (67)，尚未安装。正在补 Pro/Prolite 仅周额度时的生产自动判断与一次性内存模拟入口。前一次编译因编辑并发而作废，须全部源码冻结后重新编译。
+
+实机阻点：旧 app-server-control socket 与 Mimi LaunchAgent 均不存在；当前 Codex Desktop 使用自己的 stdio app-server。已存在本机 Desktop IPC，正在只读核对合法接入；不得新开孤立服务并冒称暂停了现有 Desktop 任务。真实暂停、切号、续做尚未执行。测试收据在 `.local-artifacts/token-monitor-native-0926v1/desktop-companion/switch-test-0927v6.json`；先检查 state 和运行时恢复 journal，切勿重复提交已启动的 operationID。
+
+下一步：完成同一 Desktop 实例控制面核验 → 冻结构建与自检 → 覆盖安装 → 本次模拟低额真实链路。若发现真实端无法附着，须保留账号，不把纯测试结果作为真实验收。
+
+## Previous entry · 0927v4
+
+已覆盖安装 2.0 / 9.6.16 (65)。本轮仅调整桌面 staging 适配与 helper 元数据：LSUIElement + 嵌入 accessory 策略隐藏第二个 Dock 图标，侧边栏点击沿用 openViewFromTray('home')。独立上游与官方应用未修改，Swift 源码摘要一致并复用上轮二进制。
+
+6 组适配、4 组打包检查及严格签名通过。实机 helper 为 UIElement，showHome 打开后仍保持此状态，统计首页热图/趋势已目视确认；原生工具未能绑定单独 rail，因此不宣称完成物理点击验收。当前保存偏好下正常运行，20 倍身份与全局 auth/config 摘要不变。机器证据仍在原 desktop-companion 目录的 `*-0927v4.*`，详细边界见 [0927v4](docs/ai-goodbro-2.0-0927v4.md)。没有实切、暂停任务、发通知或发布。
+
+## Previous entry · 0927v3
+
+2026-09-27 09:35 已覆盖安装 AiGoodBro 2.0 / 内部 9.6.15 (64)，正式记录见 [0927v3](docs/ai-goodbro-2.0-0927v3.md)。源分支与长期工作树沿用前条，不回滚其他已存在增量。用户最新选择为“保持当前 20 倍，完成修复和隔离测试”；本轮不再进行真实往返切换或中断任务。已只读核对系统登录、启动与监控为其指定 20 倍 Pro，不能把此事实说成我们完成了实切。
+
+单次请求使用显式 profile、reported-week quota policy 与全新 UUID；启动前记录操作编号，复用编号或目标已为当前身份会拒绝。Pro 未报告五小时窗口时按新鲜官方周额度判断，已报告但耗尽或目标不足门槛仍拒绝。暂存规则绑定目标身份，只有切换、暂停和历史三项确认才可续做；应用重启不自动恢复。未改变长期自动化开关与参与偏好。独立 CLI 派单的零点数规则不用于 Desktop 事务，没有启用付费回退。
+
+全源 CLT 26.5 编译、7 组相关自检（8 暂停 / 18 续做模拟）、deep strict 签名通过。候选与安装版 binary / ASAR / ICNS 一致，安装前后 auth/config 摘要未变。helper 与图标保持 0927v2 内容；安装版私有连接 ready、trayVisible，父子进程身份核对通过。机器证据沿用 `.local-artifacts/token-monitor-native-0926v1/desktop-companion/` 下 `*-0927v3.*`，不另建输出树。
+
+0927v2 已完成原版浮窗设置导航与 AiGoodBro 网址整合、辅助进程启动修复，删除 9 个明确旧版应用包（约 1.09 GiB），当时 33 组自检通过。尚未获得设置页与右缘详情卡的完整目视验收，WidgetKit、Antigravity OAuth 和七套主题仍按前版边界记录；不宣称全部上游能力已实机验收。代码和文档没有推送或公开发布。下一步如需真实测试，必须按用户之后的新选择执行，不把更早的往返意向恢复为授权。
+
+## Previous entry · 0927v1
+
+2026-09-27 已覆盖安装 `/Applications/AiGoodBro.app`，公开名称 AiGoodBro 2.0，内部9.6.13(62)。来源分支 `codex/reset-messages-0926v1`，base HEAD `debedc32bbc1d619e6be184643a3a14f6d239393`；工作树含长期未提交增量，不要清理/回滚 vendor 或其他来源的改动。用户最新要求为1%暂停→安全切号→继续原任务，已实现并随此版安装。
+
+完整 Electron v0.62.0 经 `Companion/TokenMonitorDesktop` staging 适配，嵌入 `Contents/Helpers/AiGoodBro Token Core.app`；vendor 和 `/Applications/Token Monitor.app` 只读。Helper 命名 SIGTRAP、CSP 拒绝 inline style 导致 Home 品牌巨图均已修；品牌固定批准头像，Agent SVG、尺寸、字体和玻璃保留原版。最终ASAR `b7b9f4954ae8e100e6e1050672e1adf935c8f693a6e17172a7de0c083a9d078f`，宿主 `cbfc6bcb72a889674942bb510923113cc039bc9fde6da58ef1c3e98a4cda351a`。About显示v2.0，内置引擎另标v0.62.0；更新说明指向AiGoodBro宿主。
+
+最终Swift编译、deep strict签名、33组原生自检、39项打包检查、ASAR2223/78完整性通过。候选/安装版主程序、ICNS、ASAR一致；安装前后auth/config摘要未变。安装后精确宿主及嵌入helper进程启动，private socket ready=true/trayVisible=true。Home、Dashboard、Trends在候选真机检查通过；9/9导航成功。最后安装版CUA在自动化→管理时native pipe断开，reset后仍失败，应用并未崩溃，故About/新1%与续做控件不宣称已目视验收。本次GUI启动没有维护参数（验收遗漏），新1%开关仍为unset/关闭；未主动切号或续做，前后auth/config摘要不变。收口已向精确宿主PID发送正常TERM，确认宿主与全部helper退出，不留验收进程。EdgeDock已保存右侧/始终显示，但CUA只能绑定同名隐藏peek，rail/detail目视证据仍缺。
+
+暂停前 stage 准确thread/turn清单与目标身份哈希；先持维护租约、核身份/新鲜额度，再interrupt并确认全部停止。只有切号、重启、原对话历史核验成功才ready。续做前再次核目标当前身份、官方额度、完整无活跃任务快照；逐项验证同一interrupted轮次，通过thread/resume + turn/start在原对话续做。持久attempted防重，启动不自动恢复，失败批次保留，用户可手动继续/清记录。独立1% opt-in未替用户开启；自动续做选项默认true但受此opt-in控制。7组暂停及11组续做隔离模拟通过；没有暂停真实任务、没有实切账号、没有为测试发送提示词。三新文件由Sol Max services实现与审查，Root接UsageStore、transport、UI；Root最终编译通过。详见 [1%实现记录](docs/desktop-quota-pause-0927v1.md)。
+
+证据在 `.local-artifacts/token-monitor-native-0926v1/desktop-companion/`：`final-candidate-receipt.json`、`install-final-receipt.json`、`final-self-tests.log`、`host-build-quota-resume.log`。新版源图在 `Resources/AiGoodBro-approved-source-1254.png`，旧五款已迁为mascot；联系卡以SwiftUI覆盖旧logo，二维码原图字节未改。
+
+用户已授权必要编辑、构建、覆盖安装、只读查看；本轮没有push/release、远程Hub或实测通知，禁止修改全局Codex auth/config。WidgetKit自身签名、Antigravity OAuth仍不可用；七套后续主题仍待逐套实现/验收。软件文档区分这些限制，不宣称全部上游能力已实机验收。安装阶段没有清空废纸篓或删除官方Token Monitor。
+
+## Previous entry · 0926v4
+
+AiGoodBro 2.0 的 macOS 源码已接入 vendored Token Monitor v0.62.0 用量采集、Dashboard／菜单栏 Home・Status・Totals、原生玻璃和独立右缘 Edge Dock。用户指定的产品名称与应用图标仍为 AiGoodBro；各工具图标从已签名的上游 SVG 资源加载。2026-09-26 已将内部版本 **9.6.12（61）** 覆盖安装至 `/Applications/AiGoodBro.app`；安装二进制 SHA-256 为 `7edf55adf2507472e3aa96936bdd36ef46fc53b51ba4d0250fc6ce2174f0e4d5`，与候选一致，`codesign --verify --deep --strict`、随包 runtime 验证、33/33 原生自测均通过，临安装前后 `~/.codex/auth.json` 与 `~/.codex/config.toml` 摘要一致。机器证据位于 [.local-artifacts/token-monitor-native-0926v1/edge-dock/install-receipt.json](.local-artifacts/token-monitor-native-0926v1/edge-dock/install-receipt.json)。本次覆盖后尚未启动 AiGoodBro 安装版；候选实机已看到右缘凹肩 rail 与 OpenAI 结图标，但 CUA 单窗抓取未取得独立详情卡，不能写成详情卡已实机验收。
+
+**仍待处理**：用户要求右缘工具图标尺寸也与上游完全一致。当前 Edge rail 对共享 `ProviderMark` 再做 `scaleEffect(0.63)`，使 17pt 图案缩到约 10.7pt；上游 CSS 的常规值为 42px ring／17px glyph，紧凑值为 34px ring／14px glyph。用户随后要求先安装官方原版，因此 AiGoodBro 的该修正、重新构建与二次覆盖已暂停；不要将现有 2.0 安装包称作最终视觉一致。后续七套主题清单只在 [2.0 说明](docs/ai-goodbro-2.0-0926v4.md)中列为待办，未在本轮实现。
+
+官方独立 [Token Monitor v0.62.0](https://github.com/Javis603/token-monitor/releases/tag/v0.62.0) 已从官方 Apple Silicon DMG 校验并安装到 `/Applications/Token Monitor.app`，bundle ID `com.javis.tokenmonitor`；2026-09-26 CUA 从精确路径启动后看到中文设置窗口和官方 7px 右缘 Dock peek，原版进程保持运行。它是另一个应用，未替换 AiGoodBro；未添加账号、未启用 Hub 远传，也未更改身份或系统安全设置。当前优先让用户查看官方原版；AiGoodBro 的后续对齐须以用户新指令继续。
+
+## Previous entry · 0926v3
+
+相较 0926v2，新增公开重置预告自动推送：HTML 预告经独立 ledger 做首次基线与后续新公告去重；发送前持久化状态，结果不明时不自动重试；已完成公告仍走原 ledger。全源编译、`feishu-webhook` 与 `token-monitor-ui` 纯自测通过。**2026-09-26 已将 macOS 9.6.11（60）/ 0926v3 覆盖安装至 `/Applications/AiGoodBro.app`**；严格签名、候选与安装二进制 SHA-256 一致。CUA 从精确安装路径启动后目视确认首页显示 codex-resets.com 今日待确认预告与蓝色「今日新消息」。未发送测试通知、未推送代码或发布下载包；独立 Hub／全局 Skill 未更新。安装前与更早快照相比已观察到 auth 与所选 profile 摘要变化，来源未判定；临安装前后摘要一致。源码仍在分支 `codex/reset-messages-0926v1`、基线 HEAD `debedc32bbc1d619e6be184643a3a14f6d239393`，详见 [公开重置预告自动推送 0926v3](docs/reset-forecast-push-0926v3.md)。
+
+## Previous entry · 0926v2
+
+首页重置区只显示 codex-resets.com 消息、当天蓝色高亮，并新增 GPT-6 Sol / Luna 模型目录及随包 Python / Go 适配。0926v2 于 2026-09-26 13:52 覆盖安装为 9.6.10（59）；清理与旧版验证细节见 [重置消息与模型目录 0926v2](docs/reset-models-0926v2.md)。该记录保留当时的真实结果；当前安装与界面验收以 0926v3 记录为准。
+
+## Previous entry · 0923v9
 
 相较 0923v8：修复 Grok 已有余额／周期时间被空窗口遮蔽、OpenCode 打包桥接误判和 Kimi 新旧额度格式兼容；增加 Antigravity 与非 Codex 统一多账号入口。首页用量统计独立放在推荐／重置公告下方、账号区之前，默认折叠，保留热力图、趋势及工具明细。Jev 与可调度账号参与判断和对抗审查。源码统一从 [草稿 PR #12](https://github.com/BLACKIELF/AgentHub-AiGoodBro/pull/12) 的最新提交接手；旧 PR #3、#10、#11 的提交已包含，重复入口已关闭。实现、验证、安装及边界见 [CLI 额度与多账号修复 0923v9](docs/cli-quota-repair-0923v9.md)。Windows 已补余额／重置卡独立显示及用量模块，但非 Codex 原生适配并未完整移植；接手者须按 [Windows 交接](docs/windows-port/WINDOWS_AI_HANDOFF_0922v4.md) 继续，不能只做打包。
 

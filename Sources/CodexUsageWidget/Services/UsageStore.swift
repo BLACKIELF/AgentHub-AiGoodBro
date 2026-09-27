@@ -13,18 +13,36 @@ enum VisualEnergyMode: Equatable {
 final class UsageStore: ObservableObject {
     @Published private(set) var engineState = TokenMonitorEngineState()
     @Published private(set) var statisticsEngineChoice = StatisticsEngineChoice.stored()
+    let serviceStatus: TokenMonitorServiceStatusStore
+    let tokenMonitorHubSync: TokenMonitorHubSyncStore
+    @MainActor private(set) lazy var quotaResume = CodexQuotaResumeStore(previewOnly: isPreview)
+    private var quotaResumeTask: Task<Void, Never>?
     private var engineGeneration = TokenMonitorGeneration()
     private var engineCancellation: TokenMonitorCancellation?
+    private struct StatisticsEngineScanKey: Equatable {
+        let choice: StatisticsEngineChoice
+        let preference: StatisticsTimeZonePreference
+        let timeZone: String
+        let sources: [TokenMonitorSource]
+    }
+    private var engineScanKey: StatisticsEngineScanKey?
     private var engineLocalSources: [TokenMonitorSource] = []
     private var statisticsIncludesManagedCodex = true
     @Published private(set) var engineLimitsByProfileID: [String: TokenMonitorResponse] = [:]
     private var engineQuotaCancellation: TokenMonitorCancellation?
     private var engineLimitsSelector: ((TokenMonitorResponse, String) -> TokenMonitorJSON?)?
+    private var tokenMonitorHubTask: Task<Void, Never>?
+    private var tokenMonitorHubProbeTask: Task<Void, Never>?
+    private var tokenMonitorStatusRefreshTask: Task<Void, Never>?
+    private var tokenMonitorHubGeneration: UInt64 = 0
+    private var tokenMonitorHubProbeGeneration: UInt64 = 0
+    private var tokenMonitorStatusGeneration: UInt64 = 0
+    private var tokenMonitorPresentationForwarders: Set<AnyCancellable> = []
+    private var pendingTokenMonitorHubPublish: TokenMonitorResponse?
 
     /// Optional additional selector restriction; it cannot override confirmed target binding.
     func configureStatisticsLimitsSelector(_ selector: @escaping (TokenMonitorResponse, String) -> TokenMonitorJSON?) {
         engineLimitsSelector = selector
-        cancelStatisticsEngine()
     }
 
     /// Root supplies the existing local account store's metadata, never credentials.
@@ -47,8 +65,12 @@ final class UsageStore: ObservableObject {
                 canonicalPath: URL(fileURLWithPath: profile.configDirectory).appendingPathComponent(logs).path,
                 pathRole: .logRoot, toolId: provider)
         }
-        cancelStatisticsEngine()
-        if hasStarted { refresh(queueIfBusy: true) }
+        if hasStarted {
+            refreshStatisticsEngine()
+            refresh(queueIfBusy: true)
+        } else {
+            cancelStatisticsEngine()
+        }
     }
 
     /// Caller supplies approved upstream collector roots and exact path roles, never inferred homes.
@@ -56,17 +78,21 @@ final class UsageStore: ObservableObject {
         guard sources.allSatisfy({ $0.authority == .upstream }) else { throw TokenMonitorFailure.invalidSource }
         engineLocalSources = try TokenMonitorSource.validated(sources)
         statisticsIncludesManagedCodex = includeManagedCodex
-        cancelStatisticsEngine()
-        if hasStarted { refresh(queueIfBusy: true) }
+        if hasStarted {
+            refreshStatisticsEngine()
+            refresh(queueIfBusy: true)
+        } else {
+            cancelStatisticsEngine()
+        }
     }
 
     func selectStatisticsEngine(_ choice: StatisticsEngineChoice) {
         UserDefaults.standard.set(choice.rawValue, forKey: StatisticsEngineChoice.storageKey)
         statisticsEngineChoice = choice
-        cancelStatisticsEngine()
         // Previous-mode values must not be aggregated with the newly selected authority.
         engineState = TokenMonitorEngineState()
         engineLimitsByProfileID = [:]
+        refreshStatisticsEngine()
         refresh(queueIfBusy: true)
     }
 
@@ -74,46 +100,56 @@ final class UsageStore: ObservableObject {
         engineGeneration.invalidate()
         engineCancellation?.cancel()
         engineCancellation = nil
+        engineScanKey = nil
         engineState.phase = .stopped
     }
 
+    private func currentStatisticsEngineScanKey() -> StatisticsEngineScanKey {
+        var sources = engineLocalSources
+        if statisticsIncludesManagedCodex {
+            sources += profiles.filter { !$0.isSystemProfile }.map { profile in
+                // Path normalization stays in request validation on the utility queue.
+                TokenMonitorSource(
+                    id: profile.id, providerId: "codex", kind: .managedAccount,
+                    canonicalPath: profile.codexHomeURL.path, pathRole: .codexHome, toolId: "codex")
+            }
+        }
+        return StatisticsEngineScanKey(
+            choice: StatisticsEngineChoice.stored(), preference: statisticsPreference,
+            timeZone: statisticsPreference.resolvedTimeZone().identifier, sources: sources)
+    }
+
     private func refreshStatisticsEngine() {
+        let key = currentStatisticsEngineScanKey()
+        if engineState.phase == .loading, let cancellation = engineCancellation,
+            !cancellation.isCancelled, engineScanKey == key
+        {
+            return
+        }
         cancelStatisticsEngine()
-        let choice = StatisticsEngineChoice.stored()
-        statisticsEngineChoice = choice
-        guard choice == .upstream else {
-            engineState = TokenMonitorEngineState(phase: choice == .custom ? .custom : .legacy)
+        statisticsEngineChoice = key.choice
+        guard key.choice == .upstream else {
+            engineState = TokenMonitorEngineState(phase: key.choice == .custom ? .custom : .legacy)
             return
         }
         let generation = engineGeneration.value
         let cancellation = TokenMonitorCancellation()
         engineCancellation = cancellation
+        engineScanKey = key
         engineState.phase = .loading
         engineState.failureCode = nil
-        let candidates = statisticsIncludesManagedCodex ? profiles.filter { !$0.isSystemProfile } : []
-        let localSources = engineLocalSources
-        let preference = statisticsPreference
         DispatchQueue.global(qos: .utility).async {
-            let context = RuntimeLoadContext.live(statisticsPreference: preference)
-            var sources = localSources
-            for profile in candidates {
-                let home = profile.codexHomeURL.resolvingSymlinksInPath().standardizedFileURL
-                // Registered home provenance is independent of current login and historical ownership.
-                sources.append(
-                    TokenMonitorSource(
-                        id: profile.id, providerId: "codex", kind: .managedAccount,
-                        canonicalPath: home.path, pathRole: .codexHome, toolId: "codex"))
-            }
+            let context = RuntimeLoadContext.live(statisticsPreference: key.preference)
             var request = TokenMonitorRequest(
                 operation: .collectUsage,
-                timezone: context.statistics.resolvedIdentifier,
+                timezone: key.timeZone,
                 cacheDirectory: context.cacheDirectory.appendingPathComponent("TokenMonitorEngine").path,
-                sources: sources)
+                sources: key.sources)
             // A full multi-agent history scan can outlast a single account quota request.
-            request.options.timeoutMs = 60_000
+            request.options.timeoutMs = 180_000
             let result: Result<TokenMonitorEngineState, TokenMonitorFailure>
             do {
-                guard !sources.isEmpty else { throw TokenMonitorFailure.invalidSource }
+                guard !key.sources.isEmpty else { throw TokenMonitorFailure.invalidSource }
                 let response = try TokenMonitorEngine().collect(request: request, cancellation: cancellation)
                 guard response.status != .error else { throw TokenMonitorFailure.engineError }
                 let prepared = TokenMonitorEngineState(phase: response.status == .ok ? .ready : .partial, lastGood: response)
@@ -121,18 +157,116 @@ final class UsageStore: ObservableObject {
                 result = .success(prepared)
             } catch { result = .failure((error as? TokenMonitorFailure) ?? .invalidResponse) }
             DispatchQueue.main.async {
-                guard self.engineGeneration.accepts(generation), !cancellation.isCancelled,
-                    choice == StatisticsEngineChoice.stored(), preference == self.statisticsPreference
-                else { return }
+                guard self.engineGeneration.accepts(generation), !cancellation.isCancelled else { return }
+                guard key == self.currentStatisticsEngineScanKey() else {
+                    self.refreshStatisticsEngine()
+                    return
+                }
                 self.engineCancellation = nil
+                self.engineScanKey = nil
                 switch result {
                 case .success(let prepared):
                     self.engineState = prepared
+                    if let response = prepared.lastGood {
+                        self.updateTokenMonitorHubAfterLocalCollection(response)
+                    }
                 case .failure(let failure):
                     self.engineState.phase = .failed
                     self.engineState.failureCode = failure
                 }
             }
+        }
+    }
+
+    private func updateTokenMonitorHubAfterLocalCollection(_ response: TokenMonitorResponse) {
+        Task { @MainActor [weak self] in
+            self?.synchronizeTokenMonitorHub(publish: response)
+        }
+    }
+
+    private func observeTokenMonitorPresentationChanges() {
+        serviceStatus.objectWillChange
+            .sink { [weak self] _ in
+                Task { @MainActor [weak self] in self?.objectWillChange.send() }
+            }
+            .store(in: &tokenMonitorPresentationForwarders)
+        tokenMonitorHubSync.objectWillChange
+            .sink { [weak self] _ in
+                Task { @MainActor [weak self] in self?.objectWillChange.send() }
+            }
+            .store(in: &tokenMonitorPresentationForwarders)
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            self.quotaResume.objectWillChange
+                .sink { [weak self] _ in self?.objectWillChange.send() }
+                .store(in: &self.tokenMonitorPresentationForwarders)
+        }
+    }
+
+    /// UI settings actions call this after saving/enabling Hub configuration or an explicit probe.
+    /// Ordinary reads are limited to visible app time and use the Hub's separate publish opt-in.
+    @MainActor
+    func refreshTokenMonitorConnections(manualHubProbe: Bool = false) {
+        guard !isPreview, hasStarted,
+            manualHubProbe || isMainWindowActive || isTaskOverviewVisible
+        else { return }
+        if tokenMonitorStatusRefreshTask == nil {
+            let status = serviceStatus
+            tokenMonitorStatusGeneration &+= 1
+            let generation = tokenMonitorStatusGeneration
+            tokenMonitorStatusRefreshTask = Task { @MainActor [weak self] in
+                await status.refresh()
+                guard let self, self.tokenMonitorStatusGeneration == generation else { return }
+                self.tokenMonitorStatusRefreshTask = nil
+            }
+        }
+        if manualHubProbe && !tokenMonitorHubSync.isEnabled {
+            guard tokenMonitorHubProbeTask == nil else { return }
+            let hub = tokenMonitorHubSync
+            tokenMonitorHubProbeGeneration &+= 1
+            let generation = tokenMonitorHubProbeGeneration
+            tokenMonitorHubProbeTask = Task { @MainActor [weak self] in
+                await hub.probe()
+                guard let self, self.tokenMonitorHubProbeGeneration == generation else { return }
+                self.tokenMonitorHubProbeTask = nil
+            }
+        } else {
+            synchronizeTokenMonitorHub(force: manualHubProbe)
+        }
+    }
+
+    @MainActor
+    private func synchronizeTokenMonitorHub(publish response: TokenMonitorResponse? = nil, force: Bool = false) {
+        guard !isPreview, tokenMonitorHubSync.isEnabled else { return }
+        if let response, response.status == .ok, tokenMonitorHubSync.isPublishingThisDevice {
+            pendingTokenMonitorHubPublish = response
+        }
+        guard force || isMainWindowActive || isTaskOverviewVisible else { return }
+        guard tokenMonitorHubTask == nil else { return }
+        tokenMonitorHubGeneration &+= 1
+        let generation = tokenMonitorHubGeneration
+        tokenMonitorHubTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            while !Task.isCancelled {
+                guard self.tokenMonitorHubSync.isEnabled else {
+                    self.pendingTokenMonitorHubPublish = nil
+                    break
+                }
+                let nextPublish = self.pendingTokenMonitorHubPublish
+                self.pendingTokenMonitorHubPublish = nil
+                if let nextPublish, self.tokenMonitorHubSync.isPublishingThisDevice,
+                    force || self.isMainWindowActive || self.isTaskOverviewVisible
+                {
+                    await self.tokenMonitorHubSync.publishThisDevice(nextPublish)
+                }
+                guard self.tokenMonitorHubSync.isEnabled,
+                    force || self.isMainWindowActive || self.isTaskOverviewVisible
+                else { break }
+                await self.tokenMonitorHubSync.refresh()
+                if self.pendingTokenMonitorHubPublish == nil { break }
+            }
+            guard self.tokenMonitorHubGeneration == generation else { return }
+            self.tokenMonitorHubTask = nil
         }
     }
 
@@ -158,6 +292,12 @@ final class UsageStore: ObservableObject {
         let sourceQuota: AutomaticSwitchQuotaState
         let eventID: UUID
         let thresholds: LowQuotaAlertThresholds
+        let pauseAtOnePercent: Bool
+        var oneShotIntent: CodexOneShotSwitchIntent? = nil
+        var pausedTasksConfirmed = false
+        var historyConfirmed = false
+        var pausedLoadedThreadIDs: Set<String>?
+        var resumeAccountKey: String?
         var completeTasks: CodexTaskLiveSnapshot?
     }
 
@@ -235,6 +375,8 @@ final class UsageStore: ObservableObject {
     @Published private(set) var automaticAccountSwitchEnabled: Bool
     @Published private(set) var accountRefreshFrequency: AccountRefreshFrequency = .automatic
     @Published private(set) var lowQuotaAlertThresholds: LowQuotaAlertThresholds = .standard
+    @Published private(set) var pauseDesktopTasksAtOnePercent = false
+    @Published private(set) var resumeDesktopTasksAfterSwitch = true
     private(set) var pausedAutomationFeatures: [PausedAutomationFeature] = []
     @Published private(set) var feishuNotificationsEnabled: Bool
     @Published private(set) var feishuQuotaResetEnabled = false
@@ -294,6 +436,8 @@ final class UsageStore: ObservableObject {
     private var automaticSwitchTargetID: String?
     private var automaticCandidateRefreshAttemptAt: Date?
     private var automaticSwitchContext: AutomaticSwitchContext?
+    private var oneShotPreparationTask: Task<Void, Never>?
+    private var oneShotResumeAuthorization: (accountKey: String, policy: CodexOneShotSwitchIntent.QuotaPolicy)?
     private var codexHistoryConfirmationSuccess: (() -> Void)?
     private var codexHistoryConfirmationFailure: ((String) -> Void)?
     private var codexHistoryConfirmationTimeout: DispatchWorkItem?
@@ -350,11 +494,16 @@ final class UsageStore: ObservableObject {
 
     init() {
         isPreview = false
+        serviceStatus = TokenMonitorServiceStatusStore()
+        tokenMonitorHubSync = TokenMonitorHubSyncStore()
         publicResetAnnouncements = PublicResetAnnouncementMonitor()
         publisherMessages = PublisherMessageMonitor()
         statisticsPreference = StatisticsTimeZonePreferenceStore.load()
         automaticAccountSwitchEnabled = UserDefaults.standard.bool(forKey: CodexAutomaticSwitchPolicy.enabledDefaultsKey)
-        lowQuotaAlertThresholds = .load()
+        let storedPauseAtOnePercent = UserDefaults.standard.bool(forKey: CodexDesktopQuotaPause.enabledDefaultsKey)
+        pauseDesktopTasksAtOnePercent = storedPauseAtOnePercent
+        resumeDesktopTasksAfterSwitch = UserDefaults.standard.object(forKey: "AiGoodBro.quotaResumeAutomatically") as? Bool ?? true
+        lowQuotaAlertThresholds = storedPauseAtOnePercent ? CodexDesktopQuotaPause.thresholds : .load()
         accountRefreshFrequency = .load()
         pausedAutomationFeatures = PausedAutomationFeature.read(from: UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain))
         feishuNotificationsEnabled = NextFeatureDefaults.isEnabled(Self.feishuNotificationsEnabledKey)
@@ -380,12 +529,21 @@ final class UsageStore: ObservableObject {
         selectedLaunchProfileID = profileStore.selectedLaunchProfileID
         automationEvents = automationAuditStore.load()
         refreshFeishuWebhookConfiguration()
+        observeTokenMonitorPresentationChanges()
     }
 
     /// Documentation fixtures never load account credentials, Keychain, audit logs or
     /// persistent token totals. All profile-store I/O is confined to the supplied sandbox.
-    init(previewProfiles: [CodexProfile], snapshot: UsageSnapshot, isolatedRoot: URL) {
+    init(
+        previewProfiles: [CodexProfile],
+        snapshot: UsageSnapshot,
+        isolatedRoot: URL,
+        serviceStatus: TokenMonitorServiceStatusStore? = nil,
+        tokenMonitorHubSync: TokenMonitorHubSyncStore? = nil
+    ) {
         isPreview = true
+        self.serviceStatus = serviceStatus ?? TokenMonitorServiceStatusStore(previewOnly: true)
+        self.tokenMonitorHubSync = tokenMonitorHubSync ?? TokenMonitorHubSyncStore(previewOnly: true)
         publicResetAnnouncements = PublicResetAnnouncementMonitor(preview: true)
         publisherMessages = PublisherMessageMonitor(preview: true)
         statisticsPreference = .default
@@ -406,6 +564,7 @@ final class UsageStore: ObservableObject {
         feishuTaskCompletionNotificationsEnabled = false
         feishuMessageOptions = .standard
         feishuWebhookConfigured = false
+        observeTokenMonitorPresentationChanges()
     }
 
     var runtimeSummaries: [RuntimeMenuSummary] {
@@ -1899,8 +2058,176 @@ final class UsageStore: ObservableObject {
         codexLiveTasks = refreshedSnapshot
     }
 
+    /// An explicit launch argument is consumed once in this process. The App
+    /// owns this task while Codex Desktop is interrupted and restarted.
+    @MainActor
+    func startOneShotDesktopSwitch(_ intent: CodexOneShotSwitchIntent) {
+        guard hasStarted, oneShotPreparationTask == nil, automaticSwitchContext == nil,
+            automaticSwitchTargetID == nil, !isPreview
+        else { return }
+        oneShotPreparationTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.oneShotPreparationTask = nil }
+            let deadline = Date().addingTimeInterval(60)
+            while self.isLaunchingCodex || self.isAccountSwitchTransactionActive || self.isRefreshing
+                || self.isRefreshingWarmUpProfiles || self.warmingProfileID != nil
+            {
+                guard !Task.isCancelled, Date() < deadline else { return }
+                do { try await Task.sleep(nanoseconds: 100_000_000) } catch { return }
+            }
+            guard !Task.isCancelled, self.quotaResume.canBeginAutomaticSwitch(),
+                !self.isLoggingIn, self.desktopSwitchMaintenanceLeases.isEmpty,
+                let system = self.profiles.first(where: \.isSystemProfile),
+                let target = self.profiles.first(where: { $0.id == intent.profileID && !$0.isSystemProfile }),
+                CodexOneShotSwitchIntent.targetPlanMatches(
+                    target.resolvedPlanType, displayedMultiplier: target.displayedProTierMultiplier)
+            else {
+                self.accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
+                    "一次性切换未启动：账号身份、目标 Pro 套餐或未完成任务记录未通过预检",
+                    "One-time switch did not start: account identity, target Pro plan or pending task record failed preflight.")
+                return
+            }
+            let targetHome = self.profileStore.effectiveCredentialHome(for: target.id) ?? target.codexHomeURL
+            guard
+                let sourceIdentity = CodexOfficialProfileReader.credentialIdentity(codexHomeURL: system.codexHomeURL),
+                let targetIdentity = CodexOfficialProfileReader.credentialIdentity(codexHomeURL: targetHome),
+                system.matchesRecordedCredential(sourceIdentity), target.matchesRecordedCredential(targetIdentity),
+                sourceIdentity.accountID != targetIdentity.accountID,
+                let sourceAccount = self.maskedAccount(for: system),
+                let targetAccount = self.maskedAccount(for: target)
+            else {
+                self.accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
+                    "一次性切换未启动：账号身份、目标 Pro 套餐或未完成任务记录未通过预检",
+                    "One-time switch did not start: account identity, target Pro plan or pending task record failed preflight.")
+                return
+            }
+            self.accountManagerMessage =
+                intent.simulateLowQuota
+                ? WidgetLanguage.storedOrAutomatic().text(
+                    "模拟低额度测试：正在读取两个账号的真实官方额度…",
+                    "Simulated low-quota test: reading both accounts' real official limits…")
+                : WidgetLanguage.storedOrAutomatic().text(
+                    "正在即时读取两个账号的官方额度…", "Reading fresh official limits for both accounts…")
+            let preference = self.statisticsPreference
+            let pair = await Task.detached(priority: .userInitiated) {
+                CodexSwitchPreparation.load(
+                    source: RuntimeLoadContext.live(statisticsPreference: preference, codexHomeDirectory: system.codexHomeURL),
+                    target: RuntimeLoadContext.live(statisticsPreference: preference, codexHomeDirectory: targetHome))
+            }.value
+            let now = Date()
+            guard !Task.isCancelled,
+                pair.source.account?.email?.lowercased() == sourceIdentity.email,
+                pair.target.account?.email?.lowercased() == targetIdentity.email,
+                let currentTarget = self.profiles.first(where: { $0.id == target.id }),
+                CodexOneShotSwitchIntent.targetPlanMatches(
+                    pair.target.account?.planType, displayedMultiplier: currentTarget.displayedProTierMultiplier),
+                intent.quotaPolicy.accepts(pair.source, target: false, now: now),
+                intent.quotaPolicy.accepts(pair.target, target: true, now: now),
+                (try? self.accountActions.currentSystemAuthFingerprint(
+                    expectedEmail: sourceIdentity.email,
+                    expectedAccountID: sourceIdentity.accountID)) != nil,
+                self.profiles.first(where: \.isSystemProfile)?.lastSnapshot?.accountID == sourceIdentity.accountID
+            else {
+                self.accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
+                    "一次性切换未启动：即时官方身份、额度或目标套餐未通过预检",
+                    "One-time switch did not start: fresh official identity, limits or target plan failed preflight.")
+                return
+            }
+            if intent.simulateLowQuota {
+                let client = self.taskClient
+                let taskSnapshot = await Task.detached(priority: .userInitiated) {
+                    client.awaitSnapshot(timeout: 5)
+                }.value
+                let decisionNow = Date()
+                let thresholds = CodexDesktopQuotaPause.thresholds
+                let simulated = AutomaticSwitchQuotaState(snapshot: pair.source).simulatingLowQuota()
+                let preferred = simulated.flatMap { quota in
+                    CodexAutomaticSwitchPolicy.preferredCandidate(
+                        [.init(profileID: target.id, quota: AutomaticSwitchQuotaState(snapshot: pair.target))],
+                        for: quota.triggeredWindows(thresholds: thresholds))
+                }
+                let legacyManagerRunning =
+                    !NSRunningApplication
+                    .runningApplications(withBundleIdentifier: "local.codex.account-manager").isEmpty
+                guard !Task.isCancelled, let simulated, let taskSnapshot,
+                    CodexAutomaticSwitchPolicy.shouldEvaluate(
+                        enabled: true, sourceQuota: simulated, sourceRefreshedAt: pair.source.refreshedAt,
+                        taskSnapshot: taskSnapshot, codexInactiveSince: nil,
+                        legacyManagerRunning: legacyManagerRunning, lastAttemptAt: nil, lastSucceededAt: nil,
+                        thresholds: thresholds, pauseAtOnePercent: true, now: decisionNow),
+                    preferred?.profileID == target.id
+                else {
+                    self.accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
+                        "模拟低额度预检未通过：真实任务、官方额度或指定候选不满足自动决策门槛",
+                        "Simulated low-quota preflight failed: real task, official limits or selected candidate did not pass the automatic decision.")
+                    return
+                }
+            }
+            do {
+                try self.profileStore.record(
+                    pair.source, for: system.id, allowAccountOnly: true,
+                    allowSystemAccountChange: true)
+                try self.profileStore.record(pair.target, for: target.id)
+                self.syncProfiles()
+            } catch {
+                self.accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
+                    "一次性切换未启动：无法保存即时额度核验结果",
+                    "One-time switch did not start: the fresh quota result could not be saved.")
+                return
+            }
+            guard
+                let fingerprint = try? self.accountActions.currentSystemAuthFingerprint(
+                    expectedEmail: sourceIdentity.email, expectedAccountID: sourceIdentity.accountID),
+                let freshSystem = self.profiles.first(where: \.isSystemProfile),
+                let freshTarget = self.profiles.first(where: { $0.id == target.id }),
+                let sourceSaved = freshSystem.lastSnapshot,
+                let targetSaved = freshTarget.lastSnapshot,
+                CodexOneShotSwitchIntent.targetPlanMatches(
+                    targetSaved.planType, displayedMultiplier: freshTarget.displayedProTierMultiplier),
+                intent.quotaPolicy.accepts(
+                    CodexSwitchSnapshotProjection.snapshot(
+                        saved: sourceSaved,
+                        identity: sourceIdentity), target: false),
+                intent.quotaPolicy.accepts(
+                    CodexSwitchSnapshotProjection.snapshot(
+                        saved: targetSaved,
+                        identity: targetIdentity), target: true),
+                self.quotaResume.canBeginAutomaticSwitch(),
+                !self.isLaunchingCodex, !self.isAccountSwitchTransactionActive
+            else {
+                self.accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
+                    "一次性切换未启动：额度或账号状态在核验后发生变化",
+                    "One-time switch did not start: quota or account state changed after verification.")
+                return
+            }
+            guard intent.claim() else {
+                self.accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
+                    "一次性切换未启动：此操作编号已使用或无法持久记录",
+                    "One-time switch did not start: the operation ID was used or could not be saved.")
+                return
+            }
+            self.oneShotResumeAuthorization = nil
+            var context = AutomaticSwitchContext(
+                sourceProfileID: freshSystem.id, sourceIdentityKey: sourceIdentity.email,
+                sourceAccountID: sourceIdentity.accountID, sourceAuthFingerprint: fingerprint,
+                sourceAccount: sourceAccount, targetAccount: targetAccount,
+                sourceQuota: AutomaticSwitchQuotaState(snapshot: pair.source), eventID: UUID(),
+                thresholds: self.lowQuotaAlertThresholds, pauseAtOnePercent: true,
+                completeTasks: nil)
+            context.oneShotIntent = intent
+            self.automaticSwitchContext = context
+            self.automaticSwitchTargetID = target.id
+            if intent.simulateLowQuota {
+                self.accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
+                    "模拟低额度 0.99% 仅用于决策；真实身份与额度已核验，正在暂停并切换…",
+                    "Simulated 0.99% was used only for the decision; real identity and limits passed. Pausing and switching…")
+            }
+            self.launchCodex(with: target.id)
+        }
+    }
+
     func launchCodex(with profileID: String, forceWithoutSessionRestore: Bool = false) {
-        guard !isLaunchingCodex, !isLoggingIn, !isAccountSwitchTransactionActive else {
+        guard !isLaunchingCodex, !isLoggingIn, !isAccountSwitchTransactionActive, quotaResumeTask == nil else {
             presentAccountSwitchBlock(
                 WidgetLanguage.storedOrAutomatic().text(
                     "已有登录或切换正在处理，请等待完成；当前账号未改变", "A sign-in or switch is already in progress. Wait for it to finish."), isAutomatic: automaticSwitchTargetID == profileID)
@@ -1925,6 +2252,7 @@ final class UsageStore: ObservableObject {
                     switchPreparationEvidenceID = nil
                     finishDesktopSwitchPreparation()
                     isLaunchingCodex = false
+                    finishDesktopSwitchMaintenance()
                     finishAutomaticSwitchAttempt(
                         for: profileID, succeeded: false, failureReason: .validationFailed,
                         detail: WidgetLanguage.storedOrAutomatic().text(
@@ -1946,6 +2274,12 @@ final class UsageStore: ObservableObject {
                 }
             }
             guard !Task.isCancelled else { return }
+            if isAutomatic, !quotaResume.canBeginAutomaticSwitch() {
+                accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
+                    "已有未处理的暂停任务或恢复记录不可读；本次不再自动换号",
+                    "Paused tasks are still pending or the recovery record is unreadable. Automatic switching stopped.")
+                return
+            }
             accountManagerMessage = WidgetLanguage.storedOrAutomatic().text("正在检查桌面任务…", "Checking Desktop tasks…")
             let client = taskClient
             if isAutomatic { automaticSwitchContext?.completeTasks = nil }
@@ -1967,14 +2301,106 @@ final class UsageStore: ObservableObject {
                 }
             }
             let board = snapshot.taskBoard
+            var pausedVisibleThread: String?
+            var alreadyReserved = false
+            if isAutomatic, automaticSwitchContext?.pauseAtOnePercent == true {
+                pausedVisibleThread = await Task.detached(priority: .userInitiated) {
+                    CodexSessionOpener.visibleThreadID(in: board)
+                }.value
+                if !NSRunningApplication.runningApplications(withBundleIdentifier: "com.openai.codex").isEmpty,
+                    pausedVisibleThread == nil
+                {
+                    accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
+                        "无法确认要保留的桌面对话，本次未暂停或切号", "The Desktop conversation could not be verified. No task was paused or account switched.")
+                    return
+                }
+                guard await reserveDesktopSwitchMaintenance(for: profileID) else { return }
+                alreadyReserved = true
+                guard canContinueQuotaPause(for: profileID) else { return }
+                let simulatedLowQuota = automaticSwitchContext?.oneShotIntent?.simulateLowQuota == true
+                accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
+                    automaticSwitchContext?.oneShotIntent == nil
+                        ? "额度剩余不超过 1%，正在暂停桌面任务…"
+                        : (simulatedLowQuota ? "模拟低额度测试：正在暂停桌面任务…" : "一次性切换：正在暂停桌面任务…"),
+                    automaticSwitchContext?.oneShotIntent == nil
+                        ? "Quota is at 1% or less. Pausing Desktop tasks…"
+                        : (simulatedLowQuota ? "Simulated low-quota test: pausing Desktop tasks…" : "One-time switch: pausing Desktop tasks…"))
+                let paused = await CodexDesktopQuotaPause.pause(
+                    client: client,
+                    requiredThreadID: pausedVisibleThread,
+                    onLoadedThreads: { [weak self] ids in
+                        self?.automaticSwitchContext?.pausedLoadedThreadIDs = ids
+                    },
+                    preflightHistory: { [weak self] turns in
+                        guard let self else { return false }
+                        guard self.automaticSwitchContext?.oneShotIntent != nil else { return true }
+                        guard !turns.isEmpty, self.canContinueQuotaPause(for: profileID) else { return false }
+                        let historyComplete = await Task.detached(priority: .userInitiated) {
+                            turns.allSatisfy { turn in
+                                if case .success = CodexThreadHistoryProbe.capture(threadID: turn.threadID) {
+                                    return true
+                                }
+                                return false
+                            }
+                        }.value
+                        guard historyComplete, self.canContinueQuotaPause(for: profileID) else { return false }
+                        for turn in turns {
+                            guard
+                                let response = await client.desktopPauseRequest(
+                                    "thread/turns/list",
+                                    params: [
+                                        "threadId": turn.threadID, "limit": 1,
+                                        "sortDirection": "desc", "itemsView": "notLoaded",
+                                    ]),
+                                CodexDesktopQuotaPause.activeTurnID(response) == turn.turnID,
+                                self.canContinueQuotaPause(for: profileID)
+                            else { return false }
+                        }
+                        return true
+                    },
+                    prepareInterrupts: { [weak self] turns in
+                        guard let self, self.canContinueQuotaPause(for: profileID),
+                            let target = self.profiles.first(where: { $0.id == profileID }),
+                            let key = TokenMonitorHostIdentity.accountKey(
+                                email: target.lastSnapshot?.email,
+                                accountID: target.lastSnapshot?.accountID),
+                            self.quotaResume.stage(
+                                turns, targetAccountKey: key,
+                                oneShotQuotaPolicy: self.automaticSwitchContext?.oneShotIntent?.quotaPolicy)
+                        else { return false }
+                        self.automaticSwitchContext?.resumeAccountKey = key
+                        return true
+                    }
+                ) { [weak self] in
+                    self?.canContinueQuotaPause(for: profileID) == true
+                }
+                guard paused, !Task.isCancelled,
+                    let checked = await Task.detached(
+                        priority: .userInitiated,
+                        operation: {
+                            client.awaitSnapshot(timeout: 5)
+                        }
+                    ).value,
+                    CodexAutomaticSwitchPolicy.hasNoActiveTasks(checked, legacyManagerRunning: false),
+                    canContinueQuotaPause(for: profileID)
+                else {
+                    accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
+                        "尚未确认全部任务暂停；保留当前账号，已暂停的任务不会自动重跑",
+                        "Not all tasks are confirmed paused. The current account is retained; interrupted work will not be restarted automatically.")
+                    return
+                }
+                codexLiveTasks = checked
+                automaticSwitchContext?.completeTasks = checked
+                automaticSwitchContext?.pausedTasksConfirmed = true
+            }
             let canRestore =
                 !forceWithoutSessionRestore
                 && CodexAutomaticSwitchPolicy.hasNoActiveTasks(codexLiveTasks, legacyManagerRunning: false)
             let visibleThread = await Task.detached(priority: .userInitiated) {
-                canRestore ? CodexSessionOpener.visibleThreadID(in: board) : nil
+                pausedVisibleThread ?? (canRestore ? CodexSessionOpener.visibleThreadID(in: board) : nil)
             }.value
             guard !Task.isCancelled else { return }
-            let reserved = await reserveDesktopSwitchMaintenance(for: profileID)
+            let reserved = alreadyReserved ? true : await reserveDesktopSwitchMaintenance(for: profileID)
             guard !Task.isCancelled else { return }
             guard reserved else {
                 finishDesktopSwitchPreparation()
@@ -1986,6 +2412,77 @@ final class UsageStore: ObservableObject {
             switchPreparationEvidenceID = nil
             beginCodexSwitch(with: profileID, forceWithoutSessionRestore: forceWithoutSessionRestore, visibleThreadID: visibleThread)
         }
+    }
+
+    private func canContinueQuotaPause(for profileID: String) -> Bool {
+        guard let context = automaticSwitchContext else { return false }
+        let oneShot = context.oneShotIntent
+        guard !Task.isCancelled,
+            oneShot != nil || (automaticAccountSwitchEnabled && pauseDesktopTasksAtOnePercent),
+            automaticSwitchTargetID == profileID, !desktopSwitchMaintenanceLeases.isEmpty,
+            oneShot != nil || !pausedAutomationFeatures.contains(.lowQuota),
+            context.pauseAtOnePercent,
+            oneShot != nil || context.thresholds == lowQuotaAlertThresholds,
+            switchScopeIsEligible(for: profileID),
+            let system = profiles.first(where: \.isSystemProfile), let source = system.lastSnapshot,
+            source.accountID == context.sourceAccountID,
+            Self.automaticQuotaEvidenceIsFresh(
+                succeeded: source.quotaReadSucceeded,
+                fetchedAt: source.fetchedAt, failedAt: system.lastQuotaReadFailureAt, now: Date()),
+            let target = profiles.first(where: { $0.id == profileID }), let quota = target.lastSnapshot,
+            let targetIdentity = CodexOfficialProfileReader.credentialIdentity(
+                codexHomeURL: profileStore.effectiveCredentialHome(for: target.id) ?? target.codexHomeURL),
+            target.matchesRecordedCredential(targetIdentity), targetIdentity.accountID != context.sourceAccountID,
+            Self.automaticQuotaEvidenceIsFresh(
+                succeeded: quota.quotaReadSucceeded,
+                fetchedAt: quota.fetchedAt, failedAt: target.lastQuotaReadFailureAt, now: Date()),
+            quotaPauseEvidenceIsEligible(
+                context: context, source: source, target: target,
+                targetIdentity: targetIdentity),
+            (try? accountActions.currentSystemAuthFingerprint(
+                expectedEmail: context.sourceIdentityKey,
+                expectedAccountID: context.sourceAccountID)) == context.sourceAuthFingerprint
+        else { return false }
+        return true
+    }
+
+    private func switchScopeIsEligible(for profileID: String) -> Bool {
+        guard let context = automaticSwitchContext else { return false }
+        if let oneShot = context.oneShotIntent { return oneShot.profileID == profileID }
+        return automaticSwitchParticipation(for: context.sourceProfileID)
+            && automaticSwitchParticipation(for: profileID)
+    }
+
+    private func quotaPauseEvidenceIsEligible(
+        context: AutomaticSwitchContext,
+        source: CodexAccountSnapshot, target: CodexProfile,
+        targetIdentity: CodexCredentialIdentity
+    ) -> Bool {
+        guard let targetSnapshot = target.lastSnapshot else { return false }
+        if let oneShot = context.oneShotIntent {
+            let sourceIdentity = CodexCredentialIdentity(
+                email: context.sourceIdentityKey,
+                accountID: context.sourceAccountID)
+            return oneShot.profileID == target.id
+                && CodexOneShotSwitchIntent.targetPlanMatches(
+                    targetSnapshot.planType, displayedMultiplier: target.displayedProTierMultiplier)
+                && oneShot.quotaPolicy.accepts(
+                    CodexSwitchSnapshotProjection.snapshot(
+                        saved: source,
+                        identity: sourceIdentity), target: false)
+                && oneShot.quotaPolicy.accepts(
+                    CodexSwitchSnapshotProjection.snapshot(
+                        saved: targetSnapshot,
+                        identity: targetIdentity), target: true)
+        }
+        return CodexDesktopQuotaPause.isCritical(.init(savedSnapshot: source))
+            && CodexAutomaticSwitchPolicy.preferredCandidate(
+                [
+                    .init(
+                        profileID: target.id,
+                        quota: .init(savedSnapshot: targetSnapshot))
+                ],
+                for: context.sourceQuota.triggeredWindows(thresholds: context.thresholds)) != nil
     }
 
     private func cancelQuotaRefreshesForDesktopSwitch() {
@@ -2015,6 +2512,51 @@ final class UsageStore: ObservableObject {
             return
         }
         launchCodex(with: profileID)
+    }
+
+    /// A user action in the embedded upstream UI enters the same guarded
+    /// transaction as the native workspace. The helper never writes system auth.
+    func requestTokenMonitorDesktopSwitch(accountKey: String) async -> String? {
+        guard !isLaunchingCodex, !isLoggingIn, !isAccountSwitchTransactionActive,
+            let profile = TokenMonitorHostIdentity.uniqueProfile(for: accountKey, profiles: profiles),
+            let identity = CodexOfficialProfileReader.credentialIdentity(codexHomeURL: profile.codexHomeURL),
+            profile.matchesRecordedCredential(identity),
+            TokenMonitorHostIdentity.accountKey(email: identity.email, accountID: identity.accountID) == accountKey
+        else {
+            return "account-unavailable-or-busy"
+        }
+        // launchCodex re-reads Desktop tasks, reserves both accounts and checks
+        // configured Hub availability. Do not invent an idle Hub snapshot here.
+        launchCodex(with: profile.id)
+        let deadline = Date().addingTimeInterval(220)
+        while isLaunchingCodex {
+            if Date() >= deadline || Task.isCancelled { return "operation-in-progress" }
+            do { try await Task.sleep(nanoseconds: 200_000_000) } catch { return "operation-in-progress" }
+        }
+        guard desktopSwitchSucceeded,
+            let system = profiles.first(where: \.isSystemProfile),
+            TokenMonitorHostIdentity.accountKey(email: system.lastSnapshot?.email, accountID: system.lastSnapshot?.accountID) == accountKey
+        else {
+            return "switch-not-confirmed"
+        }
+        return nil
+    }
+
+    func tokenMonitorManagedCodexAccounts() -> [TokenMonitorManagedCodexAccount] {
+        profiles.compactMap { profile -> TokenMonitorManagedCodexAccount? in
+            guard !profile.isSystemProfile, profile.id.range(of: "^[A-Za-z0-9._-]{1,80}$", options: .regularExpression) != nil,
+                profile.codexHomePath.utf8.count <= 1024,
+                let key = TokenMonitorHostIdentity.accountKey(email: profile.lastSnapshot?.email, accountID: profile.lastSnapshot?.accountID),
+                TokenMonitorHostIdentity.uniqueProfile(for: key, profiles: profiles)?.id == profile.id,
+                let identity = CodexOfficialProfileReader.credentialIdentity(codexHomeURL: profile.codexHomeURL),
+                identity.accountID.utf8.count <= 256,
+                profile.matchesRecordedCredential(identity),
+                TokenMonitorHostIdentity.accountKey(email: identity.email, accountID: identity.accountID) == key
+            else { return nil }
+            return TokenMonitorManagedCodexAccount(
+                id: "aigoodbro-" + profile.id, accountKey: key, workspaceAccountId: identity.accountID,
+                homePath: profile.codexHomePath, alias: String(AccountDisplay.profileName(profile).prefix(80)), enabled: true)
+        }.prefix(128).map { $0 }
     }
 
     private func reserveDesktopSwitchMaintenance(for profileID: String) async -> Bool {
@@ -2194,11 +2736,7 @@ final class UsageStore: ObservableObject {
             )
             return
         }
-        let isWithinAutomaticSwitchScope =
-            automaticSwitchParticipation(for: profileID)
-            && automaticSwitchContext.map {
-                automaticSwitchParticipation(for: $0.sourceProfileID)
-            } == true
+        let isWithinAutomaticSwitchScope = switchScopeIsEligible(for: profileID)
         guard !isAutomaticSwitch || isWithinAutomaticSwitchScope else {
             accountManagerMessage = WidgetLanguage.storedOrAutomatic().text("自动切换已取消：账号已被排除自动切换范围", "Automatic switching cancelled: the account is no longer opted in.")
             finishAutomaticSwitchAttempt(
@@ -2264,7 +2802,7 @@ final class UsageStore: ObservableObject {
             let currentSystemCredentialIdentity = CodexOfficialProfileReader.credentialIdentity(
                 codexHomeURL: systemProfile.codexHomeURL
             )
-            DispatchQueue.main.async {
+            Task { @MainActor in
                 var historyBaseline: CodexThreadHistorySnapshot?
                 if let historyBaselineResult {
                     switch historyBaselineResult {
@@ -2339,6 +2877,17 @@ final class UsageStore: ObservableObject {
                             [.init(profileID: profile.id, quota: AutomaticSwitchQuotaState(snapshot: verifiedSnapshot))],
                             for: triggeredWindows
                         ) != nil
+                    let oneShotIntent = self.automaticSwitchContext?.oneShotIntent
+                    let quotaEligible =
+                        oneShotIntent.map { intent in
+                            intent.profileID == profile.id
+                                && CodexOneShotSwitchIntent.targetPlanMatches(
+                                    verifiedSnapshot.account?.planType, displayedMultiplier: profile.displayedProTierMultiplier)
+                                && intent.quotaPolicy.accepts(currentSystemSnapshot, target: false, now: preflightNow)
+                                && intent.quotaPolicy.accepts(verifiedSnapshot, target: true, now: preflightNow)
+                        }
+                        ?? (currentQuota.hasCompleteApplicableWindows
+                            && !triggeredWindows.isEmpty && targetIsEligible)
                     let legacyManagerRunning =
                         !NSRunningApplication
                         .runningApplications(withBundleIdentifier: "local.codex.account-manager")
@@ -2346,11 +2895,11 @@ final class UsageStore: ObservableObject {
                     guard let context = self.automaticSwitchContext,
                         let completeTasks = context.completeTasks,
                         !profile.isSystemProfile,
-                        context.thresholds == self.lowQuotaAlertThresholds,
+                        oneShotIntent != nil || context.thresholds == self.lowQuotaAlertThresholds,
+                        oneShotIntent != nil || !context.pauseAtOnePercent || self.pauseDesktopTasksAtOnePercent,
                         NSRunningApplication.runningApplications(withBundleIdentifier: "com.openai.codex").isEmpty || threadIDToRestore != nil,
-                        self.automaticAccountSwitchEnabled,
-                        self.automaticSwitchParticipation(for: profileID),
-                        self.automaticSwitchParticipation(for: context.sourceProfileID),
+                        oneShotIntent != nil || self.automaticAccountSwitchEnabled,
+                        self.switchScopeIsEligible(for: profileID),
                         self.profiles.first(where: \.isSystemProfile)?.lastSnapshot?.accountID == context.sourceAccountID,
                         currentEmail == context.sourceIdentityKey,
                         currentSystemCredentialIdentity.accountID == context.sourceAccountID,
@@ -2358,8 +2907,6 @@ final class UsageStore: ObservableObject {
                             expectedEmail: context.sourceIdentityKey,
                             expectedAccountID: context.sourceAccountID)) == context.sourceAuthFingerprint,
                         targetCredentialIdentity.accountID == profile.lastSnapshot?.accountID,
-                        currentQuota.fiveHourRemaining != nil,
-                        currentQuota.sevenDayRemaining != nil,
                         (systemProfile.lastQuotaReadFailureAt ?? .distantPast) < currentSystemSnapshot.refreshedAt,
                         (profile.lastQuotaReadFailureAt ?? .distantPast) < verifiedSnapshot.refreshedAt,
                         currentSystemSnapshot.quotaReadSucceeded,
@@ -2368,18 +2915,19 @@ final class UsageStore: ObservableObject {
                         quotaAge <= CodexAutomaticSwitchPolicy.quotaSnapshotMaximumAge,
                         targetQuotaAge >= -5,
                         targetQuotaAge <= CodexAutomaticSwitchPolicy.quotaSnapshotMaximumAge,
-                        !triggeredWindows.isEmpty,
-                        targetIsEligible,
+                        quotaEligible,
                         CodexAutomaticSwitchPolicy.hasSafeTaskState(
                             completeTasks,
                             codexInactiveSince: self.codexInactiveSince,
                             legacyManagerRunning: legacyManagerRunning,
+                            allowForeground: context.pausedTasksConfirmed,
                             now: preflightNow
                         ),
                         CodexAutomaticSwitchPolicy.hasSafeTaskState(
                             self.codexLiveTasks,
                             codexInactiveSince: self.codexInactiveSince,
                             legacyManagerRunning: legacyManagerRunning,
+                            allowForeground: context.pausedTasksConfirmed,
                             now: preflightNow
                         )
                     else {
@@ -2480,20 +3028,22 @@ final class UsageStore: ObservableObject {
                 if isAutomaticSwitch {
                     guard let context = self.automaticSwitchContext,
                         let completeTasks = context.completeTasks,
-                        context.thresholds == self.lowQuotaAlertThresholds,
+                        context.oneShotIntent != nil || context.thresholds == self.lowQuotaAlertThresholds,
+                        context.oneShotIntent != nil || !context.pauseAtOnePercent || self.pauseDesktopTasksAtOnePercent,
                         NSRunningApplication.runningApplications(withBundleIdentifier: "com.openai.codex").isEmpty || threadIDToRestore != nil,
-                        self.automaticAccountSwitchEnabled,
-                        self.automaticSwitchParticipation(for: profileID),
-                        self.automaticSwitchParticipation(for: context.sourceProfileID),
+                        context.oneShotIntent != nil || self.automaticAccountSwitchEnabled,
+                        self.switchScopeIsEligible(for: profileID),
                         CodexAutomaticSwitchPolicy.hasSafeTaskState(
                             completeTasks,
                             codexInactiveSince: self.codexInactiveSince,
-                            legacyManagerRunning: legacyManagerRunning
+                            legacyManagerRunning: legacyManagerRunning,
+                            allowForeground: context.pausedTasksConfirmed
                         ),
                         CodexAutomaticSwitchPolicy.hasSafeTaskState(
                             self.codexLiveTasks,
                             codexInactiveSince: self.codexInactiveSince,
-                            legacyManagerRunning: legacyManagerRunning
+                            legacyManagerRunning: legacyManagerRunning,
+                            allowForeground: context.pausedTasksConfirmed
                         )
                     else {
                         self.isLaunchingCodex = false
@@ -2507,6 +3057,28 @@ final class UsageStore: ObservableObject {
                         )
                         return
                     }
+                }
+                if isAutomaticSwitch, self.automaticSwitchContext?.pauseAtOnePercent == true {
+                    let client = self.taskClient
+                    let fresh = await Task.detached(priority: .userInitiated) { client.awaitSnapshot(timeout: 5) }.value
+                    guard let fresh, let allowedIDs = self.automaticSwitchContext?.pausedLoadedThreadIDs,
+                        CodexAutomaticSwitchPolicy.hasNoActiveTasks(fresh, legacyManagerRunning: legacyManagerRunning),
+                        await CodexDesktopQuotaPause.confirmStopped(
+                            client: client, allowedIDs: allowedIDs,
+                            shouldContinue: { [weak self] in self?.canContinueQuotaPause(for: profileID) == true }),
+                        self.canContinueQuotaPause(for: profileID),
+                        CodexAutomaticSwitchPolicy.hasNoActiveTasks(self.codexLiveTasks, legacyManagerRunning: legacyManagerRunning)
+                    else {
+                        self.isLaunchingCodex = false
+                        self.finishDesktopSwitchMaintenance()
+                        self.finishAutomaticSwitchAttempt(
+                            for: profileID, succeeded: false, failureReason: .validationFailed,
+                            detail: WidgetLanguage.storedOrAutomatic().text(
+                                "写入前复核未通过：任务、身份或额度发生变化，保持当前账号", "Final recheck failed: tasks, identity or quota changed. The current account is retained."))
+                        return
+                    }
+                    self.codexLiveTasks = fresh
+                    self.automaticSwitchContext?.completeTasks = fresh
                 }
                 let transactionGeneration = self.beginAccountSwitchTransaction()
                 self.accountActions.launchCodex(
@@ -2610,12 +3182,25 @@ final class UsageStore: ObservableObject {
                         self.desktopSwitchSucceeded = true
                         self.finishAccountSwitchTransaction()
                         self.isLaunchingCodex = false
-                        self.accountManagerMessage =
+                        let hasUnverifiedPausedTasks =
                             isAutomaticSwitch
-                            ? WidgetLanguage.storedOrAutomatic().text("安全自动切换已完成，Codex 已重新打开", "Safe automatic switch complete. Codex reopened.")
-                            : (requiresCodexRestart
-                                ? WidgetLanguage.storedOrAutomatic().text("已切换账号并重新打开 Codex，额度随后刷新", "Account switched and Codex reopened. Limits refresh next.")
-                                : WidgetLanguage.storedOrAutomatic().text("已核对本机登录为此账号，Codex 已打开；额度随后刷新", "Local sign-in matches this account. Codex is open; limits refresh next."))
+                            && self.automaticSwitchContext?.pausedTasksConfirmed == true
+                            && self.automaticSwitchContext?.resumeAccountKey != nil
+                        if hasUnverifiedPausedTasks {
+                            self.accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
+                                "账号已切换，但原任务历史未核验；续做记录保持暂停",
+                                "The account switched, but task history was not verified. Continuation remains paused.")
+                        } else if isAutomaticSwitch {
+                            self.accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
+                                "安全自动切换已完成，Codex 已重新打开", "Safe automatic switch complete. Codex reopened.")
+                        } else if requiresCodexRestart {
+                            self.accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
+                                "已切换账号并重新打开 Codex，额度随后刷新", "Account switched and Codex reopened. Limits refresh next.")
+                        } else {
+                            self.accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
+                                "已核对本机登录为此账号，Codex 已打开；额度随后刷新",
+                                "Local sign-in matches this account. Codex is open; limits refresh next.")
+                        }
                         self.finishAutomaticSwitchAttempt(
                             for: profileID,
                             succeeded: true,
@@ -2709,6 +3294,7 @@ final class UsageStore: ObservableObject {
                             return
                         }
                         self.desktopSwitchSucceeded = true
+                        if isAutomaticSwitch { self.automaticSwitchContext?.historyConfirmed = true }
                         self.finishAccountSwitchTransaction()
                         self.isLaunchingCodex = false
                         self.accountManagerMessage =
@@ -3027,18 +3613,250 @@ final class UsageStore: ObservableObject {
             taskClient.start(reason: .startup)
             taskClient.refreshThreads()
             accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
-                "自动换号已开启；低于额度阈值时核对备用账号，任务空闲后切换",
-                "Automatic switching enabled. Below the quota threshold, verify a backup and switch when tasks are idle.")
+                pauseDesktopTasksAtOnePercent
+                    ? "已开启：剩余 ≤1% 时暂停桌面任务，确认停止后切换备用账号"
+                    : "自动换号已开启；低于额度阈值时核对备用账号，任务空闲后切换",
+                pauseDesktopTasksAtOnePercent
+                    ? "Enabled: at 1% or less, pause Desktop tasks and switch after confirming they stopped."
+                    : "Automatic switching enabled. Below the quota threshold, verify a backup and switch when tasks are idle.")
             refresh(queueIfBusy: true)
             refreshWarmUpProfilesThenSchedule(performWarmUpAfterRefresh: false, quotaOnly: true)
         } else {
             if automaticSwitchTargetID != nil, canCancelDesktopSwitch { cancelDesktopSwitchPreparation() }
+            quotaResumeTask?.cancel()
             accountManagerMessage = WidgetLanguage.storedOrAutomatic().text("额度不足自动换号已关闭", "Automatic switching for low quota is off.")
         }
     }
 
+    func setPauseDesktopTasksAtOnePercent(_ enabled: Bool) {
+        guard !pausedAutomationFeatures.contains(.lowQuota) else { return }
+        pauseDesktopTasksAtOnePercent = enabled
+        if !isPreview { UserDefaults.standard.set(enabled, forKey: CodexDesktopQuotaPause.enabledDefaultsKey) }
+        if enabled {
+            lowQuotaAlertThresholds = CodexDesktopQuotaPause.thresholds
+            // The previous idle-switch thresholds stay saved for disabling this option.
+            setAutomaticAccountSwitchEnabled(true)
+        } else {
+            lowQuotaAlertThresholds = .load()
+            quotaResumeTask?.cancel()
+            if automaticSwitchContext?.pauseAtOnePercent == true, canCancelDesktopSwitch {
+                cancelDesktopSwitchPreparation()
+            }
+        }
+    }
+
+    func setResumeDesktopTasksAfterSwitch(_ enabled: Bool) {
+        resumeDesktopTasksAfterSwitch = enabled
+        if !isPreview { UserDefaults.standard.set(enabled, forKey: "AiGoodBro.quotaResumeAutomatically") }
+        if !enabled { quotaResumeTask?.cancel() }
+    }
+
+    @MainActor
+    func resumePausedDesktopTasks(automatically: Bool = false) {
+        guard quotaResumeTask == nil, !quotaResume.pending.isEmpty, !isPreview, hasStarted else { return }
+        guard quotaResume.isReady else {
+            accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
+                "切号与历史核验尚未完成，任务保持暂停", "The switch and history checks are unfinished. Tasks remain paused.")
+            return
+        }
+        quotaResumeTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.quotaResumeTask = nil }
+            if let policy = self.quotaResume.oneShotQuotaPolicy {
+                guard let system = self.profiles.first(where: \.isSystemProfile),
+                    let expected = self.quotaResume.expectedAccountKey,
+                    let identity = CodexOfficialProfileReader.credentialIdentity(codexHomeURL: system.codexHomeURL),
+                    TokenMonitorHostIdentity.accountKey(email: identity.email, accountID: identity.accountID) == expected
+                else {
+                    self.accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
+                        "一次性续做停止：当前账号身份未核实", "One-time continuation stopped: current account identity is unverified.")
+                    return
+                }
+                let preference = self.statisticsPreference
+                let quota = await Task.detached(priority: .userInitiated) {
+                    CodexUsageReader().load(
+                        context: RuntimeLoadContext.live(
+                            statisticsPreference: preference, codexHomeDirectory: system.codexHomeURL),
+                        quotaOnly: true, requestTimeout: 12)
+                }.value
+                guard !Task.isCancelled,
+                    quota.account?.email?.lowercased() == identity.email,
+                    CodexOneShotSwitchIntent.targetMultiplier(for: quota.account?.planType) != nil,
+                    policy.accepts(quota, target: true),
+                    CodexOfficialProfileReader.credentialIdentity(codexHomeURL: system.codexHomeURL) == identity,
+                    self.quotaResume.expectedAccountKey == expected
+                else {
+                    self.accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
+                        "一次性续做停止：即时官方身份或额度未通过核验",
+                        "One-time continuation stopped: fresh official identity or quota verification failed.")
+                    return
+                }
+                do {
+                    try self.profileStore.record(quota, for: system.id, allowAccountOnly: true)
+                    self.syncProfiles()
+                } catch {
+                    self.accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
+                        "一次性续做停止：无法保存即时额度核验结果",
+                        "One-time continuation stopped: the fresh quota result could not be saved.")
+                    return
+                }
+            }
+            let client = self.taskClient
+            client.start(reason: .startup)
+            guard
+                let fresh = await Task.detached(
+                    priority: .userInitiated,
+                    operation: {
+                        client.awaitSnapshot(timeout: 10)
+                    }
+                ).value
+            else {
+                self.accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
+                    "任务服务尚未就绪，已保留续做记录；可稍后点击继续", "The task service is not ready. The continuation record is saved; try Continue later.")
+                return
+            }
+            self.codexLiveTasks = fresh
+            guard
+                CodexAutomaticSwitchPolicy.hasNoActiveTasks(
+                    fresh,
+                    legacyManagerRunning: !NSRunningApplication.runningApplications(withBundleIdentifier: "local.codex.account-manager").isEmpty),
+                self.canContinueQuotaResume(automatically: automatically),
+                self.quotaResume.expectedAccountKey != nil
+            else {
+                self.accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
+                    "账号、额度或任务状态尚未核实，任务保持暂停", "Account, quota or task state is not verified. Tasks remain paused.")
+                return
+            }
+            // A restart retains a previously confirmed ready batch. Matching
+            // credentials alone cannot certify a failed or unfinished switch.
+            await Self.runReadyQuotaResume(
+                self.quotaResume,
+                request: { method, params in
+                    await client.desktopResumeRequest(method, params: params)
+                },
+                beforeStart: { [weak self] startedTurns in
+                    guard let self, self.canContinueQuotaResume(automatically: automatically),
+                        let fresh = await Task.detached(
+                            priority: .userInitiated,
+                            operation: {
+                                client.awaitSnapshot(timeout: 5)
+                            }
+                        ).value
+                    else { return false }
+                    self.codexLiveTasks = fresh
+                    return CodexAutomaticSwitchPolicy.hasNoUnexpectedActiveTasks(
+                        fresh,
+                        startedTurns: startedTurns,
+                        legacyManagerRunning: !NSRunningApplication.runningApplications(
+                            withBundleIdentifier: "local.codex.account-manager"
+                        ).isEmpty)
+                        && self.canContinueQuotaResume(automatically: automatically)
+                },
+                shouldContinue: { [weak self] in
+                    self?.canContinueQuotaResume(automatically: automatically) == true
+                })
+            self.accountManagerMessage = self.quotaResume.message
+        }
+    }
+
+    /// The production continuation entry and isolated protocol test share this
+    /// final admission, so an unconfirmed journal cannot submit a turn.
+    @MainActor
+    static func runReadyQuotaResume(
+        _ store: CodexQuotaResumeStore,
+        request: @escaping @MainActor (String, [String: Any]) async -> [String: Any]?,
+        beforeStart: @escaping @MainActor ([String: String]) async -> Bool,
+        shouldContinue: @escaping @MainActor () -> Bool
+    ) async {
+        guard store.isReady else { return }
+        await store.resume(request: request, beforeStart: beforeStart, shouldContinue: shouldContinue)
+    }
+
+    @MainActor
+    static func confirmReadyQuotaResume(
+        _ store: CodexQuotaResumeStore,
+        switchSucceeded: Bool, pausedTasksConfirmed: Bool, historyConfirmed: Bool,
+        accountKey: String
+    ) {
+        guard switchSucceeded, pausedTasksConfirmed, historyConfirmed else { return }
+        store.markSwitchSucceeded(accountKey: accountKey)
+    }
+
+    @MainActor
+    private func canContinueQuotaResume(automatically: Bool) -> Bool {
+        let oneShotPolicy = quotaResume.oneShotQuotaPolicy
+        let oneShotAutomatic = automatically && oneShotPolicy != nil
+        let oneShotAdmission: (CodexAccountSnapshot, CodexCredentialIdentity, String, Date?) -> Bool =
+            { quota, identity, expected, failedAt in
+                guard let oneShotPolicy else { return Self.standardQuotaResumeIsEligible(quota) }
+                return Self.oneShotQuotaResumeIsEligible(
+                    quota: quota, identity: identity,
+                    expectedAccountKey: expected, policy: oneShotPolicy, failedAt: failedAt)
+            }
+        guard !Task.isCancelled, !isPreview, hasStarted,
+            !isLoggingIn, !isLaunchingCodex, !isAccountSwitchTransactionActive,
+            !isAwaitingCodexHistoryConfirmation, desktopSwitchMaintenanceLeases.isEmpty,
+            CodexAccountActions.switchRecoveryIsClear(),
+            oneShotPolicy != nil || !pausedAutomationFeatures.contains(.lowQuota),
+            !automatically || oneShotAutomatic
+                || (automaticAccountSwitchEnabled && pauseDesktopTasksAtOnePercent && resumeDesktopTasksAfterSwitch),
+            let expected = quotaResume.expectedAccountKey,
+            !oneShotAutomatic
+                || (oneShotResumeAuthorization?.accountKey == expected
+                    && oneShotResumeAuthorization?.policy == oneShotPolicy),
+            let system = profiles.first(where: \.isSystemProfile),
+            let identity = CodexOfficialProfileReader.credentialIdentity(codexHomeURL: system.codexHomeURL),
+            TokenMonitorHostIdentity.accountKey(email: identity.email, accountID: identity.accountID) == expected,
+            let quota = system.lastSnapshot,
+            TokenMonitorHostIdentity.accountKey(email: quota.email, accountID: quota.accountID) == expected,
+            Self.automaticQuotaEvidenceIsFresh(
+                succeeded: quota.quotaReadSucceeded, fetchedAt: quota.fetchedAt,
+                failedAt: system.lastQuotaReadFailureAt, now: Date()),
+            oneShotAdmission(quota, identity, expected, system.lastQuotaReadFailureAt),
+            CodexDesktopQuotaPause.canPrepare(
+                codexLiveTasks,
+                legacyManagerRunning: !NSRunningApplication.runningApplications(withBundleIdentifier: "local.codex.account-manager").isEmpty,
+                now: Date())
+        else { return false }
+        return true
+    }
+
+    @MainActor
+    static func oneShotQuotaResumeIsEligible(
+        quota: CodexAccountSnapshot,
+        identity: CodexCredentialIdentity, expectedAccountKey: String,
+        policy: CodexOneShotSwitchIntent.QuotaPolicy, failedAt: Date?, now: Date = Date()
+    ) -> Bool {
+        TokenMonitorHostIdentity.accountKey(email: identity.email, accountID: identity.accountID) == expectedAccountKey
+            && TokenMonitorHostIdentity.accountKey(email: quota.email, accountID: quota.accountID) == expectedAccountKey
+            && CodexOneShotSwitchIntent.targetMultiplier(for: quota.planType) != nil
+            && automaticQuotaEvidenceIsFresh(
+                succeeded: quota.quotaReadSucceeded, fetchedAt: quota.fetchedAt,
+                failedAt: failedAt, now: now)
+            && policy.accepts(
+                CodexSwitchSnapshotProjection.snapshot(saved: quota, identity: identity),
+                target: true, now: now)
+    }
+
+    private static func standardQuotaResumeIsEligible(_ quota: CodexAccountSnapshot) -> Bool {
+        let state = AutomaticSwitchQuotaState(savedSnapshot: quota)
+        guard quota.quotaReadSucceeded == true, state.hasCompleteApplicableWindows,
+            let week = state.sevenDayRemaining, week > 1
+        else { return false }
+        return state.fiveHourNotApplicable || (state.fiveHourRemaining.map { $0 > 1 } ?? false)
+    }
+
+    @MainActor
+    func discardQuotaResumePlan() {
+        guard quotaResumeTask == nil else { return }
+        quotaResume.abandonStaged()
+    }
+
     func setLowQuotaAlertThresholds(fiveHour: Int, sevenDay: Int) {
-        let thresholds = LowQuotaAlertThresholds(fiveHour: fiveHour, sevenDay: sevenDay)
+        let thresholds =
+            pauseDesktopTasksAtOnePercent
+            ? CodexDesktopQuotaPause.thresholds
+            : LowQuotaAlertThresholds(fiveHour: fiveHour, sevenDay: sevenDay)
         guard thresholds != lowQuotaAlertThresholds else { return }
         lowQuotaAlertThresholds = thresholds
         if !isPreview { thresholds.save() }
@@ -3422,6 +4240,7 @@ final class UsageStore: ObservableObject {
 
     private func evaluateAutomaticAccountSwitch() {
         guard hasStarted,
+            quotaResumeTask == nil,
             automaticAccountSwitchEnabled,
             automaticSwitchContext == nil,
             automaticSwitchTargetID == nil,
@@ -3489,6 +4308,7 @@ final class UsageStore: ObservableObject {
                 lastAttemptAt: defaults.object(forKey: CodexAutomaticSwitchPolicy.lastAttemptDefaultsKey) as? Date,
                 lastSucceededAt: defaults.object(forKey: CodexAutomaticSwitchPolicy.lastSuccessDefaultsKey) as? Date,
                 thresholds: lowQuotaAlertThresholds,
+                pauseAtOnePercent: pauseDesktopTasksAtOnePercent,
                 now: now
             )
         else { return }
@@ -3537,10 +4357,7 @@ final class UsageStore: ObservableObject {
                 else { return nil }
                 return .init(
                     profileID: profile.id,
-                    quota: AutomaticSwitchQuotaState(
-                        fiveHourRemaining: snapshot.fiveHour.map { 100 - $0.usedPercent },
-                        sevenDayRemaining: snapshot.sevenDay.map { 100 - $0.usedPercent }
-                    )
+                    quota: AutomaticSwitchQuotaState(savedSnapshot: snapshot)
                 )
             },
             for: triggeredWindows
@@ -3585,7 +4402,9 @@ final class UsageStore: ObservableObject {
                 sourceProfileID: sourceProfile.id, sourceIdentityKey: sourceEmail,
                 sourceAccountID: sourceAccountID, sourceAuthFingerprint: fingerprint,
                 sourceAccount: source, targetAccount: targetAccount, sourceQuota: sourceQuota,
-                eventID: UUID(), thresholds: lowQuotaAlertThresholds, completeTasks: nil)
+                eventID: UUID(), thresholds: lowQuotaAlertThresholds,
+                pauseAtOnePercent: pauseDesktopTasksAtOnePercent && CodexDesktopQuotaPause.isCritical(sourceQuota),
+                completeTasks: nil)
             automaticSwitchTargetID = target.id
             launchCodex(with: target.id)
         } catch {
@@ -3606,41 +4425,74 @@ final class UsageStore: ObservableObject {
         automaticSwitchTargetID = nil
         automaticSwitchContext = nil
         if succeeded {
-            UserDefaults.standard.set(Date(), forKey: CodexAutomaticSwitchPolicy.lastSuccessDefaultsKey)
-            UserDefaults.standard.removeObject(forKey: CodexAutomaticSwitchPolicy.lastAttemptDefaultsKey)
+            if context.oneShotIntent == nil {
+                UserDefaults.standard.set(Date(), forKey: CodexAutomaticSwitchPolicy.lastSuccessDefaultsKey)
+                UserDefaults.standard.removeObject(forKey: CodexAutomaticSwitchPolicy.lastAttemptDefaultsKey)
+            }
             recordAutomationEvent(
                 level: .success,
-                title: WidgetLanguage.storedOrAutomatic().text("自动切换完成", "Automatic switch complete"),
+                title: context.oneShotIntent == nil
+                    ? WidgetLanguage.storedOrAutomatic().text("自动切换完成", "Automatic switch complete")
+                    : (context.oneShotIntent?.simulateLowQuota == true
+                        ? WidgetLanguage.storedOrAutomatic().text("模拟低额度一次性切换完成", "Simulated low-quota one-time switch complete")
+                        : WidgetLanguage.storedOrAutomatic().text("一次性切换完成", "One-time switch complete")),
                 detail: "\(context.sourceAccount.value) → \(context.targetAccount.value) · \(detail)"
             )
-            sendFeishuNotification(
-                event: .switchSucceeded,
-                source: context.sourceAccount,
-                target: context.targetAccount,
-                quota: context.sourceQuota,
-                eventID: context.eventID,
-                switchOrigin: .lowQuota
-            )
+            if context.oneShotIntent == nil {
+                sendFeishuNotification(
+                    event: .switchSucceeded,
+                    source: context.sourceAccount,
+                    target: context.targetAccount,
+                    quota: context.sourceQuota,
+                    eventID: context.eventID,
+                    switchOrigin: .lowQuota
+                )
+            }
         } else {
+            if context.oneShotIntent != nil { oneShotResumeAuthorization = nil }
             recordAutomationEvent(
                 level: .failure,
-                title: WidgetLanguage.storedOrAutomatic().text("自动切换失败", "Automatic switch failed"),
+                title: context.oneShotIntent == nil
+                    ? WidgetLanguage.storedOrAutomatic().text("自动切换失败", "Automatic switch failed")
+                    : (context.oneShotIntent?.simulateLowQuota == true
+                        ? WidgetLanguage.storedOrAutomatic().text("模拟低额度一次性切换失败", "Simulated low-quota one-time switch failed")
+                        : WidgetLanguage.storedOrAutomatic().text("一次性切换失败", "One-time switch failed")),
                 detail: "\(context.sourceAccount.value) · \(detail)"
             )
-            sendFeishuNotification(
-                event: .switchFailed(failureReason),
-                source: context.sourceAccount,
-                target: context.targetAccount,
-                quota: context.sourceQuota,
-                eventID: context.eventID,
-                switchOrigin: .lowQuota
-            )
+            if context.oneShotIntent == nil {
+                sendFeishuNotification(
+                    event: .switchFailed(failureReason),
+                    source: context.sourceAccount,
+                    target: context.targetAccount,
+                    quota: context.sourceQuota,
+                    eventID: context.eventID,
+                    switchOrigin: .lowQuota
+                )
+            }
         }
         taskClient.stop()
-        DispatchQueue.main.async { [weak self] in
-            guard let self, self.hasStarted, self.automaticAccountSwitchEnabled else { return }
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            if let expected = context.resumeAccountKey {
+                Self.confirmReadyQuotaResume(
+                    self.quotaResume,
+                    switchSucceeded: succeeded, pausedTasksConfirmed: context.pausedTasksConfirmed,
+                    historyConfirmed: context.historyConfirmed, accountKey: expected)
+                if let intent = context.oneShotIntent, succeeded, self.quotaResume.isReady,
+                    self.quotaResume.expectedAccountKey == expected,
+                    self.quotaResume.oneShotQuotaPolicy == intent.quotaPolicy
+                {
+                    self.oneShotResumeAuthorization = (accountKey: expected, policy: intent.quotaPolicy)
+                }
+            }
+            guard self.hasStarted, context.oneShotIntent != nil || self.automaticAccountSwitchEnabled else { return }
             self.taskClient.start(reason: .startup)
             self.taskClient.refreshThreads()
+            if succeeded, context.pausedTasksConfirmed, context.historyConfirmed,
+                context.oneShotIntent != nil || self.resumeDesktopTasksAfterSwitch
+            {
+                self.resumePausedDesktopTasks(automatically: true)
+            }
         }
     }
 
@@ -4945,6 +5797,7 @@ final class UsageStore: ObservableObject {
     @MainActor
     private func startAfterPendingSwitchRecovery() {
         guard hasStarted else { return }
+        refreshTokenMonitorConnections()
         publisherMessages.start { [weak self] message, admission in
             await withCheckedContinuation { continuation in
                 NextLocalNotificationService.shared.submitPublisherMessage(
@@ -5021,6 +5874,32 @@ final class UsageStore: ObservableObject {
                     self.recordOperationsIssue(
                         id: "public-reset-" + result.channel.rawValue,
                         summary: result.statusText)
+                }
+            },
+            sendForecast: { [weak self] forecast in
+                guard let self else { return .failure(.cancelled) }
+                let revision = self.feishuConfigurationRevision
+                let admission = self.publicResetAnnouncements.deliveryAdmission()
+                return await withCheckedContinuation { continuation in
+                    self.feishuWebhookService.sendPublicResetForecast(
+                        forecast,
+                        shouldSend: { [weak self] in
+                            guard let self else { return false }
+                            return admission() && self.hasStarted && self.publicResetAnnouncements.enabled
+                                && self.feishuNotificationsEnabled && self.feishuWebhookConfigured
+                                && !self.isUpdatingFeishuConnection && revision == self.feishuConfigurationRevision
+                                && !self.pausedAutomationFeatures.contains(.feishu)
+                        },
+                        completion: { [weak self] result in
+                            Task { @MainActor [weak self] in
+                                if admission(), let self, revision == self.feishuConfigurationRevision,
+                                    case .failure(let error) = result
+                                {
+                                    self.handleFeishuCredentialFailure(error)
+                                }
+                                continuation.resume(returning: result)
+                            }
+                        })
                 }
             })
         updateCodexForegroundState()
@@ -5236,6 +6115,18 @@ final class UsageStore: ObservableObject {
 
     @MainActor
     func stop() {
+        quotaResumeTask?.cancel()
+        quotaResumeTask = nil
+        tokenMonitorHubGeneration &+= 1
+        tokenMonitorHubProbeGeneration &+= 1
+        tokenMonitorStatusGeneration &+= 1
+        tokenMonitorHubTask?.cancel()
+        tokenMonitorHubTask = nil
+        tokenMonitorHubProbeTask?.cancel()
+        tokenMonitorHubProbeTask = nil
+        tokenMonitorStatusRefreshTask?.cancel()
+        tokenMonitorStatusRefreshTask = nil
+        pendingTokenMonitorHubPublish = nil
         fullRefreshCancellation?.cancel()
         fullRefreshCancellation = nil
         identityRefreshCancellation?.cancel()
@@ -5476,6 +6367,12 @@ final class UsageStore: ObservableObject {
         scheduleStatisticsRollover()
         isSwitchingStatisticsTimeZone = true
         statisticsTransitionMessage = statisticsSwitchingMessage(for: repaired)
+        // A cached legacy snapshot must not leave an old engine scan loading forever.
+        if hasStarted {
+            refreshStatisticsEngine()
+        } else {
+            cancelStatisticsEngine()
+        }
 
         let key = statisticsCacheKey(for: repaired)
         if let cached = validCachedStatisticsSnapshot(forKey: key) {
@@ -5629,6 +6526,16 @@ final class UsageStore: ObservableObject {
         scheduleFullRefreshTimer()
         if isActive {
             refreshIfStale(maximumAge: foregroundFullRefreshInterval)
+            Task { @MainActor [weak self] in
+                self?.refreshTokenMonitorConnections()
+            }
+        } else {
+            tokenMonitorStatusGeneration &+= 1
+            tokenMonitorStatusRefreshTask?.cancel()
+            tokenMonitorStatusRefreshTask = nil
+            tokenMonitorHubProbeGeneration &+= 1
+            tokenMonitorHubProbeTask?.cancel()
+            tokenMonitorHubProbeTask = nil
         }
     }
 
@@ -5639,6 +6546,9 @@ final class UsageStore: ObservableObject {
         scheduleFullRefreshTimer()
         guard isVisible else { return }
         refreshIfStale(maximumAge: foregroundFullRefreshInterval)
+        Task { @MainActor [weak self] in
+            self?.refreshTokenMonitorConnections()
+        }
         taskClient.start(reason: .startup)
         taskClient.refreshThreads()
     }
@@ -5694,7 +6604,13 @@ final class UsageStore: ObservableObject {
             interval: interval,
             repeats: true
         ) { [weak self] _ in
-            self?.refresh()
+            guard let self else { return }
+            self.refresh()
+            if self.isMainWindowActive || self.isTaskOverviewVisible {
+                Task { @MainActor [weak self] in
+                    self?.refreshTokenMonitorConnections()
+                }
+            }
         }
         timer.tolerance = interval * 0.1
         RunLoop.main.add(timer, forMode: .common)
@@ -5782,7 +6698,11 @@ final class UsageStore: ObservableObject {
 
     private func syncProfiles() {
         if !isPreview { DispatchCodeCatalog.reload() }
+        let previousStatisticsSources = hasStarted ? currentStatisticsEngineScanKey().sources : []
         profiles = profileStore.profiles
+        if hasStarted, previousStatisticsSources != currentStatisticsEngineScanKey().sources {
+            refreshStatisticsEngine()
+        }
         let activeProfileIDs = Set(profiles.map(\.id))
         quotaResetRefreshAttempts = quotaResetRefreshAttempts.filter { activeProfileIDs.contains($0.key) }
         let observed = Self.observedOfficialLifetimeTokens(in: profiles)

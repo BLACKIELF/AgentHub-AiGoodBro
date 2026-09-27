@@ -71,30 +71,34 @@ const LIMITS_RECONFIGURE_KEYS = Object.freeze([
 const SINK_STRUCTURAL_KEYS = Object.freeze(['syncUploadIntervalMs']);
 const LIMIT_PROVIDER_SETTING_KEYS = Object.freeze({
   claude: ['claudeWebCookie'],
-  cursor: ['cursorDisabledAccountIds'],
+  codex: ['codexManagedAccounts'],
   opencode: ['opencodeCookie', 'opencodeProfiles', 'opencodeLocalLimitsEnabled'],
-  openrouter: ['openrouterProfiles'],
-  deepseek: ['deepseekApiKey'],
-  minimax: ['minimaxApiKey'],
+  cursor: ['cursorDisabledAccountIds'],
+  cline: ['clineApiKey'],
+  factory: ['factoryApiKey'],
+  kimi: ['kimiApiKey', 'kimiWebAccessToken'],
   copilot: ['copilotApiToken', 'copilotEnterpriseHost'],
+  zed: ['zedCookie'],
+  commandcode: ['commandcodeCookie'],
+  mimo: ['mimoManagedAccounts'],
   zai: ['zaiApiKey', 'zaiApiRegion'],
   zaiteam: ['zaiTeamApiKey', 'zaiTeamOrganizationId', 'zaiTeamProjectId'],
+  // The desktop widget auto-detects WorkBuddy when the provider itself is
+  // enabled. Token and metadata fields remain available to headless/CLI deployments.
+  workbuddy: ['workbuddyAccessToken', 'workbuddyUserId', 'workbuddyEnterpriseId', 'workbuddyLocale', 'workbuddyDomain', 'workbuddyDepartmentInfo'],
+  qoder: ['qoderCookie', 'qoderSite'],
+  deepseek: ['deepseekApiKey'],
+  devin: ['devinBearerToken', 'devinOrganization'],
+  typesafe: ['typesafeCookie'],
+  openrouter: ['openrouterProfiles'],
+  minimax: ['minimaxApiKey'],
   volcengine: [
     'volcengineAccessKeyId', 'volcengineSecretAccessKey', 'volcengineRegion',
     'volcengineAgentAccessKeyId', 'volcengineAgentSecretAccessKey', 'volcengineAgentRegion'
   ],
-  alibaba: ['alibabaCookie', 'alibabaVariant'],
-  qoder: ['qoderCookie', 'qoderSite'],
-  trae: ['traeAccessToken', 'traeDeviceId'],
-  zed: ['zedCookie'],
-  // The desktop widget auto-detects WorkBuddy when the provider itself is
-  // enabled. Token and metadata fields remain available to headless/CLI deployments.
-  workbuddy: ['workbuddyAccessToken', 'workbuddyUserId', 'workbuddyEnterpriseId', 'workbuddyLocale', 'workbuddyDomain', 'workbuddyDepartmentInfo'],
-  commandcode: ['commandcodeCookie'],
-  kimi: ['kimiApiKey', 'kimiWebAccessToken'],
   ollama: ['ollamaCookie'],
-  codex: ['codexManagedAccounts'],
-  mimo: ['mimoManagedAccounts'],
+  trae: ['traeAccessToken', 'traeDeviceId'],
+  alibaba: ['alibabaCookie', 'alibabaVariant'],
   thirdparty: ['thirdPartyProfiles']
 });
 
@@ -179,6 +183,7 @@ function limitsConfigFromSettings(settings = {}, context = {}) {
     minimaxApiKey: settings.minimaxApiKey || '',
     copilotApiToken: settings.copilotApiToken || '',
     copilotEnterpriseHost: settings.copilotEnterpriseHost || '',
+    factoryApiKey: settings.factoryApiKey || '',
     zaiApiKey: settings.zaiApiKey || '',
     zaiApiRegion: settings.zaiApiRegion || 'global',
     zaiTeamApiKey: settings.zaiTeamApiKey || '',
@@ -194,6 +199,8 @@ function limitsConfigFromSettings(settings = {}, context = {}) {
     alibabaVariant: settings.alibabaVariant || '',
     qoderCookie: settings.qoderCookie || '',
     qoderSite: settings.qoderSite || 'global',
+    devinBearerToken: settings.devinBearerToken || '',
+    devinOrganization: settings.devinOrganization || '',
     traeAccessToken: settings.traeAccessToken
       || env.TOKEN_MONITOR_TRAE_ACCESS_TOKEN
       || env.TRAE_ACCESS_TOKEN
@@ -205,6 +212,10 @@ function limitsConfigFromSettings(settings = {}, context = {}) {
     zedCookie: settings.zedCookie
       || env.TOKEN_MONITOR_ZED_COOKIE
       || env.ZED_COOKIE
+      || '',
+    typesafeCookie: settings.typesafeCookie
+      || env.TOKEN_MONITOR_TYPESAFE_COOKIE
+      || env.TYPESAFE_COOKIE
       || '',
     commandcodeCookie: settings.commandcodeCookie || '',
     workbuddyAccessToken: workbuddySettings.workbuddyAccessToken
@@ -233,6 +244,12 @@ function limitsConfigFromSettings(settings = {}, context = {}) {
       || '',
     workbuddyAccountType: context.workbuddyDesktopSessionEnabled === true
       ? workbuddyLocalSession.accountType || ''
+      : '',
+    // Why the app-owned session is unusable, when it is. An encrypted or
+    // otherwise unreadable credential is not a signed-out app, and the limits
+    // layer needs that difference to stop asking the user to sign in again.
+    workbuddyLocalSessionReason: context.workbuddyDesktopSessionEnabled === true
+      ? String(workbuddyLocalSession.reason || '').trim()
       : '',
     workbuddyLocale: workbuddySettings.workbuddyLocale
       || workbuddyEnv.TOKEN_MONITOR_WORKBUDDY_LOCALE

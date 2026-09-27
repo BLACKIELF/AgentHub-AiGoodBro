@@ -20,26 +20,28 @@
   const PROVIDER_SOURCE_LABELS = {
     claude: { oauth: 'OAuth', cli: 'CLI', web: 'Web' },
     codex: { rpc: 'RPC' },
+    opencode: { local: 'Local', web: 'Web', api: 'API' },
     cursor: { web: 'Web' },
     antigravity: { oauth: 'OAuth', rpc: 'RPC' },
-    opencode: { local: 'Local', web: 'Web', api: 'API' },
-    openrouter: { api: 'API' },
-    deepseek: { api: 'API' },
-    minimax: { api: 'API' },
-    mimo: { web: 'Web' },
+    factory: { api: 'API' },
+    kimi: { api: 'API', web: 'Web' },
     grok: { rpc: 'CLI', web: 'Web' },
     copilot: { api: 'API' },
     zed: { web: 'Web' },
-    kiro: { cli: 'CLI' },
+    commandcode: { web: 'Web' },
+    mimo: { web: 'Web' },
     zai: { api: 'API' },
     zaiteam: { api: 'API' },
-    volcengine: { api: 'API' },
-    qoder: { web: 'Web' },
-    trae: { api: 'Web' },
+    kiro: { cli: 'CLI' },
     workbuddy: { local: 'Local', api: 'API' },
-    commandcode: { web: 'Web' },
-    kimi: { api: 'API', web: 'Web' },
+    qoder: { web: 'Web' },
+    deepseek: { api: 'API' },
+    devin: { web: 'Web' },
+    openrouter: { api: 'API' },
+    minimax: { api: 'API' },
+    volcengine: { api: 'API', cli: 'arkcli' },
     ollama: { web: 'Web' },
+    trae: { api: 'Web' },
     alibaba: { web: 'Web' },
     thirdparty: { api: 'API' }
   };
@@ -54,26 +56,30 @@
   const CAPABILITY_TAGS = {
     claude: ['Auto', 'OAuth/CLI', 'Web'],
     codex: ['Auto', 'OAuth/App/CLI'],
+    opencode: ['Auto', 'API/Web'],
     cursor: ['Auto', 'Web'],
     antigravity: ['Auto', 'OAuth/App/CLI'],
-    opencode: ['Auto', 'API/Web'],
-    openrouter: ['Pay-as-you-go', 'API key'],
-    deepseek: ['Pay-as-you-go', 'API key'],
-    minimax: ['Token Plan', 'API key'],
-    mimo: ['Token Plan', 'Web'],
+    cline: ['Auto', 'Desktop app', 'CLI'],
+    factory: ['Auto', 'API key'],
+    kimi: ['Coding Plan', 'Web/API'],
     grok: ['Auto', 'CLI/Web'],
     copilot: ['Manual login', 'API'],
     zed: ['Manual login', 'Web'],
-    kiro: ['Auto', 'CLI'],
+    commandcode: ['Manual login', 'Web'],
+    mimo: ['Token Plan', 'Web'],
     zai: ['Auto', 'Coding Plan', 'API key'],
     zaiteam: ['Team Plan', 'API key'],
-    volcengine: ['Coding/Agent Plan', 'API key'],
-    qoder: ['Manual login', 'Web'],
-    trae: ['Manual login', 'Web'],
+    kiro: ['Auto', 'CLI'],
     workbuddy: ['Auto', 'Desktop app'],
-    commandcode: ['Manual login', 'Web'],
-    kimi: ['Coding Plan', 'Web/API'],
+    qoder: ['Manual login', 'Web'],
+    deepseek: ['Pay-as-you-go', 'API key'],
+    devin: ['Manual login', 'Web'],
+    typesafe: ['Manual login', 'Web'],
+    openrouter: ['Pay-as-you-go', 'API key'],
+    minimax: ['Token Plan', 'API key'],
+    volcengine: ['Auto', 'API key', 'CLI'],
     ollama: ['Manual login', 'Web'],
+    trae: ['Manual login', 'Web'],
     alibaba: ['Token Plan', 'Web'],
     thirdparty: ['Relay', 'API']
   };
@@ -152,6 +158,56 @@
   function codexAdditionalQuotaDisplayName(value) {
     const name = String(value || '').trim();
     return normalizeId(name) === 'gpt-reserve' ? 'Luna Reserve' : name;
+  }
+
+  // One "Third-party APIs" group can hold New API, Sub2API and Custom rows at
+  // once, and each of those is a different product: they get their own mark and
+  // colour rather than all reading as one anonymous integration. The adapter id
+  // is what the user picked, so it is also the only thing that can name the row's
+  // plan — these adapters report no plan of their own.
+  const THIRD_PARTY_ADAPTER_VISUALS = {
+    'newapi-account': { color: '#C738FB', markId: 'newapi' },
+    'newapi-token': { color: '#C738FB', markId: 'newapi' },
+    sub2api: { color: '#39D9E7', markId: 'sub2api' },
+    custom: { color: '#8A96A8', markId: 'thirdparty' }
+  };
+
+  function thirdPartyAdapterVisual(provider, fallbackColor) {
+    return THIRD_PARTY_ADAPTER_VISUALS[normalizeId(provider?.adapterId)]
+      || { color: fallbackColor, markId: 'thirdparty' };
+  }
+
+  function thirdPartyAdapterFamily(provider) {
+    const adapterId = normalizeId(provider?.adapterId);
+    if (adapterId === 'newapi-account' || adapterId === 'newapi-token') return 'newapi';
+    if (adapterId === 'sub2api') return 'sub2api';
+    if (adapterId === 'custom') return 'thirdparty';
+    return '';
+  }
+
+  // The family every account in a group shares, or null when they differ. A
+  // shared family moves up to the group header; a mixed one stays per row.
+  function thirdPartySharedAdapterFamily(providers) {
+    const families = new Set((providers || []).map(thirdPartyAdapterFamily));
+    return families.size === 1 ? [...families][0] : null;
+  }
+
+  // The account row's plan text. Each adapter is one product and the adapter id
+  // is what the user picked, so it is the only thing that can name the row —
+  // these adapters report no plan of their own. undefined hands the cell back to
+  // the provider's own plan label.
+  function thirdPartyGroupPlanText(provider) {
+    if (provider?.status !== 'ok') return undefined;
+    const adapterId = normalizeId(provider?.adapterId);
+    if (adapterId === 'newapi-account') return 'New API · Account';
+    if (adapterId === 'newapi-token') return 'New API · API key';
+    if (adapterId === 'sub2api') return 'Sub2API · Account';
+    if (adapterId === 'custom') return 'Custom';
+    const planLabel = String(provider?.planLabel || '').toLowerCase();
+    if (planLabel === 'account') return 'Account';
+    if (planLabel === 'api key') return 'API key';
+    if (planLabel === 'custom') return 'Custom';
+    return undefined;
   }
 
   function antigravityQuotaWindow(window) {
@@ -263,6 +319,37 @@
     return remainingMs >= -Math.max(0, Number(resetNowGraceMs) || 0) ? 0 : null;
   }
 
+  // "4h 26m" — coarse enough that a row does not rewrite itself every second,
+  // which is what a quota meter wants and a stopwatch does not.
+  function limitDurationText(ms) {
+    const totalMinutes = Math.max(0, Math.round(Number(ms || 0) / 60000));
+    const days = Math.floor(totalMinutes / 1440);
+    const hours = Math.floor((totalMinutes % 1440) / 60);
+    const minutes = totalMinutes % 60;
+    if (days > 0) return `${days}d ${hours}h`;
+    if (hours > 0) return `${hours}h ${minutes}m`;
+    if (minutes > 0) return `${minutes}m`;
+    return '<1m';
+  }
+
+  // The line under a quota meter: when the window turns over, or when the thing
+  // it measures expires. Shared rather than re-derived per surface — the Limits
+  // page and the edge dock render the same meters, and a window that says
+  // "Expires" on one and "Reset" on the other is describing two different
+  // products.
+  function limitBoundaryText(window) {
+    const diffMs = limitResetRemainingMs(window?.resetsAt);
+    if (diffMs === null) return '';
+    const mixed = window?.boundaryKind === 'mixed';
+    const prefix = window?.boundaryKind === 'expiry'
+      ? 'Expires'
+      : mixed
+        ? 'Changes in'
+        : 'Reset';
+    if (diffMs === 0) return mixed ? 'Changes now' : `${prefix} now`;
+    return `${prefix} ${limitDurationText(diffMs)}`;
+  }
+
   // The "live" Codex account is the one THIS device's Codex app/CLI is currently
   // signed into (sourceDetail app/cli/unknown). Managed accounts added inside
   // Token Monitor report sourceDetail 'managed' and are NOT live. A remote
@@ -288,6 +375,37 @@
       || (providerName === 'zed' && source === 'web');
   }
 
+  // How long ago a provider row was refreshed, and whether that reading is
+  // still trusted. One function because the Limits view and the edge dock used
+  // to word this differently off the same `provider.stale` flag — the page said
+  // "Stale · 55m ago" while the card said "Updated 54m ago" and added a
+  // separate warning line, which read like two different conditions.
+  //
+  // `tone` is what a surface decorates with; the words do not change with it.
+  function limitProviderFreshness(provider, options = {}) {
+    const nowMs = Number.isFinite(options.nowMs) ? options.nowMs : Date.now();
+    const at = Date.parse(provider?.updatedAt || provider?.checkedAt || '');
+    if (!Number.isFinite(at)) {
+      return { text: provider?.stale ? 'Stale' : 'Update unknown', age: '', tone: provider?.stale ? 'stale' : 'unknown' };
+    }
+    const diffMs = Math.max(0, nowMs - at);
+    let age;
+    if (diffMs < 45_000) {
+      age = 'just now';
+    } else {
+      const minutes = Math.round(diffMs / 60000);
+      if (minutes < 60) {
+        age = `${minutes}m ago`;
+      } else {
+        const hours = Math.round(minutes / 60);
+        age = hours < 24 ? `${hours}h ago` : `${Math.round(hours / 24)}d ago`;
+      }
+    }
+    return provider?.stale
+      ? { text: `Stale · ${age}`, age, tone: 'stale' }
+      : { text: `Updated ${age}`, age, tone: 'ok' };
+  }
+
   function limitProviderStatusLabel(provider = {}) {
     const providerName = providerId(provider);
     const status = statusId(provider);
@@ -300,13 +418,37 @@
         tone: 'setup'
       };
     }
+    if (providerName === 'workbuddy' && provider?.actionRequired === 'appSessionEncrypted') {
+      return {
+        label: 'Encrypted by app',
+        key: 'settings.limits.status.appSessionEncrypted',
+        tone: 'warn'
+      };
+    }
     if (status === 'ok') return { label: isLinkedStatus(provider) ? 'Linked' : 'Live', tone: 'ok' };
     if (status === 'disabled') return { label: 'Disabled', tone: 'muted' };
     if (status === 'noSyncedData') return { label: 'No synced data', tone: 'sync' };
     if (status === 'unauthorized') {
       if (providerName === 'kimi') return { label: 'Update credential', tone: 'setup' };
       if (providerName === 'thirdparty') return { label: 'Update credential', tone: 'setup' };
-      return providerName === 'openrouter' || providerName === 'deepseek' || providerName === 'minimax' || providerName === 'copilot' || providerName === 'zai' || providerName === 'zaiteam' || providerName === 'volcengine' || providerName === 'kimi'
+      // Cline owns its credential lifecycle — it refreshes the stored token
+      // whenever the app or the CLI runs, and only it persists a rotated one — so
+      // this provider reads that sign-in read-only. The two lanes it accepts refuse
+      // in different places: a rejected key is replaced in Token Monitor's own
+      // settings field, while a stale sign-in only opening Cline fixes. The shared
+      // vocabulary carries one `unauthorized` for both, so the label reads the lane
+      // off the row: providers/cline/limits.js reports `api` for a configured key
+      // and `oauth` for the discovered sign-in. This is the one provider whose
+      // status branches on source, and it does so because both causes are reachable
+      // with neither of them rarer than the other — the file lane is the discovery
+      // default and its access token expires hourly. Grok and kiro name the vendor's
+      // own action here for the same reason, without needing the split.
+      if (providerName === 'cline') {
+        return sourceId(provider) === 'api'
+          ? { label: 'Update API key', tone: 'setup' }
+          : { label: 'Open Cline', tone: 'setup' };
+      }
+      return providerName === 'openrouter' || providerName === 'deepseek' || providerName === 'minimax' || providerName === 'copilot' || providerName === 'factory' || providerName === 'zai' || providerName === 'zaiteam' || providerName === 'volcengine' || providerName === 'kimi'
         ? { label: 'Update API key', tone: 'setup' }
         : providerName === 'qoder' || providerName === 'trae'
           ? { label: 'Sign in again', tone: 'setup' }
@@ -321,9 +463,12 @@
     if (status === 'notConfigured') {
       if (providerName === 'kimi') return { label: 'Add credential', tone: 'setup' };
       if (providerName === 'antigravity') return { label: 'Not set up', tone: 'setup' };
-      if (providerName === 'cursor' || providerName === 'copilot' || providerName === 'zed' || providerName === 'qoder' || providerName === 'trae' || providerName === 'workbuddy' || providerName === 'commandcode' || providerName === 'ollama' || providerName === 'alibaba') return { label: 'Sign in', tone: 'setup' };
+      if (providerName === 'cursor' || providerName === 'copilot' || providerName === 'zed' || providerName === 'typesafe' || providerName === 'qoder' || providerName === 'trae' || providerName === 'workbuddy' || providerName === 'commandcode' || providerName === 'ollama' || providerName === 'alibaba') return { label: 'Sign in', tone: 'setup' };
       if (providerName === 'thirdparty') return { label: 'Add credential', tone: 'setup' };
-      if (providerName === 'openrouter' || providerName === 'deepseek' || providerName === 'minimax' || providerName === 'zai' || providerName === 'zaiteam' || providerName === 'volcengine' || providerName === 'kimi') return { label: 'Add API key', tone: 'setup' };
+      // Cline joins the key-configured family: with neither a key nor a stored
+      // sign-in, the one thing this application can be told is a key (the sign-in
+      // belongs to Cline, and its own row explains that).
+      if (providerName === 'openrouter' || providerName === 'deepseek' || providerName === 'minimax' || providerName === 'factory' || providerName === 'zai' || providerName === 'zaiteam' || providerName === 'volcengine' || providerName === 'kimi' || providerName === 'cline') return { label: 'Add API key', tone: 'setup' };
       if (providerName === 'grok') return { label: 'Run grok login', tone: 'setup' };
       if (providerName === 'kiro') return { label: 'Run kiro-cli login', tone: 'setup' };
       return { label: 'Not set up', tone: 'setup' };
@@ -358,23 +503,14 @@
     return status !== 'disabled' && status !== 'notConfigured';
   }
 
-  function accountKey(value) {
-    return String(value || '').trim();
-  }
-
-  function accountIdentityKeys(value) {
-    return new Set([
-      value?.accountKey,
-      value?.webAccountKey,
-      ...(Array.isArray(value?.accountKeyAliases) ? value.accountKeyAliases : [])
-    ].map(accountKey).filter(Boolean));
-  }
-
+  // The key family is read from accountIdentity.js rather than built again here:
+  // it is the same rule the subscription matcher binds with, and a second copy of
+  // it is a second answer to "which account is this" waiting to drift.
   function providerMatchesTarget(candidate, target) {
     if (providerId(candidate) !== providerId(target)) return false;
-    const targetAccountKeys = accountIdentityKeys(target);
+    const targetAccountKeys = accountIdentityApi.accountKeyFamily(target);
     if (targetAccountKeys.size === 0) return true;
-    return [...accountIdentityKeys(candidate)].some((key) => targetAccountKeys.has(key));
+    return [...accountIdentityApi.accountKeyFamily(candidate)].some((key) => targetAccountKeys.has(key));
   }
 
   function deviceProviderCandidate(device, target) {
@@ -468,14 +604,21 @@
     limitProviderCompactWindowLabel,
     limitProviderCompactWindowPeriodLabel,
     limitProviderCompactWindows,
+    limitProviderFreshness,
     limitProviderDisplayLabel,
     limitProviderPlanDisplayLabel,
     limitProviderMainDeviceLabel,
     namedApiProfileStatus,
     limitProviderProvenance,
+    limitBoundaryText,
+    limitDurationText,
     limitResetRemainingMs,
     limitProviderSourceLabel,
     limitProviderStatusLabel,
-    limitProviderSettingsTags
+    limitProviderSettingsTags,
+    thirdPartyAdapterFamily,
+    thirdPartyAdapterVisual,
+    thirdPartyGroupPlanText,
+    thirdPartySharedAdapterFamily
   };
 });

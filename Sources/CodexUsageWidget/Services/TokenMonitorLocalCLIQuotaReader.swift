@@ -5,7 +5,7 @@ import Foundation
 /// API-only, selected local profile observation. A local ID is not a remote identity.
 struct TokenMonitorLocalCLIQuotaReader: Sendable {
     typealias Collector = @Sendable (TokenMonitorRequest, TokenMonitorCancellation) throws -> TokenMonitorResponse
-    static let sourceLabel = "token-monitor ef079b6 OpenCode Go"
+    static let sourceLabel = "token-monitor v0.62 OpenCode Go"
     enum Reason: String, Sendable {
         case authMissing = "auth_missing"
         case providerMissing = "provider_missing"

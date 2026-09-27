@@ -60,7 +60,7 @@ class PackagingTests(unittest.TestCase):
         self.pin = {'schemaVersion': 1, 'dependencyRoots': ['demo'],
                     'finalSource': {'files': {}},
                     'node': {'platforms': {'darwin-arm64': {'url': 'https://nodejs.org/dist/v22.23.2/node-v22.23.2-darwin-arm64.tar.gz', 'archiveSHA256': m.digest(node), 'binaryPreSignSHA256': m.digest(macho())}}},
-                    'tokscale': {'platforms': {'darwin-arm64': {'url': 'https://github.com/Javis603/tokscale/releases/download/token-monitor-8ef7aa98/tokscale-darwin-arm64', 'sha256': m.digest(binary), 'package': '@tokscale/cli-darwin-arm64'}}}}
+                    'tokscale': {'platforms': {'darwin-arm64': {'url': 'https://github.com/Javis603/tokscale/releases/download/token-monitor-06a9f162/tokscale-darwin-arm64', 'sha256': m.digest(binary), 'package': '@tokscale/cli-darwin-arm64'}}}}
         files = {'bridge.cjs': b'"use strict";', 'client-catalog.json': b'{"clients":[]}', 'provenance.json': b'{"license":"MIT"}', 'lib/index.cjs': b'module.exports = {};',
                  'hooks/index.cjs': b'module.exports = {};', 'upstream/LICENSE': b'Original MIT license',
                  'upstream/package-lock.json': m.canonical(self.lock)}
@@ -326,7 +326,7 @@ class PackagingTests(unittest.TestCase):
             self.assertEqual(run.call_count, 1)
 
     def test_redirect_to_unapproved_host_rejected(self):
-        url = 'https://github.com/Javis603/tokscale/releases/download/token-monitor-8ef7aa98/tokscale-darwin-arm64'
+        url = 'https://github.com/Javis603/tokscale/releases/download/token-monitor-06a9f162/tokscale-darwin-arm64'
         result = subprocess.CompletedProcess([], 0, b'302\nhttps://evil.example/binary', b'')
         with patch.object(m.subprocess, 'run', return_value=result), self.assertRaisesRegex(m.PackagingError, 'download_redirect_forbidden'):
             m.fetch(url, self.cache, '0' * 64, 'sha256', False)
