@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Exercise the real Codex app-server through the adapter, using localhost fixtures."""
 import argparse
+import base64
 import http.server
 import json
 import os
@@ -21,12 +22,37 @@ def main():
     calls = []
     key = secrets.token_urlsafe(32)
     marker = "AIGOODBRO_ISOLATED_DESKTOP_OK"
+    desktop_token = "fixture-desktop-access-token"
+    expected_auth = [key]
 
     class Handler(http.server.BaseHTTPRequestHandler):
         def log_message(self, *_): pass
+        def do_GET(self):
+            if self.headers.get("Upgrade"):
+                self.send_response(426)
+                self.end_headers()
+                return
+            # The official auth control plane remains separate from inference.
+            if self.path.startswith("/backend-api/wham/accounts/check"):
+                assert self.headers.get("Authorization") == "Bearer " + desktop_token
+                value = {"accounts": [{"id": "fixture-account",
+                    "workspace_backend_origin": "https://127.0.0.1",
+                    "account_routing_override": "NO_CONSTRAINT"}]}
+            elif self.path.startswith("/backend-api/wham/config/bundle"):
+                value = {}
+            else:
+                self.send_error(404)
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(value).encode())
         def do_POST(self):
+            if self.path != "/v1/responses":
+                self.send_error(404)
+                return
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-            assert self.headers.get("Authorization") == "Bearer " + key
+            assert self.headers.get("Authorization") == "Bearer " + expected_auth[0]
             assert self.path == "/v1/responses"
             calls.append(body)
             self.send_response(200)
@@ -56,6 +82,21 @@ def main():
         root = Path(temp)
         home = root / "codex"
         home.mkdir(mode=0o700)
+        claims = {"email": "fixture@example.invalid", "https://api.openai.com/auth": {
+            "chatgpt_account_id": "fixture-account", "chatgpt_user_id": "fixture-user",
+            "chatgpt_plan_type": "plus"}}
+        encode = lambda value: base64.urlsafe_b64encode(json.dumps(value).encode()).decode().rstrip("=")
+        # Synthetic login in an isolated home; never copy a real account token.
+        auth_path = home / "auth.json"
+        auth_path.write_text(json.dumps({"auth_mode": "chatgpt", "tokens": {
+            "id_token": encode({"alg": "none"}) + "." + encode(claims) + ".fixture",
+            "access_token": desktop_token, "refresh_token": "fixture-refresh-token",
+            "account_id": "fixture-account"}, "last_refresh": "2099-01-01T00:00:00Z"}))
+        auth_path.chmod(0o600)
+        auth_before = auth_path.read_bytes()
+        (home / "config.toml").write_text(
+            f'chatgpt_base_url="http://127.0.0.1:{server.server_port}/backend-api/"\n'
+            'cli_auth_credentials_store="file"\n')
         connection = root / "connection.json"
         connection.write_text(json.dumps({
             "schemaVersion": 1, "endpoint": f"http://127.0.0.1:{server.server_port}/v1",
@@ -66,10 +107,34 @@ def main():
                "TMPDIR": temp, "LANG": "en_US.UTF-8",
                "AIGOODBRO_PROXY_CONNECTION_FILE": str(connection)}
         thread_id = None
-        for run in range(2):
-            child = subprocess.Popen([str(args.helper.resolve()), "app-server", "--listen", "stdio://"],
+        for run in range(5):
+            # Match Desktop's real argv, including config on both sides of
+            # app-server. A bare app-server missed a provider-loss regression.
+            command = [str(args.helper.resolve()), "-c", "features.code_mode_host=true",
+                       "app-server", "--analytics-default-enabled", "-c",
+                       "plugins.codex-app-tools@openai-bundled.mcp_servers.codex_app.enabled=true"]
+            endpoint = f"http://127.0.0.1:{server.server_port}/v1"
+            run_env = dict(env)
+            expected_auth[0] = key
+            if run == 0:
+                # Seed the exact legacy provider metadata left by build 73.
+                command[0] = str(args.codex.resolve())
+                command += ["-c", 'model_provider="aigoodbro_local"', "-c",
+                            'model_providers.aigoodbro_local={name="AiGoodBro Local",base_url="' + endpoint + '",env_key="AIGOODBRO_PROXY_KEY",wire_api="responses",requires_openai_auth=false,supports_websockets=false}']
+                run_env["AIGOODBRO_PROXY_KEY"] = key
+            elif run in (2, 4):
+                # Ordinary Codex after disabling the proxy: no adapter/provider
+                # definition, and no explicit provider on thread/resume.
+                command[0] = str(args.codex.resolve())
+                command += ["-c", 'openai_base_url="' + endpoint + '"',
+                            "-c", "features.responses_websockets=false",
+                            "-c", "features.responses_websockets_v2=false",
+                            "-c", "features.enable_request_compression=false"]
+                run_env.pop("AIGOODBRO_PROXY_CONNECTION_FILE")
+                expected_auth[0] = desktop_token
+            child = subprocess.Popen(command,
                                      stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                     stderr=subprocess.DEVNULL, env=env, text=True)
+                                     stderr=subprocess.DEVNULL, env=run_env, text=True)
             incoming = queue.Queue()
             def read():
                 for line in child.stdout:
@@ -98,20 +163,33 @@ def main():
                                    "capabilities": {"experimentalApi": True}}, 1)
                 send("initialized", {})
                 params = {"cwd": temp, "approvalPolicy": "never", "sandbox": "read-only",
-                          "model": "gpt-6-sol", "modelProvider": "openai",
+                          "model": "gpt-6-sol", "modelProvider": "aigoodbro_local",
                           "config": {"model_reasoning_effort": "max"}}
-                if run == 0:
+                if run in (0, 3):
                     result = rpc("thread/start", params, 2)
                     thread_id = result["thread"]["id"]
                 else:
+                    if run in (2, 4):
+                        params.pop("modelProvider")
+                        params.pop("model")
+                        params.pop("config")
                     result = rpc("thread/resume", {**params, "threadId": thread_id}, 2)
-                assert result["modelProvider"] == "aigoodbro_local"
+                assert result["modelProvider"] == ("aigoodbro_local" if run == 0 else "openai")
                 assert result["model"] == "gpt-6-sol"
+                if run > 0:
+                    account = rpc("account/read", {"refreshToken": False}, 5)
+                    assert account["requiresOpenaiAuth"] is True
+                    assert account["account"]["type"] == "chatgpt"
+                    assert account["workspaceRouting"] is not None
                 rpc("turn/start", {"threadId": thread_id, "model": "gpt-6-sol", "effort": "max",
                                   "input": [{"type": "text", "text": "Return the fixture marker."}]}, 3)
                 finished = until(lambda x: x.get("method") == "turn/completed")
                 assert finished["params"]["turn"]["status"] == "completed", finished
-                history = rpc("thread/list", {"modelProviders": ["openai"], "limit": 20}, 4)
+                # Old rollouts retain their creation provider in all-provider
+                # history. New adapter threads must appear in normal OpenAI
+                # history without needing the adapter after it is disabled.
+                providers = [] if run == 2 else ["aigoodbro_local" if run == 0 else "openai"]
+                history = rpc("thread/list", {"modelProviders": providers, "limit": 20}, 4)
                 assert thread_id in [x["id"] for x in history["data"]]
             finally:
                 child.stdin.close()
@@ -120,10 +198,11 @@ def main():
                     child.terminate()
                     child.wait(timeout=5)
                 reader.join(timeout=2)
-        assert len(calls) == 2, len(calls)
+        assert len(calls) == 5, len(calls)
         assert all(x["model"] == "gpt-6-sol" and x.get("reasoning", {}).get("effort") == "max" for x in calls)
         assert any(marker in json.dumps(x.get("input")) for x in calls[1:])
-        print("PASS: real app-server start, cold resume, history listing and two localhost turns; model/effort retained; no live account")
+        assert auth_path.read_bytes() == auth_before
+        print("PASS: legacy provider recovery, proxy turn, ordinary Codex resume after disable, ChatGPT workspace identity, history and model/effort retained; synthetic account only")
     server.shutdown()
 
 

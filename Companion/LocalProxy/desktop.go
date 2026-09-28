@@ -16,7 +16,6 @@ import (
 	"time"
 )
 
-const desktopLineLimit = 64 << 20
 const desktopConnectionLimit = 16 << 10
 
 type desktopConnection struct {
@@ -101,7 +100,8 @@ func desktopEndpoint(endpoint string) bool {
 	return err == nil && port >= 1 && port <= 65535 && strconv.Itoa(port) == portText
 }
 
-// The global -c flags must precede app-server. Other CLI commands pass through.
+// Locate app-server after the Desktop's global config flags. Other CLI commands
+// pass through without changing their configuration.
 func desktopAppServerIndex(args []string) int {
 	i := 0
 	for i < len(args) {
@@ -127,17 +127,22 @@ func desktopArgs(args []string, index int, endpoint string) []string {
 		return append([]string(nil), args...)
 	}
 	overrides := []string{
-		"-c", `model_provider="aigoodbro_local"`,
-		"-c", `model_providers.aigoodbro_local={name="AiGoodBro Local",base_url="` + endpoint + `",env_key="AIGOODBRO_PROXY_KEY",wire_api="responses",requires_openai_auth=false,supports_websockets=false,request_max_retries=0,stream_max_retries=0}`,
+		"-c", `model_provider="openai"`,
+		"-c", `openai_base_url="` + endpoint + `"`,
+		"-c", `features.responses_websockets=false`,
+		"-c", `features.responses_websockets_v2=false`,
+		"-c", `features.enable_request_compression=false`,
 	}
 	out := make([]string, 0, len(args)+len(overrides))
-	out = append(out, args[:index]...)
+	// Desktop also supplies -c after app-server. Codex's subcommand config takes
+	// precedence over the global config list, so the provider must be in that
+	// same list. Otherwise initialize succeeds but every thread resume fails.
+	out = append(out, args...)
 	out = append(out, overrides...)
-	out = append(out, args[index:]...)
 	return out
 }
 
-func desktopEnvironment(base []string, key string, appServer bool) []string {
+func desktopEnvironment(base []string, codexExecutable string) []string {
 	out := make([]string, 0, len(base)+1)
 	for _, entry := range base {
 		name, _, _ := strings.Cut(entry, "=")
@@ -145,9 +150,9 @@ func desktopEnvironment(base []string, key string, appServer bool) []string {
 			out = append(out, entry)
 		}
 	}
-	if appServer {
-		out = append(out, "AIGOODBRO_PROXY_KEY="+key)
-	}
+	// Official plugins discover the signed bundled Node next to CODEX_CLI_PATH.
+	// Removing the variable sends them to an unsigned fallback runtime instead.
+	out = append(out, "CODEX_CLI_PATH="+codexExecutable)
 	return out
 }
 
@@ -172,7 +177,9 @@ func transformDesktopLine(line []byte) []byte {
 	if method == "thread/list" {
 		params["modelProviders"] = json.RawMessage(`[]`)
 	} else {
-		params["modelProvider"] = json.RawMessage(`"aigoodbro_local"`)
+		// Keep persisted thread metadata compatible with an ordinary Desktop
+		// launch after the proxy is disabled. This also repairs legacy resumes.
+		params["modelProvider"] = json.RawMessage(`"openai"`)
 	}
 	encodedParams, err := json.Marshal(params)
 	if err != nil {
@@ -199,9 +206,6 @@ func forwardDesktopInput(input io.Reader, output io.WriteCloser) error {
 		var line bytes.Buffer
 		for {
 			part, err := reader.ReadSlice('\n')
-			if line.Len()+len(part) > desktopLineLimit {
-				return errors.New("desktop input line too long")
-			}
 			_, _ = line.Write(part)
 			if err == bufio.ErrBufferFull {
 				continue
@@ -251,8 +255,18 @@ func runDesktopAdapter(connectionPath string, args []string) int {
 		return 78
 	}
 	index := desktopAppServerIndex(args)
-	cmd := exec.Command(c.CodexExecutable, desktopArgs(args, index, c.Endpoint)...)
-	cmd.Env = desktopEnvironment(os.Environ(), c.ClientKey, index >= 0)
+	endpoint := c.Endpoint
+	if index >= 0 {
+		gateway, localEndpoint, err := startDesktopGateway(c, os.Environ())
+		if err != nil {
+			_, _ = io.WriteString(os.Stderr, "desktop adapter: local gateway unavailable\n")
+			return 78
+		}
+		defer gateway.Close()
+		endpoint = localEndpoint
+	}
+	cmd := exec.Command(c.CodexExecutable, desktopArgs(args, index, endpoint)...)
+	cmd.Env = desktopEnvironment(os.Environ(), c.CodexExecutable)
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	var childInput io.WriteCloser

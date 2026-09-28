@@ -400,7 +400,8 @@ func newRuntime(s startup, e *events, testBaseURL string) (*runtime, error) {
 		defer stop()
 		scope := &requestScope{id: uuid.NewString(), cancel: requestCancel, ctx: requestCtx, bridge: b, events: e, done: make(chan struct{}), exited: make(chan struct{})}
 		c.Request = c.Request.WithContext(context.WithValue(requestCtx, scopeKey{}, scope))
-		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 32<<20)
+		// Desktop can replay large image histories. Do not impose a second,
+		// local body-size cap on Responses or compaction requests.
 		go scope.heartbeats()
 		defer scope.close()
 		c.Next()

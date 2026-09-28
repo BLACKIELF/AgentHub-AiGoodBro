@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -46,7 +47,7 @@ func TestDesktopTransforms(t *testing.T) {
 			t.Fatal(err)
 		}
 		params := got["params"].(map[string]any)
-		if params["modelProvider"] != "aigoodbro_local" || params["model"] != "original-model" || params["effort"] != "high" || got["id"] != float64(42) || !reflect.DeepEqual(params["tools"], []any{map[string]any{"name": "fixture"}}) || !reflect.DeepEqual(params["config"], map[string]any{"x": float64(1)}) || !reflect.DeepEqual(params["response"], map[string]any{"a": true}) || !reflect.DeepEqual(got["extra"], []any{float64(1), float64(2)}) {
+		if params["modelProvider"] != "openai" || params["model"] != "original-model" || params["effort"] != "high" || got["id"] != float64(42) || !reflect.DeepEqual(params["tools"], []any{map[string]any{"name": "fixture"}}) || !reflect.DeepEqual(params["config"], map[string]any{"x": float64(1)}) || !reflect.DeepEqual(params["response"], map[string]any{"a": true}) || !reflect.DeepEqual(got["extra"], []any{float64(1), float64(2)}) {
 			t.Fatalf("%s changed unrelated data: %#v", method, got)
 		}
 	}
@@ -141,11 +142,45 @@ func TestDesktopArgsAndPassthrough(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if bytes.Contains(args, []byte(c.ClientKey)) || (tc.wantProxy && (!bytes.Contains(args, []byte(`model_provider="aigoodbro_local"`)) || !bytes.Contains(args, []byte(c.Endpoint)) || !bytes.Contains(args, []byte(`model="original"`)) || string(key) != c.ClientKey)) || (!tc.wantProxy && (string(key) != "" || string(args) != "--version\n")) {
+		if bytes.Contains(args, []byte(c.ClientKey)) || len(key) != 0 || (tc.wantProxy && (!bytes.Contains(args, []byte(`model_provider="openai"`)) || !bytes.Contains(args, []byte(`openai_base_url="http://127.0.0.1:`)) || !bytes.Contains(args, []byte(`model="original"`)))) || (!tc.wantProxy && string(args) != "--version\n") {
 			t.Fatalf("wrong args or key placement: args=%q, key-present=%t", args, len(key) != 0)
 		}
 	}
 }
+
+func TestDesktopKeepsOfficialRuntimeDiscovery(t *testing.T) {
+	got := desktopEnvironment([]string{"HOME=/fixture", "CODEX_CLI_PATH=/adapter", "AIGOODBRO_PROXY_KEY=fixture-secret", "AIGOODBRO_PROXY_CONNECTION_FILE=/connection", "PATH=/bin"}, "/official/Resources/codex")
+	want := []string{"HOME=/fixture", "PATH=/bin", "CODEX_CLI_PATH=/official/Resources/codex"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatal("official runtime path or environment isolation lost")
+	}
+}
+
+func TestDesktopInputHasNoFormer64MiBLimit(t *testing.T) {
+	// Exercise an unchanged JSONL record without keeping a second large copy.
+	input := io.MultiReader(strings.NewReader(`{"method":"fixture","payload":"`), io.LimitReader(repeatedByte('x'), 65<<20), strings.NewReader("\"}\n"))
+	out := &countingDesktopWriter{}
+	if err := forwardDesktopInput(input, out); err != nil || out.n <= 64<<20 || !out.closed {
+		t.Fatalf("large Desktop record failed: bytes=%d closed=%t error=%v", out.n, out.closed, err)
+	}
+}
+
+type repeatedByte byte
+
+func (b repeatedByte) Read(p []byte) (int, error) {
+	for i := range p {
+		p[i] = byte(b)
+	}
+	return len(p), nil
+}
+
+type countingDesktopWriter struct {
+	n      int
+	closed bool
+}
+
+func (w *countingDesktopWriter) Write(p []byte) (int, error) { w.n += len(p); return len(p), nil }
+func (w *countingDesktopWriter) Close() error                { w.closed = true; return nil }
 
 func TestDesktopChildExitWithOpenStdin(t *testing.T) {
 	path, _ := desktopFixture(t, "exit 7")
