@@ -1,4 +1,12 @@
 {
-  "version": 1,
-  "messages": []
+  "messages" : [
+    {
+      "body" : "aigoodbro微信号同名",
+      "expiresAt" : "2026-10-28T11:27:44Z",
+      "id" : "notice-5e445836-7781-4f01-8cdb-8ed018581c6f",
+      "publishedAt" : "2026-09-28T11:27:44Z",
+      "title" : "aigoodbro微信号同名"
+    }
+  ],
+  "version" : 1
 }
