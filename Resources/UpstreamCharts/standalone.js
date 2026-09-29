@@ -324,7 +324,7 @@
     const available = [...state.byDate.values()].filter(r => r.date >= start && r.date <= end).sort((a,b) => a.date.localeCompare(b.date));
     const rows = available.filter(r => dimension(r, field)?.some(([,v]) => amount(v?.tokens) !== null)).map(r => ({date:r.date, [field]:Object.fromEntries(dimension(r, field).filter(([,v]) => amount(v?.tokens) !== null).map(([k,v]) => [k,{tokens:v.tokens}]))}));
     if (!rows.length) { $('bars').textContent = t('此范围未提供该维度','Dimension unavailable in this range'); $('legend').textContent = t('无法从每日总量推断模型或工具分组。','No model/tool grouping inferred from daily totals.'); return; }
-    const model = api.dailyBarsChart(rows,{width:barsWidth(),height:150,padLeft:56,stackBy:$('group').value,metric:'tokens'});
+    const model = api.dailyBarsChart(rows,{width:barsWidth(),height:state.compact ? 100 : 150,padLeft:56,stackBy:$('group').value,metric:'tokens'});
     const colorFor = k => `hsl(${(model.keys.indexOf(k)*67+205)%360},65%,52%)`;
     const labelStride = Math.max(1, Math.ceil(rows.length / Math.max(2, Math.floor(model.plot.w / 72))));
     const tickFormat = new Intl.NumberFormat(language === 'en' ? 'en-US' : 'zh-CN', {notation:'compact',maximumFractionDigits:1});
@@ -353,6 +353,7 @@
   }
   root.__renderTrend = function (input, options = {}) {
     language = options.language === 'en' ? 'en' : 'zh'; localize();
+    document.body.setAttribute('data-compact', String(Number.isFinite(options.height) && options.height <= 180));
     // Native sends the bounded JSON once per snapshot/navigation. Presentation
     // updates carry only its identity and options, reusing this realm's object.
     const snapshotID = options.snapshotID;
@@ -381,6 +382,7 @@
     const previousFrom = $('from').value, previousTo = $('to').value;
     state = normalize(input,options.resetAnnotations);
     state.snapshotID = snapshotID;
+    state.compact = Number.isFinite(options.height) && options.height <= 180;
     state.width = Number.isFinite(options.width) ? Math.max(320,Math.min(2000,options.width)) : 650;
     $('context').textContent = `${t('每日 Token','Daily tokens')} · ${publicText(input.timezone)} · ${t('仅汇总已记录用量','Recorded usage only')}`;
     const rows = [...state.byDate.values()].filter(r => amount(r.tokens) !== null);

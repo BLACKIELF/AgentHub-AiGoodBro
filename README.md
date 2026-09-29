@@ -1,12 +1,12 @@
-# AiGoodBro 2.0 · AgentHub
+# AiGoodBro · AgentHub（2.0候选）
 
-**AiGoodBro 2.0** 是 macOS 的 Codex 多账号工作台，主页名为 **AgentHub**。它集中显示账号额度、Token 用量和服务状态，右侧停靠栏方便随时查看今日用量与额度。开启重置消息推送并配置飞书机器人后，新的公开重置预告会自动发送提醒，方便及时安排任务、减少反复刷网页。菜单栏提供用量、限额、趋势和服务状态入口，也可返回工作台管理账号或启动隔离 CLI。升级保留已有账号与设置。
+AiGoodBro 是面向个人自用的 macOS AI 工作台。它把 Codex 多账号额度、Token 用量、本机 CLI、公开重置消息和可选的本地反代放在一起，方便查看剩余额度、重置时间与任务占用，并在需要时启动独立 CLI。界面支持中文和英文，主页名为 AgentHub。
 
 **中文** | [English](README.en.md)
 
 ![AiGoodBro 2.0 新版用量看板](docs/images/0927v6/dashboard.jpg)
 
-> 2026-09-27 安装版实机截图：Token 活动、模型与工具排行。金额为用量估算，不是实际账单。[查看新版首页与图片说明](docs/images/0927v6/README.md)。
+> 2026-09-27 实机截图，来自 AiGoodBro 2.0 / 9.6.17 (66)，展示 Token 活动、模型与工具排行；它不是 9.6.32 (82) 的当前界面。金额为用量估算，不是实际账单。[图片说明](docs/images/0927v6/README.md) · [当前候选验证记录](docs/source-publication-0929v1.md)。
 
 每天开工前，先回答四个问题：还剩多少额度、几点恢复、这个账号现在能不能用、任务进行到哪一步。
 
@@ -26,19 +26,34 @@ AiGoodBro 把额度提醒与消息放在前面，让你及时知道什么时候�
 
 单账号也能只读使用。公开重置公告、某个账号的额度恢复、账号持有的重置卡是三种不同信息：收到公告不会自动使用重置卡，也不能替代账号额度刷新。软件内的微信接入指**企业微信群机器人**；个人微信未接入。
 
-**当前安装候选：AiGoodBro 2.0 · 0928v1，9.6.24 (74)。** 本次取消反代 HTTP 请求与桌面 JSONL 消息的大小上限，修复桌面工作区身份、原生工具运行时以及关闭反代后的任务恢复。9 月 28 日已覆盖安装，安装包签名和文件校验通过；完整 Desktop 重连及原任务实机验收尚未完成。此前额度与浮窗整合见 [0927v5 记录](docs/ai-goodbro-2.0-0927v5.md)。2.0 尚未发布 GitHub 下载包。
+**当前源码候选：AiGoodBro · AgentHub（2.0候选），0929v2 / 9.6.32 (82)。** 左侧页面导航与底部设置菜单，紧凑账号卡片 / 列表，保留统一编号、短细额度条、精确重置时间、点数和调度开关。首页沿用 Token Monitor 的日历、柱状图及 K 线交互，模型 / 工具明细默认折叠。ZCode Start Plan 显示完整 Token 额度；Kimi / Grok 自动续期读取额度，TRAE 国内个人版显示积分，WorkBuddy 桌面额度仍不可读取。反代运行中可调整优先级与顺序；全部参与账号的订阅额度先于点数，桌面账号在每个阶段最后使用。原生生图 / 图片编辑保留模型、提示词和参考图，结果不明时不自动重发。CC Switch 已配置的余额仅用于 Claude CLI。本次上传复检 33 项纯自测中 31 项通过，2 项失败详见[当前候选发布检查](docs/source-publication-0929v1.md)；82 仍为候选。历史构建、签名、CLI 额度与反代回归及官方 app-server 隔离验证见[集成记录](docs/local-proxy-0928v1.md)。候选位于 `codex/reset-messages-0926v1` 分支及 [PR #13](https://github.com/BLACKIELF/AgentHub-AiGoodBro/pull/13)；`main` 保留现有主线且不包含 82。2.0 尚无 GitHub 下载包。
 
-**本地反代与桌面接入。** 反代单独开启，支持参与调用、优先调用和账号队列排序，按请求占用账号，额度不足后尝试后续可用账号。退出 Codex 后，从反代面板点击“接入桌面”；每个对话保留自己的模型和推理强度。桌面保留 OpenAI 登录身份，只有模型请求经本机代理转入账号池，不改系统认证或全局配置。关闭代理后需要正常重开 Codex；旧任务在新版适配器中恢复一次后可继续。真实 app-server 的隔离测试已覆盖旧任务恢复、工作区身份、关闭反代后续做及历史读取；40 MiB 图片请求、40 MiB 压缩上下文请求与 65 MiB 桌面消息通过。原有暂停→切号→续做仍待完整实机验收，因此暂不合入主线或发布正式版。[反代集成记录](docs/local-proxy-0928v1.md) · [此前验收记录](docs/source-snapshot-0927v6.md)。
+**本地反代与桌面接入。** 反代单独开启，支持参与调用、优先调用和账号队列排序，按请求占用账号，额度不足后尝试后续可用账号。退出 Codex 后，从反代面板点击“接入桌面”；每个对话保留自己的模型和推理强度。桌面保留 OpenAI 登录身份，只有模型请求经本机代理转入账号池，不改系统认证或全局配置。关闭代理后需要正常重开 Codex；旧任务在新版适配器中恢复一次后可继续。真实 app-server 的隔离测试已覆盖旧任务恢复、工作区身份、关闭反代后续做及历史读取；40 MiB 图片请求、40 MiB 压缩上下文请求与 65 MiB 桌面消息通过。75 的适配器在原进程中执行官方签名的 Codex，转发工作交给旁路子进程；原生签名校验模块已通过隔离验证，未放宽校验规则。build80 的真实 Desktop→账号池请求是历史验证；82 版反代由用户手动开启与接入，本次发布检查未验证当前 Desktop 路由。WAICY 大消息恢复、自动暂停→切号→续做、最终界面回归及真实反代生图仍待验收。[反代集成记录](docs/local-proxy-0928v1.md) · [当前候选发布检查](docs/source-publication-0929v1.md) · [0927v6 历史验收记录](docs/source-snapshot-0927v6.md)。
 
-### 反代仅限个人使用
+### 个人自用与技术背景
 
-本地反代功能仅限个人使用，用于本人账号在本机的任务；不提供凭据共享、额度转售或面向他人的公共代理服务。
+本地反代为个人自用场景设计，用于自己的账号和本机任务；本项目不提供账号、凭据共享、额度转售或公共代理服务。依赖组件仍按各自许可证说明。
 
-Tibo（@thsottiaux）在 2026-07-12 的公开帖子中写道：**“Step 1: Install CLIProxyAPI”**，并介绍将 GPT 接入 Claude Code 的方法。[查看原帖](https://x.com/thsottiaux/status/2076119366647894371)。这里引用的是技术背景，不代表 OpenAI 对 AiGoodBro 或任何其他使用方式的授权。依赖组件保留各自的许可证与来源说明。
+Tibo（@thsottiaux）在介绍 GPT 与 Claude Code 配合使用的 2026-07-12 公开帖中提到 CLIProxyAPI；[查看原帖](https://x.com/thsottiaux/status/2076119366647894371)。该引用仅说明技术背景，不代表官方对本项目的授权或背书。
 
-一句话安装口令和 4 个调用模板都在下面。2.0 候选源码见 [PR #13](https://github.com/BLACKIELF/AgentHub-AiGoodBro/pull/13)；`main` 尚未包含这次整合，下载或构建前请核对版本。
+## 功能来源与许可证
 
-[![CI](https://github.com/BLACKIELF/AgentHub-AiGoodBro/actions/workflows/ci.yml/badge.svg)](https://github.com/BLACKIELF/AgentHub-AiGoodBro/actions/workflows/ci.yml)
+功能设计参考、借鉴了相关开源项目；实际直接复用的代码与资源单独列明，并保留原许可证和版权声明。
+
+| 来源 | 关系 |
+|---|---|
+| [codexU](https://github.com/shanggqm/codexU) | 历史 SwiftUI、额度、配色与 Windows 基础直接继承。 |
+| [Token Monitor v0.62.0 固定提交](https://github.com/Javis603/token-monitor/tree/dcccfb01557e2786888fd5479552f392ac6c0d32) | 统计引擎、桌面看板、图表与资源直接复用，并适配宿主应用。 |
+| [Tokscale fork](https://github.com/Javis603/tokscale) · [original](https://github.com/junhoyeo/tokscale) | 统计采集基础；打包修订为 `06a9f1625d5a505f01b39eff29f7be44a2c52188`，见 [`SOURCE.json`](Companion/TokenMonitorEngine/SOURCE.json)。 |
+| [CLIProxyAPI v8.0.2 固定版本](https://github.com/router-for-me/CLIProxyAPI/tree/v8.0.2) | SDK 调度、Codex 执行器与 Responses 处理器直接复用。 |
+| [Codex-Manager](https://github.com/qxcnm/Codex-Manager) | 暖号请求结构与 SSE 完成规则的实现适配，见 [`CodexAccountActions.swift`](Sources/CodexUsageWidget/Services/CodexAccountActions.swift#L850)。 |
+| [Hazmat stdio wrapper 脚本](https://github.com/dredozubov/hazmat/blob/c112d222bb53e888dd17a8927927286792f7c20e/scripts/check-codex-desktop-attach-smoke.sh) | 参考 `CODEX_CLI_PATH` 的 stdio wrapper 入口；未集成 Hazmat 沙箱或服务。 |
+
+许可证和完整版权声明见 [`LICENSE`](LICENSE)、[`Resources/THIRD_PARTY_NOTICES.txt`](Resources/THIRD_PARTY_NOTICES.txt)、[`Companion/LocalProxy/LICENSE.CLIProxyAPI`](Companion/LocalProxy/LICENSE.CLIProxyAPI)、[`LICENSE.Hazmat`](Companion/LocalProxy/LICENSE.Hazmat) 与 [`THIRD-PARTY-NOTICES.txt`](Companion/LocalProxy/THIRD-PARTY-NOTICES.txt)。详细来源、固定版本和本轮验证边界见[候选发布检查记录](docs/source-publication-0929v1.md)。
+
+下面提供安装口令和 4 个调用模板。2.0 候选源码位于 `codex/reset-messages-0926v1` 分支及 [PR #13](https://github.com/BLACKIELF/AgentHub-AiGoodBro/pull/13)；`main` 保留现有主线且不包含此候选。当前没有可下载的 2.0 安装包。
+
+[![CI](https://github.com/BLACKIELF/AgentHub-AiGoodBro/actions/workflows/ci.yml/badge.svg?branch=codex%2Freset-messages-0926v1)](https://github.com/BLACKIELF/AgentHub-AiGoodBro/actions/workflows/ci.yml)
 ![macOS 13+](https://img.shields.io/badge/macOS-13%2B-111111?logo=apple)
 [![MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
@@ -52,15 +67,23 @@ Tibo（@thsottiaux）在 2026-07-12 的公开帖子中写道：**“Step 1: Inst
 
 需要 macOS 13+、已正常登录的 Codex，以及 Xcode Command Line Tools。只有一个账号也能先用只读监控。CLI 与暖号还需要配置本机 Hub 和账号映射；没有配置时，相关入口保持关闭并提示原因。首次引导会检查现有 Python 3.9+ 和 Codex CLI，按需准备配套 Skill；依赖由用户安装，AiGoodBro 不内置外部 Python 或 Codex。配套 Hub 在确认项目和账号后单独设置，已存在的服务会保留。
 
-自己构建：
+构建 2.0 候选（9.6.32 / 82）：
 
 ```sh
-git clone --branch main https://github.com/BLACKIELF/AgentHub-AiGoodBro.git
-cd AgentHub-AiGoodBro
+git clone --branch codex/reset-messages-0926v1 https://github.com/BLACKIELF/AgentHub-AiGoodBro.git AiGoodBro-2.0
+cd AiGoodBro-2.0
 make build
 ```
 
-源码构建还需要 Go 1.26+，用于编译固定 CLIProxyAPI v8.0.2 的本地反代组件；安装后的代理无需另外安装 Go。完整桌面模块的构建需另提供已校验的 Token Monitor v0.62.0 macOS arm64 官方运行时，默认读取 `/Applications/Token Monitor.app`；配置和已知限制见 [2.0 集成记录](docs/ai-goodbro-2.0-0927v5.md)。
+需要现有主线版本时，仍可从 `main` 构建；该分支不含 82 候选：
+
+```sh
+git clone --branch main https://github.com/BLACKIELF/AgentHub-AiGoodBro.git AiGoodBro-main
+cd AiGoodBro-main
+make build
+```
+
+源码构建还需要 Go 1.26+，用于编译固定 CLIProxyAPI v8.0.2 的本地反代组件；安装后的代理无需另外安装 Go。完整桌面模块的构建需另提供已校验的 Token Monitor v0.62.0 macOS arm64 官方运行时，默认读取 `/Applications/Token Monitor.app`；当前限制见[候选发布检查记录](docs/source-publication-0929v1.md)和[反代集成记录](docs/local-proxy-0928v1.md)。较早的 0927v5 集成过程保留在[历史记录](docs/ai-goodbro-2.0-0927v5.md)。
 
 构建结果应为 `build/AiGoodBro.app`。构建不会自动安装或启动；升级时先备份旧版，再迁移为唯一的 `AiGoodBro.app`，不要留下两个可启动副本。详见[安装与配置](docs/usage-guide.md#安装与配置)与[品牌兼容表](docs/brand-compat-0911v1.md)。本机构建使用 ad-hoc 签名；2.0 候选没有已发布的 Apple 公证下载包。
 
@@ -70,13 +93,13 @@ make build
 
 ![AiGoodBro 2.0 首页：公开重置预告与用量入口](docs/images/0927v6/workspace.jpg)
 
-*当前安装版截图，账号卡已折叠；缓存与未确认状态按原样展示。*
+*历史实机截图来自 9.6.17 (66)，不是 9.6.32 (82) 的当前 UI；账号卡已折叠，缓存与未确认状态按原样展示。当前候选边界见[发布检查记录](docs/source-publication-0929v1.md)。*
 
 主页依次呈现 Agent 导航、公开重置消息、Token 汇总与账号。公开预告和已完成公告分开显示，并保留发布时间、中文说明与来源入口；预告不代表账号额度到账。用量界面提供 Home、Tool、Status、Device、Model、Project、Session、Limits、Trends，服务状态读取公开摘要。
 
 2.0 集成候选采用固定的 Token Monitor v0.62.0 完整桌面代码，包含原版看板、菜单栏和右侧浮窗，通过 AiGoodBro 统一启动和退出。美元费用是根据本机用量估算的成本，不是供应商账单。实际读到的工具、模型、会话与项目维度按数据展示；未能确认的历史账号归属保持未知。设置 → 工作区 → 统计方式可以切回原有自定义模式，两套结果分别计算。
 
-统计运行时和固定依赖随 App 打包，不需要另外安装 Node.js。首次源码构建需要准备经过校验的依赖缓存；当前集成与验证边界见 [2.0 集成记录](docs/ai-goodbro-2.0-0927v5.md)。Hub 读取跨设备数据与发布本机用量分别选择，默认均关闭；发布前还要确认数据范围。
+统计运行时和固定依赖随 App 打包，不需要另外安装 Node.js。首次源码构建需要准备经过校验的依赖缓存；当前集成与验证边界见[候选发布检查记录](docs/source-publication-0929v1.md)和[反代集成记录](docs/local-proxy-0928v1.md)。早期 0927v5 集成记录仍保留作历史参考。Hub 读取跨设备数据与发布本机用量分别选择，默认均关闭；发布前还要确认数据范围。
 
 设置 → 右侧边栏提供独立的屏幕边缘入口，默认依次显示今天、最多三个已有额度平台和 `tok/s`。悬停展开详情卡，点击固定栏体；可选择自动隐藏或始终显示，并拖动顶部调整位置。设置中可增加“总计”等项目，详情卡支持工具／模型排行与精确 Token 数。速率取自新采集性能记录的实际输出量与耗时，有样本才显示；采集间隔内可能显示上次样本或“—”。
 
@@ -92,11 +115,11 @@ make build
 
 > 以下界面图保留自 0910v1，由当时的生产 SwiftUI 组件原生渲染，使用演示账号、额度和日期，不读取个人凭据。图中的“状态待确认”表示未连接 Hub。[图片来源与制作提示词](docs/images/0910v1/README.md)
 
-> 图片可能展示早期布局，仅用于介绍界面；2.0 的最新集成和实机验收结果见[候选记录](docs/ai-goodbro-2.0-0927v5.md)。
+> 图片可能展示早期布局，仅用于介绍界面；2.0 当前候选的来源与实机验收边界见[发布检查记录](docs/source-publication-0929v1.md)。
 
 ## 选择 CLI、执行档位和消息内容
 
-工作台顶部可选择本机已安装的 Codex、Grok、Kimi Code、Claude Code、OpenCode、Gemini CLI、MiMo 和 ZCode。每个 CLI 可关联已有登录目录，分别命名和刷新；支持范围见[账号与额度说明](docs/local-cli-accounts.md)。ZCode 可读取当前启用且身份匹配的个人 Coding Plan；MiMo 原生额度、WorkBuddy 与 TRAE 当前不可读的官方会话会明确提示，不能把工具已安装当作额度已连接。
+工作台顶部可选择本机已安装的 Codex、Grok、Kimi Code、Claude Code、OpenCode、Gemini CLI、MiMo 和 ZCode。每个 CLI 可关联已有登录目录，分别命名和刷新；支持范围见[账号与额度说明](docs/local-cli-accounts.md)。ZCode 可读取当前账号的个人 Coding Plan 与 Start Plan，完整显示模型 Token 剩余 / 总量；TRAE 国内个人版可读取当前登录的积分。MiMo 原生额度与 WorkBuddy 不可读的官方会话仍明确提示，工具已安装不等于额度已连接。
 
 模型菜单提供三个可改名称和组合的档位：沿用当前模型、Sol High 配 Luna Max 子代理、Luna Max 直接执行。每档均可更改主模型、强度和子代理配置；启动前校验最终参数。配置显示与实际执行证据分别记录。
 
@@ -198,11 +221,11 @@ AiGoodBro 的终端按钮会登记占用并等待启动回执；退出码 0 只�
 
 2.0 集成原版 Token 看板、菜单栏 Home / Status / Tool、右侧用量与额度栏、Claude 和 OpenAI 公开状态视图，以及公开重置预告的可选飞书自动提醒。剩余 1% 暂停、切号和原任务续接仍在进行实机验证。Agent／工具标识统一复用上游图标，应用使用定稿的 AiGoodBro 人物头像。固定 Token Monitor v0.62.0 源码与运行依赖，保留既有账号、CLI 和自动化流程。界面支持中文、英文、原版毛玻璃和系统降低透明度偏好。
 
-2.0 候选的本机测试、安装及未验证边界以[0927v5 记录](docs/ai-goodbro-2.0-0927v5.md)为准。完整官方重置周期、多 CLI 登录与真实调用、Desktop 切号和通知送达需要各自的运行证据；本轮没有为验证而发送真实通知或切换账号。
+2.0 候选的来源、当前版本、安装记录和未验证边界见[0929v1 发布检查记录](docs/source-publication-0929v1.md)及[反代集成记录](docs/local-proxy-0928v1.md)；[0927v5 集成记录](docs/ai-goodbro-2.0-0927v5.md)保留作早期历史。82 版当前 Desktop 路由未在本次发布检查中复验；真实反代生图、WAICY 大消息恢复、自动暂停→切号→续做和最终界面回归仍待验收。完整官方重置周期、多 CLI 登录与真实调用、通知送达也需要各自的运行证据；本轮没有为验证而发送真实通知或切换账号。
 
 既有打包流程计划在两种 Mac 安装包中附 `Companion Skill/multi-agent-management` 和中文安装说明；2.0 没有 Release 安装包，需在发布包装验证后才能确认。已有 Skill 先比较差异、备份并保留个人配置；安装 Skill 不会自动配置 Hub。
 
-[2.0 集成记录](docs/ai-goodbro-2.0-0927v5.md) · [V1.0 历史记录](docs/release-notes-v9.6.1.md) · [完整历史](CHANGELOG.md) · [调度 Skill 使用说明](.agents/skills/multi-agent-management/使用说明.md) · [详细使用说明](docs/usage-guide.md)
+[当前候选发布检查](docs/source-publication-0929v1.md) · [反代集成记录](docs/local-proxy-0928v1.md) · [0927v5 历史集成记录](docs/ai-goodbro-2.0-0927v5.md) · [V1.0 历史记录](docs/release-notes-v9.6.1.md) · [完整历史](CHANGELOG.md) · [调度 Skill 使用说明](.agents/skills/multi-agent-management/使用说明.md) · [详细使用说明](docs/usage-guide.md)
 
 ## 还有哪些功能
 

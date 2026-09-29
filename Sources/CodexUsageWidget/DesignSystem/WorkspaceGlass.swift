@@ -12,7 +12,15 @@ private struct WorkspacePreviewOpaqueSurfaceKey: EnvironmentKey {
     static let defaultValue = false
 }
 
+private struct WorkspaceGlassPreferencesKey: EnvironmentKey {
+    static let defaultValue = WorkspaceGlassPreferences()
+}
+
 extension EnvironmentValues {
+    var workspaceGlass: WorkspaceGlassPreferences {
+        get { self[WorkspaceGlassPreferencesKey.self] }
+        set { self[WorkspaceGlassPreferencesKey.self] = newValue }
+    }
     /// The screenshot harness may freeze presentation time; live accounts always use the clock.
     var workspacePreviewDate: Date? {
         get { self[WorkspacePreviewDateKey.self] }
@@ -68,6 +76,7 @@ struct WorkspaceGlassSurface: View {
     @Environment(\.colorSchemeContrast) private var contrast
     @Environment(\.visualTokens) private var tokens
     @Environment(\.workspacePreviewOpaqueSurface) private var previewOpaque
+    @Environment(\.workspaceGlass) private var glass
 
     private var opaque: Bool { reduceTransparency || previewOpaque || contrast == .increased }
     private var shape: RoundedRectangle { RoundedRectangle(cornerRadius: cornerRadius, style: .continuous) }
@@ -82,8 +91,8 @@ struct WorkspaceGlassSurface: View {
                 if !opaque {
                     shape.fill(
                         colorScheme == .dark
-                            ? Color.white.opacity(0.018)
-                            : Color.white.opacity(0.065))
+                            ? Color.white.opacity(glass.controlOpacity * 0.4)
+                            : Color.white.opacity(glass.controlOpacity * 1.4))
                     shape.fill(tokens.surfaceTint.color.color.opacity(tokens.surfaceTint.maximumOpacity * 0.22))
                     shape.fill(
                         LinearGradient(
@@ -95,7 +104,7 @@ struct WorkspaceGlassSurface: View {
                 shape.strokeBorder(
                     selected
                         ? tokens.selection.stroke.color
-                        : Color.primary.opacity(contrast == .increased ? 0.35 : colorScheme == .dark ? 0.10 : 0.06),
+                        : Color.primary.opacity(contrast == .increased ? 0.35 : glass.lineOpacity * (colorScheme == .dark ? 0.78 : 0.47)),
                     lineWidth: selected ? 1 : 0.6)
             }
             .shadow(color: .black.opacity(opaque ? 0 : colorScheme == .dark ? 0.05 : 0.025), radius: 6, y: 2)

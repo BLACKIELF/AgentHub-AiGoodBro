@@ -162,6 +162,7 @@ private struct EdgeDockHUDMaterial<Outline: Shape>: NSViewRepresentable {
 
 private struct EdgeDockGlass<Content: View, Outline: Shape>: View {
     let outline: Outline
+    let glass: WorkspaceGlassPreferences
     let content: Content
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
@@ -173,13 +174,13 @@ private struct EdgeDockGlass<Content: View, Outline: Shape>: View {
                 if reduceTransparency || contrast == .increased {
                     outline.fill(Color(nsColor: .windowBackgroundColor))
                 } else {
-                    EdgeDockHUDMaterial(outline: outline)
+                    if glass.systemGlass { EdgeDockHUDMaterial(outline: outline) }
                     outline.fill(
                         colorScheme == .dark
-                            ? Color(red: 48 / 255, green: 52 / 255, blue: 56 / 255).opacity(0.68)
-                            : Color(red: 246 / 255, green: 247 / 255, blue: 250 / 255).opacity(0.54))
+                            ? Color(red: 48 / 255, green: 52 / 255, blue: 56 / 255).opacity(glass.tintOpacity)
+                            : Color(red: 246 / 255, green: 247 / 255, blue: 250 / 255).opacity(glass.tintOpacity))
                 }
-                outline.stroke(Color.primary.opacity(colorScheme == .dark ? 0.22 : 0.13), lineWidth: 0.6)
+                outline.stroke(Color.primary.opacity(glass.lineOpacity), lineWidth: 0.6)
             }
             .clipShape(outline)
             .contentShape(outline)
@@ -189,12 +190,14 @@ private struct EdgeDockGlass<Content: View, Outline: Shape>: View {
 struct TokenMonitorEdgeDockPeekView: View {
     let side: TokenMonitorEdgeDockPreferences.Side
     let language: WidgetLanguage
+    var glass = WorkspaceGlassPreferences()
     let onReveal: () -> Void
 
     var body: some View {
         Button(action: onReveal) {
             EdgeDockGlass(
                 outline: EdgeDockPeekShape(side: side),
+                glass: glass,
                 content:
                     Capsule()
                     .fill(Color(red: 0.40, green: 0.75, blue: 0.90))
@@ -213,6 +216,7 @@ struct TokenMonitorEdgeDockRailView: View {
     let cells: [TokenMonitorEdgeDockCell]
     let side: TokenMonitorEdgeDockPreferences.Side
     let language: WidgetLanguage
+    var glass = WorkspaceGlassPreferences()
     let compact: Bool
     let warnColors: Bool
     let focusedIndex: Int?
@@ -225,6 +229,7 @@ struct TokenMonitorEdgeDockRailView: View {
     var body: some View {
         EdgeDockGlass(
             outline: EdgeDockRailShape(side: side),
+            glass: glass,
             content:
                 VStack(spacing: 2) {
                     ForEach(cells.indices, id: \.self) { index in
@@ -341,6 +346,7 @@ struct TokenMonitorEdgeDockCardView: View {
     let cell: TokenMonitorEdgeDockCell
     let side: TokenMonitorEdgeDockPreferences.Side
     let language: WidgetLanguage
+    var glass = WorkspaceGlassPreferences()
     let tailY: CGFloat
     let isPinned: Bool
     let canPin: Bool
@@ -351,6 +357,7 @@ struct TokenMonitorEdgeDockCardView: View {
     var body: some View {
         EdgeDockGlass(
             outline: EdgeDockCardShape(side: side, tailY: tailY),
+            glass: glass,
             content:
                 ScrollView(showsIndicators: false) {
                     VStack(alignment: .leading, spacing: 9) {

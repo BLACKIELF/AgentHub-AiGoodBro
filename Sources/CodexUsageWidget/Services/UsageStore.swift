@@ -613,7 +613,7 @@ final class UsageStore: ObservableObject {
             return
         }
         terminalLaunchesInProgress.insert(profileID)
-        let accountName = AccountDisplay.profileName(profile, allProfiles: profiles)
+        let accountName = AccountDisplay.numberedName(profile, allProfiles: self.profiles)
         let directory = workingDirectory ?? FileManager.default.homeDirectoryForCurrentUser
         Task { @MainActor in
             defer { terminalLaunchesInProgress.remove(profileID) }
@@ -662,7 +662,7 @@ final class UsageStore: ObservableObject {
                     try DispatchActivityStore.live.resumeTerminal(lease)
                     let profile = profiles.first { DispatchActivityStore.hash($0.recordedAccountKey) == lease.accountKey }
                     let name =
-                        profile.map { AccountDisplay.profileName($0, allProfiles: profiles) }
+                        profile.map { AccountDisplay.numberedName($0, allProfiles: self.profiles) }
                         ?? WidgetLanguage.storedOrAutomatic().text("已隔离账号", "Isolated account")
                     monitorTerminal(session, lease: lease.leaseId, accountName: name)
                 } catch {
@@ -871,7 +871,7 @@ final class UsageStore: ObservableObject {
         if reason.presentsPanel {
             if deviceLogin == nil {
                 let name =
-                    profile.map { AccountDisplay.profileName($0) }
+                    profile.map { AccountDisplay.numberedName($0, allProfiles: self.profiles) }
                     ?? language.text("新 Codex 账号", "New Codex account")
                 presentDeviceLogin(
                     profile, adding: adding, sourceID: nil, host: host, phase: .failed(reason.loginFailure), targetName: name)
@@ -1025,7 +1025,7 @@ final class UsageStore: ObservableObject {
                 case .duplicateIndependent(let existingID):
                     let existingName =
                         self.profiles.first(where: { $0.id == existingID }).map {
-                            AccountDisplay.profileName($0, allProfiles: self.profiles)
+                            AccountDisplay.numberedName($0, allProfiles: self.profiles)
                         }
                         ?? WidgetLanguage.storedOrAutomatic().text("原账号", "original account")
                     let cleanupWarning = self.temporaryProfileCleanupWarning(for: profile.id)
@@ -1384,7 +1384,8 @@ final class UsageStore: ObservableObject {
                 clearDisplayedAccount()
                 refresh(queueIfBusy: true)
             }
-            accountManagerMessage = WidgetLanguage.storedOrAutomatic().text("已删除 \(AccountDisplay.profileName(profile))", "Removed \(AccountDisplay.profileName(profile)).")
+            accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
+                "已删除 \(AccountDisplay.numberedName(profile, allProfiles: self.profiles))", "Removed \(AccountDisplay.numberedName(profile, allProfiles: self.profiles)).")
         } catch {
             accountManagerMessage = WidgetLanguage.storedOrAutomatic().text("删除账号失败：\(error.localizedDescription)", "Could not remove the account: \(error.localizedDescription)")
         }
@@ -1610,8 +1611,7 @@ final class UsageStore: ObservableObject {
         if let targetName {
             name = targetName
         } else if let profile {
-            let code = DispatchCodeCatalog.code(for: profile.id, allowsLocalRead: !isPreview)
-            name = AccountDisplay.profileName(profile) + (code.map { " · \($0)" } ?? "")
+            name = AccountDisplay.numberedName(profile, allProfiles: self.profiles)
         } else {
             name = WidgetLanguage.storedOrAutomatic().text("新 Codex 账号", "New Codex account")
         }
@@ -1636,9 +1636,8 @@ final class UsageStore: ObservableObject {
         deviceLoginIsAdding = adding
         deviceLoginAddedSourceID = sourceID
         deviceLoginBrowserChoice = browserChoice
-        let code = DispatchCodeCatalog.code(for: profile.id, allowsLocalRead: !isPreview)
         deviceLogin?.profileID = profile.id
-        deviceLogin?.targetName = AccountDisplay.profileName(profile) + (code.map { " · \($0)" } ?? "")
+        deviceLogin?.targetName = AccountDisplay.numberedName(profile, allProfiles: self.profiles)
         deviceLogin?.browserChoice = browserChoice
     }
 
@@ -2785,8 +2784,10 @@ final class UsageStore: ObservableObject {
         accountManagerMessage =
             isAutomaticSwitch
             ? WidgetLanguage.storedOrAutomatic().text(
-                "安全自动切换：正在验证 \(AccountDisplay.profileName(profile))…", "Safe automatic switch: verifying \(AccountDisplay.profileName(profile))…")
-            : WidgetLanguage.storedOrAutomatic().text("正在验证 \(AccountDisplay.profileName(profile))…", "Verifying \(AccountDisplay.profileName(profile))…")
+                "安全自动切换：正在验证 \(AccountDisplay.numberedName(profile, allProfiles: self.profiles))…",
+                "Safe automatic switch: verifying \(AccountDisplay.numberedName(profile, allProfiles: self.profiles))…")
+            : WidgetLanguage.storedOrAutomatic().text(
+                "正在验证 \(AccountDisplay.numberedName(profile, allProfiles: self.profiles))…", "Verifying \(AccountDisplay.numberedName(profile, allProfiles: self.profiles))…")
         let preference = statisticsPreference
         DispatchQueue.global(qos: .utility).async {
             let historyBaselineResult = threadIDToRestore.map {
@@ -2992,8 +2993,11 @@ final class UsageStore: ObservableObject {
                 self.accountManagerMessage =
                     isAutomaticSwitch
                     ? WidgetLanguage.storedOrAutomatic().text(
-                        "安全自动切换：正在切换到 \(AccountDisplay.profileName(profile))…", "Safe automatic switch: switching to \(AccountDisplay.profileName(profile))…")
-                    : WidgetLanguage.storedOrAutomatic().text("正在切换到 \(AccountDisplay.profileName(profile))…", "Switching to \(AccountDisplay.profileName(profile))…")
+                        "安全自动切换：正在切换到 \(AccountDisplay.numberedName(profile, allProfiles: self.profiles))…",
+                        "Safe automatic switch: switching to \(AccountDisplay.numberedName(profile, allProfiles: self.profiles))…")
+                    : WidgetLanguage.storedOrAutomatic().text(
+                        "正在切换到 \(AccountDisplay.numberedName(profile, allProfiles: self.profiles))…",
+                        "Switching to \(AccountDisplay.numberedName(profile, allProfiles: self.profiles))…")
                 let legacyManagerRunning =
                     !NSRunningApplication
                     .runningApplications(withBundleIdentifier: "local.codex.account-manager")
@@ -4389,7 +4393,7 @@ final class UsageStore: ObservableObject {
         defaults.set(now, forKey: CodexAutomaticSwitchPolicy.lastAttemptDefaultsKey)
         let recommendedName =
             recommendedProfile.map {
-                AccountDisplay.profileName($0, allProfiles: profiles)
+                AccountDisplay.numberedName($0, allProfiles: self.profiles)
             }
             ?? WidgetLanguage.storedOrAutomatic().text(
                 "无合格候选：需新鲜且读取成功的完整额度、两个窗口可用、触发窗口至少 30%",
@@ -4701,7 +4705,7 @@ final class UsageStore: ObservableObject {
                     && $0.lastSnapshot?.accountID == profile.lastSnapshot?.accountID
             } ?? profile : profile
         if let account = try? FeishuMaskedAccount(
-            displayName: AccountDisplay.profileName(displayProfile, allProfiles: profiles)
+            displayName: AccountDisplay.numberedName(displayProfile, allProfiles: self.profiles)
         ) {
             return account
         }
@@ -4830,7 +4834,7 @@ final class UsageStore: ObservableObject {
             accountManagerMessage = WidgetLanguage.storedOrAutomatic().text("账号操作正在进行，请稍后再刷新", "An account operation is in progress. Wait before refreshing.")
             return
         }
-        let name = AccountDisplay.profileName(profile)
+        let name = AccountDisplay.numberedName(profile, allProfiles: self.profiles)
         accountManagerMessage = WidgetLanguage.storedOrAutomatic().text("正在刷新 \(name) 的额度…", "Refreshing limits for \(name)…")
         refreshWarmUpProfilesThenSchedule(
             performWarmUpAfterRefresh: false,
@@ -4854,7 +4858,7 @@ final class UsageStore: ObservableObject {
             accountManagerMessage = WidgetLanguage.storedOrAutomatic().text("账号操作正在进行，请稍后再暖号", "An account operation is in progress. Wait before warming up.")
             return
         }
-        let name = AccountDisplay.profileName(profile)
+        let name = AccountDisplay.numberedName(profile, allProfiles: self.profiles)
         accountManagerMessage = WidgetLanguage.storedOrAutomatic().text("正在刷新 \(name) 的额度并校验凭据…", "Refreshing limits and verifying sign-in for \(name)…")
         refreshWarmUpProfilesThenSchedule(
             performWarmUpAfterRefresh: false,
@@ -5125,7 +5129,8 @@ final class UsageStore: ObservableObject {
         else { return }
         warmingProfileID = profile.id
         accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
-            "正在确认 \(AccountDisplay.profileName(profile)) 是否空闲…", "Checking whether \(AccountDisplay.profileName(profile)) is idle…")
+            "正在确认 \(AccountDisplay.numberedName(profile, allProfiles: self.profiles)) 是否空闲…",
+            "Checking whether \(AccountDisplay.numberedName(profile, allProfiles: self.profiles)) is idle…")
         guard let alias = hubAccountAlias(for: profile) else {
             warmingProfileID = nil
             hubWarmUpDeferredUntilByAccount[profile.recordedAccountKey] = Date().addingTimeInterval(hubWarmUpRetryDelay)
@@ -5181,7 +5186,8 @@ final class UsageStore: ObservableObject {
             hubWarmUpDeferredUntilByAccount[accountKey] = Date().addingTimeInterval(hubWarmUpRetryDelay)
             warmingProfileID = nil
             accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
-                "Hub 正在使用 \(AccountDisplay.profileName(profile))，暖号保留并稍后重试", "Hub is using \(AccountDisplay.profileName(profile)). Warm-up remains queued for retry.")
+                "Hub 正在使用 \(AccountDisplay.numberedName(profile, allProfiles: self.profiles))，暖号保留并稍后重试",
+                "Hub is using \(AccountDisplay.numberedName(profile, allProfiles: self.profiles)). Warm-up remains queued for retry.")
             scheduleWarmUpTimer()
             return
         case .unavailable:
@@ -5220,7 +5226,8 @@ final class UsageStore: ObservableObject {
             return
         }
         accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
-            "正在为 \(AccountDisplay.profileName(currentProfile)) 发送最小请求…", "Sending a minimal request for \(AccountDisplay.profileName(currentProfile))…")
+            "正在为 \(AccountDisplay.numberedName(currentProfile, allProfiles: self.profiles)) 发送最小请求…",
+            "Sending a minimal request for \(AccountDisplay.numberedName(currentProfile, allProfiles: self.profiles))…")
         let expectedAccountID = currentProfile.lastSnapshot?.accountID ?? ""
         var requestWasPersisted = false
         do {
@@ -5256,8 +5263,8 @@ final class UsageStore: ObservableObject {
                     self.accountManagerMessage =
                         saved
                         ? WidgetLanguage.storedOrAutomatic().text(
-                            "\(AccountDisplay.profileName(profile)) 已发送最小请求，正在确认窗口是否开始…",
-                            "Minimal request sent for \(AccountDisplay.profileName(profile)). Checking whether a usage window started…")
+                            "\(AccountDisplay.numberedName(profile, allProfiles: self.profiles)) 已发送最小请求，正在确认窗口是否开始…",
+                            "Minimal request sent for \(AccountDisplay.numberedName(profile, allProfiles: self.profiles)). Checking whether a usage window started…")
                         : WidgetLanguage.storedOrAutomatic().text(
                             "最小请求已成功，但记录保存失败；已保留持久占用，重启也不会自动重试，请核实账号历史",
                             "The request succeeded but saving failed. The durable reservation remains occupied across restarts; verify account history.")
@@ -5278,8 +5285,9 @@ final class UsageStore: ObservableObject {
                     self.syncProfiles()
                     self.warmingProfileID = nil
                     self.accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
-                        "\(AccountDisplay.profileName(profile)) 暖号失败：\(error.localizedDescription)；本窗口不再自动重试",
-                        "Warm-up failed for \(AccountDisplay.profileName(profile)): \(error.localizedDescription). It will not retry automatically in this window.")
+                        "\(AccountDisplay.numberedName(profile, allProfiles: self.profiles)) 暖号失败：\(error.localizedDescription)；本窗口不再自动重试",
+                        "Warm-up failed for \(AccountDisplay.numberedName(profile, allProfiles: self.profiles)): \(error.localizedDescription). It will not retry automatically in this window."
+                    )
                     self.scheduleWarmUpTimer()
                 }
             }
@@ -5467,8 +5475,8 @@ final class UsageStore: ObservableObject {
         guard !kinds.isEmpty else { return }
         warmUpResetTracker.note(kinds, for: previous.recordedAccountKey)
         accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
-            "检测到 \(AccountDisplay.profileName(previous)) 官方额度提前重置；暖号调度将独立执行一次",
-            "An early limit reset was detected for \(AccountDisplay.profileName(previous)). Warm-up will be scheduled separately once.")
+            "检测到 \(AccountDisplay.numberedName(previous, allProfiles: self.profiles)) 官方额度提前重置；暖号调度将独立执行一次",
+            "An early limit reset was detected for \(AccountDisplay.numberedName(previous, allProfiles: self.profiles)). Warm-up will be scheduled separately once.")
     }
 
     private func refreshProfileAfterWarmUp(_ profile: CodexProfile, manual: Bool = false) {
@@ -5494,10 +5502,11 @@ final class UsageStore: ObservableObject {
                     self.accountManagerMessage =
                         snapshot.quotaReadSucceeded
                         ? WidgetLanguage.storedOrAutomatic().text(
-                            "\(AccountDisplay.profileName(profile)) 已暖号并刷新额度", "Warm-up complete and limits refreshed for \(AccountDisplay.profileName(profile)).")
+                            "\(AccountDisplay.numberedName(profile, allProfiles: self.profiles)) 已暖号并刷新额度",
+                            "Warm-up complete and limits refreshed for \(AccountDisplay.numberedName(profile, allProfiles: self.profiles)).")
                         : WidgetLanguage.storedOrAutomatic().text(
-                            "\(AccountDisplay.profileName(profile)) 已发送最小请求；官方额度暂不可用",
-                            "Minimal request sent for \(AccountDisplay.profileName(profile)). Current usage limits are unavailable.")
+                            "\(AccountDisplay.numberedName(profile, allProfiles: self.profiles)) 已发送最小请求；官方额度暂不可用",
+                            "Minimal request sent for \(AccountDisplay.numberedName(profile, allProfiles: self.profiles)). Current usage limits are unavailable.")
                     if profile.id == self.selectedMonitorProfileID {
                         self.refresh(queueIfBusy: true)
                     }
@@ -5513,8 +5522,8 @@ final class UsageStore: ObservableObject {
                     || (selection.sevenDay && CodexWarmUpPolicy.isWindowIdle(updated.lastSnapshot?.sevenDay))
                 if stillIdle {
                     self.accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
-                        "\(AccountDisplay.profileName(profile)) 已发送最小请求，继续按暖号周期复核",
-                        "Minimal request sent for \(AccountDisplay.profileName(profile)). Scheduled warm-up checks will continue.")
+                        "\(AccountDisplay.numberedName(profile, allProfiles: self.profiles)) 已发送最小请求，继续按暖号周期复核",
+                        "Minimal request sent for \(AccountDisplay.numberedName(profile, allProfiles: self.profiles)). Scheduled warm-up checks will continue.")
                 } else {
                     let resetTexts = [
                         selection.fiveHour
@@ -5529,9 +5538,11 @@ final class UsageStore: ObservableObject {
                     self.accountManagerMessage =
                         resetTexts.isEmpty
                         ? WidgetLanguage.storedOrAutomatic().text(
-                            "\(AccountDisplay.profileName(profile)) 已开始额度窗口", "A usage window started for \(AccountDisplay.profileName(profile)).")
+                            "\(AccountDisplay.numberedName(profile, allProfiles: self.profiles)) 已开始额度窗口",
+                            "A usage window started for \(AccountDisplay.numberedName(profile, allProfiles: self.profiles)).")
                         : WidgetLanguage.storedOrAutomatic().text(
-                            "\(AccountDisplay.profileName(profile)) 已开始额度窗口 · ", "A usage window started for \(AccountDisplay.profileName(profile)) · ")
+                            "\(AccountDisplay.numberedName(profile, allProfiles: self.profiles)) 已开始额度窗口 · ",
+                            "A usage window started for \(AccountDisplay.numberedName(profile, allProfiles: self.profiles)) · ")
                             + resetTexts.joined(separator: " · ")
                 }
                 if profile.id == self.selectedMonitorProfileID {
@@ -5823,8 +5834,7 @@ final class UsageStore: ObservableObject {
                     message,
                     shouldSend: { [weak self] in
                         guard let self else { return false }
-                        return admission() && self.hasStarted && self.localNotificationsEnabled
-                            && !self.pausedAutomationFeatures.contains(.localNotification)
+                        return admission() && self.hasStarted
                     }
                 ) { result in
                     if case .success = result { continuation.resume(returning: true) } else { continuation.resume(returning: false) }
@@ -6091,8 +6101,8 @@ final class UsageStore: ObservableObject {
                     try self.profileStore.recordMembershipRefresh(at: attemptedAt, succeeded: false, for: profile.id)
                 } catch { continue }
                 self.accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
-                    "正在更新 \(AccountDisplay.profileName(profile)) 的会员日期…",
-                    "Updating the subscription date for \(AccountDisplay.profileName(profile))…")
+                    "正在更新 \(AccountDisplay.numberedName(profile, allProfiles: self.profiles)) 的会员日期…",
+                    "Updating the subscription date for \(AccountDisplay.numberedName(profile, allProfiles: self.profiles))…")
                 let result = await Task.detached(priority: .utility) {
                     let context = RuntimeLoadContext.live(statisticsPreference: preference, codexHomeDirectory: profile.codexHomeURL, quotaCancellation: cancellation)
                     let reader = CodexUsageReader()
@@ -6116,11 +6126,11 @@ final class UsageStore: ObservableObject {
                 self.accountManagerMessage =
                     succeeded
                     ? WidgetLanguage.storedOrAutomatic().text(
-                        "\(AccountDisplay.profileName(profile)) 的会员日期已重新核查",
-                        "Subscription date rechecked for \(AccountDisplay.profileName(profile)).")
+                        "\(AccountDisplay.numberedName(profile, allProfiles: self.profiles)) 的会员日期已重新核查",
+                        "Subscription date rechecked for \(AccountDisplay.numberedName(profile, allProfiles: self.profiles)).")
                     : WidgetLanguage.storedOrAutomatic().text(
-                        "\(AccountDisplay.profileName(profile)) 的会员日期刷新失败，稍后自动重试",
-                        "Could not update the subscription date for \(AccountDisplay.profileName(profile)). It will retry later.")
+                        "\(AccountDisplay.numberedName(profile, allProfiles: self.profiles)) 的会员日期刷新失败，稍后自动重试",
+                        "Could not update the subscription date for \(AccountDisplay.numberedName(profile, allProfiles: self.profiles)). It will retry later.")
             }
             guard self.engineQuotaCancellation === cancellation else { return }
             self.engineQuotaCancellation = nil
@@ -6299,7 +6309,8 @@ final class UsageStore: ObservableObject {
                         self.clearDisplayedAccount()
                         self.hasPendingRefresh = true
                         self.accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
-                            "当前 Codex 登录的是 \(AccountDisplay.profileName(duplicate))，已切换监控", "Codex is signed in as \(AccountDisplay.profileName(duplicate)). Monitoring updated.")
+                            "当前 Codex 登录的是 \(AccountDisplay.numberedName(duplicate, allProfiles: self.profiles))，已切换监控",
+                            "Codex is signed in as \(AccountDisplay.numberedName(duplicate, allProfiles: self.profiles)). Monitoring updated.")
                     } else if identityMismatch {
                         self.accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
                             "检测到 CODEX_HOME 已登录另一个账号，已阻止额度串号", "This profile is signed in to a different account. Its limits were not saved.")
@@ -6315,8 +6326,9 @@ final class UsageStore: ObservableObject {
                         }
                         if let duplicate, !duplicate.isSystemProfile, let profile {
                             self.accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
-                                "\(AccountDisplay.profileName(profile)) 与 \(AccountDisplay.profileName(duplicate)) 登录的是同一账号",
-                                "\(AccountDisplay.profileName(profile)) and \(AccountDisplay.profileName(duplicate)) use the same account.")
+                                "\(AccountDisplay.numberedName(profile, allProfiles: self.profiles)) 与 \(AccountDisplay.numberedName(duplicate, allProfiles: self.profiles)) 登录的是同一账号",
+                                "\(AccountDisplay.numberedName(profile, allProfiles: self.profiles)) and \(AccountDisplay.numberedName(duplicate, allProfiles: self.profiles)) use the same account."
+                            )
                         }
                     }
                     if self.isSwitchingStatisticsTimeZone {
@@ -6350,9 +6362,8 @@ final class UsageStore: ObservableObject {
     /// It never starts membership, statistics, warm-up, or system-profile work.
     func refreshLocalProxyQuotas(profileIDs: Set<String>) {
         guard !isPreview, hasStarted else { return }
-        let centralKey = profiles.first(where: \.isSystemProfile)?.recordedAccountKey
         let ids = profiles.filter {
-            !$0.isSystemProfile && $0.recordedAccountKey != centralKey && profileIDs.contains($0.id)
+            !$0.isSystemProfile && profileIDs.contains($0.id)
         }.map(\.id)
         localProxyQuotaPendingIDs.formUnion(ids)
         drainLocalProxyQuotaRefreshes()
@@ -6373,13 +6384,11 @@ final class UsageStore: ObservableObject {
             }
             return
         }
-        let centralKey = profiles.first(where: \.isSystemProfile)?.recordedAccountKey
         while localProxyQuotaRefreshes.count < 4,
             let id = localProxyQuotaPendingIDs.sorted().first(where: { localProxyQuotaRefreshes[$0] == nil })
         {
             localProxyQuotaPendingIDs.remove(id)
-            guard let profile = profiles.first(where: { $0.id == id }), !profile.isSystemProfile,
-                profile.recordedAccountKey != centralKey
+            guard let profile = profiles.first(where: { $0.id == id }), !profile.isSystemProfile
             else { continue }
             let cancellation = TokenMonitorCancellation()
             localProxyQuotaRefreshes[id] = cancellation

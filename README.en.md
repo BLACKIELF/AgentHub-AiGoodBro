@@ -1,12 +1,12 @@
-# AiGoodBro 2.0 · AgentHub
+# AiGoodBro · AgentHub (2.0 candidate)
 
-**AiGoodBro 2.0** is a macOS workspace for Codex accounts, with **AgentHub** as its Home view. It brings account quota, token usage, and service health together, with an edge dock for checking today's usage and limits at a glance. Enable reset-message delivery and configure a Feishu bot to receive new public reset forecasts automatically, so you can plan tasks sooner and check the website less often. The menu bar opens usage, limits, trends and service health, with links back to account management and isolated CLIs. Upgrades preserve existing accounts and settings.
+AiGoodBro is a macOS AI workspace for personal use. It brings together quotas for multiple Codex accounts, token usage, local CLIs, public reset announcements, and an optional local proxy, making it easy to check remaining quota, reset times, and task occupancy, and to launch an isolated CLI when needed. The interface supports Chinese and English; its home page is called AgentHub.
 
 [中文](README.md) | **English**
 
 ![AiGoodBro 2.0 usage dashboard](docs/images/0927v6/dashboard.jpg)
 
-> Captured from the installed app on 2026-09-27, showing token activity and model/tool rankings. Costs are estimates, not bills. [View the new workspace and screenshot notes](docs/images/0927v6/README.md).
+> Captured from AiGoodBro 2.0 / 9.6.17 (66) on 2026-09-27, showing token activity and model/tool rankings. This is a historical interface screenshot, not the current 9.6.32 (82) UI. Costs are estimates, not bills. [Screenshot notes](docs/images/0927v6/README.md) · [Current candidate validation record](docs/source-publication-0929v1.md).
 
 Before starting work, answer four questions: how much quota remains, when it resets, whether the account is usable now, and how far the task has progressed.
 
@@ -26,19 +26,34 @@ AiGoodBro puts quota alerts and reset news first, so you can see when work can c
 
 A single account can use read-only monitoring. A public announcement, an account's recovered quota and its available reset credits are separate facts: an announcement neither spends a credit nor replaces an account refresh. The WeChat integration is a **WeCom group bot**; personal WeChat is not connected.
 
-**Installed candidate: AiGoodBro 2.0 · 0928v1, version 9.6.24 (74).** This build removes local HTTP request and Desktop JSONL size limits, and repairs workspace identity, native-tool runtime discovery and resuming tasks after disabling the proxy. Installed on September 28 with package signatures and file hashes verified; Desktop reconnection and live acceptance of the affected task remain pending. See the [0927v5 record](docs/ai-goodbro-2.0-0927v5.md) for earlier quota and floating-window integration. No public 2.0 release has been published.
+**Current source candidate: AiGoodBro · AgentHub (2.0 candidate), 0929v2 / 9.6.32 (82).** Navigation sits in a left icon rail with a bottom settings menu. Compact account cards and rows preserve numbering, thin quota bars, reset times, credits and dispatch controls. The home calendar, bars and candlesticks reuse Token Monitor interactions, with model/tool details collapsed. ZCode Start Plan shows exact token balances; Kimi and Grok renew sessions to read quota, and TRAE CN displays personal credits. WorkBuddy desktop quota remains unreadable. The proxy supports live order/priority changes and uses all enrolled subscription quotas before credits, leaving the Desktop account last within each phase. Native image generation and editing preserve the image model, prompt and references; uncertain failures are not replayed. Configured CC Switch balances are available only to Claude CLI. Build 82 remains a candidate: this upload review passed 31 of 33 pure self-tests; the two failures are detailed in the [current publication check](docs/source-publication-0929v1.md). The candidate is on `codex/reset-messages-0926v1` and [PR #13](https://github.com/BLACKIELF/AgentHub-AiGoodBro/pull/13); `main` retains the existing mainline and does not include build 82. No GitHub 2.0 download is available.
 
-**Local proxy and Desktop connection.** The optional proxy supports participation, priority and account ordering, reserves accounts per request and tries the next available account after quota exhaustion. Quit Codex, then choose Connect Desktop to reopen tasks with each conversation's model and reasoning effort. Desktop retains its OpenAI sign-in; only inference requests enter the local account pool. Authentication and global configuration files are unchanged. After stopping the proxy, reopen Codex normally; legacy tasks can continue after one resume through the repaired adapter. Isolated tests with the real app-server cover legacy recovery, workspace identity, ordinary resume after disabling the proxy and history listing. A 40 MiB image request, 40 MiB compaction request and 65 MiB Desktop message pass. Full Desktop acceptance and the earlier pause → switch → continuation flow remain pending; this candidate is not merged into main or released. [Proxy integration record](docs/local-proxy-0928v1.md) · [Previous acceptance record](docs/source-snapshot-0927v6.md).
+**Local proxy and Desktop connection.** The optional proxy supports participation, priority and account ordering, reserves accounts per request and tries the next available account after quota exhaustion. Quit Codex, then choose Connect Desktop to reopen tasks with each conversation's model and reasoning effort. Desktop retains its OpenAI sign-in; only inference requests enter the local account pool. Authentication and global configuration files are unchanged. After stopping the proxy, reopen Codex normally; legacy tasks can continue after one resume through the repaired adapter. Isolated tests with the real app-server cover legacy recovery, workspace identity, ordinary resume after disabling the proxy and history listing. A 40 MiB image request, 40 MiB compaction request and 65 MiB Desktop message pass. Build 75 preserves the official signed process ancestry using exec and a separate gateway child; all three native peer-authorization fixtures pass without relaxing checks. Real Desktop-to-pool requests were verified on build80 as historical evidence. The user manually starts and connects the build 82 proxy; this upload review did not verify current Desktop routing. WAICY large-message recovery, automatic pause → switch → continuation, final UI regression and real proxy image generation remain pending acceptance. [Proxy integration record](docs/local-proxy-0928v1.md) · [Current publication check](docs/source-publication-0929v1.md) · [0927v6 historical acceptance record](docs/source-snapshot-0927v6.md).
 
-### Local proxy: personal use only
+### Personal use and technical context
 
-The local proxy is for personal use only, with your own accounts and tasks on your own machine. It does not provide credential sharing, quota resale, or a public proxy service for others.
+The local proxy is designed for personal use with your own accounts and local tasks. This project does not provide accounts, credential sharing, quota resale, or a public proxy service. Dependencies remain subject to their respective licenses.
 
-On July 12, 2026, Tibo (@thsottiaux) wrote **“Step 1: Install CLIProxyAPI”** while explaining how to use GPT through Claude Code. [Original post](https://x.com/thsottiaux/status/2076119366647894371). This citation documents the technical background; it is not OpenAI's authorization of AiGoodBro or of other uses. Dependencies retain their own licenses and attribution.
+Tibo (@thsottiaux) mentions CLIProxyAPI in a July 12, 2026 post about using GPT with Claude Code; [original post](https://x.com/thsottiaux/status/2076119366647894371). This reference provides technical context only; it does not imply official authorization or endorsement of this project.
 
-The 2.0 candidate source is in [PR #13](https://github.com/BLACKIELF/AgentHub-AiGoodBro/pull/13); `main` does not yet include this integration. Check the version before building; an installation prompt and four task prompts are below.
+## Feature sources and licenses
 
-[![CI](https://github.com/BLACKIELF/AgentHub-AiGoodBro/actions/workflows/ci.yml/badge.svg)](https://github.com/BLACKIELF/AgentHub-AiGoodBro/actions/workflows/ci.yml)
+Feature design references and borrows from related open-source projects; code and resources directly reused in this project are listed separately, with their original licenses and copyright notices retained.
+
+| Source | Relationship |
+|---|---|
+| [codexU](https://github.com/shanggqm/codexU) | Historical SwiftUI, quota, palette and Windows foundations directly inherited. |
+| [Token Monitor v0.62.0 pinned commit](https://github.com/Javis603/token-monitor/tree/dcccfb01557e2786888fd5479552f392ac6c0d32) | Statistics engine, desktop dashboard, charts and resources directly reused with host adaptation. |
+| [Tokscale fork](https://github.com/Javis603/tokscale) · [original](https://github.com/junhoyeo/tokscale) | Statistics collection foundation; the bundled revision is `06a9f1625d5a505f01b39eff29f7be44a2c52188`, listed in [`SOURCE.json`](Companion/TokenMonitorEngine/SOURCE.json). |
+| [CLIProxyAPI v8.0.2 pinned version](https://github.com/router-for-me/CLIProxyAPI/tree/v8.0.2) | SDK scheduler, Codex executor and Responses handler directly reused. |
+| [Codex-Manager](https://github.com/qxcnm/Codex-Manager) | Warm-up request structure and SSE completion rules adapted in the implementation; see [`CodexAccountActions.swift`](Sources/CodexUsageWidget/Services/CodexAccountActions.swift#L850). |
+| [Hazmat stdio wrapper script](https://github.com/dredozubov/hazmat/blob/c112d222bb53e888dd17a8927927286792f7c20e/scripts/check-codex-desktop-attach-smoke.sh) | Reference for the `CODEX_CLI_PATH` stdio-wrapper entry point; no Hazmat sandbox or service is integrated. |
+
+Licenses and full copyright notices are in [`LICENSE`](LICENSE), [`Resources/THIRD_PARTY_NOTICES.txt`](Resources/THIRD_PARTY_NOTICES.txt), [`Companion/LocalProxy/LICENSE.CLIProxyAPI`](Companion/LocalProxy/LICENSE.CLIProxyAPI), [`LICENSE.Hazmat`](Companion/LocalProxy/LICENSE.Hazmat), and [`THIRD-PARTY-NOTICES.txt`](Companion/LocalProxy/THIRD-PARTY-NOTICES.txt). The [candidate publication check](docs/source-publication-0929v1.md) records detailed sources, pinned versions and validation boundaries.
+
+An installation prompt and four task prompts are below. The 2.0 candidate is on `codex/reset-messages-0926v1` and [PR #13](https://github.com/BLACKIELF/AgentHub-AiGoodBro/pull/13); `main` remains the existing mainline and does not include this candidate. No 2.0 installer is currently available.
+
+[![CI](https://github.com/BLACKIELF/AgentHub-AiGoodBro/actions/workflows/ci.yml/badge.svg?branch=codex%2Freset-messages-0926v1)](https://github.com/BLACKIELF/AgentHub-AiGoodBro/actions/workflows/ci.yml)
 ![macOS 13+](https://img.shields.io/badge/macOS-13%2B-111111?logo=apple)
 [![MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
@@ -50,15 +65,23 @@ Install or upgrade AiGoodBro from https://github.com/BLACKIELF/AgentHub-AiGoodBr
 
 Requires macOS 13+, a working Codex sign-in and Xcode Command Line Tools. A single account can start with read-only monitoring. CLI launch and warm-up also require a configured local Hub and account mapping; those controls remain blocked when required evidence is missing. Setup checks existing Python 3.9+ and Codex CLI and can prepare the companion Skill. External Python and Codex are not bundled. Companion Hub setup requires a selected project and accounts and preserves existing services.
 
-To build yourself:
+Build the 2.0 candidate (9.6.32 / 82):
 
 ```sh
-git clone --branch main https://github.com/BLACKIELF/AgentHub-AiGoodBro.git
-cd AgentHub-AiGoodBro
+git clone --branch codex/reset-messages-0926v1 https://github.com/BLACKIELF/AgentHub-AiGoodBro.git AiGoodBro-2.0
+cd AiGoodBro-2.0
 make build
 ```
 
-Source builds also require Go 1.26+ to compile the local proxy against pinned CLIProxyAPI v8.0.2. The installed helper needs no external Go runtime. The complete desktop build also needs the verified official Token Monitor v0.62.0 macOS arm64 runtime, read from `/Applications/Token Monitor.app` by default. See the [integration record](docs/ai-goodbro-2.0-0927v5.md) for configuration and limitations.
+To build the existing mainline, use `main`; it does not include build 82:
+
+```sh
+git clone --branch main https://github.com/BLACKIELF/AgentHub-AiGoodBro.git AiGoodBro-main
+cd AiGoodBro-main
+make build
+```
+
+Source builds also require Go 1.26+ to compile the local proxy against pinned CLIProxyAPI v8.0.2. The installed helper needs no external Go runtime. The complete desktop build also needs the verified official Token Monitor v0.62.0 macOS arm64 runtime, read from `/Applications/Token Monitor.app` by default. See the [candidate publication check](docs/source-publication-0929v1.md) and [proxy integration record](docs/local-proxy-0928v1.md) for current limitations. The earlier 0927v5 integration process remains in the [historical record](docs/ai-goodbro-2.0-0927v5.md).
 
 The build result should be `build/AiGoodBro.app`. Building does not install or launch it. Back up the old build, then migrate to one `AiGoodBro.app` without leaving a second launchable copy. See the [compatibility map](docs/brand-compat-0911v1.md). Local builds use ad-hoc signing; no Apple-notarized 2.0 download has been published.
 
@@ -68,7 +91,7 @@ Future installer assets should use `AiGoodBro-<version>-mac-<arch>.dmg`. No 2.0 
 
 ![AiGoodBro 2.0 workspace with reset forecasts](docs/images/0927v6/workspace.jpg)
 
-*Installed app, with account cards collapsed. Cache and unconfirmed states are shown as captured.*
+*Historical screenshot from 9.6.17 (66), not the current 9.6.32 (82) UI. Account cards are collapsed; cache and unconfirmed states are shown as captured. See the [current publication check](docs/source-publication-0929v1.md) for candidate boundaries.*
 
 Choose **Professional** or **Simple** at the top of Home. Professional starts with the full interface expanded. Simple offers Overview, Account cards, or Custom with four optional modules. These preferences affect presentation only; provider tabs retain their full controls. Overview preserves per-account status and shows “—” for unavailable quota. The native Settings window has Display & Icons, Menu Bar, Floating window, Automation, Workspace, Usage dashboard, and About sections.
 
@@ -82,7 +105,7 @@ Refresh each account, set its model and open an isolated CLI environment. Saved 
 
 > Workspace screenshots are retained native renders of the 0910v1 production SwiftUI views using synthetic accounts, quota and dates. “Unverified” means that the demo is not connected to a Hub. The English header illustration is retained from 0909v4. [Image provenance and prompts](docs/images/0910v1/README.md)
 
-> Images may show an earlier layout and are included only to introduce the interface. The [2.0 integration record](docs/ai-goodbro-2.0-0927v5.md) tracks current source and runtime verification.
+> Images may show an earlier layout and are included only to introduce the interface. The [current publication check](docs/source-publication-0929v1.md) tracks this candidate's source and runtime verification boundaries.
 
 ## Usage Dashboard
 
@@ -90,7 +113,7 @@ Home places Agent navigation first, followed by public reset news, Token totals 
 
 The default statistics mode uses pinned Token Monitor v0.62.0 collection and aggregation, shown in the bundled upstream dashboard with eight metrics, a 365-day heatmap, trends, and model and tool rankings. USD costs are estimates derived from local usage, not provider bills. Keep the previous custom mode for unsupported sources via Settings → Workspace → Statistics mode. Modes do not combine their totals. Historical account ownership and unavailable values remain unassigned rather than guessed.
 
-The app bundles its statistics runtime and verified dependencies; installed statistics do not require a separate Node.js installation. A first source build must prepare the verified dependency cache. See the [2.0 integration record](docs/ai-goodbro-2.0-0927v5.md) for current integration and validation boundaries. Hub reading and publishing local usage are separate opt-in choices, both off by default; publishing also requires scope confirmation.
+The app bundles its statistics runtime and verified dependencies; installed statistics do not require a separate Node.js installation. A first source build must prepare the verified dependency cache. See the [current publication check](docs/source-publication-0929v1.md) and [proxy integration record](docs/local-proxy-0928v1.md) for current integration and validation boundaries; the 0927v5 record is retained as historical background. Hub reading and publishing local usage are separate opt-in choices, both off by default; publishing also requires scope confirmation.
 
 The default interface uses native frosted glass, supports Chinese and English, and respects the system's Reduce Transparency setting.
 
@@ -98,7 +121,7 @@ Settings → Edge Dock provides an independent screen-edge rail, showing Today, 
 
 ## Choose a CLI, preset and message fields
 
-The workspace can show installed Codex, Grok, Kimi Code, Claude Code, OpenCode, Gemini CLI, MiMo and ZCode environments. Link existing signed-in directories, name them and refresh their individual quota. See the [coverage table](docs/local-cli-accounts.md); ZCode supports the currently enabled, identity-matched personal Coding Plan. MiMo quota and unreadable WorkBuddy/TRAE desktop sessions remain explicit limitations; an installed tool alone does not prove a quota connection.
+The workspace can show installed Codex, Grok, Kimi Code, Claude Code, OpenCode, Gemini CLI, MiMo and ZCode environments. Link existing signed-in directories, name them and refresh their individual quota. See the [coverage table](docs/local-cli-accounts.md); ZCode supports identity-matched personal Coding Plan and Start Plan allowances, including exact model token counts. TRAE China personal credits are read from its current desktop session. MiMo quota and unreadable WorkBuddy desktop sessions remain explicit limitations; an installed tool alone does not prove a quota connection.
 
 Three presets start with the saved model, Sol High with Luna Max children, and Luna Max directly. Names, main model, reasoning effort and child configuration are editable. Launches validate the effective settings and keep configuration separate from observed execution.
 
@@ -203,11 +226,11 @@ Saved choices take precedence, including disabled features. New users still rece
 
 Version 2.0 integrates the original Usage Dashboard, all nine menu-bar views, and Edge Dock for usage and quota, public Claude and OpenAI status views, and optional automatic Feishu delivery for new public reset forecasts. Agent and tool marks reuse upstream artwork consistently while the application keeps its AiGoodBro name and icon. It pins Token Monitor v0.62.0 source and runtime dependencies while retaining account, switching, CLI, and automation workflows. The interface supports Chinese and English, native frosted glass, and Reduce Transparency.
 
-The [0927v5 record](docs/ai-goodbro-2.0-0927v5.md) distinguishes local tests, installation, and runtime behavior still unverified. A full official reset cycle, multiple CLI sign-ins and real calls, Desktop switching, and notification delivery need separate evidence. No real notification or account switch was performed for this validation.
+The [0929v1 publication check](docs/source-publication-0929v1.md) and [proxy integration record](docs/local-proxy-0928v1.md) distinguish this candidate's source, installation and unverified runtime behavior; the [0927v5 integration record](docs/ai-goodbro-2.0-0927v5.md) remains historical background. Current build 82 Desktop routing was not rechecked during this publication review. Real proxy image generation, WAICY large-message recovery, automatic pause → switch → continuation and final UI regression remain pending acceptance. A full official reset cycle, multiple CLI sign-ins and real calls, and notification delivery also need separate evidence. No real notification or account switch was performed for this validation.
 
 The existing packaging flow plans to include `Companion Skill/multi-agent-management` and Chinese instructions in both Mac installers. There is no 2.0 Release installer; the release wrapper must verify its contents if one is made. Compare and back up an existing Skill, preserving personal configuration. Installing the Skill does not configure a Hub.
 
-[2.0 integration record](docs/ai-goodbro-2.0-0927v5.md) · [V1.0 history](docs/release-notes-v9.6.1.md) · [Changelog](CHANGELOG.md) · [Dispatch Skill instructions (Chinese)](.agents/skills/multi-agent-management/使用说明.md) · [Detailed guide (Chinese)](docs/usage-guide.md)
+[Current candidate publication check](docs/source-publication-0929v1.md) · [Proxy integration record](docs/local-proxy-0928v1.md) · [0927v5 historical integration record](docs/ai-goodbro-2.0-0927v5.md) · [V1.0 history](docs/release-notes-v9.6.1.md) · [Changelog](CHANGELOG.md) · [Dispatch Skill instructions (Chinese)](.agents/skills/multi-agent-management/使用说明.md) · [Detailed guide (Chinese)](docs/usage-guide.md)
 
 ## The rest of the workspace
 

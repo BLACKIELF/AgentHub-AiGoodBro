@@ -65,6 +65,7 @@ final class TokenMonitorEdgeDockController: NSObject {
     private var preferences = TokenMonitorEdgeDockPreferences()
     private var cells: [TokenMonitorEdgeDockCell] = []
     private var language: WidgetLanguage = .zh
+    private var glass = WorkspaceGlassPreferences()
     private var onPreferencesChange: ((TokenMonitorEdgeDockPreferences) -> Void)?
     private var onOpenDashboard: (() -> Void)?
 
@@ -90,6 +91,7 @@ final class TokenMonitorEdgeDockController: NSObject {
         preferences: TokenMonitorEdgeDockPreferences,
         cells: [TokenMonitorEdgeDockCell],
         language: WidgetLanguage,
+        glass: WorkspaceGlassPreferences = .init(),
         onPreferencesChange: @escaping (TokenMonitorEdgeDockPreferences) -> Void,
         onOpenDashboard: @escaping () -> Void
     ) {
@@ -97,6 +99,7 @@ final class TokenMonitorEdgeDockController: NSObject {
         self.preferences = preferences.normalized()
         self.cells = cells
         self.language = language
+        self.glass = glass
         self.onPreferencesChange = onPreferencesChange
         self.onOpenDashboard = onOpenDashboard
         guard self.preferences.enabled, !cells.isEmpty else {
@@ -191,7 +194,7 @@ final class TokenMonitorEdgeDockController: NSObject {
         peek?.setFrame(layout.peek, display: true)
         if isAutoHidden {
             if let peek {
-                let view = TokenMonitorEdgeDockPeekView(side: preferences.side, language: language) { [weak self] in self?.revealRail() }
+                let view = TokenMonitorEdgeDockPeekView(side: preferences.side, language: language, glass: glass) { [weak self] in self?.revealRail() }
                 if let peekHost {
                     peekHost.rootView = view
                 } else {
@@ -208,7 +211,7 @@ final class TokenMonitorEdgeDockController: NSObject {
         rail?.setFrame(layout.rail, display: true)
         if railVisible, let rail {
             let view = TokenMonitorEdgeDockRailView(
-                cells: cells, side: preferences.side, language: language,
+                cells: cells, side: preferences.side, language: language, glass: glass,
                 compact: layout.compact, warnColors: preferences.warnColors,
                 focusedIndex: cardIndex,
                 onSelect: { [weak self] index in self?.selectCell(index) },
@@ -232,7 +235,7 @@ final class TokenMonitorEdgeDockController: NSObject {
         {
             card.setFrame(placement.frame, display: true)
             let view = TokenMonitorEdgeDockCardView(
-                cell: cells[index], side: preferences.side, language: language,
+                cell: cells[index], side: preferences.side, language: language, glass: glass,
                 tailY: placement.tailY,
                 isPinned: railPinned || preferences.mode == .always,
                 canPin: preferences.mode != .always,

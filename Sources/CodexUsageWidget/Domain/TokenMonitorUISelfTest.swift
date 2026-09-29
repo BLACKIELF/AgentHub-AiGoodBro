@@ -56,7 +56,8 @@ enum TokenMonitorUISelfTest {
         expect(ResetCardPresentation.savedOrder(["a", "b", "c"], pinnedAccountID: "c") == ["c", "a", "b"], "only an explicit pin changes presentation order")
         expect(HomeMessageInboxStore.visibleAnnouncementLimit == 3, "homepage shows only three reset messages")
         expect(PublisherMessageSelfTest.run(), "publisher announcements respect delivery and URL boundaries")
-        expect(OnboardingModesSelfTest.run(), "onboarding modes, 6pt track and skip/back fixtures")
+        expect(PublisherMessagePublishingSelfTest.run(), "only the verified owner publishes; conflicts and retries preserve messages")
+        expect(OnboardingModesSelfTest.run(), "onboarding modes, 3pt track and skip/back fixtures")
 
         if failures.isEmpty {
             print("token-monitor UI self-test passed: floating geometry, navigation, avatars, icons, menu/model, responsive totals, reset history, chart states, announcements")
@@ -99,14 +100,14 @@ enum TokenMonitorUISelfTest {
         func countdown(_ seconds: TimeInterval, now: Date? = nil, kind: ResetCountdownPresentation.Kind = .publicForecast, language: WidgetLanguage = .zh) -> String {
             ResetCountdownPresentation.label(deadline: start.addingTimeInterval(seconds), now: now ?? start, kind: kind, language: language)
         }
-        expect(countdown(90_061) == "最晚还有 1 天 01:01:01", "countdown includes days, hours, minutes and seconds")
-        expect(countdown(90_061, language: .en) == "Due within 1d 01:01:01", "English countdown retains day precision")
-        expect(countdown(60.1) == "最晚还有 00:01:01", "fractional seconds do not report zero early")
-        expect(countdown(0.1) == "最晚还有 00:00:01", "last fraction of a second is still pending")
+        expect(countdown(90_061) == "预计重置还有 1 天 01:01:01", "countdown includes days, hours, minutes and seconds")
+        expect(countdown(90_061, language: .en) == "Expected reset in 1d 01:01:01", "English countdown retains day precision")
+        expect(countdown(60.1) == "预计重置还有 00:01:01", "fractional seconds do not report zero early")
+        expect(countdown(0.1) == "预计重置还有 00:00:01", "last fraction of a second is still pending")
         expect(countdown(0).contains("等待来源确认"), "deadline never claims public delivery")
         expect(countdown(-10, kind: .accountWindow).contains("等待额度更新"), "expired account window never implies restored quota")
-        expect(countdown(3_661, now: start.addingTimeInterval(3_600)) == "最晚还有 00:01:01", "sleep or missed ticks cannot accumulate drift")
-        expect(countdown(60, now: start.addingTimeInterval(-60)) == "最晚还有 00:02:00", "clock corrections rederive the remaining duration")
+        expect(countdown(3_661, now: start.addingTimeInterval(3_600)) == "预计重置还有 00:01:01", "sleep or missed ticks cannot accumulate drift")
+        expect(countdown(60, now: start.addingTimeInterval(-60)) == "预计重置还有 00:02:00", "clock corrections rederive the remaining duration")
         expect(countdown(.infinity).contains("待公开来源公布"), "invalid timestamps do not trap or create a fake timer")
         expect(ResetCountdownPresentation.label(deadline: nil, now: start, kind: .accountWindow, language: .zh) == "重置时间未知", "missing reset time stays unknown")
     }

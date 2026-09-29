@@ -22,6 +22,10 @@ import (
 )
 
 func TestMain(m *testing.M) {
+	if os.Getenv("AIGOODBRO_DESKTOP_TEST_CHILD") == "1" {
+		main()
+		os.Exit(0)
+	}
 	gin.SetMode(gin.ReleaseMode)
 	gin.DefaultWriter = io.Discard
 	gin.DefaultErrorWriter = io.Discard
@@ -43,7 +47,9 @@ type fakeBridge struct {
 	busy               map[string]bool
 	acquired, released []string
 	commands           []string
+	order              []string
 	denyRelease        bool
+	admission          func(command, profileID string) bool
 }
 
 func newFakeBridge(t *testing.T) *fakeBridge {
@@ -52,7 +58,7 @@ func newFakeBridge(t *testing.T) *fakeBridge {
 	if err != nil {
 		t.Fatal(err)
 	}
-	b := &fakeBridge{socket: filepath.Join(dir, "b.sock"), owned: map[string]string{}, busy: map[string]bool{}}
+	b := &fakeBridge{socket: filepath.Join(dir, "b.sock"), owned: map[string]string{}, busy: map[string]bool{}, order: []string{"A", "B"}}
 	b.listener, err = net.Listen("unix", b.socket)
 	if err != nil {
 		t.Fatal(err)
@@ -80,8 +86,12 @@ func (b *fakeBridge) serve(c net.Conn) {
 	b.commands = append(b.commands, q.Command)
 	reply := bridgeReply{OK: true}
 	switch q.Command {
-	case "acquire":
-		if b.busy[q.ProfileID] || b.owned[q.ProfileID] != "" {
+	case "order":
+		reply.Order = append([]string(nil), b.order...)
+	case "acquire", "acquire_credit_primary", "acquire_credit_secondary", "acquire_desktop", "acquire_desktop_credit_primary", "acquire_desktop_credit_secondary":
+		if b.admission != nil && !b.admission(q.Command, q.ProfileID) {
+			reply = bridgeReply{Error: "quota"}
+		} else if b.busy[q.ProfileID] || b.owned[q.ProfileID] != "" {
 			reply = bridgeReply{Error: "busy"}
 		} else {
 			b.owned[q.ProfileID] = q.RequestID
@@ -196,6 +206,108 @@ func waitEmpty(t *testing.T, b *fakeBridge) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("lease not released")
+}
+
+func TestSubscriptionsBeforeCreditsAndDesktopLastWithinPhases(t *testing.T) {
+	b := newFakeBridge(t)
+	s := newStartup(t, b)
+	s.CreditFallback = true
+	s.DesktopFallback = true
+	// Deliberately place Desktop first: its priority must not beat other tiers.
+	s.Accounts = append(s.Accounts[:0], struct {
+		ID string `json:"id"`
+	}{"Desktop"}, struct {
+		ID string `json:"id"`
+	}{"A"}, struct {
+		ID string `json:"id"`
+	}{"B"})
+	b.order = []string{"Desktop", "A", "B"}
+	balances := map[string]int{"A": 2500, "B": 2200, "Desktop": 2500}
+	free := map[string]bool{"A": true, "B": true, "Desktop": true}
+	b.admission = func(command, id string) bool {
+		if id == "Desktop" {
+			return command == "acquire_desktop" && free[id] || command == "acquire_desktop_credit_primary" && balances[id] > 2000
+		}
+		if command == "acquire" {
+			return free[id]
+		}
+		if command == "acquire_credit_primary" {
+			return balances[id] > 2000
+		}
+		if command == "acquire_credit_secondary" {
+			return balances[id] > 1500
+		}
+		return false
+	}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer fixture-")
+		if !b.hasLease(id) {
+			t.Error("upstream without lease")
+		}
+		complete(w, id)
+	}))
+	defer upstream.Close()
+	_, server, _ := startTestRuntime(t, s, upstream.URL)
+	turn := func(want string) {
+		t.Helper()
+		response := request(t, s, server.URL, false)
+		body := consume(t, response)
+		if response.StatusCode != 200 || !strings.Contains(body, "done-"+want) {
+			t.Fatalf("wanted %s, got %d %s", want, response.StatusCode, body)
+		}
+		waitEmpty(t, b)
+	}
+	turn("A") // Subscription quota before any credit balance.
+	b.mu.Lock()
+	free["A"] = false
+	b.mu.Unlock()
+	turn("B") // Another account's subscription wins over A's credits.
+	b.mu.Lock()
+	free["B"] = false
+	b.mu.Unlock()
+	turn("Desktop") // Desktop subscription also precedes every paid tier.
+	b.mu.Lock()
+	free["Desktop"] = false
+	b.mu.Unlock()
+	turn("A")
+	b.mu.Lock()
+	balances["A"] = 2000
+	b.mu.Unlock()
+	turn("B")
+	b.mu.Lock()
+	balances["B"] = 2000
+	b.mu.Unlock()
+	turn("A") // Only after every primary-tier balance has reached its floor.
+	b.mu.Lock()
+	balances["A"] = 1500
+	b.mu.Unlock()
+	turn("B")
+	b.mu.Lock()
+	balances["B"] = 1500
+	b.mu.Unlock()
+	turn("Desktop")
+}
+
+func TestCreditFallbackDisabledNeverAttemptsPaidAdmission(t *testing.T) {
+	b := newFakeBridge(t)
+	s := newStartup(t, b)
+	s.DesktopFallback = true
+	b.admission = func(command, id string) bool { return command == "acquire_desktop" && id == "B" }
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { complete(w, "B") }))
+	defer upstream.Close()
+	_, server, _ := startTestRuntime(t, s, upstream.URL)
+	response := request(t, s, server.URL, false)
+	if body := consume(t, response); response.StatusCode != 200 || !strings.Contains(body, "done-B") {
+		t.Fatalf("desktop fallback failed: %d", response.StatusCode)
+	}
+	waitEmpty(t, b)
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for _, command := range b.commands {
+		if strings.Contains(command, "credit") {
+			t.Fatalf("paid admission without opt-in: %s", command)
+		}
+	}
 }
 
 func TestLeaseBeforeUpstreamAndQuotaFailover(t *testing.T) {

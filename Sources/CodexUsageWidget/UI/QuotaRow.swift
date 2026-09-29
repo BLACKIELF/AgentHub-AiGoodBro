@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Shared quota row: label, value, 6pt track, footnote. Unknown never paints 0%.
+/// Shared compact quota row. Unknown never paints 0%.
 struct QuotaRow: View {
     let window: QuotaWindowModel
     var compact = false
@@ -9,18 +9,18 @@ struct QuotaRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: WorkspaceVisualMetrics.Space.xxs) {
-            HStack(alignment: .firstTextBaseline, spacing: WorkspaceVisualMetrics.Space.xs) {
+            HStack(alignment: .center, spacing: WorkspaceVisualMetrics.Space.xs) {
                 Text(window.label)
                     .font(compact ? WorkspaceVisualMetrics.metaFont().weight(.semibold) : WorkspaceVisualMetrics.bodyFont().weight(.semibold))
                     .lineLimit(1)
-                Spacer(minLength: WorkspaceVisualMetrics.Space.xs)
                 Text(window.state.percentText())
-                    .font(WorkspaceVisualMetrics.valueFont(compact: compact))
+                    .font(WorkspaceVisualMetrics.bodyFont().weight(.semibold).monospacedDigit())
                     .foregroundStyle(window.state.fillFraction == nil ? Color.secondary : Color.primary)
                     .lineLimit(1)
                     .fixedSize(horizontal: true, vertical: false)
+                QuotaTrack(state: window.state).frame(width: 64)
+                Spacer(minLength: 0)
             }
-            QuotaTrack(state: window.state)
             if !window.footnote.isEmpty {
                 Text(window.footnote)
                     .font(WorkspaceVisualMetrics.metaFont())

@@ -19,8 +19,12 @@ final class GlassHostingContainer<Content: View>: NSView {
     private let reduceTransparency: Bool
     private let allowsWindowDragging: Bool
     private var glassTint: NSView?
+    private var glassMaterial: NSVisualEffectView?
+    private var glassPreferences = WorkspaceGlassPreferences()
+    private var glassSubscription: AnyCancellable?
+    private var accessibilitySubscription: AnyCancellable?
 
-    init(rootView: Content, cornerRadius: CGFloat, reduceTransparency: Bool = false, allowsWindowDragging: Bool = true) {
+    init(rootView: Content, cornerRadius: CGFloat, reduceTransparency: Bool = false, allowsWindowDragging: Bool = true, settings: AppSettings? = nil) {
         self.cornerRadius = cornerRadius
         self.reduceTransparency = reduceTransparency
         self.allowsWindowDragging = allowsWindowDragging
@@ -35,16 +39,19 @@ final class GlassHostingContainer<Content: View>: NSView {
         host.autoresizingMask = [.width, .height]
         host.allowsWindowDragging = allowsWindowDragging
 
-        if reduceTransparency {
-            installOpaqueFallback(host: host)
-            return
-        }
-
         // AppKit HUD vibrancy is the single window-wide glass pass. The
         // macOS 26 clear glass style washed out light desktops behind white
         // labels; regular glass flattened the backdrop to grey. HUD retains
         // the underlying desktop color and readable native contrast.
         installMaterialFallback(host: host)
+        if let settings {
+            glassSubscription = settings.$workspaceGlass.sink { [weak self] value in
+                self?.glassPreferences = value
+                self?.updateGlassTint()
+            }
+        }
+        accessibilitySubscription = NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification)
+            .receive(on: RunLoop.main).sink { [weak self] _ in self?.updateGlassTint() }
     }
 
     private func installMaterialFallback(host: NSView) {
@@ -59,11 +66,13 @@ final class GlassHostingContainer<Content: View>: NSView {
         let tint = NSView(frame: bounds)
         tint.autoresizingMask = [.width, .height]
         tint.wantsLayer = true
-        material.addSubview(tint)
+        glassMaterial = material
         glassTint = tint
-        updateGlassTint()
-        material.addSubview(host)
         addSubview(material)
+        addSubview(tint)
+        // Siblings keep text and hit targets opaque when the backdrop is disabled.
+        addSubview(host)
+        updateGlassTint()
     }
 
     override func viewDidChangeEffectiveAppearance() {
@@ -73,17 +82,16 @@ final class GlassHostingContainer<Content: View>: NSView {
 
     private func updateGlassTint() {
         let isDark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-        // One native tint over the HUD blur matches the source shell's 68%
-        // neutral base; translucent cards must not each add another blur pass.
+        let opaque =
+            reduceTransparency || NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency
+            || NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast
+        glassMaterial?.isHidden = opaque || !glassPreferences.systemGlass
+        glassTint?.isHidden = opaque
+        layer?.backgroundColor = opaque ? NSColor.windowBackgroundColor.cgColor : NSColor.clear.cgColor
         glassTint?.layer?.backgroundColor =
             isDark
-            ? NSColor(srgbRed: 48 / 255, green: 52 / 255, blue: 56 / 255, alpha: 0.68).cgColor
-            : NSColor(srgbRed: 246 / 255, green: 247 / 255, blue: 250 / 255, alpha: 0.54).cgColor
-    }
-
-    private func installOpaqueFallback(host: NSView) {
-        layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
-        addSubview(host)
+            ? NSColor(srgbRed: 48 / 255, green: 52 / 255, blue: 56 / 255, alpha: glassPreferences.tintOpacity).cgColor
+            : NSColor(srgbRed: 246 / 255, green: 247 / 255, blue: 250 / 255, alpha: glassPreferences.tintOpacity).cgColor
     }
 
     required init?(coder: NSCoder) {
@@ -321,7 +329,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
                 localCLIAccounts: localCLIAccounts,
                 localProxy: localProxy
             ),
-            cornerRadius: CodexAccountManagerView.windowCornerRadius
+            cornerRadius: CodexAccountManagerView.windowCornerRadius, settings: settings
         )
         installTitlebarToolbar(on: mainWindow)
         _ = mainWindow.setFrameAutosaveName("CodexAccountManagerNext.mainWindow")
@@ -395,6 +403,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
 
     private func setupEdgeDockSync() {
         syncEdgeDock()
+        settings.$workspaceGlass
+            .removeDuplicates()
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.syncEdgeDock() }
+            .store(in: &cancellables)
         settings.$edgeDock
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in self?.syncEdgeDock() }
@@ -422,7 +435,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             edgeDockRateTracker.reset()
             edgeDockLastObservedRequestID = nil
             edgeDockController.configure(
-                preferences: prefs, cells: [], language: settings.language,
+                preferences: prefs, cells: [], language: settings.language, glass: settings.workspaceGlass,
                 onPreferencesChange: { [weak self] next in
                     guard let self, self.settings.edgeDock != next else { return }
                     self.settings.edgeDock = next
@@ -478,7 +491,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             liveRateSample: rateSample
         )
         edgeDockController.configure(
-            preferences: prefs, cells: cells, language: settings.language,
+            preferences: prefs, cells: cells, language: settings.language, glass: settings.workspaceGlass,
             onPreferencesChange: { [weak self] next in
                 guard let self, self.settings.edgeDock != next else { return }
                 self.settings.edgeDock = next
@@ -589,6 +602,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         if store.isLaunchingCodex { return .terminateCancel }
         guard terminationTask == nil else { return .terminateLater }
         terminationTask = Task { @MainActor in
+            if localProxy.requiresStopConfirmation {
+                let alert = NSAlert()
+                alert.alertStyle = .warning
+                alert.messageText = settings.language.text("退出并停止反代？", "Quit and stop the proxy?")
+                alert.informativeText = settings.language.text(
+                    "所有接入反代的对话都会断开，正在执行的任务可能中断。取消可让反代继续运行。",
+                    "All conversations connected to the proxy will disconnect, and active tasks may be interrupted. Cancel to keep the proxy running."
+                )
+                alert.addButton(withTitle: settings.language.text("取消", "Cancel"))
+                alert.addButton(withTitle: settings.language.text("退出并停止", "Quit and stop"))
+                let response: NSApplication.ModalResponse
+                if let window, window.isVisible { response = await alert.beginSheetModal(for: window) } else { response = alert.runModal() }
+                guard response == .alertSecondButtonReturn else {
+                    terminationTask = nil
+                    sender.reply(toApplicationShouldTerminate: false)
+                    return
+                }
+            }
             if store.isLoggingIn {
                 await store.finishLoginForTermination()
             }
@@ -678,7 +709,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         if sender === window {
-            if settings.keepRunningWhenMainWindowClosed {
+            if settings.keepRunningWhenMainWindowClosed || localProxy.requiresStopConfirmation {
                 hideMainWindowAfterClose()
             } else {
                 NSApp.terminate(nil)
@@ -943,8 +974,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
                     onOpenPaletteLibrary: { [weak self] in self?.openPaletteLibraryWindow() }
                 ),
                 cornerRadius: 12,
-                reduceTransparency: NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency,
-                allowsWindowDragging: false
+                allowsWindowDragging: false, settings: settings
             )
             panel.center()
             settingsWindow = panel
@@ -980,7 +1010,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             paletteLibraryWindow.contentMinSize = NSSize(width: 660, height: 320)
             paletteLibraryWindow.contentView = GlassHostingContainer(
                 rootView: PaletteLibraryView(settings: settings),
-                cornerRadius: 20
+                cornerRadius: 20, settings: settings
             )
             paletteLibraryWindow.center()
             self.paletteLibraryWindow = paletteLibraryWindow

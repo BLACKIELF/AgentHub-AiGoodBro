@@ -249,10 +249,18 @@ final class AppSettings: ObservableObject {
         didSet { defaults.set(tokenUsageHomeCustomStart, forKey: TokenUsageHomeRange.customStartKey) }
     }
 
+    @Published var homeDashboardPreferences: HomeDashboardPreferences {
+        didSet { defaults.set(try? JSONEncoder().encode(homeDashboardPreferences), forKey: HomeDashboardPreferences.storageKey) }
+    }
+
     @Published var accountMenuTransparency: AccountMenuTransparency {
         didSet {
             accountMenuTransparency.persist(defaults: defaults)
         }
+    }
+
+    @Published var workspaceGlass: WorkspaceGlassPreferences {
+        didSet { defaults.set(try? JSONEncoder().encode(workspaceGlass), forKey: WorkspaceGlassPreferences.storageKey) }
     }
 
     @Published var homeModuleArrangement: WorkspaceModuleArrangement {
@@ -411,11 +419,13 @@ final class AppSettings: ObservableObject {
         particleAnimationMode = ParticleAnimationMode.storedOrDefault(defaults: defaults)
         usageTrendWindow = UsageTrendWindow.storedOrDefault(defaults: defaults)
         tokenUsageHomeRange = TokenUsageHomeRange.storedOrDefault(defaults: defaults)
+        homeDashboardPreferences = HomeDashboardPreferences.load(defaults.data(forKey: HomeDashboardPreferences.storageKey))
         tokenUsageHomeCustomStart =
             (defaults.object(forKey: TokenUsageHomeRange.customStartKey) as? Date)
             ?? Calendar.current.date(byAdding: .day, value: -29, to: Date())
             ?? Date()
         accountMenuTransparency = AccountMenuTransparency.storedOrDefault(defaults: defaults)
+        workspaceGlass = WorkspaceGlassPreferences.load(defaults.data(forKey: WorkspaceGlassPreferences.storageKey))
         homeModuleArrangement = WorkspaceModuleArrangement.load(defaults.data(forKey: WorkspaceModuleArrangement.storageKey))
         var navigationBackup: Data?
         agentNavigation = AgentNavigationState.load(defaults.data(forKey: AgentNavigationState.storageKey), backupRaw: &navigationBackup)

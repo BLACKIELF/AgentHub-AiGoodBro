@@ -16,6 +16,9 @@ struct HomeCodexAccountSummary: View {
     let sevenDayRemaining: Double?
     let sevenDayReset: Date?
     let creditBalance: CreditBalancePresentation
+    let resetCardCount: Int?
+    let canSwitchDesktop: Bool
+    let onSwitchDesktop: () -> Void
     let currentDate: Date
     let isRefreshing: Bool
     let canCopyTerminalCommand: Bool
@@ -30,7 +33,6 @@ struct HomeCodexAccountSummary: View {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.visualTokens) private var visualTokens
     @Environment(\.workspacePreviewDate) private var previewDate
-    @State private var showingListBalanceDetails = false
 
     var body: some View {
         Group {
@@ -38,14 +40,14 @@ struct HomeCodexAccountSummary: View {
                 card
             } else {
                 ViewThatFits(in: .horizontal) {
-                    wideRow.frame(minWidth: 1_190)
+                    wideRow.frame(minWidth: 620)
                     narrowRow
                 }
             }
         }
-        .padding(.horizontal, layout == .cards ? 15 : 14)
-        .padding(.vertical, layout == .cards ? 14 : 11)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .frame(maxWidth: .infinity, maxHeight: layout == .cards ? .infinity : nil, alignment: .topLeading)
         .background {
             if layout == .cards {
                 WorkspaceGlassSurface(selected: isCurrentCodexAccount)
@@ -66,63 +68,52 @@ struct HomeCodexAccountSummary: View {
     }
 
     private var card: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 4) {
             identity
-            HStack(spacing: 5) {
-                status
-                Spacer(minLength: 3)
-                membership
-            }
-            .font(.system(size: 11))
-            CreditBalanceView(presentation: creditBalance, compact: true)
-                .font(.system(size: 11))
-            Divider().opacity(0.55)
-            HStack(alignment: .top, spacing: 15) {
-                quotaWindow(
-                    language.text("5 小时剩余", "5h left"), remaining: fiveHourRemaining, reset: fiveHourReset,
-                    constrainedByWeekly: QuotaAvailabilityPresentation.isWeeklyExhausted(sevenDayRemaining))
-                quotaWindow(
-                    language.text("7 天剩余", "7d left"), remaining: sevenDayRemaining, reset: sevenDayReset,
-                    paletteRole: .secondary)
-            }
-            Divider().opacity(0.65)
-            actions
+            quotas
+            balanceSummary
         }
     }
 
-    private var wideRow: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            if displayNumber == 1 {
-                HStack(spacing: 12) {
-                    Text(language.text("账号", "Account")).frame(width: 230, alignment: .leading)
-                    Text(language.text("会员到期", "Membership")).frame(width: 108, alignment: .leading)
-                    Text(language.text("美元 / 点数", "USD / credits")).frame(width: 130, alignment: .leading)
-                    Text(language.text("5 小时剩余 · 重置时间", "5h left · reset time"))
-                        .frame(minWidth: 210, maxWidth: .infinity, alignment: .leading)
-                    Text(language.text("7 天剩余 · 重置时间", "7d left · reset time"))
-                        .frame(minWidth: 210, maxWidth: .infinity, alignment: .leading)
-                    Text(language.text("操作", "Actions")).frame(width: 150, alignment: .trailing)
-                }
-                .font(.system(size: 10, weight: .medium))
-                .foregroundStyle(.secondary)
-                Divider().opacity(0.5)
-            }
-            HStack(alignment: .center, spacing: 12) {
-                listIdentity.frame(width: 230, alignment: .leading)
-                listMembership.frame(width: 108, alignment: .leading)
-                listBalance.frame(width: 130, alignment: .leading)
-                listQuota(
-                    remaining: fiveHourRemaining, reset: fiveHourReset,
-                    constrainedByWeekly: QuotaAvailabilityPresentation.isWeeklyExhausted(sevenDayRemaining)
-                )
-                .frame(minWidth: 210, maxWidth: .infinity, alignment: .leading)
-                listQuota(remaining: sevenDayRemaining, reset: sevenDayReset, paletteRole: .secondary)
-                    .frame(minWidth: 210, maxWidth: .infinity, alignment: .leading)
-                listActions.frame(width: 150, alignment: .trailing)
-            }
-            .frame(minHeight: 43)
+    private var quotas: some View {
+        HStack(alignment: .top, spacing: 10) {
+            quotaWindow(
+                language.text("5h", "5h"), remaining: fiveHourRemaining, reset: fiveHourReset,
+                constrainedByWeekly: QuotaAvailabilityPresentation.isWeeklyExhausted(sevenDayRemaining))
+            quotaWindow(language.text("7d", "7d"), remaining: sevenDayRemaining, reset: sevenDayReset, paletteRole: .secondary)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var balanceSummary: some View {
+        HStack(spacing: 6) {
+            Text(AccountDisplay.planLabel(profile, empty: "—"))
+                .font(.system(size: 9)).lineLimit(1)
+                .help(accountHelp)
+            Text("·")
+            CreditBalanceView(presentation: creditBalance, compact: true)
+            Text("·")
+            Text(
+                resetCardCount.map { language.text("重置卡 \($0)", "\($0) reset cards") }
+                    ?? language.text("重置卡 —", "Reset cards —")
+            )
+            .monospacedDigit().lineLimit(1)
+            Spacer(minLength: 0)
+        }
+        .font(.system(size: 10)).foregroundStyle(.secondary)
+    }
+
+    private var wideRow: some View {
+        HStack(alignment: .center, spacing: 14) {
+            VStack(alignment: .leading, spacing: 3) {
+                identity
+                balanceSummary
+            }
+            .frame(minWidth: 235, maxWidth: .infinity, alignment: .leading)
+            quotaWindow(
+                "5h", remaining: fiveHourRemaining, reset: fiveHourReset,
+                constrainedByWeekly: QuotaAvailabilityPresentation.isWeeklyExhausted(sevenDayRemaining))
+            quotaWindow("7d", remaining: sevenDayRemaining, reset: sevenDayReset, paletteRole: .secondary)
+        }
     }
 
     private var listIdentity: some View {
@@ -137,6 +128,7 @@ struct HomeCodexAccountSummary: View {
                     Text(AccountDisplay.profileName(profile, allProfiles: allProfiles))
                         .font(.system(size: 12, weight: .semibold))
                         .lineLimit(1)
+                    headerActions
                     Text(AccountDisplay.planLabel(profile, empty: "—"))
                         .font(.system(size: 9, weight: .semibold))
                         .foregroundStyle(.tint)
@@ -173,7 +165,7 @@ struct HomeCodexAccountSummary: View {
                     } ?? "")
             }
         }
-        .accessibilityElement(children: .combine)
+        .accessibilityElement(children: .contain)
         .accessibilityLabel(
             language.text("第 \(displayNumber) 位，", "Position \(displayNumber), ")
                 + AccountDisplay.profileName(profile, allProfiles: allProfiles))
@@ -197,50 +189,6 @@ struct HomeCodexAccountSummary: View {
         .lineLimit(1)
     }
 
-    private var listBalance: some View {
-        HStack(alignment: .bottom, spacing: 0) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(language.text("美元 —", "USD —"))
-                Text(language.text("点数 ", "Credits ") + compactCreditText)
-                    .monospacedDigit()
-            }
-            .font(.system(size: 10))
-            .foregroundStyle(.secondary)
-            .lineLimit(1)
-            Spacer(minLength: 0)
-            Button {
-                showingListBalanceDetails.toggle()
-            } label: {
-                Image(systemName: "info.circle")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 20, height: 20)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel(language.text("余额说明", "Balance details"))
-            .popover(isPresented: $showingListBalanceDetails, arrowEdge: .bottom) {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(creditBalance.primaryText(language))
-                        .font(.body.weight(.semibold).monospacedDigit())
-                        .textSelection(.enabled)
-                    Text(language.text("美元余额未提供，不从点数推算。", "USD balance is not provided and is not inferred from credits."))
-                    Text(creditBalance.sourceText(language))
-                    if let snapshotAt = creditBalance.snapshotAt {
-                        Text(language.text("快照时间：", "Snapshot: ") + language.dateTime(snapshotAt))
-                    }
-                    Text(creditBalance.explanation(language))
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                .font(.caption)
-                .padding(14)
-                .frame(width: 268, alignment: .leading)
-                .background(.background)
-            }
-        }
-        .help(creditBalance.sourceText(language) + "\n" + creditBalance.explanation(language))
-    }
-
     private var compactCreditText: String {
         switch creditBalance.value {
         case .unavailable: return "—"
@@ -261,111 +209,8 @@ struct HomeCodexAccountSummary: View {
         }
     }
 
-    private func listQuota(
-        remaining: Double?, reset: Date?, constrainedByWeekly: Bool = false,
-        paletteRole: QuotaPaletteRole = .primary
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 10) {
-                Text(QuotaAvailabilityPresentation.percentText(remaining))
-                    .font(.system(size: 15, weight: .semibold).monospacedDigit())
-                    .foregroundStyle(remaining == nil ? Color.secondary : Color.primary)
-                    .frame(width: 51, alignment: .leading)
-                if remaining != nil {
-                    QuotaProgressTrack(percent: remaining, paletteRole: paletteRole)
-                        .frame(maxWidth: .infinity).frame(height: 5)
-                } else {
-                    Text(language.text("官方未提供", "Not provided"))
-                        .font(.system(size: 10))
-                        .foregroundStyle(.secondary)
-                }
-            }
-            VStack(alignment: .leading, spacing: 3) {
-                Text(reset.map(shortDateTime) ?? language.text("重置时间 —", "Reset time —"))
-                if let reset {
-                    countdown(deadline: reset)
-                }
-            }
-            .font(.system(size: 10))
-            .foregroundStyle(.secondary)
-            .lineLimit(1)
-            .minimumScaleFactor(0.8)
-            if constrainedByWeekly {
-                Text(language.text("受 7 天额度限制", "Limited by 7-day quota"))
-                    .font(.system(size: 10))
-                    .foregroundStyle(FixedVisualPalette.statusWarningForeground(colorScheme))
-            }
-        }
-        .help(
-            (reset.map(fullBeijingDateTime) ?? language.text("官方未提供重置时间", "Official reset time unavailable"))
-                + (constrainedByWeekly ? language.text(" · 受 7 天额度限制", " · Limited by 7-day quota") : ""))
-    }
-
-    private var listActions: some View {
-        HStack(spacing: 5) {
-            Button(action: onRefresh) {
-                Image(systemName: isRefreshing ? "hourglass" : "arrow.clockwise")
-                    .frame(width: 27, height: 26)
-            }
-            .disabled(isRefreshing)
-            .accessibilityLabel(language.text("刷新此账号额度", "Refresh account usage"))
-            .homeSummaryAction()
-            HStack(spacing: 0) {
-                Button(action: onOpenTerminal) {
-                    Image(systemName: "terminal").frame(width: 29, height: 26)
-                }
-                .disabled(!canOpenTerminal)
-                .accessibilityLabel(language.text("在终端中使用此账号", "Open account in Terminal"))
-                Rectangle().fill(visualTokens.selection.stroke.color).frame(width: 1, height: 12)
-                Menu {
-                    Button(language.text("复制 CLI 调用命令", "Copy CLI command"), action: onCopyTerminalCommand)
-                        .disabled(!canCopyTerminalCommand)
-                    Button(language.text("打开完整管理", "Open full management"), action: onManage)
-                } label: {
-                    Image(systemName: "chevron.down").font(.system(size: 9)).frame(width: 18, height: 26)
-                }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-                .accessibilityLabel(language.text("更多终端操作", "More Terminal actions"))
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(visualTokens.selection.foreground.color)
-            .background(visualTokens.selection.fill.color, in: RoundedRectangle(cornerRadius: 5))
-            .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(visualTokens.selection.stroke.color, lineWidth: 0.7).allowsHitTesting(false))
-            Button(action: onManage) {
-                Text(language.text("管理 ›", "Manage ›"))
-                    .font(.system(size: 10, weight: .medium))
-                    .frame(width: 60, height: 26)
-            }
-            .accessibilityLabel(language.text("打开此账号的完整管理", "Open full account management"))
-            .homeSummaryAction()
-        }
-        .buttonStyle(.plain)
-    }
-
     private var narrowRow: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                identity
-                Spacer(minLength: 4)
-                membership.font(.system(size: 11))
-            }
-            HStack(spacing: 12) {
-                status.font(.system(size: 10))
-                CreditBalanceView(presentation: creditBalance, compact: true)
-                    .font(.system(size: 10)).frame(maxWidth: 230)
-                Spacer(minLength: 0)
-                actions
-            }
-            HStack(alignment: .top, spacing: 16) {
-                quotaWindow(
-                    language.text("5 小时剩余", "5h left"), remaining: fiveHourRemaining, reset: fiveHourReset,
-                    constrainedByWeekly: QuotaAvailabilityPresentation.isWeeklyExhausted(sevenDayRemaining))
-                quotaWindow(
-                    language.text("7 天剩余", "7d left"), remaining: sevenDayRemaining, reset: sevenDayReset,
-                    paletteRole: .secondary)
-            }
-        }
+        card
     }
 
     private var identity: some View {
@@ -375,18 +220,26 @@ struct HomeCodexAccountSummary: View {
                 .foregroundStyle(.secondary)
             StoredCodexAvatar(profile: profile, slot: .compactRow)
             Text(AccountDisplay.profileName(profile, allProfiles: allProfiles))
-                .font(.system(size: 14, weight: .semibold))
+                .font(.system(size: 12, weight: .semibold))
                 .lineLimit(1)
-                .help(AccountDisplay.profileName(profile, allProfiles: allProfiles))
+                .help(accountHelp)
+            if loginEligibility != .loggedIn {
+                Image(systemName: "exclamationmark.circle")
+                    .foregroundStyle(FixedVisualPalette.statusWarningForeground(colorScheme))
+                    .font(.system(size: 10))
+                    .help(accountStatus).accessibilityLabel(accountStatus)
+            } else if profile.lastQuotaReadFailureAt != nil
+                || profile.lastSnapshot.map({ currentDate.timeIntervalSince($0.fetchedAt) > 1_800 }) == true
+            {
+                Image(systemName: "clock.arrow.circlepath")
+                    .foregroundStyle(.secondary).font(.system(size: 10))
+                    .help(language.text("显示上次额度快照", "Showing last usage snapshot"))
+                    .accessibilityLabel(language.text("显示上次额度快照", "Showing last usage snapshot"))
+            }
             Spacer(minLength: 0)
-            Text(AccountDisplay.planLabel(profile, empty: "—"))
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(visualTokens.selection.foreground.color)
-                .padding(.horizontal, 7).padding(.vertical, 3)
-                .background(visualTokens.selection.fill.color, in: RoundedRectangle(cornerRadius: 5))
-                .lineLimit(1)
+            headerActions
         }
-        .accessibilityElement(children: .combine)
+        .accessibilityElement(children: .contain)
         .accessibilityLabel(
             language.text("第 \(displayNumber) 位，", "Position \(displayNumber), ")
                 + AccountDisplay.profileName(profile, allProfiles: allProfiles)
@@ -446,90 +299,57 @@ struct HomeCodexAccountSummary: View {
         }
     }
 
+    private var accountHelp: String {
+        var lines = [
+            AccountDisplay.profileName(profile, allProfiles: allProfiles),
+            AccountDisplay.planLabel(profile, empty: "—"), accountStatus,
+        ]
+        if let until = profile.officialProfile?.subscriptionActiveUntil {
+            lines.append(
+                language.text("到期 ", "Expires ") + fullBeijingDateTime(until)
+                    + (until > currentDate ? "" : language.text(" · 待核实", " · verify")))
+        }
+        if let fetchedAt = profile.lastSnapshot?.fetchedAt {
+            lines.append(language.text("额度更新于 ", "Usage updated ") + language.dateTime(fetchedAt))
+        }
+        return lines.joined(separator: "\n")
+    }
+
     private func quotaWindow(
         _ title: String, remaining: Double?, reset: Date?, constrainedByWeekly: Bool = false,
         paletteRole: QuotaPaletteRole = .primary
     ) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(alignment: .firstTextBaseline, spacing: 3) {
-                Text(title).font(.system(size: 11, weight: .medium))
-                Spacer(minLength: 2)
-                Text(QuotaAvailabilityPresentation.percentText(remaining))
-                    .font(.system(size: layout == .cards ? 21 : 15, weight: .semibold).monospacedDigit())
-                    .foregroundStyle(remaining == nil ? Color.secondary : Color.primary)
-            }
-            if remaining != nil {
-                QuotaProgressTrack(percent: remaining, paletteRole: paletteRole)
-                    .frame(height: 5).padding(.vertical, 3)
-            } else {
-                Color.clear.frame(height: 11)
-            }
-            Text(
-                reset.map { language.text("重置 ", "Resets ") + shortDateTime($0) }
-                    ?? language.text("重置时间 —", "Reset time —")
-            )
-            .help(reset.map(fullBeijingDateTime) ?? "")
-            if let reset {
-                countdown(deadline: reset)
-            } else {
-                Text(
-                    remaining == nil
-                        ? language.text("官方未提供", "Not provided")
-                        : language.text("倒计时 —", "Countdown —"))
-            }
-            if constrainedByWeekly {
-                Text(language.text("受 7 天额度限制", "Limited by 7-day quota"))
-                    .foregroundStyle(FixedVisualPalette.statusWarningForeground(colorScheme))
-            }
-        }
-        .font(.system(size: 11))
-        .foregroundStyle(.secondary)
-        .lineLimit(1)
-        .minimumScaleFactor(0.78)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        CompactQuotaView(title: title, remaining: remaining, reset: reset, paletteRole: paletteRole, constrainedByWeekly: constrainedByWeekly)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private var actions: some View {
-        HStack(spacing: 6) {
-            Button(action: onRefresh) {
-                Image(systemName: isRefreshing ? "hourglass" : "arrow.clockwise")
-                    .frame(width: 28, height: 27)
+    private var headerActions: some View {
+        HStack(spacing: 2) {
+            Button(action: onSwitchDesktop) {
+                Image(systemName: "macwindow").frame(width: 26, height: 26)
+                    .foregroundStyle(isCurrentCodexAccount ? FixedVisualPalette.statusSuccess : Color.secondary)
             }
-            .disabled(isRefreshing)
-            .accessibilityLabel(language.text("刷新此账号额度", "Refresh account usage"))
-            .homeSummaryAction()
-            HStack(spacing: 0) {
-                Button(action: onOpenTerminal) {
-                    Image(systemName: "terminal").frame(width: 32, height: 27)
+            .disabled(!canSwitchDesktop)
+            .help(isCurrentCodexAccount ? language.text("当前桌面账号", "Current Desktop account") : language.text("切换到桌面", "Switch Desktop"))
+            .accessibilityLabel(isCurrentCodexAccount ? language.text("当前桌面账号", "Current Desktop account") : language.text("切换到桌面", "Switch Desktop"))
+            Menu {
+                Button(language.text("刷新额度", "Refresh limits"), action: onRefresh).disabled(isRefreshing)
+                Button(language.text("在终端中使用", "Open in Terminal"), action: onOpenTerminal).disabled(!canOpenTerminal)
+                Button(language.text("复制 CLI 调用命令", "Copy CLI command"), action: onCopyTerminalCommand).disabled(!canCopyTerminalCommand)
+                Button(language.text("打开完整管理", "Open full management"), action: onManage)
+                Divider()
+                Text(accountStatus)
+                if let until = profile.officialProfile?.subscriptionActiveUntil {
+                    Text(language.text("到期 ", "Expires ") + fullBeijingDateTime(until))
                 }
-                .disabled(!canOpenTerminal)
-                .accessibilityLabel(language.text("在终端中使用此账号", "Open account in Terminal"))
-                Rectangle().fill(visualTokens.selection.stroke.color).frame(width: 1, height: 12)
-                Menu {
-                    Button(language.text("复制 CLI 调用命令", "Copy CLI command"), action: onCopyTerminalCommand)
-                        .disabled(!canCopyTerminalCommand)
-                    Button(language.text("打开完整管理", "Open full management"), action: onManage)
-                } label: {
-                    Image(systemName: "chevron.down").font(.system(size: 9)).frame(width: 21, height: 27)
-                }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-                .accessibilityLabel(language.text("更多终端操作", "More Terminal actions"))
+            } label: {
+                Image(systemName: isRefreshing ? "hourglass" : "ellipsis").frame(width: 26, height: 26)
             }
-            .buttonStyle(.plain)
-            .foregroundStyle(visualTokens.selection.foreground.color)
-            .background(visualTokens.selection.fill.color, in: RoundedRectangle(cornerRadius: 5))
-            .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(visualTokens.selection.stroke.color, lineWidth: 0.7).allowsHitTesting(false))
-            Spacer(minLength: 0)
-            Button(action: onManage) {
-                Text(language.text("管理 ›", "Manage ›"))
-                    .font(.system(size: 11, weight: .medium))
-                    .frame(height: 27).padding(.horizontal, 7)
-            }
-            .accessibilityLabel(language.text("打开此账号的完整管理", "Open full account management"))
-            .buttonStyle(.plain)
+            .menuStyle(.borderlessButton).menuIndicator(.hidden)
+            .accessibilityLabel(language.text("更多账号操作", "More account actions"))
         }
-        .buttonStyle(.plain)
+        .font(.system(size: 11)).foregroundStyle(.secondary).buttonStyle(WorkspaceQuietButtonStyle())
+        .fixedSize()
     }
 
     private func shortDate(_ date: Date) -> String {

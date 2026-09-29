@@ -47,7 +47,9 @@ def run(helper=None):
         bridge_source=(ROOT/'Sources/CodexUsageWidget/Services/LocalProxyBridge.swift').read_text()
         bridge_source=bridge_source[:bridge_source.index('/// Reads under the same')]
         domain=(ROOT/'Sources/CodexUsageWidget/Domain/LocalProxyQueue.swift').read_text()
-        domain=domain[:domain.index('/// Subscription windows only.')]
+        # Compile only the shared IPC DTOs. UI rows and quota admission have
+        # native application dependencies and are covered by host fixtures.
+        domain='import Foundation\n'+domain[domain.index('enum LocalProxyFailure:'):domain.index('enum LocalProxyAdmission {')]
         (folder/'Bridge.swift').write_text(bridge_source)
         (folder/'Domain.swift').write_text(domain)
         subprocess.run(['xcrun','swiftc','-swift-version','5','-parse-as-library',str(folder/'Bridge.swift'),str(folder/'Domain.swift'),str(MODULE/'fixtures/BridgeFixture.swift'),'-o',str(folder/'bridge')],check=True)
@@ -79,8 +81,8 @@ def run(helper=None):
                     events=stop(child);assert events[-1]['event']=='stopped',events
                     bridge_events=stop(bridge);assert bridge_events[-1]['event']=='stopped' and bridge_events[-1]['held']==0,bridge_events
                     commands=[(e['command'],e['profileID']) for e in bridge_events if e['event']=='bridge']
-                    assert commands[:2]==[('acquire','A'),('acquire','B')],commands
-                    if mode=='allow':assert sorted(commands[2:])==[('release','A'),('release','B')],commands
+                    assert commands[:3]==[('order','A'),('acquire','A'),('acquire','B')],commands
+                    if mode=='allow':assert sorted(commands[3:])==[('release','A'),('release','B')],commands
                     print('PASS:',mode,'production Swift bridge +', 'production Go helper' if mode=='deny' else 'Go runtime test child + fake HTTP upstream')
                 finally:
                     for process in (child,bridge):

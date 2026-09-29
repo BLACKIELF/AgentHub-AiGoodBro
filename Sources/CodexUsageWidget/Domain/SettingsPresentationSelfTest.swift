@@ -41,6 +41,26 @@ enum SettingsPresentationSelfTest {
 
         let catalog = PaletteCatalog.loadFromMainBundle()
         let settings = AppSettings(defaults: defaults, paletteCatalog: catalog)
+        expect(settings.workspaceGlass == WorkspaceGlassPreferences(), "glass defaults match Token Monitor")
+        let glassWindow = GlassHostingContainer(rootView: Text("Synthetic glass check"), cornerRadius: 12, settings: settings)
+        let material = glassWindow.subviews.compactMap { $0 as? NSVisualEffectView }.first
+        let host = glassWindow.subviews.last
+        settings.workspaceGlass = WorkspaceGlassPreferences(systemGlass: false, opacity: 24, depth: 75)
+        expect(material?.isHidden == true && host?.isHidden == false, "transparent backdrop must keep content visible")
+        settings.workspaceGlass.systemGlass = true
+        if !NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency && !NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast {
+            expect(material?.isHidden == false, "system glass updates in an existing window")
+        }
+        glassWindow.updateCornerRadius(0)
+        expect(glassWindow.layer?.cornerRadius == 0 && material?.layer?.cornerRadius == 0, "full-screen removes both clipping radii")
+        glassWindow.updateCornerRadius(12)
+        expect(glassWindow.layer?.cornerRadius == 12 && material?.layer?.cornerRadius == 12, "exiting full-screen restores glass shape")
+        let savedGlass = AppSettings(defaults: defaults, paletteCatalog: catalog)
+        expect(savedGlass.workspaceGlass == settings.workspaceGlass, "glass sliders and backdrop survive reopen")
+        let invalidGlass = Data(#"{"opacity":900,"depth":-10}"#.utf8)
+        expect(WorkspaceGlassPreferences.load(invalidGlass) == .init(opacity: 100, depth: 0), "invalid glass values cannot overflow opacity or contrast")
+        expect(WorkspaceGlassPreferences.load(Data("invalid".utf8)) == .init(), "corrupt glass preferences use safe defaults")
+        settings.workspaceGlass = .init()
         expect(settings.language == .zh && settings.themeMode == .dark, "fresh installs use Chinese and dark appearance")
         expect(
             settings.accountWorkspaceLayout == .rows && settings.paletteID == PaletteCatalog.initialPaletteID,

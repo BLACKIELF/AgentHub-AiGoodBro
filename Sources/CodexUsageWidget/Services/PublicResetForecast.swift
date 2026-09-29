@@ -520,7 +520,7 @@ enum PublicResetForecastSelfTest {
             let beijing = PublicResetAnnouncementPresentation.forecastTime(deadline, language: .zh)
             guard beijing.contains("2026年9月23日"), beijing.contains("14:59"),
                 beijing.contains("北京时间"),
-                PublicResetAnnouncementPresentation.forecastCountdown(cached, now: fetchedAt, language: .zh).contains("最晚还有"),
+                PublicResetAnnouncementPresentation.forecastCountdown(cached, now: fetchedAt, language: .zh).contains("预计重置还有"),
                 PublicResetAnnouncementPresentation.forecastCountdown(
                     cached, now: deadline.addingTimeInterval(1), language: .zh
                 ).contains("等待来源确认")

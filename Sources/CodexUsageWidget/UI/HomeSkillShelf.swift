@@ -104,7 +104,7 @@ struct HomeSkillShelf: View {
     static let quickToggleURL = URL(string: "https://github.com/BLACKIELF/QuickToggle/releases")!
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 6) {
             HStack {
                 HomeSectionToggle(
                     title: language.text("推荐 Skills 与应用", "Recommended skills and apps"),
@@ -116,8 +116,8 @@ struct HomeSkillShelf: View {
             }
             if isExpanded {
                 ViewThatFits(in: .horizontal) {
-                    recommendationGrid(columns: 4).frame(minWidth: 996)
-                    recommendationGrid(columns: 2).frame(minWidth: 492)
+                    recommendationGrid(columns: 4).frame(minWidth: 720)
+                    recommendationGrid(columns: 2).frame(minWidth: 400)
                     recommendationGrid(columns: 1)
                 }
             }
@@ -126,21 +126,21 @@ struct HomeSkillShelf: View {
     }
 
     private func recommendationGrid(columns: Int) -> some View {
-        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: columns), spacing: 10) {
+        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: columns), spacing: 6) {
             ForEach(BundledSkill.allCases) { skill in
                 Button {
                     selected = skill
                 } label: {
-                    HStack(spacing: 10) {
-                        Image(systemName: skill.symbol).foregroundStyle(.tint).font(.title3)
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(skill.title).font(.callout.weight(.semibold))
-                            Text(skill.summary(language)).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                    HStack(spacing: 6) {
+                        Image(systemName: skill.symbol).foregroundStyle(.tint).font(.system(size: 12))
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(skill.title).font(.system(size: 11, weight: .semibold))
+                            Text(skill.summary(language)).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1).help(skill.summary(language))
                         }
                         Spacer(minLength: 0)
                         Image(systemName: "arrow.up.forward").font(.caption).foregroundStyle(.secondary)
                     }
-                    .padding(12).frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(7).frame(maxWidth: .infinity, alignment: .leading)
                     .background(Color.accentColor.opacity(0.05), in: RoundedRectangle(cornerRadius: 10))
                     .contentShape(Rectangle())
                 }

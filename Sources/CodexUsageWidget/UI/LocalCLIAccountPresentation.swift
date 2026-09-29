@@ -4,14 +4,15 @@ import Foundation
 /// separate observations and must not be inferred from one another.
 enum LocalCLIAccountPresentation {
     static func balanceTitle(kind: LocalCLIKind, language: WidgetLanguage) -> String {
-        kind == .grok ? language.text("购入余额", "Purchased balance") : language.text("余额", "Balance")
+        if kind == .trae || kind == .workBuddy { return language.text("积分", "Credits") }
+        return kind == .grok ? language.text("购入余额", "Purchased balance") : language.text("余额", "Balance")
     }
 
     static func balanceText(kind: LocalCLIKind, result: LocalCLIQuotaResult, language: WidgetLanguage) -> String? {
         guard let balance = result.balance, balance.isFinite else { return nil }
         let currency = result.balanceCurrency ?? (kind == .grok ? "USD" : nil)
         return balance.formatted(.number.precision(.fractionLength(0...4)).locale(language.locale))
-            + (currency.map { " " + $0 } ?? "")
+            + (currency.map { $0 == "CREDITS" ? language.text(" 点", " credits") : " " + $0 } ?? "")
     }
 
     static func quotaExplanation(kind: LocalCLIKind, result: LocalCLIQuotaResult?, language: WidgetLanguage) -> String? {
@@ -53,8 +54,12 @@ enum LocalCLIAccountPresentation {
                 "This authentication uses an API key or another method; Google personal subscription quota is unavailable.")
         case "local_cli_kimi_token_refresh_required":
             return language.text(
-                "Kimi 登录凭据已保存，但当前会话已过期。打开官方 Kimi CLI 更新会话后，返回这里会自动刷新额度。",
-                "Kimi sign-in credentials are saved, but the current session expired. Open the official Kimi CLI to update it; limits refresh when you return here.")
+                "Kimi 会话已过期，本次自动续期未成功。请稍后刷新；若登录已失效，请在官方 CLI 重新登录。",
+                "The Kimi session expired and automatic renewal did not succeed. Retry later; sign in through the official CLI if the login has expired.")
+        case "local_cli_trae_default_required":
+            return language.text("TRAE 积分读取使用本机默认登录。", "TRAE credits use the default local sign-in.")
+        case "local_cli_trae_session_unreadable":
+            return language.text("TRAE 本机登录信息暂不可读，请在官方应用确认登录。", "The local TRAE session is unreadable. Check sign-in in the official app.")
         case "local_cli_gemini_access_refresh_required":
             return language.text(
                 "Google 登录凭据已保存，但当前会话已过期。打开官方 Gemini CLI 更新会话后，返回这里会自动刷新额度。",
@@ -71,6 +76,12 @@ enum LocalCLIAccountPresentation {
             return language.text(
                 "ZCode 当前选择的 Coding Plan 未启用。请在 ZCode 中恢复该服务商后刷新；不会读取其他账号或旧配置的额度。",
                 "The Coding Plan selected in ZCode is inactive. Enable that provider in ZCode, then refresh; limits from other accounts or old configurations are not used.")
+        case "local_cli_zcode_partial_quota":
+            return language.text("部分额度暂时未读到，当前显示已核实的额度。", "Some limits are unavailable; verified limits are shown.")
+        case "local_cli_zcode_no_quota":
+            return language.text("当前账号暂无有效额度，已到期的赠送额度不计入可用余额。", "No active allowance was returned. Expired grants are excluded.")
+        case "local_cli_zcode_no_coding_plan":
+            return language.text("官方返回：当前 ZCode 账号未开通 Coding Plan。", "The provider reports no Coding Plan for the current ZCode account.")
         case "local_cli_zcode_account_unverified":
             return language.text(
                 "尚未确认 ZCode 当前账号与所选 Coding Plan 的对应关系。请在官方 ZCode 中确认账号与服务商，再刷新额度。",

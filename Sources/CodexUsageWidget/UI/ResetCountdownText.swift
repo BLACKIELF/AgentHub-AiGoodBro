@@ -5,7 +5,7 @@ enum ResetCountdownPresentation {
 
     /// Always derive the remaining time from the deadline, including after sleep
     /// or a clock correction. A countdown never changes a quota or confirms a reset.
-    static func label(deadline: Date?, now: Date, kind: Kind, language: WidgetLanguage) -> String {
+    static func label(deadline: Date?, now: Date, kind: Kind, language: WidgetLanguage, compact: Bool = false) -> String {
         guard let deadline else { return unknown(kind, language: language) }
         let interval = deadline.timeIntervalSince(now)
         guard interval.isFinite, abs(interval) < Double(Int.max) else {
@@ -14,7 +14,9 @@ enum ResetCountdownPresentation {
         guard interval > 0 else {
             return kind == .publicForecast
                 ? language.text("预告时间已到，等待来源确认", "Forecast time reached; awaiting confirmation")
-                : language.text("时间已到，等待额度更新", "Time reached; awaiting quota update")
+                : compact
+                    ? language.text("待更新", "Awaiting update")
+                    : language.text("时间已到，等待额度更新", "Time reached; awaiting quota update")
         }
         let seconds = Int(ceil(interval))
         let days = seconds / 86_400
@@ -22,8 +24,8 @@ enum ResetCountdownPresentation {
         let duration = days > 0 ? language.text("\(days) 天 ", "\(days)d ") + clock : clock
         return
             (kind == .publicForecast
-            ? language.text("最晚还有 ", "Due within ")
-            : language.text("重置还有 ", "Resets in ")) + duration
+            ? language.text("预计重置还有 ", "Expected reset in ")
+            : compact ? "" : language.text("重置还有 ", "Resets in ")) + duration
     }
 
     private static func unknown(_ kind: Kind, language: WidgetLanguage) -> String {
@@ -38,6 +40,7 @@ struct ResetCountdownText: View {
     let deadline: Date
     let kind: ResetCountdownPresentation.Kind
     let language: WidgetLanguage
+    var compact = false
     @Environment(\.workspacePreviewDate) private var previewDate
     @Environment(\.colorScheme) private var colorScheme
 
@@ -55,11 +58,13 @@ struct ResetCountdownText: View {
     }
 
     private func label(now: Date) -> some View {
-        Text(ResetCountdownPresentation.label(deadline: deadline, now: now, kind: kind, language: language))
+        Text(ResetCountdownPresentation.label(deadline: deadline, now: now, kind: kind, language: language, compact: compact))
             .monospacedDigit()
             .fixedSize(horizontal: false, vertical: true)
             .foregroundStyle(
                 kind == .publicForecast && deadline > now
-                    ? FixedVisualPalette.statusWarningForeground(colorScheme) : Color.secondary)
+                    ? FixedVisualPalette.statusWarningForeground(colorScheme) : Color.secondary
+            )
+            .accessibilityLabel(ResetCountdownPresentation.label(deadline: deadline, now: now, kind: kind, language: language))
     }
 }

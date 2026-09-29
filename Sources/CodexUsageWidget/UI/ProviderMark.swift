@@ -33,9 +33,17 @@ enum UpstreamProviderArtwork {
             .appendingPathComponent("TokenMonitorEngine/upstream/assets/icons", isDirectory: true)
             .appendingPathComponent(name)
             .appendingPathExtension("svg")
-        guard let image = NSImage(contentsOf: url) else { return nil }
+        guard var artwork = try? String(contentsOf: url, encoding: .utf8) else { return nil }
+        if name == "gemini" {
+            // CoreSVG misreads this upstream path's adjacent arc flags and
+            // renders only a tiny fragment. Add separators without changing
+            // its geometry or the signed upstream asset.
+            artwork = artwork.replacingOccurrences(of: "0 01", with: "0 0 1 ")
+                .replacingOccurrences(of: "0 00", with: "0 0 0 ")
+        }
+        guard let image = NSImage(data: Data(artwork.utf8)) else { return nil }
         // Upstream currentColor marks need system foreground ink in dark and light mode.
-        image.isTemplate = (try? String(contentsOf: url, encoding: .utf8))?.contains("currentColor") == true
+        image.isTemplate = artwork.contains("currentColor")
         cache.setObject(image, forKey: name as NSString)
         return image
     }

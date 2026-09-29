@@ -29,7 +29,7 @@ enum FloatingBubbleEvidence {
             }
             return TokenMonitorFloatingBubbleAccount(
                 providerID: AgentNavCatalog.codexID, providerName: "Codex",
-                accountID: profile.id, accountName: AccountDisplay.profileName(profile, allProfiles: store.profiles),
+                accountID: profile.id, accountName: AccountDisplay.numberedName(profile, allProfiles: store.profiles),
                 isLoggedIn: loggedIn, metrics: metrics)
         }
         for profile in localAccounts.profiles {

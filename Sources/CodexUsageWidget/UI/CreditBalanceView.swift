@@ -7,10 +7,29 @@ struct CreditBalanceView: View {
     @State private var showingDetails = false
 
     var body: some View {
+        Group {
+            if compact {
+                Button {
+                    showingDetails.toggle()
+                } label: {
+                    Text(language.text("点数 ", "Credits ") + creditText)
+                        .monospacedDigit().lineLimit(1)
+                        .foregroundStyle(.secondary)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityHint(language.text("查看余额说明", "Show balance details"))
+            } else {
+                fullLabel
+            }
+        }
+        .font(.system(size: compact ? 10 : 12))
+        .help(helpText)
+        .popover(isPresented: $showingDetails, arrowEdge: .bottom) { balanceDetails }
+    }
+
+    private var fullLabel: some View {
         HStack(spacing: 6) {
-            Text(language.text("美元 —", "USD —"))
-                .foregroundStyle(.secondary)
-            Spacer(minLength: 8)
             Text(language.text("点数 ", "Credits ") + creditText)
                 .fontWeight(.semibold)
                 .foregroundStyle(.secondary)
@@ -23,17 +42,12 @@ struct CreditBalanceView: View {
                 Image(systemName: "info.circle")
                     .foregroundStyle(.secondary)
                     .frame(width: 14, height: 14)
-                    .frame(width: 24, height: 24)
+                    .frame(width: compact ? 18 : 24, height: compact ? 18 : 24)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .accessibilityLabel(language.text("余额说明", "Balance details"))
-            .popover(isPresented: $showingDetails, arrowEdge: .bottom) {
-                balanceDetails
-            }
         }
-        .font(.caption)
-        .help(helpText)
     }
 
     private var creditText: String {
@@ -61,8 +75,6 @@ struct CreditBalanceView: View {
                 .font(.body.weight(.semibold).monospacedDigit())
                 .foregroundStyle(.primary)
                 .textSelection(.enabled)
-            Text(language.text("美元余额未提供，不从点数推算。", "USD balance is not provided and is not inferred from credits."))
-                .foregroundStyle(.secondary)
             Text(presentation.sourceText(language))
                 .foregroundStyle(.secondary)
             if let snapshotAt = presentation.snapshotAt {

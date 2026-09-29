@@ -196,7 +196,7 @@ struct PublicResetAnnouncementLinks: View {
 
     var body: some View {
         ViewThatFits(in: .horizontal) {
-            HStack(spacing: 10) { links }
+            HStack(spacing: 6) { links }
                 .fixedSize(horizontal: true, vertical: false)
             VStack(alignment: .leading, spacing: 6) { links }
         }
@@ -315,9 +315,9 @@ struct ResetUpdatesBanner: View {
     private var announcementCard: some View {
         let current = recentAnnouncement
         VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 8) {
+            HStack(spacing: 6) {
                 Button(action: onOpenAnnouncements) {
-                    HStack(spacing: 8) {
+                    HStack(spacing: 6) {
                         Image(systemName: "megaphone.fill")
                             .font(.system(size: 11, weight: .semibold))
                             .foregroundStyle(current == nil ? Color.secondary : FixedVisualPalette.statusInfo)
@@ -353,7 +353,7 @@ struct ResetUpdatesBanner: View {
                 TimelineView(.periodic(from: .now, by: 60)) { context in
                     let isToday = PublicResetAnnouncementPresentation.wasAnnouncedToday(ann.announcedAt, now: context.date)
                     VStack(alignment: .leading, spacing: 5) {
-                        HStack(spacing: 8) {
+                        HStack(spacing: 6) {
                             Text(
                                 language.text("最近历史记录 · ", "Latest historical record · ")
                                     + PublicResetAnnouncementPresentation.relativeEventTime(ann.announcedAt, now: context.date, language: language)
@@ -365,14 +365,14 @@ struct ResetUpdatesBanner: View {
                             .font(.subheadline.weight(.medium))
                             .help(PublicResetAnnouncementPresentation.eventTime(ann.announcedAt, language: language))
                         PublicResetTranslatedText(eventID: ann.id, original: ann.text, language: language, compact: true)
-                        HStack(spacing: 8) {
+                        HStack(spacing: 6) {
                             Text(PublicResetAnnouncementPresentation.sourceLabel(ann.source, language: language))
                                 .font(.caption2).foregroundStyle(.secondary)
                             Link("codex-resets.com", destination: PublicResetClient.siteURL)
                                 .font(.caption2)
                         }
                     }
-                    .padding(isToday ? 9 : 0)
+                    .padding(isToday ? 6 : 0)
                     .background(isToday ? FixedVisualPalette.statusInfo.opacity(0.10) : Color.clear, in: RoundedRectangle(cornerRadius: 9))
                     .overlay {
                         RoundedRectangle(cornerRadius: 9)
@@ -399,12 +399,12 @@ struct ResetUpdatesBanner: View {
         if let forecast = forecastStore.forecast {
             TimelineView(.periodic(from: .now, by: 60)) { context in
                 let isToday = PublicResetAnnouncementPresentation.wasAnnouncedToday(forecast.announcedAt, now: context.date)
-                VStack(alignment: .leading, spacing: 7) {
-                    HStack(spacing: 7) {
+                VStack(alignment: .leading, spacing: compactSummary ? 4 : 7) {
+                    HStack(spacing: compactSummary ? 4 : 7) {
                         Image(systemName: "clock.badge.exclamationmark.fill")
                             .foregroundStyle(FixedVisualPalette.statusWarning)
                         Text(language.text("重置预告 · 待确认", "Reset forecast · unconfirmed"))
-                            .font(.callout.weight(.semibold))
+                            .font(compactSummary ? .caption.weight(.semibold) : .callout.weight(.semibold))
                         if isToday { todayBadge }
                         Spacer(minLength: 4)
                         if forecastStore.isShowingCache {
@@ -413,31 +413,29 @@ struct ResetUpdatesBanner: View {
                                 .foregroundStyle(.secondary)
                         }
                     }
-                    if let deadline = forecast.latestBy {
-                        Text(language.text("预计最晚 ", "Expected by ") + PublicResetAnnouncementPresentation.forecastTime(deadline, language: language))
-                            .font(.headline)
-                            .monospacedDigit()
-                            .fixedSize(horizontal: false, vertical: true)
-                        ResetCountdownText(deadline: deadline, kind: .publicForecast, language: language)
-                            .font(.callout.weight(.semibold))
+                    if compactSummary {
+                        ViewThatFits(in: .horizontal) {
+                            HStack(spacing: 8) { compactForecastFacts(forecast) }
+                            VStack(alignment: .leading, spacing: 3) { compactForecastFacts(forecast) }
+                        }
+                        .font(.system(size: 11))
                     } else {
-                        Text(PublicResetAnnouncementPresentation.forecastCountdown(forecast, now: Date(), language: language))
-                            .font(.callout.weight(.medium))
+                        if let deadline = forecast.latestBy {
+                            Text(language.text("预计最晚 ", "Expected by ") + PublicResetAnnouncementPresentation.forecastTime(deadline, language: language))
+                                .font(.headline).monospacedDigit().fixedSize(horizontal: false, vertical: true)
+                            ResetCountdownText(deadline: deadline, kind: .publicForecast, language: language)
+                                .font(compactSummary ? .caption.weight(.semibold) : .callout.weight(.semibold))
+                        } else {
+                            Text(PublicResetAnnouncementPresentation.forecastCountdown(forecast, now: Date(), language: language))
+                                .font(.callout.weight(.medium))
+                        }
+                        HStack(spacing: 6) { forecastLinks(forecast) }.font(.caption2)
+                        Text(
+                            language.text("发布时间：", "Published: ")
+                                + PublicResetAnnouncementPresentation.compactEventTime(forecast.announcedAt, language: language)
+                        )
+                        .foregroundStyle(.secondary)
                     }
-                    HStack(spacing: 12) {
-                        Link(language.text("来源公告", "Source announcement"), destination: forecast.sourceURL)
-                        Link("codex-resets.com", destination: PublicResetClient.siteURL)
-                    }
-                    .font(.caption2)
-                    Text(
-                        language.text("发布时间：", "Published: ")
-                            + PublicResetAnnouncementPresentation.compactEventTime(forecast.announcedAt, language: language)
-                    )
-                    .foregroundStyle(.secondary)
-                    .help(
-                        language.text("上次成功检查：", "Last successful check: ")
-                            + PublicResetAnnouncementPresentation.compactEventTime(
-                                forecastStore.checkedAt ?? forecast.fetchedAt, language: language))
                     if forecastStore.isShowingCache, let status = forecastStore.status, !status.isEmpty {
                         Text(language.text("刷新未成功，仍显示上次预告", "Refresh failed; showing the previous forecast"))
                             .font(.caption2)
@@ -445,7 +443,7 @@ struct ResetUpdatesBanner: View {
                             .help(PublicResetAnnouncementPresentation.readableText(status))
                     }
                 }
-                .padding(10)
+                .padding(compactSummary ? 6 : 10)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(isToday ? 2 : 0)
                 .background(
@@ -465,9 +463,29 @@ struct ResetUpdatesBanner: View {
         }
     }
 
+    @ViewBuilder
+    private func compactForecastFacts(_ forecast: PublicResetForecast) -> some View {
+        if let deadline = forecast.latestBy {
+            Text(language.text("最晚 ", "By ") + PublicResetAnnouncementPresentation.compactEventTime(deadline, language: language))
+                .monospacedDigit().foregroundStyle(.secondary)
+            ResetCountdownText(deadline: deadline, kind: .publicForecast, language: language)
+                .fontWeight(.semibold)
+        } else {
+            Text(PublicResetAnnouncementPresentation.forecastCountdown(forecast, now: Date(), language: language))
+        }
+        forecastLinks(forecast)
+    }
+
+    @ViewBuilder
+    private func forecastLinks(_ forecast: PublicResetForecast) -> some View {
+        Link(language.text("来源公告", "Source"), destination: forecast.sourceURL)
+            .help(language.text("发布时间：", "Published: ") + language.dateTime(forecast.announcedAt))
+        Link("codex-resets.com", destination: PublicResetClient.siteURL)
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
                 if compactSummary {
                     HomeSectionToggle(
                         title: language.text("重置消息", "Reset updates"), systemImage: "arrow.counterclockwise.circle.fill",
@@ -481,6 +499,20 @@ struct ResetUpdatesBanner: View {
                             }
                         }
                     }
+                    Spacer(minLength: 4)
+                    Link("codex-resets.com", destination: PublicResetClient.siteURL)
+                        .font(.caption2)
+                    Button(language.text(historyExpanded ? "收起历史" : "最近 3 条", historyExpanded ? "Hide history" : "Latest 3")) {
+                        sectionExpanded = true
+                        historyExpanded.toggle()
+                    }
+                    .buttonStyle(.plain).font(.caption2).foregroundStyle(.secondary)
+                    Button(action: refreshAll) {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                    .buttonStyle(.plain).disabled(refreshingAnything)
+                    .help(refreshTooltip)
+                    .accessibilityLabel(language.text("分别刷新公开预告与历史记录", "Refresh public forecast and history independently"))
                 } else {
                     Label(language.text("重置消息", "Reset updates"), systemImage: "arrow.counterclockwise.circle.fill")
                         .font(.system(size: 12.5, weight: .semibold))
@@ -496,49 +528,33 @@ struct ResetUpdatesBanner: View {
                             current.map {
                                 PublicResetAnnouncementPresentation.wasAnnouncedToday($0.announcedAt, now: context.date)
                             } ?? false
-                        HStack(alignment: .top, spacing: 12) {
+                        HStack(alignment: .top, spacing: 6) {
                             VStack(alignment: .leading, spacing: 4) {
-                                HStack(spacing: 7) {
-                                    Text(current?.title(language) ?? language.text("重置消息", "Reset updates"))
-                                        .font(.callout.weight(.medium)).lineLimit(1)
-                                    if isToday { todayBadge }
+                                if let current {
+                                    HStack(spacing: 7) {
+                                        Text(current.title(language)).font(.callout.weight(.medium)).lineLimit(1)
+                                        if isToday { todayBadge }
+                                    }
                                 }
                                 Text(
                                     current.map { PublicResetAnnouncementPresentation.readableText($0.text) }
                                         ?? language.text("暂无近期可验证的新公告", "No recent verifiable notices")
                                 )
                                 .font(.caption).foregroundStyle(.secondary).lineLimit(2)
-                                Link("codex-resets.com", destination: PublicResetClient.siteURL)
-                                    .font(.caption2)
                             }
                             Spacer(minLength: 0)
                             if let current {
                                 Text(PublicResetAnnouncementPresentation.compactEventTime(current.announcedAt, language: language))
                                     .font(.caption2).foregroundStyle(.secondary)
                             }
-                            Button(action: refreshAll) {
-                                Label(refreshingAnything ? language.text("检查中…", "Checking…") : language.text("刷新", "Refresh"), systemImage: "arrow.clockwise")
-                            }
-                            .buttonStyle(.plain).disabled(refreshingAnything)
-                            .help(refreshTooltip)
-                            .accessibilityLabel(language.text("分别刷新公开预告与历史记录", "Refresh public forecast and history independently"))
                         }
-                        .padding(isToday ? 9 : 0)
+                        .padding(isToday ? 6 : 0)
                         .background(isToday ? FixedVisualPalette.statusInfo.opacity(0.10) : Color.clear, in: RoundedRectangle(cornerRadius: 9))
                         .overlay {
                             RoundedRectangle(cornerRadius: 9)
                                 .strokeBorder(isToday ? FixedVisualPalette.statusInfo.opacity(0.55) : Color.clear, lineWidth: 1.2)
                         }
                     }
-                    HStack(spacing: 12) {
-                        Spacer()
-                        Button(
-                            language.text(historyExpanded ? "收起历史消息" : "最近 3 条历史", historyExpanded ? "Collapse history" : "Latest 3 historical records")
-                        ) {
-                            historyExpanded.toggle()
-                        }
-                    }
-                    .font(.caption2).buttonStyle(.plain)
                     if historyExpanded { inlineHistory }
                 } else if showsHistory {
                     announcementDashboard
@@ -555,7 +571,7 @@ struct ResetUpdatesBanner: View {
                 }
             }
         }
-        .padding(embedded ? 0 : 12)
+        .padding(embedded ? 0 : 8)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background {
             if !embedded { RoundedRectangle(cornerRadius: 12).fill(FixedVisualPalette.surfaceMutedFill) }
@@ -565,7 +581,7 @@ struct ResetUpdatesBanner: View {
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
                     .fill(FixedVisualPalette.statusInfo)
                     .frame(width: 3)
-                    .padding(.vertical, 10)
+                    .padding(.vertical, 5)
                     .padding(.leading, 1)
                     .allowsHitTesting(false)
             }
@@ -575,7 +591,7 @@ struct ResetUpdatesBanner: View {
     }
 
     private var accountSummary: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 6) {
             Divider()
             Text(language.text("当前账号的窗口重置", "Monitored account reset windows"))
                 .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
@@ -644,7 +660,7 @@ struct ResetUpdatesBanner: View {
     }
 
     private var inlineHistory: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Text(language.text("最近 3 条历史记录", "Latest 3 historical records"))
                     .font(.caption.weight(.semibold))
@@ -721,7 +737,7 @@ struct ResetUpdatesBanner: View {
         emphasized: Bool,
         action: (() -> Void)?
     ) -> some View {
-        let content = HStack(alignment: .firstTextBaseline, spacing: 8) {
+        let content = HStack(alignment: .firstTextBaseline, spacing: 6) {
             Image(systemName: systemImage)
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(emphasized ? FixedVisualPalette.statusInfo : Color.secondary)

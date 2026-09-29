@@ -8,6 +8,7 @@ enum QuotaProviderWiringSelfTest {
         }
 
         expect(QuotaProviderID.allCases.count == 24, "catalog has 24 providers")
+        expect(CCSwitchClaudeRelay.selfTest(), "configured Claude relay balance, identity and endpoint boundaries")
         expect(QuotaProviderCatalog.all.count == 24, "descriptor list has 24 rows")
         expect(Set(QuotaProviderCatalog.all.map(\.id)).count == 24, "provider IDs are unique")
         expect(QuotaProviderCatalog.all.filter(\.usesExistingProduction).map(\.id) == [.codex], "only Codex is existing-production")

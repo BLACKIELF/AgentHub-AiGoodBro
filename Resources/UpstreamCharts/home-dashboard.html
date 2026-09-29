@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'none'; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AiGoodBro</title>
+<link rel="stylesheet" href="desktop/dashboard.css"><link rel="stylesheet" href="home-dashboard.css">
+</head><body>
+<div hidden><button id="themeToggle"></button><button id="refreshBtn"></button><button id="minBtn"></button><button id="closeBtn"></button></div>
+<main id="homeDashboard" tabindex="0" aria-label="Usage dashboard">
+<div id="dashCards" class="dash-cards" role="group" aria-label="Usage summary"></div>
+<section id="activityPane" class="dash-pane" aria-label="Overview">
+  <div class="dash-heatmap-block">
+    <div class="dash-heatmap-title-row"><div class="dash-heatmap-title" data-i18n="dashboard.heatmap.title">Token 活动</div>
+      <div class="seg seg--sm" data-control="heatmapMetric"><button class="seg-btn" data-val="tokens" data-i18n="dashboard.heatmap.tokens">Tokens</button><button class="seg-btn active" data-val="cost" data-i18n="dashboard.heatmap.cost">成本</button></div>
+    </div>
+    <label class="heatmap-start"><span id="heatmapStartLabel">开始日期</span><input id="heatmapStart" type="date"><button id="heatmapStartReset" type="button">默认</button></label>
+    <div id="dashHeatmap" class="dash-heatmap-wrap"></div>
+  </div>
+</section>
+<section id="trendsPane" class="dash-pane" aria-label="Trends">
+  <div class="dash-controls"><div class="dash-control-row">
+    <h2 data-i18n="dashboard.tab.trends">趋势</h2>
+    <div class="seg" data-control="mode"><button class="seg-btn active" data-mode="bars" data-i18n="dashboard.mode.bars">柱状图</button><button class="seg-btn" data-mode="kline" data-i18n="dashboard.mode.kline">K 线</button></div>
+    <div id="rangeSelect" class="dash-range-group"></div>
+    <div class="seg seg--sm" data-control="stack"><button class="seg-btn active" data-stack="client" data-i18n="dashboard.stack.client">按工具</button><button class="seg-btn" data-stack="model" data-i18n="dashboard.stack.model">按模型</button></div>
+  </div></div>
+  <div id="dashChart" class="dash-chart-wrap"></div><div id="dashLegend" class="dash-legend"></div>
+</section>
+<details id="breakdownDetails" class="dash-breakdown-details">
+  <summary id="breakdownSummary">按模型 / 按工具</summary>
+  <div id="dashBreakdown" class="dash-breakdown"></div>
+</details>
+</main>
+<div id="dashEmpty" class="dash-empty hidden" data-i18n="dashboard.empty">暂无用量记录</div>
+<div id="dashTooltip" class="dash-tooltip hidden" role="tooltip"></div>
+<script src="desktop/usageCharts.js"></script><script src="desktop/themePresets.js"></script><script src="desktop/i18n.js"></script>
+<script src="desktop/compactTokens.js"></script><script src="desktop/currency.js"></script><script src="desktop/compactMoney.js"></script><script src="desktop/fontSettings.js"></script>
+<script src="desktop/motionPreference.js"></script><script src="desktop/statsRenderScheduler.js"></script>
+<script src="home-bridge.js"></script><script src="desktop/dashboard.js"></script><script src="home-dashboard.js"></script>
+</body></html>

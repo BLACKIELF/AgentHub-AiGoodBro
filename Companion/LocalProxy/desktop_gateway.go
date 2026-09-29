@@ -69,7 +69,7 @@ func startDesktopGateway(c desktopConnection, environment []string) (*http.Serve
 			w.WriteHeader(http.StatusUpgradeRequired)
 			return
 		}
-		if !((r.Method == "POST" && (r.URL.Path == "/v1/responses" || r.URL.Path == "/v1/responses/compact")) || (r.Method == "GET" && r.URL.Path == "/v1/models")) {
+		if !((r.Method == "POST" && (r.URL.Path == "/v1/responses" || r.URL.Path == "/v1/responses/compact" || (strings.HasPrefix(r.URL.Path, "/v1/") && imageLocalPath(r.URL.Path) != ""))) || (r.Method == "GET" && r.URL.Path == "/v1/models")) {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}

@@ -20,6 +20,8 @@ import Darwin
             }
             emit(["event":"bridge", "command":request.command, "profileID":request.profileID])
             switch request.command {
+            case "order":
+                return LocalProxyReply(ok: true, order: ["A", "B"])
             case "acquire":
                 if mode == "deny" || owners[request.profileID] != nil { return .failure(.busy) }
                 owners[request.profileID] = request.requestID

@@ -7,13 +7,10 @@ import (
 	"errors"
 	"io"
 	"os"
-	"os/exec"
-	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
-	"time"
 )
 
 const desktopConnectionLimit = 16 << 10
@@ -201,6 +198,13 @@ func transformDesktopLine(line []byte) []byte {
 
 func forwardDesktopInput(input io.Reader, output io.WriteCloser) error {
 	defer output.Close()
+	return forwardDesktopLines(input, func(line []byte) error {
+		_, err := output.Write(transformDesktopLine(line))
+		return err
+	})
+}
+
+func forwardDesktopLines(input io.Reader, write func([]byte) error) error {
 	reader := bufio.NewReaderSize(input, 64<<10)
 	for {
 		var line bytes.Buffer
@@ -211,7 +215,7 @@ func forwardDesktopInput(input io.Reader, output io.WriteCloser) error {
 				continue
 			}
 			if line.Len() > 0 {
-				if _, writeErr := output.Write(transformDesktopLine(line.Bytes())); writeErr != nil {
+				if writeErr := write(line.Bytes()); writeErr != nil {
 					return writeErr
 				}
 			}
@@ -226,28 +230,6 @@ func forwardDesktopInput(input io.Reader, output io.WriteCloser) error {
 	}
 }
 
-func desktopSignal(cmd *exec.Cmd, sig syscall.Signal) {
-	if cmd.Process != nil {
-		if err := syscall.Kill(-cmd.Process.Pid, sig); err != nil {
-			_ = cmd.Process.Signal(sig)
-		}
-	}
-}
-
-func desktopExitCode(err error) int {
-	if err == nil {
-		return 0
-	}
-	var exit *exec.ExitError
-	if errors.As(err, &exit) {
-		if status, ok := exit.Sys().(syscall.WaitStatus); ok && status.Signaled() {
-			return 128 + int(status.Signal())
-		}
-		return exit.ExitCode()
-	}
-	return 127
-}
-
 func runDesktopAdapter(connectionPath string, args []string) int {
 	c, err := readDesktopConnection(connectionPath)
 	if err != nil {
@@ -257,74 +239,20 @@ func runDesktopAdapter(connectionPath string, args []string) int {
 	index := desktopAppServerIndex(args)
 	endpoint := c.Endpoint
 	if index >= 0 {
-		gateway, localEndpoint, err := startDesktopGateway(c, os.Environ())
+		localEndpoint, cleanup, err := prepareDesktopBridge()
 		if err != nil {
 			_, _ = io.WriteString(os.Stderr, "desktop adapter: local gateway unavailable\n")
 			return 78
 		}
-		defer gateway.Close()
+		// Only runs if exec fails. The bridge otherwise remains a child of
+		// the original signed backend, never an ancestor of native tools.
+		defer cleanup()
 		endpoint = localEndpoint
 	}
-	cmd := exec.Command(c.CodexExecutable, desktopArgs(args, index, endpoint)...)
-	cmd.Env = desktopEnvironment(os.Environ(), c.CodexExecutable)
-	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	var childInput io.WriteCloser
-	if index >= 0 {
-		childInput, err = cmd.StdinPipe()
-	} else {
-		cmd.Stdin = os.Stdin
-	}
-	if err != nil || cmd.Start() != nil {
-		_, _ = io.WriteString(os.Stderr, "desktop adapter: backend start failed\n")
-		return 127
-	}
-	inputDone := make(chan error, 1)
-	if childInput != nil {
-		go func() { inputDone <- forwardDesktopInput(os.Stdin, childInput) }()
-	}
-	childDone := make(chan error, 1)
-	go func() { childDone <- cmd.Wait() }()
-	signals := make(chan os.Signal, 1)
-	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
-	defer signal.Stop(signals)
-	var timer *time.Timer
-	var timeout <-chan time.Time
-	phase := 0
-	for {
-		select {
-		case err := <-childDone:
-			if timer != nil {
-				timer.Stop()
-			}
-			if childInput != nil {
-				_ = os.Stdin.Close() // release a reader if Desktop left its pipe open
-			}
-			return desktopExitCode(err)
-		case <-inputDone:
-			if phase == 0 {
-				phase = 1
-				timer = time.NewTimer(3 * time.Second)
-				timeout = timer.C
-			}
-		case sig := <-signals:
-			if s, ok := sig.(syscall.Signal); ok {
-				desktopSignal(cmd, s)
-			}
-			if phase == 0 {
-				phase = 2
-				timer = time.NewTimer(3 * time.Second)
-				timeout = timer.C
-			}
-		case <-timeout:
-			if phase == 1 {
-				desktopSignal(cmd, syscall.SIGTERM)
-				phase = 2
-				timer.Reset(2 * time.Second)
-			} else {
-				desktopSignal(cmd, syscall.SIGKILL)
-				timeout = nil
-			}
-		}
-	}
+	// Native tools authenticate their signed ancestors as well as Node itself.
+	// Preserve Desktop -> original Codex -> signed tool runtime.
+	argv := append([]string{c.CodexExecutable}, desktopArgs(args, index, endpoint)...)
+	_ = syscall.Exec(c.CodexExecutable, argv, desktopEnvironment(os.Environ(), c.CodexExecutable))
+	_, _ = io.WriteString(os.Stderr, "desktop adapter: backend start failed\n")
+	return 127
 }

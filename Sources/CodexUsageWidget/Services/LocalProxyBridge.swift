@@ -134,7 +134,9 @@ enum LocalProxyCredentialReader {
         let accountID: String
         let expiresAt: Double
     }
-    static func read(profile: CodexProfile, system: CodexProfile, now: Date = Date()) throws -> Value {
+    static func read(profile: CodexProfile, system: CodexProfile, now: Date = Date(), allowDesktopAccount: Bool = false, creditFloor: Int? = nil, allowPaidCredits: Bool = false)
+        throws -> Value
+    {
         try withBoundedGates([profile.codexHomeURL, system.codexHomeURL]) {
             let home = CodexCredentialTransaction.canonical(profile.codexHomeURL)
             let central = CodexCredentialTransaction.canonical(system.codexHomeURL)
@@ -144,7 +146,9 @@ enum LocalProxyCredentialReader {
                 let centralData = try readSnapshot(home: central),
                 let centralIdentity = CodexOfficialProfileReader.credentialIdentity(fromAuthData: centralData)
             else { throw LocalProxyFailure.identity }
-            let result = try validate(data: data, profile: profile, centralIdentity: centralIdentity, now: now)
+            let result = try validate(
+                data: data, profile: profile, centralIdentity: centralIdentity, now: now, allowDesktopAccount: allowDesktopAccount, creditFloor: creditFloor,
+                allowPaidCredits: allowPaidCredits)
             guard try readSnapshot(home: home) == data,
                 try readSnapshot(home: central) == centralData,
                 CodexCredentialTransaction.canonical(profile.codexHomeURL) == home,
@@ -193,19 +197,24 @@ enum LocalProxyCredentialReader {
         return try operation()
     }
 
-    static func validate(data: Data, profile: CodexProfile, centralIdentity: CodexCredentialIdentity, now: Date) throws -> Value {
+    static func validate(
+        data: Data, profile: CodexProfile, centralIdentity: CodexCredentialIdentity, now: Date, allowDesktopAccount: Bool = false, creditFloor: Int? = nil,
+        allowPaidCredits: Bool = false
+    ) throws -> Value {
         guard data.count <= 1024 * 1024, !profile.isSystemProfile,
             let snapshot = profile.lastSnapshot,
             let identity = CodexOfficialProfileReader.credentialIdentity(fromAuthData: data),
             profile.matchesRecordedCredential(identity),
             snapshot.accountID == identity.accountID,
             snapshot.email?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == identity.email,
-            identity.email != centralIdentity.email, identity.accountID != centralIdentity.accountID,
+            allowDesktopAccount
+                ? (identity.email == centralIdentity.email && identity.accountID == centralIdentity.accountID)
+                : (identity.email != centralIdentity.email && identity.accountID != centralIdentity.accountID),
             let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
             let tokens = object["tokens"] as? [String: Any], let token = tokens["access_token"] as? String,
             token.utf8.count <= 32768, !token.contains("\n"), !token.contains("\r")
         else { throw LocalProxyFailure.identity }
-        guard LocalProxyAdmission.quota(profile, now: now) == nil else { throw LocalProxyAdmission.quota(profile, now: now)! }
+        if let failure = LocalProxyAdmission.quota(profile, now: now, creditFloor: creditFloor, allowPaidCredits: allowPaidCredits) { throw failure }
         let parts = token.split(separator: ".", omittingEmptySubsequences: false)
         guard parts.count == 3 else { throw LocalProxyFailure.loginExpired }
         var encoded = String(parts[1]).replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")

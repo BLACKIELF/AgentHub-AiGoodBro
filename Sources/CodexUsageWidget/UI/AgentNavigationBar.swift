@@ -2,10 +2,9 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct AgentNavigationBar: View {
-    @Environment(\.colorScheme) private var colorScheme
     @Environment(\.colorSchemeContrast) private var colorSchemeContrast
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.visualTokens) private var visualTokens
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @Binding var navigation: AgentNavigationState
     let language: WidgetLanguage
@@ -18,29 +17,18 @@ struct AgentNavigationBar: View {
     var onRefresh: () -> Void
     var showsGettingStarted: Bool
     var onGettingStarted: () -> Void
+    var onOpenSettings: () -> Void = {}
 
     @State private var isAdding = false
-    @State private var showsOverflow = false
     @State private var isManaging = false
     @State private var management: AgentNavigationManagementSession?
     @State private var dropTargetID: String?
     @State private var undoIDs: [String]?
     @State private var undoResult: [String]?
-    @State private var availableWidth: CGFloat = 980
+    @State private var hoveredID: String?
 
     var body: some View {
-        let visible = navigation.renderableIDs()
-        let overflow = AgentNavigationOverflow.layout(
-            orderedIDs: visible,
-            availableWidth: Double(availableWidth),
-            trailingChromeWidth: showsGettingStarted ? 262 : 146,
-            itemWidth: {
-                let font = NSFont.systemFont(ofSize: 12, weight: .medium)
-                let labelWidth = (AgentNavCatalog.displayName($0) as NSString).size(withAttributes: [.font: font]).width
-                return Double(labelWidth + ProviderIconSlot.navigation.container + 7 + 24)
-            }
-        )
-        HStack(spacing: 5) {
+        VStack(spacing: 6) {
             navButton(
                 id: AgentNavCatalog.homeID,
                 title: language.text("主页", "Home"),
@@ -48,92 +36,81 @@ struct AgentNavigationBar: View {
                 systemImage: "house",
                 action: onSelectHome
             )
-            ForEach(overflow.visibleIDs, id: \.self) { id in
-                agentButton(id: id, selected: !showingHome && selectedID == id)
-            }
-            if overflow.showsMore {
-                Button {
-                    showsOverflow.toggle()
-                } label: {
-                    let selectedOverflowID = !showingHome && overflow.overflowIDs.contains(selectedID ?? "") ? selectedID : nil
-                    HStack(spacing: 7) {
-                        if let selectedOverflowID {
-                            ProviderMark(providerID: selectedOverflowID, slot: .navigation)
-                        } else {
-                            Image(systemName: "ellipsis")
-                                .font(.system(size: 13, weight: .medium))
-                                .frame(width: ProviderIconSlot.navigation.container, height: ProviderIconSlot.navigation.container)
+            Divider().padding(.horizontal, 8)
+            ScrollViewReader { scroll in
+                ScrollView(.vertical, showsIndicators: false) {
+                    VStack(spacing: 4) {
+                        ForEach(navigation.renderableIDs(), id: \.self) { id in
+                            agentButton(id: id, selected: !showingHome && selectedID == id)
+                                .id(id)
                         }
-                        Text(selectedOverflowID.map(AgentNavCatalog.displayName) ?? language.text("更多", "More"))
-                            .font(.system(size: 12, weight: .medium))
-                            .fixedSize()
                     }
-                    .padding(.horizontal, 10).frame(height: 32)
-                    .background(selectionFill(selectedOverflowID != nil), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .padding(.vertical, 2)
+                    .frame(maxWidth: .infinity)
                 }
-                .buttonStyle(.plain)
-                .popover(isPresented: $showsOverflow) {
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 6) {
-                            ForEach(overflow.overflowIDs, id: \.self) { id in
-                                agentButton(id: id, selected: !showingHome && selectedID == id)
-                            }
-                        }.padding(12)
-                    }.frame(maxHeight: 360)
+                .onChange(of: selectedID) { id in
+                    if let id { scroll.scrollTo(id, anchor: .center) }
                 }
-                .accessibilityLabel(language.text("更多 Agent", "More agents"))
             }
-            Spacer(minLength: 8)
-            Button {
-                isAdding = true
+            Divider().padding(.horizontal, 8)
+            Menu {
+                Button(language.text("添加 Agent…", "Add Agent…")) { isAdding = true }
+                Button(language.text("管理导航…", "Manage navigation…")) {
+                    management = AgentNavigationManagementSession(navigation)
+                    dropTargetID = nil
+                    isManaging = true
+                }
+                if undoIDs != nil {
+                    Button(language.text("撤销导航调整", "Undo navigation change")) {
+                        if let undoIDs, navigation.orderedVisibleProviderIDs == undoResult {
+                            navigation.orderedVisibleProviderIDs = undoIDs
+                        }
+                        self.undoIDs = nil
+                    }
+                }
             } label: {
-                Image(systemName: "plus")
-                    .font(.system(size: 14, weight: .medium))
-                    .frame(width: 32, height: 32)
-                    .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 17, weight: .medium))
+                    .frame(width: 44, height: 40)
+                    .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel(language.text("添加 Agent", "Add Agent"))
-            .help(language.text("添加 Agent", "Add Agent"))
-            Button {
-                management = AgentNavigationManagementSession(navigation)
-                dropTargetID = nil
-                isManaging = true
-            } label: {
-                Text(language.text("管理", "Manage"))
-                    .font(.system(size: 12, weight: .medium))
-                    .padding(.horizontal, 10).frame(height: 32)
+            .menuStyle(.borderlessButton).menuIndicator(.hidden)
+            .help(language.text("管理导航", "Manage navigation"))
+            .accessibilityLabel(language.text("管理导航", "Manage navigation"))
+            .accessibilityIdentifier("workspace.navigation.more")
+            Button(action: onGettingStarted) {
+                VStack(spacing: 3) {
+                    Image(systemName: "questionmark.circle").font(.system(size: 17, weight: .medium))
+                    Text(language.text("使用引导", "Guide")).font(.system(size: 9, weight: .medium))
+                }
+                .frame(width: 48, height: 44)
             }
-            .buttonStyle(.plain)
-            if showsGettingStarted {
-                Button(language.text("使用引导", "Getting started"), action: onGettingStarted)
-                    .font(.system(size: 12, weight: .medium))
-                    .padding(.horizontal, 8)
-                    .frame(height: 32)
-                    .buttonStyle(.plain)
+            .buttonStyle(WorkspaceQuietButtonStyle(cornerRadius: 10))
+            .help(language.text("使用引导", "Getting started"))
+            .accessibilityLabel(language.text("使用引导", "Getting started"))
+            .accessibilityIdentifier("workspace.navigation.guide")
+            Button(action: onOpenSettings) {
+                Image(systemName: "gearshape")
+                    .font(.system(size: 17, weight: .medium))
+                    .frame(width: 44, height: 40)
             }
+            .buttonStyle(WorkspaceQuietButtonStyle(cornerRadius: 10))
+            .help(language.text("设置", "Settings"))
+            .accessibilityLabel(language.text("设置", "Settings"))
+            .accessibilityIdentifier("workspace.navigation.settings")
         }
-        .padding(.horizontal, 5)
-        .padding(.vertical, 3)
-        .background(WorkspaceGlassSurface(cornerRadius: 9))
-        .background(widthReader)
-        .frame(minHeight: 40)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 10)
+        .frame(width: 64)
+        .frame(maxHeight: .infinity)
+        .background(WorkspaceGlassSurface(cornerRadius: 0))
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(language.text("页面导航", "Page navigation"))
         .onAppear {
             navigation.bootstrapIfNeeded(existingUser: existingUser, currentVisible: defaultVisible)
         }
         .sheet(isPresented: $isAdding) { addSheet }
         .sheet(isPresented: $isManaging, onDismiss: cancelManagement) { manageSheet }
-        .overlay(alignment: .topTrailing) {
-            if undoIDs != nil {
-                Button(language.text("撤销", "Undo")) {
-                    if let undoIDs, navigation.orderedVisibleProviderIDs == undoResult { navigation.orderedVisibleProviderIDs = undoIDs }
-                    self.undoIDs = nil
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .padding(.top, 36)
-            }
-        }
     }
 
     private var defaultVisible: [String] {
@@ -144,10 +121,7 @@ struct AgentNavigationBar: View {
         navButton(
             id: id, title: AgentNavCatalog.displayName(id), selected: selected,
             providerID: id,
-            action: {
-                showsOverflow = false
-                onSelect(id)
-            }
+            action: { onSelect(id) }
         )
         .contextMenu {
             Button(language.text("从导航移除", "Remove from navigation")) { remove(id) }
@@ -163,32 +137,44 @@ struct AgentNavigationBar: View {
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
-            HStack(spacing: 7) {
+            Group {
                 if let systemImage {
                     Image(systemName: systemImage)
-                        .font(.system(size: 13, weight: .medium))
+                        .font(.system(size: 17, weight: .medium))
                         .frame(width: ProviderIconSlot.navigation.container, height: ProviderIconSlot.navigation.container)
                 } else if let providerID {
                     ProviderMark(providerID: providerID, slot: .navigation)
                 }
-                Text(title).font(.system(size: 12, weight: selected ? .semibold : .medium)).fixedSize()
             }
-            .padding(.horizontal, 10).frame(height: 32)
-            .background(selectionFill(selected), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .frame(width: 44, height: 40)
+            .background(
+                selected ? visualTokens.selection.fill.color : Color.primary.opacity(hoveredID == id ? 0.07 : 0),
+                in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+            )
             .overlay {
                 if selected {
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .strokeBorder(visualTokens.selection.stroke.color.opacity(colorSchemeContrast == .increased ? 0.85 : 0.55), lineWidth: 0.7)
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .strokeBorder(visualTokens.selection.stroke.color.opacity(colorSchemeContrast == .increased ? 0.85 : 0.7), lineWidth: 1)
                 }
             }
+            .overlay(alignment: .leading) {
+                if selected {
+                    Capsule().fill(visualTokens.accent.primary.color)
+                        .frame(width: 3, height: 16).offset(x: -5)
+                        .allowsHitTesting(false)
+                }
+            }
+            .animation(WorkspaceMotion.feedback(reduceMotion: reduceMotion), value: hoveredID == id)
+            .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(WorkspaceQuietButtonStyle(cornerRadius: 10))
+        .onHover { hovering in
+            if hovering { hoveredID = id } else if hoveredID == id { hoveredID = nil }
+        }
+        .help(title)
         .accessibilityLabel(title)
+        .accessibilityIdentifier("workspace.navigation." + id)
         .accessibilityAddTraits(selected ? .isSelected : [])
-    }
-
-    private func selectionFill(_ selected: Bool) -> Color {
-        selected ? visualTokens.selection.fill.color : .clear
     }
 
     private func remove(_ id: String) {
@@ -196,13 +182,6 @@ struct AgentNavigationBar: View {
         _ = navigation.remove(id)
         undoResult = navigation.orderedVisibleProviderIDs
         if selectedID == id { onSelectHome() }
-    }
-
-    private var widthReader: some View {
-        GeometryReader { proxy in
-            Color.clear.preference(key: AgentNavigationWidthKey.self, value: proxy.size.width)
-        }
-        .onPreferenceChange(AgentNavigationWidthKey.self) { availableWidth = $0 }
     }
 
     private var addSheet: some View {
@@ -483,9 +462,4 @@ struct AgentNavigationManagementSession: Equatable {
         dragSource = nil
         dragOrder = nil
     }
-}
-
-private struct AgentNavigationWidthKey: PreferenceKey {
-    static var defaultValue: CGFloat = 980
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
 }

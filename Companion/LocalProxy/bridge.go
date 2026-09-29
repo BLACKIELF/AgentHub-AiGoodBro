@@ -20,13 +20,14 @@ type bridgeRequest struct {
 	LeaseID       string `json:"leaseID,omitempty"`
 }
 type bridgeReply struct {
-	OK          bool   `json:"ok"`
-	LeaseID     string `json:"leaseID"`
-	AccessToken string `json:"accessToken"`
-	AccountID   string `json:"accountID"`
-	ExpiresAt   int64  `json:"expiresAt"`
-	Error       string `json:"error"`
-	RetryAt     int64  `json:"retryAt"`
+	OK          bool     `json:"ok"`
+	Order       []string `json:"order,omitempty"`
+	LeaseID     string   `json:"leaseID"`
+	AccessToken string   `json:"accessToken"`
+	AccountID   string   `json:"accountID"`
+	ExpiresAt   int64    `json:"expiresAt"`
+	Error       string   `json:"error"`
+	RetryAt     int64    `json:"retryAt"`
 }
 
 func (b *bridge) call(ctx context.Context, command, requestID, profileID, leaseID string) (bridgeReply, error) {

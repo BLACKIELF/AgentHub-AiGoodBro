@@ -988,6 +988,61 @@ private func testZCodeCredentialFilesInvalidateFreshQuota() async throws {
     try expect(preview.refreshing.isEmpty && preview.quotas.isEmpty, "preview never schedules a quota read")
 }
 
+@MainActor
+private func testConfiguredClaudeWithoutExecutable() async throws {
+    let paths = try makeRoot("claude-api-discovery")
+    defer { try? FileManager.default.removeItem(at: paths.root) }
+    let directory = paths.home.appendingPathComponent(".claude", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let settings = directory.appendingPathComponent("settings.json")
+    let clock = FixtureClock()
+    let probe = VisibleQuotaProbe(mode: .alwaysAvailable)
+    let store = makeStore(home: paths.home, support: paths.support,
+        loader: { profile in await probe.load(profile, now: clock.now()) }, clock: { clock.now() })
+    try Data("{\"env\":{}}".utf8).write(to: settings)
+    store.discover()
+    try expect(store.profiles(for: .claudeCode).isEmpty, "empty settings do not invent a Claude account")
+    try Data("{\"env\":{\"ANTHROPIC_AUTH_TOKEN\":\"synthetic-relay\"}}".utf8).write(to: settings, options: .atomic)
+    store.discover()
+    guard let profile = store.profiles(for: .claudeCode).first else { throw FixtureFailure.failed("configured Claude was hidden") }
+    try expect(store.executable(for: profile) == nil && !store.canOpen(profile) && !store.canSignIn(profile),
+               "balance discovery must not claim an installed CLI or enable launch")
+    store.refreshIfNeeded(kind: .claudeCode)
+    try await waitForVisibleRefresh(store, ids: [profile.id])
+    let initialReads = await probe.count(profile.id)
+    try expect(initialReads == 1, "configured Claude can refresh without its executable")
+    let relay = paths.home.appendingPathComponent(".cc-switch", isDirectory: true)
+    try FileManager.default.createDirectory(at: relay, withIntermediateDirectories: true)
+    for (index, name) in ["cc-switch.db", "cc-switch.db-wal"].enumerated() {
+        try Data("synthetic metadata \(index)".utf8).write(to: relay.appendingPathComponent(name))
+        store.refreshIfNeeded(kind: .claudeCode)
+        try expect(store.quotas[profile.id] == nil, "relay change immediately hides old account balance")
+        try await waitForVisibleRefresh(store, ids: [profile.id])
+        let reads = await probe.count(profile.id)
+        try expect(reads == index + 2, "relay database and WAL changes invalidate fresh quota")
+    }
+    try expect(store.rename(profile, name: "My Claude CLI"), "configured-only profile preserves custom name")
+    let executable = paths.home.appendingPathComponent(".local/bin/claude")
+    try Data("synthetic executable".utf8).write(to: executable)
+    guard chmod(executable.path, 0o700) == 0 else { throw FixtureFailure.failed("synthetic Claude chmod") }
+    store.discover()
+    guard let installed = store.profiles(for: .claudeCode).first else { throw FixtureFailure.failed("installed Claude profile") }
+    try expect(installed.id == profile.id && installed.displayName == "My Claude CLI" && store.canOpen(installed),
+               "installing the CLI keeps the same profile and custom name")
+    var keychainReads = 0
+    var reader = LocalCLIAuthenticationReader()
+    reader.fileReader = { url in
+        url.lastPathComponent == "settings.json"
+            ? Data("{\"env\":{\"ANTHROPIC_AUTH_TOKEN\":\"synthetic-api\"}}".utf8) : nil
+    }
+    reader.keychainReader = { _, _ in keychainReads += 1; return nil }
+    let systemProfile = LocalCLIProfile(id: "synthetic-system-claude", kind: .claudeCode,
+        displayName: "Synthetic", configDirectory: LocalCLIKind.claudeCode.defaultConfigDirectory(
+            home: FileManager.default.homeDirectoryForCurrentUser).path, isDefault: true)
+    try expect(reader.read(systemProfile) == .apiKey && keychainReads == 0,
+               "explicit API configuration is detected without a subscription Keychain request")
+}
+
 @main enum Main {
     @MainActor static func main() async throws {
         try await testDiscoveryLinkRenameUnlinkAndPermissions()
@@ -1012,6 +1067,7 @@ private func testZCodeCredentialFilesInvalidateFreshQuota() async throws {
         try await testKimiDeviceIDInvalidatesFreshQuota()
         try await testFailedNewAccountReadNeverKeepsOldQuota()
         try await testZCodeCredentialFilesInvalidateFreshQuota()
+        try await testConfiguredClaudeWithoutExecutable()
         print("local-cli-account-fixture: ok")
     }
 }

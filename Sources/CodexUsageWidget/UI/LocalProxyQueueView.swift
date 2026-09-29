@@ -4,12 +4,15 @@ struct LocalProxyQueueView: View {
     @ObservedObject var model: LocalProxyQueueStore
     let language: WidgetLanguage
     @Environment(\.dismiss) private var dismiss
+    @State private var primaryFloorText = ""
+    @State private var secondaryFloorText = ""
+    @State private var confirmingStop = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Label(language.text("反代模式", "Reverse proxy mode"), systemImage: "network")
-                    .font(.title2.weight(.semibold))
+                    .font(.headline)
                 Spacer()
                 Text(phaseTitle).font(.callout.weight(.medium)).foregroundStyle(.secondary)
                 Button(language.text("关闭", "Close")) { dismiss() }
@@ -24,6 +27,7 @@ struct LocalProxyQueueView: View {
             .font(.callout).foregroundStyle(.secondary)
 
             controls
+            creditSettings
             if let endpoint = model.endpoint {
                 HStack(spacing: 12) {
                     VStack(alignment: .leading, spacing: 4) {
@@ -38,7 +42,7 @@ struct LocalProxyQueueView: View {
                             .help(language.text("先退出 Codex，再从这里重新打开；任务使用各自选择的模型。", "Quit Codex, then reopen it here. Each task keeps its selected model."))
                     }
                 }
-                .padding(12)
+                .padding(8)
                 .background(WorkspaceGlassSurface(cornerRadius: 10))
             }
 
@@ -54,13 +58,13 @@ struct LocalProxyQueueView: View {
             }
             Text(
                 language.text(
-                    "优先调用的账号排在前面，同组按队列顺序使用额度。这里的参与与优先设置仅用于反代。",
-                    "Priority accounts are used first, then queue order within each group. These participation and priority settings apply only to the proxy."
+                    "编号与主页一致；优先账号先调用，同组按队列顺序。参与和优先开关仅用于反代。",
+                    "Account numbers match Home. Priority accounts run first, then queue order. These switches apply only to the proxy."
                 )
             )
             .font(.caption).foregroundStyle(.secondary)
             ScrollView {
-                LazyVStack(spacing: 8) {
+                LazyVStack(spacing: 4) {
                     if model.rows.isEmpty {
                         Text(language.text("暂无可加入的账号。请先在账号管理中添加账号。", "No accounts are available. Add an account in account management first."))
                             .font(.callout).foregroundStyle(.secondary)
@@ -81,16 +85,86 @@ struct LocalProxyQueueView: View {
             }
             Text(
                 language.text(
-                    "仅正在处理请求的账号会被占用，原有派单设置保持不变。停止代理后可调整队列；关闭此面板不会停止代理。",
-                    "Only accounts handling active requests are occupied. Existing dispatch settings stay unchanged. Stop the proxy to edit the queue; closing this panel keeps it running."
+                    "排序和优先标记可随时调整，新请求立即采用；正在处理的请求保持不变。关闭此面板不会停止代理。",
+                    "Order and priority can change while running. New requests use the new order; active requests stay unchanged. Closing this panel keeps the proxy running."
                 )
             )
             .font(.caption).foregroundStyle(.secondary)
         }
-        .padding(24)
-        .frame(width: 740, height: 680)
+        .padding(16)
+        .frame(width: 830, height: 660)
         .background(WorkspaceGlassBackdrop())
         .accessibilityIdentifier("next.local-proxy.panel")
+        .alert(language.text("停止反代？", "Stop the proxy?"), isPresented: $confirmingStop) {
+            Button(language.text("取消", "Cancel"), role: .cancel) {}
+            Button(language.text("停止反代", "Stop proxy"), role: .destructive) { disableProxy() }
+        } message: {
+            Text(
+                language.text(
+                    "所有接入反代的对话都会断开，正在执行的任务可能中断。",
+                    "All conversations connected to the proxy will disconnect, and active tasks may be interrupted."
+                ))
+        }
+        .onAppear {
+            primaryFloorText = String(model.creditPrimaryFloor)
+            secondaryFloorText = String(model.creditSecondaryFloor)
+        }
+    }
+
+    private var parsedCreditFloors: (primary: Int, secondary: Int)? {
+        guard let primary = Int(primaryFloorText), let secondary = Int(secondaryFloorText),
+            LocalProxyPreferences.validCreditFloors(primary: primary, secondary: secondary)
+        else { return nil }
+        return (primary, secondary)
+    }
+    private var creditFloorsChanged: Bool {
+        primaryFloorText != String(model.creditPrimaryFloor) || secondaryFloorText != String(model.creditSecondaryFloor)
+    }
+    private var creditSettings: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 10) {
+                Toggle(
+                    language.text("点数接续", "Credit fallback"),
+                    isOn: Binding(
+                        get: { model.creditFallbackEnabled }, set: { model.setCreditFallback($0) }
+                    )
+                )
+                .toggleStyle(.checkbox).disabled(!model.canEdit)
+                Text(language.text("第一档保留", "First floor"))
+                TextField("2000", text: $primaryFloorText)
+                    .frame(width: 64)
+                    .accessibilityLabel(language.text("第一档保留点数", "First retained credit floor"))
+                    .accessibilityIdentifier("next.local-proxy.credit-primary")
+                Text(language.text("第二档保留", "Second floor"))
+                TextField("1500", text: $secondaryFloorText)
+                    .frame(width: 64)
+                    .accessibilityLabel(language.text("第二档保留点数", "Second retained credit floor"))
+                    .accessibilityIdentifier("next.local-proxy.credit-secondary")
+                Text(language.text("点", "points")).foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+                Button(language.text("保存底线", "Save floors")) {
+                    if let floors = parsedCreditFloors { model.setCreditFloors(primary: floors.primary, secondary: floors.secondary) }
+                }
+                .disabled(!model.canEdit || !creditFloorsChanged || parsedCreditFloors == nil)
+                .accessibilityIdentifier("next.local-proxy.credit-save")
+            }
+            .disabled(!model.canEdit)
+            .textFieldStyle(.roundedBorder)
+            .controlSize(.small)
+            Text(
+                language.text(
+                    "先用完所有参与账号的订阅额度，再逐档使用点数；桌面账号在这两个阶段各自最后。忙碌或额度未知不会转用点数。单次结算可能越过底线。",
+                    "Use all enrolled subscription quota before credit tiers; Desktop is last in each phase. Busy or unknown quota never enables credits. One settlement may cross a floor."
+                )
+            ).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            if parsedCreditFloors == nil && creditFloorsChanged {
+                Text(language.text("请输入整数：第一档高于第二档，第二档不小于 0。", "Use whole points: first floor above second; second at least 0."))
+                    .foregroundStyle(.orange)
+            }
+        }
+        .font(.caption)
+        .padding(8)
+        .background(WorkspaceGlassSurface(cornerRadius: 10))
     }
 
     private var controls: some View {
@@ -106,35 +180,58 @@ struct LocalProxyQueueView: View {
                 Task { await model.start() }
             }
             .buttonStyle(.borderedProminent)
-            .disabled(!model.canStart)
+            .disabled(!model.canStart || creditFloorsChanged)
             .accessibilityIdentifier("next.local-proxy.start")
             Button(language.text("关闭反代", "Disable reverse proxy")) {
-                Task {
-                    await model.stop()
-                    if model.canEdit { model.setOptIn(false) }
-                }
+                if model.requiresStopConfirmation { confirmingStop = true } else { disableProxy() }
             }
             .disabled((!model.canStop && !model.isEnabled) || model.phase == .stopping)
             .accessibilityIdentifier("next.local-proxy.stop")
         }
-        .padding(12)
+        .padding(8)
         .background(WorkspaceGlassSurface(cornerRadius: 10))
     }
 
+    private func disableProxy() {
+        Task {
+            await model.stop()
+            if model.canEdit { model.setOptIn(false) }
+        }
+    }
+
     private func accountRow(_ row: LocalProxyQueueRow, index: Int) -> some View {
-        HStack(spacing: 12) {
-            Text("\(index + 1)").font(.system(.callout, design: .monospaced)).foregroundStyle(.secondary)
+        HStack(spacing: 8) {
+            Text(row.accountNumber.map { String(format: "%02d", $0) } ?? "—").font(.system(size: 11).monospacedDigit()).foregroundStyle(.secondary)
                 .frame(width: 24)
-            VStack(alignment: .leading, spacing: 5) {
-                HStack(spacing: 8) {
-                    Text(row.label).font(.callout.weight(.medium)).lineLimit(1)
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 5) {
+                    Text(row.label).font(.system(size: 12, weight: .semibold)).lineLimit(1)
+                    if row.isDesktopAccount {
+                        Image(systemName: "macwindow").font(.system(size: 9)).foregroundStyle(.secondary)
+                            .help(language.text("桌面账号 · 最后使用", "Desktop account · Last resort"))
+                            .accessibilityLabel(language.text("桌面账号 · 最后使用", "Desktop account · Last resort"))
+                    }
                     if row.isCurrent {
-                        Label(language.text("当前请求", "Current request"), systemImage: "bolt.fill")
-                            .font(.caption).foregroundStyle(Color.accentColor)
+                        Image(systemName: "bolt.fill")
+                            .font(.system(size: 9)).foregroundStyle(Color.accentColor)
+                            .help(language.text("当前请求", "Current request"))
+                            .accessibilityLabel(language.text("当前请求", "Current request"))
+                    }
+                    if row.snapshotStale {
+                        Image(systemName: "clock.arrow.circlepath")
+                            .font(.system(size: 9)).foregroundStyle(.secondary)
+                            .help(language.text("上次快照 · 待刷新", "Last snapshot · refresh needed"))
+                            .accessibilityLabel(language.text("上次快照 · 待刷新", "Last snapshot · refresh needed"))
                     }
                 }
-                Text(row.quotaText ?? language.text("额度未知", "Limits unknown"))
-                    .font(.caption).foregroundStyle(.secondary)
+                HStack(spacing: 5) {
+                    if let balance = row.creditBalance { CreditBalanceView(presentation: balance, compact: true) }
+                    Text("·")
+                    Text(
+                        row.resetCardCount.map { language.text("重置卡 \($0)", "\($0) reset cards") }
+                            ?? language.text("重置卡 —", "Reset cards —"))
+                }
+                .font(.system(size: 10)).foregroundStyle(.secondary)
                 if let deadline = row.cooldownUntil {
                     HStack(spacing: 4) {
                         Text(language.text("冷却至", "Cooldown until"))
@@ -143,49 +240,68 @@ struct LocalProxyQueueView: View {
                     .font(.caption).foregroundStyle(.secondary)
                 }
             }
-            Spacer(minLength: 8)
-            Text(stateTitle(row)).font(.caption).foregroundStyle(.secondary)
+            .frame(width: 225, alignment: .leading)
+            LazyVGrid(columns: [GridItem(.fixed(118), alignment: .leading), GridItem(.fixed(118), alignment: .leading)], alignment: .leading, spacing: 5) {
+                ForEach(row.windows) { window in
+                    CompactQuotaView(
+                        title: window.id, remaining: window.remaining, reset: window.resetsAt,
+                        paletteRole: window.id == "5h" ? .primary : .secondary
+                    )
+                    .frame(minWidth: 118, alignment: .leading)
+                }
+            }
+            .frame(width: 248)
+            .environment(\.widgetLanguage, language)
+            .help(row.quotaText ?? "")
+            Spacer(minLength: 0)
+            Text(stateTitle(row)).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(2).frame(width: 48)
             VStack(alignment: .leading, spacing: 5) {
                 Toggle(
-                    language.text("参与调用", "Participate"),
+                    language.text("参与", "Use"),
                     isOn: Binding(
                         get: { row.isEnabled }, set: { model.setAccountEnabled(id: row.id, enabled: $0) }
                     )
                 )
-                .accessibilityLabel(language.text("\(row.label) 参与调用", "Use \(row.label) for proxy requests"))
+                .disabled(!model.canEdit)
+                .accessibilityLabel(language.text("\(accountTitle(row)) 参与调用", "Use \(accountTitle(row)) for proxy requests"))
                 Toggle(
-                    language.text("优先调用", "Priority"),
+                    language.text("优先", "Priority"),
                     isOn: Binding(
                         get: { row.isPriority }, set: { model.setAccountPriority(id: row.id, priority: $0) }
                     )
                 )
-                .disabled(!row.isEnabled)
-                .accessibilityLabel(language.text("\(row.label) 优先调用", "Prioritize \(row.label) for proxy requests"))
+                .disabled(!model.canReorder || !row.isEnabled)
+                .accessibilityLabel(language.text("\(accountTitle(row)) 优先调用", "Prioritize \(accountTitle(row)) for proxy requests"))
             }
             .toggleStyle(.checkbox)
             .controlSize(.small)
             .font(.caption)
-            .disabled(!model.canEdit)
             VStack(spacing: 3) {
                 Button {
                     model.moveAccount(id: row.id, by: -1)
                 } label: {
                     Image(systemName: "chevron.up")
                 }
-                .disabled(!model.canEdit || index == 0)
-                .accessibilityLabel(language.text("上移 \(row.label)", "Move \(row.label) up"))
+                .disabled(!model.canMoveAccount(id: row.id, by: -1))
+                .accessibilityLabel(language.text("上移 \(accountTitle(row))", "Move \(accountTitle(row)) up"))
                 Button {
                     model.moveAccount(id: row.id, by: 1)
                 } label: {
                     Image(systemName: "chevron.down")
                 }
-                .disabled(!model.canEdit || index == model.rows.count - 1)
-                .accessibilityLabel(language.text("下移 \(row.label)", "Move \(row.label) down"))
+                .disabled(!model.canMoveAccount(id: row.id, by: 1))
+                .accessibilityLabel(language.text("下移 \(accountTitle(row))", "Move \(accountTitle(row)) down"))
             }
             .buttonStyle(.borderless)
         }
-        .padding(12)
-        .background(WorkspaceGlassSurface(cornerRadius: 10))
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(WorkspaceGlassSurface(cornerRadius: 8))
+        .accessibilityIdentifier("next.local-proxy.account-\(row.id)")
+    }
+
+    private func accountTitle(_ row: LocalProxyQueueRow) -> String {
+        (row.accountNumber.map { String(format: "%02d", $0) + " · " } ?? "") + row.label
     }
 
     private var phaseTitle: String {
@@ -206,6 +322,7 @@ struct LocalProxyQueueView: View {
         case "current": return language.text("请求中", "Handling request")
         case "ready": return language.text("可用", "Ready")
         case "quota": return language.text("额度不足", "Limit reached")
+        case "subscription_pending": return language.text("订阅额度优先", "Subscription first")
         case "login_expired": return language.text("登录已失效", "Sign-in expired")
         case "temporary_error": return language.text("暂时异常", "Temporary error")
         case "busy": return language.text("账号忙碌", "Account busy")

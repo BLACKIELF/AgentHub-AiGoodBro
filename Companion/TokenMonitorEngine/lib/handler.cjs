@@ -166,18 +166,22 @@ async function executeRequest(rawRequest, deps) {
   let payload = {};
   let limitsSnapshot = null;
   let history = null;
+  let costEstimates = null;
 
   if (request.operation === 'collectUsage') {
     const usageResults = await raceWithAbort(
       collect.collectUsagePerTarget(upstream, targets, request, runnerDeps, scope, todayKey, errors),
       scope
     );
-    history = await raceWithAbort(
+    const historyResult = await raceWithAbort(
       collect.collectHistoryPerTarget(upstream, targets, request, runnerDeps, scope, todayKey, errors),
       scope
     );
+    history = historyResult.history;
+    costEstimates = historyResult.costEstimates;
     payload.usage = collect.buildUsageBundle(upstream, usageResults);
     payload.history = history;
+    payload.costEstimates = costEstimates;
     const aggregate = collect.buildAggregate(upstream, usageResults, customContributions);
     aggregate.customSources = {
       accepted: resolvedCustom.accepted.map((record) => ({ sourceId: record.sourceId, providerId: record.providerId, period: record.period })),

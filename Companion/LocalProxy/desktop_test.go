@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -131,8 +133,9 @@ func TestDesktopArgsAndPassthrough(t *testing.T) {
 		{[]string{"--version"}, false},
 		{[]string{"-c", `model="original"`, "app-server", "--listen", "stdio://"}, true},
 	} {
-		if code := runDesktopAdapter(path, tc.args); code != 23 {
-			t.Fatalf("exit code = %d", code)
+		cmd := desktopTestCommand(t, path, tc.args...)
+		if err := cmd.Run(); err == nil || cmd.ProcessState.ExitCode() != 23 {
+			t.Fatalf("exit result = %v", err)
 		}
 		args, err := os.ReadFile(argsPath)
 		if err != nil {
@@ -189,17 +192,78 @@ func TestDesktopChildExitWithOpenStdin(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer writeEnd.Close()
-	old := os.Stdin
-	os.Stdin = readEnd
-	defer func() { os.Stdin = old }()
-	done := make(chan int, 1)
-	go func() { done <- runDesktopAdapter(path, []string{"app-server"}) }()
+	defer readEnd.Close()
+	cmd := desktopTestCommand(t, path, "app-server")
+	cmd.Stdin = readEnd
+	done := make(chan error, 1)
+	go func() { done <- cmd.Run() }()
 	select {
-	case code := <-done:
-		if code != 7 {
-			t.Fatalf("exit code = %d", code)
+	case err := <-done:
+		if err == nil || cmd.ProcessState.ExitCode() != 7 {
+			t.Fatalf("exit result = %v", err)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("wrapper waited for stdin after child exited")
 	}
+}
+
+func TestDesktopBridgeClosesGatewayAfterBackendExit(t *testing.T) {
+	path, _ := desktopFixture(t, `printf '%s\n' "$@"; exit 0`)
+	cmd := desktopTestCommand(t, path, "app-server")
+	data, err := cmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var address string
+	for _, arg := range strings.Split(string(data), "\n") {
+		if strings.HasPrefix(arg, `openai_base_url="`) {
+			endpoint := strings.TrimSuffix(strings.TrimPrefix(arg, `openai_base_url="`), `"`)
+			address = strings.TrimSuffix(strings.TrimPrefix(endpoint, "http://"), "/v1")
+		}
+	}
+	if address == "" {
+		t.Fatal("gateway endpoint missing")
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		connection, err := net.DialTimeout("tcp", address, 100*time.Millisecond)
+		if err != nil {
+			return
+		}
+		_ = connection.Close()
+		if time.Now().After(deadline) {
+			t.Fatal("gateway survived its backend")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+func TestDesktopBridgeBoundsShutdownAfterInputEOF(t *testing.T) {
+	path, _ := desktopFixture(t, `trap 'exit 0' TERM; while :; do sleep 0.1; done`)
+	cmd := desktopTestCommand(t, path, "app-server")
+	done := make(chan error, 1)
+	go func() { done <- cmd.Run() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("backend did not shut down gracefully: %v", err)
+		}
+	case <-time.After(7 * time.Second):
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+		t.Fatal("backend survived Desktop input EOF")
+	}
+}
+
+func desktopTestCommand(t *testing.T, connection string, args ...string) *exec.Cmd {
+	t.Helper()
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(self, args...)
+	cmd.Env = append(os.Environ(), "AIGOODBRO_DESKTOP_TEST_CHILD=1", "AIGOODBRO_PROXY_CONNECTION_FILE="+connection)
+	cmd.Stderr = os.Stderr
+	return cmd
 }

@@ -34,15 +34,17 @@ import (
 )
 
 type startup struct {
-	SchemaVersion  int    `json:"schemaVersion"`
-	RunID          string `json:"runID"`
-	ControlSocket  string `json:"controlSocket"`
-	ControlKey     string `json:"controlKey"`
-	ClientKey      string `json:"clientKey"`
-	Port           int    `json:"port"`
-	StateDirectory string `json:"stateDirectory"`
-	NetworkProxy   string `json:"networkProxy,omitempty"`
-	Accounts       []struct {
+	SchemaVersion   int    `json:"schemaVersion"`
+	RunID           string `json:"runID"`
+	ControlSocket   string `json:"controlSocket"`
+	ControlKey      string `json:"controlKey"`
+	ClientKey       string `json:"clientKey"`
+	Port            int    `json:"port"`
+	StateDirectory  string `json:"stateDirectory"`
+	NetworkProxy    string `json:"networkProxy,omitempty"`
+	CreditFallback  bool   `json:"creditFallback,omitempty"`
+	DesktopFallback bool   `json:"desktopFallback,omitempty"`
+	Accounts        []struct {
 		ID string `json:"id"`
 	} `json:"accounts"`
 	Models []string `json:"models"`
@@ -97,6 +99,9 @@ func (noRefresh) ShouldRefresh(time.Time, *auth.Auth) bool { return false }
 type scopeKey struct{}
 type lease struct{ ProfileID, ID string }
 type requestScope struct {
+	orderOnce       sync.Once
+	order           []string
+	orderErr        error
 	heartbeatPeriod time.Duration // Zero selects the fixed production interval; shortened only by unit tests.
 	id              string
 	cancel          context.CancelFunc
@@ -174,10 +179,11 @@ func scopeFrom(ctx context.Context) *requestScope {
 }
 
 type selector struct {
-	order   []string
-	bridge  *bridge
-	events  *events
-	baseURL string
+	order    []string
+	commands []string
+	bridge   *bridge
+	events   *events
+	baseURL  string
 }
 
 func (s *selector) Pick(ctx context.Context, _, _ string, _ executor.Options, candidates []*auth.Auth) (*auth.Auth, error) {
@@ -185,50 +191,102 @@ func (s *selector) Pick(ctx context.Context, _, _ string, _ executor.Options, ca
 	if scope == nil {
 		return nil, &auth.Error{Code: "unavailable", Message: "request admission unavailable", HTTPStatus: 503}
 	}
+	// Freeze the host's current order once per request. A live reorder affects
+	// subsequent requests, never the retry order or lease of one already started.
+	scope.orderOnce.Do(func() {
+		reply, err := s.bridge.call(scope.ctx, "order", scope.id, s.order[0], "")
+		if err != nil || !reply.OK || !sameAccounts(s.order, reply.Order) {
+			scope.orderErr = &auth.Error{Code: "unavailable", Message: "account order unavailable", HTTPStatus: 503}
+			return
+		}
+		scope.order = reply.Order
+	})
+	if scope.orderErr != nil {
+		return nil, scope.orderErr
+	}
 	byID := map[string]*auth.Auth{}
 	for _, a := range candidates {
 		byID[a.ID] = a
 	}
-	for _, id := range s.order {
-		a := byID[id]
-		if a == nil {
-			continue
+	commands := s.commands
+	if len(commands) == 0 {
+		commands = []string{"acquire"}
+	}
+	for _, command := range commands {
+		for _, id := range scope.order {
+			a := byID[id]
+			if a == nil {
+				continue
+			}
+			reply, err := s.bridge.call(scope.ctx, command, scope.id, id, "")
+			if err != nil {
+				s.events.emit(event{Event: "error", ErrorCode: "lease_acquire_unknown"})
+				scope.cancel()
+				return nil, &auth.Error{Code: "unavailable", Message: "account admission unavailable", HTTPStatus: 503}
+			}
+			if !reply.OK {
+				state := safeState(reply.Error)
+				s.events.emit(event{Event: "account", ProfileID: id, State: state, CooldownUntil: reply.RetryAt})
+				continue
+			}
+			if reply.LeaseID == "" {
+				s.events.emit(event{Event: "error", ErrorCode: "lease_acquire_unknown"})
+				scope.cancel()
+				return nil, &auth.Error{Code: "unavailable", Message: "account admission unavailable", HTTPStatus: 503}
+			}
+			scope.add(lease{id, reply.LeaseID})
+			if reply.AccessToken == "" || reply.AccountID == "" || reply.ExpiresAt <= time.Now().Add(30*time.Second).Unix() {
+				s.events.emit(event{Event: "account", ProfileID: id, State: "login_expired"})
+				continue
+			}
+			out := a.Clone()
+			out.Runtime = noRefresh{}
+			out.Metadata = map[string]any{"type": "codex", "access_token": reply.AccessToken, "account_id": reply.AccountID, "expired": time.Unix(reply.ExpiresAt, 0).UTC().Format(time.RFC3339)}
+			if s.baseURL != "" {
+				out.Attributes["base_url"] = s.baseURL
+			}
+			s.events.emit(event{Event: "account", ProfileID: id, State: "current"})
+			return out, nil
 		}
-		reply, err := s.bridge.call(scope.ctx, "acquire", scope.id, id, "")
-		if err != nil {
-			s.events.emit(event{Event: "error", ErrorCode: "lease_acquire_unknown"})
-			scope.cancel()
-			return nil, &auth.Error{Code: "unavailable", Message: "account admission unavailable", HTTPStatus: 503}
-		}
-		if !reply.OK {
-			state := safeState(reply.Error)
-			s.events.emit(event{Event: "account", ProfileID: id, State: state, CooldownUntil: reply.RetryAt})
-			continue
-		}
-		if reply.LeaseID == "" {
-			s.events.emit(event{Event: "error", ErrorCode: "lease_acquire_unknown"})
-			scope.cancel()
-			return nil, &auth.Error{Code: "unavailable", Message: "account admission unavailable", HTTPStatus: 503}
-		}
-		scope.add(lease{id, reply.LeaseID})
-		if reply.AccessToken == "" || reply.AccountID == "" || reply.ExpiresAt <= time.Now().Add(30*time.Second).Unix() {
-			s.events.emit(event{Event: "account", ProfileID: id, State: "login_expired"})
-			continue
-		}
-		out := a.Clone()
-		out.Runtime = noRefresh{}
-		out.Metadata = map[string]any{"type": "codex", "access_token": reply.AccessToken, "account_id": reply.AccountID, "expired": time.Unix(reply.ExpiresAt, 0).UTC().Format(time.RFC3339)}
-		if s.baseURL != "" {
-			out.Attributes["base_url"] = s.baseURL
-		}
-		s.events.emit(event{Event: "account", ProfileID: id, State: "current"})
-		return out, nil
 	}
 	return nil, &auth.Error{Code: "unavailable", Message: "no eligible account available", HTTPStatus: 503}
 }
+
+func sameAccounts(registered, order []string) bool {
+	if len(order) != len(registered) {
+		return false
+	}
+	remaining := make(map[string]bool, len(registered))
+	for _, id := range registered {
+		remaining[id] = true
+	}
+	for _, id := range order {
+		if !remaining[id] {
+			return false
+		}
+		delete(remaining, id)
+	}
+	return len(remaining) == 0
+}
+
+func admissionCommands(credits, desktop bool) []string {
+	commands := []string{"acquire"}
+	// Exhaust every enrolled subscription before any paid-credit pass.
+	if desktop {
+		commands = append(commands, "acquire_desktop")
+	}
+	if credits {
+		commands = append(commands, "acquire_credit_primary", "acquire_credit_secondary")
+	}
+	// Desktop remains last within both the subscription and credit phases.
+	if desktop && credits {
+		commands = append(commands, "acquire_desktop_credit_primary", "acquire_desktop_credit_secondary")
+	}
+	return commands
+}
 func safeState(code string) string {
 	switch code {
-	case "busy", "credentials_busy", "quota", "quota_unknown", "login_expired":
+	case "busy", "credentials_busy", "quota", "quota_unknown", "login_expired", "subscription_pending":
 		return code
 	default:
 		return "temporary_error"
@@ -254,6 +312,9 @@ func (h *hook) OnResult(_ context.Context, r auth.Result) {
 				state = "quota"
 				code = "quota"
 			case 401, 403:
+				if r.Error.HTTPStatus == 403 && imageLocalPath(r.Options.Alt) != "" && r.Error.IsRequestScoped() {
+					break // Image permission denial is not proof of an expired login.
+				}
 				state = "login_expired"
 				code = "login_expired"
 			}
@@ -289,7 +350,7 @@ type guardTransport struct {
 }
 
 func (t *guardTransport) RoundTrip(r *http.Request) (*http.Response, error) {
-	if r.URL.Scheme+"://"+r.URL.Host != t.origin || r.URL.User != nil || r.Method != "POST" || !(strings.HasSuffix(r.URL.Path, "/responses") || strings.HasSuffix(r.URL.Path, "/responses/compact")) || (!t.expiry.IsZero() && !t.expiry.After(time.Now().Add(5*time.Second))) {
+	if r.URL.Scheme+"://"+r.URL.Host != t.origin || r.URL.User != nil || r.Method != "POST" || !(strings.HasSuffix(r.URL.Path, "/responses") || strings.HasSuffix(r.URL.Path, "/responses/compact") || imageUpstreamPath(r.URL.Path)) || (!t.expiry.IsZero() && !t.expiry.After(time.Now().Add(5*time.Second))) {
 		return nil, errors.New("upstream_request_blocked")
 	}
 	resp, err := t.base.RoundTrip(r)
@@ -322,7 +383,7 @@ func newRuntime(s startup, e *events, testBaseURL string) (*runtime, error) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	b := &bridge{socket: s.ControlSocket, key: s.ControlKey, runID: s.RunID}
-	sel := &selector{bridge: b, events: e, baseURL: testBaseURL}
+	sel := &selector{bridge: b, events: e, baseURL: testBaseURL, commands: admissionCommands(s.CreditFallback, s.DesktopFallback)}
 	for _, a := range s.Accounts {
 		sel.order = append(sel.order, a.ID)
 	}
@@ -348,8 +409,13 @@ func newRuntime(s startup, e *events, testBaseURL string) (*runtime, error) {
 	if proxyURL, _ := parseNetworkProxy(s.NetworkProxy); proxyURL != nil {
 		transport.Proxy = http.ProxyURL(proxyURL)
 	}
-	m.SetRoundTripperProvider(transportProvider{transport, origin})
-	m.RegisterExecutor(provider.NewCodexExecutor(cfg))
+	transports := transportProvider{transport, origin}
+	m.SetRoundTripperProvider(transports)
+	imageBaseURL := "https://chatgpt.com/backend-api/codex"
+	if testBaseURL != "" {
+		imageBaseURL = testBaseURL
+	}
+	m.RegisterExecutor(&imageExecutor{CodexExecutor: provider.NewCodexExecutor(cfg), transports: transports, baseURL: imageBaseURL})
 	rt := &runtime{manager: m, ids: sel.order, cancel: cancel, store: store, transport: transport}
 	for _, id := range sel.order {
 		_, err = m.Register(context.Background(), &auth.Auth{ID: id, Provider: "codex", Status: auth.StatusActive, Attributes: map[string]string{"priority": "0"}, Metadata: map[string]any{"type": "codex"}, Runtime: noRefresh{}})
@@ -358,7 +424,9 @@ func newRuntime(s startup, e *events, testBaseURL string) (*runtime, error) {
 			return nil, errors.New("account_registration_failed")
 		}
 		models := make([]*registry.ModelInfo, 0, len(s.Models))
-		for _, model := range s.Models {
+		// Native image_gen uses a separate model and endpoint. Keep it out of
+		// Desktop's text-model menu while sharing the same admission/cooldowns.
+		for _, model := range append(append([]string(nil), s.Models...), nativeImageModel) {
 			models = append(models, &registry.ModelInfo{ID: model, Object: "model", OwnedBy: "openai", Type: "codex", DisplayName: model})
 		}
 		registry.GetGlobalRegistry().RegisterClient(id, "codex", models)
@@ -378,7 +446,7 @@ func newRuntime(s startup, e *events, testBaseURL string) (*runtime, error) {
 			c.AbortWithStatus(401)
 			return
 		}
-		if !((c.Request.Method == "POST" && (c.Request.URL.Path == "/v1/responses" || c.Request.URL.Path == "/responses" || c.Request.URL.Path == "/v1/responses/compact" || c.Request.URL.Path == "/responses/compact")) || (c.Request.Method == "GET" && c.Request.URL.Path == "/v1/models")) {
+		if !((c.Request.Method == "POST" && (c.Request.URL.Path == "/v1/responses" || c.Request.URL.Path == "/responses" || c.Request.URL.Path == "/v1/responses/compact" || c.Request.URL.Path == "/responses/compact" || imageLocalPath(c.Request.URL.Path) != "")) || (c.Request.Method == "GET" && c.Request.URL.Path == "/v1/models")) {
 			c.AbortWithStatus(404)
 			return
 		}
@@ -410,6 +478,9 @@ func newRuntime(s startup, e *events, testBaseURL string) (*runtime, error) {
 	router.POST("/responses", responses.Responses)
 	router.POST("/v1/responses/compact", responses.Compact)
 	router.POST("/responses/compact", responses.Compact)
+	for _, path := range []string{"/v1/images/generations", "/v1/images/edits", "/images/generations", "/images/edits"} {
+		router.POST(path, imageHandler(m))
+	}
 	router.GET("/v1/models", func(c *gin.Context) {
 		models := make([]map[string]string, 0, len(s.Models))
 		for _, model := range s.Models {
@@ -441,6 +512,9 @@ func (rt *runtime) close() {
 
 func main() {
 	if connectionPath, enabled := os.LookupEnv("AIGOODBRO_PROXY_CONNECTION_FILE"); enabled {
+		if len(os.Args) == 2 && os.Args[1] == desktopBridgeArgument {
+			os.Exit(runDesktopBridge(connectionPath))
+		}
 		os.Exit(runDesktopAdapter(connectionPath, os.Args[1:]))
 	}
 	if len(os.Args) == 2 && os.Args[1] == "--version" {
