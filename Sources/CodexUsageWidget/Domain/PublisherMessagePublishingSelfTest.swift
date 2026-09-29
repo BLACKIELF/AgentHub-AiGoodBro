@@ -3,6 +3,7 @@ import Foundation
 enum PublisherMessagePublishingSelfTest {
     static func run() -> Bool {
         typealias Publisher = PublisherMessagePublishing
+        var stage = "construct first message"
         let now = Date(timeIntervalSince1970: 1_800_000_000)
         var feed = PublisherMessageFeed(version: 1, messages: [])
         var puts = 0
@@ -43,11 +44,13 @@ enum PublisherMessagePublishingSelfTest {
                 return false
             } catch Publisher.Failure.forbidden {} catch { return false }
             guard puts == 0 else { return false }
+            stage = "first publication"
             wrongOwner = false
             try Publisher.publish(message, api: api, now: now)
             guard puts == 1, feed.messages == [message] else { return false }
             try Publisher.publish(message, api: api, now: now)
             guard puts == 1 else { return false }
+            stage = "construct second message"
             let another = try Publisher.message(title: "Another", body: "Preserves existing notice", link: "https://aigoodbro.com", now: now)
             conflict = true
             do {
@@ -56,9 +59,11 @@ enum PublisherMessagePublishingSelfTest {
             } catch Publisher.Failure.conflict {} catch { return false }
             guard feed.messages == [message] else { return false }
             conflict = false
+            stage = "ambiguous successful publication"
             ambiguousSuccess = true
             try Publisher.publish(another, api: api, now: now)
             guard feed.messages == [message, another] else { return false }
+            stage = "construct pending message"
             let final = try Publisher.message(title: "Pending", body: "Uncertain write", link: "", now: now)
             ambiguousSuccess = false
             errorBeforeWrite = true
@@ -80,12 +85,19 @@ enum PublisherMessagePublishingSelfTest {
             let root = FileManager.default.temporaryDirectory.appendingPathComponent("publisher-outbox-test-" + UUID().uuidString)
             defer { try? FileManager.default.removeItem(at: root) }
             let outbox = root.appendingPathComponent("outbox.json")
+            stage = "save pending outbox"
             try Publisher.saveOutbox(final, at: outbox)
+            stage = "read pending outbox"
             let restored = try JSONDecoder().decode(Publisher.Outbox.self, from: Data(contentsOf: outbox))
             guard restored.pending == final else { return false }
+            stage = "clear pending outbox"
             try Publisher.saveOutbox(nil, at: outbox)
             guard try JSONDecoder().decode(Publisher.Outbox.self, from: Data(contentsOf: outbox)).pending == nil else { return false }
-        } catch { return false }
+        } catch {
+            let reason = (error as? Publisher.Failure).map { String(describing: $0) } ?? String(describing: type(of: error))
+            print("Publisher write self-test failed during \(stage): \(reason)")
+            return false
+        }
         print("Publisher write self-test passed: owner identity, CAS conflict, readback, retry dedupe, ambiguous writes, validation and persistent outbox")
         return true
     }

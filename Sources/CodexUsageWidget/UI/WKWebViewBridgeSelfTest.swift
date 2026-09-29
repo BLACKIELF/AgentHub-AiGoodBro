@@ -140,14 +140,18 @@ enum WKWebViewBridgeSelfTest {
             let renderer: UpstreamTrendView.Renderer
             init(_ renderer: UpstreamTrendView.Renderer) { self.renderer = renderer }
             func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-                renderer.didFinishLoading(webView, navigation: navigation)
+                Task { @MainActor in
+                    renderer.didFinishLoading(webView, navigation: navigation)
+                }
             }
             func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
-                guard let web = message.webView else { return }
-                if message.name == "chartPreferences" {
-                    renderer.receiveHomePreferences(body: message.body, from: web, isMainFrame: message.frameInfo.isMainFrame, url: message.frameInfo.request.url)
-                } else {
-                    renderer.receiveContentSize(body: message.body, from: web, isMainFrame: message.frameInfo.isMainFrame, url: message.frameInfo.request.url)
+                Task { @MainActor in
+                    guard let web = message.webView else { return }
+                    if message.name == "chartPreferences" {
+                        renderer.receiveHomePreferences(body: message.body, from: web, isMainFrame: message.frameInfo.isMainFrame, url: message.frameInfo.request.url)
+                    } else {
+                        renderer.receiveContentSize(body: message.body, from: web, isMainFrame: message.frameInfo.isMainFrame, url: message.frameInfo.request.url)
+                    }
                 }
             }
         }

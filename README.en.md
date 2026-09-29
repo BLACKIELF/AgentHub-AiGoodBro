@@ -62,11 +62,11 @@ The proxy is designed for personal use with your own accounts and local tasks. T
 
 ## Candidate status and acceptance limits
 
-The current source is **AiGoodBro 9.6.32 (82) · 0929v2**, on [`codex/reset-messages-0926v1`](https://github.com/BLACKIELF/AgentHub-AiGoodBro/tree/codex/reset-messages-0926v1) and under review in [PR #13](https://github.com/BLACKIELF/AgentHub-AiGoodBro/pull/13). It remains a candidate, is not merged into `main`, and has no official download.
+The current source is **AiGoodBro 9.6.32 (82) · source candidate 0929v3**, on [`codex/reset-messages-0926v1`](https://github.com/BLACKIELF/AgentHub-AiGoodBro/tree/codex/reset-messages-0926v1) and under review in [PR #13](https://github.com/BLACKIELF/AgentHub-AiGoodBro/pull/13). It remains a candidate, is not merged into `main`, and has no official download.
 
 [![Candidate branch CI](https://github.com/BLACKIELF/AgentHub-AiGoodBro/actions/workflows/ci.yml/badge.svg?branch=codex%2Freset-messages-0926v1)](https://github.com/BLACKIELF/AgentHub-AiGoodBro/pull/13/checks)
 
-The latest candidate recheck passed 31 of 33 pure self-tests. `workspace-screenshot` and `token-monitor-ui` failed; details are in the [source publication record](docs/source-publication-0929v1.md). The macOS CI run for the latest source commit [`c5c35ee`](https://github.com/BLACKIELF/AgentHub-AiGoodBro/commit/c5c35ee) failed with a MainActor-related compile error; see [PR #13 checks](https://github.com/BLACKIELF/AgentHub-AiGoodBro/pull/13/checks). This README and screenshot update adds no new application acceptance.
+0929v3 fixes MainActor isolation in the WebKit self-test callbacks, oversized account rows in narrow windows, and valid message IDs rejected in optimized builds. The rebuilt macOS arm64 candidate passes all 33 pure self-tests, Swift lint, 132 isolated dispatch tests, and resource/signature verification; see the [source publication record](docs/source-publication-0929v1.md). Remote macOS CI status is tracked in [PR #13 checks](https://github.com/BLACKIELF/AgentHub-AiGoodBro/pull/13/checks). Further Windows development and validation are on hold.
 
 Current build 82 Desktop routing, real proxy image generation, long-conversation recovery, automatic pause → account switch → continuation and final UI regression remain unaccepted. See the [source publication record](docs/source-publication-0929v1.md) and [proxy integration notes](docs/local-proxy-0928v1.md) for implementation details and verification boundaries.
 

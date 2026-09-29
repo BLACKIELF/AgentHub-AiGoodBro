@@ -62,11 +62,11 @@ Codex 独立 CLI 可使用各自的本机登录目录；其他工具按提供商
 
 ## 当前候选与验收边界
 
-当前源码是 **AiGoodBro 9.6.32 (82) · 0929v2**，位于 [`codex/reset-messages-0926v1`](https://github.com/BLACKIELF/AgentHub-AiGoodBro/tree/codex/reset-messages-0926v1)，由 [PR #13](https://github.com/BLACKIELF/AgentHub-AiGoodBro/pull/13) 评审。它仍是候选，未合并到 `main`，也没有正式下载包。
+当前源码是 **AiGoodBro 9.6.32 (82) · 0929v3 源码候选**，位于 [`codex/reset-messages-0926v1`](https://github.com/BLACKIELF/AgentHub-AiGoodBro/tree/codex/reset-messages-0926v1)，由 [PR #13](https://github.com/BLACKIELF/AgentHub-AiGoodBro/pull/13) 评审。它仍是候选，未合并到 `main`，也没有正式下载包。
 
 [![候选分支 CI](https://github.com/BLACKIELF/AgentHub-AiGoodBro/actions/workflows/ci.yml/badge.svg?branch=codex%2Freset-messages-0926v1)](https://github.com/BLACKIELF/AgentHub-AiGoodBro/pull/13/checks)
 
-最近一次候选复检的 33 项纯自测中 31 项通过；`workspace-screenshot` 与 `token-monitor-ui` 两项失败，细节见[当前源码发布记录](docs/source-publication-0929v1.md)。最近源码提交 [`c5c35ee`](https://github.com/BLACKIELF/AgentHub-AiGoodBro/commit/c5c35ee) 对应的 macOS CI 因 MainActor 相关编译错误失败，见 [PR #13 检查页](https://github.com/BLACKIELF/AgentHub-AiGoodBro/pull/13/checks)。本次只更新文档与截图资料，没有新增应用验收。
+0929v3 修复了 WebKit 自测回调的 MainActor 编译错误、窄窗口账号行过高，以及优化构建误拒合法消息 ID 的问题。重新编译的 macOS arm64 候选通过全部 33 项纯自测、Swift lint、132 项隔离调度测试及资源与签名校验；详见[当前源码发布记录](docs/source-publication-0929v1.md)。远端 macOS CI 以 [PR #13 检查页](https://github.com/BLACKIELF/AgentHub-AiGoodBro/pull/13/checks)为准。Windows 后续开发与验证已搁置。
 
 82 版当前 Desktop 路由、真实反代生图、长对话恢复、自动暂停→切号→续做及最终界面回归仍待验收。完整的实现来源、验证范围和未覆盖行为见[源码发布记录](docs/source-publication-0929v1.md)与[反代集成记录](docs/local-proxy-0928v1.md)。
 

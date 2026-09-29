@@ -5731,8 +5731,9 @@ private struct ProfileRow: View {
             } else {
                 ViewThatFits(in: .horizontal) {
                     HStack(alignment: .center, spacing: 6) {
-                        identitySummary.frame(minWidth: 210, maxWidth: .infinity, alignment: .leading)
-                        quotaSummary.frame(minWidth: 220, maxWidth: .infinity)
+                        // Fit the compact columns before measuring an untruncated account label.
+                        identitySummary.frame(minWidth: 210, idealWidth: 210, maxWidth: .infinity, alignment: .leading)
+                        quotaSummary.frame(minWidth: 220, idealWidth: 220, maxWidth: .infinity)
                         compactDispatchControls.frame(width: 148)
                     }.frame(minWidth: 600)
                     compactCard
