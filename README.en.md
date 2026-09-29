@@ -1,71 +1,76 @@
 # AiGoodBro · AgentHub (2.0 candidate)
 
-AiGoodBro is a macOS AI workspace for personal use. It brings together quotas for multiple Codex accounts, token usage, local CLIs, public reset announcements, and an optional local proxy, making it easy to check remaining quota, reset times, and task occupancy, and to launch an isolated CLI when needed. The interface supports Chinese and English; its home page is called AgentHub.
+**See quota, usage and task occupancy at a glance; when needed, route local work through your own Codex account pool.**
+
+AiGoodBro is a macOS AI workspace for personal use. It brings together quotas for multiple Codex accounts, token usage, local CLIs and public reset announcements, with an optional local proxy. The interface supports Chinese and English; its home page is called AgentHub.
 
 [中文](README.md) | **English**
 
-![AiGoodBro 2.0 usage dashboard](docs/images/0927v6/dashboard.jpg)
+The screenshots below show the real 9.6.32 (82) interface captured on 2026-09-29. See the [screenshot notes](docs/images/0929v2/README.md) for provenance.
 
-> Captured from AiGoodBro 2.0 / 9.6.17 (66) on 2026-09-27, showing token activity and model/tool rankings. This is a historical interface screenshot, not the current 9.6.32 (82) UI. Costs are estimates, not bills. [Screenshot notes](docs/images/0927v6/README.md) · [Current candidate validation record](docs/source-publication-0929v1.md).
+## See what is happening
 
-Before starting work, answer four questions: how much quota remains, when it resets, whether the account is usable now, and how far the task has progressed.
+Home shows each account's remaining quota, reset time and task occupancy. Public reset announcements stay distinct from an account's actual quota. Usage views summarize token, model and tool activity; estimated costs are based on local data, not provider bills.
 
-AiGoodBro puts quota alerts and reset news first, so you can see when work can continue and choose the account to use.
+![AgentHub home and usage summary, 9.6.32 (82), captured 2026-09-29](docs/images/0929v2/01-home.jpg)
 
-| What you need | What AiGoodBro provides |
-|---|---|
-| Check remaining quota | Officially returned windows, including five-hour and weekly limits, with remaining percentages, reset times and snapshot timestamps. Alert thresholds are adjustable; unknown values stay “—”. |
-| Review multi-agent usage | The pinned [Token Monitor v0.62.0](https://github.com/Javis603/token-monitor) desktop module provides its original Dashboard, heatmap, trends, model/tool rankings, icons, dimensions, fonts and glass styling. |
-| Glance at usage and limits | Enable Edge Dock for today's tokens, estimated cost and provider quota rings at the screen edge. Hover for details, auto-hide or pin the rail, and drag it to move. The rate appears when measured performance samples are available. |
-| Hear about resets | Public forecasts and completed announcements from [Codex Resets](https://codex-resets.com/), with publication times and source links. New forecasts can be sent automatically to a configured Feishu bot; account quota still needs its own refresh. |
-| Check service health | The menu-bar Status view reads public Claude and OpenAI service summaries and marks stale snapshots. |
-| Receive notifications | Native macOS notifications, optional Feishu alerts, and configurable Telegram / WeCom group bots. Permissions, configuration and supported event types apply to each channel; see below. |
-| Switch accounts | Start a Desktop switch from an account card and follow preparation, graceful exit, write, relaunch and verification. Isolated CLIs can use other accounts independently. |
-| Continue after low quota (in validation) | Controls for pausing at 1%, switching and continuing the original task are implemented. Integration and real end-to-end validation with the current Desktop are still in progress. Unknown task state blocks switching, and uncertain submissions are not repeated. |
-| Coordinate and troubleshoot | Per-account CLI environments and model preferences, reservations before launch, task states, execution receipts and operational issue logs. |
+*Usage overview, activity heatmap, trends and account quotas on one page.*
 
-A single account can use read-only monitoring. A public announcement, an account's recovered quota and its available reset credits are separate facts: an announcement neither spends a credit nor replaces an account refresh. The WeChat integration is a **WeCom group bot**; personal WeChat is not connected.
+Codex's isolated CLI can use its own local sign-in directory; support for other tools depends on the provider. Account cards and rows let you refresh quota, change order, choose a model or start an isolated CLI. See the [CLI quota coverage](docs/local-cli-accounts.md) for supported providers and limits.
 
-**Current source candidate: AiGoodBro · AgentHub (2.0 candidate), 0929v2 / 9.6.32 (82).** Navigation sits in a left icon rail with a bottom settings menu. Compact account cards and rows preserve numbering, thin quota bars, reset times, credits and dispatch controls. The home calendar, bars and candlesticks reuse Token Monitor interactions, with model/tool details collapsed. ZCode Start Plan shows exact token balances; Kimi and Grok renew sessions to read quota, and TRAE CN displays personal credits. WorkBuddy desktop quota remains unreadable. The proxy supports live order/priority changes and uses all enrolled subscription quotas before credits, leaving the Desktop account last within each phase. Native image generation and editing preserve the image model, prompt and references; uncertain failures are not replayed. Configured CC Switch balances are available only to Claude CLI. Build 82 remains a candidate: this upload review passed 31 of 33 pure self-tests; the two failures are detailed in the [current publication check](docs/source-publication-0929v1.md). The candidate is on `codex/reset-messages-0926v1` and [PR #13](https://github.com/BLACKIELF/AgentHub-AiGoodBro/pull/13); `main` retains the existing mainline and does not include build 82. No GitHub 2.0 download is available.
+![Codex account cards, 9.6.32 (82), captured 2026-09-29](docs/images/0929v2/02-codex.jpg)
 
-**Local proxy and Desktop connection.** The optional proxy supports participation, priority and account ordering, reserves accounts per request and tries the next available account after quota exhaustion. Quit Codex, then choose Connect Desktop to reopen tasks with each conversation's model and reasoning effort. Desktop retains its OpenAI sign-in; only inference requests enter the local account pool. Authentication and global configuration files are unchanged. After stopping the proxy, reopen Codex normally; legacy tasks can continue after one resume through the repaired adapter. Isolated tests with the real app-server cover legacy recovery, workspace identity, ordinary resume after disabling the proxy and history listing. A 40 MiB image request, 40 MiB compaction request and 65 MiB Desktop message pass. Build 75 preserves the official signed process ancestry using exec and a separate gateway child; all three native peer-authorization fixtures pass without relaxing checks. Real Desktop-to-pool requests were verified on build80 as historical evidence. The user manually starts and connects the build 82 proxy; this upload review did not verify current Desktop routing. WAICY large-message recovery, automatic pause → switch → continuation, final UI regression and real proxy image generation remain pending acceptance. [Proxy integration record](docs/local-proxy-0928v1.md) · [Current publication check](docs/source-publication-0929v1.md) · [0927v6 historical acceptance record](docs/source-snapshot-0927v6.md).
+*Codex account cards.*
 
-### Personal use and technical context
+The workspace shows quota and status for connected tools; availability depends on the tool and current sign-in. ZCode is a desktop tool, not a CLI. WorkBuddy desktop quota is currently unreadable. The Kimi CLI view shows its previous snapshot; refresh it before relying on the value.
 
-The local proxy is designed for personal use with your own accounts and local tasks. This project does not provide accounts, credential sharing, quota resale, or a public proxy service. Dependencies remain subject to their respective licenses.
+![ZCode desktop account view, 9.6.32 (82), captured 2026-09-29](docs/images/0929v2/03-zcode.jpg)
 
-Tibo (@thsottiaux) mentions CLIProxyAPI in a July 12, 2026 post about using GPT with Claude Code; [original post](https://x.com/thsottiaux/status/2076119366647894371). This reference provides technical context only; it does not imply official authorization or endorsement of this project.
+*The ZCode desktop account page brings models, expiration dates and token balances together.*
 
-## Feature sources and licenses
+![Kimi CLI quota view, 9.6.32 (82), captured 2026-09-29](docs/images/0929v2/06-kimi.jpg)
 
-Feature design references and borrows from related open-source projects; code and resources directly reused in this project are listed separately, with their original licenses and copyright notices retained.
+*Kimi shows its previous snapshot; refresh before use.*
 
-| Source | Relationship |
-|---|---|
-| [codexU](https://github.com/shanggqm/codexU) | Historical SwiftUI, quota, palette and Windows foundations directly inherited. |
-| [Token Monitor v0.62.0 pinned commit](https://github.com/Javis603/token-monitor/tree/dcccfb01557e2786888fd5479552f392ac6c0d32) | Statistics engine, desktop dashboard, charts and resources directly reused with host adaptation. |
-| [Tokscale fork](https://github.com/Javis603/tokscale) · [original](https://github.com/junhoyeo/tokscale) | Statistics collection foundation; the bundled revision is `06a9f1625d5a505f01b39eff29f7be44a2c52188`, listed in [`SOURCE.json`](Companion/TokenMonitorEngine/SOURCE.json). |
-| [CLIProxyAPI v8.0.2 pinned version](https://github.com/router-for-me/CLIProxyAPI/tree/v8.0.2) | SDK scheduler, Codex executor and Responses handler directly reused. |
-| [Codex-Manager](https://github.com/qxcnm/Codex-Manager) | Warm-up request structure and SSE completion rules adapted in the implementation; see [`CodexAccountActions.swift`](Sources/CodexUsageWidget/Services/CodexAccountActions.swift#L850). |
-| [Hazmat stdio wrapper script](https://github.com/dredozubov/hazmat/blob/c112d222bb53e888dd17a8927927286792f7c20e/scripts/check-codex-desktop-attach-smoke.sh) | Reference for the `CODEX_CLI_PATH` stdio-wrapper entry point; no Hazmat sandbox or service is integrated. |
+## Setup guide: connect official tools and accounts
 
-Licenses and full copyright notices are in [`LICENSE`](LICENSE), [`Resources/THIRD_PARTY_NOTICES.txt`](Resources/THIRD_PARTY_NOTICES.txt), [`Companion/LocalProxy/LICENSE.CLIProxyAPI`](Companion/LocalProxy/LICENSE.CLIProxyAPI), [`LICENSE.Hazmat`](Companion/LocalProxy/LICENSE.Hazmat), and [`THIRD-PARTY-NOTICES.txt`](Companion/LocalProxy/THIRD-PARTY-NOTICES.txt). The [candidate publication check](docs/source-publication-0929v1.md) records detailed sources, pinned versions and validation boundaries.
+Follow the guide to sign in to an official tool or account, then return to the workspace to check its connection status. Connect each tool when you need it.
 
-An installation prompt and four task prompts are below. The 2.0 candidate is on `codex/reset-messages-0926v1` and [PR #13](https://github.com/BLACKIELF/AgentHub-AiGoodBro/pull/13); `main` remains the existing mainline and does not include this candidate. No 2.0 installer is currently available.
+![Guide to connecting official tools and accounts, 9.6.32 (82), captured 2026-09-29](docs/images/0929v2/05-guide.jpg)
 
-[![CI](https://github.com/BLACKIELF/AgentHub-AiGoodBro/actions/workflows/ci.yml/badge.svg?branch=codex%2Freset-messages-0926v1)](https://github.com/BLACKIELF/AgentHub-AiGoodBro/actions/workflows/ci.yml)
-![macOS 13+](https://img.shields.io/badge/macOS-13%2B-111111?logo=apple)
-[![MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+## Local proxy: route requests through your own account pool
 
-## Install it with your local agent
+The optional local proxy is a personal tool. Compatible clients send model requests to a service on this Mac; AiGoodBro selects an enrolled account by participation, priority and saved order. Available subscription quota across participating accounts is used before credits, and the current Desktop account is tried last in each quota phase.
 
-```text
-Install or upgrade AiGoodBro from https://github.com/BLACKIELF/AgentHub-AiGoodBro. Read the README and check the system, dependencies and existing installation first. Record current settings, wait for the app's own operations to finish, move the old build to a dedicated rollback folder, then migrate to one AiGoodBro.app. Preserve accounts, dispatch participation, execution preferences and the current Codex sign-in. Verify the app name, running version and restored settings. Do not leave two launchable copies, terminate other CLI tasks, start real tasks, switch accounts or send notifications just to test the installation. Let me complete any official sign-in manually.
-```
+Credit continuation is off by default. Only if the user enables it does the proxy enter credit phases after subscription quota is exhausted. Busy or unknown accounts do not count as exhausted. The credit threshold guides account selection between requests; it is not a per-request hard cap.
 
-Requires macOS 13+, a working Codex sign-in and Xcode Command Line Tools. A single account can start with read-only monitoring. CLI launch and warm-up also require a configured local Hub and account mapping; those controls remain blocked when required evidence is missing. Setup checks existing Python 3.9+ and Codex CLI and can prepare the companion Skill. External Python and Codex are not bundled. Companion Hub setup requires a selected project and accounts and preserves existing services.
+The proxy routes inference requests only. Codex Desktop keeps its OpenAI sign-in, each conversation's model and reasoning effort; using the proxy does not change system authentication files or global configuration. An already-running Codex process does not switch routes until it is restarted and connected again.
 
-Build the 2.0 candidate (9.6.32 / 82):
+![Local proxy controls, 9.6.32 (82), captured 2026-09-29](docs/images/0929v2/04-proxy.jpg)
+
+*The proxy was stopped and showed an unavailable notice in this screenshot. It shows the controls only; the proxy was not enabled for the capture and request forwarding was not tested.*
+
+**Start and stop it yourself:**
+
+1. Turn on the proxy manually in AiGoodBro. It does not start automatically when the app restarts.
+2. Quit Codex. The **Connect Desktop** button appears only after the proxy starts successfully and its connection details are ready; choose it to relaunch Codex with the local route.
+3. When finished, stop the service in the proxy panel. Closing the main window only hides it; quitting the app asks whether to stop the proxy. Reopen Codex normally after stopping it.
+
+Once a streamed response has begun, an error is not replayed through another account. An uncertain result is not sent again automatically, avoiding duplicate task execution. Proxy controls and the Connect Desktop entry are present in the candidate UI; their presence does not prove end-to-end acceptance.
+
+The proxy is designed for personal use with your own accounts and local tasks. This project does not provide accounts, credential sharing, quota resale or a public proxy service.
+
+## Candidate status and acceptance limits
+
+The current source is **AiGoodBro 9.6.32 (82) · 0929v2**, on [`codex/reset-messages-0926v1`](https://github.com/BLACKIELF/AgentHub-AiGoodBro/tree/codex/reset-messages-0926v1) and under review in [PR #13](https://github.com/BLACKIELF/AgentHub-AiGoodBro/pull/13). It remains a candidate, is not merged into `main`, and has no official download.
+
+[![Candidate branch CI](https://github.com/BLACKIELF/AgentHub-AiGoodBro/actions/workflows/ci.yml/badge.svg?branch=codex%2Freset-messages-0926v1)](https://github.com/BLACKIELF/AgentHub-AiGoodBro/pull/13/checks)
+
+The latest candidate recheck passed 31 of 33 pure self-tests. `workspace-screenshot` and `token-monitor-ui` failed; details are in the [source publication record](docs/source-publication-0929v1.md). The macOS CI run for the latest source commit [`c5c35ee`](https://github.com/BLACKIELF/AgentHub-AiGoodBro/commit/c5c35ee) failed with a MainActor-related compile error; see [PR #13 checks](https://github.com/BLACKIELF/AgentHub-AiGoodBro/pull/13/checks). This README and screenshot update adds no new application acceptance.
+
+Current build 82 Desktop routing, real proxy image generation, long-conversation recovery, automatic pause → account switch → continuation and final UI regression remain unaccepted. See the [source publication record](docs/source-publication-0929v1.md) and [proxy integration notes](docs/local-proxy-0928v1.md) for implementation details and verification boundaries.
+
+Build the 2.0 candidate:
 
 ```sh
 git clone --branch codex/reset-messages-0926v1 https://github.com/BLACKIELF/AgentHub-AiGoodBro.git AiGoodBro-2.0
@@ -73,183 +78,25 @@ cd AiGoodBro-2.0
 make build
 ```
 
-To build the existing mainline, use `main`; it does not include build 82:
+To build the existing mainline, use `main`; it does not include candidate 82. Source builds require Go 1.26+ and the verified Token Monitor v0.62.0 macOS runtime; see the [source publication record](docs/source-publication-0929v1.md). No 2.0 installer is currently available.
 
-```sh
-git clone --branch main https://github.com/BLACKIELF/AgentHub-AiGoodBro.git AiGoodBro-main
-cd AiGoodBro-main
-make build
-```
+## Inspiration, code sources and licenses
 
-Source builds also require Go 1.26+ to compile the local proxy against pinned CLIProxyAPI v8.0.2. The installed helper needs no external Go runtime. The complete desktop build also needs the verified official Token Monitor v0.62.0 macOS arm64 runtime, read from `/Applications/Token Monitor.app` by default. See the [candidate publication check](docs/source-publication-0929v1.md) and [proxy integration record](docs/local-proxy-0928v1.md) for current limitations. The earlier 0927v5 integration process remains in the [historical record](docs/ai-goodbro-2.0-0927v5.md).
+Feature design borrows from related open-source projects. Code and resources directly reused or adapted are listed below, with their applicable licenses and copyright notices retained.
 
-The build result should be `build/AiGoodBro.app`. Building does not install or launch it. Back up the old build, then migrate to one `AiGoodBro.app` without leaving a second launchable copy. See the [compatibility map](docs/brand-compat-0911v1.md). Local builds use ad-hoc signing; no Apple-notarized 2.0 download has been published.
-
-Future installer assets should use `AiGoodBro-<version>-mac-<arch>.dmg`. No 2.0 installer is currently available.
-
-## Start with the workspace
-
-![AiGoodBro 2.0 workspace with reset forecasts](docs/images/0927v6/workspace.jpg)
-
-*Historical screenshot from 9.6.17 (66), not the current 9.6.32 (82) UI. Account cards are collapsed; cache and unconfirmed states are shown as captured. See the [current publication check](docs/source-publication-0929v1.md) for candidate boundaries.*
-
-Choose **Professional** or **Simple** at the top of Home. Professional starts with the full interface expanded. Simple offers Overview, Account cards, or Custom with four optional modules. These preferences affect presentation only; provider tabs retain their full controls. Overview preserves per-account status and shows “—” for unavailable quota. The native Settings window has Display & Icons, Menu Bar, Floating window, Automation, Workspace, Usage dashboard, and About sections.
-
-![Current account cards rendered with synthetic data](docs/images/0910v1/02-workspace-cards-en-dark@2x.png)
-
-See remaining 5-hour and weekly quota alongside reported reset times. A missing window shows “—”; the workspace preserves the limits actually returned by the official source. Switch between a compact list and cards without changing account order or behavior.
-
-Home now lists accounts across providers in one sequence. Pin one account first; accounts with freshly verified reset cards expiring within 72 hours follow it and receive a red border. Cards and rows share that order. Grok card details remain unknown when the official response provides no card fields.
-
-Refresh each account, set its model and open an isolated CLI environment. Saved preferences apply to subsequent tasks. New accounts default to **GPT-6 Astra / Low / Standard**; actual availability depends on the account and provider.
-
-> Workspace screenshots are retained native renders of the 0910v1 production SwiftUI views using synthetic accounts, quota and dates. “Unverified” means that the demo is not connected to a Hub. The English header illustration is retained from 0909v4. [Image provenance and prompts](docs/images/0910v1/README.md)
-
-> Images may show an earlier layout and are included only to introduce the interface. The [current publication check](docs/source-publication-0929v1.md) tracks this candidate's source and runtime verification boundaries.
-
-## Usage Dashboard
-
-Home places Agent navigation first, followed by public reset news, Token totals and signed-in accounts. Forecasts and completed announcements remain distinct, with publication time, explanation and source link. A forecast does not prove that an account's quota has returned. The menu bar opens Home, Tool, Status, Device, Model, Project, Session, Limits and Trends; service health uses public status summaries.
-
-The default statistics mode uses pinned Token Monitor v0.62.0 collection and aggregation, shown in the bundled upstream dashboard with eight metrics, a 365-day heatmap, trends, and model and tool rankings. USD costs are estimates derived from local usage, not provider bills. Keep the previous custom mode for unsupported sources via Settings → Workspace → Statistics mode. Modes do not combine their totals. Historical account ownership and unavailable values remain unassigned rather than guessed.
-
-The app bundles its statistics runtime and verified dependencies; installed statistics do not require a separate Node.js installation. A first source build must prepare the verified dependency cache. See the [current publication check](docs/source-publication-0929v1.md) and [proxy integration record](docs/local-proxy-0928v1.md) for current integration and validation boundaries; the 0927v5 record is retained as historical background. Hub reading and publishing local usage are separate opt-in choices, both off by default; publishing also requires scope confirmation.
-
-The default interface uses native frosted glass, supports Chinese and English, and respects the system's Reduce Transparency setting.
-
-Settings → Edge Dock provides an independent screen-edge rail, showing Today, up to three connected limit providers, and `tok/s` by default. Hover for a detail card, click to pin the rail, or drag its top to move it. Auto-hide and always-visible modes are available. Add Total and other items in Settings; usage cards show exact token counts and tool/model breakdowns. Rates use actual output and duration increments from newly collected performance records; between collections, the dock may show the last sample or a dash.
-
-## Choose a CLI, preset and message fields
-
-The workspace can show installed Codex, Grok, Kimi Code, Claude Code, OpenCode, Gemini CLI, MiMo and ZCode environments. Link existing signed-in directories, name them and refresh their individual quota. See the [coverage table](docs/local-cli-accounts.md); ZCode supports identity-matched personal Coding Plan and Start Plan allowances, including exact model token counts. TRAE China personal credits are read from its current desktop session. MiMo quota and unreadable WorkBuddy desktop sessions remain explicit limitations; an installed tool alone does not prove a quota connection.
-
-Three presets start with the saved model, Sol High with Luna Max children, and Luna Max directly. Names, main model, reasoning effort and child configuration are editable. Launches validate the effective settings and keep configuration separate from observed execution.
-
-Feishu fields include the account label, quota, reset times, card count and nearest or all expiries. Agent name and reported balance are optional. The primary balance rounds to a whole number, with “≈” when rounded. Its details retain the exact reported value, source and time without inventing a currency or conversion.
-
-The selected account exposes a reset-card button with three confirmations, fresh account/card checks and shared activity protection. **The reset flow was not executed or tested.** Unknown outcomes preserve the original attempt and never trigger an automatic retry. See the [implementation boundary](docs/reset-credit-control.md).
-
-Telegram and WeCom can be configured separately in Automation Center and default to off. Codex completion alerts require an observed running-to-completed transition; archived and initial historical snapshots do not trigger them. Credentials use AiGoodBro's isolated Keychain namespace. Offline tests do not prove delivery. [Channel details](docs/message-channels-0911v1.md)
-
-
-## Stop watching the reset countdown
-
-Five-hour and weekly warm-up have separate switches. AiGoodBro refreshes official quota first, checks identity and occupancy, then sends one minimal request when the checks pass.
-
-AiGoodBro must remain running on an awake, connected Mac. Warm-up consumes quota. Busy accounts, exhausted weekly quota or uncertain state defer the attempt; failures are rechecked after a delay. A successful request followed by 100% remaining quota no longer causes repeated warm-up every minute.
-
-Dispatch participation only controls new task eligibility. Excluded accounts still refresh and follow the global warm-up switches. Warm-up does not add quota or redeem reset credits.
-
-## Reserve before starting
-
-With the companion coordination protocol, a new call reserves its account and real project directory before environment checks and process launch. Other cooperating calls can read that reservation immediately; AiGoodBro refreshes its view roughly every ten seconds.
-
-| State | Meaning |
+| Project | Relationship |
 |---|---|
-| Online · preparing | Reserved; execution has not been proven |
-| Online · running | Actual process or Hub execution evidence exists |
-| Online · maintenance | Warm-up or an authorized maintenance reservation |
-| Ended · awaiting acceptance | The process ended; its output still needs review |
-| Unverified | Evidence is incomplete and occupancy remains blocked |
+| [codexU](https://github.com/shanggqm/codexU) | Historical SwiftUI, quota, palette and Windows foundations inherited. |
+| [Token Monitor v0.62.0](https://github.com/Javis603/token-monitor/tree/dcccfb01557e2786888fd5479552f392ac6c0d32) | Statistics engine, desktop dashboard, charts and resources directly reused with host adaptation. |
+| [Tokscale fork](https://github.com/Javis603/tokscale) · [original](https://github.com/junhoyeo/tokscale) | Statistics collection foundation; bundled revision `06a9f1625d5a505f01b39eff29f7be44a2c52188`, as recorded in [`SOURCE.json`](Companion/TokenMonitorEngine/SOURCE.json). |
+| [CLIProxyAPI v8.0.2](https://github.com/router-for-me/CLIProxyAPI/tree/v8.0.2) | SDK scheduler, Codex executor and Responses handler directly reused. |
+| [Codex-Manager](https://github.com/qxcnm/Codex-Manager) | Warm-up request structure and SSE completion rules adapted in the implementation; see [`CodexAccountActions.swift`](Sources/CodexUsageWidget/Services/CodexAccountActions.swift#L850). |
+| [Hazmat wrapper script](https://github.com/dredozubov/hazmat/blob/c112d222bb53e888dd17a8927927286792f7c20e/scripts/check-codex-desktop-attach-smoke.sh) | Reference for the `CODEX_CLI_PATH` stdio-wrapper entry point; no Hazmat sandbox or service is integrated. |
 
-Concurrent reservations for the same account or real project directory are rejected. An expired heartbeat does not make an account idle. Observations, fixes and verification are appended with dates to one issue journal, accessible from the workspace.
+AiGoodBro is licensed under [MIT](LICENSE). Full third-party license texts and copyright notices are in [`Resources/THIRD_PARTY_NOTICES.txt`](Resources/THIRD_PARTY_NOTICES.txt), [`Companion/LocalProxy/LICENSE.CLIProxyAPI`](Companion/LocalProxy/LICENSE.CLIProxyAPI), [`Companion/LocalProxy/LICENSE.Hazmat`](Companion/LocalProxy/LICENSE.Hazmat) and [`Companion/LocalProxy/THIRD-PARTY-NOTICES.txt`](Companion/LocalProxy/THIRD-PARTY-NOTICES.txt).
 
-AiGoodBro's Terminal button registers occupancy and waits for a private launch receipt. Exit code zero only means that the session ended. The companion Hub checks shared occupancy when creating and approving tasks; older CLI entry points and older Hub builds still require process checks. AiGoodBro does not adopt those sessions. [Protocol and integration requirements](docs/dispatch-coordination.md)
+## More information
 
-## Receive public reset announcements
+[Detailed guide (Chinese)](docs/usage-guide.md) · [CLI quota coverage](docs/local-cli-accounts.md) · [Proxy implementation and validation](docs/local-proxy-0928v1.md) · [Current source publication record](docs/source-publication-0929v1.md) · [Historical screenshots: 0927v6](docs/images/0927v6/README.md) · [Historical screenshots: 0910v1](docs/images/0910v1/README.md) · [Report an issue](https://github.com/BLACKIELF/AgentHub-AiGoodBro/issues) · [Security](SECURITY.md)
 
-“Receive reset updates” is on by default. While AiGoodBro is running, it checks [Codex Resets](https://codex-resets.com/) every five minutes without consuming account quota, choosing an account or configuring Feishu. The first check establishes a baseline without sending old announcements. Later updates use macOS notifications, subject to system permission. With Feishu forwarding enabled and a bot configured, AiGoodBro also sends newly published forecasts automatically, helping you plan tasks and check the website less often.
-
-“Reset updates” is the first section in the workspace's Automation center. Read the latest update there even without notification permission. Expand “Also send to Feishu (optional)” only if you want that delivery channel. Upgrades preserve an existing off setting.
-
-Cards show 5-hour and 7-day limits side by side, with three columns available at the 820-point minimum window width. Common actions stay below the limits; detailed warm-up and reset records remain in Details.
-
-Feishu uses the pool code and account label. Connection tests, manual switches, restart tests and automatic low-limit events carry distinct reasons; low-limit alerts show only the condition that was actually met.
-
-Connect Feishu directly in Getting started. For a saved bot, choose Authorize connection when permission is needed. Enter your login password only in the macOS dialog; choose Always Allow, if offered, to remember access. Background checks stay silent. A replaced local ad-hoc build may need authorization again.
-
-![Automation center rendered with synthetic state](docs/images/0910v1/04-automation-center-en-dark@2x.png)
-
-This is a third-party public feed. An announcement does not prove that your account has reset and does not redeem a reset credit. Verify quota and available credits through the official account refresh.
-
-The clock beside dispatch participation sets allowed or excluded times, weekdays and an IANA time zone, including intervals across midnight. It only controls new tasks; refresh and warm-up keep their own switches. The companion Skill enforces these windows. Equivalent Hub API protection requires the matching Hub build.
-
-## Follow Desktop switch progress
-
-The Desktop switch button immediately shows preparation progress. You can cancel while waiting for an existing refresh. Identity and quota checks run concurrently in the background, followed by visible closing, switching, opening and verification stages. Both identities remain reserved for maintenance throughout the transaction.
-
-Changing the actual identity still requires Codex to exit and reopen. Network and process state affect the duration. An ordinary switch does not silently force termination after a timeout; forced switching requires the explicit warning. Finish active work before changing accounts.
-
-## Four prompts to use after setup
-
-Give these to an agent with the necessary local tools and configuration. They are not a built-in chat interface in AiGoodBro.
-
-**1. Check before work**
-
-```text
-Read AiGoodBro's current 5-hour and weekly remaining quota, reset times in my time zone, task occupancy and execution preferences. Distinguish fresh evidence, old snapshots and unknown state. Do not start a task.
-```
-
-**2. Use a specific account**
-
-```text
-Use account A for the currently authorized task. Verify the required tools, project directory and identity; reserve the account as soon as preparation starts, then refresh quota and check occupancy. Use AiGoodBro's saved execution preferences and do not silently substitute another account. Collect and validate the output as soon as execution ends, then release the reservation.
-```
-
-**3. Diagnose missing warm-up**
-
-```text
-Check AiGoodBro's warm-up switches, recent success and failure records, official reset times, weekly quota and occupancy. Append the findings with today's date to the same issue journal. Start with the smallest diagnostic check instead of repeatedly sending real warm-up requests.
-```
-
-**4. Restore settings after an upgrade**
-
-```text
-Record AiGoodBro's settings, account order, participation and model preferences before upgrading. Wait for existing calls to finish, reserve the accounts for maintenance, back up the old build and migrate to one AiGoodBro.app. Verify the name and version, restore settings and admission controls, and release all maintenance reservations. Do not start test tasks.
-```
-
-## Defaults for a new installation
-
-| Setting | Default |
-|---|---|
-| Language, layout, appearance | Chinese, list, system appearance, standard palette |
-| Menu bar | Classic, weekly remaining quota, no reset countdown |
-| Shortcut | ⌘U |
-| New account execution | GPT-6 Astra / Low / Standard |
-| Window maintenance | Five-hour and weekly warm-up enabled |
-| Alerts | Reset updates, low quota, local notifications, Feishu and both quota event options enabled |
-| Low quota thresholds | 5-hour ≤5%; weekly <10%, independently adjustable |
-
-Saved choices take precedence, including disabled features. New users still receive onboarding. Local notifications require macOS authorization; Feishu requires a configured robot. An enabled switch does not prove delivery. New accounts participate in dispatch by default; existing participation choices are preserved.
-
-## Version 2.0 and validation
-
-Version 2.0 integrates the original Usage Dashboard, all nine menu-bar views, and Edge Dock for usage and quota, public Claude and OpenAI status views, and optional automatic Feishu delivery for new public reset forecasts. Agent and tool marks reuse upstream artwork consistently while the application keeps its AiGoodBro name and icon. It pins Token Monitor v0.62.0 source and runtime dependencies while retaining account, switching, CLI, and automation workflows. The interface supports Chinese and English, native frosted glass, and Reduce Transparency.
-
-The [0929v1 publication check](docs/source-publication-0929v1.md) and [proxy integration record](docs/local-proxy-0928v1.md) distinguish this candidate's source, installation and unverified runtime behavior; the [0927v5 integration record](docs/ai-goodbro-2.0-0927v5.md) remains historical background. Current build 82 Desktop routing was not rechecked during this publication review. Real proxy image generation, WAICY large-message recovery, automatic pause → switch → continuation and final UI regression remain pending acceptance. A full official reset cycle, multiple CLI sign-ins and real calls, and notification delivery also need separate evidence. No real notification or account switch was performed for this validation.
-
-The existing packaging flow plans to include `Companion Skill/multi-agent-management` and Chinese instructions in both Mac installers. There is no 2.0 Release installer; the release wrapper must verify its contents if one is made. Compare and back up an existing Skill, preserving personal configuration. Installing the Skill does not configure a Hub.
-
-[Current candidate publication check](docs/source-publication-0929v1.md) · [Proxy integration record](docs/local-proxy-0928v1.md) · [0927v5 historical integration record](docs/ai-goodbro-2.0-0927v5.md) · [V1.0 history](docs/release-notes-v9.6.1.md) · [Changelog](CHANGELOG.md) · [Dispatch Skill instructions (Chinese)](.agents/skills/multi-agent-management/使用说明.md) · [Detailed guide (Chinese)](docs/usage-guide.md)
-
-## The rest of the workspace
-
-Single-account menus, full PNG exports, labels and ordering, model and reasoning selection, Standard/Fast, apply-to-all preferences, isolated Chrome sign-in, explicit Desktop switching, low-quota suggestions, Feishu alerts, palettes and workspace settings remain available.
-
-AiGoodBro is an independent third-party open-source project. It does not supply accounts or increase quota. An isolated CLI leaves the current Desktop sign-in unchanged; explicit Desktop switching uses a separate identity transaction. Webhooks are stored in an isolated Keychain namespace. Remove credentials, account details, task content and private paths before sharing diagnostics.
-
-Development checks:
-
-```sh
-make build
-scripts/run-self-tests.sh --skip-build --build-dir build
-python3 tests/test_dispatch_activity.py
-python3 tests/test-dispatch-activity-interop.py
-make test-macos-compatibility
-make memory-risk-check
-git diff --check
-```
-
-This update targets macOS. Windows sources remain in the repository and were not validated for this version.
-
-[Report an issue](https://github.com/BLACKIELF/AgentHub-AiGoodBro/issues) · [Security](SECURITY.md) · [Brand compatibility](docs/brand-compat-0911v1.md) · [Design](docs/DESIGN_SYSTEM.md) · [MIT license](LICENSE) · [Third-party notices](Resources/THIRD_PARTY_NOTICES.txt)
+[MIT license](LICENSE) · [Third-party notices](Resources/THIRD_PARTY_NOTICES.txt) · [Brand compatibility](docs/brand-compat-0911v1.md)
