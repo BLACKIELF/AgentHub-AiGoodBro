@@ -170,12 +170,16 @@ struct LocalCLIQuotaReader {
     private let transport: any LocalCLIQuotaTransport
     private let fileReader: FileReader
     private let claudeKeychainReader: ClaudeKeychainReader
+    private let claudeRelayReader: (() throws -> CCSwitchClaudeRelay.Credential?)?
+    private let credentialRefresher: ((LocalCLIProfile) async -> Bool)?
 
     init(
         transport: (any LocalCLIQuotaTransport)? = nil,
         fileReader: FileReader? = nil,
         claudeKeychainReader: ClaudeKeychainReader? = nil,
-        upstreamReader: UpstreamReader? = nil
+        upstreamReader: UpstreamReader? = nil,
+        claudeRelayReader: (() throws -> CCSwitchClaudeRelay.Credential?)? = nil,
+        credentialRefresher: ((LocalCLIProfile) async -> Bool)? = nil
     ) {
         self.upstreamReader =
             upstreamReader
@@ -190,6 +194,10 @@ struct LocalCLIQuotaReader {
                     allowMissing: allowMissing)
             }
         self.claudeKeychainReader = claudeKeychainReader ?? Self.readDefaultClaudeKeychain
+        self.claudeRelayReader = claudeRelayReader
+            ?? (transport == nil && fileReader == nil && claudeKeychainReader == nil ? { try CCSwitchClaudeRelay.currentCredential() } : nil)
+        self.credentialRefresher = credentialRefresher
+            ?? (transport == nil && fileReader == nil ? { profile in await LocalCLIQuotaRefresh.shared.refresh(profile) } : nil)
     }
 
     func load(profile: LocalCLIProfile, now: Date = Date()) async -> LocalCLIQuotaResult {
@@ -233,7 +241,15 @@ struct LocalCLIQuotaReader {
                     sourceLabel: "OpenCode Go native fallback (" + reason + ")", messageCode: native.messageCode)
             }
         }
-        return await loadNative(profile: profile, now: now)
+        let observation = await loadNative(profile: profile, now: now)
+        if [.kimi, .grok].contains(profile.kind),
+            observation.state == .needsLogin || ["local_cli_kimi_token_refresh_required", "local_cli_authorization_unverified"].contains(observation.messageCode ?? ""),
+            let credentialRefresher, !Task.isCancelled,
+            await credentialRefresher(profile), !Task.isCancelled
+        {
+            return await loadNative(profile: profile, now: Date())
+        }
+        return observation
     }
 
     private func loadNative(profile: LocalCLIProfile, now: Date) async -> LocalCLIQuotaResult {
@@ -382,6 +398,19 @@ struct LocalCLIQuotaReader {
     }
 
     private func loadClaude(profile: LocalCLIProfile, now: Date) async throws -> LocalCLIQuotaResult {
+        if isDefaultClaudeDirectory(profile), let relay = try claudeRelayReader?() {
+            var request = fixedRequest("https://claude.moylor.com/v1/usage")
+            request.setValue("Bearer " + relay.token, forHTTPHeaderField: "Authorization")
+            let response = try await checkedResponse(for: request)
+            let (balance, unit) = try CCSwitchClaudeRelay.balance(response.data)
+            // Recheck the selected provider before publishing a possibly stale
+            // response. No fallback to an unrelated OAuth account after failure.
+            guard try claudeRelayReader?()?.fingerprint == relay.fingerprint else { throw LocalCLIReaderFailure.unavailable }
+            return LocalCLIQuotaResult(
+                state: .available, fetchedAt: now, maskedIdentity: nil, identityFingerprint: relay.fingerprint,
+                planLabel: "moylor · CLI", windows: [], balance: balance, balanceCurrency: unit,
+                sourceLabel: "CC Switch · moylor", messageCode: nil)
+        }
         // Selected directories are isolated deliberately. This adapter never falls back to
         // Claude Code's default Keychain identity or prompts for Keychain access.
         let credentialsURL = directoryURL(profile).appendingPathComponent(".credentials.json")

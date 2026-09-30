@@ -11,10 +11,8 @@ struct TaskOverviewPanelView: View {
             header
             Divider().opacity(0.45)
             content
-            if model.isExpanded {
-                Divider().opacity(0.45)
-                workspaceButton
-            }
+            Divider().opacity(0.45)
+            workspaceButton
         }
         .background(.regularMaterial)
         .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
@@ -97,6 +95,11 @@ struct TaskOverviewPanelView: View {
                     tint: .green
                 )
             }
+            ForEach(model.workbench?.attention.map(\.task) ?? []) { item in taskRow(item) }
+            if model.workbench?.attention.isEmpty == true {
+                Text(model.language.text("暂无需关注的已知事项", "No known items need attention"))
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             dataStateLine(presentation.dataState)
         }
         .padding(.horizontal, 14)
@@ -125,7 +128,7 @@ struct TaskOverviewPanelView: View {
             } else {
                 ScrollView {
                     LazyVStack(spacing: 6) {
-                        ForEach(presentation.items) { item in
+                        ForEach(model.workbench?.attention.map(\.task) ?? Array(presentation.items.prefix(3))) { item in
                             taskRow(item)
                         }
                     }
@@ -167,7 +170,11 @@ struct TaskOverviewPanelView: View {
                         .lineLimit(1)
                         .truncationMode(.tail)
                     HStack(spacing: 5) {
-                        Text(stateLabel(item.state))
+                        Text(item.state == .completed ? model.language.text("本轮结束", "Turn ended") : stateLabel(item.state))
+                        if let row = model.workbench?.items.first(where: { $0.id == item.id }) {
+                            Text("·")
+                            Text(row.outcome.label(model.language))
+                        }
                         if let updatedAt = item.updatedAt {
                             Text("·")
                             Text(updatedAt, style: .relative)
@@ -188,7 +195,7 @@ struct TaskOverviewPanelView: View {
             .background(FixedVisualPalette.surfaceMutedFill, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         }
         .buttonStyle(.plain)
-        .help(model.language.text("在工作台核对原任务", "Verify the original task in the workspace"))
+        .help(model.language.text("打开原聊天", "Open original chat"))
     }
 
     private var workspaceButton: some View {

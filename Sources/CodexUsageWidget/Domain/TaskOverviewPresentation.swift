@@ -81,10 +81,12 @@ enum TaskOverviewPresentationBuilder {
     static func make(
         runtimeSnapshots: [RuntimeUsageSnapshot],
         codexLiveTasks: CodexTaskLiveSnapshot,
-        now: Date = Date()
+        now: Date = Date(),
+        maximumItems: Int = TaskOverviewPresentation.maximumItemCount,
+        includeAllExisting: Bool = false
     ) -> TaskOverviewPresentation {
         let liveIsFresh = isFresh(codexLiveTasks, now: now)
-        let runtimeStatuses = runtimeSnapshots.map { runtime in
+        var runtimeStatuses = runtimeSnapshots.map { runtime in
             TaskOverviewRuntimeStatus(
                 scope: runtime.scope,
                 dataState: dataState(
@@ -95,6 +97,10 @@ enum TaskOverviewPresentationBuilder {
             )
         }
 
+        if includeAllExisting, !runtimeStatuses.contains(where: { $0.scope == .codex }) {
+            runtimeStatuses.append(TaskOverviewRuntimeStatus(scope: .codex,
+                dataState: codexLiveTasks.connectionMode == .disconnected ? .disconnected : liveIsFresh ? .available : .stale))
+        }
         var candidates: [String: TaskOverviewItem] = [:]
         for runtime in runtimeSnapshots {
             guard let taskBoard = runtime.snapshot.taskBoard else { continue }
@@ -108,10 +114,10 @@ enum TaskOverviewPresentationBuilder {
             }
         }
 
-        if runtimeSnapshots.contains(where: { $0.scope == .codex }) {
+        if includeAllExisting || runtimeSnapshots.contains(where: { $0.scope == .codex }) {
             for record in codexLiveTasks.records.values {
                 let key = itemKey(scope: .codex, threadID: record.threadID, fallbackID: record.threadID)
-                guard candidates[key] != nil || shouldIncludeLiveOnly(record, now: now) else { continue }
+                guard includeAllExisting || candidates[key] != nil || shouldIncludeLiveOnly(record, now: now) else { continue }
                 let fallback = candidates[key]
                 let state: TaskOverviewItemState
                 if liveIsFresh {
@@ -135,7 +141,7 @@ enum TaskOverviewPresentationBuilder {
         }
 
         let allItems = candidates.values.sorted(by: isOrderedBefore)
-        let visibleItems = Array(allItems.prefix(TaskOverviewPresentation.maximumItemCount))
+        let visibleItems = Array(allItems.prefix(max(0, min(1000, maximumItems))))
         return TaskOverviewPresentation(
             dataState: aggregateDataState(runtimeStatuses),
             runtimeStatuses: runtimeStatuses,

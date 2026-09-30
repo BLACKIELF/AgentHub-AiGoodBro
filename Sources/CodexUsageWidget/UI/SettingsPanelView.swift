@@ -4,7 +4,7 @@ import SwiftUI
 let titlebarControlHeight: CGFloat = 18
 let settingsAccessoryColumnWidth: CGFloat = 184
 let settingsControlCornerRadius: CGFloat = 8
-let settingsSegmentHeight: CGFloat = 30
+let settingsSegmentHeight: CGFloat = 24
 let settingsControlVisualHeight: CGFloat = settingsSegmentHeight + 6
 let settingsRowTitleFontSize: CGFloat = 12.5
 let settingsRowDetailFontSize: CGFloat = 10.5
@@ -76,71 +76,6 @@ struct HeaderActionButton: View {
         .onHover { hovering in
             isHovering = hovering
         }
-    }
-}
-
-struct TitlebarToolbarView: View {
-    @ObservedObject var settings: AppSettings
-    @Environment(\.colorScheme) private var colorScheme
-    let onOpenSettings: () -> Void
-    let onSaveScreenshot: () -> Void
-    let onOpenGuide: () -> Void
-
-    private var language: WidgetLanguage { settings.language }
-    private var themeMode: WidgetThemeMode { settings.themeMode }
-    private var effectiveColorScheme: ColorScheme {
-        themeMode.preferredColorScheme ?? colorScheme
-    }
-
-    var body: some View {
-        HStack(spacing: 10) {
-            Spacer(minLength: 0)
-            HeaderActionButton(
-                systemName: "questionmark.circle",
-                help: language.text("使用引导", "Getting started"),
-                accessibilityLabel: language.text("使用引导", "Getting started")
-            ) {
-                onOpenGuide()
-            }
-
-            HStack(spacing: 2) {
-                HeaderActionButton(
-                    systemName: "camera.viewfinder",
-                    help: language.text("保存主界面长截图（PNG）", "Save full workspace screenshot (PNG)"),
-                    accessibilityLabel: language.text("保存主界面长截图", "Save full workspace screenshot")
-                ) {
-                    onSaveScreenshot()
-                }
-                HeaderActionButton(
-                    systemName: "gearshape",
-                    help: language.text("设置", "Settings"),
-                    accessibilityLabel: language.text("设置", "Settings")
-                ) {
-                    onOpenSettings()
-                }
-            }
-            .padding(3)
-            .background(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(FixedVisualPalette.controlFill(effectiveColorScheme))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .strokeBorder(FixedVisualPalette.controlStroke(effectiveColorScheme), lineWidth: 0.8)
-                    )
-            )
-        }
-        .padding(.top, 12)
-        .padding(.bottom, 2)
-        .padding(.trailing, 18)
-        .frame(maxWidth: .infinity, minHeight: 44, maxHeight: 44, alignment: .topTrailing)
-        .appVisualEnvironment(
-            catalog: settings.paletteCatalog,
-            paletteID: settings.paletteID,
-            appearance: PaletteAppearance(effectiveColorScheme)
-        )
-        .environment(\.colorScheme, effectiveColorScheme)
-        .preferredColorScheme(themeMode.preferredColorScheme)
-        .readableForegroundHierarchy(effectiveColorScheme)
     }
 }
 
@@ -336,6 +271,7 @@ struct SettingsPanelView: View {
         }
         .frame(maxHeight: .infinity)
         .background(WorkspaceGlassBackdrop())
+        .environment(\.workspaceGlass, settings.workspaceGlass)
         .appVisualEnvironment(catalog: settings.paletteCatalog, paletteID: settings.paletteID, appearance: PaletteAppearance(colorScheme))
         .readableForegroundHierarchy(colorScheme)
         .sheet(isPresented: $showsAutomationCenter) { AccountAutomationCenterView(store: store) }
@@ -346,7 +282,7 @@ struct SettingsPanelView: View {
 
     private var pageScroll: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
+            VStack(alignment: .leading, spacing: 12) {
                 VStack(alignment: .leading, spacing: 6) {
                     Text(selectedPage.title(language))
                         .font(.system(size: compact ? 18 : 24, weight: .semibold))
@@ -357,7 +293,7 @@ struct SettingsPanelView: View {
                 .accessibilityAddTraits(.isHeader)
                 pageContent
             }
-            .padding(compact ? 18 : 28)
+            .padding(compact ? 12 : 18)
             .frame(maxWidth: .infinity, alignment: .leading)
             .accessibilityIdentifier("next.settings.page.\(selectedPage.rawValue)")
         }
@@ -424,13 +360,13 @@ struct SettingsPanelView: View {
         case .appearance: appearancePage
         case .menuBar:
             if !store.isPreview, TokenMonitorDesktopController.shared.isBundled {
-                TokenMonitorDesktopEntryView(language: language, route: .settings)
+                TokenMonitorDesktopEntryView(language: language, route: .menuBarSettings)
             } else {
                 StatusItemSettingsView(settings: settings, store: store)
             }
         case .floatingBubble:
             if !store.isPreview, TokenMonitorDesktopController.shared.isBundled {
-                TokenMonitorDesktopEntryView(language: language, route: .settings)
+                TokenMonitorDesktopEntryView(language: language, route: .floatingBubbleSettings)
             } else {
                 VStack(spacing: 6) {
                     TokenMonitorFloatingBubbleEditor(
@@ -450,11 +386,7 @@ struct SettingsPanelView: View {
                 }
             }
         case .edgeDock:
-            if !store.isPreview, TokenMonitorDesktopController.shared.isBundled {
-                TokenMonitorDesktopEntryView(language: language, route: .settings)
-            } else {
-                TokenMonitorEdgeDockSettingsView(settings: settings, quotaSources: floatingBubbleSources, language: language)
-            }
+            TokenMonitorEdgeDockSettingsView(settings: settings, quotaSources: floatingBubbleSources, language: language)
         case .automation: automationPage
         case .workspace: workspacePage
         case .tokenMonitor:
@@ -491,24 +423,7 @@ struct SettingsPanelView: View {
                     width: settingsAccessoryColumnWidth
                 )
             }
-            if !store.isPreview, TokenMonitorDesktopController.shared.isBundled {
-                TokenMonitorDesktopEntryView(language: language, route: .settings)
-            } else {
-                SettingsPickerRow(
-                    title: language.text("面板透明度", "Panel opacity"),
-                    detail: language.text("调整菜单栏面板的背景浓度", "Adjust the menu bar panel's background opacity")
-                ) {
-                    SettingsSegmentedControl(
-                        selection: $settings.accountMenuTransparency,
-                        options: [
-                            SettingsSegmentOption(value: .clear, title: language.text("清晰", "Clear")),
-                            SettingsSegmentOption(value: .standard, title: language.text("标准", "Standard")),
-                            SettingsSegmentOption(value: .frosted, title: language.text("磨砂", "Frosted")),
-                        ],
-                        width: settingsAccessoryColumnWidth
-                    )
-                }
-            }
+            WorkspaceGlassControls(settings: settings)
             SettingsPickerRow(
                 title: language.text("额度环动效", "Ring motion"),
                 detail: language.text("默认仅前台聚焦时播放；省电仅悬停时播放", "Default: active window only. Power Saving: pointer hover only.")
@@ -1089,7 +1004,7 @@ private struct TokenMonitorSettingsPage: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
-        .padding(14)
+        .padding(10)
         .sectionBackground()
     }
 
@@ -1133,7 +1048,7 @@ private struct TokenMonitorSettingsPage: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
-        .padding(14)
+        .padding(10)
         .sectionBackground()
     }
 
@@ -1612,7 +1527,7 @@ struct SettingsBaseRow<Accessory: View>: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
-        .padding(.vertical, 10)
+        .padding(.vertical, 6)
         .frame(maxWidth: .infinity, alignment: .leading)
         .overlay(alignment: .bottom) {
             Rectangle()

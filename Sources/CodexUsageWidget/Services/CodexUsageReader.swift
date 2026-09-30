@@ -829,7 +829,10 @@ final class CodexUsageReader {
             ), CodexResetCreditVersion.supports(String(data: versionData, encoding: .utf8))
         else { return .failure(.unsupportedCLI) }
 
-        if selectedCard != nil {
+        // Managed accounts have a separate home and an account-scoped maintenance
+        // reservation in the controller. Unrelated CLI/Desktop processes do not
+        // block their reset; the shared system home retains the conservative gate.
+        if selectedCard != nil, profile.isSystemProfile {
             guard
                 let processData = try? BoundedLocalProcess.run(
                     executable: URL(fileURLWithPath: "/usr/bin/pgrep"),
@@ -3251,7 +3254,8 @@ final class CodexUsageReader {
             threadID: rawId,
             sourceKind: .codexThread,
             displayState: displayState,
-            stateBasis: kind == .done ? .archive : .activityWindow
+            stateBasis: kind == .done ? .archive : .activityWindow,
+            projectPath: cwd.isEmpty ? nil : cwd
         )
     }
 

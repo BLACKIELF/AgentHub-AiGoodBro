@@ -13,6 +13,26 @@ enum TokenMonitorUISelfTest {
         reproduceFloatingBubble(expect: expect)
         expect(TokenMonitorEdgeDockNativeGeometrySelfTest.run(), "native Edge Dock keeps the rail and detail card inside right, left, dragged and short multi-display work areas")
         expect(TokenMonitorEdgeDockSelfTest.run(), "edge dock composition, exact data and sampled rate")
+        let dock = TokenMonitorEdgeDockController()
+        let dockCells = TokenMonitorEdgeDockProjection.make(
+            preferences: .init(items: [.limit("codex"), .limit("grok"), .proxy()]),
+            quotaSources: [], usage: TokenMonitorDashboardSnapshot(response: nil), language: .en)
+        var usageOpens = 0
+        var proxyOpens = 0
+        var dashboardOpens = 0
+        // Disabled preferences exercise the actual click routing without
+        // creating windows, collecting data or starting the desktop runtime.
+        dock.configure(preferences: .init(), cells: dockCells, language: .en,
+            onPreferencesChange: { _ in }, onOpenDashboard: { dashboardOpens += 1 },
+            onOpenUsageOverview: { usageOpens += 1 }, onOpenProxy: { proxyOpens += 1 })
+        dock.activateCell(at: 0)
+        dock.activateCell(at: 1)
+        dock.activateCell(at: 2)
+        dock.activateCell(at: 99)
+        expect(usageOpens == 1 && proxyOpens == 1 && dashboardOpens == 0,
+               "Codex click opens the existing usage overview; Grok, proxy and invalid indexes keep their own routes")
+        dock.shutdown()
+        expect(TokenMonitorEdgeDockController.navigationSelfTest(), "GPT and both proxy-settings entries dismiss the hover card until pointer re-entry")
         expect(TokenMonitorHostSelfTest.run(), "embedded desktop IPC and account identity boundaries")
         reproduceNavigation(expect: expect)
         reproduceAvatars(expect: expect)
@@ -46,6 +66,7 @@ enum TokenMonitorUISelfTest {
         quotaProfile.lastQuotaReadFailureAt = quotaNow.addingTimeInterval(1)
         expect(!AccountInformationView.shouldShowQuota(activeWindow, profile: quotaProfile, now: quotaNow), "a failed newer read does not make the old quota current")
         reproducePublicResetHistory(expect: expect)
+        reproduceResetCreditSummary(expect: expect)
         reproduceResetDashboardLayout(expect: expect)
         let quotaPair = LocalCLIQuotaWindowDetails.percentages(usedPercent: 23.5, language: .en)
         expect(quotaPair.used == "23.5%" && quotaPair.remaining == "76.5%", "used and remaining quota preserve precision and total 100 percent")
@@ -56,7 +77,8 @@ enum TokenMonitorUISelfTest {
         expect(ResetCardPresentation.savedOrder(["a", "b", "c"], pinnedAccountID: "c") == ["c", "a", "b"], "only an explicit pin changes presentation order")
         expect(HomeMessageInboxStore.visibleAnnouncementLimit == 3, "homepage shows only three reset messages")
         expect(PublisherMessageSelfTest.run(), "publisher announcements respect delivery and URL boundaries")
-        expect(OnboardingModesSelfTest.run(), "onboarding modes, 6pt track and skip/back fixtures")
+        expect(PublisherMessagePublishingSelfTest.run(), "only the verified owner publishes; conflicts and retries preserve messages")
+        expect(OnboardingModesSelfTest.run(), "onboarding modes, 3pt track and skip/back fixtures")
 
         if failures.isEmpty {
             print("token-monitor UI self-test passed: floating geometry, navigation, avatars, icons, menu/model, responsive totals, reset history, chart states, announcements")
@@ -99,14 +121,14 @@ enum TokenMonitorUISelfTest {
         func countdown(_ seconds: TimeInterval, now: Date? = nil, kind: ResetCountdownPresentation.Kind = .publicForecast, language: WidgetLanguage = .zh) -> String {
             ResetCountdownPresentation.label(deadline: start.addingTimeInterval(seconds), now: now ?? start, kind: kind, language: language)
         }
-        expect(countdown(90_061) == "最晚还有 1 天 01:01:01", "countdown includes days, hours, minutes and seconds")
-        expect(countdown(90_061, language: .en) == "Due within 1d 01:01:01", "English countdown retains day precision")
-        expect(countdown(60.1) == "最晚还有 00:01:01", "fractional seconds do not report zero early")
-        expect(countdown(0.1) == "最晚还有 00:00:01", "last fraction of a second is still pending")
+        expect(countdown(90_061) == "预计重置还有 1 天 01:01:01", "countdown includes days, hours, minutes and seconds")
+        expect(countdown(90_061, language: .en) == "Expected reset in 1d 01:01:01", "English countdown retains day precision")
+        expect(countdown(60.1) == "预计重置还有 00:01:01", "fractional seconds do not report zero early")
+        expect(countdown(0.1) == "预计重置还有 00:00:01", "last fraction of a second is still pending")
         expect(countdown(0).contains("等待来源确认"), "deadline never claims public delivery")
         expect(countdown(-10, kind: .accountWindow).contains("等待额度更新"), "expired account window never implies restored quota")
-        expect(countdown(3_661, now: start.addingTimeInterval(3_600)) == "最晚还有 00:01:01", "sleep or missed ticks cannot accumulate drift")
-        expect(countdown(60, now: start.addingTimeInterval(-60)) == "最晚还有 00:02:00", "clock corrections rederive the remaining duration")
+        expect(countdown(3_661, now: start.addingTimeInterval(3_600)) == "预计重置还有 00:01:01", "sleep or missed ticks cannot accumulate drift")
+        expect(countdown(60, now: start.addingTimeInterval(-60)) == "预计重置还有 00:02:00", "clock corrections rederive the remaining duration")
         expect(countdown(.infinity).contains("待公开来源公布"), "invalid timestamps do not trap or create a fake timer")
         expect(ResetCountdownPresentation.label(deadline: nil, now: start, kind: .accountWindow, language: .zh) == "重置时间未知", "missing reset time stays unknown")
     }
@@ -130,6 +152,38 @@ enum TokenMonitorUISelfTest {
             }
         }
         expect(Set(HomeSection.allCases.map(\.storageKey)).count == HomeSection.allCases.count, "home section preferences are independent")
+    }
+
+    private static func reproduceResetCreditSummary(expect: (Bool, String) -> Void) {
+        let now = Date(timeIntervalSince1970: 1_790_000_000)
+        func profile(_ id: String, account: String?, count: Int?, age: TimeInterval = 0) -> CodexProfile {
+            CodexProfile(id: id, name: "Fixture", codexHomePath: "", isSystemProfile: false, createdAt: now,
+                lastSnapshot: CodexAccountSnapshot(accountType: "chatgpt", planType: "plus", email: "fixture@example.com",
+                    accountID: account, limitId: "codex", limitName: nil, fiveHour: nil, sevenDay: nil, monthly: nil,
+                    availableResetCredits: count, fetchedAt: now.addingTimeInterval(-age), appServerVersion: nil))
+        }
+        let first = profile("one", account: "a", count: 2, age: 30)
+        let mirror = profile("mirror", account: "a", count: 3)
+        let second = profile("two", account: "b", count: 1, age: 60)
+        let summary = ResetCreditLocalSummary(profiles: [first, mirror, second], now: now)
+        expect(summary.availableCards == 4 && summary.accountsWithCards == 2, "mirrors count once while distinct verified account IDs remain separate")
+        expect(summary.checkedAt == now.addingTimeInterval(-60), "combined balance freshness uses the oldest included account")
+        expect(summary.latestIncrease == nil, "existing balances never invent receipt history")
+        let unknown = ResetCreditLocalSummary(profiles: [first, profile("mirror", account: "a", count: nil)], now: now)
+        expect(unknown.availableCards == nil && unknown.hasUnknownAccounts, "newer unknown balances supersede older known balances")
+        let partial = ResetCreditLocalSummary(profiles: [first, profile("unverified", account: nil, count: 99)], now: now)
+        expect(partial.availableCards == 2 && partial.hasUnknownAccounts, "unverified identity is excluded without presenting a full total")
+        expect(ResetCreditLocalSummary(profiles: [profile("old", account: "a", count: 2, age: 901)], now: now).isStale,
+               "stale balances do not claim current verification")
+        let future = ResetCreditLocalSummary(profiles: [profile("future", account: "a", count: 4, age: -60)], now: now)
+        expect(future.availableCards == nil, "future observations are not shown as verified")
+        let overflow = ResetCreditLocalSummary(profiles: [profile("max", account: "a", count: Int.max), second], now: now)
+        expect(overflow.availableCards == nil && overflow.hasUnknownAccounts, "malformed totals fail closed without overflow")
+        var received = mirror
+        received.resetCreditHistory = [.init(id: UUID(), previousObservedAt: now.addingTimeInterval(-30), observedAt: now,
+            previousAvailable: 1, available: 3)]
+        expect(ResetCreditLocalSummary(profiles: [received], now: now).latestIncrease?.added == 2,
+               "verified receipt history appears independently of forecasts")
     }
 
     private static func reproducePublicResetHistory(expect: (Bool, String) -> Void) {

@@ -36,13 +36,13 @@ enum MessageChannelsControllerSelfTest {
                 lock.unlock()
             }
         }
-        func completeAll(status: Int = 200) {
+        func completeAll(status: Int = 200, responseBody: String? = nil) {
             lock.lock()
             let callbacks = pending
             pending.removeAll()
             lock.unlock()
             for (request, callback) in callbacks {
-                let body = request.url?.host == "api.telegram.org" ? #"{"ok":true,"result":{"message_id":17}}"# : #"{"errcode":0}"#
+                let body = responseBody ?? (request.url?.host == "api.telegram.org" ? #"{"ok":true,"result":{"message_id":17}}"# : #"{"errcode":0}"#)
                 callback.resume(returning: (Data(body.utf8), HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil)!))
             }
         }
@@ -178,8 +178,122 @@ enum MessageChannelsControllerSelfTest {
         expect(controller.telegramPhase == .pendingVerification, "later rejection removes previous verified status")
         let reloaded = MessageChannelsController(defaults: defaults, storage: storage, transport: { transport })
         expect(reloaded.telegramEnabled && !reloaded.weChatEnabled, "enabled flags persist")
+        controller.setEnabled(false, for: .telegram)
+        controller.setEnabled(true, for: .weChat)
+        storage.resolve(weChat)
+        var options = FeishuMessageOptions.standard
+        options.notifiesFiveHourReset = false
+        options.includesAccountLabel = false
+        controller.setWeChatMessageOptions(options)
+        let optionsReloaded = MessageChannelsController(defaults: defaults, storage: storage, transport: { transport })
+        expect(optionsReloaded.weChatMessageOptions == options, "WeCom content/window options persist independently")
+        let beforeReset = transport.count
+        let label = try! MessageChannelAccountLabel(displayName: "Synthetic fixture")
+        let five = try! MessageTaskStatus(eventKind: .quotaReset, accountLabel: label, occurredAt: Date(),
+            quotaChange: .quotaReset(fiveHour: true, sevenDay: false))
+        controller.send(five)
+        settle()
+        expect(transport.count == beforeReset, "disabled WeCom 5h reset still sent")
+        let seven = try! MessageTaskStatus(eventKind: .quotaReset, accountLabel: label, occurredAt: Date(),
+            quotaChange: .quotaReset(fiveHour: false, sevenDay: true))
+        controller.send(seven)
+        spin { transport.count == beforeReset + 1 }
+        expect(transport.count == beforeReset + 1, "enabled WeCom 7d reset did not send")
+        let selectedBody = String(data: transport.lastRequest?.httpBody ?? Data(), encoding: .utf8) ?? ""
+        expect(!selectedBody.contains(label.value), "WeCom controller ignored account visibility")
+        options.includesAccountLabel = true
+        controller.setWeChatMessageOptions(options)
+        transport.completeAll()
+        settle()
+        expect(controller.weChatPhase == .pendingVerification, "changed WeCom options accepted an obsolete in-flight receipt")
+        let personalStorage = Storage()
+        let personalHTTP = Transport()
+        let personalDefaults = UserDefaults(suiteName: suite + ".personal")!
+        defer { personalDefaults.removePersistentDomain(forName: suite + ".personal") }
+        let ledgerDirectory = FileManager.default.temporaryDirectory.appendingPathComponent("wechat-controller-" + UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: ledgerDirectory) }
+        let personal = MessageChannelsController(defaults: personalDefaults, storage: personalStorage,
+            transport: { personalHTTP }, personalTransport: { personalHTTP },
+            botLedger: WeChatBotEventLedger(directory: ledgerDirectory))
+        personal.onPersonalBotCommand = { $0 == "/状态" ? "synthetic cached status" : nil }
+        defer { personal.stop(); personalHTTP.completeAll(); settle() }
+        personal.start()
+        personal.connectPersonalWeChat()
+        personal.sendTest(.personalWeChat)
+        settle()
+        expect(!personal.personalWeChatEnabled && personalStorage.loads.isEmpty && personalHTTP.count == 0,
+            "personal WeChat performs no I/O without opt-in")
+        personal.setEnabled(true, for: .personalWeChat)
+        personalStorage.resolve(nil)
+        personal.connectPersonalWeChat()
+        spin { personalHTTP.lastRequest?.url?.path == "/ilink/bot/get_bot_qrcode" }
+        expect(personal.personalLoginInProgress && personalStorage.saves.isEmpty, "QR start saved a credential before confirmation")
+        personalHTTP.completeAll(responseBody: #"{"qrcode":"synthetic-qr-reference","qrcode_img_content":"https://example.invalid/synthetic-qr"}"#)
+        spin { personalHTTP.lastRequest?.url?.path == "/ilink/bot/get_qrcode_status" }
+        expect(personal.personalLoginQRCode != nil && !personal.personalWeChatConnected, "QR presentation falsely marked the account connected")
+        personalHTTP.completeAll(responseBody: #"{"status":"confirmed","bot_token":"synthetic-personal-token","ilink_bot_id":"synthetic-bot","ilink_user_id":"scanner@im.wechat","baseurl":"https://ilinkai.weixin.qq.com"}"#)
+        spin { personalStorage.saves.count == 1 }
+        expect(personal.actionInFlight && !personal.personalWeChatConnected, "connection bypassed Keychain acknowledgement")
+        guard personalStorage.saves.count == 1 else {
+            failures.append("personal QR confirmation did not request one credential save")
+            failures.forEach { print("Message channel controller self-test failed: \($0)") }
+            return false
+        }
+        personalStorage.saves.removeFirst().2(.success(()))
+        spin { personal.personalWeChatConnected && !personal.personalLoginInProgress && personalHTTP.lastRequest?.url?.path == "/ilink/bot/getupdates" }
+        expect(!personal.personalWeChatHasContext && personal.personalWeChatPhase == .needsSetup,
+            "QR confirmation was confused with message context or delivery acceptance")
+        let personalCount = personalHTTP.count
+        personal.sendTest(.personalWeChat)
+        settle()
+        expect(personalHTTP.count == personalCount, "personal test sent before the scanner established a context")
+        let incoming: [String: Any] = ["ret": 0, "get_updates_buf": "synthetic-cursor", "msgs": [[
+            "message_type": 1, "from_user_id": "scanner@im.wechat", "to_user_id": "synthetic-bot",
+            "context_token": "synthetic-context", "create_time_ms": Int(Date().timeIntervalSince1970 * 1000)]]]
+        personalHTTP.completeAll(responseBody: String(data: try! JSONSerialization.data(withJSONObject: incoming), encoding: .utf8)!)
+        spin { personal.personalWeChatHasContext && personalStorage.saves.count == 1 }
+        expect(personal.personalWeChatPhase == .pendingVerification && personal.personalLoginQRCode == nil,
+            "receiving a context falsely marked API delivery verified or retained the login QR")
+        if personalStorage.saves.count == 1 {
+            let persisted = personalStorage.saves.removeFirst()
+            expect(persisted.0.personalBinding?.contextToken == "synthetic-context", "background encrypted-record update lost personal context")
+            persisted.2(.success(()))
+        } else { failures.append("personal context was not saved to the encrypted record") }
+        personal.sendTest(.personalWeChat)
+        spin { personalHTTP.lastRequest?.url?.path == "/ilink/bot/sendmessage" }
+        expect(personal.personalWeChatPhase == .pendingVerification, "personal test was marked accepted before the HTTP response")
+        personalHTTP.completeAll(responseBody: #"{"ret":0}"#)
+        spin { personal.personalWeChatPhase == .ready }
+        expect(personal.personalWeChatPhase == .ready, "successful personal test did not verify the channel")
+        spin { personalHTTP.lastRequest?.url?.path == "/ilink/bot/getupdates" }
+        let command: [String: Any] = ["ret": 0, "get_updates_buf": "synthetic-command-cursor", "msgs": [[
+            "message_id": "synthetic-command-id", "message_type": 1, "message_state": 2,
+            "from_user_id": "scanner@im.wechat", "to_user_id": "synthetic-bot",
+            "context_token": "synthetic-context", "create_time_ms": Int(Date().timeIntervalSince1970 * 1000),
+            "item_list": [["type": 1, "text_item": ["text": "/状态"]]]]]]
+        let commandBody = String(data: try! JSONSerialization.data(withJSONObject: command), encoding: .utf8)!
+        personalHTTP.completeAll(responseBody: commandBody)
+        spin { personalHTTP.lastRequest?.url?.path == "/ilink/bot/sendmessage" }
+        let botBody = String(data: personalHTTP.lastRequest?.httpBody ?? Data(), encoding: .utf8) ?? ""
+        expect(botBody.contains("synthetic cached status") && !personal.personalChatEnabled,
+            "local command failed without model conversation enabled")
+        personalHTTP.completeAll(responseBody: #"{"ret":0}"#)
+        spin { personalHTTP.lastRequest?.url?.path == "/ilink/bot/getupdates" }
+        let beforeDuplicate = personalHTTP.count
+        personalHTTP.completeAll(responseBody: commandBody)
+        settle()
+        expect(personalHTTP.count == beforeDuplicate, "duplicate command sent a second bot reply")
+        let longReply = MessageChannelsController.boundedPersonalReply(String(repeating: "测", count: 3000))
+        expect(longReply.utf8.count <= 4096 && longReply.contains("全文请在 Codex"), "long bot reply silently truncated or exceeded byte limit")
+        personal.sendTest(.personalWeChat)
+        spin { personal.actionInFlight }
+        personal.setEnabled(false, for: .personalWeChat)
+        personalHTTP.completeAll(responseBody: #"{"ret":0}"#)
+        settle()
+        expect(personal.personalWeChatPhase == .disabled && !personal.personalWeChatHasContext && !personal.personalWeChatConnected,
+            "disabling personal WeChat retained connection state or accepted an obsolete send")
         if failures.isEmpty {
-            print("Message channel controller self-test passed: opt-in, persistence, callback revisions, independent completion and bounded sends")
+            print("Message channel controller self-test passed: opt-in, persistence, callback revisions, independent completion, bounded sends and personal QR/context/delivery")
         } else {
             failures.forEach { print("Message channel controller self-test failed: \($0)") }
         }

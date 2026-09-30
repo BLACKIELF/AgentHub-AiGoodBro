@@ -68,6 +68,46 @@ struct CodexAccountSnapshot: Codable, Equatable {
     }
 }
 
+/// A confirmed balance increase between two official observations. The interval
+/// is evidence of when we observed the change, not the server's grant timestamp.
+struct CodexResetCreditReceipt: Codable, Equatable, Identifiable {
+    let id: UUID
+    let previousObservedAt: Date
+    let observedAt: Date
+    let previousAvailable: Int
+    let available: Int
+
+    var added: Int {
+        guard previousAvailable >= 0, available > previousAvailable else { return 0 }
+        return available - previousAvailable
+    }
+
+    func isValid(at now: Date) -> Bool {
+        added > 0 && previousObservedAt.timeIntervalSince1970.isFinite
+            && observedAt.timeIntervalSince1970.isFinite
+            && previousObservedAt < observedAt && observedAt <= now
+    }
+
+    static func increase(
+        previous: CodexAccountSnapshot?, current: CodexAccountSnapshot
+    ) -> CodexResetCreditReceipt? {
+        guard let previous,
+            previous.quotaReadSucceeded == true, current.quotaReadSucceeded == true,
+            let accountID = current.accountID, !accountID.isEmpty, previous.accountID == accountID,
+            previous.limitId == current.limitId,
+            previous.fetchedAt.timeIntervalSince1970.isFinite,
+            current.fetchedAt.timeIntervalSince1970.isFinite,
+            current.fetchedAt > previous.fetchedAt,
+            let before = previous.availableResetCredits, before >= 0,
+            let after = current.availableResetCredits, after > before
+        else { return nil }
+        return .init(
+            id: UUID(), previousObservedAt: previous.fetchedAt, observedAt: current.fetchedAt,
+            previousAvailable: before, available: after
+        )
+    }
+}
+
 struct CodexCredentialIdentity: Equatable {
     let email: String
     let accountID: String
@@ -494,6 +534,7 @@ struct CodexProfile: Codable, Equatable, Identifiable {
     let isSystemProfile: Bool
     let createdAt: Date
     var lastSnapshot: CodexAccountSnapshot?
+    var resetCreditHistory: [CodexResetCreditReceipt]? = nil
     var officialResetHistory: OfficialResetHistory? = nil
     var officialProfile: CodexOfficialProfileSnapshot? = nil
     var lastMembershipRefreshAt: Date? = nil
@@ -1828,6 +1869,7 @@ final class CodexProfileStore {
             }
             guard !accountChanged || (allowSystemAccountChange && self.state.profiles[index].isSystemProfile) else { return false }
             if accountChanged {
+                self.state.profiles[index].resetCreditHistory = nil
                 self.state.profiles[index].officialResetHistory = nil
                 self.state.profiles[index].officialProfile = nil
                 self.state.profiles[index].lastWarmUpAt = nil
@@ -1890,6 +1932,19 @@ final class CodexProfileStore {
                     || (mergesEqualObservation && (previousSnapshot?.quotaReadSucceeded ?? true))
             )
             let previousSevenDay = self.state.profiles[index].lastSnapshot?.sevenDay
+            if acceptsQuotaRead, let accountID = record.accountID {
+                // Desktop and managed profiles can mirror one account. Compare
+                // against the newest verified observation across those mirrors
+                // so a delayed response cannot report the same increase twice.
+                let previousCreditSnapshot = self.state.profiles.compactMap(\.lastSnapshot)
+                    .filter { $0.accountID == accountID && $0.quotaReadSucceeded == true }
+                    .max { $0.fetchedAt < $1.fetchedAt }
+                if let receipt = CodexResetCreditReceipt.increase(previous: previousCreditSnapshot, current: record) {
+                    var history = self.state.profiles[index].resetCreditHistory ?? []
+                    history.append(receipt)
+                    self.state.profiles[index].resetCreditHistory = Array(history.suffix(32))
+                }
+            }
             self.state.profiles[index].lastSnapshot = record
             if acceptsQuotaRead {
                 self.state.profiles[index].lastQuotaReadFailureAt = nil
@@ -2425,6 +2480,7 @@ enum CodexProfileStoreSelfTest {
         do {
             guard try testQuotaCommitCredentialRace(root: root, fileManager: fileManager) else { return false }
             guard try testQuotaObservationOrdering(root: root, fileManager: fileManager) else { return false }
+            guard try testResetCreditReceipts(root: root, fileManager: fileManager) else { return false }
             guard try testSystemSwitchObservationOrdering(root: root, fileManager: fileManager) else { return false }
             guard try testCrossInstanceStateTransactions(root: root, fileManager: fileManager) else { return false }
             guard try testProfileOrderTransactions(root: root, fileManager: fileManager) else { return false }
@@ -4995,6 +5051,46 @@ enum CodexProfileStoreSelfTest {
         )
         if failures == 0 { print("Codex quota observation ordering self-test passed") }
         return failures == 0
+    }
+
+    private static func testResetCreditReceipts(root: URL, fileManager: FileManager) throws -> Bool {
+        let home = root.appendingPathComponent("credit-history-home")
+        let support = root.appendingPathComponent("credit-history-support")
+        let store = CodexProfileStore(fileManager: fileManager, homeDirectory: home, applicationSupportDirectory: support)
+        let profile = try store.addManagedProfile()
+        try testWriteAuth(for: profile, email: "credit-fixture@example.com")
+        try testWriteAuth(for: store.profiles.first(where: \.isSystemProfile)!, email: "credit-fixture@example.com")
+        func record(_ time: Int, _ count: Int?, system: Bool = false) throws {
+            try store.record(testSnapshot(email: "credit-fixture@example.com", usedPercent: 20,
+                at: Date(timeIntervalSince1970: Double(time)), resetCredits: count),
+                for: system ? "system" : profile.id, allowSystemAccountChange: system)
+        }
+        func history() -> [CodexResetCreditReceipt] { store.profiles.flatMap { $0.resetCreditHistory ?? [] } }
+        try record(100, 1)
+        guard history().isEmpty else { return false }
+        try record(101, 3)
+        guard history().count == 1, history()[0].added == 2,
+            history()[0].previousAvailable == 1, history()[0].available == 3,
+            history()[0].previousObservedAt == Date(timeIntervalSince1970: 100)
+        else { return false }
+        try record(101, 3)
+        try record(102, 3, system: true)
+        try record(100, 4)
+        guard history().count == 1 else { return false }
+        try record(103, nil)
+        try record(104, 5)
+        guard history().count == 1 else { return false }
+        try record(105, 6)
+        guard history().count == 2, history().last?.added == 1 else { return false }
+        let restored = CodexProfileStore(fileManager: fileManager, homeDirectory: home, applicationSupportDirectory: support)
+        guard restored.profiles.flatMap({ $0.resetCreditHistory ?? [] }) == history() else { return false }
+        for time in 106...146 { try record(time, time - 99) }
+        guard history().count == 32, history().last?.available == 47 else { return false }
+        let malformed = CodexResetCreditReceipt(id: UUID(), previousObservedAt: .distantPast,
+            observedAt: .distantFuture, previousAvailable: Int.max, available: Int.min)
+        guard malformed.added == 0, !malformed.isValid(at: Date()) else { return false }
+        print("Reset-credit receipts passed: baseline, increases, mirrors, ordering, unknown gaps, persistence and retention")
+        return true
     }
 
     private static func testSnapshot(

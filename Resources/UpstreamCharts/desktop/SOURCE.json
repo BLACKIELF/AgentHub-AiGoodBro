@@ -1,0 +1,51 @@
+{
+  "repository": "https://github.com/Javis603/token-monitor",
+  "version": "0.62.0",
+  "license": "MIT; see ../LICENSE-token-monitor",
+  "files": {
+    "usageCharts.js": {
+      "source": "electron/renderer/usageCharts.js",
+      "sha256": "15ee9c76df923d19f2e58cc2d3f98758be6ebf2cb16856ed08c84c8b562c6c37"
+    },
+    "dashboard.js": {
+      "source": "electron/renderer/dashboard.js",
+      "sha256": "c832dc2650d6c1af021480117a177b0143a7871f7fd743b79f858ed551cd93a5"
+    },
+    "dashboard.css": {
+      "source": "electron/renderer/dashboard.css",
+      "sha256": "8db9fa66a9aec0896f9539fa850f44449ef8941e7413acc076e518c50c221d33"
+    },
+    "themePresets.js": {
+      "source": "electron/renderer/themePresets.js",
+      "sha256": "bea4b615b7916be234c7508ce4a83a70f71fd858a384cbaac82caadbb79fc311"
+    },
+    "i18n.js": {
+      "source": "electron/renderer/i18n.js",
+      "sha256": "4d7f919ce9247feaebc7d109d38afb9006b081bffcaba5b77965da02bd581b19"
+    },
+    "compactTokens.js": {
+      "source": "shared/compactTokens.js",
+      "sha256": "a61a1adf24b4124ab397210e84d77a9d5618dc32ecf02d9b53bba9d8feb56b27"
+    },
+    "currency.js": {
+      "source": "shared/currency.js",
+      "sha256": "f2b6b8ec8d2404052b48d783a7309e72da1b268f9827ab22da366bdcb12782e6"
+    },
+    "compactMoney.js": {
+      "source": "shared/compactMoney.js",
+      "sha256": "4e008bdb0c5796446231581f0a21034bfa78b23144c8f40c825cd4d46c8d2e6c"
+    },
+    "fontSettings.js": {
+      "source": "shared/fontSettings.js",
+      "sha256": "52576a4a5226c6f93a69e7432e96eefd86a722a2864f32d04abb5d782b30102b"
+    },
+    "motionPreference.js": {
+      "source": "electron/motionPreference.js",
+      "sha256": "38739f2f3768575912fdf676ab8ad6121365b3fe6c5008e0b397d6d3827014e8"
+    },
+    "statsRenderScheduler.js": {
+      "source": "electron/renderer/statsRenderScheduler.js",
+      "sha256": "0dade3b408988b544fd7925c2477cd342a3c004c5ba5fe899a84fcf22ea85bc9"
+    }
+  }
+}

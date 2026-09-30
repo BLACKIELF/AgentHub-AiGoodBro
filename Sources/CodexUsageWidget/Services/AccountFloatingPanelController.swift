@@ -126,8 +126,7 @@ final class AccountFloatingPanelController: NSObject, NSWindowDelegate {
                 preferredContentSize: Self.expandedSize
             ),
             cornerRadius: 20,
-            reduceTransparency: NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency,
-            allowsWindowDragging: false
+            allowsWindowDragging: false, settings: settings
         )
         self.panel = panel
         position(panel, persisted: persistedState)

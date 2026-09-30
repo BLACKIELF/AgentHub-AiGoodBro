@@ -77,6 +77,107 @@ enum TokenMonitorNativePreviewRenderer {
             && hubErrorEn == "The Hub could not be reached. Check its address and network."
     }
 
+    private static func renderProxyActivity(to directory: URL) throws {
+        let rows = [4, 8].map { number in
+            LocalProxyQueueRow(
+                id: "fixture-proxy-\(number)", label: "示例 Plus 账号", accountNumber: number,
+                windows: [
+                    .init(id: "5h", remaining: number == 4 ? 89 : 100, resetsAt: referenceDate.addingTimeInterval(17_520)),
+                    .init(id: "7d", remaining: number == 4 ? 21 : 73, resetsAt: referenceDate.addingTimeInterval(360_000)),
+                ], creditBalance: .init(balance: "2240.36", unlimited: false),
+                isEnabled: true, isPriority: false, isCurrent: true, quotaText: nil,
+                state: "current", cooldownUntil: nil, activeRequestCount: 1)
+        }
+        let preferences = TokenMonitorEdgeDockPreferences(enabled: true, mode: .always, items: [.proxy()])
+        let cells = TokenMonitorEdgeDockProjection.make(
+            preferences: preferences, quotaSources: [], usage: .init(response: nil), language: .zh,
+            proxyPhase: .running, proxyRows: rows)
+        for scheme in [ColorScheme.dark, .light] {
+            let controlSamples = VStack(alignment: .leading, spacing: 14) {
+                HStack {
+                    Button("开启反代") {}.buttonStyle(WorkspaceActionButtonStyle(prominent: true))
+                    Button("复制连接配置") {}.buttonStyle(WorkspaceActionButtonStyle())
+                    Button("保存底线") {}.buttonStyle(WorkspaceActionButtonStyle()).disabled(true)
+                }
+                HStack(spacing: 18) {
+                    Toggle("参与", isOn: .constant(true))
+                    Toggle("优先", isOn: .constant(false))
+                    Toggle("参与（运行时锁定）", isOn: .constant(true)).disabled(true)
+                }
+                .toggleStyle(WorkspaceCheckboxStyle())
+                TokenMonitorDesktopEntryView(language: .zh, route: .menuBarSettings)
+                Divider()
+                TokenMonitorDesktopEntryView(language: .zh, route: .floatingBubbleSettings)
+            }
+            .padding(20)
+            .background(Color(nsColor: .windowBackgroundColor))
+            try WorkspacePreviewRenderer.renderView(
+                controlSamples, size: CGSize(width: 610, height: 390), scheme: scheme,
+                to: directory.appendingPathComponent("settings-controls-\(scheme == .dark ? "dark" : "light").png"))
+            let view = HStack(alignment: .center, spacing: 4) {
+                TokenMonitorEdgeDockCardView(
+                    cell: cells[0], side: .right, language: .zh, tailY: 166,
+                    isPinned: true, canPin: false, onPin: {}, onOpenDashboard: {})
+                    .frame(width: 292, height: 332)
+                TokenMonitorEdgeDockRailView(
+                    cells: cells, side: .right, language: .zh, compact: false, warnColors: false,
+                    focusedIndex: 0, onSelect: { _ in }, onDrag: { _ in }, onDrop: { _ in })
+                    .frame(width: 64, height: 134)
+            }
+            .padding(16)
+            .background(Color(nsColor: .windowBackgroundColor))
+            .environment(\.workspacePreviewDate, referenceDate)
+            try WorkspacePreviewRenderer.renderView(
+                view, size: CGSize(width: 392, height: 364), scheme: scheme,
+                to: directory.appendingPathComponent("proxy-activity-\(scheme == .dark ? "dark" : "light").png"))
+        }
+    }
+
+    private static func renderQuotaDock(to directory: URL) throws {
+        var grok = TokenMonitorFloatingBubbleAccount(
+            providerID: "grok", providerName: "Grok", accountID: "fixture-grok",
+            accountName: "01 · Grok", metrics: [
+                .init(id: "balance", name: "余额", sourceID: "grok:fixture-grok:balance",
+                      fetchedAt: referenceDate, value: .text("7.50 USD")),
+                .init(id: "credits", name: "每月额度", sourceID: "grok:fixture-grok:credits",
+                      fetchedAt: referenceDate, value: .percentRemaining(63),
+                      resetLabel: "2026-10-01"),
+            ])
+        let claude = TokenMonitorFloatingBubbleAccount(
+            providerID: "claude", providerName: "Claude", accountID: "fixture-claude",
+            accountName: "02 · Claude", metrics: [
+                .init(id: "balance", name: "余额", sourceID: "claude:fixture-claude:balance",
+                      fetchedAt: referenceDate, value: .text("12.34 USD")),
+            ])
+        grok.metrics[1].isStale = true
+        let preferences = TokenMonitorEdgeDockPreferences(
+            enabled: true, mode: .always,
+            items: [.account("grok", grok.accountID), .account("claude", claude.accountID)])
+        let cells = TokenMonitorEdgeDockProjection.make(
+            preferences: preferences, quotaSources: [grok, claude],
+            usage: .init(response: nil), language: .zh, now: referenceDate)
+        for scheme in [ColorScheme.dark, .light] {
+            for index in cells.indices {
+                let view = HStack(alignment: .center, spacing: 4) {
+                    TokenMonitorEdgeDockCardView(
+                        cell: cells[index], side: .right, language: .zh, tailY: 166,
+                        isPinned: true, canPin: false, onPin: {}, onOpenDashboard: {})
+                        .frame(width: 292, height: 332)
+                    TokenMonitorEdgeDockRailView(
+                        cells: cells, side: .right, language: .zh, compact: false, warnColors: false,
+                        focusedIndex: index, onSelect: { _ in }, onDrag: { _ in }, onDrop: { _ in })
+                        .frame(width: 64, height: 204)
+                }
+                .padding(16)
+                .background(Color(nsColor: .windowBackgroundColor))
+                try WorkspacePreviewRenderer.renderView(
+                    view, size: CGSize(width: 392, height: 364), scheme: scheme,
+                    to: directory.appendingPathComponent(
+                        "edge-quota-\(index == 0 ? "grok" : "claude")-\(scheme == .dark ? "dark" : "light").png"))
+            }
+        }
+    }
+
     static func render(to directory: URL) -> Bool {
         guard fixtureSelfTest() else {
             print("Token Monitor native preview fixture check failed")
@@ -84,6 +185,8 @@ enum TokenMonitorNativePreviewRenderer {
         }
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try renderProxyActivity(to: directory)
+            try renderQuotaDock(to: directory)
             let catalog = PaletteCatalog.loadFromMainBundle()
             let dashboard = TokenMonitorDashboardSnapshot(response: response())
             let largeDashboard = TokenMonitorDashboardSnapshot(response: response(largeNumbers: true))

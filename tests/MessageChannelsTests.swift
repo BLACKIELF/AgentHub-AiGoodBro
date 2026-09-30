@@ -83,6 +83,8 @@ enum MessageChannelsTests {
         testDuplicateSuppression()
         testCancellation()
         testWeComAdapter()
+        testWeComMessageOptions()
+        testPersonalWeChat()
         testDeduplicatorCapacity()
         testAcceptanceRegressions()
         testConcurrentDuplicateSuppression()
@@ -252,8 +254,8 @@ enum MessageChannelsTests {
         let capabilities = weChat.capabilities
         expect(capabilities.count == 3, "WeChat capability list must cover all three variants")
         expect(
-            capabilities.first { $0.variant == .personal }?.phase == .unavailable(.noOfficialPersonalAPI),
-            "personal WeChat must be reported unavailable")
+            capabilities.first { $0.variant == .personal }?.phase == .disabled,
+            "personal WeChat must be supported but opt-in")
         expect(
             capabilities.first { $0.variant == .officialAccount }?.phase == .unavailable(.officialAccountRequiresServerApproval),
             "official account must be reported unavailable")
@@ -429,6 +431,125 @@ enum MessageChannelsTests {
             failures.append("retry after cancellation was suppressed as a duplicate")
             return
         }
+    }
+
+    private static func testWeComMessageOptions() {
+        do {
+            let now = Date(timeIntervalSince1970: 1_790_000_000)
+            let facts = try MessageChannelAccountFacts(fiveHourResetsAt: now.addingTimeInterval(18_000),
+                sevenDayResetsAt: now.addingTimeInterval(604_800), availableResetCredits: 3,
+                resetCreditExpiries: [now.addingTimeInterval(86_400), now.addingTimeInterval(172_800)])
+            let status = try MessageTaskStatus(eventKind: .resetCreditsAdded,
+                accountLabel: MessageChannelAccountLabel(displayName: "演示账号"),
+                fiveHourRemainingPercent: 100, sevenDayRemainingPercent: nil,
+                occurredAt: now, quotaChange: .resetCreditsAdded(added: 2, available: 3), accountFacts: facts)
+            var options = FeishuMessageOptions.standard
+            let detailed = WeChatMessageChannel.messageContent(status: status, options: options, language: .zh)
+            expect(detailed.contains("新增 2 次") && detailed.contains("1 → 3"), "verified reset increase lost its before/after balance")
+            expect(detailed.contains("7 天**：剩余 未知") && !detailed.contains("7 天**：剩余 100%"), "unknown quota was fabricated")
+            expect(detailed.contains("发现时间不等于实际到账时间") && detailed.contains("北京时间"), "WeCom detected time was confused with grant time")
+            expect(detailed.contains("演示账号") && !detailed.contains("**Agent**"), "default WeCom fields drifted from the selected options")
+            options.notifiesFiveHourReset = false
+            options.applyContentPreset(.compact)
+            let compact = WeChatMessageChannel.messageContent(status: status, options: options, language: .zh)
+            expect(!compact.contains("**5 小时**") && !compact.contains(" · 到期 "), "compact content retained detailed quota/expiry fields")
+            expect(compact.contains("新增 2 次") && !options.notifiesFiveHourReset, "density change altered window-alert choices")
+            options.includesAccountLabel = false
+            options.includesResetCredits = false
+            let custom = WeChatMessageChannel.messageContent(status: status, options: options, language: .zh)
+            expect(!custom.contains("演示账号") && !custom.contains("新增 2 次") && !custom.contains("1 → 3"), "custom hidden fields still disclosed account/reset quantities")
+
+            let reset = try MessageTaskStatus(eventKind: .quotaReset, accountLabel: status.accountLabel,
+                occurredAt: now, quotaChange: .quotaReset(fiveHour: true, sevenDay: true))
+            let selected = reset.selectingQuotaWindows(options)
+            expect(selected?.quotaChange == .quotaReset(fiveHour: false, sevenDay: true), "WeCom window selection retained the disabled 5h window")
+            expect(selected?.eventID == reset.eventID, "window filtering changed the idempotency identity")
+            options.notifiesSevenDayReset = false
+            expect(reset.selectingQuotaWindows(options) == nil, "both disabled windows still notified")
+            expect(status.selectingQuotaWindows(options) == status, "window switches suppressed reset-credit increases")
+
+            let many = try MessageChannelAccountFacts(availableResetCredits: 500,
+                resetCreditExpiries: (1...500).map { now.addingTimeInterval(Double($0) * 3600) })
+            let longStatus = try MessageTaskStatus(eventKind: .resetCreditsAdded, accountLabel: status.accountLabel,
+                occurredAt: now, quotaChange: .resetCreditsAdded(added: 1, available: 500), accountFacts: many)
+            options = .standard
+            options.resetExpiryDetail = .all
+            let bounded = WeChatMessageChannel.messageContent(status: longStatus, options: options, language: .zh)
+            expect(bounded.utf8.count <= WeChatMessageChannel.contentByteLimit && bounded.contains("其余到期时间"), "all expiries exceeded the WeCom byte limit or silently disappeared")
+            expect(bounded.contains("发现时间不等于实际到账时间"), "expiry truncation removed the interpretation footer")
+            _ = try WeChatMessageChannel.requestPayload(status: longStatus, messageOptions: options, language: .zh)
+            expect((try? MessageTaskStatus(eventKind: .resetCreditsAdded, accountLabel: status.accountLabel,
+                occurredAt: now, quotaChange: .resetCreditsAdded(added: 2, available: 1))) == nil, "invalid reset balance accepted")
+            expect((try? MessageChannelAccountFacts(fiveHourResetsAt: Date(timeIntervalSince1970: .nan))) == nil, "nonfinite snapshot time accepted")
+        } catch { failures.append("WeCom message options failed: \(error)") }
+    }
+
+    private static func testPersonalWeChat() {
+        do {
+            let now = Date()
+            let base = PersonalWeChatMessageChannel.defaultBaseURL
+            for invalid in ["http://ilinkai.weixin.qq.com", "https://ilinkai.weixin.qq.com.evil.invalid",
+                "https://evil.invalid", "https://ilinkai.weixin.qq.com/path", "https://token@ilinkai.weixin.qq.com",
+                "https://ilinkai.weixin.qq.com?token=placeholder", "https://ilinkai.weixin.qq.com:8443"] {
+                expect((try? PersonalWeChatMessageChannel.validatedBaseURL(URL(string: invalid)!)) == nil, "personal WeChat accepted an untrusted endpoint")
+            }
+            let qrRequest = try PersonalWeChatMessageChannel.qrRequest()
+            let qrBody = try JSONSerialization.jsonObject(with: qrRequest.httpBody!) as! [String: Any]
+            expect(qrRequest.httpMethod == "POST" && qrRequest.url?.path == "/ilink/bot/get_bot_qrcode", "QR request does not follow Tencent's current POST protocol")
+            expect(qrBody["local_token_list"] as? [String] == [] && qrBody["base_info"] == nil && qrRequest.value(forHTTPHeaderField: "Authorization") == nil, "QR request reused unrelated tokens or credentials")
+            let uin = Data(base64Encoded: qrRequest.value(forHTTPHeaderField: "X-WECHAT-UIN") ?? "").flatMap { String(data: $0, encoding: .utf8) }
+            expect(uin.flatMap(UInt32.init) != nil, "X-WECHAT-UIN is not a base64 decimal uint32")
+            let loginRequest = try PersonalWeChatMessageChannel.loginStatusRequest(reference: "fixture-qr", verificationCode: "123456")
+            expect(loginRequest.httpMethod == "GET" && loginRequest.value(forHTTPHeaderField: "AuthorizationType") == nil,
+                "QR polling leaked bot authentication headers")
+            expect(loginRequest.url?.query?.contains("verify_code=123456") == true, "pairing code was omitted")
+            let unbound = MessageChannelCredential(secret: "synthetic-ilink-token", target: "scanner@im.wechat",
+                personalBinding: PersonalWeChatBinding(baseURL: base, botID: "fixture-bot"))
+            let status = try MessageTaskStatus(eventKind: .test, occurredAt: now)
+            expect((try? PersonalWeChatMessageChannel.messageRequest(status: status, credential: unbound, now: now)) == nil,
+                "personal WeChat sent without a verified conversation context")
+            func message(user: String = "scanner@im.wechat", bot: String = "fixture-bot", token: String, offset: Double = 0) -> [String: Any] {
+                ["message_type": 1, "from_user_id": user, "to_user_id": bot, "context_token": token,
+                    "create_time_ms": Int(now.addingTimeInterval(offset).timeIntervalSince1970 * 1000),
+                    "item_list": [["type": 1, "text_item": ["text": "private inbound body must never be retained"]]]]
+            }
+            let updates = try PersonalWeChatMessageChannel.bindingFromUpdates([
+                "msgs": [message(user: "other@im.wechat", token: "wrong-user"), message(bot: "wrong-bot", token: "wrong-bot"),
+                         message(token: "stale-token", offset: -90_000), message(token: "future-token", offset: 3_600),
+                         message(token: "fresh-context")], "get_updates_buf": "fixture-cursor"], credential: unbound, now: now)
+            expect(updates.contextChanged && updates.binding.contextToken == "fresh-context" && updates.binding.updatesCursor == "fixture-cursor", "context did not stay bound to the scanner's own bot and recent message")
+            let credential = MessageChannelCredential(secret: unbound.secret, target: unbound.target, personalBinding: updates.binding)
+            let roundTrip = try JSONDecoder().decode(MessageChannelCredential.self, from: JSONEncoder().encode(credential))
+            expect(roundTrip.personalBinding == updates.binding, "encrypted-record session round trip lost context/cursor")
+            let request = try PersonalWeChatMessageChannel.messageRequest(status: status, credential: credential, language: .zh, now: now)
+            let body = try JSONSerialization.jsonObject(with: request.httpBody!) as! [String: Any]
+            let msg = body["msg"] as! [String: Any]
+            expect(msg["to_user_id"] as? String == unbound.target && msg["context_token"] as? String == "fresh-context", "personal notification recipient/context mismatch")
+            expect(msg["message_type"] as? Int == 2 && msg["message_state"] as? Int == 2 && request.value(forHTTPHeaderField: "Authorization") == "Bearer " + unbound.secret, "personal notification wire format mismatch")
+            let encoded = String(data: request.httpBody!, encoding: .utf8)!
+            expect(!encoded.contains(unbound.secret) && !encoded.contains("private inbound body") && !encoded.contains("**"), "personal text included credentials, incoming text or Markdown formatting")
+            let http = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            for response in ["{}", #"{"ret":false}"#, #"{"ret":0.5}"#, #"{"ret":0,"errcode":-1}"#] {
+                expect((try? PersonalWeChatMessageChannel.responseObject(Data(response.utf8), http: http, request: request, requiresAcceptance: true)) == nil, "personal notification falsely accepted an ambiguous response")
+            }
+            do {
+                _ = try PersonalWeChatMessageChannel.responseObject(Data(#"{"ret":-14}"#.utf8), http: http, request: request, requiresAcceptance: true)
+                failures.append("expired personal session accepted")
+            } catch { expect(error as? MessageChannelError == .weChatSessionExpired, "expired session was not surfaced for reconnect") }
+            let transport = FakeTransport(behavior: .respond(status: 200, body: Data(#"{"ret":0}"#.utf8)))
+            let channel = PersonalWeChatMessageChannel(transport: transport)
+            let first = runAsync { await channel.send(status, credential: credential, options: .standard) }
+            expect(!isFailure(first), "personal text send did not accept a verified response")
+            let duplicate = runAsync { await channel.send(status, credential: credential, options: .standard) }
+            expect(duplicate == .success(.duplicateSkipped) && transport.requests.count == 1, "personal duplicate send was not suppressed")
+            let cancelled = runAsync { await channel.send(try! MessageTaskStatus(eventKind: .test, occurredAt: Date()), credential: credential, options: .standard, shouldSend: { false }) }
+            expect(cancelled == .failure(.cancelled) && transport.requests.count == 1, "personal disabled/revised delivery still sent")
+            let loginTransport = FakeTransport(behavior: .respond(status: 200, body: Data(#"{"status":"confirmed","bot_token":"synthetic-ilink-token","ilink_bot_id":"fixture-bot","ilink_user_id":"scanner@im.wechat","baseurl":"https://ilinkai.weixin.qq.com"}"#.utf8)))
+            let login = runAsync { try? await PersonalWeChatMessageChannel(transport: loginTransport).pollLogin(reference: "fixture-qr", base: base, verificationCode: nil) }
+            if case .confirmed(let saved)? = login {
+                expect(saved.personalBinding?.hasFreshContext(now: now) == false && saved.target == unbound.target, "QR confirmation falsely verified notification delivery/context")
+            } else { failures.append("official QR confirmation did not produce a bound credential") }
+        } catch { failures.append("personal WeChat regression failed: \(error)") }
     }
 
     // 企业微信群机器人适配器

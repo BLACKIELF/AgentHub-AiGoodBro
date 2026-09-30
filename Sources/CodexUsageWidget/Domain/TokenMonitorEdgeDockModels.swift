@@ -1,5 +1,75 @@
 import Foundation
 
+/// Stable screen selection in the existing displayID preference field. Numeric
+/// values are accepted only to migrate older settings; new choices use the
+/// built-in screen semantic or a CoreGraphics display UUID.
+enum TokenMonitorEdgeDockScreenTarget {
+    static let builtInID = "builtin"
+
+    struct Identity: Equatable {
+        let numericID: UInt32?
+        let uuid: UUID?
+        let isBuiltIn: Bool
+    }
+
+    static func stableID(for screen: Identity) -> String? {
+        if screen.isBuiltIn { return builtInID }
+        return screen.uuid.map { "uuid:\($0.uuidString.lowercased())" }
+    }
+
+    static func normalizedID(_ raw: String?) -> String? {
+        guard let raw = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else { return nil }
+        if raw.lowercased() == builtInID { return builtInID }
+        if raw.lowercased().hasPrefix("uuid:"),
+            let uuid = UUID(uuidString: String(raw.dropFirst(5)))
+        {
+            return "uuid:\(uuid.uuidString.lowercased())"
+        }
+        // Preserve unknown and disconnected legacy selections instead of
+        // silently moving the rail to a different screen.
+        return raw
+    }
+
+    static func index(for selection: String?, in screens: [Identity], preferredIndex: Int?) -> Int? {
+        guard !screens.isEmpty else { return nil }
+        guard let selection = normalizedID(selection) else {
+            if let preferredIndex, screens.indices.contains(preferredIndex) { return preferredIndex }
+            return screens.startIndex
+        }
+        if selection == builtInID { return screens.firstIndex(where: \.isBuiltIn) }
+        if selection.hasPrefix("uuid:"),
+            let uuid = UUID(uuidString: String(selection.dropFirst(5)))
+        {
+            return screens.firstIndex { $0.uuid == uuid }
+        }
+        if let legacy = UInt32(selection) {
+            return screens.firstIndex { $0.numericID == legacy }
+        }
+        return nil
+    }
+
+    static func migratedID(_ selection: String?, screens: [Identity]) -> String? {
+        guard let selection = normalizedID(selection), UInt32(selection) != nil,
+            let index = index(for: selection, in: screens, preferredIndex: nil)
+        else { return selection }
+        return stableID(for: screens[index]) ?? selection
+    }
+
+    /// A fixed choice cannot be changed by dropping onto another display.
+    /// A following rail remains following for an in-screen move; crossing to
+    /// another identified screen is an intentional new fixed placement.
+    static func targetAfterDrag(
+        _ selection: String?, originIndex: Int, destinationIndex: Int,
+        screens: [Identity]
+    ) -> String? {
+        guard let selection = normalizedID(selection) else {
+            guard originIndex != destinationIndex, screens.indices.contains(destinationIndex) else { return nil }
+            return stableID(for: screens[destinationIndex])
+        }
+        return selection
+    }
+}
+
 /// Native preferences for the independent upstream edge dock. `items == nil`
 /// follows connected providers; `items == []` is an explicitly empty rail.
 struct TokenMonitorEdgeDockPreferences: Codable, Equatable {
@@ -57,8 +127,7 @@ struct TokenMonitorEdgeDockPreferences: Codable, Equatable {
     func normalized() -> Self {
         var result = self
         result.offset = offset.isFinite ? min(1, max(0, offset)) : 0.3
-        result.displayID = displayID?.trimmingCharacters(in: .whitespacesAndNewlines)
-        if result.displayID?.isEmpty == true { result.displayID = nil }
+        result.displayID = TokenMonitorEdgeDockScreenTarget.normalizedID(displayID)
         result.items = items.map(TokenMonitorEdgeDockItem.normalizedList)
         return result
     }
@@ -67,10 +136,31 @@ struct TokenMonitorEdgeDockPreferences: Codable, Equatable {
         guard let data, let value = try? JSONDecoder().decode(Self.self, from: data) else { return Self() }
         return value.normalized()
     }
+
+    /// Read only the previous dock preferences; keep an explicitly empty rail
+    /// and the user's visibility choice when its owner becomes the native host.
+    static func migratedEmbeddedSettings(_ data: Data) -> Self? {
+        struct Embedded: Decodable {
+            var edgeDockEnabled: Bool?
+            var edgeDockMode: Mode?
+            var edgeDockSide: Side?
+            var edgeDockOffset: Double?
+            var edgeDockDisplayId: String?
+            var edgeDockItems: [TokenMonitorEdgeDockItem]?
+            var edgeDockHaptic: Bool?
+            var edgeDockWarnColors: Bool?
+        }
+        guard let old = try? JSONDecoder().decode(Embedded.self, from: data), let enabled = old.edgeDockEnabled else { return nil }
+        return Self(
+            enabled: enabled, mode: old.edgeDockMode ?? .autoHide, side: old.edgeDockSide ?? .right,
+            offset: old.edgeDockOffset ?? 0.3, displayID: old.edgeDockDisplayId, items: old.edgeDockItems,
+            hapticEnabled: old.edgeDockHaptic ?? true, warnColors: old.edgeDockWarnColors ?? false
+        ).normalized()
+    }
 }
 
 struct TokenMonitorEdgeDockItem: Codable, Equatable, Identifiable {
-    enum Kind: String, Codable { case limit, stat }
+    enum Kind: String, Codable { case limit, stat, proxy }
     enum Metric: String, Codable, CaseIterable, Identifiable {
         case today, week, last7, last30, month, allTime, liveRate, sessions
         var id: String { rawValue }
@@ -83,7 +173,7 @@ struct TokenMonitorEdgeDockItem: Codable, Equatable, Identifiable {
             case .last30: return language.text("近 30 天", "Last 30 days")
             case .month: return language.text("本月", "This month")
             case .allTime: return language.text("总计", "Total")
-            case .liveRate: return language.text("实时速率", "Live rate")
+            case .liveRate: return language.text("采样速率", "Sampled rate")
             case .sessions: return language.text("会话", "Sessions")
             }
         }
@@ -94,6 +184,7 @@ struct TokenMonitorEdgeDockItem: Codable, Equatable, Identifiable {
 
     var type: Kind
     var providerID: String?
+    var accountID: String?
     var metric: Metric?
     var hiddenAccountIDs: [String] = []
     var showUsage = true
@@ -105,27 +196,43 @@ struct TokenMonitorEdgeDockItem: Codable, Equatable, Identifiable {
 
     var id: String {
         switch type {
-        case .limit: return "limit:\(providerID ?? "")"
+        case .limit:
+            let provider = "limit:\(providerID ?? "")"
+            return accountID.map { provider + ":account:" + $0 } ?? provider
         case .stat: return "stat:\(metric?.rawValue ?? "")"
+        case .proxy: return "proxy"
         }
     }
 
     static func limit(_ providerID: String) -> Self {
-        Self(type: .limit, providerID: providerID, accountMode: providerID == "codex" ? .active : .lowest)
+        let id = canonicalProviderID(providerID)
+        return Self(type: .limit, providerID: id, accountMode: id == "codex" ? .active : .lowest)
+    }
+
+    static func account(_ providerID: String, _ accountID: String) -> Self {
+        Self(type: .limit, providerID: canonicalProviderID(providerID), accountID: accountID, showUsage: false, showSessions: false)
     }
 
     static func stat(_ metric: Metric) -> Self {
         Self(type: .stat, metric: metric)
     }
 
+    static func proxy() -> Self { Self(type: .proxy, showUsage: false, showSessions: false) }
+
+    static func canonicalProviderID(_ value: String) -> String {
+        let id = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return id == "claudecode" || id == "claude-code" ? "claude" : id
+    }
+
     private enum CodingKeys: String, CodingKey {
-        case type, providerID, provider, metric, hiddenAccountIDs, hiddenAccounts
+        case type, providerID, provider, accountID, metric, hiddenAccountIDs, hiddenAccounts
         case showUsage, showSessions, accountMode, runningOnly, groupBy, cellDetail
     }
 
     init(
         type: Kind,
         providerID: String? = nil,
+        accountID: String? = nil,
         metric: Metric? = nil,
         hiddenAccountIDs: [String] = [],
         showUsage: Bool = true,
@@ -137,6 +244,7 @@ struct TokenMonitorEdgeDockItem: Codable, Equatable, Identifiable {
     ) {
         self.type = type
         self.providerID = providerID
+        self.accountID = accountID
         self.metric = metric
         self.hiddenAccountIDs = hiddenAccountIDs
         self.showUsage = showUsage
@@ -153,6 +261,7 @@ struct TokenMonitorEdgeDockItem: Codable, Equatable, Identifiable {
         providerID =
             (try? values.decode(String.self, forKey: .providerID))
             ?? (try? values.decode(String.self, forKey: .provider))
+        accountID = try values.decodeIfPresent(String.self, forKey: .accountID)
         metric = try? values.decode(Metric.self, forKey: .metric)
         hiddenAccountIDs =
             (try? values.decode([String].self, forKey: .hiddenAccountIDs))
@@ -173,6 +282,7 @@ struct TokenMonitorEdgeDockItem: Codable, Equatable, Identifiable {
         switch type {
         case .limit:
             try values.encode(providerID, forKey: .providerID)
+            try values.encodeIfPresent(accountID, forKey: .accountID)
             try values.encode(hiddenAccountIDs, forKey: .hiddenAccountIDs)
             try values.encode(showUsage, forKey: .showUsage)
             try values.encode(showSessions, forKey: .showSessions)
@@ -184,6 +294,7 @@ struct TokenMonitorEdgeDockItem: Codable, Equatable, Identifiable {
                 try values.encode(groupBy, forKey: .groupBy)
                 try values.encode(cellDetail, forKey: .cellDetail)
             }
+        case .proxy: break
         }
     }
 
@@ -191,11 +302,23 @@ struct TokenMonitorEdgeDockItem: Codable, Equatable, Identifiable {
         var result = self
         switch type {
         case .limit:
-            guard let id = providerID?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+            guard let id = providerID.map(Self.canonicalProviderID),
                 TokenMonitorSource.safeID(id)
             else { return nil }
             result.providerID = id
             result.metric = nil
+            if let accountID {
+                let account = accountID.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !account.isEmpty, account.utf8.count <= 200,
+                    !account.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains)
+                else { return nil }
+                result.accountID = account
+                result.hiddenAccountIDs = []
+                result.accountMode = .lowest
+                result.showUsage = false
+                result.showSessions = false
+                return result
+            }
             result.hiddenAccountIDs = Array(
                 Set(
                     hiddenAccountIDs
@@ -206,7 +329,10 @@ struct TokenMonitorEdgeDockItem: Codable, Equatable, Identifiable {
         case .stat:
             guard metric != nil else { return nil }
             result.providerID = nil
+            result.accountID = nil
             result.hiddenAccountIDs = []
+        case .proxy:
+            return .proxy()
         }
         return result
     }
@@ -270,7 +396,7 @@ struct TokenMonitorEdgeDockSessionRow: Equatable, Identifiable {
 }
 
 struct TokenMonitorEdgeDockCell: Equatable, Identifiable {
-    enum Kind: Equatable { case provider, stat }
+    enum Kind: Equatable { case provider, stat, proxy }
 
     let id: String
     let kind: Kind
@@ -298,4 +424,71 @@ struct TokenMonitorEdgeDockCell: Equatable, Identifiable {
     let usageTodayCostUSD: Double?
     let usageMonthCostUSD: Double?
     let supportsLiveSessions: Bool
+    var accountLabel: String? = nil
+    var accountBindingMissing = false
+    var proxyPhase: LocalProxyPhase? = nil
+    /// Already admitted, still-owned requests; never inferred from quota or history.
+    var proxyAccounts: [LocalProxyQueueRow] = []
+
+    var proxyRequestCount: Int { proxyAccounts.reduce(0) { $0 + $1.activeRequestCount } }
+
+    var accountBadge: String? {
+        guard let label = accountLabel?.trimmingCharacters(in: .whitespacesAndNewlines),
+            !label.isEmpty, !["—", "–", "-", "--", "…"].contains(label)
+        else { return nil }
+        return String(label.prefix(2))
+    }
+
+    func proxyStatusTitle(_ language: WidgetLanguage) -> String {
+        switch proxyPhase {
+        case .stopped: return language.text("已停止", "Stopped")
+        case .starting: return language.text("正在启动", "Starting")
+        case .running: return proxyAccounts.isEmpty ? language.text("空闲", "Idle") : language.text("运行中", "Running")
+        case .stopping: return language.text("正在停止", "Stopping")
+        case .failed: return language.text("需要处理", "Needs attention")
+        case nil: return language.text("状态待确认", "Status pending")
+        }
+    }
+}
+
+/// Shared by the input observer and native panel configuration. Equal evidence
+/// must not start another projection or replace an unchanged hosting view.
+struct TokenMonitorEdgeDockChangeGate<Value: Equatable> {
+    private var previous: Value?
+
+    mutating func accept(_ value: Value) -> Bool {
+        guard previous != value else { return false }
+        previous = value
+        return true
+    }
+
+    mutating func reset() { previous = nil }
+}
+
+enum TokenMonitorEdgeDockIdlePolicy {
+    static func shouldClearOutside(
+        hasCard: Bool, railVisible: Bool, mode: TokenMonitorEdgeDockPreferences.Mode, pinned: Bool,
+        cardPinned: Bool = false
+    ) -> Bool {
+        !cardPinned && (hasCard || (railVisible && mode == .autoHide && !pinned))
+    }
+
+    static func tickInterval(nearEdge: Bool, hasCard: Bool, dragging: Bool, waitingOutside: Bool) -> TimeInterval {
+        nearEdge || hasCard || dragging || waitingOutside ? 0.05 : 0.2
+    }
+}
+
+/// Keep every configured cell reachable on small displays without clipped hit targets.
+struct TokenMonitorEdgeDockPage {
+    let indices: Range<Int>
+    let index: Int
+    let count: Int
+
+    static func make(cellCount: Int, availableHeight: Double, index: Int) -> Self {
+        let capacity = max(1, Int(max(0, availableHeight - 64) / 56))
+        let count = max(1, (cellCount + capacity - 1) / capacity)
+        let page = max(0, min(count - 1, index))
+        let start = min(cellCount, page * capacity)
+        return Self(indices: start..<min(cellCount, start + capacity), index: page, count: count)
+    }
 }

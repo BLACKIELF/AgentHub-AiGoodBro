@@ -10,14 +10,22 @@ final class TokenMonitorDesktopController: ObservableObject {
 
     enum Route: String, CaseIterable {
         case home, tool, status, device, model, project, session, limits, trends
-        case dashboard, settings
+        case dashboard, settings, menuBarSettings, floatingBubbleSettings
 
         var command: String {
             switch self {
             case .home: return "showHome"
             case .dashboard: return "showDashboard"
-            case .settings: return "showSettings"
+            case .settings, .menuBarSettings, .floatingBubbleSettings: return "showSettings"
             default: return "showView"
+            }
+        }
+
+        var settingsSection: String? {
+            switch self {
+            case .menuBarSettings: return "menuBar"
+            case .floatingBubbleSettings: return "floatingBubble"
+            default: return nil
             }
         }
     }
@@ -78,7 +86,7 @@ final class TokenMonitorDesktopController: ObservableObject {
         do {
             try await ensureStarted()
             guard let socketPath else { throw DesktopError.unavailable }
-            let request = DesktopRequest(cmd: route.command, view: route.command == "showView" ? route.rawValue : nil)
+            let request = DesktopRequest(cmd: route.command, view: route.command == "showView" ? route.rawValue : nil, section: route.settingsSection)
             let reply = try await Task.detached(priority: .userInitiated) {
                 try DesktopSocket.request(request, path: socketPath)
             }.value
@@ -352,6 +360,7 @@ private struct DesktopRequest: Encodable, Sendable {
     let id = UUID().uuidString
     let cmd: String
     var view: String? = nil
+    var section: String? = nil
 }
 
 private struct DesktopReply: Decodable, Sendable {

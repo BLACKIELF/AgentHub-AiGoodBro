@@ -10,11 +10,28 @@ struct FeishuMessageOptionsView: View {
             Text(language.text("消息字段", "Message fields"))
                 .font(.subheadline.weight(.semibold))
 
+            Picker(language.text("消息密度", "Message density"), selection: Binding(
+                get: { options.contentPreset },
+                set: { options.applyContentPreset($0) }
+            )) {
+                Text(language.text("紧凑", "Compact")).tag(FeishuMessageOptions.ContentPreset.compact)
+                Text(language.text("详细", "Detailed")).tag(FeishuMessageOptions.ContentPreset.detailed)
+                Text(language.text("自定义", "Custom")).tag(FeishuMessageOptions.ContentPreset.custom)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .tint(.blue)
+
             Toggle(language.text("Agent 名称（固定为 Codex）", "Agent name (always Codex)"), isOn: $options.includesAgentName)
             Toggle(language.text("账号备注名", "Account label"), isOn: $options.includesAccountLabel)
             Toggle(language.text("5 小时与 7 天额度", "5-hour and 7-day quotas"), isOn: $options.includesQuotas)
             Toggle(language.text("额度重置时间", "Quota reset times"), isOn: $options.includesResetTimes)
             Toggle(language.text("可用 Reset 卡", "Available reset credits"), isOn: $options.includesResetCredits)
+
+            Text(language.text("额度窗口提醒", "Quota-window alerts"))
+                .font(.caption)
+            Toggle(language.text("5 小时窗口重置", "5-hour window reset"), isOn: $options.notifiesFiveHourReset)
+            Toggle(language.text("7 天窗口重置", "7-day window reset"), isOn: $options.notifiesSevenDayReset)
 
             if options.includesResetCredits {
                 Text(language.text("到期详情", "Expiry details"))
@@ -38,6 +55,7 @@ struct FeishuMessageOptionsView: View {
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
         }
+        .tint(.blue)
         .disabled(disabled)
     }
 }

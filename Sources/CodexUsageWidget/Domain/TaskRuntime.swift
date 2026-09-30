@@ -709,7 +709,8 @@ extension TaskItem {
             displayState: presentation.displayState,
             stateBasis: stateBasis,
             rawStatus: rawStatus,
-            nextRunAt: nextRunAt
+            nextRunAt: nextRunAt,
+            projectPath: projectPath
         )
     }
 }

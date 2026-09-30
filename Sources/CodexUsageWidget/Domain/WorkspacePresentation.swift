@@ -19,6 +19,12 @@ enum QuotaAvailabilityPresentation {
         return fiveHour
     }
 
+    /// A missing official short window stays unknown, including weekly-only Pro.
+    static func reportedFiveHourRemaining(_ fiveHour: Double?, sevenDay: Double?) -> Double? {
+        guard let fiveHour else { return nil }
+        return fiveHourRemaining(fiveHour, sevenDay: sevenDay)
+    }
+
     static func fiveHourWindow(_ fiveHour: RateWindow?, sevenDay: RateWindow?) -> RateWindow? {
         guard isWeeklyExhausted(sevenDay?.remainingPercent) else { return fiveHour }
         return RateWindow(
@@ -37,6 +43,9 @@ enum QuotaAvailabilityPresentation {
             && fiveHourRemaining(nil, sevenDay: 83) == nil
             && fiveHourRemaining(82, sevenDay: 0.1) == 82
             && fiveHourRemaining(82, sevenDay: .nan) == 82
+            && reportedFiveHourRemaining(56, sevenDay: 0) == 0
+            && reportedFiveHourRemaining(nil, sevenDay: 0) == nil
+            && reportedFiveHourRemaining(56, sevenDay: 20) == 56
             && fiveHourWindow(fiveHour, sevenDay: exhausted)?.remainingPercent == 0
             && fiveHourWindow(nil, sevenDay: exhausted)?.remainingPercent == 0
             && fiveHourWindow(nil, sevenDay: nil) == nil

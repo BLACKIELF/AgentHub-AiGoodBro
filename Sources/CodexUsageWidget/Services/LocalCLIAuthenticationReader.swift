@@ -75,6 +75,10 @@ struct LocalCLIAuthenticationReader {
                 return .oauth
             }
         case .claudeCode:
+            let env = object("settings.json")["env"] as? [String: Any] ?? [:]
+            // An explicit CLI API configuration (including CC Switch) is the
+            // active route; do not consult an unrelated subscription Keychain item.
+            if Self.nonempty(env["ANTHROPIC_API_KEY"]) || Self.nonempty(env["ANTHROPIC_AUTH_TOKEN"]) { return .apiKey }
             var credentials = object(".credentials.json")
             if credentials.isEmpty, usesSystemKeychain,
                 let data = keychainReader("Claude Code-credentials", nil),
@@ -87,8 +91,6 @@ struct LocalCLIAuthenticationReader {
             {
                 return .oauth
             }
-            let env = object("settings.json")["env"] as? [String: Any] ?? [:]
-            if Self.nonempty(env["ANTHROPIC_API_KEY"]) || Self.nonempty(env["ANTHROPIC_AUTH_TOKEN"]) { return .apiKey }
         case .workBuddy, .zcode, .trae, .antigravity: break
         }
         return .unknown

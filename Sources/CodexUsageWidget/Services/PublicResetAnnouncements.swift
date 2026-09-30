@@ -442,6 +442,7 @@ final class PublicResetAnnouncementMonitor: ObservableObject {
     private var task: Task<Void, Never>?
     private var generation: UInt64 = 0
     private var historyCheckSequence: UInt64 = 0
+    private var fetchedForecastSequence: UInt64?
     private var verifiedCompletedIDs: Set<String>?
     private var stopped = false
     private let fixtureScheduling: Bool
@@ -514,6 +515,7 @@ final class PublicResetAnnouncementMonitor: ObservableObject {
         timer = nil
         task?.cancel()
         task = nil
+        fetchedForecastSequence = nil
         checking = false
     }
 
@@ -626,6 +628,9 @@ final class PublicResetAnnouncementMonitor: ObservableObject {
     private func deliverForecast(
         _ state: PublicResetForecastPageState, epoch: UInt64, checkSequence: UInt64? = nil
     ) async {
+        // An unsourced site watch is visible context only. It must not touch
+        // the forecast delivery ledger or establish a notification baseline.
+        if case .siteWatch = state { return }
         let sequence = checkSequence ?? historyCheckSequence
         guard enabled, isCurrent(epoch), sequence == historyCheckSequence,
             canSend(), let sendForecast
@@ -739,12 +744,14 @@ final class PublicResetAnnouncementMonitor: ObservableObject {
         let epoch = generation
         historyCheckSequence &+= 1
         let sequence = historyCheckSequence
+        fetchedForecastSequence = nil
         verifiedCompletedIDs = nil
         // Forecast state is fetched through its own parser and cache. Its
         // delivery ledger remains stage-specific and independent of history.
         if !preview {
             PublicResetForecastStore.shared.check { [weak self] state in
-                guard let self else { return }
+                guard let self, self.isCurrent(epoch), self.historyCheckSequence == sequence else { return }
+                self.fetchedForecastSequence = sequence
                 await self.deliverForecast(state, epoch: epoch, checkSequence: sequence)
             }
         }
@@ -776,10 +783,10 @@ final class PublicResetAnnouncementMonitor: ObservableObject {
                 let language = WidgetLanguage.storedOrAutomatic()
                 status = language.text("公告已更新；来源为第三方汇总，账号额度以官方刷新结果为准", "Announcements updated from a third-party feed. Account limits use official refresh results.")
                 guard enabled else { return }
-                // If the forecast callback arrived first, a validated cached
-                // forecast can now drain its pending record without another poll.
+                // Drain only a forecast validated by this check's page fetch;
+                // a previous cached post may have been withdrawn on the site.
                 if let forecast = PublicResetForecastStore.shared.forecast,
-                    forecast.isRetainableCache(at: Date())
+                    Self.shouldDrainForecast(forecast, fetchedSequence: fetchedForecastSequence, checkSequence: sequence, now: Date())
                 {
                     await deliverForecast(.forecast(forecast), epoch: epoch, checkSequence: sequence)
                 }
@@ -1004,6 +1011,12 @@ final class PublicResetAnnouncementMonitor: ObservableObject {
         } catch {
             if isCurrent(epoch) { status = PublicResetFailure.unavailable.localizedDescription }
         }
+    }
+
+    private static func shouldDrainForecast(
+        _ forecast: PublicResetForecast, fetchedSequence: UInt64?, checkSequence: UInt64, now: Date
+    ) -> Bool {
+        fetchedSequence == checkSequence && forecast.isRetainableCache(at: now)
     }
 
     /// Only the explicit CLI authorization path calls this. No app startup,
@@ -1332,9 +1345,17 @@ extension PublicResetAnnouncementMonitor {
         }
 
         do {
+            guard !shouldDrainForecast(first, fetchedSequence: nil, checkSequence: 2, now: now),
+                !shouldDrainForecast(first, fetchedSequence: 1, checkSequence: 2, now: now),
+                shouldDrainForecast(first, fetchedSequence: 2, checkSequence: 2, now: now)
+            else { return false }
             await monitor.deliverForecast(.forecast(first), epoch: monitor.generation)
             guard submitted.isEmpty, !FileManager.default.fileExists(atPath: monitor.forecastStateURL.path) else { return false }
             monitor.enabled = true
+            await monitor.deliverForecast(
+                .siteWatch(PublicResetSiteWatch(latestBy: now.addingTimeInterval(3600), fetchedAt: now)),
+                epoch: monitor.generation)
+            guard submitted.isEmpty, !FileManager.default.fileExists(atPath: monitor.forecastStateURL.path) else { return false }
             monitor.canSend = { false }
             await monitor.deliverForecast(.forecast(first), epoch: monitor.generation)
             guard !FileManager.default.fileExists(atPath: monitor.forecastStateURL.path) else { return false }

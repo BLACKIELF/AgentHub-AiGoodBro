@@ -7,12 +7,83 @@ struct FeishuMessageOptions: Codable, Equatable {
         case none
     }
 
+    enum ContentPreset: String, CaseIterable {
+        case compact, detailed, custom
+    }
+
     var includesAgentName: Bool
     var includesAccountLabel: Bool
     var includesQuotas: Bool
     var includesResetTimes: Bool
     var includesResetCredits: Bool
     var resetExpiryDetail: ResetExpiryDetail
+    var notifiesFiveHourReset: Bool
+    var notifiesSevenDayReset: Bool
+
+    init(includesAgentName: Bool, includesAccountLabel: Bool, includesQuotas: Bool,
+         includesResetTimes: Bool, includesResetCredits: Bool, resetExpiryDetail: ResetExpiryDetail,
+         notifiesFiveHourReset: Bool = true, notifiesSevenDayReset: Bool = true) {
+        self.includesAgentName = includesAgentName
+        self.includesAccountLabel = includesAccountLabel
+        self.includesQuotas = includesQuotas
+        self.includesResetTimes = includesResetTimes
+        self.includesResetCredits = includesResetCredits
+        self.resetExpiryDetail = resetExpiryDetail
+        self.notifiesFiveHourReset = notifiesFiveHourReset
+        self.notifiesSevenDayReset = notifiesSevenDayReset
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case includesAgentName, includesAccountLabel, includesQuotas, includesResetTimes
+        case includesResetCredits, resetExpiryDetail, notifiesFiveHourReset, notifiesSevenDayReset
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        includesAgentName = try values.decodeIfPresent(Bool.self, forKey: .includesAgentName) ?? false
+        includesAccountLabel = try values.decodeIfPresent(Bool.self, forKey: .includesAccountLabel) ?? true
+        includesQuotas = try values.decodeIfPresent(Bool.self, forKey: .includesQuotas) ?? true
+        includesResetTimes = try values.decodeIfPresent(Bool.self, forKey: .includesResetTimes) ?? true
+        includesResetCredits = try values.decodeIfPresent(Bool.self, forKey: .includesResetCredits) ?? true
+        resetExpiryDetail = try values.decodeIfPresent(ResetExpiryDetail.self, forKey: .resetExpiryDetail) ?? .nearest
+        // Existing installations keep receiving the two window types they enabled.
+        notifiesFiveHourReset = try values.decodeIfPresent(Bool.self, forKey: .notifiesFiveHourReset) ?? true
+        notifiesSevenDayReset = try values.decodeIfPresent(Bool.self, forKey: .notifiesSevenDayReset) ?? true
+    }
+
+    var contentPreset: ContentPreset {
+        if fieldsMatch(.standard) { return .detailed }
+        if fieldsMatch(.compact) { return .compact }
+        return .custom
+    }
+
+    mutating func applyContentPreset(_ preset: ContentPreset) {
+        guard preset != .custom else { return }
+        let fields: Self = preset == .compact ? .compact : .standard
+        includesAgentName = fields.includesAgentName
+        includesAccountLabel = fields.includesAccountLabel
+        includesQuotas = fields.includesQuotas
+        includesResetTimes = fields.includesResetTimes
+        includesResetCredits = fields.includesResetCredits
+        resetExpiryDetail = fields.resetExpiryDetail
+    }
+
+    func selectedQuotaEvent(_ event: CodexQuotaEvent) -> CodexQuotaEvent? {
+        guard case .quotaReset(let fiveHour, let sevenDay) = event else { return event }
+        let five = fiveHour && notifiesFiveHourReset
+        let seven = sevenDay && notifiesSevenDayReset
+        return five || seven ? .quotaReset(fiveHour: five, sevenDay: seven) : nil
+    }
+
+    private func fieldsMatch(_ other: Self) -> Bool {
+        includesAgentName == other.includesAgentName && includesAccountLabel == other.includesAccountLabel
+            && includesQuotas == other.includesQuotas && includesResetTimes == other.includesResetTimes
+            && includesResetCredits == other.includesResetCredits && resetExpiryDetail == other.resetExpiryDetail
+    }
+
+    private static let compact = FeishuMessageOptions(
+        includesAgentName: false, includesAccountLabel: true, includesQuotas: false,
+        includesResetTimes: false, includesResetCredits: true, resetExpiryDetail: .none)
 
     static let standard = FeishuMessageOptions(
         includesAgentName: false,

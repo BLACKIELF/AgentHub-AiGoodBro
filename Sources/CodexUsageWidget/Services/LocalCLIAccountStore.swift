@@ -625,7 +625,7 @@ final class LocalCLIAccountStore: ObservableObject {
                     self.quotaAttemptedAt.removeValue(forKey: profile.id)
                     self.quotaAttemptState.removeValue(forKey: profile.id)
                 }
-                if queuedRefresh, loaded.state != .rateLimited, !previousRateLimitStillActive {
+                if queuedRefresh || loaded.state == .available, loaded.state != .rateLimited, !previousRateLimitStillActive {
                     self.refresh(currentProfile)
                 }
                 return
@@ -696,15 +696,22 @@ final class LocalCLIAccountStore: ObservableObject {
             switch profile.kind {
             case .kimi: ["credentials/kimi-code.json", "device_id"]
             case .grok, .openCode, .mimo: ["auth.json"]
-            case .claudeCode: [".credentials.json"]
+            case .claudeCode: [".credentials.json", "settings.json"]
             case .gemini: ["settings.json", "oauth_creds.json", ".env"]
             case .zcode: ["v2/setting.json", "v2/config.json", "v2/credentials.json"]
             case .trae, .workBuddy, .antigravity: []
             }
         let directory = URL(fileURLWithPath: profile.configDirectory, isDirectory: true)
-        let files = names.map { name -> CredentialVersion.File? in
+        var urls = names.map { directory.appendingPathComponent($0) }
+        if profile.kind == .claudeCode, profile.isDefault,
+            directory.standardizedFileURL == LocalCLIKind.claudeCode.defaultConfigDirectory(home: home).standardizedFileURL
+        {
+            let relay = home.appendingPathComponent(".cc-switch", isDirectory: true)
+            urls += ["cc-switch.db", "cc-switch.db-wal"].map { relay.appendingPathComponent($0) }
+        }
+        let files = urls.map { url -> CredentialVersion.File? in
             var info = stat()
-            let path = directory.appendingPathComponent(name).path
+            let path = url.path
             guard lstat(path, &info) == 0, info.st_mode & S_IFMT == S_IFREG,
                 info.st_uid == geteuid(), info.st_nlink == 1
             else { return nil }
@@ -732,7 +739,7 @@ final class LocalCLIAccountStore: ObservableObject {
     private func rebuildProfiles() {
         let previousScopes = Dictionary(uniqueKeysWithValues: profiles.map { ($0.id, $0) })
         var result: [LocalCLIProfile] = []
-        for kind in LocalCLIKind.allCases where installed[kind] != nil {
+        for kind in LocalCLIKind.allCases where installed[kind] != nil || (kind == .claudeCode && hasClaudeAPIConfiguration()) {
             if kind == .workBuddy {
                 for edition in WorkBuddyEdition.allCases where workBuddyInstalled[edition] != nil {
                     let directory = home.appendingPathComponent(edition.directoryName).standardizedFileURL.path
@@ -784,6 +791,20 @@ final class LocalCLIAccountStore: ObservableObject {
         quotaAttemptState = quotaAttemptState.filter { retainedIDs.contains($0.key) }
         quotaCredentialVersions = quotaCredentialVersions.filter { retainedIDs.contains($0.key) }
         queuedCredentialRefresh.formIntersection(retainedIDs)
+    }
+
+    /// A configured API account can report a balance before its CLI is installed.
+    /// This discovers a profile only; launch readiness still requires an executable.
+    private func hasClaudeAPIConfiguration() -> Bool {
+        let file = LocalCLIKind.claudeCode.defaultConfigDirectory(home: home).appendingPathComponent("settings.json")
+        guard let data = try? DispatchParticipationSync.readBoundedRegularFile(file, maximumBytes: 256 * 1024, allowMissing: false),
+            let settings = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let environment = settings["env"] as? [String: Any]
+        else { return false }
+        return ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"].contains { key in
+            guard let value = environment[key] as? String else { return false }
+            return !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
     }
 
     private func validName(_ value: String) -> Bool {

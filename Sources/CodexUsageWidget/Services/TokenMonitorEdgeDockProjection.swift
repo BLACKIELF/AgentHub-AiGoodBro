@@ -12,6 +12,7 @@ enum TokenMonitorEdgeDockProjection {
     private static let clientProviderOverrides = [
         "droid": "factory", "zcode": "zai", "qodercn": "qoder", "dsh": "deepseek",
     ]
+    private static let sessionCache = SessionCache()
 
     static func make(
         preferences: TokenMonitorEdgeDockPreferences,
@@ -20,18 +21,29 @@ enum TokenMonitorEdgeDockProjection {
         language: WidgetLanguage,
         now: Date = Date(),
         activeCodexAccountID: String? = nil,
-        liveRateSample: TokenMonitorEdgeDockRateSample? = nil
+        liveRateSample: TokenMonitorEdgeDockRateSample? = nil,
+        proxyPhase: LocalProxyPhase? = nil,
+        proxyRows: [LocalProxyQueueRow] = []
     ) -> [TokenMonitorEdgeDockCell] {
         let items = preferences.normalized().items ?? automaticItems(quotaSources)
+        // Session details share one decoded, sorted view. No session payload is read
+        // when the selected dock items cannot display sessions.
+        let needsSessions = items.contains {
+            ($0.type == .limit && $0.providerID == "codex" && $0.showSessions)
+                || ($0.type == .stat && $0.metric == .sessions)
+        }
+        let sessions = needsSessions ? sessionCache.index(for: usage) : nil
         return items.map { item in
             switch item.type {
             case .limit:
                 return providerCell(
-                    item, sources: quotaSources, usage: usage, language: language,
+                    item, sources: quotaSources, usage: usage, sessions: sessions, language: language,
                     activeCodexAccountID: activeCodexAccountID
                 )
             case .stat:
-                return statCell(item, usage: usage, language: language, now: now, liveRateSample: liveRateSample)
+                return statCell(item, usage: usage, sessions: sessions, language: language, now: now, liveRateSample: liveRateSample)
+            case .proxy:
+                return proxyCell(language: language, phase: proxyPhase, rows: proxyRows)
             }
         }
     }
@@ -43,25 +55,46 @@ enum TokenMonitorEdgeDockProjection {
                     && account.metrics.contains { metric in
                         metric.isAvailable && !metric.sourceID.isEmpty && knownValue(metric.value)
                     }
-            }.map(\.providerID))
+            }.map { TokenMonitorEdgeDockItem.canonicalProviderID($0.providerID) })
         let ordered =
             providerOrder.filter(connected.contains)
             + connected.subtracting(providerOrder).sorted()
-        return [.stat(.today)]
+        return [.proxy(), .stat(.today)]
             + Array(ordered.prefix(3)).map(TokenMonitorEdgeDockItem.limit)
             + [.stat(.liveRate)]
+    }
+
+    private static func proxyCell(language: WidgetLanguage, phase: LocalProxyPhase?, rows: [LocalProxyQueueRow]) -> TokenMonitorEdgeDockCell {
+        let active = (phase == .running || phase == .stopping)
+            ? rows.filter { $0.isCurrent && $0.activeRequestCount > 0 }.sorted {
+                ($0.accountNumber ?? Int.max) < ($1.accountNumber ?? Int.max)
+            } : []
+        return TokenMonitorEdgeDockCell(
+            id: "proxy", kind: .proxy, title: language.text("反代状态", "Proxy activity"),
+            providerID: nil, iconID: nil, headlineAccountID: nil, headlineValueLabel: nil,
+            metric: nil, percentRemaining: nil, severityRemainingPercent: nil,
+            isStale: false, isAvailable: true, tokenCount: nil, costUSD: nil,
+            byTool: [], byModel: [], liveRate: nil, accounts: [], sessions: [],
+            sessionCount: nil, lastCollectedAt: nil, usageTodayTokens: nil,
+            usageMonthTokens: nil, usageTodayCostUSD: nil, usageMonthCostUSD: nil,
+            supportsLiveSessions: false, proxyPhase: phase, proxyAccounts: active
+        )
     }
 
     private static func providerCell(
         _ item: TokenMonitorEdgeDockItem,
         sources: [TokenMonitorFloatingBubbleAccount],
         usage: TokenMonitorDashboardSnapshot,
+        sessions: SessionIndex?,
         language: WidgetLanguage,
         activeCodexAccountID: String?
     ) -> TokenMonitorEdgeDockCell {
         let providerID = item.providerID ?? ""
         let hidden = Set(item.hiddenAccountIDs)
-        let matches = sources.filter { $0.providerID == providerID && !hidden.contains($0.accountID) }
+        let matches = sources.filter {
+            TokenMonitorEdgeDockItem.canonicalProviderID($0.providerID) == providerID && !hidden.contains($0.accountID)
+                && (item.accountID == nil || $0.accountID == item.accountID)
+        }
         let accounts = matches.map { account in
             let rows = account.metrics.map { metric in
                 let available = account.isLoggedIn && metric.isAvailable && !metric.sourceID.isEmpty
@@ -100,12 +133,23 @@ enum TokenMonitorEdgeDockProjection {
         // tightest known window, independently of the headline.
         // "active" is only resolved from a separately verified local account ID.
         let candidates: [(TokenMonitorEdgeDockAccountRow, TokenMonitorEdgeDockQuotaRow)] = accounts.compactMap { account in
-            let visible = account.quotaRows.filter { $0.isAvailable && !$0.isStale }
-            guard let row = visible.first(where: { $0.percentRemaining == 0 }) ?? visible.first else { return nil }
+            // Grok is refreshed on demand. Keep its last verified percentage
+            // visible with the stale marker, just like the account page. An
+            // expired window or invalid identity remains unavailable upstream.
+            let visible = account.quotaRows.filter { $0.isAvailable && (providerID == "grok" || !$0.isStale) }
+            let headlineRows: [TokenMonitorEdgeDockQuotaRow]
+            switch providerID {
+            case "grok": headlineRows = visible.filter { $0.percentRemaining != nil }
+            case "claude": headlineRows = visible.filter { $0.id == "balance" && $0.valueLabel != nil }
+            default: headlineRows = visible
+            }
+            guard let row = headlineRows.first(where: { $0.percentRemaining == 0 }) ?? headlineRows.first else { return nil }
             return (account, row)
         }
         let selected: (TokenMonitorEdgeDockAccountRow, TokenMonitorEdgeDockQuotaRow)?
-        if providerID == "codex" && item.accountMode == .active {
+        if let accountID = item.accountID {
+            selected = matches.count == 1 ? candidates.first(where: { $0.0.id == accountID }) : nil
+        } else if providerID == "codex" && item.accountMode == .active {
             selected = candidates.first { $0.0.id == activeCodexAccountID }
         } else {
             selected = candidates.min { lhs, rhs in
@@ -119,45 +163,52 @@ enum TokenMonitorEdgeDockProjection {
                 }
             }
         }
-        let severity = selected?.0.quotaRows
+        let severity = providerID == "claude" ? nil : selected?.0.quotaRows
             .filter { $0.isAvailable && !$0.isStale }
             .compactMap(\.percentRemaining).min()
         let period = usageByProvider(usage, providerID: providerID)
-        let sessions = item.showSessions ? recentSessions(usage, providerID: providerID, maximum: 3) : []
+        let showSessions = item.showSessions && providerID == "codex"
+        let recent = showSessions ? sessions?.recentCodex(maximum: 3) ?? [] : []
         return TokenMonitorEdgeDockCell(
             id: item.id, kind: .provider,
-            title: matches.first?.providerName ?? providerID,
+            title: item.accountID == nil ? (matches.first?.providerName ?? providerID)
+                : (matches.first?.accountName ?? language.text("账号不可用", "Account unavailable")),
             providerID: providerID, iconID: providerID,
-            headlineAccountID: selected?.0.id, headlineValueLabel: selected?.1.valueLabel,
+            headlineAccountID: selected?.0.id,
+            headlineValueLabel: item.accountID != nil && matches.isEmpty
+                ? language.text("账号未匹配", "Unmatched") : selected?.1.valueLabel,
             metric: nil, percentRemaining: selected?.1.percentRemaining,
             severityRemainingPercent: severity,
-            isStale: accounts.contains { $0.isStale } || usage.isStale,
+            isStale: accounts.contains { $0.isStale }
+                || (item.accountID == nil && usage.isStale && providerID != "grok" && providerID != "claude"),
             isAvailable: selected != nil,
             tokenCount: item.showUsage ? period.today.tokens : nil,
             costUSD: item.showUsage ? period.today.cost : nil,
             byTool: [], byModel: [], liveRate: nil, accounts: accounts,
-            sessions: sessions, sessionCount: item.showSessions ? sessions.count : nil,
+            sessions: recent, sessionCount: showSessions ? recent.count : nil,
             lastCollectedAt: usage.collectedAt,
             usageTodayTokens: item.showUsage ? period.today.tokens : nil,
             usageMonthTokens: item.showUsage ? period.month.tokens : nil,
             usageTodayCostUSD: item.showUsage ? period.today.cost : nil,
             usageMonthCostUSD: item.showUsage ? period.month.cost : nil,
-            supportsLiveSessions: false
+            supportsLiveSessions: false,
+            accountLabel: item.accountID == nil ? nil : matches.first?.accountName,
+            accountBindingMissing: item.accountID != nil && matches.isEmpty
         )
     }
 
     private static func statCell(
         _ item: TokenMonitorEdgeDockItem,
         usage: TokenMonitorDashboardSnapshot,
+        sessions: SessionIndex?,
         language: WidgetLanguage,
         now: Date,
         liveRateSample: TokenMonitorEdgeDockRateSample?
     ) -> TokenMonitorEdgeDockCell {
         let metric = item.metric ?? .allTime
         let result = periodResult(metric, usage: usage, language: language, now: now)
-        let sessions =
-            metric == .sessions
-            ? recentSessions(usage, providerID: nil, maximum: 6, runningOnly: item.runningOnly)
+        let recent = metric == .sessions
+            ? sessions?.recent(maximum: 6, runningOnly: item.runningOnly) ?? []
             : []
         let hasSessionSource = usage.response?.payload["aggregate"]?["month"]?["sessions"]?.object != nil
         let available =
@@ -175,7 +226,7 @@ enum TokenMonitorEdgeDockProjection {
             tokenCount: result.tokens, costUSD: result.cost,
             byTool: result.byTool, byModel: result.byModel,
             liveRate: metric == .liveRate ? liveRateSample : nil, accounts: [],
-            sessions: sessions, sessionCount: metric == .sessions && hasSessionSource ? sessions.count : nil,
+            sessions: recent, sessionCount: metric == .sessions && hasSessionSource ? recent.count : nil,
             lastCollectedAt: usage.collectedAt,
             usageTodayTokens: nil, usageMonthTokens: nil,
             usageTodayCostUSD: nil, usageMonthCostUSD: nil,
@@ -409,47 +460,116 @@ enum TokenMonitorEdgeDockProjection {
         }
     }
 
-    private static func recentSessions(
-        _ usage: TokenMonitorDashboardSnapshot,
-        providerID: String?, maximum: Int,
-        runningOnly: Bool = false
-    ) -> [TokenMonitorEdgeDockSessionRow] {
-        guard let response = usage.response else { return [] }
-        var source: [String: TokenMonitorJSON] = [:]
-        for period in ["month", "today"] {
-            for (key, value) in response.payload["aggregate"]?[period]?["sessions"]?.object ?? [:]
-            where source[key] == nil {
-                source[key] = value
-            }
+    private struct SessionIndex {
+        private struct Candidate {
+            let row: TokenMonitorEdgeDockSessionRow
+            let isRunning: Bool
+            let isCodex: Bool
         }
-        let collectedAt = usage.collectedAt ?? .distantPast
-        return source.compactMap { key, value -> TokenMonitorEdgeDockSessionRow? in
-            guard value["sessionKind"]?.string != "background-review",
-                let lastUsed = (value["lastUsedAt"]?.string ?? value["startedAt"]?.string)
-                    .flatMap(TokenMonitorResponse.timestamp),
-                let client = value["client"]?.string, !client.isEmpty,
-                providerID == nil || provider(forClient: client) == providerID
-            else { return nil }
-            let ended: Bool
-            if case .some(.bool(true)) = value["turnEnded"] { ended = true } else { ended = false }
-            let archived = ["archived", "deleted", "sourceDeleted"].contains { field in
-                if case .some(.bool(true)) = value[field] { return true }
-                return false
+
+        let all: [TokenMonitorEdgeDockSessionRow]
+        let running: [TokenMonitorEdgeDockSessionRow]
+        let codex: [TokenMonitorEdgeDockSessionRow]
+
+        init(
+            month: [String: TokenMonitorJSON], today: [String: TokenMonitorJSON],
+            collectedAt: Date?, parseTimestamp: (String) -> Date?
+        ) {
+            // The month entry wins when the same session is present in today.
+            var source = month
+            for (key, value) in today where source[key] == nil { source[key] = value }
+            let observedAt = collectedAt ?? .distantPast
+            var candidates: [Candidate] = []
+            candidates.reserveCapacity(source.count)
+            for (key, value) in source {
+                guard value["sessionKind"]?.string != "background-review",
+                    let client = value["client"]?.string, !client.isEmpty,
+                    let rawDate = value["lastUsedAt"]?.string ?? value["startedAt"]?.string,
+                    let lastUsed = parseTimestamp(rawDate)
+                else { continue }
+                let ended: Bool
+                if case .some(.bool(true)) = value["turnEnded"] { ended = true } else { ended = false }
+                let archived = ["archived", "deleted", "sourceDeleted"].contains { field in
+                    if case .some(.bool(true)) = value[field] { return true }
+                    return false
+                }
+                let model = TokenMonitorEdgeDockProjection.countMap(value["models"])
+                    .max { $0.value < $1.value }?.key
+                let amount = value["costUsd"]?.double
+                let row = TokenMonitorEdgeDockSessionRow(
+                    id: key, clientID: client, modelID: model,
+                    tokenCount: TokenMonitorDashboardSnapshot.integer(value["totalTokens"]),
+                    costUSD: amount.flatMap { $0.isFinite && $0 >= 0 ? $0 : nil },
+                    lastUsedAt: lastUsed, turnEnded: ended
+                )
+                candidates.append(Candidate(
+                    row: row, isRunning: !archived && !ended && observedAt.timeIntervalSince(lastUsed) <= 600,
+                    isCodex: TokenMonitorEdgeDockProjection.provider(forClient: client) == "codex"
+                ))
             }
-            if runningOnly && (archived || ended || collectedAt.timeIntervalSince(lastUsed) > 600) {
+            candidates.sort { $0.row.lastUsedAt > $1.row.lastUsedAt }
+            all = candidates.map(\.row)
+            running = candidates.filter(\.isRunning).map(\.row)
+            codex = candidates.filter(\.isCodex).map(\.row)
+        }
+
+        func recent(maximum: Int, runningOnly: Bool = false) -> [TokenMonitorEdgeDockSessionRow] {
+            Array((runningOnly ? running : all).prefix(maximum))
+        }
+
+        func recentCodex(maximum: Int) -> [TokenMonitorEdgeDockSessionRow] {
+            Array(codex.prefix(maximum))
+        }
+    }
+
+    /// Exact session JSON and collection time are the key, not requestId: a
+    /// same-ID response may change a session's client, status, or last-used time.
+    /// The cache retains one index and at most 4096 parsed timestamp strings.
+    private final class SessionCache: @unchecked Sendable {
+        private enum ParsedTime {
+            case valid(Date), invalid
+            var date: Date? {
+                if case .valid(let date) = self { return date }
                 return nil
             }
-            let models = countMap(value["models"])
-            let model = models.max { $0.value < $1.value }?.key
-            let amount = value["costUsd"]?.double
-            return TokenMonitorEdgeDockSessionRow(
-                id: key, clientID: client, modelID: model,
-                tokenCount: TokenMonitorDashboardSnapshot.integer(value["totalTokens"]),
-                costUSD: amount.flatMap { $0.isFinite && $0 >= 0 ? $0 : nil },
-                lastUsedAt: lastUsed, turnEnded: ended
-            )
         }
-        .sorted { $0.lastUsedAt > $1.lastUsedAt }
-        .prefix(maximum).map { $0 }
+
+        private let lock = NSLock()
+        private let regular = ISO8601DateFormatter()
+        private let fractional: ISO8601DateFormatter = {
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            return formatter
+        }()
+        private var parsedTimes: [String: ParsedTime] = [:]
+        private var lastMonth: TokenMonitorJSON?
+        private var lastToday: TokenMonitorJSON?
+        private var lastCollectedAt: Date?
+        private var lastIndex: SessionIndex?
+
+        func index(for usage: TokenMonitorDashboardSnapshot) -> SessionIndex {
+            let month = usage.response?.payload["aggregate"]?["month"]?["sessions"]
+            let today = usage.response?.payload["aggregate"]?["today"]?["sessions"]
+            lock.lock()
+            defer { lock.unlock() }
+            if let lastIndex, month == lastMonth, today == lastToday, usage.collectedAt == lastCollectedAt {
+                return lastIndex
+            }
+            let index = SessionIndex(
+                month: month?.object ?? [:], today: today?.object ?? [:],
+                collectedAt: usage.collectedAt, parseTimestamp: { [self] raw in
+                    if let cached = parsedTimes[raw] { return cached.date }
+                    let date = regular.date(from: raw) ?? fractional.date(from: raw)
+                    if parsedTimes.count >= 4096 { parsedTimes.removeAll(keepingCapacity: true) }
+                    parsedTimes[raw] = date.map(ParsedTime.valid) ?? .invalid
+                    return date
+                }
+            )
+            lastMonth = month
+            lastToday = today
+            lastCollectedAt = usage.collectedAt
+            lastIndex = index
+            return index
+        }
     }
 }

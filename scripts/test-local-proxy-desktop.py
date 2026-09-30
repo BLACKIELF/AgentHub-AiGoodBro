@@ -20,6 +20,7 @@ def main():
     parser.add_argument("--codex", type=Path, required=True)
     args = parser.parse_args()
     calls = []
+    accounts = []
     key = secrets.token_urlsafe(32)
     marker = "AIGOODBRO_ISOLATED_DESKTOP_OK"
     desktop_token = "fixture-desktop-access-token"
@@ -156,7 +157,7 @@ def main():
             def rpc(method, params, ident):
                 send(method, params, ident)
                 reply = until(lambda x: x.get("id") == ident)
-                assert "error" not in reply, reply.get("error")
+                assert "error" not in reply, (run, method, reply.get("error"))
                 return reply["result"]
             try:
                 rpc("initialize", {"clientInfo": {"name": "aigoodbro_fixture", "version": "1"},
@@ -169,10 +170,11 @@ def main():
                     result = rpc("thread/start", params, 2)
                     thread_id = result["thread"]["id"]
                 else:
-                    if run in (2, 4):
-                        params.pop("modelProvider")
+                    if run in (1, 2, 4):
                         params.pop("model")
                         params.pop("config")
+                    if run in (2, 4):
+                        params.pop("modelProvider")
                     result = rpc("thread/resume", {**params, "threadId": thread_id}, 2)
                 assert result["modelProvider"] == ("aigoodbro_local" if run == 0 else "openai")
                 assert result["model"] == "gpt-6-sol"
@@ -180,9 +182,14 @@ def main():
                     account = rpc("account/read", {"refreshToken": False}, 5)
                     assert account["requiresOpenaiAuth"] is True
                     assert account["account"]["type"] == "chatgpt"
-                    assert account["workspaceRouting"] is not None
-                rpc("turn/start", {"threadId": thread_id, "model": "gpt-6-sol", "effort": "max",
-                                  "input": [{"type": "text", "text": "Return the fixture marker."}]}, 3)
+                    assert account["account"]["email"] == "fixture@example.invalid"
+                    assert account["account"]["planType"] == "plus"
+                    accounts.append(account)
+                turn = {"threadId": thread_id,
+                        "input": [{"type": "text", "text": "Return the fixture marker."}]}
+                if run in (0, 3):
+                    turn.update(model="gpt-6-sol", effort="max")
+                rpc("turn/start", turn, 3)
                 finished = until(lambda x: x.get("method") == "turn/completed")
                 assert finished["params"]["turn"]["status"] == "completed", finished
                 # Old rollouts retain their creation provider in all-provider
@@ -199,6 +206,10 @@ def main():
                     child.wait(timeout=5)
                 reader.join(timeout=2)
         assert len(calls) == 5, len(calls)
+        # Standalone 0.154 no longer exposes workspaceRouting in account/read.
+        # Compare the entire adapter/direct responses, including that field on
+        # versions that expose it, instead of depending on a removed API field.
+        assert len(accounts) == 4 and all(account == accounts[0] for account in accounts)
         assert all(x["model"] == "gpt-6-sol" and x.get("reasoning", {}).get("effort") == "max" for x in calls)
         assert any(marker in json.dumps(x.get("input")) for x in calls[1:])
         assert auth_path.read_bytes() == auth_before

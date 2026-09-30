@@ -2,7 +2,7 @@ import Darwin
 import Foundation
 
 /// Same-user, local-only transport for the installed Codex Desktop IPC router.
-/// The wire versions below are pinned to Desktop 26.917.71314; unknown messages fail closed.
+/// The wire versions were rechecked against Desktop 26.928.20755; unknown messages fail closed.
 final class CodexDesktopIPC {
     enum IPCError: Error {
         case mainThread
@@ -13,6 +13,7 @@ final class CodexDesktopIPC {
         case disconnected
         case unsupportedRequest
         case unexpectedResponse
+        case cancelled
         case remote(String)
     }
 
@@ -56,7 +57,8 @@ final class CodexDesktopIPC {
         params: [String: Any],
         targetClientId: String? = nil,
         hostId: String = "local",
-        timeout: TimeInterval = 5
+        timeout: TimeInterval = 5,
+        shouldSend: @escaping () -> Bool = { true }
     ) throws -> [String: Any] {
         guard !Thread.isMainThread else { throw IPCError.mainThread }
         guard hostId == "local", timeout > 0, timeout <= 30 else { throw IPCError.unsupportedRequest }
@@ -96,7 +98,8 @@ final class CodexDesktopIPC {
             params: params,
             version: version,
             targetClientID: targetClientId,
-            timeout: timeout
+            timeout: timeout,
+            shouldSend: shouldSend
         )
         guard response["method"] as? String == method,
             response["resultType"] as? String == "success"
@@ -259,7 +262,8 @@ final class CodexDesktopIPC {
         params: [String: Any],
         version: Int,
         targetClientID: String?,
-        timeout: TimeInterval
+        timeout: TimeInterval,
+        shouldSend: @escaping () -> Bool = { true }
     ) throws -> [String: Any] {
         let requestID = UUID().uuidString.lowercased()
         let waiter = Pending()
@@ -273,7 +277,7 @@ final class CodexDesktopIPC {
             "timeoutMs": Int(timeout * 1_000),
         ]
         if let targetClientID { message["targetClientId"] = targetClientID }
-        do { try send(message) } catch {
+        do { try send(message, shouldSend: shouldSend) } catch {
             stateLock.lock()
             pending.removeValue(forKey: requestID)
             stateLock.unlock()
@@ -304,7 +308,7 @@ final class CodexDesktopIPC {
         ])
     }
 
-    private func send(_ message: [String: Any]) throws {
+    private func send(_ message: [String: Any], shouldSend: () -> Bool = { true }) throws {
         guard JSONSerialization.isValidJSONObject(message),
             let payload = try? JSONSerialization.data(withJSONObject: message),
             payload.count > 0, payload.count <= maximumFrameBytes
@@ -314,6 +318,7 @@ final class CodexDesktopIPC {
         frame.append(payload)
         writeLock.lock()
         defer { writeLock.unlock() }
+        guard shouldSend() else { throw IPCError.cancelled }
         stateLock.lock()
         let fd = descriptor
         stateLock.unlock()

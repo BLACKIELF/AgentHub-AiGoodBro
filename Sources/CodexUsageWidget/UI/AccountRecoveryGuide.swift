@@ -34,7 +34,7 @@ struct AccountRecoveryGuide: View {
             Picker(language.text("目标账号", "Target account"), selection: $selectedID) {
                 Text(language.text("先选择要恢复的账号", "Choose an account first")).tag("")
                 ForEach(candidates) { profile in
-                    Text(AccountDisplay.profileName(profile) + " · " + String(profile.id.prefix(8))).tag(profile.id)
+                    Text(AccountDisplay.numberedName(profile, allProfiles: store.profiles) + " · " + String(profile.id.prefix(8))).tag(profile.id)
                 }
             }.disabled(store.isLoggingIn)
             if let profile = selected {
@@ -108,7 +108,7 @@ struct AccountRecoveryGuide: View {
         } message: {
             if let profile = selected {
                 Text(
-                    AccountDisplay.profileName(profile) + "\n" + profile.id + "\n"
+                    AccountDisplay.numberedName(profile, allProfiles: store.profiles) + "\n" + profile.id + "\n"
                         + language.text("仅此独立账号。先检查占用；浏览器中请再次确认身份。", "Only this isolated account. Occupancy is checked first; verify identity again in the browser."))
             }
         }

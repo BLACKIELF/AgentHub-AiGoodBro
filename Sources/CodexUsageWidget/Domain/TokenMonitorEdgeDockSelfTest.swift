@@ -27,6 +27,46 @@ enum TokenMonitorEdgeDockSelfTest {
             "configured cells normalize and de-duplicate in order"
         )
 
+        let builtInUUID = UUID(uuidString: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")!
+        let externalUUID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+        let builtIn = TokenMonitorEdgeDockScreenTarget.Identity(
+            numericID: 1, uuid: builtInUUID, isBuiltIn: true
+        )
+        let external = TokenMonitorEdgeDockScreenTarget.Identity(
+            numericID: 2, uuid: externalUUID, isBuiltIn: false
+        )
+        let externalID = TokenMonitorEdgeDockScreenTarget.stableID(for: external)!
+        let legacyScreen = TokenMonitorEdgeDockPreferences.load(
+            Data(#"{"enabled":true,"displayID":"1"}"#.utf8)
+        )
+        expect(legacyScreen.enabled && legacyScreen.displayID == "1"
+               && TokenMonitorEdgeDockScreenTarget.migratedID(legacyScreen.displayID, screens: [builtIn, external]) == "builtin",
+               "numeric display ID migrates to the built-in screen semantic when that display is present")
+        expect(TokenMonitorEdgeDockScreenTarget.migratedID("1", screens: [external]) == "1"
+               && TokenMonitorEdgeDockScreenTarget.index(for: "1", in: [external], preferredIndex: 0) == nil,
+               "disconnected numeric choice stays selected and does not fall back to another display")
+        expect(TokenMonitorEdgeDockScreenTarget.migratedID("2", screens: [builtIn, external]) == externalID,
+               "a legacy external numeric ID migrates to its stable UUID")
+        let reattachedExternal = TokenMonitorEdgeDockScreenTarget.Identity(
+            numericID: 87, uuid: externalUUID, isBuiltIn: false
+        )
+        let reattachedBuiltIn = TokenMonitorEdgeDockScreenTarget.Identity(
+            numericID: 55, uuid: builtInUUID, isBuiltIn: true
+        )
+        expect(TokenMonitorEdgeDockScreenTarget.index(for: externalID, in: [builtIn], preferredIndex: 0) == nil
+               && TokenMonitorEdgeDockScreenTarget.index(for: externalID, in: [reattachedExternal], preferredIndex: 0) == 0,
+               "fixed external target hides when disconnected and returns after numeric ID changes")
+        expect(TokenMonitorEdgeDockScreenTarget.index(for: "builtin", in: [external], preferredIndex: 0) == nil
+               && TokenMonitorEdgeDockScreenTarget.index(for: "builtin", in: [reattachedBuiltIn, external], preferredIndex: 1) == 0,
+               "built-in target does not follow the main external screen and recovers after reconnect")
+        expect(TokenMonitorEdgeDockScreenTarget.index(for: nil, in: [builtIn, external], preferredIndex: 1) == 1
+               && TokenMonitorEdgeDockScreenTarget.targetAfterDrag(nil, originIndex: 0, destinationIndex: 0, screens: [builtIn, external]) == nil
+               && TokenMonitorEdgeDockScreenTarget.targetAfterDrag(nil, originIndex: 0, destinationIndex: 1, screens: [builtIn, external]) == externalID,
+               "follow mode honors the current screen and intentional cross-screen drops")
+        expect(TokenMonitorEdgeDockScreenTarget.targetAfterDrag("builtin", originIndex: 0, destinationIndex: 1, screens: [builtIn, external]) == "builtin"
+               && TokenMonitorEdgeDockScreenTarget.targetAfterDrag(externalID, originIndex: 1, destinationIndex: 0, screens: [builtIn, external]) == externalID,
+               "dragging a fixed rail cannot silently change its target screen")
+
         let now = Date(timeIntervalSince1970: 1_790_380_800)
         let primary = TokenMonitorFloatingBubbleMetric(
             id: "five-hour", name: "5-hour", sourceID: "codex:a:five-hour",
@@ -50,8 +90,8 @@ enum TokenMonitorEdgeDockSelfTest {
             language: .en, now: now
         )
         expect(
-            automatic.map(\.id) == ["stat:today", "limit:claude", "limit:codex", "stat:liveRate"],
-            "automatic rail places Today, connected providers and rate in upstream display order"
+            automatic.map(\.id) == ["proxy", "stat:today", "limit:claude", "limit:codex", "stat:liveRate"],
+            "automatic rail exposes proxy settings ahead of usage and quota items"
         )
         expect(
             TokenMonitorEdgeDockProjection.make(
@@ -78,6 +118,301 @@ enum TokenMonitorEdgeDockSelfTest {
         expect(active[1].costUSD == nil, "missing cost remains unknown")
         expect(active[2].tokenCount == nil, "derived week with missing history coverage remains unknown")
         expect(active[3].liveRate == nil && !active[3].isAvailable, "live rate has no fabricated initial value")
+
+        let grokWindow = TokenMonitorFloatingBubbleMetric(
+            id: "credits", name: "Monthly", sourceID: "grok:g:credits", fetchedAt: now,
+            value: .percentRemaining(63)
+        )
+        let grokBalance = TokenMonitorFloatingBubbleMetric(
+            id: "balance", name: "Balance", sourceID: "grok:g:balance", fetchedAt: now,
+            value: .text("7.50 USD")
+        )
+        let grok = TokenMonitorFloatingBubbleAccount(
+            providerID: "grok", providerName: "Grok", accountID: "g",
+            accountName: "Grok alias", metrics: [grokBalance, grokWindow]
+        )
+        let grokCell = TokenMonitorEdgeDockProjection.make(
+            preferences: .init(items: [.account("grok", "g")]), quotaSources: [grok],
+            usage: usage, language: .en, now: now
+        )[0]
+        expect(grokCell.percentRemaining == 63 && grokCell.headlineValueLabel == nil,
+               "Grok subscription percentage wins over prepaid USD in the headline")
+        expect(grokCell.accounts[0].quotaRows.first?.valueLabel == "7.50 USD",
+               "Grok prepaid balance stays visible in details")
+        var cachedWindow = grokWindow
+        cachedWindow.fetchedAt = now.addingTimeInterval(-360)
+        cachedWindow.isStale = true
+        let cachedGrok = TokenMonitorFloatingBubbleAccount(
+            providerID: "grok", providerName: "Grok", accountID: "g",
+            accountName: "Grok alias", metrics: [cachedWindow, grokBalance]
+        )
+        let cachedCell = TokenMonitorEdgeDockProjection.make(
+            preferences: .init(items: [.account("grok", "g")]), quotaSources: [cachedGrok],
+            usage: usage, language: .en, now: now
+        )[0]
+        expect(cachedCell.isAvailable && cachedCell.isStale && cachedCell.percentRemaining == 63
+               && cachedCell.severityRemainingPercent == nil,
+               "cached Grok percentage remains visible as last recorded without a current severity signal")
+        var refreshedGrok = grok
+        refreshedGrok.metrics[1].value = .percentRemaining(99)
+        let refreshedCell = TokenMonitorEdgeDockProjection.make(
+            preferences: .init(items: [.account("grok", "g")]), quotaSources: [refreshedGrok],
+            usage: usage, language: .en, now: now
+        )[0]
+        expect(refreshedCell.percentRemaining == 99 && !refreshedCell.isStale,
+               "a completed quota read replaces the cached headline and clears its stale marker")
+        var loggedOutGrok = cachedGrok
+        loggedOutGrok.isLoggedIn = false
+        let loggedOutCell = TokenMonitorEdgeDockProjection.make(
+            preferences: .init(items: [.account("grok", "g")]), quotaSources: [loggedOutGrok],
+            usage: usage, language: .en, now: now
+        )[0]
+        expect(!loggedOutCell.isAvailable && loggedOutCell.percentRemaining == nil,
+               "cached quota never bypasses the login or identity gate")
+        let balanceOnlyGrok = TokenMonitorFloatingBubbleAccount(
+            providerID: "grok", providerName: "Grok", accountID: "g",
+            accountName: "Grok alias", metrics: [grokBalance]
+        )
+        let unknownGrok = TokenMonitorEdgeDockProjection.make(
+            preferences: .init(items: [.account("grok", "g")]), quotaSources: [balanceOnlyGrok],
+            usage: usage, language: .en, now: now
+        )[0]
+        expect(!unknownGrok.isAvailable && unknownGrok.percentRemaining == nil && unknownGrok.headlineValueLabel == nil,
+               "Grok balance alone never becomes a subscription percentage")
+        var expiredWindow = grokWindow
+        expiredWindow.isStale = true
+        expiredWindow.isAvailable = false
+        let expiredGrok = TokenMonitorEdgeDockProjection.make(
+            preferences: .init(items: [.account("grok", "g")]),
+            quotaSources: [.init(providerID: "grok", providerName: "Grok", accountID: "g",
+                                 accountName: "Grok alias", metrics: [expiredWindow, grokBalance])],
+            usage: usage, language: .en, now: now
+        )[0]
+        expect(!expiredGrok.isAvailable && expiredGrok.isStale,
+               "expired Grok subscription is stale even when prepaid balance remains known")
+        let claudeBalance = TokenMonitorFloatingBubbleMetric(
+            id: "balance", name: "Balance", sourceID: "claude:c:balance", fetchedAt: now,
+            value: .text("12.34 USD")
+        )
+        let claudeWithBalance = TokenMonitorFloatingBubbleAccount(
+            providerID: "claude", providerName: "Claude", accountID: "c",
+            accountName: "Claude alias", metrics: [primary, claudeBalance]
+        )
+        let claudeCell = TokenMonitorEdgeDockProjection.make(
+            preferences: .init(items: [.account("claude", "c")]), quotaSources: [claudeWithBalance],
+            usage: usage, language: .en, now: now
+        )[0]
+        expect(claudeCell.headlineValueLabel == "12.34 USD" && claudeCell.percentRemaining == nil
+               && claudeCell.severityRemainingPercent == nil,
+               "Claude headline uses the observed balance and currency, never a percent")
+        let unknownClaude = TokenMonitorEdgeDockProjection.make(
+            preferences: .init(items: [.account("claude", "c")]), quotaSources: [claude],
+            usage: usage, language: .en, now: now
+        )[0]
+        expect(!unknownClaude.isAvailable && unknownClaude.headlineValueLabel == nil,
+               "Claude without an observed balance remains unknown")
+
+        // A shared session index must use current JSON even when requestId is
+        // reused. Provider detail is Codex-only; generic history covers all clients.
+        func session(_ client: String, at date: Date, ended: Bool = false) -> TokenMonitorJSON {
+            .object([
+                "client": .string(client),
+                "lastUsedAt": .string(ISO8601DateFormatter().string(from: date)),
+                "turnEnded": .bool(ended), "totalTokens": .number(10),
+            ])
+        }
+        var sessionResult = response(now: now, tokens: 10)
+        let older = now.addingTimeInterval(-100)
+        let newer = now.addingTimeInterval(-40)
+        func sessionPayload(_ month: [String: TokenMonitorJSON], today: [String: TokenMonitorJSON]) -> TokenMonitorJSON {
+            .object(["aggregate": .object([
+                "month": .object(["sessions": .object(month)]),
+                "today": .object(["sessions": .object(today)]),
+            ])])
+        }
+        sessionResult.payload = sessionPayload(
+            ["c1": session("codex", at: older), "c2": session("codex", at: newer),
+             "g1": session("grok", at: now), "k1": session("kimi", at: now),
+             "x1": session("custom-cli", at: now.addingTimeInterval(-10))],
+            today: ["c1": session("grok", at: now), "c3": session("codex", at: now.addingTimeInterval(-20))]
+        )
+        let kimi = TokenMonitorFloatingBubbleAccount(
+            providerID: "kimi", providerName: "Kimi", accountID: "k",
+            accountName: "Kimi alias", metrics: [.init(
+                id: "credits", name: "Credits", sourceID: "kimi:k:credits", fetchedAt: now,
+                value: .text("5 credits"))]
+        )
+        let sessionPreferences = TokenMonitorEdgeDockPreferences(items: [
+            .limit("codex"), .limit("grok"), .limit("kimi"), .stat(.sessions),
+        ])
+        func sessionCells(_ result: TokenMonitorResponse, preferences: TokenMonitorEdgeDockPreferences = sessionPreferences) -> [TokenMonitorEdgeDockCell] {
+            TokenMonitorEdgeDockProjection.make(
+                preferences: preferences, quotaSources: [codex, grok, kimi],
+                usage: TokenMonitorDashboardSnapshot(response: result), language: .en, now: now
+            )
+        }
+        let firstSessions = sessionCells(sessionResult)
+        expect(firstSessions[0].sessions.map(\.id) == ["c3", "c2", "c1"],
+               "Codex provider keeps only its sessions; month wins duplicate IDs")
+        expect(Set(firstSessions[3].sessions.prefix(2).map(\.id)) == Set(["g1", "k1"])
+               && firstSessions[3].sessions.dropFirst(2).first?.id == "x1"
+               && firstSessions[3].sessions.suffix(3).map(\.id) == ["c3", "c2", "c1"]
+               && firstSessions[3].sessionCount == 6,
+               "generic session history retains all valid clients in descending date order")
+        expect(firstSessions[1].sessions.isEmpty && firstSessions[1].sessionCount == nil
+               && firstSessions[2].sessions.isEmpty && firstSessions[2].sessionCount == nil
+               && firstSessions[1].isAvailable && firstSessions[2].isAvailable
+               && firstSessions[2].headlineValueLabel == "5 credits",
+               "Grok and Kimi keep account and quota cards without session detail monitoring")
+        sessionResult.payload = sessionPayload(
+            ["c1": session("grok", at: older), "c2": session("codex", at: newer, ended: true)],
+            today: ["c3": session("codex", at: now.addingTimeInterval(-20))]
+        )
+        let changedSessions = sessionCells(sessionResult)
+        expect(changedSessions[0].sessions.map(\.id) == ["c3", "c2"]
+               && changedSessions[0].sessions.first(where: { $0.id == "c2" })?.turnEnded == true
+               && changedSessions[3].sessions.map(\.id) == ["c3", "c2", "c1"]
+               && changedSessions[3].sessions.last?.clientID == "grok",
+               "same-request client and status changes invalidate both index views")
+        var runningOnly = sessionPreferences
+        var runningSessionItem = TokenMonitorEdgeDockItem.stat(.sessions)
+        runningSessionItem.runningOnly = true
+        runningOnly.items = [runningSessionItem]
+        expect(sessionCells(sessionResult, preferences: runningOnly)[0].sessions.map(\.id) == ["c3", "c1"],
+               "generic running history keeps other clients but omits ended rows")
+        sessionResult.collectedAt = ISO8601DateFormatter().string(from: now.addingTimeInterval(700))
+        expect(sessionCells(sessionResult, preferences: runningOnly)[0].sessions.isEmpty,
+               "a changed collection time invalidates running-session freshness")
+
+        var inputGate = TokenMonitorEdgeDockChangeGate<Int>()
+        expect(inputGate.accept(0), "initial Edge Dock evidence draws immediately")
+        var redundantSyncs = 0
+        for _ in 0..<100 {
+            if inputGate.accept(0) { redundantSyncs += 1 }
+        }
+        expect(redundantSyncs == 0 && inputGate.accept(1) && !inputGate.accept(1),
+               "100 unrelated publications are ignored; one changed input passes once")
+        var outputGate = TokenMonitorEdgeDockChangeGate<[TokenMonitorEdgeDockCell]>()
+        let identicalConfigures = [cells, cells].filter { outputGate.accept($0) }.count
+        expect(identicalConfigures == 1, "identical final cells configure native surfaces once")
+        expect(!TokenMonitorEdgeDockIdlePolicy.shouldClearOutside(
+            hasCard: false, railVisible: true, mode: .always, pinned: false),
+            "moving away from an already empty always-visible rail does not redraw")
+        expect(TokenMonitorEdgeDockIdlePolicy.shouldClearOutside(
+            hasCard: true, railVisible: true, mode: .always, pinned: false)
+            && TokenMonitorEdgeDockIdlePolicy.shouldClearOutside(
+                hasCard: false, railVisible: true, mode: .autoHide, pinned: false),
+            "an open card closes and an unpinned auto-hide rail retracts")
+        expect(TokenMonitorEdgeDockIdlePolicy.tickInterval(
+            nearEdge: false, hasCard: false, dragging: false, waitingOutside: false) == 0.2
+            && TokenMonitorEdgeDockIdlePolicy.tickInterval(
+                nearEdge: true, hasCard: false, dragging: false, waitingOutside: false) == 0.05
+            && TokenMonitorEdgeDockIdlePolicy.tickInterval(
+                nearEdge: false, hasCard: false, dragging: true, waitingOutside: false) == 0.05,
+            "idle polling is low frequency while near-edge and drag polling stays responsive")
+
+        let secondAccount = TokenMonitorFloatingBubbleAccount(
+            providerID: "codex", providerName: "Codex", accountID: "b",
+            accountName: "02 Second", metrics: [primary]
+        )
+        let pinnedItems: [TokenMonitorEdgeDockItem] = [.account("codex", "b"), .account("codex", "a"), .account("codex", "removed")]
+        var pinned = defaults
+        pinned.mode = .always
+        pinned.items = pinnedItems + [.account("codex", "a")]
+        let restoredPinned = TokenMonitorEdgeDockPreferences.load(try? JSONEncoder().encode(pinned))
+        expect(restoredPinned.items == pinnedItems && restoredPinned.mode == .always, "account selection, order and always-visible mode persist without duplicates")
+        let pinnedCells = TokenMonitorEdgeDockProjection.make(
+            preferences: restoredPinned, quotaSources: [codex, secondAccount], usage: usage,
+            language: .en, now: now, activeCodexAccountID: "a"
+        )
+        expect(pinnedCells.map(\.percentRemaining) == [100, 0, nil], "multiple selected accounts retain separate quotas regardless of the Desktop login")
+        expect(pinnedCells[0].accountLabel == "02 Second" && pinnedCells[0].accounts.map(\.id) == ["b"], "pinned account shows its numbered alias and only its own details")
+        expect(!pinnedCells[2].isAvailable && pinnedCells[2].accounts.isEmpty, "removed selected account stays unavailable instead of switching to another identity")
+        expect(pinnedCells[2].accountLabel == nil && pinnedCells[2].accountBadge == nil && pinnedCells[2].accountBindingMissing
+               && pinnedCells[2].headlineValueLabel == "Unmatched", "missing account binding never becomes a minus-shaped badge or another account’s quota")
+        expect(pinnedCells[0].accountBadge == "02", "verified account shorthand stays visible")
+        var placeholder = pinnedCells[0]
+        placeholder.accountLabel = " — "
+        expect(placeholder.accountBadge == nil, "placeholder account names do not render a false button")
+        let localClaude = TokenMonitorFloatingBubbleAccount(
+            providerID: "claudeCode", providerName: "Claude Code", accountID: "local-claude",
+            accountName: "Local login", metrics: [.init(id: "balance", name: "Balance", sourceID: "fixture:claude:balance",
+                fetchedAt: now, value: .text("12.34 USD"))])
+        let oldClaudePreference = TokenMonitorEdgeDockPreferences.load(Data(
+            #"{"enabled":true,"items":[{"type":"limit","providerID":"claudecode","accountID":"local-claude"}]}"#.utf8))
+        let migratedClaude = TokenMonitorEdgeDockProjection.make(preferences: oldClaudePreference,
+            quotaSources: [localClaude], usage: usage, language: .en, now: now)
+        expect(oldClaudePreference.items?.first?.providerID == "claude"
+               && oldClaudePreference.items?.first?.accountID == "local-claude"
+               && migratedClaude.first?.headlineValueLabel == "12.34 USD"
+               && migratedClaude.first?.accountBindingMissing == false,
+               "existing Claude Code account selections match native provider aliases without changing identity")
+        expect(TokenMonitorEdgeDockItem.account("claudeCode", "local-claude").id == oldClaudePreference.items?.first?.id,
+               "the account checkbox and persisted item use the same canonical identity")
+        expect(TokenMonitorEdgeDockProjection.automaticItems([localClaude]).contains { $0.providerID == "claude" },
+               "automatic provider discovery canonicalizes native IDs too")
+        expect(pinnedCells[0].tokenCount == nil && pinnedCells[0].sessions.isEmpty, "provider-wide token usage is not attributed to a pinned account")
+        let embeddedSettings = Data(#"{"edgeDockEnabled":true,"edgeDockMode":"always","edgeDockSide":"left","edgeDockOffset":0.7,"edgeDockItems":[{"type":"limit","provider":"codex","hiddenAccounts":["hidden"],"accountMode":"active"},{"type":"stat","metric":"sessions","runningOnly":true}]}"#.utf8)
+        let migrated = TokenMonitorEdgeDockPreferences.migratedEmbeddedSettings(embeddedSettings)
+        expect(migrated?.enabled == true && migrated?.mode == .always && migrated?.side == .left && migrated?.offset == 0.7, "embedded dock retains visibility and placement")
+        expect(migrated?.items?.first?.hiddenAccountIDs == ["hidden"] && migrated?.items?.last?.runningOnly == true, "embedded dock retains account filtering and session options")
+        let emptyMigrated = TokenMonitorEdgeDockPreferences.migratedEmbeddedSettings(Data(#"{"edgeDockEnabled":false,"edgeDockItems":[]}"#.utf8))
+        expect(emptyMigrated?.enabled == false && emptyMigrated?.items == [], "migration never enables a disabled dock or fills an explicit empty list")
+        expect(TokenMonitorEdgeDockPreferences.migratedEmbeddedSettings(Data("invalid".utf8)) == nil, "invalid embedded settings do not become a preference write")
+        let oldItem = try? JSONDecoder().decode(TokenMonitorEdgeDockItem.self, from: Data(#"{"type":"limit","providerID":"codex"}"#.utf8))
+        expect(oldItem?.id == "limit:codex" && oldItem?.accountID == nil, "previous provider summary settings retain their meaning")
+        expect(TokenMonitorEdgeDockItem.account("codex", "  ").normalized() == nil, "blank account binding cannot become a provider summary")
+        let pages = (0..<8).map { TokenMonitorEdgeDockPage.make(cellCount: 24, availableHeight: 250, index: $0) }
+        expect(pages.flatMap { Array($0.indices) } == Array(0..<24), "all 24 selected accounts remain reachable on a short display")
+        expect(TokenMonitorEdgeDockPage.make(cellCount: 2, availableHeight: 250, index: 7).indices == 0..<2, "shrinking the list clamps the current page")
+
+        var proxyPreferences = TokenMonitorEdgeDockPreferences(items: [.account("codex", "b"), .proxy(), .proxy(), .stat(.today)])
+        let proxyRestored = TokenMonitorEdgeDockPreferences.load(try? JSONEncoder().encode(proxyPreferences))
+        expect(proxyRestored.items?.map(\.id) == ["limit:codex:account:b", "proxy", "stat:today"], "proxy shortcut persists once at the chosen position")
+        for phase in [LocalProxyPhase.stopped, .starting, .running, .stopping, .failed] {
+            let projected = TokenMonitorEdgeDockProjection.make(
+                preferences: proxyRestored, quotaSources: [], usage: usage, language: .en,
+                now: now, proxyPhase: phase
+            )[1]
+            expect(projected.kind == .proxy && projected.proxyPhase == phase && projected.isAvailable, "proxy settings remain reachable in every lifecycle state")
+            expect(projected.accounts.isEmpty && projected.headlineAccountID == nil && projected.percentRemaining == nil, "proxy shortcut does not expose or impersonate an account")
+        }
+        func proxyRow(_ id: String, number: Int, current: Bool, requests: Int, stale: Bool = false) -> LocalProxyQueueRow {
+            LocalProxyQueueRow(
+                id: id, label: "Safe \(id)", accountNumber: number,
+                windows: [.init(id: "5h", remaining: nil, resetsAt: nil)], snapshotStale: stale,
+                isEnabled: true, isPriority: false, isCurrent: current, quotaText: nil,
+                state: current ? "current" : "ready", cooldownUntil: nil, activeRequestCount: requests)
+        }
+        let liveRows = [proxyRow("b", number: 11, current: true, requests: 2, stale: true),
+                        proxyRow("idle", number: 1, current: false, requests: 0),
+                        proxyRow("a", number: 3, current: true, requests: 1),
+                        proxyRow("late", number: 4, current: true, requests: 0)]
+        func liveProxy(_ phase: LocalProxyPhase, rows: [LocalProxyQueueRow]) -> TokenMonitorEdgeDockCell {
+            TokenMonitorEdgeDockProjection.make(
+                preferences: .init(items: [.proxy()]), quotaSources: [codex], usage: usage,
+                language: .en, now: now, activeCodexAccountID: "idle", proxyPhase: phase, proxyRows: rows)[0]
+        }
+        let liveProxyCell = liveProxy(.running, rows: liveRows)
+        expect(liveProxyCell.proxyAccounts.map(\.id) == ["a", "b"] && liveProxyCell.proxyRequestCount == 3,
+               "proxy hover shows all admitted accounts in panel-number order, not the Desktop login or enabled queue")
+        expect(liveProxyCell.proxyAccounts.last?.snapshotStale == true && liveProxyCell.proxyAccounts.first?.windows.first?.remaining == nil,
+               "stale and unknown quota remain distinct from real running requests")
+        expect(liveProxy(.running, rows: []).proxyStatusTitle(.en) == "Idle", "running service without requests is explicitly idle")
+        expect(liveProxy(.stopping, rows: liveRows).proxyRequestCount == 3, "draining requests remain visible until release")
+        for phase in [LocalProxyPhase.stopped, .starting, .failed] {
+            expect(liveProxy(phase, rows: liveRows).proxyAccounts.isEmpty, "inactive service cannot expose leftover running rows")
+        }
+        expect(liveProxy(.running, rows: Array(liveRows.dropFirst())).proxyAccounts.map(\.id) == ["a"],
+               "released requests disappear from the next projection without changing the selected icon")
+        proxyPreferences.items = [.stat(.today), .proxy(), .account("codex", "b")]
+        let reorderedProxy = TokenMonitorEdgeDockPreferences.load(try? JSONEncoder().encode(proxyPreferences))
+        expect(reorderedProxy.items?.map(\.id) == ["stat:today", "proxy", "limit:codex:account:b"], "proxy shortcut can be reordered alongside accounts and statistics")
+        proxyPreferences.items?.removeAll { $0.type == .proxy }
+        let removedProxy = TokenMonitorEdgeDockPreferences.load(try? JSONEncoder().encode(proxyPreferences))
+        expect(!TokenMonitorEdgeDockProjection.make(
+            preferences: removedProxy, quotaSources: [], usage: usage, language: .en, proxyPhase: .running
+        ).contains { $0.kind == .proxy }, "running proxy never re-adds an explicitly removed shortcut")
 
         let tracker = TokenMonitorEdgeDockRateTracker()
         expect(tracker.observe(response: rateResponse(now: now, tokens: 100, output: 40, duration: 1_000), now: now) == nil, "first counters establish a baseline")
@@ -109,7 +444,7 @@ enum TokenMonitorEdgeDockSelfTest {
         expect(hugeSample?.speed == 2_000 && hugeSample?.burn == 240_000, "Int64 counter deltas remain exact above 2^53")
 
         if failures.isEmpty {
-            print("token-monitor edge dock self-test passed: composition, quota, exact ranks, unknowns, timed rate")
+            print("token-monitor edge dock self-test passed: composition, quota, display, de-duplication, idle, timed rate")
             return true
         }
         failures.forEach { print("token-monitor edge dock self-test failed: \($0)") }

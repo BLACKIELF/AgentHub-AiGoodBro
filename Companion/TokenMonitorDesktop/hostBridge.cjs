@@ -9,7 +9,8 @@ const { execFileSync } = require('node:child_process');
 const MAX_REQUEST_BYTES = 4096;
 const VIEWS = new Set(['home', 'tool', 'status', 'device', 'model', 'project', 'session', 'limits', 'trends']);
 const COMMANDS = new Set(['showDashboard', 'showHome', 'showSettings', 'showView', 'status', 'quit']);
-const HOST_COMMANDS = new Set(['openWorkbench', 'openAccounts', 'openTasks', 'openSettings', 'checkForUpdates', 'quitHost', 'switchCodexAccount', 'getManagedCodexAccounts']);
+const HOST_COMMANDS = new Set(['openWorkbench', 'openAccounts', 'openTasks', 'openSettings', 'openEdgeDockSettings', 'checkForUpdates', 'quitHost', 'switchCodexAccount', 'getManagedCodexAccounts']);
+const SETTINGS_SECTIONS = new Set(['menuBar', 'floatingBubble']);
 const EMBEDDED_ENV = new Set([
   'AIGOODBRO_TOKEN_MONITOR_EMBEDDED', 'AIGOODBRO_TOKEN_MONITOR_USER_DATA',
   'AIGOODBRO_TOKEN_MONITOR_SOCKET', 'AIGOODBRO_TOKEN_MONITOR_HOST_SOCKET',
@@ -104,9 +105,11 @@ function parseRequest(line) {
   }
   if (typeof request.cmd !== 'string' || !COMMANDS.has(request.cmd)) throw new Error('invalid-command');
   const keys = Object.keys(request);
-  const allowed = request.cmd === 'showView' ? new Set(['id', 'cmd', 'view']) : new Set(['id', 'cmd']);
+  const allowed = request.cmd === 'showView' ? new Set(['id', 'cmd', 'view'])
+    : request.cmd === 'showSettings' ? new Set(['id', 'cmd', 'section']) : new Set(['id', 'cmd']);
   if (keys.some((key) => !allowed.has(key))) throw new Error('unexpected-field');
   if (request.cmd === 'showView' && !VIEWS.has(request.view)) throw new Error('invalid-view');
+  if (request.cmd === 'showSettings' && request.section !== undefined && !SETTINGS_SECTIONS.has(request.section)) throw new Error('invalid-section');
   return request;
 }
 
@@ -141,7 +144,7 @@ function createHostBridge({ socketPath, hostSocketPath = null, app, logger = () 
     try {
       if (cmd === 'showDashboard') await routes.showDashboard();
       else if (cmd === 'showHome') await routes.showView('home');
-      else if (cmd === 'showSettings') await routes.showSettings();
+      else if (cmd === 'showSettings') await routes.showSettings(request.section);
       else if (cmd === 'showView') await routes.showView(request.view);
       else if (cmd === 'quit') {
         return reply(socket, { id, ok: true }, () => { setImmediate(() => routes.quit()); });

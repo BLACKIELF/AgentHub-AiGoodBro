@@ -3,7 +3,7 @@ import Foundation
 
 struct TokenMonitorHostRequest: Decodable, Sendable {
     enum Command: String, Decodable, Sendable {
-        case openWorkbench, openAccounts, openTasks, openSettings, checkForUpdates, quitHost
+        case openWorkbench, openAccounts, openTasks, openSettings, openEdgeDockSettings, checkForUpdates, quitHost
         case switchCodexAccount
         case getManagedCodexAccounts
     }

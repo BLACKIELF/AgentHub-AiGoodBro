@@ -121,6 +121,7 @@ struct AccountOrderSheet: View {
     @State private var editingPositionID: String?
     @State private var targetPositionText = ""
     @State private var positionError = false
+    @State private var dropTargetID: String?
     @FocusState private var isPositionFieldFocused: Bool
 
     init(
@@ -140,8 +141,8 @@ struct AccountOrderSheet: View {
                 .font(.title3.weight(.semibold))
             Text(
                 language.text(
-                    "序号是当前展示顺序。点击序号输入目标位置，也可用箭头；保存后按新顺序展示，额度刷新不会改变顺序。",
-                    "Numbers show the current display order. Click one to enter a new position, or use the arrows. The saved order remains stable when usage refreshes."
+                    "拖动账号、点击序号或用箭头调整位置。保存后统一更新展示序号；刷新额度不会打乱顺序。",
+                    "Drag an account, click its number, or use the arrows. Save to update the display order everywhere; quota refreshes keep it stable."
                 )
             )
             .font(.callout)
@@ -184,6 +185,8 @@ struct AccountOrderSheet: View {
                 .fixedSize(horizontal: false, vertical: true)
             }
             HStack {
+                Text(draft.hasChanges ? language.text("有未保存的调整", "Unsaved changes") : language.text("当前顺序", "Current order"))
+                    .font(.caption).foregroundStyle(.secondary)
                 Spacer()
                 Button(language.text("取消", "Cancel"), action: onCancel)
                     .keyboardShortcut(.cancelAction)
@@ -224,6 +227,8 @@ struct AccountOrderSheet: View {
                     .accessibilityIdentifier("account-order-position-" + id)
             }
             HStack {
+                Image(systemName: "line.3.horizontal")
+                    .font(.caption).foregroundStyle(.tertiary).accessibilityHidden(true)
                 Text(verbatim: items.first(where: { $0.id == id })?.title ?? language.text("账号", "Account"))
                     .lineLimit(2)
                 Spacer(minLength: 8)
@@ -231,6 +236,10 @@ struct AccountOrderSheet: View {
             .padding(.horizontal, 12)
             .frame(maxWidth: .infinity, minHeight: 40)
             .contentShape(Rectangle())
+            .onDrag {
+                guard let token = draft.beginDragging(id) else { return NSItemProvider() }
+                return NSItemProvider(object: token as NSString)
+            }
             .accessibilityElement(children: .combine)
             .accessibilityLabel(items.first(where: { $0.id == id })?.title ?? language.text("账号", "Account"))
             .accessibilityIdentifier("account-order-" + id)
@@ -241,23 +250,41 @@ struct AccountOrderSheet: View {
                 Button {
                     moveByOne(id, offset: -1)
                 } label: {
-                    Image(systemName: "arrow.up")
+                    Image(systemName: "arrow.up").frame(width: 26, height: 28)
                 }
                 .disabled(draft.orderedVisibleIDs.first == id)
                 .accessibilityLabel(language.text("向上移动", "Move up"))
                 Button {
                     moveByOne(id, offset: 1)
                 } label: {
-                    Image(systemName: "arrow.down")
+                    Image(systemName: "arrow.down").frame(width: 26, height: 28)
                 }
                 .disabled(draft.orderedVisibleIDs.last == id)
                 .accessibilityLabel(language.text("向下移动", "Move down"))
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(WorkspaceQuietButtonStyle(restingFill: 0.04))
             .padding(.trailing, 10)
         }
         .frame(height: 40)
         .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8)
+            .strokeBorder(dropTargetID == id ? Color.accentColor : Color.clear, lineWidth: 1.5)
+            .allowsHitTesting(false))
+        .dropDestination(for: String.self) { tokens, location in
+            guard tokens.count == 1, let token = tokens.first else { return false }
+            let accepted = draft.drop(token: token, targetID: id, after: location.y > 20)
+            if accepted {
+                editingPositionID = nil
+                isPositionFieldFocused = false
+                positionError = false
+                saveFailed = false
+            }
+            dropTargetID = nil
+            return accepted
+        } isTargeted: { targeted in
+            if targeted && draft.isDragging { dropTargetID = id }
+            else if dropTargetID == id { dropTargetID = nil }
+        }
     }
 
     private func positionLabel(for id: String) -> String {

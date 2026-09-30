@@ -9,8 +9,8 @@ import Foundation
 /// Read-only adapters for locally selected Gemini CLI, MiMo Code, ZCode, WorkBuddy, and TRAE profiles.
 ///
 /// Gemini uses the native, already-fresh OAuth access token. This reader never refreshes or writes it.
-/// MiMo, ZCode native, WorkBuddy, and TRAE stop at their selected-profile credential boundary
-/// instead of treating API balances, desktop membership, or local tokens as CLI quota.
+/// TRAE reads its verified local session and official credits. Other adapters
+/// stop at their selected-profile boundary rather than infer quota from tokens.
 struct AdditionalCLIQuotaReader {
     private enum Failure: Error {
         case credentialsMissing
@@ -65,11 +65,7 @@ struct AdditionalCLIQuotaReader {
                     source: sourceLabel(for: .workBuddy),
                     messageCode: "local_cli_workbuddy_app_session_read_limited")
             case .trae:
-                return result(
-                    state: .unsupported,
-                    now: now,
-                    source: sourceLabel(for: .trae),
-                    messageCode: "local_cli_trae_app_session_read_limited")
+                return await TraeCLIQuotaReader(transport: transport, fileReader: fileReader).load(profile: profile, now: now)
             case .claudeCode, .grok, .openCode, .kimi, .antigravity:
                 return result(
                     state: .unsupported,

@@ -16,6 +16,9 @@ class ZCodeCLIQuotaTests(unittest.TestCase):
             ROOT / "Sources/CodexUsageWidget/Services/TokenMonitorEngine.swift",
             ROOT / "Sources/CodexUsageWidget/Services/TokenMonitorLocalCLIQuotaReader.swift",
             ROOT / "Sources/CodexUsageWidget/Services/LocalCLIQuotaReader.swift",
+            ROOT / "Sources/CodexUsageWidget/Services/LocalCLIQuotaRefresh.swift",
+            ROOT / "Sources/CodexUsageWidget/Services/CCSwitchClaudeRelay.swift",
+            ROOT / "Sources/CodexUsageWidget/Services/BoundedLocalProcess.swift",
             ROOT / "Sources/CodexUsageWidget/Services/ZCodeCLIQuotaReader.swift",
             ROOT / "tests/ZCodeCLIQuotaFixture.swift",
         ]
@@ -45,7 +48,7 @@ class ZCodeCLIQuotaTests(unittest.TestCase):
         self.assertIn('"builtin:\\(family)-coding-plan"', source)
         self.assertIn('"open.bigmodel.cn", "api.z.ai"', source)
         self.assertIn('"/api/monitor/usage/quota/limit"', source)
-        self.assertIn('identityFingerprint: nil', source)
+        self.assertIn('identityFingerprint: fingerprint', source)
         self.assertIn('"credentials.json"', source)
         self.assertIn('"setting.json"', source)
         self.assertIn("credentialsUnreadable", source)

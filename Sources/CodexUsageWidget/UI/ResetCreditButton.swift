@@ -7,6 +7,7 @@ struct ResetCreditButton: View {
     let selectedProfileID: String?
     let hubAccountAlias: String?
     let onConfirmedResult: () -> Void
+    var displayNumber: Int? = nil
 
     @StateObject private var controller = CodexResetCreditController()
 
@@ -41,23 +42,7 @@ struct ResetCreditButton: View {
             Text(reviewMessage)
         }
         .alert(
-            language.text("第二次确认：了解重置影响", "Confirmation 2: understand the reset"),
-            isPresented: impactBinding
-        ) {
-            Button(language.text("取消", "Cancel"), role: .cancel) { controller.cancel() }
-                .keyboardShortcut(.cancelAction)
-            Button(language.text("我了解这些变化", "I understand these changes")) {
-                controller.confirmImpact(profile: profile, selectedProfileID: selectedProfileID)
-            }
-        } message: {
-            Text(
-                language.text(
-                    "兑换会重置符合条件的 Codex 额度窗口，并改变每周额度的下次重置时间。",
-                    "Redeeming resets eligible Codex limit windows and changes the next weekly reset time."
-                ))
-        }
-        .alert(
-            language.text("第三次确认：使用一张重置卡", "Confirmation 3: consume one reset card"),
+            language.text("第二次确认：使用一张重置卡", "Confirmation 2: consume one reset card"),
             isPresented: consumptionBinding
         ) {
             Button(language.text("取消", "Cancel"), role: .cancel) { controller.cancel() }
@@ -74,8 +59,8 @@ struct ResetCreditButton: View {
         } message: {
             Text(
                 language.text(
-                    "继续后将为刚才核对的账号使用刚才核对的卡片，且无法撤销。",
-                    "Continuing uses the reviewed card for the reviewed account and cannot be undone."
+                    "将为 \(accountLabel) 使用 1 张重置卡。\n符合条件的额度窗口将重置，每周额度的下次重置时间会改变。此操作无法撤销。",
+                    "Use 1 reset card for \(accountLabel).\nEligible limit windows will reset, and the next weekly reset time will change. This cannot be undone."
                 ))
         }
         .alert(item: $controller.notice) { notice in
@@ -115,8 +100,16 @@ struct ResetCreditButton: View {
 
     private var buttonHelp: String {
         canBegin
-            ? language.text("仅供本人手动操作，需三次确认；Agent 不得主动使用", "For your manual use only, with three confirmations. Agents must not initiate redemption.")
-            : language.text("只有当前选中账号且官方确认有可用卡片时才能开始", "Available only for the selected account after an available card is officially confirmed")
+            ? language.text("为此账号使用一张重置卡，需要二次确认", "Use one reset card for this account after two confirmations")
+            : language.text("官方确认有可用卡片后才能开始；状态未知时请刷新账号", "Requires an officially reported available card. Refresh the account if its status is unknown.")
+    }
+
+    private var accountLabel: String {
+        let prefix = displayNumber.map { String(format: "%02d · ", $0) } ?? ""
+        switch controller.step {
+        case .reviewing(let review), .consumption(let review): return prefix + review.accountRemark
+        case .idle: return prefix
+        }
     }
 
     private var reviewMessage: String {
@@ -128,8 +121,8 @@ struct ResetCreditButton: View {
             expiry = language.text("无到期时间", "No expiry")
         }
         return language.text(
-            "账号备注：\(review.accountRemark)\n卡片：可用的 Codex 额度重置卡\n到期：\(expiry)",
-            "Account label: \(review.accountRemark)\nCard: available Codex rate-limit reset card\nExpiry: \(expiry)"
+            "账号：\(accountLabel)\n卡片：1 张可用的 Codex 额度重置卡\n到期：\(expiry)",
+            "Account: \(accountLabel)\nCard: 1 available Codex rate-limit reset card\nExpiry: \(expiry)"
         )
     }
 
@@ -140,16 +133,6 @@ struct ResetCreditButton: View {
                 return false
             },
             set: { if !$0, case .reviewing = controller.step { controller.cancel() } }
-        )
-    }
-
-    private var impactBinding: Binding<Bool> {
-        Binding(
-            get: {
-                if case .impact = controller.step { return true }
-                return false
-            },
-            set: { if !$0, case .impact = controller.step { controller.cancel() } }
         )
     }
 

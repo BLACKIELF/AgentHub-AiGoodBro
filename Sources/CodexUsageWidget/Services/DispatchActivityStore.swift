@@ -5,6 +5,8 @@ import Foundation
 /// Versioned local contract shared with next_dispatch_activity.py. Existing
 /// unregistered CLI processes are not adopted, stopped, or declared idle here.
 struct DispatchActivityStore {
+    private static let proxyRunLock = NSLock()
+    private static var closedProxyRuns = Set<String>()
     static let stateName = "dispatch-activity-v1.json"
     static let lockName = ".dispatch-activity.lock"
     static let issueName = "operations-issues-v1.jsonl"
@@ -26,6 +28,10 @@ struct DispatchActivityStore {
         let createdAt: Double
         let updatedAt: Double
         let heartbeatDueAt: Double
+        var proxyRunID: String? = nil
+        var proxyRequestID: String? = nil
+        var proxyProfileKey: String? = nil
+        var pid: Int? = nil
 
         var occupied: Bool { DispatchActivityStore.activeStates.contains(state) }
 
@@ -56,9 +62,21 @@ struct DispatchActivityStore {
         }
     }
 
+    struct ProxyAcquireKey: Decodable {
+        let runID: String
+        let requestID: String
+        let profileKey: String
+        let ownerPID: Int
+        let wasReserved: Bool
+        let abandoned: Bool
+        let requestTime: Int64?
+    }
+
     struct Snapshot: Decodable {
         let schemaVersion: Int
         let leases: [Lease]
+        var proxyAcquireKeys: [ProxyAcquireKey]? = nil
+        var proxyRequestHighwater: [String: Int64]? = nil
 
         func latest(forAlias alias: String?, accountKey: String? = nil) -> Lease? {
             let key = alias.map { DispatchActivityStore.hash($0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()) }
@@ -74,7 +92,45 @@ struct DispatchActivityStore {
         }
     }
 
-    enum Failure: Error { case invalidState, busy, unavailable }
+    enum Failure: Error { case invalidState, busy, unavailable, deadline }
+
+    /// A stopped run cannot admit a detached reservation even if an earlier
+    /// task resumes after the next bridge has been created in this process.
+    static func closeProxyRun(_ runID: String) {
+        proxyRunLock.lock()
+        closedProxyRuns.insert(runID)
+        proxyRunLock.unlock()
+    }
+
+    private static func requestTime(_ requestID: String) -> Int64? {
+        guard let uuid = UUID(uuidString: requestID)?.uuidString.lowercased(), uuid[uuid.index(uuid.startIndex, offsetBy: 14)] == "7" else { return nil }
+        return Int64(String(uuid.prefix(8)) + String(uuid.dropFirst(9).prefix(4)), radix: 16)
+    }
+
+    private static func checkRequestTime(_ requestID: String, runID: String, highwater: inout [String: Int64], now: Date, enforced: Bool) throws -> Int64? {
+        let value = requestTime(requestID)
+        if enforced {
+            guard let value else { throw Failure.deadline }
+            let current = Int64(now.timeIntervalSince1970 * 1000)
+            guard value >= current - 120_000, value <= current + 30_000,
+                value >= (highwater[runID] ?? value) - 120_000
+            else { throw Failure.deadline }
+        }
+        if let value { highwater[runID] = max(highwater[runID] ?? value, value) }
+        return value
+    }
+
+    private static func pruneProxyKeys(_ keys: inout [[String: Any]], highwater: [String: Int64]) {
+        // A request older than the per-run high-water window is rejected even
+        // if the wall clock moves backward. Legacy UUIDv4 keys have no safe
+        // time proof and remain until their owning run is retired.
+        keys.removeAll { key in
+            guard let run = key["runID"] as? String, let time = key["requestTime"] as? Int64,
+                let latest = highwater[run]
+            else { return false }
+            return time < latest - 150_000
+        }
+    }
 
     static func hash(_ value: String) -> String {
         SHA256.hash(data: Data(value.utf8)).map { String(format: "%02x", $0) }.joined()
@@ -92,7 +148,17 @@ struct DispatchActivityStore {
 
     static func decode(_ data: Data) throws -> Snapshot {
         let snapshot = try JSONDecoder().decode(Snapshot.self, from: data)
-        guard snapshot.schemaVersion == 1, snapshot.leases.count <= 2000,
+        let keys = snapshot.proxyAcquireKeys ?? []
+        let highwater = snapshot.proxyRequestHighwater ?? [:]
+        guard snapshot.schemaVersion == 1, snapshot.leases.count <= 2000, keys.count <= 10000,
+            Set(keys.map { "\($0.runID):\($0.requestID):\($0.profileKey)" }).count == keys.count,
+            keys.allSatisfy({ key in
+                UUID(uuidString: key.runID) != nil && UUID(uuidString: key.requestID) != nil
+                    && key.profileKey.count == 64 && key.profileKey.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
+                    && key.ownerPID > 1 && (key.requestTime == nil || key.requestTime! > 0)
+            }),
+            highwater.count <= 10000,
+            highwater.allSatisfy({ UUID(uuidString: $0.key) != nil && $0.value > 0 }),
             Set(snapshot.leases.map(\.leaseId)).count == snapshot.leases.count,
             snapshot.leases.allSatisfy({ lease in
                 [lease.accountKey, lease.aliasKey, lease.projectKey].allSatisfy {
@@ -120,12 +186,18 @@ struct DispatchActivityStore {
         guard fstat(fd, &info) == 0, info.st_mode & S_IFMT == S_IFREG,
             info.st_uid == geteuid(), info.st_nlink == 1, info.st_mode & 0o077 == 0
         else { throw Failure.unavailable }
-        guard flock(fd, LOCK_EX | LOCK_NB) == 0 else { throw Failure.busy }
+        guard flock(fd, LOCK_EX | LOCK_NB) == 0 else {
+            throw (errno == EWOULDBLOCK || errno == EAGAIN) ? Failure.busy : Failure.unavailable
+        }
         defer { flock(fd, LOCK_UN) }
         return try body()
     }
 
     private func mutate(_ action: (inout [[String: Any]]) throws -> Void) throws {
+        try mutateProxy { records, _, _ in try action(&records) }
+    }
+
+    private func mutateProxy(_ action: (inout [[String: Any]], inout [[String: Any]], inout [String: Int64]) throws -> Void) throws {
         try withLock {
             var object: [String: Any]
             if let data = try stateData() {
@@ -136,8 +208,12 @@ struct DispatchActivityStore {
                 object = ["schemaVersion": 1, "leases": [[String: Any]]()]
             }
             guard var records = object["leases"] as? [[String: Any]] else { throw Failure.invalidState }
-            try action(&records)
+            var keys = object["proxyAcquireKeys"] as? [[String: Any]] ?? []
+            var highwater = object["proxyRequestHighwater"] as? [String: Int64] ?? [:]
+            try action(&records, &keys, &highwater)
             object["leases"] = records
+            object["proxyAcquireKeys"] = keys
+            object["proxyRequestHighwater"] = highwater
             let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
             _ = try Self.decode(data)
             guard data.count <= 2 * 1024 * 1024 else { throw Failure.invalidState }
@@ -156,12 +232,25 @@ struct DispatchActivityStore {
     }
 
     /// A proxy lease is bound to one run/request/profile, never a renewable account credential.
-    func reserveProxy(account: String, alias: String, runID: String, requestID: String, profileID: String, childPID: pid_t, now: Date = Date()) throws -> String {
+    func reserveProxy(account: String, alias: String, runID: String, requestID: String, profileID: String, childPID: pid_t, admissionDeadline: TimeInterval? = nil, enforceFreshness: Bool = false, now: Date = Date()) throws -> String {
         guard UUID(uuidString: runID) != nil, UUID(uuidString: requestID) != nil, childPID > 1 else { throw Failure.invalidState }
         let id = UUID().uuidString.lowercased()
         let accountKey = Self.hash(account)
         let aliasKey = Self.hash(alias.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
-        try mutate { records in
+        Self.proxyRunLock.lock()
+        defer { Self.proxyRunLock.unlock() }
+        guard !Self.closedProxyRuns.contains(runID), admissionDeadline == nil || ProcessInfo.processInfo.systemUptime < admissionDeadline! else { throw Failure.deadline }
+        try mutateProxy { records, keys, highwater in
+            guard admissionDeadline == nil || ProcessInfo.processInfo.systemUptime < admissionDeadline! else { throw Failure.deadline }
+            let requestTime = try Self.checkRequestTime(requestID, runID: runID, highwater: &highwater, now: now, enforced: enforceFreshness)
+            let profileKey = Self.hash(profileID)
+            guard !keys.contains(where: {
+                $0["runID"] as? String == runID && $0["requestID"] as? String == requestID
+                    && $0["profileKey"] as? String == profileKey
+            }), !records.contains(where: {
+                $0["route"] as? String == "proxy" && $0["proxyRunID"] as? String == runID
+                    && $0["proxyRequestID"] as? String == requestID && $0["proxyProfileKey"] as? String == profileKey
+            }) else { throw Failure.busy }
             guard
                 !records.contains(where: {
                     Self.activeStates.contains($0["state"] as? String ?? "") && ($0["accountKey"] as? String == accountKey || $0["aliasKey"] as? String == aliasKey)
@@ -175,8 +264,94 @@ struct DispatchActivityStore {
                 "createdAt": now.timeIntervalSince1970, "updatedAt": now.timeIntervalSince1970,
                 "heartbeatDueAt": now.timeIntervalSince1970 + 60,
             ])
+            var marker: [String: Any] = ["runID": runID, "requestID": requestID, "profileKey": profileKey,
+                "ownerPID": Int(getpid()), "wasReserved": true, "abandoned": false]
+            if let requestTime { marker["requestTime"] = requestTime }
+            keys.append(marker)
+            Self.pruneProxyKeys(&keys, highwater: highwater)
         }
         return id
+    }
+
+    enum ProxyResolution: String { case abandoned, notReserved = "not_reserved" }
+
+    func isProxyAcquireAbandoned(runID: String, requestID: String, profileID: String) throws -> Bool {
+        let profileKey = Self.hash(profileID)
+        return try read().proxyAcquireKeys?.contains {
+            $0.runID == runID && $0.requestID == requestID && $0.profileKey == profileKey
+                && $0.ownerPID == Int(getpid()) && $0.abandoned
+        } == true
+    }
+
+    /// A detached registry update can finish after an off-main resolver has
+    /// cancelled the same request, before its MainActor cleanup runs.
+    func isProxyLeaseActive(_ id: String, runID: String, requestID: String, profileID: String, childPID: pid_t) throws -> Bool {
+        let snapshot = try read()
+        let profileKey = Self.hash(profileID)
+        guard snapshot.proxyAcquireKeys?.contains(where: {
+            $0.runID == runID && $0.requestID == requestID && $0.profileKey == profileKey
+                && $0.ownerPID == Int(getpid()) && $0.wasReserved && !$0.abandoned
+        }) == true else { return false }
+        return snapshot.leases.contains {
+            $0.leaseId == id && $0.ownerThreadId == "next-\(getpid())"
+                && $0.taskId == "proxy-\(runID)-\(requestID)" && $0.route == "proxy"
+                && $0.proxyRunID == runID && $0.proxyRequestID == requestID
+                && $0.proxyProfileKey == profileKey && $0.pid == Int(childPID)
+                && $0.state == "running"
+        }
+    }
+
+    /// The reservation and the deny marker share the same file lock. A late
+    /// acquire can never pass after a successful no-reservation resolution.
+    func abandonProxy(runID: String, requestID: String, profileID: String, enforceFreshness: Bool = false, now: Date = Date()) throws -> ProxyResolution {
+        guard UUID(uuidString: runID) != nil, UUID(uuidString: requestID) != nil else { throw Failure.invalidState }
+        let profileKey = Self.hash(profileID)
+        var resolution: ProxyResolution = .notReserved
+        try mutateProxy { records, keys, highwater in
+            let requestTime = try Self.checkRequestTime(requestID, runID: runID, highwater: &highwater, now: now, enforced: enforceFreshness)
+            let keyIndex = keys.firstIndex {
+                $0["runID"] as? String == runID && $0["requestID"] as? String == requestID
+                    && $0["profileKey"] as? String == profileKey
+            }
+            if let keyIndex, keys[keyIndex]["ownerPID"] as? Int != Int(getpid()) { throw Failure.invalidState }
+            let matches = records.indices.filter {
+                records[$0]["route"] as? String == "proxy" && records[$0]["proxyRunID"] as? String == runID
+                    && records[$0]["proxyRequestID"] as? String == requestID && records[$0]["proxyProfileKey"] as? String == profileKey
+            }
+            guard matches.count <= 1 else { throw Failure.invalidState }
+            if let index = matches.first {
+                guard records[index]["ownerThreadId"] as? String == "next-\(getpid())",
+                    records[index]["taskId"] as? String == "proxy-\(runID)-\(requestID)"
+                else { throw Failure.invalidState }
+                let state = records[index]["state"] as? String ?? ""
+                if Self.activeStates.contains(state) {
+                    records[index]["state"] = "cancelled"
+                    records[index]["updatedAt"] = now.timeIntervalSince1970
+                    records[index]["heartbeatDueAt"] = now.timeIntervalSince1970
+                } else if state != "cancelled" {
+                    // An accepted request may have reached the upstream. Its
+                    // outcome cannot be made safe by writing a marker now.
+                    throw Failure.invalidState
+                }
+                resolution = .abandoned
+            } else if let keyIndex, keys[keyIndex]["wasReserved"] as? Bool == true {
+                // A reserved lease vanished from bounded history. Do not claim
+                // a successful rollback without evidence of its final state.
+                throw Failure.invalidState
+            }
+            if let keyIndex {
+                keys[keyIndex]["abandoned"] = true
+                resolution = (keys[keyIndex]["wasReserved"] as? Bool == true) ? .abandoned : .notReserved
+            } else {
+                var marker: [String: Any] = ["runID": runID, "requestID": requestID, "profileKey": profileKey,
+                    "ownerPID": Int(getpid()), "wasReserved": resolution == .abandoned, "abandoned": true]
+                if let requestTime { marker["requestTime"] = requestTime }
+                keys.append(marker)
+            }
+            records = records.filter { Self.activeStates.contains($0["state"] as? String ?? "") } + Self.recentEndedRecords(records)
+            Self.pruneProxyKeys(&keys, highwater: highwater)
+        }
+        return resolution
     }
 
     func updateProxy(_ id: String, runID: String, requestID: String, profileID: String, state: String, now: Date = Date()) throws {
@@ -199,23 +374,42 @@ struct DispatchActivityStore {
 
     /// Recovery requires both recorded owner and child PIDs to be proven gone.
     /// PID reuse or permission errors retain the uncertain reservation.
-    func finishStoppedProxyRuns(now: Date = Date()) throws {
-        try mutate { records in
+    func finishStoppedProxyRuns(retiringCurrentRun: Bool = false, now: Date = Date()) throws {
+        Self.proxyRunLock.lock()
+        defer { Self.proxyRunLock.unlock() }
+        try mutateProxy { records, keys, highwater in
             for i in records.indices {
                 guard records[i]["route"] as? String == "proxy",
                     Self.activeStates.contains(records[i]["state"] as? String ?? ""),
                     let owner = records[i]["ownerThreadId"] as? String, owner.hasPrefix("next-"),
-                    let parent = pid_t(owner.dropFirst(5)), parent > 1, parent != getpid(),
-                    let child = records[i]["pid"] as? Int, child > 1, child <= Int(Int32.max),
                     let run = records[i]["proxyRunID"] as? String, UUID(uuidString: run) != nil,
                     let request = records[i]["proxyRequestID"] as? String, UUID(uuidString: request) != nil,
-                    records[i]["taskId"] as? String == "proxy-\(run)-\(request)",
-                    kill(parent, 0) != 0, errno == ESRCH,
-                    kill(pid_t(child), 0) != 0, errno == ESRCH
+                    records[i]["taskId"] as? String == "proxy-\(run)-\(request)"
                 else { continue }
+                if owner == "next-\(getpid())" {
+                    guard retiringCurrentRun, Self.closedProxyRuns.contains(run) else { continue }
+                } else {
+                    guard let parent = pid_t(owner.dropFirst(5)), parent > 1,
+                        let child = records[i]["pid"] as? Int, child > 1, child <= Int(Int32.max),
+                        kill(parent, 0) != 0, errno == ESRCH,
+                        kill(pid_t(child), 0) != 0, errno == ESRCH
+                    else { continue }
+                }
                 records[i]["state"] = "cancelled"
                 records[i]["updatedAt"] = now.timeIntervalSince1970
                 records[i]["heartbeatDueAt"] = now.timeIntervalSince1970
+            }
+            // Called before creating the next bridge. This process has no old
+            // run to accept a replay; a dead owner has no socket at all.
+            keys.removeAll { key in
+                guard let owner = key["ownerPID"] as? Int, owner > 1 else { return false }
+                if owner == Int(getpid()) {
+                    return retiringCurrentRun && (key["runID"] as? String).map { Self.closedProxyRuns.contains($0) } == true
+                }
+                return kill(pid_t(owner), 0) != 0 && errno == ESRCH
+            }
+            for run in Array(highwater.keys) where !keys.contains(where: { $0["runID"] as? String == run }) {
+                highwater.removeValue(forKey: run)
             }
         }
     }

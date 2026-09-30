@@ -24,6 +24,12 @@ struct CodexAccountManagerNextMain {
             exit(PaletteCatalogSelfTest.run() ? 0 : 1)
         }
 
+        if let index = CommandLine.arguments.firstIndex(of: "--render-workbench-previews"),
+            CommandLine.arguments.indices.contains(index + 1) {
+            _ = NSApplication.shared
+            exit(TaskWorkbenchPreviewRenderer.render(to: URL(fileURLWithPath: CommandLine.arguments[index + 1], isDirectory: true)) ? 0 : 1)
+        }
+
         if let previewIndex = CommandLine.arguments.firstIndex(of: "--render-palette-previews"),
             CommandLine.arguments.indices.contains(previewIndex + 1)
         {
@@ -256,7 +262,7 @@ struct CodexAccountManagerNextMain {
         }
 
         if CommandLine.arguments.contains("--self-test-task-runtime") {
-            exit(TaskRuntimeSelfTest.run() ? 0 : 1)
+            exit(TaskRuntimeSelfTest.run() && TaskOverviewPresentationSelfTest.run() && TaskWorkbenchSelfTest.run() ? 0 : 1)
         }
 
         if CommandLine.arguments.contains("--self-test-leadership-model") {

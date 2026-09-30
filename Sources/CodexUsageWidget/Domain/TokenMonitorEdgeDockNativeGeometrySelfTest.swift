@@ -16,6 +16,12 @@ enum TokenMonitorEdgeDockNativeGeometrySelfTest {
         let crossed = TokenMonitorEdgeDockNativeGeometry.placementAfterDrag(
             rail: top, translation: CGSize(width: -1_100, height: 1_000), destinationWorkArea: work
         )
+        let fixedDrop = TokenMonitorEdgeDockNativeGeometry.placementAfterDrag(
+            rail: top, translation: CGSize(width: 2_400, height: 1_000), destinationWorkArea: work
+        )
+        let fixedRail = TokenMonitorEdgeDockNativeGeometry.railFrame(
+            workArea: work, side: fixedDrop.side, offset: fixedDrop.offset, height: height
+        )
         let leftCard = TokenMonitorEdgeDockNativeGeometry.cardFrame(
             rail: left, centerY: work.maxY - 25, height: 360, workArea: work, side: .left
         )
@@ -34,6 +40,8 @@ enum TokenMonitorEdgeDockNativeGeometrySelfTest {
             && bottom.minY == work.minY + 8
             && left.minX == work.minX
             && crossed.side == .left && crossed.offset == 1
+            && fixedDrop.side == .right && fixedDrop.offset == 1
+            && fixedRail.maxX == work.maxX && fixedRail.minY >= work.minY + 8
             && leftCard.minX > left.maxX && leftCard.maxY <= work.maxY - 8
             && rightCard.maxX < top.minX && rightCard.minY >= work.minY + 8
             && clamped.minX < 0 && clamped.maxX == short.maxX

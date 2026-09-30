@@ -12,6 +12,7 @@ enum TokenMonitorHostSelfTest {
         expect(TokenMonitorHostIdentity.accountKey(email: "fixture@example.com\0", accountID: "Workspace-A") == nil, "delimiter injection rejected")
         expect(TokenMonitorHostIdentity.accountKey(email: "fixture@example.com", accountID: "Workspace-B") != key, "same member in another workspace stays distinct")
         expect(accepts(#"{"id":"test-1","cmd":"openWorkbench"}"#), "native workspace entry allowed")
+        expect(accepts(#"{"id":"dock","cmd":"openEdgeDockSettings"}"#), "native edge dock settings entry allowed")
         expect(
             accepts("{\"id\":\"test-2\",\"cmd\":\"switchCodexAccount\",\"vendorAccountId\":\"fixture\",\"recordedAccountKey\":\"\(key)\"}"),
             "switch requires vendor ID and hashed composite identity")

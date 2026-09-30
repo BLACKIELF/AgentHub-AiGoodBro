@@ -8,8 +8,16 @@ final class LocalProxyBridge: @unchecked Sendable {
     private var source: DispatchSourceRead?
     private let lock = NSLock()
     private let slots = DispatchSemaphore(value: 8)
+    private let controlSlots = DispatchSemaphore(value: 4)
+    private let readers = DispatchSemaphore(value: 8)
 
-    init(path: String, handler: @escaping @MainActor @Sendable (LocalProxyRequest) async -> LocalProxyReply) throws {
+    init(
+        path: String,
+        resolve: @escaping @Sendable (LocalProxyRequest) -> LocalProxyReply = { _ in .failure(.unavailable) },
+        rollback: @escaping @Sendable (LocalProxyRequest) throws -> Void = { _ in },
+        onRollbackFailure: @escaping @Sendable (LocalProxyRequest) -> Void = { _ in },
+        handler: @escaping @MainActor @Sendable (LocalProxyRequest) async -> LocalProxyReply
+    ) throws {
         guard path.utf8.count < 104, !FileManager.default.fileExists(atPath: path) else { throw LocalProxySocketError.unavailable }
         let directory = URL(fileURLWithPath: path).deletingLastPathComponent().path
         let attributes = try FileManager.default.attributesOfItem(atPath: directory)
@@ -37,33 +45,68 @@ final class LocalProxyBridge: @unchecked Sendable {
             if bound == 0 { unlink(path) }
             throw LocalProxySocketError.unavailable
         }
-        let readSource = DispatchSource.makeReadSource(fileDescriptor: descriptor, queue: DispatchQueue(label: "AiGoodBro.LocalProxyIPC"))
+        let queue = DispatchQueue(label: "AiGoodBro.LocalProxyIPC")
+        let readSource = DispatchSource.makeReadSource(fileDescriptor: descriptor, queue: queue)
         let slots = self.slots
+        let controlSlots = self.controlSlots
+        let readers = self.readers
         readSource.setEventHandler {
             for _ in 0..<8 {
+                // Leave excess unread clients in the bounded socket backlog.
+                // A balanced short suspension avoids spinning the accept queue.
+                guard readers.wait(timeout: .now()) == .success else {
+                    readSource.suspend()
+                    queue.asyncAfter(deadline: .now() + .milliseconds(10)) { readSource.resume() }
+                    return
+                }
                 let client = Darwin.accept(descriptor, nil, nil)
-                guard client >= 0 else { return }
+                guard client >= 0 else { readers.signal(); return }
                 var uid: uid_t = 0
                 var gid: gid_t = 0
-                guard getpeereid(client, &uid, &gid) == 0, uid == getuid(), slots.wait(timeout: .now()) == .success else {
+                guard getpeereid(client, &uid, &gid) == 0, uid == getuid() else {
                     Darwin.close(client)
+                    readers.signal()
                     continue
                 }
                 // Read only one bounded line per connection. Slow/malformed
                 // clients cannot hold the UI thread or an unlimited worker pool.
                 Task.detached(priority: .userInitiated) {
+                    var reading = true
+                    var admission: DispatchSemaphore?
                     defer {
                         Darwin.close(client)
-                        slots.signal()
+                        if reading { readers.signal() }
+                        admission?.signal()
                     }
                     _ = fcntl(client, F_SETFD, FD_CLOEXEC)
                     Self.configure(client)
                     do {
-                        let request = try JSONDecoder().decode(LocalProxyRequest.self, from: Self.readLine(client))
-                        let reply = await handler(request)
-                        var data = try JSONEncoder().encode(reply)
-                        data.append(10)
-                        try Self.write(data, to: client)
+                        var request = try JSONDecoder().decode(LocalProxyRequest.self, from: Self.readLine(client))
+                        request.receivedAt = ProcessInfo.processInfo.systemUptime
+                        let capacity = ["heartbeat", "release", "acquire_resolve", "order_end"].contains(request.command) ? controlSlots : slots
+                        guard Self.takeSlot(capacity) else {
+                            // The complete bounded request was consumed, but no
+                            // handler or side effect ran. Only this explicit
+                            // negative reply permits a safe control-call retry.
+                            var busy = try JSONEncoder().encode(LocalProxyReply.failure(.controlBusy))
+                            busy.append(10)
+                            try Self.write(busy, to: client)
+                            return
+                        }
+                        admission = capacity
+                        reading = false
+                        readers.signal()
+                        let reply = request.command == "acquire_resolve" ? resolve(request) : await handler(request)
+                        do {
+                            var data = try JSONEncoder().encode(reply)
+                            data.append(10)
+                            try Self.write(data, to: client)
+                        } catch {
+                            if request.command.hasPrefix("acquire"), reply.ok, reply.leaseID != nil {
+                                do { try rollback(request) } catch { onRollbackFailure(request) }
+                            }
+                            throw error
+                        }
                     } catch {
                         // Never expose account metadata in IPC diagnostics.
                     }
@@ -82,10 +125,15 @@ final class LocalProxyBridge: @unchecked Sendable {
         let previous = source
         source = nil
         lock.unlock()
+        previous?.setEventHandler(handler: nil)
         previous?.cancel()
     }
 
     deinit { stop() }
+
+    private static func takeSlot(_ capacity: DispatchSemaphore) -> Bool {
+        capacity.wait(timeout: .now()) == .success
+    }
 
     private static func configure(_ descriptor: Int32) {
         // Accepted sockets must be blocking even when the listener isn't.
@@ -99,8 +147,10 @@ final class LocalProxyBridge: @unchecked Sendable {
 
     private static func readLine(_ descriptor: Int32) throws -> Data {
         var received = Data()
+        let deadline = ProcessInfo.processInfo.systemUptime + 2
         var buffer = [UInt8](repeating: 0, count: 1024)
         while received.count <= 4096 {
+            guard ProcessInfo.processInfo.systemUptime < deadline else { throw LocalProxySocketError.invalidRequest }
             let count = Darwin.recv(descriptor, &buffer, min(buffer.count, 4097 - received.count), 0)
             if count < 0, errno == EINTR { continue }
             guard count > 0 else { throw LocalProxySocketError.invalidRequest }
@@ -134,8 +184,10 @@ enum LocalProxyCredentialReader {
         let accountID: String
         let expiresAt: Double
     }
-    static func read(profile: CodexProfile, system: CodexProfile, now: Date = Date()) throws -> Value {
-        try withBoundedGates([profile.codexHomeURL, system.codexHomeURL]) {
+    static func read(profile: CodexProfile, system: CodexProfile, now: Date = Date(), allowDesktopAccount: Bool = false, creditFloor: Int? = nil, allowPaidCredits: Bool = false, deadline: TimeInterval? = nil)
+        throws -> Value
+    {
+        try withBoundedGates([profile.codexHomeURL, system.codexHomeURL], deadline: deadline) {
             let home = CodexCredentialTransaction.canonical(profile.codexHomeURL)
             let central = CodexCredentialTransaction.canonical(system.codexHomeURL)
             guard !profile.isSystemProfile, home != central,
@@ -144,7 +196,9 @@ enum LocalProxyCredentialReader {
                 let centralData = try readSnapshot(home: central),
                 let centralIdentity = CodexOfficialProfileReader.credentialIdentity(fromAuthData: centralData)
             else { throw LocalProxyFailure.identity }
-            let result = try validate(data: data, profile: profile, centralIdentity: centralIdentity, now: now)
+            let result = try validate(
+                data: data, profile: profile, centralIdentity: centralIdentity, now: now, allowDesktopAccount: allowDesktopAccount, creditFloor: creditFloor,
+                allowPaidCredits: allowPaidCredits)
             guard try readSnapshot(home: home) == data,
                 try readSnapshot(home: central) == centralData,
                 CodexCredentialTransaction.canonical(profile.codexHomeURL) == home,
@@ -174,11 +228,11 @@ enum LocalProxyCredentialReader {
         return data
     }
 
-    private static func withBoundedGates<T>(_ homes: [URL], operation: () throws -> T) throws -> T {
+    private static func withBoundedGates<T>(_ homes: [URL], deadline admissionDeadline: TimeInterval?, operation: () throws -> T) throws -> T {
         // Quota refreshes use the same credential gates. Allow a short refresh
         // to finish without misclassifying it as a task occupying this account.
         // Keep this below the 25s bridge deadline, including the 6s Hub check.
-        let deadline = ProcessInfo.processInfo.systemUptime + 12
+        let deadline = min(ProcessInfo.processInfo.systemUptime + 12, admissionDeadline ?? .greatestFiniteMagnitude)
         let gates =
             [CodexCredentialAccessGate.lock] + Set(homes.map { CodexCredentialTransaction.canonical($0).path }).sorted().map { CodexCredentialAccessGate.homeLock(forHomePath: $0) }
         var acquired: [NSRecursiveLock] = []
@@ -193,19 +247,24 @@ enum LocalProxyCredentialReader {
         return try operation()
     }
 
-    static func validate(data: Data, profile: CodexProfile, centralIdentity: CodexCredentialIdentity, now: Date) throws -> Value {
+    static func validate(
+        data: Data, profile: CodexProfile, centralIdentity: CodexCredentialIdentity, now: Date, allowDesktopAccount: Bool = false, creditFloor: Int? = nil,
+        allowPaidCredits: Bool = false
+    ) throws -> Value {
         guard data.count <= 1024 * 1024, !profile.isSystemProfile,
             let snapshot = profile.lastSnapshot,
             let identity = CodexOfficialProfileReader.credentialIdentity(fromAuthData: data),
             profile.matchesRecordedCredential(identity),
             snapshot.accountID == identity.accountID,
             snapshot.email?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == identity.email,
-            identity.email != centralIdentity.email, identity.accountID != centralIdentity.accountID,
+            allowDesktopAccount
+                ? (identity.email == centralIdentity.email && identity.accountID == centralIdentity.accountID)
+                : (identity.email != centralIdentity.email && identity.accountID != centralIdentity.accountID),
             let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
             let tokens = object["tokens"] as? [String: Any], let token = tokens["access_token"] as? String,
             token.utf8.count <= 32768, !token.contains("\n"), !token.contains("\r")
         else { throw LocalProxyFailure.identity }
-        guard LocalProxyAdmission.quota(profile, now: now) == nil else { throw LocalProxyAdmission.quota(profile, now: now)! }
+        if let failure = LocalProxyAdmission.quota(profile, now: now, creditFloor: creditFloor, allowPaidCredits: allowPaidCredits) { throw failure }
         let parts = token.split(separator: ".", omittingEmptySubsequences: false)
         guard parts.count == 3 else { throw LocalProxyFailure.loginExpired }
         var encoded = String(parts[1]).replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")

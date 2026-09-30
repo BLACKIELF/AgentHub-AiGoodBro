@@ -167,7 +167,7 @@ test('private control socket routes only allowlisted requests after upstream is 
   bridge.bind({
     showDashboard: () => calls.push('dashboard'),
     showView: (view) => calls.push(`view:${view}`),
-    showSettings: () => calls.push('settings'),
+    showSettings: (section) => calls.push(section ? `settings:${section}` : 'settings'),
     isTrayVisible: () => true,
     quit: () => calls.push('quit')
   });
@@ -177,10 +177,15 @@ test('private control socket routes only allowlisted requests after upstream is 
   assert.equal((await request(socketPath, { id: 'dash', cmd: 'showDashboard' })).ok, true);
   assert.equal((await request(socketPath, { id: 'home', cmd: 'showHome' })).ok, true);
   assert.equal((await request(socketPath, { id: 'settings', cmd: 'showSettings' })).ok, true);
+  for (const section of ['menuBar', 'floatingBubble']) {
+    assert.equal((await request(socketPath, { id: section, cmd: 'showSettings', section })).ok, true);
+  }
+  assert.deepEqual(await request(socketPath, { id: 'badsection', cmd: 'showSettings', section: 'arbitrary' }), { id: null, ok: false, error: 'invalid-section' });
+  assert.deepEqual(await request(socketPath, { id: 'wrongroute', cmd: 'showHome', section: 'menuBar' }), { id: null, ok: false, error: 'unexpected-field' });
   assert.equal((await request(socketPath, { id: 'tool', cmd: 'showView', view: 'tool' })).ok, true);
   assert.deepEqual(await request(socketPath, { id: 'bad', cmd: 'showView', view: 'secret' }), { id: null, ok: false, error: 'invalid-view' });
   assert.deepEqual(await request(socketPath, { id: 'extra', cmd: 'status', token: 'x' }), { id: null, ok: false, error: 'unexpected-field' });
-  assert.deepEqual(calls, ['dashboard', 'view:home', 'settings', 'view:tool']);
+  assert.deepEqual(calls, ['dashboard', 'view:home', 'settings', 'settings:menuBar', 'settings:floatingBubble', 'view:tool']);
   assert.equal((await request(socketPath, { id: 'quit', cmd: 'quit' })).ok, true);
   await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(calls.at(-1), 'quit');
@@ -361,8 +366,50 @@ test('staging patch preserves vendor source and disables its independent updater
   const i18n = require(stagedI18nPath);
   const styles = fs.readFileSync(path.join(stage, 'src/electron/renderer/styles.css'), 'utf8');
   const rendererApp = fs.readFileSync(path.join(stage, 'src/electron/renderer/app.js'), 'utf8');
+  const homeRouteSource = rendererApp.match(/window\.tokenMonitor\.onOpenView\?\.\(\(viewId\) => \{[\s\S]*?\n\}\);/)?.[0];
+  assert.ok(homeRouteSource);
+  let openView;
+  const homeCalls = [];
+  vm.runInNewContext(homeRouteSource, {
+    window: { tokenMonitor: { onOpenView: (handler) => { openView = handler; } } },
+    setPeriod: (period) => homeCalls.push(`period:${period}`),
+    openViewFromTray: (view) => homeCalls.push(`view:${view}`)
+  });
+  openView('home');
+  assert.deepEqual(homeCalls, ['period:allTime', 'view:home']);
+  homeCalls.length = 0;
+  openView('limits');
+  assert.deepEqual(homeCalls, ['view:limits'], 'other routes retain the selected period');
   const tray = fs.readFileSync(path.join(stage, 'src/electron/tray.js'), 'utf8');
   assert.match(main, /hostBridge\.bind\(/);
+  const routeSource = rendererApp.match(/window\.tokenMonitor\.onOpenSettings\?\.\(\(section\) => \{[\s\S]*?\n\}\);/)?.[0];
+  assert.ok(routeSource);
+  for (const [section, target] of [['menuBar', 'showTrayIconInput'], ['floatingBubble', 'floatingBubbleInput'], [undefined, null]]) {
+    const calls = [];
+    let route;
+    vm.runInNewContext(routeSource, {
+      window: { tokenMonitor: { onOpenSettings: (handler) => { route = handler; } } },
+      openSettingsPanel: () => calls.push('open'),
+      setSettingsSectionExpanded: (id, expanded) => calls.push(`${id}:${expanded}`),
+      requestAnimationFrame: (fn) => fn(),
+      document: { getElementById: (id) => {
+        assert.equal(id, target);
+        assert.match(index, new RegExp(`id="${id}"`));
+        return { closest: () => ({ scrollIntoView: () => calls.push('scroll') }), focus: () => calls.push('focus') };
+      } }
+    });
+    route(section);
+    assert.deepEqual(calls, target ? ['open', 'window:true', 'scroll', 'focus'] : ['open']);
+  }
+  const dockSync = main.match(/function syncEdgeDock\(rendererSettings\) \{[\s\S]*?\n\}\n\n(?=function refreshLimitStatsPresentation)/)?.[0];
+  assert.ok(dockSync);
+  let dockStops = 0;
+  const stopEmbeddedDock = vm.runInNewContext(`${dockSync}; syncEdgeDock;`, {
+    IS_AIGOODBRO_EMBEDDED: true, edgeDockController: { stop: () => { dockStops += 1; } }
+  });
+  stopEmbeddedDock({});
+  assert.equal(dockStops, 1, 'embedded dock cannot open alongside native dock');
+
   const activationFunction = main.match(/function applyMacActivationPolicy\(state = \{\}\) \{[\s\S]*?\n\}/)?.[0];
   assert.ok(activationFunction);
   const { macActivationPolicyMode } = require(path.join(upstreamRoot, 'src/electron/trayModeSettings.js'));
@@ -412,7 +459,7 @@ test('staging patch preserves vendor source and disables its independent updater
     assert.deepEqual(calls, ['rate']);
   }
   assert.match(main, /event\.sender !== mainWindow\?\.webContents/);
-  assert.match(main, /\['openWorkbench', 'openAccounts', 'openSettings', 'checkForUpdates'\]\.includes\(action\)/);
+  assert.match(main, /\['openWorkbench', 'openAccounts', 'openSettings', 'openEdgeDockSettings', 'checkForUpdates'\]\.includes\(action\)/);
   assert.match(preload, /openAiGoodBroHost: \(action\) => ipcRenderer\.invoke\('aigoodbro:openHost', action\)/);
   assert.match(main, /isTrayVisible: \(\) => Boolean\(tray && !tray\.isDestroyed\(\)\)/);
   assert.match(main, /if \(IS_AIGOODBRO_EMBEDDED\) return deriveAppUpdateState\(\);/);

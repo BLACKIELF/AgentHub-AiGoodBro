@@ -162,6 +162,7 @@ private struct EdgeDockHUDMaterial<Outline: Shape>: NSViewRepresentable {
 
 private struct EdgeDockGlass<Content: View, Outline: Shape>: View {
     let outline: Outline
+    let glass: WorkspaceGlassPreferences
     let content: Content
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
@@ -173,13 +174,13 @@ private struct EdgeDockGlass<Content: View, Outline: Shape>: View {
                 if reduceTransparency || contrast == .increased {
                     outline.fill(Color(nsColor: .windowBackgroundColor))
                 } else {
-                    EdgeDockHUDMaterial(outline: outline)
+                    if glass.systemGlass { EdgeDockHUDMaterial(outline: outline) }
                     outline.fill(
                         colorScheme == .dark
-                            ? Color(red: 48 / 255, green: 52 / 255, blue: 56 / 255).opacity(0.68)
-                            : Color(red: 246 / 255, green: 247 / 255, blue: 250 / 255).opacity(0.54))
+                            ? Color(red: 48 / 255, green: 52 / 255, blue: 56 / 255).opacity(glass.tintOpacity)
+                            : Color(red: 246 / 255, green: 247 / 255, blue: 250 / 255).opacity(glass.tintOpacity))
                 }
-                outline.stroke(Color.primary.opacity(colorScheme == .dark ? 0.22 : 0.13), lineWidth: 0.6)
+                outline.stroke(Color.primary.opacity(glass.lineOpacity), lineWidth: 0.6)
             }
             .clipShape(outline)
             .contentShape(outline)
@@ -189,12 +190,14 @@ private struct EdgeDockGlass<Content: View, Outline: Shape>: View {
 struct TokenMonitorEdgeDockPeekView: View {
     let side: TokenMonitorEdgeDockPreferences.Side
     let language: WidgetLanguage
+    var glass = WorkspaceGlassPreferences()
     let onReveal: () -> Void
 
     var body: some View {
         Button(action: onReveal) {
             EdgeDockGlass(
                 outline: EdgeDockPeekShape(side: side),
+                glass: glass,
                 content:
                     Capsule()
                     .fill(Color(red: 0.40, green: 0.75, blue: 0.90))
@@ -213,9 +216,13 @@ struct TokenMonitorEdgeDockRailView: View {
     let cells: [TokenMonitorEdgeDockCell]
     let side: TokenMonitorEdgeDockPreferences.Side
     let language: WidgetLanguage
+    var glass = WorkspaceGlassPreferences()
     let compact: Bool
     let warnColors: Bool
     let focusedIndex: Int?
+    var pageIndex = 0
+    var pageCount = 1
+    var onPage: (Int) -> Void = { _ in }
     let onSelect: (Int) -> Void
     let onDrag: (CGSize) -> Void
     let onDrop: (CGSize) -> Void
@@ -225,6 +232,7 @@ struct TokenMonitorEdgeDockRailView: View {
     var body: some View {
         EdgeDockGlass(
             outline: EdgeDockRailShape(side: side),
+            glass: glass,
             content:
                 VStack(spacing: 2) {
                     ForEach(cells.indices, id: \.self) { index in
@@ -237,13 +245,10 @@ struct TokenMonitorEdgeDockRailView: View {
                                 .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
-                        .help(cell.title)
+                        .help(cell.kind == .proxy ? "\(cell.title) · \(cell.proxyStatusTitle(language))" : cell.title)
                         .accessibilityLabel(cell.title)
-                        .accessibilityValue(
-                            cell.isAvailable
-                                ? (cell.kind == .stat
-                                    ? statisticValue(cell, compact: false)
-                                    : percentText(cell.percentRemaining)) : language.text("暂不可用", "Unavailable"))
+                        .accessibilityValue(accessibilityValue(cell))
+                        .accessibilityIdentifier(cell.kind == .proxy ? "edge-dock-proxy" : "edge-dock-item-\(index)")
                     }
                 }
                 .padding(.top, 32)
@@ -261,12 +266,38 @@ struct TokenMonitorEdgeDockRailView: View {
                 )
                 .accessibilityLabel(language.text("拖动侧边栏", "Drag Edge Dock"))
         }
+        .overlay(alignment: .bottom) {
+            if pageCount > 1 {
+                HStack(spacing: 3) {
+                    Button { onPage(-1) } label: { Image(systemName: "chevron.up").frame(width: 18, height: 24) }
+                        .disabled(pageIndex == 0)
+                        .accessibilityLabel(language.text("上一页账号", "Previous accounts"))
+                    Text("\(pageIndex + 1)/\(pageCount)").font(.system(size: 8)).monospacedDigit()
+                    Button { onPage(1) } label: { Image(systemName: "chevron.down").frame(width: 18, height: 24) }
+                        .disabled(pageIndex + 1 == pageCount)
+                        .accessibilityLabel(language.text("下一页账号", "Next accounts"))
+                }
+                .font(.system(size: 10)).buttonStyle(.plain)
+                .padding(.bottom, 4)
+            }
+        }
         .accessibilityIdentifier("edge-dock-rail")
     }
 
     @ViewBuilder
     private func cellView(_ cell: TokenMonitorEdgeDockCell, focused: Bool) -> some View {
-        if cell.kind == .provider {
+        if cell.kind == .proxy {
+            Image(systemName: "network")
+                .font(.system(size: 24, weight: .regular))
+                .foregroundStyle(proxyColor(cell))
+                .frame(width: 42, height: 42)
+                .background(proxyColor(cell).opacity(0.09), in: RoundedRectangle(cornerRadius: 12))
+                .overlay(alignment: .bottomTrailing) {
+                    Circle().fill(proxyColor(cell)).frame(width: 7, height: 7)
+                        .overlay { Circle().stroke(Color(nsColor: .windowBackgroundColor), lineWidth: 1.5) }
+                        .offset(x: -1, y: -1)
+                }
+        } else if cell.kind == .provider {
             VStack(spacing: 2) {
                 ZStack {
                     Circle().stroke(Color.primary.opacity(0.13), lineWidth: 3.5)
@@ -279,14 +310,27 @@ struct TokenMonitorEdgeDockRailView: View {
                         .rotationEffect(.degrees(-90))
                         .opacity(cell.isAvailable ? 1 : 0.3)
                     if let providerID = cell.providerID {
-                        ProviderMark(providerID: providerID, slot: .navigation)
-                            .scaleEffect(0.63)
+                        ProviderMark(providerID: providerID, slot: .card)
                     }
                 }
                 .frame(width: 42, height: 42)
-                Text(cell.headlineValueLabel ?? percentText(cell.percentRemaining))
+                .overlay(alignment: .topTrailing) {
+                    if let label = cell.accountBadge {
+                        Text(label)
+                            .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 3).padding(.vertical, 1)
+                            .background(Color.black.opacity(0.75), in: Capsule())
+                            .offset(x: 3, y: -2)
+                            .accessibilityHidden(true)
+                    }
+                }
+                Text(providerHeadline(cell))
                     .font(.system(size: 9, weight: .medium, design: .monospaced))
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.6)
+                    .frame(maxWidth: 56)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(focused ? Color.white.opacity(0.06) : .clear, in: RoundedRectangle(cornerRadius: 12))
@@ -315,14 +359,40 @@ struct TokenMonitorEdgeDockRailView: View {
         }
     }
 
+    private func proxyColor(_ cell: TokenMonitorEdgeDockCell) -> Color {
+        switch cell.proxyPhase {
+        case .running: return .green
+        case .starting, .stopping: return .orange
+        case .failed: return .red
+        case .stopped, nil: return .secondary
+        }
+    }
+
+    private func accessibilityValue(_ cell: TokenMonitorEdgeDockCell) -> String {
+        if cell.kind == .proxy { return cell.proxyStatusTitle(language) }
+        guard cell.isAvailable else {
+            return cell.providerID == "grok" || cell.providerID == "claude"
+                ? providerHeadline(cell) : language.text("暂不可用", "Unavailable")
+        }
+        return cell.kind == .stat ? statisticValue(cell, compact: false)
+            : providerHeadline(cell)
+    }
+
+    private func providerHeadline(_ cell: TokenMonitorEdgeDockCell) -> String {
+        if let label = cell.headlineValueLabel { return label }
+        if let percent = cell.percentRemaining { return percentText(percent) }
+        guard cell.providerID == "grok" || cell.providerID == "claude" else { return "—" }
+        return cell.isStale ? language.text("待刷新", "Refresh needed") : language.text("未知", "Unknown")
+    }
+
     private func percentText(_ value: Double?) -> String {
         guard let value, value.isFinite else { return "—" }
         return "\(Int(value.rounded()))%"
     }
 
     private func liveRateStateLabel(_ cell: TokenMonitorEdgeDockCell) -> String {
-        guard let sample = cell.liveRate else { return language.text("等待", "WAIT") }
-        return sample.isIdle ? language.text("上次", "LAST") : language.text("即时", "LIVE")
+        guard cell.liveRate != nil else { return language.text("等待", "WAIT") }
+        return language.text("上次", "LAST")
     }
 
     private func statisticValue(_ cell: TokenMonitorEdgeDockCell, compact: Bool) -> String {
@@ -341,21 +411,26 @@ struct TokenMonitorEdgeDockCardView: View {
     let cell: TokenMonitorEdgeDockCell
     let side: TokenMonitorEdgeDockPreferences.Side
     let language: WidgetLanguage
+    var glass = WorkspaceGlassPreferences()
     let tailY: CGFloat
     let isPinned: Bool
     let canPin: Bool
     let onPin: () -> Void
     let onOpenDashboard: () -> Void
+    var onOpenProxy: () -> Void = {}
     @State private var byModel = false
 
     var body: some View {
         EdgeDockGlass(
             outline: EdgeDockCardShape(side: side, tailY: tailY),
+            glass: glass,
             content:
                 ScrollView(showsIndicators: false) {
                     VStack(alignment: .leading, spacing: 9) {
                         header
-                        if cell.metric == .liveRate {
+                        if cell.kind == .proxy {
+                            proxyContent
+                        } else if cell.metric == .liveRate {
                             liveRateContent
                         } else if cell.metric == .sessions {
                             sessionsContent
@@ -371,16 +446,24 @@ struct TokenMonitorEdgeDockCardView: View {
                     .padding(.trailing, side == .right ? 24 : 14)
                 }
         )
+        .environment(\.widgetLanguage, language)
         .accessibilityIdentifier("edge-dock-card")
     }
 
     private var header: some View {
         HStack(spacing: 5) {
+            if cell.kind == .proxy {
+                Image(systemName: "network").font(.system(size: 12))
+            }
             Text(cell.title)
                 .font(.system(size: 12, weight: .semibold, design: .monospaced))
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
             Spacer(minLength: 4)
+            if cell.kind == .proxy && !cell.proxyAccounts.isEmpty {
+                Text(language.text("\(cell.proxyAccounts.count) 个账号", "\(cell.proxyAccounts.count) accounts"))
+                    .font(.system(size: 10)).foregroundStyle(.secondary)
+            }
             if cell.kind == .stat && cell.metric != .liveRate && cell.metric != .sessions {
                 HStack(spacing: 0) {
                     dimensionButton(language.text("工具", "Tools"), selected: !byModel) { byModel = false }
@@ -390,10 +473,18 @@ struct TokenMonitorEdgeDockCardView: View {
                 .background(Color.primary.opacity(0.09), in: RoundedRectangle(cornerRadius: 8))
             }
             if canPin {
-                Button(action: onPin) { Image(systemName: isPinned ? "pin.fill" : "pin").font(.system(size: 10)) }
+                Button(action: onPin) {
+                    Image(systemName: isPinned ? "pin.fill" : "pin")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(Color.blue)
+                        .frame(width: 24, height: 24)
+                        .background(Color.blue.opacity(isPinned ? 0.16 : 0.07), in: RoundedRectangle(cornerRadius: 6))
+                }
                     .buttonStyle(.plain)
-                    .help(isPinned ? language.text("取消固定侧边栏", "Unpin rail") : language.text("固定侧边栏", "Pin rail"))
-                    .accessibilityLabel(isPinned ? language.text("取消固定侧边栏", "Unpin rail") : language.text("固定侧边栏", "Pin rail"))
+                    .help(isPinned ? language.text("取消固定，移开鼠标后关闭", "Unpin to dismiss when the pointer leaves") : language.text("固定此详情并置顶", "Keep this detail on top"))
+                    .accessibilityLabel(isPinned ? language.text("取消固定详情", "Unpin detail") : language.text("固定详情", "Pin detail"))
+                    .accessibilityIdentifier("edge-dock-card-pin")
+                    .accessibilityValue(isPinned ? language.text("已固定", "Pinned") : language.text("未固定", "Not pinned"))
             }
         }
     }
@@ -406,6 +497,101 @@ struct TokenMonitorEdgeDockCardView: View {
         }
         .buttonStyle(.plain)
         .accessibilityAddTraits(selected ? [.isSelected] : [])
+    }
+
+    private var proxyContent: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(spacing: 5) {
+                Circle().fill(cell.proxyRequestCount > 0 ? Color.green : Color.secondary)
+                    .frame(width: 5, height: 5)
+                Text(cell.proxyStatusTitle(language))
+                Spacer(minLength: 4)
+                if cell.proxyRequestCount > 0 {
+                    Text(language.text("\(cell.proxyRequestCount) 个请求", "\(cell.proxyRequestCount) requests"))
+                        .monospacedDigit()
+                }
+            }
+            .font(.system(size: 10, weight: .medium))
+            if cell.proxyAccounts.isEmpty {
+                Text(cell.proxyPhase == .running
+                    ? language.text("上次快照没有活动请求", "No active requests in the last snapshot")
+                    : language.text("没有活动账号记录", "No active accounts in this snapshot"))
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                    .padding(.vertical, 8)
+            } else {
+                ForEach(cell.proxyAccounts) { account in
+                    Divider().opacity(0.5)
+                    proxyAccount(account)
+                }
+                Text(language.text("请求快照每分钟更新 · 额度为最近一次读取", "Request snapshot updates every minute · Last reported quota"))
+                    .font(.system(size: 9)).foregroundStyle(.secondary)
+            }
+            Button(action: onOpenProxy) {
+                Label(language.text("反代设置", "Proxy settings"), systemImage: "slider.horizontal.3")
+                    .font(.system(size: 10, weight: .medium))
+            }
+            .buttonStyle(.plain).foregroundStyle(Color.accentColor)
+            .accessibilityIdentifier("edge-dock-proxy-settings")
+        }
+        .accessibilityIdentifier("edge-dock-proxy-activity")
+    }
+
+    private func proxyAccount(_ account: LocalProxyQueueRow) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 5) {
+                Text(account.accountNumber.map { String(format: "%02d", $0) } ?? "—")
+                    .foregroundStyle(.secondary).monospacedDigit()
+                Text(account.label).lineLimit(1).truncationMode(.middle)
+                Spacer(minLength: 3)
+                Text(language.text("运行中", "Running"))
+                    .font(.system(size: 9, weight: .medium)).foregroundStyle(.green)
+            }
+            .font(.system(size: 11, weight: .semibold))
+            HStack(alignment: .top, spacing: 12) {
+                ForEach(account.windows) { window in proxyWindow(window) }
+            }
+            HStack(spacing: 5) {
+                if let balance = account.creditBalance {
+                    CreditBalanceView(presentation: balance, compact: true)
+                }
+                Spacer(minLength: 3)
+                if account.activeRequestCount > 1 {
+                    Text(language.text("\(account.activeRequestCount) 个请求", "\(account.activeRequestCount) requests"))
+                }
+                if account.snapshotStale {
+                    Text(language.text("额度待刷新", "Quota needs refresh"))
+                        .foregroundStyle(.orange)
+                }
+            }
+            .font(.system(size: 9)).foregroundStyle(.secondary)
+        }
+        .padding(.vertical, 3)
+    }
+
+    private func proxyWindow(_ window: LocalProxyQuotaWindow) -> some View {
+        let remaining = window.remaining.flatMap { $0.isFinite && (0...100).contains($0) ? $0 : nil }
+        let color = window.id == "5h" ? Color(red: 0.30, green: 0.66, blue: 0.73) : Color.purple
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 3) {
+                Text(window.id).foregroundStyle(.secondary)
+                Spacer(minLength: 2)
+                Text(remaining.map { "\(Int($0.rounded()))%" } ?? "—").monospacedDigit()
+            }
+            .font(.system(size: 10, weight: .medium))
+            GeometryReader { geometry in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Color.primary.opacity(0.12))
+                    if let remaining {
+                        Capsule().fill(color).frame(width: geometry.size.width * CGFloat(remaining / 100))
+                    }
+                }
+            }.frame(height: 3)
+            if let reset = window.resetsAt {
+                ResetCountdownText(deadline: reset, kind: .accountWindow, language: language, compact: true)
+                    .font(.system(size: 8)).lineLimit(1)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var statisticsContent: some View {
@@ -519,13 +705,21 @@ struct TokenMonitorEdgeDockCardView: View {
     private var limitsContent: some View {
         VStack(alignment: .leading, spacing: 9) {
             HStack(alignment: .firstTextBaseline) {
-                Text(cell.headlineValueLabel ?? cell.percentRemaining.map { "\(Int($0.rounded()))%" } ?? "—")
+                Text(cell.headlineValueLabel ?? cell.percentRemaining.map { "\(Int($0.rounded()))%" }
+                    ?? (cell.isStale ? language.text("待刷新", "Refresh needed") : language.text("未知", "Unknown")))
                     .font(.system(size: 28, weight: .medium)).monospacedDigit()
-                Text(language.text("剩余额度", "remaining"))
+                Text(cell.providerID == "claude" ? language.text("余额", "balance") : language.text("剩余额度", "remaining"))
                     .font(.system(size: 10)).foregroundStyle(.secondary)
             }
             if !cell.isAvailable {
-                Text(language.text("当前暂无可核对的额度", "No verified limit right now"))
+                Text(cell.accountBindingMissing
+                    ? language.text("没有匹配到所选账号。请到侧边栏设置重新选择；不会自动改用其他账号。",
+                                    "The selected account could not be matched. Choose it again in Edge Dock settings; another account is never substituted automatically.")
+                    : cell.providerID == "claude"
+                    ? language.text("当前暂无可核对的余额", "No verified balance right now")
+                    : cell.providerID == "grok"
+                        ? language.text("订阅额度待核对，请在账号页刷新。", "Refresh the account page to verify subscription quota.")
+                        : language.text("当前暂无可核对的额度", "No verified limit right now"))
                     .font(.system(size: 10)).foregroundStyle(.secondary)
             }
             ForEach(cell.accounts) { account in
@@ -546,7 +740,7 @@ struct TokenMonitorEdgeDockCardView: View {
                                 .foregroundStyle(.secondary)
                         }
                         if metric.isStale || account.isStale {
-                            Text(language.text("上次记录 · 数据已过期", "Last recorded · Stale"))
+                            Text(language.text("上次记录 · 待刷新", "Last recorded · Refresh needed"))
                                 .font(.system(size: 8, design: .monospaced))
                                 .foregroundStyle(.secondary)
                         }

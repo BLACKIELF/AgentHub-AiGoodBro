@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// The normal product entry for the independent screen-edge dock. Editing an
@@ -7,13 +8,35 @@ struct TokenMonitorEdgeDockSettingsView: View {
     @ObservedObject var settings: AppSettings
     let quotaSources: [TokenMonitorFloatingBubbleAccount]
     let language: WidgetLanguage
+    @State private var screenOptions: [TokenMonitorEdgeDockScreenCatalog.Option] = []
+
+    private var selectedScreenID: String {
+        TokenMonitorEdgeDockScreenTarget.migratedID(
+            preferences.displayID, screens: screenOptions.map(\.identity)
+        ) ?? ""
+    }
+
+    private var unavailableScreenID: String? {
+        let selected = selectedScreenID
+        guard !selected.isEmpty,
+            !screenOptions.contains(where: { $0.id == selected })
+        else { return nil }
+        return selected
+    }
+
+    private var screenBinding: Binding<String> {
+        Binding(
+            get: { selectedScreenID },
+            set: { choice in update { $0.displayID = choice.isEmpty ? nil : choice } }
+        )
+    }
 
     private var preferences: TokenMonitorEdgeDockPreferences { settings.edgeDock }
 
     private var availableProviders: [(id: String, title: String)] {
         var seen = Set<String>()
-        return quotaSources.filter { $0.isLoggedIn && seen.insert($0.providerID).inserted }
-            .map { (id: $0.providerID, title: $0.providerName) }
+        return quotaSources.filter { seen.insert(TokenMonitorEdgeDockItem.canonicalProviderID($0.providerID)).inserted }
+            .map { (id: TokenMonitorEdgeDockItem.canonicalProviderID($0.providerID), title: $0.providerName) }
     }
 
     private var defaultItems: [TokenMonitorEdgeDockItem] {
@@ -27,8 +50,8 @@ struct TokenMonitorEdgeDockSettingsView: View {
                 .accessibilityIdentifier("edge-dock-enabled")
             Text(
                 language.text(
-                    "从屏幕右缘向内移动指针可展开额度与用量栏；悬停查看详情，点击固定栏体，拖动顶部可换边或调整高度。",
-                    "Push the pointer into the screen edge to reveal limits and usage. Hover for details, click to pin the rail, or drag its top to move it.")
+                    "选择多个账号，额度会分别显示在屏幕边缘。悬停查看详情，拖动顶部调整位置；项目较多时可翻页。",
+                    "Choose multiple accounts to show their limits separately at the screen edge. Hover for details, drag the top to move, and page through longer lists.")
             )
             .font(.system(size: 11)).foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
@@ -49,9 +72,33 @@ struct TokenMonitorEdgeDockSettingsView: View {
                     Text(language.text("左侧", "Left")).tag(TokenMonitorEdgeDockPreferences.Side.left)
                 }
                 .pickerStyle(.segmented).labelsHidden()
+
+                Text(language.text("显示屏幕", "Display"))
+                    .font(.system(size: 11, weight: .semibold))
+                Picker(language.text("显示屏幕", "Display"), selection: screenBinding) {
+                    Text(language.text("跟随当前屏幕", "Follow current screen")).tag("")
+                    Text(language.text("Mac内置屏幕", "Mac built-in screen"))
+                        .tag(TokenMonitorEdgeDockScreenTarget.builtInID)
+                    ForEach(screenOptions.filter { !$0.identity.isBuiltIn }) { option in
+                        Text(option.title).tag(option.id)
+                    }
+                    if let unavailableScreenID, unavailableScreenID != TokenMonitorEdgeDockScreenTarget.builtInID {
+                        Text(language.text("已选屏幕暂不可用", "Selected screen unavailable"))
+                            .tag(unavailableScreenID)
+                    }
+                }
+                .accessibilityIdentifier("edge-dock-display")
+                if unavailableScreenID != nil {
+                    Text(language.text(
+                        "目标屏幕未连接，侧边栏暂时隐藏；重新连接后会恢复，选择不会丢失。",
+                        "The selected screen is disconnected. The dock is hidden until it returns; your choice is kept."
+                    ))
+                    .font(.system(size: 10)).foregroundStyle(.secondary)
+                }
             }
 
             Divider()
+            accountComposer
             itemComposer
 
             Toggle(language.text("触控板轻触反馈", "Trackpad haptics"), isOn: binding(\.hapticEnabled))
@@ -63,6 +110,61 @@ struct TokenMonitorEdgeDockSettingsView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(18)
         .accessibilityIdentifier("edge-dock-settings")
+        .onAppear { screenOptions = TokenMonitorEdgeDockScreenCatalog.options() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)) { _ in
+            TokenMonitorEdgeDockScreenCatalog.screensChanged()
+            screenOptions = TokenMonitorEdgeDockScreenCatalog.options()
+        }
+    }
+
+    private var accountComposer: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text(language.text("常驻账号", "Pinned accounts"))
+                    .font(.system(size: 12, weight: .semibold))
+                Spacer()
+                Button(language.text("右侧常驻", "Keep on right")) {
+                    update { prefs in
+                        prefs.enabled = true
+                        prefs.mode = .always
+                        prefs.side = .right
+                    }
+                }
+                .font(.system(size: 11))
+                .accessibilityIdentifier("edge-dock-keep-on-right")
+            }
+            ForEach(availableProviders, id: \.id) { provider in
+                DisclosureGroup(provider.title) {
+                    ForEach(quotaSources.filter { TokenMonitorEdgeDockItem.canonicalProviderID($0.providerID) == provider.id }, id: \.accountID) { account in
+                        Toggle(account.accountName, isOn: pinnedAccountBinding(account))
+                            .toggleStyle(.checkbox)
+                            .font(.system(size: 11))
+                            .disabled(!isPinned(account) && (preferences.items ?? defaultItems).count >= 24)
+                            .accessibilityIdentifier("edge-dock-account-\(account.accountID)")
+                    }
+                    .padding(.leading, 10)
+                }
+                .font(.system(size: 11))
+            }
+            Text(language.text("勾选后独立显示；在下方调整顺序。最多 24 项。", "Selected accounts appear separately. Reorder them below. Up to 24 items."))
+                .font(.system(size: 10)).foregroundStyle(.secondary)
+        }
+    }
+
+    private func isPinned(_ account: TokenMonitorFloatingBubbleAccount) -> Bool {
+        (preferences.items ?? defaultItems).contains { $0.id == TokenMonitorEdgeDockItem.account(account.providerID, account.accountID).id }
+    }
+
+    private func pinnedAccountBinding(_ account: TokenMonitorFloatingBubbleAccount) -> Binding<Bool> {
+        Binding(get: { isPinned(account) }, set: { selected in
+            let item = TokenMonitorEdgeDockItem.account(account.providerID, account.accountID)
+            update { prefs in
+                var items = prefs.items ?? defaultItems
+                items.removeAll { $0.id == item.id }
+                if selected { items.append(item) }
+                prefs.items = items
+            }
+        })
     }
 
     private var itemComposer: some View {
@@ -79,7 +181,7 @@ struct TokenMonitorEdgeDockSettingsView: View {
             if preferences.items == nil {
                 Text(
                     language.text(
-                        "自动显示今日用量、最多三个已连接额度平台与可信实时速率；总计可在下方添加。", "Automatically show today's usage, up to three connected limit providers, and verified live rate. Add Total below."
+                        "自动显示反代入口、今日用量、最多三个额度平台和采样速率。自定义后可移除或调整顺序。", "Automatically show proxy settings, today's usage, up to three limit providers, and sampled rate. Customize to remove or reorder items."
                     )
                 )
                 .font(.system(size: 10)).foregroundStyle(.secondary)
@@ -122,7 +224,7 @@ struct TokenMonitorEdgeDockSettingsView: View {
                             .accessibilityLabel(language.text("移除项目", "Remove item"))
                         }
                         .buttonStyle(.plain)
-                        if items[index].type == .limit {
+                        if items[index].type == .limit && items[index].accountID == nil {
                             limitItemOptions(items[index])
                         }
                     }
@@ -131,6 +233,13 @@ struct TokenMonitorEdgeDockSettingsView: View {
                 }
             }
             Menu {
+                Button {
+                    addItem(.proxy())
+                } label: {
+                    Label(language.text("反代设置", "Proxy settings"), systemImage: "network")
+                }
+                .disabled((preferences.items ?? defaultItems).contains { $0.type == .proxy })
+                Divider()
                 ForEach(availableProviders.map(\.id), id: \.self) { providerID in
                     Button(availableProviders.first { $0.id == providerID }?.title ?? providerID) {
                         addItem(.limit(providerID))
@@ -141,22 +250,25 @@ struct TokenMonitorEdgeDockSettingsView: View {
                     Button(metric.title(language)) { addItem(.stat(metric)) }
                 }
             } label: {
-                Label(language.text("添加额度或用量项目", "Add limit or usage item"), systemImage: "plus.circle")
+                Label(language.text("添加项目", "Add item"), systemImage: "plus.circle")
             }
             .font(.system(size: 10))
-            Text(language.text("实时速率尚无可信采样时显示“—”，不会推算数值。", "Live rate shows a dash until a verified sample exists."))
+            .disabled((preferences.items ?? defaultItems).count >= 24)
+            Text(language.text("网络图标打开反代设置；移除图标不会停止反代。", "The network icon opens proxy settings. Removing it does not stop the proxy."))
+                .font(.system(size: 10)).foregroundStyle(.secondary)
+            Text(language.text("数据按分钟更新；采样速率没有可信记录时显示“—”。", "Data updates at minute intervals. Sampled rate shows a dash until a verified sample exists."))
                 .font(.system(size: 9)).foregroundStyle(.secondary)
         }
     }
 
     private func itemLabel(_ item: TokenMonitorEdgeDockItem) -> some View {
         HStack(spacing: 5) {
-            Image(systemName: item.type == .stat ? "chart.bar.xaxis" : "circle.dotted.circle")
+            Image(systemName: item.type == .proxy ? "network" : item.type == .stat ? "chart.bar.xaxis" : "circle.dotted.circle")
                 .frame(width: 14)
             Text(
                 item.type == .stat
                     ? (item.metric?.title(language) ?? "—")
-                    : (availableProviders.first { $0.id == item.providerID }?.title ?? item.providerID ?? "—")
+                    : itemTitle(item)
             )
             .lineLimit(1)
             if item.metric == .liveRate {
@@ -167,23 +279,31 @@ struct TokenMonitorEdgeDockSettingsView: View {
         .font(.system(size: 10))
     }
 
+    private func itemTitle(_ item: TokenMonitorEdgeDockItem) -> String {
+        if item.type == .proxy { return language.text("反代设置", "Proxy settings") }
+        let provider = availableProviders.first { $0.id == item.providerID }?.title ?? item.providerID ?? "—"
+        guard let accountID = item.accountID else { return provider }
+        let account = quotaSources.first { TokenMonitorEdgeDockItem.canonicalProviderID($0.providerID) == item.providerID && $0.accountID == accountID }
+        return account.map { "\(provider) · \($0.accountName)" } ?? language.text("账号不可用", "Account unavailable")
+    }
+
     private func limitItemOptions(_ item: TokenMonitorEdgeDockItem) -> some View {
         DisclosureGroup(language.text("额度项目选项", "Limit item options")) {
             VStack(alignment: .leading, spacing: 6) {
                 Toggle(
                     language.text("详情卡显示 Token 用量", "Show token usage in card"),
                     isOn: itemBinding(item, \.showUsage))
-                Toggle(
-                    language.text("详情卡显示最近会话", "Show recent sessions in card"),
-                    isOn: itemBinding(item, \.showSessions))
                 if item.providerID == AgentNavCatalog.codexID {
+                    Toggle(
+                        language.text("详情卡显示最近会话", "Show recent sessions in card"),
+                        isOn: itemBinding(item, \.showSessions))
                     Picker(language.text("额度栏显示", "Rail value"), selection: itemBinding(item, \.accountMode)) {
                         Text(language.text("当前账号", "Current account")).tag(TokenMonitorEdgeDockItem.AccountMode.active)
                         Text(language.text("最低额度", "Lowest visible allowance")).tag(TokenMonitorEdgeDockItem.AccountMode.lowest)
                     }
                     .pickerStyle(.menu)
                 }
-                ForEach(quotaSources.filter { $0.providerID == item.providerID }, id: \.accountID) { account in
+                ForEach(quotaSources.filter { TokenMonitorEdgeDockItem.canonicalProviderID($0.providerID) == item.providerID }, id: \.accountID) { account in
                     Toggle(account.accountName, isOn: accountVisibilityBinding(itemID: item.id, accountID: account.accountID))
                 }
             }

@@ -223,7 +223,7 @@ async function switchCodexSystemAccount(id) {`,
     hostBridge.bind({
       showDashboard: async () => { await refreshAiGoodBroManagedCodexAccounts(); createDashboardWindow(); },
       showView: async (viewId) => { await refreshAiGoodBroManagedCodexAccounts(); openViewFromTray(viewId); },
-      showSettings: async () => { await refreshAiGoodBroManagedCodexAccounts(); openSettingsFromTray(); },
+      showSettings: async (section) => { await refreshAiGoodBroManagedCodexAccounts(); focusExistingWindow(); sendMainWindowEvent('settings:open', section); },
       isTrayVisible: () => Boolean(tray && !tray.isDestroyed()),
       quit: () => requestAppQuit()
     });
@@ -234,7 +234,7 @@ async function switchCodexSystemAccount(id) {`,
     "  ipcMain.handle('settings:get', () => settingsForRenderer());",
     `  ipcMain.handle('aigoodbro:openHost', async (event, action) => {
     if (!IS_AIGOODBRO_EMBEDDED || event.sender !== mainWindow?.webContents
-      || !['openWorkbench', 'openAccounts', 'openSettings', 'checkForUpdates'].includes(action)) {
+      || !['openWorkbench', 'openAccounts', 'openSettings', 'openEdgeDockSettings', 'checkForUpdates'].includes(action)) {
       return { ok: false, error: 'unsupported-action' };
     }
     const result = await globalThis.__AIGOODBRO_TOKEN_MONITOR_BRIDGE__.requestHost(action);
@@ -243,6 +243,14 @@ async function switchCodexSystemAccount(id) {`,
   });
   ipcMain.handle('settings:get', () => settingsForRenderer());`,
     'renderer to native workspace routes');
+  text = replaceOne(text,
+    'function syncEdgeDock(rendererSettings) {\n  if (!settings) return;',
+    'function syncEdgeDock(rendererSettings) {\n  if (IS_AIGOODBRO_EMBEDDED) { edgeDockController?.stop(); return; }\n  if (!settings) return;',
+    'one screen-edge dock owned by the native host');
+  text = replaceOne(text,
+    'function setEdgeDockFromMenu(patch = {}) {',
+    "function setEdgeDockFromMenu(patch = {}) {\n  if (IS_AIGOODBRO_EMBEDDED) { void globalThis.__AIGOODBRO_TOKEN_MONITOR_BRIDGE__?.requestHost('openEdgeDockSettings'); return; }",
+    'tray edge dock action opens its native settings');
   text = replaceOne(text,
     "  if (parsed.hostname === 'github.com' && parsed.pathname.startsWith('/Javis603/token-monitor')) return true;",
     "  if (parsed.hostname === 'github.com' && (parsed.pathname === '/BLACKIELF/AgentHub-AiGoodBro' || parsed.pathname.startsWith('/BLACKIELF/AgentHub-AiGoodBro/'))) return true;",
@@ -286,10 +294,14 @@ function patchUpdater(source) {
 }
 
 function patchPreload(source) {
-  return replaceOne(source,
+  let text = replaceOne(source,
     "  getSettings: () => ipcRenderer.invoke('settings:get'),",
     "  openAiGoodBroHost: (action) => ipcRenderer.invoke('aigoodbro:openHost', action),\n  getSettings: () => ipcRenderer.invoke('settings:get'),",
     'private native workspace action');
+  return replaceOne(text,
+    "  onOpenSettings: (callback) => {\n    const listener = () => { try { callback(); } catch (_) {} };",
+    "  onOpenSettings: (callback) => {\n    const listener = (_event, section) => { try { callback(['menuBar', 'floatingBubble'].includes(section) ? section : undefined); } catch (_) {} };",
+    'bounded settings target');
 }
 
 function patchI18n(source) {
@@ -360,6 +372,14 @@ function patchIndex(source) {
     '<div class="settings-group-header"><span data-i18n="settings.about.title">About AiGoodBro</span><span id="aboutVersion">—</span></div>\n              <p id="aboutEngineVersion" class="settings-note"></p>',
     'public product and embedded engine versions');
   text = replaceOne(text,
+    '              <div id="edgeDockFeature" class="presence-feature">',
+    '              <div id="edgeDockFeature" class="presence-feature" hidden style="display: none">',
+    'hide replaced embedded edge dock controls');
+  text = replaceOne(text,
+    '              <div id="edgeDockFeature" class="presence-feature" hidden style="display: none">',
+    '              <button class="inline-link" type="button" data-aigoodbro-host-action="openEdgeDockSettings" data-i18n="settings.display.edgeDock">Edge Dock</button>\n              <div id="edgeDockFeature" class="presence-feature" hidden style="display: none">',
+    'native edge dock settings entry');
+  text = replaceOne(text,
     '<span class="app-title-mark" aria-hidden="true">Σ</span>',
     '<span class="app-title-mark" aria-hidden="true"><img class="aigoodbro-title-mark-icon" src="../../../assets/icon.png" alt="" /></span>',
     'index collapsed brand mark');
@@ -376,6 +396,13 @@ function patchApp(source) {
     "const TOKEN_MONITOR_REPOSITORY_URL = 'https://github.com/BLACKIELF/AgentHub-AiGoodBro';\nconst TOKEN_MONITOR_ISSUES_URL = `${TOKEN_MONITOR_REPOSITORY_URL}/issues`;\nconst TOKEN_MONITOR_WEBSITE_URL = 'https://aigoodbro.com/';\nconst TOKEN_MONITOR_WSL_SQLITE_GUIDE_URL = `${TOKEN_MONITOR_REPOSITORY_URL}/blob/main/docs/usage-guide.md`;",
     'AiGoodBro product links');
   text = replaceOne(text,
+    "window.tokenMonitor.onOpenView?.(openViewFromTray);",
+    `window.tokenMonitor.onOpenView?.((viewId) => {
+  if (viewId === 'home') setPeriod('allTime');
+  openViewFromTray(viewId);
+});`,
+    'home entry always opens the total usage overview');
+  text = replaceOne(text,
     "window.tokenMonitor.onOpenSettings?.(openSettingsPanel);",
     `for (const button of document.querySelectorAll('[data-aigoodbro-host-action]')) {
   button.addEventListener('click', async () => {
@@ -391,7 +418,17 @@ function patchApp(source) {
   });
 }
 
-window.tokenMonitor.onOpenSettings?.(openSettingsPanel);`,
+window.tokenMonitor.onOpenSettings?.((section) => {
+  openSettingsPanel();
+  const target = section === 'menuBar' ? 'showTrayIconInput' : section === 'floatingBubble' ? 'floatingBubbleInput' : null;
+  if (!target) return;
+  setSettingsSectionExpanded('window', true);
+  requestAnimationFrame(() => {
+    const input = document.getElementById(target);
+    input?.closest('.presence-feature')?.scrollIntoView({ block: 'start', behavior: 'instant' });
+    input?.focus({ preventScroll: true });
+  });
+});`,
     'native workspace links in original settings');
   text = replaceOne(text,
     'function renderFloatingBubbleContent() {',

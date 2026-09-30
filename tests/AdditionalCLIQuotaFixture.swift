@@ -367,7 +367,7 @@ private func testWorkBuddyAndTraeUnsupportedWithoutIO() async throws {
         try expect(result.state == .unsupported, "\(kind.rawValue) lacks a supported selected-session reader")
         try expect(result.state != .needsLogin, "\(kind.rawValue) is not classified as needsLogin")
         let expectedCode = kind == .workBuddy
-            ? "local_cli_workbuddy_app_session_read_limited" : "local_cli_trae_app_session_read_limited"
+            ? "local_cli_workbuddy_app_session_read_limited" : "local_cli_trae_default_required"
         try expect(result.messageCode == expectedCode, "\(kind.rawValue) explains its app-session boundary")
         try expect(result.windows.isEmpty, "\(kind.rawValue) does not forge windows")
         try expect(result.balance == nil, "\(kind.rawValue) does not report a balance")
@@ -383,9 +383,41 @@ private func testWorkBuddyAndTraeUnsupportedWithoutIO() async throws {
     try expect(requests.isEmpty, "WorkBuddy/TRAE do not probe billing or transport")
 }
 
+private func testTraeOfficialCredits() async throws {
+    let encoded = "dGMFEAAAAAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh/FbtdOeI2U9dFDAosMMUvYih5VTbf3fRPwHGBxTiq1fz5fT3UkW1Tazy+rgoiQwNd1IP5mhe91fyn15FJi5hwy/I3G70YK2fQ1J7KkSd8lXs0ZvLxlOdqIYlUzxThEmzIUc79elQMe3Pu//f0T44++mHjQ6y2HnY82UycvJYxGpg=="
+    let changed = "dGMFEAAAAAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh+jNRYRW/YKsi93Y1NrYIpA1Srg37yWxjAdSMLPqL+eMEdyWz1m1ZWv5b/LNfY6hmH0N0zHGYtUrSASixvHaT3ORNqfECY03Q3Ro5caShDlFcIsoko9h0e/7stEd6I1ZCqs18C/YA1jkdlsrsXg4yULtg5gmqA4FFvVlSQdnEPqFQ=="
+    let native = LocalCLIProfile(id: "fixture-trae", kind: .trae, displayName: "Fixture", configDirectory: LocalCLIKind.trae.defaultConfigDirectory(home: FileManager.default.homeDirectoryForCurrentUser).path, isDefault: true)
+    let packs: [String: Any] = ["code":0, "user_entitlement_pack_list":[
+        ["entitlement_base_info":["quota":["credits_limit":"4800"]], "usage":["credits_amount":"97.2"]]]]
+    let transport = FakeTransport([try response(packs)])
+    let storage = try json(["iCubeAuthInfo://icube.cloudide":encoded])
+    let value = await TraeCLIQuotaReader(transport: transport, fileReader: { _,_,_ in storage }).load(profile: native)
+    try expect(value.state == .available && abs((value.balance ?? 0) - 4702.8) < 0.001 && value.balanceCurrency == "CREDITS", "TRAE reads official credit packs")
+    try expect(value.identityFingerprint?.count == 64 && value.windows.count == 1, "TRAE account-bound quota")
+    let requests = await transport.requests
+    try expect(requests.count == 1 && requests[0].url?.absoluteString == "https://api.trae.cn/trae/api/v2/pay/ide_user_ent_usage", "fixed TRAE origin")
+    try expect(requests[0].value(forHTTPHeaderField: "Authorization") == "Cloud-IDE-JWT fixture-token", "selected TRAE session")
+    var reads = 0
+    let changedStorage = try json(["iCubeAuthInfo://icube.cloudide":changed])
+    let switching = await TraeCLIQuotaReader(transport: FakeTransport([try response(packs)]), fileReader: { _,_,_ in
+        reads += 1; return reads == 1 ? storage : changedStorage
+    }).load(profile: native)
+    try expect(switching.state == .unavailable && switching.balance == nil, "TRAE account switch invalidates response")
+    var corrupted = Data(base64Encoded: encoded)!; corrupted[corrupted.count - 17] ^= 1
+    try expect(TraeCLIQuotaReader.decodeSession(corrupted.base64EncodedString()) == nil, "TRAE digest detects tampered session")
+    let overused = try TraeCLIQuotaReader.parse(json(["userEntitlementPackList":[["entitlementBaseInfo":["quota":["creditsLimit":10]],"usage":["creditsAmount":12]]]]))
+    try expect(overused.remaining == 0 && overused.usedPercent == 100, "credits cannot be negative")
+    for invalid in [try json(["code":false,"user_entitlement_pack_list":[]]), try json(["user_entitlement_pack_list":[["entitlement_base_info":["quota":["credits_limit":true]]]]])] {
+        do { _ = try TraeCLIQuotaReader.parse(invalid); throw FixtureError.failed("invalid credit response accepted") }
+        catch is FixtureError { throw FixtureError.failed("invalid credit response accepted") }
+        catch {}
+    }
+}
+
 @main
 private enum AdditionalCLIQuotaFixture {
     static func main() async throws {
+        try await testTraeOfficialCredits()
         try await testGeminiValid()
         try await testGeminiAuthIsolation()
         try await testGeminiExpiredDoesNotRefresh()

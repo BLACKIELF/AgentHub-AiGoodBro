@@ -8,10 +8,10 @@ enum OnboardingModesSelfTest {
             if !condition { failures.append(message) }
         }
 
-        expect(WorkspaceVisualMetrics.trackThickness == 6, "quota track is 6pt")
+        expect(WorkspaceVisualMetrics.trackThickness == 3, "quota track is 3pt")
         expect(WorkspaceVisualMetrics.titleSize == 15 && WorkspaceVisualMetrics.bodySize == 13, "title 15 / body 13")
         expect(WorkspaceVisualMetrics.metaSize == 11 && WorkspaceVisualMetrics.valueSize == 22, "meta 11 / value 22")
-        expect(WorkspaceVisualMetrics.cardPadding == 16 && WorkspaceVisualMetrics.cardCorner == 16, "card padding/corner 16")
+        expect(WorkspaceVisualMetrics.cardPadding == 10 && WorkspaceVisualMetrics.cardCorner == 16, "compact card padding 10 / corner 16")
         expect(QuotaRowState.from(percent: nil).percentText() == "—", "unknown is not 0%")
         expect(QuotaRowState.from(percent: 0).percentText() == "0%", "real zero stays 0%")
         expect(QuotaRowState.from(percent: nil).fillFraction == nil, "unknown does not fill the track")
@@ -55,7 +55,7 @@ enum OnboardingModesSelfTest {
         expect(!lost, "mode flips do not own account state")
 
         if let measurement = measureTracks() {
-            expect(abs(measurement.afterPixels - Int((WorkspaceVisualMetrics.trackThickness * 2).rounded())) <= 1, "after track is 6pt ±1px at 2x")
+            expect(abs(measurement.afterPixels - Int((WorkspaceVisualMetrics.trackThickness * 2).rounded())) <= 1, "after track is 3pt ±1px at 2x")
             expect(measurement.beforePixels >= 14, "before probe keeps the 8pt track")
             expect(measurement.unknownDoesNotFill, "unknown after-track has no fill bar")
         } else {
@@ -63,7 +63,7 @@ enum OnboardingModesSelfTest {
         }
 
         if failures.isEmpty {
-            print("onboarding-modes self-test passed: metrics, unknown≠0, 6pt track, skip/back/migrate")
+            print("onboarding-modes self-test passed: metrics, unknown≠0, 3pt track, skip/back/migrate")
             return true
         }
         failures.forEach { print("onboarding-modes self-test failed: \($0)") }

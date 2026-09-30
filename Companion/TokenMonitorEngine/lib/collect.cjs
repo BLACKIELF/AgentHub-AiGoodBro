@@ -44,6 +44,78 @@ function targetEnv(target) {
   return scopedEnvironment(target.root, target.pathRole === 'codexHome' ? target.root : null);
 }
 
+// Graph costs are estimates. Inspect the raw rows before upstream history
+// normalization turns a missing cost into zero; an explicit zero is evidence.
+function explicitCost(value) {
+  if (typeof value === 'string' && !value.replace(/[$,]/g, '').trim()) return null;
+  const amount = typeof value === 'number' ? value
+    : typeof value === 'string' && value.trim() ? Number(value.replace(/[$,]/g, '')) : NaN;
+  return Number.isFinite(amount) && amount >= 0 ? amount : null;
+}
+
+function graphCostEvidence(graph) {
+  const dates = new Map();
+  for (const row of Array.isArray(graph?.contributions) ? graph.contributions : []) {
+    const date = typeof row?.date === 'string' ? row.date.slice(0, 10) : '';
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || Number.isNaN(Date.parse(`${date}T00:00:00Z`))
+      || new Date(`${date}T00:00:00Z`).toISOString().slice(0, 10) !== date) continue;
+    const result = dates.get(date) || { date, cost: 0, recorded: 0, missing: 0 };
+    const clients = Array.isArray(row.clients) ? row.clients : [];
+    if (!clients.length) result.missing += 1;
+    for (const client of clients) {
+      const amount = explicitCost(client?.cost);
+      if (amount === null) result.missing += 1;
+      else { result.cost += amount; result.recorded += 1; }
+    }
+    dates.set(date, result);
+  }
+  return dates;
+}
+
+function mergeGraphCostEvidence(graphs, history, incomplete = false) {
+  const dates = new Map();
+  for (const graph of graphs) {
+    for (const row of graphCostEvidence(graph).values()) {
+      const result = dates.get(row.date) || { date: row.date, cost: 0, recorded: 0, missing: 0 };
+      result.cost += row.cost;
+      result.recorded += row.recorded;
+      result.missing += row.missing;
+      dates.set(row.date, result);
+    }
+  }
+  const daily = (history?.daily || []).map(day => {
+    const row = dates.get(day.date);
+    if (!row || row.recorded === 0) {
+      // A positive retained history cost is evidence even when its original
+      // graph row is no longer available. Its completeness is unverified.
+      const retained = explicitCost(day.cost);
+      return { date: day.date, cost: retained !== null && retained > 0 ? retained : null,
+        status: retained !== null && retained > 0 ? 'partial' : 'unknown' };
+    }
+    const retained = explicitCost(day.cost);
+    const retainedExtra = retained !== null && retained > row.cost + 1e-9;
+    return { date: day.date, cost: retainedExtra ? retained : row.cost,
+      status: incomplete || row.missing > 0 || retainedExtra ? 'partial' : 'estimated' };
+  });
+  const recorded = [...dates.values()].filter(row => row.recorded > 0);
+  const graphTotal = recorded.length ? recorded.reduce((sum, row) => sum + row.cost, 0) : null;
+  const retainedTotal = explicitCost(history?.summary?.totalCost);
+  const retainedExtra = retainedTotal !== null && retainedTotal > 0
+    && (graphTotal === null || retainedTotal > graphTotal + 1e-9);
+  const totalCost = retainedExtra ? retainedTotal : graphTotal;
+  const retainedMonths = (history?.monthly || []).some(month =>
+    (Number(month.tokens) > 0 || Number(month.cost) > 0)
+      && ![...dates.keys()].some(date => date.slice(0, 7) === month.month));
+  const partial = incomplete || retainedExtra || retainedMonths
+    || [...dates.values()].some(row => row.missing > 0)
+    || daily.some(row => row.status !== 'estimated');
+  return {
+    daily,
+    totalCost,
+    status: totalCost === null ? 'unknown' : partial ? 'partial' : 'estimated'
+  };
+}
+
 // The injected network layer for provider probes. The providerHelpers overlay
 // covers providers that go through fetchJson; this covers the ones that call
 // deps.fetch directly.
@@ -157,14 +229,20 @@ async function collectUsagePerTarget(up, targets, request, deps, scope, todayKey
 
 async function collectHistoryPerTarget(up, targets, request, deps, scope, todayKey, errors) {
   const histories = [];
+  const costGraphs = [];
   for (const target of targets) {
     scope.checkAborted();
     try {
+      const targetGraphs = [];
       const history = await withTarget(target, request.timezone, scoped => up.collector.collectHistoryOnce({
         ...scoped,
         clients: target.providerIds[0] === 'proma' ? '' : target.providerIds.join(','),
         ...(target.providerIds[0] === 'proma' ? { promaGraph: up.proma.buildPromaHistoryGraph({ rows: up.proma.collectPromaRows() }) } : {}),
-        runGraph: input => (deps.runGraph || up.collector.bridgeRunGraph)({ ...input, ...scoped }),
+        runGraph: async input => {
+          const graph = await (deps.runGraph || up.collector.bridgeRunGraph)({ ...input, ...scoped });
+          targetGraphs.push(graph);
+          return graph;
+        },
         todayKey, capDays: 370,
         commandTimeoutMs: Math.max(1000, Math.min(request.options.timeoutMs, 60000)),
         signal: scope.signal, historyEnabled: true,
@@ -172,10 +250,14 @@ async function collectHistoryPerTarget(up, targets, request, deps, scope, todayK
         logger: () => {}
       }));
       target.evidence.history = history;
+      target.evidence.costEstimates = new Map(targetGraphs.flatMap(graph => [...graphCostEvidence(graph)]));
       if (!target.evidence.historySucceeded) {
         for (const sourceId of target.sourceIds) errors.push(structuredError(CODES.COLLECTION_FAILED, sourceId));
       }
-      if (history) histories.push(history);
+      if (history) {
+        histories.push(history);
+        costGraphs.push(...targetGraphs);
+      }
     } catch (error) {
       if (scope.signal?.aborted) throw error;
       for (const sourceId of target.sourceIds) {
@@ -183,9 +265,11 @@ async function collectHistoryPerTarget(up, targets, request, deps, scope, todayK
       }
     }
   }
-  if (histories.length === 0) return null;
-  if (histories.length === 1) return histories[0];
-  return up.history.mergeHistories(histories, { todayKey });
+  const history = histories.length === 0 ? null : histories.length === 1
+    ? histories[0] : up.history.mergeHistories(histories, { todayKey });
+  const incomplete = targets.some(target => !target.evidence.historySucceeded
+    || target.providerIds.includes('proma'));
+  return { history, costEstimates: mergeGraphCostEvidence(costGraphs, history, incomplete) };
 }
 
 async function collectLimitsOnce(up, request, deps, scope, targets) {
@@ -308,5 +392,8 @@ module.exports = {
   deriveStatus,
   targetEnv,
   civilDate,
+  explicitCost,
+  graphCostEvidence,
+  mergeGraphCostEvidence,
   custom
 };

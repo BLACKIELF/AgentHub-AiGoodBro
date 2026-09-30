@@ -50,6 +50,8 @@ enum WorkspacePreviewRenderer {
                     availableResetCredits: 2, resetCreditExpiries: [now.addingTimeInterval(864_000)],
                     fetchedAt: now, appServerVersion: nil
                 ),
+                resetCreditHistory: index == 0 ? [.init(id: UUID(), previousObservedAt: now.addingTimeInterval(-7_200),
+                    observedAt: now.addingTimeInterval(-3_600), previousAvailable: 1, available: 2)] : nil,
                 officialProfile: CodexOfficialProfileSnapshot(
                     accountEmail: nil, displayName: nil, username: nil,
                     lifetimeTokens: 82_400_000, peakDailyTokens: nil, planType: isPro ? "pro" : "plus",
@@ -357,8 +359,11 @@ enum WorkspacePreviewRenderer {
     }
 
     @MainActor static func render(to directory: URL, language: WidgetLanguage = .zh) -> Bool {
+        if CommandLine.arguments.contains("--preview-codex-only") {
+            return renderCodexAccounts(to: directory, language: language)
+        }
         if CommandLine.arguments.contains("--preview-design-home-only") {
-            return renderDesignHome(to: directory)
+            return renderDesignHome(to: directory, language: language)
         }
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("next-ui-preview-\(UUID().uuidString)")
         let suiteName = "CodexManagerNext.workspace-preview.\(UUID().uuidString)"
@@ -459,9 +464,6 @@ enum WorkspacePreviewRenderer {
                 .background(FixedVisualPalette.windowScrim(scheme, reduceTransparency: true))
                 .environment(\.colorScheme, scheme)
                 try renderView(statusExample, size: CGSize(width: 520, height: 56), scheme: scheme, to: directory.appendingPathComponent("warmup-status-\(theme).png"))
-                let toolbar = TitlebarToolbarView(settings: settings, onOpenSettings: {}, onSaveScreenshot: {}, onOpenGuide: {})
-                    .background(FixedVisualPalette.windowScrim(scheme))
-                try renderView(toolbar, size: CGSize(width: 320, height: 44), scheme: scheme, to: directory.appendingPathComponent("toolbar-\(theme).png"))
                 let editor = ExecutionPreferenceControl(
                     preference: .init(model: .astra, reasoningEffort: .max, serviceTier: .standard),
                     inlineEditor: true, onSave: { _, _ in .success(()) }
@@ -629,10 +631,48 @@ enum WorkspacePreviewRenderer {
         }
     }
 
+    /// Render the production Codex cards and rows without loading real accounts.
+    @MainActor static func renderCodexAccounts(to directory: URL, language: WidgetLanguage) -> Bool {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("aigoodbro-codex-layout-\(UUID().uuidString)")
+        let suite = "AiGoodBro.codex-layout.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suite) else { return false }
+        defer {
+            defaults.removePersistentDomain(forName: suite)
+            try? FileManager.default.removeItem(at: root)
+        }
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let catalog = PaletteCatalog.loadFromMainBundle()
+            let settings = AppSettings(defaults: defaults, paletteCatalog: catalog,
+                previewAvatarRoot: root.appendingPathComponent("avatars"))
+            settings.language = language
+            settings.agentNavigation = AgentNavigationState(
+                initialized: true, customized: true,
+                orderedVisibleProviderIDs: [AgentNavCatalog.codexID] + LocalCLIKind.allCases.map(\.rawValue)
+            )
+            let store = fixtureStore(accountCount: 9, root: root, language: language, includeQuotaEdgeCases: true)
+            for layout in [AccountWorkspaceLayout.cards, .rows] {
+                settings.accountWorkspaceLayout = layout
+                for width: CGFloat in [820, 1280, 1920, 2560] {
+                    let view = CodexAccountManagerView(store: store, settings: settings,
+                        paletteCatalog: catalog, previewOpenCodexWorkspace: true)
+                    let capture = try WorkspaceScreenshotExporter.render(
+                        view.screenshotContent.defaultAppStorage(defaults), width: width, scheme: .dark)
+                    try capture.png.write(to: directory.appendingPathComponent("codex-\(layout.rawValue)-\(Int(width)).png"), options: .atomic)
+                }
+            }
+            print("Codex card/list previews rendered with synthetic quota edge cases")
+            return true
+        } catch {
+            print("Codex card/list preview failed: \(error.localizedDescription)")
+            return false
+        }
+    }
+
     /// A quick, focused visual check of the approved eight-account home design.
     /// Invoke through the existing --render-workspace-previews entry point with
     /// --preview-design-home-only; the full acceptance matrix remains unchanged.
-    @MainActor static func renderDesignHome(to directory: URL) -> Bool {
+    @MainActor static func renderDesignHome(to directory: URL, language: WidgetLanguage = .zh) -> Bool {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("aigoodbro-design-home-\(UUID().uuidString)")
         let suite = "AiGoodBro.design-home-render.\(UUID().uuidString)"
@@ -648,6 +688,7 @@ enum WorkspacePreviewRenderer {
                 defaults: defaults, paletteCatalog: catalog,
                 previewAvatarRoot: root.appendingPathComponent("avatars"))
             DesignHomePreviewFixture.configure(settings)
+            settings.language = language
             let store = DesignHomePreviewFixture.makeStore(root: root)
             let local = DesignHomePreviewFixture.makeLocalCLIStore(root: root)
             let referenceDate = DesignHomePreviewFixture.referenceDate
@@ -705,6 +746,25 @@ enum WorkspacePreviewRenderer {
                 layout: .cards, scheme: .light, width: 1_440,
                 reduceTransparency: true,
                 filename: "home-cards-light-liquid-keycap-1440-reduce-transparency-viewport.png")
+            // Compact layout checks include expanded sections, both languages,
+            // and the real proxy view, with synthetic account data only.
+            settings.language = language
+            defaults.set(true, forKey: "AiGoodBro.home.section.recommended-announcements.expanded")
+            defaults.set(true, forKey: "AiGoodBro.home.section.usage.expanded")
+            try renderViewport(
+                layout: .cards, scheme: .dark, width: 980, reduceTransparency: true,
+                filename: "compact-home-\(language.rawValue).png")
+            let proxy = LocalProxyQueueStore(usageStore: store)
+            let tokens = catalog.resolve(id: settings.paletteID, appearance: .dark)
+            let proxyView = LocalProxyQueueView(model: proxy, language: language)
+                .environment(\.widgetLanguage, language)
+                .environment(\.visualTokens, tokens)
+                .environment(\.workspacePreviewDate, referenceDate)
+                .environment(\.workspacePreviewOpaqueSurface, true)
+                .environment(\.colorScheme, ColorScheme.dark)
+            try renderView(
+                proxyView, size: CGSize(width: 830, height: 660), scheme: .dark,
+                to: directory.appendingPathComponent("compact-proxy-\(language.rawValue).png"))
             let note = """
                 AiGoodBro 0923v8 design review, synthetic data only.
                 Shared fixture: eight named accounts from docs/ui-preview-0923v7/index.html.
@@ -817,7 +877,13 @@ enum WorkspacePreviewRenderer {
     }
 
     static func renderView<Content: View>(_ view: Content, size: CGSize, scheme: ColorScheme, to url: URL) throws {
-        let host = NSHostingView(rootView: view)
+        // Offscreen previews have no desktop to composite glass against. Supply
+        // a deterministic canvas; the interactive preview still uses live glass.
+        let root = view
+            .frame(width: size.width, height: size.height, alignment: .topLeading)
+            .environment(\.colorScheme, scheme)
+            .background(Color(nsColor: .windowBackgroundColor))
+        let host = NSHostingView(rootView: root)
         // An unattached host rasterizes its SwiftUI layers at 1x. Attach to a
         // non-presented window so AppKit supplies the display's backing scale.
         let window = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: .borderless, backing: .buffered, defer: false)
