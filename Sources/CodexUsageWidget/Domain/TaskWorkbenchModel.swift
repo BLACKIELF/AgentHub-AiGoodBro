@@ -38,7 +38,8 @@ struct TaskWorkbenchArtifact: Codable, Equatable, Identifiable {
             return allowed.contains(value.pathExtension.lowercased()) ? value : nil
         }
         guard let value = URL(string: reference), value.scheme == "https", value.host != nil,
-            value.user == nil, value.password == nil else { return nil }
+            value.user == nil, value.password == nil
+        else { return nil }
         return value
     }
 }
@@ -63,16 +64,21 @@ struct TaskWorkbenchInventory: Codable, Equatable {
             Self.safeText(evidence, limit: 1600), remaining.count <= 8,
             remaining.allSatisfy({ Self.safeText($0, limit: 800) }),
             artifacts.count <= 8, Set(artifacts.map(\.reference)).count == artifacts.count,
-            artifacts.allSatisfy({ Self.safeText($0.title, limit: 160)
-                && Self.safeText($0.reference, limit: 2048) && $0.url != nil }),
+            artifacts.allSatisfy({
+                Self.safeText($0.title, limit: 160)
+                    && Self.safeText($0.reference, limit: 2048) && $0.url != nil
+            }),
             checkedAt.timeIntervalSince1970.isFinite,
-            sourceTurnID.map({ UUID(uuidString: $0) != nil }) ?? true else { throw Failure.invalid }
+            sourceTurnID.map({ UUID(uuidString: $0) != nil }) ?? true
+        else { throw Failure.invalid }
         return self
     }
     enum Failure: Error { case invalid, unavailable, capacity }
     static func safeText(_ text: String, limit: Int) -> Bool {
         text.utf8.count <= limit && text.unicodeScalars.allSatisfy { $0.value >= 32 || $0 == "\n" || $0 == "\t" }
-            && text.range(of: #"(?i)(Bearer\s+[A-Za-z0-9._-]{16,}|sk-[A-Za-z0-9_-]{16,}|(?:api[_ -]?key|access[_ -]?token|bot[_ -]?token|password)\s*[:=]\s*[A-Za-z0-9._-]{12,})"#, options: .regularExpression) == nil
+            && text.range(
+                of: #"(?i)(Bearer\s+[A-Za-z0-9._-]{16,}|sk-[A-Za-z0-9_-]{16,}|(?:api[_ -]?key|access[_ -]?token|bot[_ -]?token|password)\s*[:=]\s*[A-Za-z0-9._-]{12,})"#,
+                options: .regularExpression) == nil
     }
     static func parse(_ text: String, threadID: String, sourceTurnID: String?, now: Date = Date()) throws -> Self {
         guard text.utf8.count <= 24 * 1024, let data = text.data(using: .utf8),
@@ -84,12 +90,15 @@ struct TaskWorkbenchInventory: Codable, Equatable {
             let next = value["nextStep"] as? String,
             let evidence = value["evidence"] as? String,
             let rows = value["artifacts"] as? [[String: String]],
-            rows.allSatisfy({ $0["title"] != nil && $0["reference"] != nil }) else { throw Failure.invalid }
-        return try Self(threadID: declared, project: project,
+            rows.allSatisfy({ $0["title"] != nil && $0["reference"] != nil })
+        else { throw Failure.invalid }
+        return try Self(
+            threadID: declared, project: project,
             outcome: outcome == .complete ? .awaitingAcceptance : outcome,
             remaining: remaining, nextStep: next,
             artifacts: rows.map { TaskWorkbenchArtifact(title: $0["title"]!, reference: $0["reference"]!) },
-            evidence: evidence, checkedAt: now, sourceTurnID: sourceTurnID).validated(expectedThreadID: threadID)
+            evidence: evidence, checkedAt: now, sourceTurnID: sourceTurnID
+        ).validated(expectedThreadID: threadID)
     }
 }
 
@@ -148,12 +157,15 @@ struct TaskWorkbenchPresentation: Equatable {
         return Array(rows.prefix(3))
     }
 
-    static func make(overview: TaskOverviewPresentation, projectNames: [String: String],
-                     annotations: [String: TaskWorkbenchAnnotation], now: Date) -> Self {
+    static func make(
+        overview: TaskOverviewPresentation, projectNames: [String: String],
+        annotations: [String: TaskWorkbenchAnnotation], now: Date
+    ) -> Self {
         let rows = overview.items.map { task in
             let note = annotations[task.id] ?? TaskWorkbenchAnnotation()
             let project = note.inventory?.project.trimmingCharacters(in: .whitespacesAndNewlines)
-            return TaskWorkbenchItem(task: task,
+            return TaskWorkbenchItem(
+                task: task,
                 project: project?.isEmpty == false ? project! : projectNames[task.id] ?? "未归类",
                 annotation: note)
         }

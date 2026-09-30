@@ -200,7 +200,9 @@ struct PaletteFallbackNotice: Equatable {
 final class AppSettings: ObservableObject {
     func migrateEmbeddedEdgeDockIfNeeded(from file: URL? = nil) {
         guard defaults.object(forKey: TokenMonitorEdgeDockPreferences.storageKey) == nil else { return }
-        let source = file ?? DispatchParticipationPaths.supportDirectory()
+        let source =
+            file
+            ?? DispatchParticipationPaths.supportDirectory()
             .appendingPathComponent("TokenMonitorDesktop/settings.json")
         guard let attributes = try? FileManager.default.attributesOfItem(atPath: source.path),
             attributes[.type] as? FileAttributeType == .typeRegular,

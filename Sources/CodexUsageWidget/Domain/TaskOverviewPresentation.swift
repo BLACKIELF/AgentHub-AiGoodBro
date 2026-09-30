@@ -98,8 +98,10 @@ enum TaskOverviewPresentationBuilder {
         }
 
         if includeAllExisting, !runtimeStatuses.contains(where: { $0.scope == .codex }) {
-            runtimeStatuses.append(TaskOverviewRuntimeStatus(scope: .codex,
-                dataState: codexLiveTasks.connectionMode == .disconnected ? .disconnected : liveIsFresh ? .available : .stale))
+            runtimeStatuses.append(
+                TaskOverviewRuntimeStatus(
+                    scope: .codex,
+                    dataState: codexLiveTasks.connectionMode == .disconnected ? .disconnected : liveIsFresh ? .available : .stale))
         }
         var candidates: [String: TaskOverviewItem] = [:]
         for runtime in runtimeSnapshots {

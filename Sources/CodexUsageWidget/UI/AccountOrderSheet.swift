@@ -267,9 +267,11 @@ struct AccountOrderSheet: View {
         }
         .frame(height: 40)
         .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8)
-            .strokeBorder(dropTargetID == id ? Color.accentColor : Color.clear, lineWidth: 1.5)
-            .allowsHitTesting(false))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .strokeBorder(dropTargetID == id ? Color.accentColor : Color.clear, lineWidth: 1.5)
+                .allowsHitTesting(false)
+        )
         .dropDestination(for: String.self) { tokens, location in
             guard tokens.count == 1, let token = tokens.first else { return false }
             let accepted = draft.drop(token: token, targetID: id, after: location.y > 20)
@@ -282,8 +284,7 @@ struct AccountOrderSheet: View {
             dropTargetID = nil
             return accepted
         } isTargeted: { targeted in
-            if targeted && draft.isDragging { dropTargetID = id }
-            else if dropTargetID == id { dropTargetID = nil }
+            if targeted && draft.isDragging { dropTargetID = id } else if dropTargetID == id { dropTargetID = nil }
         }
     }
 

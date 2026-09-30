@@ -442,7 +442,8 @@ final class PublicResetForecastStore: ObservableObject {
         checkedAt = fetchedAt
         isShowingCache = false
         let language = WidgetLanguage.storedOrAutomatic()
-        status = next == nil && nextWatch == nil
+        status =
+            next == nil && nextWatch == nil
             ? language.text("当前没有待确认的重置预告", "There is no pending reset forecast") : nil
     }
 
@@ -558,7 +559,10 @@ enum PublicResetForecastSelfTest {
                 page(watch: "<section data-role=\"reset-watch\" data-expires-at=\"2026-09-23T06:59:00Z\"><p class=\"not-watch-rumor\">False marker</p></section>"),
                 page(watch: "<section data-role=\"scheduled-reset\" data-scheduled-for=\"2026-09-23T06:59:00Z\"><p class=\"watch-rumor\">Rumor</p></section>"),
                 page(watch: "<section data-role=\"reset-watch\" data-expires-at=\"2026-10-23T06:59:00Z\"><p class=\"watch-rumor\">Far-future rumor</p></section>"),
-                page(watch: "<section data-role=\"reset-watch\" data-expires-at=\"2026-09-23T06:59:00Z\"><p class=\"watch-rumor\">Link with no source</p><a href=\"https://example.invalid\">other</a></section>"),
+                page(
+                    watch:
+                        "<section data-role=\"reset-watch\" data-expires-at=\"2026-09-23T06:59:00Z\"><p class=\"watch-rumor\">Link with no source</p><a href=\"https://example.invalid\">other</a></section>"
+                ),
                 page(
                     watch:
                         "<section data-role=\"reset-watch\" data-expires-at=\"2026-09-23T06:59:00Z\"><a href=\"https://x.com.attacker.invalid/thsottiaux/status/\(postID)\">x</a></section>"
@@ -752,15 +756,18 @@ enum PublicResetForecastSelfTest {
                 return false
             } catch PublicResetForecastFailure.cacheWriteFailed {} catch { return false }
             guard failing.forecast == forecast, failing.siteWatch == nil,
-                failing.checkedAt == now, failing.isShowingCache else { return false }
+                failing.checkedAt == now, failing.isShowingCache
+            else { return false }
             let restarted = PublicResetForecastStore(supportDirectory: root)
             guard restarted.forecast == failing.forecast, restarted.isShowingCache else { return false }
             try restarted.applyPage(.siteWatch(watch), now: now.addingTimeInterval(1))
             guard restarted.forecast == nil, restarted.siteWatch == watch,
-                restarted.checkedAt == watch.fetchedAt, !restarted.isShowingCache else { return false }
+                restarted.checkedAt == watch.fetchedAt, !restarted.isShowingCache
+            else { return false }
             let afterRestart = PublicResetForecastStore(supportDirectory: root)
             guard afterRestart.forecast == nil, afterRestart.siteWatch == nil,
-                afterRestart.checkedAt == watch.fetchedAt else { return false }
+                afterRestart.checkedAt == watch.fetchedAt
+            else { return false }
             try restarted.applyPage(.none(fetchedAt: now.addingTimeInterval(2)), now: now.addingTimeInterval(2))
             return restarted.siteWatch == nil && restarted.forecast == nil
                 && restarted.checkedAt == now.addingTimeInterval(2)

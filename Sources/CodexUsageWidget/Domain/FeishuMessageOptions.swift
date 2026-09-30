@@ -20,9 +20,11 @@ struct FeishuMessageOptions: Codable, Equatable {
     var notifiesFiveHourReset: Bool
     var notifiesSevenDayReset: Bool
 
-    init(includesAgentName: Bool, includesAccountLabel: Bool, includesQuotas: Bool,
-         includesResetTimes: Bool, includesResetCredits: Bool, resetExpiryDetail: ResetExpiryDetail,
-         notifiesFiveHourReset: Bool = true, notifiesSevenDayReset: Bool = true) {
+    init(
+        includesAgentName: Bool, includesAccountLabel: Bool, includesQuotas: Bool,
+        includesResetTimes: Bool, includesResetCredits: Bool, resetExpiryDetail: ResetExpiryDetail,
+        notifiesFiveHourReset: Bool = true, notifiesSevenDayReset: Bool = true
+    ) {
         self.includesAgentName = includesAgentName
         self.includesAccountLabel = includesAccountLabel
         self.includesQuotas = includesQuotas

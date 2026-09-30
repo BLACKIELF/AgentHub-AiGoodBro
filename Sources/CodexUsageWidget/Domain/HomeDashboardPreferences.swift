@@ -29,11 +29,17 @@ struct HomeDashboardPreferences: Codable, Equatable {
         range = try values.decodeIfPresent(String.self, forKey: .range) ?? "30"
         mode = try values.decodeIfPresent(String.self, forKey: .mode) ?? "bars"
         stackBy = try values.decodeIfPresent(String.self, forKey: .stackBy) ?? "client"
-        height = min(Self.maximumHeight, max(Self.minimumHeight,
-            try values.decodeIfPresent(Int.self, forKey: .height) ?? Self.defaultHeight))
+        height = min(
+            Self.maximumHeight,
+            max(
+                Self.minimumHeight,
+                try values.decodeIfPresent(Int.self, forKey: .height) ?? Self.defaultHeight))
         let decodedRatio = try values.decodeIfPresent(Double.self, forKey: .splitRatio) ?? Self.defaultSplitRatio
-        splitRatio = min(Self.maximumSplitRatio, max(Self.minimumSplitRatio,
-            decodedRatio.isFinite ? decodedRatio : Self.defaultSplitRatio))
+        splitRatio = min(
+            Self.maximumSplitRatio,
+            max(
+                Self.minimumSplitRatio,
+                decodedRatio.isFinite ? decodedRatio : Self.defaultSplitRatio))
     }
 
     var isValid: Bool {

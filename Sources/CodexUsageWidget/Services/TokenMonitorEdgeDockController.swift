@@ -298,8 +298,10 @@ final class TokenMonitorEdgeDockController: NSObject {
     }
 
     private func suspendForMissingScreen() {
-        guard layout != nil || peekPanel?.isVisible == true || railPanel?.isVisible == true
-            || cardPanel?.isVisible == true else { return }
+        guard
+            layout != nil || peekPanel?.isVisible == true || railPanel?.isVisible == true
+                || cardPanel?.isVisible == true
+        else { return }
         layout = nil
         if peekPanel?.isVisible == true { peekPanel?.orderOut(nil) }
         if railPanel?.isVisible == true { railPanel?.orderOut(nil) }
@@ -462,12 +464,13 @@ final class TokenMonitorEdgeDockController: NSObject {
     private func scheduleTick() {
         guard timer == nil, preferences.enabled, !cells.isEmpty else { return }
         let point = NSEvent.mouseLocation
-        let nearEdge = layout.map {
-            $0.rail.insetBy(dx: -64, dy: -32).contains(point)
-                || $0.peek.insetBy(dx: -64, dy: -32).contains(point)
-                || (cardPanel?.isVisible == true
-                    && cardPanel?.frame.insetBy(dx: -24, dy: -24).contains(point) == true)
-        } ?? false
+        let nearEdge =
+            layout.map {
+                $0.rail.insetBy(dx: -64, dy: -32).contains(point)
+                    || $0.peek.insetBy(dx: -64, dy: -32).contains(point)
+                    || (cardPanel?.isVisible == true
+                        && cardPanel?.frame.insetBy(dx: -24, dy: -24).contains(point) == true)
+            } ?? false
         let interval = TokenMonitorEdgeDockIdlePolicy.tickInterval(
             nearEdge: nearEdge, hasCard: cardIndex != nil && !cardPinned, dragging: isDragging,
             waitingOutside: outsideStartedAt != nil
@@ -529,10 +532,12 @@ final class TokenMonitorEdgeDockController: NSObject {
             outsideStartedAt = nil
             return
         }
-        guard TokenMonitorEdgeDockIdlePolicy.shouldClearOutside(
-            hasCard: cardIndex != nil, railVisible: railVisible,
-            mode: preferences.mode, pinned: railPinned, cardPinned: cardPinned
-        ) else {
+        guard
+            TokenMonitorEdgeDockIdlePolicy.shouldClearOutside(
+                hasCard: cardIndex != nil, railVisible: railVisible,
+                mode: preferences.mode, pinned: railPinned, cardPinned: cardPinned
+            )
+        else {
             outsideStartedAt = nil
             return
         }
@@ -608,7 +613,8 @@ final class TokenMonitorEdgeDockController: NSObject {
             usage: TokenMonitorDashboardSnapshot(response: nil), language: .en)
         var usageOpens = 0
         var proxyOpens = 0
-        dock.configure(preferences: .init(), cells: cells, language: .en,
+        dock.configure(
+            preferences: .init(), cells: cells, language: .en,
             onPreferencesChange: { _ in }, onOpenDashboard: {},
             onOpenUsageOverview: { usageOpens += 1 }, onOpenProxy: { proxyOpens += 1 })
         defer { dock.shutdown() }
@@ -624,12 +630,14 @@ final class TokenMonitorEdgeDockController: NSObject {
             dock.preferences.mode = mode
             dock.cardIndex = 1
             dock.togglePin()
-            guard dock.cardPinned, !TokenMonitorEdgeDockIdlePolicy.shouldClearOutside(
-                hasCard: true, railVisible: true, mode: mode, pinned: false, cardPinned: dock.cardPinned)
+            guard dock.cardPinned,
+                !TokenMonitorEdgeDockIdlePolicy.shouldClearOutside(
+                    hasCard: true, railVisible: true, mode: mode, pinned: false, cardPinned: dock.cardPinned)
             else { return false }
             dock.togglePin()
-            guard !dock.cardPinned, TokenMonitorEdgeDockIdlePolicy.shouldClearOutside(
-                hasCard: true, railVisible: true, mode: mode, pinned: false, cardPinned: dock.cardPinned)
+            guard !dock.cardPinned,
+                TokenMonitorEdgeDockIdlePolicy.shouldClearOutside(
+                    hasCard: true, railVisible: true, mode: mode, pinned: false, cardPinned: dock.cardPinned)
             else { return false }
         }
         dock.cardIndex = 1
@@ -666,10 +674,13 @@ final class TokenMonitorEdgeDockController: NSObject {
         cardPanel?.orderOut(nil)
         guard let start = dragStart else { return }
         let translatedX = start.minX + translation.width
-        let newX = preferences.displayID == nil ? translatedX : max(
-            layout.workArea.minX,
-            min(layout.workArea.maxX - start.width, translatedX)
-        )
+        let newX =
+            preferences.displayID == nil
+            ? translatedX
+            : max(
+                layout.workArea.minX,
+                min(layout.workArea.maxX - start.width, translatedX)
+            )
         let newY = max(
             layout.workArea.minY + 8,
             min(layout.workArea.maxY - start.height - 8, start.minY - translation.height))
@@ -688,14 +699,16 @@ final class TokenMonitorEdgeDockController: NSObject {
             return
         }
         let dropped = NSPoint(x: start.midX + translation.width, y: start.midY - translation.height)
-        let destinationIndex = preferences.displayID == nil
+        let destinationIndex =
+            preferences.displayID == nil
             ? screens.firstIndex(where: { $0.screen.frame.contains(dropped) }) ?? originIndex
             : originIndex
         let target = TokenMonitorEdgeDockScreenTarget.targetAfterDrag(
             preferences.displayID, originIndex: originIndex, destinationIndex: destinationIndex,
             screens: screens.map(\.identity)
         )
-        let destination = preferences.displayID == nil && target != nil
+        let destination =
+            preferences.displayID == nil && target != nil
             ? screens[destinationIndex].screen : layout.screen
         let placement = TokenMonitorEdgeDockNativeGeometry.placementAfterDrag(
             rail: start, translation: translation, destinationWorkArea: destination.visibleFrame
@@ -718,9 +731,11 @@ final class TokenMonitorEdgeDockController: NSObject {
         let preferredIndex = screens.firstIndex {
             $0.screen === main || (mainNumber != nil && $0.identity.numericID == mainNumber)
         }
-        guard let index = TokenMonitorEdgeDockScreenTarget.index(
-            for: preferences.displayID, in: screens.map(\.identity), preferredIndex: preferredIndex
-        ) else { return nil }
+        guard
+            let index = TokenMonitorEdgeDockScreenTarget.index(
+                for: preferences.displayID, in: screens.map(\.identity), preferredIndex: preferredIndex
+            )
+        else { return nil }
         let screen = screens[index].screen
         let work = screen.visibleFrame
         let normal = cells.map { $0.kind == .stat ? CGFloat(56) : CGFloat(70) }
@@ -728,7 +743,8 @@ final class TokenMonitorEdgeDockController: NSObject {
         let chrome: CGFloat = 28 * 2 + 4 * 2
         let gaps = CGFloat(max(0, cells.count - 1)) * 2
         let compact = chrome + normal.reduce(0, +) + gaps > work.height - 16
-        let page = compact
+        let page =
+            compact
             ? TokenMonitorEdgeDockPage.make(cellCount: cells.count, availableHeight: Double(work.height - 16), index: pageIndex)
             : TokenMonitorEdgeDockPage(indices: cells.indices, index: 0, count: 1)
         let heights = Array((compact ? compressed : normal)[page.indices])

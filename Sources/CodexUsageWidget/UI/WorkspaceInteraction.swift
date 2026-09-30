@@ -10,7 +10,9 @@ struct WorkspaceActionButtonStyle: ButtonStyle {
 
     func makeBody(configuration: Configuration) -> some View {
         let highlighted = prominent && isEnabled
-        let background = highlighted ? Color(red: 0.02, green: 0.36, blue: 0.78)
+        let background =
+            highlighted
+            ? Color(red: 0.02, green: 0.36, blue: 0.78)
             : Color(nsColor: colorScheme == .dark ? .darkGray : .controlBackgroundColor)
         configuration.label
             .font(.system(size: compact ? 10 : 12, weight: .semibold))
@@ -30,13 +32,16 @@ struct WorkspaceCheckboxStyle: ToggleStyle {
     @Environment(\.isEnabled) private var isEnabled
 
     func makeBody(configuration: Configuration) -> some View {
-        Button { configuration.isOn.toggle() } label: {
+        Button {
+            configuration.isOn.toggle()
+        } label: {
             HStack(spacing: 6) {
                 ZStack {
                     RoundedRectangle(cornerRadius: 4)
-                        .fill(configuration.isOn
-                            ? (isEnabled ? Color(red: 0.02, green: 0.36, blue: 0.78) : Color.secondary)
-                            : Color.primary.opacity(0.07))
+                        .fill(
+                            configuration.isOn
+                                ? (isEnabled ? Color(red: 0.02, green: 0.36, blue: 0.78) : Color.secondary)
+                                : Color.primary.opacity(0.07))
                     RoundedRectangle(cornerRadius: 4)
                         .strokeBorder(Color.primary.opacity(configuration.isOn ? 0.15 : 0.5), lineWidth: 1)
                     if configuration.isOn {
@@ -78,7 +83,8 @@ struct WorkspaceQuietButtonStyle: ButtonStyle {
             .contentShape(Rectangle())
             .background(
                 Color.primary.opacity(isEnabled && configuration.isPressed ? 0.13 : isEnabled && hovering ? 0.07 : restingFill),
-                in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+                in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+            )
             .scaleEffect(scalesOnPress && !reduceMotion && WorkspaceMotion.isPointerEvent && configuration.isPressed ? 0.97 : 1)
             .opacity(isEnabled ? 1 : 0.45)
             .animation(WorkspaceMotion.feedback(reduceMotion: reduceMotion), value: hovering)
@@ -101,7 +107,10 @@ struct AccountToolbar<Title: View, Actions: View>: View {
             }
             VStack(alignment: .leading, spacing: 6) {
                 title()
-                HStack(spacing: 8) { actions(); Spacer(minLength: 0) }
+                HStack(spacing: 8) {
+                    actions()
+                    Spacer(minLength: 0)
+                }
             }
         }
         .controlSize(.small)

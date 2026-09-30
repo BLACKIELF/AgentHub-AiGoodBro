@@ -426,8 +426,9 @@ struct LocalCLIWorkspaceView: View {
 
     private func compactHomeQuotaWindow(_ window: LocalCLIQuotaWindow) -> some View {
         VStack(alignment: .leading, spacing: 2) {
-            CompactQuotaView(title: window.label, remaining: 100 - window.usedPercent,
-                             reset: window.resetsAt, isExpiry: window.isExpiry)
+            CompactQuotaView(
+                title: window.label, remaining: 100 - window.usedPercent,
+                reset: window.resetsAt, isExpiry: window.isExpiry)
             if let amount = window.tokenAmountText {
                 Text(amount).font(.system(size: 10).monospacedDigit())
                     .lineLimit(1).minimumScaleFactor(0.85).help(amount)

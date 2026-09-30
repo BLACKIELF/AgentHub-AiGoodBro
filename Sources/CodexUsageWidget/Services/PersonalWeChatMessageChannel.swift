@@ -11,8 +11,10 @@ struct PersonalWeChatBinding: Codable, Equatable {
     let contextCheckedAt: Date?
     let updatesCursor: String
 
-    init(baseURL: URL, botID: String, contextToken: String? = nil,
-         contextCheckedAt: Date? = nil, updatesCursor: String = "") {
+    init(
+        baseURL: URL, botID: String, contextToken: String? = nil,
+        contextCheckedAt: Date? = nil, updatesCursor: String = ""
+    ) {
         self.baseURL = baseURL
         self.botID = botID
         self.contextToken = contextToken
@@ -29,8 +31,9 @@ struct PersonalWeChatBinding: Codable, Equatable {
             contextCheckedAt.map({ $0.timeIntervalSince1970.isFinite }) ?? true
         else { throw MessageChannelError.invalidCredential }
         if let contextToken { _ = try PersonalWeChatMessageChannel.validatedToken(contextToken, limit: 8192) }
-        return Self(baseURL: base, botID: bot, contextToken: contextToken,
-                    contextCheckedAt: contextCheckedAt, updatesCursor: updatesCursor)
+        return Self(
+            baseURL: base, botID: bot, contextToken: contextToken,
+            contextCheckedAt: contextCheckedAt, updatesCursor: updatesCursor)
     }
 
     /// A local conservative guard, not a claim about the server's token TTL.
@@ -46,7 +49,10 @@ final class PersonalWeChatMessageChannel {
     static let protocolVersion = "2.4.9"
     static let documentation = URL(string: "https://github.com/Tencent/openclaw-weixin/blob/24de5c9eb0dd5e595d7e2d090ed8a3f82870d42c/docs/protocol_zh_CN.md")!
 
-    struct LoginQR { let reference: String; let content: String }
+    struct LoginQR {
+        let reference: String
+        let content: String
+    }
     enum LoginStatus {
         case waiting, scanned, expired, needsVerificationCode, verificationBlocked, alreadyBound
         case redirect(URL)
@@ -97,9 +103,11 @@ final class PersonalWeChatMessageChannel {
         return base
     }
 
-    private static func request(base: URL, path: String, token: String? = nil,
-                                query: [URLQueryItem] = [], body: [String: Any]? = nil,
-                                timeout: TimeInterval = 15, includeBaseInfo: Bool = true) throws -> URLRequest {
+    private static func request(
+        base: URL, path: String, token: String? = nil,
+        query: [URLQueryItem] = [], body: [String: Any]? = nil,
+        timeout: TimeInterval = 15, includeBaseInfo: Bool = true
+    ) throws -> URLRequest {
         var parts = URLComponents(url: try validatedBaseURL(base), resolvingAgainstBaseURL: false)!
         parts.path = "/ilink/bot/" + path
         if !query.isEmpty { parts.queryItems = query }
@@ -116,7 +124,7 @@ final class PersonalWeChatMessageChannel {
             result.setValue(uin, forHTTPHeaderField: "X-WECHAT-UIN")
             if let token { result.setValue("Bearer " + (try validatedToken(token)), forHTTPHeaderField: "Authorization") }
             if includeBaseInfo {
-                body["base_info"] = ["channel_version": protocolVersion, "bot_agent": "AiGoodBro/9.6.40"]
+                body["base_info"] = ["channel_version": protocolVersion, "bot_agent": "AiGoodBro/9.6.41"]
             }
             result.httpBody = try JSONSerialization.data(withJSONObject: body, options: .sortedKeys)
         }
@@ -124,8 +132,9 @@ final class PersonalWeChatMessageChannel {
     }
 
     static func qrRequest() throws -> URLRequest {
-        try request(base: defaultBaseURL, path: "get_bot_qrcode", query: [URLQueryItem(name: "bot_type", value: "3")],
-                    body: ["local_token_list": [String]()], includeBaseInfo: false)
+        try request(
+            base: defaultBaseURL, path: "get_bot_qrcode", query: [URLQueryItem(name: "bot_type", value: "3")],
+            body: ["local_token_list": [String]()], includeBaseInfo: false)
     }
 
     static func loginStatusRequest(reference: String, base: URL = defaultBaseURL, verificationCode: String? = nil) throws -> URLRequest {
@@ -142,13 +151,16 @@ final class PersonalWeChatMessageChannel {
 
     static func updatesRequest(_ credential: MessageChannelCredential) throws -> URLRequest {
         let credential = try credential.validated(for: .personalWeChat)
-        return try request(base: credential.personalBinding!.baseURL, path: "getupdates", token: credential.secret,
+        return try request(
+            base: credential.personalBinding!.baseURL, path: "getupdates", token: credential.secret,
             body: ["get_updates_buf": credential.personalBinding!.updatesCursor], timeout: 40)
     }
 
-    static func messageRequest(status: MessageTaskStatus, credential: MessageChannelCredential,
-                               options: FeishuMessageOptions = .standard, language: WidgetLanguage = .storedOrAutomatic(),
-                               now: Date = Date()) throws -> URLRequest {
+    static func messageRequest(
+        status: MessageTaskStatus, credential: MessageChannelCredential,
+        options: FeishuMessageOptions = .standard, language: WidgetLanguage = .storedOrAutomatic(),
+        now: Date = Date()
+    ) throws -> URLRequest {
         let age = now.timeIntervalSince(status.occurredAt)
         guard age.isFinite, age >= 0, age <= 120 else { throw MessageChannelError.staleStatus }
         // The shared formatter receives only the existing masked status DTO.
@@ -156,8 +168,10 @@ final class PersonalWeChatMessageChannel {
         return try textRequest(text, eventID: status.eventID, credential: credential, now: now)
     }
 
-    static func textRequest(_ text: String, eventID: UUID, credential: MessageChannelCredential,
-                            now: Date = Date()) throws -> URLRequest {
+    static func textRequest(
+        _ text: String, eventID: UUID, credential: MessageChannelCredential,
+        now: Date = Date()
+    ) throws -> URLRequest {
         let credential = try credential.validated(for: .personalWeChat)
         let binding = credential.personalBinding!
         guard binding.hasFreshContext(now: now) else { throw MessageChannelError.weChatContextRequired }
@@ -167,9 +181,11 @@ final class PersonalWeChatMessageChannel {
         guard text.utf8.count <= WeChatMessageChannel.contentByteLimit else {
             throw MessageChannelError.messageTooLong(limit: WeChatMessageChannel.contentByteLimit)
         }
-        let msg: [String: Any] = ["from_user_id": "", "to_user_id": credential.target!,
+        let msg: [String: Any] = [
+            "from_user_id": "", "to_user_id": credential.target!,
             "client_id": "aigoodbro-" + eventID.uuidString.lowercased(), "message_type": 2, "message_state": 2,
-            "context_token": binding.contextToken!, "item_list": [["type": 1, "text_item": ["text": text]]]]
+            "context_token": binding.contextToken!, "item_list": [["type": 1, "text_item": ["text": text]]],
+        ]
         return try request(base: binding.baseURL, path: "sendmessage", token: credential.secret, body: ["msg": msg])
     }
 
@@ -178,8 +194,10 @@ final class PersonalWeChatMessageChannel {
         return Int(exactly: number.doubleValue)
     }
 
-    static func responseObject(_ data: Data, http: HTTPURLResponse, request: URLRequest,
-                               requiresAcceptance: Bool) throws -> [String: Any] {
+    static func responseObject(
+        _ data: Data, http: HTTPURLResponse, request: URLRequest,
+        requiresAcceptance: Bool
+    ) throws -> [String: Any] {
         guard http.url == request.url else { throw MessageChannelError.redirected }
         guard !(300..<400).contains(http.statusCode) else { throw MessageChannelError.redirected }
         if http.statusCode == 429 { throw MessageChannelError.rateLimited(retryAfterSeconds: nil) }
@@ -187,7 +205,8 @@ final class PersonalWeChatMessageChannel {
         guard data.count <= URLSessionMessageChannelTransport.maximumResponseBytes,
             let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else { throw MessageChannelError.invalidResponse }
-        let ret = integer(object["ret"]), code = integer(object["errcode"])
+        let ret = integer(object["ret"])
+        let code = integer(object["errcode"])
         if object["ret"] != nil && ret == nil || object["errcode"] != nil && code == nil { throw MessageChannelError.invalidResponse }
         if ret == -14 || code == -14 { throw MessageChannelError.weChatSessionExpired }
         if let failure = [ret, code].compactMap({ $0 }).first(where: { $0 != 0 }) {
@@ -202,8 +221,10 @@ final class PersonalWeChatMessageChannel {
             let (data, http) = try await transport.send(request)
             try Task.checkCancellation()
             return try Self.responseObject(data, http: http, request: request, requiresAcceptance: requiresAcceptance)
-        } catch is CancellationError { throw MessageChannelError.cancelled
-        } catch let error as MessageChannelError { throw error
+        } catch is CancellationError {
+            throw MessageChannelError.cancelled
+        } catch let error as MessageChannelError {
+            throw error
         } catch { throw MessageChannelError.transportFailed }
     }
 
@@ -234,8 +255,11 @@ final class PersonalWeChatMessageChannel {
                 let user = object["ilink_user_id"] as? String,
                 let base = URL(string: object["baseurl"] as? String ?? Self.defaultBaseURL.absoluteString)
             else { throw MessageChannelError.invalidResponse }
-            return .confirmed(try MessageChannelCredential(secret: token, target: user,
-                personalBinding: PersonalWeChatBinding(baseURL: base, botID: bot)).validated(for: .personalWeChat))
+            return .confirmed(
+                try MessageChannelCredential(
+                    secret: token, target: user,
+                    personalBinding: PersonalWeChatBinding(baseURL: base, botID: bot)
+                ).validated(for: .personalWeChat))
         default: throw MessageChannelError.invalidResponse
         }
     }
@@ -248,7 +272,8 @@ final class PersonalWeChatMessageChannel {
     static func bindingFromUpdates(_ object: [String: Any], credential: MessageChannelCredential, now: Date) throws -> Updates {
         let credential = try credential.validated(for: .personalWeChat)
         let old = credential.personalBinding!
-        var token = old.contextToken, checkedAt = old.contextCheckedAt
+        var token = old.contextToken
+        var checkedAt = old.contextCheckedAt
         var incoming: [IncomingMessage] = []
         let messages = object["msgs"] as? [[String: Any]] ?? []
         guard messages.count <= 256 else { throw MessageChannelError.invalidResponse }
@@ -288,17 +313,22 @@ final class PersonalWeChatMessageChannel {
             incoming.append(IncomingMessage(id: id, text: text, receivedAt: receivedAt))
         }
         let cursor = object["get_updates_buf"] as? String
-        let binding = try PersonalWeChatBinding(baseURL: old.baseURL, botID: old.botID, contextToken: token,
-            contextCheckedAt: checkedAt, updatesCursor: cursor?.isEmpty == false ? cursor! : old.updatesCursor).validated()
-        return Updates(binding: binding,
+        let binding = try PersonalWeChatBinding(
+            baseURL: old.baseURL, botID: old.botID, contextToken: token,
+            contextCheckedAt: checkedAt, updatesCursor: cursor?.isEmpty == false ? cursor! : old.updatesCursor
+        ).validated()
+        return Updates(
+            binding: binding,
             contextChanged: token != old.contextToken || checkedAt != old.contextCheckedAt,
             messages: incoming.sorted { $0.receivedAt < $1.receivedAt })
     }
 
     /// Replies are attempted once. A lost API response cannot trigger another
     /// send in this process; the bot controller also journals the attempt.
-    func sendText(_ text: String, eventID: UUID, credential: MessageChannelCredential,
-                  shouldSend: @escaping () -> Bool = { true }) async -> Result<MessageDeliveryOutcome, MessageChannelError> {
+    func sendText(
+        _ text: String, eventID: UUID, credential: MessageChannelCredential,
+        shouldSend: @escaping () -> Bool = { true }
+    ) async -> Result<MessageDeliveryOutcome, MessageChannelError> {
         guard shouldSend(), !Task.isCancelled else { return .failure(.cancelled) }
         switch deduplicator.begin(eventID) {
         case .duplicate: return .success(.duplicateSkipped)
@@ -312,12 +342,15 @@ final class PersonalWeChatMessageChannel {
             deduplicator.claim(eventID)
             _ = try await fetch(request, requiresAcceptance: true)
             return .success(.accepted(MessageDeliveryReceipt(acceptedAt: Date(), remoteMessageID: nil)))
-        } catch let error as MessageChannelError { return .failure(error)
+        } catch let error as MessageChannelError {
+            return .failure(error)
         } catch { return .failure(.encodingFailed) }
     }
 
-    func send(_ status: MessageTaskStatus, credential: MessageChannelCredential, options: FeishuMessageOptions,
-              shouldSend: @escaping () -> Bool = { true }) async -> Result<MessageDeliveryOutcome, MessageChannelError> {
+    func send(
+        _ status: MessageTaskStatus, credential: MessageChannelCredential, options: FeishuMessageOptions,
+        shouldSend: @escaping () -> Bool = { true }
+    ) async -> Result<MessageDeliveryOutcome, MessageChannelError> {
         guard shouldSend(), !Task.isCancelled else { return .failure(.cancelled) }
         switch deduplicator.begin(status.eventID) {
         case .duplicate: return .success(.duplicateSkipped)
@@ -331,7 +364,8 @@ final class PersonalWeChatMessageChannel {
             guard shouldSend(), !Task.isCancelled else { return .failure(.cancelled) }
             deduplicator.claim(status.eventID)
             return .success(.accepted(MessageDeliveryReceipt(acceptedAt: Date(), remoteMessageID: nil)))
-        } catch let error as MessageChannelError { return .failure(error)
+        } catch let error as MessageChannelError {
+            return .failure(error)
         } catch { return .failure(.encodingFailed) }
     }
 }

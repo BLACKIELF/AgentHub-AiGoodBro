@@ -20,7 +20,7 @@ struct LocalProxyQueueView: View {
                 Button(language.text("关闭", "Close")) {
                     if let onClose { onClose() } else { dismiss() }
                 }
-                    .keyboardShortcut(.cancelAction)
+                .keyboardShortcut(.cancelAction)
             }
             Text(
                 language.text(
@@ -68,16 +68,20 @@ struct LocalProxyQueueView: View {
                 )
             )
             .font(.caption).foregroundStyle(.secondary)
-            Text(language.text(
-                "请求状态为最近快照，约每分钟更新；手动刷新可立即查看已收集数据。",
-                "Request activity is a recent snapshot, updated about once a minute. Refresh to view collected data now."
-            ))
+            Text(
+                language.text(
+                    "请求状态为最近快照，约每分钟更新；手动刷新可立即查看已收集数据。",
+                    "Request activity is a recent snapshot, updated about once a minute. Refresh to view collected data now."
+                )
+            )
             .font(.caption).foregroundStyle(.secondary)
             if model.phase == .running && model.membershipChangeWaiting {
-                Text(language.text(
-                    "参与开关可随时调整，新请求生效；已开始的请求继续完成。",
-                    "Participation changes apply to new requests; requests already started continue to completion."
-                ))
+                Text(
+                    language.text(
+                        "参与开关可随时调整，新请求生效；已开始的请求继续完成。",
+                        "Participation changes apply to new requests; requests already started continue to completion."
+                    )
+                )
                 .font(.caption).foregroundStyle(.secondary)
             }
             ScrollView {
@@ -122,10 +126,11 @@ struct LocalProxyQueueView: View {
             Button(language.text("取消", "Cancel"), role: .cancel) {}
             Button(language.text("停止反代", "Stop proxy"), role: .destructive) { disableProxy() }
         } message: {
-            Text(language.text(
-                "所有接入反代的对话都会断开，正在执行的任务可能中断。",
-                "All conversations connected to the proxy will disconnect, and active tasks may be interrupted."
-            ))
+            Text(
+                language.text(
+                    "所有接入反代的对话都会断开，正在执行的任务可能中断。",
+                    "All conversations connected to the proxy will disconnect, and active tasks may be interrupted."
+                ))
         }
         .onAppear {
             guard !creditFloorDraftsInitialized else { return }
@@ -207,8 +212,7 @@ struct LocalProxyQueueView: View {
             .disabled(!model.canStart || creditFloorsChanged)
             .accessibilityIdentifier("next.local-proxy.start")
             Button(language.text("关闭反代", "Disable reverse proxy")) {
-                if model.requiresStopConfirmation { confirmingStop = true }
-                else { disableProxy() }
+                if model.requiresStopConfirmation { confirmingStop = true } else { disableProxy() }
             }
             .disabled((!model.canStop && !model.isEnabled) || model.phase == .stopping)
             .accessibilityIdentifier("next.local-proxy.stop")
@@ -285,7 +289,8 @@ struct LocalProxyQueueView: View {
                 Toggle(
                     language.text("参与", "Use"),
                     isOn: Binding(
-                        get: { row.isEnabled }, set: {
+                        get: { row.isEnabled },
+                        set: {
                             model.setAccountEnabled(id: row.id, enabled: $0)
                             model.flushDisplayRows()
                         }
@@ -296,7 +301,8 @@ struct LocalProxyQueueView: View {
                 Toggle(
                     language.text("优先", "Priority"),
                     isOn: Binding(
-                        get: { row.isPriority }, set: {
+                        get: { row.isPriority },
+                        set: {
                             model.setAccountPriority(id: row.id, priority: $0)
                             model.flushDisplayRows()
                         }

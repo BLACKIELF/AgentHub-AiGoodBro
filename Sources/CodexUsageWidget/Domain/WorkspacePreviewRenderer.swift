@@ -50,8 +50,12 @@ enum WorkspacePreviewRenderer {
                     availableResetCredits: 2, resetCreditExpiries: [now.addingTimeInterval(864_000)],
                     fetchedAt: now, appServerVersion: nil
                 ),
-                resetCreditHistory: index == 0 ? [.init(id: UUID(), previousObservedAt: now.addingTimeInterval(-7_200),
-                    observedAt: now.addingTimeInterval(-3_600), previousAvailable: 1, available: 2)] : nil,
+                resetCreditHistory: index == 0
+                    ? [
+                        .init(
+                            id: UUID(), previousObservedAt: now.addingTimeInterval(-7_200),
+                            observedAt: now.addingTimeInterval(-3_600), previousAvailable: 1, available: 2)
+                    ] : nil,
                 officialProfile: CodexOfficialProfileSnapshot(
                     accountEmail: nil, displayName: nil, username: nil,
                     lifetimeTokens: 82_400_000, peakDailyTokens: nil, planType: isPro ? "pro" : "plus",
@@ -643,7 +647,8 @@ enum WorkspacePreviewRenderer {
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             let catalog = PaletteCatalog.loadFromMainBundle()
-            let settings = AppSettings(defaults: defaults, paletteCatalog: catalog,
+            let settings = AppSettings(
+                defaults: defaults, paletteCatalog: catalog,
                 previewAvatarRoot: root.appendingPathComponent("avatars"))
             settings.language = language
             settings.agentNavigation = AgentNavigationState(
@@ -654,7 +659,8 @@ enum WorkspacePreviewRenderer {
             for layout in [AccountWorkspaceLayout.cards, .rows] {
                 settings.accountWorkspaceLayout = layout
                 for width: CGFloat in [820, 1280, 1920, 2560] {
-                    let view = CodexAccountManagerView(store: store, settings: settings,
+                    let view = CodexAccountManagerView(
+                        store: store, settings: settings,
                         paletteCatalog: catalog, previewOpenCodexWorkspace: true)
                     let capture = try WorkspaceScreenshotExporter.render(
                         view.screenshotContent.defaultAppStorage(defaults), width: width, scheme: .dark)
@@ -879,7 +885,8 @@ enum WorkspacePreviewRenderer {
     static func renderView<Content: View>(_ view: Content, size: CGSize, scheme: ColorScheme, to url: URL) throws {
         // Offscreen previews have no desktop to composite glass against. Supply
         // a deterministic canvas; the interactive preview still uses live glass.
-        let root = view
+        let root =
+            view
             .frame(width: size.width, height: size.height, alignment: .topLeading)
             .environment(\.colorScheme, scheme)
             .background(Color(nsColor: .windowBackgroundColor))

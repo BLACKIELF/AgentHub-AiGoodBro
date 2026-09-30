@@ -269,13 +269,21 @@ struct TokenMonitorEdgeDockRailView: View {
         .overlay(alignment: .bottom) {
             if pageCount > 1 {
                 HStack(spacing: 3) {
-                    Button { onPage(-1) } label: { Image(systemName: "chevron.up").frame(width: 18, height: 24) }
-                        .disabled(pageIndex == 0)
-                        .accessibilityLabel(language.text("上一页账号", "Previous accounts"))
+                    Button {
+                        onPage(-1)
+                    } label: {
+                        Image(systemName: "chevron.up").frame(width: 18, height: 24)
+                    }
+                    .disabled(pageIndex == 0)
+                    .accessibilityLabel(language.text("上一页账号", "Previous accounts"))
                     Text("\(pageIndex + 1)/\(pageCount)").font(.system(size: 8)).monospacedDigit()
-                    Button { onPage(1) } label: { Image(systemName: "chevron.down").frame(width: 18, height: 24) }
-                        .disabled(pageIndex + 1 == pageCount)
-                        .accessibilityLabel(language.text("下一页账号", "Next accounts"))
+                    Button {
+                        onPage(1)
+                    } label: {
+                        Image(systemName: "chevron.down").frame(width: 18, height: 24)
+                    }
+                    .disabled(pageIndex + 1 == pageCount)
+                    .accessibilityLabel(language.text("下一页账号", "Next accounts"))
                 }
                 .font(.system(size: 10)).buttonStyle(.plain)
                 .padding(.bottom, 4)
@@ -374,7 +382,8 @@ struct TokenMonitorEdgeDockRailView: View {
             return cell.providerID == "grok" || cell.providerID == "claude"
                 ? providerHeadline(cell) : language.text("暂不可用", "Unavailable")
         }
-        return cell.kind == .stat ? statisticValue(cell, compact: false)
+        return cell.kind == .stat
+            ? statisticValue(cell, compact: false)
             : providerHeadline(cell)
     }
 
@@ -480,11 +489,11 @@ struct TokenMonitorEdgeDockCardView: View {
                         .frame(width: 24, height: 24)
                         .background(Color.blue.opacity(isPinned ? 0.16 : 0.07), in: RoundedRectangle(cornerRadius: 6))
                 }
-                    .buttonStyle(.plain)
-                    .help(isPinned ? language.text("取消固定，移开鼠标后关闭", "Unpin to dismiss when the pointer leaves") : language.text("固定此详情并置顶", "Keep this detail on top"))
-                    .accessibilityLabel(isPinned ? language.text("取消固定详情", "Unpin detail") : language.text("固定详情", "Pin detail"))
-                    .accessibilityIdentifier("edge-dock-card-pin")
-                    .accessibilityValue(isPinned ? language.text("已固定", "Pinned") : language.text("未固定", "Not pinned"))
+                .buttonStyle(.plain)
+                .help(isPinned ? language.text("取消固定，移开鼠标后关闭", "Unpin to dismiss when the pointer leaves") : language.text("固定此详情并置顶", "Keep this detail on top"))
+                .accessibilityLabel(isPinned ? language.text("取消固定详情", "Unpin detail") : language.text("固定详情", "Pin detail"))
+                .accessibilityIdentifier("edge-dock-card-pin")
+                .accessibilityValue(isPinned ? language.text("已固定", "Pinned") : language.text("未固定", "Not pinned"))
             }
         }
     }
@@ -513,11 +522,13 @@ struct TokenMonitorEdgeDockCardView: View {
             }
             .font(.system(size: 10, weight: .medium))
             if cell.proxyAccounts.isEmpty {
-                Text(cell.proxyPhase == .running
-                    ? language.text("上次快照没有活动请求", "No active requests in the last snapshot")
-                    : language.text("没有活动账号记录", "No active accounts in this snapshot"))
-                    .font(.system(size: 11)).foregroundStyle(.secondary)
-                    .padding(.vertical, 8)
+                Text(
+                    cell.proxyPhase == .running
+                        ? language.text("上次快照没有活动请求", "No active requests in the last snapshot")
+                        : language.text("没有活动账号记录", "No active accounts in this snapshot")
+                )
+                .font(.system(size: 11)).foregroundStyle(.secondary)
+                .padding(.vertical, 8)
             } else {
                 ForEach(cell.proxyAccounts) { account in
                     Divider().opacity(0.5)
@@ -705,22 +716,27 @@ struct TokenMonitorEdgeDockCardView: View {
     private var limitsContent: some View {
         VStack(alignment: .leading, spacing: 9) {
             HStack(alignment: .firstTextBaseline) {
-                Text(cell.headlineValueLabel ?? cell.percentRemaining.map { "\(Int($0.rounded()))%" }
-                    ?? (cell.isStale ? language.text("待刷新", "Refresh needed") : language.text("未知", "Unknown")))
-                    .font(.system(size: 28, weight: .medium)).monospacedDigit()
+                Text(
+                    cell.headlineValueLabel ?? cell.percentRemaining.map { "\(Int($0.rounded()))%" }
+                        ?? (cell.isStale ? language.text("待刷新", "Refresh needed") : language.text("未知", "Unknown"))
+                )
+                .font(.system(size: 28, weight: .medium)).monospacedDigit()
                 Text(cell.providerID == "claude" ? language.text("余额", "balance") : language.text("剩余额度", "remaining"))
                     .font(.system(size: 10)).foregroundStyle(.secondary)
             }
             if !cell.isAvailable {
-                Text(cell.accountBindingMissing
-                    ? language.text("没有匹配到所选账号。请到侧边栏设置重新选择；不会自动改用其他账号。",
-                                    "The selected account could not be matched. Choose it again in Edge Dock settings; another account is never substituted automatically.")
-                    : cell.providerID == "claude"
-                    ? language.text("当前暂无可核对的余额", "No verified balance right now")
-                    : cell.providerID == "grok"
-                        ? language.text("订阅额度待核对，请在账号页刷新。", "Refresh the account page to verify subscription quota.")
-                        : language.text("当前暂无可核对的额度", "No verified limit right now"))
-                    .font(.system(size: 10)).foregroundStyle(.secondary)
+                Text(
+                    cell.accountBindingMissing
+                        ? language.text(
+                            "没有匹配到所选账号。请到侧边栏设置重新选择；不会自动改用其他账号。",
+                            "The selected account could not be matched. Choose it again in Edge Dock settings; another account is never substituted automatically.")
+                        : cell.providerID == "claude"
+                            ? language.text("当前暂无可核对的余额", "No verified balance right now")
+                            : cell.providerID == "grok"
+                                ? language.text("订阅额度待核对，请在账号页刷新。", "Refresh the account page to verify subscription quota.")
+                                : language.text("当前暂无可核对的额度", "No verified limit right now")
+                )
+                .font(.system(size: 10)).foregroundStyle(.secondary)
             }
             ForEach(cell.accounts) { account in
                 VStack(alignment: .leading, spacing: 4) {

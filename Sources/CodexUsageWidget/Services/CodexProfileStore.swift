@@ -5061,8 +5061,10 @@ enum CodexProfileStoreSelfTest {
         try testWriteAuth(for: profile, email: "credit-fixture@example.com")
         try testWriteAuth(for: store.profiles.first(where: \.isSystemProfile)!, email: "credit-fixture@example.com")
         func record(_ time: Int, _ count: Int?, system: Bool = false) throws {
-            try store.record(testSnapshot(email: "credit-fixture@example.com", usedPercent: 20,
-                at: Date(timeIntervalSince1970: Double(time)), resetCredits: count),
+            try store.record(
+                testSnapshot(
+                    email: "credit-fixture@example.com", usedPercent: 20,
+                    at: Date(timeIntervalSince1970: Double(time)), resetCredits: count),
                 for: system ? "system" : profile.id, allowSystemAccountChange: system)
         }
         func history() -> [CodexResetCreditReceipt] { store.profiles.flatMap { $0.resetCreditHistory ?? [] } }
@@ -5086,7 +5088,8 @@ enum CodexProfileStoreSelfTest {
         guard restored.profiles.flatMap({ $0.resetCreditHistory ?? [] }) == history() else { return false }
         for time in 106...146 { try record(time, time - 99) }
         guard history().count == 32, history().last?.available == 47 else { return false }
-        let malformed = CodexResetCreditReceipt(id: UUID(), previousObservedAt: .distantPast,
+        let malformed = CodexResetCreditReceipt(
+            id: UUID(), previousObservedAt: .distantPast,
             observedAt: .distantFuture, previousAvailable: Int.max, available: Int.min)
         guard malformed.added == 0, !malformed.isValid(at: Date()) else { return false }
         print("Reset-credit receipts passed: baseline, increases, mirrors, ordering, unknown gaps, persistence and retention")

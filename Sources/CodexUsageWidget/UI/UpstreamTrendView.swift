@@ -212,7 +212,8 @@ struct UpstreamTrendView: View {
     private var safeHeight: CGFloat {
         if dashboardJSON != nil {
             if homePreferences != nil {
-                return min(CGFloat(HomeDashboardPreferences.maximumHeight),
+                return min(
+                    CGFloat(HomeDashboardPreferences.maximumHeight),
                     max(CGFloat(HomeDashboardPreferences.minimumHeight), height.isFinite ? height : CGFloat(HomeDashboardPreferences.defaultHeight)))
             }
             return renderer.state == .ready ? renderer.contentHeight : 120
@@ -418,15 +419,18 @@ struct UpstreamTrendView: View {
             language: WidgetLanguage = .zh, from: String? = nil, to: String? = nil,
             homePreferences: HomeDashboardPreferences? = nil
         ) {
-            let nextHeight = incomingHeight.isFinite
-                ? min(homeDashboard ? CGFloat(HomeDashboardPreferences.maximumHeight) : 600,
+            let nextHeight =
+                incomingHeight.isFinite
+                ? min(
+                    homeDashboard ? CGFloat(HomeDashboardPreferences.maximumHeight) : 600,
                     max(homeDashboard ? CGFloat(HomeDashboardPreferences.minimumHeight) : 24, incomingHeight))
                 : CGFloat(HomeDashboardPreferences.defaultHeight)
             var previousRenderingPreferences = self.homePreferences
             var nextRenderingPreferences = homePreferences
             previousRenderingPreferences?.height = HomeDashboardPreferences.defaultHeight
             nextRenderingPreferences?.height = HomeDashboardPreferences.defaultHeight
-            let needsRender = self.language != language || dashboardJSON != incoming
+            let needsRender =
+                self.language != language || dashboardJSON != incoming
                 || self.resetAnnotations != resetAnnotations || (!homeDashboard && height != nextHeight)
                 || chartFrom != from || chartTo != to
                 || previousRenderingPreferences != nextRenderingPreferences
@@ -620,7 +624,8 @@ struct UpstreamTrendView: View {
             let width = web.bounds.width.isFinite && web.bounds.width > 0 ? min(4_096, web.bounds.width) : 650
             var options: [String: Any] = ["width": width, "height": height, "resetAnnotations": annotationObject, "language": language.rawValue]
             if let homePreferences, let data = try? JSONEncoder().encode(homePreferences),
-                let object = try? JSONSerialization.jsonObject(with: data) {
+                let object = try? JSONSerialization.jsonObject(with: data)
+            {
                 options["homePreferences"] = object
             }
             if let chartFrom { options["from"] = chartFrom }

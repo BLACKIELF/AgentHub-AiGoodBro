@@ -117,12 +117,14 @@ enum TokenMonitorNativePreviewRenderer {
             let view = HStack(alignment: .center, spacing: 4) {
                 TokenMonitorEdgeDockCardView(
                     cell: cells[0], side: .right, language: .zh, tailY: 166,
-                    isPinned: true, canPin: false, onPin: {}, onOpenDashboard: {})
-                    .frame(width: 292, height: 332)
+                    isPinned: true, canPin: false, onPin: {}, onOpenDashboard: {}
+                )
+                .frame(width: 292, height: 332)
                 TokenMonitorEdgeDockRailView(
                     cells: cells, side: .right, language: .zh, compact: false, warnColors: false,
-                    focusedIndex: 0, onSelect: { _ in }, onDrag: { _ in }, onDrop: { _ in })
-                    .frame(width: 64, height: 134)
+                    focusedIndex: 0, onSelect: { _ in }, onDrag: { _ in }, onDrop: { _ in }
+                )
+                .frame(width: 64, height: 134)
             }
             .padding(16)
             .background(Color(nsColor: .windowBackgroundColor))
@@ -136,18 +138,23 @@ enum TokenMonitorNativePreviewRenderer {
     private static func renderQuotaDock(to directory: URL) throws {
         var grok = TokenMonitorFloatingBubbleAccount(
             providerID: "grok", providerName: "Grok", accountID: "fixture-grok",
-            accountName: "01 · Grok", metrics: [
-                .init(id: "balance", name: "余额", sourceID: "grok:fixture-grok:balance",
-                      fetchedAt: referenceDate, value: .text("7.50 USD")),
-                .init(id: "credits", name: "每月额度", sourceID: "grok:fixture-grok:credits",
-                      fetchedAt: referenceDate, value: .percentRemaining(63),
-                      resetLabel: "2026-10-01"),
+            accountName: "01 · Grok",
+            metrics: [
+                .init(
+                    id: "balance", name: "余额", sourceID: "grok:fixture-grok:balance",
+                    fetchedAt: referenceDate, value: .text("7.50 USD")),
+                .init(
+                    id: "credits", name: "每月额度", sourceID: "grok:fixture-grok:credits",
+                    fetchedAt: referenceDate, value: .percentRemaining(63),
+                    resetLabel: "2026-10-01"),
             ])
         let claude = TokenMonitorFloatingBubbleAccount(
             providerID: "claude", providerName: "Claude", accountID: "fixture-claude",
-            accountName: "02 · Claude", metrics: [
-                .init(id: "balance", name: "余额", sourceID: "claude:fixture-claude:balance",
-                      fetchedAt: referenceDate, value: .text("12.34 USD")),
+            accountName: "02 · Claude",
+            metrics: [
+                .init(
+                    id: "balance", name: "余额", sourceID: "claude:fixture-claude:balance",
+                    fetchedAt: referenceDate, value: .text("12.34 USD"))
             ])
         grok.metrics[1].isStale = true
         let preferences = TokenMonitorEdgeDockPreferences(
@@ -161,12 +168,14 @@ enum TokenMonitorNativePreviewRenderer {
                 let view = HStack(alignment: .center, spacing: 4) {
                     TokenMonitorEdgeDockCardView(
                         cell: cells[index], side: .right, language: .zh, tailY: 166,
-                        isPinned: true, canPin: false, onPin: {}, onOpenDashboard: {})
-                        .frame(width: 292, height: 332)
+                        isPinned: true, canPin: false, onPin: {}, onOpenDashboard: {}
+                    )
+                    .frame(width: 292, height: 332)
                     TokenMonitorEdgeDockRailView(
                         cells: cells, side: .right, language: .zh, compact: false, warnColors: false,
-                        focusedIndex: index, onSelect: { _ in }, onDrag: { _ in }, onDrop: { _ in })
-                        .frame(width: 64, height: 204)
+                        focusedIndex: index, onSelect: { _ in }, onDrag: { _ in }, onDrop: { _ in }
+                    )
+                    .frame(width: 64, height: 204)
                 }
                 .padding(16)
                 .background(Color(nsColor: .windowBackgroundColor))

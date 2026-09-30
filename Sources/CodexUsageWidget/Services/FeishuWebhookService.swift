@@ -525,14 +525,17 @@ final class FeishuWebhookService {
         guard announcement.isValid(now: Date()) else { throw FeishuWebhookError.invalidNotification }
         let link = announcement.source.url ?? PublicResetClient.siteURL
         let template = announcement.resetType == .banked ? "purple" : "turquoise"
-        return try resetCardData(title: announcement.title(language), template: template, sections: [
-            language.text("**公开消息 · 个人到账待核实**", "**Public notice · account receipt unverified**")
-                + "\n" + announcement.summary(language),
-            language.text("**接下来**\n打开 AiGoodBro → 账号，核对当前额度与可用 Reset 卡。",
-                          "**Next step**\nOpen AiGoodBro → Accounts to check current quotas and available reset credits."),
-            language.text("来源：Codex Resets（第三方汇总）", "Source: Codex Resets (third-party feed)")
-                + "\n[" + language.text("查看来源", "View source") + "](\(link.absoluteString))",
-        ])
+        return try resetCardData(
+            title: announcement.title(language), template: template,
+            sections: [
+                language.text("**公开消息 · 个人到账待核实**", "**Public notice · account receipt unverified**")
+                    + "\n" + announcement.summary(language),
+                language.text(
+                    "**接下来**\n打开 AiGoodBro → 账号，核对当前额度与可用 Reset 卡。",
+                    "**Next step**\nOpen AiGoodBro → Accounts to check current quotas and available reset credits."),
+                language.text("来源：Codex Resets（第三方汇总）", "Source: Codex Resets (third-party feed)")
+                    + "\n[" + language.text("查看来源", "View source") + "](\(link.absoluteString))",
+            ])
     }
 
     static func publicResetForecastPayload(
@@ -542,16 +545,20 @@ final class FeishuWebhookService {
         guard forecast.isValid(now: Date()) else { throw FeishuWebhookError.invalidNotification }
         var lines = [language.text("**公开预告 · 等待确认**", "**Public forecast · awaiting confirmation**")]
         if let latestBy = forecast.latestBy {
-            lines.append(language.text("**预计最晚时间**：", "**Expected by**: ")
-                + PublicResetAnnouncementPresentation.compactEventTime(latestBy, language: language))
+            lines.append(
+                language.text("**预计最晚时间**：", "**Expected by**: ")
+                    + PublicResetAnnouncementPresentation.compactEventTime(latestBy, language: language))
         } else {
             lines.append(language.text("**预计重置时间**：待确认", "**Expected reset time**: To be confirmed"))
         }
         return try resetCardData(
-            title: language.text("重置预告 · 待确认", "Reset forecast · unconfirmed"), template: "orange", sections: [
+            title: language.text("重置预告 · 待确认", "Reset forecast · unconfirmed"), template: "orange",
+            sections: [
                 lines.joined(separator: "\n"),
-                language.text("**如何判断已到账**\n以账号的官方额度和 Reset 卡余额为准。预告时间到达后仍需核实；这条消息不代表重置已完成或额度已到账。",
-                              "**How to confirm receipt**\nCheck the account’s official quotas and reset-credit balance. Reaching the forecast time still requires verification; this notice does not confirm completion or credited quota."),
+                language.text(
+                    "**如何判断已到账**\n以账号的官方额度和 Reset 卡余额为准。预告时间到达后仍需核实；这条消息不代表重置已完成或额度已到账。",
+                    "**How to confirm receipt**\nCheck the account’s official quotas and reset-credit balance. Reaching the forecast time still requires verification; this notice does not confirm completion or credited quota."
+                ),
                 language.text("**发布时间**：", "**Published**: ")
                     + PublicResetAnnouncementPresentation.compactEventTime(forecast.announcedAt, language: language)
                     + "\n" + language.text("来源：Codex Resets（公开预告）", "Source: Codex Resets (public forecast)")
@@ -565,15 +572,16 @@ final class FeishuWebhookService {
             if !elements.isEmpty { elements.append(["tag": "hr"]) }
             elements.append(["tag": "markdown", "content": section])
         }
-        return try JSONSerialization.data(withJSONObject: [
-            "msg_type": "interactive",
-            "card": [
-                "schema": "2.0",
-                "config": ["wide_screen_mode": true],
-                "header": ["template": template, "title": ["tag": "plain_text", "content": title]],
-                "body": ["elements": elements],
-            ],
-        ], options: [.sortedKeys])
+        return try JSONSerialization.data(
+            withJSONObject: [
+                "msg_type": "interactive",
+                "card": [
+                    "schema": "2.0",
+                    "config": ["wide_screen_mode": true],
+                    "header": ["template": template, "title": ["tag": "plain_text", "content": title]],
+                    "body": ["elements": elements],
+                ],
+            ], options: [.sortedKeys])
     }
 
     private static func quotaChangePayload(
@@ -595,18 +603,24 @@ final class FeishuWebhookService {
         case .quotaReset(let fiveHour, let sevenDay):
             let windows = [(fiveHour, language.text("5 小时", "5h")), (sevenDay, language.text("7 天", "7d"))]
                 .filter { $0.0 }.map { $0.1 }.joined(separator: " + ")
-            result = [language.text("**已核实 · 官方额度窗口变化**", "**Verified · official quota-window change**"),
-                      language.text("**变化窗口**：\(windows)", "**Changed windows**: \(windows)")]
+            result = [
+                language.text("**已核实 · 官方额度窗口变化**", "**Verified · official quota-window change**"),
+                language.text("**变化窗口**：\(windows)", "**Changed windows**: \(windows)"),
+            ]
         }
         if options.includesAccountLabel { result.append(language.text("**账号**：\(notification.sourceAccount.value)", "**Account**: \(notification.sourceAccount.value)")) }
         if options.includesAgentName { result.append("**Agent**: Codex") }
         var details: [String] = []
         if options.includesQuotas {
             details.append(language.text("**当前额度 · 剩余**", "**Current quota · remaining**"))
-            details.append(quotaLine(label: language.text("5 小时", "5h"), value: notification.accountFacts.fiveHour,
-                                     includesResetTime: options.includesResetTimes, language: language, timeZone: beijing))
-            details.append(quotaLine(label: language.text("7 天", "7d"), value: notification.accountFacts.sevenDay,
-                                     includesResetTime: options.includesResetTimes, language: language, timeZone: beijing))
+            details.append(
+                quotaLine(
+                    label: language.text("5 小时", "5h"), value: notification.accountFacts.fiveHour,
+                    includesResetTime: options.includesResetTimes, language: language, timeZone: beijing))
+            details.append(
+                quotaLine(
+                    label: language.text("7 天", "7d"), value: notification.accountFacts.sevenDay,
+                    includesResetTime: options.includesResetTimes, language: language, timeZone: beijing))
         } else if options.includesResetTimes {
             details += resetTimeLines(for: notification.accountFacts, language: language, timeZone: beijing)
         }
@@ -616,19 +630,23 @@ final class FeishuWebhookService {
         let interpretation: String
         switch change {
         case .resetCreditsAdded:
-            interpretation = language.text("根据两次官方快照确认余额增加；发现时间不等于实际发放时间。打开 AiGoodBro → 账号查看卡片与到期信息。",
-                                           "Two official snapshots confirm a balance increase. Detection time is not the exact grant time. Open AiGoodBro → Accounts for credits and expiry details.")
+            interpretation = language.text(
+                "根据两次官方快照确认余额增加；发现时间不等于实际发放时间。打开 AiGoodBro → 账号查看卡片与到期信息。",
+                "Two official snapshots confirm a balance increase. Detection time is not the exact grant time. Open AiGoodBro → Accounts for credits and expiry details.")
         case .quotaReset:
-            interpretation = language.text("仅报告官方额度窗口变化；Reset 卡增减及使用状态另行核对。打开 AiGoodBro → 账号查看最新额度。",
-                                           "Official quota-window change reported only; reset-credit changes and usage are verified separately. Open AiGoodBro → Accounts for current quotas.")
+            interpretation = language.text(
+                "仅报告官方额度窗口变化；Reset 卡增减及使用状态另行核对。打开 AiGoodBro → 账号查看最新额度。",
+                "Official quota-window change reported only; reset-credit changes and usage are verified separately. Open AiGoodBro → Accounts for current quotas.")
         }
-        return try resetCardData(title: title, template: presentation.template, sections: [
-            result.joined(separator: "\n"), details.joined(separator: "\n"),
-            language.text("**发现时间**：", "**Detected**: ")
-                + PublicResetAnnouncementPresentation.compactEventTime(notification.occurredAt, language: language)
-                + "\n" + language.text("卡片内时间均为北京时间。", "All times in this card use Beijing time.")
-                + "\n" + interpretation,
-        ])
+        return try resetCardData(
+            title: title, template: presentation.template,
+            sections: [
+                result.joined(separator: "\n"), details.joined(separator: "\n"),
+                language.text("**发现时间**：", "**Detected**: ")
+                    + PublicResetAnnouncementPresentation.compactEventTime(notification.occurredAt, language: language)
+                    + "\n" + language.text("卡片内时间均为北京时间。", "All times in this card use Beijing time.")
+                    + "\n" + interpretation,
+            ])
     }
 
     /// Sends an observer-confirmed task-completion card. The DTO itself fails
@@ -1029,7 +1047,9 @@ final class FeishuWebhookService {
         let availableCount: Int?
         if case .quotaChange(.resetCreditsAdded(_, let available)) = notification.event {
             availableCount = available
-        } else { availableCount = notification.accountFacts.availableResetCredits }
+        } else {
+            availableCount = notification.accountFacts.availableResetCredits
+        }
         let count = availableCount.map(String.init) ?? language.text("未知", "Unknown")
         var line = language.text("**可用 Reset 卡**：\(count) 次", "**Available resets**: \(count)")
         guard notification.messageOptions.resetExpiryDetail != .none,
@@ -1441,18 +1461,23 @@ enum FeishuWebhookServiceSelfTest {
             hiddenOptions.includesQuotas = false
             hiddenOptions.includesResetTimes = false
             hiddenOptions.includesResetCredits = false
-            let hiddenEvent = try FeishuSwitchNotification(event: .quotaChange(.resetCreditsAdded(added: 2, available: 3)),
+            let hiddenEvent = try FeishuSwitchNotification(
+                event: .quotaChange(.resetCreditsAdded(added: 2, available: 3)),
                 sourceAccount: source, triggerThresholdPercent: 10, fiveHourRemainingPercent: nil, sevenDayRemainingPercent: nil,
                 messageOptions: hiddenOptions)
             let hiddenPayload = try FeishuWebhookService.payloadData(for: hiddenEvent, language: .zh)
             let hiddenText = markdown(hiddenPayload)
-            expect(!hiddenText.contains(source.value) && !hiddenText.contains("1 → 3") && !hiddenText.contains("5 小时")
-                   && !cardHeader(hiddenPayload).title.contains("+2"), "reset cards must honor hidden fields in both title and body")
-            let conflictingFacts = try FeishuAccountFacts(fiveHour: .unknown, sevenDay: .unknown,
+            expect(
+                !hiddenText.contains(source.value) && !hiddenText.contains("1 → 3") && !hiddenText.contains("5 小时")
+                    && !cardHeader(hiddenPayload).title.contains("+2"), "reset cards must honor hidden fields in both title and body")
+            let conflictingFacts = try FeishuAccountFacts(
+                fiveHour: .unknown, sevenDay: .unknown,
                 availableResetCredits: 4, resetCreditExpiries: [])
-            expect((try? FeishuSwitchNotification(event: .quotaChange(.resetCreditsAdded(added: 2, available: 3)),
-                sourceAccount: source, triggerThresholdPercent: 10, fiveHourRemainingPercent: nil, sevenDayRemainingPercent: nil,
-                accountFacts: conflictingFacts)) == nil, "conflicting current balances must not enter a notification")
+            expect(
+                (try? FeishuSwitchNotification(
+                    event: .quotaChange(.resetCreditsAdded(added: 2, available: 3)),
+                    sourceAccount: source, triggerThresholdPercent: 10, fiveHourRemainingPercent: nil, sevenDayRemainingPercent: nil,
+                    accountFacts: conflictingFacts)) == nil, "conflicting current balances must not enter a notification")
             for invalidChange in [
                 CodexQuotaEvent.quotaReset(fiveHour: false, sevenDay: false),
                 .resetCreditsAdded(added: 0, available: 1),
@@ -1476,8 +1501,7 @@ enum FeishuWebhookServiceSelfTest {
         expect(!FeishuWebhookService.parseResponse(Data(#"{"msg":"success"}"#.utf8)).isSuccess, "missing code accepted")
 
         if let previewPath = ProcessInfo.processInfo.environment["AIGOODBRO_FEISHU_PREVIEW_DIRECTORY"] {
-            do { try writePreviewFixtures(to: URL(fileURLWithPath: previewPath)) }
-            catch { failures.append("offline preview export failed") }
+            do { try writePreviewFixtures(to: URL(fileURLWithPath: previewPath)) } catch { failures.append("offline preview export failed") }
         }
 
         if failures.isEmpty {
@@ -1491,25 +1515,31 @@ enum FeishuWebhookServiceSelfTest {
     private static func writePreviewFixtures(to directory: URL) throws {
         let now = Date(timeIntervalSince1970: floor(Date().timeIntervalSince1970))
         let source = try FeishuMaskedAccount(displayName: "Pro 20x · 演示账号")
-        let facts = try FeishuAccountFacts(fiveHour: .finite(remainingPercent: 100, resetsAt: now.addingTimeInterval(18_000)),
+        let facts = try FeishuAccountFacts(
+            fiveHour: .finite(remainingPercent: 100, resetsAt: now.addingTimeInterval(18_000)),
             sevenDay: .finite(remainingPercent: 82, resetsAt: now.addingTimeInterval(259_200)),
             availableResetCredits: 3, resetCreditExpiries: [now.addingTimeInterval(7 * 86_400)])
         var payloads: [String: Data] = [:]
-        for (name, change) in [("reset-credit", CodexQuotaEvent.resetCreditsAdded(added: 2, available: 3)),
-                               ("quota-window", .quotaReset(fiveHour: true, sevenDay: false))] {
-            let event = try FeishuSwitchNotification(event: .quotaChange(change), sourceAccount: source,
+        for (name, change) in [
+            ("reset-credit", CodexQuotaEvent.resetCreditsAdded(added: 2, available: 3)),
+            ("quota-window", .quotaReset(fiveHour: true, sevenDay: false)),
+        ] {
+            let event = try FeishuSwitchNotification(
+                event: .quotaChange(change), sourceAccount: source,
                 triggerThresholdPercent: 10, fiveHourRemainingPercent: 100, sevenDayRemainingPercent: 82,
                 accountFacts: facts, occurredAt: now)
             payloads[name] = try FeishuWebhookService.payloadData(for: event, language: .zh)
         }
         let id = PublicResetForecast.sourcePostID(at: now)!
         let url = URL(string: "https://x.com/thsottiaux/status/\(id)")!
-        let forecast = PublicResetForecast(id: id, latestBy: now.addingTimeInterval(7_200), announcedAt: now,
+        let forecast = PublicResetForecast(
+            id: id, latestBy: now.addingTimeInterval(7_200), announcedAt: now,
             sourceURL: url, fetchedAt: now)
         payloads["forecast"] = try FeishuWebhookService.publicResetForecastPayload(
             PublicResetForecastNotification(forecast, referenceDate: now), language: .zh)
         payloads["public-announcement"] = try FeishuWebhookService.publicResetPayload(
-            PublicResetAnnouncement(id: id, resetType: .banked, announcedAt: now, text: "Synthetic preview",
+            PublicResetAnnouncement(
+                id: id, resetType: .banked, announcedAt: now, text: "Synthetic preview",
                 source: .init(type: "x_post", author: "thsottiaux", url: url)), language: .zh)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         for (name, data) in payloads { try data.write(to: directory.appendingPathComponent(name + ".json"), options: .atomic) }

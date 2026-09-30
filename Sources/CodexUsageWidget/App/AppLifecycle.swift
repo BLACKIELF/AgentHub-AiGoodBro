@@ -82,7 +82,8 @@ final class GlassHostingContainer<Content: View>: NSView {
 
     private func updateGlassTint() {
         let isDark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-        let opaque = reduceTransparency || NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency
+        let opaque =
+            reduceTransparency || NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency
             || NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast
         glassMaterial?.isHidden = opaque || !glassPreferences.systemGlass
         glassTint?.isHidden = opaque
@@ -481,10 +482,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             changed(store.$profiles), changed(localCLIAccounts.$profiles),
             changed(localCLIAccounts.$quotas), changed(localCLIAccounts.$stale),
         ])
-            .receive(on: RunLoop.main)
-            .throttle(for: .seconds(60), scheduler: RunLoop.main, latest: true)
-            .sink { [weak self] _ in self?.syncFloatingBubble() }
-            .store(in: &cancellables)
+        .receive(on: RunLoop.main)
+        .throttle(for: .seconds(60), scheduler: RunLoop.main, latest: true)
+        .sink { [weak self] _ in self?.syncFloatingBubble() }
+        .store(in: &cancellables)
     }
 
     private func setupEdgeDockSync() {
@@ -498,15 +499,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         Publishers.MergeMany([
             changed(settings.$workspaceGlass), changed(settings.$edgeDock), changed(settings.$language),
             changed(settings.$pinnedAccountKey), changed(localProxy.$phase),
-            changed(localProxy.$displayRows), // Already coalesced by the queue's display publisher.
+            changed(localProxy.$displayRows),  // Already coalesced by the queue's display publisher.
             // Completed local quota reads should match the account page. This
             // publishes an existing snapshot and never starts another fetch.
             changed(localCLIAccounts.$quotas), changed(localCLIAccounts.$stale),
         ])
-            .receive(on: RunLoop.main)
-            .throttle(for: .milliseconds(220), scheduler: RunLoop.main, latest: true)
-            .sink { [weak self] _ in self?.syncEdgeDockIfChanged() }
-            .store(in: &cancellables)
+        .receive(on: RunLoop.main)
+        .throttle(for: .milliseconds(220), scheduler: RunLoop.main, latest: true)
+        .sink { [weak self] _ in self?.syncEdgeDockIfChanged() }
+        .store(in: &cancellables)
         let hub = store.tokenMonitorHubSync
         Publishers.MergeMany([
             changed(store.$profiles), changed(store.$engineState),
@@ -514,12 +515,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             changed(hub.$isEnabled), changed(hub.$connectionState), changed(hub.$lastRefresh),
             changed(hub.$history), changed(hub.$devices),
         ])
-            .receive(on: RunLoop.main)
-            // Coalesce before building or comparing the session/history input.
-            // This never changes collection, proxy admission or lease heartbeats.
-            .throttle(for: .seconds(60), scheduler: RunLoop.main, latest: true)
-            .sink { [weak self] _ in self?.syncEdgeDockIfChanged() }
-            .store(in: &cancellables)
+        .receive(on: RunLoop.main)
+        // Coalesce before building or comparing the session/history input.
+        // This never changes collection, proxy admission or lease heartbeats.
+        .throttle(for: .seconds(60), scheduler: RunLoop.main, latest: true)
+        .sink { [weak self] _ in self?.syncEdgeDockIfChanged() }
+        .store(in: &cancellables)
     }
 
     private func syncEdgeDockIfChanged() {
@@ -762,8 +763,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
                 alert.addButton(withTitle: settings.language.text("取消", "Cancel"))
                 alert.addButton(withTitle: settings.language.text("退出并停止", "Quit and stop"))
                 let response: NSApplication.ModalResponse
-                if let window, window.isVisible { response = await alert.beginSheetModal(for: window) }
-                else { response = alert.runModal() }
+                if let window, window.isVisible { response = await alert.beginSheetModal(for: window) } else { response = alert.runModal() }
                 guard response == .alertSecondButtonReturn else {
                     terminationTask = nil
                     sender.reply(toApplicationShouldTerminate: false)

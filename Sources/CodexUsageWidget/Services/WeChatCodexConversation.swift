@@ -8,8 +8,16 @@ struct WeChatCodexConversationTarget: Identifiable, Equatable {
 final class WeChatCodexSendAdmission: @unchecked Sendable {
     private let lock = NSLock()
     private var enabled = true
-    var isActive: Bool { lock.lock(); defer { lock.unlock() }; return enabled }
-    func cancel() { lock.lock(); enabled = false; lock.unlock() }
+    var isActive: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return enabled
+    }
+    func cancel() {
+        lock.lock()
+        enabled = false
+        lock.unlock()
+    }
 }
 
 /// Injectable owner operations keep all verification tests off real Codex
@@ -26,14 +34,18 @@ struct WeChatCodexConversationConnection {
             owner: { try ipc.discoverOwner(conversationId: $0) },
             snapshot: { try ipc.snapshot(conversationId: $0, ownerClientId: $1) },
             start: { thread, owner, id, text, admission in
-                let envelope = try ipc.request(method: "thread-follower-start-turn", params: [
-                    "conversationId": thread,
-                    "turnStart": [
-                        "request": ["threadId": thread, "clientUserMessageId": id.uuidString.lowercased(),
-                            "input": [["type": "text", "text": text, "text_elements": []]]],
-                        "context": ["inheritThreadSettings": true],
-                    ],
-                ], targetClientId: owner, timeout: 15, shouldSend: { admission.isActive })
+                let envelope = try ipc.request(
+                    method: "thread-follower-start-turn",
+                    params: [
+                        "conversationId": thread,
+                        "turnStart": [
+                            "request": [
+                                "threadId": thread, "clientUserMessageId": id.uuidString.lowercased(),
+                                "input": [["type": "text", "text": text, "text_elements": []]],
+                            ],
+                            "context": ["inheritThreadSettings": true],
+                        ],
+                    ], targetClientId: owner, timeout: 15, shouldSend: { admission.isActive })
                 let result = envelope["result"] as? [String: Any]
                 let nested = result?["result"] as? [String: Any]
                 return ((nested?["turn"] ?? result?["turn"]) as? [String: Any])?["id"] as? String
@@ -61,8 +73,10 @@ final class WeChatCodexConversation {
     private(set) var isRunning = false
     private static var activeThreads = Set<String>()
 
-    init(connection: WeChatCodexConversationConnection = .live(),
-         pollIntervalNanoseconds: UInt64 = 5_000_000_000, timeout: TimeInterval = 15 * 60) {
+    init(
+        connection: WeChatCodexConversationConnection = .live(),
+        pollIntervalNanoseconds: UInt64 = 5_000_000_000, timeout: TimeInterval = 15 * 60
+    ) {
         self.connection = connection
         self.pollInterval = pollIntervalNanoseconds
         self.timeout = timeout
@@ -70,19 +84,26 @@ final class WeChatCodexConversation {
 
     /// The controller durably claims the incoming ID before calling this.
     /// One owner request is made; timeout/disconnect never creates another writer.
-    func reply(threadID: String, eventID: UUID, text: String,
-               shouldContinue: @escaping () -> Bool,
-               onSubmitted: @escaping (String) -> Bool) async -> Outcome {
+    func reply(
+        threadID: String, eventID: UUID, text: String,
+        shouldContinue: @escaping () -> Bool,
+        onSubmitted: @escaping (String) -> Bool
+    ) async -> Outcome {
         guard !isRunning, !Self.activeThreads.contains(threadID) else { return .busy }
         guard UUID(uuidString: threadID) != nil, !text.isEmpty, text.utf8.count <= 4096 else { return .unavailable }
         guard shouldContinue(), !Task.isCancelled else { return .cancelled }
         isRunning = true
         Self.activeThreads.insert(threadID)
-        defer { isRunning = false; Self.activeThreads.remove(threadID); connection.close() }
+        defer {
+            isRunning = false
+            Self.activeThreads.remove(threadID)
+            connection.close()
+        }
         let connection = self.connection
         let prepared = await Task.detached(priority: .utility) { () -> (String, [String: Any])? in
             guard let owner = try? connection.owner(threadID),
-                let state = try? connection.snapshot(threadID, owner) else { return nil }
+                let state = try? connection.snapshot(threadID, owner)
+            else { return nil }
             return (owner, state)
         }.value
         guard shouldContinue(), !Task.isCancelled else { return .cancelled }
@@ -93,12 +114,13 @@ final class WeChatCodexConversation {
         }
 
         let admission = WeChatCodexSendAdmission()
-        let started = await withTaskCancellationHandler(operation: {
-            await Task.detached(priority: .userInitiated) {
-                guard admission.isActive else { return nil as String? }
-                return try? connection.start(threadID, owner, eventID, text, admission)
-            }.value
-        }, onCancel: { admission.cancel() })
+        let started = await withTaskCancellationHandler(
+            operation: {
+                await Task.detached(priority: .userInitiated) {
+                    guard admission.isActive else { return nil as String? }
+                    return try? connection.start(threadID, owner, eventID, text, admission)
+                }.value
+            }, onCancel: { admission.cancel() })
         guard shouldContinue(), !Task.isCancelled else { return .cancelled }
         guard let turnID = started, UUID(uuidString: turnID) != nil else { return .uncertain }
         guard onSubmitted(turnID) else { return .uncertain }
@@ -124,13 +146,18 @@ final class WeChatCodexConversation {
     nonisolated static func isIdle(_ state: [String: Any], threadID: String) -> Bool {
         guard identityMatches(state, threadID: threadID), state["resumeState"] as? String == "resumed",
             (state["threadRuntimeStatus"] as? [String: Any])?["type"] as? String == "idle",
-            let requests = state["requests"] as? [Any], requests.isEmpty else { return false }
+            let requests = state["requests"] as? [Any], requests.isEmpty
+        else { return false }
         if let value = state["threadGoal"], !(value is NSNull) {
             guard let goal = value as? [String: Any], let status = goal["status"] as? String,
-                status == "active" else { return false }
+                status == "active"
+            else { return false }
         }
         if let confirmation = state["threadGoalResumeConfirmation"],
-            !(confirmation is NSNull), confirmation as? Bool != false { return false }
+            !(confirmation is NSNull), confirmation as? Bool != false
+        {
+            return false
+        }
         return true
     }
 
@@ -145,13 +172,17 @@ final class WeChatCodexConversation {
     nonisolated static func outcome(_ state: [String: Any], turnID: String) -> Outcome? {
         let turn: [String: Any]?
         if let turns = state["turns"] as? [[String: Any]],
-            let found = turns.first(where: { ($0["turnId"] ?? $0["id"]) as? String == turnID }) {
+            let found = turns.first(where: { ($0["turnId"] ?? $0["id"]) as? String == turnID })
+        {
             turn = found
         } else if let history = (state["turnHistory"] as? [String: Any])?["history"] as? [String: Any],
-            let entities = history["entitiesByKey"] as? [String: [String: Any]] {
+            let entities = history["entitiesByKey"] as? [String: [String: Any]]
+        {
             let matches = entities.values.filter { ($0["turnId"] ?? $0["id"]) as? String == turnID }
             turn = matches.count == 1 ? matches.first : nil
-        } else { turn = nil }
+        } else {
+            turn = nil
+        }
         guard let turn, let status = turn["status"] as? String else { return nil }
         switch status {
         case "failed": return .failed

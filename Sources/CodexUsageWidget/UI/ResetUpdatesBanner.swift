@@ -243,20 +243,25 @@ struct ResetCreditLocalSummary {
         var overflowed = false
         var receipts: [CodexResetCreditReceipt] = []
         for group in groups {
-            guard let newest = group.max(by: {
-                ($0.lastSnapshot?.fetchedAt ?? .distantPast) < ($1.lastSnapshot?.fetchedAt ?? .distantPast)
-            }), let snapshot = newest.lastSnapshot,
+            guard
+                let newest = group.max(by: {
+                    ($0.lastSnapshot?.fetchedAt ?? .distantPast) < ($1.lastSnapshot?.fetchedAt ?? .distantPast)
+                }), let snapshot = newest.lastSnapshot,
                 snapshot.quotaReadSucceeded == true,
                 let accountID = snapshot.accountID, !accountID.isEmpty,
                 let count = snapshot.availableResetCredits, count >= 0,
                 snapshot.fetchedAt.timeIntervalSince1970.isFinite,
                 snapshot.fetchedAt <= now.addingTimeInterval(5)
-            else { unknown = true; continue }
+            else {
+                unknown = true
+                continue
+            }
             let sum = total.addingReportingOverflow(count)
             if sum.overflow { overflowed = true } else { total = sum.partialValue }
             if count > 0 { withCards += 1 }
             observedDates.append(snapshot.fetchedAt)
-            stale = stale || now.timeIntervalSince(snapshot.fetchedAt) > 15 * 60
+            stale =
+                stale || now.timeIntervalSince(snapshot.fetchedAt) > 15 * 60
                 || group.contains { ($0.lastQuotaReadFailureAt ?? .distantPast) >= snapshot.fetchedAt }
             receipts += group.filter { $0.lastSnapshot?.accountID == accountID }
                 .flatMap { $0.resetCreditHistory ?? [] }
@@ -312,9 +317,10 @@ struct ResetUpdatesBanner: View {
             forecastStore.forecast.map {
                 PublicResetAnnouncementPresentation.wasAnnouncedToday($0.announcedAt, now: now)
             } ?? false
-        let todayReceipt = ResetCreditLocalSummary(profiles: accountProfiles, now: now).latestIncrease.map {
-            PublicResetAnnouncementPresentation.wasAnnouncedToday($0.observedAt, now: now)
-        } ?? false
+        let todayReceipt =
+            ResetCreditLocalSummary(profiles: accountProfiles, now: now).latestIncrease.map {
+                PublicResetAnnouncementPresentation.wasAnnouncedToday($0.observedAt, now: now)
+            } ?? false
         return todayAnnouncement || todayForecast || todayReceipt
     }
 
@@ -521,10 +527,12 @@ struct ResetUpdatesBanner: View {
                         systemImage: "questionmark.circle"
                     )
                     .font(compactSummary ? .caption.weight(.semibold) : .callout.weight(.semibold))
-                    Text(language.text(
-                        "预测尚未得到来源确认。已核实的重置卡余额见上方。",
-                        "This prediction is unconfirmed. Verified reset-card balances are shown above."
-                    ))
+                    Text(
+                        language.text(
+                            "预测尚未得到来源确认。已核实的重置卡余额见上方。",
+                            "This prediction is unconfirmed. Verified reset-card balances are shown above."
+                        )
+                    )
                     .font(.caption).foregroundStyle(.secondary)
                     Text(
                         language.text(
@@ -535,9 +543,11 @@ struct ResetUpdatesBanner: View {
                     .font(.caption).monospacedDigit()
                     HStack(spacing: 8) {
                         Link(language.text("查看第三方页面", "View third-party page"), destination: PublicResetForecastClient.endpoint)
-                        Text(language.text("页面检查：", "Page checked: ")
-                            + PublicResetAnnouncementPresentation.compactEventTime(watch.fetchedAt, language: language))
-                            .foregroundStyle(.secondary)
+                        Text(
+                            language.text("页面检查：", "Page checked: ")
+                                + PublicResetAnnouncementPresentation.compactEventTime(watch.fetchedAt, language: language)
+                        )
+                        .foregroundStyle(.secondary)
                     }
                     .font(.caption2)
                 }
@@ -549,10 +559,11 @@ struct ResetUpdatesBanner: View {
                         .strokeBorder(FixedVisualPalette.surfaceStrokeSubtle, lineWidth: 0.8)
                 }
                 .accessibilityElement(children: .contain)
-                .accessibilityLabel(language.text(
-                    "第三方站点推测，没有公告来源，不代表额度重置",
-                    "Third-party speculation without an announcement source; no confirmed reset"
-                ))
+                .accessibilityLabel(
+                    language.text(
+                        "第三方站点推测，没有公告来源，不代表额度重置",
+                        "Third-party speculation without an announcement source; no confirmed reset"
+                    ))
             }
         } else if let status = forecastStore.status, !status.isEmpty {
             Text(PublicResetAnnouncementPresentation.readableText(status))
@@ -597,32 +608,40 @@ struct ResetUpdatesBanner: View {
                         Button(language.text("查看账号", "Accounts"), action: onOpenAccounts)
                             .font(.caption2).buttonStyle(.plain)
                     }
-                    Text(language.text(
-                        "\(summary.accountsWithCards) 个账号持有重置卡" + (summary.hasUnknownAccounts ? " · 部分账号尚未确认" : ""),
-                        "\(summary.accountsWithCards) accounts have reset cards" + (summary.hasUnknownAccounts ? " · Some accounts unverified" : "")
-                    ))
+                    Text(
+                        language.text(
+                            "\(summary.accountsWithCards) 个账号持有重置卡" + (summary.hasUnknownAccounts ? " · 部分账号尚未确认" : ""),
+                            "\(summary.accountsWithCards) accounts have reset cards" + (summary.hasUnknownAccounts ? " · Some accounts unverified" : "")
+                        )
+                    )
                     .font(.caption2).foregroundStyle(.secondary)
                     if let receipt = summary.latestIncrease {
                         HStack(spacing: 6) {
-                            Text(language.text(
-                                "最近核实增加 +\(receipt.added) 张（\(receipt.previousAvailable) → \(receipt.available)）",
-                                "Latest verified increase: +\(receipt.added) cards (\(receipt.previousAvailable) → \(receipt.available))"
-                            ))
+                            Text(
+                                language.text(
+                                    "最近核实增加 +\(receipt.added) 张（\(receipt.previousAvailable) → \(receipt.available)）",
+                                    "Latest verified increase: +\(receipt.added) cards (\(receipt.previousAvailable) → \(receipt.available))"
+                                )
+                            )
                             .font(.caption.weight(.medium))
                             if PublicResetAnnouncementPresentation.wasAnnouncedToday(receipt.observedAt, now: context.date) { todayBadge }
                         }
-                        Text(language.text("核对区间：", "Observed between: ")
-                            + PublicResetAnnouncementPresentation.compactEventTime(receipt.previousObservedAt, language: language)
-                            + " → " + PublicResetAnnouncementPresentation.compactEventTime(receipt.observedAt, language: language))
-                            .font(.caption2).foregroundStyle(.secondary)
+                        Text(
+                            language.text("核对区间：", "Observed between: ")
+                                + PublicResetAnnouncementPresentation.compactEventTime(receipt.previousObservedAt, language: language)
+                                + " → " + PublicResetAnnouncementPresentation.compactEventTime(receipt.observedAt, language: language)
+                        )
+                        .font(.caption2).foregroundStyle(.secondary)
                     } else {
                         Text(language.text("余额已核实，到账时间未记录。", "Balance verified; the grant time was not recorded."))
                             .font(.caption2).foregroundStyle(.secondary)
                     }
                     if let checkedAt = summary.checkedAt {
-                        Text(language.text("最早核对：", "Oldest check: ")
-                            + PublicResetAnnouncementPresentation.compactEventTime(checkedAt, language: language))
-                            .font(.caption2).foregroundStyle(.secondary)
+                        Text(
+                            language.text("最早核对：", "Oldest check: ")
+                                + PublicResetAnnouncementPresentation.compactEventTime(checkedAt, language: language)
+                        )
+                        .font(.caption2).foregroundStyle(.secondary)
                     }
                 }
                 .padding(compactSummary ? 7 : 10)

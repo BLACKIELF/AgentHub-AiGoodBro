@@ -18,9 +18,10 @@ struct WorkspaceGlassPreferences: Codable, Equatable {
 
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
-        self.init(systemGlass: try values.decodeIfPresent(Bool.self, forKey: .systemGlass) ?? true,
-                  opacity: try values.decodeIfPresent(Int.self, forKey: .opacity) ?? 68,
-                  depth: try values.decodeIfPresent(Int.self, forKey: .depth) ?? 32)
+        self.init(
+            systemGlass: try values.decodeIfPresent(Bool.self, forKey: .systemGlass) ?? true,
+            opacity: try values.decodeIfPresent(Int.self, forKey: .opacity) ?? 68,
+            depth: try values.decodeIfPresent(Int.self, forKey: .depth) ?? 32)
     }
 
     static func load(_ data: Data?) -> Self {

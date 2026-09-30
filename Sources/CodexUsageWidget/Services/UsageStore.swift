@@ -4081,7 +4081,8 @@ final class UsageStore: ObservableObject {
     func setFeishuMessageOptions(_ options: FeishuMessageOptions) {
         guard !pausedAutomationFeatures.contains(.feishu) else { return }
         guard options != feishuMessageOptions else { return }
-        let alertsChanged = options.notifiesFiveHourReset != feishuMessageOptions.notifiesFiveHourReset
+        let alertsChanged =
+            options.notifiesFiveHourReset != feishuMessageOptions.notifiesFiveHourReset
             || options.notifiesSevenDayReset != feishuMessageOptions.notifiesSevenDayReset
         feishuConfigurationRevision += 1
         feishuMessageOptions = options
@@ -4542,7 +4543,8 @@ final class UsageStore: ObservableObject {
         isTest: Bool = false
     ) {
         if !isTest, hasStarted {
-            sendAdditionalChannelEvent(event, source: source, target: target, quota: quota,
+            sendAdditionalChannelEvent(
+                event, source: source, target: target, quota: quota,
                 factsSnapshot: factsSnapshot, eventID: eventID)
         }
         guard isTest || feishuNotificationsEnabled, feishuWebhookConfigured, !isUpdatingFeishuConnection else { return }
@@ -4777,8 +4779,10 @@ final class UsageStore: ObservableObject {
             case .quotaReset: enabled = feishuQuotaResetEnabled && feishuMessageOptions.selectedQuotaEvent(change) != nil
             case .resetCreditsAdded: enabled = feishuResetCreditEnabled
             }
-            guard enabled || messageChannels.telegramEnabled || messageChannels.weChatEnabled
-                || messageChannels.personalWeChatEnabled else { continue }
+            guard
+                enabled || messageChannels.telegramEnabled || messageChannels.weChatEnabled
+                    || messageChannels.personalWeChatEnabled
+            else { continue }
             sendFeishuNotification(
                 event: .quotaChange(change), source: source, target: nil,
                 quota: AutomaticSwitchQuotaState(snapshot: current), factsSnapshot: current, eventID: UUID()
@@ -5823,9 +5827,10 @@ final class UsageStore: ObservableObject {
                 return "Codex：" + (fresh ? "已连接" : "状态待刷新") + "\n运行中：\(count) 个\n微信对话：" + (self.messageChannels.personalChatEnabled ? "已启用" : "已关闭")
             case "/任务", "/tasks":
                 guard let view = self.taskWorkbench.presentation, !view.items.isEmpty else { return "当前没有可显示的任务记录；请在电脑上刷新工作台。" }
-                return "任务记录（执行与成果分开核对）：\n" + view.items.prefix(12).map {
-                    "• " + $0.task.title + " · " + $0.outcome.label(.storedOrAutomatic())
-                }.joined(separator: "\n")
+                return "任务记录（执行与成果分开核对）：\n"
+                    + view.items.prefix(12).map {
+                        "• " + $0.task.title + " · " + $0.outcome.label(.storedOrAutomatic())
+                    }.joined(separator: "\n")
             case "/重置卡", "/reset":
                 guard let latest = self.publicResetAnnouncements.latest else { return "暂无已核验的重置卡，请在电脑上刷新。" }
                 return latest.summary()

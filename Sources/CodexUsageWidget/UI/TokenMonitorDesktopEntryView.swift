@@ -41,12 +41,12 @@ struct TokenMonitorDesktopEntryView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(title)
-            .font(.headline)
+                .font(.headline)
             Text(detail)
-            .foregroundStyle(.secondary)
+                .foregroundStyle(.secondary)
             HStack {
                 Button(actionTitle) { desktop.open(route) }
-                .buttonStyle(.borderedProminent)
+                    .buttonStyle(.borderedProminent)
             }
             if let error = desktop.lastError {
                 Text(error).font(.caption).foregroundStyle(.secondary)

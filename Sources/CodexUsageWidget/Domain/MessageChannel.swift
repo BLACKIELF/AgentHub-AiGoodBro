@@ -303,8 +303,10 @@ struct MessageChannelAccountFacts: Equatable {
     let availableResetCredits: Int?
     let resetCreditExpiries: [Date]
 
-    init(fiveHourResetsAt: Date? = nil, sevenDayResetsAt: Date? = nil,
-         availableResetCredits: Int? = nil, resetCreditExpiries: [Date] = []) throws {
+    init(
+        fiveHourResetsAt: Date? = nil, sevenDayResetsAt: Date? = nil,
+        availableResetCredits: Int? = nil, resetCreditExpiries: [Date] = []
+    ) throws {
         let dates = [fiveHourResetsAt, sevenDayResetsAt].compactMap { $0 } + resetCreditExpiries
         guard availableResetCredits.map({ $0 >= 0 }) ?? true,
             dates.allSatisfy({ $0.timeIntervalSince1970.isFinite })
@@ -422,7 +424,8 @@ struct MessageTaskStatus: Equatable {
             return options.notifiesFiveHourReset || options.notifiesSevenDayReset ? self : nil
         }
         guard let selected = options.selectedQuotaEvent(quotaChange) else { return nil }
-        return try? MessageTaskStatus(eventKind: eventKind, accountLabel: accountLabel, taskLabel: taskLabel,
+        return try? MessageTaskStatus(
+            eventKind: eventKind, accountLabel: accountLabel, taskLabel: taskLabel,
             taskState: taskState, fiveHourRemainingPercent: fiveHourRemainingPercent,
             sevenDayRemainingPercent: sevenDayRemainingPercent, failureReason: failureReason,
             occurredAt: occurredAt, eventID: eventID, publicResetContext: publicResetContext,
@@ -508,7 +511,8 @@ struct MessageChannelCredential: Codable {
             return try Self(secret: WeChatMessageChannel.validatedWebhookKey(secret), target: nil)
         case .personalWeChat:
             guard let personalBinding else { throw MessageChannelError.invalidCredential }
-            return try Self(secret: PersonalWeChatMessageChannel.validatedToken(secret),
+            return try Self(
+                secret: PersonalWeChatMessageChannel.validatedToken(secret),
                 target: PersonalWeChatMessageChannel.validatedID(target ?? ""), personalBinding: personalBinding.validated())
         }
     }
@@ -602,8 +606,10 @@ final class URLSessionMessageChannelTransport: MessageChannelTransport {
 
     private let session: URLSession
 
-    init(sessionConfiguration: URLSessionConfiguration = .ephemeral, requestTimeout: TimeInterval = 12,
-         resourceTimeout: TimeInterval = 20) {
+    init(
+        sessionConfiguration: URLSessionConfiguration = .ephemeral, requestTimeout: TimeInterval = 12,
+        resourceTimeout: TimeInterval = 20
+    ) {
         let configuration = sessionConfiguration
         configuration.timeoutIntervalForRequest = requestTimeout
         configuration.timeoutIntervalForResource = resourceTimeout

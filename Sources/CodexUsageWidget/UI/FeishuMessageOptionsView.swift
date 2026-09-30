@@ -10,10 +10,13 @@ struct FeishuMessageOptionsView: View {
             Text(language.text("消息字段", "Message fields"))
                 .font(.subheadline.weight(.semibold))
 
-            Picker(language.text("消息密度", "Message density"), selection: Binding(
-                get: { options.contentPreset },
-                set: { options.applyContentPreset($0) }
-            )) {
+            Picker(
+                language.text("消息密度", "Message density"),
+                selection: Binding(
+                    get: { options.contentPreset },
+                    set: { options.applyContentPreset($0) }
+                )
+            ) {
                 Text(language.text("紧凑", "Compact")).tag(FeishuMessageOptions.ContentPreset.compact)
                 Text(language.text("详细", "Detailed")).tag(FeishuMessageOptions.ContentPreset.detailed)
                 Text(language.text("自定义", "Custom")).tag(FeishuMessageOptions.ContentPreset.custom)

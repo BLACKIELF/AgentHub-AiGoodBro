@@ -34,10 +34,11 @@ struct PublisherMessageFeed: Codable {
         guard feed.version == 1, feed.messages.count <= 50,
             Set(feed.messages.map(\.id)).count == feed.messages.count,
             feed.messages.allSatisfy({ item in
-                (1...64).contains(item.id.utf8.count) && item.id.utf8.allSatisfy { byte in
-                    (65...90).contains(byte) || (97...122).contains(byte) || (48...57).contains(byte)
-                        || byte == 45 || byte == 95
-                }
+                (1...64).contains(item.id.utf8.count)
+                    && item.id.utf8.allSatisfy { byte in
+                        (65...90).contains(byte) || (97...122).contains(byte) || (48...57).contains(byte)
+                            || byte == 45 || byte == 95
+                    }
                     && !item.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && item.title.utf8.count <= 240
                     && !item.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && item.body.utf8.count <= 2_000
                     && item.publishedAt.timeIntervalSince1970.isFinite && item.expiresAt.timeIntervalSince1970.isFinite
@@ -128,6 +129,16 @@ enum PublisherMessageSelfTest {
         else { return false }
         do {
             _ = try PublisherMessageFeed.decode(Data(#"{"version":1,"messages":[]}"#.utf8))
+            let allowedID = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"
+            let validFeed = PublisherMessageFeed(version: 1, messages: [message(allowedID, seconds: 0)])
+            guard try PublisherMessageFeed.decode(PublisherMessagePublishing.encode(validFeed)).messages == validFeed.messages else { return false }
+            for invalidID in ["", String(repeating: "a", count: 65), "notice.dot", "notice/part", "notice space", "notice\n", "提示", "notice😀"] {
+                let invalidFeed = PublisherMessageFeed(version: 1, messages: [message(invalidID, seconds: 0)])
+                do {
+                    _ = try PublisherMessageFeed.decode(PublisherMessagePublishing.encode(invalidFeed))
+                    return false
+                } catch PublicResetFailure.invalidResponse {}
+            }
             let root = FileManager.default.temporaryDirectory.appendingPathComponent("publisher-message-test-" + UUID().uuidString)
             defer { try? FileManager.default.removeItem(at: root) }
             let state = root.appendingPathComponent("ledger.json")

@@ -65,7 +65,8 @@ enum TokenMonitorEdgeDockProjection {
     }
 
     private static func proxyCell(language: WidgetLanguage, phase: LocalProxyPhase?, rows: [LocalProxyQueueRow]) -> TokenMonitorEdgeDockCell {
-        let active = (phase == .running || phase == .stopping)
+        let active =
+            (phase == .running || phase == .stopping)
             ? rows.filter { $0.isCurrent && $0.activeRequestCount > 0 }.sorted {
                 ($0.accountNumber ?? Int.max) < ($1.accountNumber ?? Int.max)
             } : []
@@ -163,15 +164,19 @@ enum TokenMonitorEdgeDockProjection {
                 }
             }
         }
-        let severity = providerID == "claude" ? nil : selected?.0.quotaRows
-            .filter { $0.isAvailable && !$0.isStale }
-            .compactMap(\.percentRemaining).min()
+        let severity =
+            providerID == "claude"
+            ? nil
+            : selected?.0.quotaRows
+                .filter { $0.isAvailable && !$0.isStale }
+                .compactMap(\.percentRemaining).min()
         let period = usageByProvider(usage, providerID: providerID)
         let showSessions = item.showSessions && providerID == "codex"
         let recent = showSessions ? sessions?.recentCodex(maximum: 3) ?? [] : []
         return TokenMonitorEdgeDockCell(
             id: item.id, kind: .provider,
-            title: item.accountID == nil ? (matches.first?.providerName ?? providerID)
+            title: item.accountID == nil
+                ? (matches.first?.providerName ?? providerID)
                 : (matches.first?.accountName ?? language.text("账号不可用", "Account unavailable")),
             providerID: providerID, iconID: providerID,
             headlineAccountID: selected?.0.id,
@@ -207,7 +212,8 @@ enum TokenMonitorEdgeDockProjection {
     ) -> TokenMonitorEdgeDockCell {
         let metric = item.metric ?? .allTime
         let result = periodResult(metric, usage: usage, language: language, now: now)
-        let recent = metric == .sessions
+        let recent =
+            metric == .sessions
             ? sessions?.recent(maximum: 6, runningOnly: item.runningOnly) ?? []
             : []
         let hasSessionSource = usage.response?.payload["aggregate"]?["month"]?["sessions"]?.object != nil
@@ -502,10 +508,11 @@ enum TokenMonitorEdgeDockProjection {
                     costUSD: amount.flatMap { $0.isFinite && $0 >= 0 ? $0 : nil },
                     lastUsedAt: lastUsed, turnEnded: ended
                 )
-                candidates.append(Candidate(
-                    row: row, isRunning: !archived && !ended && observedAt.timeIntervalSince(lastUsed) <= 600,
-                    isCodex: TokenMonitorEdgeDockProjection.provider(forClient: client) == "codex"
-                ))
+                candidates.append(
+                    Candidate(
+                        row: row, isRunning: !archived && !ended && observedAt.timeIntervalSince(lastUsed) <= 600,
+                        isCodex: TokenMonitorEdgeDockProjection.provider(forClient: client) == "codex"
+                    ))
             }
             candidates.sort { $0.row.lastUsedAt > $1.row.lastUsedAt }
             all = candidates.map(\.row)
@@ -527,7 +534,8 @@ enum TokenMonitorEdgeDockProjection {
     /// The cache retains one index and at most 4096 parsed timestamp strings.
     private final class SessionCache: @unchecked Sendable {
         private enum ParsedTime {
-            case valid(Date), invalid
+            case valid(Date)
+            case invalid
             var date: Date? {
                 if case .valid(let date) = self { return date }
                 return nil
@@ -557,7 +565,8 @@ enum TokenMonitorEdgeDockProjection {
             }
             let index = SessionIndex(
                 month: month?.object ?? [:], today: today?.object ?? [:],
-                collectedAt: usage.collectedAt, parseTimestamp: { [self] raw in
+                collectedAt: usage.collectedAt,
+                parseTimestamp: { [self] raw in
                     if let cached = parsedTimes[raw] { return cached.date }
                     let date = regular.date(from: raw) ?? fractional.date(from: raw)
                     if parsedTimes.count >= 4096 { parsedTimes.removeAll(keepingCapacity: true) }

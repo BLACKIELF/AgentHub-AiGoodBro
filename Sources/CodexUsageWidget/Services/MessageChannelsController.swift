@@ -68,8 +68,10 @@ final class MessageChannelKeychainStore: MessageChannelCredentialStoring {
         save(value, for: kind, allowInteraction: false, completion: completion)
     }
 
-    private func save(_ value: MessageChannelCredential, for kind: MessageChannelKind, allowInteraction: Bool,
-                      completion: @escaping (Result<Void, FeishuWebhookError>) -> Void) {
+    private func save(
+        _ value: MessageChannelCredential, for kind: MessageChannelKind, allowInteraction: Bool,
+        completion: @escaping (Result<Void, FeishuWebhookError>) -> Void
+    ) {
         // The controller keeps this explicit user action pending until Security
         // returns; a timeout must not allow overlapping credential writes.
         queue.async {
@@ -190,7 +192,8 @@ final class MessageChannelsController: ObservableObject {
         personalChatEnabled = defaults.bool(forKey: Self.personalChatEnabledKey)
         let thread = defaults.string(forKey: Self.personalChatThreadKey) ?? ""
         personalChatThreadID = UUID(uuidString: thread) == nil ? "" : thread
-        weChatMessageOptions = defaults.data(forKey: Self.weChatOptionsKey)
+        weChatMessageOptions =
+            defaults.data(forKey: Self.weChatOptionsKey)
             .flatMap { try? JSONDecoder().decode(FeishuMessageOptions.self, from: $0) } ?? .standard
     }
 
@@ -209,7 +212,8 @@ final class MessageChannelsController: ObservableObject {
 
     func setPersonalChatThread(_ id: String) {
         guard !credentialWriteInFlight, id != personalChatThreadID,
-            id.isEmpty || UUID(uuidString: id) != nil && personalChatTargets.contains(where: { $0.id == id }) else { return }
+            id.isEmpty || UUID(uuidString: id) != nil && personalChatTargets.contains(where: { $0.id == id })
+        else { return }
         cancelPersonalBotTasks()
         personalChatThreadID = id
         personalChatNotBefore = Date()
@@ -359,7 +363,10 @@ final class MessageChannelsController: ObservableObject {
             let value = credentials[kind], (try? value.validated(for: kind)) != nil
         else { return nil }
         if kind == .personalWeChat,
-            !personalWeChatConnected || !personalWeChatHasContext || value.personalBinding?.hasFreshContext() != true { return nil }
+            !personalWeChatConnected || !personalWeChatHasContext || value.personalBinding?.hasFreshContext() != true
+        {
+            return nil
+        }
         return revisions[kind]
     }
 
@@ -383,10 +390,13 @@ final class MessageChannelsController: ObservableObject {
         case .telegram:
             result = await TelegramMessageChannel(credentials: frozen, transport: transport()).send(status, shouldSend: valid)
         case .weChat:
-            result = await WeChatMessageChannel(credentials: frozen, transport: transport(),
-                messageOptions: weChatMessageOptions).send(status, shouldSend: valid)
+            result = await WeChatMessageChannel(
+                credentials: frozen, transport: transport(),
+                messageOptions: weChatMessageOptions
+            ).send(status, shouldSend: valid)
         case .personalWeChat:
-            result = await PersonalWeChatMessageChannel(transport: transport()).send(status,
+            result = await PersonalWeChatMessageChannel(transport: transport()).send(
+                status,
                 credential: value, options: weChatMessageOptions, shouldSend: valid)
         }
         guard valid(), !Task.isCancelled else { return .failure(.cancelled) }
@@ -437,7 +447,8 @@ final class MessageChannelsController: ObservableObject {
         let messageOptions = weChatMessageOptions
         guard let status = kind != .telegram ? status.selectingQuotaWindows(messageOptions) : status else { return }
         if kind == .personalWeChat,
-            !personalWeChatConnected || !personalWeChatHasContext || value.personalBinding?.hasFreshContext() != true {
+            !personalWeChatConnected || !personalWeChatHasContext || value.personalBinding?.hasFreshContext() != true
+        {
             personalWeChatHasContext = false
             setPhase(.needsSetup, for: kind)
             if explicit { statusText = MessageChannelError.weChatContextRequired.localizedDescription }
@@ -468,12 +479,14 @@ final class MessageChannelsController: ObservableObject {
                 let channel = TelegramMessageChannel(credentials: credential, transport: selectedTransport, deduplicator: self.telegramEvents)
                 result = await channel.send(status)
             case .weChat:
-                let channel = WeChatMessageChannel(credentials: credential, transport: selectedTransport,
+                let channel = WeChatMessageChannel(
+                    credentials: credential, transport: selectedTransport,
                     deduplicator: self.weChatEvents, messageOptions: messageOptions)
                 result = await channel.send(status)
             case .personalWeChat:
                 let channel = PersonalWeChatMessageChannel(transport: selectedTransport, deduplicator: self.personalWeChatEvents)
-                result = await channel.send(status, credential: value, options: messageOptions,
+                result = await channel.send(
+                    status, credential: value, options: messageOptions,
                     shouldSend: { self.running && self.personalWeChatEnabled && self.revisions[kind] == revision })
             }
             guard self.running, !Task.isCancelled, self.isEnabled(kind), self.revisions[kind] == revision else { return }
@@ -489,7 +502,9 @@ final class MessageChannelsController: ObservableObject {
                     self.personalWeChatConnected = false
                     self.personalWeChatHasContext = false
                     self.invalidate(kind)
-                } else { self.setPhase(.pendingVerification, for: kind) }
+                } else {
+                    self.setPhase(.pendingVerification, for: kind)
+                }
                 self.statusText = error.localizedDescription
             }
         }
@@ -517,7 +532,8 @@ final class MessageChannelsController: ObservableObject {
 
     func submitPersonalWeChatCode(_ code: String) {
         guard personalLoginInProgress, personalLoginNeedsCode,
-            code.range(of: "^[0-9]{4,10}$", options: .regularExpression) != nil else { return }
+            code.range(of: "^[0-9]{4,10}$", options: .regularExpression) != nil
+        else { return }
         personalVerificationCode = code
         personalLoginNeedsCode = false
     }
@@ -606,11 +622,13 @@ final class MessageChannelsController: ObservableObject {
             guard let self else { return }
             var failures = 0
             while self.running, self.personalWeChatEnabled, self.personalConnectionEpoch == epoch,
-                !Task.isCancelled, let credential = self.credentials[.personalWeChat] {
+                !Task.isCancelled, let credential = self.credentials[.personalWeChat]
+            {
                 do {
                     let update = try await channel.updates(credential)
                     guard !Task.isCancelled, self.personalConnectionEpoch == epoch,
-                        self.credentials[.personalWeChat]?.secret == credential.secret else { return }
+                        self.credentials[.personalWeChat]?.secret == credential.secret
+                    else { return }
                     failures = 0
                     let current = MessageChannelCredential(secret: credential.secret, target: credential.target, personalBinding: update.binding)
                     self.credentials[.personalWeChat] = current
@@ -620,11 +638,14 @@ final class MessageChannelsController: ObservableObject {
                         self.storage.saveBackground(current, for: .personalWeChat) { [weak self] result in
                             guard let self, self.personalConnectionEpoch == epoch else { return }
                             if case .failure = result {
-                                self.statusText = WidgetLanguage.storedOrAutomatic().text("会话只在本次运行中可用；钥匙串未保存更新。", "The session is available for this run; the Keychain update was not saved.")
+                                self.statusText = WidgetLanguage.storedOrAutomatic().text(
+                                    "会话只在本次运行中可用；钥匙串未保存更新。", "The session is available for this run; the Keychain update was not saved.")
                             }
                         }
                         if update.contextChanged { self.onConfigurationChanged?() }
-                    } else if !self.personalWeChatHasContext { self.setPhase(.needsSetup, for: .personalWeChat) }
+                    } else if !self.personalWeChatHasContext {
+                        self.setPhase(.needsSetup, for: .personalWeChat)
+                    }
                     self.handlePersonalMessages(update.messages)
                 } catch {
                     guard !Task.isCancelled, self.personalConnectionEpoch == epoch else { return }
@@ -650,8 +671,7 @@ final class MessageChannelsController: ObservableObject {
                         }
                     }
                 }
-                do { try await Task.sleep(nanoseconds: UInt64(min(30, failures == 0 ? 1 : 5 * failures)) * 1_000_000_000) }
-                catch { return }
+                do { try await Task.sleep(nanoseconds: UInt64(min(30, failures == 0 ? 1 : 5 * failures)) * 1_000_000_000) } catch { return }
             }
         }
     }
@@ -663,14 +683,16 @@ final class MessageChannelsController: ObservableObject {
 
     private func updatePersonalChatTargets(_ snapshot: CodexTaskLiveSnapshot) {
         guard snapshot.connectionMode != .disconnected,
-            Date().timeIntervalSince(personalTargetsRefreshedAt) >= 60 else { return }
+            Date().timeIntervalSince(personalTargetsRefreshedAt) >= 60
+        else { return }
         personalTargetsRefreshedAt = Date()
         personalChatTargets = snapshot.records.values
             .filter { UUID(uuidString: $0.threadID) != nil }
             .sorted { ($0.updatedAt ?? .distantPast) > ($1.updatedAt ?? .distantPast) }
             .prefix(100).map {
                 let name = ($0.name ?? "Codex").components(separatedBy: .controlCharacters).joined(separator: " ")
-                return WeChatCodexConversationTarget(id: $0.threadID,
+                return WeChatCodexConversationTarget(
+                    id: $0.threadID,
                     title: String(name.prefix(80)))
             }
     }
@@ -678,13 +700,13 @@ final class MessageChannelsController: ObservableObject {
     @MainActor
     private func handlePersonalMessages(_ messages: [PersonalWeChatMessageChannel.IncomingMessage]) {
         guard running, personalWeChatEnabled, personalWeChatConnected,
-            let binding = credentials[.personalWeChat]?.personalBinding else { return }
+            let binding = credentials[.personalWeChat]?.personalBinding
+        else { return }
         let owner = binding.botID + "\u{0}" + (credentials[.personalWeChat]?.target ?? "")
         for message in messages where message.receivedAt >= personalMessagesNotBefore {
             guard personalBotTasks.count < 8 else { break }
             let claimed: UUID?
-            do { claimed = try botLedger.claim(owner: owner, messageID: message.id, receivedAt: message.receivedAt) }
-            catch {
+            do { claimed = try botLedger.claim(owner: owner, messageID: message.id, receivedAt: message.receivedAt) } catch {
                 statusText = "微信消息去重记录不可用，已暂停该消息。"
                 continue
             }
@@ -699,8 +721,10 @@ final class MessageChannelsController: ObservableObject {
                         self.personalBotIsReplying = self.personalConversation?.isRunning == true
                     }
                 }
-                let valid = { self.running && self.personalWeChatEnabled && self.personalWeChatConnected
-                    && self.personalChatEpoch == epoch && self.personalConnectionEpoch == connectionEpoch }
+                let valid = {
+                    self.running && self.personalWeChatEnabled && self.personalWeChatConnected
+                        && self.personalChatEpoch == epoch && self.personalConnectionEpoch == connectionEpoch
+                }
                 guard valid(), !Task.isCancelled else { return }
                 let text = message.text.trimmingCharacters(in: .whitespacesAndNewlines)
                 let reply: String
@@ -710,7 +734,9 @@ final class MessageChannelsController: ObservableObject {
                         reply = Self.personalBotHelp
                     } else if let local = self.onPersonalBotCommand?(command) {
                         reply = local
-                    } else { reply = Self.personalBotHelp }
+                    } else {
+                        reply = Self.personalBotHelp
+                    }
                 } else if !self.personalChatEnabled || message.receivedAt < self.personalChatNotBefore {
                     reply = "Codex 对话尚未启用。请在电脑上的微信机器人设置中选择原聊天并开启对话。\n" + Self.personalBotHelp
                 } else if UUID(uuidString: self.personalChatThreadID) == nil {
@@ -720,10 +746,14 @@ final class MessageChannelsController: ObservableObject {
                     guard let conversation = self.personalConversation else { return }
                     self.personalBotIsReplying = true
                     let thread = self.personalChatThreadID
-                    let outcome = await conversation.reply(threadID: thread, eventID: id, text: text,
-                        shouldContinue: valid, onSubmitted: { turn in
-                            do { try self.botLedger.mark(id, phase: .submitted, threadID: thread, turnID: turn); return true }
-                            catch { return false }
+                    let outcome = await conversation.reply(
+                        threadID: thread, eventID: id, text: text,
+                        shouldContinue: valid,
+                        onSubmitted: { turn in
+                            do {
+                                try self.botLedger.mark(id, phase: .submitted, threadID: thread, turnID: turn)
+                                return true
+                            } catch { return false }
                         })
                     guard valid(), !Task.isCancelled else { return }
                     switch outcome {
@@ -742,9 +772,12 @@ final class MessageChannelsController: ObservableObject {
                 }
                 guard valid(), !Task.isCancelled,
                     let credential = self.credentials[.personalWeChat],
-                    credential.personalBinding?.hasFreshContext() == true else { return }
-                do { try self.botLedger.mark(id, phase: .replyAttempted) }
-                catch { self.statusText = "微信回复记录未能保存，已暂停发送。"; return }
+                    credential.personalBinding?.hasFreshContext() == true
+                else { return }
+                do { try self.botLedger.mark(id, phase: .replyAttempted) } catch {
+                    self.statusText = "微信回复记录未能保存，已暂停发送。"
+                    return
+                }
                 let result = await PersonalWeChatMessageChannel(transport: self.transport()).sendText(
                     Self.boundedPersonalReply(reply), eventID: id, credential: credential, shouldSend: valid)
                 switch result {

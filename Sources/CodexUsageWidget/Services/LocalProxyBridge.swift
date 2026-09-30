@@ -60,7 +60,10 @@ final class LocalProxyBridge: @unchecked Sendable {
                     return
                 }
                 let client = Darwin.accept(descriptor, nil, nil)
-                guard client >= 0 else { readers.signal(); return }
+                guard client >= 0 else {
+                    readers.signal()
+                    return
+                }
                 var uid: uid_t = 0
                 var gid: gid_t = 0
                 guard getpeereid(client, &uid, &gid) == 0, uid == getuid() else {
@@ -184,7 +187,10 @@ enum LocalProxyCredentialReader {
         let accountID: String
         let expiresAt: Double
     }
-    static func read(profile: CodexProfile, system: CodexProfile, now: Date = Date(), allowDesktopAccount: Bool = false, creditFloor: Int? = nil, allowPaidCredits: Bool = false, deadline: TimeInterval? = nil)
+    static func read(
+        profile: CodexProfile, system: CodexProfile, now: Date = Date(), allowDesktopAccount: Bool = false, creditFloor: Int? = nil, allowPaidCredits: Bool = false,
+        deadline: TimeInterval? = nil
+    )
         throws -> Value
     {
         try withBoundedGates([profile.codexHomeURL, system.codexHomeURL], deadline: deadline) {

@@ -45,7 +45,9 @@ struct PublisherMessagesView: View {
                         .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
                 }
                 ForEach(monitor.messages) { message in
-                    Button { selectedMessage = message } label: {
+                    Button {
+                        selectedMessage = message
+                    } label: {
                         VStack(alignment: .leading, spacing: 5) {
                             HStack {
                                 Text(verbatim: message.title).font(.caption.weight(.semibold)).lineLimit(2)

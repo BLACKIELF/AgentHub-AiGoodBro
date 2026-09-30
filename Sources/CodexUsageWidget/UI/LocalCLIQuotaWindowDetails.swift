@@ -9,8 +9,9 @@ struct LocalCLIQuotaWindowDetails: View {
         let percentages = Self.percentages(usedPercent: window.usedPercent, language: language)
         VStack(alignment: .leading, spacing: 2) {
             if let amount = window.tokenAmountText { Text(amount).monospacedDigit() }
-            Text(language.text("已用 ", "Used ") + percentages.used
-                + " · " + language.text("剩余 ", "Remaining ") + percentages.remaining)
+            Text(
+                language.text("已用 ", "Used ") + percentages.used
+                    + " · " + language.text("剩余 ", "Remaining ") + percentages.remaining)
             Text(
                 window.resetsAt.map {
                     (window.isExpiry ? language.text("到期：", "Expires: ") : language.text("重置：", "Resets: "))

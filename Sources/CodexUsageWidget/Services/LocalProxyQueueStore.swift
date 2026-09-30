@@ -342,8 +342,9 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
                     !profile.isSystemProfile, let accountID = profile.lastSnapshot?.accountID,
                     !accountID.isEmpty, pool[row.id] == nil
                 else { throw LocalProxyFailure.identity }
-                pool[row.id] = PoolBinding(home: profile.codexHomeURL,
-                                           account: profile.recordedAccountKey, accountID: accountID)
+                pool[row.id] = PoolBinding(
+                    home: profile.codexHomeURL,
+                    account: profile.recordedAccountKey, accountID: accountID)
             }
             guard !pool.isEmpty, pool.count <= 100 else { throw LocalProxyFailure.unavailable }
             registeredPool = pool
@@ -365,8 +366,7 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
                             runID: request.runID, requestID: request.requestID, profileID: request.profileID, enforceFreshness: true)
                         Task { @MainActor [weak self] in self?.forgetAbandoned(request) }
                         return LocalProxyReply(ok: true, resolution: resolution.rawValue)
-                    } catch DispatchActivityStore.Failure.busy { return .failure(.controlBusy) }
-                    catch { return .failure(.admissionUnknown) }
+                    } catch DispatchActivityStore.Failure.busy { return .failure(.controlBusy) } catch { return .failure(.admissionUnknown) }
                 },
                 rollback: { [weak self] request in
                     let deadline = ProcessInfo.processInfo.systemUptime + 8
@@ -390,7 +390,10 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
                         let deadline = ProcessInfo.processInfo.systemUptime + 40
                         repeat {
                             if (try? DispatchActivityStore.live.isProxyAcquireAbandoned(
-                                runID: request.runID, requestID: request.requestID, profileID: request.profileID)) == true { return }
+                                runID: request.runID, requestID: request.requestID, profileID: request.profileID)) == true
+                            {
+                                return
+                            }
                             try? await Task.sleep(nanoseconds: 100_000_000)
                         } while ProcessInfo.processInfo.systemUptime < deadline
                         await MainActor.run { [weak self] in
@@ -402,11 +405,12 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
                             Task { await self.stop(reason: .controlFailure) }
                         }
                     }
+                },
+                handler: { [weak self] request in
+                    guard let self else { return .failure(.stopping) }
+                    return await self.handle(request)
                 }
-            ) { [weak self] request in
-                guard let self else { return .failure(.stopping) }
-                return await self.handle(request)
-            }
+            )
             let child = Process()
             let stdin = Pipe()
             let stdout = Pipe()
@@ -573,8 +577,10 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
                 }
             } catch { issue = message(.unavailable) }
         }
-        do { try DispatchActivityStore.live.finishStoppedProxyRuns(retiringCurrentRun: true) }
-        catch { registryCleanupFailed = true; issue = message(.unavailable) }
+        do { try DispatchActivityStore.live.finishStoppedProxyRuns(retiringCurrentRun: true) } catch {
+            registryCleanupFailed = true
+            issue = message(.unavailable)
+        }
         try? input?.close()
         input = nil
         process = nil
@@ -754,15 +760,14 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
                 child.isRunning, runID == request.runID,
                 isMembershipSnapshotCurrent(membership, requestID: request.requestID)
             else {
-                do { try await rollBack(lease) }
-                catch { return .failure(.admissionUnknown) }
+                do { try await rollBack(lease) } catch { return .failure(.admissionUnknown) }
                 return .failure(.stopping)
             }
             leases[id] = lease
             refreshMembershipWaitState()
-        } catch DispatchActivityStore.Failure.busy { return .failure(.busy) }
-        catch DispatchActivityStore.Failure.deadline { return .failure(.admissionDeadline) }
-        catch { return .failure(.unavailable) }
+        } catch DispatchActivityStore.Failure.busy { return .failure(.busy) } catch DispatchActivityStore.Failure.deadline { return .failure(.admissionDeadline) } catch {
+            return .failure(.unavailable)
+        }
         func reject(_ reason: LocalProxyFailure) async -> LocalProxyReply {
             if leases[lease.id] != nil {
                 do {
@@ -787,7 +792,8 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
         do {
             let paid = creditFallbackEnabled
             let credential = try await Task.detached {
-                try LocalProxyCredentialReader.read(profile: latest, system: system, allowDesktopAccount: desktopPass, creditFloor: floor, allowPaidCredits: paid, deadline: admissionDeadline)
+                try LocalProxyCredentialReader.read(
+                    profile: latest, system: system, allowDesktopAccount: desktopPass, creditFloor: floor, allowPaidCredits: paid, deadline: admissionDeadline)
             }.value
             guard ProcessInfo.processInfo.systemUptime < admissionDeadline else { return await reject(.admissionDeadline) }
             guard phase == .running, process === child, child.isRunning, request.runID == runID, leases[lease.id] != nil,
@@ -843,8 +849,10 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
 
     private func updateAfterContention(_ lease: Lease, state: String, deadline: TimeInterval) async throws {
         while true {
-            do { try update(lease, state: state); return }
-            catch DispatchActivityStore.Failure.busy {
+            do {
+                try update(lease, state: state)
+                return
+            } catch DispatchActivityStore.Failure.busy {
                 guard ProcessInfo.processInfo.systemUptime < deadline else { throw DispatchActivityStore.Failure.busy }
                 // Yield the main actor; only a lock refusal before mutation can retry.
                 try await Task.sleep(nanoseconds: 50_000_000)
@@ -921,7 +929,10 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
         for profile in profiles where !preferences.knownIDs.contains(profile.id) {
             preferences.knownIDs.insert(profile.id)
             if profile.recordedAccountKey != central?.recordedAccountKey,
-                process == nil || registeredPool[profile.id] != nil { preferences.enabledIDs.insert(profile.id) }
+                process == nil || registeredPool[profile.id] != nil
+            {
+                preferences.enabledIDs.insert(profile.id)
+            }
             if profile.isDispatchPriorityEnabled { preferences.priorityIDs.insert(profile.id) }
         }
         let ids = preferences.order.filter { id in profiles.contains { $0.id == id } } + profiles.map(\.id).filter { !preferences.order.contains($0) }
@@ -945,7 +956,8 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
             let displayWindows = [("5h", profile.lastSnapshot?.fiveHour), ("7d", profile.lastSnapshot?.sevenDay), ("30d", profile.lastSnapshot?.monthly)]
                 .filter { $0.0 != "30d" || $0.1 != nil }
                 .map { label, window in
-                    LocalProxyQuotaWindow(id: label,
+                    LocalProxyQuotaWindow(
+                        id: label,
                         remaining: label == "5h"
                             ? QuotaAvailabilityPresentation.reportedFiveHourRemaining(officialRemaining(window), sevenDay: weeklyRemaining)
                             : officialRemaining(window),
@@ -957,7 +969,9 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
                 let language = WidgetLanguage.storedOrAutomatic()
                 let remaining = displayWindows.compactMap { window -> String? in
                     guard let remaining = window.remaining else { return nil }
-                    let label = window.id == "5h" ? language.text("5 小时", "5h")
+                    let label =
+                        window.id == "5h"
+                        ? language.text("5 小时", "5h")
                         : window.id == "7d" ? language.text("每周", "Weekly") : language.text("每月", "Monthly")
                     return label + " " + String(format: "%.1f%%", remaining)
                 }.joined(separator: " · ")

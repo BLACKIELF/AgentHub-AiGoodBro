@@ -79,15 +79,17 @@ struct ZCodeCLIQuotaReader {
             let fingerprint = SHA256.hash(data: Data(("zcode:" + credential.host + ":" + credential.accountID).utf8)).map { String(format: "%02x", $0) }.joined()
             let windows = billing.windows + coding.windows
             if !windows.isEmpty {
-                return result(state: .available, now: now, fingerprint: fingerprint,
-                              plan: billing.plan ?? coding.plan, windows: windows,
-                              messageCode: billing.failure != nil || coding.failure != nil
-                                ? "local_cli_zcode_partial_quota" : nil)
+                return result(
+                    state: .available, now: now, fingerprint: fingerprint,
+                    plan: billing.plan ?? coding.plan, windows: windows,
+                    messageCode: billing.failure != nil || coding.failure != nil
+                        ? "local_cli_zcode_partial_quota" : nil)
             }
             if let failure = billing.failure ?? coding.failure { throw failure }
-            return result(state: .unsupported, now: now, fingerprint: fingerprint,
-                          messageCode: coding.noCodingPlan && credential.billingJWT == nil
-                            ? "local_cli_zcode_no_coding_plan" : "local_cli_zcode_no_quota")
+            return result(
+                state: .unsupported, now: now, fingerprint: fingerprint,
+                messageCode: coding.noCodingPlan && credential.billingJWT == nil
+                    ? "local_cli_zcode_no_coding_plan" : "local_cli_zcode_no_quota")
         } catch let failure as Failure {
             switch failure {
             case .unsupportedConfiguration:
@@ -136,7 +138,9 @@ struct ZCodeCLIQuotaReader {
             if let envelope = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                 Self.strictDouble(envelope["code"]) == 500,
                 (envelope["msg"] as? String ?? envelope["message"] as? String) == "当前用户不存在coding plan"
-            { return Lane(noCodingPlan: true) }
+            {
+                return Lane(noCodingPlan: true)
+            }
             let parsed = try Self.parse(data, now: now)
             return Lane(plan: parsed.plan, windows: parsed.windows)
         } catch { return Lane(failure: error as? Failure ?? .unavailable) }
@@ -163,8 +167,7 @@ struct ZCodeCLIQuotaReader {
         request.setValue(deviceMid, forHTTPHeaderField: "X-Device-Mid")
         request.setValue("CodexUsageWidget-Next", forHTTPHeaderField: "User-Agent")
         let response: LocalCLIHTTPResponse
-        do { response = try await transport.response(for: request) }
-        catch { throw Failure.unavailable }
+        do { response = try await transport.response(for: request) } catch { throw Failure.unavailable }
         guard response.data.count <= Self.maximumBytes else { throw Failure.invalidResponse }
         switch response.statusCode {
         case 200: return response.data
@@ -271,7 +274,9 @@ struct ZCodeCLIQuotaReader {
             let telemetry = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
             let mid = Self.nonempty(telemetry["deviceMid"]), mid.utf8.count <= 512,
             !mid.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains)
-        { deviceMid = mid }
+        {
+            deviceMid = mid
+        }
         guard apiKey != nil || billingJWT != nil else { throw Failure.credentialsUnreadable }
         return Credential(apiKey: apiKey, host: host, accountID: identity, billingJWT: billingJWT, deviceMid: deviceMid)
     }
@@ -405,7 +410,8 @@ struct ZCodeCLIQuotaReader {
             let entitlementID = nonempty(balance["entitlement_id"])
             let entitlement = entitlementID.flatMap { id in entitlements.first { nonempty($0["entitlement_id"]) == id } }
             if let effective = try timestamp(entitlement?["effective_at"]), effective > reference { continue }
-            let reset = try timestamp(balance["expires_at"])
+            let reset =
+                try timestamp(balance["expires_at"])
                 ?? timestamp(balance["period_end"]) ?? timestamp(plan["ends_at"])
             if let reset, reset <= reference { continue }
             guard let total = billingNumber(balance["total_units"]), total > 0,
@@ -428,9 +434,10 @@ struct ZCodeCLIQuotaReader {
             let digest = SHA256.hash(data: key).map { String(format: "%02x", $0) }.joined()
             let unit = nonempty(balance["unit_type"]) ?? nonempty(entitlement?["unit_type"])
             let period = nonempty(entitlement?["period"]) ?? nonempty(balance["period"])
-            var window = LocalCLIQuotaWindow(id: "zcode-start-" + digest, label: label,
-                                             usedPercent: (1 - remaining / total) * 100,
-                                             resetsAt: reset, isExpiry: period == "one_time")
+            var window = LocalCLIQuotaWindow(
+                id: "zcode-start-" + digest, label: label,
+                usedPercent: (1 - remaining / total) * 100,
+                resetsAt: reset, isExpiry: period == "one_time")
             if unit == "token" {
                 // JSON numbers above 2^53 cannot preserve exact token counts.
                 guard total <= 9_007_199_254_740_991,

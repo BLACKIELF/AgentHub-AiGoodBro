@@ -9,10 +9,13 @@ struct WorkspaceGlassControls: View {
     var body: some View {
         VStack(spacing: 6) {
             SettingsPickerRow(title: language.text("玻璃背景", "Glass backdrop"), detail: "") {
-                SettingsSegmentedControl(selection: $settings.workspaceGlass.systemGlass, options: [
-                    SettingsSegmentOption(value: true, title: language.text("系统", "System")),
-                    SettingsSegmentOption(value: false, title: language.text("透明", "Transparent"))
-                ], width: 224)
+                SettingsSegmentedControl(
+                    selection: $settings.workspaceGlass.systemGlass,
+                    options: [
+                        SettingsSegmentOption(value: true, title: language.text("系统", "System")),
+                        SettingsSegmentOption(value: false, title: language.text("透明", "Transparent")),
+                    ], width: 224
+                )
                 .accessibilityIdentifier("appearance.glass.backdrop")
             }
             sliderRow(title: language.text("玻璃浓度", "Glass"), value: $settings.workspaceGlass.opacity, defaultValue: 68, id: "opacity")
@@ -26,10 +29,15 @@ struct WorkspaceGlassControls: View {
     }
 
     private func sliderRow(title: String, value: Binding<Int>, defaultValue: Int, id: String) -> some View {
-        SettingsPickerRow(title: title, detail: id == "depth"
-            ? language.text("边框与控件的层次感", "Border and control contrast") : "") {
+        SettingsPickerRow(
+            title: title,
+            detail: id == "depth"
+                ? language.text("边框与控件的层次感", "Border and control contrast") : ""
+        ) {
             HStack(spacing: 8) {
-                Button { value.wrappedValue = defaultValue } label: {
+                Button {
+                    value.wrappedValue = defaultValue
+                } label: {
                     Image(systemName: "arrow.counterclockwise").frame(width: 24, height: 26)
                 }
                 .buttonStyle(WorkspaceQuietButtonStyle())

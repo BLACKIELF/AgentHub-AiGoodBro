@@ -41,14 +41,16 @@ struct MessageChannelsSettingsView: View {
             }.padding(.horizontal, 20).padding(.vertical, 10)
             MessageChannelsView(
                 telegramPhase: controller.telegramPhase,
-                weChatCapabilities: WeChatChannelCapabilities.all(workGroupBotPhase: controller.weChatPhase,
+                weChatCapabilities: WeChatChannelCapabilities.all(
+                    workGroupBotPhase: controller.weChatPhase,
                     personalPhase: controller.personalWeChatPhase),
                 telegramEnabled: Binding(get: { controller.telegramEnabled }, set: { controller.setEnabled($0, for: .telegram) }),
                 telegramTokenDraft: $telegramToken,
                 telegramTargetDraft: $telegramTarget,
                 weChatEnabled: Binding(get: { controller.weChatEnabled }, set: { controller.setEnabled($0, for: .weChat) }),
                 weChatKeyDraft: $weChatKey,
-                weChatMessageOptions: Binding(get: { controller.weChatMessageOptions },
+                weChatMessageOptions: Binding(
+                    get: { controller.weChatMessageOptions },
                     set: { controller.setWeChatMessageOptions($0) }),
                 personalWeChatEnabled: Binding(get: { controller.personalWeChatEnabled }, set: { controller.setEnabled($0, for: .personalWeChat) }),
                 personalPairingCode: $personalPairingCode,

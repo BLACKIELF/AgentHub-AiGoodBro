@@ -43,7 +43,7 @@ impl CodexStateReader {
     /// Loads thread metadata indexed by normalized rollout filename.
     ///
     /// The key is the basename of `rollout_path` (e.g.
-    /// `rollout-2026-03-26T20-53-36-019d2a35-18c6-7a91-a1af-ea3f821cd221.jsonl`)
+    /// `rollout-2026-01-01T00-00-00-00000000-0000-4000-8000-000000000001.jsonl`)
     /// so it can be matched against transcript files discovered on disk.
     pub async fn load_metadata(&self) -> anyhow::Result<HashMap<String, CodexThreadMetadata>> {
         let db_path = self.db_path.clone();
@@ -264,8 +264,8 @@ mod tests {
                 model, created_at_ms, updated_at_ms
             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
             rusqlite::params![
-                "019d2a35-18c6-7a91-a1af-ea3f821cd221",
-                r"C:\Users\ADMIN\.codex\sessions\2026\03\26\rollout-2026-03-26T20-53-36-019d2a35-18c6-7a91-a1af-ea3f821cd221.jsonl",
+                "00000000-0000-4000-8000-000000000001",
+                r"C:\Users\Example\.codex\sessions\2026\01\01\rollout-2026-01-01T00-00-00-00000000-0000-4000-8000-000000000001.jsonl",
                 0i64,
                 0i64,
                 "source",
@@ -276,8 +276,8 @@ mod tests {
                 "approval",
                 1i64,
                 Some("gpt-5.4"),
-                1711464816000i64,
-                1711468416000i64,
+                1767225600000i64,
+                1767225600000i64,
             ],
         )
         .unwrap();
@@ -288,9 +288,9 @@ mod tests {
 
         assert_eq!(metadata.len(), 1);
         let meta = metadata
-            .get("rollout-2026-03-26T20-53-36-019d2a35-18c6-7a91-a1af-ea3f821cd221.jsonl")
+            .get("rollout-2026-01-01T00-00-00-00000000-0000-4000-8000-000000000001.jsonl")
             .expect("key should be normalized rollout filename");
-        assert_eq!(meta.thread_id, "019d2a35-18c6-7a91-a1af-ea3f821cd221");
+        assert_eq!(meta.thread_id, "00000000-0000-4000-8000-000000000001");
         assert_eq!(meta.title.as_deref(), Some("Demo thread"));
         assert_eq!(meta.cwd.as_deref(), Some("h:\\project\\demo"));
         assert_eq!(meta.model.as_deref(), Some("gpt-5.4"));

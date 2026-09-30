@@ -25,9 +25,12 @@ struct PersonalWeChatSettingsView: View {
         Label(statusLabel, systemImage: connected ? "checkmark.circle.fill" : "qrcode")
             .foregroundStyle(connected ? Color.green : Color.secondary)
         if enabled && connected && !hasContext {
-            Text(language.text("在微信里给刚绑定的机器人发一句话，随后即可测试推送。",
-                "Send a message in WeChat to the bot you just paired, then test a notification."))
-                .font(.callout).fixedSize(horizontal: false, vertical: true)
+            Text(
+                language.text(
+                    "在微信里给刚绑定的机器人发一句话，随后即可测试推送。",
+                    "Send a message in WeChat to the bot you just paired, then test a notification.")
+            )
+            .font(.callout).fixedSize(horizontal: false, vertical: true)
         }
         HStack(spacing: 12) {
             Button(language.text(connected ? "重新扫码" : "扫码连接微信", connected ? "Scan again" : "Connect with QR"), action: onConnect)
@@ -45,7 +48,9 @@ struct PersonalWeChatSettingsView: View {
                         .frame(width: 210, height: 210).padding(12).background(.white)
                         .clipShape(RoundedRectangle(cornerRadius: 12))
                         .accessibilityLabel(language.text("微信连接二维码", "WeChat connection QR"))
-                } else { ProgressView().controlSize(.small) }
+                } else {
+                    ProgressView().controlSize(.small)
+                }
                 Text(language.text("用手机微信扫一扫，并在手机上确认。", "Scan with WeChat on your phone and confirm."))
                     .font(.callout).fixedSize(horizontal: false, vertical: true)
             }.frame(maxWidth: .infinity).padding(.vertical, 10)
@@ -60,9 +65,12 @@ struct PersonalWeChatSettingsView: View {
                 }.disabled(disabled || pairingCode.range(of: "^[0-9]{4,10}$", options: .regularExpression) == nil)
             }
         }
-        Text(language.text("通知只发给扫码绑定的微信。成功表示微信接口已接受消息，请在手机上核对收到的内容。",
-            "Notifications go only to the WeChat user who scanned. Success means the API accepted the message; check receipt on your phone."))
-            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        Text(
+            language.text(
+                "通知只发给扫码绑定的微信。成功表示微信接口已接受消息，请在手机上核对收到的内容。",
+                "Notifications go only to the WeChat user who scanned. Success means the API accepted the message; check receipt on your phone.")
+        )
+        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
     }
 
     private var statusLabel: String {
@@ -73,11 +81,13 @@ struct PersonalWeChatSettingsView: View {
 
     static func qrImage(_ content: String) -> NSImage? {
         guard !content.isEmpty, content.utf8.count <= 4096,
-            let filter = CIFilter(name: "CIQRCodeGenerator") else { return nil }
+            let filter = CIFilter(name: "CIQRCodeGenerator")
+        else { return nil }
         filter.setValue(Data(content.utf8), forKey: "inputMessage")
         filter.setValue("M", forKey: "inputCorrectionLevel")
         guard let output = filter.outputImage,
-            let image = CIContext().createCGImage(output, from: output.extent) else { return nil }
+            let image = CIContext().createCGImage(output, from: output.extent)
+        else { return nil }
         return NSImage(cgImage: image, size: NSSize(width: output.extent.width, height: output.extent.height))
     }
 }

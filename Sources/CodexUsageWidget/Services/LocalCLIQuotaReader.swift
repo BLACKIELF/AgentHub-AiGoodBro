@@ -194,9 +194,11 @@ struct LocalCLIQuotaReader {
                     allowMissing: allowMissing)
             }
         self.claudeKeychainReader = claudeKeychainReader ?? Self.readDefaultClaudeKeychain
-        self.claudeRelayReader = claudeRelayReader
+        self.claudeRelayReader =
+            claudeRelayReader
             ?? (transport == nil && fileReader == nil && claudeKeychainReader == nil ? { try CCSwitchClaudeRelay.currentCredential() } : nil)
-        self.credentialRefresher = credentialRefresher
+        self.credentialRefresher =
+            credentialRefresher
             ?? (transport == nil && fileReader == nil ? { profile in await LocalCLIQuotaRefresh.shared.refresh(profile) } : nil)
     }
 

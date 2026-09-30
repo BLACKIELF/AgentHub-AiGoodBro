@@ -232,7 +232,10 @@ struct DispatchActivityStore {
     }
 
     /// A proxy lease is bound to one run/request/profile, never a renewable account credential.
-    func reserveProxy(account: String, alias: String, runID: String, requestID: String, profileID: String, childPID: pid_t, admissionDeadline: TimeInterval? = nil, enforceFreshness: Bool = false, now: Date = Date()) throws -> String {
+    func reserveProxy(
+        account: String, alias: String, runID: String, requestID: String, profileID: String, childPID: pid_t, admissionDeadline: TimeInterval? = nil,
+        enforceFreshness: Bool = false, now: Date = Date()
+    ) throws -> String {
         guard UUID(uuidString: runID) != nil, UUID(uuidString: requestID) != nil, childPID > 1 else { throw Failure.invalidState }
         let id = UUID().uuidString.lowercased()
         let accountKey = Self.hash(account)
@@ -244,13 +247,16 @@ struct DispatchActivityStore {
             guard admissionDeadline == nil || ProcessInfo.processInfo.systemUptime < admissionDeadline! else { throw Failure.deadline }
             let requestTime = try Self.checkRequestTime(requestID, runID: runID, highwater: &highwater, now: now, enforced: enforceFreshness)
             let profileKey = Self.hash(profileID)
-            guard !keys.contains(where: {
-                $0["runID"] as? String == runID && $0["requestID"] as? String == requestID
-                    && $0["profileKey"] as? String == profileKey
-            }), !records.contains(where: {
-                $0["route"] as? String == "proxy" && $0["proxyRunID"] as? String == runID
-                    && $0["proxyRequestID"] as? String == requestID && $0["proxyProfileKey"] as? String == profileKey
-            }) else { throw Failure.busy }
+            guard
+                !keys.contains(where: {
+                    $0["runID"] as? String == runID && $0["requestID"] as? String == requestID
+                        && $0["profileKey"] as? String == profileKey
+                }),
+                !records.contains(where: {
+                    $0["route"] as? String == "proxy" && $0["proxyRunID"] as? String == runID
+                        && $0["proxyRequestID"] as? String == requestID && $0["proxyProfileKey"] as? String == profileKey
+                })
+            else { throw Failure.busy }
             guard
                 !records.contains(where: {
                     Self.activeStates.contains($0["state"] as? String ?? "") && ($0["accountKey"] as? String == accountKey || $0["aliasKey"] as? String == aliasKey)
@@ -264,8 +270,10 @@ struct DispatchActivityStore {
                 "createdAt": now.timeIntervalSince1970, "updatedAt": now.timeIntervalSince1970,
                 "heartbeatDueAt": now.timeIntervalSince1970 + 60,
             ])
-            var marker: [String: Any] = ["runID": runID, "requestID": requestID, "profileKey": profileKey,
-                "ownerPID": Int(getpid()), "wasReserved": true, "abandoned": false]
+            var marker: [String: Any] = [
+                "runID": runID, "requestID": requestID, "profileKey": profileKey,
+                "ownerPID": Int(getpid()), "wasReserved": true, "abandoned": false,
+            ]
             if let requestTime { marker["requestTime"] = requestTime }
             keys.append(marker)
             Self.pruneProxyKeys(&keys, highwater: highwater)
@@ -273,7 +281,10 @@ struct DispatchActivityStore {
         return id
     }
 
-    enum ProxyResolution: String { case abandoned, notReserved = "not_reserved" }
+    enum ProxyResolution: String {
+        case abandoned
+        case notReserved = "not_reserved"
+    }
 
     func isProxyAcquireAbandoned(runID: String, requestID: String, profileID: String) throws -> Bool {
         let profileKey = Self.hash(profileID)
@@ -288,10 +299,12 @@ struct DispatchActivityStore {
     func isProxyLeaseActive(_ id: String, runID: String, requestID: String, profileID: String, childPID: pid_t) throws -> Bool {
         let snapshot = try read()
         let profileKey = Self.hash(profileID)
-        guard snapshot.proxyAcquireKeys?.contains(where: {
-            $0.runID == runID && $0.requestID == requestID && $0.profileKey == profileKey
-                && $0.ownerPID == Int(getpid()) && $0.wasReserved && !$0.abandoned
-        }) == true else { return false }
+        guard
+            snapshot.proxyAcquireKeys?.contains(where: {
+                $0.runID == runID && $0.requestID == requestID && $0.profileKey == profileKey
+                    && $0.ownerPID == Int(getpid()) && $0.wasReserved && !$0.abandoned
+            }) == true
+        else { return false }
         return snapshot.leases.contains {
             $0.leaseId == id && $0.ownerThreadId == "next-\(getpid())"
                 && $0.taskId == "proxy-\(runID)-\(requestID)" && $0.route == "proxy"
@@ -343,8 +356,10 @@ struct DispatchActivityStore {
                 keys[keyIndex]["abandoned"] = true
                 resolution = (keys[keyIndex]["wasReserved"] as? Bool == true) ? .abandoned : .notReserved
             } else {
-                var marker: [String: Any] = ["runID": runID, "requestID": requestID, "profileKey": profileKey,
-                    "ownerPID": Int(getpid()), "wasReserved": resolution == .abandoned, "abandoned": true]
+                var marker: [String: Any] = [
+                    "runID": runID, "requestID": requestID, "profileKey": profileKey,
+                    "ownerPID": Int(getpid()), "wasReserved": resolution == .abandoned, "abandoned": true,
+                ]
                 if let requestTime { marker["requestTime"] = requestTime }
                 keys.append(marker)
             }

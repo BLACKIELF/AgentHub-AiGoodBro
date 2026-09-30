@@ -89,10 +89,12 @@ struct TokenMonitorEdgeDockSettingsView: View {
                 }
                 .accessibilityIdentifier("edge-dock-display")
                 if unavailableScreenID != nil {
-                    Text(language.text(
-                        "目标屏幕未连接，侧边栏暂时隐藏；重新连接后会恢复，选择不会丢失。",
-                        "The selected screen is disconnected. The dock is hidden until it returns; your choice is kept."
-                    ))
+                    Text(
+                        language.text(
+                            "目标屏幕未连接，侧边栏暂时隐藏；重新连接后会恢复，选择不会丢失。",
+                            "The selected screen is disconnected. The dock is hidden until it returns; your choice is kept."
+                        )
+                    )
                     .font(.system(size: 10)).foregroundStyle(.secondary)
                 }
             }
@@ -156,15 +158,17 @@ struct TokenMonitorEdgeDockSettingsView: View {
     }
 
     private func pinnedAccountBinding(_ account: TokenMonitorFloatingBubbleAccount) -> Binding<Bool> {
-        Binding(get: { isPinned(account) }, set: { selected in
-            let item = TokenMonitorEdgeDockItem.account(account.providerID, account.accountID)
-            update { prefs in
-                var items = prefs.items ?? defaultItems
-                items.removeAll { $0.id == item.id }
-                if selected { items.append(item) }
-                prefs.items = items
-            }
-        })
+        Binding(
+            get: { isPinned(account) },
+            set: { selected in
+                let item = TokenMonitorEdgeDockItem.account(account.providerID, account.accountID)
+                update { prefs in
+                    var items = prefs.items ?? defaultItems
+                    items.removeAll { $0.id == item.id }
+                    if selected { items.append(item) }
+                    prefs.items = items
+                }
+            })
     }
 
     private var itemComposer: some View {
@@ -181,7 +185,8 @@ struct TokenMonitorEdgeDockSettingsView: View {
             if preferences.items == nil {
                 Text(
                     language.text(
-                        "自动显示反代入口、今日用量、最多三个额度平台和采样速率。自定义后可移除或调整顺序。", "Automatically show proxy settings, today's usage, up to three limit providers, and sampled rate. Customize to remove or reorder items."
+                        "自动显示反代入口、今日用量、最多三个额度平台和采样速率。自定义后可移除或调整顺序。",
+                        "Automatically show proxy settings, today's usage, up to three limit providers, and sampled rate. Customize to remove or reorder items."
                     )
                 )
                 .font(.system(size: 10)).foregroundStyle(.secondary)

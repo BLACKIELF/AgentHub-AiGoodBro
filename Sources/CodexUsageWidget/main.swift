@@ -25,7 +25,8 @@ struct CodexAccountManagerNextMain {
         }
 
         if let index = CommandLine.arguments.firstIndex(of: "--render-workbench-previews"),
-            CommandLine.arguments.indices.contains(index + 1) {
+            CommandLine.arguments.indices.contains(index + 1)
+        {
             _ = NSApplication.shared
             exit(TaskWorkbenchPreviewRenderer.render(to: URL(fileURLWithPath: CommandLine.arguments[index + 1], isDirectory: true)) ? 0 : 1)
         }

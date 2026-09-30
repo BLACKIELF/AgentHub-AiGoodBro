@@ -17,8 +17,10 @@ enum CCSwitchClaudeRelay {
         guard FileManager.default.fileExists(atPath: database.path) else { return nil }
         let data = try BoundedLocalProcess.run(
             executable: URL(fileURLWithPath: "/usr/bin/sqlite3"),
-            arguments: ["-readonly", "-json", database.path,
-                "PRAGMA query_only=ON; SELECT settings_config, meta FROM providers WHERE app_type='claude' AND is_current=1 LIMIT 2;"],
+            arguments: [
+                "-readonly", "-json", database.path,
+                "PRAGMA query_only=ON; SELECT settings_config, meta FROM providers WHERE app_type='claude' AND is_current=1 LIMIT 2;",
+            ],
             timeout: 3)
         guard !data.isEmpty else { return nil }
         guard let rows = try JSONSerialization.jsonObject(with: data) as? [[String: Any]], rows.count <= 1 else {
@@ -56,9 +58,13 @@ enum CCSwitchClaudeRelay {
         let quota = object["quota"] as? [String: Any]
         let raw = object["remaining"] ?? quota?["remaining"] ?? object["balance"]
         let value: Double?
-        if let string = raw as? String { value = Double(string) }
-        else if let number = raw as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() { value = number.doubleValue }
-        else { value = nil }
+        if let string = raw as? String {
+            value = Double(string)
+        } else if let number = raw as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() {
+            value = number.doubleValue
+        } else {
+            value = nil
+        }
         let unit = object["unit"] as? String ?? quota?["unit"] as? String ?? "USD"
         guard let value, value.isFinite, value >= 0, unit.uppercased() == "USD" else { throw Failure.invalidResponse }
         return (value, "USD")
@@ -76,11 +82,20 @@ enum CCSwitchClaudeRelay {
                 try balance(Data("{\"remaining\":46.72,\"unit\":\"USD\"}".utf8)).0 == 46.72,
                 try balance(Data("{\"quota\":{\"remaining\":\"0\"}}".utf8)).0 == 0
             else { return false }
-            for invalid in [row("http://claude.moylor.com"), row("https://claude.moylor.com?key=value"), row("https://claude.moylor.com", token: "bad\nheader"), row("https://claude.moylor.com", enabled: false)] {
-                do { _ = try self.credential(invalid); return false } catch {}
+            for invalid in [
+                row("http://claude.moylor.com"), row("https://claude.moylor.com?key=value"), row("https://claude.moylor.com", token: "bad\nheader"),
+                row("https://claude.moylor.com", enabled: false),
+            ] {
+                do {
+                    _ = try self.credential(invalid)
+                    return false
+                } catch {}
             }
             for invalid in ["{}", "{\"remaining\":true}", "{\"remaining\":-1}", "{\"remaining\":1,\"is_active\":false}", "{\"remaining\":1,\"unit\":\"tokens\"}"] {
-                do { _ = try balance(Data(invalid.utf8)); return false } catch {}
+                do {
+                    _ = try balance(Data(invalid.utf8))
+                    return false
+                } catch {}
             }
             return true
         } catch { return false }

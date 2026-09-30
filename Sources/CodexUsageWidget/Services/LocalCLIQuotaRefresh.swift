@@ -85,9 +85,13 @@ actor LocalCLIQuotaRefresh {
 
     private static func duration(_ value: Any?) -> Double? {
         let number: Double?
-        if let n = value as? NSNumber, CFGetTypeID(n) != CFBooleanGetTypeID() { number = n.doubleValue }
-        else if let text = value as? String { number = Double(text) }
-        else { number = nil }
+        if let n = value as? NSNumber, CFGetTypeID(n) != CFBooleanGetTypeID() {
+            number = n.doubleValue
+        } else if let text = value as? String {
+            number = Double(text)
+        } else {
+            number = nil
+        }
         guard let number, number.isFinite, number > 0 else { return nil }
         return number
     }
@@ -111,7 +115,10 @@ actor LocalCLIQuotaRefresh {
         heartbeat.schedule(deadline: .now() + 1, repeating: 1)
         heartbeat.setEventHandler { _ = utimes(lock.path, nil) }
         heartbeat.resume()
-        defer { heartbeat.cancel(); _ = rmdir(lock.path) }
+        defer {
+            heartbeat.cancel()
+            _ = rmdir(lock.path)
+        }
         guard try read(file) == original else { throw Failure.changed }
         let request = try kimiRefreshRequest(refreshToken: token, deviceID: device)
         let response = try await LocalCLIURLSessionTransport().response(for: request)
@@ -125,7 +132,10 @@ actor LocalCLIQuotaRefresh {
         let temporary = file.deletingLastPathComponent().appendingPathComponent(".aigoodbro-refresh-" + UUID().uuidString)
         let descriptor = open(temporary.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o600)
         guard descriptor >= 0 else { throw Failure.invalid }
-        defer { close(descriptor); try? FileManager.default.removeItem(at: temporary) }
+        defer {
+            close(descriptor)
+            try? FileManager.default.removeItem(at: temporary)
+        }
         try updated.withUnsafeBytes { bytes in
             var offset = 0
             while offset < bytes.count {
@@ -136,7 +146,8 @@ actor LocalCLIQuotaRefresh {
             }
         }
         guard fsync(descriptor) == 0, try read(file) == expected,
-            rename(temporary.path, file.path) == 0 else { throw Failure.changed }
+            rename(temporary.path, file.path) == 0
+        else { throw Failure.changed }
     }
 
     static func grokRefreshRequest(_ entry: [String: Any], sessionKey: String) throws -> URLRequest {
@@ -194,7 +205,8 @@ actor LocalCLIQuotaRefresh {
         defer { close(descriptor) }
         var metadata = stat()
         guard fstat(descriptor, &metadata) == 0, metadata.st_mode & S_IFMT == S_IFREG,
-            metadata.st_uid == getuid(), metadata.st_nlink == 1 else { throw Failure.invalid }
+            metadata.st_uid == getuid(), metadata.st_nlink == 1
+        else { throw Failure.invalid }
         guard flock(descriptor, LOCK_EX | LOCK_NB) == 0 else { throw Failure.busy }
         defer { _ = flock(descriptor, LOCK_UN) }
         func sameLock() -> Bool {
@@ -214,7 +226,10 @@ actor LocalCLIQuotaRefresh {
         heartbeat.schedule(deadline: .now() + 5, repeating: 5)
         heartbeat.setEventHandler(handler: stamp)
         heartbeat.resume()
-        defer { heartbeat.cancel(); queue.sync {} }
+        defer {
+            heartbeat.cancel()
+            queue.sync {}
+        }
         // Another process may already have renewed or switched the selection.
         // Let the caller reread rather than spending the old refresh token.
         guard try read(file) == before else { return }

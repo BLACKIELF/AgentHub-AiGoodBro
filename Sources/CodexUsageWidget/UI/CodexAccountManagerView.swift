@@ -368,22 +368,25 @@ private struct UpstreamHomeStatistics: View {
                         case .decrement: step = -40
                         @unknown default: return
                         }
-                        preferences.height = min(HomeDashboardPreferences.maximumHeight,
+                        preferences.height = min(
+                            HomeDashboardPreferences.maximumHeight,
                             max(HomeDashboardPreferences.minimumHeight, preferences.height + step))
                     }
                     // The handle moves with the panel; measure the pointer in a
                     // stable coordinate space so layout cannot feed back into the drag.
-                    .gesture(DragGesture(minimumDistance: 2, coordinateSpace: .global)
-                        .onChanged { value in
-                            if dragStartHeight == nil { dragStartHeight = CGFloat(preferences.height) }
-                            draggingHeight = min(CGFloat(HomeDashboardPreferences.maximumHeight),
-                                max(CGFloat(HomeDashboardPreferences.minimumHeight), ((dragStartHeight ?? dashboardHeight) + value.translation.height).rounded()))
-                        }
-                        .onEnded { _ in
-                            if let draggingHeight { preferences.height = Int(draggingHeight.rounded()) }
-                            dragStartHeight = nil
-                            draggingHeight = nil
-                        })
+                    .gesture(
+                        DragGesture(minimumDistance: 2, coordinateSpace: .global)
+                            .onChanged { value in
+                                if dragStartHeight == nil { dragStartHeight = CGFloat(preferences.height) }
+                                draggingHeight = min(
+                                    CGFloat(HomeDashboardPreferences.maximumHeight),
+                                    max(CGFloat(HomeDashboardPreferences.minimumHeight), ((dragStartHeight ?? dashboardHeight) + value.translation.height).rounded()))
+                            }
+                            .onEnded { _ in
+                                if let draggingHeight { preferences.height = Int(draggingHeight.rounded()) }
+                                dragStartHeight = nil
+                                draggingHeight = nil
+                            })
                 }
                 .transaction { $0.animation = nil }
             }
@@ -1463,7 +1466,8 @@ struct CodexAccountManagerView: View {
             permanentlyInvalid: result?.state == .needsLogin || result?.messageCode == "local_cli_invalid_credentials",
             refreshFailed: localCLIAccounts.stale.contains(profile.id)
                 || (result != nil && result?.state != .available
-                    && !["local_cli_zcode_no_coding_plan", "local_cli_zcode_no_quota"].contains(result?.messageCode ?? "")))
+                    && !["local_cli_zcode_no_coding_plan", "local_cli_zcode_no_quota"].contains(result?.messageCode ?? ""))
+        )
     }
 
     private var reloginCount: Int {
@@ -1534,8 +1538,10 @@ struct CodexAccountManagerView: View {
             draggingLocalCLIKey = key
             return NSItemProvider(object: key as NSString)
         }
-        .onDrop(of: [.text], delegate: LocalCLIHomeDropDelegate(
-            targetKey: localCLIHomeKey(profile), order: localCLIHomeOrderBinding(), draggingKey: $draggingLocalCLIKey))
+        .onDrop(
+            of: [.text],
+            delegate: LocalCLIHomeDropDelegate(
+                targetKey: localCLIHomeKey(profile), order: localCLIHomeOrderBinding(), draggingKey: $draggingLocalCLIKey))
     }
 
     private var emptyHomeAccounts: some View {
@@ -1558,25 +1564,25 @@ struct CodexAccountManagerView: View {
         VStack(alignment: .leading, spacing: 6) {
             AccountToolbar {
                 HStack(spacing: 8) {
-                HomeSectionToggle(
-                    title: language.text("Codex 账号", "Codex accounts"), systemImage: "person.2",
-                    fillsWidth: false, language: language, isExpanded: $homeAccountsExpanded
-                )
-                .font(.headline)
-                Text("\(presentedProfiles.count)").font(.caption).foregroundStyle(.secondary)
+                    HomeSectionToggle(
+                        title: language.text("Codex 账号", "Codex accounts"), systemImage: "person.2",
+                        fillsWidth: false, language: language, isExpanded: $homeAccountsExpanded
+                    )
+                    .font(.headline)
+                    Text("\(presentedProfiles.count)").font(.caption).foregroundStyle(.secondary)
                 }
             } actions: {
                 HStack(spacing: 8) {
-                accountOrderButton
-                reloginAccountsMenu
-                accountLayoutPicker
-                Button {
-                    openPrimaryGuide()
-                } label: {
-                    Label(language.text("添加账号", "Add account"), systemImage: "plus")
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
+                    accountOrderButton
+                    reloginAccountsMenu
+                    accountLayoutPicker
+                    Button {
+                        openPrimaryGuide()
+                    } label: {
+                        Label(language.text("添加账号", "Add account"), systemImage: "plus")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
                 }
             }
             if homeAccountsExpanded {
@@ -1984,7 +1990,8 @@ struct CodexAccountManagerView: View {
         }
         if let balance = LocalCLIAccountPresentation.balanceText(kind: kind, result: result, language: language) {
             let reset = result.periodResetsAt.map { language.text("重置 ", "Resets ") + language.dateTime($0) }
-            let title = result.sourceLabel == "CC Switch · moylor" ? language.text("中转余额", "Relay balance") : LocalCLIAccountPresentation.balanceTitle(kind: kind, language: language)
+            let title =
+                result.sourceLabel == "CC Switch · moylor" ? language.text("中转余额", "Relay balance") : LocalCLIAccountPresentation.balanceTitle(kind: kind, language: language)
             let detail = result.sourceLabel == "CC Switch · moylor" ? language.text("CLI 专用", "CLI only") : ""
             return (title + " " + balance, staleNote ?? reset ?? detail)
         }
@@ -2057,8 +2064,9 @@ struct CodexAccountManagerView: View {
             showsGettingStarted: false,
             onGettingStarted: { openPrimaryGuide() },
             onOpenSettings: {
-                if let onOpenWorkspaceSettings { onOpenWorkspaceSettings() }
-                else if !store.isPreview {
+                if let onOpenWorkspaceSettings {
+                    onOpenWorkspaceSettings()
+                } else if !store.isPreview {
                     _ = NSApp.sendAction(NSSelectorFromString("openSettingsFromMenu"), to: NSApp.delegate, from: nil)
                 }
             },
@@ -2625,60 +2633,62 @@ struct CodexAccountManagerView: View {
         VStack(alignment: .leading, spacing: 8) {
             AccountToolbar {
                 HStack(spacing: 8) {
-                Label(language.text("Codex 账号", "Codex accounts"), systemImage: "person.2")
-                    .font(.headline)
-                Text("\(filteredCodexProfiles.count)")
-                    .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                if accountScope != .all || focusedAccountID != nil {
-                    Button(language.text("显示全部", "Show all")) {
-                        accountScope = .all
-                        focusedAccountID = nil
-                    }.buttonStyle(.borderless).controlSize(.small)
-                }
+                    Label(language.text("Codex 账号", "Codex accounts"), systemImage: "person.2")
+                        .font(.headline)
+                    Text("\(filteredCodexProfiles.count)")
+                        .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                    if accountScope != .all || focusedAccountID != nil {
+                        Button(language.text("显示全部", "Show all")) {
+                            accountScope = .all
+                            focusedAccountID = nil
+                        }.buttonStyle(.borderless).controlSize(.small)
+                    }
                 }
             } actions: {
                 HStack(spacing: 8) {
-                Button(action: { store.refreshQuotas() }) {
-                    Image(systemName: "arrow.clockwise").frame(width: 24, height: 24).contentShape(Rectangle())
-                }
-                .buttonStyle(.borderless).disabled(store.isRefreshing)
-                .help(language.text("刷新额度", "Refresh limits"))
-                .accessibilityLabel(language.text("刷新额度", "Refresh limits"))
-                accountOrderButton
-                accountLayoutPicker
-                if isEditingProfiles {
-                    Button(language.text("完成", "Done")) {
-                        isEditingProfiles = false
-                        directReorder.cancel()
-                    }.buttonStyle(.bordered)
-                }
-                Button { _ = store.addProfile() } label: {
-                    Label(
-                        store.deviceLogin != nil || store.isLoggingIn
-                            ? language.text("登录中…", "Signing in…") : language.text("添加账号", "Add account"),
-                        systemImage: "plus")
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(store.canBeginAddingProfile() != nil)
-                .help(store.canBeginAddingProfile()?.message(language) ?? language.text("添加独立 Codex 账号", "Add an isolated Codex account"))
-                .accessibilityLabel(language.text("添加账号", "Add account"))
-                Menu {
-                    Picker(language.text("账号筛选", "Account filter"), selection: $accountScope) {
-                        Text(language.text("可用", "Available")).tag(HomeAccountScope.available)
-                        Text(language.text("需要处理", "Needs attention")).tag(HomeAccountScope.attention)
-                        Text(language.text("全部已保存", "All saved")).tag(HomeAccountScope.all)
+                    Button(action: { store.refreshQuotas() }) {
+                        Image(systemName: "arrow.clockwise").frame(width: 24, height: 24).contentShape(Rectangle())
                     }
-                    if settings.accountWorkspaceLayout == .cards { AccountCardDensityPicker() }
-                    Divider()
-                    Button(language.text("管理账号", "Manage accounts")) {
-                        isEditingProfiles = true
-                        directReorder.cancel()
+                    .buttonStyle(.borderless).disabled(store.isRefreshing)
+                    .help(language.text("刷新额度", "Refresh limits"))
+                    .accessibilityLabel(language.text("刷新额度", "Refresh limits"))
+                    accountOrderButton
+                    accountLayoutPicker
+                    if isEditingProfiles {
+                        Button(language.text("完成", "Done")) {
+                            isEditingProfiles = false
+                            directReorder.cancel()
+                        }.buttonStyle(.bordered)
                     }
-                } label: {
-                    Image(systemName: "ellipsis").frame(width: 24, height: 24).contentShape(Rectangle())
-                }
-                .menuStyle(.borderlessButton).menuIndicator(.hidden)
-                .accessibilityLabel(language.text("账号显示与管理", "Account display and management"))
+                    Button {
+                        _ = store.addProfile()
+                    } label: {
+                        Label(
+                            store.deviceLogin != nil || store.isLoggingIn
+                                ? language.text("登录中…", "Signing in…") : language.text("添加账号", "Add account"),
+                            systemImage: "plus")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(store.canBeginAddingProfile() != nil)
+                    .help(store.canBeginAddingProfile()?.message(language) ?? language.text("添加独立 Codex 账号", "Add an isolated Codex account"))
+                    .accessibilityLabel(language.text("添加账号", "Add account"))
+                    Menu {
+                        Picker(language.text("账号筛选", "Account filter"), selection: $accountScope) {
+                            Text(language.text("可用", "Available")).tag(HomeAccountScope.available)
+                            Text(language.text("需要处理", "Needs attention")).tag(HomeAccountScope.attention)
+                            Text(language.text("全部已保存", "All saved")).tag(HomeAccountScope.all)
+                        }
+                        if settings.accountWorkspaceLayout == .cards { AccountCardDensityPicker() }
+                        Divider()
+                        Button(language.text("管理账号", "Manage accounts")) {
+                            isEditingProfiles = true
+                            directReorder.cancel()
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis").frame(width: 24, height: 24).contentShape(Rectangle())
+                    }
+                    .menuStyle(.borderlessButton).menuIndicator(.hidden)
+                    .accessibilityLabel(language.text("账号显示与管理", "Account display and management"))
                 }
             }
 
@@ -5274,7 +5284,7 @@ struct CodexAccountMenuView: View {
     private func avatar(for profile: CodexProfile?, size: CGFloat) -> some View {
         StoredCodexAvatar(profile: profile, slot: size <= 28 ? .list : .card)
             .environment(\.accountAvatarSettings, settings)
-        .environment(\.workspaceGlass, settings.workspaceGlass)
+            .environment(\.workspaceGlass, settings.workspaceGlass)
     }
 
     private var planName: String {
@@ -5696,8 +5706,9 @@ private struct ProfileRow: View {
             } else {
                 ViewThatFits(in: .horizontal) {
                     HStack(alignment: .center, spacing: 6) {
-                        identitySummary.frame(minWidth: 210, idealWidth: 240, maxWidth: .infinity, alignment: .leading)
-                        quotaSummary.frame(minWidth: 220, maxWidth: .infinity)
+                        // Fit the compact columns before measuring an untruncated account label.
+                        identitySummary.frame(minWidth: 210, idealWidth: 210, maxWidth: .infinity, alignment: .leading)
+                        quotaSummary.frame(minWidth: 220, idealWidth: 220, maxWidth: .infinity)
                         compactDispatchControls.frame(width: 148)
                     }.frame(minWidth: 600)
                     compactCard
@@ -5706,10 +5717,12 @@ private struct ProfileRow: View {
             if allowsResetCreditAction {
                 HStack {
                     Spacer(minLength: 0)
-                    ResetCreditButton(profile: profile, selectedProfileID: profile.id,
+                    ResetCreditButton(
+                        profile: profile, selectedProfileID: profile.id,
                         hubAccountAlias: hubAccountAlias, onConfirmedResult: onRefresh,
-                        displayNumber: displayNumber)
-                        .controlSize(.small)
+                        displayNumber: displayNumber
+                    )
+                    .controlSize(.small)
                 }
             }
             if isEditing {
@@ -5782,7 +5795,9 @@ private struct ProfileRow: View {
                     .foregroundStyle(.secondary)
                     .accessibilityLabel(language.text("第 \(displayNumber) 位", "Position \(displayNumber)"))
                 profileAvatar
-                Button { isShowingDetails = true } label: {
+                Button {
+                    isShowingDetails = true
+                } label: {
                     Text(AccountDisplay.profileName(profile, allProfiles: allProfiles))
                         .font(.system(size: 12, weight: .semibold)).lineLimit(1)
                         .frame(minHeight: 26, alignment: .leading)
@@ -5838,11 +5853,13 @@ private struct ProfileRow: View {
     @ViewBuilder private var compactAccountFacts: some View {
         Text(planBadge.name).fontWeight(.medium).lineLimit(1)
         if linkedAccountName == nil { CreditBalanceView(presentation: creditBalance, compact: true) }
-        Text(availableResetCredits.map { language.text("重置卡 \($0)", "\($0) reset cards") }
-            ?? language.text("重置卡 —", "Reset cards —"))
-            .monospacedDigit().lineLimit(1)
-            .foregroundStyle(resetCardsExpiring ? FixedVisualPalette.statusDanger : Color.secondary)
-            .help(resetCreditExpiries.first.map { language.text("到期 ", "Expires ") + language.dateTime($0) } ?? "")
+        Text(
+            availableResetCredits.map { language.text("重置卡 \($0)", "\($0) reset cards") }
+                ?? language.text("重置卡 —", "Reset cards —")
+        )
+        .monospacedDigit().lineLimit(1)
+        .foregroundStyle(resetCardsExpiring ? FixedVisualPalette.statusDanger : Color.secondary)
+        .help(resetCreditExpiries.first.map { language.text("到期 ", "Expires ") + language.dateTime($0) } ?? "")
     }
 
     private var compactHeaderActions: some View {
@@ -5880,9 +5897,11 @@ private struct ProfileRow: View {
                 Button(isMonitoring ? language.text("已监控", "Monitoring") : language.text("监控此账号", "Monitor account"), action: onMonitor)
                     .disabled(linkedAccountName != nil || isMonitoring)
                 Divider()
-                Button(linkedAccountName != nil || profile.isSystemProfile
-                    ? language.text("设置独立 CLI", "Set up isolated CLI") : language.text("重新登录", "Sign in again"), action: onRelogin)
-                    .disabled(isLoggingIn || isLaunching || (linkedAccountName == nil && !profile.isSystemProfile && cliTaskStatus.blocksLocalCLI))
+                Button(
+                    linkedAccountName != nil || profile.isSystemProfile
+                        ? language.text("设置独立 CLI", "Set up isolated CLI") : language.text("重新登录", "Sign in again"), action: onRelogin
+                )
+                .disabled(isLoggingIn || isLaunching || (linkedAccountName == nil && !profile.isSystemProfile && cliTaskStatus.blocksLocalCLI))
             } label: {
                 Image(systemName: "ellipsis").frame(width: 26, height: 26)
             }
@@ -6033,11 +6052,13 @@ private struct ProfileRow: View {
 
     private var quotaSummary: some View {
         HStack(alignment: .top, spacing: 10) {
-            CompactQuotaView(title: "5h", remaining: fiveHourRemainingPercent, reset: fiveHourResetsAt,
-                constrainedByWeekly: QuotaAvailabilityPresentation.isWeeklyExhausted(remainingPercent))
+            CompactQuotaView(
+                title: "5h", remaining: fiveHourRemainingPercent, reset: fiveHourResetsAt,
+                constrainedByWeekly: QuotaAvailabilityPresentation.isWeeklyExhausted(remainingPercent)
+            )
             .frame(maxWidth: .infinity, alignment: .leading)
             CompactQuotaView(title: "7d", remaining: remainingPercent, reset: resetsAt, paletteRole: .secondary)
-            .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 

@@ -22,15 +22,17 @@ enum TokenMonitorUISelfTest {
         var dashboardOpens = 0
         // Disabled preferences exercise the actual click routing without
         // creating windows, collecting data or starting the desktop runtime.
-        dock.configure(preferences: .init(), cells: dockCells, language: .en,
+        dock.configure(
+            preferences: .init(), cells: dockCells, language: .en,
             onPreferencesChange: { _ in }, onOpenDashboard: { dashboardOpens += 1 },
             onOpenUsageOverview: { usageOpens += 1 }, onOpenProxy: { proxyOpens += 1 })
         dock.activateCell(at: 0)
         dock.activateCell(at: 1)
         dock.activateCell(at: 2)
         dock.activateCell(at: 99)
-        expect(usageOpens == 1 && proxyOpens == 1 && dashboardOpens == 0,
-               "Codex click opens the existing usage overview; Grok, proxy and invalid indexes keep their own routes")
+        expect(
+            usageOpens == 1 && proxyOpens == 1 && dashboardOpens == 0,
+            "Codex click opens the existing usage overview; Grok, proxy and invalid indexes keep their own routes")
         dock.shutdown()
         expect(TokenMonitorEdgeDockController.navigationSelfTest(), "GPT and both proxy-settings entries dismiss the hover card until pointer re-entry")
         expect(TokenMonitorHostSelfTest.run(), "embedded desktop IPC and account identity boundaries")
@@ -157,8 +159,10 @@ enum TokenMonitorUISelfTest {
     private static func reproduceResetCreditSummary(expect: (Bool, String) -> Void) {
         let now = Date(timeIntervalSince1970: 1_790_000_000)
         func profile(_ id: String, account: String?, count: Int?, age: TimeInterval = 0) -> CodexProfile {
-            CodexProfile(id: id, name: "Fixture", codexHomePath: "", isSystemProfile: false, createdAt: now,
-                lastSnapshot: CodexAccountSnapshot(accountType: "chatgpt", planType: "plus", email: "fixture@example.com",
+            CodexProfile(
+                id: id, name: "Fixture", codexHomePath: "", isSystemProfile: false, createdAt: now,
+                lastSnapshot: CodexAccountSnapshot(
+                    accountType: "chatgpt", planType: "plus", email: "fixture@example.com",
                     accountID: account, limitId: "codex", limitName: nil, fiveHour: nil, sevenDay: nil, monthly: nil,
                     availableResetCredits: count, fetchedAt: now.addingTimeInterval(-age), appServerVersion: nil))
         }
@@ -173,17 +177,22 @@ enum TokenMonitorUISelfTest {
         expect(unknown.availableCards == nil && unknown.hasUnknownAccounts, "newer unknown balances supersede older known balances")
         let partial = ResetCreditLocalSummary(profiles: [first, profile("unverified", account: nil, count: 99)], now: now)
         expect(partial.availableCards == 2 && partial.hasUnknownAccounts, "unverified identity is excluded without presenting a full total")
-        expect(ResetCreditLocalSummary(profiles: [profile("old", account: "a", count: 2, age: 901)], now: now).isStale,
-               "stale balances do not claim current verification")
+        expect(
+            ResetCreditLocalSummary(profiles: [profile("old", account: "a", count: 2, age: 901)], now: now).isStale,
+            "stale balances do not claim current verification")
         let future = ResetCreditLocalSummary(profiles: [profile("future", account: "a", count: 4, age: -60)], now: now)
         expect(future.availableCards == nil, "future observations are not shown as verified")
         let overflow = ResetCreditLocalSummary(profiles: [profile("max", account: "a", count: Int.max), second], now: now)
         expect(overflow.availableCards == nil && overflow.hasUnknownAccounts, "malformed totals fail closed without overflow")
         var received = mirror
-        received.resetCreditHistory = [.init(id: UUID(), previousObservedAt: now.addingTimeInterval(-30), observedAt: now,
-            previousAvailable: 1, available: 3)]
-        expect(ResetCreditLocalSummary(profiles: [received], now: now).latestIncrease?.added == 2,
-               "verified receipt history appears independently of forecasts")
+        received.resetCreditHistory = [
+            .init(
+                id: UUID(), previousObservedAt: now.addingTimeInterval(-30), observedAt: now,
+                previousAvailable: 1, available: 3)
+        ]
+        expect(
+            ResetCreditLocalSummary(profiles: [received], now: now).latestIncrease?.added == 2,
+            "verified receipt history appears independently of forecasts")
     }
 
     private static func reproducePublicResetHistory(expect: (Bool, String) -> Void) {

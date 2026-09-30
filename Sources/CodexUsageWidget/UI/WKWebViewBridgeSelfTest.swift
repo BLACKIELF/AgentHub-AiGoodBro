@@ -140,14 +140,18 @@ enum WKWebViewBridgeSelfTest {
             let renderer: UpstreamTrendView.Renderer
             init(_ renderer: UpstreamTrendView.Renderer) { self.renderer = renderer }
             func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-                renderer.didFinishLoading(webView, navigation: navigation)
+                Task { @MainActor in
+                    renderer.didFinishLoading(webView, navigation: navigation)
+                }
             }
             func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
-                guard let web = message.webView else { return }
-                if message.name == "chartPreferences" {
-                    renderer.receiveHomePreferences(body: message.body, from: web, isMainFrame: message.frameInfo.isMainFrame, url: message.frameInfo.request.url)
-                } else {
-                    renderer.receiveContentSize(body: message.body, from: web, isMainFrame: message.frameInfo.isMainFrame, url: message.frameInfo.request.url)
+                Task { @MainActor in
+                    guard let web = message.webView else { return }
+                    if message.name == "chartPreferences" {
+                        renderer.receiveHomePreferences(body: message.body, from: web, isMainFrame: message.frameInfo.isMainFrame, url: message.frameInfo.request.url)
+                    } else {
+                        renderer.receiveContentSize(body: message.body, from: web, isMainFrame: message.frameInfo.isMainFrame, url: message.frameInfo.request.url)
+                    }
                 }
             }
         }
@@ -157,7 +161,8 @@ enum WKWebViewBridgeSelfTest {
         // production callback with a timer; DOM measurement and native guards
         // remain real, without bringing a test window over the user's work.
         configuration.userContentController.addUserScript(
-            WKUserScript(source: "window.requestAnimationFrame = callback => setTimeout(() => callback(performance.now()), 0);", injectionTime: .atDocumentStart, forMainFrameOnly: true))
+            WKUserScript(
+                source: "window.requestAnimationFrame = callback => setTimeout(() => callback(performance.now()), 0);", injectionTime: .atDocumentStart, forMainFrameOnly: true))
         for name in ["chartPreferences", "chartSize"] { configuration.userContentController.add(delegate, name: name) }
         defer {
             for name in ["chartPreferences", "chartSize"] { configuration.userContentController.removeScriptMessageHandler(forName: name) }
@@ -167,7 +172,10 @@ enum WKWebViewBridgeSelfTest {
         window.isReleasedWhenClosed = false
         window.contentView = web
         window.orderBack(nil)
-        defer { window.orderOut(nil); window.contentView = nil }
+        defer {
+            window.orderOut(nil)
+            window.contentView = nil
+        }
         web.navigationDelegate = delegate
         let fixture = """
             {"schemaVersion":1,"collectedAt":"2026-09-28T10:00:00Z","timezone":"Asia/Shanghai","coverage":{"cost":"known"},
@@ -206,27 +214,35 @@ enum WKWebViewBridgeSelfTest {
             wait(on: done, seconds: 5)
             return result
         }
-        guard let initial = evaluate("""
-            (() => {
-              const columns = getComputedStyle(document.getElementById('homeDashboard')).gridTemplateColumns.split(' ').length;
-              const start = document.getElementById('heatmapStart'); const initial = start.value;
-              start.value = '2026-08-01'; start.dispatchEvent(new Event('change'));
-              const splitter = document.getElementById('dashSplitter');
-              return {columns, initial, snapshot:window.AiGoodBroDashboard.snapshotID,
-                splitter:!!splitter, splitRatio:window.AiGoodBroDashboard.preferences.splitRatio,
-                both:!document.getElementById('trendsPane').classList.contains('hidden') && !document.getElementById('activityPane').classList.contains('hidden')};
-            })()
-            """), initial["columns"] as? Int == 3, initial["initial"] as? String == "2026-06-01",
+        guard
+            let initial = evaluate(
+                """
+                (() => {
+                  const columns = getComputedStyle(document.getElementById('homeDashboard')).gridTemplateColumns.split(' ').length;
+                  const start = document.getElementById('heatmapStart'); const initial = start.value;
+                  start.value = '2026-08-01'; start.dispatchEvent(new Event('change'));
+                  const splitter = document.getElementById('dashSplitter');
+                  return {columns, initial, snapshot:window.AiGoodBroDashboard.snapshotID,
+                    splitter:!!splitter, splitRatio:window.AiGoodBroDashboard.preferences.splitRatio,
+                    both:!document.getElementById('trendsPane').classList.contains('hidden') && !document.getElementById('activityPane').classList.contains('hidden')};
+                })()
+                """), initial["columns"] as? Int == 3, initial["initial"] as? String == "2026-06-01",
             initial["splitter"] as? Bool == true, (initial["splitRatio"] as? Double ?? -1) == HomeDashboardPreferences.defaultSplitRatio,
             initial["both"] as? Bool == true
-        else { print("Home dashboard native bridge failed: split layout/date"); return false }
+        else {
+            print("Home dashboard native bridge failed: split layout/date")
+            return false
+        }
         let callbackDeadline = Date().addingTimeInterval(3)
-        while (received.isEmpty || renderer.contentHeight <= 220), Date() < callbackDeadline { RunLoop.current.run(until: Date().addingTimeInterval(0.01)) }
+        while received.isEmpty || renderer.contentHeight <= 220, Date() < callbackDeadline { RunLoop.current.run(until: Date().addingTimeInterval(0.01)) }
         guard received.count == 1, received[0].heatmapStart == "2026-08-01", renderer.contentHeight > 220 else {
             print("Home dashboard native bridge failed: preference callbacks=\(received.count), height=\(renderer.contentHeight)")
             return false
         }
-        let keyboardSplit = (evaluateValue("(() => { const s = document.getElementById('dashSplitter'); s.focus(); s.dispatchEvent(new KeyboardEvent('keydown', {key:'ArrowRight', bubbles:true})); return window.AiGoodBroDashboard.preferences.splitRatio; })()") as? Double) ?? 0
+        let keyboardSplit =
+            (evaluateValue(
+                "(() => { const s = document.getElementById('dashSplitter'); s.focus(); s.dispatchEvent(new KeyboardEvent('keydown', {key:'ArrowRight', bubbles:true})); return window.AiGoodBroDashboard.preferences.splitRatio; })()"
+            ) as? Double) ?? 0
         guard keyboardSplit > HomeDashboardPreferences.defaultSplitRatio else {
             print("Home dashboard native bridge failed: splitter keyboard adjustment")
             return false
@@ -247,11 +263,14 @@ enum WKWebViewBridgeSelfTest {
         renderer.receiveHomePreferences(body: ["snapshotID": "stale", "preferences": object], from: web, isMainFrame: true, url: web.url)
         renderer.receiveHomePreferences(body: ["snapshotID": snapshot, "preferences": ["mode": "invalid"]], from: web, isMainFrame: true, url: web.url)
         guard received.count == 2 else { return false }
-        guard evaluate("""
-            (() => { window.nativeRenders = 0; const render = window.__renderTrend;
-              window.__renderTrend = (...args) => { window.nativeRenders++; return render(...args); };
-              return {count:window.nativeRenders}; })()
-            """)?["count"] as? Int == 0 else { return false }
+        guard
+            evaluate(
+                """
+                (() => { window.nativeRenders = 0; const render = window.__renderTrend;
+                  window.__renderTrend = (...args) => { window.nativeRenders++; return render(...args); };
+                  return {count:window.nativeRenders}; })()
+                """)?["count"] as? Int == 0
+        else { return false }
         renderer.update(dashboardJSON: fixture, resetAnnotations: [], height: 380, homePreferences: received[1])
         guard renderer.state == .ready, evaluate("({count:window.nativeRenders})")?["count"] as? Int == 0 else {
             print("Home dashboard native bridge failed: preference echo rerender")
@@ -263,10 +282,14 @@ enum WKWebViewBridgeSelfTest {
             return false
         }
         let nextDeadline = Date().addingTimeInterval(5)
-        var reused = evaluate("({start:document.getElementById('heatmapStart').value,label:document.getElementById('heatmapStartLabel').textContent,snapshot:window.AiGoodBroDashboard.snapshotID,count:window.nativeRenders})")
+        var reused = evaluate(
+            "({start:document.getElementById('heatmapStart').value,label:document.getElementById('heatmapStartLabel').textContent,snapshot:window.AiGoodBroDashboard.snapshotID,count:window.nativeRenders})"
+        )
         while reused?["label"] as? String != "Start date", Date() < nextDeadline {
             RunLoop.current.run(until: Date().addingTimeInterval(0.01))
-            reused = evaluate("({start:document.getElementById('heatmapStart').value,label:document.getElementById('heatmapStartLabel').textContent,snapshot:window.AiGoodBroDashboard.snapshotID,count:window.nativeRenders})")
+            reused = evaluate(
+                "({start:document.getElementById('heatmapStart').value,label:document.getElementById('heatmapStartLabel').textContent,snapshot:window.AiGoodBroDashboard.snapshotID,count:window.nativeRenders})"
+            )
         }
         let oldPreferences = """
             {"heatmapStart":"2026-08-01","heatmapMetric":"cost","range":"30","mode":"bars","stackBy":"client"}
@@ -279,30 +302,41 @@ enum WKWebViewBridgeSelfTest {
             HomeDashboardPreferences.load(oldPreferences).height == HomeDashboardPreferences.defaultHeight,
             HomeDashboardPreferences.load(oversizedPreferences).height == HomeDashboardPreferences.maximumHeight,
             HomeDashboardPreferences.load(undersizedPreferences).height == HomeDashboardPreferences.minimumHeight
-        else { print("Home dashboard native bridge failed: snapshot/preference reuse"); return false }
+        else {
+            print("Home dashboard native bridge failed: snapshot/preference reuse")
+            return false
+        }
         var resized = received[1]
         resized.height = 480
         renderer.update(dashboardJSON: fixture, resetAnnotations: [], height: 480, language: .en, homePreferences: resized)
         guard renderer.state == .ready,
             evaluate("({count:window.nativeRenders})")?["count"] as? Int == 1
-        else { print("Home dashboard native bridge failed: height-only redraw"); return false }
-        guard let toggles = evaluate("""
-            (() => {
-              const home = window.AiGoodBroDashboard;
-              const heat = document.querySelector('#dashHeatmap svg');
-              document.querySelector('[data-mode="kline"]').click(); home.render();
-              const heatKept = document.querySelector('#dashHeatmap svg') === heat;
-              const chart = document.querySelector('#dashChart svg');
-              document.querySelector('[data-control="heatmapMetric"] [data-val="tokens"]').click(); home.render();
-              const chartKept = document.querySelector('#dashChart svg') === chart;
-              const tokensHeat = document.querySelector('#dashHeatmap svg');
-              document.querySelector('[data-control="heatmapMetric"] [data-val="tokens"]').click(); home.render();
-              const repeatKept = document.querySelector('#dashHeatmap svg') === tokensHeat;
-              return {heatKept, chartKept, repeatKept};
-            })()
-            """), toggles["heatKept"] as? Bool == true,
+        else {
+            print("Home dashboard native bridge failed: height-only redraw")
+            return false
+        }
+        guard
+            let toggles = evaluate(
+                """
+                (() => {
+                  const home = window.AiGoodBroDashboard;
+                  const heat = document.querySelector('#dashHeatmap svg');
+                  document.querySelector('[data-mode="kline"]').click(); home.render();
+                  const heatKept = document.querySelector('#dashHeatmap svg') === heat;
+                  const chart = document.querySelector('#dashChart svg');
+                  document.querySelector('[data-control="heatmapMetric"] [data-val="tokens"]').click(); home.render();
+                  const chartKept = document.querySelector('#dashChart svg') === chart;
+                  const tokensHeat = document.querySelector('#dashHeatmap svg');
+                  document.querySelector('[data-control="heatmapMetric"] [data-val="tokens"]').click(); home.render();
+                  const repeatKept = document.querySelector('#dashHeatmap svg') === tokensHeat;
+                  return {heatKept, chartKept, repeatKept};
+                })()
+                """), toggles["heatKept"] as? Bool == true,
             toggles["chartKept"] as? Bool == true, toggles["repeatKept"] as? Bool == true
-        else { print("Home dashboard native bridge failed: repeat toggle redraw"); return false }
+        else {
+            print("Home dashboard native bridge failed: repeat toggle redraw")
+            return false
+        }
         let resizedDeadline = Date().addingTimeInterval(3)
         while received.count == 2, Date() < resizedDeadline {
             RunLoop.current.run(until: Date().addingTimeInterval(0.01))

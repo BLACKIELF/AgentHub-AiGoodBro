@@ -19,7 +19,10 @@ struct TaskWorkbenchView: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button(language.text("刷新", "Refresh")) { onRefresh(); model.rebuild() }
+                Button(language.text("刷新", "Refresh")) {
+                    onRefresh()
+                    model.rebuild()
+                }
             }
             if let status = message ?? model.status {
                 Text(status).font(.caption).foregroundStyle(.secondary)
@@ -49,8 +52,12 @@ struct TaskWorkbenchView: View {
                         taskArea(presentation)
                     }
                 }
-                Text(language.text("展示现有任务记录，每分钟合并一次。暂缓或取消只改变后续安排，不会终止正在执行的任务。", "Existing task records are merged once per minute. Deferring or cancelling follow-up work does not stop a running turn."))
-                    .font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Text(
+                    language.text(
+                        "展示现有任务记录，每分钟合并一次。暂缓或取消只改变后续安排，不会终止正在执行的任务。",
+                        "Existing task records are merged once per minute. Deferring or cancelling follow-up work does not stop a running turn.")
+                )
+                .font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             } else {
                 Text(language.text("正在整理现有记录…", "Preparing existing records…"))
                     .font(.callout).foregroundStyle(.secondary).padding(20)
@@ -87,27 +94,43 @@ struct TaskWorkbenchView: View {
 
     private func projectList(_ presentation: TaskWorkbenchPresentation) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            Button { selectedProject = ""; selectedID = nil } label: {
-                HStack { Text(language.text("所有项目", "All projects")); Spacer(); Text("\(presentation.items.count)") }
+            Button {
+                selectedProject = ""
+                selectedID = nil
+            } label: {
+                HStack {
+                    Text(language.text("所有项目", "All projects"))
+                    Spacer()
+                    Text("\(presentation.items.count)")
+                }
             }.buttonStyle(.plain).padding(9)
-                .background(selectedProject.isEmpty ? Color.blue.opacity(0.1) : Color.clear,
+                .background(
+                    selectedProject.isEmpty ? Color.blue.opacity(0.1) : Color.clear,
                     in: RoundedRectangle(cornerRadius: 8))
             ForEach(presentation.projects) { project in
-                Button { selectedProject = project.name; selectedID = nil } label: {
+                Button {
+                    selectedProject = project.name
+                    selectedID = nil
+                } label: {
                     HStack(alignment: .top) {
                         Text(projectTitle(project.name)).lineLimit(2)
-                        Spacer(minLength: 4); Text("\(project.items.count)").foregroundStyle(.secondary)
+                        Spacer(minLength: 4)
+                        Text("\(project.items.count)").foregroundStyle(.secondary)
                     }.frame(maxWidth: .infinity, alignment: .leading)
                 }.buttonStyle(.plain).padding(9)
-                    .background(selectedProject == project.name ? Color.blue.opacity(0.1) : Color.clear,
-                        in: RoundedRectangle(cornerRadius: 8))
+                    .background(
+                        selectedProject == project.name ? Color.blue.opacity(0.1) : Color.clear,
+                        in: RoundedRectangle(cornerRadius: 8)
+                    )
                     .help(project.name)
             }
         }.font(.caption)
     }
 
     private func taskRow(_ item: TaskWorkbenchItem) -> some View {
-        Button { selectedID = item.id } label: {
+        Button {
+            selectedID = item.id
+        } label: {
             HStack(spacing: 8) {
                 Circle().fill(TaskStatusCopy.color(item.task.state)).frame(width: 7, height: 7)
                 VStack(alignment: .leading, spacing: 4) {
@@ -117,14 +140,16 @@ struct TaskWorkbenchView: View {
                         Text("·")
                         Text(item.outcome.label(language))
                         if item.annotation.decision != .none {
-                            Text("·"); Text(item.annotation.decision.label(language))
+                            Text("·")
+                            Text(item.annotation.decision.label(language))
                         }
                     }.font(.caption2).foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 0)
                 Image(systemName: "chevron.right").font(.caption2).foregroundStyle(.tertiary)
             }.padding(10).frame(maxWidth: .infinity, alignment: .leading)
-                .background(selectedID == item.id ? Color.blue.opacity(0.08) : Color.secondary.opacity(0.05),
+                .background(
+                    selectedID == item.id ? Color.blue.opacity(0.08) : Color.secondary.opacity(0.05),
                     in: RoundedRectangle(cornerRadius: 9))
         }.buttonStyle(.plain)
     }
@@ -137,8 +162,11 @@ struct TaskWorkbenchView: View {
                 HStack { actionButtons(item) }
                 VStack(alignment: .leading, spacing: 8) { actionButtons(item) }
             }.font(.caption)
-            Picker(language.text("后续安排", "Follow-up decision"), selection: Binding(
-                get: { item.annotation.decision }, set: { model.setDecision($0, for: item) })) {
+            Picker(
+                language.text("后续安排", "Follow-up decision"),
+                selection: Binding(
+                    get: { item.annotation.decision }, set: { model.setDecision($0, for: item) })
+            ) {
                 ForEach(TaskManualDecision.allCases, id: \.self) { decision in
                     Text(decision.label(language)).tag(decision)
                 }
@@ -165,7 +193,9 @@ struct TaskWorkbenchView: View {
                 }
                 ForEach(inventory.artifacts) { artifact in
                     if let url = artifact.url {
-                        Button { NSWorkspace.shared.open(url) } label: {
+                        Button {
+                            NSWorkspace.shared.open(url)
+                        } label: {
                             Label(artifact.title, systemImage: "doc.text")
                         }.font(.caption).buttonStyle(.link)
                     }
@@ -180,8 +210,12 @@ struct TaskWorkbenchView: View {
                 Text(item.task.threadID.map(TaskWorkbenchStore.prompt(threadID:)) ?? "")
                     .font(.caption2).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
             }.font(.caption)
-            Text(language.text("盘点会向所选原聊天提交一次请求，沿用它的模型和权限；结果不明不会自动重发。", "Inventory submits one request to the selected original chat, using its model and permissions. Uncertain requests are never automatically retried."))
-                .font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            Text(
+                language.text(
+                    "盘点会向所选原聊天提交一次请求，沿用它的模型和权限；结果不明不会自动重发。",
+                    "Inventory submits one request to the selected original chat, using its model and permissions. Uncertain requests are never automatically retried.")
+            )
+            .font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -193,16 +227,19 @@ struct TaskWorkbenchView: View {
     }
     private func openOriginal(_ item: TaskWorkbenchItem) {
         guard item.task.runtimeScope == .codex, let id = item.task.threadID,
-            let url = CodexSessionLink.url(threadID: id) else { return }
+            let url = CodexSessionLink.url(threadID: id)
+        else { return }
         if !NSWorkspace.shared.open(url) { message = language.text("无法打开原聊天，请确认 Codex 已安装。", "Unable to open the chat. Check that Codex is installed.") }
     }
     private func importInventory(_ item: TaskWorkbenchItem) {
         let panel = NSOpenPanel()
-        panel.allowedContentTypes = [.json]; panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [.json]
+        panel.allowsMultipleSelection = false
         panel.canChooseDirectories = false
         guard panel.runModal() == .OK, let url = panel.url,
             let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize, size <= 24 * 1024,
-            let data = try? Data(contentsOf: url) else { return }
+            let data = try? Data(contentsOf: url)
+        else { return }
         model.importInventory(data: data, for: item)
     }
 }

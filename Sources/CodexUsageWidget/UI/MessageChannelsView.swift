@@ -67,7 +67,8 @@ struct MessageChannelsView: View {
             }
 
             Section(language.text("微信机器人", "WeChat bot")) {
-                PersonalWeChatSettingsView(enabled: $personalWeChatEnabled, pairingCode: $personalPairingCode,
+                PersonalWeChatSettingsView(
+                    enabled: $personalWeChatEnabled, pairingCode: $personalPairingCode,
                     connected: personalWeChatConnected, hasContext: personalWeChatHasContext,
                     connecting: personalLoginInProgress, qrContent: personalLoginQRCode,
                     needsCode: personalLoginNeedsCode, disabled: actionInFlight,
@@ -79,7 +80,8 @@ struct MessageChannelsView: View {
                     Picker(language.text("继续哪个原聊天", "Continue which chat"), selection: personalChatThreadID) {
                         Text(language.text("请选择原聊天", "Choose a chat")).tag("")
                         if !personalChatThreadID.wrappedValue.isEmpty,
-                            !personalChatTargets.contains(where: { $0.id == personalChatThreadID.wrappedValue }) {
+                            !personalChatTargets.contains(where: { $0.id == personalChatThreadID.wrappedValue })
+                        {
                             Text(language.text("已选聊天（暂未刷新）", "Selected chat (not refreshed)")).tag(personalChatThreadID.wrappedValue)
                         }
                         ForEach(personalChatTargets) { target in

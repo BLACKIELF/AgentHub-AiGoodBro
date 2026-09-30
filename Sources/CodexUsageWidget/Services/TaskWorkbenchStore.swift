@@ -21,8 +21,10 @@ final class TaskWorkbenchStore: ObservableObject {
     private var generation = UUID()
     private var lastBuilt = Date.distantPast
 
-    init(previewOnly: Bool = false, file: URL? = nil,
-         conversationFactory: @escaping @MainActor () -> WeChatCodexConversation = { WeChatCodexConversation(timeout: 120) }) {
+    init(
+        previewOnly: Bool = false, file: URL? = nil,
+        conversationFactory: @escaping @MainActor () -> WeChatCodexConversation = { WeChatCodexConversation(timeout: 120) }
+    ) {
         let support = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/CodexAccountManagerNext/TaskWorkbench", isDirectory: true)
         self.file = previewOnly ? nil : (file ?? support.appendingPathComponent("inventory-v1.json"))
@@ -34,13 +36,18 @@ final class TaskWorkbenchStore: ObservableObject {
                 let data = try Data(contentsOf: file)
                 guard data.count <= 1024 * 1024 else { throw TaskWorkbenchInventory.Failure.capacity }
                 let saved = try JSONDecoder().decode([String: TaskWorkbenchAnnotation].self, from: data)
-                guard saved.count <= 1000, saved.allSatisfy({ Self.validKey($0.key)
-                    && ((try? $0.value.inventory?.validated()) != nil || $0.value.inventory == nil) })
+                guard saved.count <= 1000,
+                    saved.allSatisfy({
+                        Self.validKey($0.key)
+                            && ((try? $0.value.inventory?.validated()) != nil || $0.value.inventory == nil)
+                    })
                 else { throw TaskWorkbenchInventory.Failure.invalid }
-                guard saved.allSatisfy({ key, note in
-                note.inventory.map { key == RuntimeScope.codex.runtimeId + ":" + $0.threadID } ?? true
-            }) else { throw TaskWorkbenchInventory.Failure.invalid }
-            annotations = saved
+                guard
+                    saved.allSatisfy({ key, note in
+                        note.inventory.map { key == RuntimeScope.codex.runtimeId + ":" + $0.threadID } ?? true
+                    })
+                else { throw TaskWorkbenchInventory.Failure.invalid }
+                annotations = saved
             } catch { status = "工作台记录未能读取，保留原文件；请核对本地结果。" }
         }
     }
@@ -51,12 +58,15 @@ final class TaskWorkbenchStore: ObservableObject {
         return model
     }
 
-    func bind(runtimes: Published<[RuntimeUsageSnapshot]>.Publisher,
-              live: Published<CodexTaskLiveSnapshot>.Publisher) {
+    func bind(
+        runtimes: Published<[RuntimeUsageSnapshot]>.Publisher,
+        live: Published<CodexTaskLiveSnapshot>.Publisher
+    ) {
         guard subscriptions.isEmpty else { return }
         runtimes.combineLatest(live).receive(on: RunLoop.main).sink { [weak self] runtimes, live in
             guard let self else { return }
-            self.latestRuntimes = runtimes; self.latestLive = live
+            self.latestRuntimes = runtimes
+            self.latestLive = live
             if self.presentation == nil || Date().timeIntervalSince(self.lastBuilt) >= 60 { self.rebuild() }
         }.store(in: &subscriptions)
         timer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
@@ -66,7 +76,8 @@ final class TaskWorkbenchStore: ObservableObject {
     }
 
     func rebuild(now: Date = Date()) {
-        let overview = TaskOverviewPresentationBuilder.make(runtimeSnapshots: latestRuntimes,
+        let overview = TaskOverviewPresentationBuilder.make(
+            runtimeSnapshots: latestRuntimes,
             codexLiveTasks: latestLive, now: now, maximumItems: 1000, includeAllExisting: true)
         var projects: [String: String] = [:]
         let knownIDs = Set(overview.items.map(\.id))
@@ -74,12 +85,14 @@ final class TaskWorkbenchStore: ObservableObject {
             for task in runtime.snapshot.taskBoard?.columns.flatMap(\.items) ?? [] {
                 let key = runtime.scope.runtimeId + ":" + (task.threadID ?? task.id)
                 guard knownIDs.contains(key) else { continue }
-                let label = task.projectPath.flatMap { $0.isEmpty ? nil : $0 }
+                let label =
+                    task.projectPath.flatMap { $0.isEmpty ? nil : $0 }
                     ?? (task.detail.isEmpty ? "未归类" : task.detail)
                 projects[key] = label
             }
         }
-        presentation = TaskWorkbenchPresentation.make(overview: overview, projectNames: projects,
+        presentation = TaskWorkbenchPresentation.make(
+            overview: overview, projectNames: projects,
             annotations: annotations, now: now)
         lastBuilt = now
     }
@@ -88,17 +101,24 @@ final class TaskWorkbenchStore: ObservableObject {
         guard Self.validKey(item.id), annotations.count < 1000 || annotations[item.id] != nil else { return }
         var saved = annotations
         var note = saved[item.id] ?? TaskWorkbenchAnnotation()
-        note.decision = decision; note.decisionAt = Date(); saved[item.id] = note
-        do { try persist(saved); annotations = saved; rebuild() }
-        catch { status = "后续安排未能保存；原记录未更改。" }
+        note.decision = decision
+        note.decisionAt = Date()
+        saved[item.id] = note
+        do {
+            try persist(saved)
+            annotations = saved
+            rebuild()
+        } catch { status = "后续安排未能保存；原记录未更改。" }
     }
 
     /// Explicit import is a minimal local result interface. The file contains
     /// bounded inventory only, not a transcript, credentials or remote approvals.
     func importInventory(data: Data, for item: TaskWorkbenchItem) {
         guard item.task.runtimeScope == .codex, let thread = item.task.threadID,
-            data.count <= 24 * 1024, let text = String(data: data, encoding: .utf8) else {
-            status = "结果文件不符合所选 Codex 聊天。"; return
+            data.count <= 24 * 1024, let text = String(data: data, encoding: .utf8)
+        else {
+            status = "结果文件不符合所选 Codex 聊天。"
+            return
         }
         do {
             let result = try TaskWorkbenchInventory.parse(text, threadID: thread, sourceTurnID: nil)
@@ -109,9 +129,11 @@ final class TaskWorkbenchStore: ObservableObject {
 
     func inventory(_ item: TaskWorkbenchItem) {
         guard !inventoryInFlight, item.task.runtimeScope == .codex,
-            let thread = item.task.threadID, UUID(uuidString: thread) != nil else { return }
+            let thread = item.task.threadID, UUID(uuidString: thread) != nil
+        else { return }
         guard (annotations[item.id]?.decision ?? .none) == .none else {
-            status = "此任务已被手动暂缓、取消或确认完成；先改为继续关注，才能发起盘点。"; return
+            status = "此任务已被手动暂缓、取消或确认完成；先改为继续关注，才能发起盘点。"
+            return
         }
         let action = UUID()
         let event: UUID
@@ -119,19 +141,31 @@ final class TaskWorkbenchStore: ObservableObject {
             guard let claimed = try ledger.claim(owner: "task-workbench", messageID: action.uuidString, receivedAt: Date())
             else { return }
             event = claimed
-        } catch { status = "盘点去重记录不可用，未向 Codex 提交。"; return }
+        } catch {
+            status = "盘点去重记录不可用，未向 Codex 提交。"
+            return
+        }
         inventoryInFlight = true
         let epoch = generation
         inventoryTask = Task { @MainActor [weak self] in
             guard let self else { return }
-            defer { if self.generation == epoch { self.inventoryInFlight = false; self.inventoryTask = nil } }
+            defer {
+                if self.generation == epoch {
+                    self.inventoryInFlight = false
+                    self.inventoryTask = nil
+                }
+            }
             let relay = self.conversationFactory()
             var returnedTurn: String?
-            let result = await relay.reply(threadID: thread, eventID: event,
+            let result = await relay.reply(
+                threadID: thread, eventID: event,
                 text: Self.prompt(threadID: thread), shouldContinue: { self.generation == epoch },
                 onSubmitted: { turn in
-                    do { try self.ledger.mark(event, phase: .submitted, threadID: thread, turnID: turn)
-                        returnedTurn = turn; return true } catch { return false }
+                    do {
+                        try self.ledger.mark(event, phase: .submitted, threadID: thread, turnID: turn)
+                        returnedTurn = turn
+                        return true
+                    } catch { return false }
                 })
             guard self.generation == epoch, !Task.isCancelled else { return }
             switch result {
@@ -155,8 +189,13 @@ final class TaskWorkbenchStore: ObservableObject {
     }
 
     func stop() {
-        generation = UUID(); inventoryTask?.cancel(); inventoryTask = nil
-        inventoryInFlight = false; timer?.invalidate(); timer = nil; subscriptions.removeAll()
+        generation = UUID()
+        inventoryTask?.cancel()
+        inventoryTask = nil
+        inventoryInFlight = false
+        timer?.invalidate()
+        timer = nil
+        subscriptions.removeAll()
     }
 
     private func save(_ inventory: TaskWorkbenchInventory, for key: String) throws {
@@ -166,8 +205,11 @@ final class TaskWorkbenchStore: ObservableObject {
         var saved = annotations
         var note = saved[key] ?? TaskWorkbenchAnnotation()
         if value.sourceTurnID != nil && note.inventory?.sourceTurnID == value.sourceTurnID { return }
-        note.inventory = value; saved[key] = note
-        try persist(saved); annotations = saved; rebuild()
+        note.inventory = value
+        saved[key] = note
+        try persist(saved)
+        annotations = saved
+        rebuild()
     }
 
     private func persist(_ value: [String: TaskWorkbenchAnnotation]) throws {
@@ -178,7 +220,8 @@ final class TaskWorkbenchStore: ObservableObject {
         let attributes = try FileManager.default.attributesOfItem(atPath: directory.path)
         guard attributes[.type] as? FileAttributeType == .typeDirectory,
             (attributes[.ownerAccountID] as? NSNumber)?.uint32Value == geteuid(),
-            ((attributes[.posixPermissions] as? NSNumber)?.intValue ?? 0o777) & 0o077 == 0 else { throw TaskWorkbenchInventory.Failure.invalid }
+            ((attributes[.posixPermissions] as? NSNumber)?.intValue ?? 0o777) & 0o077 == 0
+        else { throw TaskWorkbenchInventory.Failure.invalid }
         if FileManager.default.fileExists(atPath: file.path) { try verifyFile(file) }
         let data = try JSONEncoder().encode(value)
         guard data.count <= 1024 * 1024 else { throw TaskWorkbenchInventory.Failure.capacity }
@@ -192,7 +235,8 @@ final class TaskWorkbenchStore: ObservableObject {
         var attributes = stat()
         guard lstat(file.path, &attributes) == 0, attributes.st_mode & S_IFMT == S_IFREG,
             attributes.st_uid == geteuid(), attributes.st_nlink == 1, attributes.st_mode & 0o077 == 0,
-            attributes.st_size <= 1024 * 1024 else { throw TaskWorkbenchInventory.Failure.invalid }
+            attributes.st_size <= 1024 * 1024
+        else { throw TaskWorkbenchInventory.Failure.invalid }
     }
 
     private static func validKey(_ key: String) -> Bool { !key.isEmpty && TaskWorkbenchInventory.safeText(key, limit: 512) }
