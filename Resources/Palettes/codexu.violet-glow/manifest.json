@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "id": "codexu.violet-glow",
+  "version": "1.0.0",
+  "minimumAppVersion": "1.0.5",
+  "lifecycle": "stable",
+  "defaultLocale": "zh-Hans",
+  "localizations": {
+    "zh-Hans": "localizations/zh-Hans.json",
+    "en": "localizations/en.json"
+  },
+  "variants": {
+    "light": "tokens/light.json",
+    "dark": "tokens/dark.json"
+  },
+  "assetManifest": "assets/manifest.json",
+  "author": {
+    "name": "codexU contributors",
+    "url": "https://github.com/shanggqm/codexU"
+  },
+  "license": "MIT",
+  "source": {
+    "type": "original-design-translation",
+    "note": "Background presentation variant of the existing codexu.default blue-violet palette. Both token files are copied unchanged from that baseline under a distinct non-default identity; this preserves its earlier artistic background presentation without changing the default package or redesigning the colors."
+  },
+  "capabilities": [
+    "color-tokens"
+  ]
+}

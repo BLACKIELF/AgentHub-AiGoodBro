@@ -2,7 +2,7 @@ import Foundation
 
 struct PaletteCatalog {
     /// The palette selected for new settings and the Reset action.
-    static let initialPaletteID = "codexu.liquid-keycap"
+    static let initialPaletteID = "codexu.default"
     /// Keep this legacy ID as the resolver's compiled-token safety fallback.
     static let defaultPaletteID = "codexu.default"
 

@@ -293,7 +293,7 @@ private struct UpstreamHomeStatistics: View {
     let state: TokenMonitorEngineState
     let language: WidgetLanguage
     @Binding var preferences: HomeDashboardPreferences
-    @Binding var detailsExpanded: Bool
+    let summaryCost: UpstreamTrendView.SummaryCost
     @State private var dragStartHeight: CGFloat?
     @State private var draggingHeight: CGFloat?
     @State private var hoveringResize = false
@@ -335,83 +335,66 @@ private struct UpstreamHomeStatistics: View {
                 VStack(spacing: 0) {
                     UpstreamTrendView(
                         dashboardJSON: dashboardJSON, height: dashboardHeight,
-                        homePreferences: preferences, onHomePreferences: { preferences = $0 }
+                        homePreferences: preferences, onHomePreferences: { preferences = $0 },
+                        summaryCost: summaryCost
                     )
                     .environment(\.widgetLanguage, language)
-                    HStack {
-                        Spacer()
-                        Capsule()
-                            .fill(hoveringResize || draggingHeight != nil ? Color.accentColor : Color.secondary.opacity(0.45))
-                            .frame(width: 30, height: 3)
-                        Spacer()
-                    }
-                    .frame(height: 22)
-                    .background(Color.primary.opacity(hoveringResize ? 0.035 : 0), in: RoundedRectangle(cornerRadius: 5))
-                    .contentShape(Rectangle())
-                    .onHover { inside in
-                        hoveringResize = inside
-                        if inside { NSCursor.resizeUpDown.set() } else { NSCursor.arrow.set() }
-                    }
-                    .onDisappear { if hoveringResize { NSCursor.arrow.set() } }
-                    .onTapGesture(count: 2) { preferences.height = HomeDashboardPreferences.defaultHeight }
-                    .accessibilityAction(named: Text(language.text("恢复默认高度", "Reset height"))) {
-                        preferences.height = HomeDashboardPreferences.defaultHeight
-                    }
-                    .accessibilityIdentifier("workspace.usage.resize")
-                    .help(language.text("拖动调整高度 · 双击恢复默认", "Drag to resize · Double-click to reset"))
-                    .accessibilityLabel(language.text("用量面板高度", "Usage dashboard height"))
-                    .accessibilityValue("\(Int(dashboardHeight))")
-                    .accessibilityAdjustableAction { direction in
-                        let step: Int
-                        switch direction {
-                        case .increment: step = 40
-                        case .decrement: step = -40
-                        @unknown default: return
+                    .overlay(alignment: .bottom) {
+                        HStack {
+                            Spacer()
+                            Capsule()
+                                .fill(Color.accentColor)
+                                .opacity(hoveringResize || draggingHeight != nil ? 1 : 0)
+                                .frame(width: 30, height: 3)
+                            Spacer()
                         }
-                        preferences.height = min(
-                            HomeDashboardPreferences.maximumHeight,
-                            max(HomeDashboardPreferences.minimumHeight, preferences.height + step))
-                    }
-                    // The handle moves with the panel; measure the pointer in a
-                    // stable coordinate space so layout cannot feed back into the drag.
-                    .gesture(
-                        DragGesture(minimumDistance: 2, coordinateSpace: .global)
-                            .onChanged { value in
-                                if dragStartHeight == nil { dragStartHeight = CGFloat(preferences.height) }
-                                draggingHeight = min(
-                                    CGFloat(HomeDashboardPreferences.maximumHeight),
-                                    max(CGFloat(HomeDashboardPreferences.minimumHeight), ((dragStartHeight ?? dashboardHeight) + value.translation.height).rounded()))
+                        .frame(height: 14)
+                        .background(Color.primary.opacity(hoveringResize ? 0.035 : 0), in: RoundedRectangle(cornerRadius: 5))
+                        .contentShape(Rectangle())
+                        .onHover { inside in
+                            hoveringResize = inside
+                            if inside { NSCursor.resizeUpDown.set() } else { NSCursor.arrow.set() }
+                        }
+                        .onDisappear { if hoveringResize { NSCursor.arrow.set() } }
+                        .onTapGesture(count: 2) { preferences.height = HomeDashboardPreferences.defaultHeight }
+                        .accessibilityAction(named: Text(language.text("恢复默认高度", "Reset height"))) {
+                            preferences.height = HomeDashboardPreferences.defaultHeight
+                        }
+                        .accessibilityIdentifier("workspace.usage.resize")
+                        .help(language.text("拖动调整高度 · 双击恢复默认", "Drag to resize · Double-click to reset"))
+                        .accessibilityLabel(language.text("用量面板高度", "Usage dashboard height"))
+                        .accessibilityValue("\(Int(dashboardHeight))")
+                        .accessibilityAdjustableAction { direction in
+                            let step: Int
+                            switch direction {
+                            case .increment: step = 40
+                            case .decrement: step = -40
+                            @unknown default: return
                             }
-                            .onEnded { _ in
-                                if let draggingHeight { preferences.height = Int(draggingHeight.rounded()) }
-                                dragStartHeight = nil
-                                draggingHeight = nil
-                            })
+                            preferences.height = min(
+                                HomeDashboardPreferences.maximumHeight,
+                                max(HomeDashboardPreferences.minimumHeight, preferences.height + step))
+                        }
+                        // The handle moves with the panel; measure the pointer in a
+                        // stable coordinate space so layout cannot feed back into the drag.
+                        .gesture(
+                            DragGesture(minimumDistance: 2, coordinateSpace: .global)
+                                .onChanged { value in
+                                    if dragStartHeight == nil { dragStartHeight = CGFloat(preferences.height) }
+                                    draggingHeight = min(
+                                        CGFloat(HomeDashboardPreferences.maximumHeight),
+                                        max(CGFloat(HomeDashboardPreferences.minimumHeight), ((dragStartHeight ?? dashboardHeight) + value.translation.height).rounded()))
+                                }
+                                .onEnded { _ in
+                                    if let draggingHeight { preferences.height = Int(draggingHeight.rounded()) }
+                                    dragStartHeight = nil
+                                    draggingHeight = nil
+                                })
+                    }
                 }
                 .transaction { $0.animation = nil }
             }
-            DisclosureGroup(language.text("统计详情", "Statistics details"), isExpanded: $detailsExpanded) {
-                VStack(alignment: .leading, spacing: 5) {
-                    if let response = state.lastGood {
-                        Text(
-                            language.text("已读取来源：", "Sources read: ")
-                                + "\(HomeEngineProjection.evidencedSources(response))/\(response.sources.filter { $0.status != .excluded }.count)")
-                        Text(language.text("累计值来自已读取记录，统计覆盖随来源而异。", "The total uses records read; coverage varies by source."))
-                        if let date = TokenMonitorResponse.timestamp(response.collectedAt) {
-                            Text(language.text("更新于 ", "Updated ") + language.dateTime(date))
-                        }
-                        if response.payload["costEstimates"]?["totalCost"]?.double != nil {
-                            Text(language.text("成本是已记录用量的估算值，可能不完整，并非实际账单。", "Cost is a potentially incomplete estimate from recorded usage, not a bill."))
-                        } else if response.coverage.cost != .known {
-                            Text(language.text("费用暂不可确认，Token 统计独立显示。", "Cost is unavailable; token statistics are shown independently."))
-                        }
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .fixedSize(horizontal: false, vertical: true)
-            }
-            .font(.caption)
-            .foregroundStyle(.secondary)
+
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -433,6 +416,7 @@ struct CodexAccountManagerView: View {
     @ObservedObject var store: UsageStore
     @ObservedObject private var resetAnnouncementMonitor: PublicResetAnnouncementMonitor
     @ObservedObject var settings: AppSettings
+    @ObservedObject private var tokenDesktop = TokenMonitorDesktopController.shared
     let paletteCatalog: PaletteCatalog
     private let previewReferenceDate: Date?
     private let previewForecastBy: Date?
@@ -470,6 +454,10 @@ struct CodexAccountManagerView: View {
     @AppStorage(HomeSection.usage.storageKey) private var homeUsageExpanded = false
     @AppStorage("AiGoodBro.home.section.recommended-announcements.expanded") private var homeNoticesExpanded = false
     @AppStorage("AiGoodBro.home.section.local-cli.expanded") private var homeLocalCLIExpanded = false
+    @AppStorage(HomeSection.reset.storageKey) private var homeResetExpanded = true
+    @AppStorage(HomeSection.messages.storageKey) private var homeMessagesExpanded = true
+    @AppStorage(HomeSection.recommendations.storageKey) private var homeSkillsExpanded = true
+    @AppStorage(HomeSection.maintenance.storageKey) private var homeMaintenanceExpanded = true
     @State private var isSavingScreenshot = false
     @State private var screenshotFeedback: String?
     @StateObject private var hubTaskStatusModel = HubAccountTaskStatusModel()
@@ -493,7 +481,6 @@ struct CodexAccountManagerView: View {
     @StateObject private var quotaProviders = QuotaProviderStore()
     @State private var usageQuery = ""
     @State private var usageDimension: String? = nil
-    @State private var statisticsDetailsExpanded = false
 
     private enum ProfessionalWorkspaceSection: String, CaseIterable, Identifiable {
         case overview
@@ -800,7 +787,10 @@ struct CodexAccountManagerView: View {
         VStack(alignment: .leading, spacing: 6) {
             homeNotices
             homeTokenTotalsCard
-            AutomationMaintenanceNotice(features: store.pausedAutomationFeatures, language: language)
+            if !store.pausedAutomationFeatures.isEmpty {
+                AutomationMaintenanceNotice(features: store.pausedAutomationFeatures, language: language)
+                    .homeResizable(.maintenance, title: language.text("自动化提示", "Automation notice"), language: language, expanded: homeMaintenanceExpanded)
+            }
             homeUnifiedAccounts
             homeFooter
         }
@@ -815,7 +805,12 @@ struct CodexAccountManagerView: View {
                 )
                 .font(.system(size: 12, weight: .semibold))
                 Group {
-                    if let deadline = store.isPreview ? (previewForecastBy ?? previewForecastDeadline) : homeForecastStore.forecast?.latestBy {
+                    if !homeNoticesExpanded {
+                        ResetMessageHeaderSummary(
+                            language: language, profiles: store.profiles,
+                            announcements: resetAnnouncementMonitor.announcements + (resetAnnouncementMonitor.latest.map { [$0] } ?? []),
+                            forecastDeadline: store.isPreview ? (previewForecastBy ?? previewForecastDeadline) : homeForecastStore.forecast?.latestBy)
+                    } else if let deadline = store.isPreview ? (previewForecastBy ?? previewForecastDeadline) : homeForecastStore.forecast?.latestBy {
                         ResetCountdownText(deadline: deadline, kind: .publicForecast, language: language)
                             .layoutPriority(1)
                         Text("· " + PublicResetAnnouncementPresentation.compactEventTime(deadline, language: language))
@@ -829,18 +824,26 @@ struct CodexAccountManagerView: View {
                 }
                 .font(.system(size: 11))
                 .lineLimit(1)
+                if homeNoticesExpanded {
+                    ResetMessageHeaderSummary(
+                        language: language, profiles: store.profiles, announcements: [],
+                        forecastDeadline: nil, balancesOnly: true)
+                }
             }
             .frame(minHeight: 26)
             if homeNoticesExpanded {
-                resetUpdatesBanner.padding(7).sectionBackground()
+                resetUpdatesBanner.padding(.horizontal, 7).padding(.vertical, homeResetExpanded ? 5 : 3)
+                    .homeResizable(.reset, title: language.text("重置消息", "Reset updates"), language: language, expanded: homeResetExpanded, minimumWidth: 420, allowsWidth: false)
                 PublisherMessagesView(monitor: store.publisherMessages, language: language)
-                    .padding(7).sectionBackground()
-                HomeSkillShelf(language: language).padding(7).sectionBackground()
+                    .padding(.horizontal, 7).padding(.vertical, homeMessagesExpanded ? 5 : 3)
+                    .homeResizable(.messages, title: language.text("AiGoodBro 官方消息", "AiGoodBro official updates"), language: language, expanded: homeMessagesExpanded)
+                HomeSkillShelf(language: language).padding(.horizontal, 7).padding(.vertical, homeSkillsExpanded ? 5 : 3)
+                    .homeResizable(.skills, title: language.text("推荐 Skills 与应用", "Recommended skills and apps"), language: language, expanded: homeSkillsExpanded)
             }
         }
         .padding(.horizontal, 13).padding(.vertical, homeNoticesExpanded ? 7 : 3)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(WorkspaceGlassSurface(cornerRadius: 8))
+        .homeResizable(.notices, title: language.text("推荐与公告", "Recommendations and notices"), language: language, expanded: homeNoticesExpanded, minimumWidth: 420)
     }
 
     @ViewBuilder
@@ -1190,18 +1193,22 @@ struct CodexAccountManagerView: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, homeUsageExpanded ? 9 : 3)
-        .sectionBackground()
         .accessibilityElement(children: .contain)
+        .homeResizable(.usage, title: language.text("用量统计", "Usage statistics"), language: language, expanded: homeUsageExpanded, minimumWidth: 420)
     }
 
     @ViewBuilder
     private var homeTokenTotals: some View {
         switch store.statisticsEngineChoice {
         case .upstream:
+            let usage = TokenMonitorDashboardSnapshot(state: store.engineState, hub: store.tokenMonitorHubSync)
+            let usesDesktop = !store.isPreview && tokenDesktop.isBundled
             UpstreamHomeStatistics(
                 state: store.engineState, language: language,
                 preferences: $settings.homeDashboardPreferences,
-                detailsExpanded: $statisticsDetailsExpanded)
+                summaryCost: .init(
+                    value: usesDesktop ? tokenDesktop.totalCostUSD : usage.value(for: .total, metric: .cost),
+                    isPartial: !usesDesktop && !usage.isHubSource && store.engineState.lastGood?.coverage.cost == .partial))
         case .custom:
             VStack(alignment: .leading, spacing: 10) {
                 Text(language.text("自定义已记录累计", "Custom recorded cumulative")).font(.headline)
@@ -1280,11 +1287,8 @@ struct CodexAccountManagerView: View {
                 .font(.system(size: WorkspaceVisualMetrics.metaSize, weight: .semibold))
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
-            QuotaProgressTrack(percent: remaining)
-                .frame(maxWidth: .infinity)
-            Text(QuotaAvailabilityPresentation.percentText(remaining))
-                .font(.system(size: 13, weight: .semibold, design: .rounded).monospacedDigit())
-                .frame(minWidth: 36, alignment: .trailing)
+            Spacer(minLength: 8)
+            QuotaPercentageRing(percent: remaining, diameter: 42)
         }
         .frame(maxWidth: .infinity)
     }
@@ -1562,78 +1566,84 @@ struct CodexAccountManagerView: View {
 
     private var homeUnifiedAccounts: some View {
         VStack(alignment: .leading, spacing: 6) {
-            AccountToolbar {
-                HStack(spacing: 8) {
-                    HomeSectionToggle(
-                        title: language.text("Codex 账号", "Codex accounts"), systemImage: "person.2",
-                        fillsWidth: false, language: language, isExpanded: $homeAccountsExpanded
-                    )
-                    .font(.headline)
-                    Text("\(presentedProfiles.count)").font(.caption).foregroundStyle(.secondary)
-                }
-            } actions: {
-                HStack(spacing: 8) {
-                    accountOrderButton
-                    reloginAccountsMenu
-                    accountLayoutPicker
-                    Button {
-                        openPrimaryGuide()
-                    } label: {
-                        Label(language.text("添加账号", "Add account"), systemImage: "plus")
+            VStack(alignment: .leading, spacing: 6) {
+                AccountToolbar {
+                    HStack(spacing: 8) {
+                        HomeSectionToggle(
+                            title: language.text("Codex 账号", "Codex accounts"), systemImage: "person.2",
+                            fillsWidth: false, language: language, isExpanded: $homeAccountsExpanded
+                        )
+                        .font(.headline)
+                        Text("\(presentedProfiles.count)").font(.caption).foregroundStyle(.secondary)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
+                } actions: {
+                    HStack(spacing: 8) {
+                        accountOrderButton
+                        reloginAccountsMenu
+                        accountLayoutPicker
+                        Button {
+                            openPrimaryGuide()
+                        } label: {
+                            Label(language.text("添加账号", "Add account"), systemImage: "plus")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                    }
                 }
-            }
-            if homeAccountsExpanded {
-                if presentedProfiles.isEmpty {
-                    emptyHomeAccounts
-                } else {
-                    VStack(spacing: 0) {
-                        TimelineView(.periodic(from: .now, by: 60)) { timeline in
-                            let profiles = directReorder.preview(orderedProfiles, id: { $0.id })
-                            profilesLayout {
-                                ForEach(profiles) { profile in
-                                    codexAccountRow(
-                                        profile, index: profiles.firstIndex(where: { $0.id == profile.id }) ?? 0,
-                                        now: presentationPreviewDate ?? timeline.date)
+                if homeAccountsExpanded {
+                    if presentedProfiles.isEmpty {
+                        emptyHomeAccounts
+                    } else {
+                        VStack(spacing: 0) {
+                            TimelineView(.periodic(from: .now, by: 60)) { timeline in
+                                let profiles = directReorder.preview(orderedProfiles, id: { $0.id })
+                                profilesLayout {
+                                    ForEach(profiles) { profile in
+                                        codexAccountRow(
+                                            profile, index: profiles.firstIndex(where: { $0.id == profile.id }) ?? 0,
+                                            now: presentationPreviewDate ?? timeline.date)
+                                    }
                                 }
                             }
                         }
-                    }
-                    .background {
-                        if displayedAccountLayout == .rows {
-                            WorkspaceGlassSurface(cornerRadius: 9)
+                        .background {
+                            if displayedAccountLayout == .rows {
+                                WorkspaceGlassSurface(cornerRadius: 9)
+                            }
                         }
-                    }
-                    .clipShape(RoundedRectangle(cornerRadius: displayedAccountLayout == .rows ? 9 : 0))
-                    .overlay {
-                        if displayedAccountLayout == .rows {
-                            RoundedRectangle(cornerRadius: 9, style: .continuous)
-                                .strokeBorder(FixedVisualPalette.cardStroke(colorScheme, elevated: false), lineWidth: 0.7)
-                                .allowsHitTesting(false)
+                        .clipShape(RoundedRectangle(cornerRadius: displayedAccountLayout == .rows ? 9 : 0))
+                        .overlay {
+                            if displayedAccountLayout == .rows {
+                                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                                    .strokeBorder(FixedVisualPalette.cardStroke(colorScheme, elevated: false), lineWidth: 0.7)
+                                    .allowsHitTesting(false)
+                            }
                         }
                     }
                 }
             }
+            .homeResizable(.accounts, title: language.text("Codex 账号", "Codex accounts"), language: language, expanded: homeAccountsExpanded, minimumWidth: 420)
             if !localCLIAccounts.profiles.isEmpty {
-                HomeSectionToggle(
-                    title: language.text("其他 CLI", "Other CLIs"), systemImage: "terminal",
-                    language: language, isExpanded: $homeLocalCLIExpanded
-                )
-                .font(.subheadline.weight(.semibold))
-                .padding(.top, 5)
-                if homeLocalCLIExpanded {
-                    (displayedAccountLayout == .cards
-                        ? AnyLayout(AccountCardGridLayout(minimumWidth: 285))
-                        : AnyLayout(VStackLayout(spacing: 8))) {
-                            ForEach(orderedHomeLocalProfiles) { profile in
-                                homeLocalAccountCard(profile)
+                VStack(alignment: .leading, spacing: 6) {
+                    HomeSectionToggle(
+                        title: language.text("其他 CLI", "Other CLIs"), systemImage: "terminal",
+                        language: language, isExpanded: $homeLocalCLIExpanded
+                    )
+                    .font(.subheadline.weight(.semibold))
+                    .padding(.top, 5)
+                    if homeLocalCLIExpanded {
+                        (displayedAccountLayout == .cards
+                            ? AnyLayout(AccountCardGridLayout(minimumWidth: 285))
+                            : AnyLayout(VStackLayout(spacing: 8))) {
+                                ForEach(orderedHomeLocalProfiles) { profile in
+                                    homeLocalAccountCard(profile)
+                                }
                             }
-                        }
-                } else {
-                    homeLocalCLICompactStrip
+                    } else {
+                        homeLocalCLICompactStrip
+                    }
                 }
+                .homeResizable(.localCLI, title: language.text("其他 CLI", "Other CLIs"), language: language, expanded: homeLocalCLIExpanded, minimumWidth: 300)
             }
         }
     }
@@ -1650,8 +1660,22 @@ struct CodexAccountManagerView: View {
             keys.contains(candidate) && seen.insert(candidate).inserted
         }
         let ordered = saved + keys.filter { !saved.contains($0) }
-        return ResetCardPresentation.savedOrder(ordered, pinnedAccountID: settings.pinnedAccountKey)
+        let orderedProfiles = ResetCardPresentation.savedOrder(ordered, pinnedAccountID: settings.pinnedAccountKey)
             .compactMap { byKey[$0] }
+        return orderedProfiles.filter(homeLocalHasQuotaData)
+            + orderedProfiles.filter { !homeLocalHasQuotaData($0) }
+    }
+
+    private func homeLocalHasQuotaData(_ profile: LocalCLIProfile) -> Bool {
+        guard let result = localCLIAccounts.quotas[profile.id] else { return false }
+        return result.windows.contains { $0.usedPercent.isFinite }
+            || result.balance?.isFinite == true
+    }
+
+    private var homeQuotaOrderedLocalKinds: [LocalCLIKind] {
+        let kinds = homeOrderedKinds.filter { !localCLIAccounts.profiles(for: $0).isEmpty }
+        let withQuota = Set(kinds.filter { localCLIAccounts.profiles(for: $0).contains(where: homeLocalHasQuotaData) })
+        return kinds.filter { withQuota.contains($0) } + kinds.filter { !withQuota.contains($0) }
     }
 
     private func localCLIHomeKey(_ profile: LocalCLIProfile) -> String {
@@ -1684,7 +1708,7 @@ struct CodexAccountManagerView: View {
 
     private var homeLocalCLICompactStrip: some View {
         AccountCardGridLayout(minimumWidth: 285) {
-            ForEach(homeOrderedKinds.filter { !localCLIAccounts.profiles(for: $0).isEmpty }) { kind in
+            ForEach(homeQuotaOrderedLocalKinds) { kind in
                 Button {
                     openLocalCLITab(kind)
                 } label: {
@@ -1707,13 +1731,14 @@ struct CodexAccountManagerView: View {
                         if profiles.count == 1,
                             let window = localCLIAccounts.quotas[profiles[0].id]?.windows.first
                         {
-                            Text(
-                                language.text("已用 ", "Used ")
-                                    + QuotaAvailabilityPresentation.percentText(window.usedPercent)
-                                    + language.text(" · 剩余 ", " · Left ")
-                                    + QuotaAvailabilityPresentation.percentText(100 - window.usedPercent)
-                            )
-                            .lineLimit(1)
+                            HStack(spacing: 8) {
+                                Text(language.text("已用", "Used"))
+                                QuotaPercentageRing(
+                                    percent: window.usedPercent, diameter: 34, tint: .secondary,
+                                    accessibilityTitle: language.text("已用额度", "Used quota"))
+                                Text(language.text("剩余", "Left"))
+                                QuotaPercentageRing(percent: 100 - window.usedPercent, diameter: 34)
+                            }
                             Text(
                                 window.resetsAt.map {
                                     language.text("重置 ", "Resets ") + language.dateTime($0)
@@ -2489,20 +2514,15 @@ struct CodexAccountManagerView: View {
                         .foregroundStyle(.secondary)
                 } else {
                     ForEach(shares.prefix(10)) { share in
-                        HStack(alignment: .firstTextBaseline, spacing: 10) {
+                        HStack(alignment: .center, spacing: 10) {
                             Text(share.name)
                                 .font(.caption.weight(.medium))
                                 .frame(minWidth: 110, alignment: .leading)
-                            GeometryReader { proxy in
-                                Capsule()
-                                    .fill(Color.accentColor.opacity(0.25))
-                                    .frame(width: max(proxy.size.width * CGFloat(share.tokens) / CGFloat(percentBase), 2))
-                            }
-                            .frame(height: 6)
-                            Text("\(Int((Double(share.tokens) / percentBase * 100).rounded()))%")
-                                .font(.caption.weight(.bold).monospacedDigit())
-                                .foregroundStyle(.tint)
-                                .frame(width: 40, alignment: .trailing)
+                            Spacer(minLength: 4)
+                            QuotaPercentageRing(
+                                percent: Double(share.tokens) / percentBase * 100,
+                                diameter: 34, tint: .accentColor,
+                                accessibilityTitle: language.text("用量占比", "Usage share"))
                             Text(language.tokens(share.tokens))
                                 .font(.caption.monospacedDigit())
                                 .foregroundStyle(.secondary)
@@ -2784,7 +2804,10 @@ struct CodexAccountManagerView: View {
                     onRefresh: { store.refreshProfile(profile.id) },
                     onOpenTerminal: { store.openTerminal(for: profile.id, workingDirectory: nil) },
                     onCopyTerminalCommand: { store.copyTerminalCommand(for: profile.id) },
-                    onManage: { openAccountManagement(profileID: profile.id) }
+                    onManage: { openAccountManagement(profileID: profile.id) },
+                    allowsResetCreditAction: !store.isPreview && linkedProfile == nil,
+                    hubAccountAlias: store.accountTaskAlias(for: profile),
+                    referralAccount: !store.isPreview && linkedProfile == nil ? { try store.referralAccount(for: profile.id) } : nil
                 ))
         }
         return AnyView(
@@ -2825,6 +2848,7 @@ struct CodexAccountManagerView: View {
                 creditBalance: store.creditBalancePresentation(for: profile),
                 allowsResetCreditAction: !store.isPreview && linkedProfile == nil,
                 hubAccountAlias: store.accountTaskAlias(for: profile),
+                referralAccount: !store.isPreview && linkedProfile == nil ? { try store.referralAccount(for: profile.id) } : nil,
                 availableResetCredits: store.availableResetCredits(for: profile),
                 resetCreditExpiries: store.resetCreditExpiries(for: profile),
                 resetCardsExpiring: codexCardExpiring(profile, now: now),
@@ -3834,6 +3858,10 @@ struct CodexAccountMenuView: View {
         menuPresentation.isSingleAccount ? menuPresentation.focusedProfile : store.selectedMonitorProfile
     }
 
+    private var hasThemedBackdrop: Bool {
+        paletteCatalog.resolve(id: settings.paletteID, appearance: PaletteAppearance(colorScheme)).identity.paletteID != PaletteCatalog.defaultPaletteID
+    }
+
     private var visibleProfiles: [CodexProfile] {
         // A linked system profile is the same recorded account as its managed
         // profile. Keep the existing de-duplication while retaining every
@@ -4024,9 +4052,7 @@ struct CodexAccountMenuView: View {
                         Circle()
                             .fill(menuQuota.readSucceeded ? FixedVisualPalette.statusSuccess : Color.secondary)
                             .frame(width: 5, height: 5)
-                        Text(menuQuota.sevenDay.map { "\(Int($0.remainingPercent.rounded()))%" } ?? "--")
-                            .monospacedDigit()
-                            .foregroundStyle(.secondary)
+                        QuotaPercentageRing(percent: menuQuota.sevenDay?.remainingPercent, diameter: 30, lineWidth: 2.5)
                     }
                     .font(.system(size: 10, weight: .medium))
                 }
@@ -4040,7 +4066,12 @@ struct CodexAccountMenuView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .background(.regularMaterial)
+        .background {
+            ZStack {
+                Rectangle().fill(.regularMaterial)
+                if hasThemedBackdrop { WorkspaceGlassBackdrop() }
+            }
+        }
         .accessibilityLabel(text("展开账号浮窗", "Expand account panel"))
     }
 
@@ -4187,6 +4218,7 @@ struct CodexAccountMenuView: View {
                     ? Color(red: 48 / 255, green: 52 / 255, blue: 56 / 255)
                     : Color(red: 246 / 255, green: 247 / 255, blue: 250 / 255))
                     .opacity(settings.workspaceGlass.tintOpacity)
+                if hasThemedBackdrop { WorkspaceGlassBackdrop() }
             }
         }
         .ignoresSafeArea()
@@ -4385,15 +4417,10 @@ struct CodexAccountMenuView: View {
     }
 
     private func menuQuotaBar(title: String, remaining: Double?, succeeded: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            HStack {
-                Text(title).font(.system(size: 10, weight: .medium)).foregroundStyle(.secondary)
-                Spacer()
-                Text(succeeded ? QuotaAvailabilityPresentation.percentText(remaining) : "—")
-                    .font(.system(size: 11, weight: .semibold, design: .rounded))
-                    .monospacedDigit()
-            }
-            QuotaProgressTrack(percent: succeeded ? remaining : nil)
+        HStack(spacing: 8) {
+            Text(title).font(.system(size: 10, weight: .medium)).foregroundStyle(.secondary)
+            Spacer()
+            QuotaPercentageRing(percent: succeeded ? remaining : nil, diameter: 36)
         }
     }
 
@@ -4801,12 +4828,8 @@ struct CodexAccountMenuView: View {
                             }
                             HubCLITaskStatusBadge(status: cliTaskStatus, compact: true)
                         }
-                        AccountSemanticQuotaTrack(percent: remaining, height: 6)
                     }
-                    Text(remaining.map { "\(Int($0.rounded()))%" } ?? "--")
-                        .font(.system(size: 11, weight: .semibold, design: .rounded))
-                        .monospacedDigit()
-                        .foregroundStyle(.secondary)
+                    QuotaPercentageRing(percent: remaining, diameter: 38)
                 }
                 .padding(.leading, 10)
                 .frame(height: 48)
@@ -4957,8 +4980,7 @@ struct CodexAccountMenuView: View {
                         HStack(spacing: 3) {
                             Text(window.label)
                                 .foregroundStyle(.secondary)
-                            Text("\(Int(max(0, min(100, 100 - window.usedPercent)).rounded()))%")
-                                .monospacedDigit()
+                            QuotaPercentageRing(percent: 100 - window.usedPercent, diameter: 34)
                         }
                     }
                 }
@@ -5087,12 +5109,8 @@ struct CodexAccountMenuView: View {
                     .foregroundStyle(.secondary)
                 }
                 Spacer()
-                Text(remaining.map { "\(Int($0.rounded()))%" } ?? "--")
-                    .font(.system(size: 12, weight: .semibold, design: .rounded))
-                    .monospacedDigit()
+                QuotaPercentageRing(percent: remaining, diameter: 44)
             }
-
-            AccountSemanticQuotaTrack(percent: remaining, height: 6)
 
             HStack(spacing: 8) {
                 profileQuotaWindowLabel(
@@ -5200,8 +5218,7 @@ struct CodexAccountMenuView: View {
         HStack(spacing: 3) {
             Text(title)
                 .foregroundStyle(.secondary)
-            Text(window.map { "\(Int($0.remainingPercent.rounded()))%" } ?? "--")
-                .monospacedDigit()
+            QuotaPercentageRing(percent: window?.remainingPercent, diameter: 34)
         }
         .font(.system(size: 9.5, weight: .semibold))
         .lineLimit(1)
@@ -5664,6 +5681,7 @@ private struct ProfileRow: View {
     let creditBalance: CreditBalancePresentation
     let allowsResetCreditAction: Bool
     let hubAccountAlias: String?
+    var referralAccount: (() throws -> CodexReferralAccount)? = nil
     let availableResetCredits: Int?
     let resetCreditExpiries: [Date]
     let resetCardsExpiring: Bool
@@ -5707,22 +5725,11 @@ private struct ProfileRow: View {
                 ViewThatFits(in: .horizontal) {
                     HStack(alignment: .center, spacing: 6) {
                         // Fit the compact columns before measuring an untruncated account label.
-                        identitySummary.frame(minWidth: 210, idealWidth: 210, maxWidth: .infinity, alignment: .leading)
+                        identitySummary.frame(minWidth: 250, idealWidth: 280, maxWidth: .infinity, alignment: .leading)
                         quotaSummary.frame(minWidth: 220, idealWidth: 220, maxWidth: .infinity)
                         compactDispatchControls.frame(width: 148)
-                    }.frame(minWidth: 600)
+                    }.frame(minWidth: 630)
                     compactCard
-                }
-            }
-            if allowsResetCreditAction {
-                HStack {
-                    Spacer(minLength: 0)
-                    ResetCreditButton(
-                        profile: profile, selectedProfileID: profile.id,
-                        hubAccountAlias: hubAccountAlias, onConfirmedResult: onRefresh,
-                        displayNumber: displayNumber
-                    )
-                    .controlSize(.small)
                 }
             }
             if isEditing {
@@ -5804,6 +5811,18 @@ private struct ProfileRow: View {
                 }
                 .buttonStyle(WorkspaceQuietButtonStyle(scalesOnPress: false))
                 .help(language.text("查看账号资料", "View account details"))
+                ResetCreditButton(
+                    profile: profile, selectedProfileID: profile.id,
+                    hubAccountAlias: hubAccountAlias, onConfirmedResult: onRefresh,
+                    displayNumber: displayNumber, compact: true
+                )
+                .fixedSize()
+                .disabled(!allowsResetCreditAction)
+                CodexInviteButton(
+                    accountLabel: String(format: "%02d · ", displayNumber) + AccountDisplay.profileName(profile, allProfiles: allProfiles),
+                    resolveAccount: referralAccount
+                )
+                .fixedSize()
                 Spacer(minLength: 0)
                 compactHeaderActions
                 if isEditing { identityEditButtons }

@@ -21,6 +21,7 @@ type desktopConnection struct {
 	ClientKey       string `json:"clientKey"`
 	RunID           string `json:"runID"`
 	CodexExecutable string `json:"codexExecutable"`
+	NetworkProxy    string `json:"networkProxy,omitempty"`
 }
 
 // The connection is supplied by the native host, never by Codex or its config.
@@ -53,6 +54,9 @@ func readDesktopConnection(path string) (desktopConnection, error) {
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	if decoder.Decode(&c) != nil || decoder.Decode(new(any)) != io.EOF || c.SchemaVersion != 1 || !identifier.MatchString(c.RunID) || !desktopCleanKey(c.ClientKey) || !desktopEndpoint(c.Endpoint) || !filepath.IsAbs(c.CodexExecutable) {
+		return desktopConnection{}, bad
+	}
+	if _, err := parseNetworkProxy(c.NetworkProxy); err != nil {
 		return desktopConnection{}, bad
 	}
 	exe, err := os.Stat(c.CodexExecutable)

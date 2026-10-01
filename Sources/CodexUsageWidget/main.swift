@@ -4,6 +4,14 @@ import Darwin
 @main
 struct CodexAccountManagerNextMain {
     @MainActor static func main() async {
+        if CommandLine.arguments.contains("--self-test-section-sizes") {
+            exit(HomeSectionSizingSelfTest.run() ? 0 : 1)
+        }
+
+        if CommandLine.arguments.contains("--self-test-referrals") {
+            exit(await CodexReferralSelfTest.run() ? 0 : 1)
+        }
+
         if CommandLine.arguments.contains("--self-test-global-shortcut") {
             exit(GlobalShortcutSelfTest.run() ? 0 : 1)
         }

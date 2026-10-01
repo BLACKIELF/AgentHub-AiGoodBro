@@ -28,6 +28,11 @@ enum MessageChannelsControllerSelfTest {
             defer { lock.unlock() }
             return sent.last
         }
+        func hasPending(_ path: String) -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return pending.contains { $0.0.url?.path == path }
+        }
         func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
             try await withCheckedThrowingContinuation { continuation in
                 lock.lock()
@@ -214,10 +219,47 @@ enum MessageChannelsControllerSelfTest {
         defer { personalDefaults.removePersistentDomain(forName: suite + ".personal") }
         let ledgerDirectory = FileManager.default.temporaryDirectory.appendingPathComponent("wechat-controller-" + UUID().uuidString, isDirectory: true)
         defer { try? FileManager.default.removeItem(at: ledgerDirectory) }
+        let dedicatedThread = UUID().uuidString
+        var creationCount = 0
+        var pendingCreation: CheckedContinuation<WeChatCodexThreadCreation, Never>?
+        var conversationStarts = 0
+        var activeTurn = UUID().uuidString
+        var turnComplete = false
+        let dedicatedConnection = WeChatCodexConversationConnection(
+            owner: { _ in "synthetic-desktop" },
+            snapshot: { thread, _ in
+                var value: [String: Any] = [
+                    "id": thread, "hostId": "local", "resumeState": "resumed",
+                    "requests": [Any](), "threadRuntimeStatus": ["type": "idle"],
+                ]
+                if turnComplete {
+                    value["turns"] = [
+                        [
+                            "id": activeTurn, "status": "completed",
+                            "items": [
+                                ["type": "agentMessage", "phase": "final_answer", "text": "synthetic dedicated reply"]
+                            ],
+                        ]
+                    ]
+                }
+                return value
+            },
+            start: { thread, _, _, _, _ in
+                guard thread == dedicatedThread else { return nil }
+                conversationStarts += 1
+                activeTurn = UUID().uuidString
+                turnComplete = true
+                return activeTurn
+            }, close: {})
         let personal = MessageChannelsController(
             defaults: personalDefaults, storage: personalStorage,
             transport: { personalHTTP }, personalTransport: { personalHTTP },
-            botLedger: WeChatBotEventLedger(directory: ledgerDirectory))
+            botLedger: WeChatBotEventLedger(directory: ledgerDirectory),
+            conversationFactory: { WeChatCodexConversation(connection: dedicatedConnection, pollIntervalNanoseconds: 1_000_000) })
+        personal.onCreatePersonalChat = { _ in
+            creationCount += 1
+            return await withCheckedContinuation { pendingCreation = $0 }
+        }
         personal.onPersonalBotCommand = { $0 == "/状态" ? "synthetic cached status" : nil }
         defer {
             personal.stop()
@@ -311,6 +353,51 @@ enum MessageChannelsControllerSelfTest {
         personalHTTP.completeAll(responseBody: commandBody)
         settle()
         expect(personalHTTP.count == beforeDuplicate, "duplicate command sent a second bot reply")
+        personal.setPersonalChatEnabled(true)
+        func ordinary(_ id: String) -> String {
+            let value: [String: Any] = [
+                "ret": 0, "get_updates_buf": "synthetic-command-cursor",
+                "msgs": [
+                    [
+                        "message_id": id, "message_type": 1, "message_state": 2,
+                        "from_user_id": "scanner@im.wechat", "to_user_id": "synthetic-bot",
+                        "context_token": "synthetic-context", "create_time_ms": Int((Date().timeIntervalSince1970 * 1000).rounded(.up)),
+                        "item_list": [["type": 1, "text_item": ["text": "synthetic ordinary message"]]],
+                    ]
+                ],
+            ]
+            return String(data: try! JSONSerialization.data(withJSONObject: value), encoding: .utf8)!
+        }
+        // First text reserves one creation. A second incoming text while it is
+        // held must not create or submit another conversation.
+        spin { personalHTTP.hasPending("/ilink/bot/getupdates") }
+        personalHTTP.completeAll(responseBody: ordinary("ordinary-one"))
+        spin { pendingCreation != nil }
+        expect(creationCount == 1 && conversationStarts == 0, "first text must reserve before submitting")
+        spin { personalHTTP.hasPending("/ilink/bot/getupdates") }
+        personalHTTP.completeAll(responseBody: ordinary("ordinary-overlap"))
+        spin { personalHTTP.lastRequest?.url?.path == "/ilink/bot/sendmessage" }
+        expect(creationCount == 1 && conversationStarts == 0, "overlapping first messages created duplicate chats")
+        personalHTTP.completeAll(responseBody: #"{"ret":0}"#)
+        pendingCreation?.resume(returning: .created(dedicatedThread))
+        pendingCreation = nil
+        spin { conversationStarts == 1 && personalHTTP.hasPending("/ilink/bot/sendmessage") }
+        expect(
+            personal.personalAutomaticThreadID == dedicatedThread && personal.personalChatThreadID.isEmpty,
+            "automatic binding overwrote manual selection mode")
+        expect(
+            (String(data: personalHTTP.lastRequest?.httpBody ?? Data(), encoding: .utf8) ?? "").contains("synthetic dedicated reply"),
+            "automatic conversation did not return its final answer")
+        personalHTTP.completeAll(responseBody: #"{"ret":0}"#)
+        spin { !personal.personalBotIsReplying && personalHTTP.hasPending("/ilink/bot/getupdates") }
+        personalHTTP.completeAll(responseBody: ordinary("ordinary-two"))
+        spin { conversationStarts == 2 && personalHTTP.hasPending("/ilink/bot/sendmessage") }
+        expect(creationCount == 1, "second text created a different conversation")
+        expect(
+            (try? WeChatBotEventLedger(directory: ledgerDirectory).conversationID(owner: "synthetic-bot\u{0}scanner@im.wechat")) == dedicatedThread,
+            "dedicated binding did not survive a new ledger instance")
+        personalHTTP.completeAll(responseBody: #"{"ret":0}"#)
+        spin { !personal.personalBotIsReplying }
         let longReply = MessageChannelsController.boundedPersonalReply(String(repeating: "测", count: 3000))
         expect(longReply.utf8.count <= 4096 && longReply.contains("全文请在 Codex"), "long bot reply silently truncated or exceeded byte limit")
         personal.sendTest(.personalWeChat)

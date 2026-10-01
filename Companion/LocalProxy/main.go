@@ -22,6 +22,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	provider "github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor"
 	_ "github.com/router-for-me/CLIProxyAPI/v8/internal/translator"
@@ -569,16 +570,22 @@ func (h *hook) OnResult(_ context.Context, r auth.Result) {
 		state = "temporary_error"
 		code = "upstream_failed"
 		if r.Error != nil {
-			switch r.Error.HTTPStatus {
-			case 429:
-				state = "quota"
-				code = "quota"
-			case 401, 403:
-				if r.Error.HTTPStatus == 403 && imageLocalPath(r.Options.Alt) != "" && r.Error.IsRequestScoped() {
-					break // Image permission denial is not proof of an expired login.
+			if r.Error.IsRequestScoped() {
+				// A rejected request does not establish account or quota failure.
+				state = "ready"
+				code = "request_rejected"
+			} else {
+				switch r.Error.HTTPStatus {
+				case 429:
+					state = "quota"
+					code = "quota"
+				case 401, 403:
+					if r.Error.HTTPStatus == 403 && imageLocalPath(r.Options.Alt) != "" && r.Error.IsRequestScoped() {
+						break // Image permission denial is not proof of an expired login.
+					}
+					state = "login_expired"
+					code = "login_expired"
 				}
-				state = "login_expired"
-				code = "login_expired"
 			}
 		}
 	}
@@ -624,6 +631,8 @@ func (t *guardTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 
 type runtime struct {
 	closeOnce sync.Once
+	modelMu   sync.Mutex
+	models    map[string]*registry.ModelInfo
 	selector  *selector // Retained so isolated runtime fixtures can shorten admission waits.
 	store     *cooldownStore
 	transport *http.Transport
@@ -656,6 +665,12 @@ func newRuntime(s startup, e *events, testBaseURL string) (*runtime, error) {
 	cfg := &config.Config{}
 	cfg.Codex.DisableCodexCloaking = true
 	cfg.Codex.StreamBootstrapBuffering = true
+	// This upstream response rejects the requested model/client combination.
+	// Preserve it and stop this request instead of poisoning every credential
+	// with the SDK's default twelve-hour model-support cooldown.
+	cfg.OAuthRequestScopedErrors = map[string][]internalconfig.RequestScopedErrorRule{
+		"codex": {{Status: http.StatusBadRequest, Match: []string{"model is not supported when using Codex with a ChatGPT account"}, Action: "stop"}},
+	}
 	cfg.SaveCooldownStatus = true
 	cfg.RequestRetry = 0
 	cfg.MaxRetryCredentials = len(s.Accounts)
@@ -679,18 +694,20 @@ func newRuntime(s startup, e *events, testBaseURL string) (*runtime, error) {
 		imageBaseURL = testBaseURL
 	}
 	m.RegisterExecutor(&imageExecutor{CodexExecutor: provider.NewCodexExecutor(cfg), transports: transports, baseURL: imageBaseURL})
-	rt := &runtime{selector: sel, manager: m, ids: sel.order, cancel: cancel, store: store, transport: transport}
+	rt := &runtime{selector: sel, manager: m, ids: sel.order, cancel: cancel, store: store, transport: transport, models: make(map[string]*registry.ModelInfo)}
+	// This is a discovery seed, not the set of models Desktop may request.
+	for _, model := range append(append([]string(nil), s.Models...), nativeImageModel) {
+		rt.models[model] = proxyModelInfo(model)
+	}
 	for _, id := range sel.order {
 		_, err = m.Register(context.Background(), &auth.Auth{ID: id, Provider: "codex", Status: auth.StatusActive, Attributes: map[string]string{"priority": "0"}, Metadata: map[string]any{"type": "codex"}, Runtime: noRefresh{}})
 		if err != nil {
 			cancel()
 			return nil, errors.New("account_registration_failed")
 		}
-		models := make([]*registry.ModelInfo, 0, len(s.Models))
-		// Native image_gen uses a separate model and endpoint. Keep it out of
-		// Desktop's text-model menu while sharing the same admission/cooldowns.
-		for _, model := range append(append([]string(nil), s.Models...), nativeImageModel) {
-			models = append(models, &registry.ModelInfo{ID: model, Object: "model", OwnedBy: "openai", Type: "codex", DisplayName: model})
+		models := make([]*registry.ModelInfo, 0, len(rt.models))
+		for _, model := range rt.models {
+			models = append(models, model)
 		}
 		registry.GetGlobalRegistry().RegisterClient(id, "codex", models)
 		m.RefreshSchedulerEntry(id)
@@ -700,6 +717,7 @@ func newRuntime(s startup, e *events, testBaseURL string) (*runtime, error) {
 		return nil, errors.New("cooldown_restore_failed")
 	}
 	base := handlers.NewBaseAPIHandlers(&cfg.SDKConfig, m)
+	base.SetModelRouterHost(codexModelRoute{})
 	responses := openai.NewOpenAIResponsesAPIHandler(base)
 	router := gin.New()
 	router.RedirectTrailingSlash = false
@@ -743,10 +761,10 @@ func newRuntime(s startup, e *events, testBaseURL string) (*runtime, error) {
 		defer scope.close()
 		c.Next()
 	})
-	router.POST("/v1/responses", responses.Responses)
-	router.POST("/responses", responses.Responses)
-	router.POST("/v1/responses/compact", responses.Compact)
-	router.POST("/responses/compact", responses.Compact)
+	router.POST("/v1/responses", rt.withResponseModel(responses.Responses))
+	router.POST("/responses", rt.withResponseModel(responses.Responses))
+	router.POST("/v1/responses/compact", rt.withResponseModel(responses.Compact))
+	router.POST("/responses/compact", rt.withResponseModel(responses.Compact))
 	for _, path := range []string{"/v1/images/generations", "/v1/images/edits", "/images/generations", "/images/edits"} {
 		router.POST(path, imageHandler(m))
 	}
@@ -787,7 +805,7 @@ func main() {
 		os.Exit(runDesktopAdapter(connectionPath, os.Args[1:]))
 	}
 	if len(os.Args) == 2 && os.Args[1] == "--version" {
-		_, _ = io.WriteString(os.Stdout, "AiGoodBro Local Proxy 0928v1; CLIProxyAPI v8.0.2\n")
+		_, _ = io.WriteString(os.Stdout, "AiGoodBro Local Proxy 1001v3; CLIProxyAPI v8.0.2\n")
 		return
 	}
 	logrus.SetOutput(io.Discard)

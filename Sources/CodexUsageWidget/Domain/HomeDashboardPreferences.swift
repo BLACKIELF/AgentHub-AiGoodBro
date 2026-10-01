@@ -8,6 +8,7 @@ struct HomeDashboardPreferences: Codable, Equatable {
     static let defaultSplitRatio = 0.34
     static let minimumSplitRatio = 0.28
     static let maximumSplitRatio = 0.72
+    static let summaryKeys = ["totalTokens", "totalCost", "activeDays", "currentStreak", "activeTimeMs", "peakDayTokens", "favoriteModel", "messages"]
     var heatmapStart = ""
     var heatmapMetric = "cost"
     var range = "30"
@@ -15,11 +16,12 @@ struct HomeDashboardPreferences: Codable, Equatable {
     var stackBy = "client"
     var height = Self.defaultHeight
     var splitRatio = Self.defaultSplitRatio
+    var summaryWidths: [String: Double] = [:]
 
     init() {}
 
     private enum CodingKeys: String, CodingKey {
-        case heatmapStart, heatmapMetric, range, mode, stackBy, height, splitRatio
+        case heatmapStart, heatmapMetric, range, mode, stackBy, height, splitRatio, summaryWidths
     }
 
     init(from decoder: Decoder) throws {
@@ -40,6 +42,7 @@ struct HomeDashboardPreferences: Codable, Equatable {
             max(
                 Self.minimumSplitRatio,
                 decodedRatio.isFinite ? decodedRatio : Self.defaultSplitRatio))
+        summaryWidths = try values.decodeIfPresent([String: Double].self, forKey: .summaryWidths) ?? [:]
     }
 
     var isValid: Bool {
@@ -50,6 +53,8 @@ struct HomeDashboardPreferences: Codable, Equatable {
             && ["client", "model"].contains(stackBy)
             && (Self.minimumHeight...Self.maximumHeight).contains(height)
             && splitRatio.isFinite && (Self.minimumSplitRatio...Self.maximumSplitRatio).contains(splitRatio)
+            && summaryWidths.count <= Self.summaryKeys.count
+            && summaryWidths.allSatisfy { Self.summaryKeys.contains($0.key) && $0.value.isFinite && (0.02...1).contains($0.value) }
     }
 
     static func load(_ data: Data?) -> Self {

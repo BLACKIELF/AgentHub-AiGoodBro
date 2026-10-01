@@ -5,9 +5,15 @@ struct WeChatCodexConversationTarget: Identifiable, Equatable {
     let title: String
 }
 
+enum WeChatCodexThreadCreation {
+    case created(String)
+    case unavailable, uncertain
+}
+
 final class WeChatCodexSendAdmission: @unchecked Sendable {
     private let lock = NSLock()
     private var enabled = true
+    private var requestAttempted = false
     var isActive: Bool {
         lock.lock()
         defer { lock.unlock() }
@@ -17,6 +23,16 @@ final class WeChatCodexSendAdmission: @unchecked Sendable {
         lock.lock()
         enabled = false
         lock.unlock()
+    }
+    func markRequestAttempted() {
+        lock.lock()
+        requestAttempted = true
+        lock.unlock()
+    }
+    var wasRequestAttempted: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return requestAttempted
     }
 }
 
@@ -87,6 +103,7 @@ final class WeChatCodexConversation {
     func reply(
         threadID: String, eventID: UUID, text: String,
         shouldContinue: @escaping () -> Bool,
+        openDedicatedThread: (() -> Bool)? = nil,
         onSubmitted: @escaping (String) -> Bool
     ) async -> Outcome {
         guard !isRunning, !Self.activeThreads.contains(threadID) else { return .busy }
@@ -100,12 +117,29 @@ final class WeChatCodexConversation {
             connection.close()
         }
         let connection = self.connection
-        let prepared = await Task.detached(priority: .utility) { () -> (String, [String: Any])? in
-            guard let owner = try? connection.owner(threadID),
-                let state = try? connection.snapshot(threadID, owner)
-            else { return nil }
-            return (owner, state)
-        }.value
+        let readPrepared = { () async -> (String, [String: Any])? in
+            await Task.detached(priority: .utility) { () -> (String, [String: Any])? in
+                guard let owner = try? connection.owner(threadID),
+                    let state = try? connection.snapshot(threadID, owner)
+                else { return nil }
+                return (owner, state)
+            }.value
+        }
+        var prepared = await readPrepared()
+        guard shouldContinue(), !Task.isCancelled else { return .cancelled }
+        // Only our dedicated chat may be opened automatically. The desktop
+        // retains ownership, model settings, tools and approval handling.
+        if prepared == nil || prepared?.1["resumeState"] as? String != "resumed",
+            let openDedicatedThread, openDedicatedThread()
+        {
+            let restoreDeadline = Date().addingTimeInterval(20)
+            for _ in 0..<20 {
+                guard shouldContinue(), !Task.isCancelled else { return .cancelled }
+                prepared = await readPrepared()
+                if prepared?.1["resumeState"] as? String == "resumed" || Date() >= restoreDeadline { break }
+                do { try await Task.sleep(nanoseconds: 250_000_000) } catch { return .cancelled }
+            }
+        }
         guard shouldContinue(), !Task.isCancelled else { return .cancelled }
         guard let (owner, state) = prepared else { return .unavailable }
         guard Self.identityMatches(state, threadID: threadID) else { return .unavailable }

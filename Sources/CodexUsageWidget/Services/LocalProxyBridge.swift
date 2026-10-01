@@ -200,10 +200,15 @@ enum LocalProxyCredentialReader {
                 home == profile.codexHomeURL.standardizedFileURL,
                 let data = try readSnapshot(home: home),
                 let centralData = try readSnapshot(home: central),
-                let centralIdentity = CodexOfficialProfileReader.credentialIdentity(fromAuthData: centralData)
+                let centralIdentity = CodexOfficialProfileReader.credentialIdentity(fromAuthData: centralData),
+                profile.matchesRecordedCredential(CodexOfficialProfileReader.credentialIdentity(fromAuthData: data))
             else { throw LocalProxyFailure.identity }
+            // The enrolled Desktop account can have an invalidated managed
+            // session while Desktop's current session is healthy. Use that
+            // current session read-only after matching both recorded identities.
             let result = try validate(
-                data: data, profile: profile, centralIdentity: centralIdentity, now: now, allowDesktopAccount: allowDesktopAccount, creditFloor: creditFloor,
+                data: allowDesktopAccount ? centralData : data, profile: profile, centralIdentity: centralIdentity, now: now, allowDesktopAccount: allowDesktopAccount,
+                creditFloor: creditFloor,
                 allowPaidCredits: allowPaidCredits)
             guard try readSnapshot(home: home) == data,
                 try readSnapshot(home: central) == centralData,

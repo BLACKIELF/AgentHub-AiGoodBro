@@ -1,4 +1,6 @@
-# Current source publication · 0930v6 · 2026-09-30
+# Historical source publication · 0930v6 · 2026-09-30
+
+Current source candidate and gallery: [1002v2 / 9.6.63 (113)](source-publication-1002v2.md).
 
 The current source candidate is 9.6.41 (91), integrating the official Tencent iLink WeChat bot, native project workbench, CLI reception repairs and previously verified local build 87 improvements. The existing remote branch history, build 82 screenshot gallery and regression fixes are retained. Current main-program sources are rebuilt after the merge and required style normalization; build 90 receipts do not qualify the changed tree.
 

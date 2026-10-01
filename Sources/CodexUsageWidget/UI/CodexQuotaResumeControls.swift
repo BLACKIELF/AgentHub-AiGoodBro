@@ -7,21 +7,20 @@ struct CodexQuotaResumeControls: View {
     var body: some View {
         if store.pauseDesktopTasksAtOnePercent || !store.quotaResume.pending.isEmpty {
             VStack(alignment: .leading, spacing: 8) {
-                Toggle(
-                    language.text("换号成功后自动继续原任务", "Continue original tasks after switching"),
-                    isOn: Binding(
-                        get: { store.resumeDesktopTasksAfterSwitch },
-                        set: { store.setResumeDesktopTasksAfterSwitch($0) })
-                )
-                .toggleStyle(.switch)
-                .disabled(!store.pauseDesktopTasksAtOnePercent || store.pausedAutomationFeatures.contains(.lowQuota))
-                .accessibilityIdentifier("next.accounts.resumeAfterSwitch")
-                Text(
-                    language.text(
+                SettingsToggleRow(
+                    title: language.text("换号成功后自动继续原任务", "Continue original tasks after switching"),
+                    detail: language.text(
                         "核实新账号后，在原对话中续做；已完成或已经继续的任务会跳过。关闭此项可手动继续。",
                         "After verifying the new account, continue in the same conversations. Finished or already continued tasks are skipped. Turn this off to continue manually.")
-                )
-                .font(.caption).foregroundStyle(.secondary)
+                ) {
+                    SettingsSwitchToggle(
+                        isOn: Binding(
+                            get: { store.resumeDesktopTasksAfterSwitch },
+                            set: { store.setResumeDesktopTasksAfterSwitch($0) })
+                    )
+                    .disabled(!store.pauseDesktopTasksAtOnePercent || store.pausedAutomationFeatures.contains(.lowQuota))
+                    .accessibilityIdentifier("next.accounts.resumeAfterSwitch")
+                }
                 if !store.quotaResume.pending.isEmpty {
                     HStack {
                         Text(language.text("待续做：\(store.quotaResume.pending.count) 个任务", "Pending: \(store.quotaResume.pending.count) tasks"))
@@ -32,10 +31,10 @@ struct CodexQuotaResumeControls: View {
                         Button(language.text("清除续做记录", "Clear continuation record")) { store.discardQuotaResumePlan() }
                             .disabled(store.quotaResume.isResuming || store.isLaunchingCodex)
                     }
-                    .font(.caption)
+                    .font(.system(size: settingsRowDetailFontSize))
                 }
                 if let message = store.quotaResume.message {
-                    Text(message).font(.caption).foregroundStyle(.secondary)
+                    Text(message).font(.system(size: settingsRowDetailFontSize)).foregroundStyle(.secondary)
                 }
             }
         }

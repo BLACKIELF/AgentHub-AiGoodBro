@@ -1,65 +1,102 @@
 #!/usr/bin/env python3
-"""Exercise UsageStore's real scoped refresh methods with an offline quota reader."""
+"""Compile the real proxy quota refresh flow with synthetic homes and readers."""
 from pathlib import Path
-import os, subprocess, tempfile
+import subprocess
+import tempfile
+
 root = Path(__file__).resolve().parent.parent
-source = (root/'Sources/CodexUsageWidget/Services/UsageStore.swift').read_text()
-a = source.index('    func refreshLocalProxyQuotas(')
-b = source.index('    private func updateCodexForegroundState(', a)
-methods = source[a:b].replace('private func ', 'func ')
-fixture = r'''
+source = (root / 'Sources/CodexUsageWidget/Services/UsageStore.swift').read_text()
+start = source.index('    func refreshLocalProxyQuotas(')
+end = source.index('    private func updateCodexForegroundState(', start)
+flow = source[start:end]
+stubs = r'''
 import Foundation
-struct Snapshot { var accountID: String?; let fetchedAt: Date }
-struct Profile { let id: String; var isSystemProfile = false; var lastSnapshot: Snapshot?; var codexHomeURL: URL { URL(fileURLWithPath: "/fixture/" + id) }; var recordedAccountKey: String { id } }
-final class TokenMonitorCancellation { private let lock = NSLock(); private var stopped = false; var isCancelled: Bool { lock.lock(); defer { lock.unlock() }; return stopped }; func cancel() { lock.lock(); stopped = true; lock.unlock() } }
-struct RuntimeLoadContext { let id: String; let now: Date; static func live(statisticsPreference: Int, codexHomeDirectory: URL) -> Self { .init(id: codexHomeDirectory.lastPathComponent, now: Date()) } }
-struct Quota { let accountID: String; let engineLimits: Int? = nil }
-final class ReaderState { static let live = ReaderState(); let lock = NSLock(); var delays: [String: Double] = [:]; var counts: [String: Int] = [:]; var active = 0; var peak = 0; func read(_ id: String) { lock.lock(); counts[id, default: 0] += 1; active += 1; peak = max(peak, active); let delay = delays[id] ?? 0.02; lock.unlock(); Thread.sleep(forTimeInterval: delay); lock.lock(); active -= 1; lock.unlock() }; func count(_ id: String) -> Int { lock.lock(); defer { lock.unlock() }; return counts[id, default: 0] } }
-struct CodexUsageReader { func readQuotaSnapshot(context: RuntimeLoadContext, quotaOnly: Bool, messages: inout [String], managedProfile: Profile, cancellation: TokenMonitorCancellation, selectLimitsProvider: Int) -> Quota { precondition(quotaOnly); ReaderState.live.read(context.id); return Quota(accountID: context.id) }; func finishingLoad(appServer: Quota, messages: [String], context: RuntimeLoadContext, quotaOnly: Bool) -> Snapshot { Snapshot(accountID: appServer.accountID, fetchedAt: context.now) } }
-final class ProfileStore { var saved: [String: Snapshot] = [:]; func record(_ snapshot: Snapshot, for id: String) throws { if saved[id].map({ $0.fetchedAt > snapshot.fetchedAt }) == true { return }; saved[id] = snapshot } }
-enum WidgetLanguage { case fixture; static func storedOrAutomatic() -> Self { .fixture }; func text(_ zh: String, _ en: String) -> String { en } }
-final class FixtureStore {
- var isPreview = false; var hasStarted = true; var isLoggingIn = false; var isLaunchingCodex = false; var isAccountSwitchTransactionActive = false
- var localProxyQuotaPendingIDs = Set<String>(); var localProxyQuotaRefreshes: [String: TokenMonitorCancellation] = [:]; var localProxyQuotaRetry: DispatchWorkItem?
- var profiles: [Profile]; let statisticsPreference = 0; let engineLimitsSelector = 0; let profileStore = ProfileStore(); var engineLimitsByProfileID: [String: Int] = [:]; var accountManagerMessage = ""
- init(_ ids: [String]) { profiles = ids.map { Profile(id: $0, lastSnapshot: Snapshot(accountID: $0, fetchedAt: .distantPast)) } }
- func observeOfficialQuotaChanges(_ snapshot: Snapshot, profileID: String) {}
- func syncProfiles() { for i in profiles.indices { if let saved = profileStore.saved[profiles[i].id] { profiles[i].lastSnapshot = saved } } }
-'''+methods+r'''
+struct CodexProfile {
+    let id: String
+    var isSystemProfile = false
+    let codexHomeURL: URL
+    var recordedAccountKey: String { id }
+    var lastSnapshot: Account? = Account(accountID: "fixture")
 }
-@main struct Tests {
- @MainActor static func pause(_ seconds: Double) async { try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000)) }
- @MainActor static func main() async {
-  let reads = ReaderState.live
-  reads.delays = ["fast": 0.01, "slow": 0.5, "repeat": 0.15, "stopped": 0.15]
-  let store = FixtureStore(["fast", "slow"])
-  let started = Date(); store.refreshLocalProxyQuotas(profileIDs: ["fast", "slow"])
-  await pause(0.12)
-  precondition(store.profileStore.saved["fast"] != nil && store.profileStore.saved["slow"] == nil, "fast account must publish before unrelated slow account")
-  precondition(store.profileStore.saved["fast"]!.fetchedAt >= started && store.profileStore.saved["fast"]!.fetchedAt < Date(), "preserve actual read timestamp")
-  let repeatStore = FixtureStore(["repeat"])
-  repeatStore.refreshLocalProxyQuotas(profileIDs: ["repeat"]); await pause(0.04)
-  repeatStore.refreshLocalProxyQuotas(profileIDs: ["repeat"]); repeatStore.refreshLocalProxyQuotas(profileIDs: ["repeat"])
-  await pause(0.5); precondition(reads.count("repeat") == 2, "refresh during read coalesces into one pending observation")
-  let blocked = FixtureStore(["blocked"]); blocked.isAccountSwitchTransactionActive = true
-  blocked.refreshLocalProxyQuotas(profileIDs: ["blocked"]); await pause(0.05)
-  precondition(reads.count("blocked") == 0, "account operation blocks read")
-  blocked.isAccountSwitchTransactionActive = false; await pause(1.1)
-  precondition(blocked.profileStore.saved["blocked"] != nil, "blocked request is retained")
-  let stopped = FixtureStore(["stopped"]); stopped.refreshLocalProxyQuotas(profileIDs: ["stopped"]); await pause(0.03)
-  stopped.hasStarted = false; stopped.localProxyQuotaRefreshes.values.forEach { $0.cancel() }; stopped.localProxyQuotaRefreshes.removeAll(); await pause(0.2)
-  precondition(stopped.profileStore.saved.isEmpty, "late completion cannot publish after stop")
-  let many = FixtureStore((0..<9).map { "many-\($0)" }); reads.peak = 0
-  many.refreshLocalProxyQuotas(profileIDs: Set(many.profiles.map(\.id))); await pause(0.3)
-  precondition(reads.peak <= 4 && many.profileStore.saved.count == 9, "bounded concurrency completes all accounts")
-  let identities = FixtureStore(["system", "other"]); identities.profiles[0].isSystemProfile = true
-  identities.refreshLocalProxyQuotas(profileIDs: ["system", "other", "missing"]); await pause(0.1)
-  precondition(reads.count("system") == 0 && identities.profileStore.saved.count == 1, "central and unknown profiles excluded")
-  print("PASS: 8 scoped quota refresh checks; no accounts, credentials or network")
- }
+struct Account { let accountID: String }
+struct Snapshot { let home: URL; let managedID: String?; var engineLimits: Int? = nil }
+final class TokenMonitorCancellation { var isCancelled = false }
+enum WidgetLanguage { static func storedOrAutomatic() -> Self { .fixture }; case fixture; func text(_ a: String, _ b: String) -> String { b } }
+struct RuntimeLoadContext {
+    let home: URL
+    static func live(statisticsPreference: Int, codexHomeDirectory: URL) -> Self { Self(home: codexHomeDirectory) }
+}
+enum ReaderFixture {
+    static let entered = DispatchSemaphore(value: 0)
+    static let release = DispatchSemaphore(value: 0)
+    static var held = false
+}
+struct CodexUsageReader {
+    func readQuotaSnapshot(context: RuntimeLoadContext, quotaOnly: Bool, messages: inout [String], managedProfile: CodexProfile?, cancellation: TokenMonitorCancellation, selectLimitsProvider: Int) -> Snapshot {
+        if ReaderFixture.held { ReaderFixture.entered.signal(); _ = ReaderFixture.release.wait(timeout: .now()+5) }
+        return Snapshot(home: context.home, managedID: managedProfile?.id)
+    }
+    func finishingLoad(appServer: Snapshot, messages: [String], context: RuntimeLoadContext, quotaOnly: Bool) -> Snapshot { appServer }
+}
+@MainActor final class ProfileStore {
+    var homes: [String: URL] = [:]
+    var recorded: [(String, Snapshot)] = []
+    func effectiveCredentialHome(for id: String) -> URL? { homes[id] }
+    func record(_ snapshot: Snapshot, for id: String) throws { recorded.append((id,snapshot)) }
+}
+@MainActor final class UsageStore {
+    var profiles: [CodexProfile] = []
+    var isPreview = false, hasStarted = true, isLoggingIn = false, isLaunchingCodex = false, isAccountSwitchTransactionActive = false
+    var localProxyQuotaPendingIDs: Set<String> = []
+    var localProxyQuotaRefreshes: [String:TokenMonitorCancellation] = [:]
+    var localProxyQuotaRetry: DispatchWorkItem?
+    var statisticsPreference = 0, engineLimitsSelector = 0
+    var engineLimitsByProfileID: [String:Int] = [:]
+    var accountManagerMessage = ""
+    let profileStore = ProfileStore()
+    func observeOfficialQuotaChanges(_ snapshot: Snapshot, profileID: String) {}
+    func syncProfiles() {}
+'''
+tests = r'''
+}
+@main struct Fixture {
+    @MainActor static func wait(_ condition: () -> Bool) async {
+        for _ in 0..<200 { if condition() { return }; try? await Task.sleep(nanoseconds: 10_000_000) }
+        preconditionFailure("quota refresh fixture timed out")
+    }
+    @MainActor static func main() async {
+        let usage = UsageStore()
+        let desktop = URL(fileURLWithPath: "/fixture/.codex")
+        let enrolled = URL(fileURLWithPath: "/fixture/managed/enrolled")
+        let peer = URL(fileURLWithPath: "/fixture/managed/peer")
+        usage.profiles = [CodexProfile(id:"enrolled",codexHomeURL:enrolled),CodexProfile(id:"peer",codexHomeURL:peer),CodexProfile(id:"system",isSystemProfile:true,codexHomeURL:desktop)]
+        usage.profileStore.homes = ["enrolled":desktop,"peer":peer,"system":desktop]
+        usage.refreshLocalProxyQuotas(profileIDs:["enrolled","peer","system"])
+        await wait { usage.localProxyQuotaRefreshes.isEmpty }
+        let records = usage.profileStore.recorded
+        precondition(records.count == 2)
+        let own = records.first { $0.0 == "enrolled" }!.1
+        let other = records.first { $0.0 == "peer" }!.1
+        precondition(own.home == desktop && own.managedID == nil, "Desktop quota must use current effective session")
+        precondition(other.home == peer && other.managedID == "peer", "other enrolled identity must keep its own home")
+        precondition(!records.contains { $0.0 == "system" }, "proxy must not record the system profile")
+        usage.profileStore.recorded = []
+        ReaderFixture.held = true
+        usage.refreshLocalProxyQuotas(profileIDs:["enrolled"])
+        let entered = await Task.detached { ReaderFixture.entered.wait(timeout:.now()+2) == .success }.value
+        precondition(entered)
+        usage.profileStore.homes["enrolled"] = enrolled
+        ReaderFixture.release.signal()
+        await wait { usage.localProxyQuotaRefreshes.isEmpty }
+        precondition(usage.profileStore.recorded.isEmpty, "changed effective identity must discard in-flight result")
+        print("PASS: actual proxy refresh reads enrolled Desktop's effective home, preserves peer isolation, excludes system-profile writes and discards changed identity")
+    }
 }
 '''
-with tempfile.TemporaryDirectory(prefix='aigoodbro-proxy-quota-') as temporary:
-    p = Path(temporary); (p/'Fixture.swift').write_text(fixture)
-    subprocess.run(['xcrun','swiftc','-swift-version','5','-parse-as-library',str(p/'Fixture.swift'),'-o',str(p/'fixture')],check=True)
-    subprocess.run([str(p/'fixture')],check=True,timeout=15)
+with tempfile.TemporaryDirectory(prefix='agb-proxy-quota-') as directory:
+    folder = Path(directory)
+    swift = folder / 'Fixture.swift'
+    swift.write_text(stubs + flow + tests)
+    binary = folder / 'fixture'
+    subprocess.run(['xcrun','swiftc','-swift-version','5','-parse-as-library',str(swift),'-o',str(binary)],check=True)
+    subprocess.run([str(binary)],check=True)

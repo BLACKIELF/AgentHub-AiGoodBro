@@ -518,6 +518,20 @@ enum MessageChannelsTests {
                          message(token: "stale-token", offset: -90_000), message(token: "future-token", offset: 3_600),
                          message(token: "fresh-context")], "get_updates_buf": "fixture-cursor"], credential: unbound, now: now)
             expect(updates.contextChanged && updates.binding.contextToken == "fresh-context" && updates.binding.updatesCursor == "fixture-cursor", "context did not stay bound to the scanner's own bot and recent message")
+            for rawID in ["9007199254740993", "18446744073709551615"] {
+                var inbound = message(token: "fresh-context")
+                inbound["message_state"] = 2
+                inbound["message_id"] = try JSONSerialization.jsonObject(with: Data(rawID.utf8), options: .fragmentsAllowed)
+                let parsed = try PersonalWeChatMessageChannel.bindingFromUpdates(["msgs": [inbound]], credential: unbound, now: now)
+                expect(parsed.messages.first?.id == rawID, "numeric uint64 message ID was lost or rounded")
+            }
+            for invalidID: Any in [true, -1, 0.5] {
+                var inbound = message(token: "fresh-context")
+                inbound["message_state"] = 2
+                inbound["message_id"] = invalidID
+                let parsed = try PersonalWeChatMessageChannel.bindingFromUpdates(["msgs": [inbound]], credential: unbound, now: now)
+                expect(parsed.messages.isEmpty, "invalid message ID admitted a command")
+            }
             let credential = MessageChannelCredential(secret: unbound.secret, target: unbound.target, personalBinding: updates.binding)
             let roundTrip = try JSONDecoder().decode(MessageChannelCredential.self, from: JSONEncoder().encode(credential))
             expect(roundTrip.personalBinding == updates.binding, "encrypted-record session round trip lost context/cursor")
@@ -529,13 +543,40 @@ enum MessageChannelsTests {
             let encoded = String(data: request.httpBody!, encoding: .utf8)!
             expect(!encoded.contains(unbound.secret) && !encoded.contains("private inbound body") && !encoded.contains("**"), "personal text included credentials, incoming text or Markdown formatting")
             let http = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
-            for response in ["{}", #"{"ret":false}"#, #"{"ret":0.5}"#, #"{"ret":0,"errcode":-1}"#] {
+            for response in [#"{"unexpected":true}"#, #"{"ret":false}"#, #"{"ret":0.5}"#, #"{"ret":0,"errcode":-1}"#] {
                 expect((try? PersonalWeChatMessageChannel.responseObject(Data(response.utf8), http: http, request: request, requiresAcceptance: true)) == nil, "personal notification falsely accepted an ambiguous response")
             }
             do {
                 _ = try PersonalWeChatMessageChannel.responseObject(Data(#"{"ret":-14}"#.utf8), http: http, request: request, requiresAcceptance: true)
                 failures.append("expired personal session accepted")
             } catch { expect(error as? MessageChannelError == .weChatSessionExpired, "expired session was not surfaced for reconnect") }
+            for response in ["{}", #"{"message_id":18446744073709551615}"#] {
+                expect((try? PersonalWeChatMessageChannel.responseObject(Data(response.utf8), http: http, request: request, requiresAcceptance: true)) != nil,
+                    "official success response with omitted default fields was rejected")
+            }
+            let pollingTransport = FakeTransport(behavior: .respond(status: 200, body: Data(#"{"msgs":[],"get_updates_buf":"next-cursor"}"#.utf8)))
+            let pollingChannel = PersonalWeChatMessageChannel(transport: pollingTransport)
+            let polling = runAsync { () -> Bool in
+                do {
+                    let update = try await pollingChannel.updates(unbound, now: now)
+                    return update.binding.updatesCursor == "next-cursor" && update.messages.isEmpty
+                } catch { return false }
+            }
+            expect(polling == true, "successful iLink poll without optional ret was rejected")
+            expect((try? PersonalWeChatMessageChannel.bindingFromUpdates(["msgs": "invalid"], credential: unbound, now: now)) == nil,
+                "malformed polling messages were accepted")
+            var inbound = message(token: "fresh-context")
+            inbound["message_state"] = 2
+            inbound["message_id"] = NSNumber(value: UInt64.max)
+            inbound["item_list"] = [["type": 1, "text_item": ["text": "/状态"]]]
+            let incomingData = try JSONSerialization.data(withJSONObject: ["msgs": [inbound], "get_updates_buf": "next-cursor"])
+            let incomingTransport = FakeTransport(behavior: .respond(status: 200, body: incomingData))
+            let received = runAsync { try? await PersonalWeChatMessageChannel(transport: incomingTransport).updates(unbound, now: now) }
+            expect(received?.messages.first?.text == "/状态" && received?.binding.hasFreshContext(now: now) == true,
+                "wire response did not enable context and deliver the status command")
+            let emptyAck = FakeTransport(behavior: .respond(status: 200, body: Data("{}".utf8)))
+            let reply = runAsync { await PersonalWeChatMessageChannel(transport: emptyAck).sendText("测试回复", eventID: UUID(), credential: credential) }
+            expect(!isFailure(reply) && emptyAck.requests.count == 1, "reply with omitted success fields did not complete once")
             let transport = FakeTransport(behavior: .respond(status: 200, body: Data(#"{"ret":0}"#.utf8)))
             let channel = PersonalWeChatMessageChannel(transport: transport)
             let first = runAsync { await channel.send(status, credential: credential, options: .standard) }

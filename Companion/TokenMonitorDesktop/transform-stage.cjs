@@ -225,6 +225,7 @@ async function switchCodexSystemAccount(id) {`,
       showView: async (viewId) => { await refreshAiGoodBroManagedCodexAccounts(); openViewFromTray(viewId); },
       showSettings: async (section) => { await refreshAiGoodBroManagedCodexAccounts(); focusExistingWindow(); sendMainWindowEvent('settings:open', section); },
       isTrayVisible: () => Boolean(tray && !tray.isDestroyed()),
+      getAllTimeCostUsd: () => electronPresentationStats(latestStats || localStats)?.periods?.allTime?.costUsd,
       quit: () => requestAppQuit()
     });
   }

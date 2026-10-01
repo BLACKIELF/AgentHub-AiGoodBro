@@ -31,3 +31,5 @@
 --self-test-account-floating-panel
 --self-test-brand-assets
 --self-test-webview-bridge
+--self-test-referrals
+--self-test-section-sizes

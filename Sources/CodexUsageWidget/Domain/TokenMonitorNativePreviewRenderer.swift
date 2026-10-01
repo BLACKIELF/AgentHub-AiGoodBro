@@ -117,7 +117,7 @@ enum TokenMonitorNativePreviewRenderer {
             let view = HStack(alignment: .center, spacing: 4) {
                 TokenMonitorEdgeDockCardView(
                     cell: cells[0], side: .right, language: .zh, tailY: 166,
-                    isPinned: true, canPin: false, onPin: {}, onOpenDashboard: {}
+                    isPinned: true, canPin: true, onPin: {}, onOpenDashboard: {}, onRefresh: {}
                 )
                 .frame(width: 292, height: 332)
                 TokenMonitorEdgeDockRailView(
@@ -168,7 +168,7 @@ enum TokenMonitorNativePreviewRenderer {
                 let view = HStack(alignment: .center, spacing: 4) {
                     TokenMonitorEdgeDockCardView(
                         cell: cells[index], side: .right, language: .zh, tailY: 166,
-                        isPinned: true, canPin: false, onPin: {}, onOpenDashboard: {}
+                        isPinned: true, canPin: true, onPin: {}, onOpenDashboard: {}, onRefresh: {}
                     )
                     .frame(width: 292, height: 332)
                     TokenMonitorEdgeDockRailView(
@@ -196,7 +196,25 @@ enum TokenMonitorNativePreviewRenderer {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             try renderProxyActivity(to: directory)
             try renderQuotaDock(to: directory)
+            for scheme in [ColorScheme.light, .dark] {
+                let rings = HStack(spacing: 20) {
+                    ForEach([Double?.none, 0, 1, 67, 100], id: \.self) { value in
+                        QuotaPercentageRing(percent: value, diameter: 48)
+                    }
+                }
+                .padding(20).background(Color(nsColor: .windowBackgroundColor))
+                try WorkspacePreviewRenderer.renderView(
+                    rings, size: CGSize(width: 370, height: 90), scheme: scheme,
+                    to: directory.appendingPathComponent("percentage-rings-\(scheme == .dark ? "dark" : "light").png"))
+            }
             let catalog = PaletteCatalog.loadFromMainBundle()
+            for scheme in [ColorScheme.light, .dark] {
+                try renderSettings(
+                    paletteID: "codexu.liquid-keycap", scheme: scheme, language: .zh,
+                    includeStatusError: false, catalog: catalog, directory: directory,
+                    filename: "settings-workspace-\(scheme == .dark ? "dark" : "light").png",
+                    page: .workspace)
+            }
             let dashboard = TokenMonitorDashboardSnapshot(response: response())
             let largeDashboard = TokenMonitorDashboardSnapshot(response: response(largeNumbers: true))
             let leapNow = fixtureDate(year: 2024, month: 3, day: 1)
@@ -561,7 +579,8 @@ enum TokenMonitorNativePreviewRenderer {
         includeStatusError: Bool,
         catalog: PaletteCatalog,
         directory: URL,
-        filename: String
+        filename: String,
+        page: SettingsPage = .tokenMonitor
     ) throws {
         let size = CGSize(width: 820, height: 704)
         let tokens = catalog.resolve(id: paletteID, appearance: PaletteAppearance(scheme))
@@ -589,12 +608,13 @@ enum TokenMonitorNativePreviewRenderer {
             tokenMonitorHubSync: hub
         )
         let updateStore = AppUpdateStore(settings: settings)
+        if page == .workspace { usage.setPauseDesktopTasksAtOnePercent(true) }
         let panel = SettingsPanelView(
             settings: settings,
             store: usage,
             updateStore: updateStore,
             onOpenPaletteLibrary: {},
-            initialPage: .tokenMonitor
+            initialPage: page
         )
         .frame(width: 780, height: 640)
         .background(WorkspaceGlassSurface(cornerRadius: 18))

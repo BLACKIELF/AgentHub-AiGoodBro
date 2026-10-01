@@ -754,29 +754,136 @@ enum WorkspacePreviewRenderer {
                 filename: "home-cards-light-liquid-keycap-1440-reduce-transparency-viewport.png")
             // Compact layout checks include expanded sections, both languages,
             // and the real proxy view, with synthetic account data only.
-            settings.language = language
-            defaults.set(true, forKey: "AiGoodBro.home.section.recommended-announcements.expanded")
-            defaults.set(true, forKey: "AiGoodBro.home.section.usage.expanded")
-            try renderViewport(
-                layout: .cards, scheme: .dark, width: 980, reduceTransparency: true,
-                filename: "compact-home-\(language.rawValue).png")
             let proxy = LocalProxyQueueStore(usageStore: store)
-            let tokens = catalog.resolve(id: settings.paletteID, appearance: .dark)
-            let proxyView = LocalProxyQueueView(model: proxy, language: language)
-                .environment(\.widgetLanguage, language)
-                .environment(\.visualTokens, tokens)
-                .environment(\.workspacePreviewDate, referenceDate)
-                .environment(\.workspacePreviewOpaqueSurface, true)
-                .environment(\.colorScheme, ColorScheme.dark)
-            try renderView(
-                proxyView, size: CGSize(width: 830, height: 660), scheme: .dark,
-                to: directory.appendingPathComponent("compact-proxy-\(language.rawValue).png"))
+            for locale in [WidgetLanguage.zh, .en] {
+                settings.language = locale
+                defaults.set(true, forKey: "AiGoodBro.home.section.recommended-announcements.expanded")
+                defaults.set(true, forKey: "AiGoodBro.home.section.usage.expanded")
+                defaults.set(true, forKey: HomeSection.reset.storageKey)
+                try renderViewport(
+                    layout: .cards, scheme: .dark, width: 980, reduceTransparency: true,
+                    filename: "compact-home-\(locale.rawValue).png")
+                defaults.set(HomeResetMessageOrder.announcementsFirst.rawValue, forKey: HomeResetMessageOrder.storageKey)
+                try renderViewport(
+                    layout: .cards, scheme: .dark, width: 820, reduceTransparency: true,
+                    filename: "swapped-reset-\(locale.rawValue).png")
+                defaults.set(HomeResetMessageOrder.cardsFirst.rawValue, forKey: HomeResetMessageOrder.storageKey)
+                defaults.set(false, forKey: HomeSection.reset.storageKey)
+                try renderViewport(
+                    layout: .rows, scheme: .dark, width: 820, reduceTransparency: true,
+                    filename: "collapsed-reset-\(locale.rawValue).png")
+                defaults.set(false, forKey: "AiGoodBro.home.section.recommended-announcements.expanded")
+                try renderViewport(
+                    layout: .rows, scheme: .dark, width: 820, reduceTransparency: true,
+                    filename: "collapsed-notices-\(locale.rawValue).png")
+                for (name, amount) in [("250", 250.0), ("500", 500.0), ("1000", 1000.0), ("none", -1.0), ("unknown", -2.0)] {
+                    var payload: [String: Any] = [
+                        "should_show": true, "remaining_send_capacity": 3, "remaining_reward_capacity": 3,
+                        "requires_explicit_confirmation": true,
+                        "rules": [locale.text("演示：奖励需满足官方条件。", "Demo: rewards require the official qualifying actions.")],
+                    ]
+                    if amount >= 0 {
+                        payload["grants"] = [["recipient": "referrer", "grant_type": "personal_credits", "amount": amount]]
+                    } else if amount == -1 {
+                        payload["offer_id"] = "none"
+                    }
+                    let eligibility = try JSONDecoder().decode(CodexReferralEligibility.self, from: JSONSerialization.data(withJSONObject: payload))
+                    let review = CodexReferralReview(context: CodexReferralContext(programID: "codex_referral_consumer"), eligibility: eligibility, checkedAt: referenceDate)
+                    let account = CodexReferralAccount(profile: store.profiles[0], credentialHome: store.profiles[0].codexHomeURL)
+                    let controller = CodexInviteController(previewReview: review)
+                    let sheet = CodexInviteSheet(
+                        account: account, accountLabel: locale.text("演示账号 · 未发送邀请", "Demo account · No invitation sent"), resolveAccount: { account }, controller: controller
+                    )
+                    .environment(\.widgetLanguage, locale)
+                    .environment(\.colorScheme, ColorScheme.dark)
+                    try renderView(
+                        sheet, size: CGSize(width: 520, height: 560), scheme: .dark,
+                        to: directory.appendingPathComponent("invite-\(name)-\(locale.rawValue).png"))
+                }
+                for scheme in [ColorScheme.dark, .light] {
+                    let tokens = catalog.resolve(id: settings.paletteID, appearance: scheme == .dark ? .dark : .light)
+                    let proxyView = LocalProxyQueueView(model: proxy, language: locale)
+                        .environment(\.widgetLanguage, locale)
+                        .environment(\.visualTokens, tokens)
+                        .environment(\.workspacePreviewDate, referenceDate)
+                        .environment(\.workspacePreviewOpaqueSurface, true)
+                        .environment(\.colorScheme, scheme)
+                    for width in [CGFloat(680), 830] {
+                        try renderView(
+                            proxyView, size: CGSize(width: width, height: 660), scheme: scheme,
+                            to: directory.appendingPathComponent("compact-proxy-\(locale.rawValue)-\(scheme == .dark ? "dark" : "light")-\(Int(width)).png"))
+                    }
+                }
+            }
+            // Append sizing coverage after the established 33 captures so their
+            // fixtures remain unchanged. Every key belongs to this preview suite.
+            func renderSizingViewport(locale: WidgetLanguage, wide: Bool) throws {
+                let keys =
+                    HomeResizableSectionID.allCases.flatMap { [$0.widthKey, $0.heightKey] }
+                    + HomeSection.allCases.map(\.storageKey)
+                    + [
+                        HomeSectionSizing.resetSplitKey, HomeResetMessageOrder.storageKey,
+                        "AiGoodBro.home.section.recommended-announcements.expanded",
+                        "AiGoodBro.home.section.local-cli.expanded",
+                    ]
+                let previousValues = keys.map { (key: $0, value: defaults.object(forKey: $0)) }
+                let previousLanguage = settings.language
+                let previousLayout = settings.accountWorkspaceLayout
+                let previousTheme = settings.themeMode
+                defer {
+                    for previous in previousValues {
+                        if let value = previous.value {
+                            defaults.set(value, forKey: previous.key)
+                        } else {
+                            defaults.removeObject(forKey: previous.key)
+                        }
+                    }
+                    settings.language = previousLanguage
+                    settings.accountWorkspaceLayout = previousLayout
+                    settings.themeMode = previousTheme
+                }
+                for section in HomeResizableSectionID.allCases {
+                    HomeSectionSize.reset(section, in: defaults)
+                }
+                settings.language = locale
+                defaults.set(true, forKey: "AiGoodBro.home.section.recommended-announcements.expanded")
+                defaults.set(false, forKey: "AiGoodBro.home.section.local-cli.expanded")
+                defaults.set(wide, forKey: HomeSection.reset.storageKey)
+                defaults.set(false, forKey: HomeSection.messages.storageKey)
+                defaults.set(true, forKey: HomeSection.recommendations.storageKey)
+                defaults.set(true, forKey: HomeSection.accounts.storageKey)
+                defaults.set(false, forKey: HomeSection.usage.storageKey)
+                defaults.set(HomeResetMessageOrder.cardsFirst.rawValue, forKey: HomeResetMessageOrder.storageKey)
+                defaults.set(wide ? 0.35 : 0.5, forKey: HomeSectionSizing.resetSplitKey)
+                if wide {
+                    HomeSectionSize(widthFraction: 0.88, height: 248).save(.reset, to: defaults)
+                    HomeSectionSize(height: 152).save(.resetCards, to: defaults)
+                    HomeSectionSize(height: 176).save(.resetAnnouncements, to: defaults)
+                    HomeSectionSize(widthFraction: 0.82, height: 280).save(.accounts, to: defaults)
+                } else {
+                    // Eight real fixture rows exceed this height and enter the
+                    // production HomeResizableSection's native vertical scroll.
+                    HomeSectionSize(height: 320).save(.accounts, to: defaults)
+                }
+                let width = wide ? CodexAccountManagerView.maxWidth : CodexAccountManagerView.minWidth
+                try renderViewport(
+                    layout: wide ? .cards : .rows, scheme: .dark, width: width, reduceTransparency: true,
+                    filename: "home-resized-\(wide ? "wide" : "narrow")-\(locale.rawValue)-\(Int(width))-viewport.png")
+            }
+            for locale in [WidgetLanguage.zh, .en] {
+                try renderSizingViewport(locale: locale, wide: true)
+                try renderSizingViewport(locale: locale, wide: false)
+            }
             let note = """
-                AiGoodBro 0923v8 design review, synthetic data only.
+                AiGoodBro 1001v4 UI review, synthetic data only.
                 Shared fixture: eight named accounts from docs/ui-preview-0923v7/index.html.
                 Reference clock: 2026-09-23 03:00 Asia/Shanghai.
                 Production CodexAccountManagerView: full-height 1440-point cards/rows,
                 1440- and 820-point dark viewports, plus a light reduced-transparency viewport.
+                Compact home and collapsed reset/notices in Chinese and English.
+                Saved section sizes and unequal reset columns at 1440 points;
+                expanded Skills and a scrolling account section at 820 points, in both languages.
+                Proxy input and quota layout at 680 and 830 points, in light and dark.
                 """
             try note.write(
                 to: directory.appendingPathComponent("README.txt"),

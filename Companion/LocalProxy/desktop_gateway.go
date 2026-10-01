@@ -20,8 +20,22 @@ import (
 // The built-in OpenAI provider keeps Desktop's real ChatGPT control-plane
 // identity and persists a provider that still exists after the proxy is off.
 // Its inference bearer is verified locally, then replaced before entering the
-// account pool. The Desktop credential is never forwarded to the pool/upstream.
+// account pool. The Desktop credential is never forwarded to pool inference.
 func startDesktopGateway(c desktopConnection, environment []string) (*http.Server, string, error) {
+	catalog, closeCatalog, err := newDesktopModelCatalog(c.NetworkProxy)
+	if err != nil {
+		return nil, "", err
+	}
+	server, endpoint, err := startDesktopGatewayWithCatalog(c, environment, catalog)
+	if err != nil {
+		closeCatalog()
+		return nil, "", err
+	}
+	server.RegisterOnShutdown(closeCatalog)
+	return server, endpoint, nil
+}
+
+func startDesktopGatewayWithCatalog(c desktopConnection, environment []string, catalog http.Handler) (*http.Server, string, error) {
 	home := ""
 	userHome := ""
 	for _, entry := range environment {
@@ -69,7 +83,14 @@ func startDesktopGateway(c desktopConnection, environment []string) (*http.Serve
 			w.WriteHeader(http.StatusUpgradeRequired)
 			return
 		}
-		if !((r.Method == "POST" && (r.URL.Path == "/v1/responses" || r.URL.Path == "/v1/responses/compact" || (strings.HasPrefix(r.URL.Path, "/v1/") && imageLocalPath(r.URL.Path) != ""))) || (r.Method == "GET" && r.URL.Path == "/v1/models")) {
+		// Codex expects its native {models:[...]} catalog with capabilities,
+		// not the generic pool's OpenAI-compatible {data:[{id:...}]} listing.
+		// Discovery remains on the signed-in Desktop's official control plane.
+		if r.Method == http.MethodGet && r.URL.Path == "/v1/models" {
+			catalog.ServeHTTP(w, r)
+			return
+		}
+		if !(r.Method == "POST" && (r.URL.Path == "/v1/responses" || r.URL.Path == "/v1/responses/compact" || (strings.HasPrefix(r.URL.Path, "/v1/") && imageLocalPath(r.URL.Path) != ""))) {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
@@ -81,7 +102,13 @@ func startDesktopGateway(c desktopConnection, environment []string) (*http.Serve
 	}
 	server := &http.Server{Handler: handler, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: time.Minute, ErrorLog: log.New(io.Discard, "", 0)}
 	server.RegisterOnShutdown(transport.CloseIdleConnections)
-	go func() { _ = server.Serve(listener); transport.CloseIdleConnections() }()
+	go func() {
+		_ = server.Serve(listener)
+		transport.CloseIdleConnections()
+		if closer, ok := catalog.(interface{ CloseIdleConnections() }); ok {
+			closer.CloseIdleConnections()
+		}
+	}()
 	return server, "http://" + listener.Addr().String() + "/v1", nil
 }
 

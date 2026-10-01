@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Account-card control only. It exposes no keyboard, menu, URL or CLI shortcut.
+/// Explicit account control with two confirmations; no keyboard, menu, URL or CLI shortcut.
 struct ResetCreditButton: View {
     @Environment(\.widgetLanguage) private var language
     let profile: CodexProfile
@@ -8,6 +8,7 @@ struct ResetCreditButton: View {
     let hubAccountAlias: String?
     let onConfirmedResult: () -> Void
     var displayNumber: Int? = nil
+    var compact = false
 
     @StateObject private var controller = CodexResetCreditController()
 
@@ -15,17 +16,17 @@ struct ResetCreditButton: View {
         Button {
             controller.beginReview(profile: profile, selectedProfileID: selectedProfileID)
         } label: {
-            HStack(spacing: 6) {
+            HStack(spacing: compact ? 4 : 6) {
                 if controller.isWorking {
                     ProgressView().controlSize(.small)
                 } else {
                     Image(systemName: "arrow.counterclockwise.circle")
                 }
-                Text(language.text("使用重置卡", "Use reset card"))
+                Text(compact ? language.text("重置卡", "Reset") : language.text("使用重置卡", "Use reset card"))
                     .lineLimit(1)
             }
         }
-        .buttonStyle(.bordered)
+        .buttonStyle(WorkspaceActionButtonStyle(compact: compact))
         .disabled(!canBegin)
         .help(buttonHelp)
         .accessibilityLabel(buttonTitle)

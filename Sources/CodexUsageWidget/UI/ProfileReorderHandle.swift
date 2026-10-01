@@ -53,17 +53,21 @@ struct ProfileReorderHandle: NSViewRepresentable {
     let onMove: (CGPoint) -> Void
     let onDrop: (CGPoint) -> Void
     let onCancel: () -> Void
+    var handleLabel: String? = nil
+    var handleHelp: String? = nil
+    var glyphScale: CGFloat = 1
 
     func makeNSView(context: Context) -> HandleView { HandleView() }
 
     func updateNSView(_ view: HandleView, context: Context) {
-        view.setAccessibilityLabel(language.text("拖动调整账号顺序", "Drag to reorder accounts"))
-        view.toolTip = language.text("拖动调整顺序；右键可上移或下移", "Drag to reorder; right-click to move up or down")
+        view.setAccessibilityLabel(handleLabel ?? language.text("拖动调整账号顺序", "Drag to reorder accounts"))
+        view.toolTip = handleHelp ?? language.text("拖动调整顺序；右键可上移或下移", "Drag to reorder; right-click to move up or down")
         view.isEnabled = isEnabled
         view.onBegin = onBegin
         view.onMove = onMove
         view.onDrop = onDrop
         view.onCancel = onCancel
+        view.glyphScale = glyphScale
         view.needsDisplay = true
     }
 
@@ -75,6 +79,7 @@ struct ProfileReorderHandle: NSViewRepresentable {
         var onMove: (CGPoint) -> Void = { _ in }
         var onDrop: (CGPoint) -> Void = { _ in }
         var onCancel: () -> Void = {}
+        var glyphScale: CGFloat = 1
         private var canBeginDrag = false
         private var isDragging = false
         private weak var previousResponder: NSResponder?
@@ -90,17 +95,17 @@ struct ProfileReorderHandle: NSViewRepresentable {
         required init?(coder: NSCoder) { nil }
 
         override func draw(_ dirtyRect: NSRect) {
-            Self.drawBars(in: bounds, color: isEnabled ? .secondaryLabelColor : .disabledControlTextColor)
+            Self.drawBars(in: bounds, color: isEnabled ? .secondaryLabelColor : .disabledControlTextColor, scale: glyphScale)
         }
 
-        private static func drawBars(in rect: NSRect, color: NSColor) {
+        private static func drawBars(in rect: NSRect, color: NSColor, scale: CGFloat) {
             color.setStroke()
             let path = NSBezierPath()
-            path.lineWidth = 1.8
+            path.lineWidth = 1.8 * scale
             path.lineCapStyle = .round
             for offset: CGFloat in [-5, 0, 5] {
-                path.move(to: CGPoint(x: rect.midX - 7, y: rect.midY + offset))
-                path.line(to: CGPoint(x: rect.midX + 7, y: rect.midY + offset))
+                path.move(to: CGPoint(x: rect.midX - 7 * scale, y: rect.midY + offset * scale))
+                path.line(to: CGPoint(x: rect.midX + 7 * scale, y: rect.midY + offset * scale))
             }
             path.stroke()
         }

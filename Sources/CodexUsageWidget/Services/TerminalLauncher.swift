@@ -199,7 +199,7 @@ struct TerminalAppLauncher: TerminalLaunching {
             let middleCommand = try configuredCodexCommand(executable: "/fixture/codex", preference: middle, roleURL: role)
             let direct = CodexExecutionPreference(model: .astra, reasoningEffort: .low, serviceTier: .standard, subagentMode: .lunaDirect)
             let directCommand = try configuredCodexCommand(executable: "/fixture/codex", preference: direct)
-            guard middleCommand.contains("--model 'gpt-6-sol'"), middleCommand.contains("model_reasoning_effort=\"high\""),
+            guard middleCommand.contains("--model 'gpt-6.1-sol'"), middleCommand.contains("model_reasoning_effort=\"high\""),
                 middleCommand.contains("agents.max_concurrent_threads_per_session=1"),
                 middleCommand.contains("agents.next_preset_worker.config_file="),
                 !middleCommand.contains("developer_instructions="),

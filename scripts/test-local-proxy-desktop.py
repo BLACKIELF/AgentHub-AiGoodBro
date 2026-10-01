@@ -95,8 +95,21 @@ def main():
             "account_id": "fixture-account"}, "last_refresh": "2099-01-01T00:00:00Z"}))
         auth_path.chmod(0o600)
         auth_before = auth_path.read_bytes()
+        # Inference/ancestry fixture: avoid official discovery with synthetic
+        # credentials. Native model/list discovery has its own gateway fixture.
+        catalog_path = root / "catalog.json"
+        catalog_path.write_text(json.dumps({"models": [{
+            "slug": "gpt-6-sol", "display_name": "Fixture", "description": "Synthetic model",
+            "default_reasoning_level": "max", "supported_reasoning_levels": [{"effort": "max", "description": "Max"}],
+            "shell_type": "unified_exec", "visibility": "list", "supported_in_api": True,
+            "priority": 1, "base_instructions": "Synthetic fixture.",
+            "default_reasoning_summary": "none", "support_verbosity": True, "default_verbosity": "low",
+            "apply_patch_tool_type": "freeform", "truncation_policy": {"mode": "tokens", "limit": 10000},
+            "context_window": 272000, "effective_context_window_percent": 95,
+            "input_modalities": ["text", "image"], "experimental_supported_tools": []}]}))
         (home / "config.toml").write_text(
             f'chatgpt_base_url="http://127.0.0.1:{server.server_port}/backend-api/"\n'
+            f'model_catalog_json={json.dumps(str(catalog_path))}\n'
             'cli_auth_credentials_store="file"\n')
         connection = root / "connection.json"
         connection.write_text(json.dumps({

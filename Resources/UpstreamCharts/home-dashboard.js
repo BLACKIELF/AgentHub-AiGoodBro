@@ -10,6 +10,11 @@ const fullNumber = value => new Intl.NumberFormat(state.locale, {maximumFraction
 const splitBounds = Object.freeze({min:0.28, max:0.72, default:0.34});
 const safeSplitRatio = value => Number.isFinite(Number(value))
   ? Math.min(splitBounds.max, Math.max(splitBounds.min, Number(value))) : splitBounds.default;
+const summaryKeys = ['totalTokens','totalCost','activeDays','currentStreak','activeTimeMs','peakDayTokens','favoriteModel','messages'];
+const summaryDefaultWeights = [1.55,1.1,.45,.45,1.15,1.4,1.35,1];
+const safeSummaryWidths = value => Object.fromEntries(summaryKeys
+  .filter(key => value && presentNumber(value[key]) && value[key] >= .02 && value[key] <= 1)
+  .map(key => [key,value[key]]));
 const juneStart = end => `${Number(end.slice(0, 4)) - (end.slice(5, 10) < '06-01' ? 1 : 0)}-06-01`;
 const currentStart = () => dateKey(home.preferences.heatmapStart)
   ? (home.preferences.heatmapStart > home.end ? home.end : home.preferences.heatmapStart) : juneStart(home.end);
@@ -55,6 +60,7 @@ function savePreferences(patch = {}) {
   const next = {...home.preferences, range:state.range, mode:state.mode,
     stackBy:state.stackBy, heatmapMetric:state.heatmapMetric, splitRatio:safeSplitRatio(home.preferences.splitRatio), ...patch};
   next.splitRatio = safeSplitRatio(next.splitRatio);
+  next.summaryWidths = safeSummaryWidths(next.summaryWidths);
   if (JSON.stringify(next) === JSON.stringify(home.preferences)) return;
   home.preferences = next;
   window.webkit?.messageHandlers?.chartPreferences?.postMessage({snapshotID:home.snapshotID, preferences:home.preferences});
@@ -122,32 +128,33 @@ renderNow = () => {
     window.innerWidth, els.activityPane.clientWidth].join(':');
   if (activityKey !== lastActivityKey) {
     renderActivity(); lastActivityKey = activityKey;
-    // Unknown summary fields stay unknown instead of inheriting upstream n(null)=0.
-    const cards = charts.statsCards(state.history?.summary || {});
-    els.cards.querySelectorAll('.dash-card').forEach((card, index) => {
-      const key = cards[index]?.key, raw = state.history?.summary?.[key];
-      const value = card.querySelector('.dash-card-v');
-      if (value) {
-        if (raw == null || (key !== 'favoriteModel' && !presentNumber(raw))) value.textContent = '—';
-        else if (key === 'totalCost') value.textContent = formatCost(raw);
-        else if (key !== 'favoriteModel' && key !== 'activeTimeMs') value.textContent = fullNumber(raw);
-      }
-      if (value) value.title = value.textContent;
-      if (key === 'totalCost') {
-        const zh = state.locale.startsWith('zh');
-        card.querySelector('.dash-card-k').textContent = home.totalCostStatus === 'unknown'
-          ? (zh ? '成本未记录' : 'Cost not recorded')
-          : home.totalCostStatus === 'partial'
-            ? (zh ? '部分成本估算' : 'Partial cost estimate')
-            : (zh ? '已记录成本估算' : 'Recorded cost estimate');
-        if (value) value.title = home.totalCostStatus === 'unknown'
-          ? (zh ? '未记录可确认的成本' : 'No recorded cost estimate')
-          : home.totalCostStatus === 'partial'
-            ? (zh ? '部分记录的估算值，非实际账单' : 'Partial recorded estimate, not a bill')
-            : (zh ? '估算值，非实际账单' : 'Estimate, not a bill');
-      }
-    });
   }
+  // Unknown summary fields stay unknown instead of inheriting upstream n(null)=0.
+  const cards = charts.statsCards(state.history?.summary || {});
+  els.cards.querySelectorAll('.dash-card').forEach((card, index) => {
+    const key = cards[index]?.key, raw = state.history?.summary?.[key];
+    const value = card.querySelector('.dash-card-v');
+    if (value) {
+      if (raw == null || (key !== 'favoriteModel' && !presentNumber(raw))) value.textContent = '—';
+      else if (key === 'totalCost') value.textContent = formatCost(raw);
+      else if (key !== 'favoriteModel' && key !== 'activeTimeMs') value.textContent = fullNumber(raw);
+    }
+    if (value) value.title = value.textContent;
+    if (key === 'totalCost') {
+      const zh = state.locale.startsWith('zh');
+      card.querySelector('.dash-card-k').textContent = home.totalCostStatus === 'unknown'
+        ? (zh ? '成本未记录' : 'Cost not recorded')
+        : home.totalCostStatus === 'partial'
+          ? (zh ? '部分成本估算' : 'Partial cost estimate')
+          : (zh ? '成本估算' : 'Cost estimate');
+      if (value) value.title = home.totalCostStatus === 'unknown'
+        ? (zh ? '未记录可确认的成本' : 'No recorded cost estimate')
+        : home.totalCostStatus === 'partial'
+          ? (zh ? '部分记录的估算值，非实际账单' : 'Partial recorded estimate, not a bill')
+          : (zh ? '累计估算值，与侧栏总计一致，非实际账单' : 'Cumulative estimate, same as the tray total; not a bill');
+    }
+  });
+  applySummaryWidths();
   const start = document.getElementById('heatmapStart'); start.value = currentStart(); start.max = home.end;
   const zh = state.locale.startsWith('zh');
   els.cards.setAttribute('aria-label', zh ? '用量总览' : 'Usage summary');
@@ -188,13 +195,14 @@ window.__renderTrend = (input, options = {}) => {
     home.revision = (home.revision || 0) + 1;
     home.rawDaily = new Map(daily.map(row => [row.date, row]));
     home.history = {...original, daily:daily.filter(row => presentNumber(row.tokens)), summary:{...original.summary}};
-    const fallbackTotal = original.summary?.totalCost;
-    const fallbackUsable = presentNumber(fallbackTotal)
-      && (fallbackTotal > 0 || ['known','partial'].includes(data.coverage?.cost));
-    home.history.summary.totalCost = projection
-      ? presentNumber(projection.totalCost) && ['estimated','partial'].includes(projection.status) ? projection.totalCost : null
-      : fallbackUsable ? fallbackTotal : null;
-    home.totalCostStatus = projection?.status || (fallbackUsable ? 'partial' : 'unknown');
+    // Total cost follows the same aggregate priority and coverage as the tray;
+    // daily graph estimates remain the calendar's separate evidence.
+    const allTime = data.payload.aggregate?.allTime;
+    const totalCost = ['costUsd','costUSD','totalCost','cost'].map(key => allTime?.[key]).find(presentNumber)
+      ?? original.summary?.totalCost;
+    const usable = ['known','partial'].includes(data.coverage?.cost) && presentNumber(totalCost);
+    home.history.summary.totalCost = usable ? totalCost : null;
+    home.totalCostStatus = usable ? data.coverage.cost === 'partial' ? 'partial' : 'estimated' : 'unknown';
     let end = aggregate.periodWindows?.today?.key;
     if (!dateKey(end) && data.collectedAt && data.timezone) {
       const parts = new Intl.DateTimeFormat('en-US', {timeZone:data.timezone,year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date(data.collectedAt));
@@ -204,6 +212,11 @@ window.__renderTrend = (input, options = {}) => {
     home.end = dateKey(end) ? end : daily.at(-1)?.date || charts.localDayKey();
   }
   if (!home.input) throw Error('Missing dashboard snapshot');
+  if (options.summaryCost) {
+    home.history.summary.totalCost = presentNumber(options.summaryCost.value) ? options.summaryCost.value : null;
+    home.totalCostStatus = home.history.summary.totalCost == null ? 'unknown'
+      : options.summaryCost.status === 'partial' ? 'partial' : 'estimated';
+  }
   home.snapshotID = options.snapshotID || home.snapshotID;
   const p = options.homePreferences || home.preferences;
   home.preferences = {heatmapStart:dateKey(p.heatmapStart) ? p.heatmapStart : '',
@@ -211,7 +224,7 @@ window.__renderTrend = (input, options = {}) => {
     range:RANGES.includes(p.range) ? p.range : '30', mode:['bars','kline'].includes(p.mode) ? p.mode : 'bars',
     stackBy:['client','model'].includes(p.stackBy) ? p.stackBy : 'client',
     height:Number.isSafeInteger(p.height) ? Math.min(900, Math.max(260, p.height)) : 340,
-    splitRatio:safeSplitRatio(p.splitRatio)};
+    splitRatio:safeSplitRatio(p.splitRatio), summaryWidths:safeSummaryWidths(p.summaryWidths)};
   state.history = home.history; Object.assign(state, home.preferences);
   state.locale = options.language === 'en' ? 'en' : 'zh-CN';
   home.settings = {locale:state.locale,heatmapMetric:state.heatmapMetric};
@@ -248,6 +261,103 @@ document.getElementById('heatmapStart').addEventListener('change', event => {
 });
 document.getElementById('heatmapStartReset').addEventListener('click', () => {
   savePreferences({heatmapStart:''}); state.motion = 'none'; renderNow();
+});
+
+// Resize a boundary between neighboring metrics. The full row stays within
+// the window; each metric keeps its own saved share when the window changes.
+let summaryDrag = null;
+function summaryColumns() { return window.innerWidth > 1080 ? 8 : window.innerWidth > 540 ? 4 : 2; }
+function applySummaryWidths(widths = home.preferences?.summaryWidths || {}) {
+  const cards = [...els.cards.querySelectorAll('.dash-card')];
+  const columns = summaryColumns(), totalWeight = summaryDefaultWeights.reduce((a,b) => a+b,0);
+  for (let start = 0; start < cards.length; start += columns) {
+    const group = cards.slice(start,start+columns);
+    const weights = group.map((_,i) => widths[summaryKeys[start+i]] || summaryDefaultWeights[start+i] / totalWeight);
+    const total = weights.reduce((a,b) => a+b,0);
+    group.forEach((card,i) => {
+      const index = start+i, key = summaryKeys[index], next = group[i+1];
+      card.dataset.metric = key;
+      card.style.flex = `0 0 calc(${weights[i]/total*100}% - 0.1px)`;
+      card.classList.toggle('is-row-end', !next);
+      card.classList.toggle('is-last-row', start+columns >= cards.length);
+      let handle = card.querySelector('.summary-resize');
+      if (!handle) {
+        handle = document.createElement('span'); handle.className = 'summary-resize';
+        handle.setAttribute('role','separator'); handle.setAttribute('aria-orientation','vertical');
+        handle.tabIndex = 0; card.append(handle);
+      }
+      handle.hidden = !next;
+      handle.dataset.index = String(index);
+      const title = card.querySelector('.dash-card-k')?.textContent || key;
+      const zh = state.locale.startsWith('zh');
+      handle.setAttribute('aria-label', zh ? `调整${title}列宽` : `Resize ${title} column`);
+      handle.setAttribute('aria-valuemin','40');
+      handle.setAttribute('aria-valuemax',String(Math.round(els.cards.clientWidth)));
+      handle.setAttribute('aria-valuenow',String(Math.round(card.getBoundingClientRect().width)));
+      handle.title = zh ? '拖动调整列宽 · 双击恢复默认' : 'Drag to resize · Double-click to reset';
+    });
+  }
+}
+function measuredSummaryWidths() {
+  const cards = [...els.cards.querySelectorAll('.dash-card')];
+  const columns = summaryColumns(), widths = {};
+  for (let start = 0; start < cards.length; start += columns) {
+    const group = cards.slice(start,start+columns), total = group.reduce((sum,card) => sum+card.getBoundingClientRect().width,0);
+    group.forEach((card,i) => { widths[summaryKeys[start+i]] = card.getBoundingClientRect().width/Math.max(1,total); });
+  }
+  return widths;
+}
+function summaryResize(index, delta, base) {
+  const cards = [...els.cards.querySelectorAll('.dash-card')], columns = summaryColumns();
+  if (!cards[index+1] || (index+1)%columns === 0) return null;
+  const current = base || {widths:measuredSummaryWidths(), left:cards[index].getBoundingClientRect().width,
+    right:cards[index+1].getBoundingClientRect().width};
+  const combined = current.left+current.right;
+  const minimum = key => Math.max(els.cards.clientWidth*.02,
+    ['activeDays','currentStreak'].includes(key) ? 56 : 88);
+  const lower = Math.min(minimum(summaryKeys[index]),combined*.4);
+  const upper = combined-Math.min(minimum(summaryKeys[index+1]),combined*.4);
+  const left = Math.min(upper,Math.max(lower,current.left+delta));
+  const pairShare = current.widths[summaryKeys[index]]+current.widths[summaryKeys[index+1]];
+  const widths = {...current.widths,[summaryKeys[index]]:pairShare*left/combined,
+    [summaryKeys[index+1]]:pairShare*(combined-left)/combined};
+  applySummaryWidths(widths); reportHomeSize(); return widths;
+}
+els.cards.addEventListener('pointerdown', event => {
+  const handle = event.target.closest('.summary-resize');
+  if (!handle || handle.hidden || event.button !== 0) return;
+  const index = Number(handle.dataset.index), cards = [...els.cards.querySelectorAll('.dash-card')];
+  summaryDrag = {pointer:event.pointerId,handle,index,x:event.clientX,widths:measuredSummaryWidths(),
+    left:cards[index].getBoundingClientRect().width,right:cards[index+1].getBoundingClientRect().width};
+  handle.setPointerCapture?.(event.pointerId); handle.classList.add('is-dragging'); event.preventDefault();
+});
+els.cards.addEventListener('pointermove', event => {
+  if (summaryDrag?.pointer !== event.pointerId) return;
+  summaryDrag.next = summaryResize(summaryDrag.index,event.clientX-summaryDrag.x,summaryDrag);
+});
+function finishSummaryResize(event, cancelled = false) {
+  if (summaryDrag?.pointer !== event.pointerId) return;
+  const drag = summaryDrag; summaryDrag = null; drag.handle.classList.remove('is-dragging');
+  if (drag.handle.hasPointerCapture?.(event.pointerId)) drag.handle.releasePointerCapture(event.pointerId);
+  if (cancelled) applySummaryWidths(drag.widths);
+  else if (drag.next) savePreferences({summaryWidths:drag.next});
+}
+els.cards.addEventListener('pointerup',event => finishSummaryResize(event));
+els.cards.addEventListener('pointercancel',event => finishSummaryResize(event,true));
+els.cards.addEventListener('lostpointercapture',event => finishSummaryResize(event,true));
+els.cards.addEventListener('dblclick',event => {
+  if (!event.target.closest('.summary-resize')) return;
+  savePreferences({summaryWidths:{}}); applySummaryWidths(); reportHomeSize();
+});
+els.cards.addEventListener('keydown',event => {
+  const handle = event.target.closest('.summary-resize');
+  if (!handle || !['ArrowLeft','ArrowRight','Home'].includes(event.key)) return;
+  event.preventDefault();
+  if (event.key === 'Home') { savePreferences({summaryWidths:{}}); applySummaryWidths(); }
+  else {
+    const widths = summaryResize(Number(handle.dataset.index),event.key === 'ArrowRight' ? 12 : -12);
+    if (widths) savePreferences({summaryWidths:widths});
+  }
 });
 
 const splitter = document.getElementById('dashSplitter');

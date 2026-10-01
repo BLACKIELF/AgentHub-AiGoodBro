@@ -113,12 +113,16 @@ final class TokenMonitorEdgeDockController: NSObject {
         let cells: [TokenMonitorEdgeDockCell]
         let language: WidgetLanguage
         let glass: WorkspaceGlassPreferences
+        let paletteID: String
+        let preferredColorScheme: ColorScheme?
     }
 
     private struct PeekContent: Equatable {
         let side: TokenMonitorEdgeDockPreferences.Side
         let language: WidgetLanguage
         let glass: WorkspaceGlassPreferences
+        let paletteID: String
+        let preferredColorScheme: ColorScheme?
     }
 
     private struct RailContent: Equatable {
@@ -126,6 +130,8 @@ final class TokenMonitorEdgeDockController: NSObject {
         let side: TokenMonitorEdgeDockPreferences.Side
         let language: WidgetLanguage
         let glass: WorkspaceGlassPreferences
+        let paletteID: String
+        let preferredColorScheme: ColorScheme?
         let compact: Bool
         let warnColors: Bool
         let focusedIndex: Int?
@@ -139,9 +145,12 @@ final class TokenMonitorEdgeDockController: NSObject {
         let side: TokenMonitorEdgeDockPreferences.Side
         let language: WidgetLanguage
         let glass: WorkspaceGlassPreferences
+        let paletteID: String
+        let preferredColorScheme: ColorScheme?
         let tailY: CGFloat
         let isPinned: Bool
         let canPin: Bool
+        let isRefreshing: Bool
     }
 
     private struct Layout {
@@ -159,17 +168,22 @@ final class TokenMonitorEdgeDockController: NSObject {
     private var cells: [TokenMonitorEdgeDockCell] = []
     private var language: WidgetLanguage = .zh
     private var glass = WorkspaceGlassPreferences()
+    private var paletteCatalog = PaletteCatalog.loadFromMainBundle()
+    private var paletteID = PaletteCatalog.defaultPaletteID
+    private var preferredColorScheme: ColorScheme?
     private var onPreferencesChange: ((TokenMonitorEdgeDockPreferences) -> Void)?
     private var onOpenDashboard: (() -> Void)?
     private var onOpenUsageOverview: (() -> Void)?
     private var onOpenProxy: (() -> Void)?
+    private var onRefresh: ((TokenMonitorEdgeDockCell) async -> Void)?
+    private var refreshingCells: Set<String> = []
 
     private var peekPanel: NSPanel?
     private var railPanel: NSPanel?
     private var cardPanel: NSPanel?
-    private var peekHost: NSHostingView<TokenMonitorEdgeDockPeekView>?
-    private var railHost: NSHostingView<TokenMonitorEdgeDockRailView>?
-    private var cardHost: NSHostingView<TokenMonitorEdgeDockCardView>?
+    private var peekHost: NSHostingView<NativePaletteRoot<TokenMonitorEdgeDockPeekView>>?
+    private var railHost: NSHostingView<NativePaletteRoot<TokenMonitorEdgeDockRailView>>?
+    private var cardHost: NSHostingView<NativePaletteRoot<TokenMonitorEdgeDockCardView>>?
     private var timer: Timer?
     private var screenObserver: NSObjectProtocol?
     private var layout: Layout?
@@ -194,10 +208,14 @@ final class TokenMonitorEdgeDockController: NSObject {
         cells: [TokenMonitorEdgeDockCell],
         language: WidgetLanguage,
         glass: WorkspaceGlassPreferences = .init(),
+        paletteCatalog: PaletteCatalog? = nil,
+        paletteID: String = PaletteCatalog.defaultPaletteID,
+        preferredColorScheme: ColorScheme? = nil,
         onPreferencesChange: @escaping (TokenMonitorEdgeDockPreferences) -> Void,
         onOpenDashboard: @escaping () -> Void,
         onOpenUsageOverview: @escaping () -> Void,
-        onOpenProxy: @escaping () -> Void
+        onOpenProxy: @escaping () -> Void,
+        onRefresh: ((TokenMonitorEdgeDockCell) async -> Void)? = nil
     ) {
         var normalized = preferences.normalized()
         let screens = TokenMonitorEdgeDockScreenCatalog.connected()
@@ -206,11 +224,15 @@ final class TokenMonitorEdgeDockController: NSObject {
         )
         let needsMigration = migrated != normalized.displayID
         normalized.displayID = migrated
-        let configuration = Configuration(preferences: normalized, cells: cells, language: language, glass: glass)
+        let configuration = Configuration(
+            preferences: normalized, cells: cells, language: language, glass: glass,
+            paletteID: paletteID, preferredColorScheme: preferredColorScheme
+        )
         self.onPreferencesChange = onPreferencesChange
         self.onOpenDashboard = onOpenDashboard
         self.onOpenUsageOverview = onOpenUsageOverview
         self.onOpenProxy = onOpenProxy
+        self.onRefresh = onRefresh
         guard configurationGate.accept(configuration) else { return }
         let previous = self.preferences
         let selectedID = cardIndex.flatMap { self.cells.indices.contains($0) ? self.cells[$0].id : nil }
@@ -220,6 +242,9 @@ final class TokenMonitorEdgeDockController: NSObject {
         if cardIndex == nil { cardPinned = false }
         self.language = language
         self.glass = glass
+        if let paletteCatalog { self.paletteCatalog = paletteCatalog }
+        self.paletteID = paletteID
+        self.preferredColorScheme = preferredColorScheme
         guard self.preferences.enabled, !cells.isEmpty else {
             hideAll()
             return
@@ -260,6 +285,8 @@ final class TokenMonitorEdgeDockController: NSObject {
         onOpenDashboard = nil
         onOpenUsageOverview = nil
         onOpenProxy = nil
+        onRefresh = nil
+        refreshingCells.removeAll()
         configurationGate.reset()
         lastPeekContent = nil
         lastRailContent = nil
@@ -368,6 +395,13 @@ final class TokenMonitorEdgeDockController: NSObject {
         return panel
     }
 
+    private func themed<Content: View>(_ content: Content) -> NativePaletteRoot<Content> {
+        NativePaletteRoot(
+            content: content, catalog: paletteCatalog, paletteID: paletteID,
+            preferredColorScheme: preferredColorScheme, glass: glass
+        )
+    }
+
     private func updateSurfaces() {
         guard let layout else { return }
         let peek = peekPanel
@@ -378,9 +412,14 @@ final class TokenMonitorEdgeDockController: NSObject {
         if let peek, peek.frame != layout.peek { peek.setFrame(layout.peek, display: false) }
         if isAutoHidden {
             if let peek {
-                let content = PeekContent(side: preferences.side, language: language, glass: glass)
+                let content = PeekContent(
+                    side: preferences.side, language: language, glass: glass,
+                    paletteID: paletteID, preferredColorScheme: preferredColorScheme
+                )
                 if peekHost == nil || lastPeekContent != content {
-                    let view = TokenMonitorEdgeDockPeekView(side: preferences.side, language: language, glass: glass) { [weak self] in self?.revealRail() }
+                    let view = themed(
+                        TokenMonitorEdgeDockPeekView(side: preferences.side, language: language, glass: glass) { [weak self] in self?.revealRail() }
+                    )
                     if let peekHost {
                         peekHost.rootView = view
                     } else {
@@ -400,21 +439,23 @@ final class TokenMonitorEdgeDockController: NSObject {
         if railVisible, let rail {
             let content = RailContent(
                 cells: Array(cells[layout.page.indices]), side: preferences.side, language: language, glass: glass,
+                paletteID: paletteID, preferredColorScheme: preferredColorScheme,
                 compact: layout.compact, warnColors: preferences.warnColors,
                 focusedIndex: cardIndex.map { $0 - layout.page.indices.lowerBound },
                 startIndex: layout.page.indices.lowerBound,
                 pageIndex: layout.page.index, pageCount: layout.page.count
             )
             if railHost == nil || lastRailContent != content {
-                let view = TokenMonitorEdgeDockRailView(
-                    cells: content.cells, side: content.side, language: content.language, glass: content.glass,
-                    compact: content.compact, warnColors: content.warnColors,
-                    focusedIndex: content.focusedIndex, pageIndex: content.pageIndex, pageCount: content.pageCount,
-                    onPage: { [weak self] direction in self?.changePage(direction) },
-                    onSelect: { [weak self] index in self?.activateCell(at: index + content.startIndex) },
-                    onDrag: { [weak self] translation in self?.dragRail(translation) },
-                    onDrop: { [weak self] translation in self?.dropRail(translation) }
-                )
+                let view = themed(
+                    TokenMonitorEdgeDockRailView(
+                        cells: content.cells, side: content.side, language: content.language, glass: content.glass,
+                        compact: content.compact, warnColors: content.warnColors,
+                        focusedIndex: content.focusedIndex, pageIndex: content.pageIndex, pageCount: content.pageCount,
+                        onPage: { [weak self] direction in self?.changePage(direction) },
+                        onSelect: { [weak self] index in self?.activateCell(at: index + content.startIndex) },
+                        onDrag: { [weak self] translation in self?.dragRail(translation) },
+                        onDrop: { [weak self] translation in self?.dropRail(translation) }
+                    ))
                 if let railHost {
                     railHost.rootView = view
                 } else {
@@ -435,17 +476,21 @@ final class TokenMonitorEdgeDockController: NSObject {
             if card.frame != placement.frame { card.setFrame(placement.frame, display: false) }
             let content = CardContent(
                 cell: cells[index], side: preferences.side, language: language, glass: glass,
+                paletteID: paletteID, preferredColorScheme: preferredColorScheme,
                 tailY: placement.tailY, isPinned: cardPinned,
-                canPin: true
+                canPin: true, isRefreshing: refreshingCells.contains(cells[index].id)
             )
             if cardHost == nil || lastCardContent != content {
-                let view = TokenMonitorEdgeDockCardView(
-                    cell: content.cell, side: content.side, language: content.language, glass: content.glass,
-                    tailY: content.tailY, isPinned: content.isPinned, canPin: content.canPin,
-                    onPin: { [weak self] in self?.togglePin() },
-                    onOpenDashboard: { [weak self] in self?.openDashboard() },
-                    onOpenProxy: { [weak self] in self?.openProxySettings() }
-                )
+                let view = themed(
+                    TokenMonitorEdgeDockCardView(
+                        cell: content.cell, side: content.side, language: content.language, glass: content.glass,
+                        tailY: content.tailY, isPinned: content.isPinned, canPin: content.canPin,
+                        onPin: { [weak self] in self?.togglePin() },
+                        onOpenDashboard: { [weak self] in self?.openDashboard() },
+                        onOpenProxy: { [weak self] in self?.openProxySettings() },
+                        isRefreshing: content.isRefreshing,
+                        onRefresh: onRefresh == nil ? nil : { [weak self] in self?.refresh(content.cell) }
+                    ))
                 if let cardHost {
                     cardHost.rootView = view
                 } else {
@@ -458,6 +503,18 @@ final class TokenMonitorEdgeDockController: NSObject {
             if !card.isVisible { card.orderFrontRegardless() }
         } else {
             if card?.isVisible == true { card?.orderOut(nil) }
+        }
+    }
+
+    private func refresh(_ cell: TokenMonitorEdgeDockCell) {
+        guard let onRefresh, !refreshingCells.contains(cell.id) else { return }
+        refreshingCells.insert(cell.id)
+        updateSurfaces()
+        Task { @MainActor [weak self] in
+            await onRefresh(cell)
+            guard let self else { return }
+            self.refreshingCells.remove(cell.id)
+            self.updateSurfaces()
         }
     }
 

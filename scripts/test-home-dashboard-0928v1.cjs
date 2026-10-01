@@ -22,7 +22,7 @@ const daily = Array.from({length:95}, (_,i) => {
     perModel:{'gpt-6-sol':{tokens:tokens*.6},'gpt-6-luna':{tokens:tokens*.4}}};
 });
 const fixture = {schemaVersion:1,collectedAt:'2026-09-28T10:00:00Z',timezone:'Asia/Shanghai',coverage:{cost:'known'},
-  payload:{aggregate:{history:{daily,summary:{totalTokens:21600123456,totalCost:16600.25,activeDays:95,currentStreak:95,
+  payload:{aggregate:{allTime:{costUsd:19732.09},history:{daily,summary:{totalTokens:21600123456,totalCost:16600.25,activeDays:95,currentStreak:95,
     activeTimeMs:4450800000,peakDayTokens:1200000000,favoriteModel:'gpt-6-sol',messages:164800}}}}};
 (async () => {
   const browser = await chromium.launch({executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined});
@@ -52,9 +52,44 @@ const fixture = {schemaVersion:1,collectedAt:'2026-09-28T10:00:00Z',timezone:'As
     assert.ok(await page.locator('#dashCards .dash-card').evaluateAll(cards => cards.every(card => card.scrollWidth <= card.clientWidth + 1)),
       'Compact day counters and exact totals fit without horizontal overflow');
     assert.equal(await page.locator('.dash-card-v').nth(0).textContent(), '21,600,123,456');
-    assert.match(await page.locator('.dash-card-v').nth(1).textContent(), /16,?600\.25/);
+    assert.match(await page.locator('.dash-card-v').nth(1).textContent(), /19,?732\.09/);
+    const costOnlyNodes = await page.evaluate(() => {
+      window.costOnlyNodes = {heat:document.querySelector('#dashHeatmap svg'),chart:document.querySelector('#dashChart svg'),handle:document.querySelector('.summary-resize')};
+      return true;
+    });
+    assert.equal(costOnlyNodes,true);
+    for (const [value,status,label] of [[19733.1,'known','成本估算'],[19733.1,'partial','部分成本估算'],[null,'known','成本未记录'],[0,'known','成本估算']]) {
+      await render(null,{summaryCost:{value,status}});
+      const text = await page.locator('.dash-card-v').nth(1).textContent();
+      assert.equal(text,value == null ? '—' : value === 0 ? '$0.0000' : `$${value.toFixed(2)}`);
+      assert.equal(await page.locator('.dash-card-k').nth(1).textContent(),label);
+      assert.equal(await page.evaluate(() => window.costOnlyNodes.heat===document.querySelector('#dashHeatmap svg')
+        && window.costOnlyNodes.chart===document.querySelector('#dashChart svg')
+        && window.costOnlyNodes.handle===document.querySelector('.summary-resize')),true,
+        'Cost-only updates refresh the visible number without rebuilding charts or losing resize focus');
+    }
+    await render(null,{summaryCost:{value:19732.09,status:'known'}});
     assert.equal(await page.locator('.dash-card-v').nth(5).textContent(), '1,200,000,000');
     assert.equal(await page.locator('.dash-card-v').nth(7).textContent(), '164,800');
+    // Every metric can change through its neighboring boundary, and widths
+    // survive a native preference round-trip without rebuilding chart content.
+    const beforeResize = await page.locator('#dashCards .dash-card').evaluateAll(cards => cards.map(card => card.getBoundingClientRect().width));
+    const handle = page.locator('.summary-resize').nth(0);
+    const bounds = await handle.boundingBox();
+    await page.mouse.move(bounds.x+bounds.width/2,bounds.y+bounds.height/2);
+    await page.mouse.down(); await page.mouse.move(bounds.x+bounds.width/2+50,bounds.y+bounds.height/2); await page.mouse.up();
+    const afterResize = await page.locator('#dashCards .dash-card').evaluateAll(cards => cards.map(card => card.getBoundingClientRect().width));
+    assert.ok(afterResize[0] > beforeResize[0]+40 && afterResize[1] < beforeResize[1]-40);
+    const widths = await page.evaluate(() => window.events.at(-1).preferences.summaryWidths);
+    assert.equal(Object.keys(widths).length,8);
+    for (let index=1;index<7;index++) {
+      await page.locator('.summary-resize').nth(index).focus(); await page.keyboard.press('ArrowRight');
+    }
+    const savedWidths = await page.evaluate(() => window.events.at(-1).preferences);
+    await render(null,{homePreferences:savedWidths});
+    assert.deepEqual(await page.evaluate(() => window.AiGoodBroDashboard.preferences.summaryWidths),savedWidths.summaryWidths);
+    await page.locator('.summary-resize').first().dblclick();
+    assert.deepEqual(await page.evaluate(() => window.AiGoodBroDashboard.preferences.summaryWidths),{});
     const summaryLayout = await page.evaluate(() => {
       const cards = document.getElementById('dashCards').getBoundingClientRect();
       const left = document.getElementById('activityPane').getBoundingClientRect();
@@ -172,7 +207,7 @@ const fixture = {schemaVersion:1,collectedAt:'2026-09-28T10:00:00Z',timezone:'As
     assert.ok(await page.locator('.candle-body').count() > 0);
     await page.keyboard.press('Home');
     assert.ok(await page.locator('#dashChart .bar-seg').count() > 0);
-    const estimated = structuredClone(fixture); estimated.coverage.cost = 'unknown';
+    const estimated = structuredClone(fixture); estimated.coverage.cost = 'partial';
     estimated.payload.costEstimates = {status:'partial',totalCost:17.25,daily:daily.map((row,i) =>
       ({date:row.date,cost:i === 0 ? 0 : i === 1 ? null : i === 2 ? 1.75 : row.cost,
         status:i === 1 ? 'unknown' : i === 2 ? 'partial' : 'estimated'}))};
@@ -194,7 +229,7 @@ const fixture = {schemaVersion:1,collectedAt:'2026-09-28T10:00:00Z',timezone:'As
     await render(legacyEstimate);
     assert.equal(await page.evaluate(() => window.AiGoodBroDashboard.rawDaily.get('2026-06-26').cost), null);
     assert.ok(await page.evaluate(() => window.AiGoodBroDashboard.rawDaily.get('2026-06-27').cost) > 0);
-    assert.notEqual(await page.locator('.dash-card-v').nth(1).textContent(),'—');
+    assert.equal(await page.locator('.dash-card-v').nth(1).textContent(),'—');
     const unknown = structuredClone(fixture); unknown.coverage.cost = 'unknown'; delete unknown.payload.aggregate.history.summary.messages;
     unknown.payload.costEstimates = {status:'unknown',totalCost:null,daily:daily.map(row => ({date:row.date,cost:null,status:'unknown'}))};
     await render(unknown);

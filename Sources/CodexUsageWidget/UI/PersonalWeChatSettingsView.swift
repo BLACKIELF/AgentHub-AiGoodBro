@@ -17,6 +17,11 @@ struct PersonalWeChatSettingsView: View {
     let onCancel: () -> Void
     let onSubmitCode: (String) -> Void
     let onTest: () -> Void
+    var needsAuthorization = false
+    var bindingMissing = false
+    var restoring = false
+    var connectionStatus: String? = nil
+    var onRestore: (() -> Void)? = nil
     @Environment(\.widgetLanguage) private var language
 
     var body: some View {
@@ -32,11 +37,21 @@ struct PersonalWeChatSettingsView: View {
             )
             .font(.callout).fixedSize(horizontal: false, vertical: true)
         }
+        if enabled, let connectionStatus {
+            Text(connectionStatus).font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
         HStack(spacing: 12) {
+            if !connected, !bindingMissing, let onRestore {
+                Button(language.text("恢复连接", "Restore connection"), action: onRestore)
+                    .disabled(disabled || !enabled || connecting || restoring)
+                    .accessibilityIdentifier("wechat-restore-connection")
+            }
             Button(language.text(connected ? "重新扫码" : "扫码连接微信", connected ? "Scan again" : "Connect with QR"), action: onConnect)
                 .disabled(disabled || !enabled || connecting)
             Button(language.text("发送测试消息", "Send test message"), action: onTest)
                 .disabled(disabled || !enabled || !hasContext || connecting)
+            if restoring { ProgressView().controlSize(.small) }
             if connecting {
                 Button(language.text("取消扫码", "Cancel"), action: onCancel).disabled(disabled)
             }
@@ -74,9 +89,13 @@ struct PersonalWeChatSettingsView: View {
     }
 
     private var statusLabel: String {
+        if restoring { return language.text("正在恢复已保存的微信连接", "Restoring saved WeChat connection") }
         if connecting { return language.text("正在等待扫码确认", "Waiting for QR confirmation") }
         if connected { return language.text(hasContext ? "微信已连接，可以测试推送" : "微信已连接，等待会话", hasContext ? "Connected · ready to test" : "Connected · waiting for conversation") }
-        return language.text(enabled ? "尚未连接，请扫码" : "推送已关闭", enabled ? "Scan to connect" : "Notifications disabled")
+        if !enabled { return language.text("推送已关闭", "Notifications disabled") }
+        if needsAuthorization { return language.text("微信连接需要授权", "WeChat needs authorization") }
+        if bindingMissing { return language.text("尚未保存微信连接，请扫码", "No saved WeChat connection; scan to connect") }
+        return language.text("微信连接未恢复", "WeChat connection needs restoring")
     }
 
     static func qrImage(_ content: String) -> NSImage? {

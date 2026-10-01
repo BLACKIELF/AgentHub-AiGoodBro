@@ -428,7 +428,7 @@ struct LocalCLIWorkspaceView: View {
         VStack(alignment: .leading, spacing: 2) {
             CompactQuotaView(
                 title: window.label, remaining: 100 - window.usedPercent,
-                reset: window.resetsAt, isExpiry: window.isExpiry)
+                reset: window.resetsAt, isExpiry: window.isExpiry, horizontalDetails: compactHomeSummary)
             if let amount = window.tokenAmountText {
                 Text(amount).font(.system(size: 10).monospacedDigit())
                     .lineLimit(1).minimumScaleFactor(0.85).help(amount)

@@ -19,6 +19,7 @@ struct TokenMonitorPopoverView: View {
     let onCollapse: (() -> Void)?
     let onClose: (() -> Void)?
     let isRefreshing: Bool
+    @Environment(\.visualTokens) private var tokens
 
     @State private var route: TokenMonitorViewRoute
     @State private var period: TokenMonitorPeriod = .total
@@ -75,7 +76,12 @@ struct TokenMonitorPopoverView: View {
             footer
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(WorkspaceGlassSurface(cornerRadius: 20))
+        .background {
+            ZStack {
+                if tokens.identity.paletteID != PaletteCatalog.defaultPaletteID { WorkspaceGlassBackdrop() }
+                WorkspaceGlassSurface(cornerRadius: 20)
+            }
+        }
         .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
         .accessibilityIdentifier("token-monitor-popover")
         .onChange(of: route) { newRoute in

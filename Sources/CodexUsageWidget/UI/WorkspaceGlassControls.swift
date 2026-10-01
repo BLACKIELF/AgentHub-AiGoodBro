@@ -44,7 +44,7 @@ struct WorkspaceGlassControls: View {
                 .help(language.text("恢复默认 \(defaultValue)", "Reset to \(defaultValue)"))
                 .accessibilityLabel(language.text("重置\(title)", "Reset \(title)"))
                 .accessibilityIdentifier("appearance.glass." + id + ".reset")
-                Slider(value: Binding(get: { Double(value.wrappedValue) }, set: { value.wrappedValue = Int($0.rounded()) }), in: 0...100, step: 1)
+                Slider(value: Binding(get: { Double(value.wrappedValue) }, set: { value.wrappedValue = Int($0.rounded()) }), in: 0...100)
                     .accessibilityLabel(title)
                     .accessibilityIdentifier("appearance.glass." + id)
                 Text("\(value.wrappedValue)").font(.caption.monospacedDigit())

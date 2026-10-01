@@ -23,21 +23,32 @@ final class LocalProxyQueueWindowController: NSObject, NSWindowDelegate {
 
         let window = NSWindow(
             contentRect: NSRect(origin: .zero, size: Self.initialContentSize),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
         window.title = settings.language.text("反代模式", "Local proxy")
+        // Let the glass surface own the whole frame. The default titlebar
+        // separator otherwise leaves a dark horizontal seam between the
+        // traffic lights and the proxy content.
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        window.titlebarSeparatorStyle = .none
         window.isReleasedWhenClosed = false
+        window.isOpaque = false
+        window.backgroundColor = .clear
+        window.hasShadow = true
+        window.isMovableByWindowBackground = true
+        window.acceptsMouseMovedEvents = true
         window.contentMinSize = Self.minimumContentSize
         window.delegate = self
-        window.contentViewController = NSHostingController(
+        window.contentView = GlassHostingContainer(
             rootView: LocalProxyQueueWindowContent(
                 model: model,
                 settings: settings,
                 paletteCatalog: paletteCatalog,
                 onClose: { [weak self] in self?.hide() }
-            )
+            ), cornerRadius: 14, allowsWindowDragging: false, settings: settings, preservesDefaultOpaqueBackground: true
         )
         window.center()
         self.window = window

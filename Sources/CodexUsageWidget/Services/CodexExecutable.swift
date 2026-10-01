@@ -4,6 +4,22 @@ import Foundation
 enum CodexExecutable {
     static let preferredPathKey = "CodexManagerNext.runtime.codexPath"
 
+    static func bundledPath(fileManager: FileManager = .default) -> String? {
+        guard let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.openai.codex") else { return nil }
+        return bundledPath(in: appURL, fileManager: fileManager)
+    }
+
+    static func bundledPath(in appURL: URL, fileManager: FileManager = .default) -> String? {
+        // ChatGPT 26.928 moved its signed CLI into the codex-cli package.
+        let paths = [
+            "Contents/Resources/codex-cli/bin/codex",
+            "Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex",
+            "Contents/Resources/codex",
+        ]
+        return paths.map { appURL.appendingPathComponent($0).path }
+            .first(where: { fileManager.isExecutableFile(atPath: $0) })
+    }
+
     static func independentPath(fileManager: FileManager = .default) -> String? {
         let preferred = UserDefaults.standard.string(forKey: preferredPathKey)
         let candidates = [
@@ -20,13 +36,13 @@ enum CodexExecutable {
         if let preferred = UserDefaults.standard.string(forKey: preferredPathKey) {
             candidates.append(preferred)
         }
+        if let bundled = bundledPath(fileManager: fileManager) {
+            candidates.append(bundled)
+        }
         candidates.append(contentsOf: [
             fileManager.homeDirectoryForCurrentUser.appendingPathComponent(".local/bin/codex").path,
             fileManager.homeDirectoryForCurrentUser.appendingPathComponent(".codex/packages/standalone/current/bin/codex").path,
         ])
-        if let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.openai.codex") {
-            candidates.append(appURL.appendingPathComponent("Contents/Resources/codex").path)
-        }
         candidates.append(contentsOf: [
             "/Applications/ChatGPT.app/Contents/Resources/codex",
             "/Applications/Codex.app/Contents/Resources/codex",

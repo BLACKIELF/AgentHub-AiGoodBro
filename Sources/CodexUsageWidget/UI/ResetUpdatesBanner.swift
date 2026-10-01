@@ -225,6 +225,7 @@ enum ResetCardAccountSummary: Equatable {
 
 struct ResetCreditLocalSummary {
     let availableCards: Int?
+    let availableCardsByPlan: [String: Int]
     let accountsWithCards: Int
     let checkedAt: Date?
     let isStale: Bool
@@ -236,6 +237,7 @@ struct ResetCreditLocalSummary {
             profile.lastSnapshot?.accountID.flatMap { $0.isEmpty ? nil : "account:\($0)" } ?? "profile:\(profile.id)"
         }.values
         var total = 0
+        var planCounts: [String: Int] = [:]
         var withCards = 0
         var observedDates: [Date] = []
         var stale = false
@@ -258,7 +260,12 @@ struct ResetCreditLocalSummary {
             }
             let sum = total.addingReportingOverflow(count)
             if sum.overflow { overflowed = true } else { total = sum.partialValue }
-            if count > 0 { withCards += 1 }
+            if count > 0 {
+                withCards += 1
+                let plan = AccountDisplay.planLabel(newest, empty: "")
+                let planSum = (planCounts[plan] ?? 0).addingReportingOverflow(count)
+                if planSum.overflow { overflowed = true } else { planCounts[plan] = planSum.partialValue }
+            }
             observedDates.append(snapshot.fetchedAt)
             stale =
                 stale || now.timeIntervalSince(snapshot.fetchedAt) > 15 * 60
@@ -268,6 +275,7 @@ struct ResetCreditLocalSummary {
                 .filter { $0.isValid(at: now) && $0.observedAt >= now.addingTimeInterval(-30 * 24 * 60 * 60) }
         }
         availableCards = observedDates.isEmpty || overflowed ? nil : total
+        availableCardsByPlan = overflowed ? [:] : planCounts
         accountsWithCards = withCards
         // A combined balance is only as fresh as its oldest included account.
         checkedAt = observedDates.min()
@@ -275,6 +283,135 @@ struct ResetCreditLocalSummary {
         hasUnknownAccounts = unknown || overflowed
         latestIncrease = receipts.max { $0.observedAt < $1.observedAt }
     }
+
+    func planBreakdown(_ language: WidgetLanguage) -> String? {
+        guard availableCards != nil, !availableCardsByPlan.isEmpty else { return nil }
+        let orderedPlans = availableCardsByPlan.keys.sorted {
+            let preferred = ["PRO 20x", "PRO 5x", "PRO", "PLUS"]
+            let left = $0.isEmpty ? Int.max : preferred.firstIndex(of: $0) ?? preferred.count
+            let right = $1.isEmpty ? Int.max : preferred.firstIndex(of: $1) ?? preferred.count
+            return left == right ? $0 < $1 : left < right
+        }
+        return orderedPlans.map { plan in
+            let label: String
+            switch plan {
+            case "PRO 20x": label = language.text("Pro 20倍", "Pro 20x")
+            case "PRO 5x": label = language.text("Pro 5倍", "Pro 5x")
+            case "PRO": label = "Pro"
+            case "PLUS": label = "Plus"
+            case "": label = language.text("套餐未知", "Unknown plan")
+            default: label = plan
+            }
+            return "\(label) ×\(availableCardsByPlan[plan] ?? 0)"
+        }.joined(separator: language.text("、", " · "))
+    }
+}
+
+/// Account mirrors contribute only the newest verified balance once.
+struct ResetCreditPointSummary {
+    let points: Decimal?
+    let hasUnknownAccounts: Bool
+    let hasUnlimitedBalance: Bool
+    let isStale: Bool
+
+    init(profiles: [CodexProfile], now: Date) {
+        let groups = Dictionary(grouping: profiles) { profile in
+            profile.lastSnapshot?.accountID.flatMap { $0.isEmpty ? nil : "account:\($0)" } ?? "profile:\(profile.id)"
+        }.values
+        var total = Decimal.zero
+        var known = false
+        var unknown = false
+        var unlimited = false
+        var stale = false
+        for group in groups {
+            guard
+                let newest = group.max(by: {
+                    ($0.lastSnapshot?.fetchedAt ?? .distantPast) < ($1.lastSnapshot?.fetchedAt ?? .distantPast)
+                }), let snapshot = newest.lastSnapshot,
+                snapshot.quotaReadSucceeded == true,
+                let accountID = snapshot.accountID, !accountID.isEmpty,
+                snapshot.fetchedAt.timeIntervalSince1970.isFinite,
+                snapshot.fetchedAt <= now.addingTimeInterval(5)
+            else {
+                unknown = true
+                continue
+            }
+            if snapshot.creditBalanceUnlimited == true {
+                unlimited = true
+            } else {
+                guard let raw = CreditBalancePresentation.normalizedBalance(snapshot.creditBalance),
+                    var balance = Decimal(string: raw.replacingOccurrences(of: ",", with: ""), locale: Locale(identifier: "en_US_POSIX")),
+                    !balance.isNaN
+                else {
+                    unknown = true
+                    continue
+                }
+                var sum = Decimal.zero
+                guard NSDecimalAdd(&sum, &total, &balance, .plain) == .noError else {
+                    unknown = true
+                    continue
+                }
+                total = sum
+                known = true
+            }
+            stale =
+                stale || now.timeIntervalSince(snapshot.fetchedAt) > 15 * 60
+                || group.contains { ($0.lastQuotaReadFailureAt ?? .distantPast) >= snapshot.fetchedAt }
+        }
+        points = known ? total : nil
+        hasUnknownAccounts = unknown
+        hasUnlimitedBalance = unlimited
+        isStale = stale
+    }
+
+    var dollarText: String {
+        if hasUnlimitedBalance { return "$∞" }
+        guard let points else { return "$—" }
+        let formatter = NumberFormatter()
+        formatter.locale = Locale(identifier: "en_US")
+        formatter.numberStyle = .currency
+        formatter.currencyCode = "USD"
+        formatter.minimumFractionDigits = 2
+        formatter.maximumFractionDigits = 2
+        return formatter.string(from: NSDecimalNumber(decimal: points / 25)) ?? "$—"
+    }
+
+    var pointText: String {
+        if hasUnlimitedBalance { return "∞" }
+        guard let points else { return "—" }
+        // NumberFormatter rounds long Decimal values through a floating-point
+        // representation. Group the exact decimal string without changing it.
+        let components = NSDecimalNumber(decimal: points).stringValue.split(separator: ".", maxSplits: 1)
+        let integer = components[0]
+        let negative = integer.first == "-"
+        let digits = negative ? integer.dropFirst() : integer
+        let digitCount = digits.count
+        var grouped = negative ? "-" : ""
+        for (index, digit) in digits.enumerated() {
+            if index > 0 && (digitCount - index) % 3 == 0 { grouped.append(",") }
+            grouped.append(digit)
+        }
+        return grouped + (components.count > 1 ? "." + components[1] : "")
+    }
+
+    func pointSummaryText(_ language: WidgetLanguage) -> String {
+        guard points != nil || hasUnlimitedBalance else {
+            return language.text("点数总额尚未核实", "Total points unverified")
+        }
+        let title: String
+        if isStale {
+            title = hasUnknownAccounts ? language.text("上次记录的已知点数", "Last recorded known points") : language.text("上次记录点数", "Last recorded points")
+        } else {
+            title = hasUnknownAccounts ? language.text("已核实点数", "Known points") : language.text("点数总额", "Total points")
+        }
+        let value = hasUnlimitedBalance ? language.text("无限", "Unlimited") : pointText
+        return title + " " + value + (hasUnknownAccounts ? language.text(" · 部分账号尚未确认", " · Some accounts unverified") : "")
+    }
+}
+
+private struct ResetMessageWidthKey: PreferenceKey {
+    static var defaultValue: CGFloat { 0 }
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
 }
 
 struct ResetUpdatesBanner: View {
@@ -297,8 +434,21 @@ struct ResetUpdatesBanner: View {
     var accountProfiles: [CodexProfile] = []
     @ObservedObject var inbox: HomeMessageInboxStore = .shared
     @ObservedObject private var forecastStore = PublicResetForecastStore.shared
+    @Environment(\.workspacePreviewForecastDeadline) private var previewForecastDeadline
     @AppStorage(HomeSection.reset.storageKey) private var sectionExpanded = true
+    @AppStorage(HomeResetMessageOrder.storageKey) private var messageOrderRaw = HomeResetMessageOrder.cardsFirst.rawValue
     @State private var historyExpanded = false
+    @State private var draggedBlock: String?
+    @State private var messageBlockFrames: [String: CGRect] = [:]
+    @AppStorage(HomeSectionSizing.resetSplitKey) private var savedSplitRatio = 0.5
+    @State private var messageColumnWidth: CGFloat = 0
+    @State private var liveSplitRatio: Double?
+    @State private var splitDragOrigin: CGPoint?
+    @State private var splitDragStart = 0.5
+
+    private var messageOrder: HomeResetMessageOrder {
+        HomeResetMessageOrder(rawValue: messageOrderRaw) ?? .cardsFirst
+    }
 
     private var historicalAnnouncements: [PublicResetAnnouncement] {
         PublicResetAnnouncementPresentation.normalized(announcements + (announcement.map { [$0] } ?? []))
@@ -593,28 +743,48 @@ struct ResetUpdatesBanner: View {
     private var localResetCreditSection: some View {
         TimelineView(.periodic(from: .now, by: 60)) { context in
             let summary = ResetCreditLocalSummary(profiles: accountProfiles, now: context.date)
-            if let count = summary.availableCards {
+            let credits = ResetCreditPointSummary(profiles: accountProfiles, now: context.date)
+            if summary.availableCards != nil || credits.points != nil || credits.hasUnlimitedBalance {
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(spacing: 6) {
                         Label(
-                            summary.isStale
-                                ? language.text("上次记录：\(count) 张重置卡", "Last recorded: \(count) reset cards")
-                                : language.text("已核实 \(count) 张可用重置卡", "\(count) available reset cards verified"),
-                            systemImage: "checkmark.seal.fill"
+                            summary.availableCards.map { count in
+                                summary.isStale
+                                    ? language.text("上次记录：\(count) 张重置卡", "Last recorded: \(count) reset cards")
+                                    : summary.hasUnknownAccounts
+                                        ? language.text("已知 \(count) 张可用重置卡", "\(count) known available reset cards")
+                                        : language.text("已核实 \(count) 张可用重置卡", "\(count) available reset cards verified")
+                            } ?? language.text("重置卡余额尚未核实", "Reset-card balance unverified"),
+                            systemImage: summary.availableCards == nil ? "questionmark.circle" : "checkmark.seal.fill"
                         )
                         .font(.caption.weight(.semibold))
-                        .foregroundStyle(summary.isStale ? Color.secondary : FixedVisualPalette.statusSuccess)
+                        .foregroundStyle(summary.isStale || summary.availableCards == nil ? Color.secondary : FixedVisualPalette.statusSuccess)
                         Spacer(minLength: 4)
                         Button(language.text("查看账号", "Accounts"), action: onOpenAccounts)
                             .font(.caption2).buttonStyle(.plain)
                     }
-                    Text(
-                        language.text(
-                            "\(summary.accountsWithCards) 个账号持有重置卡" + (summary.hasUnknownAccounts ? " · 部分账号尚未确认" : ""),
-                            "\(summary.accountsWithCards) accounts have reset cards" + (summary.hasUnknownAccounts ? " · Some accounts unverified" : "")
+                    if summary.availableCards != nil {
+                        Text(
+                            language.text(
+                                "\(summary.accountsWithCards) 个账号持有重置卡" + (summary.hasUnknownAccounts ? " · 部分账号尚未确认" : ""),
+                                "\(summary.accountsWithCards) accounts have reset cards" + (summary.hasUnknownAccounts ? " · Some accounts unverified" : "")
+                            )
                         )
-                    )
-                    .font(.caption2).foregroundStyle(.secondary)
+                        .font(.caption2).foregroundStyle(.secondary)
+                    } else {
+                        Text(language.text("可在账号页刷新重置卡余额。", "Refresh reset-card balances on Accounts."))
+                            .font(.caption2).foregroundStyle(.secondary)
+                    }
+                    if let breakdown = summary.planBreakdown(language) {
+                        Text(language.text("重置卡明细：", "Reset cards by plan: ") + breakdown)
+                            .font(.caption.weight(.medium))
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Text(credits.pointSummaryText(language))
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(credits.isStale || (credits.points == nil && !credits.hasUnlimitedBalance) ? Color.secondary : Color.primary)
+                        .monospacedDigit()
+                        .fixedSize(horizontal: false, vertical: true)
                     if let receipt = summary.latestIncrease {
                         HStack(spacing: 6) {
                             Text(
@@ -632,7 +802,7 @@ struct ResetUpdatesBanner: View {
                                 + " → " + PublicResetAnnouncementPresentation.compactEventTime(receipt.observedAt, language: language)
                         )
                         .font(.caption2).foregroundStyle(.secondary)
-                    } else {
+                    } else if summary.availableCards != nil {
                         Text(language.text("余额已核实，到账时间未记录。", "Balance verified; the grant time was not recorded."))
                             .font(.caption2).foregroundStyle(.secondary)
                     }
@@ -644,7 +814,7 @@ struct ResetUpdatesBanner: View {
                         .font(.caption2).foregroundStyle(.secondary)
                     }
                 }
-                .padding(compactSummary ? 7 : 10)
+                .padding(compactSummary ? 6 : 10)
                 .background(FixedVisualPalette.statusSuccess.opacity(0.07), in: RoundedRectangle(cornerRadius: 10))
                 .accessibilityElement(children: .contain)
             }
@@ -652,22 +822,24 @@ struct ResetUpdatesBanner: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: compactSummary ? 4 : 6) {
             HStack(spacing: 6) {
                 if compactSummary {
                     HomeSectionToggle(
                         title: language.text("重置消息", "Reset updates"), systemImage: "arrow.counterclockwise.circle.fill",
-                        language: language, isExpanded: $sectionExpanded
+                        fillsWidth: false, language: language, isExpanded: $sectionExpanded
                     )
                     .font(.system(size: 12.5, weight: .semibold))
-                    if !sectionExpanded {
-                        TimelineView(.periodic(from: .now, by: 60)) { context in
-                            if hasTodayWebsiteMessage(at: context.date) {
-                                todayBadge
-                            }
-                        }
-                    }
                     Spacer(minLength: 4)
+                    Menu {
+                        Button(language.text("重置卡在左／上", "Reset cards first")) { messageOrderRaw = HomeResetMessageOrder.cardsFirst.rawValue }
+                        Button(language.text("重置公告在左／上", "Announcements first")) { messageOrderRaw = HomeResetMessageOrder.announcementsFirst.rawValue }
+                    } label: {
+                        Image(systemName: "arrow.left.arrow.right")
+                    }
+                    .menuStyle(.borderlessButton).fixedSize()
+                    .help(language.text("调整重置消息的位置，也可拖动标题旁的手柄", "Arrange reset blocks, or drag a handle beside a heading"))
+                    .accessibilityLabel(language.text("重置消息布局", "Reset message layout"))
                     Button(language.text(historyExpanded ? "收起历史" : "最近 3 条", historyExpanded ? "Hide history" : "Latest 3")) {
                         sectionExpanded = true
                         historyExpanded.toggle()
@@ -686,34 +858,19 @@ struct ResetUpdatesBanner: View {
                 }
             }
             if !compactSummary || sectionExpanded {
-                localResetCreditSection
-                forecastSection
                 if compactSummary {
-                    let current = recentAnnouncement
-                    TimelineView(.periodic(from: .now, by: 60)) { context in
-                        let isToday =
-                            current.map {
-                                PublicResetAnnouncementPresentation.wasAnnouncedToday($0.announcedAt, now: context.date)
-                            } ?? false
-                        if let current {
-                            Link(destination: current.source.url ?? PublicResetClient.siteURL) {
-                                compactAnnouncement(current, isToday: isToday)
-                            }
-                            .buttonStyle(.plain)
-                            .help(language.text("打开这条公告的来源", "Open this announcement’s source"))
-                            .accessibilityHint(language.text("在浏览器中打开公告来源", "Open the announcement source in your browser"))
-                        } else {
-                            Text(language.text("暂无近期可验证的新公告", "No recent verifiable notices"))
-                                .font(.caption).foregroundStyle(.secondary)
-                        }
-                    }
+                    resetMessageColumns
                     if historyExpanded { inlineHistory }
-                } else if showsHistory {
-                    announcementDashboard
-                    inlineHistory
                 } else {
-                    announcementCard
-                    accountSummary
+                    localResetCreditSection
+                    forecastSection
+                    if showsHistory {
+                        announcementDashboard
+                        inlineHistory
+                    } else {
+                        announcementCard
+                        accountSummary
+                    }
                 }
                 if compactSummary && historyExpanded {
                     Button(language.text("收起，仅显示概要", "Collapse to summary")) {
@@ -740,13 +897,175 @@ struct ResetUpdatesBanner: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel(language.text("重置消息", "Reset updates"))
+        .onPreferenceChange(ProfileFramePreferenceKey.self) { messageBlockFrames = $0 }
     }
 
-    private func compactAnnouncement(_ announcement: PublicResetAnnouncement, isToday: Bool) -> some View {
+    private var compactCardMessages: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            blockHeading(language.text("重置卡消息", "Reset-card updates"), image: "ticket", block: "cards")
+            localResetCreditSection
+            let credits = ResetCreditPointSummary(profiles: accountProfiles, now: Date())
+            if ResetCreditLocalSummary(profiles: accountProfiles, now: Date()).availableCards == nil && credits.points == nil && !credits.hasUnlimitedBalance {
+                Text(language.text("重置卡余额尚未核实，可在账号页刷新。", "Reset-card balances are unverified. Refresh them on Accounts."))
+                    .font(.caption).foregroundStyle(.secondary)
+                Button(language.text("查看账号", "Accounts"), action: onOpenAccounts)
+                    .font(.caption2).buttonStyle(.plain)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .accessibilityIdentifier("home.reset.card-messages")
+    }
+
+    private var compactQuotaMessages: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            blockHeading(language.text("额度重置公告", "Quota reset announcements"), image: "megaphone", block: "announcements")
+            forecastSection
+            Text(language.text("上次重置信息", "Last reset information")).font(.caption.weight(.semibold))
+            typedCompactAnnouncement(.banked, showsTitle: false)
+            typedCompactAnnouncement(.regular, showsTitle: false)
+        }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .accessibilityIdentifier("home.reset.quota-announcements")
+    }
+
+    @ViewBuilder
+    private func resetMessageBlock(_ block: String) -> some View {
+        Group {
+            if block == "cards" { compactCardMessages } else { compactQuotaMessages }
+        }
+        .homeResizable(
+            block == "cards" ? .resetCards : .resetAnnouncements,
+            title: block == "cards" ? language.text("重置卡消息", "Reset-card updates") : language.text("额度重置公告", "Quota reset announcements"),
+            language: language, allowsWidth: false, fillsProposedHeight: true
+        )
+        .contentShape(Rectangle())
+        .background {
+            GeometryReader { geometry in
+                Color.clear.preference(key: ProfileFramePreferenceKey.self, value: [block: geometry.frame(in: .global)])
+            }
+        }
+    }
+
+    private var resetMessageColumns: some View {
+        ResetMessageColumnsLayout(splitRatio: liveSplitRatio ?? savedSplitRatio) {
+            resetMessageBlock(messageOrder.blocks[0])
+            resetColumnDivider
+            resetMessageBlock(messageOrder.blocks[1])
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background {
+            GeometryReader { geometry in
+                Color.clear.preference(key: ResetMessageWidthKey.self, value: geometry.size.width)
+            }
+        }
+        .onPreferenceChange(ResetMessageWidthKey.self) { value in
+            if value.isFinite && value > 0 { messageColumnWidth = value }
+        }
+        .transaction { if liveSplitRatio != nil { $0.animation = nil } }
+    }
+
+    private var resetColumnDivider: some View {
+        HomeSectionResizeHandle(
+            axis: .width,
+            label: language.text("调整重置消息左右比例", "Resize reset message columns"),
+            help: language.text("左右拖动调整比例 · 双击恢复均分", "Drag to change the split · Double-click for equal widths"),
+            alwaysVisible: true,
+            onBegin: { point in
+                splitDragOrigin = point
+                splitDragStart = HomeSectionSizing.splitRatio(savedSplitRatio, availableWidth: max(1, messageColumnWidth - 12))
+                return true
+            },
+            onMove: updateSplit,
+            onEnd: { point in
+                updateSplit(point)
+                if let liveSplitRatio { savedSplitRatio = liveSplitRatio }
+                liveSplitRatio = nil
+                splitDragOrigin = nil
+            },
+            onCancel: {
+                liveSplitRatio = nil
+                splitDragOrigin = nil
+            },
+            onReset: {
+                liveSplitRatio = nil
+                splitDragOrigin = nil
+                savedSplitRatio = 0.5
+            }
+        )
+        .frame(minHeight: 0, idealHeight: 24, maxHeight: .infinity)
+        .accessibilityIdentifier("home.reset.resize-columns")
+        .accessibilityLabel(language.text("调整重置消息左右比例", "Resize reset message columns"))
+        .accessibilityAction(named: language.text("恢复均分", "Reset split")) { savedSplitRatio = 0.5 }
+    }
+
+    private func updateSplit(_ point: CGPoint) {
+        guard let splitDragOrigin, point.x.isFinite else { return }
+        let available = max(1, messageColumnWidth - 12)
+        liveSplitRatio = HomeSectionSizing.splitRatio(splitDragStart + Double((point.x - splitDragOrigin.x) / available), availableWidth: available)
+    }
+
+    private func blockHeading(_ title: String, image: String, block: String) -> some View {
+        HStack(spacing: 6) {
+            Label(title, systemImage: image).font(.caption.weight(.semibold))
+            Spacer(minLength: 4)
+            ProfileReorderHandle(
+                isEnabled: true,
+                onBegin: {
+                    draggedBlock = block
+                    return true
+                },
+                onMove: { _ in },
+                onDrop: { point in
+                    defer { draggedBlock = nil }
+                    guard draggedBlock == block,
+                        HomeResetMessageOrder.dropTarget(source: block, at: point, frames: messageBlockFrames) != nil
+                    else { return }
+                    messageOrderRaw = messageOrder.swapped.rawValue
+                },
+                onCancel: { draggedBlock = nil },
+                handleLabel: language.text("拖动\(title)换位", "Drag \(title) to reorder"),
+                handleHelp: language.text("拖到另一块上方可换位，顺序会保存", "Drag onto the other block to swap and save the order"),
+                glyphScale: 0.65
+            )
+            .frame(width: 22, height: 20)
+            .help(language.text("拖到另一块上方可换位，顺序会保存", "Drag onto the other block to swap and save the order"))
+            .accessibilityLabel(language.text("拖动\(title)换位", "Drag \(title) to reorder"))
+            .accessibilityAction(named: language.text("调换位置", "Swap positions")) { messageOrderRaw = messageOrder.swapped.rawValue }
+        }
+    }
+
+    private func typedCompactAnnouncement(_ kind: PublicResetAnnouncement.Kind, showsTitle: Bool = true) -> some View {
+        TimelineView(.periodic(from: .now, by: 60)) { context in
+            let current = PublicResetAnnouncementPresentation.recentVerifiableAnnouncement(
+                historicalAnnouncements.filter { $0.resetType == kind }, now: context.date)
+            if let current {
+                Link(destination: current.source.url ?? PublicResetClient.siteURL) {
+                    compactAnnouncement(current, isToday: PublicResetAnnouncementPresentation.wasAnnouncedToday(current.announcedAt, now: context.date), showsTitle: showsTitle)
+                }
+                .buttonStyle(.plain)
+                .help(language.text("打开这条公告的来源", "Open this announcement’s source"))
+                .accessibilityHint(language.text("在浏览器中打开公告来源", "Open the announcement source in your browser"))
+            } else {
+                Text(
+                    kind == .banked
+                        ? language.text("暂无近期可验证的重置卡公告", "No recent verifiable reset-card announcements")
+                        : language.text("暂无近期可验证的额度重置公告", "No recent verifiable quota reset announcements")
+                )
+                .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func compactAnnouncement(_ announcement: PublicResetAnnouncement, isToday: Bool, showsTitle: Bool = true) -> some View {
         HStack(alignment: .top, spacing: 6) {
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 7) {
-                    Text(announcement.title(language)).font(.callout.weight(.medium)).lineLimit(1)
+                    if showsTitle {
+                        Text(announcement.title(language)).font(.callout.weight(.medium)).lineLimit(1)
+                    } else {
+                        Text(language.text(announcement.resetType == .banked ? "重置卡" : "常规额度", announcement.resetType == .banked ? "Reset cards" : "Regular limits"))
+                            .font(.caption2).foregroundStyle(.secondary)
+                    }
                     if isToday { todayBadge }
                 }
                 Text(verbatim: PublicResetAnnouncementPresentation.readableText(announcement.text))
@@ -946,6 +1265,120 @@ struct ResetUpdatesBanner: View {
                 .accessibilityHint(language.text("打开对应详情", "Open related details"))
         } else {
             content
+        }
+    }
+}
+
+/// Expanded and collapsed headers retain account totals and public-notice facts.
+struct ResetMessageHeaderSummary: View {
+    let language: WidgetLanguage
+    let profiles: [CodexProfile]
+    let announcements: [PublicResetAnnouncement]
+    let forecastDeadline: Date?
+    var balancesOnly = false
+    @Environment(\.workspacePreviewDate) private var previewDate
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 60)) { context in
+            let now = previewDate ?? context.date
+            let cards = ResetCreditLocalSummary(profiles: profiles, now: now)
+            let credits = ResetCreditPointSummary(profiles: profiles, now: now)
+            let current = PublicResetAnnouncementPresentation.recentVerifiableAnnouncement(announcements, now: now)
+            HStack(spacing: 8) {
+                Label(
+                    cards.availableCards.map {
+                        (cards.isStale ? "Last known: " : cards.hasUnknownAccounts ? "Known: " : "") + "\($0) cards"
+                    }
+                        ?? "Cards unverified", systemImage: "ticket"
+                )
+                .fixedSize()
+                .help(
+                    "Remaining reset cards across all Codex accounts. " + (cards.isStale ? "Last recorded balance. " : "")
+                        + (cards.hasUnknownAccounts ? "Some accounts are unverified." : "Verified balance."))
+                Label((credits.isStale ? "Last credits " : credits.hasUnknownAccounts ? "Known credits " : "Credits ") + credits.dollarText, systemImage: "banknote")
+                    .fixedSize()
+                    .monospacedDigit()
+                    .help(
+                        "Remaining credits across all Codex accounts, converted at your rate: $1 = 25 points. " + (credits.isStale ? "Last recorded balance. " : "")
+                            + (credits.hasUnknownAccounts ? "Some accounts are unverified." : "Verified balance."))
+                if !balancesOnly {
+                    Text(
+                        current.map { ($0.resetType == .banked ? "Reset cards" : "Quota reset") + " · " + PublicResetAnnouncementPresentation.readableText($0.text) }
+                            ?? "No notices"
+                    )
+                    .lineLimit(1)
+                    .frame(minWidth: 80, maxWidth: .infinity, alignment: .leading)
+                    .layoutPriority(-1)
+                    .help(current.map { $0.title(language) + " · " + PublicResetAnnouncementPresentation.compactEventTime($0.announcedAt, language: language) } ?? "")
+                    if let forecastDeadline {
+                        ResetCountdownText(deadline: forecastDeadline, kind: .publicForecast, language: .en, compact: true)
+                            .fixedSize()
+                    } else {
+                        Text("No reset forecast").fixedSize()
+                    }
+                }
+            }
+            .font(.system(size: 10))
+            .foregroundStyle(.secondary)
+            .accessibilityElement(children: .combine)
+            .accessibilityIdentifier(balancesOnly ? "home.reset.account-totals" : "home.reset.collapsed-summary")
+        }
+    }
+}
+
+/// The proposal sets column widths and both blocks share their current requested height.
+struct ResetMessageColumnsLayout: Layout {
+    var splitRatio: Double
+    static let dividerWidth: CGFloat = 12
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let width = Self.resolvedWidth(proposal.width)
+        let frames = frames(width: width, subviews: subviews)
+        return CGSize(width: width, height: frames.map(\.maxY).max() ?? 0)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        for (view, frame) in zip(subviews, frames(width: bounds.width, subviews: subviews)) {
+            view.place(
+                at: CGPoint(x: bounds.minX + frame.minX, y: bounds.minY + frame.minY), anchor: .topLeading,
+                proposal: ProposedViewSize(width: frame.width, height: frame.height))
+        }
+    }
+
+    private static func resolvedWidth(_ proposed: CGFloat?) -> CGFloat {
+        guard let proposed, proposed.isFinite else { return 960 }
+        return max(1, proposed)
+    }
+
+    private func frames(width: CGFloat, subviews: Subviews) -> [CGRect] {
+        Self.frames(width: width, splitRatio: splitRatio, count: subviews.count) { index, proposedWidth in
+            subviews[index].sizeThatFits(ProposedViewSize(width: proposedWidth, height: nil)).height
+        }
+    }
+
+    static func frames(width: CGFloat, splitRatio: Double, count: Int, measure: (Int, CGFloat) -> CGFloat) -> [CGRect] {
+        let width = resolvedWidth(width)
+        let widths: [CGFloat]
+        if count == 3 {
+            let divider = min(dividerWidth, width)
+            let available = width - divider
+            let ratio = HomeSectionSizing.splitRatio(splitRatio, availableWidth: available)
+            let left = available * CGFloat(ratio)
+            widths = [left, divider, available - left]
+        } else {
+            widths = Array(repeating: width / CGFloat(max(1, count)), count: max(0, count))
+        }
+        let heights = widths.enumerated().map { index, childWidth in
+            let height = measure(index, childWidth)
+            return max(0, height.isFinite ? height : 0)
+        }
+        // Divider measurements must not retain a previous, taller row.
+        let sharedHeight = count == 3 ? max(heights[0], heights[2]) : heights.max() ?? 0
+        var x: CGFloat = 0
+        return widths.enumerated().map { _, childWidth in
+            let frame = CGRect(x: x, y: 0, width: childWidth, height: sharedHeight)
+            x = frame.maxX
+            return frame
         }
     }
 }

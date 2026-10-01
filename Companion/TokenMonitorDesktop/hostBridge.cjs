@@ -124,11 +124,17 @@ function createHostBridge({ socketPath, hostSocketPath = null, app, logger = () 
   let closed = false;
 
   function status() {
+    let allTimeCostUsd = null;
+    try {
+      const cost = routes?.getAllTimeCostUsd?.();
+      if (typeof cost === 'number' && Number.isFinite(cost) && cost >= 0) allTimeCostUsd = cost;
+    } catch (_) {}
     return {
       ready: routes !== null,
       trayVisible: routes !== null && typeof routes.isTrayVisible === 'function' && routes.isTrayVisible() === true,
       pid: process.pid,
-      version: app.getVersion()
+      version: app.getVersion(),
+      allTimeCostUsd
     };
   }
 

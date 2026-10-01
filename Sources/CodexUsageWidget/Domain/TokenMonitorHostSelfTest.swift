@@ -5,6 +5,11 @@ enum TokenMonitorHostSelfTest {
         var failures: [String] = []
         func expect(_ value: Bool, _ message: String) { if !value { failures.append(message) } }
         func accepts(_ json: String) -> Bool { (try? TokenMonitorHostRequest.decode(Data(json.utf8))) != nil }
+        expect(TokenMonitorDesktopController.validatedTotalCostUSD(19755.13) == 19755.13, "desktop cumulative cost stays exact")
+        expect(TokenMonitorDesktopController.validatedTotalCostUSD(0) == 0, "recorded desktop zero cost is retained")
+        for value: Double? in [nil, -.infinity, .infinity, .nan, -1] {
+            expect(TokenMonitorDesktopController.validatedTotalCostUSD(value) == nil, "missing or invalid desktop cost stays unavailable")
+        }
         let key = "sha256:b064f8f87a3fa626af7a4e92491a833119e18fdc9a7729ed1cfd16d8c328f751"
         // Expected bytes were produced by the pinned upstream codexAuthIdentity.
         expect(TokenMonitorHostIdentity.accountKey(email: " Fixture@Example.com ", accountID: "Workspace-A") == key, "upstream composite identity hash parity")

@@ -575,7 +575,7 @@ def execution_preference(profile: dict[str, Any]) -> dict[str, Any] | None:
         return None
     model, effort, tier = (preference.get(k) for k in ("model", "reasoningEffort", "serviceTier"))
     subagent_mode = preference.get("subagentMode", "standard")
-    maxima = {"gpt-6-astra": 6, "gpt-6-sol": 6, "gpt-6-luna": 5,
+    maxima = {"gpt-6-astra": 6, "gpt-6.1-sol": 6, "gpt-6-sol": 6, "gpt-6-luna": 5,
               "gpt-5.6-sol": 6, "gpt-5.6-terra": 6, "gpt-5.6-luna": 5,
               "gpt-5.5": 4, "gpt-5.2": 4}
     ranks = {"low": 1, "medium": 2, "high": 3, "xhigh": 4, "max": 5, "ultra": 6}
@@ -617,8 +617,8 @@ def execution_preference(profile: dict[str, Any]) -> dict[str, Any] | None:
 
 def effective_strategy(preference: dict[str, Any]) -> dict[str, Any]:
     defaults = {
-        "standard": {"useSavedModel": True, "model": "gpt-6-sol", "reasoningEffort": "low", "subagentsEnabled": False, "subagentModel": "gpt-6-luna", "subagentReasoningEffort": "max"},
-        "sol_luna": {"useSavedModel": False, "model": "gpt-6-sol", "reasoningEffort": "high", "subagentsEnabled": True, "subagentModel": "gpt-6-luna", "subagentReasoningEffort": "max"},
+        "standard": {"useSavedModel": True, "model": "gpt-6.1-sol", "reasoningEffort": "low", "subagentsEnabled": False, "subagentModel": "gpt-6-luna", "subagentReasoningEffort": "max"},
+        "sol_luna": {"useSavedModel": False, "model": "gpt-6.1-sol", "reasoningEffort": "high", "subagentsEnabled": True, "subagentModel": "gpt-6-luna", "subagentReasoningEffort": "max"},
         "luna_direct": {"useSavedModel": False, "model": "gpt-6-luna", "reasoningEffort": "max", "subagentsEnabled": False, "subagentModel": "gpt-6-luna", "subagentReasoningEffort": "max"},
     }
     mode = preference["subagentMode"]
@@ -635,7 +635,7 @@ def effective_strategy(preference: dict[str, Any]) -> dict[str, Any]:
 
 def valid_effective_strategy(strategy: dict[str, Any]) -> bool:
     """Validate the values that will actually reach Codex, after CLI overrides."""
-    maxima = {"gpt-6-astra": 6, "gpt-6-sol": 6, "gpt-6-luna": 5,
+    maxima = {"gpt-6-astra": 6, "gpt-6.1-sol": 6, "gpt-6-sol": 6, "gpt-6-luna": 5,
               "gpt-5.6-sol": 6, "gpt-5.6-terra": 6, "gpt-5.6-luna": 5,
               "gpt-5.5": 4, "gpt-5.2": 4}
     ranks = {"low": 1, "medium": 2, "high": 3, "xhigh": 4, "max": 5, "ultra": 6}
@@ -1399,6 +1399,11 @@ def self_test() -> None:
         "model": "gpt-6-sol", "reasoningEffort": "ultra", "serviceTier": "default",
     }})
     assert sol_saved is not None
+    sol61_saved = execution_preference({"executionPreference": {
+        "model": "gpt-6.1-sol", "reasoningEffort": "ultra", "serviceTier": "fast",
+    }})
+    assert sol61_saved is not None
+    assert valid_effective_strategy(effective_strategy(sol61_saved))
     luna_saved = execution_preference({"executionPreference": {
         "model": "gpt-6-luna", "reasoningEffort": "max", "serviceTier": "default",
     }})
@@ -1414,7 +1419,7 @@ def self_test() -> None:
     sol_luna = effective_strategy({**sol_saved, "subagentMode": "sol_luna"})
     assert (sol_luna["model"], sol_luna["reasoningEffort"], sol_luna["subagentsEnabled"],
             sol_luna["subagentModel"], sol_luna["subagentReasoningEffort"]) == (
-        "gpt-6-sol", "high", True, "gpt-6-luna", "max")
+        "gpt-6.1-sol", "high", True, "gpt-6-luna", "max")
     luna_direct = effective_strategy({**sol_saved, "subagentMode": "luna_direct"})
     assert (luna_direct["model"], luna_direct["reasoningEffort"], luna_direct["subagentsEnabled"],
             luna_direct["subagentModel"], luna_direct["subagentReasoningEffort"]) == (

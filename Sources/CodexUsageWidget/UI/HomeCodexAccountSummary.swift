@@ -27,6 +27,9 @@ struct HomeCodexAccountSummary: View {
     let onOpenTerminal: () -> Void
     let onCopyTerminalCommand: () -> Void
     let onManage: () -> Void
+    var allowsResetCreditAction = false
+    var hubAccountAlias: String? = nil
+    var referralAccount: (() throws -> CodexReferralAccount)? = nil
 
     @Environment(\.widgetLanguage) private var language
     @Environment(\.colorScheme) private var colorScheme
@@ -40,7 +43,7 @@ struct HomeCodexAccountSummary: View {
                 card
             } else {
                 ViewThatFits(in: .horizontal) {
-                    wideRow.frame(minWidth: 620)
+                    wideRow.frame(minWidth: 640)
                     narrowRow
                 }
             }
@@ -70,8 +73,24 @@ struct HomeCodexAccountSummary: View {
     private var card: some View {
         VStack(alignment: .leading, spacing: 4) {
             identity
+            if layout == .cards {
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 6) {
+                        balanceSummary
+                        frequentActions
+                    }
+                    VStack(alignment: .leading, spacing: 3) {
+                        balanceSummary
+                        HStack {
+                            frequentActions
+                            Spacer(minLength: 0)
+                        }
+                    }
+                }
+            } else {
+                balanceSummary
+            }
             quotas
-            balanceSummary
         }
     }
 
@@ -108,11 +127,8 @@ struct HomeCodexAccountSummary: View {
                 identity
                 balanceSummary
             }
-            .frame(minWidth: 235, maxWidth: .infinity, alignment: .leading)
-            quotaWindow(
-                "5h", remaining: fiveHourRemaining, reset: fiveHourReset,
-                constrainedByWeekly: QuotaAvailabilityPresentation.isWeeklyExhausted(sevenDayRemaining))
-            quotaWindow("7d", remaining: sevenDayRemaining, reset: sevenDayReset, paletteRole: .secondary)
+            .frame(minWidth: 300, maxWidth: .infinity, alignment: .leading)
+            quotas.frame(minWidth: 320, maxWidth: 360)
         }
     }
 
@@ -223,6 +239,18 @@ struct HomeCodexAccountSummary: View {
                 .font(.system(size: 12, weight: .semibold))
                 .lineLimit(1)
                 .help(accountHelp)
+            ResetCreditButton(
+                profile: profile, selectedProfileID: profile.id,
+                hubAccountAlias: hubAccountAlias, onConfirmedResult: onRefresh,
+                displayNumber: displayNumber, compact: true
+            )
+            .fixedSize()
+            .disabled(!allowsResetCreditAction)
+            CodexInviteButton(
+                accountLabel: String(format: "%02d · ", displayNumber) + AccountDisplay.profileName(profile, allProfiles: allProfiles),
+                resolveAccount: referralAccount
+            )
+            .fixedSize()
             if loginEligibility != .loggedIn {
                 Image(systemName: "exclamationmark.circle")
                     .foregroundStyle(FixedVisualPalette.statusWarningForeground(colorScheme))
@@ -237,7 +265,7 @@ struct HomeCodexAccountSummary: View {
                     .accessibilityLabel(language.text("显示上次额度快照", "Showing last usage snapshot"))
             }
             Spacer(minLength: 0)
-            headerActions
+            if layout == .cards { moreActions } else { headerActions }
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel(
@@ -319,35 +347,69 @@ struct HomeCodexAccountSummary: View {
         _ title: String, remaining: Double?, reset: Date?, constrainedByWeekly: Bool = false,
         paletteRole: QuotaPaletteRole = .primary
     ) -> some View {
-        CompactQuotaView(title: title, remaining: remaining, reset: reset, paletteRole: paletteRole, constrainedByWeekly: constrainedByWeekly)
-            .frame(maxWidth: .infinity, alignment: .leading)
+        CompactQuotaView(
+            title: title, remaining: remaining, reset: reset, paletteRole: paletteRole,
+            constrainedByWeekly: constrainedByWeekly, horizontalDetails: true
+        )
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var headerActions: some View {
         HStack(spacing: 2) {
+            frequentActions
+            moreActions
+        }
+        .fixedSize()
+    }
+
+    private var frequentActions: some View {
+        HStack(spacing: 2) {
+            Button(action: onRefresh) {
+                Image(systemName: isRefreshing ? "hourglass" : "arrow.clockwise").frame(width: 24, height: 26)
+            }
+            .disabled(isRefreshing)
+            .help(language.text("刷新此账号", "Refresh account"))
+            .accessibilityLabel(language.text("刷新此账号", "Refresh account"))
+            Button(action: onOpenTerminal) {
+                Image(systemName: "terminal").frame(width: 24, height: 26)
+            }
+            .disabled(!canOpenTerminal)
+            .help(language.text("在终端中使用", "Open in Terminal"))
+            .accessibilityLabel(language.text("在终端中使用", "Open in Terminal"))
+            Button(action: onCopyTerminalCommand) {
+                Image(systemName: "doc.on.doc").frame(width: 24, height: 26)
+            }
+            .disabled(!canCopyTerminalCommand)
+            .help(language.text("复制 CLI 调用命令", "Copy CLI command"))
+            .accessibilityLabel(language.text("复制 CLI 调用命令", "Copy CLI command"))
             Button(action: onSwitchDesktop) {
-                Image(systemName: "macwindow").frame(width: 26, height: 26)
+                Image(systemName: "macwindow").frame(width: 24, height: 26)
                     .foregroundStyle(isCurrentCodexAccount ? FixedVisualPalette.statusSuccess : Color.secondary)
             }
             .disabled(!canSwitchDesktop)
             .help(isCurrentCodexAccount ? language.text("当前桌面账号", "Current Desktop account") : language.text("切换到桌面", "Switch Desktop"))
             .accessibilityLabel(isCurrentCodexAccount ? language.text("当前桌面账号", "Current Desktop account") : language.text("切换到桌面", "Switch Desktop"))
-            Menu {
-                Button(language.text("刷新额度", "Refresh limits"), action: onRefresh).disabled(isRefreshing)
-                Button(language.text("在终端中使用", "Open in Terminal"), action: onOpenTerminal).disabled(!canOpenTerminal)
-                Button(language.text("复制 CLI 调用命令", "Copy CLI command"), action: onCopyTerminalCommand).disabled(!canCopyTerminalCommand)
-                Button(language.text("打开完整管理", "Open full management"), action: onManage)
-                Divider()
-                Text(accountStatus)
-                if let until = profile.officialProfile?.subscriptionActiveUntil {
-                    Text(language.text("到期 ", "Expires ") + fullBeijingDateTime(until))
-                }
-            } label: {
-                Image(systemName: isRefreshing ? "hourglass" : "ellipsis").frame(width: 26, height: 26)
-            }
-            .menuStyle(.borderlessButton).menuIndicator(.hidden)
-            .accessibilityLabel(language.text("更多账号操作", "More account actions"))
         }
+        .font(.system(size: 11)).foregroundStyle(.secondary).buttonStyle(WorkspaceQuietButtonStyle())
+        .fixedSize()
+    }
+
+    private var moreActions: some View {
+        Menu {
+            Button(language.text("刷新额度", "Refresh limits"), action: onRefresh).disabled(isRefreshing)
+            Button(language.text("在终端中使用", "Open in Terminal"), action: onOpenTerminal).disabled(!canOpenTerminal)
+            Button(language.text("复制 CLI 调用命令", "Copy CLI command"), action: onCopyTerminalCommand).disabled(!canCopyTerminalCommand)
+            Button(language.text("打开完整管理", "Open full management"), action: onManage)
+            Divider()
+            Text(accountStatus)
+            if let until = profile.officialProfile?.subscriptionActiveUntil {
+                Text(language.text("到期 ", "Expires ") + fullBeijingDateTime(until))
+            }
+        } label: {
+            Image(systemName: "ellipsis").frame(width: 24, height: 26)
+        }
+        .menuStyle(.borderlessButton).menuIndicator(.hidden)
+        .accessibilityLabel(language.text("更多账号操作", "More account actions"))
         .font(.system(size: 11)).foregroundStyle(.secondary).buttonStyle(WorkspaceQuietButtonStyle())
         .fixedSize()
     }

@@ -49,6 +49,7 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
     @Published private(set) var displayRows: [LocalProxyQueueRow] = []
     private var displayGate = LocalProxyDisplayPublicationGate<[LocalProxyQueueRow]>(initial: [])
     private var displayPublishTask: Task<Void, Never>?
+    private var resetCreditRefreshTarget: CodexProfile?
     @Published private(set) var phase: LocalProxyPhase = .stopped
     @Published private(set) var membershipChangeWaiting = false
     @Published private(set) var endpoint: String?
@@ -235,6 +236,39 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
         rebuildRows()
     }
 
+    struct ResetCreditTarget {
+        let profile: CodexProfile
+        let selectedProfileID: String?
+        let hubAccountAlias: String?
+    }
+
+    /// Resolve the current queue identity without selecting or switching an account.
+    func resetCreditTarget(for id: String) -> ResetCreditTarget? {
+        let matches = usageStore.profiles.filter { $0.id == id }
+        guard rows.filter({ $0.id == id }).count == 1, matches.count == 1,
+            let profile = matches.first, !profile.isSystemProfile,
+            let accountID = profile.lastSnapshot?.accountID, !accountID.isEmpty
+        else { return nil }
+        let allowsAction = !usageStore.isPreview && !finishing
+        return ResetCreditTarget(
+            profile: profile, selectedProfileID: allowsAction ? profile.id : nil,
+            hubAccountAlias: allowsAction ? alias(for: profile) : nil)
+    }
+
+    /// The button calls this only after its existing two-confirmation flow succeeds.
+    func refreshAfterResetCredit(_ target: ResetCreditTarget) {
+        guard !usageStore.isPreview, target.selectedProfileID == target.profile.id,
+            let current = resetCreditTarget(for: target.profile.id),
+            current.selectedProfileID == target.selectedProfileID,
+            current.profile.lastSnapshot?.accountID == target.profile.lastSnapshot?.accountID,
+            current.profile.codexHomeURL == target.profile.codexHomeURL
+        else { return }
+        resetCreditRefreshTarget = current.profile
+        usageStore.refreshLocalProxyQuotas(profileIDs: [current.profile.id])
+        rebuildRows()
+        flushDisplayRows()
+    }
+
     /// Publish the current in-memory queue state on an explicit UI action.
     /// This does not start a quota or network refresh.
     func flushDisplayRows() {
@@ -251,17 +285,17 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
     private func prepareDesktopConnection() throws {
         guard let runID, let runDirectory, let endpoint, let clientKey
         else { throw LocalProxyFailure.unavailable }
-        let bundled = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.openai.codex")?
-            .appendingPathComponent("Contents/Resources/codex").path
+        let bundled = CodexExecutable.bundledPath()
         guard
             let selected = [bundled, CodexExecutable.path()].compactMap({ $0 })
                 .first(where: { FileManager.default.isExecutableFile(atPath: $0) })
         else { return }
         let executable = URL(fileURLWithPath: selected).resolvingSymlinksInPath().path
-        let connection: [String: Any] = [
+        var connection: [String: Any] = [
             "schemaVersion": 1, "runID": runID, "endpoint": endpoint,
             "clientKey": clientKey, "codexExecutable": executable,
         ]
+        if let networkProxy = try LocalProxyNetworkSettings.load() { connection["networkProxy"] = networkProxy }
         let data = try JSONSerialization.data(withJSONObject: connection)
         let destination = runDirectory.appendingPathComponent("desktop-connection.json")
         guard !FileManager.default.fileExists(atPath: destination.path) else {
@@ -702,13 +736,28 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
         else { return .failure(.identity) }
         let isDesktop = profile.recordedAccountKey == system.recordedAccountKey || profile.lastSnapshot?.accountID == system.lastSnapshot?.accountID
         guard desktopPass == isDesktop else { return .failure(.stageNotApplicable) }
-        // Paid admission needs an observation after the previous request ended,
-        // including a subscription request that may have crossed its limit.
-        if floor != nil, let after = creditRefreshAfter[profile.id] {
-            usageStore.refreshLocalProxyQuotas(profileIDs: [profile.id])
+        func admission(_ candidate: CodexProfile) -> LocalProxyFailure? {
+            if floor != nil,
+                let failure = LocalProxyAdmission.creditPool(usageStore.profiles, activeIDs: requestMembers, refreshAfter: creditRefreshAfter)
+            {
+                return failure
+            }
+            return LocalProxyAdmission.quota(candidate, creditFloor: floor, allowPaidCredits: creditFallbackEnabled)
+        }
+        guard let initial = currentBinding(profile, system: system) else { return .failure(.identity) }
+        // Refresh before rejecting a stale snapshot. Paid admission observes the
+        // whole frozen pool, including releases that may have consumed quota.
+        // The existing admission deadline and all identity/credit checks remain.
+        if admission(initial) == .quotaUnknown {
+            usageStore.refreshLocalProxyQuotas(profileIDs: floor == nil ? [profile.id] : requestMembers)
             for _ in 0..<30 {
+                guard !Task.isCancelled, !finishing, phase == .running, process === child,
+                    child.isRunning, request.runID == runID,
+                    isMembershipSnapshotCurrent(membership, requestID: request.requestID)
+                else { return .failure(.stopping) }
                 guard ProcessInfo.processInfo.systemUptime < admissionDeadline else { return .failure(.admissionDeadline) }
-                if (usageStore.profiles.first { $0.id == profile.id }?.lastSnapshot?.fetchedAt ?? .distantPast) > after { break }
+                guard let updated = currentBinding(profile, system: system) else { return .failure(.identity) }
+                if admission(updated) != .quotaUnknown { break }
                 let left = admissionDeadline - ProcessInfo.processInfo.systemUptime
                 try? await Task.sleep(nanoseconds: UInt64(min(0.1, max(0, left)) * 1_000_000_000))
             }
@@ -717,15 +766,6 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
             child.isRunning, request.runID == runID,
             isMembershipSnapshotCurrent(membership, requestID: request.requestID)
         else { return .failure(.stopping) }
-        func admission(_ candidate: CodexProfile) -> LocalProxyFailure? {
-            if floor != nil,
-                let failure = LocalProxyAdmission.creditPool(usageStore.profiles, activeIDs: requestMembers, refreshAfter: creditRefreshAfter)
-            {
-                if failure == .quotaUnknown { usageStore.refreshLocalProxyQuotas(profileIDs: requestMembers) }
-                return failure
-            }
-            return LocalProxyAdmission.quota(candidate, creditFloor: floor, allowPaidCredits: creditFallbackEnabled)
-        }
         guard let fresh = currentBinding(profile, system: system) else { return .failure(.identity) }
         if let failure = admission(fresh) { return .failure(failure) }
         guard ProcessInfo.processInfo.systemUptime < admissionDeadline else { return .failure(.admissionDeadline) }
@@ -991,7 +1031,23 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
                 isPriority: preferences.priorityIDs.contains(id), isCurrent: state == "current", quotaText: quota, state: state, cooldownUntil: cooldowns[id],
                 activeRequestCount: activeRequestCount)
         }
-        publishDisplayRows()
+        var immediately = false
+        if let target = resetCreditRefreshTarget {
+            if let current = usageStore.profiles.first(where: { $0.id == target.id }),
+                current.lastSnapshot?.accountID == target.lastSnapshot?.accountID,
+                current.codexHomeURL == target.codexHomeURL
+            {
+                if current.lastSnapshot?.fetchedAt != target.lastSnapshot?.fetchedAt
+                    || current.lastQuotaReadFailureAt != target.lastQuotaReadFailureAt
+                {
+                    immediately = true
+                    resetCreditRefreshTarget = nil
+                }
+            } else {
+                resetCreditRefreshTarget = nil
+            }
+        }
+        publishDisplayRows(immediately: immediately)
     }
 
     private func publishDisplayRows(immediately: Bool = false) {

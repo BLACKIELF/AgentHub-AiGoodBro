@@ -32,6 +32,7 @@ final class TokenMonitorDesktopController: ObservableObject {
 
     @Published private(set) var isReady = false
     @Published private(set) var hasVisibleTray = false
+    @Published private(set) var totalCostUSD: Double?
     @Published private(set) var lastError: String?
     var hostAction: (@MainActor (TokenMonitorHostRequest) async -> TokenMonitorHostReply)?
     private var process: Process?
@@ -129,6 +130,7 @@ final class TokenMonitorDesktopController: ObservableObject {
                 if process === child, child.isRunning, reply?.ok == true, reply?.ready == true {
                     isReady = true
                     hasVisibleTray = reply?.trayVisible == true
+                    updateTotalCost(reply?.allTimeCostUsd)
                     lastError = nil
                     startStatusPolling(path: socketPath, child: child)
                     return
@@ -146,6 +148,7 @@ final class TokenMonitorDesktopController: ObservableObject {
         statusPolling = nil
         isReady = false
         hasVisibleTray = false
+        updateTotalCost(nil)
         if child.isRunning, process === child, let socketPath {
             _ = try? await Task.detached {
                 try DesktopSocket.request(DesktopRequest(cmd: "quit"), path: socketPath, timeout: 0.4)
@@ -174,6 +177,7 @@ final class TokenMonitorDesktopController: ObservableObject {
         guard process === child else { return }
         isReady = false
         hasVisibleTray = false
+        updateTotalCost(nil)
         statusPolling?.cancel()
         statusPolling = nil
         process = nil
@@ -275,6 +279,7 @@ final class TokenMonitorDesktopController: ObservableObject {
                     if response?.ok == true, response?.ready == true {
                         isReady = true
                         hasVisibleTray = response?.trayVisible == true
+                        updateTotalCost(response?.allTimeCostUsd)
                         lastError = nil
                         startStatusPolling(path: path, child: child)
                         return
@@ -328,11 +333,13 @@ final class TokenMonitorDesktopController: ObservableObject {
                     missed = 0
                     self.isReady = true
                     self.hasVisibleTray = reply?.trayVisible == true
+                    self.updateTotalCost(reply?.allTimeCostUsd)
                 } else {
                     missed += 1
                     if missed >= 3 {
                         self.isReady = false
                         self.hasVisibleTray = false
+                        self.updateTotalCost(nil)
                     }
                 }
             }
@@ -350,7 +357,18 @@ final class TokenMonitorDesktopController: ObservableObject {
     }
 
     private func recordFailure() {
+        updateTotalCost(nil)
         lastError = WidgetLanguage.storedOrAutomatic().text("无法打开用量界面，请重试。", "Unable to open usage. Please try again.")
+    }
+
+    nonisolated static func validatedTotalCostUSD(_ value: Double?) -> Double? {
+        guard let value, value.isFinite, value >= 0 else { return nil }
+        return value
+    }
+
+    private func updateTotalCost(_ value: Double?) {
+        let next = Self.validatedTotalCostUSD(value)
+        if totalCostUSD != next { totalCostUSD = next }
     }
 }
 
@@ -368,6 +386,7 @@ private struct DesktopReply: Decodable, Sendable {
     let ok: Bool
     let ready: Bool?
     let trayVisible: Bool?
+    let allTimeCostUsd: Double?
 }
 
 private enum DesktopSocket {

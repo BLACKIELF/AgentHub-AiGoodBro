@@ -28,7 +28,7 @@ struct HomeSectionToggle: View {
                 if let systemImage {
                     Image(systemName: systemImage).accessibilityHidden(true)
                 }
-                Text(title)
+                Text(title).lineLimit(1)
                 if fillsWidth { Spacer(minLength: 0) }
             }
             .frame(minHeight: 24)

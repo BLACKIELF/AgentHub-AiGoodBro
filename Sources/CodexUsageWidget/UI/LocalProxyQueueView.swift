@@ -9,6 +9,9 @@ struct LocalProxyQueueView: View {
     @State private var secondaryFloorText = ""
     @State private var creditFloorDraftsInitialized = false
     @State private var confirmingStop = false
+    @FocusState private var focusedCreditFloor: CreditFloor?
+
+    private enum CreditFloor: Hashable { case primary, secondary }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -119,7 +122,11 @@ struct LocalProxyQueueView: View {
             minHeight: LocalProxyQueueWindowController.minimumContentSize.height,
             maxHeight: .infinity
         )
-        .background(WorkspaceGlassBackdrop())
+        .background {
+            // The proxy window uses a transparent full-size titlebar; extend
+            // the backdrop under it so the outer edge reads as one surface.
+            WorkspaceGlassBackdrop().ignoresSafeArea()
+        }
         .buttonStyle(WorkspaceActionButtonStyle())
         .accessibilityIdentifier("next.local-proxy.panel")
         .alert(language.text("停止反代？", "Stop the proxy?"), isPresented: $confirmingStop) {
@@ -151,34 +158,23 @@ struct LocalProxyQueueView: View {
     }
     private var creditSettings: some View {
         VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 10) {
-                Toggle(
-                    language.text("点数接续", "Credit fallback"),
-                    isOn: Binding(
-                        get: { model.creditFallbackEnabled }, set: { model.setCreditFallback($0) }
-                    )
-                )
-                .toggleStyle(WorkspaceCheckboxStyle()).disabled(!model.canEdit)
-                Text(language.text("第一档保留", "First floor"))
-                TextField("2000", text: $primaryFloorText)
-                    .frame(width: 64)
-                    .accessibilityLabel(language.text("第一档保留点数", "First retained credit floor"))
-                    .accessibilityIdentifier("next.local-proxy.credit-primary")
-                Text(language.text("第二档保留", "Second floor"))
-                TextField("1500", text: $secondaryFloorText)
-                    .frame(width: 64)
-                    .accessibilityLabel(language.text("第二档保留点数", "Second retained credit floor"))
-                    .accessibilityIdentifier("next.local-proxy.credit-secondary")
-                Text(language.text("点", "points")).foregroundStyle(.secondary)
-                Spacer(minLength: 0)
-                Button(language.text("保存底线", "Save floors")) {
-                    if let floors = parsedCreditFloors { model.setCreditFloors(primary: floors.primary, secondary: floors.secondary) }
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 10) {
+                    creditFallbackToggle
+                    creditFloorFields
+                    Spacer(minLength: 0)
+                    saveCreditFloorsButton
                 }
-                .disabled(!model.canEdit || !creditFloorsChanged || parsedCreditFloors == nil)
-                .accessibilityIdentifier("next.local-proxy.credit-save")
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        creditFallbackToggle
+                        Spacer()
+                        saveCreditFloorsButton
+                    }
+                    creditFloorFields
+                }
             }
             .disabled(!model.canEdit)
-            .textFieldStyle(.roundedBorder)
             .controlSize(.small)
             Text(
                 language.text(
@@ -194,6 +190,61 @@ struct LocalProxyQueueView: View {
         .font(.caption)
         .padding(8)
         .background(WorkspaceGlassSurface(cornerRadius: 10))
+    }
+
+    private var creditFallbackToggle: some View {
+        Toggle(
+            language.text("点数接续", "Credit fallback"),
+            isOn: Binding(
+                get: { model.creditFallbackEnabled }, set: { model.setCreditFallback($0) }
+            )
+        )
+        .toggleStyle(WorkspaceCheckboxStyle()).disabled(!model.canEdit)
+        .fixedSize()
+    }
+
+    private var creditFloorFields: some View {
+        HStack(spacing: 10) {
+            creditFloorField(.primary, title: language.text("第一档保留", "First floor"), text: $primaryFloorText)
+            creditFloorField(.secondary, title: language.text("第二档保留", "Second floor"), text: $secondaryFloorText)
+            Text(language.text("点", "points")).foregroundStyle(.secondary)
+        }
+        .fixedSize()
+    }
+
+    private func creditFloorField(_ floor: CreditFloor, title: String, text: Binding<String>) -> some View {
+        HStack(spacing: 6) {
+            Text(title)
+            TextField(floor == .primary ? "2000" : "1500", text: text)
+                .textFieldStyle(.plain)
+                .font(.system(size: 12, weight: .medium).monospacedDigit())
+                .foregroundStyle(.primary)
+                .padding(.horizontal, 8)
+                .frame(width: 84, height: 30)
+                .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 6)
+                        .strokeBorder(focusedCreditFloor == floor ? Color.accentColor : Color.primary.opacity(0.25), lineWidth: 1)
+                }
+                .focused($focusedCreditFloor, equals: floor)
+                .onSubmit(saveCreditFloors)
+                .accessibilityLabel(language.text(title + "点数", title + " points"))
+                .accessibilityIdentifier(floor == .primary ? "next.local-proxy.credit-primary" : "next.local-proxy.credit-secondary")
+        }
+    }
+
+    private var saveCreditFloorsButton: some View {
+        Button(language.text("保存底线", "Save floors")) {
+            saveCreditFloors()
+        }
+        .disabled(!model.canEdit || !creditFloorsChanged || parsedCreditFloors == nil)
+        .accessibilityIdentifier("next.local-proxy.credit-save")
+        .fixedSize()
+    }
+
+    private func saveCreditFloors() {
+        guard model.canEdit, creditFloorsChanged, let floors = parsedCreditFloors else { return }
+        model.setCreditFloors(primary: floors.primary, secondary: floors.secondary)
     }
 
     private var controls: some View {
@@ -268,19 +319,30 @@ struct LocalProxyQueueView: View {
                     }
                     .font(.caption).foregroundStyle(.secondary)
                 }
+                if let target = model.resetCreditTarget(for: row.id) {
+                    ResetCreditButton(
+                        profile: target.profile, selectedProfileID: target.selectedProfileID,
+                        hubAccountAlias: target.hubAccountAlias,
+                        onConfirmedResult: { model.refreshAfterResetCredit(target) },
+                        displayNumber: row.accountNumber
+                    )
+                    .fixedSize()
+                    .environment(\.widgetLanguage, language)
+                    .accessibilityIdentifier("next.local-proxy.reset-card-\(row.id)")
+                }
             }
-            .frame(minWidth: 100, maxWidth: 225, alignment: .leading)
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 100), alignment: .leading)], alignment: .leading, spacing: 5) {
+            .frame(minWidth: 130, maxWidth: .infinity, alignment: .leading)
+            LazyVGrid(columns: [GridItem(.flexible(minimum: 132), alignment: .leading), GridItem(.flexible(minimum: 132), alignment: .leading)], alignment: .leading, spacing: 5) {
                 ForEach(row.windows) { window in
                     CompactQuotaView(
                         title: window.id, remaining: window.remaining, reset: window.resetsAt,
                         paletteRole: window.id == "5h" ? .primary : .secondary,
-                        constrainedByWeekly: window.constrainedByWeekly
+                        constrainedByWeekly: window.constrainedByWeekly, horizontalDetails: true
                     )
-                    .frame(minWidth: 100, alignment: .leading)
+                    .frame(minWidth: 132, alignment: .leading)
                 }
             }
-            .frame(minWidth: 100, maxWidth: 248)
+            .frame(minWidth: 272, maxWidth: 360)
             .environment(\.widgetLanguage, language)
             .help(row.quotaText ?? "")
             Spacer(minLength: 0)

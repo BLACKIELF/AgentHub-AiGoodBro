@@ -58,7 +58,7 @@ open "$HOME/Applications/AiGoodBro.app"
 
 ## 账号动作
 
-![新版列表工作台，原生演示数据](images/0909v4/03-workspace-list-zh-light@2x.png)
+![当前列表工作台，9.6.63 (113) 原生模拟数据预览](images/1002v2/home/rows-dark.png)
 
 | 动作 | 作用 | 额度与身份 |
 |---|---|---|

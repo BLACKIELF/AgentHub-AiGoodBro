@@ -87,6 +87,8 @@ func TestDesktopConnectionValidation(t *testing.T) {
 		func(c *desktopConnection) { c.ClientKey = strings.Repeat("k", 24) + "\n" },
 		func(c *desktopConnection) { c.RunID = "bad id" },
 		func(c *desktopConnection) { c.CodexExecutable = "relative" },
+		func(c *desktopConnection) { c.NetworkProxy = "http://user:password@127.0.0.1:7890" },
+		func(c *desktopConnection) { c.NetworkProxy = "https://127.0.0.1:7890/path" },
 	} {
 		bad := c
 		change(&bad)

@@ -167,6 +167,7 @@ private struct EdgeDockGlass<Content: View, Outline: Shape>: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.colorSchemeContrast) private var contrast
+    @Environment(\.visualTokens) private var tokens
 
     var body: some View {
         content
@@ -179,6 +180,9 @@ private struct EdgeDockGlass<Content: View, Outline: Shape>: View {
                         colorScheme == .dark
                             ? Color(red: 48 / 255, green: 52 / 255, blue: 56 / 255).opacity(glass.tintOpacity)
                             : Color(red: 246 / 255, green: 247 / 255, blue: 250 / 255).opacity(glass.tintOpacity))
+                    if tokens.identity.paletteID != PaletteCatalog.defaultPaletteID {
+                        WorkspaceGlassBackdrop().environment(\.workspaceGlass, glass)
+                    }
                 }
                 outline.stroke(Color.primary.opacity(glass.lineOpacity), lineWidth: 0.6)
             }
@@ -308,16 +312,12 @@ struct TokenMonitorEdgeDockRailView: View {
         } else if cell.kind == .provider {
             VStack(spacing: 2) {
                 ZStack {
-                    Circle().stroke(Color.primary.opacity(0.13), lineWidth: 3.5)
-                    Circle().trim(from: 0, to: CGFloat(max(0, min(100, cell.percentRemaining ?? 0)) / 100))
-                        .stroke(
-                            warnColors && (cell.severityRemainingPercent ?? 100) < 20
-                                ? Color(red: 0.88, green: 0.48, blue: 0.31) : providerColor(cell.providerID),
-                            style: StrokeStyle(lineWidth: 3.5, lineCap: .round)
-                        )
-                        .rotationEffect(.degrees(-90))
-                        .opacity(cell.isAvailable ? 1 : 0.3)
-                    if let providerID = cell.providerID {
+                    if cell.headlineValueLabel == nil {
+                        QuotaPercentageRing(
+                            percent: cell.percentRemaining, diameter: 42, lineWidth: 3.5,
+                            tint: warnColors && (cell.severityRemainingPercent ?? 100) < 20
+                                ? Color(red: 0.88, green: 0.48, blue: 0.31) : providerColor(cell.providerID))
+                    } else if let providerID = cell.providerID {
                         ProviderMark(providerID: providerID, slot: .card)
                     }
                 }
@@ -325,7 +325,7 @@ struct TokenMonitorEdgeDockRailView: View {
                 .overlay(alignment: .topTrailing) {
                     if let label = cell.accountBadge {
                         Text(label)
-                            .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                            .font(.system(size: 8, weight: .semibold))
                             .foregroundStyle(.white)
                             .padding(.horizontal, 3).padding(.vertical, 1)
                             .background(Color.black.opacity(0.75), in: Capsule())
@@ -333,8 +333,8 @@ struct TokenMonitorEdgeDockRailView: View {
                             .accessibilityHidden(true)
                     }
                 }
-                Text(providerHeadline(cell))
-                    .font(.system(size: 9, weight: .medium, design: .monospaced))
+                Text(cell.headlineValueLabel ?? cell.title)
+                    .font(.system(size: 9, weight: .medium))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .minimumScaleFactor(0.6)
@@ -345,7 +345,7 @@ struct TokenMonitorEdgeDockRailView: View {
         } else {
             VStack(spacing: 2) {
                 Text(cell.metric == .liveRate ? "tok/s" : cell.title.uppercased())
-                    .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                    .font(.system(size: 8, weight: .semibold))
                     .foregroundStyle(.secondary)
                 Text(statisticValue(cell, compact: true))
                     .font(.system(size: 12, weight: .semibold))
@@ -357,7 +357,7 @@ struct TokenMonitorEdgeDockRailView: View {
                         ? liveRateStateLabel(cell)
                         : TokenMonitorFormatting.cost(cell.costUSD, compact: true, language: language)
                 )
-                .font(.system(size: 8, design: .monospaced))
+                .font(.system(size: 8))
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
                 .minimumScaleFactor(0.7)
@@ -427,6 +427,8 @@ struct TokenMonitorEdgeDockCardView: View {
     let onPin: () -> Void
     let onOpenDashboard: () -> Void
     var onOpenProxy: () -> Void = {}
+    var isRefreshing = false
+    var onRefresh: (() -> Void)? = nil
     @State private var byModel = false
 
     var body: some View {
@@ -465,7 +467,7 @@ struct TokenMonitorEdgeDockCardView: View {
                 Image(systemName: "network").font(.system(size: 12))
             }
             Text(cell.title)
-                .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
             Spacer(minLength: 4)
@@ -480,6 +482,23 @@ struct TokenMonitorEdgeDockCardView: View {
                 }
                 .padding(3)
                 .background(Color.primary.opacity(0.09), in: RoundedRectangle(cornerRadius: 8))
+            }
+            if cell.kind == .provider, let onRefresh {
+                Button(action: onRefresh) {
+                    ZStack {
+                        if isRefreshing {
+                            ProgressView().controlSize(.mini)
+                        } else {
+                            Image(systemName: "arrow.clockwise").font(.system(size: 11, weight: .medium))
+                        }
+                    }
+                    .frame(width: 24, height: 24)
+                    .background(Color.blue.opacity(0.07), in: RoundedRectangle(cornerRadius: 6))
+                }
+                .buttonStyle(.plain).foregroundStyle(.blue).disabled(isRefreshing)
+                .help(language.text("刷新额度", "Refresh quota"))
+                .accessibilityLabel(language.text(isRefreshing ? "正在刷新额度" : "刷新额度", isRefreshing ? "Refreshing quota" : "Refresh quota"))
+                .accessibilityIdentifier("edge-dock-card-refresh")
             }
             if canPin {
                 Button(action: onPin) {
@@ -583,20 +602,10 @@ struct TokenMonitorEdgeDockCardView: View {
         let remaining = window.remaining.flatMap { $0.isFinite && (0...100).contains($0) ? $0 : nil }
         let color = window.id == "5h" ? Color(red: 0.30, green: 0.66, blue: 0.73) : Color.purple
         return VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 3) {
-                Text(window.id).foregroundStyle(.secondary)
-                Spacer(minLength: 2)
-                Text(remaining.map { "\(Int($0.rounded()))%" } ?? "—").monospacedDigit()
+            HStack(spacing: 6) {
+                QuotaPercentageRing(percent: remaining, diameter: 36, tint: color)
+                Text(window.id).font(.system(size: 10, weight: .medium)).foregroundStyle(.secondary)
             }
-            .font(.system(size: 10, weight: .medium))
-            GeometryReader { geometry in
-                ZStack(alignment: .leading) {
-                    Capsule().fill(Color.primary.opacity(0.12))
-                    if let remaining {
-                        Capsule().fill(color).frame(width: geometry.size.width * CGFloat(remaining / 100))
-                    }
-                }
-            }.frame(height: 3)
             if let reset = window.resetsAt {
                 ResetCountdownText(deadline: reset, kind: .accountWindow, language: language, compact: true)
                     .font(.system(size: 8)).lineLimit(1)
@@ -626,7 +635,7 @@ struct TokenMonitorEdgeDockCardView: View {
                 .foregroundStyle(.secondary)
             if cell.isStale {
                 Text(language.text("上次记录 · 数据已过期", "Last recorded · Stale"))
-                    .font(.system(size: 9, design: .monospaced)).foregroundStyle(.secondary)
+                    .font(.system(size: 9)).foregroundStyle(.secondary)
             }
             let ranks = Array((byModel ? cell.byModel : cell.byTool).prefix(12))
             if ranks.isEmpty {
@@ -656,7 +665,7 @@ struct TokenMonitorEdgeDockCardView: View {
                 .font(.system(size: 10)).foregroundStyle(.secondary)
             if let rate = cell.liveRate {
                 Text(language.text("采样时间：", "Sampled: ") + language.dateTime(rate.sampledAt))
-                    .font(.system(size: 9, design: .monospaced)).foregroundStyle(.secondary)
+                    .font(.system(size: 9)).foregroundStyle(.secondary)
                 if rate.isIdle {
                     Text(language.text("上次采样 · 等待新采样", "Last sample · Waiting for a new sample"))
                         .font(.system(size: 9)).foregroundStyle(.secondary)
@@ -681,7 +690,7 @@ struct TokenMonitorEdgeDockCardView: View {
                     Text(TokenMonitorFormatting.count(session.tokenCount, compact: true, language: language))
                         .monospacedDigit()
                 }
-                .font(.system(size: 9, design: .monospaced))
+                .font(.system(size: 9))
             }
         }
     }
@@ -692,37 +701,35 @@ struct TokenMonitorEdgeDockCardView: View {
             HStack(spacing: 5) {
                 ProviderMark(providerID: rank.id, slot: .navigation)
                     .scaleEffect(0.58).frame(width: 16, height: 16)
-                Text(rank.id).font(.system(size: 10, weight: .medium, design: .monospaced))
+                Text(rank.id).font(.system(size: 10, weight: .medium))
                     .lineLimit(1).truncationMode(.middle)
                 Spacer(minLength: 2)
                 Text(TokenMonitorFormatting.count(rank.tokens, language: language))
-                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                    .font(.system(size: 10, weight: .semibold))
                     .monospacedDigit().lineLimit(1).minimumScaleFactor(0.7)
-                Text(rank.share.map { "\(Int(($0 * 100).rounded()))%" } ?? "—")
-                    .font(.system(size: 9, design: .monospaced))
-                    .foregroundStyle(.secondary).frame(width: 28, alignment: .trailing)
+                QuotaPercentageRing(
+                    percent: rank.share.map { $0 * 100 }, diameter: 32, lineWidth: 2.5,
+                    tint: color, accessibilityTitle: language.text("占比", "Share"))
             }
-            GeometryReader { geometry in
-                ZStack(alignment: .leading) {
-                    Capsule().fill(Color.primary.opacity(0.14))
-                    Capsule().fill(color).frame(width: geometry.size.width * CGFloat(max(0, min(1, rank.share ?? 0))))
-                }
-            }
-            .frame(height: 5)
         }
         .padding(.vertical, 2)
     }
 
     private var limitsContent: some View {
         VStack(alignment: .leading, spacing: 9) {
-            HStack(alignment: .firstTextBaseline) {
-                Text(
-                    cell.headlineValueLabel ?? cell.percentRemaining.map { "\(Int($0.rounded()))%" }
-                        ?? (cell.isStale ? language.text("待刷新", "Refresh needed") : language.text("未知", "Unknown"))
-                )
-                .font(.system(size: 28, weight: .medium)).monospacedDigit()
-                Text(cell.providerID == "claude" ? language.text("余额", "balance") : language.text("剩余额度", "remaining"))
-                    .font(.system(size: 10)).foregroundStyle(.secondary)
+            HStack(spacing: 10) {
+                if let label = cell.headlineValueLabel {
+                    Text(label).font(.system(size: 28, weight: .medium)).monospacedDigit()
+                } else {
+                    QuotaPercentageRing(percent: cell.percentRemaining, diameter: 64, lineWidth: 4)
+                }
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(cell.providerID == "claude" ? language.text("余额", "Balance") : language.text("剩余额度", "Remaining quota"))
+                        .font(.system(size: 11, weight: .medium))
+                    if cell.isStale {
+                        Text(language.text("待刷新", "Refresh needed")).font(.system(size: 10)).foregroundStyle(.secondary)
+                    }
+                }
             }
             if !cell.isAvailable {
                 Text(
@@ -740,25 +747,27 @@ struct TokenMonitorEdgeDockCardView: View {
             }
             ForEach(cell.accounts) { account in
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(account.name).font(.system(size: 10, weight: .medium, design: .monospaced))
+                    Text(account.name).font(.system(size: 10, weight: .medium))
                         .lineLimit(1).truncationMode(.middle)
                     ForEach(account.quotaRows) { metric in
-                        HStack {
-                            Text(metric.title).foregroundStyle(.secondary)
+                        HStack(spacing: 10) {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(metric.title).font(.system(size: 10)).foregroundStyle(.secondary)
+                                if metric.resetLabel != "—" {
+                                    Text(language.text("重置：", "Reset: ") + metric.resetLabel)
+                                        .font(.system(size: 9)).monospacedDigit().foregroundStyle(.secondary)
+                                }
+                                if metric.isStale || account.isStale {
+                                    Text(language.text("上次记录 · 待刷新", "Last recorded · Refresh needed"))
+                                        .font(.system(size: 9)).foregroundStyle(.secondary)
+                                }
+                            }
                             Spacer(minLength: 4)
-                            Text(metric.valueLabel ?? metric.percentRemaining.map { "\(Int($0.rounded()))%" } ?? "—")
-                                .monospacedDigit()
-                        }
-                        .font(.system(size: 9, design: .monospaced))
-                        if metric.resetLabel != "—" {
-                            Text(language.text("重置：", "Reset: ") + metric.resetLabel)
-                                .font(.system(size: 8, design: .monospaced))
-                                .foregroundStyle(.secondary)
-                        }
-                        if metric.isStale || account.isStale {
-                            Text(language.text("上次记录 · 待刷新", "Last recorded · Refresh needed"))
-                                .font(.system(size: 8, design: .monospaced))
-                                .foregroundStyle(.secondary)
+                            if let label = metric.valueLabel {
+                                Text(label).font(.system(size: 11, weight: .semibold)).monospacedDigit()
+                            } else {
+                                QuotaPercentageRing(percent: metric.percentRemaining, diameter: 38)
+                            }
                         }
                     }
                 }
@@ -766,7 +775,7 @@ struct TokenMonitorEdgeDockCardView: View {
             }
             if let collectedAt = cell.lastCollectedAt {
                 Text(language.text("采集：", "Collected: ") + language.dateTime(collectedAt))
-                    .font(.system(size: 8, design: .monospaced))
+                    .font(.system(size: 8))
                     .foregroundStyle(.secondary)
             }
         }

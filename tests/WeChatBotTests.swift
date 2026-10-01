@@ -14,6 +14,21 @@ struct WeChatBotTests {
         expect(try WeChatBotEventLedger(directory: directory).claim(owner: "synthetic-owner", messageID: "one", receivedAt: now) == nil, "restart duplicate")
         let thread = UUID().uuidString
         let turn = UUID().uuidString
+        expect(try ledger.reserveConversation(owner: "synthetic-owner") == .create, "first message reserves one creation")
+        expect(try WeChatBotEventLedger(directory: directory).reserveConversation(owner: "synthetic-owner") == .uncertain, "restart never repeats ambiguous creation")
+        try ledger.bindConversation(owner: "synthetic-owner", threadID: thread)
+        expect(try WeChatBotEventLedger(directory: directory).reserveConversation(owner: "synthetic-owner") == .bound(thread), "restart reuses exact dedicated chat")
+        expect(try ledger.conversationID(owner: "synthetic-other") == nil, "pairing owner isolation")
+        expect(try ledger.reserveConversation(owner: "synthetic-other") == .create, "different owner gets own binding")
+        try ledger.releaseUnsentConversation(owner: "synthetic-other")
+        expect(try ledger.reserveConversation(owner: "synthetic-other") == .create, "definitely unsent creation can recover")
+        do { try ledger.bindConversation(owner: "synthetic-owner", threadID: UUID().uuidString); failures.append("rebind protection") } catch {}
+        do { try ledger.releaseUnsentConversation(owner: "synthetic-owner"); failures.append("bound conversation removal") } catch {}
+        let bindingFile = directory.appendingPathComponent("conversations-v1.json")
+        let bindingText = try String(contentsOf: bindingFile, encoding: .utf8)
+        expect(!bindingText.contains("synthetic-owner") && !bindingText.contains("synthetic-other"), "binding contains no raw recipient")
+        let bindingAttributes = try FileManager.default.attributesOfItem(atPath: bindingFile.path)
+        expect((bindingAttributes[.posixPermissions] as? NSNumber)?.intValue == 0o600, "binding file is private")
         try ledger.mark(event, phase: .submitted, threadID: thread, turnID: turn)
         try ledger.mark(event, phase: .replyAttempted)
         try ledger.mark(event, phase: .uncertain)
@@ -63,6 +78,17 @@ struct WeChatBotTests {
         expect(uncertain == .uncertain && starts == before + 1, "lost response no retry")
         let cancelled = await relay.reply(threadID: thread, eventID: UUID(), text: "synthetic instruction", shouldContinue: { false }, onSubmitted: { _ in true })
         expect(cancelled == .cancelled && starts == before + 1, "disabled admission no start")
+        var opened = 0
+        var recoverySnapshots = 0
+        var recoveryStarts = 0
+        let recovered = WeChatCodexConversation(connection: .init(owner: { _ in opened == 0 ? nil : "synthetic-client" }, snapshot: { _, _ in
+            recoverySnapshots += 1; return recoverySnapshots == 1 ? idle : complete
+        }, start: { _, _, _, _, _ in recoveryStarts += 1; return turn }, close: {}), pollIntervalNanoseconds: 1_000_000, timeout: 1)
+        let recoveredResult = await recovered.reply(threadID: thread, eventID: UUID(), text: "synthetic instruction", shouldContinue: { true }, openDedicatedThread: { opened += 1; return true }, onSubmitted: { $0 == turn })
+        expect(recoveredResult == .reply("public final") && opened == 1 && recoveryStarts == 1, "dedicated chat opens then verifies owner before one submission")
+        let absentOwner = WeChatCodexConversation(connection: .init(owner: { _ in nil }, snapshot: { _, _ in idle }, start: { _, _, _, _, _ in recoveryStarts += 1; return turn }, close: {}))
+        let manualResult = await absentOwner.reply(threadID: thread, eventID: UUID(), text: "synthetic instruction", shouldContinue: { true }, onSubmitted: { _ in true })
+        expect(manualResult == .unavailable && recoveryStarts == 1, "manual chat does not silently create or open a different chat")
         let busy = WeChatCodexConversation(connection: .init(owner: { _ in "synthetic-client" }, snapshot: { _, _ in blocked }, start: { _, _, _, _, _ in starts += 1; return turn }, close: {}))
         let busyResult = await busy.reply(threadID: thread, eventID: UUID(), text: "synthetic instruction", shouldContinue: { true }, onSubmitted: { _ in true })
         expect(busyResult == .busy && starts == before + 1, "unsafe snapshot no start")

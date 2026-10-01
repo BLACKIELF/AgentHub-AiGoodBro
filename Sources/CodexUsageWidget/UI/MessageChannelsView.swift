@@ -35,9 +35,16 @@ struct MessageChannelsView: View {
     var actionInFlight: Bool = false
     var statusText: String? = nil
 
+    var personalWeChatNeedsAuthorization = false
+    var personalWeChatBindingMissing = false
+    var personalWeChatRestoreInProgress = false
+    var personalWeChatStatusText: String? = nil
+    var onRestorePersonalWeChat: (() -> Void)? = nil
+
     var personalChatEnabled: Binding<Bool> = .constant(false)
     var personalChatThreadID: Binding<String> = .constant("")
     var personalChatTargets: [WeChatCodexConversationTarget] = []
+    var personalAutomaticThreadID = ""
     var personalBotIsReplying = false
     var onRefreshPersonalChatTargets: () -> Void = {}
     var onOpenPersonalChat: () -> Void = {}
@@ -73,12 +80,17 @@ struct MessageChannelsView: View {
                     connecting: personalLoginInProgress, qrContent: personalLoginQRCode,
                     needsCode: personalLoginNeedsCode, disabled: actionInFlight,
                     onConnect: onConnectPersonalWeChat, onCancel: onCancelPersonalWeChat,
-                    onSubmitCode: onSubmitPersonalWeChatCode, onTest: onTestPersonalWeChat)
-                Toggle(language.text("允许微信继续 Codex 对话", "Continue Codex chats from WeChat"), isOn: personalChatEnabled)
+                    onSubmitCode: onSubmitPersonalWeChatCode, onTest: onTestPersonalWeChat,
+                    needsAuthorization: personalWeChatNeedsAuthorization,
+                    bindingMissing: personalWeChatBindingMissing,
+                    restoring: personalWeChatRestoreInProgress,
+                    connectionStatus: personalWeChatStatusText,
+                    onRestore: onRestorePersonalWeChat)
+                Toggle(language.text("允许微信与 Codex 对话", "Chat with Codex from WeChat"), isOn: personalChatEnabled)
                     .disabled(actionInFlight || personalLoginInProgress)
                 if personalChatEnabled.wrappedValue {
-                    Picker(language.text("继续哪个原聊天", "Continue which chat"), selection: personalChatThreadID) {
-                        Text(language.text("请选择原聊天", "Choose a chat")).tag("")
+                    Picker(language.text("使用哪个对话", "Conversation"), selection: personalChatThreadID) {
+                        Text(language.text("自动绑定微信专用对话", "Automatic dedicated WeChat chat")).tag("")
                         if !personalChatThreadID.wrappedValue.isEmpty,
                             !personalChatTargets.contains(where: { $0.id == personalChatThreadID.wrappedValue })
                         {
@@ -90,15 +102,27 @@ struct MessageChannelsView: View {
                     }.disabled(actionInFlight)
                     HStack {
                         Button(language.text("刷新聊天列表", "Refresh chats"), action: onRefreshPersonalChatTargets)
-                        Button(language.text("打开原聊天", "Open original chat"), action: onOpenPersonalChat)
-                            .disabled(personalChatThreadID.wrappedValue.isEmpty)
+                        Button(language.text("打开对话", "Open chat"), action: onOpenPersonalChat)
+                            .disabled(personalChatThreadID.wrappedValue.isEmpty && personalAutomaticThreadID.isEmpty)
+                    }
+                    if personalChatThreadID.wrappedValue.isEmpty {
+                        Text(
+                            personalAutomaticThreadID.isEmpty
+                                ? language.text("第一次发消息时自动建立专用对话，以后固定续聊。", "Your first message creates a dedicated chat; later messages continue it.")
+                                : language.text("微信专用对话已绑定，重启后继续使用同一对话。", "Dedicated chat linked. The same conversation is reused after restart.")
+                        )
+                        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     }
                     if personalBotIsReplying {
                         Label(language.text("Codex 正在回复", "Codex is replying"), systemImage: "ellipsis.message")
                             .font(.caption).foregroundStyle(.secondary)
                     }
-                    Text(language.text("沿用原聊天的模型、工具和权限；审批、登录在电脑上完成。", "Uses the original chat’s model, tools and permissions. Complete approvals and sign-in on your computer."))
-                        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    Text(
+                        language.text(
+                            "新对话沿用 Codex 默认设置，已有对话保留原设置。保持 Codex 和 AiGoodBro 运行；审批、登录在电脑上完成。",
+                            "New chats use Codex defaults; existing chats keep their settings. Keep Codex and AiGoodBro running. Complete approvals and sign-in on your computer.")
+                    )
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
                 Text(language.text("微信发送 /状态、/任务、/重置卡、/帮助，即可查询。", "Send /status, /tasks, /reset or /help in WeChat to query."))
                     .font(.caption).foregroundStyle(.secondary)

@@ -345,7 +345,61 @@ enum WKWebViewBridgeSelfTest {
             print("Home dashboard native bridge failed: web toggle reset dragged height")
             return false
         }
-        print("Home dashboard native bridge passed: bundled renderer, split panes, June/custom date, guarded preference callback, snapshot reuse and content size")
+        renderer.update(
+            dashboardJSON: fixture, resetAnnotations: [], height: 480, language: .en,
+            homePreferences: resized, summaryCost: .init(value: 19732.09))
+        let costDeadline = Date().addingTimeInterval(3)
+        while Date() < costDeadline {
+            if evaluateValue("window.AiGoodBroDashboard.history.summary.totalCost") as? Double == 19732.09 { break }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+        }
+        guard evaluateValue("window.AiGoodBroDashboard.history.summary.totalCost") as? Double == 19732.09,
+            evaluateValue("document.querySelectorAll('.dash-card-v')[1].textContent") as? String == "$19732.09",
+            evaluateValue("document.querySelector('.summary-resize').dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowRight',bubbles:true})); true") as? Bool == true
+        else {
+            print("Home dashboard native bridge failed: shared tray cost/metric resize")
+            return false
+        }
+        let widthsDeadline = Date().addingTimeInterval(3)
+        while received.last?.summaryWidths.isEmpty != false, Date() < widthsDeadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+        }
+        guard let widths = received.last, widths.summaryWidths.count == 8, widths.isValid,
+            HomeDashboardPreferences.load(try? JSONEncoder().encode(widths)).summaryWidths == widths.summaryWidths
+        else {
+            print("Home dashboard native bridge failed: metric widths persistence")
+            return false
+        }
+        _ = evaluateValue("window.costOnlyHeatmap = document.querySelector('#dashHeatmap svg'); true")
+        renderer.update(
+            dashboardJSON: fixture, resetAnnotations: [], height: 480, language: .en,
+            homePreferences: widths, summaryCost: .init(value: 19733.1))
+        let visibleCostDeadline = Date().addingTimeInterval(3)
+        while Date() < visibleCostDeadline {
+            if evaluateValue("document.querySelectorAll('.dash-card-v')[1].textContent") as? String == "$19733.10" { break }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+        }
+        guard evaluateValue("document.querySelectorAll('.dash-card-v')[1].textContent") as? String == "$19733.10",
+            evaluateValue("window.costOnlyHeatmap === document.querySelector('#dashHeatmap svg')") as? Bool == true
+        else {
+            print("Home dashboard native bridge failed: visible cost-only update")
+            return false
+        }
+        renderer.update(
+            dashboardJSON: fixture, resetAnnotations: [], height: 480, language: .en,
+            homePreferences: widths, summaryCost: .init(value: nil))
+        let unknownDeadline = Date().addingTimeInterval(3)
+        while Date() < unknownDeadline {
+            if evaluateValue("window.AiGoodBroDashboard.history.summary.totalCost == null") as? Bool == true { break }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+        }
+        guard evaluateValue("window.AiGoodBroDashboard.history.summary.totalCost == null") as? Bool == true,
+            evaluateValue("document.querySelectorAll('.dash-card-v')[1].textContent") as? String == "—"
+        else {
+            print("Home dashboard native bridge failed: unknown shared cost")
+            return false
+        }
+        print("Home dashboard native bridge passed: shared tray cost, saved metric widths, split panes, guarded callbacks and snapshot reuse")
         return true
     }
 

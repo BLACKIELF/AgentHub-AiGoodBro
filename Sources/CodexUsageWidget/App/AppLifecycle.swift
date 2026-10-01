@@ -23,11 +23,22 @@ final class GlassHostingContainer<Content: View>: NSView {
     private var glassPreferences = WorkspaceGlassPreferences()
     private var glassSubscription: AnyCancellable?
     private var accessibilitySubscription: AnyCancellable?
+    private var paletteSubscription: AnyCancellable?
+    private let preservesDefaultOpaqueBackground: Bool
+    private var usesDefaultOpaqueBackground: Bool
 
-    init(rootView: Content, cornerRadius: CGFloat, reduceTransparency: Bool = false, allowsWindowDragging: Bool = true, settings: AppSettings? = nil) {
+    init(
+        rootView: Content, cornerRadius: CGFloat, reduceTransparency: Bool = false, allowsWindowDragging: Bool = true, settings: AppSettings? = nil,
+        preservesDefaultOpaqueBackground: Bool = false
+    ) {
         self.cornerRadius = cornerRadius
         self.reduceTransparency = reduceTransparency
         self.allowsWindowDragging = allowsWindowDragging
+        self.preservesDefaultOpaqueBackground = preservesDefaultOpaqueBackground
+        usesDefaultOpaqueBackground =
+            preservesDefaultOpaqueBackground
+            && (settings?.paletteCatalog.resolve(id: settings?.paletteID ?? PaletteCatalog.defaultPaletteID, appearance: .light).identity.paletteID
+                ?? PaletteCatalog.defaultPaletteID) == PaletteCatalog.defaultPaletteID
         super.init(frame: .zero)
 
         wantsLayer = true
@@ -48,6 +59,12 @@ final class GlassHostingContainer<Content: View>: NSView {
             glassSubscription = settings.$workspaceGlass.sink { [weak self] value in
                 self?.glassPreferences = value
                 self?.updateGlassTint()
+            }
+            if preservesDefaultOpaqueBackground {
+                paletteSubscription = settings.$paletteID.sink { [weak self] paletteID in
+                    self?.usesDefaultOpaqueBackground = settings.paletteCatalog.resolve(id: paletteID, appearance: .light).identity.paletteID == PaletteCatalog.defaultPaletteID
+                    self?.updateGlassTint()
+                }
             }
         }
         accessibilitySubscription = NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification)
@@ -80,11 +97,20 @@ final class GlassHostingContainer<Content: View>: NSView {
         updateGlassTint()
     }
 
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        updateGlassTint()
+    }
+
     private func updateGlassTint() {
         let isDark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
         let opaque =
             reduceTransparency || NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency
-            || NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast
+            || NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast || usesDefaultOpaqueBackground
+        if preservesDefaultOpaqueBackground {
+            window?.isOpaque = opaque
+            window?.backgroundColor = opaque ? .windowBackgroundColor : .clear
+        }
         glassMaterial?.isHidden = opaque || !glassPreferences.systemGlass
         glassTint?.isHidden = opaque
         layer?.backgroundColor = opaque ? NSColor.windowBackgroundColor.cgColor : NSColor.clear.cgColor
@@ -225,6 +251,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         let preferences: TokenMonitorEdgeDockPreferences
         let glass: WorkspaceGlassPreferences
         let language: WidgetLanguage
+        let paletteID: String
+        let preferredColorScheme: ColorScheme?
         let codex: [EdgeDockCodexInput]
         let pinnedAccountKey: String?
         let local: [EdgeDockLocalInput]
@@ -479,6 +507,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             publisher.map { _ in () }.eraseToAnyPublisher()
         }
         Publishers.MergeMany([
+            changed(settings.$paletteID), changed(settings.$themeMode), changed(settings.$workspaceGlass),
+        ])
+        .receive(on: RunLoop.main)
+        .sink { [weak self] _ in self?.syncFloatingBubble() }
+        .store(in: &cancellables)
+        Publishers.MergeMany([
             changed(store.$profiles), changed(localCLIAccounts.$profiles),
             changed(localCLIAccounts.$quotas), changed(localCLIAccounts.$stale),
         ])
@@ -498,6 +532,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         // Routine usage, quota and queue values are snapshots, not a live feed.
         Publishers.MergeMany([
             changed(settings.$workspaceGlass), changed(settings.$edgeDock), changed(settings.$language),
+            changed(settings.$paletteID), changed(settings.$themeMode),
             changed(settings.$pinnedAccountKey), changed(localProxy.$phase),
             changed(localProxy.$displayRows),  // Already coalesced by the queue's display publisher.
             // Completed local quota reads should match the account page. This
@@ -537,6 +572,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         let hub = store.tokenMonitorHubSync
         return EdgeDockInput(
             preferences: settings.edgeDock, glass: settings.workspaceGlass, language: settings.language,
+            paletteID: settings.paletteID, preferredColorScheme: settings.themeMode.preferredColorScheme,
             codex: store.profiles.map(EdgeDockCodexInput.init),
             pinnedAccountKey: settings.pinnedAccountKey,
             local: localCLIAccounts.profiles.map { EdgeDockLocalInput($0, quota: localCLIAccounts.quotas[$0.id]) },
@@ -558,6 +594,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             edgeDockLastObservedRequestID = nil
             edgeDockController.configure(
                 preferences: prefs, cells: [], language: settings.language, glass: settings.workspaceGlass,
+                paletteCatalog: paletteCatalog, paletteID: settings.paletteID,
+                preferredColorScheme: settings.themeMode.preferredColorScheme,
                 onPreferencesChange: { [weak self] next in
                     guard let self, self.settings.edgeDock != next else { return }
                     self.settings.edgeDock = next
@@ -637,14 +675,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         )
         edgeDockController.configure(
             preferences: prefs, cells: cells, language: settings.language, glass: settings.workspaceGlass,
+            paletteCatalog: paletteCatalog, paletteID: settings.paletteID,
+            preferredColorScheme: settings.themeMode.preferredColorScheme,
             onPreferencesChange: { [weak self] next in
                 guard let self, self.settings.edgeDock != next else { return }
                 self.settings.edgeDock = next
             },
             onOpenDashboard: { [weak self] in self?.showMainWindow() },
             onOpenUsageOverview: { [weak self] in self?.openUsageOverview() },
-            onOpenProxy: { [weak self] in self?.showProxySettings() }
+            onOpenProxy: { [weak self] in self?.showProxySettings() },
+            onRefresh: { [weak self] cell in await self?.refreshEdgeDockQuota(cell) }
         )
+    }
+
+    private func refreshEdgeDockQuota(_ cell: TokenMonitorEdgeDockCell) async {
+        guard let providerID = cell.providerID else { return }
+        let localIDs: Set<String>
+        if providerID == AgentNavCatalog.codexID {
+            localIDs = []
+            store.refreshQuotas()
+        } else if let kind = LocalCLIKind.allCases.first(where: { TokenMonitorEdgeDockItem.canonicalProviderID($0.rawValue) == providerID }) {
+            let profiles = localCLIAccounts.profiles.filter { $0.kind == kind }
+            localIDs = Set(profiles.map(\.id))
+            for profile in profiles { localCLIAccounts.refresh(profile) }
+        } else {
+            return
+        }
+        // Use the same readers as the account page, then immediately project
+        // their completed result instead of waiting for the periodic UI tick.
+        for _ in 0..<480 {
+            let busy =
+                providerID == AgentNavCatalog.codexID
+                ? store.isRefreshing || !store.refreshingProfileIDs.isEmpty
+                : !localCLIAccounts.refreshing.isDisjoint(with: localIDs)
+            if !busy { break }
+            do { try await Task.sleep(nanoseconds: 250_000_000) } catch { return }
+        }
+        syncEdgeDock()
     }
 
     private func showProxySettings() {
@@ -671,10 +738,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             preferences: prefs,
             sources: FloatingBubbleEvidence.make(store: store, localAccounts: localCLIAccounts, language: settings.language)
         )
-        let changed = bubble.language != settings.language || bubble.preferences != prefs || bubble.snapshot != snapshot
+        let changed =
+            bubble.language != settings.language || bubble.preferences != prefs || bubble.snapshot != snapshot
+            || bubble.paletteID != settings.paletteID || bubble.preferredColorScheme != settings.themeMode.preferredColorScheme
+            || bubble.glass != settings.workspaceGlass
         bubble.language = settings.language
         bubble.preferences = prefs
         bubble.snapshot = snapshot
+        bubble.paletteCatalog = paletteCatalog
+        bubble.paletteID = settings.paletteID
+        bubble.preferredColorScheme = settings.themeMode.preferredColorScheme
+        bubble.glass = settings.workspaceGlass
         if reveal || !floatingBubbleEnabled { bubble.show() } else if changed { bubble.refreshContent() }
         floatingBubbleEnabled = true
         // A selected quota can expire without another collection event.
@@ -717,7 +791,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         editor.isReleasedWhenClosed = false
         editor.delegate = self
         editor.title = settings.language.text("自定义悬浮窗", "Customize floating bubble")
-        editor.contentView = NSHostingView(
+        editor.contentView = GlassHostingContainer(
             rootView: LiveFloatingBubbleEditor(
                 settings: settings,
                 store: store,
@@ -729,7 +803,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
                 },
                 onCancel: { [weak self] in self?.closeFloatingBubbleEditor() },
                 onDone: { [weak self] in self?.closeFloatingBubbleEditor() }
-            ))
+            ), cornerRadius: 0, allowsWindowDragging: false, settings: settings, preservesDefaultOpaqueBackground: true)
         floatingBubbleEditorWindow = editor
         editor.center()
         editor.makeKeyAndOrderFront(nil)

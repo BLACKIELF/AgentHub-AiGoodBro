@@ -5817,6 +5817,14 @@ final class UsageStore: ObservableObject {
             self.scheduleWarmUpMaintenanceTimer()
         }
         messageChannels.onRefreshPersonalChatTargets = { [weak self] in self?.taskClient.refreshThreads() }
+        messageChannels.onCreatePersonalChat = { [weak self] admission in
+            guard let self, self.hasStarted else { return .unavailable }
+            return await self.taskClient.createPersonalWeChatThread(admission: admission)
+        }
+        messageChannels.onOpenPersonalChatThread = { thread in
+            guard let url = CodexSessionLink.url(threadID: thread) else { return false }
+            return NSWorkspace.shared.open(url)
+        }
         messageChannels.onPersonalBotCommand = { [weak self] command in
             guard let self else { return nil }
             switch command {
@@ -6417,8 +6425,17 @@ final class UsageStore: ObservableObject {
         refresh(scheduleWarmUpAfterRefresh: false)
     }
 
-    /// The independent proxy refreshes only participating managed accounts.
-    /// It never starts membership, statistics, warm-up, or system-profile work.
+    func referralAccount(for profileID: String) throws -> CodexReferralAccount {
+        guard !isPreview, !isLoggingIn, !isLaunchingCodex, !isAccountSwitchTransactionActive,
+            let profile = profiles.first(where: { $0.id == profileID }),
+            let credentialHome = profileStore.effectiveCredentialHome(for: profileID)
+        else { throw CodexReferralFailure.unavailable }
+        return CodexReferralAccount(profile: profile, credentialHome: credentialHome)
+    }
+
+    /// Refresh only participating identities. The enrolled Desktop identity
+    /// uses its current effective home, as the ordinary quota view already does.
+    /// This never starts membership, statistics, warm-up or account switching.
     func refreshLocalProxyQuotas(profileIDs: Set<String>) {
         guard !isPreview, hasStarted else { return }
         let ids = profiles.filter {
@@ -6453,13 +6470,15 @@ final class UsageStore: ObservableObject {
             localProxyQuotaRefreshes[id] = cancellation
             let preference = statisticsPreference
             let selector = engineLimitsSelector
+            let effectiveHome = profileStore.effectiveCredentialHome(for: id) ?? profile.codexHomeURL
+            let usesManagedHome = effectiveHome.standardizedFileURL == profile.codexHomeURL.standardizedFileURL
             DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-                let context = RuntimeLoadContext.live(statisticsPreference: preference, codexHomeDirectory: profile.codexHomeURL)
+                let context = RuntimeLoadContext.live(statisticsPreference: preference, codexHomeDirectory: effectiveHome)
                 let reader = CodexUsageReader()
                 var messages: [String] = []
                 let quota = reader.readQuotaSnapshot(
                     context: context, quotaOnly: true, messages: &messages,
-                    managedProfile: profile, cancellation: cancellation, selectLimitsProvider: selector)
+                    managedProfile: usesManagedHome ? profile : nil, cancellation: cancellation, selectLimitsProvider: selector)
                 let snapshot = reader.finishingLoad(appServer: quota, messages: messages, context: context, quotaOnly: true)
                 DispatchQueue.main.async {
                     guard let self, self.localProxyQuotaRefreshes[id] === cancellation else { return }
@@ -6468,6 +6487,7 @@ final class UsageStore: ObservableObject {
                     guard self.hasStarted, !cancellation.isCancelled,
                         let current = self.profiles.first(where: { $0.id == id }), !current.isSystemProfile,
                         current.codexHomeURL == profile.codexHomeURL,
+                        self.profileStore.effectiveCredentialHome(for: id)?.standardizedFileURL == effectiveHome.standardizedFileURL,
                         current.recordedAccountKey == profile.recordedAccountKey,
                         current.lastSnapshot?.accountID == profile.lastSnapshot?.accountID
                     else { return }

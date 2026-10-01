@@ -624,14 +624,42 @@ final class CodexAppServerTaskClient: CodexTaskEventClient {
         return await desktopQuotaRequest(method, params: params)
     }
 
-    private func desktopQuotaRequest(_ method: String, params: [String: Any]) async -> [String: Any]? {
-        guard !Task.isCancelled else { return nil }
+    /// A single empty thread, requested only after the WeChat controller has
+    /// durably reserved the paired user's dedicated binding. No settings or
+    /// authentication overrides, and no model turn is submitted by this client.
+    func createPersonalWeChatThread(admission: WeChatCodexSendAdmission) async -> WeChatCodexThreadCreation {
+        guard admission.isActive, !Task.isCancelled else { return .unavailable }
+        let workspace = homeDirectory.appendingPathComponent(
+            "Library/Application Support/CodexAccountManagerNext/PersonalWeChat/Workspace", isDirectory: true)
+        guard workspace.standardizedFileURL == workspace.resolvingSymlinksInPath().standardizedFileURL else { return .unavailable }
+        do {
+            try fileManager.createDirectory(at: workspace, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        } catch { return .unavailable }
+        let result = await desktopQuotaRequest(
+            "thread/start", params: ["cwd": workspace.path, "ephemeral": false], shouldSend: { admission.isActive },
+            onSend: { admission.markRequestAttempted() })
+        guard let thread = (result?["thread"] as? [String: Any])?["id"] as? String,
+            UUID(uuidString: thread) != nil
+        else { return admission.wasRequestAttempted ? .uncertain : .unavailable }
+        // Even a cancellation after creation must return the ID for durable
+        // recovery. Naming is optional; its failure must not trigger creation.
+        if admission.isActive, !Task.isCancelled {
+            _ = await desktopQuotaRequest(
+                "thread/name/set", params: ["threadId": thread, "name": "微信专用对话"], shouldSend: { admission.isActive })
+        }
+        return .created(thread)
+    }
+
+    private func desktopQuotaRequest(
+        _ method: String, params: [String: Any], shouldSend: @escaping () -> Bool = { true }, onSend: (() -> Void)? = nil
+    ) async -> [String: Any]? {
+        guard !Task.isCancelled, shouldSend() else { return nil }
         let admission = PauseRequestAdmission()
         return await withTaskCancellationHandler(
             operation: {
                 await withCheckedContinuation { continuation in
                     queue.async { [weak self] in
-                        guard admission.isActive, let self, self.isConnected, self.connectionMode == .sharedDaemon,
+                        guard admission.isActive, shouldSend(), let self, self.isConnected, self.connectionMode == .sharedDaemon,
                             self.initializeTimeout == nil, self.webSocket != nil
                         else {
                             continuation.resume(returning: nil)
@@ -647,6 +675,7 @@ final class CodexAppServerTaskClient: CodexTaskEventClient {
                         }
                         self.pendingPauseTimeouts[id] = timeout
                         self.queue.asyncAfter(deadline: .now() + 5, execute: timeout)
+                        onSend?()
                         if !self.writeJSONObject(["id": id, "method": method, "params": params]) {
                             self.pendingPauseTimeouts.removeValue(forKey: id)?.cancel()
                             self.pendingPauseRequests.removeValue(forKey: id)?(nil)

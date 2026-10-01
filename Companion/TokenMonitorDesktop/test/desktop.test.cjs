@@ -163,17 +163,27 @@ test('private control socket routes only allowlisted requests after upstream is 
   const before = await request(socketPath, { id: 'before', cmd: 'status' });
   assert.equal(before.ready, false);
   assert.equal(before.trayVisible, false);
+  assert.equal(before.allTimeCostUsd, null);
   assert.deepEqual(await request(socketPath, { id: 'notready', cmd: 'showHome' }), { id: 'notready', ok: false, error: 'not-ready' });
+  let totalCost = 19755.13;
   bridge.bind({
     showDashboard: () => calls.push('dashboard'),
     showView: (view) => calls.push(`view:${view}`),
     showSettings: (section) => calls.push(section ? `settings:${section}` : 'settings'),
     isTrayVisible: () => true,
+    getAllTimeCostUsd: () => totalCost,
     quit: () => calls.push('quit')
   });
   const ready = await request(socketPath, { id: 'ready', cmd: 'status' });
   assert.equal(ready.ready, true);
   assert.equal(ready.trayVisible, true);
+  assert.equal(ready.allTimeCostUsd, 19755.13);
+  for (const value of [0, null, undefined, -1, NaN, Infinity, '100', { token: 'private-fixture' }]) {
+    totalCost = value;
+    const actual = await request(socketPath, { id: 'cost', cmd: 'status' });
+    assert.equal(actual.allTimeCostUsd, value === 0 ? 0 : null);
+    assert.equal(JSON.stringify(actual).includes('private-fixture'), false);
+  }
   assert.equal((await request(socketPath, { id: 'dash', cmd: 'showDashboard' })).ok, true);
   assert.equal((await request(socketPath, { id: 'home', cmd: 'showHome' })).ok, true);
   assert.equal((await request(socketPath, { id: 'settings', cmd: 'showSettings' })).ok, true);
@@ -462,6 +472,18 @@ test('staging patch preserves vendor source and disables its independent updater
   assert.match(main, /\['openWorkbench', 'openAccounts', 'openSettings', 'openEdgeDockSettings', 'checkForUpdates'\]\.includes\(action\)/);
   assert.match(preload, /openAiGoodBroHost: \(action\) => ipcRenderer\.invoke\('aigoodbro:openHost', action\)/);
   assert.match(main, /isTrayVisible: \(\) => Boolean\(tray && !tray\.isDestroyed\(\)\)/);
+  const costRoute = main.match(/getAllTimeCostUsd: (\(\) => [^\n]+),/)?.[1];
+  assert.ok(costRoute);
+  for (const fixture of [{ costUsd: 19755.13 }, { costUsd: 0 }, {}]) {
+    const stats = { periods: { allTime: fixture } };
+    let projected = false;
+    const value = vm.runInNewContext(`(${costRoute})()`, {
+      latestStats: stats, localStats: null,
+      electronPresentationStats: (input) => { assert.equal(input, stats); projected = true; return input; }
+    });
+    assert.equal(projected, true);
+    assert.equal(value, fixture.costUsd);
+  }
   assert.match(main, /if \(IS_AIGOODBRO_EMBEDDED\) return deriveAppUpdateState\(\);/);
   assert.match(main, /requestCodexSwitch\(\{\s*vendorAccountId: account\.id,\s*recordedAccountKey: account\.accountKey/);
   assert.match(main, /response\.accountId !== account\.id/);

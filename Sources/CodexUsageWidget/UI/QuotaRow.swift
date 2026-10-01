@@ -13,12 +13,7 @@ struct QuotaRow: View {
                 Text(window.label)
                     .font(compact ? WorkspaceVisualMetrics.metaFont().weight(.semibold) : WorkspaceVisualMetrics.bodyFont().weight(.semibold))
                     .lineLimit(1)
-                Text(window.state.percentText())
-                    .font(WorkspaceVisualMetrics.bodyFont().weight(.semibold).monospacedDigit())
-                    .foregroundStyle(window.state.fillFraction == nil ? Color.secondary : Color.primary)
-                    .lineLimit(1)
-                    .fixedSize(horizontal: true, vertical: false)
-                QuotaTrack(state: window.state).frame(width: 64)
+                QuotaPercentageRing(percent: window.state.fillFraction.map { Double($0 * 100) }, diameter: compact ? 36 : 42)
                 Spacer(minLength: 0)
             }
             if !window.footnote.isEmpty {

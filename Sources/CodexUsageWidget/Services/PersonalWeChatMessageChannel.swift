@@ -124,7 +124,7 @@ final class PersonalWeChatMessageChannel {
             result.setValue(uin, forHTTPHeaderField: "X-WECHAT-UIN")
             if let token { result.setValue("Bearer " + (try validatedToken(token)), forHTTPHeaderField: "Authorization") }
             if includeBaseInfo {
-                body["base_info"] = ["channel_version": protocolVersion, "bot_agent": "AiGoodBro/9.6.41"]
+                body["base_info"] = ["channel_version": protocolVersion, "bot_agent": "AiGoodBro/9.6.45"]
             }
             result.httpBody = try JSONSerialization.data(withJSONObject: body, options: .sortedKeys)
         }
@@ -194,6 +194,18 @@ final class PersonalWeChatMessageChannel {
         return Int(exactly: number.doubleValue)
     }
 
+    // JSONSerialization preserves uint64 integers in NSNumber. Never convert
+    // message IDs through Double, which merges distinct IDs above 2^53.
+    private static func messageID(_ value: Any?) -> String? {
+        if let value = value as? String {
+            return (try? validatedToken(value, limit: 256)) == nil ? nil : value
+        }
+        guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
+            let value = UInt64(number.stringValue), value > 0
+        else { return nil }
+        return String(value)
+    }
+
     static func responseObject(
         _ data: Data, http: HTTPURLResponse, request: URLRequest,
         requiresAcceptance: Bool
@@ -212,7 +224,13 @@ final class PersonalWeChatMessageChannel {
         if let failure = [ret, code].compactMap({ $0 }).first(where: { $0 != 0 }) {
             throw MessageChannelError.rejected(code: failure, description: nil)
         }
-        guard !requiresAcceptance || ret == 0 || code == 0 else { throw MessageChannelError.invalidResponse }
+        // Successful protobuf JSON can omit every default field, including ret.
+        // For sends accept an empty success object or a server message ID too;
+        // an unrelated object is still not a delivery acknowledgement.
+        guard
+            !requiresAcceptance || ret == 0 || code == 0 || object.isEmpty
+                || messageID(object["message_id"]) != nil
+        else { throw MessageChannelError.invalidResponse }
         return object
     }
 
@@ -265,7 +283,7 @@ final class PersonalWeChatMessageChannel {
     }
 
     func updates(_ credential: MessageChannelCredential, now: Date = Date()) async throws -> Updates {
-        let object = try await fetch(Self.updatesRequest(credential), requiresAcceptance: true)
+        let object = try await fetch(Self.updatesRequest(credential), requiresAcceptance: false)
         return try Self.bindingFromUpdates(object, credential: credential, now: now)
     }
 
@@ -275,6 +293,11 @@ final class PersonalWeChatMessageChannel {
         var token = old.contextToken
         var checkedAt = old.contextCheckedAt
         var incoming: [IncomingMessage] = []
+        // iLink omits zero-valued status fields on successful polling responses.
+        // Validate the endpoint payload separately; sending still requires acceptance.
+        guard object["msgs"] == nil || object["msgs"] is [[String: Any]],
+            object["get_updates_buf"] == nil || object["get_updates_buf"] is String
+        else { throw MessageChannelError.invalidResponse }
         let messages = object["msgs"] as? [[String: Any]] ?? []
         guard messages.count <= 256 else { throw MessageChannelError.invalidResponse }
         for message in messages {
@@ -299,7 +322,7 @@ final class PersonalWeChatMessageChannel {
             guard age >= -5, age <= 120,
                 message["to_user_id"] as? String == old.botID,
                 integer(message["message_state"]) == 2,
-                let id = message["message_id"] as? String,
+                let id = messageID(message["message_id"]),
                 (try? validatedToken(id, limit: 256)) != nil,
                 let items = message["item_list"] as? [[String: Any]], !items.isEmpty, items.count <= 8,
                 items.allSatisfy({ integer($0["type"]) == 1 })

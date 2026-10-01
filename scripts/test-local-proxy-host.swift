@@ -141,6 +141,16 @@ import Foundation
         expect(store.phase == .stopped && !store.isEnabled && store.endpoint == nil, "construction inert")
         expect(!store.requiresStopConfirmation, "stopped proxy does not need interruption consent")
         expect(usage.refreshCount == 0 && !store.canStart, "preview never refreshes or launches")
+        let previewResetTarget = store.resetCreditTarget(for: profile.id)!
+        expect(previewResetTarget.profile.id == profile.id && previewResetTarget.selectedProfileID == nil && previewResetTarget.hubAccountAlias == nil, "preview reset-card entry has no actionable identity")
+        store.refreshAfterResetCredit(previewResetTarget)
+        expect(usage.refreshCount == 0, "preview reset-card result never refreshes")
+        expect(store.resetCreditTarget(for: "missing") == nil, "reset-card entry rejects a stale queue identity")
+        var duplicateResetProfile = profile
+        duplicateResetProfile.lastSnapshot?.accountID = "duplicate-reset-account"
+        duplicateResetProfile.lastSnapshot?.email = "duplicate-reset@example.invalid"
+        let duplicateResetStore = LocalProxyQueueStore(usageStore: UsageStore([profile, duplicateResetProfile]))
+        expect(duplicateResetStore.resetCreditTarget(for: profile.id) == nil, "reset-card entry rejects duplicate profile IDs")
         expect(store.rows.first?.isEnabled == true, "new independent queue participation default")
         expect(store.rows.first?.quotaText == "Remaining: 5h 99.0% · Weekly 99.0%", "verified remaining quota labels omit unreported monthly window")
         var weeklyExhausted = profile
@@ -191,6 +201,36 @@ import Foundation
         expect(reloaded.isEnabled && reloaded.rows.first?.isEnabled == false && reloaded.rows.first?.isPriority == true, "independent queue preferences persisted")
         expect(liveFixtureUsage.profiles == [profile] && !profile.isDispatchPriorityEnabled, "dispatch profile source unchanged")
         expect(reloaded.phase == .stopped && reloaded.endpoint == nil, "saved opt-in never auto-starts")
+        let resetTarget = editable.resetCreditTarget(for: profile.id)!
+        expect(resetTarget.selectedProfileID == profile.id && resetTarget.hubAccountAlias == "fixture-alias", "queue reset-card entry binds only its current profile and alias")
+        let beforeResetPreferences = editable.preferences
+        var resetRefreshIDs: [Set<String>] = []
+        liveFixtureUsage.onRefresh = { resetRefreshIDs.append($0) }
+        editable.refreshAfterResetCredit(resetTarget)
+        expect(resetRefreshIDs == [[profile.id]], "confirmed reset-card result refreshes only the target account")
+        var resetRefreshedProfile = profile
+        resetRefreshedProfile.lastSnapshot?.fetchedAt = now.addingTimeInterval(1)
+        resetRefreshedProfile.lastSnapshot?.fiveHour?.usedPercent = 30
+        liveFixtureUsage.profiles = [resetRefreshedProfile]
+        editable.rebuildRows()
+        expect(editable.displayRows.first?.windows.first?.remaining == 70 && editable.resetCreditRefreshTarget == nil, "reset-card quota result publishes immediately instead of waiting for the routine snapshot interval")
+        expect(
+            editable.preferences.order == beforeResetPreferences.order && editable.preferences.enabledIDs == beforeResetPreferences.enabledIDs
+                && editable.preferences.priorityIDs == beforeResetPreferences.priorityIDs
+                && editable.preferences.creditPrimaryFloor == beforeResetPreferences.creditPrimaryFloor
+                && editable.preferences.creditSecondaryFloor == beforeResetPreferences.creditSecondaryFloor,
+            "reset-card result preserves queue membership, ordering, priority and credit floors")
+        resetRefreshedProfile.lastSnapshot?.accountID = "identity-changed"
+        liveFixtureUsage.profiles = [resetRefreshedProfile]
+        editable.refreshAfterResetCredit(resetTarget)
+        expect(resetRefreshIDs.count == 1, "changed account identity rejects a stale reset-card callback")
+        liveFixtureUsage.profiles = [profile]
+        editable.finishing = true
+        editable.refreshAfterResetCredit(resetTarget)
+        expect(resetRefreshIDs.count == 1, "terminating proxy rejects a stale reset-card callback")
+        editable.finishing = false
+        liveFixtureUsage.onRefresh = nil
+        editable.rebuildRows()
         var secondSnapshot = snapshot
         secondSnapshot.accountID = "second-account"
         secondSnapshot.email = "second@example.invalid"
@@ -787,6 +827,22 @@ import Foundation
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: centralFile.path)
         let bounded = try LocalProxyCredentialReader.read(profile: profile, system: systemProfile, now: now)
         expect(bounded.accountID == "account-fixture", "owned bounded snapshot under gates")
+        var desktopManaged = profile
+        desktopManaged.lastSnapshot = systemProfile.lastSnapshot
+        desktopManaged.lastSnapshot?.fetchedAt = now
+        let expiredDesktopCopy = try auth(expiry: now.timeIntervalSince1970 - 60, issued: now.timeIntervalSince1970 - 3600, account: "central-account", email: "central@example.invalid")
+        try expiredDesktopCopy.write(to: profileFile)
+        let currentDesktopCredential = try LocalProxyCredentialReader.read(profile: desktopManaged, system: systemProfile, now: now, allowDesktopAccount: true)
+        let centralObject = try JSONSerialization.jsonObject(with: centralAuth) as! [String: Any]
+        expect(currentDesktopCredential.token == (centralObject["tokens"] as! [String: Any])["access_token"] as? String,
+            "Desktop pass uses current same-identity session despite expired managed copy")
+        try expect(Data(contentsOf: profileFile) == expiredDesktopCopy && Data(contentsOf: centralFile) == centralAuth,
+            "Desktop admission writes neither managed nor system credentials")
+        try valid.write(to: profileFile)
+        do {
+            _ = try LocalProxyCredentialReader.read(profile: desktopManaged, system: systemProfile, now: now, allowDesktopAccount: true)
+            preconditionFailure("Desktop pass ignored changed managed identity")
+        } catch LocalProxyFailure.identity { checks += 1 }
         // Exercise the actual host admission, lease and post-request refresh path.
         var creditProfile = profile
         creditProfile.lastSnapshot?.fiveHour?.usedPercent = 100
@@ -838,11 +894,38 @@ import Foundation
         let unknownSubscription = await fixtureHandle(creditStore, creditRequest("acquire_credit_primary", requestID: UUID().uuidString))
         expect(
             unknownSubscription.error == "quota_unknown" && creditStore.leases.isEmpty && creditUsage.refreshCount > 0, "unknown subscription blocks points and requests refresh")
+        creditUsage.onRefresh = { ids in
+            expect(ids == creditStore.activeIDs, "paid refresh observes every frozen pool member")
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 20_000_000)
+                creditUsage.profiles[2].lastSnapshot?.fetchedAt = Date()
+            }
+        }
+        let refreshedSubscription = await fixtureHandle(creditStore, creditRequest("acquire_credit_primary", requestID: UUID().uuidString))
+        expect(refreshedSubscription.error == "subscription_pending" && creditStore.leases.isEmpty,
+            "same request waits for refreshed peer and still preserves subscription-before-credits")
+        creditUsage.onRefresh = nil
         // Excluding the peer restores the original one-account fixture scope.
         creditStore.activeIDs.remove(subscriptionPeer.id)
         creditUsage.profiles.removeLast()
         creditStore.rebuildRows()
         try activity.updateProxy(peerLease, runID: creditRun, requestID: peerRequestID, profileID: subscriptionPeer.id, state: "accepted")
+        creditUsage.profiles[0].lastSnapshot?.fiveHour?.usedPercent = 1
+        creditUsage.profiles[0].lastSnapshot?.fetchedAt = Date().addingTimeInterval(-121)
+        creditUsage.onRefresh = { ids in
+            expect(ids == [profile.id], "subscription refresh touches only requested account")
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 20_000_000)
+                creditUsage.profiles[0].lastSnapshot?.fetchedAt = Date()
+            }
+        }
+        let refreshedID = UUID().uuidString
+        let refreshedAdmission = await fixtureHandle(creditStore, creditRequest("acquire", requestID: refreshedID))
+        expect(refreshedAdmission.ok && refreshedAdmission.leaseID != nil, "stale subscription refresh admits the same request after fresh validation")
+        creditUsage.onRefresh = nil
+        _ = await fixtureHandle(creditStore, creditRequest("release", requestID: refreshedID, leaseID: refreshedAdmission.leaseID))
+        creditUsage.profiles[0].lastSnapshot?.fiveHour?.usedPercent = 100
+        creditUsage.profiles[0].lastSnapshot?.fetchedAt = Date()
         let resolvedAfterUpdate = fixtureUUIDv7()
         var resolvedRequest = creditRequest("acquire_credit_primary", requestID: resolvedAfterUpdate)
         resolvedRequest.receivedAt = ProcessInfo.processInfo.systemUptime

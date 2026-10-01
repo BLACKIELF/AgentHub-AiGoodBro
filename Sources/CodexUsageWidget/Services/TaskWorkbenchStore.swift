@@ -70,7 +70,7 @@ final class TaskWorkbenchStore: ObservableObject {
             if self.presentation == nil || Date().timeIntervalSince(self.lastBuilt) >= 60 { self.rebuild() }
         }.store(in: &subscriptions)
         timer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.rebuild() }
+            Task { @MainActor [weak self] in self?.rebuild() }
         }
         timer?.tolerance = 10
     }
@@ -131,7 +131,7 @@ final class TaskWorkbenchStore: ObservableObject {
         guard !inventoryInFlight, item.task.runtimeScope == .codex,
             let thread = item.task.threadID, UUID(uuidString: thread) != nil
         else { return }
-        guard (annotations[item.id]?.decision ?? .none) == .none else {
+        guard (annotations[item.id]?.decision ?? TaskManualDecision.none) == TaskManualDecision.none else {
             status = "此任务已被手动暂缓、取消或确认完成；先改为继续关注，才能发起盘点。"
             return
         }
