@@ -20,12 +20,14 @@ import Foundation
     @MainActor static func main() async throws {
         setbuf(stdout, nil)
         var checks = 0
+        let traceChecks = ProcessInfo.processInfo.environment["PROXY_FIXTURE_TRACE"] == "1"
         func fixtureUUIDv7(at date: Date = Date()) -> String {
             let time = String(format: "%012llx", UInt64(date.timeIntervalSince1970 * 1000))
             let random = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
             return "\(time.prefix(8))-\(time.suffix(4))-7\(random.prefix(3))-a\(random.dropFirst(3).prefix(3))-\(random.dropFirst(6).prefix(12))"
         }
         func expect(_ value: @autoclosure () throws -> Bool, _ label: String) rethrows {
+            if traceChecks { print("PROXY_HOST_CHECK \(checks + 1): \(label)") }
             let result = try value()
             precondition(result, label)
             checks += 1

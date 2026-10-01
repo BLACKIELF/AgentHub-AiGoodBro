@@ -73,4 +73,4 @@ with tempfile.TemporaryDirectory(prefix='aigoodbro-proxy-host-fixture-') as temp
     files=frozen
     subprocess.run(['python3',str(root/'scripts/check-build-target-idle.py'),str(folder/'fixture')],check=True)
     subprocess.run(['xcrun','swiftc','-swift-version','5','-parse-as-library','-module-cache-path',str(folder/'modules'),*[str(f) for f in files],'-o',str(folder/'fixture')],check=True)
-    subprocess.run([str(folder/'fixture')],env={**os.environ,'PROXY_FIXTURE_ROOT':str(folder/'support'),'PROXY_FIXTURE_PYTHON':sys.executable,'PROXY_FIXTURE_INTEROP':str(root/'scripts/test-local-proxy-host-interop.py')},check=True)
+    subprocess.run([str(folder/'fixture')],env={**os.environ,'PROXY_FIXTURE_TRACE':'1','PROXY_FIXTURE_ROOT':str(folder/'support'),'PROXY_FIXTURE_PYTHON':sys.executable,'PROXY_FIXTURE_INTEROP':str(root/'scripts/test-local-proxy-host-interop.py')},check=True)
