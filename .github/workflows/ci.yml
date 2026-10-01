@@ -47,6 +47,8 @@ jobs:
           cache: false
       - name: Lint Swift sources
         run: make lint
+      - name: Validate native local proxy host with synthetic accounts
+        run: python3 scripts/test-local-proxy-host.py
       - name: Mount pinned Token Monitor desktop runtime
         shell: bash
         run: |
@@ -99,7 +101,6 @@ jobs:
           python3 -m unittest tests.test_local_cli_quota tests.test_additional_cli_quota tests.test_zcode_cli_quota
       - name: Validate independent local proxy with synthetic accounts
         run: |
-          python3 scripts/test-local-proxy-host.py
           python3 scripts/test-local-proxy-quota-refresh.py
           python3 Companion/LocalProxy/fixtures/test-cross-language.py --helper build/AiGoodBro.app/Contents/Resources/LocalProxy/aigoodbro-local-proxy
           cd Companion/LocalProxy
