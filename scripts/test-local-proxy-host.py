@@ -66,21 +66,13 @@ with tempfile.TemporaryDirectory(prefix='aigoodbro-proxy-host-fixture-') as temp
                     'let id = try await Task.detached {\n                let reserved = try DispatchActivityStore.live.reserveProxy(')
                 content=content.replace('admissionDeadline: admissionDeadline, enforceFreshness: request.receivedAt != nil)\n            }.value',
                     'admissionDeadline: admissionDeadline, enforceFreshness: request.receivedAt != nil)\n                LocalProxyFixtureRuntime.afterReserve?()\n                return reserved\n            }.value')
-                # Isolate the older compiler's temporary Task await lowering;
-                # the reservation and synthetic pause keep the same behavior.
-                assert content.count('let id = try await Task.detached {\n                let reserved =') == 1
-                assert content.count('return reserved\n            }.value') == 1
-                content=content.replace('let id = try await Task.detached {\n                let reserved =',
-                    'let reservationTask = Task.detached {\n                let reserved =')
-                content=content.replace('return reserved\n            }.value',
-                    'return reserved\n            }\n            let id = try await reservationTask.value')
                 content=content.replace('profileID: lease.profileID, state: "running")\n            }.value',
                     'profileID: lease.profileID, state: "running")\n                LocalProxyFixtureRuntime.afterRunning?()\n            }.value')
             target.write_text(content)
         frozen.append(target)
     files=frozen
     subprocess.run(['python3',str(root/'scripts/check-build-target-idle.py'),str(folder/'fixture')],check=True)
-    subprocess.run(['xcrun','swiftc','-g','-swift-version','5','-parse-as-library','-module-cache-path',str(folder/'modules'),*[str(f) for f in files],'-o',str(folder/'fixture')],check=True)
+    subprocess.run(['xcrun','swiftc','-O','-g','-swift-version','5','-parse-as-library','-module-cache-path',str(folder/'modules'),*[str(f) for f in files],'-o',str(folder/'fixture')],check=True)
     fixture_env={**os.environ,'PROXY_FIXTURE_TRACE':'1','PROXY_FIXTURE_ROOT':str(folder/'support'),'PROXY_FIXTURE_PYTHON':sys.executable,'PROXY_FIXTURE_INTEROP':str(root/'scripts/test-local-proxy-host-interop.py')}
     try:
         subprocess.run([str(folder/'fixture')],env=fixture_env,check=True)
