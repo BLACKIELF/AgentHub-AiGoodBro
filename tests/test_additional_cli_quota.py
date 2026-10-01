@@ -64,8 +64,9 @@ class AdditionalCLIQuotaTests(unittest.TestCase):
                 0,
                 f"swiftc failed:\n{compile_result.stdout}\n{compile_result.stderr}",
             )
-            fixture_env = os.environ.copy()
-            fixture_env.pop("CFFIXED_USER_HOME", None)
+            fixture_home = pathlib.Path(directory) / "synthetic-home"
+            fixture_home.mkdir()
+            fixture_env = {**os.environ, "CFFIXED_USER_HOME": str(fixture_home)}
             run_result = subprocess.run(
                 [str(executable)],
                 cwd=ROOT,

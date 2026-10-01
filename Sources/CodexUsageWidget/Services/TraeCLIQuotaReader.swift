@@ -29,7 +29,7 @@ struct TraeCLIQuotaReader {
 
     func load(profile: LocalCLIProfile, now: Date = Date()) async -> LocalCLIQuotaResult {
         guard profile.kind == .trae, profile.isDefault,
-            URL(fileURLWithPath: profile.configDirectory).standardizedFileURL
+            URL(fileURLWithPath: profile.configDirectory, isDirectory: true).standardizedFileURL
                 == LocalCLIKind.trae.defaultConfigDirectory(home: FileManager.default.homeDirectoryForCurrentUser).standardizedFileURL
         else { return result(.unsupported, now: now, message: "local_cli_trae_default_required") }
         do {
@@ -121,10 +121,9 @@ struct TraeCLIQuotaReader {
         ]
         let salted = Data(SHA512.hash(data: bytes.subdata(in: 6..<38))) + Data(zip(left, right).map { $0 ^ $1 })
         let derived = Data(SHA512.hash(data: salted))
-        // Keep CommonCrypto inputs contiguous across supported macOS runtimes.
-        let key = Data(derived.prefix(16))
-        let iv = Data(derived.subdata(in: 16..<32))
-        let encrypted = Data(bytes.dropFirst(38))
+        let key = derived.prefix(16)
+        let iv = derived.subdata(in: 16..<32)
+        let encrypted = bytes.dropFirst(38)
         var output = Data(count: encrypted.count + kCCBlockSizeAES128)
         var written = 0
         let capacity = output.count

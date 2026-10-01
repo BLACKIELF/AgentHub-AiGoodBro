@@ -397,6 +397,15 @@ private func testTraeOfficialCredits() async throws {
     let requests = await transport.requests
     try expect(requests.count == 1 && requests[0].url?.absoluteString == "https://api.trae.cn/trae/api/v2/pay/ide_user_ent_usage", "fixed TRAE origin")
     try expect(requests[0].value(forHTTPHeaderField: "Authorization") == "Cloud-IDE-JWT fixture-token", "selected TRAE session")
+    var linked = native
+    linked.configDirectory = "/synthetic/trae-linked"
+    var linkedReads = 0
+    let linkedTransport = FakeTransport([])
+    let linkedValue = await TraeCLIQuotaReader(transport: linkedTransport, fileReader: { _,_,_ in
+        linkedReads += 1; return storage
+    }).load(profile: linked)
+    let linkedRequests = await linkedTransport.requests
+    try expect(linkedValue.state == .unsupported && linkedReads == 0 && linkedRequests.isEmpty, "TRAE linked path stays outside default-session reader")
     var reads = 0
     let changedStorage = try json(["iCubeAuthInfo://icube.cloudide":changed])
     let switching = await TraeCLIQuotaReader(transport: FakeTransport([try response(packs)]), fileReader: { _,_,_ in

@@ -105,13 +105,13 @@ def run(helper=None):
                     bridge_events=stop(bridge);assert bridge_events[-1]['event']=='stopped' and bridge_events[-1]['held']==0,bridge_events
                     commands=[(e['command'],e['profileID']) for e in bridge_events if e['event']=='bridge']
                     if mode=='late':
-                        assert [command for command in commands if command[0] != 'order_end'] == [('order','A'),('acquire','A'),('acquire_resolve','A')],commands
+                        assert commands[:-1] == [('order','A'),('acquire','A'),('acquire_resolve','A')],commands
                         assert commands[-1] == ('order_end',''),commands
                         assert any(e.get('errorCode')=='lease_acquire_reconciled' for e in events),events
                         assert not any(e.get('errorCode')=='lease_acquire_unknown' for e in events),events
                     else: assert commands[:3]==[('order','A'),('acquire','A'),('acquire','B')],commands
                     if mode=='allow':
-                        releases = sorted(command for command in commands[3:] if command[0] == 'release')
+                        releases = sorted(commands[3:-1])
                         assert releases == [('release','A'),('release','B')],commands
                         assert commands[-1] == ('order_end',''),commands
                     print('PASS:',mode,'production Swift bridge +', 'Go runtime test child + fake HTTP upstream' if mode=='allow' else 'production Go helper', 'in',round(elapsed,2),'seconds',flush=True)
