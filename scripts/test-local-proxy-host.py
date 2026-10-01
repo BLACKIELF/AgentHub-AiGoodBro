@@ -83,7 +83,7 @@ with tempfile.TemporaryDirectory(prefix='aigoodbro-proxy-host-fixture-') as temp
             print('PROXY_HOST_CRASH: collecting isolated fixture backtrace',flush=True)
             diagnostic_env={**fixture_env,'PROXY_FIXTURE_ROOT':str(folder/'diagnostic-support')}
             try:
-                subprocess.run(['xcrun','lldb','--batch','-o','run','-o','thread backtrace all','--',str(folder/'fixture')],env=diagnostic_env,timeout=180,check=False)
+                subprocess.run(['xcrun','lldb','--no-lldbinit','--batch','-o','run','-k','thread backtrace all','-k','register read x0 x1 x2 x3 x4','--',str(folder/'fixture')],env=diagnostic_env,timeout=180,check=False)
             except (OSError,subprocess.TimeoutExpired) as diagnostic_failure:
                 print(f'PROXY_HOST_CRASH: backtrace unavailable: {type(diagnostic_failure).__name__}',flush=True)
         raise
