@@ -74,12 +74,55 @@ with tempfile.TemporaryDirectory(prefix='aigoodbro-proxy-host-fixture-') as temp
     subprocess.run(['python3',str(root/'scripts/check-build-target-idle.py'),str(folder/'fixture')],check=True)
     sdk=subprocess.check_output(['xcrun','--sdk','macosx','--show-sdk-path'],text=True).strip()
     target=f'{os.uname().machine}-apple-macos13.0'
-    subprocess.run(['xcrun','swiftc','-O','-g','-target',target,'-sdk',sdk,'-swift-version','5','-parse-as-library','-module-cache-path',str(folder/'modules'),*[str(f) for f in files],'-o',str(folder/'fixture')],check=True)
+    compiler=['xcrun','swiftc','-O','-g','-target',target,'-sdk',sdk,'-swift-version','5','-parse-as-library','-module-cache-path',str(folder/'modules')]
+    subprocess.run([*compiler,*[str(f) for f in files],'-o',str(folder/'fixture')],check=True)
     fixture_env={**os.environ,'PROXY_FIXTURE_TRACE':'1','PROXY_FIXTURE_ROOT':str(folder/'support'),'PROXY_FIXTURE_PYTHON':sys.executable,'PROXY_FIXTURE_INTEROP':str(root/'scripts/test-local-proxy-host-interop.py')}
     try:
         subprocess.run([str(folder/'fixture')],env=fixture_env,check=True)
     except subprocess.CalledProcessError as failure:
         if failure.returncode < 0:
+            probe=folder/'TaskWaitProbe.swift'
+            probe.write_text(r'''
+import Foundation
+import Darwin
+enum ProbeError: Error { case synthetic }
+func work(_ fail: Bool) throws -> String {
+    Thread.sleep(forTimeInterval: 0.02)
+    if fail { throw ProbeError.synthetic }
+    return "ok"
+}
+@main struct TaskWaitProbe {
+    @MainActor static func main() async {
+        setbuf(stdout, nil)
+        let useResult = CommandLine.arguments.contains("result")
+        let fail = CommandLine.arguments.contains("--fail")
+        print("PROXY_TASK_PROBE: before await")
+        do {
+            let value: String
+            if useResult {
+                let task: Task<Result<String, Error>, Never> = Task.detached { Result { try work(fail) } }
+                value = try await task.value.get()
+            } else {
+                let task: Task<String, Error> = Task.detached { try work(fail) }
+                value = try await task.value
+            }
+            precondition(!fail && value == "ok")
+            print("PROXY_TASK_PROBE: success")
+        } catch {
+            precondition(fail && error is ProbeError)
+            print("PROXY_TASK_PROBE: expected synthetic failure")
+        }
+    }
+}
+''')
+            try:
+                subprocess.run([*compiler,str(probe),'-o',str(folder/'task-wait-probe')],timeout=60,check=True)
+                for mode in [[],['--fail'],['result'],['result','--fail']]:
+                    print(f'PROXY_TASK_PROBE: mode={mode}',flush=True)
+                    outcome=subprocess.run([str(folder/'task-wait-probe'),*mode],env=fixture_env,timeout=10,check=False)
+                    print(f'PROXY_TASK_PROBE: exit={outcome.returncode}',flush=True)
+            except (OSError,subprocess.CalledProcessError,subprocess.TimeoutExpired) as probe_failure:
+                print(f'PROXY_TASK_PROBE: unavailable: {type(probe_failure).__name__}',flush=True)
             # Rerun only this disposable fixture under LLDB to locate a native
             # crash. Keep a fresh synthetic registry and preserve the failure.
             print('PROXY_HOST_CRASH: collecting isolated fixture backtrace',flush=True)
