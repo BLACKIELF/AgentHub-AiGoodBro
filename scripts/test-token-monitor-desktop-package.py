@@ -114,7 +114,7 @@ class AsarPackageTests(unittest.TestCase):
             index_html = (stage / "src/electron/renderer/index.html").read_text()
             self.assertIn('data-aigoodbro-host-action="checkForUpdates"', index_html)
             main_js = (stage / "src/electron/main.js").read_text()
-            self.assertIn("['openWorkbench', 'openAccounts', 'openSettings', 'checkForUpdates'].includes(action)", main_js)
+            self.assertIn("['openWorkbench', 'openAccounts', 'openSettings', 'openEdgeDockSettings', 'checkForUpdates'].includes(action)", main_js)
             self.assertNotIn("Javis603/token-monitor", main_js)
             self.assertNotIn("javis-ai.com", main_js)
             self.assertIn("parsed.hostname === 'claude.ai'", main_js)
@@ -186,7 +186,7 @@ class AsarPackageTests(unittest.TestCase):
         discord_rpc = PACKAGE.asar_content(packaged, tree, start, "src/electron/discordRpc.js").decode()
         self.assertIn("openAiGoodBroHost: (action) => ipcRenderer.invoke('aigoodbro:openHost', action)", preload_js)
         self.assertIn("event.sender !== mainWindow?.webContents", main_js)
-        self.assertIn("['openWorkbench', 'openAccounts', 'openSettings', 'checkForUpdates'].includes(action)", main_js)
+        self.assertIn("['openWorkbench', 'openAccounts', 'openSettings', 'openEdgeDockSettings', 'checkForUpdates'].includes(action)", main_js)
         self.assertIn("parsed.hostname === 'aigoodbro.com'", main_js)
         self.assertNotIn("Javis603/token-monitor", main_js)
         self.assertNotIn("javis-ai.com", main_js)
@@ -194,7 +194,7 @@ class AsarPackageTests(unittest.TestCase):
         self.assertIn("https://github.com/BLACKIELF/AgentHub-AiGoodBro", discord_rpc)
         self.assertNotIn("Javis603/token-monitor", discord_rpc)
         self.assertIn("window.tokenMonitor.openAiGoodBroHost(button.dataset.aigoodbroHostAction)", app_js)
-        for action in ("openWorkbench", "openAccounts", "openSettings", "checkForUpdates"):
+        for action in ("openWorkbench", "openAccounts", "openSettings", "openEdgeDockSettings", "checkForUpdates"):
             self.assertIn(f'data-aigoodbro-host-action="{action}"', index_html)
         for view in ("home", "tool", "status", "device", "model", "project", "session", "limits", "trends"):
             self.assertIn(f"{{ id: '{view}', labelKey: 'views.{view}' }}", app_js)
