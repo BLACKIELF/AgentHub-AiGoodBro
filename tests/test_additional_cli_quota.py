@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import pathlib
 import platform
 import subprocess
@@ -63,6 +64,8 @@ class AdditionalCLIQuotaTests(unittest.TestCase):
                 0,
                 f"swiftc failed:\n{compile_result.stdout}\n{compile_result.stderr}",
             )
+            fixture_env = os.environ.copy()
+            fixture_env.pop("CFFIXED_USER_HOME", None)
             run_result = subprocess.run(
                 [str(executable)],
                 cwd=ROOT,
@@ -70,6 +73,7 @@ class AdditionalCLIQuotaTests(unittest.TestCase):
                 capture_output=True,
                 timeout=30,
                 check=False,
+                env=fixture_env,
             )
             self.assertEqual(
                 run_result.returncode,
