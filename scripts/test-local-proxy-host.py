@@ -60,20 +60,29 @@ with tempfile.TemporaryDirectory(prefix='aigoodbro-proxy-host-fixture-') as temp
                 content=content.replace('if child.isRunning { child.terminate() }','if child.isRunning && LocalProxyFixtureRuntime.allowStopSignals { child.terminate() }')
                 content=content.replace('if child.isRunning { _ = kill(child.processIdentifier, SIGKILL) }','if child.isRunning && LocalProxyFixtureRuntime.allowStopSignals { _ = kill(child.processIdentifier, SIGKILL) }')
                 content=content.replace('0..<40 {','0..<(LocalProxyFixtureRuntime.allowStopSignals ? 40 : 0) {').replace('0..<20 {','0..<(LocalProxyFixtureRuntime.allowStopSignals ? 20 : 0) {')
-                # A/B only: perform the same guarded registry write inline.
+                # Pause only the copied fixture source after the real registry write
+                # and before the detached task returns to the main actor.
                 old_reserve='''            let id = try await Task.detached {
                 try DispatchActivityStore.live.reserveProxy(
                     account: account, alias: alias, runID: request.runID, requestID: request.requestID, profileID: profileID, childPID: pid,
                     admissionDeadline: admissionDeadline, enforceFreshness: request.receivedAt != nil)
             }.value'''
-                new_reserve='''            let id = try DispatchActivityStore.live.reserveProxy(
-                account: account, alias: alias, runID: request.runID, requestID: request.requestID, profileID: profileID, childPID: pid,
-                admissionDeadline: admissionDeadline, enforceFreshness: request.receivedAt != nil)
-            LocalProxyFixtureRuntime.afterReserve?()'''
                 assert content.count(old_reserve) == 1
-                content=content.replace(old_reserve,new_reserve)
+                content=content.replace('let id = try await Task.detached {\n                try DispatchActivityStore.live.reserveProxy(',
+                    'let id = try await Task.detached {\n                let reserved = try DispatchActivityStore.live.reserveProxy(')
+                content=content.replace('admissionDeadline: admissionDeadline, enforceFreshness: request.receivedAt != nil)\n            }.value',
+                    'admissionDeadline: admissionDeadline, enforceFreshness: request.receivedAt != nil)\n                LocalProxyFixtureRuntime.afterReserve?()\n                return reserved\n            }.value')
                 content=content.replace('profileID: lease.profileID, state: "running")\n            }.value',
                     'profileID: lease.profileID, state: "running")\n                LocalProxyFixtureRuntime.afterRunning?()\n            }.value')
+            elif source.name == 'test-local-proxy-host.swift':
+                # Give the main actor one scheduling point before the denied
+                # request, keeping this A/B change out of production sources.
+                needle='''        let denied = await fixtureHandle(lifecycle,
+'''
+                assert content.count(needle) == 1
+                content=content.replace(needle, '''        await Task.yield()
+        let denied = await fixtureHandle(lifecycle,
+''')
             target.write_text(content)
         frozen.append(target)
     files=frozen
