@@ -72,7 +72,9 @@ with tempfile.TemporaryDirectory(prefix='aigoodbro-proxy-host-fixture-') as temp
         frozen.append(target)
     files=frozen
     subprocess.run(['python3',str(root/'scripts/check-build-target-idle.py'),str(folder/'fixture')],check=True)
-    subprocess.run(['xcrun','swiftc','-O','-g','-swift-version','5','-parse-as-library','-module-cache-path',str(folder/'modules'),*[str(f) for f in files],'-o',str(folder/'fixture')],check=True)
+    sdk=subprocess.check_output(['xcrun','--sdk','macosx','--show-sdk-path'],text=True).strip()
+    target=f'{os.uname().machine}-apple-macos13.0'
+    subprocess.run(['xcrun','swiftc','-O','-g','-target',target,'-sdk',sdk,'-swift-version','5','-parse-as-library','-module-cache-path',str(folder/'modules'),*[str(f) for f in files],'-o',str(folder/'fixture')],check=True)
     fixture_env={**os.environ,'PROXY_FIXTURE_TRACE':'1','PROXY_FIXTURE_ROOT':str(folder/'support'),'PROXY_FIXTURE_PYTHON':sys.executable,'PROXY_FIXTURE_INTEROP':str(root/'scripts/test-local-proxy-host-interop.py')}
     try:
         subprocess.run([str(folder/'fixture')],env=fixture_env,check=True)
