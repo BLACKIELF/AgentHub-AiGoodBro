@@ -121,9 +121,11 @@ struct TraeCLIQuotaReader {
         ]
         let salted = Data(SHA512.hash(data: bytes.subdata(in: 6..<38))) + Data(zip(left, right).map { $0 ^ $1 })
         let derived = Data(SHA512.hash(data: salted))
-        let key = derived.prefix(16)
-        let iv = derived.subdata(in: 16..<32)
-        let encrypted = bytes.dropFirst(38)
+        // Keep CommonCrypto inputs contiguous across the supported macOS
+        // runtimes instead of passing temporary Data slice views directly.
+        let key = Data(derived.prefix(16))
+        let iv = Data(derived.subdata(in: 16..<32))
+        let encrypted = Data(bytes.dropFirst(38))
         var output = Data(count: encrypted.count + kCCBlockSizeAES128)
         var written = 0
         let capacity = output.count
