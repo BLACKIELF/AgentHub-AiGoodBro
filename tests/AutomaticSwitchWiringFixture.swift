@@ -77,6 +77,7 @@ enum Level { case warning, success, failure }
 enum Scope { case codex }
 enum AccountDisplay {
     static func profileName(_ profile: CodexProfile, allProfiles: [CodexProfile] = []) -> String { profile.id }
+    static func numberedName(_ profile: CodexProfile, allProfiles: [CodexProfile]) -> String { profile.id }
 }
 enum NSRunningApplication {
     static var desktopRunning = false

@@ -16,7 +16,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--source", type=pathlib.Path, default=ROOT / "Sources/CodexUsageWidget/UI/UpstreamTrendView.swift")
 args = parser.parse_args()
 source = args.source.read_text()
-types = source[source.index("    struct Point:"):source.index("    let points: [Point]")]
+types = source[source.index("    struct SummaryCost:"):source.index("    let points: [Point]")]
 renderer = source[source.index("    @MainActor\n    final class Renderer:"):source.index("\n}\n\nprivate extension")]
 fixture = r'''
 import Foundation
@@ -30,6 +30,22 @@ enum JSONSerialization {
         if data.count > 1_000_000 { largeParses += 1 }
         return try Foundation.JSONSerialization.jsonObject(with: data)
     }
+    static func data(withJSONObject object: Any) throws -> Data {
+        try Foundation.JSONSerialization.data(withJSONObject: object)
+    }
+}
+// This fixture exercises the standalone renderer. The home-only cost
+// projection has its own integration suite and must not run here.
+struct TokenMonitorDashboardSnapshot {
+    enum Period { case total }
+    enum Metric { case cost }
+    init(response: TokenMonitorResponse) {}
+    func value(for period: Period, metric: Metric) -> Double? {
+        fatalError("home cost projection is outside the standalone fixture")
+    }
+}
+enum TokenMonitorEngine {
+    static let maximumOutputBytes = 16 * 1_024 * 1_024
 }
 final class WKNavigation: NSObject {}
 enum WKContentWorld { case page }
@@ -231,5 +247,8 @@ with tempfile.TemporaryDirectory(prefix="upstream-dashboard-cache-") as folder:
     if arch not in ("arm64", "x86_64"):
         raise SystemExit("unsupported host architecture: " + arch)
     subprocess.run(["xcrun", "swiftc", "-swift-version", "5", "-parse-as-library", "-sdk", sdk,
-                    "-target", arch + "-apple-macosx13.0", str(swift), "-o", str(output / "fixture")], check=True)
+                    "-target", arch + "-apple-macosx13.0", str(swift),
+                    str(ROOT / "Sources/CodexUsageWidget/Domain/TokenMonitorEngineModels.swift"),
+                    str(ROOT / "Sources/CodexUsageWidget/Domain/HomeDashboardPreferences.swift"),
+                    "-o", str(output / "fixture")], check=True)
     subprocess.run([str(output / "fixture")], check=True, timeout=60)

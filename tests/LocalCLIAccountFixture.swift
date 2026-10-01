@@ -740,35 +740,34 @@ private func testCredentialRotationDuringReadDropsOldQuota() async throws {
     let paths = try makeRoot("rotating-kimi")
     defer { try? FileManager.default.removeItem(at: paths.root) }
     let clock = FixtureClock()
-    let probe = VisibleQuotaProbe(mode: .credentialDriven)
+    let probe = SuspendedQuotaProbe()
     let store = try syntheticKimiStore(paths, clock: clock, probe: probe)
     guard let profile = store.profiles(for: .kimi).first else { throw FixtureFailure.failed("Kimi profile") }
     let directory = URL(fileURLWithPath: profile.configDirectory)
     try writeSyntheticKimiCredential(directory)
     store.refreshIfNeeded(kind: .kimi)
+    try await waitForProbeRead(probe, id: profile.id, count: 1)
+    await probe.release(profile.id, read: 1)
     try await waitForVisibleRefresh(store, ids: [profile.id])
-    try expect(store.quotas[profile.id]?.state == .available, "first account quota loaded")
+    try expect(store.quotas[profile.id]?.identityFingerprint == "synthetic-one", "first account quota loaded")
 
     clock.advance(300)
     store.refreshIfNeeded(kind: .kimi)
-    var secondReadStarted = false
-    for _ in 0..<100 {
-        if await probe.count(profile.id) == 2 {
-            secondReadStarted = true
-            break
-        }
-        try await Task.sleep(nanoseconds: 1_000_000)
-    }
-    try expect(secondReadStarted, "second request entered loader")
+    try await waitForProbeRead(probe, id: profile.id, count: 2)
     try writeSyntheticKimiCredential(directory, marker: "replacement-longer")
-    try await waitForVisibleRefresh(store, ids: [profile.id])
+    await probe.release(profile.id, read: 2)
+    try await waitForProbeRead(probe, id: profile.id, count: 3)
     try expect(store.quotas[profile.id] == nil && !store.stale.contains(profile.id),
                "credential rotation discards both in-flight result and old account cache")
-    store.refreshIfNeeded(kind: .kimi)
+    let replacementToken = await probe.token(profile.id, read: 3)
+    try expect(replacementToken == "synthetic-replacement-longer", "automatic reread uses replacement credential")
+    await probe.release(profile.id, read: 3)
     try await waitForVisibleRefresh(store, ids: [profile.id])
     let recoveredCount = await probe.count(profile.id)
-    try expect(recoveredCount == 3 && store.quotas[profile.id]?.state == .available,
-               "next visible check reads the replacement credential")
+    try expect(recoveredCount == 3
+               && store.quotas[profile.id]?.state == .available
+               && store.quotas[profile.id]?.identityFingerprint == "synthetic-replacement-longer",
+               "credential rotation clears the old cache and automatically reads the replacement")
 }
 
 @MainActor

@@ -30,6 +30,11 @@ CHECK = portion(
     "    @MainActor\n    func check() {",
     "    /// Separate durable ledger and lock per optional channel.",
 )
+SHOULD_DRAIN = portion(
+    ANNOUNCEMENTS,
+    "    private static func shouldDrainForecast(",
+    "    /// Only the explicit CLI authorization path calls this.",
+)
 
 
 def compile_and_run(name: str, source: str, optimized: bool) -> None:
@@ -274,6 +279,7 @@ INTEGRATION_MONITOR = r'''
     var checking = false
     var generation: UInt64 = 0
     var historyCheckSequence: UInt64 = 0
+    var fetchedForecastSequence: UInt64?
     var verifiedCompletedIDs: Set<String>?
     var status: String?
     var localStatus: String?
@@ -348,8 +354,8 @@ INTEGRATION_FIXTURE = r'''
         await store.emit(.forecast(forecast), callback: 0)
         precondition(historyFirst.sentForecasts.isEmpty && historyFirst.forecastLedger.records[id] == .baseline)
 
-        // A failed history read leaves a pending forecast. A later successful
-        // check drains the cached event, and a delayed callback cannot replay it.
+        // A failed history read leaves a pending forecast. A later history
+        // success cannot send it until this check freshly verifies the forecast.
         store.reset()
         let retryHistory = DeferredHistory()
         let retry = FixtureMonitor(history: retryHistory)
@@ -361,6 +367,8 @@ INTEGRATION_FIXTURE = r'''
         retry.check()
         await retryHistory.complete(.success(page([])))
         await retry.waitForCheck()
+        precondition(retry.sentForecasts.isEmpty && retry.forecastLedger.records[id] == .pending)
+        await store.emit(.forecast(forecast), callback: 1)
         precondition(retry.sentForecasts == [id] && retry.forecastLedger.records[id] == .sent)
         await store.emit(.forecast(forecast), callback: 1)
         precondition(retry.sentForecasts == [id])
@@ -406,6 +414,6 @@ for optimized in (False, True):
     compile_and_run(
         "check integration",
         INTEGRATION_STUBS + MODEL + COMPLETED_MODEL + COMPLETED_LEDGER
-        + FORECAST_LEDGER + INTEGRATION_MONITOR + DELIVER + CHECK + INTEGRATION_FIXTURE,
+        + FORECAST_LEDGER + INTEGRATION_MONITOR + DELIVER + CHECK + SHOULD_DRAIN + INTEGRATION_FIXTURE,
         optimized,
     )
