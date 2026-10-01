@@ -72,5 +72,18 @@ with tempfile.TemporaryDirectory(prefix='aigoodbro-proxy-host-fixture-') as temp
         frozen.append(target)
     files=frozen
     subprocess.run(['python3',str(root/'scripts/check-build-target-idle.py'),str(folder/'fixture')],check=True)
-    subprocess.run(['xcrun','swiftc','-swift-version','5','-parse-as-library','-module-cache-path',str(folder/'modules'),*[str(f) for f in files],'-o',str(folder/'fixture')],check=True)
-    subprocess.run([str(folder/'fixture')],env={**os.environ,'PROXY_FIXTURE_TRACE':'1','PROXY_FIXTURE_ROOT':str(folder/'support'),'PROXY_FIXTURE_PYTHON':sys.executable,'PROXY_FIXTURE_INTEROP':str(root/'scripts/test-local-proxy-host-interop.py')},check=True)
+    subprocess.run(['xcrun','swiftc','-g','-swift-version','5','-parse-as-library','-module-cache-path',str(folder/'modules'),*[str(f) for f in files],'-o',str(folder/'fixture')],check=True)
+    fixture_env={**os.environ,'PROXY_FIXTURE_TRACE':'1','PROXY_FIXTURE_ROOT':str(folder/'support'),'PROXY_FIXTURE_PYTHON':sys.executable,'PROXY_FIXTURE_INTEROP':str(root/'scripts/test-local-proxy-host-interop.py')}
+    try:
+        subprocess.run([str(folder/'fixture')],env=fixture_env,check=True)
+    except subprocess.CalledProcessError as failure:
+        if failure.returncode < 0:
+            # Rerun only this disposable fixture under LLDB to locate a native
+            # crash. Keep a fresh synthetic registry and preserve the failure.
+            print('PROXY_HOST_CRASH: collecting isolated fixture backtrace',flush=True)
+            diagnostic_env={**fixture_env,'PROXY_FIXTURE_ROOT':str(folder/'diagnostic-support')}
+            try:
+                subprocess.run(['xcrun','lldb','--batch','-o','run','-o','thread backtrace all','--',str(folder/'fixture')],env=diagnostic_env,timeout=180,check=False)
+            except (OSError,subprocess.TimeoutExpired) as diagnostic_failure:
+                print(f'PROXY_HOST_CRASH: backtrace unavailable: {type(diagnostic_failure).__name__}',flush=True)
+        raise
