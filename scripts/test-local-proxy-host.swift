@@ -260,22 +260,27 @@ import Foundation
         let run = UUID().uuidString
         var request = UUID().uuidString
         let id = try activity.reserveProxy(account: "fixture-account", alias: "fixture-alias", runID: run, requestID: request, profileID: profile.id, childPID: getpid())
-        func pythonInterop(_ mode: String, lease: String) throws -> [String: Any] {
+        func pythonInterop(_ mode: String, lease: String) async throws -> [String: Any] {
             let child = Process()
             child.executableURL = URL(fileURLWithPath: ProcessInfo.processInfo.environment["PROXY_FIXTURE_PYTHON"]!)
             child.arguments = [ProcessInfo.processInfo.environment["PROXY_FIXTURE_INTEROP"]!, mode, lease]
             let output = Pipe()
             child.standardOutput = output
-            try child.run()
-            child.waitUntilExit()
-            expect(child.terminationStatus == 0, "Python registry interop stage")
+            // Foundation waits can pump a nested main run loop. Run fixture
+            // subprocess work outside the main actor's active Swift task.
+            let terminationStatus = try await Task.detached {
+                try child.run()
+                child.waitUntilExit()
+                return child.terminationStatus
+            }.value
+            expect(terminationStatus == 0, "Python registry interop stage")
             let result = try JSONSerialization.jsonObject(with: output.fileHandleForReading.readDataToEndOfFile()) as! [String: Any]
             expect(result["ok"] as? Bool == true, "Python registry stage result")
             checks += result["checks"] as? Int ?? 0
             return result
         }
         try activity.updateProxy(id, runID: run, requestID: request, profileID: profile.id, state: "running")
-        let pythonHeld = try pythonInterop("native-active", lease: id)["leaseID"] as! String
+        let pythonHeld = try await pythonInterop("native-active", lease: id)["leaseID"] as! String
         try expect(try activity.read().proxyAcquireKeys?.contains {
             $0.runID == run && $0.requestID == request && $0.wasReserved && !$0.abandoned
         } == true, "other lease writer preserves persisted proxy request fence")
@@ -287,7 +292,7 @@ import Foundation
             try activity.updateProxy(pythonHeld, runID: run, requestID: request, profileID: profile.id, state: "accepted")
             preconditionFailure("native proxy released Python lease")
         } catch { checks += 1 }
-        _ = try pythonInterop("release-python", lease: pythonHeld)
+        _ = try await pythonInterop("release-python", lease: pythonHeld)
         // Native heartbeat still binds after Python has atomically rewritten the shared JSON.
         try activity.updateProxy(id, runID: run, requestID: request, profileID: profile.id, state: "running")
         let reserved = try activity.read()
@@ -305,14 +310,14 @@ import Foundation
             preconditionFailure("foreign request")
         } catch { checks += 1 }
         try activity.updateProxy(id, runID: run, requestID: request, profileID: profile.id, state: "uncertain")
-        _ = try pythonInterop("native-uncertain", lease: id)
+        _ = try await pythonInterop("native-uncertain", lease: id)
         try activity.finishStoppedProxyRuns()
         let uncertain = try activity.read()
         expect(uncertain.leases.first?.occupied == true, "uncertainty retains lease for live owner")
         try activity.updateProxy(id, runID: run, requestID: request, profileID: profile.id, state: "accepted")
         let released = try activity.read()
         expect(released.leases.first?.occupied == false, "bound release")
-        _ = try pythonInterop("native-released", lease: id)
+        _ = try await pythonInterop("native-released", lease: id)
         let tombstoneRequest = UUID().uuidString
         let tombstone = try activity.abandonProxy(runID: run, requestID: tombstoneRequest, profileID: profile.id)
         expect(tombstone == .notReserved, "resolve before reserve durably denies late acquire")
@@ -391,7 +396,7 @@ import Foundation
         let child = Process()
         child.executableURL = URL(fileURLWithPath: "/bin/sleep")
         child.arguments = ["30"]
-        try child.run()
+        try await Task.detached { try child.run() }.value
         defer { if child.isRunning { child.terminate() } }
         lifecycle.process = child
         lifecycle.phase = .running
@@ -603,7 +608,7 @@ import Foundation
         expect(!lifecycle.leases.isEmpty && !lifecycle.canFinishTermination, "running child cannot release leases")
         expect(lifecycle.requiresStopConfirmation, "running proxy requires interruption consent")
         child.terminate()
-        child.waitUntilExit()
+        await Task.detached { child.waitUntilExit() }.value
         lifecycle.childExited(child)
         expect(lifecycle.leases.isEmpty && lifecycle.canFinishTermination, "confirmed child exit releases only owned leases")
         expect(!lifecycle.requiresStopConfirmation, "confirmed exit clears interruption consent")
@@ -618,7 +623,7 @@ import Foundation
         let membershipChild = Process()
         membershipChild.executableURL = URL(fileURLWithPath: "/bin/sleep")
         membershipChild.arguments = ["30"]
-        try membershipChild.run()
+        try await Task.detached { try membershipChild.run() }.value
         defer { if membershipChild.isRunning { membershipChild.terminate() } }
         membershipStore.process = membershipChild
         membershipStore.phase = .running
@@ -689,14 +694,14 @@ import Foundation
         expect(membershipStore.membershipSnapshots.isEmpty && membershipStore.canToggleAccount(id: memberA.id),
             "completed long-run requests never exhaust the snapshot limit")
         membershipChild.terminate()
-        membershipChild.waitUntilExit()
+        await Task.detached { membershipChild.waitUntilExit() }.value
         membershipStore.process = nil
         membershipStore.phase = .stopped
 
         let uncertainChild = Process()
         uncertainChild.executableURL = URL(fileURLWithPath: "/bin/sleep")
         uncertainChild.arguments = ["30"]
-        try uncertainChild.run()
+        try await Task.detached { try uncertainChild.run() }.value
         let uncertainStore = LocalProxyQueueStore(usageStore: isolatedUsage)
         let uncertainRun = UUID().uuidString
         let uncertainRequest = UUID().uuidString
@@ -712,7 +717,7 @@ import Foundation
         expect(uncertainStore.requiresStopConfirmation, "uncertain lease still requires interruption consent")
         LocalProxyFixtureRuntime.allowStopSignals = true
         uncertainChild.terminate()
-        uncertainChild.waitUntilExit()
+        await Task.detached { uncertainChild.waitUntilExit() }.value
         uncertainStore.childExited(uncertainChild)
         expect(uncertainStore.canFinishTermination, "later confirmed exit resolves uncertainty")
 
@@ -860,7 +865,7 @@ import Foundation
         let creditChild = Process()
         creditChild.executableURL = URL(fileURLWithPath: "/bin/sleep")
         creditChild.arguments = ["30"]
-        try creditChild.run()
+        try await Task.detached { try creditChild.run() }.value
         defer { if creditChild.isRunning { creditChild.terminate() } }
         creditStore.process = creditChild
         creditStore.phase = .running
@@ -971,7 +976,7 @@ import Foundation
         expect(wrongPass.error == "stage_not_applicable", "other identity stage is silently inapplicable")
         expect(!creditStore.setCreditFloors(primary: 100, secondary: 0), "running policy cannot change mid-request")
         creditChild.terminate()
-        creditChild.waitUntilExit()
+        await Task.detached { creditChild.waitUntilExit() }.value
         creditStore.childExited(creditChild)
         HubConsoleModel.fixtureAvailability = .unavailable
         let refreshStarted = DispatchSemaphore(value: 0)

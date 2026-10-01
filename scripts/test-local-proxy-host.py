@@ -74,15 +74,6 @@ with tempfile.TemporaryDirectory(prefix='aigoodbro-proxy-host-fixture-') as temp
                     'admissionDeadline: admissionDeadline, enforceFreshness: request.receivedAt != nil)\n                LocalProxyFixtureRuntime.afterReserve?()\n                return reserved\n            }.value')
                 content=content.replace('profileID: lease.profileID, state: "running")\n            }.value',
                     'profileID: lease.profileID, state: "running")\n                LocalProxyFixtureRuntime.afterRunning?()\n            }.value')
-            elif source.name == 'test-local-proxy-host.swift':
-                # Give the main actor one scheduling point before the denied
-                # request, keeping this A/B change out of production sources.
-                needle='''        let denied = await fixtureHandle(lifecycle,
-'''
-                assert content.count(needle) == 1
-                content=content.replace(needle, '''        await Task.yield()
-        let denied = await fixtureHandle(lifecycle,
-''')
             target.write_text(content)
         frozen.append(target)
     files=frozen
