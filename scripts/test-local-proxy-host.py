@@ -27,11 +27,17 @@ struct CodexExecutionPreference { enum Model:String,CaseIterable { case fixture=
 enum CodexExecutable { static func path()->String? { "/usr/bin/true" }; static func bundledPath()->String? { nil } }
 enum LocalProxyFixtureRuntime { static var allowStopSignals = true; static var afterReserve:(()->Void)?; static var afterRunning:(()->Void)?; static var helper:URL { DispatchParticipationPaths.supportDirectory().appendingPathComponent("fixture-helper") } }
 func fixtureReserveProxy(account:String, alias:String, runID:String, requestID:String, profileID:String, childPID:Int32, admissionDeadline:TimeInterval?, enforceFreshness:Bool) async throws -> String {
-    try await Task.detached {
-        let reserved = try DispatchActivityStore.live.reserveProxy(account: account, alias: alias, runID: runID, requestID: requestID, profileID: profileID, childPID: childPID, admissionDeadline: admissionDeadline, enforceFreshness: enforceFreshness)
-        LocalProxyFixtureRuntime.afterReserve?()
-        return reserved
-    }.value
+    try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<String, Error>) in
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                let reserved = try DispatchActivityStore.live.reserveProxy(account: account, alias: alias, runID: runID, requestID: requestID, profileID: profileID, childPID: childPID, admissionDeadline: admissionDeadline, enforceFreshness: enforceFreshness)
+                LocalProxyFixtureRuntime.afterReserve?()
+                continuation.resume(returning: reserved)
+            } catch {
+                continuation.resume(throwing: error)
+            }
+        }
+    }
 }
 struct DispatchParticipationPaths { static func supportDirectory()->URL { URL(fileURLWithPath:ProcessInfo.processInfo.environment["PROXY_FIXTURE_ROOT"]!) }; static let snapshotFileName="fixture.json"; var hubConfig:URL; static func live(snapshot:URL)throws->Self { throw LocalProxyFailure.unavailable } }
 '''
