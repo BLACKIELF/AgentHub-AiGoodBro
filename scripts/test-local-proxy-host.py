@@ -26,6 +26,13 @@ struct CodexExecutionPreference { enum Model:String,CaseIterable { case fixture=
 @MainActor final class UsageStore:ObservableObject { @Published var profiles:[CodexProfile]; var isPreview=true; var refreshCount=0; var onRefresh:((Set<String>)->Void)?; init(_ profiles:[CodexProfile]) { self.profiles=profiles }; func refreshLocalProxyQuotas(profileIDs:Set<String>){refreshCount += 1; onRefresh?(profileIDs)}; func creditBalancePresentation(for:CodexProfile)->CreditBalancePresentation { .init() }; func availableResetCredits(for:CodexProfile)->Int? { nil } }
 enum CodexExecutable { static func path()->String? { "/usr/bin/true" }; static func bundledPath()->String? { nil } }
 enum LocalProxyFixtureRuntime { static var allowStopSignals = true; static var afterReserve:(()->Void)?; static var afterRunning:(()->Void)?; static var helper:URL { DispatchParticipationPaths.supportDirectory().appendingPathComponent("fixture-helper") } }
+func fixtureReserveProxy(account:String, alias:String, runID:String, requestID:String, profileID:String, childPID:Int32, admissionDeadline:TimeInterval?, enforceFreshness:Bool) async throws -> String {
+    try await Task.detached {
+        let reserved = try DispatchActivityStore.live.reserveProxy(account: account, alias: alias, runID: runID, requestID: requestID, profileID: profileID, childPID: childPID, admissionDeadline: admissionDeadline, enforceFreshness: enforceFreshness)
+        LocalProxyFixtureRuntime.afterReserve?()
+        return reserved
+    }.value
+}
 struct DispatchParticipationPaths { static func supportDirectory()->URL { URL(fileURLWithPath:ProcessInfo.processInfo.environment["PROXY_FIXTURE_ROOT"]!) }; static let snapshotFileName="fixture.json"; var hubConfig:URL; static func live(snapshot:URL)throws->Self { throw LocalProxyFailure.unavailable } }
 '''
 with tempfile.TemporaryDirectory(prefix='aigoodbro-proxy-host-fixture-') as temporary:
@@ -60,21 +67,20 @@ with tempfile.TemporaryDirectory(prefix='aigoodbro-proxy-host-fixture-') as temp
                 content=content.replace('if child.isRunning { child.terminate() }','if child.isRunning && LocalProxyFixtureRuntime.allowStopSignals { child.terminate() }')
                 content=content.replace('if child.isRunning { _ = kill(child.processIdentifier, SIGKILL) }','if child.isRunning && LocalProxyFixtureRuntime.allowStopSignals { _ = kill(child.processIdentifier, SIGKILL) }')
                 content=content.replace('0..<40 {','0..<(LocalProxyFixtureRuntime.allowStopSignals ? 40 : 0) {').replace('0..<20 {','0..<(LocalProxyFixtureRuntime.allowStopSignals ? 20 : 0) {')
-                # Pause only the copied fixture source after the real registry write
-                # and before the detached task returns to the main actor.
-                content=content.replace('let id = try await Task.detached {\n                try DispatchActivityStore.live.reserveProxy(',
-                    'let id = try await Task.detached {\n                let reserved = try DispatchActivityStore.live.reserveProxy(')
-                content=content.replace('admissionDeadline: admissionDeadline, enforceFreshness: request.receivedAt != nil)\n            }.value',
-                    'admissionDeadline: admissionDeadline, enforceFreshness: request.receivedAt != nil)\n                LocalProxyFixtureRuntime.afterReserve?()\n                return reserved\n            }.value')
+                # A/B only: move the same detached reservation into a global
+                # nonisolated helper, removing nested actor-method capture.
+                old_reserve='''            let id = try await Task.detached {
+                try DispatchActivityStore.live.reserveProxy(
+                    account: account, alias: alias, runID: request.runID, requestID: request.requestID, profileID: profileID, childPID: pid,
+                    admissionDeadline: admissionDeadline, enforceFreshness: request.receivedAt != nil)
+            }.value'''
+                new_reserve='''            let id = try await fixtureReserveProxy(
+                account: account, alias: alias, runID: request.runID, requestID: request.requestID, profileID: profileID, childPID: pid,
+                admissionDeadline: admissionDeadline, enforceFreshness: request.receivedAt != nil)'''
+                assert content.count(old_reserve) == 1
+                content=content.replace(old_reserve,new_reserve)
                 content=content.replace('profileID: lease.profileID, state: "running")\n            }.value',
                     'profileID: lease.profileID, state: "running")\n                LocalProxyFixtureRuntime.afterRunning?()\n            }.value')
-            if source.name == 'DispatchActivityStore.swift':
-                # Diagnostic A/B: preserve the exact lowercase digest while
-                # avoiding Foundation's concurrent String(format:) varargs.
-                old_hash='SHA256.hash(data: Data(value.utf8)).map { String(format: "%02x", $0) }.joined()'
-                new_hash='SHA256.hash(data: Data(value.utf8)).map { let text = String($0, radix: 16); return text.count == 1 ? "0" + text : text }.joined()'
-                assert content.count(old_hash) == 1
-                content=content.replace(old_hash,new_hash)
             target.write_text(content)
         frozen.append(target)
     files=frozen
