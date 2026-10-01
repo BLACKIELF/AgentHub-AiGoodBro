@@ -66,16 +66,15 @@ with tempfile.TemporaryDirectory(prefix='aigoodbro-proxy-host-fixture-') as temp
                     'let id = try await Task.detached {\n                let reserved = try DispatchActivityStore.live.reserveProxy(')
                 content=content.replace('admissionDeadline: admissionDeadline, enforceFreshness: request.receivedAt != nil)\n            }.value',
                     'admissionDeadline: admissionDeadline, enforceFreshness: request.receivedAt != nil)\n                LocalProxyFixtureRuntime.afterReserve?()\n                return reserved\n            }.value')
-                # A/B only: transport the same reservation error as a value;
-                # get() still throws into the unchanged surrounding catch.
-                assert content.count('let id = try await Task.detached {\n                let reserved =') == 1
-                assert content.count('return reserved\n            }.value') == 1
-                content=content.replace('let id = try await Task.detached {\n                let reserved =',
-                    'let reservationResult = await Task.detached {\n                Result {\n                let reserved =')
-                content=content.replace('return reserved\n            }.value',
-                    'return reserved\n                }\n            }.value\n            let id = try reservationResult.get()')
                 content=content.replace('profileID: lease.profileID, state: "running")\n            }.value',
                     'profileID: lease.profileID, state: "running")\n                LocalProxyFixtureRuntime.afterRunning?()\n            }.value')
+            if source.name == 'DispatchActivityStore.swift':
+                # Diagnostic A/B: preserve the exact lowercase digest while
+                # avoiding Foundation's concurrent String(format:) varargs.
+                old_hash='SHA256.hash(data: Data(value.utf8)).map { String(format: "%02x", $0) }.joined()'
+                new_hash='SHA256.hash(data: Data(value.utf8)).map { let text = String($0, radix: 16); return text.count == 1 ? "0" + text : text }.joined()'
+                assert content.count(old_hash) == 1
+                content=content.replace(old_hash,new_hash)
             target.write_text(content)
         frozen.append(target)
     files=frozen
