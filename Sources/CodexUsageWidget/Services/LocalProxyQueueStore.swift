@@ -64,6 +64,10 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
         !usageStore.isPreview && !preferencesBlocked && !finishing
             && (canEdit || (phase == .running && process?.isRunning == true))
     }
+    var canEditPolicy: Bool { canReorder }
+    func canEditPolicy(for id: String) -> Bool {
+        canEditPolicy && rows.contains(where: { $0.id == id }) && (canEdit || isRegisteredBindingCurrent(id))
+    }
     var canStart: Bool { canEdit && rows.count <= 100 && rows.contains(where: \.isEnabled) && !usageStore.isPreview && !preferencesBlocked }
     func canToggleAccount(id: String) -> Bool {
         guard !usageStore.isPreview, !preferencesBlocked, !finishing, rows.contains(where: { $0.id == id }) else { return false }
@@ -86,6 +90,7 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
     private let directory: URL
     private var preferences = LocalProxyPreferences()
     private var preferencesBlocked = false
+    private var policyRevision: UInt64 = 0
     private var observation: AnyCancellable?
     private var orderObservation: AnyCancellable?
     private var process: Process?
@@ -129,9 +134,12 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
     private var finishing = false
     private var requestedExitReason: ExitReason?
 
-    init(usageStore: UsageStore) {
+    init(usageStore: UsageStore, previewPreferences: LocalProxyPreferences? = nil) {
         self.usageStore = usageStore
         directory = DispatchParticipationPaths.supportDirectory()
+        if usageStore.isPreview, let previewPreferences, previewPreferences.validAccountPolicies {
+            preferences = previewPreferences
+        }
         if !usageStore.isPreview {
             do {
                 if let data = try DispatchParticipationSync.readBoundedRegularFile(
@@ -139,7 +147,7 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
                 {
                     let saved = try JSONDecoder().decode(LocalProxyPreferences.self, from: data)
                     guard saved.schemaVersion == 1, saved.order.count <= 1000, Set(saved.order).count == saved.order.count,
-                        saved.enabledIDs.count <= 1000,
+                        saved.enabledIDs.count <= 1000, saved.validAccountPolicies,
                         LocalProxyPreferences.validCreditFloors(primary: saved.creditFloors.primary, secondary: saved.creditFloors.secondary)
                     else { throw LocalProxyFailure.unavailable }
                     preferences = saved
@@ -169,24 +177,52 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
         savePreferences()
     }
     func setCreditFallback(_ enabled: Bool) {
-        guard canEdit, !usageStore.isPreview, !preferencesBlocked else { return }
+        guard canEditPolicy else { return }
+        let previous = preferences
         preferences.creditFallback = enabled
+        guard savePreferences() else {
+            preferences = previous
+            return
+        }
         creditFallbackEnabled = enabled
-        savePreferences()
-        rebuildRows()
+        policyChanged()
     }
     @discardableResult
     func setCreditFloors(primary: Int, secondary: Int) -> Bool {
-        guard canEdit, !usageStore.isPreview, !preferencesBlocked,
+        guard canEditPolicy,
             LocalProxyPreferences.validCreditFloors(primary: primary, secondary: secondary)
         else { return false }
+        let previous = preferences
         preferences.creditPrimaryFloor = primary
         preferences.creditSecondaryFloor = secondary
+        guard savePreferences() else {
+            preferences = previous
+            return false
+        }
         creditPrimaryFloor = primary
         creditSecondaryFloor = secondary
-        savePreferences()
+        policyChanged()
+        return true
+    }
+    @discardableResult
+    func setAccountPolicy(id: String, policy: LocalProxyAccountPolicy) -> Bool {
+        guard canEditPolicy(for: id), policy.isValid else { return false }
+        let previous = preferences
+        var policies = preferences.accountPolicies ?? [:]
+        policies[id] = policy
+        preferences.accountPolicies = policies
+        guard preferences.validAccountPolicies, savePreferences() else {
+            preferences = previous
+            return false
+        }
+        policyChanged()
+        return true
+    }
+    private func policyChanged() {
+        policyRevision &+= 1
+        accountStates = accountStates.filter { !["quota", "usage_limit", "subscription_pending", "quota_unknown"].contains($0.value) }
         rebuildRows()
-        return !preferencesBlocked
+        flushDisplayRows()
     }
     func setAccountEnabled(id: String, enabled: Bool) {
         guard canToggleAccount(id: id) else { return }
@@ -232,6 +268,9 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
             rebuildRows()
             return
         }
+        // A quota refresh is the authoritative chance to replace helper-reported
+        // quota failures. Do not let an older pipe event mask recovered limits.
+        accountStates = accountStates.filter { !["quota", "usage_limit", "subscription_pending", "quota_unknown"].contains($0.value) }
         usageStore.refreshLocalProxyQuotas(profileIDs: Set(rows.filter(\.isEnabled).map(\.id)))
         rebuildRows()
     }
@@ -727,8 +766,10 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
         let requestMembers = Set(membership.order)
         guard ProcessInfo.processInfo.systemUptime < admissionDeadline else { return .failure(.admissionDeadline) }
         let desktopPass = request.command.contains("desktop")
-        let floor: Int? = request.command.hasSuffix("primary") ? creditPrimaryFloor : request.command.hasSuffix("secondary") ? creditSecondaryFloor : nil
-        guard floor == nil || creditFallbackEnabled else { return .failure(.quota) }
+        let policy = preferences.resolvedPolicy(for: request.profileID)
+        let revision = policyRevision
+        let floor: Int? = request.command.hasSuffix("primary") ? policy.creditPrimaryFloor : request.command.hasSuffix("secondary") ? policy.creditSecondaryFloor : nil
+        guard floor == nil || (creditFallbackEnabled && policy.allowsCredits) else { return .failure(.quota) }
         guard !finishing, phase == .running, let child = process, child.isRunning else { return .failure(.stopping) }
         guard let profile = usageStore.profiles.first(where: { $0.id == request.profileID }), !profile.isSystemProfile,
             let system = usageStore.profiles.first(where: \.isSystemProfile),
@@ -737,12 +778,17 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
         let isDesktop = profile.recordedAccountKey == system.recordedAccountKey || profile.lastSnapshot?.accountID == system.lastSnapshot?.accountID
         guard desktopPass == isDesktop else { return .failure(.stageNotApplicable) }
         func admission(_ candidate: CodexProfile) -> LocalProxyFailure? {
+            // A policy edit may occur across any await below. Releasing a token
+            // under superseded spending limits is never allowed. The bridge can
+            // retry this admission; already dispatched requests keep their lease.
+            guard revision == policyRevision else { return .policyChanged }
             if floor != nil,
-                let failure = LocalProxyAdmission.creditPool(usageStore.profiles, activeIDs: requestMembers, refreshAfter: creditRefreshAfter)
+                let failure = LocalProxyAdmission.creditPool(
+                    usageStore.profiles, activeIDs: requestMembers, refreshAfter: creditRefreshAfter, policies: preferences.accountPolicies ?? [:])
             {
                 return failure
             }
-            return LocalProxyAdmission.quota(candidate, creditFloor: floor, allowPaidCredits: creditFallbackEnabled)
+            return LocalProxyAdmission.quota(candidate, creditFloor: floor, allowPaidCredits: creditFallbackEnabled, policy: policy)
         }
         guard let initial = currentBinding(profile, system: system) else { return .failure(.identity) }
         // Refresh before rejecting a stale snapshot. Paid admission observes the
@@ -833,7 +879,7 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
             let paid = creditFallbackEnabled
             let credential = try await Task.detached {
                 try LocalProxyCredentialReader.read(
-                    profile: latest, system: system, allowDesktopAccount: desktopPass, creditFloor: floor, allowPaidCredits: paid, deadline: admissionDeadline)
+                    profile: latest, system: system, allowDesktopAccount: desktopPass, creditFloor: floor, allowPaidCredits: paid, policy: policy, deadline: admissionDeadline)
             }.value
             guard ProcessInfo.processInfo.systemUptime < admissionDeadline else { return await reject(.admissionDeadline) }
             guard phase == .running, process === child, child.isRunning, request.runID == runID, leases[lease.id] != nil,
@@ -925,7 +971,8 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
         case "account":
             guard let id = object["profileID"] as? String, activeIDs.contains(id),
                 let state = object["state"] as? String,
-                ["current", "ready", "quota", "login_expired", "temporary_error", "busy", "credentials_busy", "quota_unknown", "subscription_pending"].contains(state)
+                ["current", "ready", "quota", "usage_limit", "login_expired", "temporary_error", "busy", "credentials_busy", "quota_unknown", "subscription_pending"].contains(
+                    state)
             else { return }
             accountStates[id] = state
             if let until = object["cooldownUntil"] as? Double, until.isFinite, until > Date().timeIntervalSince1970, until < Date().timeIntervalSince1970 + 8 * 86400 {
@@ -982,13 +1029,14 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
             return preferences.priorityIDs.contains($0) && !preferences.priorityIDs.contains($1)
         }.compactMap { id in
             guard let profile = profiles.first(where: { $0.id == id }) else { return nil }
-            let failure = LocalProxyAdmission.quota(profile, allowPaidCredits: creditFallbackEnabled)
+            let policy = preferences.resolvedPolicy(for: id)
+            let failure = LocalProxyAdmission.quota(profile, allowPaidCredits: creditFallbackEnabled, policy: policy)
             // Pipe events can arrive after release, or report another request's
             // busy result. Only an admitted, still-owned lease proves activity.
             let activeRequestCount = leases.values.filter { $0.profileID == id && $0.isAdmitted }.count
             let isCurrent = activeRequestCount > 0
             let reportedState = accountStates[id].flatMap { $0 == "current" ? nil : $0 }
-            let state = isCurrent ? "current" : reportedState ?? (failure?.rawValue ?? "ready")
+            let state = isCurrent ? "current" : failure == .usageLimit ? "usage_limit" : reportedState ?? (failure?.rawValue ?? "ready")
             func officialRemaining(_ window: CodexQuotaWindowSnapshot?) -> Double? {
                 window.flatMap { $0.usedPercent.isFinite && (0...100).contains($0.usedPercent) ? 100 - $0.usedPercent : nil }
             }
@@ -1029,7 +1077,8 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
                 isDesktopAccount: isDesktop(id),
                 isEnabled: preferences.enabledIDs.contains(id),
                 isPriority: preferences.priorityIDs.contains(id), isCurrent: state == "current", quotaText: quota, state: state, cooldownUntil: cooldowns[id],
-                activeRequestCount: activeRequestCount)
+                activeRequestCount: activeRequestCount, policy: policy,
+                usesDefaultCreditFloors: preferences.policy(for: id).creditPrimaryFloor == nil)
         }
         var immediately = false
         if let target = resetCreditRefreshTarget {
@@ -1082,6 +1131,7 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
             }
             let url = directory.appendingPathComponent("local-proxy-queue-v1.json")
             let data = try JSONEncoder().encode(preferences)
+            guard data.count <= 65536 else { throw LocalProxyFailure.unavailable }
             // Atomic replacement cannot follow a destination symlink; permissions stay private.
             try data.write(to: url, options: [.atomic])
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
@@ -1134,9 +1184,11 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
         case .busy: return language.text("账号正在执行其他任务", "Account is busy")
         case .credentialsBusy: return language.text("凭据正在读取或更新，请稍后重试", "Credentials are being read or updated; retry shortly")
         case .controlBusy: return language.text("代理控制通道忙碌，请稍后重试", "Proxy control channel is busy; retry shortly")
+        case .policyChanged: return language.text("规则已更新，正在重新选择账号", "Rules changed; selecting an account again")
         case .admissionDeadline: return language.text("账号接入超时，请稍后重试", "Account admission timed out; retry shortly")
         case .identity: return language.text("账号身份未确认", "Account identity is unverified")
         case .quota: return language.text("订阅额度已用尽", "Subscription quota exhausted")
+        case .usageLimit: return language.text("已达自定 5 小时使用上限", "Custom 5h usage limit reached")
         case .quotaUnknown: return language.text("额度未知或已过期，请刷新", "Quota missing or stale; refresh limits")
         case .loginExpired: return language.text("登录已过期，请手动重新登录", "Login expired; sign in manually")
         case .stageNotApplicable: return message(.unavailable)

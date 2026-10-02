@@ -18,6 +18,9 @@ body.flat { background: transparent; }
 .dash-cards { grid-column: 1 / -1; display: flex !important; flex-wrap: wrap; }
 .dash-card { box-sizing: border-box; position: relative; min-width: 0; padding: 6px 10px; gap: 3px; border-right: 1px solid rgba(var(--overlay-rgb), .12); border-bottom: 1px solid rgba(var(--overlay-rgb), .06); }
 .dash-card-v { font-size: 15px; line-height: 1.25; white-space: normal; overflow-wrap: anywhere; text-overflow: clip; font-variant-numeric: tabular-nums; }
+.dash-card-v.is-dual-cost { display: flex; align-items: baseline; flex-wrap: wrap; gap: 2px 8px; }
+.dash-cost-usd, .dash-cost-cny { min-width: 0; }
+.dash-cost-cny { font-size: .85em; opacity: .8; }
 .dash-card-k { font-size: 9px; letter-spacing: 0; }
 .dash-card:last-child { border-right: 0; }
 .dash-card.is-row-end { border-right: 0; }

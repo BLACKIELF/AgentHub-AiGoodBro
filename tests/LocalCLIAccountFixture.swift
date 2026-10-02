@@ -366,6 +366,49 @@ private func testManagedGrokIsolationAndStaleWriter() throws {
     try expect(fm.fileExists(atPath: auth.path), "unlink preserves Grok CLI-owned credentials")
 }
 
+private actor ClaudeCredentialReadSequence {
+    private var calls = 0
+    func next() -> LocalCLIQuotaResult {
+        calls += 1
+        let available = calls == 1
+        return LocalCLIQuotaResult(
+            state: available ? .available : .unavailable, fetchedAt: Date(), maskedIdentity: nil,
+            identityFingerprint: available ? "synthetic-previous-identity" : nil, planLabel: nil,
+            windows: available ? [.init(id: "session", label: "5-hour", usedPercent: 20, resetsAt: nil)] : [],
+            balance: nil, balanceCurrency: nil, sourceLabel: "Synthetic",
+            messageCode: available ? nil : "local_cli_claude_credentials_changed")
+    }
+}
+
+@MainActor
+private func testClaudeKeychainChangeClearsCachedIdentity() async throws {
+    let paths = try makeRoot("claude-keychain-change")
+    defer { try? FileManager.default.removeItem(at: paths.root) }
+    let executable = paths.home.appendingPathComponent(".local/bin/claude")
+    try Data("synthetic executable".utf8).write(to: executable)
+    guard chmod(executable.path, 0o700) == 0 else { throw FixtureFailure.failed("synthetic Claude chmod") }
+    let directory = paths.home.appendingPathComponent(".claude", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    // This synthetic home is not the system home, so no real Keychain is queried.
+    try Data(#"{"claudeAiOauth":{"accessToken":"synthetic-local-token"}}"#.utf8)
+        .write(to: directory.appendingPathComponent(".credentials.json"))
+    let sequence = ClaudeCredentialReadSequence()
+    let store = makeStore(home: paths.home, support: paths.support, loader: { _ in await sequence.next() })
+    store.discover()
+    guard let profile = store.profiles(for: .claudeCode).first else {
+        throw FixtureFailure.failed("synthetic Claude profile missing")
+    }
+    store.refresh(profile)
+    try await waitForVisibleRefresh(store, ids: [profile.id])
+    try expect(store.quotas[profile.id]?.identityFingerprint == "synthetic-previous-identity",
+               "baseline synthetic identity is cached")
+    store.refresh(profile)
+    try await waitForVisibleRefresh(store, ids: [profile.id])
+    try expect(store.quotas[profile.id]?.state == .unavailable && store.quotas[profile.id]?.windows.isEmpty == true
+               && store.quotas[profile.id]?.identityFingerprint == nil && !store.stale.contains(profile.id),
+               "Keychain change clears the old quota and identity even without a file metadata change")
+}
+
 private actor QuotaReadSequence {
     private var states: [LocalCLIQuotaState] = [.available, .unavailable, .needsLogin, .available]
     func next() -> LocalCLIQuotaResult {
@@ -435,6 +478,17 @@ private func testAuthenticationWithoutQuotaOrTerminalExit() async throws {
         return nil
     }
     try expect(reader.read(profile) == .unknown, "API selection cannot borrow an old Google OAuth credential")
+    for (env, expected) in [
+        ("GOOGLE_API_KEY=synthetic-vertex-key\n", LocalCLIAuthentication.unknown),
+        ("GEMINI_API_KEY=synthetic-gemini-key\n", LocalCLIAuthentication.apiKey),
+    ] {
+        reader.fileReader = { url in
+            if url.lastPathComponent == "settings.json" { return Data(#"{"security":{"auth":{"selectedType":"gemini-api-key"}}}"#.utf8) }
+            if url.lastPathComponent == ".env" { return Data(env.utf8) }
+            return nil
+        }
+        try expect(reader.read(profile) == expected, "Gemini API mode does not borrow a Vertex-only key")
+    }
     let opencode = LocalCLIProfile(id: "synthetic", kind: .openCode, displayName: "Synthetic", configDirectory: directory.path, isDefault: false)
     reader.fileReader = { _ in Data(#"{"anthropic":{"type":"oauth","refresh":"synthetic"},"provider":{"type":"api","key":"synthetic"},"invalid":{"type":"api","key":""}}"#.utf8) }
     try expect(reader.read(opencode) == .providers(2), "OpenCode provider credentials do not require OpenCode Go")
@@ -1053,6 +1107,7 @@ private func testConfiguredClaudeWithoutExecutable() async throws {
         try await testRediscoveryRemovesOtherWritersAccountState()
         try testManagedGrokIsolationAndStaleWriter()
         try await testTransientFailureAndConfirmedSignOut()
+        try await testClaudeKeychainChangeClearsCachedIdentity()
         try await testAuthenticationWithoutQuotaOrTerminalExit()
         try await testOpenCodeReusesSavedProviderUnlessUpdateRequested()
         try await testVisibleKimiRefreshAfterExternalLogin()

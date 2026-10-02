@@ -1,4 +1,4 @@
-# AiGoodBro · AgentHub (2.0 candidate)
+# AiGoodBro · AgentHub (2.2 candidate)
 
 **See quota, usage and task occupancy at a glance; when needed, route local work through your own Codex account pool.**
 
@@ -6,7 +6,9 @@ AiGoodBro is a macOS AI workspace for personal use. It brings together quotas fo
 
 [中文](README.md) | **English**
 
-The current source candidate is **9.6.63 (113) · 1002v2**. These previews are rendered by the candidate’s native interface with synthetic data. The [full gallery](docs/images/1002v2/README.md) covers home, accounts, proxy, settings, setup, usage panels and all nine themes. Historical real captures retain their version labels.
+The latest source candidate is **2.2 · 1003v1**, with internal update version 9.6.64 (114). It adds batch invitations and official history, per-account proxy rules editable while running, retained snapshots and refresh intervals, and a USD/CNY overview sized to its numbers. It also updates fullscreen shortcuts, CLI sign-in and quota readers, and desktop-switch confirmation. Version 114 is installed locally; this update has no official installer. See the [validation and scope](docs/source-publication-1003v1.md) and [new previews](docs/images/1002v4/README.md).
+
+The images below retain their 1002v2 provenance. The [full gallery](docs/images/1002v2/README.md) covers home, accounts, proxy, settings, setup, usage panels and all nine themes. Historical real captures retain their version labels.
 
 ## See what is happening
 
@@ -84,21 +86,21 @@ Choose a palette in Settings → Appearance. Each theme supports light and dark 
 
 ## Candidate status and acceptance limits
 
-The current source is **AiGoodBro 9.6.63 (113) · source candidate 1002v2**, on [`codex/reset-messages-0926v1`](https://github.com/BLACKIELF/AgentHub-AiGoodBro/tree/codex/reset-messages-0926v1) and under review in [PR #13](https://github.com/BLACKIELF/AgentHub-AiGoodBro/pull/13). It remains a candidate, is not merged into `main`, and has no official download.
+The current source candidate is **AiGoodBro 9.6.64 (114) · 2.2 / 1003v1**, on [`codex/reset-messages-0926v1`](https://github.com/BLACKIELF/AgentHub-AiGoodBro/tree/codex/reset-messages-0926v1) and under review in [PR #13](https://github.com/BLACKIELF/AgentHub-AiGoodBro/pull/13). It remains a candidate, is not merged into `main`, and has no official download.
 
 [![Candidate branch CI](https://github.com/BLACKIELF/AgentHub-AiGoodBro/actions/workflows/ci.yml/badge.svg?branch=codex%2Freset-messages-0926v1)](https://github.com/BLACKIELF/AgentHub-AiGoodBro/pull/13/checks)
 
-The installed local build is **9.6.62 (112) · 1002v1**. Candidate 113 passes an optimized build, source/resource verification, strict signatures, 35 packaged self-test groups, Swift lint and synthetic desktop protocol regressions. Home, settings, setup, login, usage-panel and theme previews are rendered offscreen with synthetic data; they do not show live accounts or real model requests. The running proxy was not restarted. Phone delivery, real original-chat conversation, automatic pause/switch/resume, real image generation and the new AppKit titlebar remain unaccepted. See the [current publication record](docs/source-publication-1002v2.md) and [PR #13 checks](https://github.com/BLACKIELF/AgentHub-AiGoodBro/pull/13/checks).
+Version **9.6.64 (114)** is installed at `/Applications/AiGoodBro.app`; the app version, executable and proxy-helper hashes, signature and architecture were verified. Before replacement, no proxy helper process or occupied proxy lease was present, and the old app quit normally. The 35 selected app self-tests, cross-language proxy regressions, Go race suite and `go vet` passed. No Codex account was switched and no real model request was sent. Home, settings, setup, login, usage-panel and theme previews use synthetic data; they do not show live accounts. Phone delivery, real original-chat conversation, automatic pause/switch/resume, real image generation and the new AppKit titlebar remain unaccepted. See the [current publication record](docs/source-publication-1003v1.md) and [PR #13 checks](https://github.com/BLACKIELF/AgentHub-AiGoodBro/pull/13/checks).
 
-Build the 2.0 candidate:
+Build the 2.2 candidate:
 
 ```sh
-git clone --branch codex/reset-messages-0926v1 https://github.com/BLACKIELF/AgentHub-AiGoodBro.git AiGoodBro-2.0
-cd AiGoodBro-2.0
+git clone --branch codex/reset-messages-0926v1 https://github.com/BLACKIELF/AgentHub-AiGoodBro.git AiGoodBro-2.2
+cd AiGoodBro-2.2
 make build
 ```
 
-Source builds require macOS, Go 1.26+ and the verified Token Monitor v0.62.0 macOS runtime; see the [build and publication record](docs/source-publication-1002v2.md). No 2.0 installer is currently available. Further Windows work remains on hold.
+Source builds require macOS, Go 1.26+ and the verified Token Monitor v0.62.0 macOS runtime; see the [build and publication record](docs/source-publication-1003v1.md). No official 2.2 installer is currently available. Further Windows work remains on hold.
 
 ## Inspiration, code sources and licenses
 
@@ -107,17 +109,18 @@ Feature design borrows from related open-source projects. Code and resources dir
 | Project | Relationship |
 |---|---|
 | [Tencent/openclaw-weixin 2.4.9](https://github.com/Tencent/openclaw-weixin/tree/24de5c9eb0dd5e595d7e2d090ed8a3f82870d42c) | Native adaptation of iLink protocol and QR pairing; MIT notice retained, without installing OpenClaw. |
-| [codexU](https://github.com/shanggqm/codexU) | Historical SwiftUI, quota, palette and Windows foundations inherited. |
-| [Token Monitor v0.62.0](https://github.com/Javis603/token-monitor/tree/dcccfb01557e2786888fd5479552f392ac6c0d32) | Statistics engine, desktop dashboard, charts and resources directly reused with host adaptation. |
-| [Tokscale fork](https://github.com/Javis603/tokscale) · [original](https://github.com/junhoyeo/tokscale) | Statistics collection foundation; bundled revision `06a9f1625d5a505f01b39eff29f7be44a2c52188`, as recorded in [`SOURCE.json`](Companion/TokenMonitorEngine/SOURCE.json). |
-| [CLIProxyAPI v8.0.2](https://github.com/router-for-me/CLIProxyAPI/tree/v8.0.2) | SDK scheduler, Codex executor and Responses handler directly reused. |
-| [Codex-Manager](https://github.com/qxcnm/Codex-Manager) | Warm-up request structure and SSE completion rules adapted in the implementation; see [`CodexAccountActions.swift`](Sources/CodexUsageWidget/Services/CodexAccountActions.swift#L850). |
-| [Hazmat wrapper script](https://github.com/dredozubov/hazmat/blob/c112d222bb53e888dd17a8927927286792f7c20e/scripts/check-codex-desktop-attach-smoke.sh) | Reference for the `CODEX_CLI_PATH` stdio-wrapper entry point; no Hazmat sandbox or service is integrated. |
+| [codexU](https://github.com/shanggqm/codexU) | Second-developed host integration from the historical fixed source: SwiftUI, quota, palette and Windows foundations were inherited and are maintained by AiGoodBro. |
+| [Token Monitor v0.62.0](https://github.com/Javis603/token-monitor/tree/dcccfb01557e2786888fd5479552f392ac6c0d32) | Second-developed native integration from the fixed upstream source: the statistics engine, dashboard, charts and resources remain bundled with the AiGoodBro bridge and Swift host. The local zero-quota fix and review of later releases are in the [current publication record](docs/source-publication-1003v1.md). |
+| [Tokscale fork](https://github.com/Javis603/tokscale) · [original](https://github.com/junhoyeo/tokscale) | Second-developed native integration from the pinned revision; the collection foundation and license remain bundled as revision `06a9f1625d5a505f01b39eff29f7be44a2c52188`. |
+| [CLIProxyAPI v8.0.2](https://github.com/router-for-me/CLIProxyAPI/tree/v8.0.2) | Host adapter over fixed upstream code: the SDK scheduler, Codex executor and Responses handler are reused, with a narrow adaptation of v8.0.7's pre-first-frame disconnect 502/failover behavior. The dependency was not upgraded wholesale. |
+| [Codex-Manager](https://github.com/qxcnm/Codex-Manager) | Protocol adaptation and static research reference; the warm-up request structure and SSE completion rules are independently implemented in [`CodexAccountActions.swift`](Sources/CodexUsageWidget/Services/CodexAccountActions.swift#L850). |
+| [Hazmat wrapper script](https://github.com/dredozubov/hazmat/blob/c112d222bb53e888dd17a8927927286792f7c20e/scripts/check-codex-desktop-attach-smoke.sh) | Protocol adaptation and static research reference for the `CODEX_CLI_PATH` stdio-wrapper entry point; no Hazmat sandbox or service is integrated. |
+| [BlackHole1/aswap v1.1.0](https://github.com/BlackHole1/aswap/releases/tag/v1.1.0) | The Claude multi-account CLI/Chrome profile tool from the referenced X post; protocol adaptation and static research reference only, with no copied, bundled or Codex, Feishu or WeCom integration. |
 
 AiGoodBro is licensed under [MIT](LICENSE). Full third-party license texts and copyright notices are in [`Resources/THIRD_PARTY_NOTICES.txt`](Resources/THIRD_PARTY_NOTICES.txt), [`Companion/LocalProxy/LICENSE.CLIProxyAPI`](Companion/LocalProxy/LICENSE.CLIProxyAPI), [`Companion/LocalProxy/LICENSE.Hazmat`](Companion/LocalProxy/LICENSE.Hazmat) and [`Companion/LocalProxy/THIRD-PARTY-NOTICES.txt`](Companion/LocalProxy/THIRD-PARTY-NOTICES.txt).
 
 ## More information
 
-[Detailed guide (Chinese)](docs/usage-guide.md) · [CLI quota coverage](docs/local-cli-accounts.md) · [Proxy implementation and validation](docs/local-proxy-0928v1.md) · [Current source publication record](docs/source-publication-1002v2.md) · [Historical real captures: 0929v2](docs/images/0929v2/README.md) · [Historical screenshots: 0927v6](docs/images/0927v6/README.md) · [Historical screenshots: 0910v1](docs/images/0910v1/README.md) · [Report an issue](https://github.com/BLACKIELF/AgentHub-AiGoodBro/issues) · [Security](SECURITY.md)
+[Detailed guide (Chinese)](docs/usage-guide.md) · [CLI quota coverage](docs/local-cli-accounts.md) · [Proxy implementation and validation](docs/local-proxy-0928v1.md) · [Current source publication record](docs/source-publication-1003v1.md) · [Historical real captures: 0929v2](docs/images/0929v2/README.md) · [Historical screenshots: 0927v6](docs/images/0927v6/README.md) · [Historical screenshots: 0910v1](docs/images/0910v1/README.md) · [Report an issue](https://github.com/BLACKIELF/AgentHub-AiGoodBro/issues) · [Security](SECURITY.md)
 
 [MIT license](LICENSE) · [Third-party notices](Resources/THIRD_PARTY_NOTICES.txt) · [Brand compatibility](docs/brand-compat-0911v1.md)

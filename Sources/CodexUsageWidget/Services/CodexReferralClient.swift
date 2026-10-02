@@ -2,7 +2,7 @@ import CFNetwork
 import Darwin
 import Foundation
 
-/// A referral belongs to this recorded account and its current read-only session.
+/// A referral belongs to this recorded account and its read-only session.
 /// No credential refresh, account switch, recipient persistence or automatic send.
 struct CodexReferralAccount: Identifiable {
     let profile: CodexProfile
@@ -127,17 +127,17 @@ enum CodexReferralFailure: Error, Equatable {
         case .loginRequired:
             return language.text("此账号需要重新登录后才能读取或发送邀请。", "Sign in to this account again to read or send invitations.")
         case .credentialsBusy:
-            return language.text("账号正在刷新，请稍后重试。", "The account is refreshing. Try again shortly.")
+            return language.text("登录凭据正在更新，请稍后重试。", "Sign-in credentials are updating. Try again shortly.")
         case .unavailable:
             return language.text("官方暂未提供此账号的邀请活动。", "No referral offer is currently available for this account.")
         case .invalidResponse:
             return language.text("官方邀请信息未能核实，请刷新后重试。", "The official referral information could not be verified. Refresh and try again.")
         case .invalidEmail:
-            return language.text("请填写一个有效的邀请邮箱。", "Enter one valid recipient email address.")
+            return language.text("请检查邀请邮箱格式，每次最多 5 个。", "Check the recipient email addresses. Send up to 5 at a time.")
         case .consentRequired:
             return language.text("发送前请确认已征得好友同意。", "Confirm the recipient's consent before sending.")
         case .capacityReached:
-            return language.text("此账号当前没有可用的邀请名额。", "This account has no invitation capacity available now.")
+            return language.text("可用邀请名额不足，请刷新后减少收件人数。", "Not enough invitation capacity. Refresh and reduce the number of recipients.")
         case .offerChanged:
             return language.text("官方活动内容已更新，请刷新并重新核对后发送。", "The official offer changed. Refresh and review it before sending.")
         case .alreadyInvited:
@@ -200,22 +200,18 @@ enum CodexReferralCredentialReader {
         let system = userHome.appendingPathComponent(".codex", isDirectory: true).standardizedFileURL
         let root = userHome.appendingPathComponent(".codex-account-manager-next/profiles", isDirectory: true).standardizedFileURL
         let managedHome = account.profile.codexHomeURL.standardizedFileURL
-        guard home == CodexCredentialTransaction.canonical(home),
+        guard home.isFileURL, home.path == CodexCredentialTransaction.canonical(home).path,
             home == managedHome || home == system,
             home == system || home.deletingLastPathComponent() == root,
             account.profile.isSystemProfile ? managedHome == system : managedHome.deletingLastPathComponent() == root
         else { throw CodexReferralFailure.identityChanged }
-        let locks = [CodexCredentialAccessGate.lock, CodexCredentialAccessGate.homeLock(forHomePath: home.path)]
-        var acquired: [NSRecursiveLock] = []
-        defer { acquired.reversed().forEach { $0.unlock() } }
-        let deadline = ProcessInfo.processInfo.systemUptime + 3
-        for lock in locks {
-            while !lock.try() {
-                guard ProcessInfo.processInfo.systemUptime < deadline else { throw CodexReferralFailure.credentialsBusy }
-                Thread.sleep(forTimeInterval: 0.01)
-            }
-            acquired.append(lock)
-        }
+        return try readSnapshot(home: home, profile: account.profile, now: now, expectedData: expectedData)
+    }
+
+    // Writers atomically replace auth.json. A bounded, stable file snapshot is
+    // sufficient for this read-only operation; waiting on the global quota lock
+    // couples unrelated accounts and can block the invitation UI for seconds.
+    static func readSnapshot(home: URL, profile: CodexProfile, now: Date, expectedData: Data? = nil) throws -> Value {
         var info = stat()
         let file = home.appendingPathComponent("auth.json")
         var before = stat()
@@ -223,18 +219,25 @@ enum CodexReferralCredentialReader {
             info.st_uid == geteuid(), info.st_mode & 0o022 == 0,
             lstat(file.path, &before) == 0, before.st_mode & S_IFMT == S_IFREG,
             before.st_uid == geteuid(), before.st_nlink == 1, before.st_mode & 0o022 == 0,
-            let data = try CodexCredentialTransaction.read(file),
-            expectedData == nil || expectedData == data
+            let data = try CodexCredentialTransaction.read(file)
         else { throw CodexReferralFailure.identityChanged }
-        let result = try validate(data, profile: account.profile, now: now)
+        let result = try validate(data, profile: profile, now: now)
+        // A normal refresh may rotate token bytes while keeping the same
+        // recorded identity. A different account must still fail closed.
+        if let expectedData {
+            guard
+                CodexOfficialProfileReader.credentialIdentity(fromAuthData: expectedData)
+                    == CodexOfficialProfileReader.credentialIdentity(fromAuthData: data)
+            else { throw CodexReferralFailure.identityChanged }
+        }
         var after = stat()
         guard lstat(file.path, &after) == 0, before.st_dev == after.st_dev, before.st_ino == after.st_ino,
             before.st_size == after.st_size, before.st_mtimespec.tv_sec == after.st_mtimespec.tv_sec,
             before.st_mtimespec.tv_nsec == after.st_mtimespec.tv_nsec,
             before.st_ctimespec.tv_sec == after.st_ctimespec.tv_sec, before.st_ctimespec.tv_nsec == after.st_ctimespec.tv_nsec,
             try CodexCredentialTransaction.read(file) == data,
-            CodexCredentialTransaction.canonical(account.credentialHome) == home
-        else { throw CodexReferralFailure.identityChanged }
+            home.isFileURL, CodexCredentialTransaction.canonical(home).path == home.path
+        else { throw CodexReferralFailure.credentialsBusy }
         return result
     }
 
@@ -282,14 +285,14 @@ final class CodexReferralClient {
     }
 
     private func loadBound(_ account: CodexReferralAccount, language: WidgetLanguage) async throws -> (CodexReferralReview, CodexReferralCredentialReader.Value) {
-        let credential = try readCredential(account, nil)
+        var credential = try readCredential(account, nil)
         let accounts = try await get("/wham/accounts/check", credential: credential, language: language)
         let context = try CodexReferralContext.parse(accounts, accountID: credential.accountID)
-        _ = try readCredential(account, credential.data)
+        credential = try readCredential(account, credential.data)
         let data = try await get(
             "/referrals/invite/eligibility", query: ["program_id": context.programID, "entrypoint": context.entrypoint],
             credential: credential, language: language)
-        _ = try readCredential(account, credential.data)
+        credential = try readCredential(account, credential.data)
         guard let eligibility = try? JSONDecoder().decode(CodexReferralEligibility.self, from: data) else {
             throw CodexReferralFailure.invalidResponse
         }
@@ -300,21 +303,33 @@ final class CodexReferralClient {
         _ account: CodexReferralAccount, reviewed: CodexReferralReview, email: String, consent: Bool, language: WidgetLanguage,
         currentAccount: @escaping @MainActor () throws -> CodexReferralAccount
     ) async throws {
-        guard let email = CodexReferralPresentation.email(email) else { throw CodexReferralFailure.invalidEmail }
+        guard let recipient = CodexReferralPresentation.email(email) else { throw CodexReferralFailure.invalidEmail }
+        let result = try await sendBatch(account, reviewed: reviewed, emails: [recipient], consent: consent, language: language, currentAccount: currentAccount)
+        guard result.sent.count == 1, result.failed.isEmpty, result.uncertain.isEmpty else { throw CodexReferralFailure.deliveryUncertain }
+    }
+
+    func sendBatch(
+        _ account: CodexReferralAccount, reviewed: CodexReferralReview, emails: [String], consent: Bool, language: WidgetLanguage,
+        currentAccount: @escaping @MainActor () throws -> CodexReferralAccount
+    ) async throws -> CodexReferralBatchResult {
+        guard !emails.isEmpty, emails.count <= 5, emails.allSatisfy({ CodexReferralPresentation.email($0) == $0 }),
+            Set(emails.map { $0.lowercased() }).count == emails.count
+        else { throw CodexReferralFailure.invalidEmail }
         guard reviewed.eligibility.canInvite else { throw CodexReferralFailure.capacityReached }
+        guard emails.count <= reviewed.eligibility.invitationCapacity else { throw CodexReferralFailure.capacityReached }
         guard !reviewed.eligibility.requiresExplicitConfirmation || consent else { throw CodexReferralFailure.consentRequired }
-        let (fresh, credential) = try await loadBound(account, language: language)
+        let (fresh, loadedCredential) = try await loadBound(account, language: language)
         guard fresh.context == reviewed.context, fresh.eligibility.sameOffer(as: reviewed.eligibility) else {
             throw CodexReferralFailure.offerChanged
         }
-        guard fresh.eligibility.canInvite else { throw CodexReferralFailure.capacityReached }
+        guard fresh.eligibility.canInvite, emails.count <= fresh.eligibility.invitationCapacity else { throw CodexReferralFailure.capacityReached }
         guard try await currentAccount().matches(account) else { throw CodexReferralFailure.identityChanged }
-        _ = try readCredential(account, credential.data)
+        let credential = try readCredential(account, loadedCredential.data)
         var request = try request("/referrals/invite", credential: credential, language: language)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONSerialization.data(withJSONObject: [
-            "program_id": fresh.context.programID, "entrypoint": fresh.context.entrypoint, "emails": [email],
+            "program_id": fresh.context.programID, "entrypoint": fresh.context.entrypoint, "emails": emails,
         ])
         // The transport never retries. A timeout, redirect or malformed success
         // after this dispatch is an unknown result, never permission to replay.
@@ -324,34 +339,54 @@ final class CodexReferralClient {
         if response.statusCode >= 500 || (300..<400).contains(response.statusCode) {
             throw CodexReferralFailure.deliveryUncertain
         }
-        try checkStatus(response)
-        guard let result = try? JSONSerialization.jsonObject(with: response.body) as? [String: Any],
-            let invites = result["invites"] as? [[String: Any]], invites.count == 1,
-            let identifier = (invites[0]["referral_id"] as? String) ?? (invites[0]["id"] as? String), !identifier.isEmpty,
-            (invites[0]["email"] as? String).map({ $0.lowercased() == email.lowercased() }) ?? true,
-            (result["failed_emails"] as? [String] ?? []).isEmpty
-        else { throw CodexReferralFailure.deliveryUncertain }
+        let result: CodexReferralBatchResult
+        if [400, 422].contains(response.statusCode), let rejected = try CodexReferralBatchResult.parseRejection(response.body, recipients: emails) {
+            result = rejected
+        } else {
+            try checkStatus(response)
+            do { result = try CodexReferralBatchResult.parse(response.body, recipients: emails) } catch { throw CodexReferralFailure.deliveryUncertain }
+        }
         do {
             guard try await currentAccount().matches(account) else { throw CodexReferralFailure.identityChanged }
             _ = try readCredential(account, credential.data)
         } catch { throw CodexReferralFailure.deliveryUncertain }
         // A recorded invitation is the server acknowledgement. It is not proof
         // that the recipient qualified or that a reward was credited.
+        return result
+    }
+
+    func historyPage(
+        _ account: CodexReferralAccount, context: CodexReferralContext? = nil, period: CodexReferralPeriod, cursor: String? = nil, language: WidgetLanguage
+    ) async throws -> CodexReferralPage {
+        var credential = try readCredential(account, nil)
+        let selectedContext: CodexReferralContext
+        if let context {
+            selectedContext = context
+        } else {
+            let data = try await get("/wham/accounts/check", credential: credential, language: language)
+            selectedContext = try CodexReferralContext.parse(data, accountID: credential.accountID)
+            credential = try readCredential(account, credential.data)
+        }
+        var query = ["program_id": selectedContext.programID, "period": period.rawValue, "limit": "100"]
+        if let cursor {
+            guard !cursor.isEmpty, cursor.utf8.count <= 2048 else { throw CodexReferralFailure.invalidResponse }
+            query["cursor"] = cursor
+        }
+        let data = try await get("/referrals/invite/tracking", query: query, credential: credential, language: language)
+        _ = try readCredential(account, credential.data)
+        let page = try CodexReferralPage.parse(data)
+        guard page.cursor == nil || page.cursor != cursor else { throw CodexReferralFailure.invalidResponse }
+        return page
     }
 
     func recorded(_ account: CodexReferralAccount, context: CodexReferralContext, email: String, language: WidgetLanguage) async throws -> Bool {
-        let credential = try readCredential(account, nil)
         var cursor: String?
+        var seen = Set<String>()
         for _ in 0..<3 {
-            var query = ["program_id": context.programID, "period": "past_90_days", "limit": "100"]
-            if let cursor { query["cursor"] = cursor }
-            let data = try await get("/referrals/invite/tracking", query: query, credential: credential, language: language)
-            _ = try readCredential(account, credential.data)
-            guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-                let items = object["items"] as? [[String: Any]], items.count <= 100
-            else { throw CodexReferralFailure.invalidResponse }
-            if items.contains(where: { ($0["email"] as? String)?.lowercased() == email.lowercased() }) { return true }
-            guard let next = object["cursor"] as? String, !next.isEmpty, next.utf8.count <= 2_048, next != cursor else { return false }
+            let page = try await historyPage(account, context: context, period: .past90Days, cursor: cursor, language: language)
+            if page.items.contains(where: { $0.email?.lowercased() == email.lowercased() }) { return true }
+            guard let next = page.cursor else { return false }
+            guard seen.insert(next).inserted else { throw CodexReferralFailure.invalidResponse }
             cursor = next
         }
         return false

@@ -298,21 +298,26 @@ struct LocalCLIQuotaReader {
         else {
             throw LocalCLIReaderFailure.invalidCredentials
         }
-        if let rawExpiry = entry["expires_at"] {
-            guard let expiry = Self.parseDate(rawExpiry), expiry > now else {
-                throw LocalCLIReaderFailure.credentialsExpired
-            }
+        let expiry: Date?
+        if let rawExpiry = entry["expires_at"], !(rawExpiry is NSNull) {
+            expiry = Self.parseDate(rawExpiry)
+        } else {
+            // Official Grok credentials without expires_at live for 30 days
+            // from create_time; absence must not mean an unlimited lifetime.
+            expiry = Self.parseDate(entry["create_time"])?.addingTimeInterval(30 * 24 * 60 * 60)
         }
+        guard let expiry, expiry > now else { throw LocalCLIReaderFailure.credentialsExpired }
+        // Billing is scoped by the exact CLI user ID. Do not substitute an
+        // email or silently strip characters from an identity header.
+        guard let identity = Self.nonempty(entry["user_id"]),
+            Self.asciiHeader(identity, fallback: "") == identity
+        else { throw LocalCLIReaderFailure.invalidCredentials }
 
-        let identity = Self.nonempty(entry["user_id"]) ?? Self.nonempty(entry["email"])
         var request = fixedRequest("https://cli-chat-proxy.grok.com/v1/billing?format=credits")
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("xai-grok-cli", forHTTPHeaderField: "x-xai-token-auth")
         request.setValue("cli", forHTTPHeaderField: "x-grok-client-mode")
-        if let userID = Self.nonempty(entry["user_id"]) {
-            let headerID = Self.asciiHeader(userID, fallback: "")
-            if !headerID.isEmpty { request.setValue(headerID, forHTTPHeaderField: "x-userid") }
-        }
+        request.setValue(identity, forHTTPHeaderField: "x-userid")
         request.setValue("CodexUsageWidget-Next", forHTTPHeaderField: "User-Agent")
         let response = try await checkedResponse(for: request)
         let parsed = try Self.parseGrok(response.data)
@@ -418,7 +423,8 @@ struct LocalCLIQuotaReader {
         let credentialsURL = directoryURL(profile).appendingPathComponent(".credentials.json")
         var credentialsData: Data
         var loadedKeychain = false
-        if let fileData = try fileReader(credentialsURL, Self.maximumCredentialBytes, true) {
+        let initialFileData = try fileReader(credentialsURL, Self.maximumCredentialBytes, true)
+        if let fileData = initialFileData {
             credentialsData = fileData
         } else if isDefaultClaudeDirectory(profile) {
             do {
@@ -449,6 +455,7 @@ struct LocalCLIQuotaReader {
                     }
                     credentialsData = freshData
                     oauth = try Self.claudeOAuth(credentialsData)
+                    loadedKeychain = true
                 }
             } catch let failure as LocalCLIReaderFailure {
                 throw failure
@@ -465,6 +472,27 @@ struct LocalCLIQuotaReader {
         request.setValue("claude-code/2.1.0", forHTTPHeaderField: "User-Agent")
         let response = try await checkedResponse(for: request)
         let windows = try Self.parseClaude(response.data)
+        // Compare the selected source again after the await. OAuth-to-OAuth
+        // changes in Keychain are not covered by the store's file metadata.
+        // These bytes remain request-local; they are never account identity.
+        guard try fileReader(credentialsURL, Self.maximumCredentialBytes, true) == initialFileData else {
+            return result(
+                state: .unavailable, now: now, source: sourceLabel(for: .claudeCode),
+                messageCode: "local_cli_claude_credentials_changed")
+        }
+        if loadedKeychain {
+            do {
+                guard try claudeKeychainReader() == credentialsData else {
+                    return result(
+                        state: .unavailable, now: now, source: sourceLabel(for: .claudeCode),
+                        messageCode: "local_cli_claude_credentials_changed")
+                }
+            } catch let failure as LocalCLIReaderFailure {
+                throw failure
+            } catch {
+                throw LocalCLIReaderFailure.keychainUnavailable
+            }
+        }
         return result(
             state: .available,
             now: now,
@@ -717,23 +745,23 @@ extension LocalCLIQuotaReader {
         let root = try object(data)
         let plan = nonempty(root["planName"]) ?? nonempty(root["plan_name"])
         var windows: [LocalCLIQuotaWindow] = []
-        // The current endpoint also returns named ratio pools. Keep all three
-        // independent windows, including the monthly pool, and never fill a
+        // The current endpoint also returns named ratio pools. Keep all four
+        // independent windows, including both monthly pools, and never fill a
         // missing usage ratio with zero.
         if let rawPools = root["usages"], !(rawPools is NSNull) {
             guard let pools = rawPools as? [String: Any] else { throw LocalCLIReaderFailure.invalidResponse }
-            for (key, id, label) in [("limit_5h", "session", "5-hour"), ("limit_7d", "weekly", "7-day"), ("limit_month_total", "monthly", "Monthly")] {
+            for (key, id, label) in [
+                ("limit_5h", "session", "5-hour"), ("limit_7d", "weekly", "7-day"), ("limit_month_total", "monthly", "Monthly"),
+                ("limit_month_code", "monthly-code", "Monthly Code"),
+            ] {
                 guard let raw = pools[key], !(raw is NSNull) else { continue }
                 guard let pool = raw as? [String: Any] else { throw LocalCLIReaderFailure.invalidResponse }
                 guard let rawRatio = pool["used_ratio"], !(rawRatio is NSNull) else { continue }
-                guard let ratio = strictDouble(rawRatio), ratio >= 0 else { throw LocalCLIReaderFailure.invalidResponse }
+                guard let ratio = strictDouble(rawRatio, allowString: true), ratio >= 0 else { throw LocalCLIReaderFailure.invalidResponse }
                 windows.append(
                     LocalCLIQuotaWindow(
                         id: id, label: label, usedPercent: min(1, ratio) * 100, resetsAt: parseDate(pool["reset_time"])))
             }
-        }
-        guard !windows.isEmpty || root.keys.contains("usage") || root.keys.contains("limits") else {
-            throw LocalCLIReaderFailure.invalidResponse
         }
         // A migration response may provide only one new pool. Fill the other
         // kinds from legacy windows; a new pool wins only for its own kind.
@@ -744,10 +772,9 @@ extension LocalCLIQuotaReader {
                 throw LocalCLIReaderFailure.invalidResponse
             }
         }
-        if let rawLimits = root["limits"] {
+        if let rawLimits = root["limits"], !(rawLimits is NSNull) {
             guard let limits = rawLimits as? [[String: Any]] else {
-                if !(rawLimits is NSNull) { throw LocalCLIReaderFailure.invalidResponse }
-                return (plan, windows)
+                throw LocalCLIReaderFailure.invalidResponse
             }
             for (index, item) in limits.enumerated() {
                 let detail = (item["detail"] as? [String: Any]) ?? item
@@ -759,6 +786,9 @@ extension LocalCLIQuotaReader {
                 windows.append(try quotaWindow(id: id, label: label, detail: detail))
             }
         }
+        // Empty legacy/null payloads are not fresh quota evidence. Let the
+        // account store retain the previous observation with its original age.
+        guard !windows.isEmpty else { throw LocalCLIReaderFailure.invalidResponse }
         return (plan, windows)
     }
 

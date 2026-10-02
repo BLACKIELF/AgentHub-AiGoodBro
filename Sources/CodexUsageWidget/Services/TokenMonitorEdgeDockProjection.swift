@@ -21,6 +21,7 @@ enum TokenMonitorEdgeDockProjection {
         language: WidgetLanguage,
         now: Date = Date(),
         activeCodexAccountID: String? = nil,
+        historicalCodexAccountID: String? = nil,
         liveRateSample: TokenMonitorEdgeDockRateSample? = nil,
         proxyPhase: LocalProxyPhase? = nil,
         proxyRows: [LocalProxyQueueRow] = []
@@ -38,7 +39,8 @@ enum TokenMonitorEdgeDockProjection {
             case .limit:
                 return providerCell(
                     item, sources: quotaSources, usage: usage, sessions: sessions, language: language,
-                    activeCodexAccountID: activeCodexAccountID
+                    activeCodexAccountID: activeCodexAccountID,
+                    historicalCodexAccountID: historicalCodexAccountID
                 )
             case .stat:
                 return statCell(item, usage: usage, sessions: sessions, language: language, now: now, liveRateSample: liveRateSample)
@@ -46,6 +48,44 @@ enum TokenMonitorEdgeDockProjection {
                 return proxyCell(language: language, phase: proxyPhase, rows: proxyRows)
             }
         }
+    }
+
+    /// Only currently configured visible accounts are eligible for dock reads.
+    /// Sets de-duplicate repeated account/provider entries; explicit empty stays empty.
+    static func refreshTargets(
+        preferences: TokenMonitorEdgeDockPreferences,
+        sources: [TokenMonitorFloatingBubbleAccount],
+        codexDisplayAccountID: String?,
+        codexSystemAccountID: String? = nil
+    ) -> [String: Set<String>] {
+        guard preferences.enabled else { return [:] }
+        var targets: [String: Set<String>] = [:]
+        for item in preferences.normalized().items ?? automaticItems(sources) where item.type == .limit {
+            guard let providerID = item.providerID else { continue }
+            if providerID == "codex", item.accountID == nil, item.accountMode == .active,
+                let systemID = codexSystemAccountID, !item.hiddenAccountIDs.contains(systemID),
+                codexDisplayAccountID.map({ !item.hiddenAccountIDs.contains($0) }) != false
+            {
+                // Identity confirmation is a read dependency of active mode,
+                // even when the display list de-duplicates the system profile.
+                targets[providerID, default: []].insert(systemID)
+            }
+            let matches = sources.filter {
+                TokenMonitorEdgeDockItem.canonicalProviderID($0.providerID) == providerID
+                    && !item.hiddenAccountIDs.contains($0.accountID)
+                    && (item.accountID == nil || item.accountID == $0.accountID)
+            }
+            if item.accountID != nil && matches.count != 1 { continue }
+            for account in matches {
+                if providerID == "codex", item.accountID == nil, item.accountMode == .active,
+                    account.accountID != codexDisplayAccountID
+                {
+                    continue
+                }
+                targets[providerID, default: []].insert(account.accountID)
+            }
+        }
+        return targets
     }
 
     static func automaticItems(_ sources: [TokenMonitorFloatingBubbleAccount]) -> [TokenMonitorEdgeDockItem] {
@@ -88,7 +128,8 @@ enum TokenMonitorEdgeDockProjection {
         usage: TokenMonitorDashboardSnapshot,
         sessions: SessionIndex?,
         language: WidgetLanguage,
-        activeCodexAccountID: String?
+        activeCodexAccountID: String?,
+        historicalCodexAccountID: String? = nil
     ) -> TokenMonitorEdgeDockCell {
         let providerID = item.providerID ?? ""
         let hidden = Set(item.hiddenAccountIDs)
@@ -134,10 +175,10 @@ enum TokenMonitorEdgeDockProjection {
         // tightest known window, independently of the headline.
         // "active" is only resolved from a separately verified local account ID.
         let candidates: [(TokenMonitorEdgeDockAccountRow, TokenMonitorEdgeDockQuotaRow)] = accounts.compactMap { account in
-            // Grok is refreshed on demand. Keep its last verified percentage
-            // visible with the stale marker, just like the account page. An
-            // expired window or invalid identity remains unavailable upstream.
-            let visible = account.quotaRows.filter { $0.isAvailable && (providerID == "grok" || !$0.isStale) }
+            // Display the last verified reading for every provider. Staleness
+            // removes severity/actionability, not the historical number. Login,
+            // identity and expired-window gates still run upstream.
+            let visible = account.quotaRows.filter { $0.isAvailable }
             let headlineRows: [TokenMonitorEdgeDockQuotaRow]
             switch providerID {
             case "grok": headlineRows = visible.filter { $0.percentRemaining != nil }
@@ -151,7 +192,7 @@ enum TokenMonitorEdgeDockProjection {
         if let accountID = item.accountID {
             selected = matches.count == 1 ? candidates.first(where: { $0.0.id == accountID }) : nil
         } else if providerID == "codex" && item.accountMode == .active {
-            selected = candidates.first { $0.0.id == activeCodexAccountID }
+            selected = candidates.first { $0.0.id == (activeCodexAccountID ?? historicalCodexAccountID) }
         } else {
             selected = candidates.min { lhs, rhs in
                 // A percentage is comparable only with another percentage;
@@ -164,8 +205,11 @@ enum TokenMonitorEdgeDockProjection {
                 }
             }
         }
+        let historical =
+            providerID == "codex" && item.accountID == nil && item.accountMode == .active
+            && activeCodexAccountID == nil && selected != nil
         let severity =
-            providerID == "claude"
+            providerID == "claude" || historical
             ? nil
             : selected?.0.quotaRows
                 .filter { $0.isAvailable && !$0.isStale }
@@ -176,7 +220,7 @@ enum TokenMonitorEdgeDockProjection {
         return TokenMonitorEdgeDockCell(
             id: item.id, kind: .provider,
             title: item.accountID == nil
-                ? (matches.first?.providerName ?? providerID)
+                ? (historical ? language.text("Codex · 上次", "Codex · Last") : (matches.first?.providerName ?? providerID))
                 : (matches.first?.accountName ?? language.text("账号不可用", "Account unavailable")),
             providerID: providerID, iconID: providerID,
             headlineAccountID: selected?.0.id,
@@ -184,7 +228,7 @@ enum TokenMonitorEdgeDockProjection {
                 ? language.text("账号未匹配", "Unmatched") : selected?.1.valueLabel,
             metric: nil, percentRemaining: selected?.1.percentRemaining,
             severityRemainingPercent: severity,
-            isStale: accounts.contains { $0.isStale }
+            isStale: historical || accounts.contains { $0.isStale }
                 || (item.accountID == nil && usage.isStale && providerID != "grok" && providerID != "claude"),
             isAvailable: selected != nil,
             tokenCount: item.showUsage ? period.today.tokens : nil,
@@ -198,7 +242,9 @@ enum TokenMonitorEdgeDockProjection {
             usageMonthCostUSD: item.showUsage ? period.month.cost : nil,
             supportsLiveSessions: false,
             accountLabel: item.accountID == nil ? nil : matches.first?.accountName,
-            accountBindingMissing: item.accountID != nil && matches.isEmpty
+            accountBindingMissing: item.accountID != nil && matches.isEmpty,
+            snapshotFetchedAt: selected?.1.fetchedAt,
+            isHistoricalAccount: historical
         )
     }
 

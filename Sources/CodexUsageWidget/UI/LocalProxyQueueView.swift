@@ -109,8 +109,8 @@ struct LocalProxyQueueView: View {
             }
             Text(
                 language.text(
-                    "排序和优先标记可随时调整，新请求立即采用；正在处理的请求保持不变。关闭此面板不会停止代理。",
-                    "Order and priority can change while running. New requests use the new order; active requests stay unchanged. Closing this panel keeps the proxy running."
+                    "运行中可保存规则，新请求采用新规则，已开始的请求继续完成。关闭此面板不会停止代理。",
+                    "Rules can be saved while running. New requests use them; active requests finish. Closing this panel keeps the proxy running."
                 )
             )
             .font(.caption).foregroundStyle(.secondary)
@@ -174,12 +174,12 @@ struct LocalProxyQueueView: View {
                     creditFloorFields
                 }
             }
-            .disabled(!model.canEdit)
+            .disabled(!model.canEditPolicy)
             .controlSize(.small)
             Text(
                 language.text(
-                    "先用完所有参与账号的订阅额度，再逐档使用点数；桌面账号在这两个阶段各自最后。忙碌或额度未知不会转用点数。单次结算可能越过底线。",
-                    "Use all enrolled subscription quota before credit tiers; Desktop is last in each phase. Busy or unknown quota never enables credits. One settlement may cross a floor."
+                    "先用订阅额度，再按各账号授权逐档用点数。下方可为每个账号设置上限和底线；单次结算可能越过底线。",
+                    "Subscriptions first, then credits from authorized accounts. Set individual limits below. A single settlement may cross a credit floor."
                 )
             ).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             if parsedCreditFloors == nil && creditFloorsChanged {
@@ -194,19 +194,19 @@ struct LocalProxyQueueView: View {
 
     private var creditFallbackToggle: some View {
         Toggle(
-            language.text("点数接续", "Credit fallback"),
+            language.text("允许点数接续", "Enable credit fallback"),
             isOn: Binding(
                 get: { model.creditFallbackEnabled }, set: { model.setCreditFallback($0) }
             )
         )
-        .toggleStyle(WorkspaceCheckboxStyle()).disabled(!model.canEdit)
+        .toggleStyle(WorkspaceCheckboxStyle()).disabled(!model.canEditPolicy)
         .fixedSize()
     }
 
     private var creditFloorFields: some View {
         HStack(spacing: 10) {
-            creditFloorField(.primary, title: language.text("第一档保留", "First floor"), text: $primaryFloorText)
-            creditFloorField(.secondary, title: language.text("第二档保留", "Second floor"), text: $secondaryFloorText)
+            creditFloorField(.primary, title: language.text("默认第一档", "Default first floor"), text: $primaryFloorText)
+            creditFloorField(.secondary, title: language.text("默认第二档", "Default second floor"), text: $secondaryFloorText)
             Text(language.text("点", "points")).foregroundStyle(.secondary)
         }
         .fixedSize()
@@ -237,13 +237,13 @@ struct LocalProxyQueueView: View {
         Button(language.text("保存底线", "Save floors")) {
             saveCreditFloors()
         }
-        .disabled(!model.canEdit || !creditFloorsChanged || parsedCreditFloors == nil)
+        .disabled(!model.canEditPolicy || !creditFloorsChanged || parsedCreditFloors == nil)
         .accessibilityIdentifier("next.local-proxy.credit-save")
         .fixedSize()
     }
 
     private func saveCreditFloors() {
-        guard model.canEdit, creditFloorsChanged, let floors = parsedCreditFloors else { return }
+        guard model.canEditPolicy, creditFloorsChanged, let floors = parsedCreditFloors else { return }
         model.setCreditFloors(primary: floors.primary, secondary: floors.secondary)
     }
 
@@ -280,74 +280,21 @@ struct LocalProxyQueueView: View {
     }
 
     private func accountRow(_ row: LocalProxyQueueRow, index: Int) -> some View {
-        HStack(spacing: 8) {
-            Text(row.accountNumber.map { String(format: "%02d", $0) } ?? "—").font(.system(size: 11).monospacedDigit()).foregroundStyle(.secondary)
-                .frame(width: 24)
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 5) {
-                    Text(row.label).font(.system(size: 12, weight: .semibold)).lineLimit(1)
-                    if row.isDesktopAccount {
-                        Image(systemName: "macwindow").font(.system(size: 9)).foregroundStyle(.secondary)
-                            .help(language.text("桌面账号 · 最后使用", "Desktop account · Last resort"))
-                            .accessibilityLabel(language.text("桌面账号 · 最后使用", "Desktop account · Last resort"))
-                    }
-                    if row.isCurrent {
-                        Label(language.text("快照有请求", "Active in snapshot"), systemImage: "circle.fill")
-                            .font(.system(size: 9, weight: .medium)).foregroundStyle(.green)
-                            .help(language.text("最近活动快照", "Recent activity snapshot"))
-                            .accessibilityLabel(language.text("最近活动快照", "Recent activity snapshot"))
-                    }
-                    if row.snapshotStale {
-                        Image(systemName: "clock.arrow.circlepath")
-                            .font(.system(size: 9)).foregroundStyle(.secondary)
-                            .help(language.text("上次快照 · 待刷新", "Last snapshot · refresh needed"))
-                            .accessibilityLabel(language.text("上次快照 · 待刷新", "Last snapshot · refresh needed"))
-                    }
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Text(row.accountNumber.map { String(format: "%02d", $0) } ?? "—")
+                    .font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary)
+                Text(row.label).font(.callout.weight(.semibold)).lineLimit(1)
+                if row.isDesktopAccount {
+                    Image(systemName: "macwindow").foregroundStyle(.secondary)
+                        .help(language.text("桌面账号 · 同阶段最后使用", "Desktop account · Last within each stage"))
                 }
-                HStack(spacing: 5) {
-                    if let balance = row.creditBalance { CreditBalanceView(presentation: balance, compact: true) }
-                    Text("·")
-                    Text(
-                        row.resetCardCount.map { language.text("重置卡 \($0)", "\($0) reset cards") }
-                            ?? language.text("重置卡 —", "Reset cards —"))
+                Text(stateTitle(row)).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                if row.snapshotStale {
+                    Image(systemName: "clock.arrow.circlepath").foregroundStyle(.secondary)
+                        .help(language.text("上次快照 · 待刷新", "Last snapshot · refresh needed"))
                 }
-                .font(.system(size: 10)).foregroundStyle(.secondary)
-                if let deadline = row.cooldownUntil {
-                    HStack(spacing: 4) {
-                        Text(language.text("冷却至", "Cooldown until"))
-                        Text(deadline, style: .time)
-                    }
-                    .font(.caption).foregroundStyle(.secondary)
-                }
-                if let target = model.resetCreditTarget(for: row.id) {
-                    ResetCreditButton(
-                        profile: target.profile, selectedProfileID: target.selectedProfileID,
-                        hubAccountAlias: target.hubAccountAlias,
-                        onConfirmedResult: { model.refreshAfterResetCredit(target) },
-                        displayNumber: row.accountNumber
-                    )
-                    .fixedSize()
-                    .environment(\.widgetLanguage, language)
-                    .accessibilityIdentifier("next.local-proxy.reset-card-\(row.id)")
-                }
-            }
-            .frame(minWidth: 130, maxWidth: .infinity, alignment: .leading)
-            LazyVGrid(columns: [GridItem(.flexible(minimum: 132), alignment: .leading), GridItem(.flexible(minimum: 132), alignment: .leading)], alignment: .leading, spacing: 5) {
-                ForEach(row.windows) { window in
-                    CompactQuotaView(
-                        title: window.id, remaining: window.remaining, reset: window.resetsAt,
-                        paletteRole: window.id == "5h" ? .primary : .secondary,
-                        constrainedByWeekly: window.constrainedByWeekly, horizontalDetails: true
-                    )
-                    .frame(minWidth: 132, alignment: .leading)
-                }
-            }
-            .frame(minWidth: 272, maxWidth: 360)
-            .environment(\.widgetLanguage, language)
-            .help(row.quotaText ?? "")
-            Spacer(minLength: 0)
-            Text(stateTitle(row)).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(2).frame(width: 48)
-            VStack(alignment: .leading, spacing: 5) {
+                Spacer(minLength: 0)
                 Toggle(
                     language.text("参与", "Use"),
                     isOn: Binding(
@@ -372,33 +319,64 @@ struct LocalProxyQueueView: View {
                 )
                 .disabled(!model.canReorder || !row.isEnabled)
                 .accessibilityLabel(language.text("\(accountTitle(row)) 优先调用", "Prioritize \(accountTitle(row)) for proxy requests"))
+                HStack(spacing: 2) {
+                    Button {
+                        model.moveAccount(id: row.id, by: -1)
+                        model.flushDisplayRows()
+                    } label: {
+                        Image(systemName: "chevron.up")
+                    }
+                    .disabled(!model.canMoveAccount(id: row.id, by: -1))
+                    .accessibilityLabel(language.text("上移 \(accountTitle(row))", "Move \(accountTitle(row)) up"))
+                    Button {
+                        model.moveAccount(id: row.id, by: 1)
+                        model.flushDisplayRows()
+                    } label: {
+                        Image(systemName: "chevron.down")
+                    }
+                    .disabled(!model.canMoveAccount(id: row.id, by: 1))
+                    .accessibilityLabel(language.text("下移 \(accountTitle(row))", "Move \(accountTitle(row)) down"))
+                }.buttonStyle(WorkspaceActionButtonStyle(compact: true))
             }
-            .toggleStyle(WorkspaceCheckboxStyle())
-            .controlSize(.small)
-            .font(.caption)
-            VStack(spacing: 3) {
-                Button {
-                    model.moveAccount(id: row.id, by: -1)
-                    model.flushDisplayRows()
-                } label: {
-                    Image(systemName: "chevron.up")
+            .font(.caption).toggleStyle(WorkspaceCheckboxStyle()).controlSize(.small)
+            HStack(spacing: 14) {
+                ForEach(row.windows) { window in
+                    CompactQuotaView(
+                        title: window.id, remaining: window.remaining, reset: window.resetsAt,
+                        paletteRole: window.id == "5h" ? .primary : .secondary,
+                        constrainedByWeekly: window.constrainedByWeekly, horizontalDetails: true
+                    ).frame(minWidth: 125, maxWidth: .infinity, alignment: .leading)
                 }
-                .disabled(!model.canMoveAccount(id: row.id, by: -1))
-                .accessibilityLabel(language.text("上移 \(accountTitle(row))", "Move \(accountTitle(row)) up"))
-                Button {
-                    model.moveAccount(id: row.id, by: 1)
-                    model.flushDisplayRows()
-                } label: {
-                    Image(systemName: "chevron.down")
-                }
-                .disabled(!model.canMoveAccount(id: row.id, by: 1))
-                .accessibilityLabel(language.text("下移 \(accountTitle(row))", "Move \(accountTitle(row)) down"))
+                VStack(alignment: .trailing, spacing: 4) {
+                    if let balance = row.creditBalance { CreditBalanceView(presentation: balance, compact: true) }
+                    if let target = model.resetCreditTarget(for: row.id) {
+                        ResetCreditButton(
+                            profile: target.profile, selectedProfileID: target.selectedProfileID,
+                            hubAccountAlias: target.hubAccountAlias,
+                            onConfirmedResult: { model.refreshAfterResetCredit(target) }, displayNumber: row.accountNumber
+                        ).accessibilityIdentifier("next.local-proxy.reset-card-\(row.id)")
+                    } else {
+                        Text(row.resetCardCount.map { language.text("重置卡 \($0)", "\($0) reset cards") } ?? language.text("重置卡 —", "Reset cards —"))
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }.fixedSize()
+            }.environment(\.widgetLanguage, language).help(row.quotaText ?? "")
+            if let deadline = row.cooldownUntil, deadline > Date() {
+                HStack(spacing: 4) {
+                    Text(language.text("冷却至", "Cooldown until"))
+                    Text(deadline, style: .time)
+                }.font(.caption).foregroundStyle(.secondary)
             }
-            .buttonStyle(WorkspaceActionButtonStyle(compact: true))
+            Divider()
+            LocalProxyAccountPolicyEditor(
+                row: row, language: language, enabled: model.canEditPolicy(for: row.id),
+                globalCreditsEnabled: model.creditFallbackEnabled,
+                defaultPrimary: model.creditPrimaryFloor, defaultSecondary: model.creditSecondaryFloor,
+                save: { model.setAccountPolicy(id: row.id, policy: $0) }
+            )
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 4)
-        .background(WorkspaceGlassSurface(cornerRadius: 8))
+        .padding(10)
+        .background(WorkspaceGlassSurface(cornerRadius: 10))
         .accessibilityIdentifier("next.local-proxy.account-\(row.id)")
     }
 
@@ -425,6 +403,7 @@ struct LocalProxyQueueView: View {
         case "current": return language.text("快照有请求", "Active in snapshot")
         case "ready": return language.text("可用", "Ready")
         case "quota": return language.text("额度不足", "Limit reached")
+        case "usage_limit": return language.text("已达自定上限", "Custom limit reached")
         case "subscription_pending": return language.text("订阅额度优先", "Subscription first")
         case "login_expired": return language.text("登录已失效", "Sign-in expired")
         case "temporary_error": return language.text("暂时异常", "Temporary error")
@@ -432,5 +411,128 @@ struct LocalProxyQueueView: View {
         case "credentials_busy": return language.text("凭据读取中", "Credentials busy")
         default: return language.text("额度未知", "Limits unknown")
         }
+    }
+}
+
+private struct LocalProxyAccountPolicyEditor: View {
+    let row: LocalProxyQueueRow
+    let language: WidgetLanguage
+    let enabled: Bool
+    let globalCreditsEnabled: Bool
+    let defaultPrimary: Int
+    let defaultSecondary: Int
+    let save: (LocalProxyAccountPolicy) -> Bool
+    @State private var limit = ""
+    @State private var allowsCredits = true
+    @State private var usesDefaults = true
+    @State private var primary = ""
+    @State private var secondary = ""
+    @State private var initialized = false
+    @State private var dirty = false
+
+    private var policy: LocalProxyAccountPolicy? {
+        guard let value = Double(limit.trimmingCharacters(in: .whitespacesAndNewlines)) else { return nil }
+        let candidate = LocalProxyAccountPolicy(
+            fiveHourUsedLimit: value, allowsCredits: allowsCredits,
+            creditPrimaryFloor: usesDefaults ? nil : Int(primary), creditSecondaryFloor: usesDefaults ? nil : Int(secondary)
+        )
+        guard candidate.isValid, usesDefaults || (candidate.creditPrimaryFloor != nil && candidate.creditSecondaryFloor != nil) else { return nil }
+        return candidate
+    }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 10) {
+                Text(language.text("5 小时已用上限", "5h used limit"))
+                field("100", text: $limit, label: language.text("5 小时已用百分比上限", "Maximum 5h used percent"))
+                    .help(
+                        language.text(
+                            "低于 100% 时，到达上限便停止此账号，点数不会绕过上限。100% 时可按授权接续点数。",
+                            "Below 100%, this account stops at the limit, including credits. At 100%, authorized credit fallback remains available."))
+                Text("%")
+                Toggle(language.text("允许使用点数", "Allow credits"), isOn: $allowsCredits)
+                    .toggleStyle(WorkspaceCheckboxStyle())
+                    .help(language.text("取消后，此账号订阅额度耗尽就停止参与，不使用点数余额。", "When off, this account stops after its subscription quota is exhausted, without using credits."))
+                Spacer(minLength: 0)
+                if dirty { Text(language.text("未保存", "Unsaved")).foregroundStyle(.secondary) }
+                Button(language.text("保存规则", "Save rules")) {
+                    if let policy, save(policy) { dirty = false }
+                }.disabled(!dirty || policy == nil)
+            }
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 10) {
+                    defaultsToggle
+                    creditFloors
+                    Spacer(minLength: 0)
+                }
+                VStack(alignment: .leading, spacing: 6) {
+                    defaultsToggle
+                    creditFloors
+                }
+            }
+            if dirty && policy == nil {
+                Text(language.text("上限为 0–100%；点数底线须为整数，第一档高于第二档，第二档不小于 0。", "Use a limit of 0–100%. Credit floors must be whole points: first above second, second at least 0."))
+                    .foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+            } else if allowsCredits && !globalCreditsEnabled {
+                Text(language.text("点数总开关未开启，此账号当前仅用订阅额度。", "Credit fallback is off above. This account currently uses subscription quota only."))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .font(.caption).controlSize(.small).disabled(!enabled)
+        .onAppear {
+            if !initialized {
+                resetDrafts()
+                initialized = true
+            }
+        }
+        .onChange(of: row.policy) { _ in if !dirty { resetDrafts() } }
+        .onChange(of: row.usesDefaultCreditFloors) { _ in if !dirty { resetDrafts() } }
+        .onChange(of: limit) { _ in markDirty() }
+        .onChange(of: allowsCredits) { _ in markDirty() }
+        .onChange(of: usesDefaults) { _ in markDirty() }
+        .onChange(of: primary) { _ in markDirty() }
+        .onChange(of: secondary) { _ in markDirty() }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(language.text("\(row.label) 的反代规则", "Proxy rules for \(row.label)"))
+    }
+    private var defaultsToggle: some View {
+        Toggle(language.text("沿用默认点数底线", "Use default credit floors"), isOn: $usesDefaults)
+            .toggleStyle(WorkspaceCheckboxStyle()).fixedSize()
+    }
+    private var creditFloors: some View {
+        HStack(spacing: 6) {
+            Text(language.text("保留", "Keep"))
+            if usesDefaults {
+                Text("\(defaultPrimary) / \(defaultSecondary)").monospacedDigit().foregroundStyle(.secondary)
+            } else {
+                field("2000", text: $primary, label: language.text("第一档保留点数", "First credit floor"))
+                Text("/")
+                field("1500", text: $secondary, label: language.text("第二档保留点数", "Second credit floor"))
+            }
+            Text(language.text("点（第一档 / 第二档）", "points (first / second)"))
+                .foregroundStyle(.secondary)
+        }.fixedSize()
+    }
+    private func field(_ placeholder: String, text: Binding<String>, label: String) -> some View {
+        TextField(placeholder, text: text).textFieldStyle(.roundedBorder)
+            .font(.system(.caption, design: .monospaced)).frame(width: 64)
+            .accessibilityLabel(label)
+    }
+    private func resetDrafts() {
+        let savedLimit = row.policy.fiveHourUsedLimit
+        limit = savedLimit.rounded() == savedLimit ? String(Int(savedLimit)) : String(savedLimit)
+        allowsCredits = row.policy.allowsCredits
+        usesDefaults = row.usesDefaultCreditFloors
+        primary = String(row.policy.creditPrimaryFloor ?? defaultPrimary)
+        secondary = String(row.policy.creditSecondaryFloor ?? defaultSecondary)
+        dirty = false
+    }
+    private func markDirty() {
+        guard initialized else { return }
+        var saved = row.policy
+        if row.usesDefaultCreditFloors {
+            saved.creditPrimaryFloor = nil
+            saved.creditSecondaryFloor = nil
+        }
+        dirty = policy != saved
     }
 }

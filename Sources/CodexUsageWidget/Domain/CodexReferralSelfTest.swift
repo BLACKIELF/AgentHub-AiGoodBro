@@ -5,11 +5,14 @@ enum CodexReferralSelfTest {
     private final class Transport: TokenMonitorHTTPTransport {
         var requests: [URLRequest] = []
         var replies: [Result<TokenMonitorHTTPResponse, Error>]
+        var onRequest: ((URLRequest) async -> Void)?
         init(_ replies: [Result<TokenMonitorHTTPResponse, Error>]) { self.replies = replies }
         func send(_ request: URLRequest, maximumResponseBytes: Int) async throws -> TokenMonitorHTTPResponse {
             requests.append(request)
             guard maximumResponseBytes == 1_048_576, !replies.isEmpty else { throw CodexReferralFailure.network }
-            return try replies.removeFirst().get()
+            let reply = replies.removeFirst()
+            if let onRequest { await onRequest(request) }
+            return try reply.get()
         }
         var postCount: Int { requests.filter { $0.httpMethod == "POST" }.count }
     }
@@ -29,9 +32,17 @@ enum CodexReferralSelfTest {
         return result
     }
 
+    private nonisolated static func waitForGate(_ semaphore: DispatchSemaphore) -> Bool {
+        semaphore.wait(timeout: .now() + 1) == .success
+    }
+
     static func run() async -> Bool {
         var failures: [String] = []
-        func expect(_ value: Bool, _ name: String) { if !value { failures.append(name) } }
+        var checks = 0
+        func expect(_ value: Bool, _ name: String) {
+            checks += 1
+            if !value { failures.append(name) }
+        }
         func eligibility(_ object: [String: Any]) throws -> CodexReferralEligibility {
             try JSONDecoder().decode(CodexReferralEligibility.self, from: JSONSerialization.data(withJSONObject: object))
         }
@@ -77,6 +88,51 @@ enum CodexReferralSelfTest {
             for value in ["", "a@b", "a@example.invalid\nb@example.invalid", "a@example.invalid,b@example.invalid", "a@example.invalid\r\nX: injected"] {
                 expect(CodexReferralPresentation.email(value) == nil, "invalid recipient rejected")
             }
+            let recipients = CodexReferralRecipients.parse(" A@example.invalid，b@example.invalid; a@example.invalid\nc@example.invalid d@example.invalid ")
+            expect(
+                recipients.emails == ["A@example.invalid", "b@example.invalid", "c@example.invalid", "d@example.invalid"] && recipients.duplicateCount == 1,
+                "batch separators and case-insensitive deduplication")
+            expect(recipients.canSend(capacity: 4) && !recipients.canSend(capacity: 3), "batch obeys current official capacity")
+            expect(!CodexReferralRecipients.parse("bad;good@example.invalid").canSend(capacity: 5), "invalid address blocks entire draft before dispatch")
+            expect(
+                !CodexReferralRecipients.parse((1...6).map { "friend\($0)@example.invalid" }.joined(separator: ",")).canSend(capacity: 99), "batch never exceeds five recipients")
+            expect(CodexReferralRecipients.parse(String(repeating: "a", count: 4097)).tooLong, "batch input bound")
+            let page = try CodexReferralPage.parse(
+                JSONSerialization.data(withJSONObject: [
+                    "items": [
+                        ["referral_id": "accepted", "email": "accepted@example.invalid", "status": "redeemed"],
+                        ["referral_id": "pending", "email": "pending@example.invalid", "status": "pending"],
+                        ["referral_id": "future", "status": "new_server_status"],
+                    ], "cursor": "page-2",
+                ]))
+            expect(page.items.map(\.status) == [.redeemed, .pending, .unknown] && page.cursor == "page-2", "official acceptance and unknown status remain distinct")
+            for invalidPage in [
+                ["items": [["referral_id": "duplicate"], ["referral_id": "duplicate"]]],
+                ["items": [], "cursor": "unsafe\nvalue"], ["items": "not-an-array"],
+            ] as [[String: Any]] {
+                do {
+                    _ = try CodexReferralPage.parse(JSONSerialization.data(withJSONObject: invalidPage))
+                    failures.append("invalid history accepted")
+                } catch { checks += 1 }
+            }
+            let batchEmails = ["first@example.invalid", "second@example.invalid", "third@example.invalid"]
+            let partialData = try JSONSerialization.data(withJSONObject: [
+                "invites": [["referral_id": "batch-first", "email": batchEmails[0]]], "failed_emails": [batchEmails[1]],
+            ])
+            let partial = try CodexReferralBatchResult.parse(partialData, recipients: batchEmails)
+            expect(
+                partial.sent == [batchEmails[0]] && partial.failed == [batchEmails[1]] && partial.uncertain == [batchEmails[2]], "partial success preserves every recipient outcome"
+            )
+            for invalidAck in [
+                ["invites": [["referral_id": "no-email"]]],
+                ["invites": [["referral_id": "wrong", "email": "outside@example.invalid"]]],
+                ["invites": [["referral_id": "overlap", "email": batchEmails[0]]], "failed_emails": [batchEmails[0]]],
+            ] as [[String: Any]] {
+                do {
+                    _ = try CodexReferralBatchResult.parse(JSONSerialization.data(withJSONObject: invalidAck), recipients: batchEmails)
+                    failures.append("ambiguous batch acknowledgement accepted")
+                } catch { expect(error as? CodexReferralFailure == .deliveryUncertain, "ambiguous acknowledgement remains uncertain") }
+            }
             expect(!CodexReferralPresentation.publicText("account sender@example.invalid").contains("sender@example.invalid"), "public text masks emails")
             let context = try CodexReferralContext.parse(JSONSerialization.data(withJSONObject: accounts), accountID: credential.accountID)
             expect(context.programID == "codex_referral_consumer", "matches selected account structure")
@@ -93,6 +149,33 @@ enum CodexReferralSelfTest {
             expect(post.value(forHTTPHeaderField: "ChatGPT-Account-Id") == credential.accountID, "bound account header")
             expect(transport.requests.allSatisfy { $0.value(forHTTPHeaderField: "OpenAI-Internal-Referral-Eligibility-Preview") == nil }, "no eligibility preview override")
 
+            let batchTransport = Transport([response(accounts), response(offer()), .success(TokenMonitorHTTPResponse(statusCode: 200, body: partialData))])
+            let batchClient = CodexReferralClient(transport: batchTransport, readCredential: read, validateNetwork: { nil })
+            let batchReply = try await batchClient.sendBatch(account, reviewed: initial, emails: batchEmails, consent: true, language: .zh, currentAccount: { account })
+            expect(batchReply == partial && batchTransport.postCount == 1, "one POST handles entire batch without replay")
+            let batchBody = try JSONSerialization.jsonObject(with: batchTransport.requests.last!.httpBody!) as! [String: Any]
+            expect(batchBody["emails"] as? [String] == batchEmails, "batch request preserves all recipients")
+            let rejected = Transport([
+                response(accounts), response(offer()), response(["detail": ["failed_emails": [batchEmails[1]]]], status: 400),
+            ])
+            let rejectedResult = try await CodexReferralClient(transport: rejected, readCredential: read, validateNetwork: { nil })
+                .sendBatch(account, reviewed: initial, emails: batchEmails, consent: true, language: .en, currentAccount: { account })
+            expect(
+                rejectedResult.sent.isEmpty && rejectedResult.failed == [batchEmails[1]] && rejectedResult.uncertain == [batchEmails[0], batchEmails[2]]
+                    && rejected.postCount == 1,
+                "official rejected-recipient detail never implies delivery for other addresses")
+            for invalid in [["outside@example.invalid"], [batchEmails[0], batchEmails[0]]] {
+                do {
+                    _ = try CodexReferralBatchResult.parseRejection(JSONSerialization.data(withJSONObject: ["detail": ["failed_emails": invalid]]), recipients: batchEmails)
+                    failures.append("invalid rejected-recipient detail accepted")
+                } catch { expect(error as? CodexReferralFailure == .deliveryUncertain, "invalid rejection detail remains uncertain") }
+            }
+            let shrinking = Transport([response(accounts), response(offer(send: 1))])
+            do {
+                _ = try await CodexReferralClient(transport: shrinking, readCredential: read, validateNetwork: { nil })
+                    .sendBatch(account, reviewed: initial, emails: batchEmails, consent: true, language: .en, currentAccount: { account })
+                failures.append("shrinking capacity accepted")
+            } catch { expect(error as? CodexReferralFailure == .capacityReached && shrinking.postCount == 0, "fresh capacity prevents oversized batch before POST") }
             func blocked(
                 _ name: String, expected: CodexReferralFailure, replies: [Result<TokenMonitorHTTPResponse, Error>], consent: Bool = true, email: String = "friend@example.invalid",
                 resolve: @escaping @MainActor () throws -> CodexReferralAccount = { account }
@@ -138,6 +221,18 @@ enum CodexReferralSelfTest {
                 try await CodexReferralClient(transport: tracking, readCredential: read, validateNetwork: { nil })
                     .recorded(account, context: context, email: "friend@example.invalid", language: .zh), "read-only reconciliation")
             expect(tracking.postCount == 0 && tracking.requests.first?.url?.path == "/backend-api/referrals/invite/tracking", "tracking does not resend")
+            let rotatingHistory = Transport([response(accounts), response(["items": []])])
+            var historyCredentialReads = 0
+            let historyRotationClient = CodexReferralClient(
+                transport: rotatingHistory,
+                readCredential: { _, _ in
+                    historyCredentialReads += 1
+                    return CodexReferralCredentialReader.Value(
+                        token: historyCredentialReads == 1 ? "fixture-before" : "fixture-after", accountID: credential.accountID, data: credential.data)
+                }, validateNetwork: { nil })
+            _ = try await historyRotationClient.historyPage(account, period: .thisMonth, language: .en)
+            expect(
+                rotatingHistory.requests.last?.value(forHTTPHeaderField: "Authorization") == "Bearer fixture-after", "history uses same-account rotated token after account check")
 
             func finish(_ controller: CodexInviteController) async {
                 let deadline = Date().addingTimeInterval(2)
@@ -170,6 +265,57 @@ enum CodexReferralSelfTest {
             await finish(afterController)
             expect(afterDispatch.postCount == 1 && afterController.uncertainEmail != nil, "post-dispatch failure remains uncertain")
 
+            let historyTransport = Transport([
+                response(accounts), response(offer()), response(["items": [["referral_id": "a", "email": "a@example.invalid", "status": "pending"]], "cursor": "next"]),
+            ])
+            let historyController = CodexInviteController(client: CodexReferralClient(transport: historyTransport, readCredential: read, validateNetwork: { nil }))
+            historyController.load(account: account, resolve: { account }, language: .en)
+            await finish(historyController)
+            func finishHistory(_ controller: CodexInviteController) async {
+                let deadline = Date().addingTimeInterval(2)
+                while controller.isHistoryLoading, Date() < deadline { try? await Task.sleep(nanoseconds: 5_000_000) }
+                expect(!controller.isHistoryLoading, "history fixture completes")
+            }
+            historyController.loadHistory(account: account, resolve: { account }, period: .thisMonth, language: .en)
+            await finishHistory(historyController)
+            let historyQuery = URLComponents(url: historyTransport.requests.last!.url!, resolvingAgainstBaseURL: false)!.queryItems!
+            expect(
+                historyQuery.contains(URLQueryItem(name: "period", value: "this_month")) && historyQuery.contains(URLQueryItem(name: "limit", value: "100")),
+                "history uses official period and page size")
+            historyTransport.replies.append(
+                response(["items": [["referral_id": "a", "email": "a@example.invalid", "status": "redeemed"], ["referral_id": "b", "status": "expired"]]]))
+            historyController.loadHistory(account: account, resolve: { account }, period: .thisMonth, more: true, language: .en)
+            await finishHistory(historyController)
+            expect(
+                historyController.records.count == 2 && historyController.records.first?.status == .redeemed && historyController.historyCursor == nil,
+                "pagination merges by official ID and updates acceptance")
+            historyTransport.replies.append(.failure(CodexReferralFailure.network))
+            historyController.loadHistory(account: account, resolve: { account }, period: .thisMonth, language: .en)
+            await finishHistory(historyController)
+            expect(historyController.records.count == 2 && historyController.historyNotice != nil, "failed refresh retains last verified history with error")
+            historyTransport.replies.append(response(["items": [["referral_id": "stale-period"]]]))
+            historyTransport.replies.append(response(["items": [["referral_id": "current-period"]]]))
+            historyTransport.onRequest = { request in
+                if request.url?.query?.contains("past_90_days") == true { try? await Task.sleep(nanoseconds: 80_000_000) }
+            }
+            let periodRequestCount = historyTransport.requests.count + 1
+            historyController.loadHistory(account: account, resolve: { account }, period: .past90Days, language: .en)
+            for _ in 0..<200 where historyTransport.requests.count < periodRequestCount { try? await Task.sleep(nanoseconds: 1_000_000) }
+            historyController.loadHistory(account: account, resolve: { account }, period: .thisMonth, language: .en)
+            await finishHistory(historyController)
+            try? await Task.sleep(nanoseconds: 100_000_000)
+            expect(
+                historyController.records.map(\.id) == ["current-period"] && historyController.historyPeriod == .thisMonth, "late cancelled period never overwrites current list")
+            afterDispatch.replies.append(response(["items": [["referral_id": "confirmed", "email": "friend@example.invalid"]]]))
+            afterDispatch.onRequest = { _ in try? await Task.sleep(nanoseconds: 80_000_000) }
+            let confirmationRequestCount = afterDispatch.requests.count + 1
+            afterController.checkRecord(account: account, resolve: { account }, language: .en)
+            for _ in 0..<200 where afterDispatch.requests.count < confirmationRequestCount { try? await Task.sleep(nanoseconds: 1_000_000) }
+            afterController.close()
+            try? await Task.sleep(nanoseconds: 100_000_000)
+            expect(
+                !afterController.isConfirming && afterController.uncertainEmail != nil && afterDispatch.postCount == 1,
+                "closing confirmation prevents late state changes and never resends")
             func token(_ claims: [String: Any]) throws -> String {
                 let bytes = try JSONSerialization.data(withJSONObject: claims)
                 let payload = bytes.base64EncodedString().replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")
@@ -184,6 +330,38 @@ enum CodexReferralSelfTest {
                 ]
             ])
             expect(try CodexReferralCredentialReader.validate(valid, profile: profile, now: now).accountID == "fixture-account", "valid recorded identity")
+            let credentialFolder = FileManager.default.temporaryDirectory.appendingPathComponent("referral-fixture-" + UUID().uuidString).resolvingSymlinksInPath()
+            try FileManager.default.createDirectory(at: credentialFolder, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            defer { try? FileManager.default.removeItem(at: credentialFolder) }
+            let credentialFile = credentialFolder.appendingPathComponent("auth.json")
+            try valid.write(to: credentialFile)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: credentialFile.path)
+            let gateEntered = DispatchSemaphore(value: 0)
+            let gateRelease = DispatchSemaphore(value: 0)
+            let gateFinished = DispatchSemaphore(value: 0)
+            DispatchQueue.global().async {
+                CodexCredentialAccessGate.lock.lock()
+                gateEntered.signal()
+                _ = gateRelease.wait(timeout: .now() + 5)
+                CodexCredentialAccessGate.lock.unlock()
+                gateFinished.signal()
+            }
+            expect(await Task.detached { waitForGate(gateEntered) }.value, "quota refresh gate fixture entered")
+            let readStarted = ProcessInfo.processInfo.systemUptime
+            let independent = try CodexReferralCredentialReader.readSnapshot(home: credentialFolder, profile: profile, now: now)
+            expect(independent.accountID == "fixture-account" && ProcessInfo.processInfo.systemUptime - readStarted < 0.5, "invitation read is independent of quota refresh locks")
+            gateRelease.signal()
+            expect(await Task.detached { waitForGate(gateFinished) }.value, "quota refresh gate fixture released")
+            var rotatedClaims = accessClaims
+            rotatedClaims["exp"] = now.timeIntervalSince1970 + 7200
+            let rotated = try JSONSerialization.data(withJSONObject: [
+                "tokens": ["account_id": "fixture-account", "access_token": try token(rotatedClaims), "id_token": try token(identity)]
+            ])
+            try rotated.write(to: credentialFile, options: .atomic)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: credentialFile.path)
+            expect(
+                try CodexReferralCredentialReader.readSnapshot(home: credentialFolder, profile: profile, now: now, expectedData: valid).data == rotated,
+                "same-identity token rotation preserves invitation eligibility")
             var changed = profile
             changed.lastSnapshot = nil
             do {
@@ -216,11 +394,14 @@ enum CodexReferralSelfTest {
             defaults.set(HomeResetMessageOrder.announcementsFirst.rawValue, forKey: HomeResetMessageOrder.storageKey)
             expect(
                 HomeResetMessageOrder(rawValue: UserDefaults(suiteName: suite)!.string(forKey: HomeResetMessageOrder.storageKey) ?? "") == .announcementsFirst, "layout persists")
-        } catch { failures.append("fixture setup or success path failed") }
+        } catch {
+            let category = (error as? CodexReferralFailure).map { String(describing: $0) } ?? "fixture-error"
+            failures.append("fixture setup or success path failed after \(checks) checks (\(category))")
+        }
         failures.forEach { print("Referral self-test FAILED: \($0)") }
         print(
             failures.isEmpty
-                ? "Referral self-test passed: rewards, consent, identity, bounded single send, unknown delivery, reconciliation and saved reset layout"
+                ? "Referral self-test passed: \(checks) checks; rewards, batches, official history, lifecycle, independent credential reads, consent and identity"
                 : "Referral self-test failed")
         return failures.isEmpty
     }

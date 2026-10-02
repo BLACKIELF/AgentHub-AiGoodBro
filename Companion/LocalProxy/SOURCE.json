@@ -1,6 +1,6 @@
 {
   "component": "AiGoodBro Local Proxy",
-  "version": "0928v1",
+  "version": "1003v1",
   "upstream": "https://github.com/router-for-me/CLIProxyAPI",
   "upstreamVersion": "v8.0.2",
   "upstreamCommit": "4a2c81864f31f39308e946c4c65e72147855da6e",
@@ -11,7 +11,15 @@
   "dependencyNotices": "THIRD-PARTY-NOTICES.txt",
   "goVersionMinimum": "1.26.0",
   "runtimeDependencies": [],
-  "sourceModifications": "No upstream edits; standalone Go SDK adapter in this directory.",
+  "sourceModifications": "No upstream module edits; the host adapter in images.go narrowly maps CLIProxyAPI v8.0.2's synchronous first-frame Codex EOF sentinel to a retryable 502, following v8.0.7 commit 9e71c20d016960cd47bb8532a16fcf1f16f5fff3.",
+  "hostAdaptations": [
+    {
+      "upstreamReference": "https://github.com/router-for-me/CLIProxyAPI/commit/9e71c20d016960cd47bb8532a16fcf1f16f5fff3",
+      "behavior": "Convert only a nil stream result carrying v8.0.2's exact request-timeout EOF sentinel into a 502 so the auth manager can try another admitted account.",
+      "guard": "An ordinary HTTP 408 response, non-matching error, or already-started stream is passed through unchanged.",
+      "validation": "Synthetic loopback HTTP 200 empty-stream failover and single-account HTTP 408 preservation tests; go test -race and go vet."
+    }
+  ],
   "desktopAdapterReference": {
     "url": "https://github.com/dredozubov/hazmat/blob/c112d222bb53e888dd17a8927927286792f7c20e/scripts/check-codex-desktop-attach-smoke.sh",
     "use": "CODEX_CLI_PATH stdio wrapper pattern; no Hazmat sandbox or server is included.",

@@ -80,8 +80,8 @@ struct TaskOverviewPanelView: View {
         VStack(spacing: 9) {
             HStack(spacing: 8) {
                 metric(
-                    value: presentation.needsAttentionCount,
-                    label: model.language.text("待处理", "Needs action"),
+                    value: attentionCount(presentation),
+                    label: model.language.text("需关注", "Needs attention"),
                     tint: .orange
                 )
                 metric(
@@ -227,9 +227,13 @@ struct TaskOverviewPanelView: View {
 
     private func summaryText(_ presentation: TaskOverviewPresentation) -> String {
         model.language.text(
-            "待处理 \(presentation.needsAttentionCount) · 运行 \(presentation.runningCount) · 结束 \(presentation.recentlyEndedCount)",
-            "\(presentation.needsAttentionCount) action · \(presentation.runningCount) running · \(presentation.recentlyEndedCount) ended"
+            "需关注 \(attentionCount(presentation)) · 运行 \(presentation.runningCount) · 结束 \(presentation.recentlyEndedCount)",
+            "\(attentionCount(presentation)) need attention · \(presentation.runningCount) running · \(presentation.recentlyEndedCount) ended"
         )
+    }
+
+    private func attentionCount(_ presentation: TaskOverviewPresentation) -> Int {
+        model.workbench?.attentionCount ?? presentation.needsAttentionCount
     }
 
     private func stateLabel(_ state: TaskOverviewItemState) -> String {

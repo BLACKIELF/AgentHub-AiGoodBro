@@ -42,6 +42,36 @@ type imageExecutor struct {
 	baseURL    string
 }
 
+const codexIncompleteBootstrapMessage = "stream error: stream disconnected before completion: stream closed before response.completed"
+
+// CLIProxyAPI v8.0.2 labels a clean EOF before the first SSE frame as a
+// request-scoped 408, which prevents the manager from trying another account.
+// Match only that synchronous, pre-bootstrap sentinel; HTTP 408 responses and
+// errors after the stream starts retain their upstream behavior.
+// Keep this error without IsRequestScoped: Manager treats that interface as a
+// client request fault and stops account rotation, while this is an upstream
+// gateway failure that should be eligible for the next admitted account.
+type emptyBootstrapError struct{}
+
+func (emptyBootstrapError) Error() string   { return "upstream stream closed before first payload" }
+func (emptyBootstrapError) StatusCode() int { return http.StatusBadGateway }
+
+func isEmptyCodexBootstrapEOF(result *executor.StreamResult, err error) bool {
+	if result != nil || err == nil || err.Error() != codexIncompleteBootstrapMessage {
+		return false
+	}
+	status, ok := err.(interface{ StatusCode() int })
+	return ok && status.StatusCode() == http.StatusRequestTimeout
+}
+
+func (e *imageExecutor) ExecuteStream(ctx context.Context, a *auth.Auth, request executor.Request, opts executor.Options) (*executor.StreamResult, error) {
+	result, err := e.CodexExecutor.ExecuteStream(ctx, a, request, opts)
+	if isEmptyCodexBootstrapEOF(result, err) {
+		return nil, emptyBootstrapError{}
+	}
+	return result, err
+}
+
 func (e *imageExecutor) Execute(ctx context.Context, a *auth.Auth, request executor.Request, opts executor.Options) (executor.Response, error) {
 	if opts.Alt != "/images/generations" && opts.Alt != "/images/edits" {
 		return e.CodexExecutor.Execute(ctx, a, request, opts)

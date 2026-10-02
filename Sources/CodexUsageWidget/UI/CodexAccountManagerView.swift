@@ -738,7 +738,7 @@ struct CodexAccountManagerView: View {
             )
         ) {
             if store.forcedAccountSwitchProfileID != nil {
-                Button(language.text("强制切换", "Force switch"), role: .destructive) {
+                Button(language.text("确认继续切换", "Switch anyway"), role: .destructive) {
                     store.confirmForcedAccountSwitch()
                 }
             }
@@ -2666,12 +2666,6 @@ struct CodexAccountManagerView: View {
                 }
             } actions: {
                 HStack(spacing: 8) {
-                    Button(action: { store.refreshQuotas() }) {
-                        Image(systemName: "arrow.clockwise").frame(width: 24, height: 24).contentShape(Rectangle())
-                    }
-                    .buttonStyle(.borderless).disabled(store.isRefreshing)
-                    .help(language.text("刷新额度", "Refresh limits"))
-                    .accessibilityLabel(language.text("刷新额度", "Refresh limits"))
                     accountOrderButton
                     accountLayoutPicker
                     if isEditingProfiles {
@@ -2680,6 +2674,19 @@ struct CodexAccountManagerView: View {
                             directReorder.cancel()
                         }.buttonStyle(.bordered)
                     }
+                    Button(action: { store.refreshAllAccountQuotas() }) {
+                        Group {
+                            if store.isRefreshingAccountQuotas {
+                                ProgressView().controlSize(.small)
+                            } else {
+                                Image(systemName: "arrow.clockwise")
+                            }
+                        }.frame(width: 24, height: 24).contentShape(Rectangle())
+                    }
+                    .buttonStyle(.borderless).disabled(!store.canRefreshAllAccountQuotas)
+                    .help(language.text("刷新全部 Codex 账号额度", "Refresh limits for all Codex accounts"))
+                    .accessibilityLabel(language.text("刷新全部 Codex 账号额度", "Refresh limits for all Codex accounts"))
+                    .accessibilityIdentifier("next.accounts.refresh-all")
                     Button {
                         _ = store.addProfile()
                     } label: {
@@ -2853,6 +2860,7 @@ struct CodexAccountManagerView: View {
                 resetCreditExpiries: store.resetCreditExpiries(for: profile),
                 resetCardsExpiring: codexCardExpiring(profile, now: now),
                 localResetHistoryCount: store.localResetHistoryCount(for: profile),
+                proxyParticipation: localProxy.displayRows.first(where: { $0.id == profile.id }).map(\.isEnabled),
                 chromeProfiles: store.availableChromeProfiles,
                 onMonitor: { store.selectMonitorProfile(profile.id) },
                 onRefresh: { store.refreshProfile(profile.id) },
@@ -2881,6 +2889,10 @@ struct CodexAccountManagerView: View {
                 },
                 onSetDispatchParticipationWindow: {
                     store.setDispatchParticipationWindow($0, for: profile.id)
+                },
+                onSetProxyParticipation: { enabled in
+                    localProxy.setAccountEnabled(id: profile.id, enabled: enabled)
+                    localProxy.flushDisplayRows()
                 },
                 onSetProTierMultiplier: { store.setProTierMultiplier($0, for: profile.id) },
                 onSetExecutionPreference: { preference, applyToAll in
@@ -4005,7 +4017,7 @@ struct CodexAccountMenuView: View {
             )
         ) {
             if store.forcedAccountSwitchProfileID != nil {
-                Button(language.text("强制切换", "Force switch"), role: .destructive) {
+                Button(language.text("确认继续切换", "Switch anyway"), role: .destructive) {
                     store.confirmForcedAccountSwitch()
                 }
             }
@@ -5686,6 +5698,10 @@ private struct ProfileRow: View {
     let resetCreditExpiries: [Date]
     let resetCardsExpiring: Bool
     let localResetHistoryCount: Int
+    /// Nil means this account is not currently eligible for the proxy queue.
+    /// It stays distinct from an explicit opt-out so the card never presents
+    /// a false participation state before identity verification.
+    let proxyParticipation: Bool?
     let chromeProfiles: [ChromeProfileBinding]
     let onMonitor: () -> Void
     let onRefresh: () -> Void
@@ -5697,6 +5713,7 @@ private struct ProfileRow: View {
     let onSetAutomaticSwitchParticipation: (Bool) -> Void
     let onSetDispatchPriority: (Bool) -> Void
     let onSetDispatchParticipationWindow: (DispatchParticipationWindow) -> Bool
+    let onSetProxyParticipation: ((Bool) -> Void)?
     let onSetProTierMultiplier: (Int?) -> Void
     let onSetExecutionPreference: (CodexExecutionPreference, Bool) -> Result<Void, Error>
     let onRename: (String) -> Result<Void, Error>
@@ -5883,6 +5900,14 @@ private struct ProfileRow: View {
 
     private var compactHeaderActions: some View {
         HStack(spacing: 1) {
+            Button {
+                isShowingModel = true
+            } label: {
+                Image(systemName: "slider.horizontal.3").frame(width: 26, height: 26)
+            }
+            .disabled(profile.isSystemProfile)
+            .help(language.text("模型设置", "Model settings"))
+            .accessibilityLabel(language.text("模型设置", "Model settings"))
             Button(action: onRefresh) {
                 Image(systemName: isRefreshingProfile ? "hourglass" : "arrow.clockwise").frame(width: 26, height: 26)
             }
@@ -5898,8 +5923,8 @@ private struct ProfileRow: View {
             .help(language.text("切换到桌面", "Switch Desktop"))
             .accessibilityLabel(isCurrentCodexAccount ? language.text("当前桌面账号", "Current Desktop account") : language.text("切换到桌面", "Switch Desktop"))
             Menu {
-                Button(language.text("账号资料与暖号详情", "Account and warm-up details")) { isShowingDetails = true }
                 Button(language.text("模型设置", "Model settings")) { isShowingModel = true }.disabled(profile.isSystemProfile)
+                Button(language.text("账号资料与暖号详情", "Account and warm-up details")) { isShowingDetails = true }
                 Button(language.text("参与调度时间段", "Dispatch hours")) {
                     dispatchWindowDraft = profile.dispatchParticipationWindow ?? .init()
                     isEditingDispatchWindow = true
@@ -5939,10 +5964,26 @@ private struct ProfileRow: View {
 
     private var compactDispatchControls: some View {
         HStack(spacing: 7) {
-            Toggle(language.text("参与", "In pool"), isOn: Binding(get: { participatesInAutomaticSwitch }, set: onSetAutomaticSwitchParticipation))
-                .help(language.text("参与调度；不影响额度刷新和暖号", "Join dispatch; quota refresh and warm-up are independent"))
-                .accessibilityLabel(language.text("参与调度", "Dispatch participation"))
-            Toggle(language.text("优先", "Priority"), isOn: Binding(get: { prioritizesDispatch }, set: onSetDispatchPriority))
+            if let proxyParticipation, let onSetProxyParticipation {
+                Toggle(
+                    language.text("反代", "Proxy"),
+                    isOn: Binding(get: { proxyParticipation }, set: onSetProxyParticipation)
+                )
+                .help(
+                    language.text(
+                        "让这个账号参与本地反代的新请求；已开始的请求不受影响",
+                        "Use this account for new local-proxy requests; active requests are unchanged"
+                    )
+                )
+                .accessibilityLabel(language.text("参与反代", "Use for proxy requests"))
+            }
+            Toggle(
+                language.text("调度", "Auto"),
+                isOn: Binding(get: { participatesInAutomaticSwitch }, set: onSetAutomaticSwitchParticipation)
+            )
+            .help(language.text("参与调度；不影响额度刷新和暖号", "Join dispatch; quota refresh and warm-up are independent"))
+            .accessibilityLabel(language.text("参与调度", "Dispatch participation"))
+            Toggle(language.text("优先", "First"), isOn: Binding(get: { prioritizesDispatch }, set: onSetDispatchPriority))
                 .foregroundStyle(prioritizesDispatch ? Color.red : Color.secondary)
                 .accessibilityLabel(language.text("优先标记", "Dispatch priority"))
             Spacer(minLength: 0)

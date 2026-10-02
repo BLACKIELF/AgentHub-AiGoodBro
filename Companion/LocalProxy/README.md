@@ -1,6 +1,6 @@
-# AiGoodBro Local Proxy · 0930v2
+# AiGoodBro Local Proxy · 1003v1
 
-Optional macOS sidecar, using CLIProxyAPI v8.0.2 commit recorded in SOURCE.json. It embeds the auth scheduler, Codex HTTP executor and Responses handlers, not the upstream service. It does not start OAuth refresh, plugins, watchers, management routes, service discovery, model updaters, login or account switching.
+Optional macOS sidecar, using CLIProxyAPI v8.0.2 commit recorded in SOURCE.json. It embeds the auth scheduler, Codex HTTP executor and Responses handlers, not the upstream service. A narrow host adapter maps only v8.0.2's synchronous first-frame clean EOF sentinel to retryable 502 behavior from [CLIProxyAPI v8.0.7](https://github.com/router-for-me/CLIProxyAPI/commit/9e71c20d016960cd47bb8532a16fcf1f16f5fff3); ordinary HTTP 408 responses and started streams are unchanged. It does not start OAuth refresh, plugins, watchers, management routes, service discovery, model updaters, login or account switching.
 
 Build from this directory with Go 1.26 or later:
 

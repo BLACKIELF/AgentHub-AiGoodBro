@@ -91,6 +91,7 @@ struct HomeCodexAccountSummary: View {
                 balanceSummary
             }
             quotas
+            quotaFreshness
         }
     }
 
@@ -128,7 +129,10 @@ struct HomeCodexAccountSummary: View {
                 balanceSummary
             }
             .frame(minWidth: 300, maxWidth: .infinity, alignment: .leading)
-            quotas.frame(minWidth: 320, maxWidth: 360)
+            VStack(alignment: .leading, spacing: 3) {
+                quotas
+                quotaFreshness
+            }.frame(minWidth: 320, maxWidth: 360)
         }
     }
 
@@ -162,9 +166,7 @@ struct HomeCodexAccountSummary: View {
                         )
                         .frame(width: 5, height: 5)
                     Text(accountStatus).lineLimit(1)
-                    if profile.lastQuotaReadFailureAt != nil
-                        || profile.lastSnapshot.map({ currentDate.timeIntervalSince($0.fetchedAt) > 1_800 }) == true
-                    {
+                    if snapshotHealth == .failed || snapshotHealth == .stale {
                         Image(systemName: "clock.arrow.circlepath")
                             .foregroundStyle(FixedVisualPalette.statusWarningForeground(colorScheme))
                             .help(language.text("显示上次额度快照", "Showing last usage snapshot"))
@@ -256,9 +258,7 @@ struct HomeCodexAccountSummary: View {
                     .foregroundStyle(FixedVisualPalette.statusWarningForeground(colorScheme))
                     .font(.system(size: 10))
                     .help(accountStatus).accessibilityLabel(accountStatus)
-            } else if profile.lastQuotaReadFailureAt != nil
-                || profile.lastSnapshot.map({ currentDate.timeIntervalSince($0.fetchedAt) > 1_800 }) == true
-            {
+            } else if snapshotHealth == .failed || snapshotHealth == .stale {
                 Image(systemName: "clock.arrow.circlepath")
                     .foregroundStyle(.secondary).font(.system(size: 10))
                     .help(language.text("显示上次额度快照", "Showing last usage snapshot"))
@@ -325,6 +325,24 @@ struct HomeCodexAccountSummary: View {
                     ? language.text("正在监控", "Monitoring")
                     : language.text("已保存账号", "Saved account")
         }
+    }
+
+    private var snapshotHealth: AccountSnapshotHealth {
+        AccountSnapshotHealth.classify(
+            snapshotAt: profile.lastSnapshot?.fetchedAt,
+            lastFailureAt: profile.lastQuotaReadFailureAt, now: previewDate ?? currentDate)
+    }
+
+    private var quotaFreshness: some View {
+        Text(snapshotHealth.updatedLabel(snapshotAt: profile.lastSnapshot?.fetchedAt, now: previewDate ?? currentDate, language: language))
+            .font(.system(size: 9))
+            .foregroundStyle(
+                snapshotHealth == .failed || snapshotHealth == .stale
+                    ? FixedVisualPalette.statusWarningForeground(colorScheme) : Color.secondary
+            )
+            .lineLimit(2)
+            .fixedSize(horizontal: false, vertical: true)
+            .help(profile.lastSnapshot.map { language.text("额度更新于 ", "Usage updated ") + language.dateTime($0.fetchedAt) } ?? "")
     }
 
     private var accountHelp: String {

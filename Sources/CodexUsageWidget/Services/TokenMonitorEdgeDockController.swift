@@ -151,6 +151,7 @@ final class TokenMonitorEdgeDockController: NSObject {
         let isPinned: Bool
         let canPin: Bool
         let isRefreshing: Bool
+        let snapshotDescription: String
     }
 
     private struct Layout {
@@ -478,7 +479,8 @@ final class TokenMonitorEdgeDockController: NSObject {
                 cell: cells[index], side: preferences.side, language: language, glass: glass,
                 paletteID: paletteID, preferredColorScheme: preferredColorScheme,
                 tailY: placement.tailY, isPinned: cardPinned,
-                canPin: true, isRefreshing: refreshingCells.contains(cells[index].id)
+                canPin: true, isRefreshing: refreshingCells.contains(cells[index].id),
+                snapshotDescription: cells[index].snapshotDescription(language)
             )
             if cardHost == nil || lastCardContent != content {
                 let view = themed(
@@ -488,6 +490,7 @@ final class TokenMonitorEdgeDockController: NSObject {
                         onPin: { [weak self] in self?.togglePin() },
                         onOpenDashboard: { [weak self] in self?.openDashboard() },
                         onOpenProxy: { [weak self] in self?.openProxySettings() },
+                        snapshotDescription: content.snapshotDescription,
                         isRefreshing: content.isRefreshing,
                         onRefresh: onRefresh == nil ? nil : { [weak self] in self?.refresh(content.cell) }
                     ))
@@ -582,6 +585,13 @@ final class TokenMonitorEdgeDockController: NSObject {
             }
         }
 
+        // Reuse the existing hover tick. The content gate changes only when
+        // the age label changes; no second timer or quota request is created.
+        if let cardIndex, cells.indices.contains(cardIndex), cells[cardIndex].kind != .proxy,
+            lastCardContent?.snapshotDescription != cells[cardIndex].snapshotDescription(language, now: now)
+        {
+            updateSurfaces()
+        }
         let overRail = layout.rail.contains(point)
         let overCard = cardPanel?.isVisible == true && cardPanel?.frame.contains(point) == true
         let crossing = cardPanel?.isVisible == true && corridorContains(point, rail: layout.rail, card: cardPanel?.frame)

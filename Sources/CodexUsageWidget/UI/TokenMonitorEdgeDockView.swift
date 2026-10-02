@@ -427,6 +427,7 @@ struct TokenMonitorEdgeDockCardView: View {
     let onPin: () -> Void
     let onOpenDashboard: () -> Void
     var onOpenProxy: () -> Void = {}
+    var snapshotDescription: String? = nil
     var isRefreshing = false
     var onRefresh: (() -> Void)? = nil
     @State private var byModel = false
@@ -439,6 +440,12 @@ struct TokenMonitorEdgeDockCardView: View {
                 ScrollView(showsIndicators: false) {
                     VStack(alignment: .leading, spacing: 9) {
                         header
+                        if cell.kind != .proxy {
+                            Text(snapshotDescription ?? cell.snapshotDescription(language))
+                                .font(.system(size: 10)).foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .accessibilityIdentifier("edge-dock-snapshot-age")
+                        }
                         if cell.kind == .proxy {
                             proxyContent
                         } else if cell.metric == .liveRate {
@@ -727,7 +734,7 @@ struct TokenMonitorEdgeDockCardView: View {
                     Text(cell.providerID == "claude" ? language.text("余额", "Balance") : language.text("剩余额度", "Remaining quota"))
                         .font(.system(size: 11, weight: .medium))
                     if cell.isStale {
-                        Text(language.text("待刷新", "Refresh needed")).font(.system(size: 10)).foregroundStyle(.secondary)
+                        Text(language.text("上次记录 · 待刷新", "Last recorded · Refresh needed")).font(.system(size: 10)).foregroundStyle(.secondary)
                     }
                 }
             }
@@ -753,6 +760,10 @@ struct TokenMonitorEdgeDockCardView: View {
                         HStack(spacing: 10) {
                             VStack(alignment: .leading, spacing: 3) {
                                 Text(metric.title).font(.system(size: 10)).foregroundStyle(.secondary)
+                                if metric.isAvailable, let fetchedAt = metric.fetchedAt {
+                                    Text(language.text("快照：", "Snapshot: ") + language.dateTime(fetchedAt))
+                                        .font(.system(size: 9)).foregroundStyle(.secondary)
+                                }
                                 if metric.resetLabel != "—" {
                                     Text(language.text("重置：", "Reset: ") + metric.resetLabel)
                                         .font(.system(size: 9)).monospacedDigit().foregroundStyle(.secondary)
@@ -774,7 +785,7 @@ struct TokenMonitorEdgeDockCardView: View {
                 .padding(.vertical, 4)
             }
             if let collectedAt = cell.lastCollectedAt {
-                Text(language.text("采集：", "Collected: ") + language.dateTime(collectedAt))
+                Text(language.text("用量采集：", "Usage collected: ") + language.dateTime(collectedAt))
                     .font(.system(size: 8))
                     .foregroundStyle(.secondary)
             }

@@ -72,6 +72,7 @@ build:
 	rm -rf "$(APP_DIR)"
 	mkdir -p "$(MACOS_DIR)" "$(RESOURCES_DIR)"
 	cp Resources/Info.plist "$(APP_DIR)/Contents/Info.plist"
+	python3 scripts/check-invite-purchase-link.py --plist "$(APP_DIR)/Contents/Info.plist" --receipt "$(BUILD_DIR)/invite-purchase-link.json"
 	cp "$(APP_ICON_SOURCE)" "$(RESOURCES_DIR)/$(APP_ICON)"
 	cp $(RUNTIME_PNG_RESOURCES) "$(RESOURCES_DIR)/"
 	cp Resources/AiGoodBro-wechat.jpg "$(RESOURCES_DIR)/"

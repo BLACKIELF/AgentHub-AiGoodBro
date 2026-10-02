@@ -59,7 +59,9 @@ def run(helper=None):
     with tempfile.TemporaryDirectory(prefix='lp-cross-',dir='/private/tmp') as temporary:
         folder=pathlib.Path(temporary);os.chmod(folder,0o700)
         bridge_source=(ROOT/'Sources/CodexUsageWidget/Services/LocalProxyBridge.swift').read_text()
-        bridge_source=bridge_source[:bridge_source.index('/// Reads under the same')]
+        reader_start=bridge_source.index('\nenum LocalProxyCredentialReader')
+        reader_comment=bridge_source.rfind('\n///',0,reader_start)
+        bridge_source=bridge_source[:reader_comment if reader_comment >= 0 else reader_start]
         domain=(ROOT/'Sources/CodexUsageWidget/Domain/LocalProxyQueue.swift').read_text()
         # Compile only the shared IPC DTOs. UI rows and quota admission have
         # native application dependencies and are covered by host fixtures.

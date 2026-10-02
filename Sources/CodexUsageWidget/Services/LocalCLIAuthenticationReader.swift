@@ -42,7 +42,7 @@ struct LocalCLIAuthenticationReader {
             switch auth?["selectedType"] as? String {
             case "gemini-api-key":
                 let env = fileReader(root.appendingPathComponent(".env")).flatMap { String(data: $0, encoding: .utf8) } ?? ""
-                if Self.hasEnvironmentValue(env, names: ["GEMINI_API_KEY", "GOOGLE_API_KEY"])
+                if Self.hasEnvironmentValue(env, names: ["GEMINI_API_KEY"])
                     || (usesSystemKeychain && keychainReader("gemini-cli-api-key", "default-api-key") != nil)
                 {
                     return .apiKey

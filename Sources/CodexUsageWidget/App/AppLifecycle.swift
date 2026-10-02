@@ -523,6 +523,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     }
 
     private func setupEdgeDockSync() {
+        store.onAccountSnapshotRefresh = { [weak self] maximumAge in
+            self?.refreshEdgeDockSnapshots(maximumAge: maximumAge)
+        }
+        settings.$edgeDock.dropFirst()
+            .removeDuplicates { $0.enabled == $1.enabled && $0.items == $1.items }
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                guard let self else { return }
+                self.refreshEdgeDockSnapshots(maximumAge: self.store.accountSnapshotRefreshInterval)
+            }
+            .store(in: &cancellables)
         _ = edgeDockInputGate.accept(edgeDockInput())
         syncEdgeDock()
         func changed<P: Publisher>(_ publisher: P) -> AnyPublisher<Void, Never> where P.Failure == Never {
@@ -643,34 +654,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             store: store, localAccounts: localCLIAccounts, language: settings.language
         )
         let usage = TokenMonitorDashboardSnapshot(state: store.engineState, hub: store.tokenMonitorHubSync)
-        // The system profile names the current Codex identity, but only a
-        // fresh, successful managed-profile quota read confirms the matching
-        // account for the dock's "active" rail value.
-        func hasFreshQuota(_ profile: CodexProfile) -> Bool {
-            guard let snapshot = profile.lastSnapshot, snapshot.quotaReadSucceeded == true,
-                Date().timeIntervalSince(snapshot.fetchedAt) <= 300
-            else { return false }
-            return profile.lastQuotaReadFailureAt.map { $0 < snapshot.fetchedAt } ?? true
-        }
-        let systemProfile = store.profiles.first(where: \.isSystemProfile)
-        let activeID: String?
-        if let systemProfile, hasFreshQuota(systemProfile) {
-            let managed = store.profiles.filter {
-                !$0.isSystemProfile && $0.recordedAccountKey == systemProfile.recordedAccountKey
-            }
-            if managed.count == 1, let profile = managed.first, hasFreshQuota(profile) {
-                activeID = profile.id
-            } else if managed.isEmpty {
-                activeID = systemProfile.id
-            } else {
-                activeID = nil
-            }
-        } else {
-            activeID = nil
-        }
+        let codexSelection = edgeDockCodexSelection()
         let cells = TokenMonitorEdgeDockProjection.make(
             preferences: prefs, quotaSources: quotaSources, usage: usage,
-            language: settings.language, activeCodexAccountID: activeID,
+            language: settings.language, activeCodexAccountID: codexSelection.active,
+            historicalCodexAccountID: codexSelection.historical,
             liveRateSample: rateSample, proxyPhase: localProxy.phase, proxyRows: localProxy.displayRows
         )
         edgeDockController.configure(
@@ -688,16 +676,61 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         )
     }
 
+    /// Historical selection describes a previous verified identity only. The
+    /// current-account test below keeps its original freshness/failure gates.
+    private func edgeDockCodexSelection(now: Date = Date()) -> (active: String?, historical: String?) {
+        func hasVerifiedSnapshot(_ profile: CodexProfile) -> Bool {
+            guard let snapshot = profile.lastSnapshot, snapshot.quotaReadSucceeded == true else { return false }
+            return
+                !(profile.lastQuotaReadFailureReason == "oauth-invalidated"
+                && (profile.lastQuotaReadFailureAt ?? .distantPast) >= snapshot.fetchedAt)
+        }
+        func hasFreshQuota(_ profile: CodexProfile) -> Bool {
+            guard let snapshot = profile.lastSnapshot, snapshot.quotaReadSucceeded == true,
+                now.timeIntervalSince(snapshot.fetchedAt) <= 300
+            else { return false }
+            return profile.lastQuotaReadFailureAt.map { $0 < snapshot.fetchedAt } ?? true
+        }
+        guard let system = store.profiles.first(where: \.isSystemProfile), hasVerifiedSnapshot(system) else { return (nil, nil) }
+        let managed = store.profiles.filter { !$0.isSystemProfile && $0.recordedAccountKey == system.recordedAccountKey }
+        let candidate: CodexProfile
+        if managed.count == 1, let match = managed.first { candidate = match } else if managed.isEmpty { candidate = system } else { return (nil, nil) }
+        guard hasVerifiedSnapshot(candidate) else { return (nil, nil) }
+        return hasFreshQuota(system) && hasFreshQuota(candidate) ? (candidate.id, nil) : (nil, candidate.id)
+    }
+
+    private func edgeDockRefreshTargets(itemID: String? = nil) -> [String: Set<String>] {
+        let sources = FloatingBubbleEvidence.make(store: store, localAccounts: localCLIAccounts, language: settings.language)
+        let selection = edgeDockCodexSelection()
+        var preferences = settings.edgeDock
+        if let itemID {
+            preferences.items = (preferences.normalized().items ?? TokenMonitorEdgeDockProjection.automaticItems(sources))
+                .filter { $0.id == itemID }
+        }
+        return TokenMonitorEdgeDockProjection.refreshTargets(
+            preferences: preferences, sources: sources,
+            codexDisplayAccountID: selection.active ?? selection.historical,
+            codexSystemAccountID: store.profiles.first(where: \.isSystemProfile)?.id)
+    }
+
+    private func refreshEdgeDockSnapshots(maximumAge: TimeInterval) {
+        guard !floatingBubbleShuttingDown, settings.edgeDock.enabled else { return }
+        let targets = edgeDockRefreshTargets()
+        store.refreshEdgeDockQuotas(profileIDs: targets["codex"] ?? [], maximumAge: maximumAge)
+        let localIDs = Set(targets.filter { $0.key != "codex" }.values.flatMap { $0 })
+        localCLIAccounts.refreshIfNeeded(profileIDs: localIDs, maximumAge: maximumAge)
+    }
+
     private func refreshEdgeDockQuota(_ cell: TokenMonitorEdgeDockCell) async {
         guard let providerID = cell.providerID else { return }
+        let targets = edgeDockRefreshTargets(itemID: cell.id)
         let localIDs: Set<String>
         if providerID == AgentNavCatalog.codexID {
             localIDs = []
-            store.refreshQuotas()
+            store.refreshEdgeDockQuotas(profileIDs: targets["codex"] ?? [], maximumAge: 0)
         } else if let kind = LocalCLIKind.allCases.first(where: { TokenMonitorEdgeDockItem.canonicalProviderID($0.rawValue) == providerID }) {
-            let profiles = localCLIAccounts.profiles.filter { $0.kind == kind }
-            localIDs = Set(profiles.map(\.id))
-            for profile in profiles { localCLIAccounts.refresh(profile) }
+            localIDs = targets[providerID] ?? []
+            localCLIAccounts.refreshIfNeeded(kind: kind, profileIDs: localIDs, maximumAge: 0)
         } else {
             return
         }
@@ -899,8 +932,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     func toggleMainWindow() {
         guard let window else { return }
 
-        if window.isVisible, !window.isMiniaturized, window.isKeyWindow {
-            window.orderOut(nil)
+        if !NSApp.isHidden, window.isVisible, !window.isMiniaturized, window.isKeyWindow {
+            if window.styleMask.contains(.fullScreen) {
+                // Let AppKit activate the next app instead of ordering the
+                // main window out of its native full-screen Space.
+                NSApp.hide(nil)
+            } else {
+                window.orderOut(nil)
+            }
             updateTaskBoardPollingActivity()
             return
         }
@@ -1006,6 +1045,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         closeStatusPopover()
         paletteLibraryWindow?.orderOut(nil)
         applyMainWindowLevel()
+        if NSApp.isHidden {
+            NSApp.unhide(nil)
+        }
         if window.isMiniaturized {
             window.deminiaturize(nil)
         }

@@ -354,7 +354,7 @@ enum WKWebViewBridgeSelfTest {
             RunLoop.current.run(until: Date().addingTimeInterval(0.01))
         }
         guard evaluateValue("window.AiGoodBroDashboard.history.summary.totalCost") as? Double == 19732.09,
-            evaluateValue("document.querySelectorAll('.dash-card-v')[1].textContent") as? String == "$19732.09",
+            evaluateValue("document.querySelectorAll('.dash-card-v')[1].textContent") as? String == "$19732.09 ¥134,178.21",
             evaluateValue("document.querySelector('.summary-resize').dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowRight',bubbles:true})); true") as? Bool == true
         else {
             print("Home dashboard native bridge failed: shared tray cost/metric resize")
@@ -376,10 +376,10 @@ enum WKWebViewBridgeSelfTest {
             homePreferences: widths, summaryCost: .init(value: 19733.1))
         let visibleCostDeadline = Date().addingTimeInterval(3)
         while Date() < visibleCostDeadline {
-            if evaluateValue("document.querySelectorAll('.dash-card-v')[1].textContent") as? String == "$19733.10" { break }
+            if evaluateValue("document.querySelectorAll('.dash-card-v')[1].textContent") as? String == "$19733.10 ¥134,185.08" { break }
             RunLoop.current.run(until: Date().addingTimeInterval(0.01))
         }
-        guard evaluateValue("document.querySelectorAll('.dash-card-v')[1].textContent") as? String == "$19733.10",
+        guard evaluateValue("document.querySelectorAll('.dash-card-v')[1].textContent") as? String == "$19733.10 ¥134,185.08",
             evaluateValue("window.costOnlyHeatmap === document.querySelector('#dashHeatmap svg')") as? Bool == true
         else {
             print("Home dashboard native bridge failed: visible cost-only update")
@@ -399,7 +399,7 @@ enum WKWebViewBridgeSelfTest {
             print("Home dashboard native bridge failed: unknown shared cost")
             return false
         }
-        print("Home dashboard native bridge passed: shared tray cost, saved metric widths, split panes, guarded callbacks and snapshot reuse")
+        print("Home dashboard native bridge passed: shared tray USD/CNY cost, saved metric widths, split panes, guarded callbacks and snapshot reuse")
         return true
     }
 

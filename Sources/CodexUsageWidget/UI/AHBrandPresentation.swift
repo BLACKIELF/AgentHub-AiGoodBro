@@ -2,7 +2,7 @@ import SwiftUI
 
 enum AHBrandIdentity {
     static let displayName = "AiGoodBro"
-    static let publicVersion = "2.0"
+    static let publicVersion = "2.2"
     static let shortName = "AH"
     static let workspaceName = "AgentHub"
 

@@ -386,7 +386,7 @@ struct SettingsPanelView: View {
                 }
             }
         case .edgeDock:
-            TokenMonitorEdgeDockSettingsView(settings: settings, quotaSources: floatingBubbleSources, language: language)
+            TokenMonitorEdgeDockSettingsView(settings: settings, store: store, quotaSources: floatingBubbleSources, language: language)
         case .automation: automationPage
         case .workspace: workspacePage
         case .tokenMonitor:

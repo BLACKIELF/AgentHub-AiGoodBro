@@ -97,11 +97,17 @@ actor LocalCLIQuotaRefresh {
     }
 
     private static func renewKimi(directory: URL) async throws {
+        try await renewKimiCredential(directory: directory, transport: LocalCLIURLSessionTransport())
+    }
+
+    static func renewKimiCredential(directory: URL, transport: any LocalCLIQuotaTransport) async throws {
         let file = directory.appendingPathComponent("credentials/kimi-code.json")
         let original = try read(file)
+        let deviceFile = directory.appendingPathComponent("device_id")
+        let deviceBytes = try read(deviceFile)
         guard let stored = try JSONSerialization.jsonObject(with: original) as? [String: Any],
             let token = secret(stored["refresh_token"]),
-            let device = String(data: try read(directory.appendingPathComponent("device_id")), encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let device = String(data: deviceBytes, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
         else { throw Failure.invalid }
         // Same proper-lockfile directory used by official Kimi Code. Updating
         // its mtime prevents another CLI process treating an active refresh as
@@ -111,19 +117,42 @@ actor LocalCLIQuotaRefresh {
         try FileManager.default.createDirectory(at: lockParent, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let lock = lockParent.appendingPathComponent("kimi-code.lock", isDirectory: true)
         guard mkdir(lock.path, 0o700) == 0 else { throw Failure.busy }
-        let heartbeat = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
+        var metadata = stat()
+        guard lstat(lock.path, &metadata) == 0, metadata.st_mode & S_IFMT == S_IFDIR,
+            metadata.st_uid == getuid()
+        else { throw Failure.invalid }
+        func sameLock() -> Bool {
+            var current = stat()
+            return lstat(lock.path, &current) == 0 && current.st_ino == metadata.st_ino && current.st_dev == metadata.st_dev
+        }
+        // Keep the owned inode open so replacement cannot reuse its identity;
+        // stamp the descriptor, never a replacement at the same path.
+        let descriptor = open(lock.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard descriptor >= 0 else {
+            if sameLock() { _ = rmdir(lock.path) }
+            throw Failure.invalid
+        }
+        defer { close(descriptor) }
+        defer { if sameLock() { _ = rmdir(lock.path) } }
+        var opened = stat()
+        guard fstat(descriptor, &opened) == 0, opened.st_ino == metadata.st_ino,
+            opened.st_dev == metadata.st_dev, sameLock()
+        else { throw Failure.changed }
+        let queue = DispatchQueue(label: "AiGoodBro.kimi-refresh-lock")
+        let heartbeat = DispatchSource.makeTimerSource(queue: queue)
         heartbeat.schedule(deadline: .now() + 1, repeating: 1)
-        heartbeat.setEventHandler { _ = utimes(lock.path, nil) }
+        heartbeat.setEventHandler { if sameLock() { _ = futimes(descriptor, nil) } }
         heartbeat.resume()
         defer {
             heartbeat.cancel()
-            _ = rmdir(lock.path)
+            queue.sync {}
         }
-        guard try read(file) == original else { throw Failure.changed }
+        guard sameLock(), try read(file) == original, try read(deviceFile) == deviceBytes else { throw Failure.changed }
         let request = try kimiRefreshRequest(refreshToken: token, deviceID: device)
-        let response = try await LocalCLIURLSessionTransport().response(for: request)
+        let response = try await transport.response(for: request)
         guard response.statusCode == 200, response.data.count <= maximumBytes else { throw Failure.invalid }
         let updated = try renewedKimiCredential(original, response: response.data, now: Date())
+        guard sameLock(), try read(deviceFile) == deviceBytes else { throw Failure.changed }
         try replaceCredential(file, expected: original, updated: updated)
     }
 
@@ -176,15 +205,24 @@ actor LocalCLIQuotaRefresh {
         guard var root = try JSONSerialization.jsonObject(with: original) as? [String: Any],
             var entry = root[sessionKey] as? [String: Any],
             let reply = try JSONSerialization.jsonObject(with: response) as? [String: Any],
-            let access = secret(reply["access_token"]), let lifetime = duration(reply["expires_in"]),
+            let access = secret(reply["access_token"]),
             ((reply["token_type"] as? String) ?? "Bearer").lowercased() == "bearer"
         else { throw Failure.invalid }
-        if let refresh = reply["refresh_token"] {
+        let formatter = ISO8601DateFormatter()
+        if let rawLifetime = reply["expires_in"], !(rawLifetime is NSNull) {
+            guard let lifetime = duration(rawLifetime), lifetime.rounded() == lifetime else { throw Failure.invalid }
+            entry["expires_at"] = formatter.string(from: now.addingTimeInterval(lifetime))
+        } else {
+            // OIDC expires_in is optional. Remove the previous token's expiry;
+            // the official 30-day fallback starts at this issuance time.
+            entry.removeValue(forKey: "expires_at")
+        }
+        if let refresh = reply["refresh_token"], !(refresh is NSNull) {
             guard let token = secret(refresh) else { throw Failure.invalid }
             entry["refresh_token"] = token
         }
         entry["key"] = access
-        entry["expires_at"] = ISO8601DateFormatter().string(from: now.addingTimeInterval(lifetime))
+        entry["create_time"] = formatter.string(from: now)
         root[sessionKey] = entry
         return try JSONSerialization.data(withJSONObject: root, options: [.sortedKeys])
     }

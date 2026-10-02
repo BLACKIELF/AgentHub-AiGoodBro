@@ -6,9 +6,11 @@ import SwiftUI
 /// intentional and never silently replaced by a provider guessed from login.
 struct TokenMonitorEdgeDockSettingsView: View {
     @ObservedObject var settings: AppSettings
+    @ObservedObject var store: UsageStore
     let quotaSources: [TokenMonitorFloatingBubbleAccount]
     let language: WidgetLanguage
     @State private var screenOptions: [TokenMonitorEdgeDockScreenCatalog.Option] = []
+    @State private var showsRefreshAdvice = false
 
     private var selectedScreenID: String {
         TokenMonitorEdgeDockScreenTarget.migratedID(
@@ -32,6 +34,72 @@ struct TokenMonitorEdgeDockSettingsView: View {
     }
 
     private var preferences: TokenMonitorEdgeDockPreferences { settings.edgeDock }
+
+    private var recommendedFrequency: AccountRefreshFrequency {
+        let machine = ProcessInfo.processInfo
+        return machine.isLowPowerModeEnabled || machine.thermalState != .nominal ? .tenMinutes : .fiveMinutes
+    }
+
+    private var refreshAdvice: String {
+        let machine = ProcessInfo.processInfo
+        let memoryGB = Int(machine.physicalMemory / 1_073_741_824)
+        let hardware = language.text(
+            "本机：\(machine.activeProcessorCount) 个逻辑 CPU · \(memoryGB) GB 内存。",
+            "This Mac: \(machine.activeProcessorCount) logical CPUs · \(memoryGB) GB memory.")
+        let constrained = machine.isLowPowerModeEnabled || machine.thermalState != .nominal
+        return hardware + "\n"
+            + (constrained
+                ? language.text("当前处于低电量模式或有温度压力，建议 10 分钟。", "Low Power Mode or thermal pressure is active; try 10 minutes.")
+                : language.text("建议 5 分钟；需要更及时且运行流畅时，可试 1 分钟。", "5 minutes is recommended; try 1 minute when timeliness matters and the app runs smoothly."))
+            + "\n"
+            + language.text(
+                "刷新还受账号数量、记录量和服务限流影响；旧快照会保留。",
+                "Account count, history size and service rate limits also affect refresh cost. Previous snapshots remain visible.")
+    }
+
+    private var refreshControls: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 7) {
+                Text(language.text("快照刷新", "Snapshot refresh"))
+                    .font(.system(size: 11, weight: .semibold))
+                Button {
+                    showsRefreshAdvice.toggle()
+                } label: {
+                    Image(systemName: "info.circle")
+                }
+                .buttonStyle(.plain)
+                .help(refreshAdvice)
+                .accessibilityLabel(language.text("本机信息与刷新建议", "This Mac and refresh advice"))
+                .popover(isPresented: $showsRefreshAdvice) {
+                    Text(refreshAdvice).font(.system(size: 11)).padding(14).frame(width: 300)
+                }
+                Spacer()
+            }
+            Picker(
+                language.text("刷新间隔", "Refresh interval"),
+                selection: Binding(
+                    get: { store.accountRefreshFrequency }, set: { store.setAccountRefreshFrequency($0) }
+                )
+            ) {
+                ForEach(AccountRefreshFrequency.allCases) { frequency in
+                    Text(frequency.label(language) + (frequency == recommendedFrequency ? language.text("（推荐）", " (recommended)") : ""))
+                        .tag(frequency)
+                }
+            }
+            .accessibilityIdentifier("edge-dock-refresh-interval")
+            Text(
+                language.text(
+                    "刷新侧栏已选账号与用量；与账号设置共用，自动为前台 3 分钟、后台 5 分钟。服务限流或读取繁忙时会延后，旧快照保留。",
+                    "Refreshes selected dock accounts and usage. Shared with account settings; Automatic uses 3 min in front, 5 min in background. Rate limits or busy readers can delay a refresh; previous snapshots remain visible."
+                )
+            )
+            .font(.system(size: 10)).foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+            Button(language.text("立即刷新侧栏", "Refresh Edge Dock now")) { store.refreshEdgeDockSnapshotsNow() }
+                .controlSize(.small).disabled(store.isRefreshing)
+                .accessibilityIdentifier("edge-dock-refresh-now")
+        }
+    }
 
     private var availableProviders: [(id: String, title: String)] {
         var seen = Set<String>()
@@ -99,6 +167,8 @@ struct TokenMonitorEdgeDockSettingsView: View {
                 }
             }
 
+            Divider()
+            refreshControls
             Divider()
             accountComposer
             itemComposer

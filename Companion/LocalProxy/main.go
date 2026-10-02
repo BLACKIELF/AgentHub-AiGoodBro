@@ -345,9 +345,9 @@ func (s *selector) Pick(ctx context.Context, _, _ string, _ executor.Options, ca
 					}
 					state := safeState(reply.Error)
 					rejections[admissionRejectionDetail(reply.Error)] = true
-					if state == "busy" || state == "credentials_busy" {
+					if state == "busy" || state == "credentials_busy" || reply.Error == "policy_changed" {
 						sawBusy = true
-					} else if state == "quota" {
+					} else if state == "quota" || state == "usage_limit" {
 						sawQuota = true
 					} else {
 						sawUncertain = true
@@ -478,6 +478,7 @@ var admissionRejectionDetails = []string{
 	"eligible accounts are occupied",
 	"proxy is stopping",
 	"local account checks unavailable",
+	"account reached its custom five-hour usage limit",
 }
 
 func admissionRejectionDetail(code string) string {
@@ -492,7 +493,9 @@ func admissionRejectionDetail(code string) string {
 		return admissionRejectionDetails[3]
 	case "quota":
 		return admissionRejectionDetails[4]
-	case "busy", "credentials_busy":
+	case "usage_limit":
+		return "account reached its custom five-hour usage limit"
+	case "busy", "credentials_busy", "policy_changed":
 		return admissionRejectionDetails[5]
 	case "stopping":
 		return admissionRejectionDetails[6]
@@ -549,7 +552,9 @@ func admissionCommands(credits, desktop bool) []string {
 }
 func safeState(code string) string {
 	switch code {
-	case "busy", "credentials_busy", "quota", "quota_unknown", "login_expired", "subscription_pending":
+	case "policy_changed":
+		return "busy"
+	case "busy", "credentials_busy", "quota", "usage_limit", "quota_unknown", "login_expired", "subscription_pending":
 		return code
 	default:
 		return "temporary_error"
@@ -805,7 +810,7 @@ func main() {
 		os.Exit(runDesktopAdapter(connectionPath, os.Args[1:]))
 	}
 	if len(os.Args) == 2 && os.Args[1] == "--version" {
-		_, _ = io.WriteString(os.Stdout, "AiGoodBro Local Proxy 1001v3; CLIProxyAPI v8.0.2\n")
+		_, _ = io.WriteString(os.Stdout, "AiGoodBro Local Proxy 1003v1; CLIProxyAPI v8.0.2\n")
 		return
 	}
 	logrus.SetOutput(io.Discard)

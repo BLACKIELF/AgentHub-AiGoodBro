@@ -383,6 +383,11 @@ final class UsageStore: ObservableObject {
     @Published private(set) var warmUpSelection: CodexWarmUpSelection
     @Published private(set) var automaticAccountSwitchEnabled: Bool
     @Published private(set) var accountRefreshFrequency: AccountRefreshFrequency = .automatic
+    /// The dock shares completed account/usage refresh cycles, not another timer.
+    var onAccountSnapshotRefresh: ((TimeInterval) -> Void)?
+    var accountSnapshotRefreshInterval: TimeInterval {
+        isMainWindowActive || isTaskOverviewVisible ? foregroundFullRefreshInterval : backgroundFullRefreshInterval
+    }
     @Published private(set) var lowQuotaAlertThresholds: LowQuotaAlertThresholds = .standard
     @Published private(set) var pauseDesktopTasksAtOnePercent = false
     @Published private(set) var resumeDesktopTasksAfterSwitch = true
@@ -2693,24 +2698,26 @@ final class UsageStore: ObservableObject {
             !NSRunningApplication
             .runningApplications(withBundleIdentifier: "com.openai.codex")
             .isEmpty
+        let sourceAuthMissingAtPreflight = CodexAccountActions.systemAuthIsMissing()
         if CodexManualAccountSwitchPolicy.requiresForceConfirmation(
             codexWasRunning: codexWasRunning,
             isAutomaticSwitch: isAutomaticSwitch,
             isForcedManualSwitch: isForcedManualSwitch,
-            canPreserveSession: visibleThreadID != nil
+            canPreserveSession: !sourceAuthMissingAtPreflight && visibleThreadID != nil
                 && CodexAutomaticSwitchPolicy.hasNoActiveTasks(codexLiveTasks, legacyManagerRunning: legacyManagerRunning)
         ) {
             forcedAccountSwitchProfileID = profileID
             presentAccountSwitchBlock(
                 WidgetLanguage.storedOrAutomatic().text(
-                    "请先确认所有 Codex 对话都已关闭、没有任务正在运行。强制切换将不恢复当前对话，是否继续？",
-                    "First close all Codex conversations and confirm no tasks are running. A forced switch will not restore the current conversation. Continue?"),
+                    "无法安全恢复当前对话。确认继续会退出 Codex，可能中断正在运行的任务，且不会恢复原对话。仍要切换桌面账号吗？",
+                    "The current conversation cannot be restored safely. Continuing will quit Codex, may interrupt running work, and will not restore the conversation. Switch Desktop anyway?"
+                ),
                 isAutomatic: false
             )
             return
         }
         let threadIDToRestore: String?
-        if codexWasRunning, !isForcedManualSwitch {
+        if codexWasRunning, !isForcedManualSwitch, !sourceAuthMissingAtPreflight {
             threadIDToRestore =
                 visibleThreadID
                 ?? recentForegroundCodexThreadID(in: taskBoardForRestore)
@@ -2725,8 +2732,8 @@ final class UsageStore: ObservableObject {
             } else {
                 forcedAccountSwitchProfileID = profileID
                 message = WidgetLanguage.storedOrAutomatic().text(
-                    "无法确认当前 Codex 对话。请先确认所有 Codex 对话都已关闭、没有任务正在运行。强制切换将不恢复当前对话，是否继续？",
-                    "The current Codex conversation could not be verified. Close all conversations and confirm no tasks are running. A forced switch will not restore the current conversation. Continue?"
+                    "无法确认当前 Codex 对话。确认继续会退出 Codex，可能中断正在运行的任务，且不会恢复原对话。仍要切换桌面账号吗？",
+                    "The current Codex conversation is unverified. Continuing will quit Codex, may interrupt running work, and will not restore the conversation. Switch Desktop anyway?"
                 )
             }
             presentAccountSwitchBlock(message, isAutomatic: isAutomaticSwitch)
@@ -2817,6 +2824,7 @@ final class UsageStore: ObservableObject {
             let currentSystemCredentialIdentity = CodexOfficialProfileReader.credentialIdentity(
                 codexHomeURL: systemProfile.codexHomeURL
             )
+            let sourceAuthMissing = currentSystemCredentialIdentity == nil && CodexAccountActions.systemAuthIsMissing()
             Task { @MainActor in
                 var historyBaseline: CodexThreadHistorySnapshot?
                 if let historyBaselineResult {
@@ -2836,18 +2844,23 @@ final class UsageStore: ObservableObject {
                         return
                     }
                 }
-                guard let currentSystemCredentialIdentity, let targetCredentialIdentity,
+                let currentSystemEmail = currentSystemSnapshot.account?.email?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .lowercased()
+                let sourceIdentityMatches =
+                    sourceAuthMissing
+                    || (currentSystemCredentialIdentity != nil
+                        && currentSystemCredentialIdentity?.email == currentSystemEmail)
+                guard let targetCredentialIdentity,
                     let verifiedAccount = verifiedSnapshot.account,
                     let verifiedEmail = verifiedAccount.email?
                         .trimmingCharacters(in: .whitespacesAndNewlines)
                         .lowercased(),
-                    let currentSystemEmail = currentSystemSnapshot.account?.email?
-                        .trimmingCharacters(in: .whitespacesAndNewlines)
-                        .lowercased(),
                     targetCredentialIdentity.email == verifiedEmail,
-                    currentSystemCredentialIdentity.email == currentSystemEmail,
+                    sourceIdentityMatches,
                     !isAutomaticSwitch
-                        || (currentSystemEmail == systemProfile.recordedAccountKey
+                        || (currentSystemCredentialIdentity != nil
+                            && currentSystemEmail == systemProfile.recordedAccountKey
                             && systemProfile.matchesRecordedCredential(currentSystemCredentialIdentity))
                 else {
                     self.isLaunchingCodex = false
@@ -2917,7 +2930,7 @@ final class UsageStore: ObservableObject {
                         self.switchScopeIsEligible(for: profileID),
                         self.profiles.first(where: \.isSystemProfile)?.lastSnapshot?.accountID == context.sourceAccountID,
                         currentEmail == context.sourceIdentityKey,
-                        currentSystemCredentialIdentity.accountID == context.sourceAccountID,
+                        currentSystemCredentialIdentity?.accountID == context.sourceAccountID,
                         (try? self.accountActions.currentSystemAuthFingerprint(
                             expectedEmail: context.sourceIdentityKey,
                             expectedAccountID: context.sourceAccountID)) == context.sourceAuthFingerprint,
@@ -2960,13 +2973,17 @@ final class UsageStore: ObservableObject {
                 }
                 var sourceBackupProfile: CodexProfile?
                 do {
-                    if isAutomaticSwitch || !systemProfile.matchesRecordedCredential(currentSystemCredentialIdentity) {
+                    if currentSystemCredentialIdentity != nil,
+                        isAutomaticSwitch || !systemProfile.matchesRecordedCredential(currentSystemCredentialIdentity)
+                    {
                         try self.profileStore.record(
                             currentSystemSnapshot, for: systemProfile.id,
                             allowAccountOnly: true, allowSystemAccountChange: true)
                     }
                     let currentEmail = currentSystemSnapshot.account?.email?.lowercased()
-                    if currentSystemCredentialIdentity.accountID != targetCredentialIdentity.accountID {
+                    if let currentSystemCredentialIdentity,
+                        currentSystemCredentialIdentity.accountID != targetCredentialIdentity.accountID
+                    {
                         sourceBackupProfile = try self.profileStore.preserveSystemLogin(
                             expectedEmail: currentEmail,
                             expectedAccountID: currentSystemCredentialIdentity.accountID
@@ -3033,7 +3050,10 @@ final class UsageStore: ObservableObject {
                         ? WidgetLanguage.storedOrAutomatic().text(
                             "自动切换已取消：写入前检测到活跃或无法确认的任务", "Automatic switching cancelled: an active or unverified task was detected before writing.")
                         : WidgetLanguage.storedOrAutomatic().text(
-                            "没有切换：当前对话仍在执行，请等待本轮完成后再点“切换并打开”", "Not switched: the current turn is still running. Wait for it to finish, then choose Switch Desktop.")
+                            "检测到仍在运行或状态不明的对话。确认继续会退出 Codex，可能中断任务，且不会恢复原对话。仍要切换桌面账号吗？",
+                            "A conversation is running or its state is unknown. Continuing will quit Codex, may interrupt work, and will not restore the conversation. Switch Desktop anyway?"
+                        )
+                    if !isAutomaticSwitch { self.forcedAccountSwitchProfileID = profileID }
                     self.presentAccountSwitchBlock(message, isAutomatic: isAutomaticSwitch)
                     self.finishAutomaticSwitchAttempt(
                         for: profileID,
@@ -3103,7 +3123,7 @@ final class UsageStore: ObservableObject {
                     profile: launchProfile,
                     sourceBackupProfile: sourceBackupProfile,
                     expectedSourceIdentity: currentSystemCredentialIdentity,
-                    retainRecoveryJournal: requiresCodexRestart && historyBaseline != nil,
+                    retainRecoveryJournal: requiresCodexRestart && (historyBaseline != nil || sourceAuthMissing),
                     allowForcedTermination: isForcedManualSwitch,
                     progress: { [weak self] message in
                         guard let self, self.isCurrentAccountSwitchTransaction(transactionGeneration) else { return }
@@ -3186,8 +3206,9 @@ final class UsageStore: ObservableObject {
                             threadID: threadIDToRestore,
                             taskBoard: taskBoardForRestore,
                             historyBaseline: historyBaseline,
-                            recoverPendingSwitch: requiresCodexRestart && historyBaseline != nil,
+                            recoverPendingSwitch: requiresCodexRestart && (historyBaseline != nil || sourceAuthMissing),
                             expectedCurrentIdentity: targetCredentialIdentity,
+                            sourceWasSignedOut: sourceAuthMissing,
                             transactionGeneration: transactionGeneration
                         )
                         return
@@ -3197,34 +3218,64 @@ final class UsageStore: ObservableObject {
                         let threadIDToRestore,
                         let historyBaseline
                     else {
-                        self.desktopSwitchSucceeded = true
-                        self.finishAccountSwitchTransaction()
-                        self.isLaunchingCodex = false
-                        let hasUnverifiedPausedTasks =
-                            isAutomaticSwitch
-                            && self.automaticSwitchContext?.pausedTasksConfirmed == true
-                            && self.automaticSwitchContext?.resumeAccountKey != nil
-                        if hasUnverifiedPausedTasks {
-                            self.accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
-                                "账号已切换，但原任务历史未核验；续做记录保持暂停",
-                                "The account switched, but task history was not verified. Continuation remains paused.")
-                        } else if isAutomaticSwitch {
-                            self.accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
-                                "安全自动切换已完成，Codex 已重新打开", "Safe automatic switch complete. Codex reopened.")
-                        } else if requiresCodexRestart {
-                            self.accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
-                                "已切换账号并重新打开 Codex，额度随后刷新", "Account switched and Codex reopened. Limits refresh next.")
-                        } else {
-                            self.accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
-                                "已核对本机登录为此账号，Codex 已打开；额度随后刷新",
-                                "Local sign-in matches this account. Codex is open; limits refresh next.")
+                        let complete: () -> Void = {
+                            self.desktopSwitchSucceeded = true
+                            self.finishAccountSwitchTransaction()
+                            self.isLaunchingCodex = false
+                            let hasUnverifiedPausedTasks =
+                                isAutomaticSwitch
+                                && self.automaticSwitchContext?.pausedTasksConfirmed == true
+                                && self.automaticSwitchContext?.resumeAccountKey != nil
+                            if hasUnverifiedPausedTasks {
+                                self.accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
+                                    "账号已切换，但原任务历史未核验；续做记录保持暂停",
+                                    "The account switched, but task history was not verified. Continuation remains paused.")
+                            } else if isAutomaticSwitch {
+                                self.accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
+                                    "安全自动切换已完成，Codex 已重新打开", "Safe automatic switch complete. Codex reopened.")
+                            } else if requiresCodexRestart {
+                                self.accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
+                                    "已切换账号并重新打开 Codex，额度随后刷新", "Account switched and Codex reopened. Limits refresh next.")
+                            } else {
+                                self.accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
+                                    "已核对本机登录为此账号，Codex 已打开；额度随后刷新",
+                                    "Local sign-in matches this account. Codex is open; limits refresh next.")
+                            }
+                            self.finishAutomaticSwitchAttempt(
+                                for: profileID,
+                                succeeded: true,
+                                detail: WidgetLanguage.storedOrAutomatic().text("登录凭据、Codex 重启与账号状态均已确认", "Sign-in, Codex restart and account state verified.")
+                            )
+                            self.refresh(queueIfBusy: true)
                         }
-                        self.finishAutomaticSwitchAttempt(
-                            for: profileID,
-                            succeeded: true,
-                            detail: WidgetLanguage.storedOrAutomatic().text("登录凭据、Codex 重启与账号状态均已确认", "Sign-in, Codex restart and account state verified.")
-                        )
-                        self.refresh(queueIfBusy: true)
+                        if sourceAuthMissing {
+                            self.accountActions.commitPendingSwitch { error in
+                                guard self.isCurrentAccountSwitchTransaction(transactionGeneration) else { return }
+                                if let error {
+                                    self.rollbackManualSwitch(
+                                        reason: WidgetLanguage.storedOrAutomatic().text(
+                                            "账号切换提交失败：\(error.localizedDescription)",
+                                            "Could not finalize the account switch: \(error.localizedDescription)"),
+                                        attemptedProfileID: profileID,
+                                        targetProfile: launchProfile,
+                                        rollbackProfile: nil,
+                                        systemProfile: systemProfile,
+                                        originalSnapshot: currentSystemSnapshot,
+                                        originalOfficialProfile: currentSystemOfficialProfile,
+                                        threadID: nil,
+                                        taskBoard: taskBoardForRestore,
+                                        historyBaseline: nil,
+                                        recoverPendingSwitch: true,
+                                        sourceWasSignedOut: true,
+                                        transactionGeneration: transactionGeneration
+                                    )
+                                } else {
+                                    complete()
+                                }
+                            }
+                        } else {
+                            complete()
+                        }
                         return
                     }
 
@@ -3450,9 +3501,43 @@ final class UsageStore: ObservableObject {
         historyBaseline: CodexThreadHistorySnapshot?,
         recoverPendingSwitch: Bool,
         expectedCurrentIdentity: CodexCredentialIdentity? = nil,
+        sourceWasSignedOut: Bool = false,
         transactionGeneration: UInt64
     ) {
         guard isCurrentAccountSwitchTransaction(transactionGeneration) else { return }
+        if sourceWasSignedOut, recoverPendingSwitch {
+            accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
+                "\(reason)，正在恢复未登录状态", "\(reason). Restoring the signed-out state.")
+            accountActions.recoverPendingSwitchIfNeeded { [weak self] outcome in
+                guard let self, self.isCurrentAccountSwitchTransaction(transactionGeneration) else { return }
+                do {
+                    switch outcome {
+                    case .success(.restoredOriginalAuth), .success(.originalAuthAlreadyPresent):
+                        break
+                    case .success(.noPendingSwitch), .success(.preservedExternalAuth):
+                        throw CodexCredentialTransaction.Failure.superseded
+                    case .failure(let error):
+                        throw error
+                    }
+                    try self.profileStore.restoreSignedOutSystemProfile(systemProfile)
+                    self.syncProfiles()
+                    self.configureAuthMonitoring()
+                    self.clearDisplayedAccount()
+                    self.accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
+                        "切换未完成，已恢复未登录状态", "Switch did not complete. The signed-out state was restored.")
+                } catch {
+                    self.accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
+                        "切换未完成，未登录状态恢复失败：\(error.localizedDescription)",
+                        "Switch did not complete; restoring the signed-out state failed: \(error.localizedDescription)")
+                }
+                self.finishAccountSwitchTransaction()
+                self.isLaunchingCodex = false
+                self.finishAutomaticSwitchAttempt(
+                    for: attemptedProfileID, succeeded: false, failureReason: .restartFailed,
+                    detail: self.accountManagerMessage ?? reason)
+            }
+            return
+        }
         guard let rollbackProfile else {
             finishAccountSwitchTransaction()
             isLaunchingCodex = false
@@ -6405,6 +6490,7 @@ final class UsageStore: ObservableObject {
                 self.isRefreshing = false
                 self.lastFullRefreshCompletedAt = Date()
                 self.scheduleFullRefreshTimer()
+                self.onAccountSnapshotRefresh?(self.accountSnapshotRefreshInterval)
                 if scheduleWarmUpAfterRefresh {
                     self.scheduleWarmUpTimer()
                 }
@@ -6420,9 +6506,70 @@ final class UsageStore: ObservableObject {
         }
     }
 
+    /// Read only dock-selected Codex profiles through the existing shared quota
+    /// queue. No warm-up, membership request, switch or automation is introduced.
+    func refreshEdgeDockQuotas(profileIDs: Set<String>, maximumAge: TimeInterval, now: Date = Date()) {
+        guard canRefreshAllAccountQuotas else { return }
+        let ageLimit = maximumAge.isFinite ? max(0, maximumAge) : accountSnapshotRefreshInterval
+        let due = Set(
+            profiles.filter { profile in
+                guard profileIDs.contains(profile.id), !refreshingProfileIDs.contains(profile.id),
+                    !(isRefreshing && profile.id == selectedMonitorProfileID)
+                else { return false }
+                let fetched = profile.lastSnapshot?.fetchedAt
+                if let failed = profile.lastQuotaReadFailureAt, failed >= (fetched ?? .distantPast) {
+                    if profile.lastQuotaReadFailureReason == "oauth-invalidated" { return false }
+                    if now.timeIntervalSince(failed) < 60 { return false }
+                } else if profile.lastSnapshot?.quotaReadSucceeded == true, let fetched,
+                    (0..<ageLimit).contains(now.timeIntervalSince(fetched))
+                {
+                    return false
+                }
+                return true
+            }.map(\.id))
+        guard !due.isEmpty else { return }
+        refreshWarmUpProfilesThenSchedule(
+            performWarmUpAfterRefresh: false, profileIDs: due, quotaOnly: true, refreshMembershipDates: false)
+    }
+
+    func refreshEdgeDockSnapshotsNow() {
+        guard hasStarted, !isPreview, !isLoggingIn, !isLaunchingCodex, !isAccountSwitchTransactionActive else { return }
+        refresh(scheduleWarmUpAfterRefresh: false)
+        onAccountSnapshotRefresh?(0)
+    }
+
     func refreshQuotas() {
         refreshWarmUpProfilesThenSchedule(performWarmUpAfterRefresh: false)
         refresh(scheduleWarmUpAfterRefresh: false)
+    }
+
+    var isRefreshingAccountQuotas: Bool { isRefreshingWarmUpProfiles }
+    var canRefreshAllAccountQuotas: Bool {
+        hasStarted && !isPreview && !profiles.isEmpty && !isRefreshingWarmUpProfiles
+            && warmingProfileID == nil && !isLoggingIn && !isLaunchingCodex && !isAccountSwitchTransactionActive
+    }
+
+    func refreshAllAccountQuotas() {
+        guard canRefreshAllAccountQuotas else { return }
+        let requestedAt = Date()
+        let ids = Set(profiles.map(\.id))
+        let language = WidgetLanguage.storedOrAutomatic()
+        accountManagerMessage = language.text("正在刷新全部 \(ids.count) 个账号的额度…", "Refreshing limits for all \(ids.count) accounts…")
+        refreshWarmUpProfilesThenSchedule(
+            performWarmUpAfterRefresh: false, profileIDs: ids, quotaOnly: true, refreshMembershipDates: false
+        ) { [weak self] _ in
+            guard let self else { return }
+            let count = self.profiles.filter { profile in
+                guard ids.contains(profile.id), let snapshot = profile.lastSnapshot else { return false }
+                return snapshot.quotaReadSucceeded == true && snapshot.fetchedAt >= requestedAt
+                    && (profile.lastQuotaReadFailureAt ?? .distantPast) < snapshot.fetchedAt
+            }.count
+            self.accountManagerMessage =
+                count == ids.count
+                ? language.text("已刷新全部 \(count) 个账号的额度", "Limits refreshed for all \(count) accounts.")
+                : language.text(
+                    "已刷新 \(count) / \(ids.count) 个账号；未成功的账号保留上次快照。", "Refreshed \(count) of \(ids.count) accounts. Unsuccessful accounts keep their previous snapshots.")
+        }
     }
 
     func referralAccount(for profileID: String) throws -> CodexReferralAccount {
@@ -6802,10 +6949,7 @@ final class UsageStore: ObservableObject {
         fullTimer = nil
         guard hasStarted else { return }
 
-        let interval =
-            isMainWindowActive || isTaskOverviewVisible
-            ? foregroundFullRefreshInterval
-            : backgroundFullRefreshInterval
+        let interval = accountSnapshotRefreshInterval
         let elapsed = lastFullRefreshCompletedAt.map { max(0, Date().timeIntervalSince($0)) } ?? 0
         let nextDelay = max(1, interval - elapsed)
         let timer = Timer(

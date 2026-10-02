@@ -426,6 +426,33 @@ struct TokenMonitorEdgeDockCell: Equatable, Identifiable {
     let supportsLiveSessions: Bool
     var accountLabel: String? = nil
     var accountBindingMissing = false
+    /// Timestamp of the selected quota metric, never the UI/usage refresh time.
+    var snapshotFetchedAt: Date? = nil
+    /// Historical display identity only; never evidence of the current login.
+    var isHistoricalAccount = false
+
+    func snapshotDescription(_ language: WidgetLanguage, now: Date = Date()) -> String {
+        guard isAvailable else {
+            return accountBindingMissing
+                ? language.text("所选账号未匹配，无法显示快照", "Selected account unmatched; no snapshot")
+                : language.text("暂无可核对的快照，请刷新或检查账号登录", "No verified snapshot; refresh or check account sign-in")
+        }
+        let prefix =
+            isHistoricalAccount
+            ? language.text("上次已核对账号，当前身份待核对 · ", "Last verified account; current identity unverified · ") : ""
+        let timestamp = kind == .provider ? snapshotFetchedAt : (liveRate?.sampledAt ?? lastCollectedAt)
+        guard let timestamp, timestamp.timeIntervalSince1970.isFinite else {
+            return prefix + language.text("快照时间未知", "Snapshot time unknown")
+        }
+        let age = max(0, now.timeIntervalSince(timestamp))
+        guard age.isFinite else { return prefix + language.text("快照时间未知", "Snapshot time unknown") }
+        if age < 60 { return prefix + language.text("快照更新于不到 1 分钟前", "Snapshot updated less than 1 min ago") }
+        // Bounded conversion also protects presentation from corrupt timestamps.
+        let minutes = Int(min(age / 60, 99_999_999))
+        if minutes < 60 { return prefix + language.text("快照更新于 \(minutes) 分钟前", "Snapshot updated \(minutes) min ago") }
+        if minutes < 1440 { return prefix + language.text("快照更新于 \(minutes / 60) 小时前", "Snapshot updated \(minutes / 60) hr ago") }
+        return prefix + language.text("快照更新于 \(minutes / 1440) 天前", "Snapshot updated \(minutes / 1440) days ago")
+    }
     var proxyPhase: LocalProxyPhase? = nil
     /// Already admitted, still-owned requests; never inferred from quota or history.
     var proxyAccounts: [LocalProxyQueueRow] = []

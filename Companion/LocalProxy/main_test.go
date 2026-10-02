@@ -350,8 +350,31 @@ func TestSelectorWaitsForBusyRelease(t *testing.T) {
 	waitEmpty(t, b)
 }
 
+func TestSelectorPolicyChangeRetriesBeforeModelRequest(t *testing.T) {
+	b := newFakeBridge(t)
+	b.busy["A"], b.busy["B"] = true, true
+	b.busyCode = map[string]string{"A": "policy_changed", "B": "policy_changed"}
+	sel, _, ctx, closeScope := selectorFixture(t, b, time.Second, 5*time.Millisecond)
+	defer closeScope()
+	go func() {
+		time.Sleep(25 * time.Millisecond)
+		b.mu.Lock()
+		delete(b.busy, "A")
+		b.mu.Unlock()
+	}()
+	got, err := sel.Pick(ctx, "", "", executor.Options{}, selectorCandidates())
+	if err != nil || got == nil || got.ID != "A" {
+		t.Fatalf("Pick after policy change = %v, %v", got, err)
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if strings.Join(b.acquired, ",") != "A" {
+		t.Fatalf("unexpected admissions: %v", b.acquired)
+	}
+}
+
 func TestSelectorBusyBudgetExpires(t *testing.T) {
-	for _, busyCode := range []string{"busy", "credentials_busy"} {
+	for _, busyCode := range []string{"busy", "credentials_busy", "policy_changed"} {
 		t.Run(busyCode, func(t *testing.T) {
 			b := newFakeBridge(t)
 			b.busy["A"], b.busy["B"] = true, true
@@ -901,6 +924,72 @@ func TestLeaseBeforeUpstreamAndQuotaFailover(t *testing.T) {
 		t.Fatal("persisted upstream text")
 	}
 }
+
+func TestEmptyStreamBootstrapFailsOverBeforeCommit(t *testing.T) {
+	b := newFakeBridge(t)
+	s := newStartup(t, b)
+	var mu sync.Mutex
+	calls := []string{}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer fixture-")
+		mu.Lock()
+		calls = append(calls, id)
+		mu.Unlock()
+		if id == "A" {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
+			}
+			return
+		}
+		complete(w, id)
+	}))
+	defer upstream.Close()
+	_, server, _ := startTestRuntime(t, s, upstream.URL)
+	r := request(t, s, server.URL, true)
+	body := consume(t, r)
+	if r.StatusCode != http.StatusOK || !strings.Contains(body, "done-B") {
+		t.Fatalf("response %d %s", r.StatusCode, body)
+	}
+	waitEmpty(t, b)
+	mu.Lock()
+	defer mu.Unlock()
+	if strings.Join(calls, ",") != "A,B" {
+		t.Fatalf("calls %v", calls)
+	}
+}
+
+func TestUpstreamRequestTimeoutIsNotConvertedToEmptyStream(t *testing.T) {
+	b := newFakeBridge(t)
+	b.order = []string{"A"}
+	s := newStartup(t, b)
+	s.Accounts = s.Accounts[:1]
+	var mu sync.Mutex
+	calls := []string{}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer fixture-")
+		mu.Lock()
+		calls = append(calls, id)
+		mu.Unlock()
+		w.WriteHeader(http.StatusRequestTimeout)
+		_, _ = io.WriteString(w, `{"error":{"type":"server_error","code":"request_timeout","message":"upstream timeout"}}`)
+	}))
+	defer upstream.Close()
+	_, server, _ := startTestRuntime(t, s, upstream.URL)
+	r := request(t, s, server.URL, true)
+	body := consume(t, r)
+	if r.StatusCode != http.StatusRequestTimeout || !strings.Contains(body, "upstream timeout") {
+		t.Fatalf("response %d %s", r.StatusCode, body)
+	}
+	waitEmpty(t, b)
+	mu.Lock()
+	defer mu.Unlock()
+	if strings.Join(calls, ",") != "A" {
+		t.Fatalf("unexpected upstream attempts for ordinary 408: %v", calls)
+	}
+}
+
 func TestUnauthorizedNeverRefreshesAndBusySkips(t *testing.T) {
 	b := newFakeBridge(t)
 	s := newStartup(t, b)

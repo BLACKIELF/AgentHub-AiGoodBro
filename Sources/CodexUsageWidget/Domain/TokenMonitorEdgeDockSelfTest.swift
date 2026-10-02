@@ -163,6 +163,84 @@ enum TokenMonitorEdgeDockSelfTest {
             cachedCell.isAvailable && cachedCell.isStale && cachedCell.percentRemaining == 63
                 && cachedCell.severityRemainingPercent == nil,
             "cached Grok percentage remains visible as last recorded without a current severity signal")
+        for providerID in ["codex", "kimi"] {
+            var lastGood = primary
+            lastGood.fetchedAt = now.addingTimeInterval(-601)
+            lastGood.isStale = true
+            lastGood.value = .percentRemaining(42)
+            var account = TokenMonitorFloatingBubbleAccount(
+                providerID: providerID, providerName: providerID, accountID: "cached",
+                accountName: "Safe cached alias", metrics: [lastGood])
+            func projected() -> TokenMonitorEdgeDockCell {
+                TokenMonitorEdgeDockProjection.make(
+                    preferences: .init(items: [.account(providerID, "cached")]), quotaSources: [account],
+                    usage: usage, language: .en, now: now)[0]
+            }
+            let retained = projected()
+            expect(
+                retained.percentRemaining == 42 && retained.isStale && retained.severityRemainingPercent == nil,
+                "\(providerID) retains a stale verified number without an actionable severity")
+            expect(
+                retained.snapshotFetchedAt == lastGood.fetchedAt && retained.snapshotFetchedAt != usage.collectedAt,
+                "quota age comes from the selected metric, never usage collection")
+            expect(
+                retained.snapshotDescription(.en, now: now) == "Snapshot updated 10 min ago"
+                    && retained.snapshotDescription(.zh, now: now) == "快照更新于 10 分钟前",
+                "snapshot age is bilingual and uses the original read time")
+            account.metrics[0].value = .percentRemaining(0)
+            expect(projected().percentRemaining == 0, "real cached zero remains zero")
+            account.metrics[0].value = .unknown
+            expect(
+                projected().percentRemaining == nil && !projected().isAvailable,
+                "unknown quota never becomes zero")
+            account.metrics[0].value = .percentRemaining(42)
+            account.isLoggedIn = false
+            expect(
+                !projected().isAvailable && projected().snapshotFetchedAt == nil,
+                "stale display cannot bypass a lost identity/login gate")
+        }
+        let historicalActive = TokenMonitorEdgeDockProjection.make(
+            preferences: .init(items: [.limit("codex")]), quotaSources: [codex], usage: usage,
+            language: .en, now: now, historicalCodexAccountID: "a")[0]
+        expect(
+            historicalActive.percentRemaining == 0 && historicalActive.isHistoricalAccount
+                && historicalActive.title == "Codex · Last" && historicalActive.severityRemainingPercent == nil,
+            "default active mode retains only explicitly marked non-actionable account history")
+        expect(
+            historicalActive.snapshotDescription(.en, now: now).contains("current identity unverified"),
+            "historical account cannot be presented as the current identity")
+        let restoredActive = TokenMonitorEdgeDockProjection.make(
+            preferences: .init(items: [.limit("codex")]), quotaSources: [codex], usage: usage,
+            language: .en, now: now, activeCodexAccountID: "a", historicalCodexAccountID: "other")[0]
+        expect(
+            !restoredActive.isHistoricalAccount && restoredActive.headlineAccountID == "a",
+            "verified current identity replaces historical display")
+        expect(
+            TokenMonitorEdgeDockProjection.refreshTargets(
+                preferences: .init(enabled: true, items: [.limit("codex")]), sources: [codex],
+                codexDisplayAccountID: "a", codexSystemAccountID: "system") == ["codex": ["a", "system"]],
+            "active manual and scheduled refresh include system identity verification despite display de-duplication")
+        expect(
+            TokenMonitorEdgeDockProjection.refreshTargets(
+                preferences: .init(enabled: true, items: [.account("codex", "a")]), sources: [codex],
+                codexDisplayAccountID: "a", codexSystemAccountID: "system") == ["codex": ["a"]],
+            "fixed account refresh does not add an unrelated system read")
+        let selectedTargets = TokenMonitorEdgeDockProjection.refreshTargets(
+            preferences: .init(enabled: true, items: [.account("grok", "g"), .limit("grok")]),
+            sources: [codex, grok], codexDisplayAccountID: "a")
+        expect(selectedTargets == ["grok": ["g"]], "selected account/provider share one refresh target")
+        expect(
+            TokenMonitorEdgeDockProjection.refreshTargets(
+                preferences: .init(enabled: true, items: []), sources: [codex, grok], codexDisplayAccountID: "a"
+            ).isEmpty,
+            "explicitly empty dock never starts account reads")
+        var hiddenRefresh = TokenMonitorEdgeDockItem.limit("grok")
+        hiddenRefresh.hiddenAccountIDs = ["g"]
+        expect(
+            TokenMonitorEdgeDockProjection.refreshTargets(
+                preferences: .init(enabled: true, items: [hiddenRefresh]), sources: [grok], codexDisplayAccountID: nil
+            ).isEmpty,
+            "hidden dock account is excluded from scheduled refresh")
         var refreshedGrok = grok
         refreshedGrok.metrics[1].value = .percentRemaining(99)
         let refreshedCell = TokenMonitorEdgeDockProjection.make(

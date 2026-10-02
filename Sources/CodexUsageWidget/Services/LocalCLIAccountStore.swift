@@ -439,10 +439,14 @@ final class LocalCLIAccountStore: ObservableObject {
     /// Recheck the visible provider after an external CLI may have changed its
     /// credentials. File metadata is only a change signal; quota and identity
     /// still come from the profile's own official reader.
-    func refreshIfNeeded(kind: LocalCLIKind? = nil) {
+    func refreshIfNeeded(kind: LocalCLIKind? = nil, profileIDs: Set<String>? = nil, maximumAge: TimeInterval = 5 * 60) {
         guard !previewOnly else { return }
         let now = clock()
-        for profile in profiles where kind == nil || profile.kind == kind {
+        let ageLimit = maximumAge.isFinite ? max(0, maximumAge) : 5 * 60
+        for profile in profiles
+        where (kind == nil || profile.kind == kind)
+            && (profileIDs == nil || profileIDs!.contains(profile.id))
+        {
             let previousAuthentication = authentication[profile.id]
             checkLocalSignIn(profile)
             let version = credentialVersion(for: profile)
@@ -461,12 +465,19 @@ final class LocalCLIAccountStore: ObservableObject {
             if let attemptedAt = quotaAttemptedAt[profile.id] {
                 let elapsed = max(0, now.timeIntervalSince(attemptedAt))
                 if quotaAttemptState[profile.id] == .rateLimited, elapsed < 15 * 60 { continue }
-                if !credentialsChanged && !authenticationChanged, elapsed < 60 { continue }
+                // Successful reads use the original snapshot age below. A
+                // slow success must not add another 60 seconds after completion.
+                // Failed reads and rate limits retain their existing backoff.
+                if quotaAttemptState[profile.id] != .available,
+                    !credentialsChanged && !authenticationChanged, elapsed < 60
+                {
+                    continue
+                }
             }
             if !credentialsChanged && !authenticationChanged,
                 let quota = quotas[profile.id], quota.state == .available,
                 !stale.contains(profile.id),
-                (0..<5 * 60).contains(now.timeIntervalSince(quota.fetchedAt))
+                (0..<ageLimit).contains(now.timeIntervalSince(quota.fetchedAt))
             {
                 continue
             }
@@ -654,7 +665,15 @@ final class LocalCLIAccountStore: ObservableObject {
                         "已检查登录配置；额度暂未提供，可打开官方工具继续使用。",
                         "Sign-in configuration checked. Quota is unavailable; open the official tool to continue.")
             }
-            if result.state != .available, result.state != .needsLogin, previous?.state == .available {
+            let credentialSourceChanged =
+                profile.kind == .claudeCode
+                && loaded.messageCode == "local_cli_claude_credentials_changed"
+            if credentialSourceChanged {
+                // Keychain rotations have no file metadata generation. Never
+                // retain the old account's quota or derived identity on this signal.
+                self.quotaCredentialVersions.removeValue(forKey: profile.id)
+            }
+            if !credentialSourceChanged, result.state != .available, result.state != .needsLogin, previous?.state == .available {
                 self.stale.insert(profile.id)
             } else {
                 self.quotas[profile.id] = result

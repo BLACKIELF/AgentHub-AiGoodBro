@@ -128,6 +128,46 @@ struct TaskWorkbenchItem: Identifiable, Equatable {
         return inventoryIsStale || [.waitingInput, .pendingApproval, .failed, .blocked, .interrupted].contains(task.state)
             || [.incomplete, .candidate, .awaitingAcceptance].contains(outcome)
     }
+
+    func attentionReason(_ language: WidgetLanguage) -> String? {
+        guard needsAttention else { return nil }
+        switch task.state {
+        case .pendingApproval: return language.text("等待你审批", "Your approval is needed")
+        case .waitingInput: return language.text("等待你补充信息", "Your input is needed")
+        case .failed: return language.text("执行失败，查看原聊天", "Execution failed; check the chat")
+        case .blocked: return language.text("有阻塞，查看原聊天", "Blocked; check the chat")
+        case .interrupted: return language.text("执行中断，需核对进度", "Interrupted; verify progress")
+        default: break
+        }
+        if inventoryIsStale { return language.text("聊天已更新，盘点需复核", "Chat changed; verify the inventory") }
+        switch outcome {
+        case .candidate, .awaitingAcceptance: return language.text("已有成果，等待验收", "Result ready for acceptance")
+        case .incomplete: return language.text("仍有未完成事项", "Work remains incomplete")
+        default: return nil
+        }
+    }
+}
+
+enum TaskWorkbenchFilter: String, CaseIterable {
+    case all, attention, running, deferred
+
+    func label(_ language: WidgetLanguage) -> String {
+        switch self {
+        case .all: language.text("全部", "All")
+        case .attention: language.text("需关注", "Needs attention")
+        case .running: language.text("运行中", "Running")
+        case .deferred: language.text("暂缓 / 取消", "Deferred / cancelled")
+        }
+    }
+
+    func includes(_ item: TaskWorkbenchItem) -> Bool {
+        switch self {
+        case .all: true
+        case .attention: item.needsAttention
+        case .running: item.task.state == .running
+        case .deferred: [.paused, .cancelled].contains(item.annotation.decision)
+        }
+    }
 }
 
 struct TaskWorkbenchProject: Identifiable, Equatable {
@@ -141,6 +181,26 @@ struct TaskWorkbenchPresentation: Equatable {
     let projects: [TaskWorkbenchProject]
     let checkedAt: Date
     var items: [TaskWorkbenchItem] { projects.flatMap(\.items) }
+    var attentionCount: Int { items.filter(\.needsAttention).count }
+    var acceptanceCount: Int {
+        items.filter { $0.annotation.decision == .none && [.candidate, .awaitingAcceptance].contains($0.outcome) }.count
+    }
+
+    /// Search only metadata already shown in the workbench; never read a transcript.
+    func filteredItems(
+        project: String = "", filter: TaskWorkbenchFilter = .all, query: String = ""
+    ) -> [TaskWorkbenchItem] {
+        let terms = String(query.prefix(160))
+            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "en_US_POSIX"))
+            .split(whereSeparator: \.isWhitespace).map(String.init)
+        return items.filter { item in
+            guard project.isEmpty || item.project == project, filter.includes(item) else { return false }
+            guard !terms.isEmpty else { return true }
+            let metadata = (item.task.title + " " + item.project + " " + item.task.runtimeScope.displayName)
+                .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "en_US_POSIX"))
+            return terms.allSatisfy { metadata.contains($0) }
+        }
+    }
     var attention: [TaskWorkbenchItem] {
         let rows = items.filter(\.needsAttention).sorted {
             func rank(_ item: TaskWorkbenchItem) -> Int {

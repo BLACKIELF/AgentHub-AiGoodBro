@@ -179,8 +179,9 @@ final class LocalProxyBridge: @unchecked Sendable {
     }
 }
 
-/// Reads under the same in-process gates as credential writers, then rechecks
-/// the exact bytes before returning. No refresh, token repair or credential write.
+/// Reads bounded, stable credential snapshots and rechecks both identities and
+/// exact bytes before returning. Quota refresh must not hold this read-only path
+/// behind its global writer gate. No refresh, repair or credential write.
 enum LocalProxyCredentialReader {
     struct Value: Sendable {
         let token: String
@@ -189,11 +190,12 @@ enum LocalProxyCredentialReader {
     }
     static func read(
         profile: CodexProfile, system: CodexProfile, now: Date = Date(), allowDesktopAccount: Bool = false, creditFloor: Int? = nil, allowPaidCredits: Bool = false,
-        deadline: TimeInterval? = nil
+        policy: LocalProxyAccountPolicy = LocalProxyAccountPolicy(), deadline: TimeInterval? = nil
     )
         throws -> Value
     {
-        try withBoundedGates([profile.codexHomeURL, system.codexHomeURL], deadline: deadline) {
+        guard ProcessInfo.processInfo.systemUptime < (deadline ?? .greatestFiniteMagnitude) else { throw LocalProxyFailure.admissionDeadline }
+        do {
             let home = CodexCredentialTransaction.canonical(profile.codexHomeURL)
             let central = CodexCredentialTransaction.canonical(system.codexHomeURL)
             guard !profile.isSystemProfile, home != central,
@@ -209,12 +211,13 @@ enum LocalProxyCredentialReader {
             let result = try validate(
                 data: allowDesktopAccount ? centralData : data, profile: profile, centralIdentity: centralIdentity, now: now, allowDesktopAccount: allowDesktopAccount,
                 creditFloor: creditFloor,
-                allowPaidCredits: allowPaidCredits)
+                allowPaidCredits: allowPaidCredits, policy: policy)
             guard try readSnapshot(home: home) == data,
                 try readSnapshot(home: central) == centralData,
                 CodexCredentialTransaction.canonical(profile.codexHomeURL) == home,
                 CodexCredentialTransaction.canonical(system.codexHomeURL) == central
-            else { throw LocalProxyFailure.identity }
+            else { throw LocalProxyFailure.credentialsBusy }
+            guard ProcessInfo.processInfo.systemUptime < (deadline ?? .greatestFiniteMagnitude) else { throw LocalProxyFailure.admissionDeadline }
             return result
         }
     }
@@ -235,32 +238,13 @@ enum LocalProxyCredentialReader {
             before.st_size == after.st_size, before.st_mtimespec.tv_sec == after.st_mtimespec.tv_sec,
             before.st_mtimespec.tv_nsec == after.st_mtimespec.tv_nsec,
             before.st_ctimespec.tv_sec == after.st_ctimespec.tv_sec, before.st_ctimespec.tv_nsec == after.st_ctimespec.tv_nsec
-        else { throw LocalProxyFailure.identity }
+        else { throw LocalProxyFailure.credentialsBusy }
         return data
-    }
-
-    private static func withBoundedGates<T>(_ homes: [URL], deadline admissionDeadline: TimeInterval?, operation: () throws -> T) throws -> T {
-        // Quota refreshes use the same credential gates. Allow a short refresh
-        // to finish without misclassifying it as a task occupying this account.
-        // Keep this below the 25s bridge deadline, including the 6s Hub check.
-        let deadline = min(ProcessInfo.processInfo.systemUptime + 12, admissionDeadline ?? .greatestFiniteMagnitude)
-        let gates =
-            [CodexCredentialAccessGate.lock] + Set(homes.map { CodexCredentialTransaction.canonical($0).path }).sorted().map { CodexCredentialAccessGate.homeLock(forHomePath: $0) }
-        var acquired: [NSRecursiveLock] = []
-        defer { acquired.reversed().forEach { $0.unlock() } }
-        for gate in gates {
-            while !gate.try() {
-                guard ProcessInfo.processInfo.systemUptime < deadline else { throw LocalProxyFailure.credentialsBusy }
-                Thread.sleep(forTimeInterval: 0.01)
-            }
-            acquired.append(gate)
-        }
-        return try operation()
     }
 
     static func validate(
         data: Data, profile: CodexProfile, centralIdentity: CodexCredentialIdentity, now: Date, allowDesktopAccount: Bool = false, creditFloor: Int? = nil,
-        allowPaidCredits: Bool = false
+        allowPaidCredits: Bool = false, policy: LocalProxyAccountPolicy = LocalProxyAccountPolicy()
     ) throws -> Value {
         guard data.count <= 1024 * 1024, !profile.isSystemProfile,
             let snapshot = profile.lastSnapshot,
@@ -275,7 +259,7 @@ enum LocalProxyCredentialReader {
             let tokens = object["tokens"] as? [String: Any], let token = tokens["access_token"] as? String,
             token.utf8.count <= 32768, !token.contains("\n"), !token.contains("\r")
         else { throw LocalProxyFailure.identity }
-        if let failure = LocalProxyAdmission.quota(profile, now: now, creditFloor: creditFloor, allowPaidCredits: allowPaidCredits) { throw failure }
+        if let failure = LocalProxyAdmission.quota(profile, now: now, creditFloor: creditFloor, allowPaidCredits: allowPaidCredits, policy: policy) { throw failure }
         let parts = token.split(separator: ".", omittingEmptySubsequences: false)
         guard parts.count == 3 else { throw LocalProxyFailure.loginExpired }
         var encoded = String(parts[1]).replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")

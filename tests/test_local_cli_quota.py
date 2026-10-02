@@ -14,6 +14,8 @@ READER = ROOT / "Sources/CodexUsageWidget/Services/LocalCLIQuotaReader.swift"
 BOUNDED_READER = ROOT / "Sources/CodexUsageWidget/Services/DispatchParticipationSync.swift"
 FIXTURE = ROOT / "tests/LocalCLIQuotaFixture.swift"
 KIMI_FIXTURE = ROOT / "tests/KimiCLIQuotaFixture.swift"
+GROK_FIXTURE = ROOT / "tests/GrokCLIQuotaContractFixture.swift"
+KIMI_RENEWAL_FIXTURE = ROOT / "tests/KimiRenewalFixture.swift"
 MODELS = ROOT / "Sources/CodexUsageWidget/Domain/TokenMonitorEngineModels.swift"
 ENGINE = ROOT / "Sources/CodexUsageWidget/Services/TokenMonitorEngine.swift"
 UPSTREAM_READER = ROOT / "Sources/CodexUsageWidget/Services/TokenMonitorLocalCLIQuotaReader.swift"
@@ -31,6 +33,8 @@ class LocalCLIQuotaTests(unittest.TestCase):
             for fixture, expected in (
                 (FIXTURE, "PASS local-cli-quota fixture"),
                 (KIMI_FIXTURE, "PASS kimi-cli-quota fixture"),
+                (GROK_FIXTURE, "GROK CONTRACT: 20/20 passed"),
+                (KIMI_RENEWAL_FIXTURE, "PASS kimi-renewal candidate fixture (4 scenarios)"),
             ):
                 output = Path(temporary) / fixture.stem
                 guard = subprocess.run(
@@ -70,7 +74,7 @@ class LocalCLIQuotaTests(unittest.TestCase):
                     capture_output=True,
                     timeout=30,
                     check=False,
-                    env={"PATH": os.environ.get("PATH", "/usr/bin:/bin")},
+                    env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "KIMI_FIXTURE_ROOT": temporary},
                 )
                 self.assertEqual(run_result.returncode, 0, run_result.stderr)
                 self.assertEqual(run_result.stdout.strip(), expected)
@@ -95,7 +99,7 @@ class LocalCLIQuotaTests(unittest.TestCase):
         self.assertIn('kSecAttrService: "Claude Code-credentials"', source)
 
     def test_fixture_contains_only_synthetic_credentials(self):
-        for fixture in (FIXTURE, KIMI_FIXTURE):
+        for fixture in (FIXTURE, KIMI_FIXTURE, GROK_FIXTURE, KIMI_RENEWAL_FIXTURE):
             content = fixture.read_bytes()
             digest = hashlib.sha256(content).hexdigest()
             self.assertEqual(len(digest), 64)

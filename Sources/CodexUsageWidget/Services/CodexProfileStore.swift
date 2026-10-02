@@ -1533,6 +1533,24 @@ final class CodexProfileStore {
         }
     }
 
+    /// Restore only the Desktop record after a switch that started signed out.
+    /// The credential journal must have restored the missing auth file first.
+    func restoreSignedOutSystemProfile(_ original: CodexProfile) throws {
+        guard original.isSystemProfile,
+            try CodexCredentialTransaction.read(original.codexHomeURL.appendingPathComponent("auth.json")) == nil
+        else { throw CodexCredentialTransaction.Failure.superseded }
+        try mutateState {
+            guard let index = self.state.profiles.firstIndex(where: \.isSystemProfile),
+                self.state.profiles[index].id == original.id,
+                self.state.profiles[index].codexHomePath == original.codexHomePath
+            else { throw CodexCredentialTransaction.Failure.superseded }
+            self.state.profiles[index] = original
+            self.state.selectedLaunchProfileID = original.id
+            self.state.selectedMonitorProfileID = original.id
+            return true
+        }
+    }
+
     func setRemark(_ remark: String, for id: String) throws {
         let trimmed = remark.trimmingCharacters(in: .whitespacesAndNewlines)
         try mutateState {

@@ -37,7 +37,7 @@ jobs:
 
   macos:
     runs-on: macos-14
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - name: Prepare companion build toolchain
@@ -101,10 +101,11 @@ jobs:
           python3 -m unittest tests.test_local_cli_quota tests.test_additional_cli_quota tests.test_zcode_cli_quota
       - name: Validate independent local proxy with synthetic accounts
         run: |
+          python3 scripts/test-invite-purchase-link.py
           python3 scripts/test-local-proxy-quota-refresh.py
           python3 Companion/LocalProxy/fixtures/test-cross-language.py --helper build/AiGoodBro.app/Contents/Resources/LocalProxy/aigoodbro-local-proxy
           cd Companion/LocalProxy
-          go test -mod=readonly -race -timeout=90s ./...
+          go test -mod=readonly -race -timeout=3m ./...
           go vet -mod=readonly ./...
       - uses: actions/setup-node@v4
         with:
@@ -114,6 +115,8 @@ jobs:
           npm install --no-save --no-package-lock --no-audit --no-fund playwright@1.62.1
           npx playwright install chromium
           node scripts/test-upstream-dashboard-dom-0918v1.js
+          node scripts/test-home-dashboard-cost-0928v4.cjs
+          node scripts/test-home-dashboard-0928v1.cjs
       - name: Unmount pinned Token Monitor desktop runtime
         if: ${{ always() }}
         shell: bash

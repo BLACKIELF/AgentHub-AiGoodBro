@@ -97,6 +97,19 @@ private func testOpenCodeXDGProviderIsolation() throws {
         command.contains("-u ANTHROPIC_API_KEY") && command.contains("-u OPENAI_API_KEY"),
         "OpenCode does not inherit paid provider API keys")
     try expect(!command.contains("opencode-go"), "OpenCode Go is not substituted for provider login")
+    // Execute only a generated shell fixture, never an installed OpenCode CLI.
+    try makeExecutable(at: executable, contents: "#!/bin/sh\ntest -z \"${OPENCODE_AUTH_CONTENT+x}\"\n")
+    for action in [LocalCLITerminalLauncher.Action.signIn, .open] {
+        let isolatedCommand = try LocalCLITerminalLauncher.command(
+            profile: profile, executable: executable.path, action: action, workingDirectory: workingDirectory)
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", isolatedCommand]
+        process.environment = ["PATH": "/usr/bin:/bin", "OPENCODE_AUTH_CONTENT": "synthetic-other-profile"]
+        try process.run()
+        process.waitUntilExit()
+        try expect(process.terminationStatus == 0, "OpenCode cannot inherit credentials outside the selected profile")
+    }
 
     let invalid = root.appendingPathComponent("linked", isDirectory: true)
     try FileManager.default.createDirectory(at: invalid, withIntermediateDirectories: true)

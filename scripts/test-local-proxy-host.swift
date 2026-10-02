@@ -78,12 +78,12 @@ import Foundation
         var weeklyOnly = profile
         weeklyOnly.lastSnapshot?.fiveHour = nil
         weeklyOnly.lastSnapshot?.planType = "pro"
-        expect(LocalProxyAdmission.quota(weeklyOnly, now: now) == .quotaUnknown, "weekly-only with unknown credits fails closed")
+        expect(LocalProxyAdmission.quota(weeklyOnly, now: now) == nil, "weekly-only Pro subscription does not depend on credits")
         weeklyOnly.lastSnapshot?.creditBalance = "0"
         weeklyOnly.lastSnapshot?.creditBalanceUnlimited = false
         expect(LocalProxyAdmission.quota(weeklyOnly, now: now) == nil, "official weekly-only Pro without paid fallback")
         weeklyOnly.lastSnapshot?.creditBalance = "10"
-        expect(LocalProxyAdmission.quota(weeklyOnly, now: now) == .quotaUnknown, "weekly-only credits cannot authorize fallback")
+        expect(LocalProxyAdmission.quota(weeklyOnly, now: now) == nil, "positive credits do not block valid weekly subscription")
         expect(LocalProxyAdmission.quota(weeklyOnly, now: now, allowPaidCredits: true) == nil, "explicit credit policy admits valid Pro weekly subscription")
         var paid = spent
         paid.lastSnapshot?.creditBalanceUnlimited = false
@@ -133,6 +133,31 @@ import Foundation
             LocalProxyAdmission.creditPool([poolSpent], activeIDs: [poolSpent.id], refreshAfter: [poolSpent.id: now], now: now) == .quotaUnknown,
             "unsettled pool member cannot authorize credits")
         expect(LocalProxyAdmission.creditPool([poolSpent], activeIDs: [], now: now) == .identity, "empty pool cannot authorize credits")
+        let stopAt60 = LocalProxyAccountPolicy(fiveHourUsedLimit: 60, allowsCredits: false)
+        var capped = profile
+        capped.lastSnapshot?.fiveHour?.usedPercent = 59.99
+        expect(LocalProxyAdmission.quota(capped, now: now, policy: stopAt60) == nil, "below custom cap is admitted")
+        capped.lastSnapshot?.fiveHour?.usedPercent = 60
+        expect(LocalProxyAdmission.quota(capped, now: now, policy: stopAt60) == .usageLimit, "equality stops at custom cap")
+        capped.lastSnapshot?.creditBalance = "5000"
+        capped.lastSnapshot?.creditBalanceUnlimited = false
+        capped.lastSnapshot?.sevenDay?.usedPercent = 100
+        expect(LocalProxyAdmission.quota(capped, now: now, creditFloor: 0, allowPaidCredits: true, policy: stopAt60) == .usageLimit, "credits never bypass custom cap")
+        let noCredits = LocalProxyAccountPolicy(allowsCredits: false)
+        weeklyOnly.lastSnapshot?.sevenDay?.usedPercent = 100
+        expect(LocalProxyAdmission.quota(weeklyOnly, now: now, policy: noCredits) == .quota, "weekly-only account stops after subscription exhaustion")
+        expect(
+            LocalProxyAdmission.quota(weeklyOnly, now: now, creditFloor: 0, allowPaidCredits: true, policy: noCredits) == .quota,
+            "per-account credit opt-out overrides global opt-in")
+        expect(LocalProxyAdmission.quota(weeklyOnly, now: now, policy: stopAt60) == .quotaUnknown, "missing 5h cannot satisfy a custom 5h cap")
+        for limit in [-1.0, 100.1, .nan, .infinity] {
+            expect(!LocalProxyAccountPolicy(fiveHourUsedLimit: limit).isValid, "invalid custom cap rejected")
+        }
+        expect(
+            LocalProxyAdmission.quota(profile, now: now, policy: LocalProxyAccountPolicy(fiveHourUsedLimit: 0)) == .usageLimit, "zero cap pauses account even with remaining quota")
+        expect(
+            LocalProxyAdmission.creditPool([capped], activeIDs: [capped.id], policies: [capped.id: stopAt60], now: now) == nil,
+            "preserved quota at a custom cap does not block other authorized credit accounts")
         let preferences = LocalProxyPreferences()
         expect(!preferences.isEnabled && preferences.enabledIDs.isEmpty, "module inert default")
         expect(preferences.creditFloors.primary == 2000 && preferences.creditFloors.secondary == 1500, "legacy preferences retain default floors")
@@ -194,8 +219,13 @@ import Foundation
         expect(!editable.setCreditFloors(primary: 1800, secondary: 2400), "invalid edit does not replace saved policy")
         editable.setAccountPriority(id: profile.id, priority: true)
         editable.setAccountEnabled(id: profile.id, enabled: false)
+        let individualPolicy = LocalProxyAccountPolicy(fiveHourUsedLimit: 72.5, allowsCredits: false, creditPrimaryFloor: 1200, creditSecondaryFloor: 400)
+        expect(editable.setAccountPolicy(id: profile.id, policy: individualPolicy), "individual cap, credit permission and floors save together")
+        expect(!editable.setAccountPolicy(id: "missing", policy: individualPolicy), "unknown policy target rejected")
         let reloaded = LocalProxyQueueStore(usageStore: liveFixtureUsage)
         expect(reloaded.creditFallbackEnabled && reloaded.creditPrimaryFloor == 2400 && reloaded.creditSecondaryFloor == 1800, "credit policy persists across reload")
+        expect(reloaded.rows.first?.policy == individualPolicy && reloaded.rows.first?.usesDefaultCreditFloors == false, "individual policy survives reload")
+        expect(editable.setAccountPolicy(id: profile.id, policy: LocalProxyAccountPolicy()), "account can return to inherited defaults")
         paid.lastSnapshot?.creditBalanceUnlimited = false
         paid.lastSnapshot?.creditBalance = "2399"
         expect(LocalProxyAdmission.quota(paid, now: now, creditFloor: reloaded.creditPrimaryFloor, allowPaidCredits: true) == .quota, "custom first floor enforced")
@@ -425,7 +455,10 @@ import Foundation
         expect(invalidIdentity.error == "identity" && lifecycle.leases.isEmpty, "actual identity mismatch still rejects admission")
         HubConsoleModel.fixtureAvailability = .busy
         var warmUpEntered = false
-        HubConsoleModel.fixtureOnWarmUp = { warmUpEntered = true; Thread.sleep(forTimeInterval: 1.2) }
+        HubConsoleModel.fixtureOnWarmUp = {
+            warmUpEntered = true
+            Thread.sleep(forTimeInterval: 1.2)
+        }
         var lateRequest = LocalProxyRequest(
             schemaVersion: 1, runID: run, key: "fixture-secret", command: "acquire", requestID: fixtureUUIDv7(), profileID: profile.id, leaseID: nil)
         lateRequest.receivedAt = ProcessInfo.processInfo.systemUptime - 17
@@ -565,7 +598,7 @@ import Foundation
         let orderAfterRemoval = await desktopOrdering.handle(priorityRequest)
         expect(orderAfterRemoval.order == prioritized.order,
             "participation edits preserve an existing request's order")
-        expect(!desktopOrdering.setCreditFloors(primary: 2500, secondary: 1800), "running financial policy stays fixed")
+        expect(desktopOrdering.setCreditFloors(primary: 2500, secondary: 1800), "running credit floors persist for new admissions")
         let liveOrderingReloaded = LocalProxyQueueStore(usageStore: desktopOrderUsage)
         expect(liveOrderingReloaded.rows.map(\.id) == prioritized.order, "live order and priority survive preference reload")
         expect(liveOrderingReloaded.rows.first?.isPriority == true, "live priority persists")
@@ -953,9 +986,46 @@ import Foundation
         LocalProxyFixtureRuntime.afterRunning = nil
         expect(!resolvedReply.ok && resolvedReply.accessToken == nil && creditStore.leases.isEmpty,
             "disk-cancelled lease cannot return credentials before MainActor forget callback")
+        for stage in ["reserve", "running", "warmup"] {
+            let entered = DispatchSemaphore(value: 0)
+            let resume = DispatchSemaphore(value: 0)
+            let pause: () -> Void = {
+                entered.signal()
+                _ = resume.wait(timeout: .now() + 5)
+            }
+            if stage == "reserve" { LocalProxyFixtureRuntime.afterReserve = pause }
+            if stage == "running" { LocalProxyFixtureRuntime.afterRunning = pause }
+            if stage == "warmup" {
+                HubConsoleModel.fixtureOnWarmUp = { _ = creditStore.setCreditFloors(primary: 2450, secondary: 1800) }
+            }
+            let changingRequest = creditRequest("acquire_credit_primary", requestID: UUID().uuidString)
+            let pending = Task { await fixtureHandle(creditStore, changingRequest) }
+            if stage != "warmup" {
+                let paused = await Task.detached { Self.waitForReserve(entered) }.value
+                expect(paused, "policy edit fixture pauses at \(stage)")
+                expect(creditStore.setCreditFloors(primary: 2450, secondary: 1800), "policy edit persists during \(stage)")
+                resume.signal()
+            }
+            let reply = await pending.value
+            LocalProxyFixtureRuntime.afterReserve = nil
+            LocalProxyFixtureRuntime.afterRunning = nil
+            HubConsoleModel.fixtureOnWarmUp = nil
+            expect(
+                reply.error == "policy_changed" && reply.accessToken == nil && creditStore.leases.isEmpty,
+                "policy change across \(stage) rolls back without releasing credentials")
+            expect(creditStore.setCreditFloors(primary: 2400, secondary: 1800), "restore fixture floors after policy race")
+        }
+        let creditOptOut = LocalProxyAccountPolicy(allowsCredits: false)
+        expect(creditStore.setAccountPolicy(id: profile.id, policy: creditOptOut), "live per-account credit opt-out saves")
+        let optedOut = await fixtureHandle(creditStore, creditRequest("acquire_credit_primary", requestID: UUID().uuidString))
+        expect(optedOut.error == "quota" && optedOut.accessToken == nil, "live individual credit opt-out blocks paid admission")
+        expect(creditStore.setAccountPolicy(id: profile.id, policy: LocalProxyAccountPolicy()), "restore individual policy")
         let firstCreditRequest = UUID().uuidString
         let firstCredit = await fixtureHandle(creditStore, creditRequest("acquire_credit_primary", requestID: firstCreditRequest))
         expect(firstCredit.ok && firstCredit.leaseID != nil, "host admits balance above configured primary floor")
+        expect(creditStore.setAccountPolicy(id: profile.id, policy: LocalProxyAccountPolicy(allowsCredits: false)), "rules remain editable with an admitted request")
+        expect(firstCredit.leaseID.map { creditStore.leases[$0]?.isAdmitted == true } == true, "editing rules preserves an already admitted request")
+        expect(creditStore.setAccountPolicy(id: profile.id, policy: LocalProxyAccountPolicy()), "restore active fixture policy")
         let firstRelease = await fixtureHandle(creditStore, creditRequest("release", requestID: firstCreditRequest, leaseID: firstCredit.leaseID))
         expect(firstRelease.ok && creditUsage.refreshCount > 0, "paid completion requests official balance refresh")
         let staleCredit = await fixtureHandle(creditStore, creditRequest("acquire_credit_primary", requestID: UUID().uuidString))
@@ -974,43 +1044,28 @@ import Foundation
         expect(secondaryAtFloor.error == "quota" && creditStore.leases.isEmpty, "host stops admission at configured lower floor")
         let wrongPass = await fixtureHandle(creditStore, creditRequest("acquire_desktop_credit_secondary", requestID: UUID().uuidString))
         expect(wrongPass.error == "stage_not_applicable", "other identity stage is silently inapplicable")
-        expect(!creditStore.setCreditFloors(primary: 100, secondary: 0), "running policy cannot change mid-request")
+        expect(creditStore.setCreditFloors(primary: 100, secondary: 0), "running policy can change for subsequent requests")
         creditChild.terminate()
         await Task.detached { creditChild.waitUntilExit() }.value
         creditStore.childExited(creditChild)
         HubConsoleModel.fixtureAvailability = .unavailable
         let refreshStarted = DispatchSemaphore(value: 0)
+        let releaseRefresh = DispatchSemaphore(value: 0)
         let refreshFinished = DispatchSemaphore(value: 0)
         DispatchQueue.global().async {
             CodexCredentialAccessGate.lock.lock()
             refreshStarted.signal()
-            Thread.sleep(forTimeInterval: 2.25)
+            _ = releaseRefresh.wait(timeout: .now() + 5)
             CodexCredentialAccessGate.lock.unlock()
             refreshFinished.signal()
         }
-        expect(refreshStarted.wait(timeout: .now() + 2) == .success, "fixture quota refresh holds credential gate")
-        let afterRefresh = try LocalProxyCredentialReader.read(profile: profile, system: systemProfile, now: now)
-        expect(afterRefresh.accountID == "account-fixture", "read waits beyond old two-second refresh contention")
-        expect(refreshFinished.wait(timeout: .now() + 1) == .success, "fixture refresh releases gate")
-        let longRefreshStarted = DispatchSemaphore(value: 0)
-        let releaseLongRefresh = DispatchSemaphore(value: 0)
-        let longRefreshFinished = DispatchSemaphore(value: 0)
-        DispatchQueue.global().async {
-            CodexCredentialAccessGate.lock.lock()
-            longRefreshStarted.signal()
-            _ = releaseLongRefresh.wait(timeout: .now() + 16)
-            CodexCredentialAccessGate.lock.unlock()
-            longRefreshFinished.signal()
-        }
-        expect(longRefreshStarted.wait(timeout: .now() + 2) == .success, "fixture long refresh holds gate")
+        expect(refreshStarted.wait(timeout: .now() + 2) == .success, "fixture quota refresh holds global credential gate")
         let gateWaitStart = ProcessInfo.processInfo.systemUptime
-        do {
-            _ = try LocalProxyCredentialReader.read(profile: profile, system: systemProfile, now: now)
-            preconditionFailure("indefinite credential gate was admitted")
-        } catch LocalProxyFailure.credentialsBusy { checks += 1 }
-        releaseLongRefresh.signal()
-        expect(ProcessInfo.processInfo.systemUptime - gateWaitStart < 14, "credential contention stays within bridge deadline")
-        expect(longRefreshFinished.wait(timeout: .now() + 1) == .success, "timed-out credential read releases all held gates")
+        let duringRefresh = try LocalProxyCredentialReader.read(profile: profile, system: systemProfile, now: now)
+        expect(duringRefresh.accountID == "account-fixture", "stable credential snapshot remains usable during unrelated refresh")
+        expect(ProcessInfo.processInfo.systemUptime - gateWaitStart < 0.5, "read-only admission does not wait on global quota refresh")
+        releaseRefresh.signal()
+        expect(refreshFinished.wait(timeout: .now() + 1) == .success, "fixture releases credential gate")
         try FileManager.default.removeItem(at: profileFile)
         try FileManager.default.createSymbolicLink(at: profileFile, withDestinationURL: centralFile)
         do {

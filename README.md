@@ -1,4 +1,4 @@
-# AiGoodBro · AgentHub（2.0候选）
+# AiGoodBro · AgentHub（2.2候选）
 
 **看清额度、用量和任务占用；需要时，让本机任务使用自己的 Codex 账号池。**
 
@@ -6,7 +6,9 @@ AiGoodBro 是面向个人自用的 macOS AI 工作台，汇总 Codex 多账号�
 
 **中文** | [English](README.en.md)
 
-当前源码候选为 **9.6.63 (113) · 1002v2**。下图由新版应用的原生界面使用模拟数据生成，展示当前布局；[完整图册](docs/images/1002v2/README.md)包含首页、账号、反代、设置、引导、用量浮层与九套主题。历史实机截图保留在各自版本目录。
+最新源码候选为 **2.2 · 1003v1**，内部更新版本为 9.6.64 (114)。本轮补齐批量邀请与官方记录、运行中的每账号反代规则、快照保留与刷新间隔、按数字长度分配宽度的美元／人民币总览，并修补全屏快捷键、CLI 登录与额度读取及桌面切换确认。本机已覆盖安装 114 版；本轮尚未发布官方安装包。见[本轮验证与范围](docs/source-publication-1003v1.md)及[新增预览](docs/images/1002v4/README.md)。
+
+下方图片保留 1002v2 的来源标记；[完整图册](docs/images/1002v2/README.md)包含首页、账号、反代、设置、引导、用量浮层与九套主题。历史实机截图保留在各自版本目录。
 
 ## 一眼看懂工作状态
 
@@ -84,21 +86,21 @@ Codex 独立 CLI 可使用各自的本机登录目录；其他工具按提供商
 
 ## 当前候选与验收边界
 
-当前源码是 **AiGoodBro 9.6.63 (113) · 1002v2 源码候选**，位于 [`codex/reset-messages-0926v1`](https://github.com/BLACKIELF/AgentHub-AiGoodBro/tree/codex/reset-messages-0926v1)，由 [PR #13](https://github.com/BLACKIELF/AgentHub-AiGoodBro/pull/13) 评审。它仍是候选，尚未合并到 `main`，没有正式下载包。
+当前源码候选是 **AiGoodBro 9.6.64 (114) · 2.2 / 1003v1**，位于 [`codex/reset-messages-0926v1`](https://github.com/BLACKIELF/AgentHub-AiGoodBro/tree/codex/reset-messages-0926v1)，由 [PR #13](https://github.com/BLACKIELF/AgentHub-AiGoodBro/pull/13) 评审。它仍是候选，尚未合并到 `main`，没有正式下载包。
 
 [![候选分支 CI](https://github.com/BLACKIELF/AgentHub-AiGoodBro/actions/workflows/ci.yml/badge.svg?branch=codex%2Freset-messages-0926v1)](https://github.com/BLACKIELF/AgentHub-AiGoodBro/pull/13/checks)
 
-本机当前安装为 **9.6.62 (112) · 1002v1**。113 候选完成优化构建、源码及资源核对、严格签名、35 组整包自测、Swift 格式检查与模拟桌面协议回归。主页、设置、引导、登录、用量浮层和主题图片由候选原生组件离屏生成，使用模拟数据，不代表真实账号或模型请求。本次没有重启正在运行的反代，也没有用真实模型请求验证新窗口边缘。个人微信手机收件、原聊天真实对话、自动暂停后切号续做、真实生图与新标题栏实机效果仍待验收。详细来源和边界见[当前源码发布记录](docs/source-publication-1002v2.md)；远端 CI 以 [PR #13 检查页](https://github.com/BLACKIELF/AgentHub-AiGoodBro/pull/13/checks)为准。
+本机已将 **9.6.64 (114)** 覆盖安装到 `/Applications/AiGoodBro.app`；安装后核验了版本、主程序和反代 helper 哈希、签名及架构。安装前确认没有运行中的反代或占用租约，并正常退出了旧版。35 项应用自测、跨语言反代桥接回归、Go race 测试与 vet 已通过；本轮没有切换 Codex 账号，也没有发送真实模型请求。主页、设置、引导、登录、用量浮层和主题图片由原生组件离屏生成，使用模拟数据，不代表真实账号或模型请求。个人微信手机收件、原聊天真实对话、自动暂停后切号续做、真实生图与新标题栏实机效果仍待验收。详细来源和边界见[当前源码发布记录](docs/source-publication-1003v1.md)；远端 CI 以 [PR #13 检查页](https://github.com/BLACKIELF/AgentHub-AiGoodBro/pull/13/checks)为准。
 
-构建 2.0 候选：
+构建 2.2 候选：
 
 ```sh
-git clone --branch codex/reset-messages-0926v1 https://github.com/BLACKIELF/AgentHub-AiGoodBro.git AiGoodBro-2.0
-cd AiGoodBro-2.0
+git clone --branch codex/reset-messages-0926v1 https://github.com/BLACKIELF/AgentHub-AiGoodBro.git AiGoodBro-2.2
+cd AiGoodBro-2.2
 make build
 ```
 
-源码构建要求 macOS、Go 1.26+ 和经校验的 Token Monitor v0.62.0 macOS 运行时，详见[构建与发布记录](docs/source-publication-1002v2.md)。当前没有可下载的 2.0 安装包；Windows 后续工作仍搁置。
+源码构建要求 macOS、Go 1.26+ 和经校验的 Token Monitor v0.62.0 macOS 运行时，详见[构建与发布记录](docs/source-publication-1003v1.md)。当前没有可下载的 2.2 官方安装包；Windows 后续工作仍搁置。
 
 ## 借鉴项目、代码来源与许可证
 
@@ -107,17 +109,18 @@ make build
 | 项目 | 来源关系 |
 |---|---|
 | [Tencent/openclaw-weixin 2.4.9](https://github.com/Tencent/openclaw-weixin/tree/24de5c9eb0dd5e595d7e2d090ed8a3f82870d42c) | iLink 协议与扫码流程的原生适配；MIT 声明保留，不安装 OpenClaw。 |
-| [codexU](https://github.com/shanggqm/codexU) | 历史 SwiftUI、额度、配色和 Windows 基础直接承接。 |
-| [Token Monitor v0.62.0](https://github.com/Javis603/token-monitor/tree/dcccfb01557e2786888fd5479552f392ac6c0d32) | 统计引擎、桌面看板、图表和资源直接复用并适配宿主。 |
-| [Tokscale fork](https://github.com/Javis603/tokscale) · [原项目](https://github.com/junhoyeo/tokscale) | 统计采集基础；打包修订为 `06a9f1625d5a505f01b39eff29f7be44a2c52188`，见 [`SOURCE.json`](Companion/TokenMonitorEngine/SOURCE.json)。 |
-| [CLIProxyAPI v8.0.2](https://github.com/router-for-me/CLIProxyAPI/tree/v8.0.2) | SDK 调度、Codex 执行器和 Responses 处理器直接复用。 |
-| [Codex-Manager](https://github.com/qxcnm/Codex-Manager) | 暖号请求结构与 SSE 完成规则的实现适配，见 [`CodexAccountActions.swift`](Sources/CodexUsageWidget/Services/CodexAccountActions.swift#L850)。 |
-| [Hazmat wrapper 脚本](https://github.com/dredozubov/hazmat/blob/c112d222bb53e888dd17a8927927286792f7c20e/scripts/check-codex-desktop-attach-smoke.sh) | 参考 `CODEX_CLI_PATH` 的 stdio wrapper 入口；未集成 Hazmat 沙箱或服务。 |
+| [codexU](https://github.com/shanggqm/codexU) | 历史固定源码的二次开发与宿主适配：SwiftUI、额度、配色和 Windows 基础承接后由 AiGoodBro 维护。 |
+| [Token Monitor v0.62.0](https://github.com/Javis603/token-monitor/tree/dcccfb01557e2786888fd5479552f392ac6c0d32) | 基于固定上游源码的二次开发与原生集成：统计引擎、桌面看板、图表和资源随包保留，AiGoodBro 通过 bridge、hooks 和 Swift 外壳接入。v0.63 以后上游更新的适用性与本机已有零额度修复见[本轮发布记录](docs/source-publication-1003v1.md)。 |
+| [Tokscale fork](https://github.com/Javis603/tokscale) · [原项目](https://github.com/junhoyeo/tokscale) | 基于固定提交的二次开发与原生集成；统计采集基础和许可证随包保留，打包修订为 `06a9f1625d5a505f01b39eff29f7be44a2c52188`。 |
+| [CLIProxyAPI v8.0.2](https://github.com/router-for-me/CLIProxyAPI/tree/v8.0.2) | 固定上游代码的宿主适配：复用 SDK 调度、Codex 执行器和 Responses 处理器，并窄适配 v8.0.7 首帧前断流的 502/failover 行为；未升级整套依赖。 |
+| [Codex-Manager](https://github.com/qxcnm/Codex-Manager) | 协议适配与静态研究参考；暖号请求结构与 SSE 完成规则独立实现，见 [`CodexAccountActions.swift`](Sources/CodexUsageWidget/Services/CodexAccountActions.swift#L850)。 |
+| [Hazmat wrapper 脚本](https://github.com/dredozubov/hazmat/blob/c112d222bb53e888dd17a8927927286792f7c20e/scripts/check-codex-desktop-attach-smoke.sh) | 协议适配与静态研究参考：仅参考 `CODEX_CLI_PATH` 的 stdio wrapper 入口，未集成 Hazmat 沙箱或服务。 |
+| [BlackHole1/aswap v1.1.0](https://github.com/BlackHole1/aswap/releases/tag/v1.1.0) | X 帖子对应的 Claude 多账号 CLI/Chrome 资料隔离工具；协议适配与静态研究参考，未复制、未打包，也未接入 Codex、Feishu 或企业微信。 |
 
 AiGoodBro 使用 [MIT 许可证](LICENSE)。第三方完整许可和版权文本见 [`Resources/THIRD_PARTY_NOTICES.txt`](Resources/THIRD_PARTY_NOTICES.txt)、[`Companion/LocalProxy/LICENSE.CLIProxyAPI`](Companion/LocalProxy/LICENSE.CLIProxyAPI)、[`Companion/LocalProxy/LICENSE.Hazmat`](Companion/LocalProxy/LICENSE.Hazmat) 与 [`Companion/LocalProxy/THIRD-PARTY-NOTICES.txt`](Companion/LocalProxy/THIRD-PARTY-NOTICES.txt)。
 
 ## 延伸阅读
 
-[详细使用说明](docs/usage-guide.md) · [本机 CLI 额度范围](docs/local-cli-accounts.md) · [反代实现与验证记录](docs/local-proxy-0928v1.md) · [当前源码发布记录](docs/source-publication-1002v2.md) · [历史实机截图：0929v2](docs/images/0929v2/README.md) · [历史截图：0927v6](docs/images/0927v6/README.md) · [历史截图：0910v1](docs/images/0910v1/README.md) · [问题反馈](https://github.com/BLACKIELF/AgentHub-AiGoodBro/issues) · [安全说明](SECURITY.md)
+[详细使用说明](docs/usage-guide.md) · [本机 CLI 额度范围](docs/local-cli-accounts.md) · [反代实现与验证记录](docs/local-proxy-0928v1.md) · [当前源码发布记录](docs/source-publication-1003v1.md) · [历史实机截图：0929v2](docs/images/0929v2/README.md) · [历史截图：0927v6](docs/images/0927v6/README.md) · [历史截图：0910v1](docs/images/0910v1/README.md) · [问题反馈](https://github.com/BLACKIELF/AgentHub-AiGoodBro/issues) · [安全说明](SECURITY.md)
 
 [MIT 许可证](LICENSE) · [第三方声明](Resources/THIRD_PARTY_NOTICES.txt) · [品牌兼容表](docs/brand-compat-0911v1.md)

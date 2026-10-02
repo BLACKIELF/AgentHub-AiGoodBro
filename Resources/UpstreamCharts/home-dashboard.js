@@ -11,7 +11,9 @@ const splitBounds = Object.freeze({min:0.28, max:0.72, default:0.34});
 const safeSplitRatio = value => Number.isFinite(Number(value))
   ? Math.min(splitBounds.max, Math.max(splitBounds.min, Number(value))) : splitBounds.default;
 const summaryKeys = ['totalTokens','totalCost','activeDays','currentStreak','activeTimeMs','peakDayTokens','favoriteModel','messages'];
-const summaryDefaultWeights = [1.55,1.1,.45,.45,1.15,1.4,1.35,1];
+// User-selected display factor, deliberately independent of live FX settings.
+const fixedCnyCost = usd => presentNumber(usd) && Number.isFinite(usd * 6.8)
+  ? '¥' + new Intl.NumberFormat(state.locale, {minimumFractionDigits:2, maximumFractionDigits:2}).format(usd * 6.8) : null;
 const safeSummaryWidths = value => Object.fromEntries(summaryKeys
   .filter(key => value && presentNumber(value[key]) && value[key] >= .02 && value[key] <= 1)
   .map(key => [key,value[key]]));
@@ -135,8 +137,14 @@ renderNow = () => {
     const key = cards[index]?.key, raw = state.history?.summary?.[key];
     const value = card.querySelector('.dash-card-v');
     if (value) {
+      value.classList.remove('is-dual-cost');
       if (raw == null || (key !== 'favoriteModel' && !presentNumber(raw))) value.textContent = '—';
-      else if (key === 'totalCost') value.textContent = formatCost(raw);
+      else if (key === 'totalCost') {
+        const usd = document.createElement('span'); usd.className = 'dash-cost-usd'; usd.textContent = formatCost(raw);
+        const cny = document.createElement('span'); cny.className = 'dash-cost-cny'; cny.textContent = fixedCnyCost(raw) ?? '¥—';
+        value.classList.add('is-dual-cost');
+        value.replaceChildren(usd, document.createTextNode(' '), cny);
+      }
       else if (key !== 'favoriteModel' && key !== 'activeTimeMs') value.textContent = fullNumber(raw);
     }
     if (value) value.title = value.textContent;
@@ -152,6 +160,9 @@ renderNow = () => {
         : home.totalCostStatus === 'partial'
           ? (zh ? '部分记录的估算值，非实际账单' : 'Partial recorded estimate, not a bill')
           : (zh ? '累计估算值，与侧栏总计一致，非实际账单' : 'Cumulative estimate, same as the tray total; not a bill');
+      if (value && presentNumber(raw)) value.title += zh
+        ? '；人民币按 USD × 6.8 固定换算，非实时汇率'
+        : '; CNY uses a fixed USD × 6.8 factor, not a live exchange rate';
     }
   });
   applySummaryWidths();
@@ -267,12 +278,32 @@ document.getElementById('heatmapStartReset').addEventListener('click', () => {
 // the window; each metric keeps its own saved share when the window changes.
 let summaryDrag = null;
 function summaryColumns() { return window.innerWidth > 1080 ? 8 : window.innerWidth > 540 ? 4 : 2; }
+const summaryMeasure = document.createElement('canvas').getContext('2d');
+function summaryContentWidth(card) {
+  const measure = element => {
+    if (!element) return 0;
+    const style = getComputedStyle(element), text = element.textContent || '';
+    if (!summaryMeasure) return text.length * (parseFloat(style.fontSize) || 15) * .65;
+    summaryMeasure.font = `${style.fontStyle} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+    return summaryMeasure.measureText(style.textTransform === 'uppercase' ? text.toUpperCase() : text).width
+      + Math.max(0,text.length-1) * (parseFloat(style.letterSpacing) || 0);
+  };
+  const value = card.querySelector('.dash-card-v'), label = card.querySelector('.dash-card-k');
+  const amount = value?.classList.contains('is-dual-cost')
+    ? [...value.children].reduce((sum,part) => sum+measure(part),0) + 8 : measure(value);
+  const style = getComputedStyle(card);
+  const padding = (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0);
+  // Measure the actual formatted digits, currencies and translated label.
+  // Bound exceptionally long model names; narrow windows can wrap full values.
+  return Math.max(48, Math.min(els.cards.clientWidth*.55, Math.ceil(Math.max(amount,measure(label))+padding+5)));
+}
 function applySummaryWidths(widths = home.preferences?.summaryWidths || {}) {
   const cards = [...els.cards.querySelectorAll('.dash-card')];
-  const columns = summaryColumns(), totalWeight = summaryDefaultWeights.reduce((a,b) => a+b,0);
+  const columns = summaryColumns(), contentWidths = cards.map(summaryContentWidth);
+  const contentTotal = contentWidths.reduce((a,b) => a+b,0) || 1;
   for (let start = 0; start < cards.length; start += columns) {
     const group = cards.slice(start,start+columns);
-    const weights = group.map((_,i) => widths[summaryKeys[start+i]] || summaryDefaultWeights[start+i] / totalWeight);
+    const weights = group.map((_,i) => widths[summaryKeys[start+i]] || contentWidths[start+i] / contentTotal);
     const total = weights.reduce((a,b) => a+b,0);
     group.forEach((card,i) => {
       const index = start+i, key = summaryKeys[index], next = group[i+1];

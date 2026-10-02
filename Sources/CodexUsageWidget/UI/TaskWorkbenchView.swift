@@ -6,9 +6,22 @@ struct TaskWorkbenchView: View {
     @ObservedObject var model: TaskWorkbenchStore
     var onRefresh: () -> Void
     @Environment(\.widgetLanguage) private var language
+    @Environment(\.colorScheme) private var colorScheme
     @State private var selectedID: String?
     @State private var selectedProject: String = ""
+    @State private var searchText: String
+    @State private var filter: TaskWorkbenchFilter
     @State private var message: String?
+
+    init(
+        model: TaskWorkbenchStore, onRefresh: @escaping () -> Void,
+        initialFilter: TaskWorkbenchFilter = .all, initialQuery: String = ""
+    ) {
+        self.model = model
+        self.onRefresh = onRefresh
+        _filter = State(initialValue: initialFilter)
+        _searchText = State(initialValue: initialQuery)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -29,27 +42,29 @@ struct TaskWorkbenchView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             if let presentation = model.presentation {
+                let visibleItems = presentation.filteredItems(project: selectedProject, filter: filter, query: searchText)
                 HStack(spacing: 12) {
                     Text(language.text("运行中 \(presentation.overview.runningCount)", "\(presentation.overview.runningCount) running"))
-                    Text(language.text("需关注 \(presentation.items.filter(\.needsAttention).count)", "\(presentation.items.filter(\.needsAttention).count) need attention"))
+                    Text(language.text("需关注 \(presentation.attentionCount)", "\(presentation.attentionCount) need attention"))
+                    Text(language.text("待验收 \(presentation.acceptanceCount)", "\(presentation.acceptanceCount) awaiting acceptance"))
                     Spacer()
-                    Text(presentation.checkedAt, style: .time)
                 }.font(.caption).foregroundStyle(.secondary)
+                searchControls(presentation, visibleCount: visibleItems.count)
                 if presentation.overview.dataState != .available {
                     Text(language.text("连接或数据待更新，旧记录不能证明任务仍在运行。", "Connection or data needs updating; old records do not prove current activity."))
-                        .font(.caption).foregroundStyle(.orange)
+                        .font(.caption).foregroundStyle(FixedVisualPalette.statusWarningForeground(colorScheme))
                 }
                 ViewThatFits(in: .horizontal) {
                     HStack(alignment: .top, spacing: 12) {
-                        ScrollView { projectList(presentation) }.frame(width: 190, height: 360)
-                        taskArea(presentation).frame(minWidth: 380)
+                        ScrollView { projectList(presentation) }.frame(width: 170, height: 360)
+                        taskArea(presentation, items: visibleItems).frame(minWidth: 380)
                     }
                     VStack(alignment: .leading, spacing: 10) {
                         Picker(language.text("项目", "Project"), selection: $selectedProject) {
                             Text(language.text("所有项目", "All projects")).tag("")
                             ForEach(presentation.projects) { project in Text(projectTitle(project.name)).tag(project.name) }
                         }.pickerStyle(.menu)
-                        taskArea(presentation)
+                        taskArea(presentation, items: visibleItems)
                     }
                 }
                 Text(
@@ -67,19 +82,81 @@ struct TaskWorkbenchView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func taskArea(_ presentation: TaskWorkbenchPresentation) -> some View {
-        let items = presentation.items.filter { selectedProject.isEmpty || $0.project == selectedProject }
+    private func taskArea(_ presentation: TaskWorkbenchPresentation, items: [TaskWorkbenchItem]) -> some View {
+        let activeID = items.first(where: { $0.id == selectedID })?.id ?? items.first?.id
         return VStack(alignment: .leading, spacing: 10) {
             if items.isEmpty {
-                Text(language.text("暂无现有任务记录", "No existing task records"))
-                    .font(.callout).foregroundStyle(.secondary).padding(16)
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(
+                        presentation.items.isEmpty
+                            ? language.text("暂无现有任务记录", "No existing task records")
+                            : language.text("没有匹配的任务", "No matching tasks"))
+                    if !presentation.items.isEmpty {
+                        Button(language.text("显示全部任务", "Show all tasks")) {
+                            searchText = ""
+                            filter = .all
+                            selectedProject = ""
+                            selectedID = nil
+                        }
+                    }
+                }.font(.callout).foregroundStyle(.secondary).padding(16)
             } else {
                 ScrollView {
-                    LazyVStack(spacing: 6) { ForEach(items) { item in taskRow(item) } }
+                    LazyVStack(spacing: 6) {
+                        ForEach(items) { item in
+                            taskRow(item, isSelected: item.id == activeID)
+                        }
+                    }
                 }.frame(minHeight: 140, maxHeight: 300)
                 if let selected = items.first(where: { $0.id == selectedID }) ?? items.first { detail(selected) }
             }
         }.frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func searchControls(_ presentation: TaskWorkbenchPresentation, visibleCount: Int) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Image(systemName: "magnifyingglass").foregroundStyle(.secondary).accessibilityHidden(true)
+                TextField(language.text("搜索任务、项目或工具", "Search tasks, projects or tools"), text: $searchText)
+                    .textFieldStyle(.plain)
+                    .accessibilityIdentifier("workbench-search")
+                if !searchText.isEmpty {
+                    Button {
+                        searchText = ""
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                    }
+                    .buttonStyle(.plain).foregroundStyle(.secondary)
+                    .accessibilityLabel(language.text("清除搜索", "Clear search"))
+                }
+            }.font(.caption).padding(8)
+                .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
+            ViewThatFits(in: .horizontal) {
+                Picker(language.text("筛选", "Filter"), selection: $filter) {
+                    ForEach(TaskWorkbenchFilter.allCases, id: \.self) { value in
+                        Text(value.label(language)).tag(value)
+                    }
+                }.pickerStyle(.segmented).frame(minWidth: 340)
+                Picker(language.text("筛选", "Filter"), selection: $filter) {
+                    ForEach(TaskWorkbenchFilter.allCases, id: \.self) { value in
+                        Text(value.label(language)).tag(value)
+                    }
+                }.pickerStyle(.menu)
+            }
+            HStack {
+                Text(
+                    language.text(
+                        "显示 \(visibleCount) / \(presentation.items.count) 项",
+                        "Showing \(visibleCount) of \(presentation.items.count)"))
+                Spacer()
+                Text(language.text("状态合并于 ", "Status merged ") + presentation.checkedAt.formatted(date: .omitted, time: .shortened))
+            }.font(.caption2).foregroundStyle(.secondary).monospacedDigit()
+        }
+        .onChange(of: searchText) { value in
+            if value.count > 160 { searchText = String(value.prefix(160)) }
+            selectedID = nil
+        }
+        .onChange(of: filter) { _ in selectedID = nil }
     }
 
     @ViewBuilder private func actionButtons(_ item: TaskWorkbenchItem) -> some View {
@@ -122,12 +199,12 @@ struct TaskWorkbenchView: View {
                         selectedProject == project.name ? Color.blue.opacity(0.1) : Color.clear,
                         in: RoundedRectangle(cornerRadius: 8)
                     )
-                    .help(project.name)
+                    .help(projectTitle(project.name))
             }
         }.font(.caption)
     }
 
-    private func taskRow(_ item: TaskWorkbenchItem) -> some View {
+    private func taskRow(_ item: TaskWorkbenchItem, isSelected: Bool) -> some View {
         Button {
             selectedID = item.id
         } label: {
@@ -144,12 +221,15 @@ struct TaskWorkbenchView: View {
                             Text(item.annotation.decision.label(language))
                         }
                     }.font(.caption2).foregroundStyle(.secondary)
+                    if let reason = item.attentionReason(language) {
+                        Text(reason).font(.caption2).foregroundStyle(FixedVisualPalette.statusWarningForeground(colorScheme)).lineLimit(2)
+                    }
                 }
                 Spacer(minLength: 0)
                 Image(systemName: "chevron.right").font(.caption2).foregroundStyle(.tertiary)
             }.padding(10).frame(maxWidth: .infinity, alignment: .leading)
                 .background(
-                    selectedID == item.id ? Color.blue.opacity(0.08) : Color.secondary.opacity(0.05),
+                    isSelected ? Color.blue.opacity(0.08) : Color.secondary.opacity(0.05),
                     in: RoundedRectangle(cornerRadius: 9))
         }.buttonStyle(.plain)
     }
@@ -158,6 +238,10 @@ struct TaskWorkbenchView: View {
         VStack(alignment: .leading, spacing: 10) {
             Divider()
             Text(item.task.title).font(.callout.weight(.semibold)).textSelection(.enabled)
+            if let updatedAt = item.task.updatedAt {
+                Text(language.text("最后活动：", "Last activity: ") + language.dateTime(updatedAt))
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
             ViewThatFits(in: .horizontal) {
                 HStack { actionButtons(item) }
                 VStack(alignment: .leading, spacing: 8) { actionButtons(item) }
@@ -174,7 +258,7 @@ struct TaskWorkbenchView: View {
             if let inventory = item.annotation.inventory {
                 if item.inventoryIsStale {
                     Text(language.text("聊天已有更新，以下旧盘点需要重新核对。", "The chat has changed; this older inventory needs verification."))
-                        .font(.caption).foregroundStyle(.orange)
+                        .font(.caption).foregroundStyle(FixedVisualPalette.statusWarningForeground(colorScheme))
                 }
                 Text(language.text("剩余事项", "Remaining work")).font(.caption.weight(.semibold))
                 if inventory.remaining.isEmpty {

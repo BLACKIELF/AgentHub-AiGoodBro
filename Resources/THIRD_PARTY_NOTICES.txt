@@ -7,6 +7,13 @@ not state a partnership, endorsement, or current product affiliation.
 Historical SwiftUI, usage, palette and Windows foundations
 Source: https://github.com/shanggqm/codexU
 
+The Token Monitor and Tokscale source areas are also bundled as fixed-source
+second-developed native integrations. Their upstream directories and notices
+remain identifiable; AiGoodBro maintains the bridge, hooks and Swift host.
+CodexBar, subswap, QuotaBar, zcode-acp, Codex-Manager and BlackHole1/aswap
+are protocol or static research references only and are not bundled runtime
+dependencies.
+
 MIT License
 
 Copyright (c) 2026 Guomeiqing
@@ -131,3 +138,4 @@ IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
 CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
 TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+AiGoodBro includes fixed Token Monitor, Tokscale and codexU source areas as second-developed native integrations. Their upstream directories and applicable notices remain identifiable; AiGoodBro bridge, hooks and Swift host changes are maintained separately. Protocol references such as CodexBar, subswap, QuotaBar, zcode-acp, Codex-Manager and BlackHole1/aswap are independently implemented research references and are not bundled runtime dependencies.

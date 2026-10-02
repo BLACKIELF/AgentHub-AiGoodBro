@@ -53,6 +53,19 @@ const fixture = {schemaVersion:1,collectedAt:'2026-09-28T10:00:00Z',timezone:'As
       'Compact day counters and exact totals fit without horizontal overflow');
     assert.equal(await page.locator('.dash-card-v').nth(0).textContent(), '21,600,123,456');
     assert.match(await page.locator('.dash-card-v').nth(1).textContent(), /19,?732\.09/);
+    const autoWidths = () => page.locator('#dashCards .dash-card').evaluateAll(cards => cards.map(card => card.getBoundingClientRect().width));
+    const shortNumbers = structuredClone(fixture);
+    shortNumbers.payload.aggregate.history.summary.totalTokens = 12;
+    shortNumbers.payload.aggregate.allTime.costUsd = 1;
+    await render(shortNumbers, {homePreferences:{summaryWidths:{}}});
+    const shortWidths = await autoWidths();
+    await render(fixture, {homePreferences:{summaryWidths:{}}});
+    const longWidths = await autoWidths();
+    assert.ok(longWidths[0] > shortWidths[0]+30 && longWidths[1] > shortWidths[1]+30,
+      'Long token totals and dual-currency amounts receive space according to their rendered content');
+    assert.ok(longWidths[2] < shortWidths[2], 'Short counters release space as other numbers grow');
+    await render(null);
+    assert.deepEqual(await autoWidths(),longWidths,'Identical data keeps column positions stable');
     const costOnlyNodes = await page.evaluate(() => {
       window.costOnlyNodes = {heat:document.querySelector('#dashHeatmap svg'),chart:document.querySelector('#dashChart svg'),handle:document.querySelector('.summary-resize')};
       return true;
@@ -61,7 +74,12 @@ const fixture = {schemaVersion:1,collectedAt:'2026-09-28T10:00:00Z',timezone:'As
     for (const [value,status,label] of [[19733.1,'known','成本估算'],[19733.1,'partial','部分成本估算'],[null,'known','成本未记录'],[0,'known','成本估算']]) {
       await render(null,{summaryCost:{value,status}});
       const text = await page.locator('.dash-card-v').nth(1).textContent();
-      assert.equal(text,value == null ? '—' : value === 0 ? '$0.0000' : `$${value.toFixed(2)}`);
+      const usd = value === 0 ? '$0.0000' : `$${value?.toFixed(2)}`;
+      const cny = value == null ? null : '¥' + new Intl.NumberFormat('zh', {minimumFractionDigits:2,maximumFractionDigits:2}).format(value * 6.8);
+      assert.equal(text,value == null ? '—' : `${usd} ${cny}`);
+      assert.equal(await page.locator('.dash-cost-cny').count(), value == null ? 0 : 1,
+        'Unknown cost clears the previous conversion; recorded zero retains a real zero');
+      if (value != null) assert.match(await page.locator('.dash-card-v').nth(1).getAttribute('title'), /USD × 6\.8/);
       assert.equal(await page.locator('.dash-card-k').nth(1).textContent(),label);
       assert.equal(await page.evaluate(() => window.costOnlyNodes.heat===document.querySelector('#dashHeatmap svg')
         && window.costOnlyNodes.chart===document.querySelector('#dashChart svg')
@@ -88,6 +106,10 @@ const fixture = {schemaVersion:1,collectedAt:'2026-09-28T10:00:00Z',timezone:'As
     const savedWidths = await page.evaluate(() => window.events.at(-1).preferences);
     await render(null,{homePreferences:savedWidths});
     assert.deepEqual(await page.evaluate(() => window.AiGoodBroDashboard.preferences.summaryWidths),savedWidths.summaryWidths);
+    const manualWidths = await autoWidths();
+    await render(null,{summaryCost:{value:1,status:'known'}});
+    assert.deepEqual(await autoWidths(),manualWidths,'Manual column widths take precedence over changing numeric lengths');
+    await render(null,{summaryCost:{value:19732.09,status:'known'}});
     await page.locator('.summary-resize').first().dblclick();
     assert.deepEqual(await page.evaluate(() => window.AiGoodBroDashboard.preferences.summaryWidths),{});
     const summaryLayout = await page.evaluate(() => {
@@ -252,6 +274,8 @@ const fixture = {schemaVersion:1,collectedAt:'2026-09-28T10:00:00Z',timezone:'As
     await page.setViewportSize({width:700,height:1000}); await page.waitForTimeout(180);
     assert.equal(await page.locator('#homeDashboard').evaluate(el => getComputedStyle(el).gridTemplateColumns.split(' ').length),1);
     assert.ok(await page.evaluate(() => document.body.scrollWidth <= innerWidth + 1));
+    assert.ok(await page.locator('#dashCards .dash-card').evaluateAll(cards => cards.every(card => card.scrollWidth <= card.clientWidth+1)));
+    await page.screenshot({path:path.join(output,'overview-narrow-summary-zh.png'),fullPage:true});
     await page.setViewportSize({width:700,height:340}); await page.waitForTimeout(180);
     await page.locator('#breakdownSummary').click();
     const narrowBounds = await page.evaluate(() => {
@@ -270,6 +294,6 @@ const fixture = {schemaVersion:1,collectedAt:'2026-09-28T10:00:00Z',timezone:'As
     assert.ok(await page.locator('#homeDashboard').evaluate(el => el.scrollTop) > 0);
     await page.screenshot({path:path.join(output,'overview-narrow-zh.png'),fullPage:true});
     assert.deepEqual(errors,[]); assert.deepEqual(requests,[]);
-    console.log('Home dashboard passed: unchanged upstream assets, split layout, 8 KPIs, June/custom date, saved controls, bars/K-line/OHLC tooltips, tool/model colors, unknowns, bilingual and narrow layouts; no network requests.');
+    console.log('Home dashboard passed: measured numeric widths, fixed USD/CNY conversion, manual-width persistence, unknown/partial/zero, unchanged upstream assets, 8 KPIs, charts, bilingual and narrow layouts; no network requests.');
   } finally {await browser.close();}
 })().catch(error => {console.error(error);process.exitCode = 1;});

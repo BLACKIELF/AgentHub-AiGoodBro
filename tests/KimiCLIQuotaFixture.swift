@@ -75,6 +75,33 @@ struct KimiCLIQuotaFixture {
         try expect(freshTransport.requests.count == 1, "expected one quota read")
         try expect(freshTransport.requests.first?.url?.absoluteString == "https://api.kimi.com/coding/v1/usages", "official Kimi endpoint")
 
+        let monthlyCode = await LocalCLIQuotaReader(transport: KimiMockTransport(body:
+            #"{"usages":{"limit_month_total":{"used_ratio":0.25},"limit_month_code":{"used_ratio":0,"reset_time":"2026-10-31T16:00:00Z"}},"limits":null}"#
+        )).load(profile: profile, now: now)
+        try expect(monthlyCode.state == .available, "monthly code pool is usable quota evidence")
+        try expect(monthlyCode.windows.map(\.id) == ["monthly", "monthly-code"], "monthly code is independent of total")
+        try expect(monthlyCode.windows.map(\.usedPercent) == [25, 0], "monthly code actual zero is preserved")
+        try expect(monthlyCode.windows[1].resetsAt != nil, "monthly code reset is preserved")
+        let codeOnly = try LocalCLIQuotaReader.parseKimi(Data(
+            #"{"usages":{"limit_month_code":{"used_ratio":0.5}}}"#.utf8))
+        try expect(codeOnly.windows.count == 1 && codeOnly.windows[0].usedPercent == 50, "code-only pool accepted")
+        let stringRatio = try LocalCLIQuotaReader.parseKimi(Data(
+            #"{"usages":{"limit_month_code":{"used_ratio":"0.125"}}}"#.utf8))
+        try expect(stringRatio.windows[0].usedPercent == 12.5, "official numeric-string ratio is accepted")
+        for body in [
+            #"{"usage":null}"#, #"{"limits":null}"#, #"{"limits":[]}"#,
+            #"{"usages":{},"limits":[]}"#,
+            #"{"usages":{"limit_month_code":{"reset_time":"2026-10-31T16:00:00Z"}},"usage":null}"#,
+            #"{"usages":{"limit_month_code":{"used_ratio":true}}}"#,
+            #"{"usages":{"limit_month_code":{"used_ratio":""}}}"#,
+            #"{"usages":{"limit_month_code":{"used_ratio":"nan"}}}"#,
+            #"{"usages":{"limit_month_code":{"used_ratio":"-0.1"}}}"#,
+        ] {
+            let empty = await LocalCLIQuotaReader(transport: KimiMockTransport(body: body))
+                .load(profile: profile, now: now)
+            try expect(empty.state == .unavailable && empty.windows.isEmpty, "empty or invalid quota is unavailable")
+        }
+
         // The reader cannot refresh OAuth itself. A saved refresh token means
         // this is temporarily unavailable, not proof that sign-in was lost.
         try saveCredentials(expiry: 1_799_999_999, refreshToken: "synthetic-refresh")

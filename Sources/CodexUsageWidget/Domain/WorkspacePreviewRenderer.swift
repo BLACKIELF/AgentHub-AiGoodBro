@@ -754,7 +754,18 @@ enum WorkspacePreviewRenderer {
                 filename: "home-cards-light-liquid-keycap-1440-reduce-transparency-viewport.png")
             // Compact layout checks include expanded sections, both languages,
             // and the real proxy view, with synthetic account data only.
-            let proxy = LocalProxyQueueStore(usageStore: store)
+            var proxyPreferences = LocalProxyPreferences()
+            proxyPreferences.creditFallback = true
+            proxyPreferences.accountPolicies = Dictionary(
+                uniqueKeysWithValues: store.profiles.enumerated().map { index, profile in
+                    (
+                        profile.id,
+                        LocalProxyAccountPolicy(
+                            fiveHourUsedLimit: index == 2 ? 80 : 100, allowsCredits: index != 1,
+                            creditPrimaryFloor: index == 2 ? 3000 : nil, creditSecondaryFloor: index == 2 ? 1000 : nil)
+                    )
+                })
+            let proxy = LocalProxyQueueStore(usageStore: store, previewPreferences: proxyPreferences)
             for locale in [WidgetLanguage.zh, .en] {
                 settings.language = locale
                 defaults.set(true, forKey: "AiGoodBro.home.section.recommended-announcements.expanded")
@@ -797,8 +808,42 @@ enum WorkspacePreviewRenderer {
                     .environment(\.widgetLanguage, locale)
                     .environment(\.colorScheme, ColorScheme.dark)
                     try renderView(
-                        sheet, size: CGSize(width: 520, height: 560), scheme: .dark,
+                        sheet, size: CGSize(width: 600, height: 660), scheme: .dark,
                         to: directory.appendingPathComponent("invite-\(name)-\(locale.rawValue).png"))
+                }
+                let historyEligibility = try JSONDecoder().decode(
+                    CodexReferralEligibility.self,
+                    from: JSONSerialization.data(withJSONObject: [
+                        "should_show": true, "remaining_send_capacity": 3, "remaining_reward_capacity": 3,
+                        "requires_explicit_confirmation": true,
+                        "grants": [["recipient": "referrer", "grant_type": "personal_credits", "amount": 1000]],
+                    ]))
+                let historyReview = CodexReferralReview(
+                    context: CodexReferralContext(programID: "codex_referral_consumer"), eligibility: historyEligibility, checkedAt: referenceDate)
+                let historyAccount = CodexReferralAccount(profile: store.profiles[0], credentialHome: store.profiles[0].codexHomeURL)
+                let historyRecords = [
+                    CodexReferralRecord(id: "demo-accepted", email: "alex@example.invalid", status: .redeemed),
+                    CodexReferralRecord(id: "demo-pending", email: "sam@example.invalid", status: .pending),
+                    CodexReferralRecord(id: "demo-expired", email: "lee@example.invalid", status: .expired),
+                    CodexReferralRecord(id: "demo-unknown", email: nil, status: .unknown),
+                ]
+                for scheme in [ColorScheme.dark, .light] {
+                    for variant in ["history", "batch", "confirming"] {
+                        let controller = CodexInviteController(
+                            previewReview: historyReview, previewRecords: historyRecords,
+                            previewBatch: variant == "history" ? nil : CodexReferralBatchResult(sent: ["alex@example.invalid"], failed: [], uncertain: ["sam@example.invalid"]),
+                            previewConfirming: variant == "confirming")
+                        controller.email = variant == "history" ? "" : "alex@example.invalid\nsam@example.invalid"
+                        let sheet = CodexInviteSheet(
+                            account: historyAccount,
+                            accountLabel: locale.text("演示账号 · 示例记录", "Demo account · Sample records"), resolveAccount: { historyAccount },
+                            controller: controller, initialHistory: variant == "history"
+                        )
+                        .environment(\.widgetLanguage, locale).environment(\.colorScheme, scheme)
+                        try renderView(
+                            sheet, size: CGSize(width: 600, height: 660), scheme: scheme,
+                            to: directory.appendingPathComponent("invite-\(variant)-\(locale.rawValue)-\(scheme == .dark ? "dark" : "light").png"))
+                    }
                 }
                 for scheme in [ColorScheme.dark, .light] {
                     let tokens = catalog.resolve(id: settings.paletteID, appearance: scheme == .dark ? .dark : .light)

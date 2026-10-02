@@ -46,6 +46,7 @@ struct LocalCLIQuotaFixture {
         try await testGrokLoad()
         try await testKimiLoadAndDeviceIsolation()
         try await testClaudeLoadAndProfileIsolation()
+        try await testClaudeCredentialChangesDiscardQuota()
         try await testClaudeRelay()
         try await testOpenCodeProviderIsolation()
         try await testOpenCodeAuthorizationStates()
@@ -380,7 +381,7 @@ struct LocalCLIQuotaFixture {
             profile: defaultProfile,
             now: Date(timeIntervalSince1970: 1_800_000_000))
         try expect(keychainResult.state == .available, "Claude default noninteractive Keychain fixture")
-        try expect(keychainReads == 1, "Claude default Keychain query is scoped")
+        try expect(keychainReads == 2, "Claude default Keychain is rechecked in the same scope")
 
         var recoveryReads = 0
         let recoveryTransport = MockTransport(data: data(#"{"five_hour":{"utilization":29}}"#))
@@ -392,10 +393,83 @@ struct LocalCLIQuotaFixture {
                 return data(#"{"claudeAiOauth":{"accessToken":"synthetic-fresh-keychain","expiresAt":2000000000000}}"#)
             })
         let recovered = await recoveryReader.load(profile: defaultProfile, now: Date(timeIntervalSince1970: 1_800_000_000))
-        try expect(recovered.state == .available && recoveryReads == 1, "expired default Claude file recovers current Keychain login")
+        try expect(recovered.state == .available && recoveryReads == 2, "expired default Claude file recovers current Keychain login")
         try expect(recoveryTransport.request?.value(forHTTPHeaderField: "Authorization") == "Bearer synthetic-fresh-keychain", "recovery uses the fresh same-scope token")
         let isolated = await recoveryReader.load(profile: profile(.claudeCode, URL(fileURLWithPath: "/synthetic-linked")), now: Date(timeIntervalSince1970: 1_800_000_000))
-        try expect(isolated.state == .needsLogin && recoveryReads == 1, "expired linked Claude account never reads global Keychain")
+        try expect(isolated.state == .needsLogin && recoveryReads == 2, "expired linked Claude account never reads global Keychain")
+    }
+
+    private static func testClaudeCredentialChangesDiscardQuota() async throws {
+        let original = data(#"{"claudeAiOauth":{"accessToken":"synthetic-original","expiresAt":2000000000000}}"#)
+        let replacement = data(#"{"claudeAiOauth":{"accessToken":"synthetic-replacement","expiresAt":2000000000000}}"#)
+        let expired = data(#"{"claudeAiOauth":{"accessToken":"synthetic-expired","expiresAt":1000}}"#)
+        let defaultDirectory = LocalCLIKind.claudeCode.defaultConfigDirectory(
+            home: FileManager.default.homeDirectoryForCurrentUser)
+        let defaultProfile = LocalCLIProfile(
+            id: "synthetic-default-claude", kind: .claudeCode, displayName: "Synthetic",
+            configDirectory: defaultDirectory.path, isDefault: true)
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        // All reads and transport responses below are synthetic. The second
+        // source read happens only after the mocked usage request has returned.
+        for changesTo in [replacement, nil] as [Data?] {
+            var fileReads = 0
+            var keychainReads = 0
+            let transport = MockTransport(data: data(#"{"five_hour":{"utilization":21}}"#))
+            let reader = LocalCLIQuotaReader(
+                transport: transport,
+                fileReader: { _, _, _ in
+                    fileReads += 1
+                    return fileReads == 1 ? original : changesTo
+                },
+                claudeKeychainReader: { keychainReads += 1; return replacement })
+            let result = await reader.load(
+                profile: profile(.claudeCode, URL(fileURLWithPath: "/synthetic-linked")), now: now)
+            try expect(transport.request != nil && fileReads == 2, "Claude rechecks file after usage")
+            try expect(result.state == .unavailable && result.windows.isEmpty && result.identityFingerprint == nil
+                       && result.messageCode == "local_cli_claude_credentials_changed",
+                       "changed or removed Claude file cannot publish old quota")
+            try expect(keychainReads == 0, "linked Claude profile never reads default Keychain")
+        }
+        for fileSeed in [nil, expired] as [Data?] {
+            for changesTo in [replacement, nil] as [Data?] {
+                var keychainReads = 0
+                let transport = MockTransport(data: data(#"{"five_hour":{"utilization":22}}"#))
+                let reader = LocalCLIQuotaReader(
+                    transport: transport, fileReader: { _, _, _ in fileSeed },
+                    claudeKeychainReader: {
+                        keychainReads += 1
+                        return keychainReads == 1 ? original : changesTo
+                    })
+                let result = await reader.load(profile: defaultProfile, now: now)
+                try expect(transport.request != nil && keychainReads == 2, "Claude selected Keychain is rechecked")
+                try expect(result.state == .unavailable && result.windows.isEmpty && result.identityFingerprint == nil
+                       && result.messageCode == "local_cli_claude_credentials_changed",
+                           "changed or missing Keychain discards direct and expired-file recovery quota")
+            }
+        }
+        var fileReads = 0
+        let appearingFile = LocalCLIQuotaReader(
+            transport: MockTransport(data: data(#"{"five_hour":{"utilization":23}}"#)),
+            fileReader: { _, _, _ in
+                fileReads += 1
+                return fileReads == 1 ? nil : replacement
+            }, claudeKeychainReader: { original })
+        let appeared = await appearingFile.load(profile: defaultProfile, now: now)
+        try expect(appeared.state == .unavailable && appeared.windows.isEmpty
+                   && appeared.messageCode == "local_cli_claude_credentials_changed",
+                   "new file source cannot inherit in-flight Keychain quota")
+        var keychainReads = 0
+        let deniedKeychain = LocalCLIQuotaReader(
+            transport: MockTransport(data: data(#"{"five_hour":{"utilization":24}}"#)),
+            fileReader: { _, _, _ in nil }, claudeKeychainReader: {
+                keychainReads += 1
+                if keychainReads > 1 { throw CocoaError(.fileReadNoPermission) }
+                return original
+            })
+        let denied = await deniedKeychain.load(profile: defaultProfile, now: now)
+        try expect(denied.state == .unavailable && denied.windows.isEmpty
+                   && denied.messageCode == "local_cli_keychain_unavailable",
+                   "Keychain recheck denial fails closed without credential fallback")
     }
 
     private static func testOpenCodeProviderIsolation() async throws {
@@ -484,7 +558,7 @@ struct LocalCLIQuotaFixture {
 
     private static func testHTTPStatesAndResponseBound() async throws {
         try await withDirectory { directory in
-            try data(#"{"https://auth.x.ai::synthetic":{"key":"synthetic-token"}}"#)
+            try data(#"{"https://auth.x.ai::synthetic":{"key":"synthetic-token","user_id":"synthetic-user","expires_at":"2030-01-01T00:00:00Z"}}"#)
                 .write(to: directory.appendingPathComponent("auth.json"))
             let unauthorized = await LocalCLIQuotaReader(
                 transport: MockTransport(status: 401, data: Data())).load(profile: profile(.grok, directory))
