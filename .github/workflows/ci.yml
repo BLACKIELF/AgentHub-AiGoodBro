@@ -206,10 +206,42 @@ jobs:
           npm run test:visual
 
 
+  windows-native-visual:
+    needs: changes
+    if: needs.changes.outputs.windows == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: windows/apps/codexu-tauri/web/package-lock.json
+      - uses: dtolnay/rust-toolchain@1.97.1
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            windows/target
+          key: windows-native-${{ hashFiles('windows/Cargo.lock') }}
+      - name: Build the packaged Windows frontend
+        working-directory: windows/apps/codexu-tauri/web
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+      - name: Build the native release application
+        working-directory: windows
+        run: cargo build --release --locked -p codexu-tauri --features custom-protocol
+      - name: Verify cold-start native capture and cleanup
+        shell: powershell
+        run: .\windows\scripts\tests\Test-NativeVisualCaptureCoverage.ps1
+
   required:
     name: CI required
     if: ${{ always() && !cancelled() }}
-    needs: [changes, macos, windows-rust-format, windows-web]
+    needs: [changes, macos, windows-rust-format, windows-web, windows-native-visual]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -220,14 +252,17 @@ jobs:
           WINDOWS_REQUIRED: ${{ needs.changes.outputs.windows }}
           RUST_RESULT: ${{ needs.windows-rust-format.result }}
           WEB_RESULT: ${{ needs.windows-web.result }}
+          NATIVE_RESULT: ${{ needs.windows-native-visual.result }}
         run: |
           test "$SCOPE_RESULT" = success
           test "$MACOS_RESULT" = success
           if [ "$WINDOWS_REQUIRED" = true ]; then
             test "$RUST_RESULT" = success
             test "$WEB_RESULT" = success
+            test "$NATIVE_RESULT" = success
           else
             test "$WINDOWS_REQUIRED" = false
             test "$RUST_RESULT" = skipped
             test "$WEB_RESULT" = skipped
+            test "$NATIVE_RESULT" = skipped
           fi

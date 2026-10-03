@@ -31,6 +31,9 @@ $output = @(
     -OutputRoot $outputRoot 2>&1
 )
 $exitCode = $LASTEXITCODE
+if ($exitCode -ne 0) {
+  $output | Write-Output
+}
 Assert-True ($exitCode -eq 0) "Native coverage capture failed with exit code $exitCode."
 
 $summaryLine = @(
