@@ -84,7 +84,7 @@ pub struct AntigravityCache {
 }
 
 pub type Transport =
-    Arc<dyn Fn(&LoopbackRequest) -> anyhow::Result<LoopbackResponse> + Send + Sync>;
+    Arc<dyn Fn(&LoopbackRequest, &dyn Fn() -> bool) -> anyhow::Result<LoopbackResponse> + Send + Sync>;
 pub type ProcessLister = Arc<dyn Fn() -> anyhow::Result<Vec<ProcessEntry>> + Send + Sync>;
 pub type PortLister = Arc<dyn Fn(u32) -> anyhow::Result<Vec<u16>> + Send + Sync>;
 pub type CacheReader = Arc<dyn Fn(&Path) -> anyhow::Result<Option<AntigravityCache>> + Send + Sync>;
@@ -278,13 +278,16 @@ impl AntigravityReader {
             self.verify(endpoint),
             "Endpoint is no longer the verified process"
         );
-        let response = (self.transport)(&LoopbackRequest {
-            scheme: endpoint.scheme,
-            port: endpoint.port,
-            path: format!("{}{}", SERVICE_PATH, method),
-            csrf: endpoint.csrf.clone(),
-            body: serde_json::to_vec(&body)?,
-        })?;
+        let response = (self.transport)(
+            &LoopbackRequest {
+                scheme: endpoint.scheme,
+                port: endpoint.port,
+                path: format!("{}{}", SERVICE_PATH, method),
+                csrf: endpoint.csrf.clone(),
+                body: serde_json::to_vec(&body)?,
+            },
+            &|| self.verify(endpoint),
+        )?;
         anyhow::ensure!(
             self.verify(endpoint),
             "Endpoint changed while the request was in flight"
@@ -1885,6 +1888,7 @@ mod win32 {
 
     pub(super) fn native_transport_call(
         request: &LoopbackRequest,
+        verify: &dyn Fn() -> bool,
     ) -> anyhow::Result<LoopbackResponse> {
         anyhow::ensure!(
             allowed_service_path(&request.path),
@@ -1940,28 +1944,30 @@ mod win32 {
             let disabled = WINHTTP_DISABLE_REDIRECTS
                 | WINHTTP_DISABLE_COOKIES
                 | WINHTTP_DISABLE_AUTHENTICATION;
-            let _ = WinHttpSetOption(
-                Some(handle),
-                WINHTTP_OPTION_DISABLE_FEATURE,
-                Some(&disabled.to_le_bytes()),
-            );
-            let _ = WinHttpSetTimeouts(handle, 3000, 3000, 3000, 4000);
-            if request.scheme == EndpointScheme::Https {
+            let outcome = configure_then_exchange(|| {
+                call("WinHttpSetOption(disable features)", WinHttpSetOption(
+                    Some(handle),
+                    WINHTTP_OPTION_DISABLE_FEATURE,
+                    Some(&disabled.to_le_bytes()),
+                ))?;
+                call("WinHttpSetTimeouts", WinHttpSetTimeouts(handle, 3000, 3000, 3000, 4000))?;
+                if request.scheme == EndpointScheme::Https {
                 // Self-signed TLS is accepted only for the verified loopback
                 // endpoint whose owning official process was checked first.
                 let security = windows::Win32::Networking::WinHttp::SECURITY_FLAG_IGNORE_UNKNOWN_CA
                     | windows::Win32::Networking::WinHttp::SECURITY_FLAG_IGNORE_CERT_CN_INVALID
                     | windows::Win32::Networking::WinHttp::SECURITY_FLAG_IGNORE_CERT_DATE_INVALID
                     | windows::Win32::Networking::WinHttp::SECURITY_FLAG_IGNORE_CERT_WRONG_USAGE;
-                let _ = WinHttpSetOption(
+                call("WinHttpSetOption(loopback TLS)", WinHttpSetOption(
                     Some(handle),
                     WINHTTP_OPTION_SECURITY_FLAGS,
                     Some(&security.to_le_bytes()),
-                );
-            }
-            let outcome = exchange_with_resend_retry(|_| {
+                ))?;
+                }
+                Ok(())
+            }, || exchange_with_resend_retry(verify, |_| {
                 exchange_loopback(handle, request, &content_type, &protocol, &csrf)
-            });
+            }));
             let _ = WinHttpCloseHandle(handle);
             let _ = WinHttpCloseHandle(connect);
             let _ = WinHttpCloseHandle(session);
@@ -1971,6 +1977,16 @@ mod win32 {
 
     /// Attempts one request is allowed before a resend signal is reported.
     const RESEND_ATTEMPTS: u32 = 2;
+
+    /// A configuration failure must reach cleanup without sending any headers.
+    pub(super) fn configure_then_exchange<C, F>(configure: C, exchange: F) -> anyhow::Result<LoopbackResponse>
+    where
+        C: FnOnce() -> anyhow::Result<()>,
+        F: FnOnce() -> anyhow::Result<LoopbackResponse>,
+    {
+        configure()?;
+        exchange()
+    }
 
     /// Send the request, repeating it once when WinHTTP asks for a resend.
     ///
@@ -1987,12 +2003,13 @@ mod win32 {
     /// The repeat itself has only ever been exercised against an injected exchange,
     /// not against a real Antigravity. Nothing here has been verified in a signed-in
     /// Antigravity environment.
-    pub(super) fn exchange_with_resend_retry<F>(mut attempt: F) -> anyhow::Result<LoopbackResponse>
+    pub(super) fn exchange_with_resend_retry<F>(verify: &dyn Fn() -> bool, mut attempt: F) -> anyhow::Result<LoopbackResponse>
     where
         F: FnMut(u32) -> anyhow::Result<LoopbackResponse>,
     {
         let mut taken = 0u32;
         loop {
+            anyhow::ensure!(verify(), "Endpoint changed before sending the request");
             taken += 1;
             match attempt(taken) {
                 Ok(response) => return Ok(response),
@@ -2021,8 +2038,8 @@ pub fn native_ports(pid: u32) -> anyhow::Result<Vec<u16>> {
 }
 
 #[cfg(windows)]
-pub fn native_transport(request: &LoopbackRequest) -> anyhow::Result<LoopbackResponse> {
-    win32::native_transport_call(request)
+pub fn native_transport(request: &LoopbackRequest, verify: &dyn Fn() -> bool) -> anyhow::Result<LoopbackResponse> {
+    win32::native_transport_call(request, verify)
 }
 
 #[cfg(not(windows))]
@@ -2036,7 +2053,7 @@ pub fn native_ports(_pid: u32) -> anyhow::Result<Vec<u16>> {
 }
 
 #[cfg(not(windows))]
-pub fn native_transport(_request: &LoopbackRequest) -> anyhow::Result<LoopbackResponse> {
+pub fn native_transport(_request: &LoopbackRequest, _verify: &dyn Fn() -> bool) -> anyhow::Result<LoopbackResponse> {
     anyhow::bail!("Antigravity transport requires Windows")
 }
 
@@ -2093,7 +2110,7 @@ mod tests {
     ) -> AntigravityReader {
         let responses = Arc::new(responses);
         AntigravityReader::synthetic(
-            Arc::new(move |request: &LoopbackRequest| {
+            Arc::new(move |request: &LoopbackRequest, _verify: &dyn Fn() -> bool| {
                 let method = request
                     .path
                     .rsplit('/')
@@ -2161,7 +2178,7 @@ mod tests {
         let calls = Arc::new(AtomicUsize::new(0));
         let inner = calls.clone();
         let reader = AntigravityReader::synthetic(
-            Arc::new(move |_request: &LoopbackRequest| {
+            Arc::new(move |_request: &LoopbackRequest, _verify: &dyn Fn() -> bool| {
                 let count = inner.fetch_add(1, Ordering::SeqCst);
                 let email = if count == 0 {
                     "first@example.com"
@@ -2198,7 +2215,7 @@ mod tests {
         let cache_reads = Arc::new(AtomicUsize::new(0));
         let counter = cache_reads.clone();
         let reader = AntigravityReader::synthetic(
-            Arc::new(|_| anyhow::bail!("synthetic failure")),
+            Arc::new(|_, _| anyhow::bail!("synthetic failure")),
             Arc::new(|| {
                 Ok(vec![process(
                     4242,
@@ -2237,7 +2254,7 @@ mod tests {
         let cache_reads = Arc::new(AtomicUsize::new(0));
         let counter = cache_reads.clone();
         let reader = AntigravityReader::synthetic(
-            Arc::new(|_| anyhow::bail!("no request may be sent")),
+            Arc::new(|_, _| anyhow::bail!("no request may be sent")),
             Arc::new(|| anyhow::bail!("synthetic process inspection failure")),
             Arc::new(|_| Ok(Vec::new())),
             Arc::new(move |_| {
@@ -2268,7 +2285,7 @@ mod tests {
     fn cache_is_only_read_when_no_live_endpoint_exists() {
         let now = Utc::now();
         let reader = AntigravityReader::synthetic(
-            Arc::new(|_| anyhow::bail!("unused")),
+            Arc::new(|_, _| anyhow::bail!("unused")),
             Arc::new(|| Ok(Vec::new())),
             Arc::new(|_| Ok(Vec::new())),
             Arc::new(move |_| {
@@ -2299,7 +2316,7 @@ mod tests {
     fn a_linked_directory_without_live_or_cache_evidence_says_so() {
         let now = Utc::now();
         let reader = AntigravityReader::synthetic(
-            Arc::new(|_| anyhow::bail!("unused")),
+            Arc::new(|_, _| anyhow::bail!("unused")),
             Arc::new(|| Ok(Vec::new())),
             Arc::new(|_| Ok(Vec::new())),
             Arc::new(|_| Ok(None)),
@@ -2793,7 +2810,7 @@ mod tests {
             path: format!("{}GetUserStatus", SERVICE_PATH),
             csrf: "synthetic-token".to_string(),
             body: br#"{"metadata":{}}"#.to_vec(),
-        })
+        }, &|| true)
         .expect("the loopback transport must complete");
         server.join().unwrap();
         assert_eq!(response.status, 200);
@@ -2813,7 +2830,7 @@ mod tests {
             path: "/etc/passwd".to_string(),
             csrf: "synthetic-token".to_string(),
             body: Vec::new(),
-        })
+        }, &|| true)
         .unwrap_err();
         assert!(error.to_string().contains("non-Antigravity path"));
     }
@@ -2848,7 +2865,7 @@ mod tests {
             path: format!("{}SomethingElse", SERVICE_PATH),
             csrf: "synthetic-token".to_string(),
             body: Vec::new(),
-        })
+        }, &|| true)
         .unwrap_err();
         assert!(error.to_string().contains("non-Antigravity path"));
     }
@@ -3057,7 +3074,7 @@ mod tests {
 
         // The first attempt is asked for a resend, the repeat is answered.
         let mut calls = 0u32;
-        let outcome = win32::exchange_with_resend_retry(|attempt| {
+        let outcome = win32::exchange_with_resend_retry(&|| true, |attempt| {
             calls += 1;
             assert!(attempt <= 2, "the retry loop ran {attempt} times");
             if attempt == 1 {
@@ -3073,7 +3090,7 @@ mod tests {
 
         // A first-attempt success is never repeated.
         let mut calls = 0u32;
-        win32::exchange_with_resend_retry(|_| {
+        win32::exchange_with_resend_retry(&|| true, |_| {
             calls += 1;
             Ok(answered())
         })
@@ -3082,7 +3099,7 @@ mod tests {
 
         // A second resend signal is reported instead of looping.
         let mut calls = 0u32;
-        let error = win32::exchange_with_resend_retry(|_| {
+        let error = win32::exchange_with_resend_retry(&|| true, |_| {
             calls += 1;
             Err(failure(0x8007_2F00))
         })
@@ -3097,7 +3114,7 @@ mod tests {
 
         // The neighbouring connection error is reported at once, not repeated.
         let mut calls = 0u32;
-        let error = win32::exchange_with_resend_retry(|_| {
+        let error = win32::exchange_with_resend_retry(&|| true, |_| {
             calls += 1;
             Err(failure(0x8007_2EFE))
         })
@@ -3109,6 +3126,79 @@ mod tests {
                 .map(win32::WinHttpFailure::summary),
             Some("connection failed")
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn failed_security_configuration_never_sends_a_request() {
+        let sends = AtomicUsize::new(0);
+        let error = win32::configure_then_exchange(
+            || Err(anyhow::Error::new(win32::WinHttpFailure {
+                stage: "WinHttpSetOption(disable features)",
+                code: 0x8007_0057,
+            })),
+            || {
+                sends.fetch_add(1, Ordering::SeqCst);
+                Ok(LoopbackResponse { status: 200, body: Vec::new() })
+            },
+        ).unwrap_err();
+        assert_eq!(sends.load(Ordering::SeqCst), 0);
+        assert!(error.to_string().contains("WinHttpSetOption(disable features)"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn changed_process_or_port_prevents_a_resend() {
+        for change_process in [false, true] {
+            let sends = Arc::new(AtomicUsize::new(0));
+            let transport_sends = sends.clone();
+            let process_sends = sends.clone();
+            let port_sends = sends.clone();
+            let original = process(4242, "language_server.exe --csrf_token abc123");
+            let endpoint = discover_with(&[original.clone()], |_| Ok(vec![31337]))
+                .into_iter().next().unwrap();
+            let reader = AntigravityReader::synthetic(
+                Arc::new(move |_, verify| {
+                    win32::exchange_with_resend_retry(verify, |_| {
+                        transport_sends.fetch_add(1, Ordering::SeqCst);
+                        Err(anyhow::Error::new(win32::WinHttpFailure {
+                            stage: "WinHttpReceiveResponse",
+                            code: 0x8007_2F00,
+                        }))
+                    })
+                }),
+                Arc::new(move || {
+                    let mut current = original.clone();
+                    if change_process && process_sends.load(Ordering::SeqCst) > 0 {
+                        current.birth_seconds += 1;
+                    }
+                    Ok(vec![current])
+                }),
+                Arc::new(move |_| {
+                    if !change_process && port_sends.load(Ordering::SeqCst) > 0 {
+                        Ok(Vec::new())
+                    } else {
+                        Ok(vec![31337])
+                    }
+                }),
+                Arc::new(|_| Ok(None)),
+            );
+            let error = reader.request("GetUserStatus", &endpoint).unwrap_err();
+            assert!(error.to_string().contains("Endpoint changed before sending"));
+            assert_eq!(sends.load(Ordering::SeqCst), 1, "the changed endpoint received a resend");
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn unverified_endpoint_is_rejected_before_the_first_send() {
+        let mut sends = 0;
+        let error = win32::exchange_with_resend_retry(&|| false, |_| {
+            sends += 1;
+            Ok(LoopbackResponse { status: 200, body: Vec::new() })
+        }).unwrap_err();
+        assert!(error.to_string().contains("Endpoint changed before sending"));
+        assert_eq!(sends, 0);
     }
 
     /// Real-machine Authenticode check.
