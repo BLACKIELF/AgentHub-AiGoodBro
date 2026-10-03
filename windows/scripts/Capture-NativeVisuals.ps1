@@ -15,6 +15,16 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+trap {
+  # Keep source function/line diagnostics while excluding machine paths.
+  foreach ($frame in ($_.ScriptStackTrace -split '\r?\n')) {
+    if ($frame -match '^at (?<function>[^,]+), .*: line (?<line>\d+)$') {
+      [Console]::Error.WriteLine("Capture call: $($Matches.function), line $($Matches.line)")
+    }
+  }
+  break
+}
+
 $repositoryRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
 $windowsRoot = Join-Path $repositoryRoot 'windows'
 $artifactBase = Join-Path $repositoryRoot '.local-artifacts\windows-visual-captures'
