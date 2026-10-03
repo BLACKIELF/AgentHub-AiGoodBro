@@ -446,7 +446,17 @@ internal static class GraphicsCaptureSnapshot
         }
         catch (Exception error)
         {
-            Console.Error.WriteLine(error.GetType().Name + ": " + error.Message);
+            Console.Error.WriteLine(error.GetType().Name + ": " + error.Message +
+                " (HRESULT 0x" + error.HResult.ToString("X8") + ")");
+            var frames = new System.Diagnostics.StackTrace(error, false).GetFrames();
+            if (frames != null)
+            {
+                foreach (var frame in frames)
+                {
+                    var method = frame.GetMethod();
+                    Console.Error.WriteLine("Capture call: " + method.DeclaringType.Name + "." + method.Name);
+                }
+            }
             return 1;
         }
     }

@@ -1604,10 +1604,17 @@ function Invoke-GraphicsCapture {
     [string] $OutputPath,
     [string] $LogPath
   )
-  $output = @(& $CaptureTool ([long]$Window) $OutputPath 2>&1)
-  $exitCode = $LASTEXITCODE
-  $output | Add-Content -LiteralPath $LogPath -Encoding utf8
+  $priorErrorPreference = $ErrorActionPreference
+  try {
+    $ErrorActionPreference = 'Continue'
+    $output = @(& $CaptureTool ([long]$Window) $OutputPath 2>&1)
+    $exitCode = $LASTEXITCODE
+  } finally {
+    $ErrorActionPreference = $priorErrorPreference
+  }
+  $output | ForEach-Object { "$_" } | Add-Content -LiteralPath $LogPath -Encoding utf8
   if ($exitCode -ne 0) {
+    $output | ForEach-Object { "$_" } | Write-Output
     throw "Windows Graphics Capture failed with exit code $exitCode."
   }
   if (-not (Test-Path -LiteralPath $OutputPath -PathType Leaf)) {
