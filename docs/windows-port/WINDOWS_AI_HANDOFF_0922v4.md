@@ -1,4 +1,10 @@
-# Windows 一次执行交接 · 0923v9
+# Windows 一次执行交接 · 0924v1
+
+0924v1（Windows 侧）：在 PR #12 上完成 Windows 非 Codex 多账号、额度与 Antigravity 原生适配。
+新增平台目录与账号隔离模式、非 Codex 额度契约（未知／不支持不被渲染成成功）、Antigravity
+Windows 原生发现与只读查询（进程路径／启动时间／端口归属／WinHTTP 环回）以及旧版 IDE 缓存的
+严格边界，并把平台维度接进账号目录界面。实现与未验证边界见
+[0924v1 Windows 多平台实现](WINDOWS_MULTI_PLATFORM_0924v1.md)。
 
 0923v9 相较 0923v8：官方额度解析、DTO 与前端三层均能保留没有百分比窗口时的有效余额／重置卡，明确区分零与未知；余额仅有值时不会误报全局周期额度可用或抹掉上次已核实的窗口，畸形百分比继续拒绝。首页“用量统计”是推荐／重置公告下方的**独立模块**，在账号区之前，默认折叠；展开保留热力图、趋势和工具用量明细，原 Usage 标签继续存在。Web 构建、31 项单元／契约测试以及新增额度、位置、折叠与偏好持久化交互已通过。本机没有 Rust/Cargo 或 Windows 原生环境，新增 Rust 测试、Tauri 运行和安装包均待 Windows 验收。
 
@@ -104,7 +110,7 @@ Get-ChildItem dist/windows -File | Get-FileHash -Algorithm SHA256
 - Windows 内托管的新增/重新登录流程目前是清晰指引与已有目录关联；可按 Mac `AccountLoginProtocol`、`DeviceAuth*` 和 `NextSetupGuideView` 对齐取消、超时、回调归属与写后身份核验，接原生凭据保护。
 - 自动后台派单、跨应用任务恢复与 Desktop 身份切换尚不是 Windows 此次交互式终端切片。按 Mac `DispatchParticipationSync`、`CodexProfileStore` 和 `scripts/next_dispatch_*` 的行为设计 Windows 实现，不能直接运行依赖 macOS 的终端脚本；已有 profile ID、模型偏好、进程持有、原子保存与额度解析可复用。
 - 其他 CLI 的真实余额/消耗/剩余/重置适配需要用 Windows 安装与官方返回验证。参考 Mac `LocalCLIAccountStore`、`LocalCLIQuotaWindowDetails` 及对应 `tests/test_*cli_quota.py`；已有记录量与官方剩余额度应分别标注，不以 token 消耗推算套餐余量。CLI 不提供某项时明示未知。
-- 0923v9 已写好 Mac 的独立 Grok、OpenCode、Kimi、WorkBuddy 配置创建及其他平台的已有配置关联入口。Windows 需要扩展当前 Codex 专用目录／运行模型，逐平台实现账号隔离、登录、读取与来源标注；Antigravity 优先沿用官方已运行桌面的只读状态查询及不同账号不能互借缓存的边界。新建账号不要通过改写全局 CLI 凭据伪造隔离；平台未提供当前余额时显示未知，不以“已登录”替代额度成功。
+- 0923v9 已写好 Mac 的独立 Grok、OpenCode、Kimi、WorkBuddy 配置创建及其他平台的已有配置关联入口。Windows 已在 0924v1 完成平台目录、隔离模式、额度契约与 Antigravity 只读适配（见 [0924v1 实现](WINDOWS_MULTI_PLATFORM_0924v1.md)）；仍缺非 Codex 平台的交互式终端启动、Antigravity 的 Authenticode 签名校验，以及真实安装的在线额度实测。
 - 维护者消息已经可以读取；Windows 原生新消息通知、系统授权、首次基线与去重还需接线并做 Windows 通知验证。参考 Mac `PublisherMessages`，避免初次启动把历史消息全部推送。
 
 这些事项是诚实的剩余能力清单，不是禁止实现。继续工作时以用户的完整产品目标为准，可以完成它们后再统一打包。真实用户凭据、未完成工作、付费回退和不可逆操作仍按实际授权处理。

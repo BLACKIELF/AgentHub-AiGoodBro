@@ -901,8 +901,8 @@ function Write-PreflightResult {
     }
     [System.IO.File]::Move($temporaryPath, $Path)
   } finally {
-    if (Test-Path -LiteralPath $temporaryPath) {
-      Remove-Item -LiteralPath $temporaryPath -Force
+    if ([System.IO.File]::Exists($temporaryPath)) {
+      [System.IO.File]::Delete($temporaryPath)
     }
   }
 }

@@ -3,7 +3,10 @@ import { SYNTHETIC_DASHBOARD, SYNTHETIC_SETTINGS } from './synthetic-fixtures.mj
 import { installTauriStub } from './tauri-stub.mjs';
 
 test.beforeEach(async ({ page }) => {
-  await page.clock.install({ time: new Date('2026-09-22T12:00:00Z') });
+  // install starts ticking: pause before navigation so a slow first render cannot
+  // consume the initial countdown. Start earlier so pauseAt always moves forward.
+  await page.clock.install({ time: new Date('2026-09-22T11:00:00Z') });
+  await page.clock.pauseAt(new Date('2026-09-22T12:00:00Z'));
   await installTauriStub(page, { settings: SYNTHETIC_SETTINGS, dashboard: SYNTHETIC_DASHBOARD });
   await page.addInitScript(() => {
     const base = window.__TAURI_INTERNALS__.invoke;
@@ -30,12 +33,14 @@ test('live forecast ticks without network calls, catches up and waits for confir
   const timer = page.getByTestId('forecast-reset-countdown');
   await expect(timer).toContainText('00:00:10');
   const calls = await page.evaluate(() => window.feedCalls);
-  await page.clock.fastForward(3000);
-  // The browser may spend real time between the fast-forward and the poll;
-  // assert that the countdown advanced without coupling the fixture to that
-  // scheduling jitter.
-  await expect(timer).toContainText(/00:00:0[1-7]/);
-  await page.clock.fastForward(10000);
+  // `pauseAt` rather than `fastForward`: fast-forwarding leaves the clock ticking, so
+  // the polling assertion below lets real time leak in and the countdown can run past
+  // the second being asserted before it is ever read. That is why this missed
+  // `00:00:07` on a busy runner while passing on an idle machine.
+  await page.clock.pauseAt(new Date('2026-09-22T12:00:03Z'));
+  await expect(timer).toContainText('00:00:07');
+  // Same reasoning at the other end: pause at the instant rather than run past it.
+  await page.clock.pauseAt(new Date('2026-09-22T12:00:13Z'));
   await expect(timer).toContainText('awaiting confirmation');
   expect(await page.evaluate(() => window.feedCalls)).toBe(calls);
   await expect(page.getByRole('region', { name: 'Public reset updates' })).toHaveScreenshot('public-reset-expired.png');

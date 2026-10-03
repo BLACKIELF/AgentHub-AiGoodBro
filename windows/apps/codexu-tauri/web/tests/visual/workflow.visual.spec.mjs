@@ -14,7 +14,7 @@ test.beforeEach(async ({ page }) => {
     window.workflowStartPending = false;
     window.workflowStartFails = false;
     window.__TAURI_INTERNALS__.invoke = async (cmd, args) => {
-      if (cmd === 'list_profiles') return [{ id: '1', label: 'Synthetic workflow', selected: true }];
+      if (cmd === 'list_profiles') return [{ id: '1', label: 'Synthetic workflow', selected: true, platform: 'codex', platform_name: 'Codex', can_view_usage: true }];
       if (cmd === 'get_account_workflow') return structuredClone(state);
       if (cmd === 'read_workflow_models') return [{ id: 'synthetic-model', label: 'Synthetic model', efforts: ['low', 'high'], default_effort: 'high', is_default: true }];
       if (cmd === 'plugin:dialog|open') return 'C:\\Synthetic\\workspace';

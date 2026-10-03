@@ -19,7 +19,10 @@ if ($Version -notmatch '^\d+\.\d+\.\d+([\-+][0-9A-Za-z.-]+)?$') {
     throw "Version must be a semantic version, for example 1.2.1 or 1.2.1-beta.1: $Version"
 }
 
-if ($env:OS -ne "Windows_NT") {
+# Ask the runtime instead of the `OS` environment variable: that variable is set
+# for interactive Windows sessions but is absent in some hosted/curated shells, and
+# the readiness entry point already gates on the same platform check.
+if ([System.Environment]::OSVersion.Platform -ne [System.PlatformID]::Win32NT) {
     throw "The Windows packaging script must run on a Windows runner."
 }
 

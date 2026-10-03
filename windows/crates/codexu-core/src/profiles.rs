@@ -1,4 +1,5 @@
 //! Metadata-only catalog. Never reads, copies or replaces account credentials.
+use crate::local_cli::LocalCliKind;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -7,6 +8,10 @@ pub struct LinkedProfile {
     pub id: u64,
     pub label: String,
     pub root: PathBuf,
+    /// Platform this directory belongs to. Catalogs written before multi-platform
+    /// support only ever contained Codex directories.
+    #[serde(default)]
+    pub kind: LocalCliKind,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -34,19 +39,13 @@ pub fn same_root(left: &Path, right: &Path) -> bool {
     }
 }
 
+/// Canonicalize an explicitly selected directory for one platform.
+pub fn normalize_root_for(kind: LocalCliKind, root: &Path) -> anyhow::Result<PathBuf> {
+    kind.normalize_directory(root)
+}
+
 pub fn normalize_root(root: &Path) -> anyhow::Result<PathBuf> {
-    anyhow::ensure!(root.is_absolute(), "Select an absolute Codex directory");
-    let root = root
-        .canonicalize()
-        .map_err(|_| anyhow::anyhow!("Directory unavailable"))?;
-    anyhow::ensure!(root.is_dir(), "Select a directory");
-    anyhow::ensure!(
-        root.join("auth.json").is_file()
-            || root.join("sessions").is_dir()
-            || root.join("state_5.sqlite").is_file(),
-        "Directory does not contain recognized Codex data"
-    );
-    Ok(root)
+    normalize_root_for(LocalCliKind::Codex, root)
 }
 
 impl ProfileCatalog {
@@ -67,10 +66,10 @@ impl ProfileCatalog {
         }
         Ok(())
     }
-    pub fn add(&mut self, label: String, root: PathBuf) -> anyhow::Result<()> {
+    pub fn add(&mut self, kind: LocalCliKind, label: String, root: PathBuf) -> anyhow::Result<()> {
         self.validate()?;
         validate_label(&label)?;
-        anyhow::ensure!(root.is_absolute(), "Select an absolute Codex directory");
+        anyhow::ensure!(root.is_absolute(), "Select an absolute account directory");
         anyhow::ensure!(self.entries.len() < 50, "Maximum 50 linked profiles");
         anyhow::ensure!(
             !self.entries.iter().any(|p| same_root(&p.root, &root)),
@@ -80,9 +79,19 @@ impl ProfileCatalog {
             .next_id
             .checked_add(1)
             .ok_or_else(|| anyhow::anyhow!("Profile IDs exhausted"))?;
-        self.entries.push(LinkedProfile { id, label, root });
+        self.entries.push(LinkedProfile {
+            id,
+            label,
+            root,
+            kind,
+        });
         self.next_id = id;
         Ok(())
+    }
+
+    /// Platform of one linked directory, or `None` when it no longer exists.
+    pub fn kind_of(&self, id: u64) -> Option<LocalCliKind> {
+        self.entries.iter().find(|p| p.id == id).map(|p| p.kind)
     }
     pub fn get(&self, id: u64) -> anyhow::Result<&LinkedProfile> {
         self.validate()?;
@@ -123,22 +132,63 @@ mod tests {
     fn order_duplicate_stale_id_and_round_trip() {
         let temp = tempfile::tempdir().unwrap();
         let mut c = ProfileCatalog::default();
-        c.add("First".into(), temp.path().join("one")).unwrap();
-        c.add("Second".into(), temp.path().join("two")).unwrap();
+        c.add(LocalCliKind::Codex, "First".into(), temp.path().join("one"))
+            .unwrap();
+        c.add(
+            LocalCliKind::Codex,
+            "Second".into(),
+            temp.path().join("two"),
+        )
+        .unwrap();
         c.rename(1, "Renamed".into()).unwrap();
         assert_eq!(c.entries[0].id, 1);
-        assert!(c.add("Duplicate".into(), temp.path().join("one")).is_err());
+        assert!(c
+            .add(
+                LocalCliKind::Codex,
+                "Duplicate".into(),
+                temp.path().join("one")
+            )
+            .is_err());
         assert!(c.rename(99, "Missing".into()).is_err());
         assert!(c.move_one(1, -1).is_err());
         c.move_one(1, 1).unwrap();
         assert_eq!(c.entries[1].id, 1);
         c.remove(1).unwrap();
-        c.add("Third".into(), temp.path().join("three")).unwrap();
+        c.add(
+            LocalCliKind::Codex,
+            "Third".into(),
+            temp.path().join("three"),
+        )
+        .unwrap();
         assert_eq!(c.entries[1].id, 3);
         let restored: ProfileCatalog =
             serde_json::from_str(&serde_json::to_string(&c).unwrap()).unwrap();
         assert_eq!(restored.entries, c.entries);
     }
+    #[test]
+    fn legacy_catalogs_upgrade_to_codex_and_new_platforms_persist() {
+        let legacy: ProfileCatalog = serde_json::from_str(
+            r#"{"next_id":1,"entries":[{"id":1,"label":"Legacy","root":"C:/tmp/one"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(legacy.entries[0].kind, LocalCliKind::Codex);
+
+        let temp = tempfile::tempdir().unwrap();
+        let mut c = ProfileCatalog::default();
+        c.add(
+            LocalCliKind::Antigravity,
+            "Gravity".into(),
+            temp.path().join("gravity"),
+        )
+        .unwrap();
+        assert_eq!(c.kind_of(1), Some(LocalCliKind::Antigravity));
+        assert_eq!(c.kind_of(99), None);
+        let json = serde_json::to_string(&c).unwrap();
+        assert!(json.contains("antigravity"));
+        let restored: ProfileCatalog = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.entries[0].kind, LocalCliKind::Antigravity);
+    }
+
     #[test]
     fn never_touches_credentials_or_linked_directory() {
         let temp = tempfile::tempdir().unwrap();
@@ -147,8 +197,12 @@ mod tests {
         let auth = root.join("auth.json");
         std::fs::write(&auth, b"synthetic-not-a-real-token").unwrap();
         let mut c = ProfileCatalog::default();
-        c.add("Alias".into(), normalize_root(&root).unwrap())
-            .unwrap();
+        c.add(
+            LocalCliKind::Codex,
+            "Alias".into(),
+            normalize_root(&root).unwrap(),
+        )
+        .unwrap();
         c.rename(1, "New alias".into()).unwrap();
         c.remove(1).unwrap();
         assert_eq!(std::fs::read(auth).unwrap(), b"synthetic-not-a-real-token");

@@ -23,6 +23,14 @@ export async function installTauriStub(page, { settings, dashboard, windowLabel 
 
       const responses = {
         list_profiles: [],
+        // Synthetic platform catalogue: one managed platform, one that only
+        // supports its default directory, and the Antigravity desktop adapter.
+        list_platforms: [
+          { id: 'codex', name: 'Codex', command: 'codex', default_directory: 'C:\\Synthetic\\.codex', isolation: 'managed', quota_supported: true, desktop: false },
+          { id: 'claude_code', name: 'Claude Code', command: 'claude', default_directory: 'C:\\Synthetic\\.claude', isolation: 'managed', quota_supported: false, desktop: false },
+          { id: 'gemini', name: 'Gemini CLI', command: 'gemini', default_directory: 'C:\\Synthetic\\.gemini', isolation: 'default_only', quota_supported: false, desktop: false },
+          { id: 'antigravity', name: 'Antigravity', command: 'antigravity', default_directory: 'C:\\Synthetic\\Antigravity', isolation: 'unsupported', quota_supported: true, desktop: true },
+        ],
         get_settings: settingsPayload,
         set_settings: settingsPayload,
         get_local_usage: dashboardPayload,

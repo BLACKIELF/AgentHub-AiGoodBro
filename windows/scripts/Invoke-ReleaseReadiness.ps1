@@ -16,10 +16,13 @@ function Get-ReleaseReadinessPlan {
     $windows = Join-Path $Root 'windows'
     $web = Join-Path $windows 'apps\codexu-tauri\web'
     $plan = [Collections.Generic.List[object]]::new()
-    $plan.Add(@{ name = 'native-preflight'; executable = $PowerShell51; directory = $Root; arguments = @('-NoProfile', '-NonInteractive', '-File', (Join-Path $Root 'windows\scripts\Capture-NativeVisuals.ps1'), '-PreflightOnly', '-PreflightResultPath', $Preflight) })
+    # A default Windows client ships PowerShell 5.1 with the Restricted policy, so
+    # every child host must be launched with an explicit process-scoped policy or the
+    # release entry point cannot run its own scripts on a freshly installed machine.
+    $plan.Add(@{ name = 'native-preflight'; executable = $PowerShell51; directory = $Root; arguments = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $Root 'windows\scripts\Capture-NativeVisuals.ps1'), '-PreflightOnly', '-PreflightResultPath', $Preflight) })
     foreach ($hostEntry in @(@{ name = 'ps51'; executable = $PowerShell51 }, @{ name = 'ps7'; executable = $PowerShell7 })) {
         foreach ($test in @('Test-PublicFeedSyntax.ps1', 'Test-NativeWindowSelection.ps1', 'Test-NativeVisualCaptureWorkflow.ps1', 'Test-ReleaseReadiness.ps1')) {
-            $plan.Add(@{ name = ($hostEntry.name + ':' + $test); executable = $hostEntry.executable; directory = $Root; arguments = @('-NoProfile', '-NonInteractive', '-File', (Join-Path $Root ('windows\scripts\tests\' + $test))) })
+            $plan.Add(@{ name = ($hostEntry.name + ':' + $test); executable = $hostEntry.executable; directory = $Root; arguments = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $Root ('windows\scripts\tests\' + $test))) })
         }
     }
     $plan.Add(@{ name = 'rust-format'; executable = 'cargo'; directory = $windows; arguments = @('+1.97.1-x86_64-pc-windows-msvc', 'fmt', '--all', '--', '--check') })
@@ -60,8 +63,11 @@ function Save-ReadinessReport {
         $cause = $_.Exception.GetBaseException()
         throw ('Readiness report write failed: phase=' + $phase + '; type=' + $cause.GetType().FullName + '; hresult=' + $cause.HResult)
     } finally {
-        if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Force }
-        if ($replaced -and (Test-Path -LiteralPath $backup)) { Remove-Item -LiteralPath $backup -Force }
+        # These two files are created by this function and are never user data, so
+        # remove them through the file APIs: the release entry point must not depend
+        # on shell recycle-bin or trash behaviour to retire its own scratch files.
+        if ([IO.File]::Exists($temporary)) { [IO.File]::Delete($temporary) }
+        if ($replaced -and [IO.File]::Exists($backup)) { [IO.File]::Delete($backup) }
     }
 }
 

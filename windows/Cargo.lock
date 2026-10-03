@@ -464,15 +464,18 @@ dependencies = [
  "anyhow",
  "chrono",
  "chrono-tz",
+ "dirs 5.0.1",
  "futures-util",
  "rusqlite",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "thiserror 1.0.69",
  "tokio",
  "tokio-tungstenite",
  "tracing",
+ "windows",
 ]
 
 [[package]]
@@ -488,6 +491,7 @@ dependencies = [
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
+ "tempfile",
  "thiserror 1.0.69",
  "tokio",
  "tracing",
