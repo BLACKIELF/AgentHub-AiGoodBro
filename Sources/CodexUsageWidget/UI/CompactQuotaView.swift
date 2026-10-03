@@ -44,7 +44,7 @@ struct CompactQuotaView: View {
                 }
                 if constrainedByWeekly {
                     Text(language.text("受周额度限制", "Weekly limit reached"))
-                        .foregroundStyle(FixedVisualPalette.statusWarning)
+                        .foregroundStyle(WorkspaceStatusForeground.warning)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -79,7 +79,7 @@ struct CompactQuotaView: View {
             }
             if constrainedByWeekly {
                 Text(language.text("受周额度限制", "Weekly limit reached"))
-                    .foregroundStyle(FixedVisualPalette.statusWarning)
+                    .foregroundStyle(WorkspaceStatusForeground.warning)
             }
         }
     }

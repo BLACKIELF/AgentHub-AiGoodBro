@@ -43,7 +43,6 @@ type startup struct {
 	Port            int    `json:"port"`
 	StateDirectory  string `json:"stateDirectory"`
 	NetworkProxy    string `json:"networkProxy,omitempty"`
-	CreditFallback  bool   `json:"creditFallback,omitempty"`
 	DesktopFallback bool   `json:"desktopFallback,omitempty"`
 	Accounts        []struct {
 		ID string `json:"id"`
@@ -104,6 +103,7 @@ type requestScope struct {
 	orderOnce          sync.Once
 	orderQueried       bool // Protected by mu; causes a bounded, idempotent snapshot cleanup.
 	order              []string
+	creditFallback     bool
 	orderErr           error
 	pickMu             sync.Mutex
 	heartbeatPeriod    time.Duration // Zero selects the fixed production interval; shortened only by unit tests.
@@ -245,13 +245,13 @@ func scopeFrom(ctx context.Context) *requestScope {
 }
 
 type selector struct {
-	order     []string
-	commands  []string
-	bridge    *bridge
-	events    *events
-	baseURL   string
-	waitFor   time.Duration // Zero uses the bounded production admission wait.
-	pollEvery time.Duration // Zero uses the production polling interval.
+	order           []string
+	desktopFallback bool
+	bridge          *bridge
+	events          *events
+	baseURL         string
+	waitFor         time.Duration // Zero uses the bounded production admission wait.
+	pollEvery       time.Duration // Zero uses the production polling interval.
 }
 
 func (s *selector) Pick(ctx context.Context, _, _ string, _ executor.Options, candidates []*auth.Auth) (*auth.Auth, error) {
@@ -280,6 +280,7 @@ func (s *selector) Pick(ctx context.Context, _, _ string, _ executor.Options, ca
 			return
 		}
 		scope.order = reply.Order
+		scope.creditFallback = reply.CreditFallback
 	})
 	if err := pickContextError(ctx, scope); err != nil {
 		return nil, err
@@ -294,10 +295,7 @@ func (s *selector) Pick(ctx context.Context, _, _ string, _ executor.Options, ca
 	for _, a := range candidates {
 		byID[a.ID] = a
 	}
-	commands := s.commands
-	if len(commands) == 0 {
-		commands = []string{"acquire"}
-	}
+	commands := admissionCommands(scope.creditFallback, s.desktopFallback)
 	waitFor, pollEvery := s.admissionWait()
 	waitDeadline := time.Now().Add(waitFor)
 	rejections := map[string]bool{}
@@ -660,7 +658,7 @@ func newRuntime(s startup, e *events, testBaseURL string) (*runtime, error) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	b := &bridge{socket: s.ControlSocket, key: s.ControlKey, runID: s.RunID}
-	sel := &selector{bridge: b, events: e, baseURL: testBaseURL, commands: admissionCommands(s.CreditFallback, s.DesktopFallback)}
+	sel := &selector{bridge: b, events: e, baseURL: testBaseURL, desktopFallback: s.DesktopFallback}
 	for _, a := range s.Accounts {
 		sel.order = append(sel.order, a.ID)
 	}

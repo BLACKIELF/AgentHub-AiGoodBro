@@ -62,10 +62,10 @@ struct GrokResetCardsFixture {
             "known empty cards hide the summary instead of showing 0")
     }
 
-    // 72h rule: 0 < remaining <= 72h, expired never counts.
+    // 48h rule: 0 < remaining <= 48h, expired never counts.
     private static func testExpiringBoundaries(now: Date) throws {
-        try expect(ResetCardPresentation.isExpiringSoon([card("a", expiresIn: 72 * 3600, from: now)], now: now), "exact 72h boundary is expiring")
-        try expect(!ResetCardPresentation.isExpiringSoon([card("a", expiresIn: 72 * 3600 + 1, from: now)], now: now), "72h+1s is not expiring")
+        try expect(ResetCardPresentation.isExpiringSoon([card("a", expiresIn: 48 * 3600, from: now)], now: now), "exact 48h boundary is expiring")
+        try expect(!ResetCardPresentation.isExpiringSoon([card("a", expiresIn: 48 * 3600 + 1, from: now)], now: now), "48h+1s is not expiring")
         try expect(ResetCardPresentation.isExpiringSoon([card("a", expiresIn: 3600, from: now)], now: now), "1h is expiring")
         try expect(!ResetCardPresentation.isExpiringSoon([card("a", expiresIn: -3600, from: now)], now: now), "expired card is not expiring")
         try expect(ResetCardPresentation.earliestValidExpiry([card("a", expiresIn: -3600, from: now)], now: now) == nil, "expired card has no valid expiry")

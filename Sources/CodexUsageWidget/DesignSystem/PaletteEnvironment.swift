@@ -1,5 +1,23 @@
 import SwiftUI
 
+/// Only text/icons use this shade; filled controls keep the saturated tint so
+/// their white checkmarks and labels retain contrast.
+struct PaletteControlForeground: ShapeStyle {
+    func resolve(in environment: EnvironmentValues) -> Color {
+        environment.visualTokens.controlForeground.color
+    }
+}
+
+enum WorkspaceStatusForeground: ShapeStyle {
+    case warning, danger
+    func resolve(in environment: EnvironmentValues) -> Color {
+        switch self {
+        case .warning: return FixedVisualPalette.statusWarningForeground(environment.colorScheme)
+        case .danger: return FixedVisualPalette.statusDangerForeground(environment.colorScheme)
+        }
+    }
+}
+
 private struct VisualTokensEnvironmentKey: EnvironmentKey {
     static let defaultValue = ResolvedVisualTokens.safeDefault(.light)
 }

@@ -48,7 +48,7 @@ final class LocalProxyQueueWindowController: NSObject, NSWindowDelegate {
                 settings: settings,
                 paletteCatalog: paletteCatalog,
                 onClose: { [weak self] in self?.hide() }
-            ), cornerRadius: 14, allowsWindowDragging: false, settings: settings, preservesDefaultOpaqueBackground: true
+            ), cornerRadius: 14, allowsWindowDragging: false, settings: settings
         )
         window.center()
         self.window = window

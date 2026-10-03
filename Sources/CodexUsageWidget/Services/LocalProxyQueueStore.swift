@@ -50,6 +50,7 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
     private var displayGate = LocalProxyDisplayPublicationGate<[LocalProxyQueueRow]>(initial: [])
     private var displayPublishTask: Task<Void, Never>?
     private var resetCreditRefreshTarget: CodexProfile?
+    private var manualRefreshTargets: [String: CodexProfile] = [:]
     @Published private(set) var phase: LocalProxyPhase = .stopped
     @Published private(set) var membershipChangeWaiting = false
     @Published private(set) var endpoint: String?
@@ -67,6 +68,10 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
     var canEditPolicy: Bool { canReorder }
     func canEditPolicy(for id: String) -> Bool {
         canEditPolicy && rows.contains(where: { $0.id == id }) && (canEdit || isRegisteredBindingCurrent(id))
+    }
+    func hasStaleRunningBinding(for id: String) -> Bool {
+        phase == .running && process?.isRunning == true && rows.contains(where: { $0.id == id })
+            && registeredPool[id] != nil && !isRegisteredBindingCurrent(id)
     }
     var canStart: Bool { canEdit && rows.count <= 100 && rows.contains(where: \.isEnabled) && !usageStore.isPreview && !preferencesBlocked }
     func canToggleAccount(id: String) -> Bool {
@@ -109,6 +114,7 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
     }
     private struct MembershipSnapshot {
         let order: [String]
+        let creditFallback: Bool
         let capturedAt: TimeInterval
     }
     private var registeredPool: [String: PoolBinding] = [:]
@@ -172,9 +178,13 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
 
     func setOptIn(_ value: Bool) {
         guard canEdit, !usageStore.isPreview, !preferencesBlocked else { return }
+        let previous = preferences
         preferences.isEnabled = value
+        guard savePreferences() else {
+            preferences = previous
+            return
+        }
         isEnabled = value
-        savePreferences()
     }
     func setCreditFallback(_ enabled: Bool) {
         guard canEditPolicy else { return }
@@ -240,8 +250,9 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
     }
     func setAccountPriority(id: String, priority: Bool) {
         guard canReorder, !usageStore.isPreview, !preferencesBlocked, rows.contains(where: { $0.id == id }) else { return }
+        let previous = preferences
         if priority { preferences.priorityIDs.insert(id) } else { preferences.priorityIDs.remove(id) }
-        savePreferences()
+        if !savePreferences() { preferences = previous }
         rebuildRows()
     }
     func moveAccount(id: String, by offset: Int) {
@@ -250,8 +261,9 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
         else { return }
         var ids = rows.map(\.id)
         ids.swapAt(index, index + offset)
+        let previous = preferences
         preferences.order = ids
-        savePreferences()
+        if !savePreferences() { preferences = previous }
         rebuildRows()
     }
     func canMoveAccount(id: String, by offset: Int) -> Bool {
@@ -263,7 +275,7 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
         return source.isDesktopAccount == target.isDesktopAccount && source.isPriority == target.isPriority
     }
     /// The existing explicit quota-only operation; does not request a warm-up.
-    func refreshStatus() {
+    func refreshStatus(displayFreshResultsImmediately: Bool = false) {
         guard !usageStore.isPreview else {
             rebuildRows()
             return
@@ -271,7 +283,14 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
         // A quota refresh is the authoritative chance to replace helper-reported
         // quota failures. Do not let an older pipe event mask recovered limits.
         accountStates = accountStates.filter { !["quota", "usage_limit", "subscription_pending", "quota_unknown"].contains($0.value) }
-        usageStore.refreshLocalProxyQuotas(profileIDs: Set(rows.filter(\.isEnabled).map(\.id)))
+        let ids = Set(rows.filter(\.isEnabled).map(\.id))
+        if displayFreshResultsImmediately {
+            manualRefreshTargets = [:]
+            for profile in usageStore.profiles where ids.contains(profile.id) {
+                manualRefreshTargets[profile.id] = profile
+            }
+        }
+        usageStore.refreshLocalProxyQuotas(profileIDs: ids)
         rebuildRows()
     }
 
@@ -506,7 +525,6 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
                 "controlKey": control, "clientKey": client, "port": 0, "stateDirectory": stateDirectory.resolvingSymlinksInPath().path,
                 "accounts": rows.map { ["id": $0.id] },
                 "models": CodexExecutionPreference.Model.allCases.map(\.rawValue),
-                "creditFallback": creditFallbackEnabled,
                 "desktopFallback": true,
             ]
             if let networkProxy { configuration["networkProxy"] = networkProxy }
@@ -693,7 +711,7 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
 
     private func isMembershipSnapshotCurrent(_ snapshot: MembershipSnapshot, requestID: String) -> Bool {
         guard let current = membershipSnapshots[requestID], current.capturedAt == snapshot.capturedAt,
-            current.order == snapshot.order
+            current.order == snapshot.order, current.creditFallback == snapshot.creditFallback
         else { return false }
         let elapsed = ProcessInfo.processInfo.systemUptime - current.capturedAt
         return elapsed >= 0 && elapsed < membershipSnapshotLifetime
@@ -728,14 +746,15 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
             let now = ProcessInfo.processInfo.systemUptime
             pruneMembershipSnapshots(at: now)
             if let existing = membershipSnapshots[request.requestID] {
-                return LocalProxyReply(ok: true, order: existing.order)
+                return LocalProxyReply(ok: true, order: existing.order, creditFallback: existing.creditFallback)
             }
             guard membershipSnapshots.count < maximumMembershipSnapshots else { return .failure(.controlBusy) }
             let order = rows.map(\.id).filter { activeIDs.contains($0) && isRegisteredBindingCurrent($0) }
             guard Set(order).count == order.count else { return .failure(.identity) }
-            membershipSnapshots[request.requestID] = MembershipSnapshot(order: order, capturedAt: now)
+            membershipSnapshots[request.requestID] = MembershipSnapshot(
+                order: order, creditFallback: creditFallbackEnabled, capturedAt: now)
             refreshMembershipWaitState()
-            return LocalProxyReply(ok: true, order: order)
+            return LocalProxyReply(ok: true, order: order, creditFallback: creditFallbackEnabled)
         }
         if request.command == "release" || request.command == "heartbeat" {
             guard let id = request.leaseID, let lease = leases[id], lease.runID == request.runID,
@@ -1096,6 +1115,23 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
                 resetCreditRefreshTarget = nil
             }
         }
+        var completedManualRefreshes: [String] = []
+        for (id, target) in manualRefreshTargets {
+            guard let current = usageStore.profiles.first(where: { $0.id == id }),
+                current.lastSnapshot?.accountID == target.lastSnapshot?.accountID,
+                current.codexHomeURL == target.codexHomeURL
+            else {
+                completedManualRefreshes.append(id)
+                continue
+            }
+            if current.lastSnapshot?.fetchedAt != target.lastSnapshot?.fetchedAt
+                || current.lastQuotaReadFailureAt != target.lastQuotaReadFailureAt
+            {
+                immediately = true
+                completedManualRefreshes.append(id)
+            }
+        }
+        for id in completedManualRefreshes { manualRefreshTargets.removeValue(forKey: id) }
         publishDisplayRows(immediately: immediately)
     }
 

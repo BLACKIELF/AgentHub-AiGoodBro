@@ -350,9 +350,9 @@ final class PersonalWeChatMessageChannel {
     /// send in this process; the bot controller also journals the attempt.
     func sendText(
         _ text: String, eventID: UUID, credential: MessageChannelCredential,
-        shouldSend: @escaping () -> Bool = { true }
+        shouldSend: @escaping @MainActor () -> Bool = { true }
     ) async -> Result<MessageDeliveryOutcome, MessageChannelError> {
-        guard shouldSend(), !Task.isCancelled else { return .failure(.cancelled) }
+        guard await shouldSend(), !Task.isCancelled else { return .failure(.cancelled) }
         switch deduplicator.begin(eventID) {
         case .duplicate: return .success(.duplicateSkipped)
         case .atCapacity: return .failure(.rateLimited(retryAfterSeconds: nil))
@@ -361,7 +361,7 @@ final class PersonalWeChatMessageChannel {
         defer { deduplicator.release(eventID) }
         do {
             let request = try Self.textRequest(text, eventID: eventID, credential: credential)
-            guard shouldSend(), !Task.isCancelled else { return .failure(.cancelled) }
+            guard await shouldSend(), !Task.isCancelled else { return .failure(.cancelled) }
             deduplicator.claim(eventID)
             _ = try await fetch(request, requiresAcceptance: true)
             return .success(.accepted(MessageDeliveryReceipt(acceptedAt: Date(), remoteMessageID: nil)))
@@ -372,9 +372,9 @@ final class PersonalWeChatMessageChannel {
 
     func send(
         _ status: MessageTaskStatus, credential: MessageChannelCredential, options: FeishuMessageOptions,
-        shouldSend: @escaping () -> Bool = { true }
+        shouldSend: @escaping @MainActor () -> Bool = { true }
     ) async -> Result<MessageDeliveryOutcome, MessageChannelError> {
-        guard shouldSend(), !Task.isCancelled else { return .failure(.cancelled) }
+        guard await shouldSend(), !Task.isCancelled else { return .failure(.cancelled) }
         switch deduplicator.begin(status.eventID) {
         case .duplicate: return .success(.duplicateSkipped)
         case .atCapacity: return .failure(.rateLimited(retryAfterSeconds: nil))
@@ -384,7 +384,7 @@ final class PersonalWeChatMessageChannel {
         do {
             let request = try Self.messageRequest(status: status, credential: credential, options: options)
             _ = try await fetch(request, requiresAcceptance: true)
-            guard shouldSend(), !Task.isCancelled else { return .failure(.cancelled) }
+            guard await shouldSend(), !Task.isCancelled else { return .failure(.cancelled) }
             deduplicator.claim(status.eventID)
             return .success(.accepted(MessageDeliveryReceipt(acceptedAt: Date(), remoteMessageID: nil)))
         } catch let error as MessageChannelError {

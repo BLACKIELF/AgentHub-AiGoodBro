@@ -173,10 +173,10 @@ struct HomeSkillShelf: View {
                     selected = skill
                 } label: {
                     HStack(spacing: 6) {
-                        Image(systemName: skill.symbol).foregroundStyle(.tint).font(.system(size: 12))
+                        Image(systemName: skill.symbol).foregroundStyle(PaletteControlForeground()).font(.system(size: 12))
                         VStack(alignment: .leading, spacing: 2) {
                             Text(skill.title).font(.system(size: 11, weight: .semibold)).lineLimit(1)
-                            Text(skill.purpose(language)).font(.system(size: 9)).foregroundStyle(.tint)
+                            Text(skill.purpose(language)).font(.system(size: 9)).foregroundStyle(PaletteControlForeground())
                             Text(skill.summary(language)).font(.system(size: 10)).foregroundStyle(.secondary)
                                 .lineLimit(2).fixedSize(horizontal: false, vertical: true).help(skill.summary(language))
                         }

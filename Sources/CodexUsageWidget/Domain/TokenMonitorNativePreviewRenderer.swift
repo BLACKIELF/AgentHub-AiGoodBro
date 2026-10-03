@@ -9,6 +9,7 @@ enum TokenMonitorNativePreviewRenderer {
     static func fixtureSelfTest() -> Bool {
         let regular = TokenMonitorDashboardSnapshot(response: response())
         let large = TokenMonitorDashboardSnapshot(response: response(largeNumbers: true))
+        let coverageIndexIsCorrect = coverageIndexSelfTest()
         let empty = TokenMonitorDashboardSnapshot(response: nil)
         let leapNow = fixtureDate(year: 2024, month: 3, day: 1)
         let leapSnapshot = TokenMonitorDashboardSnapshot(response: response(dayCount: 366, endingAt: leapNow))
@@ -44,6 +45,7 @@ enum TokenMonitorNativePreviewRenderer {
         let hubErrorEn = TokenMonitorIntegrationFailure.transport.localizedMessage(.en)
         let maxCount = TokenMonitorFormatting.count(Int64.max, compact: true, language: .en)
         return regular.summary.totalTokens == 482_137_009
+            && coverageIndexIsCorrect
             && regular.days.count == 365
             && regular.value(for: .total, metric: .tokens, now: referenceDate) == 482_137_009
             && regular.heatmapDays(count: 365, now: referenceDate).count == 365
@@ -75,6 +77,43 @@ enum TokenMonitorNativePreviewRenderer {
             && statusComponent?.localizedComponentIssues(.en) == ["API · Degraded performance"]
             && hubErrorZh == "无法连接 Hub，请检查地址和网络。"
             && hubErrorEn == "The Hub could not be reached. Check its address and network."
+    }
+
+    private static func coverageIndexSelfTest() -> Bool {
+        var fixture = response(dayCount: 1)
+        fixture.sources = [
+            .init(id: "a", providerId: "fixture", status: .ok, coverage: .known, reasonCode: nil),
+            .init(id: "b", providerId: "fixture", status: .ok, coverage: .known, reasonCode: nil),
+            .init(id: "excluded", providerId: "fixture", status: .excluded, coverage: .unknown, reasonCode: nil),
+            .init(id: "unavailable", providerId: "fixture", status: .unavailable, coverage: .unknown, reasonCode: nil),
+        ]
+        fixture.coverage.entries = (0..<365).flatMap { offset in
+            let date = "synthetic-\(offset)"
+            return ["a", "b", "excluded"].flatMap { sourceID in
+                ["tokens", "cost"].map { metric in
+                    TokenMonitorResponse.Coverage.Entry(
+                        sourceId: sourceID,
+                        providerId: "fixture",
+                        toolId: nil,
+                        accountId: nil,
+                        date: date,
+                        metric: metric,
+                        status: .known
+                    )
+                }
+            }
+        }
+        fixture.coverage.entries.append(
+            .init(
+                sourceId: "b", providerId: "fixture", toolId: nil, accountId: nil,
+                date: "synthetic-10", metric: "tokens", status: .unknown
+            ))
+        let index = TokenMonitorResponse.CoverageIndex(response: fixture)
+        return index.metricCoverage(sourceIDs: ["a", "b", "excluded"], date: "synthetic-11", metric: "tokens") == .known
+            && index.metricCoverage(sourceIDs: ["a", "b"], date: "synthetic-10", metric: "tokens") == .partial
+            && index.metricCoverage(sourceIDs: ["a", "b"], date: "missing-date", metric: "tokens") == .unknown
+            && index.metricCoverage(sourceIDs: ["unavailable"], date: "synthetic-11", metric: "tokens") == .unknown
+            && index.metricCoverage(sourceIDs: ["a", "excluded"], date: "synthetic-11", metric: "tokens") == .known
     }
 
     private static func renderProxyActivity(to directory: URL) throws {
@@ -165,12 +204,14 @@ enum TokenMonitorNativePreviewRenderer {
             usage: .init(response: nil), language: .zh, now: referenceDate)
         for scheme in [ColorScheme.dark, .light] {
             for index in cells.indices {
+                let rows = cells[index].accounts.reduce(0) { $0 + max(1, $1.quotaRows.count) }
+                let cardHeight = max(190, 190 + CGFloat(rows) * 48)
                 let view = HStack(alignment: .center, spacing: 4) {
                     TokenMonitorEdgeDockCardView(
                         cell: cells[index], side: .right, language: .zh, tailY: 166,
                         isPinned: true, canPin: true, onPin: {}, onOpenDashboard: {}, onRefresh: {}
                     )
-                    .frame(width: 292, height: 332)
+                    .frame(width: 292, height: cardHeight)
                     TokenMonitorEdgeDockRailView(
                         cells: cells, side: .right, language: .zh, compact: false, warnColors: false,
                         focusedIndex: index, onSelect: { _ in }, onDrag: { _ in }, onDrop: { _ in }
@@ -180,7 +221,7 @@ enum TokenMonitorNativePreviewRenderer {
                 .padding(16)
                 .background(Color(nsColor: .windowBackgroundColor))
                 try WorkspacePreviewRenderer.renderView(
-                    view, size: CGSize(width: 392, height: 364), scheme: scheme,
+                    view, size: CGSize(width: 392, height: cardHeight + 32), scheme: scheme,
                     to: directory.appendingPathComponent(
                         "edge-quota-\(index == 0 ? "grok" : "claude")-\(scheme == .dark ? "dark" : "light").png"))
             }

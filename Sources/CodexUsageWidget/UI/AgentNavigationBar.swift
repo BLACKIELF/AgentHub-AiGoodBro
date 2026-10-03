@@ -77,7 +77,7 @@ struct AgentNavigationBar: View {
                     .frame(width: 44, height: 40)
                     .contentShape(Rectangle())
             }
-            .menuStyle(.borderlessButton).menuIndicator(.hidden)
+            .menuStyle(.borderlessButton).tint(.primary).menuIndicator(.hidden)
             .help(language.text("管理导航", "Manage navigation"))
             .accessibilityLabel(language.text("管理导航", "Manage navigation"))
             .accessibilityIdentifier("workspace.navigation.more")

@@ -80,6 +80,7 @@ struct WorkspaceQuietButtonStyle: ButtonStyle {
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
+            .foregroundStyle(.primary)
             .contentShape(Rectangle())
             .background(
                 Color.primary.opacity(isEnabled && configuration.isPressed ? 0.13 : isEnabled && hovering ? 0.07 : restingFill),

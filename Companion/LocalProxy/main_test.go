@@ -41,6 +41,7 @@ func TestMain(m *testing.M) {
 
 type fakeBridge struct {
 	failHeartbeat      bool
+	creditFallback     bool
 	expiresDelta       time.Duration
 	mu                 sync.Mutex
 	listener           net.Listener
@@ -97,6 +98,7 @@ func (b *fakeBridge) serve(c net.Conn) {
 	reply := bridgeReply{OK: true}
 	switch q.Command {
 	case "order":
+		reply.CreditFallback = b.creditFallback
 		if prior, ok := b.snapshots[q.RequestID]; ok {
 			reply.Order = append([]string(nil), prior...)
 		} else {
@@ -773,7 +775,7 @@ func TestHeartbeatCancellationFinishesOnlyIssuedRPC(t *testing.T) {
 func TestSubscriptionsBeforeCreditsAndDesktopLastWithinPhases(t *testing.T) {
 	b := newFakeBridge(t)
 	s := newStartup(t, b)
-	s.CreditFallback = true
+	b.creditFallback = true
 	s.DesktopFallback = true
 	// Deliberately place Desktop first: its priority must not beat other tiers.
 	s.Accounts = append(s.Accounts[:0], struct {
@@ -869,6 +871,39 @@ func TestCreditFallbackDisabledNeverAttemptsPaidAdmission(t *testing.T) {
 		if strings.Contains(command, "credit") {
 			t.Fatalf("paid admission without opt-in: %s", command)
 		}
+	}
+}
+
+func TestCreditFallbackToggleAppliesToNewRequests(t *testing.T) {
+	b := newFakeBridge(t)
+	s := newStartup(t, b)
+	b.admission = func(command, id string) bool { return command == "acquire_credit_primary" && id == "A" }
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { complete(w, "A") }))
+	defer upstream.Close()
+	_, server, _ := startTestRuntime(t, s, upstream.URL)
+
+	before := request(t, s, server.URL, false)
+	_ = consume(t, before)
+	if before.StatusCode == 200 || bridgeCommandCount(b, "acquire_credit_primary") != 0 {
+		t.Fatal("disabled credit fallback reached a paid stage")
+	}
+	b.mu.Lock()
+	b.creditFallback = true
+	b.mu.Unlock()
+	after := request(t, s, server.URL, false)
+	body := consume(t, after)
+	if after.StatusCode != 200 || !strings.Contains(body, "done-A") || bridgeCommandCount(b, "acquire_credit_primary") == 0 {
+		t.Fatalf("enabling credit fallback did not affect the next request: %d %s", after.StatusCode, body)
+	}
+	waitEmpty(t, b)
+	paidCount := bridgeCommandCount(b, "acquire_credit_primary")
+	b.mu.Lock()
+	b.creditFallback = false
+	b.mu.Unlock()
+	disabled := request(t, s, server.URL, false)
+	_ = consume(t, disabled)
+	if disabled.StatusCode == 200 || bridgeCommandCount(b, "acquire_credit_primary") != paidCount {
+		t.Fatal("disabling credit fallback did not affect the next request")
 	}
 }
 

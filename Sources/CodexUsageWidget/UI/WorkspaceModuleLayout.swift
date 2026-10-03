@@ -185,7 +185,7 @@ struct WorkspaceModules<Content: View>: View {
                 .accessibilityLabel(language.text("拖动\(title(id))模块排序", "Drag \(title(id)) module to reorder"))
                 .accessibilityIdentifier("next.workspace.module.grip.\(id)")
         }
-        .foregroundStyle(Color.accentColor)
+        .foregroundStyle(PaletteControlForeground())
     }
 
     private func resizeHandle(_ id: String) -> some View {

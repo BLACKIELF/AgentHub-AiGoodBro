@@ -14,6 +14,200 @@ const { spawnSync } = require('node:child_process');
 const companionRoot = path.resolve(__dirname, '..', '..');
 const upstreamRoot = path.join(companionRoot, 'TokenMonitorEngine', 'upstream');
 
+function stagedSource(t, relativePath) {
+  const stage = fs.mkdtempSync(path.join(os.tmpdir(), 'agb-tm-behavior-'));
+  t.after(() => fs.rmSync(stage, { recursive: true, force: true }));
+  for (const source of Object.keys(INPUT_SHA256)) {
+    const target = path.join(stage, source);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.copyFileSync(path.join(upstreamRoot, source), target);
+  }
+  transformStage(stage);
+  return fs.readFileSync(path.join(stage, relativePath), 'utf8');
+}
+
+test('limits arrive before history without publishing invented usage, and stopped runtimes stay silent', (t) => {
+  const source = stagedSource(t, 'src/shared/deviceRuntime.js');
+  const context = { module: { exports: {} }, structuredClone, require(name) {
+    if (name === './deviceState') return require(path.join(upstreamRoot, 'src/shared/deviceState'));
+    return {};
+  } };
+  vm.runInNewContext(source, context);
+  let usage, limits;
+  const records = [], uploads = [], seenLimits = [];
+  let observerThrows = false;
+  const runtime = context.module.exports.createDeviceRuntime({
+    onLimits(summary) {
+      seenLimits.push(structuredClone(summary));
+      summary.providers[0].remaining = 0;
+      if (observerThrows) throw new Error('observer failed');
+    },
+    onError() { throw new Error('diagnostic observer failed'); },
+    onRecord(record) { records.push(record); },
+    sink: { enqueue(record) { uploads.push(record); } }
+  }, {
+    createUsageRuntime(options) { usage = options; return { stop() {} }; },
+    createLimitsRuntime(_options, callbacks) { limits = callbacks; return { stop() {} }; }
+  });
+  const quota = { providers: [{ provider: 'codex', remaining: 75 }] };
+  limits.onUpdate(quota);
+  assert.equal(seenLimits.length, 1);
+  assert.equal(quota.providers[0].remaining, 75, 'UI receives an isolated copy');
+  assert.equal(runtime.getSnapshot(), null);
+  assert.equal(records.length, 0);
+  assert.equal(uploads.length, 0, 'quota-only events never create a Hub usage record');
+  usage.onUpdate({ today: { tokens: 7 }, month: { tokens: 12 }, allTime: { tokens: 30 } }, 'baseline');
+  assert.equal(records.length, 1);
+  assert.equal(uploads.length, 1);
+  assert.equal(records[0].today.tokens, 7);
+  assert.equal(records[0].limits.providers[0].remaining, 75);
+  observerThrows = true;
+  assert.doesNotThrow(() => limits.onUpdate(quota));
+  assert.equal(records.length, 2, 'throwing UI/diagnostic observers cannot block ordinary delivery');
+  runtime.stop();
+  limits.onUpdate(quota);
+  usage.onUpdate({ today: { tokens: 99 } }, 'late');
+  assert.equal(seenLimits.length, 2);
+  assert.equal(records.length, 2, 'late callbacks from a stopped runtime cannot overwrite the new epoch');
+});
+
+test('stopping a collector clears presented quotas and invalidates deferred old quotas', (t) => {
+  const source = stagedSource(t, 'src/electron/main.js');
+  const stop = source.match(/let aigoodbroPendingLimits = null;\nfunction stopLocalCollector[\s\S]*?\n\}/)?.[0];
+  const observer = source.match(/onLimits: IS_AIGOODBRO_EMBEDDED \? (\(limits\) => \{[\s\S]*?\n    \}) : undefined/)?.[1];
+  assert.ok(stop && observer);
+  const events = [];
+  let stopped = 0;
+  const context = {
+    IS_AIGOODBRO_EMBEDDED: true,
+    usageRuntimeReconciler: { cancel() {}, setActiveKey() {} },
+    deviceRuntimeHandle: { stop() { stopped++; } },
+    localDevice: {}, localStats: {},
+    sendMainWindowEvent(channel, payload, current) { events.push({ channel, payload, current }); }
+  };
+  vm.runInNewContext(`${stop}\nconst publishLimits = ${observer};\nthis.fixture = { stopLocalCollector, publishLimits };`, context);
+  context.fixture.publishLimits({ providers: [{ provider: 'codex', remaining: 75 }] });
+  assert.equal(events[0].current(), true);
+  context.fixture.stopLocalCollector();
+  assert.equal(stopped, 1);
+  assert.equal(events[0].current(), false, 'a deferred old quota must never reach the renderer');
+  assert.equal(events[1].payload.data.limits, null, 'already-visible quota is cleared too');
+  assert.equal(events[1].current(), true);
+  context.deviceRuntimeHandle = { stop() {} };
+  context.fixture.publishLimits({ providers: [] });
+  assert.equal(events[1].current(), false, 'a deferred clear cannot erase newer quota');
+  assert.equal(events[2].current(), true);
+});
+
+test('quota-only renderer events show limits while preserving unknown usage and connection status', (t) => {
+  const source = stagedSource(t, 'src/electron/renderer/app.js');
+  const handler = source.match(/window\.tokenMonitor\.onStatsPush\?\.\(\(payload\) => \{[\s\S]*?\n\}\);/)?.[0];
+  assert.ok(handler);
+  const state = { stats: null, streamConnected: false, streamFailure: { reason: 'offline' } };
+  let onPush, renders = 0, ready = 0;
+  vm.runInNewContext(handler, {
+    state,
+    window: { tokenMonitor: { onStatsPush(fn) { onPush = fn; } } },
+    renderLimits() { renders++; },
+    signalContentReady() { ready++; }
+  });
+  const limits = { providers: [{ provider: 'codex', remaining: 75 }] };
+  onPush({ event: 'aigoodbro:limits', data: { limits } });
+  assert.equal(state.aigoodbroLimits, limits);
+  assert.equal(state.stats, null);
+  assert.equal(state.streamConnected, false);
+  assert.equal(state.streamFailure.reason, 'offline');
+  assert.equal(renders, 1);
+  assert.equal(ready, 1);
+  onPush({ event: 'aigoodbro:limits', data: { limits: null } });
+  assert.equal(state.aigoodbroLimits, null, 'revocation can clear the independent presentation');
+});
+
+function watchHarness(t) {
+  const source = stagedSource(t, 'src/shared/collector.js');
+  const begin = source.indexOf('  function recordWatchClients(');
+  const end = source.indexOf("  // chokidar", begin);
+  assert.ok(begin >= 0 && end > begin);
+  let now = 100000, nextTimer = 0, scheduled = 0;
+  const timers = new Map(), scans = [];
+  const context = {
+    Date: { now: () => now }, Math, Set, Array,
+    stopped: false, tickInFlight: false, debounceTimer: null,
+    aigoodbroWatchBatchStartedAt: null, watchDebounceMs: 1000,
+    lastTickSuccessAt: 0, lastTickFailureAt: 0, lastTickDurationMs: null,
+    scheduledWatchClients: new Set(), scheduledWatchNeedsFullScan: false,
+    sourceSyncQueue: { takeDue: () => [] },
+    setTimeout(callback, delay) {
+      const id = ++nextTimer;
+      scheduled++;
+      timers.set(id, { at: now + delay, callback });
+      return id;
+    },
+    clearTimeout(id) { timers.delete(id); },
+    runTick(reason, options) { scans.push({ at: now, reason, clients: [...options.targetClients] }); }
+  };
+  vm.runInNewContext(source.slice(begin, end), context);
+  function advance(to) {
+    let turns = 0;
+    while (true) {
+      const next = [...timers.entries()].sort((a, b) => a[1].at - b[1].at)[0];
+      if (!next || next[1].at > to) break;
+      assert.ok(++turns < 100, 'watcher must not spin while the collector is busy');
+      now = next[1].at;
+      timers.delete(next[0]);
+      next[1].callback();
+    }
+    now = to;
+  }
+  return { context, scans, advance, scheduled: () => scheduled, timers, source };
+}
+
+test('continuous log writes refresh within the max wait and preserve all changed clients', (t) => {
+  const h = watchHarness(t);
+  for (let offset = 0; offset < 10000; offset += 500) {
+    h.advance(100000 + offset);
+    h.context.scheduleTick('watch', [offset % 1000 ? 'codex' : 'claude']);
+  }
+  assert.equal(h.scans.length, 0);
+  h.advance(110000);
+  assert.equal(h.scans.length, 1);
+  assert.equal(h.scans[0].at, 110000);
+  assert.deepEqual(h.scans[0].clients.sort(), ['claude', 'codex']);
+  h.context.scheduleTick('watch', []);
+  h.context.scheduleTick('watch', ['codex']);
+  h.advance(111000);
+  assert.deepEqual(h.scans[1].clients, [], 'unknown source still requests all clients');
+});
+
+test('slow scans get idle time, pending events survive, and shutdown cancels the catch-up', (t) => {
+  const h = watchHarness(t);
+  h.context.tickInFlight = true;
+  h.context.scheduleTick('watch', ['codex']);
+  h.context.scheduleTick('watch', ['claude']);
+  h.advance(115000);
+  assert.equal(h.scans.length, 0);
+  assert.ok(h.scheduled() < 25, 'busy retry is bounded even after the batch deadline');
+  h.context.tickInFlight = false;
+  h.context.lastTickSuccessAt = 115000;
+  h.context.lastTickDurationMs = 8000;
+  h.advance(122999);
+  assert.equal(h.scans.length, 0);
+  h.advance(123000);
+  assert.deepEqual(h.scans[0].clients.sort(), ['claude', 'codex']);
+  h.context.scheduleTick('watch', ['codex']);
+  Object.assign(h.context, {
+    runtimeAbortController: { abort() {} }, intervalTimer: null,
+    clearRolloverHistoryRetry() {}, closeWatchers() {}, watchedDirectoryKey: null
+  });
+  h.context.sourceSyncQueue.stop = () => {};
+  const stop = h.source.slice(h.source.indexOf('  function stop(options = {}) {'), h.source.indexOf('  function whenIdle() {'));
+  vm.runInNewContext(stop, h.context);
+  h.context.stop();
+  h.advance(180000);
+  assert.equal(h.scans.length, 1);
+  assert.equal(h.timers.size, 0);
+});
+
 function writePlist(file, bundleID, executable) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, `<?xml version="1.0" encoding="UTF-8"?>
@@ -568,10 +762,11 @@ test('staging patch preserves vendor source and disables its independent updater
   assert.match(styles, /\.app-title-mark \.aigoodbro-title-mark-icon \{[^}]*width: 1em;[^}]*height: 1em;/);
   assert.match(styles, /\.floating-bubble-tab \.aigoodbro-floating-bubble-icon \{[^}]*width: 24px;[^}]*height: 24px;/);
   assert.doesNotMatch(index, /app-title-mark[^>]*>Σ/);
-  assert.match(rendererApp, /if \(id === 'app'\) return '\.\.\/\.\.\/\.\.\/assets\/icon\.png';/);
-  assert.match(rendererApp, /sources\.app = '\.\.\/\.\.\/\.\.\/assets\/icon\.png';/);
+  assert.match(rendererApp, /if \(id === 'app'\) return '\.\.\/\.\.\/\.\.\/assets\/tray-curve\.png';/);
+  assert.match(rendererApp, /sources\.app = '\.\.\/\.\.\/\.\.\/assets\/tray-curve\.png';/);
   assert.doesNotMatch(rendererApp, /assets\/icons\/tray-token-monitor\.png/);
-  assert.match(tray, /const TRAY_ICON_PATH = ICON_PATH;/);
+  assert.match(tray, /const TRAY_ICON_PATH = path\.join\(__dirname, '\.\.', '\.\.', 'assets', 'tray-curve\.png'\);/);
+  assert.match(tray, /id !== 'app' && id !== 'custom'/);
   assert.match(tray, /sized\.setTemplateImage\(false\)/);
   assert.match(tray, /Open AiGoodBro Workbench/);
   for (const relativePath of ['src/electron/main.js', 'src/electron/discordRpc.js', 'src/electron/preload.js', 'src/shared/appUpdater.js', 'src/electron/renderer/app.js', 'src/electron/tray.js']) {

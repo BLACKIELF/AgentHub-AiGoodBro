@@ -285,6 +285,7 @@ def prepare_stage(stage: Path, manifest: dict) -> dict:
     for name in ("package.json", "LICENSE"):
         shutil.copy2(source / name, stage / name)
     shutil.copy2(ROOT / manifest["helper"]["brandIcon"], stage / "assets/icon.png")
+    shutil.copy2(ROOT / manifest["helper"]["trayIcon"], stage / "assets/tray-curve.png")
     stage.joinpath("aigoodbro").mkdir()
     for name in ("bootstrap.cjs", "hostBridge.cjs"):
         shutil.copy2(DESKTOP / name, stage / "aigoodbro" / name)
@@ -299,6 +300,7 @@ def prepare_stage(stage: Path, manifest: dict) -> dict:
     require(package["main"] == "aigoodbro/bootstrap.cjs", "Electron main path changed")
     require("../../../assets/icon.png" in (stage / "src/electron/renderer/index.html").read_text(), "Renderer brand icon path is wrong")
     require(digest_file(stage / "assets/icon.png") == digest_file(ROOT / manifest["helper"]["brandIcon"]), "Brand icon was not staged")
+    require(digest_file(stage / "assets/tray-curve.png") == digest_file(ROOT / manifest["helper"]["trayIcon"]), "Tray icon was not staged")
     for icon in (source / "assets/icons").rglob("*"):
         if icon.is_file():
             require(digest_file(icon) == digest_file(stage / "assets/icons" / icon.relative_to(source / "assets/icons")), f"Provider icon changed: {icon.name}")
@@ -438,6 +440,7 @@ def verify_bundle(app: Path, manifest: dict, *, check_signature: bool) -> dict:
     for name in ("bootstrap.cjs", "hostBridge.cjs"):
         require(asar_content(asar, tree, start, f"aigoodbro/{name}") == (DESKTOP / name).read_bytes(), f"Packaged host adapter is stale: {name}")
     require(asar_content(asar, tree, start, "assets/icon.png") == (ROOT / manifest["helper"]["brandIcon"]).read_bytes(), "ASAR brand icon mismatch")
+    require(asar_content(asar, tree, start, "assets/tray-curve.png") == (ROOT / manifest["helper"]["trayIcon"]).read_bytes(), "ASAR tray icon mismatch")
     require(digest_file(app / "Contents/Resources/icon.icns") == digest_file(ROOT / "Resources/AiGoodBro.icns"), "Helper Dock icon mismatch")
     require(asar_content(asar, tree, start, "LICENSE") == (VENDOR / "upstream/LICENSE").read_bytes(), "Upstream MIT license missing")
     require(not (app / "Contents/PlugIns/TokenMonitorWidget.appex").exists(), "Original Widget is still in the active PlugIns directory")

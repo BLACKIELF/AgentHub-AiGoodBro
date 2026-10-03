@@ -1,6 +1,8 @@
 # AiGoodBro Token Monitor Desktop host adapter
 
-This directory adapts the pinned Token Monitor v0.62.0 Electron desktop app for inclusion inside AiGoodBro. The renderer, preload, Edge Dock, visual geometry, provider icons, and collectors remain upstream code. The adapter is applied **only to a disposable packaging stage**; it never edits `../TokenMonitorEngine/upstream` or the independently installed original app. Preserve upstream MIT notices and third-party licenses in the helper package.
+This directory adapts the pinned Token Monitor v0.62.0 Electron desktop app for inclusion inside AiGoodBro. The renderer, preload, Edge Dock, provider icons and collectors originate from that pinned source. The adapter is applied **only to a disposable packaging stage**; it never edits `../TokenMonitorEngine/upstream` or the independently installed original app. Preserve upstream MIT notices and third-party licenses in the helper package.
+
+The 1004v1 adapter also delivers local quotas before usage history finishes and adds bounded watcher debounce with idle time after slow scans. These changes preserve unknown usage and never create a quota-only Hub upload. Sources, behavior and remaining upstream limitations are recorded in [the follow-up](../../docs/upstream-fixes-1004v1.md).
 
 The packager stages upstream `src/`, `assets/`, and its native Node module closure at their original relative paths, copies `bootstrap.cjs` and `hostBridge.cjs` to `aigoodbro/`, sets `package.json.main` to `aigoodbro/bootstrap.cjs`, substitutes AiGoodBro's existing `Resources/AiGoodBro-icon.png` for the staged `assets/icon.png`, then runs:
 

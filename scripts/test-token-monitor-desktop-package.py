@@ -98,12 +98,13 @@ class AsarPackageTests(unittest.TestCase):
             self.assertIn("src/electron/main.js", result["transformChanged"])
             self.assertEqual(json.loads((stage / "package.json").read_text())["main"], "aigoodbro/bootstrap.cjs")
             self.assertEqual((stage / "assets/icon.png").read_bytes(), (PACKAGE.ROOT / "Resources/AiGoodBro-icon.png").read_bytes())
+            self.assertEqual((stage / "assets/tray-curve.png").read_bytes(), (PACKAGE.ROOT / manifest["helper"]["trayIcon"]).read_bytes())
             icon = "assets/icons/codex.svg"
             self.assertEqual((stage / icon).read_bytes(), (PACKAGE.VENDOR / "upstream" / icon).read_bytes())
             app_js = (stage / "src/electron/renderer/app.js").read_text()
             self.assertNotIn("../../../assets/icons/tray-token-monitor.png", app_js)
-            self.assertIn("if (id === 'app') return '../../../assets/icon.png';", app_js)
-            self.assertIn("sources.app = '../../../assets/icon.png';", app_js)
+            self.assertIn("if (id === 'app') return '../../../assets/tray-curve.png';", app_js)
+            self.assertIn("sources.app = '../../../assets/tray-curve.png';", app_js)
             self.assertIn("https://github.com/BLACKIELF/AgentHub-AiGoodBro", app_js)
             self.assertIn("https://aigoodbro.com/", app_js)
             self.assertIn("/blob/main/docs/usage-guide.md", app_js)
@@ -147,6 +148,7 @@ class AsarPackageTests(unittest.TestCase):
             "src/electron/renderer/styles.css", "src/electron/renderer/app.js",
             "src/electron/renderer/trayComposer.js", "src/electron/tray.js",
             "src/electron/edgeDock/controller.js",
+            "src/shared/deviceRuntime.js", "src/shared/collector.js",
         }
         self.assertEqual(len(source_paths), 364)
         self.assertEqual(changed_from_vendor, transformed | {"assets/icon.png", "package.json"})
@@ -174,7 +176,11 @@ class AsarPackageTests(unittest.TestCase):
         )
         app_js = PACKAGE.asar_content(packaged, tree, start, "src/electron/renderer/app.js").decode()
         self.assertNotIn("../../../assets/icons/tray-token-monitor.png", app_js)
-        self.assertIn("sources.app = '../../../assets/icon.png';", app_js)
+        self.assertIn("sources.app = '../../../assets/tray-curve.png';", app_js)
+        self.assertEqual(
+            PACKAGE.asar_content(packaged, tree, start, "assets/tray-curve.png"),
+            (PACKAGE.ROOT / "Resources/AiGoodBro-tray-curve.png").read_bytes(),
+        )
         self.assertIn("https://github.com/BLACKIELF/AgentHub-AiGoodBro", app_js)
         self.assertIn("https://aigoodbro.com/", app_js)
         self.assertNotIn("Javis603/token-monitor", app_js)

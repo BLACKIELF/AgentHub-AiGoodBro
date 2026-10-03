@@ -30,12 +30,16 @@ struct HomeCodexAccountSummary: View {
     var allowsResetCreditAction = false
     var hubAccountAlias: String? = nil
     var referralAccount: (() throws -> CodexReferralAccount)? = nil
+    var resetCreditExpiries: [Date] = []
+    var resetCardsExpiring = false
 
     @Environment(\.widgetLanguage) private var language
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.visualTokens) private var visualTokens
     @Environment(\.workspacePreviewDate) private var previewDate
+
+    @State private var isShowingDetails = false
 
     var body: some View {
         Group {
@@ -90,6 +94,7 @@ struct HomeCodexAccountSummary: View {
             } else {
                 balanceSummary
             }
+            resetExpiryNotice
             quotas
             quotaFreshness
         }
@@ -117,6 +122,7 @@ struct HomeCodexAccountSummary: View {
                     ?? language.text("重置卡 —", "Reset cards —")
             )
             .monospacedDigit().lineLimit(1)
+            .foregroundStyle(resetCardsExpiring ? FixedVisualPalette.statusWarningForeground(colorScheme) : Color.secondary)
             Spacer(minLength: 0)
         }
         .font(.system(size: 10)).foregroundStyle(.secondary)
@@ -127,12 +133,22 @@ struct HomeCodexAccountSummary: View {
             VStack(alignment: .leading, spacing: 3) {
                 identity
                 balanceSummary
+                resetExpiryNotice
             }
             .frame(minWidth: 300, maxWidth: .infinity, alignment: .leading)
             VStack(alignment: .leading, spacing: 3) {
                 quotas
                 quotaFreshness
             }.frame(minWidth: 320, maxWidth: 360)
+        }
+    }
+
+    @ViewBuilder private var resetExpiryNotice: some View {
+        if resetCardsExpiring, let expiry = ResetCardPresentation.orderedExpiries(resetCreditExpiries, now: currentDate).first {
+            Label(language.text("重置卡 48 小时内到期 · ", "Reset card expires within 48h · ") + language.dateTime(expiry), systemImage: "clock.badge.exclamationmark")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(FixedVisualPalette.statusWarningForeground(colorScheme))
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -151,7 +167,7 @@ struct HomeCodexAccountSummary: View {
                     headerActions
                     Text(AccountDisplay.planLabel(profile, empty: "—"))
                         .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(.tint)
+                        .foregroundStyle(PaletteControlForeground())
                         .padding(.horizontal, 5)
                         .padding(.vertical, 2)
                         .background(visualTokens.accent.primary.color.opacity(0.12), in: Capsule())
@@ -162,7 +178,7 @@ struct HomeCodexAccountSummary: View {
                     Circle()
                         .fill(
                             isCurrentCodexAccount && loginEligibility == .loggedIn
-                                ? FixedVisualPalette.statusSuccess : Color.secondary
+                                ? FixedVisualPalette.statusSuccessForeground(colorScheme) : Color.secondary
                         )
                         .frame(width: 5, height: 5)
                     Text(accountStatus).lineLimit(1)
@@ -175,7 +191,7 @@ struct HomeCodexAccountSummary: View {
                 .font(.system(size: 10))
                 .foregroundStyle(
                     isCurrentCodexAccount && loginEligibility == .loggedIn
-                        ? FixedVisualPalette.statusSuccess : Color.secondary
+                        ? FixedVisualPalette.statusSuccessForeground(colorScheme) : Color.secondary
                 )
                 .help(
                     profile.lastSnapshot.map {
@@ -254,10 +270,11 @@ struct HomeCodexAccountSummary: View {
             )
             .fixedSize()
             if loginEligibility != .loggedIn {
-                Image(systemName: "exclamationmark.circle")
-                    .foregroundStyle(FixedVisualPalette.statusWarningForeground(colorScheme))
-                    .font(.system(size: 10))
-                    .help(accountStatus).accessibilityLabel(accountStatus)
+                HomeCodexLoginStatusIndicator(
+                    eligibility: loginEligibility,
+                    status: accountStatus,
+                    warningColor: FixedVisualPalette.statusWarningForeground(colorScheme)
+                )
             } else if snapshotHealth == .failed || snapshotHealth == .stale {
                 Image(systemName: "clock.arrow.circlepath")
                     .foregroundStyle(.secondary).font(.system(size: 10))
@@ -278,7 +295,7 @@ struct HomeCodexAccountSummary: View {
         HStack(spacing: 4) {
             Circle().fill(
                 isCurrentCodexAccount && loginEligibility == .loggedIn
-                    ? FixedVisualPalette.statusSuccess : Color.secondary
+                    ? FixedVisualPalette.statusSuccessForeground(colorScheme) : Color.secondary
             )
             .frame(width: 5, height: 5)
             Text(accountStatus)
@@ -402,34 +419,64 @@ struct HomeCodexAccountSummary: View {
             .accessibilityLabel(language.text("复制 CLI 调用命令", "Copy CLI command"))
             Button(action: onSwitchDesktop) {
                 Image(systemName: "macwindow").frame(width: 24, height: 26)
-                    .foregroundStyle(isCurrentCodexAccount ? FixedVisualPalette.statusSuccess : Color.secondary)
+                    .foregroundStyle(isCurrentCodexAccount ? FixedVisualPalette.statusSuccessForeground(colorScheme) : Color.secondary)
             }
             .disabled(!canSwitchDesktop)
             .help(isCurrentCodexAccount ? language.text("当前桌面账号", "Current Desktop account") : language.text("切换到桌面", "Switch Desktop"))
             .accessibilityLabel(isCurrentCodexAccount ? language.text("当前桌面账号", "Current Desktop account") : language.text("切换到桌面", "Switch Desktop"))
         }
-        .font(.system(size: 11)).foregroundStyle(.secondary).buttonStyle(WorkspaceQuietButtonStyle())
+        .font(.system(size: 11)).foregroundStyle(.primary).buttonStyle(WorkspaceQuietButtonStyle())
         .fixedSize()
     }
 
     private var moreActions: some View {
-        Menu {
-            Button(language.text("刷新额度", "Refresh limits"), action: onRefresh).disabled(isRefreshing)
-            Button(language.text("在终端中使用", "Open in Terminal"), action: onOpenTerminal).disabled(!canOpenTerminal)
-            Button(language.text("复制 CLI 调用命令", "Copy CLI command"), action: onCopyTerminalCommand).disabled(!canCopyTerminalCommand)
-            Button(language.text("打开完整管理", "Open full management"), action: onManage)
-            Divider()
-            Text(accountStatus)
-            if let until = profile.officialProfile?.subscriptionActiveUntil {
-                Text(language.text("到期 ", "Expires ") + fullBeijingDateTime(until))
+        HStack(spacing: 2) {
+            Button {
+                isShowingDetails = true
+            } label: {
+                Image(systemName: "info.circle").frame(width: 24, height: 26)
             }
-        } label: {
-            Image(systemName: "ellipsis").frame(width: 24, height: 26)
+            .help(language.text("账号资料与暖号详情", "Account and warm-up details"))
+            .accessibilityLabel(language.text("账号资料与暖号详情", "Account and warm-up details"))
+            .popover(isPresented: $isShowingDetails) {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack {
+                        Text(AccountDisplay.profileName(profile, allProfiles: allProfiles)).font(.headline)
+                        Spacer()
+                        Button {
+                            isShowingDetails = false
+                        } label: {
+                            Image(systemName: "xmark")
+                        }
+                        .accessibilityLabel(language.text("关闭账号信息", "Close account information"))
+                    }
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 12) {
+                            AccountInformationView(profile: profile, accountNumber: displayNumber, now: previewDate ?? currentDate)
+                            CreditBalanceView(presentation: creditBalance)
+                        }
+                    }.frame(maxHeight: 480)
+                }.padding(16).frame(width: 430)
+            }
+            Menu {
+                Button(language.text("刷新额度", "Refresh limits"), action: onRefresh).disabled(isRefreshing)
+                Button(language.text("在终端中使用", "Open in Terminal"), action: onOpenTerminal).disabled(!canOpenTerminal)
+                Button(language.text("复制 CLI 调用命令", "Copy CLI command"), action: onCopyTerminalCommand).disabled(!canCopyTerminalCommand)
+                Button(language.text("打开完整管理", "Open full management"), action: onManage)
+                Divider()
+                Text(accountStatus)
+                if let until = profile.officialProfile?.subscriptionActiveUntil {
+                    Text(language.text("到期 ", "Expires ") + fullBeijingDateTime(until))
+                }
+            } label: {
+                Image(systemName: "ellipsis").frame(width: 24, height: 26)
+            }
+            .menuStyle(.borderlessButton).menuIndicator(.hidden)
+            .accessibilityLabel(language.text("更多账号操作", "More account actions"))
+            .font(.system(size: 11)).foregroundStyle(.primary).buttonStyle(WorkspaceQuietButtonStyle())
+            .fixedSize()
         }
-        .menuStyle(.borderlessButton).menuIndicator(.hidden)
-        .accessibilityLabel(language.text("更多账号操作", "More account actions"))
-        .font(.system(size: 11)).foregroundStyle(.secondary).buttonStyle(WorkspaceQuietButtonStyle())
-        .fixedSize()
+        .foregroundStyle(.primary).tint(.primary).buttonStyle(WorkspaceQuietButtonStyle())
     }
 
     private func shortDate(_ date: Date) -> String {
@@ -467,6 +514,163 @@ struct HomeCodexAccountSummary: View {
         ResetCountdownPresentation.label(deadline: deadline, now: now, kind: .accountWindow, language: language)
             .replacingOccurrences(of: "重置还有 ", with: "还有 ")
             .replacingOccurrences(of: "Resets in ", with: "in ")
+    }
+}
+
+@MainActor
+private struct HomeCodexLoginStatusIndicator: View {
+    let eligibility: HomeLoginEligibility
+    let status: String
+    let warningColor: Color
+
+    @Environment(\.widgetLanguage) private var language
+    @State private var triggerHovered = false
+    @State private var popoverHovered = false
+    @State private var hoverPopoverPresented = false
+    @State private var isPinned = false
+    @State private var hoverTask: Task<Void, Never>?
+
+    private var isPresented: Bool { hoverPopoverPresented || isPinned }
+
+    var body: some View {
+        Button {
+            isPinned.toggle()
+        } label: {
+            Image(systemName: "exclamationmark.circle")
+                .foregroundStyle(warningColor)
+                .font(.system(size: 10))
+                .frame(width: 18, height: 18)
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .onHover { updateHover($0, onPopover: false) }
+        .popover(
+            isPresented: Binding(
+                get: { isPresented },
+                set: { if !$0 { dismissPopover() } }
+            ),
+            attachmentAnchor: .rect(.bounds),
+            arrowEdge: .bottom
+        ) {
+            popoverContent
+                .onHover { updateHover($0, onPopover: true) }
+        }
+        .accessibilityLabel(status)
+        .accessibilityHint(
+            language.text(
+                "按空格或回车查看状态原因、额度影响和处理方法。",
+                "Press Space or Return for the status reason, quota impact, and next steps."
+            )
+        )
+        .onDisappear { hoverTask?.cancel() }
+    }
+
+    private var popoverContent: some View {
+        let copy = statusCopy
+        return VStack(alignment: .leading, spacing: 9) {
+            Text(copy.title)
+                .font(.system(size: 12, weight: .semibold))
+            detail(language.text("原因", "Reason"), copy.reason)
+            detail(language.text("额度影响", "Quota impact"), copy.impact)
+            detail(language.text("处理方法", "What to do"), copy.action)
+        }
+        .frame(width: 280, alignment: .leading)
+        .fixedSize(horizontal: false, vertical: true)
+        .padding(12)
+    }
+
+    private func detail(_ heading: String, _ text: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(heading)
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(.secondary)
+            Text(text)
+                .font(.system(size: 11))
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var statusCopy: (title: String, reason: String, impact: String, action: String) {
+        switch eligibility {
+        case .notLoggedIn:
+            return (
+                language.text("账号尚未登录", "Account not signed in"),
+                language.text(
+                    "此卡片当前无法独立读取额度，可能与账号关联或登录状态有关。",
+                    "This card cannot read quota independently right now; its account link or sign-in state may be the cause."
+                ),
+                language.text(
+                    "不会生成新的额度快照；已保存的快照仍会显示，可能已过期。",
+                    "No new quota snapshot can be created. A saved snapshot may remain visible and may be outdated."
+                ),
+                language.text(
+                    "点卡片右侧「⋯」→「打开完整管理」，检查此账号的关联和登录状态，按页面提示处理后刷新额度。",
+                    "Choose ⋯ → Open full management on the card and check this account's link and sign-in status. Follow the on-screen guidance, then refresh limits."
+                )
+            )
+        case .needsLogin:
+            return (
+                language.text("需要重新登录", "Sign in again"),
+                language.text(
+                    "Codex 已判定此账号的登录凭据失效，需要重新授权。",
+                    "Codex has rejected this account's sign-in credentials; authorization is required again."
+                ),
+                language.text(
+                    "卡片保留显示上次额度快照；刷新无法更新额度，直到重新登录成功。",
+                    "The last saved quota snapshot remains visible. Refresh cannot update quota until sign-in succeeds."
+                ),
+                language.text(
+                    "点卡片右侧「⋯」→「打开完整管理」，在原账号行选择「重新登录」或按提示「设置独立 CLI」；完成后刷新额度。",
+                    "Choose ⋯ → Open full management on the card, then choose Sign In Again or follow Set Up Isolated CLI on the original row. After signing in, refresh limits."
+                )
+            )
+        case .temporarilyUnavailable:
+            return (
+                language.text("额度暂时不可用", "Quota temporarily unavailable"),
+                language.text(
+                    "账号身份仍可识别，但最近一次额度读取失败。",
+                    "The account is still recognized, but its latest quota read failed."
+                ),
+                language.text(
+                    "卡片继续显示上次额度快照，数据可能已过期。",
+                    "The card continues to show the last quota snapshot, which may be outdated."
+                ),
+                language.text(
+                    "先点卡片上的刷新额度重试；若持续失败，点右侧「⋯」→「打开完整管理」查看此账号状态。",
+                    "Choose Refresh limits on the card to retry. If it keeps failing, use ⋯ → Open full management to check this account's status."
+                )
+            )
+        case .loggedIn:
+            return (
+                language.text("账号状态正常", "Account is available"),
+                "", "", ""
+            )
+        }
+    }
+
+    private func updateHover(_ hovering: Bool, onPopover: Bool) {
+        if onPopover {
+            popoverHovered = hovering
+        } else {
+            triggerHovered = hovering
+        }
+
+        let shouldPresent = triggerHovered || popoverHovered
+        hoverTask?.cancel()
+        hoverTask = Task { @MainActor in
+            let delay: UInt64 = shouldPresent ? 140_000_000 : 240_000_000
+            try? await Task.sleep(nanoseconds: delay)
+            guard !Task.isCancelled else { return }
+            hoverPopoverPresented = shouldPresent
+        }
+    }
+
+    private func dismissPopover() {
+        hoverTask?.cancel()
+        triggerHovered = false
+        popoverHovered = false
+        hoverPopoverPresented = false
+        isPinned = false
     }
 }
 

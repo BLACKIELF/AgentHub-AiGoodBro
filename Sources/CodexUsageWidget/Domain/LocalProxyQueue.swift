@@ -99,6 +99,7 @@ struct LocalProxyRequest: Decodable, Sendable {
 struct LocalProxyReply: Encodable, Sendable {
     var ok: Bool
     var order: [String]? = nil
+    var creditFallback: Bool? = nil
     var leaseID: String? = nil
     var accessToken: String? = nil
     var accountID: String? = nil

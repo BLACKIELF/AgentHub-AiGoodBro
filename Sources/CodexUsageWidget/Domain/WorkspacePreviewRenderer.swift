@@ -16,7 +16,8 @@ enum WorkspacePreviewRenderer {
         let localCLI: LocalCLIAccountStore
     }
 
-    static func fixtureStore(accountCount: Int, root: URL, language: WidgetLanguage = .zh, includeQuotaEdgeCases: Bool = false) -> UsageStore {
+    static func fixtureStore(accountCount: Int, root: URL, language: WidgetLanguage = .zh, includeQuotaEdgeCases: Bool = false, includeExpiryEdgeCases: Bool = false) -> UsageStore
+    {
         let now = Date()
         let fiveHour = RateWindow(usedPercent: 18, windowDurationMins: 300, resetsAt: now.addingTimeInterval(10_800))
         let sevenDay = RateWindow(usedPercent: 37, windowDurationMins: 10_080, resetsAt: now.addingTimeInterval(259_200))
@@ -47,7 +48,10 @@ enum WorkspacePreviewRenderer {
                     accountID: "synthetic-preview-account-\(index)",
                     limitId: "codex", limitName: "Codex", fiveHour: profileFiveHour,
                     sevenDay: profileSevenDay, monthly: nil,
-                    availableResetCredits: 2, resetCreditExpiries: [now.addingTimeInterval(864_000)],
+                    availableResetCredits: 2,
+                    resetCreditExpiries: includeExpiryEdgeCases
+                        ? [now.addingTimeInterval(864_000), now.addingTimeInterval(index.isMultiple(of: 2) ? 129_600 : 259_200)]
+                        : [now.addingTimeInterval(864_000)],
                     fetchedAt: now, appServerVersion: nil
                 ),
                 resetCreditHistory: index == 0
@@ -91,7 +95,9 @@ enum WorkspacePreviewRenderer {
                 }, monthlyQuota: nil,
                 credits: CreditsInfo(
                     hasCredits: false, unlimited: false, balance: nil, resetCredits: 2,
-                    resetCreditDetails: [ResetCreditDetail(id: "demo-reset", expiresAt: now.addingTimeInterval(864_000))]),
+                    resetCreditDetails: profiles[0].lastSnapshot?.resetCreditExpiries?.enumerated().map {
+                        ResetCreditDetail(id: "demo-reset-\($0.offset)", expiresAt: $0.element)
+                    }),
                 cloudLifetimeTokens: 82_400_000, local: nil, taskBoard: nil, messages: []
             ),
             isolatedRoot: root

@@ -39,6 +39,27 @@ struct MessageCredentialRecoveryFixture {
             throw CancellationError()
         }
     }
+    final class ImmediateSuccess: MessageChannelTransport {
+        func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+            (Data("{}".utf8), HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+        }
+    }
+    final class MainActorAdmissionProbe: @unchecked Sendable {
+        private let lock = NSLock()
+        private var checks = 0
+        private var allOnMain = true
+        func record() {
+            lock.lock()
+            checks += 1
+            allOnMain = allOnMain && Thread.isMainThread
+            lock.unlock()
+        }
+        var snapshot: (Int, Bool) {
+            lock.lock()
+            defer { lock.unlock() }
+            return (checks, allOnMain)
+        }
+    }
     static func credential(fresh: Bool = false) throws -> MessageChannelCredential {
         let binding = PersonalWeChatBinding(
             baseURL: URL(string: "https://ilinkai.weixin.qq.com")!, botID: "synthetic-bot",
@@ -122,6 +143,8 @@ struct MessageCredentialRecoveryFixture {
         try await keychainPolicy()
         await queuedAuthorization()
         try await MessageTestAdmissionFixture.run()
+        try await detachedPersonalWeChatAdmission()
+        try await composedPublicResetAdmission()
     }
     final class TextTransport: MessageChannelTransport {
         private let lock = NSLock()
@@ -215,6 +238,73 @@ struct MessageCredentialRecoveryFixture {
         print(
             "PASS settings entry and text delivery: prompt once on open, no background/redundant prompts, exact paired target/body, UTF-8 limit, duplicate/cancel guards, no credential writes"
         )
+    }
+
+    static func detachedPersonalWeChatAdmission() async throws {
+        let probe = MainActorAdmissionProbe()
+        let sendTextPassed = await Task.detached { () -> Bool in
+            let channel = PersonalWeChatMessageChannel(transport: ImmediateSuccess())
+            let eventID = UUID()
+            let credential = try! credential(fresh: true)
+            let result = await channel.sendText(
+                "fixture", eventID: eventID, credential: credential,
+                shouldSend: {
+                    probe.record()
+                    return true
+                })
+            if case .success(.accepted) = result { return true }
+            return false
+        }.value
+        let sendPassed = await Task.detached { () -> Bool in
+            let channel = PersonalWeChatMessageChannel(transport: ImmediateSuccess())
+            let status = try! MessageTaskStatus(eventKind: .test, occurredAt: Date())
+            let credential = try! credential(fresh: true)
+            let result = await channel.send(
+                status, credential: credential, options: .standard,
+                shouldSend: {
+                    probe.record()
+                    return true
+                })
+            if case .success(.accepted) = result { return true }
+            return false
+        }.value
+        let snapshot = probe.snapshot
+        precondition(sendTextPassed && sendPassed && snapshot.0 == 4 && snapshot.1)
+        print("PASS personal WeChat detached admission: both async send paths hop synchronous predicates to MainActor before and after transport")
+    }
+
+    @MainActor static func composedPublicResetAdmission() async throws {
+        let suite = "wechat-public-reset-admission-\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let storage = Storage()
+        storage.readResult = .success(try credential(fresh: true))
+        let transport = ImmediateSuccess()
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("wechat-public-reset-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let controller = MessageChannelsController(
+            defaults: defaults, storage: storage, transport: { transport }, personalTransport: { NoNetwork() },
+            botLedger: WeChatBotEventLedger(directory: directory))
+        defer { controller.stop() }
+        controller.start()
+        controller.setEnabled(true, for: .personalWeChat)
+        precondition(controller.personalWeChatConnected && controller.personalWeChatHasContext)
+
+        let event = PublicResetAnnouncement(
+            id: "123", resetType: .regular, announcedAt: Date(), text: "fixture",
+            source: .init(type: "x_post", author: "thsottiaux", url: URL(string: "https://x.com/thsottiaux/status/123")))
+        let revision = controller.publicResetRevision(.personalWeChat)!
+        var checks = 0
+        let result = await controller.sendPublicReset(
+            event, to: .personalWeChat, revision: revision,
+            shouldSend: {
+                precondition(Thread.isMainThread, "composed public-reset admission ran off MainActor")
+                checks += 1
+                return true
+            })
+        guard case .success(.accepted) = result else { preconditionFailure("composed personal-WeChat delivery was not accepted") }
+        precondition(checks == 4, "each synchronous composed admission must be checked on MainActor")
+        print("PASS composed public reset: controller revision and synchronous admission checks remained on MainActor through PersonalWeChatMessageChannel.send")
     }
 
     @MainActor static func keychainPolicy() async throws {

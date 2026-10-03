@@ -57,7 +57,7 @@ struct LocalProxyQueueView: View {
                 Text(language.text("代理账号队列", "Proxy account queue")).font(.headline)
                 Spacer()
                 Button {
-                    model.refreshStatus()
+                    model.refreshStatus(displayFreshResultsImmediately: true)
                     model.flushDisplayRows()
                 } label: {
                     Label(language.text("刷新额度", "Refresh limits"), systemImage: "arrow.clockwise")
@@ -103,7 +103,7 @@ struct LocalProxyQueueView: View {
 
             if let issue = model.issue {
                 Label(issue, systemImage: "exclamationmark.triangle")
-                    .font(.callout).foregroundStyle(.orange)
+                    .font(.callout).foregroundStyle(WorkspaceStatusForeground.warning)
                     .fixedSize(horizontal: false, vertical: true)
                     .accessibilityIdentifier("next.local-proxy.issue")
             }
@@ -154,7 +154,10 @@ struct LocalProxyQueueView: View {
         return (primary, secondary)
     }
     private var creditFloorsChanged: Bool {
-        primaryFloorText != String(model.creditPrimaryFloor) || secondaryFloorText != String(model.creditSecondaryFloor)
+        guard let floors = parsedCreditFloors else {
+            return primaryFloorText != String(model.creditPrimaryFloor) || secondaryFloorText != String(model.creditSecondaryFloor)
+        }
+        return floors.primary != model.creditPrimaryFloor || floors.secondary != model.creditSecondaryFloor
     }
     private var creditSettings: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -184,7 +187,7 @@ struct LocalProxyQueueView: View {
             ).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             if parsedCreditFloors == nil && creditFloorsChanged {
                 Text(language.text("请输入整数：第一档高于第二档，第二档不小于 0。", "Use whole points: first floor above second; second at least 0."))
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(WorkspaceStatusForeground.warning)
             }
         }
         .font(.caption)
@@ -374,6 +377,15 @@ struct LocalProxyQueueView: View {
                 defaultPrimary: model.creditPrimaryFloor, defaultSecondary: model.creditSecondaryFloor,
                 save: { model.setAccountPolicy(id: row.id, policy: $0) }
             )
+            if model.hasStaleRunningBinding(for: row.id) {
+                Text(
+                    language.text(
+                        "此账号登录身份与反代启动时不同；关闭反代后可保存规则，重新开启后用于新请求。",
+                        "This account's sign-in changed since proxy startup. Stop the proxy to save rules, then restart it for new requests."
+                    )
+                )
+                .font(.caption).foregroundStyle(WorkspaceStatusForeground.warning)
+            }
         }
         .padding(10)
         .background(WorkspaceGlassSurface(cornerRadius: 10))
@@ -471,7 +483,7 @@ private struct LocalProxyAccountPolicyEditor: View {
             }
             if dirty && policy == nil {
                 Text(language.text("上限为 0–100%；点数底线须为整数，第一档高于第二档，第二档不小于 0。", "Use a limit of 0–100%. Credit floors must be whole points: first above second, second at least 0."))
-                    .foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                    .foregroundStyle(WorkspaceStatusForeground.warning).fixedSize(horizontal: false, vertical: true)
             } else if allowsCredits && !globalCreditsEnabled {
                 Text(language.text("点数总开关未开启，此账号当前仅用订阅额度。", "Credit fallback is off above. This account currently uses subscription quota only."))
                     .foregroundStyle(.secondary)

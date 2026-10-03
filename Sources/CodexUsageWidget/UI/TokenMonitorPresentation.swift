@@ -122,6 +122,7 @@ struct TokenMonitorDashboardSnapshot {
     let summary: Summary
     let days: [Day]
     let statusText: String?
+    private var collectionPhase: TokenMonitorEngineState.Phase? = nil
     let collectedAt: Date?
     let timezone: TimeZone
     let isHubSource: Bool
@@ -130,9 +131,12 @@ struct TokenMonitorDashboardSnapshot {
     let hubDevices: [TokenMonitorDevicePresentation]
     private let hubHistory: TokenMonitorHubHistory?
     private let hubRecords: [TokenMonitorHubDevice]
+    private let coverageIndex: TokenMonitorResponse.CoverageIndex?
+    private let coverageSourceIDs: [String]
 
     init(state: TokenMonitorEngineState) {
         self.init(response: state.lastGood, isStale: state.isStale)
+        collectionPhase = state.phase
     }
 
     @MainActor
@@ -141,6 +145,7 @@ struct TokenMonitorDashboardSnapshot {
             self.init(hub: hub)
         } else {
             self.init(response: state.lastGood, isStale: state.isStale)
+            collectionPhase = state.phase
         }
     }
 
@@ -152,6 +157,10 @@ struct TokenMonitorDashboardSnapshot {
         self.hubHistory = nil
         self.hubDevices = []
         self.hubRecords = []
+        let coverageIndex = response.map(TokenMonitorResponse.CoverageIndex.init(response:))
+        let coverageSourceIDs = response?.sources.filter { $0.status != .excluded }.map(\.id) ?? []
+        self.coverageIndex = coverageIndex
+        self.coverageSourceIDs = coverageSourceIDs
         let timezone = response.flatMap { TimeZone(identifier: $0.timezone) } ?? TimeZone.current
         self.timezone = timezone
         self.collectedAt = response.flatMap { TokenMonitorResponse.timestamp($0.collectedAt) }
@@ -186,8 +195,12 @@ struct TokenMonitorDashboardSnapshot {
                 activeTimeMs: Self.positiveInteger(row["activeTimeMs"]),
                 perClient: Self.countMap(row["perClient"]),
                 perModel: Self.countMap(row["perModel"]),
-                coverage: Self.coverage(response, date: date, metric: "tokens"),
-                costCoverage: Self.coverage(response, date: date, metric: "cost")
+                coverage: response?.status == .error
+                    ? .unknown
+                    : coverageIndex?.metricCoverage(sourceIDs: coverageSourceIDs, date: date, metric: "tokens") ?? .unknown,
+                costCoverage: response?.status == .error
+                    ? .unknown
+                    : coverageIndex?.metricCoverage(sourceIDs: coverageSourceIDs, date: date, metric: "cost") ?? .unknown
             )
         }.sorted { $0.date < $1.date }
     }
@@ -201,6 +214,8 @@ struct TokenMonitorDashboardSnapshot {
         self.hubHistory = hub.history
         self.hubRecords = hub.devices
         self.hubDevices = hub.devices.map(TokenMonitorDevicePresentation.init(device:))
+        self.coverageIndex = nil
+        self.coverageSourceIDs = []
         self.timezone = .current
         self.collectedAt = hub.lastRefresh
         if let error = hub.error {
@@ -252,7 +267,12 @@ struct TokenMonitorDashboardSnapshot {
             return nil
         }
         guard response != nil else {
-            return language.text("尚无已采集的用量数据", "No usage data has been collected yet")
+            switch collectionPhase {
+            case .loading: return language.text("正在读取历史用量；记录较多时可能需要几分钟，额度会独立刷新", "Initializing usage history; large archives can take a few minutes. Quotas refresh independently.")
+            case .failed: return language.text("用量暂不可用，请重试", "Usage is temporarily unavailable; retry collection.")
+            case .stopped: return language.text("采集已暂停", "Collection paused")
+            default: return language.text("尚无已采集的用量数据", "No usage data has been collected yet")
+            }
         }
         switch response?.status {
         case .partial:
@@ -305,8 +325,10 @@ struct TokenMonitorDashboardSnapshot {
         if period == .day {
             let date = Self.dateFormatter(timezone: timezone).string(from: now)
             let metricName = metric == .tokens ? "tokens" : "cost"
-            let sourceIDs = response?.sources.filter { $0.status != .excluded }.map(\.id) ?? []
-            coverage = response?.metricCoverage(sourceIDs: sourceIDs, date: date, metric: metricName) ?? .unknown
+            coverage =
+                response?.status == .error
+                ? .unknown
+                : coverageIndex?.metricCoverage(sourceIDs: coverageSourceIDs, date: date, metric: metricName) ?? .unknown
         } else {
             coverage = Self.coverage(response, date: nil, metric: metric == .tokens ? "tokens" : "cost")
         }
