@@ -99,28 +99,183 @@ test('stopping a collector clears presented quotas and invalidates deferred old 
   assert.equal(events[2].current(), true);
 });
 
-test('quota-only renderer events show limits while preserving unknown usage and connection status', (t) => {
+test('local bootstrap and renderer reload preserve only current pending quota evidence', (t) => {
+  const source = stagedSource(t, 'src/electron/main.js');
+  const bootstrap = source.match(/    const bootstrapStats = withHistoryPreview[\s\S]*?    return bootstrapStats;/)?.[0];
+  const replay = source.match(/    if \(IS_AIGOODBRO_EMBEDDED && aigoodbroPendingLimits && deviceRuntimeHandle\) \{[\s\S]*?\n    \}/)?.[0];
+  assert.ok(bootstrap && replay);
+  const events = [];
+  const context = { IS_AIGOODBRO_EMBEDDED: true, localDevice: null,
+    aggregateDevices: devices => ({ devices, periods: { today: { totalTokens: 0 } } }), withHistoryPreview: x => x,
+    aigoodbroPendingLimits: { providers: [{ provider: 'codex', remaining: 75 }] }, deviceRuntimeHandle: {},
+    sendMainWindowEvent: (_channel, payload, current) => events.push({ payload, current }) };
+  const pull = () => vm.runInNewContext(`(() => {${bootstrap}})()`, context);
+  assert.equal(pull().aigoodbroUsagePending, true);
+  const { projectLimitStatsForDisplay } = require(path.join(upstreamRoot, 'src/electron/limitStatsPresentation'));
+  const { projectModelAliasStats } = require(path.join(upstreamRoot, 'src/electron/modelAliasPresentation'));
+  assert.equal(projectModelAliasStats(projectLimitStatsForDisplay(pull(), { syncActive: false }), []).aigoodbroUsagePending, true, 'production display projections retain pending evidence');
+  context.localDevice = { today: { tokens: 0 } };
+  assert.equal(pull().aigoodbroUsagePending, undefined, 'real zero baseline is known usage');
+  context.localDevice = null; context.IS_AIGOODBRO_EMBEDDED = false;
+  assert.equal(pull().aigoodbroUsagePending, undefined, 'standalone/remote behavior stays intact');
+  context.IS_AIGOODBRO_EMBEDDED = true;
+  vm.runInNewContext(replay, context);
+  assert.equal(events.length, 1);
+  assert.equal(events[0].current(), true);
+  context.aigoodbroPendingLimits = null;
+  assert.equal(events[0].current(), false, 'baseline or stop invalidates a queued replay');
+  vm.runInNewContext(replay, context);
+  assert.equal(events.length, 1);
+  context.aigoodbroPendingLimits = {}; context.deviceRuntimeHandle = null;
+  vm.runInNewContext(replay, context);
+  assert.equal(events.length, 1, 'stopped runtime cannot replay');
+});
+
+test('production quota-only rendering reveals Home and Limits without inventing usage', async (t) => {
   const source = stagedSource(t, 'src/electron/renderer/app.js');
+  const extract = (name) => {
+    const match = source.match(new RegExp(`function ${name}\\([^\\n]*\\) \\{[\\s\\S]*?\\n\\}`));
+    assert.ok(match, name);
+    return match[0];
+  };
+  const node = (hidden = true) => {
+    const classes = new Set(hidden ? ['hidden'] : []);
+    return { children: [], textContent: '0', style: { setProperty() {} },
+      classList: { add: (...xs) => xs.forEach(x => classes.add(x)), remove: (...xs) => xs.forEach(x => classes.delete(x)), contains: x => classes.has(x), toggle(x, value) { if (value) classes.add(x); else classes.delete(x); } },
+      append(...xs) { this.children.push(...xs); }, replaceChildren(...xs) { this.children = xs; },
+      querySelector(selector) { const cls = selector.slice(1); const find = n => n.className?.split(' ').includes(cls) ? n : n.children?.map(find).find(Boolean); return this.children.map(find).find(Boolean); }
+    };
+  };
+  const els = Object.fromEntries(['shell', 'totalTokens', 'totalTokensCompact', 'cost', 'fixedPeriodMessage', 'homePanel', 'breakdown', 'serviceStatusPanel', 'limitsPanel', 'trendsPanel', 'sessionDetail', 'sessionDetailHead', 'viewBackRow', 'settingsPanel'].map(id => [id, node()]));
+  const state = { stats: null, settings: { limitsEnabled: true }, breakdown: 'home', streamConnected: false, streamFailure: { reason: 'offline' } };
+  let onPush, ready = 0, surface = 'main', defer = false;
+  const context = {
+    state, els, Map, Set, Date, JSON,
+    window: { tokenMonitor: { onStatsPush(fn) { onPush = fn; }, signalContentReady() { ready++; } } },
+    document: { createElement: () => node(false) },
+    visibleStatsSurface: () => surface, statsRenderScheduler: { request() {} },
+    isSettingsPanelOpen: () => !els.settingsPanel.classList.contains('hidden'),
+    renderViewSwitcher() {}, renderSessionPager() {}, hideHomeActivityTooltip() {}, t: key => key,
+    homeModuleIds: () => ['limits', 'tool'], enabledLimitProviderSet: () => new Set(['codex']), hiddenHomeLimitProviderSet: () => new Set(),
+    LIMIT_PROVIDERS: [{ id: 'codex', label: 'Codex' }], clientColors: {},
+    limitProviderOrderApi: { orderedLimitProviders: rows => rows },
+    limitProviderPresentationApi: { limitProviderCompactWindows: (_p, windows) => windows },
+    homeOverviewApi: { homeLimitAccountsForProviders: ({ providers, hiddenProviderIds }) => providers.filter(p => !hiddenProviderIds.includes(p.provider)).map(p => ({ name: 'Codex', providerId: p.provider, windows: p.windows || [] })) },
+    homeModuleShell() { const module = node(false), body = node(false); module.append(body); return { module, body }; },
+    applyHomeListMark() {}, iconKindFor() {},
+    limitDetailTooltipShouldHoldRender: () => false,
+    codexAccountControl: { deferRender: () => defer, stateSignature: () => [] },
+    providersByLimitProviderId: providers => new Map(providers.map(p => [p.provider, [p]])),
+    currentLocale: () => 'en', captureLimitResetMotion() {}, animateLimitResets() {}, animateCachedLimitBarsFromZero() {},
+    missingLimitProviderStatus: () => 'unavailable', limitProviderColor: () => '',
+    renderLimitProviderSolo: (_id, _label, provider) => ({ provider }), renderLimitProviderGroup() {}
+  };
   const handler = source.match(/window\.tokenMonitor\.onStatsPush\?\.\(\(payload\) => \{[\s\S]*?\n\}\);/)?.[0];
-  assert.ok(handler);
-  const state = { stats: null, streamConnected: false, streamFailure: { reason: 'offline' } };
-  let onPush, renders = 0, ready = 0;
-  vm.runInNewContext(handler, {
-    state,
-    window: { tokenMonitor: { onStatsPush(fn) { onPush = fn; } } },
-    renderLimits() { renders++; },
-    signalContentReady() { ready++; }
-  });
-  const limits = { providers: [{ provider: 'codex', remaining: 75 }] };
+  vm.runInNewContext(`let contentReadySignaled = false;\n${['homeLimitRows', 'renderHomeLimitModule', 'renderLimits', 'hidePeriodContentForMessage', 'signalContentReady', 'render'].map(extract).join('\n')}\n${handler}\nthis.renderFixture = render; this.resetReady = () => { contentReadySignaled = false; };`, context);
+  const limits = { providers: [{ provider: 'codex', status: 'ok', remaining: 75, windows: [] }] };
   onPush({ event: 'aigoodbro:limits', data: { limits } });
-  assert.equal(state.aigoodbroLimits, limits);
   assert.equal(state.stats, null);
+  assert.equal(els.totalTokens.textContent, '—');
+  assert.equal(els.totalTokensCompact.textContent, '—');
+  assert.equal(els.cost.textContent, '');
+  assert.ok(els.homePanel.querySelector('.home-limit-account'));
+  assert.equal(els.homePanel.classList.contains('hidden'), false);
+  assert.equal(els.limitsPanel.classList.contains('hidden'), true);
+  assert.equal(ready, 1);
   assert.equal(state.streamConnected, false);
   assert.equal(state.streamFailure.reason, 'offline');
-  assert.equal(renders, 1);
+  state.stats = { aigoodbroUsagePending: true, periods: { today: { totalTokens: 0, costUsd: 0 } } };
+  context.renderFixture();
+  assert.equal(els.totalTokens.textContent, '—', 'bootstrap aggregate is still unknown usage');
+  assert.ok(els.homePanel.querySelector('.home-limit-account'));
+  context.resetReady(); ready = 0; state.breakdown = 'limits';
+  context.renderFixture();
+  assert.equal(els.limitsPanel.classList.contains('hidden'), false);
+  assert.equal(els.homePanel.classList.contains('hidden'), true);
+  assert.equal(els.limitsPanel.children[0].provider.remaining, 75);
   assert.equal(ready, 1);
+  context.resetReady(); ready = 0; defer = true;
+  onPush({ event: 'aigoodbro:limits', data: { limits } });
+  assert.equal(ready, 0, 'deferred account-switch render cannot signal new content');
+  defer = false;
   onPush({ event: 'aigoodbro:limits', data: { limits: null } });
-  assert.equal(state.aigoodbroLimits, null, 'revocation can clear the independent presentation');
+  assert.equal(els.limitsPanel.classList.contains('hidden'), true);
+  assert.equal(ready, 0);
+  state.breakdown = 'home'; context.renderFixture();
+  assert.equal(els.homePanel.querySelector('.home-limit-account'), undefined, 'clear removes home quota rows');
+  state.settings.limitsEnabled = false;
+  onPush({ event: 'aigoodbro:limits', data: { limits } });
+  assert.equal(ready, 0);
+  state.settings.limitsEnabled = true; surface = null;
+  onPush({ event: 'aigoodbro:limits', data: { limits } });
+  assert.equal(ready, 0, 'hidden window waits for visible paint');
+  surface = 'main'; els.settingsPanel.classList.remove('hidden'); context.renderFixture();
+  assert.equal(ready, 0, 'settings overlay does not count as quota content');
+  els.settingsPanel.classList.add('hidden'); context.renderFixture();
+  assert.equal(ready, 1);
+  // Execute the real stats branch up to its scheduler, with only outer helpers stubbed.
+  Object.assign(context, { overlayAllTimeSessions: x => x, observeLiveTokenRate() {}, observeDisplayLiveTokenRates() {}, applyCodexActiveAccountFromStats() {}, fixedPeriodRangesApi: { isDerived: () => false }, warmFixedPeriodHistory() {}, maybeUpdateBarsIcon() {}, restartTimer() {} });
+  const stats = { periods: { today: { totalTokens: 19, costUsd: 0.25 } }, limits };
+  onPush({ event: 'stats', data: { stats, reason: 'local' } });
+  assert.equal(state.stats, stats);
+  assert.equal(state.aigoodbroLimits, null);
+  assert.equal(state.streamConnected, false);
+  if (process.env.AIGOODBRO_QUOTA_CHROMIUM === '1') {
+    const { chromium } = require('playwright');
+    const browser = await chromium.launch({ executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined });
+    t.after(() => browser.close());
+    const page = await browser.newPage({ viewport: { width: 420, height: 610 } });
+    await page.route(/^https?:/, route => route.abort());
+    const ids = [...Object.keys(els), 'toolDetailFooter', 'sessionPagerHost'];
+    const css = fs.readFileSync(path.join(upstreamRoot, 'src/electron/renderer/styles.css'), 'utf8');
+    await page.setContent(`<style>${css}</style><main class="shell" style="height:580px">${ids.filter(id => id !== 'shell').map(id => `<section id="${id}" class="${id === 'homePanel' ? 'home-panel ' : id === 'fixedPeriodMessage' ? 'fixed-period-message ' : ''}hidden"></section>`).join('')}</main>`);
+    await page.locator('main').evaluate(el => { el.id = 'shell'; });
+    const functions = Object.entries(context).filter(([,value]) => typeof value === 'function' && !value.toString().includes('[native code]')).map(([key,value]) => [key, value.toString()]);
+    await page.evaluate(({ functions, production, handler }) => {
+      window.state = { stats: null, settings: { limitsEnabled: true }, breakdown: 'home', period: 'today', streamConnected: false };
+      window.els = Object.fromEntries([...document.querySelectorAll('[id]')].map(el => [el.id, el]));
+      window.ready = 0;
+      window.tokenMonitor = { onStatsPush(fn) { window.push = fn; }, signalContentReady() { window.ready++; } };
+      for (const [key, value] of functions) window[key] = (0, eval)(`(${/^(?:async )?\w+\(/.test(value) ? 'function ' + value : value})`);
+      window.visibleStatsSurface = () => 'main';
+      window.isSettingsPanelOpen = () => !els.settingsPanel.classList.contains('hidden');
+      window.homeModuleShell = () => { const module = document.createElement('article'), body = document.createElement('div'); module.append(body); return { module, body }; };
+      window.codexAccountControl = { deferRender: () => false, stateSignature: () => [] };
+      window.LIMIT_PROVIDERS = [{ id: 'codex', label: 'Codex' }]; window.clientColors = {};
+      window.limitProviderOrderApi = { orderedLimitProviders: x => x };
+      window.limitProviderPresentationApi = { limitProviderCompactWindows: (_p, w) => w };
+      window.homeOverviewApi = { homeLimitAccountsForProviders: ({providers}) => providers.map(p => ({ name: 'Codex', providerId: p.provider, windows: [] })) };
+      window.renderLimitProviderSolo = () => { const row = document.createElement('div'); row.textContent = '75%'; return row; };
+      window.statsRenderScheduler = { request() {} };
+      (0, eval)(`let contentReadySignaled = false;${production}\n${handler}\nwindow.paint = render;`);
+    }, { functions, production: ['homeLimitRows', 'renderHomeLimitModule', 'renderLimits', 'hidePeriodContentForMessage', 'signalContentReady', 'render'].map(extract).join('\n'), handler });
+    await page.evaluate(limits => push({ event: 'aigoodbro:limits', data: { limits } }), limits);
+    assert.equal(await page.locator('#homePanel .home-limit-account').isVisible(), true);
+    const quotaBounds = await page.locator('#homePanel .home-limit-account').boundingBox();
+    assert.ok(quotaBounds.y >= 0 && quotaBounds.y + quotaBounds.height <= 610, 'cold Home quota fits inside the viewport with production CSS');
+    assert.equal(await page.locator('#totalTokens').textContent(), '—');
+    assert.equal(await page.evaluate(() => ready), 1);
+    await page.evaluate(() => { state.stats = { aigoodbroUsagePending: true }; state.breakdown = 'limits'; paint(); });
+    assert.equal(await page.locator('#limitsPanel').isVisible(), true);
+    assert.equal(await page.locator('#homePanel').isVisible(), false);
+    await page.evaluate(() => push({ event: 'aigoodbro:limits', data: { limits: null } }));
+    assert.equal(await page.locator('#limitsPanel').isVisible(), false);
+    await page.evaluate(() => {
+      state.breakdown = 'home'; state.suppressInitialNumberAnimation = true;
+      window.fixedPeriodRangesApi = { isDerived: () => false };
+      for (const name of ['syncLiveTokenRateFooterState','renderSessionUsageArchiveStatus','ensureBreakdownVisible','cancelNumberAnimation','updateTotalCompact','renderTokenRate','setRefreshButtonState','stopServiceStatusTicker','renderFloatingBubbleContent']) window[name] = () => {};
+      window.numberAnimValue = 0; window.formatNumber = n => String(n); window.formatCost = n => `$${n}`;
+      window.headlineNumberIsAnimatingTo = () => false;
+      window.renderHome = () => { els.homePanel.textContent = `Total ${state.stats.periods.today.totalTokens}`; };
+      push({ event: 'stats', data: { stats: { periods: { today: { totalTokens: 19, costUsd: 0.25 } } }, reason: 'local' } });
+      paint();
+    });
+    assert.equal(await page.locator('#totalTokens').textContent(), '19');
+    assert.equal(await page.locator('#cost').textContent(), '$0.25');
+    assert.equal(await page.locator('#fixedPeriodMessage').isVisible(), false);
+    assert.equal(await page.locator('#homePanel').textContent(), 'Total 19');
+    console.log('Real Chromium cold-quota visibility and real-history transition passed');
+  }
 });
 
 function watchHarness(t) {

@@ -60,6 +60,22 @@ function stopLocalCollector(options = {}) {
     '      aigoodbroPendingLimits = null;\n      const reason = meta.reason;',
     'real collection supersedes deferred limits');
   text = replaceOne(text,
+    '    return withHistoryPreview(aggregateDevices(localDevice ? [localDevice] : [], 0), localDevice ? [localDevice] : []);',
+    `    const bootstrapStats = withHistoryPreview(aggregateDevices(localDevice ? [localDevice] : [], 0), localDevice ? [localDevice] : []);
+    if (IS_AIGOODBRO_EMBEDDED && !localDevice) bootstrapStats.aigoodbroUsagePending = true;
+    return bootstrapStats;`,
+    'local bootstrap is distinct from a real zero-usage record');
+  text = replaceOne(text,
+    "  win.webContents.on('did-finish-load', () => {\n    sendFloatingBubbleState();",
+    `  win.webContents.on('did-finish-load', () => {
+    if (IS_AIGOODBRO_EMBEDDED && aigoodbroPendingLimits && deviceRuntimeHandle) {
+      const limits = aigoodbroPendingLimits;
+      sendMainWindowEvent('stats:push', { event: 'aigoodbro:limits', data: { limits } },
+        () => aigoodbroPendingLimits === limits && deviceRuntimeHandle != null);
+    }
+    sendFloatingBubbleState();`,
+    'renderer reload replays only the current pending quota epoch');
+  text = replaceOne(text,
     '  const mode = macActivationPolicyMode(settings, { mainWindowVisible });',
     "  const mode = IS_AIGOODBRO_EMBEDDED ? 'accessory' : macActivationPolicyMode(settings, { mainWindowVisible });",
     'embedded helper never owns a second Dock icon');
@@ -428,12 +444,65 @@ function patchApp(source) {
   if (payload.event === 'aigoodbro:limits') {
     state.aigoodbroLimits = payload.data?.limits || null;
     state.limitPanelRenderSignature = '';
-    renderLimits();
+    render();
+    return;
+  }
+  if (payload.data?.stats && payload.data.stats.aigoodbroUsagePending !== true) state.aigoodbroLimits = null;`,
+    'quota-only presentation never seeds usage with zero');
+  text = replaceOne(text,
+    "  if (!state.stats) return;\n  els.toolDetailFooter.classList.add('hidden');",
+    `  if (!state.stats || state.stats.aigoodbroUsagePending === true) {
+    renderViewSwitcher();
+    els.totalTokens.textContent = '—';
+    els.totalTokensCompact.textContent = '—';
+    els.cost.textContent = '';
+    hidePeriodContentForMessage(t('periodRange.loading'));
+    els.shell.classList.toggle('home-mode', state.breakdown === 'home');
+    els.shell.classList.toggle('session-mode', state.breakdown === 'session');
+    els.viewBackRow?.classList.toggle('hidden', state.breakdown === 'home' || !state.homeReturnVisible);
+    if (state.breakdown === 'home') {
+      hideHomeActivityTooltip();
+      state.homeActivityResizeObserver?.disconnect();
+      state.homeActivityResizeObserver = null;
+      const showQuotas = state.settings?.limitsEnabled !== false && homeModuleIds().includes('limits');
+      els.homePanel.replaceChildren(...(showQuotas ? [renderHomeLimitModule()] : []));
+      els.homePanel.classList.remove('hidden');
+    } else if (state.breakdown === 'limits' && state.aigoodbroLimits) {
+      renderLimits();
+      els.fixedPeriodMessage.classList.add('hidden');
+      els.limitsPanel.classList.remove('hidden');
+    }
     signalContentReady();
     return;
   }
-  if (payload.data?.stats) state.aigoodbroLimits = null;`,
-    'quota-only presentation never seeds usage with zero');
+  els.toolDetailFooter.classList.add('hidden');`,
+    'cold quota view preserves unknown usage and selected navigation');
+  text = replaceOne(text,
+    '  if (contentReadySignaled || !state.settings || !state.stats) return;',
+    `  const usagePending = !state.stats || state.stats.aigoodbroUsagePending === true;
+  const quotaContentVisible = usagePending
+    && state.settings?.limitsEnabled !== false
+    && state.aigoodbroLimits?.providers?.some((provider) => enabledLimitProviderSet().has(provider.provider))
+    && ((state.breakdown === 'limits'
+      && state.limitPanelRenderSignature
+      && els.limitsPanel?.children.length > 0
+      && !els.limitsPanel.classList.contains('hidden'))
+      || (state.breakdown === 'home'
+        && homeLimitRows().length > 0
+        && els.homePanel?.querySelector('.home-limit-account')
+        && !els.homePanel.classList.contains('hidden')))
+    && visibleStatsSurface() === 'main'
+    && !isSettingsPanelOpen();
+  if (contentReadySignaled || !state.settings || (usagePending && !quotaContentVisible)) return;`,
+    'content ready requires visible quota content or real usage');
+  text = replaceOne(text,
+    '    state.stats = nextStats;',
+    '    if (nextStats?.aigoodbroUsagePending !== true) state.aigoodbroLimits = null;\n    state.stats = nextStats;',
+    'real pulled history supersedes quota-only presentation');
+  text = replaceOne(text,
+    'providers: (state.stats?.limits?.providers || []).map((provider) => ({',
+    'providers: ((state.aigoodbroLimits || state.stats?.limits)?.providers || []).map((provider) => ({',
+    'home quota rows reuse cold-start provider limits');
   text = replaceOne(text,
     'const providers = providersByLimitProviderId(state.stats?.limits?.providers || []);',
     'const providers = providersByLimitProviderId((state.aigoodbroLimits || state.stats?.limits)?.providers || []);',

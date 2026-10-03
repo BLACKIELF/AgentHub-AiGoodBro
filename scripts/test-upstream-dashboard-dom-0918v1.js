@@ -6,6 +6,7 @@
 // period own the date window). Caller supplies Playwright via NODE_PATH.
 const assert = require('node:assert/strict');
 const path = require('node:path');
+const {execFileSync} = require('node:child_process');
 const {pathToFileURL} = require('node:url');
 const {chromium} = require('playwright');
 const root = path.resolve(__dirname,'..');
@@ -13,6 +14,9 @@ const hostile = '</script><script>window.pwned=1</script>"雪\u2028';
 function period(n) { return {totalTokens:n, costUsd:null, outputTokens:0, clients:{Codex:n-10,Claude:10},clientCosts:{Codex:1,Claude:null},clientOutputs:{Codex:0},models:{alpha:1,beta:9,[hostile]:n-10},modelCosts:{alpha:0},sessions:{one:{client:'Codex',sessionId:'safe-session-1',totalTokens:n-3,costUsd:2,messageCount:4,models:{alpha:n-3},projectId:'p1',projectLabel:'Project one',title:'NEVER RENDER TRANSCRIPT TITLE'},two:{client:'Claude',sessionId:'safe-session-2',totalTokens:3}},projects:{p1:{label:'Project one',tokens:n-3,costUsd:2,clients:{Codex:n-3}},p2:{label:'Project two',tokens:3}},accounts:{'safe-account':{tokens:n,costUsd:null}}}; }
 const fixture = {schemaVersion:1,collectedAt:'2026-09-13T00:00:00Z',timezone:'UTC',status:'partial',coverage:{cost:'unknown',days:[{date:'2026-09-10',status:'known'},{date:'2026-09-11',status:'unknown'},{date:'2026-09-12',status:'known'},{date:'2026-09-13',status:'known'}]},payload:{aggregate:{periods:{today:period(30),month:period(300),allTime:period(3000)},history:{daily:[{date:'2026-09-10',tokens:null},{date:'2026-09-11',tokens:90,perClient:{Codex:{tokens:60},Claude:{tokens:30}},perModel:{alpha:{tokens:20},beta:{tokens:30},[hostile]:{tokens:40}}},{date:'2026-09-12',tokens:0,cost:null,perClient:{Codex:{tokens:0}},perModel:{alpha:{tokens:0}}},{date:'2026-09-13',tokens:20,cost:null,perClient:{Codex:{tokens:20}},perModel:{alpha:{tokens:12},beta:{tokens:8}}}]}}}};
 (async()=>{
+  execFileSync(process.execPath, ['--test', path.join(root, 'Companion/TokenMonitorDesktop/test/desktop.test.cjs')], {
+    env: {...process.env, AIGOODBRO_QUOTA_CHROMIUM: '1'}, stdio: 'inherit'
+  });
   const browser = await chromium.launch();
   try {
     const context = await browser.newContext({viewport:{width:900,height:650}});
