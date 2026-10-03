@@ -1246,7 +1246,18 @@ function Wait-ForElement {
     }
     Start-Sleep -Milliseconds 150
   } while ((Get-Date) -lt $deadline)
-  throw "Timed out waiting for UI element $AutomationId."
+  $root = [System.Windows.Automation.AutomationElement]::FromHandle($Window)
+  $documentCondition = New-Object System.Windows.Automation.PropertyCondition(
+    [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+    [System.Windows.Automation.ControlType]::Document
+  )
+  $document = $root.FindFirst(
+    [System.Windows.Automation.TreeScope]::Descendants, $documentCondition
+  )
+  $renderer = [NativeVisualCaptureDriver]::FindRenderer($Window)
+  # Report structure only, never accessible names or user content.
+  throw ("Timed out waiting for UI element $AutomationId. " +
+    "UIA Document present: $($null -ne $document); renderer HWND present: $($renderer -ne [IntPtr]::Zero).")
 }
 
 function Select-DashboardTab {
@@ -1816,7 +1827,9 @@ New-Item -ItemType Directory -Path (
 ) | Out-Null
 
 $script:manifestPath = Join-Path $resolvedOutputRoot 'manifest.json'
-$branch = (& git -C $repositoryRoot branch --show-current).Trim()
+$branch = [string](& git -C $repositoryRoot branch --show-current)
+$branch = $branch.Trim()
+if ([string]::IsNullOrWhiteSpace($branch)) { $branch = 'detached HEAD' }
 $sha = (& git -C $repositoryRoot rev-parse HEAD).Trim()
 $script:workflowManifest = [ordered]@{
   status = 'running'

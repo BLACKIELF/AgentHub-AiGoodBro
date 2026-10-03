@@ -25,14 +25,22 @@ $outputRoot = Join-Path $repositoryRoot (
 )
 $expectedSurfaces = @('Tasks', 'AI Leadership', 'Usage', 'Projects', 'Skills')
 
-$output = @(
-  & $powershell -NoProfile -ExecutionPolicy Bypass -File $entry `
-    -SkipBuild `
-    -OutputRoot $outputRoot 2>&1
-)
-$exitCode = $LASTEXITCODE
+$priorErrorPreference = $ErrorActionPreference
+try {
+  # PowerShell 5.1 otherwise aborts on the first native stderr line, hiding
+  # the capture error and preventing the exit-code assertion below.
+  $ErrorActionPreference = 'Continue'
+  $output = @(
+    & $powershell -NoProfile -ExecutionPolicy Bypass -File $entry `
+      -SkipBuild `
+      -OutputRoot $outputRoot 2>&1
+  )
+  $exitCode = $LASTEXITCODE
+} finally {
+  $ErrorActionPreference = $priorErrorPreference
+}
 if ($exitCode -ne 0) {
-  $output | Write-Output
+  $output | ForEach-Object { "$_" } | Write-Output
 }
 Assert-True ($exitCode -eq 0) "Native coverage capture failed with exit code $exitCode."
 
