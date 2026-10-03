@@ -76,14 +76,18 @@ Git 忽略的 `.local-artifacts/`；不得提交、上传、复制进公开报�
 
 1. `-PreflightOnly` 只检查依赖、脚本语法、窗口策略和输出边界，不构建、不启动窗口。
 2. `Test-NativeVisualCaptureWorkflow.ps1` 检查采集 workflow 的静态契约，包括最大化、non-activating、保留前台窗口、后台 Z-order、tool window、任务栏/Alt-Tab 排除和精确 capture 参数。
-3. `Test-NativeVisualCaptureCoverage.ps1` 构建并启动真实 Tauri release 应用，覆盖各 Dashboard surface，验证 exact HWND、真实截图、前台窗口未改变和最终进程清理。
+3. `Test-NativeVisualCaptureCoverage.ps1` 启动当前 checkout 已构建的真实 Tauri release 应用，覆盖各 Dashboard surface，验证 UIA Document、exact HWND、真实截图、前台窗口未改变和最终进程清理。CI 先构建 release，再使用两个独立的 WebView2 数据目录各执行一次完整采集。
 
 0921v3：窗口等待改为枚举任务 PID 下可见、无 owner 的 `Tauri Window`；
 不再使用可能指向 `Tao Thread Event Target` 的 .NET MainWindowHandle。
 冷启动主窗隐藏时继续等待；多个候选直接报错，不猜测窗口，不延长 60 秒期限。
 `Test-NativeWindowSelection.ps1` 使用生产 C# 判断逻辑测试冷启动、PID、可见性、
 owner、类名和歧义，并在 Windows PowerShell 5.1 / PowerShell 7 CI 中执行。
-这只解决 issue #8 的 HWND 选择层；WebView2 的 UIA Document 缺失仍须真机复验。
+1003v2：原生 CI 直接检查 WebView2 的 UIA Document、Dashboard tab 与 renderer，
+任何一项缺失均保持失败。tool window 使用 `PrintWindow(PW_RENDERFULLCONTENT)` 捕获
+同一个主 HWND，并拒绝空白／纯色客户区；普通窗口保留 Windows Graphics Capture。
+这是因为 Windows Graphics Capture 的 `CreateForWindow` 会拒绝从 Alt-Tab 排除的
+tool window。每张图的 manifest 记录实际引擎，窗口样式、后台 Z-order 和前台保护仍受断言约束。
 
 若 preflight 失败，它会分别说明 `cargo` 未加入 `PATH`，或已找到 `cargo` 但缺少固定的
 `1.97.1-x86_64-pc-windows-msvc` 工具链，并给出对应的 `rustup toolchain install` 命令；
@@ -103,7 +107,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\windows\scripts\Captur
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\windows\scripts\Capture-NativeVisuals.ps1 -PreflightOnly -PreflightResultPath .\.local-artifacts\windows-visual-captures\preflight.json
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\windows\scripts\tests\Test-NativeVisualCaptureWorkflow.ps1
 
-# 真实窗口覆盖测试（会构建、启动、截图并清理）
+# 当前 checkout 完成 release 构建后的真实窗口覆盖测试（启动、截图并清理）
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\windows\scripts\tests\Test-NativeVisualCaptureCoverage.ps1
 
 # 正式采集
