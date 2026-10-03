@@ -1614,7 +1614,7 @@ function Invoke-GraphicsCapture {
   }
   $output | ForEach-Object { "$_" } | Add-Content -LiteralPath $LogPath -Encoding utf8
   if ($exitCode -ne 0) {
-    $output | ForEach-Object { "$_" } | Write-Output
+    foreach ($line in $output) { [Console]::Error.WriteLine("$line") }
     throw "Windows Graphics Capture failed with exit code $exitCode."
   }
   if (-not (Test-Path -LiteralPath $OutputPath -PathType Leaf)) {
