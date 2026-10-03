@@ -279,7 +279,8 @@ final class UsageStore {
         verifiedSnapshot.sevenDayQuota = profile.lastSnapshot?.sevenDay
         verifiedSnapshot.refreshedAt = profile.lastSnapshot?.fetchedAt ?? .distantPast
         verifiedSnapshot.quotaReadSucceeded = profile.lastSnapshot?.quotaReadSucceeded == true
-        let currentSystemCredentialIdentity = CodexCredentialIdentity(email: "fixture-source", accountID: "source-id")
+        let currentSystemCredentialIdentity: CodexCredentialIdentity? =
+            CodexCredentialIdentity(email: "fixture-source", accountID: "source-id")
         let targetCredentialIdentity = CodexCredentialIdentity(email: "fixture-target", accountID: "target-id")
         // PRODUCTION_FINAL_GATE
     }

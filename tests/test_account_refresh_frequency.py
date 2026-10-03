@@ -23,6 +23,7 @@ class AccountRefreshFrequencyTests(unittest.TestCase):
         usage = (ROOT / 'Sources/CodexUsageWidget/Services/UsageStore.swift').read_text()
         policy = (ROOT / 'Sources/CodexUsageWidget/Domain/AccountRefreshFrequency.swift').read_text()
         methods = '\n'.join(declaration(usage, needle) for needle in [
+            'var accountSnapshotRefreshInterval:',
             'private var foregroundFullRefreshInterval:', 'private var backgroundFullRefreshInterval:',
             'private func scheduleFullRefreshTimer()', 'private func scheduleWarmUpMaintenanceTimer()',
             'func setAccountRefreshFrequency(',
