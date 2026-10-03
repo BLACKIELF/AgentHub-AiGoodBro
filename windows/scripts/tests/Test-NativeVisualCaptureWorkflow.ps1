@@ -63,6 +63,28 @@ function Import-EntryFunction {
 . Import-EntryFunction -Name 'Assert-PreflightReady'
 . Import-EntryFunction -Name 'Get-WindowsSdkRootCandidates'
 . Import-EntryFunction -Name 'Get-CaptureCompiler'
+. Import-EntryFunction -Name 'Get-CaptureCheckout'
+
+$gitFixtureRoot = Join-Path $repositoryRoot (
+  '.local-artifacts\windows-visual-captures\git-fixture-' + [guid]::NewGuid().ToString('N')
+)
+New-Item -ItemType Directory -Path $gitFixtureRoot -Force | Out-Null
+try {
+  & git -C $gitFixtureRoot init -q -b capture-fixture
+  Assert-True ($LASTEXITCODE -eq 0) 'Could not initialize the Git checkout fixture.'
+  & git -C $gitFixtureRoot -c user.name=Fixture -c user.email=fixture@example.invalid `
+    -c commit.gpgSign=false -c core.hooksPath=disabled-hooks commit -q --allow-empty -m fixture
+  Assert-True ($LASTEXITCODE -eq 0) 'Could not create the Git checkout fixture commit.'
+  $attached = Get-CaptureCheckout -Root $gitFixtureRoot
+  Assert-True ($attached.branch -eq 'capture-fixture') 'Attached checkout lost its branch name.'
+  & git -C $gitFixtureRoot checkout -q --detach HEAD
+  Assert-True ($LASTEXITCODE -eq 0) 'Could not detach the fixture checkout.'
+  $detached = Get-CaptureCheckout -Root $gitFixtureRoot
+  Assert-True ($detached.branch -eq 'detached HEAD') 'Detached checkout must have a safe branch label.'
+  Assert-True ($detached.sha -eq $attached.sha) 'Detached checkout changed the recorded commit.'
+} finally {
+  Remove-Item -LiteralPath $gitFixtureRoot -Recurse -Force
+}
 
 $sdkFixtureRoot = Join-Path $repositoryRoot (
   '.local-artifacts\windows-visual-captures\sdk-fixture-' + [guid]::NewGuid().ToString('N')

@@ -948,6 +948,19 @@ function Test-OutputRootIgnored {
   }
 }
 
+function Get-CaptureCheckout {
+  param([string] $Root)
+  $branchLines = @(& git -C $Root branch --show-current)
+  if ($LASTEXITCODE -ne 0) { throw 'Could not read the capture checkout branch.' }
+  $branch = ($branchLines -join '').Trim()
+  if ([string]::IsNullOrWhiteSpace($branch)) { $branch = 'detached HEAD' }
+  $shaLines = @(& git -C $Root rev-parse HEAD)
+  if ($LASTEXITCODE -ne 0) { throw 'Could not read the capture checkout commit.' }
+  $sha = ($shaLines -join '').Trim()
+  if ($sha -notmatch '^[0-9a-f]{40,64}$') { throw 'Invalid capture checkout commit.' }
+  return [ordered]@{ branch = $branch; sha = $sha }
+}
+
 function Invoke-LoggedProcess {
   param(
     [string] $FileName,
@@ -1837,18 +1850,12 @@ New-Item -ItemType Directory -Path (
 ) | Out-Null
 
 $script:manifestPath = Join-Path $resolvedOutputRoot 'manifest.json'
-$branch = [string](& git -C $repositoryRoot branch --show-current)
-$branch = $branch.Trim()
-if ([string]::IsNullOrWhiteSpace($branch)) { $branch = 'detached HEAD' }
-$sha = (& git -C $repositoryRoot rev-parse HEAD).Trim()
+$checkout = Get-CaptureCheckout -Root $repositoryRoot
 $script:workflowManifest = [ordered]@{
   status = 'running'
   started_utc = (Get-Date).ToUniversalTime().ToString('o')
   completed_utc = $null
-  checkout = [ordered]@{
-    branch = $branch
-    sha = $sha
-  }
+  checkout = $checkout
   capture_engine = 'Windows.Graphics.Capture'
   targeting = 'exact HWND'
   activation_mode = 'non-activating'
