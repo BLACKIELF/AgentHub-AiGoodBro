@@ -36,8 +36,10 @@ and leaves it running, while `expect(...).toContainText()` polls — so a countd
 run past the value being asserted before the assertion ever reads it. That is
 invisible on an idle machine and reproduces on a loaded one, which is the worst way
 for a test to fail. Use `page.clock.pauseAt(instant)`, which advances to the instant
-and stops there, so polling cannot move the clock. `install` and `setFixedTime`
-already leave it still and are safe to assert against directly.
+and stops there, so polling cannot move the clock. `install` starts a running clock:
+install at an earlier instant and pause at the fixture time before navigation so
+the first render cannot consume the countdown either. `setFixedTime` fixes Date
+without stopping timers, which suits static timestamps but not timer progression.
 
 ## Running
 

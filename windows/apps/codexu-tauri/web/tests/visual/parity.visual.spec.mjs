@@ -3,7 +3,10 @@ import { SYNTHETIC_DASHBOARD, SYNTHETIC_SETTINGS } from './synthetic-fixtures.mj
 import { installTauriStub } from './tauri-stub.mjs';
 
 test.beforeEach(async ({ page }) => {
-  await page.clock.install({ time: new Date('2026-09-22T12:00:00Z') });
+  // install starts ticking: pause before navigation so a slow first render cannot
+  // consume the initial countdown. Start earlier so pauseAt always moves forward.
+  await page.clock.install({ time: new Date('2026-09-22T11:00:00Z') });
+  await page.clock.pauseAt(new Date('2026-09-22T12:00:00Z'));
   await installTauriStub(page, { settings: SYNTHETIC_SETTINGS, dashboard: SYNTHETIC_DASHBOARD });
   await page.addInitScript(() => {
     const base = window.__TAURI_INTERNALS__.invoke;
