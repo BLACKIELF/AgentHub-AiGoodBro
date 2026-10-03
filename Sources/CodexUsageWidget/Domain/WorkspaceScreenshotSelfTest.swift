@@ -57,8 +57,8 @@ enum WorkspaceScreenshotSelfTest {
         let highlighted = WarmUpStatusText.attributed(status)
         expect(String(highlighted.characters) == status, "highlighting must preserve the exact status text")
         expect(
-            highlighted.runs.filter { $0.foregroundColor == FixedVisualPalette.statusDanger }.count == 2,
-            "every critical phrase occurrence must be red")
+            highlighted.runs.filter { $0.foregroundColor == FixedVisualPalette.statusDangerForeground(.dark) }.count == 2,
+            "every critical phrase occurrence uses the readable alert color")
         if let dateRange = highlighted.range(of: "9月10日 09:30") {
             expect(highlighted[dateRange].foregroundColor == nil, "ordinary schedule dates must keep their neutral color")
         }
@@ -67,7 +67,10 @@ enum WorkspaceScreenshotSelfTest {
         }
         for phrase in WarmUpStatusText.criticalPhrases {
             let text = WarmUpStatusText.attributed(phrase)
-            expect(text.foregroundColor == FixedVisualPalette.statusDanger, "each supported blocking status must be red")
+            expect(text.foregroundColor == FixedVisualPalette.statusDangerForeground(.dark), "each blocking status uses the dark appearance alert color")
+            expect(
+                WarmUpStatusText.attributed(phrase, colorScheme: .light).foregroundColor == FixedVisualPalette.statusDangerForeground(.light),
+                "light alerts retain readable contrast")
             expect(text.font == .caption2.weight(.semibold), "blocking status must also use stronger weight")
         }
         let reset = Date(timeIntervalSince1970: 1_800_000_000)
@@ -292,9 +295,9 @@ enum WorkspaceScreenshotSelfTest {
                         "the ninth account row must increase the complete export height at every layout"
                     )
                     let rowHeight = captured.plan.size.height - eightAccountCapture.plan.size.height
-                    // Identity, parallel quota windows and dispatch controls
-                    // remain visible in a single compact row.
-                    expect(rowHeight >= 48 && rowHeight <= 90, "account rows retain their visible controls within 90 points including the gap")
+                    // The information button and identity stay visible. A long
+                    // name may wrap its action bar instead of hiding controls.
+                    expect(rowHeight >= 48 && rowHeight <= 110, "account rows retain identity and all actions within 110 points including the gap")
                     print("Compact layout: width=\(Int(width)), scheme=\(scheme), row=\(Int(rowHeight))pt")
                     expect(NSBitmapImageRep(data: captured.png)?.pixelsHigh == captured.plan.pixelsHigh, "long PNG must retain its full planned height")
                     expect(store.isPreview && store.profiles.count == 9, "export must retain all nine fixture accounts")

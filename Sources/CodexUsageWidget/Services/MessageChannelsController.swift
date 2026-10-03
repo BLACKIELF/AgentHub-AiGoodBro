@@ -588,9 +588,12 @@ final class MessageChannelsController: ObservableObject {
                 messageOptions: weChatMessageOptions
             ).send(status, shouldSend: valid)
         case .personalWeChat:
+            let personalWeChatValid: @MainActor () -> Bool = {
+                self.publicResetRevision(kind) == revision && shouldSend()
+            }
             result = await PersonalWeChatMessageChannel(transport: transport()).send(
                 status,
-                credential: value, options: weChatMessageOptions, shouldSend: valid)
+                credential: value, options: weChatMessageOptions, shouldSend: personalWeChatValid)
         }
         guard valid(), !Task.isCancelled else { return .failure(.cancelled) }
         return result
@@ -635,7 +638,7 @@ final class MessageChannelsController: ObservableObject {
                 if self.revisions[kind] == revision { self.tasks[kind]?.removeValue(forKey: eventID) }
                 if self.explicitTest?.id == eventID { self.explicitTest = nil }
             }
-            let valid = { self.running && self.personalWeChatEnabled && self.revisions[kind] == revision }
+            let valid: @MainActor () -> Bool = { self.running && self.personalWeChatEnabled && self.revisions[kind] == revision }
             guard valid(), !Task.isCancelled else { return }
             let channel = PersonalWeChatMessageChannel(transport: selectedTransport, deduplicator: self.personalWeChatEvents)
             let result = await channel.sendText(text, eventID: eventID, credential: value, shouldSend: valid)
@@ -733,7 +736,7 @@ final class MessageChannelsController: ObservableObject {
                 let channel = PersonalWeChatMessageChannel(transport: selectedTransport, deduplicator: self.personalWeChatEvents)
                 result = await channel.send(
                     status, credential: value, options: messageOptions,
-                    shouldSend: { self.running && self.personalWeChatEnabled && self.revisions[kind] == revision })
+                    shouldSend: { @MainActor in self.running && self.personalWeChatEnabled && self.revisions[kind] == revision })
             }
             guard self.running, !Task.isCancelled, self.isEnabled(kind), self.revisions[kind] == revision else { return }
             switch result {
@@ -1037,7 +1040,7 @@ final class MessageChannelsController: ObservableObject {
                         self.personalBotIsReplying = self.personalChatMessageID != nil
                     }
                 }
-                let valid = {
+                let valid: @MainActor () -> Bool = {
                     self.running && self.personalWeChatEnabled && self.personalWeChatConnected
                         && self.personalChatEpoch == epoch && self.personalConnectionEpoch == connectionEpoch
                 }

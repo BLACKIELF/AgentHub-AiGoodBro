@@ -5141,7 +5141,7 @@ final class UsageStore: ObservableObject {
                 return language.text("最近暖号成功 ", "Last warm-up succeeded ") + language.dateTime(date)
             }
             let detail =
-                warmUpFailureDetail(profile.lastWarmUpFailureReason, language: language)
+                Self.warmUpFailureDetail(profile.lastWarmUpFailureReason, language: language)
                 .map { language.text("（\($0)）", " (\($0))") } ?? ""
             return language.text("最近暖号失败\(detail) ", "Last warm-up failed\(detail) ") + language.dateTime(date)
         }
@@ -5180,7 +5180,7 @@ final class UsageStore: ObservableObject {
         return parts.joined(separator: " · ")
     }
 
-    private func warmUpFailureDetail(_ reason: String?, language: WidgetLanguage) -> String? {
+    static func warmUpFailureDetail(_ reason: String?, language: WidgetLanguage) -> String? {
         switch reason {
         case "timeout": return language.text("请求超时", "Request timed out")
         case "network": return language.text("网络失败", "Network error")

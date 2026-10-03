@@ -4,6 +4,12 @@ import Darwin
 @main
 struct CodexAccountManagerNextMain {
     @MainActor static func main() async {
+        if let index = CommandLine.arguments.firstIndex(of: "--render-theme-audit"),
+            CommandLine.arguments.indices.contains(index + 1)
+        {
+            _ = NSApplication.shared
+            exit(ThemeReadabilityPreview.render(to: URL(fileURLWithPath: CommandLine.arguments[index + 1], isDirectory: true)) ? 0 : 1)
+        }
         if CommandLine.arguments.contains("--self-test-section-sizes") {
             exit(HomeSectionSizingSelfTest.run() ? 0 : 1)
         }

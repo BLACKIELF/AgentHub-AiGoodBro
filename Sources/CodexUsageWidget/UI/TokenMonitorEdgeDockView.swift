@@ -416,6 +416,13 @@ struct TokenMonitorEdgeDockRailView: View {
     }
 }
 
+private struct EdgeDockCardContentHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
 struct TokenMonitorEdgeDockCardView: View {
     let cell: TokenMonitorEdgeDockCell
     let side: TokenMonitorEdgeDockPreferences.Side
@@ -430,7 +437,18 @@ struct TokenMonitorEdgeDockCardView: View {
     var snapshotDescription: String? = nil
     var isRefreshing = false
     var onRefresh: (() -> Void)? = nil
+    var onContentHeightChange: (CGFloat) -> Void = { _ in }
     @State private var byModel = false
+    @State private var accountPage = 0
+
+    private var paginatesAccounts: Bool {
+        cell.kind == .provider && cell.providerID != "codex" && cell.accounts.count > 1
+    }
+
+    private var visibleAccounts: [TokenMonitorEdgeDockAccountRow] {
+        guard paginatesAccounts else { return cell.accounts }
+        return [cell.accounts[min(accountPage, cell.accounts.count - 1)]]
+    }
 
     var body: some View {
         EdgeDockGlass(
@@ -462,8 +480,16 @@ struct TokenMonitorEdgeDockCardView: View {
                     .padding(.bottom, 14)
                     .padding(.leading, side == .left ? 24 : 14)
                     .padding(.trailing, side == .right ? 24 : 14)
+                    .background {
+                        GeometryReader { geometry in
+                            Color.clear.preference(key: EdgeDockCardContentHeightKey.self, value: geometry.size.height)
+                        }
+                    }
                 }
         )
+        .onPreferenceChange(EdgeDockCardContentHeightKey.self, perform: onContentHeightChange)
+        .onChange(of: cell.id) { _ in accountPage = 0 }
+        .onChange(of: cell.accounts.map(\.id)) { _ in accountPage = 0 }
         .environment(\.widgetLanguage, language)
         .accessibilityIdentifier("edge-dock-card")
     }
@@ -477,6 +503,28 @@ struct TokenMonitorEdgeDockCardView: View {
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
+            if paginatesAccounts {
+                HStack(spacing: 3) {
+                    Button {
+                        accountPage = max(0, accountPage - 1)
+                    } label: {
+                        Image(systemName: "chevron.left").frame(width: 18, height: 24)
+                    }
+                    .disabled(accountPage == 0)
+                    .accessibilityLabel(language.text("上一个账号", "Previous account"))
+                    Text("\(min(accountPage, cell.accounts.count - 1) + 1)/\(cell.accounts.count)")
+                        .font(.system(size: 10)).monospacedDigit()
+                    Button {
+                        accountPage = min(cell.accounts.count - 1, accountPage + 1)
+                    } label: {
+                        Image(systemName: "chevron.right").frame(width: 18, height: 24)
+                    }
+                    .disabled(accountPage >= cell.accounts.count - 1)
+                    .accessibilityLabel(language.text("下一个账号", "Next account"))
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("edge-dock-account-pages")
+            }
             Spacer(minLength: 4)
             if cell.kind == .proxy && !cell.proxyAccounts.isEmpty {
                 Text(language.text("\(cell.proxyAccounts.count) 个账号", "\(cell.proxyAccounts.count) accounts"))
@@ -752,7 +800,7 @@ struct TokenMonitorEdgeDockCardView: View {
                 )
                 .font(.system(size: 10)).foregroundStyle(.secondary)
             }
-            ForEach(cell.accounts) { account in
+            ForEach(visibleAccounts) { account in
                 VStack(alignment: .leading, spacing: 4) {
                     Text(account.name).font(.system(size: 10, weight: .medium))
                         .lineLimit(1).truncationMode(.middle)

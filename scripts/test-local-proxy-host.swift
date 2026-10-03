@@ -263,6 +263,19 @@ import Foundation
         editable.finishing = false
         liveFixtureUsage.onRefresh = nil
         editable.rebuildRows()
+        editable.setAccountEnabled(id: profile.id, enabled: true)
+        editable.flushDisplayRows()
+        editable.refreshStatus(displayFreshResultsImmediately: true)
+        var manualRefreshedProfile = profile
+        manualRefreshedProfile.lastSnapshot?.fetchedAt = now.addingTimeInterval(2)
+        manualRefreshedProfile.lastSnapshot?.fiveHour?.usedPercent = 44
+        liveFixtureUsage.profiles = [manualRefreshedProfile]
+        editable.rebuildRows()
+        expect(editable.displayRows.first?.windows.first?.remaining == 56 && editable.manualRefreshTargets.isEmpty,
+            "manual refresh publishes completed quota results without waiting for the routine snapshot interval")
+        editable.setAccountEnabled(id: profile.id, enabled: false)
+        liveFixtureUsage.profiles = [profile]
+        editable.rebuildRows()
         var secondSnapshot = snapshot
         secondSnapshot.accountID = "second-account"
         secondSnapshot.email = "second@example.invalid"
@@ -423,6 +436,7 @@ import Foundation
         let isolatedUsage = UsageStore([profile, CodexProfile(id: "system", isSystemProfile: true, lastSnapshot: otherSnapshot)])
         isolatedUsage.isPreview = false
         let lifecycle = LocalProxyQueueStore(usageStore: isolatedUsage)
+        lifecycle.setCreditFallback(false)
         let child = Process()
         child.executableURL = URL(fileURLWithPath: "/bin/sleep")
         child.arguments = ["30"]
@@ -435,6 +449,26 @@ import Foundation
         lifecycle.activeIDs = [profile.id]
         lifecycle.registeredPool[profile.id] = LocalProxyQueueStore.PoolBinding(
             home: profile.codexHomeURL, account: profile.recordedAccountKey, accountID: profile.lastSnapshot!.accountID!)
+        let policySnapshotID = UUID().uuidString
+        func orderReply(_ requestID: String) async -> LocalProxyReply {
+            await lifecycle.handle(LocalProxyRequest(schemaVersion: 1, runID: run, key: "fixture-secret",
+                command: "order", requestID: requestID, profileID: profile.id, leaseID: nil))
+        }
+        let oldPolicy = await orderReply(policySnapshotID)
+        expect(oldPolicy.ok && oldPolicy.creditFallback == false, "order snapshots disabled credit fallback")
+        lifecycle.setCreditFallback(true)
+        let newPolicy = await orderReply(UUID().uuidString)
+        expect(newPolicy.ok && newPolicy.creditFallback == true, "new request sees enabled credit fallback")
+        let repeatedPolicy = await orderReply(policySnapshotID)
+        expect(repeatedPolicy.ok && repeatedPolicy.creditFallback == false, "same request retains original credit policy snapshot")
+        var changedRunningAccount = profile
+        changedRunningAccount.lastSnapshot?.accountID = "changed-running-account"
+        isolatedUsage.profiles[0] = changedRunningAccount
+        lifecycle.rebuildRows()
+        expect(lifecycle.hasStaleRunningBinding(for: profile.id) && !lifecycle.canEditPolicy(for: profile.id),
+            "changed running account explains why its policy editor is locked")
+        isolatedUsage.profiles[0] = profile
+        lifecycle.rebuildRows()
         var queuedRequest = LocalProxyRequest(
             schemaVersion: 1, runID: run, key: "fixture-secret", command: "acquire", requestID: UUID().uuidString, profileID: profile.id, leaseID: nil)
         queuedRequest.receivedAt = ProcessInfo.processInfo.systemUptime - 30

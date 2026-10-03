@@ -280,17 +280,46 @@ struct TokenMonitorResponse: Codable, Sendable {
     var coverage: Coverage
     var errors: [Diagnostic]
     static let commit = "dcccfb01557e2786888fd5479552f392ac6c0d32"
-    func metricCoverage(sourceIDs: [String], date: String, metric: String) -> TokenMonitorCoverageStatus {
-        let eligible = sourceIDs.filter { id in sources.first(where: { $0.id == id })?.status != .excluded }
-        guard !eligible.isEmpty else { return .unknown }
-        let states = eligible.map { id -> TokenMonitorCoverageStatus in
-            guard sources.first(where: { $0.id == id })?.status == .ok else { return .unknown }
-            let entries = coverage.entries.filter { $0.sourceId == id && $0.date == date && $0.metric == metric }
-            guard !entries.isEmpty else { return .unknown }
-            return entries.allSatisfy { $0.status == .known } ? .known : .unknown
+
+    struct CoverageIndex {
+        private struct Key: Hashable {
+            let sourceID: String
+            let date: String
+            let metric: String
         }
-        if states.allSatisfy({ $0 == .known }) { return .known }
-        return states.contains(.known) ? .partial : .unknown
+
+        private let sourceStatuses: [String: Source.Status]
+        private let knownByKey: [Key: Bool]
+
+        init(response: TokenMonitorResponse) {
+            sourceStatuses = response.sources.reduce(into: [:]) { result, source in
+                if result[source.id] == nil { result[source.id] = source.status }
+            }
+            knownByKey = response.coverage.entries.reduce(into: [:]) { result, entry in
+                let key = Key(sourceID: entry.sourceId, date: entry.date, metric: entry.metric)
+                result[key] = (result[key] ?? true) && entry.status == .known
+            }
+        }
+
+        func metricCoverage(sourceIDs: [String], date: String, metric: String) -> TokenMonitorCoverageStatus {
+            var hasKnown = false
+            var hasUnknown = false
+            for sourceID in sourceIDs {
+                guard sourceStatuses[sourceID] != .excluded else { continue }
+                let key = Key(sourceID: sourceID, date: date, metric: metric)
+                if sourceStatuses[sourceID] == .ok, knownByKey[key] == true {
+                    hasKnown = true
+                } else {
+                    hasUnknown = true
+                }
+            }
+            if hasUnknown { return hasKnown ? .partial : .unknown }
+            return hasKnown ? .known : .unknown
+        }
+    }
+
+    func metricCoverage(sourceIDs: [String], date: String, metric: String) -> TokenMonitorCoverageStatus {
+        CoverageIndex(response: self).metricCoverage(sourceIDs: sourceIDs, date: date, metric: metric)
     }
     static func decode(_ data: Data, request: TokenMonitorRequest) throws -> Self {
         guard data.count <= TokenMonitorEngine.maximumOutputBytes, String(data: data, encoding: .utf8) != nil else { throw TokenMonitorFailure.invalidResponse }
@@ -338,13 +367,15 @@ struct TokenMonitorResponse: Codable, Sendable {
         let excluded = Set(response.sources.filter { $0.status == .excluded }.map(\.id))
         let included = request.sources.filter { $0.enabled && !excluded.contains($0.id) }.map(\.id)
         let includedEntries = response.coverage.entries.filter { included.contains($0.sourceId) }
+        let coverageIndex = CoverageIndex(response: response)
         for i in response.coverage.days.indices {
             let date = response.coverage.days[i].date
-            response.coverage.days[i].status = response.metricCoverage(sourceIDs: included, date: date, metric: "tokens")
+            response.coverage.days[i].status = coverageIndex.metricCoverage(sourceIDs: included, date: date, metric: "tokens")
         }
         if request.operation != .capabilities {
             let dates = Set(response.coverage.days.map(\.date)).union(includedEntries.map(\.date))
-            response.coverage.cost = !dates.isEmpty && dates.allSatisfy({ response.metricCoverage(sourceIDs: included, date: $0, metric: "cost") == .known }) ? .known : .unknown
+            response.coverage.cost =
+                !dates.isEmpty && dates.allSatisfy({ coverageIndex.metricCoverage(sourceIDs: included, date: $0, metric: "cost") == .known }) ? .known : .unknown
             if response.status == .ok
                 && (included.isEmpty || response.sources.contains { included.contains($0.id) && ($0.status != .ok || $0.coverage != .known) }
                     || includedEntries.contains { $0.status != .known }

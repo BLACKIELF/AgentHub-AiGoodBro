@@ -5,8 +5,8 @@ import Foundation
 /// See that type's contract: the official Grok response has no card fields today, so
 /// production data is `nil`; the rules below are exercised by synthetic fixtures only.
 enum ResetCardPresentation {
-    /// A card counts as "expiring" only inside (0, 72h] before its expiry.
-    static let expiringWindow: TimeInterval = 72 * 60 * 60
+    /// A card counts as "expiring" only inside (0, 48h] before its expiry.
+    static let expiringWindow: TimeInterval = 48 * 60 * 60
 
     static func isFresh(_ fetchedAt: Date?, now: Date) -> Bool {
         guard let fetchedAt else { return false }
@@ -30,7 +30,16 @@ enum ResetCardPresentation {
     }
 
     static func expiringLabelText(language: WidgetLanguage) -> String {
-        language.text("72 小时内到期", "Expires within 72 hours")
+        language.text("48 小时内到期", "Expires within 48 hours")
+    }
+
+    /// Keep duplicate dates (separate cards), with upcoming expiries first and
+    /// expired records last. Invalid dates are never useful presentation data.
+    static func orderedExpiries(_ dates: [Date], now: Date) -> [Date] {
+        dates.filter { $0.timeIntervalSince1970.isFinite }.sorted {
+            if ($0 > now) != ($1 > now) { return $0 > now }
+            return $0 < $1
+        }
     }
 
     /// Earliest future expiry across the known cards, or `nil` when the set of
@@ -41,7 +50,7 @@ enum ResetCardPresentation {
         return cards.compactMap(\.expiresAt).filter { $0.timeIntervalSince1970.isFinite && $0.timeIntervalSince(now) > 0 }.min()
     }
 
-    /// 72-hour red-frame rule: strictly future and at most 72 hours away.
+    /// 48-hour red-frame rule: strictly future and at most 48 hours away.
     /// Already expired, unknown and stale evidence never count as expiring.
     static func isExpiringSoon(_ cards: [LocalCLIResetCard]?, now: Date, evidenceFresh: Bool = true) -> Bool {
         guard evidenceFresh, let earliest = earliestValidExpiry(cards, now: now) else { return false }

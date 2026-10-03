@@ -44,6 +44,7 @@
     "asarMain": "aigoodbro/bootstrap.cjs",
     "transformer": "Companion/TokenMonitorDesktop/transform-stage.cjs",
     "brandIcon": "Resources/AiGoodBro-icon.png",
+    "trayIcon": "Resources/AiGoodBro-tray-curve.png",
     "approvedAvatarSource": "Resources/AiGoodBro-approved-source-1254.png",
     "approvedAvatarSHA256": "3122ac4ef7d3e2b4a90d70ebcc848a6ddf90f474a38bd7ad51b8c30c513ca9e9"
   },

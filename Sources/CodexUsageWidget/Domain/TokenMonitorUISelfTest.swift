@@ -52,7 +52,24 @@ enum TokenMonitorUISelfTest {
             "native Token Monitor preview fixtures preserve normal, empty and Int64-max snapshots without account data"
         )
         expect(PublicResetForecastSelfTest.persistenceSelfTest(), "forecast withdrawal commits atomically and survives restart; failed writes preserve explicitly cached state")
+        let collecting = TokenMonitorDashboardSnapshot(state: .init(phase: .loading))
+        let collectionFailed = TokenMonitorDashboardSnapshot(state: .init(phase: .failed))
+        expect(collecting.localizedStatusText(.zh)?.contains("历史用量") == true && collecting.response == nil, "first baseline is loading, not zero usage")
+        expect(collectionFailed.localizedStatusText(.en)?.contains("retry") == true && collectionFailed.response == nil, "failed baseline prompts retry without inventing usage")
         let quotaNow = Date()
+        let expiresIn48Hours = quotaNow.addingTimeInterval(48 * 3600)
+        func expiring(_ expiry: Date, fetchedAt: Date = quotaNow, succeeded: Bool = true) -> Bool {
+            ResetCardPresentation.codexIsExpiring(available: 1, expiries: [expiry], fetchedAt: fetchedAt, readSucceeded: succeeded, now: quotaNow)
+        }
+        expect(expiring(expiresIn48Hours), "48-hour boundary is highlighted")
+        expect(!expiring(expiresIn48Hours.addingTimeInterval(1)), "more than 48 hours is not highlighted")
+        expect(!expiring(quotaNow), "already expired is not an upcoming expiry")
+        expect(!expiring(expiresIn48Hours, fetchedAt: quotaNow.addingTimeInterval(-301)), "stale reset evidence does not highlight")
+        expect(!expiring(expiresIn48Hours, succeeded: false), "failed reset evidence does not highlight")
+        let laterExpiry = quotaNow.addingTimeInterval(72 * 3600)
+        expect(
+            ResetCardPresentation.orderedExpiries([laterExpiry, quotaNow, expiresIn48Hours, expiresIn48Hours], now: quotaNow)
+                == [expiresIn48Hours, expiresIn48Hours, laterExpiry, quotaNow], "expiry list preserves separate cards, puts nearest upcoming first and expired records last")
         var quotaProfile = CodexProfile(
             id: "quota-fixture", name: "Fixture", codexHomePath: "", isSystemProfile: false,
             createdAt: quotaNow,
@@ -309,6 +326,23 @@ enum TokenMonitorUISelfTest {
         expect(
             PublicResetAnnouncementPresentation.normalized([older, event, event]).map(\.id) == [event.id, older.id],
             "history stays newest-first and does not duplicate the latest announcement")
+        let orderNow = parser.date(from: "2026-10-03T00:00:00Z")!
+        let latestRegular = PublicResetAnnouncement(
+            id: "observed-latest-regular", resetType: .regular,
+            announcedAt: parser.date(from: "2026-10-02T21:18:00Z")!, text: "Latest regular reset announcement",
+            source: .init(type: "observed", author: nil, url: nil))
+        let earlierBanked = PublicResetAnnouncement(
+            id: "observed-earlier-banked", resetType: .banked,
+            announcedAt: parser.date(from: "2026-09-30T00:00:00Z")!, text: "Earlier reset-card announcement",
+            source: .init(type: "observed", author: nil, url: nil))
+        expect(
+            PublicResetAnnouncementPresentation.compactAnnouncementTypeOrder([earlierBanked, latestRegular], now: orderNow)
+                == [.regular, .banked],
+            "compact quota announcements show the newest type before an older announcement")
+        expect(
+            PublicResetAnnouncementPresentation.compactAnnouncementTypeOrder([latestRegular], now: orderNow)
+                == [.regular, .banked],
+            "a missing compact announcement type follows a recent announcement")
         expect(
             PublicResetAnnouncementPresentation.compactEventTime(date, language: .zh).contains("2026-09-04 07:12"),
             "history timestamps preserve Beijing time across UTC date boundaries")

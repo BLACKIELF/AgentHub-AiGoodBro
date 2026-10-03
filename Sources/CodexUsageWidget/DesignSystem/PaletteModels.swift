@@ -44,6 +44,14 @@ struct PaletteColor: Codable, Hashable, CustomStringConvertible {
     var nsColor: NSColor {
         NSColor(srgbRed: red, green: green, blue: blue, alpha: alpha)
     }
+
+    /// Foregrounds need a different luminance from decorative strokes and fills.
+    func mixed(toward target: Double, amount: Double) -> PaletteColor {
+        func channel(_ value: Double) -> UInt32 {
+            UInt32((min(1, max(0, value + (target - value) * amount)) * 255).rounded())
+        }
+        return PaletteColor(rgba: channel(red) << 24 | channel(green) << 16 | channel(blue) << 8 | 0xFF)
+    }
 }
 
 enum PaletteModelError: LocalizedError {
@@ -246,6 +254,12 @@ struct ResolvedVisualTokens: Hashable {
     let surfaceTint: SurfaceTintTokenSet
     let ornament: OrnamentTokenSet
     let assets: [PaletteAssetSlot: PaletteAssetDescriptor]
+
+    /// Readable on glass, including mid-tone coloured wallpaper. Keep the
+    /// original accent for charts, selected fills and decorative gradients.
+    var controlForeground: PaletteColor {
+        accent.primary.mixed(toward: identity.appearance == .dark ? 1 : 0, amount: identity.appearance == .dark ? 0.90 : 0.52)
+    }
 
     static func safeDefault(_ appearance: PaletteAppearance) -> ResolvedVisualTokens {
         let accent = AccentTokenSet(

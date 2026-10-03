@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import SwiftUI
 
 enum PaletteCatalogSelfTest {
     static func run() -> Bool {
@@ -44,12 +45,32 @@ enum PaletteCatalogSelfTest {
         for descriptor in discoveredDescriptors {
             for appearance in PaletteAppearance.allCases {
                 let tokens = catalog.resolve(id: descriptor.id, appearance: appearance)
+                let foregroundSurface = PaletteColor(rgba: appearance == .dark ? 0x656C_82FF : 0xCBD0_DEFF)
+                expect(contrastRatio(tokens.controlForeground, foregroundSurface) >= 4.5, "\(descriptor.id) \(appearance.rawValue) controls retain text contrast on tinted glass")
                 expect(tokens.identity.paletteID == descriptor.id, "\(descriptor.id) should resolve without Swift registration")
                 expect(tokens.identity.appearance == appearance, "\(descriptor.id) should resolve both appearances")
                 expect(tokens.data.series.count == 3 && tokens.data.modelSeries?.count == 9 && tokens.data.heatmap.count == 5, "\(descriptor.id) should expose complete data roles")
             }
         }
         expect(elapsed < 0.5, "palette catalog should load in under 500ms during self-test")
+
+        for scheme in [ColorScheme.dark, .light] {
+            let surface = PaletteColor(rgba: scheme == .dark ? 0x656C_82FF : 0xCBD0_DEFF)
+            let statuses = [
+                FixedVisualPalette.statusSuccessForeground(scheme), FixedVisualPalette.statusWarningForeground(scheme),
+                FixedVisualPalette.statusDangerForeground(scheme), FixedVisualPalette.statusScheduledForeground(scheme),
+                FixedVisualPalette.statusInfoForeground(scheme),
+            ]
+            for status in statuses {
+                guard let color = NSColor(status).usingColorSpace(.sRGB) else {
+                    expect(false, "semantic foreground must resolve to sRGB")
+                    continue
+                }
+                let rgb = [color.redComponent, color.greenComponent, color.blueComponent].map { UInt32(($0 * 255).rounded()) }
+                let foreground = PaletteColor(rgba: rgb[0] << 24 | rgb[1] << 16 | rgb[2] << 8 | 0xFF)
+                expect(contrastRatio(foreground, surface) >= 4.5, "semantic foreground retains text contrast on tinted glass")
+            }
+        }
 
         let defaultLight = catalog.resolve(id: PaletteCatalog.defaultPaletteID, appearance: .light)
         let safeLight = ResolvedVisualTokens.safeDefault(.light)

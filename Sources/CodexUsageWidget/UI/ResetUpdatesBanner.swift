@@ -10,6 +10,22 @@ enum PublicResetAnnouncementPresentation {
         }.filter { seen.insert($0.id).inserted }
     }
 
+    static func compactAnnouncementTypeOrder(
+        _ announcements: [PublicResetAnnouncement], now: Date
+    ) -> [PublicResetAnnouncement.Kind] {
+        let kinds: [PublicResetAnnouncement.Kind] = [.banked, .regular]
+        let latestByKind = Dictionary(
+            uniqueKeysWithValues: kinds.compactMap { kind in
+                recentVerifiableAnnouncement(announcements.filter { $0.resetType == kind }, now: now)
+                    .map { (kind, $0) }
+            })
+        return kinds.sorted { lhs, rhs in
+            let leftDate = latestByKind[lhs]?.announcedAt ?? .distantPast
+            let rightDate = latestByKind[rhs]?.announcedAt ?? .distantPast
+            return leftDate == rightDate ? lhs.rawValue < rhs.rawValue : leftDate > rightDate
+        }
+    }
+
     static func title(_ language: WidgetLanguage) -> String {
         language.text("历史重置记录", "Historical reset record")
     }
@@ -180,7 +196,7 @@ struct AnnouncementOriginalText: View {
                 }
                 .buttonStyle(.plain)
                 .font(.caption2.weight(.semibold))
-                .foregroundStyle(.tint)
+                .foregroundStyle(PaletteControlForeground())
                 .accessibilityValue(
                     isExpanded ? language.text("已展开", "Expanded") : language.text("已折叠", "Collapsed")
                 )
@@ -415,6 +431,7 @@ private struct ResetMessageWidthKey: PreferenceKey {
 }
 
 struct ResetUpdatesBanner: View {
+    @Environment(\.colorScheme) private var colorScheme
     let language: WidgetLanguage
     let fiveHourResetsAt: Date?
     let sevenDayResetsAt: Date?
@@ -491,7 +508,7 @@ struct ResetUpdatesBanner: View {
     private var todayBadge: some View {
         Text(PublicResetAnnouncementPresentation.todayBadge(language))
             .font(.caption2.weight(.bold))
-            .foregroundStyle(FixedVisualPalette.statusInfo)
+            .foregroundStyle(FixedVisualPalette.statusInfoForeground(colorScheme))
             .padding(.horizontal, 7)
             .padding(.vertical, 3)
             .background(FixedVisualPalette.statusInfo.opacity(0.14), in: Capsule())
@@ -531,7 +548,7 @@ struct ResetUpdatesBanner: View {
                     HStack(spacing: 6) {
                         Image(systemName: "megaphone.fill")
                             .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(current == nil ? Color.secondary : FixedVisualPalette.statusInfo)
+                            .foregroundStyle(current == nil ? Color.secondary : FixedVisualPalette.statusInfoForeground(colorScheme))
                         Text(
                             current.map {
                                 $0.title(language)
@@ -611,7 +628,7 @@ struct ResetUpdatesBanner: View {
                 VStack(alignment: .leading, spacing: compactSummary ? 4 : 7) {
                     HStack(spacing: compactSummary ? 4 : 7) {
                         Image(systemName: "clock.badge.exclamationmark.fill")
-                            .foregroundStyle(FixedVisualPalette.statusWarning)
+                            .foregroundStyle(FixedVisualPalette.statusWarningForeground(colorScheme))
                         Text(language.text("重置预告 · 待确认", "Reset forecast · unconfirmed"))
                             .font(compactSummary ? .caption.weight(.semibold) : .callout.weight(.semibold))
                         if isToday { todayBadge }
@@ -758,7 +775,7 @@ struct ResetUpdatesBanner: View {
                             systemImage: summary.availableCards == nil ? "questionmark.circle" : "checkmark.seal.fill"
                         )
                         .font(.caption.weight(.semibold))
-                        .foregroundStyle(summary.isStale || summary.availableCards == nil ? Color.secondary : FixedVisualPalette.statusSuccess)
+                        .foregroundStyle(summary.isStale || summary.availableCards == nil ? Color.secondary : FixedVisualPalette.statusSuccessForeground(colorScheme))
                         Spacer(minLength: 4)
                         Button(language.text("查看账号", "Accounts"), action: onOpenAccounts)
                             .font(.caption2).buttonStyle(.plain)
@@ -921,8 +938,7 @@ struct ResetUpdatesBanner: View {
             blockHeading(language.text("额度重置公告", "Quota reset announcements"), image: "megaphone", block: "announcements")
             forecastSection
             Text(language.text("上次重置信息", "Last reset information")).font(.caption.weight(.semibold))
-            typedCompactAnnouncement(.banked, showsTitle: false)
-            typedCompactAnnouncement(.regular, showsTitle: false)
+            compactTypedAnnouncements
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
         .accessibilityIdentifier("home.reset.quota-announcements")
@@ -1034,13 +1050,30 @@ struct ResetUpdatesBanner: View {
         }
     }
 
-    private func typedCompactAnnouncement(_ kind: PublicResetAnnouncement.Kind, showsTitle: Bool = true) -> some View {
+    private var compactTypedAnnouncements: some View {
         TimelineView(.periodic(from: .now, by: 60)) { context in
-            let current = PublicResetAnnouncementPresentation.recentVerifiableAnnouncement(
-                historicalAnnouncements.filter { $0.resetType == kind }, now: context.date)
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(
+                    PublicResetAnnouncementPresentation.compactAnnouncementTypeOrder(historicalAnnouncements, now: context.date),
+                    id: \.rawValue
+                ) { kind in
+                    typedCompactAnnouncement(kind, now: context.date, showsTitle: false)
+                }
+            }
+        }
+    }
+
+    private func typedCompactAnnouncement(
+        _ kind: PublicResetAnnouncement.Kind, now: Date, showsTitle: Bool = true
+    ) -> some View {
+        let current = PublicResetAnnouncementPresentation.recentVerifiableAnnouncement(
+            historicalAnnouncements.filter { $0.resetType == kind }, now: now)
+        return Group {
             if let current {
                 Link(destination: current.source.url ?? PublicResetClient.siteURL) {
-                    compactAnnouncement(current, isToday: PublicResetAnnouncementPresentation.wasAnnouncedToday(current.announcedAt, now: context.date), showsTitle: showsTitle)
+                    compactAnnouncement(
+                        current, isToday: PublicResetAnnouncementPresentation.wasAnnouncedToday(current.announcedAt, now: now),
+                        showsTitle: showsTitle)
                 }
                 .buttonStyle(.plain)
                 .help(language.text("打开这条公告的来源", "Open this announcement’s source"))
@@ -1236,7 +1269,7 @@ struct ResetUpdatesBanner: View {
         let content = HStack(alignment: .firstTextBaseline, spacing: 6) {
             Image(systemName: systemImage)
                 .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(emphasized ? FixedVisualPalette.statusInfo : Color.secondary)
+                .foregroundStyle(emphasized ? FixedVisualPalette.statusInfoForeground(colorScheme) : Color.secondary)
                 .frame(width: 14)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 1) {

@@ -14,11 +14,11 @@ enum FixedVisualPalette {
     static let statusScheduled = Color(red: 0.545, green: 0.427, blue: 1.000)  // #8B6DFF
 
     // Strong semantic foregrounds keep 9 pt labels readable on light glass.
-    static let statusDangerLightText = Color(red: 0.706, green: 0.137, blue: 0.094)  // #B42318
+    static let statusDangerLightText = Color(red: 0.66, green: 0.10, blue: 0.075)
     static let statusWarningLightText = Color(red: 0.502, green: 0.294, blue: 0.000)  // #804B00
-    static let statusSuccessLightText = Color(red: 0.078, green: 0.439, blue: 0.224)  // #147039
+    static let statusSuccessLightText = Color(red: 0.06, green: 0.40, blue: 0.20)
     static let statusNeutralLightText = Color(red: 0.329, green: 0.333, blue: 0.369)  // #54555E
-    static let statusScheduledLightText = Color(red: 0.384, green: 0.251, blue: 0.773)  // #6240C5
+    static let statusScheduledLightText = Color(red: 0.36, green: 0.23, blue: 0.73)
 
     static let surfaceTrack = Color.primary.opacity(0.10)
     static let surfaceSubtleFill = Color.primary.opacity(0.025)
@@ -120,19 +120,23 @@ enum FixedVisualPalette {
     }
 
     static func statusSuccessForeground(_ colorScheme: ColorScheme) -> Color {
-        colorScheme == .dark ? statusSuccess : statusSuccessLightText
+        colorScheme == .dark ? Color(red: 0.83, green: 0.98, blue: 0.90) : statusSuccessLightText
     }
 
     static func statusWarningForeground(_ colorScheme: ColorScheme) -> Color {
-        colorScheme == .dark ? statusWarning : statusWarningLightText
+        colorScheme == .dark ? Color(red: 1.00, green: 0.93, blue: 0.76) : statusWarningLightText
     }
 
     static func statusDangerForeground(_ colorScheme: ColorScheme) -> Color {
-        colorScheme == .dark ? statusDanger : statusDangerLightText
+        colorScheme == .dark ? Color(red: 1.00, green: 0.93, blue: 0.91) : statusDangerLightText
     }
 
     static func statusScheduledForeground(_ colorScheme: ColorScheme) -> Color {
-        colorScheme == .dark ? statusScheduled : statusScheduledLightText
+        colorScheme == .dark ? Color(red: 0.95, green: 0.93, blue: 1.00) : statusScheduledLightText
+    }
+
+    static func statusInfoForeground(_ colorScheme: ColorScheme) -> Color {
+        colorScheme == .dark ? Color(red: 0.87, green: 0.95, blue: 1.00) : Color(red: 0.02, green: 0.29, blue: 0.62)
     }
 
     static func statusFill(_ foreground: Color, colorScheme: ColorScheme) -> Color {

@@ -203,6 +203,7 @@ final class TokenMonitorEdgeDockController: NSObject {
     private var lastPeekContent: PeekContent?
     private var lastRailContent: RailContent?
     private var lastCardContent: CardContent?
+    private var measuredCardHeights: [String: CGFloat] = [:]
 
     func configure(
         preferences: TokenMonitorEdgeDockPreferences,
@@ -292,6 +293,7 @@ final class TokenMonitorEdgeDockController: NSObject {
         lastPeekContent = nil
         lastRailContent = nil
         lastCardContent = nil
+        measuredCardHeights.removeAll()
     }
 
     private func hideAll() {
@@ -492,7 +494,10 @@ final class TokenMonitorEdgeDockController: NSObject {
                         onOpenProxy: { [weak self] in self?.openProxySettings() },
                         snapshotDescription: content.snapshotDescription,
                         isRefreshing: content.isRefreshing,
-                        onRefresh: onRefresh == nil ? nil : { [weak self] in self?.refresh(content.cell) }
+                        onRefresh: onRefresh == nil ? nil : { [weak self] in self?.refresh(content.cell) },
+                        onContentHeightChange: { [weak self] height in
+                            self?.resizeCardForContent(height, cellID: content.cell.id)
+                        }
                     ))
                 if let cardHost {
                     cardHost.rootView = view
@@ -519,6 +524,21 @@ final class TokenMonitorEdgeDockController: NSObject {
             self.refreshingCells.remove(cell.id)
             self.updateSurfaces()
         }
+    }
+
+    private func resizeCardForContent(_ height: CGFloat, cellID: String) {
+        guard height.isFinite, height > 0,
+            let index = cardIndex, cells.indices.contains(index), cells[index].id == cellID,
+            cardUsesContentHeight(cells[index])
+        else { return }
+        let measured = ceil(height) + 1
+        if let previous = measuredCardHeights[cellID], abs(previous - measured) < 1 { return }
+        measuredCardHeights[cellID] = measured
+        updateSurfaces()
+    }
+
+    private func cardUsesContentHeight(_ cell: TokenMonitorEdgeDockCell) -> Bool {
+        cell.kind != .provider || (cell.providerID != "codex" && cell.accounts.count <= 1)
     }
 
     private func scheduleTick() {
@@ -841,8 +861,16 @@ final class TokenMonitorEdgeDockController: NSObject {
         let cell = cells[index]
         let rows = cell.kind == .stat ? min(12, max(cell.byTool.count, cell.byModel.count)) : cell.accounts.reduce(0) { $0 + max(1, $1.quotaRows.count) }
         let preferredHeight: CGFloat
-        if cell.kind == .proxy {
+        if cardUsesContentHeight(cell), let measured = measuredCardHeights[cell.id] {
+            preferredHeight = measured
+        } else if cell.kind == .proxy {
             preferredHeight = max(164, min(520, 132 + CGFloat(cell.proxyAccounts.count) * 100))
+        } else if cell.kind == .provider && cell.providerID != "codex" {
+            if cell.accounts.count > 1 {
+                preferredHeight = 480
+            } else {
+                preferredHeight = measuredCardHeights[cell.id] ?? max(190, 190 + CGFloat(rows) * 48)
+            }
         } else {
             preferredHeight = cell.kind == .stat ? max(190, min(520, 132 + CGFloat(rows) * 44)) : max(150, min(480, 102 + CGFloat(rows) * 37))
         }

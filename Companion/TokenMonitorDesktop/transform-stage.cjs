@@ -7,6 +7,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const INPUT_SHA256 = Object.freeze({
+  'src/shared/collector.js': 'be7956dd85a124d9714d0fda67a09ecc57182a2fb61d4d081df76b17a155e746',
+  'src/shared/deviceRuntime.js': '423113332c1e2e972c7dedbceea29d693520cdb07281fe56e13108cc1e1c813b',
   'src/electron/main.js': 'f53b96ef53dae5bb695f15305b216c5dc3ab036b6179bd2ab5d958278adc3adb',
   'src/electron/edgeDock/controller.js': '3fa64b1a5796bcfce200935ac31e2b9427fb2067d305d24a2f93f60b1499dc97',
   'src/electron/discordRpc.js': '9abb5b304fdf8c45cf1321d3bb8a3422bd9888399b0e5a94b8f6e7c0d26cf7bb',
@@ -34,6 +36,29 @@ function patchMain(source) {
     "const APP_NAME = 'Token Monitor';",
     "const IS_AIGOODBRO_EMBEDDED = process.env.AIGOODBRO_TOKEN_MONITOR_EMBEDDED === '1';\nconst APP_NAME = IS_AIGOODBRO_EMBEDDED ? 'AiGoodBro' : 'Token Monitor';",
     'main brand');
+  text = replaceOne(text,
+    'function stopLocalCollector(options = {}) {',
+    `let aigoodbroPendingLimits = null;
+function stopLocalCollector(options = {}) {
+  aigoodbroPendingLimits = null;
+  if (IS_AIGOODBRO_EMBEDDED) {
+    sendMainWindowEvent('stats:push', { event: 'aigoodbro:limits', data: { limits: null } },
+      () => aigoodbroPendingLimits === null);
+  }`,
+    'limits source epoch reset');
+  text = replaceOne(text,
+    '    progressive: true,',
+    `    progressive: true,
+    onLimits: IS_AIGOODBRO_EMBEDDED ? (limits) => {
+      aigoodbroPendingLimits = limits;
+      sendMainWindowEvent('stats:push', { event: 'aigoodbro:limits', data: { limits } },
+        () => aigoodbroPendingLimits === limits && deviceRuntimeHandle != null);
+    } : undefined,`,
+    'cold start limits reach renderer without fabricated usage');
+  text = replaceOne(text,
+    '      const reason = meta.reason;',
+    '      aigoodbroPendingLimits = null;\n      const reason = meta.reason;',
+    'real collection supersedes deferred limits');
   text = replaceOne(text,
     '  const mode = macActivationPolicyMode(settings, { mainWindowVisible });',
     "  const mode = IS_AIGOODBRO_EMBEDDED ? 'accessory' : macActivationPolicyMode(settings, { mainWindowVisible });",
@@ -397,6 +422,23 @@ function patchApp(source) {
     "const TOKEN_MONITOR_REPOSITORY_URL = 'https://github.com/BLACKIELF/AgentHub-AiGoodBro';\nconst TOKEN_MONITOR_ISSUES_URL = `${TOKEN_MONITOR_REPOSITORY_URL}/issues`;\nconst TOKEN_MONITOR_WEBSITE_URL = 'https://aigoodbro.com/';\nconst TOKEN_MONITOR_WSL_SQLITE_GUIDE_URL = `${TOKEN_MONITOR_REPOSITORY_URL}/blob/main/docs/usage-guide.md`;",
     'AiGoodBro product links');
   text = replaceOne(text,
+    "window.tokenMonitor.onStatsPush?.((payload) => {\n  if (!payload) return;",
+    `window.tokenMonitor.onStatsPush?.((payload) => {
+  if (!payload) return;
+  if (payload.event === 'aigoodbro:limits') {
+    state.aigoodbroLimits = payload.data?.limits || null;
+    state.limitPanelRenderSignature = '';
+    renderLimits();
+    signalContentReady();
+    return;
+  }
+  if (payload.data?.stats) state.aigoodbroLimits = null;`,
+    'quota-only presentation never seeds usage with zero');
+  text = replaceOne(text,
+    'const providers = providersByLimitProviderId(state.stats?.limits?.providers || []);',
+    'const providers = providersByLimitProviderId((state.aigoodbroLimits || state.stats?.limits)?.providers || []);',
+    'render cold-start provider limits');
+  text = replaceOne(text,
     "window.tokenMonitor.onOpenView?.(openViewFromTray);",
     `window.tokenMonitor.onOpenView?.((viewId) => {
   if (viewId === 'home') setPeriod('allTime');
@@ -472,11 +514,11 @@ function renderFloatingBubbleContent() {`,
     'bubble icon preview');
   text = replaceOne(text,
     "  if (id === 'app') return '../../../assets/icons/tray-token-monitor.png';",
-    "  if (id === 'app') return '../../../assets/icon.png';",
+    "  if (id === 'app') return '../../../assets/tray-curve.png';",
     'tray composer app icon');
   text = replaceOne(text,
     "  sources.app = '../../../assets/icons/tray-token-monitor.png';",
-    "  sources.app = '../../../assets/icon.png';",
+    "  sources.app = '../../../assets/tray-curve.png';",
     'tray provider app icon');
   text = replaceOne(text,
     "ctx.fillText(value === 'app' ? 'Σ' : String(value || '?').slice(0, 1).toUpperCase(), x + size / 2, y + size / 2 + 1);",
@@ -515,8 +557,12 @@ function patchStyles(source) {
 function patchTray(source) {
   let text = replaceOne(source,
     "const TRAY_ICON_PATH = path.join(__dirname, '..', '..', 'assets', 'icons', 'tray-token-monitor.png');",
-    "const TRAY_ICON_PATH = ICON_PATH;",
+    "const TRAY_ICON_PATH = path.join(__dirname, '..', '..', 'assets', 'tray-curve.png');",
     'mac tray brand icon');
+  text = replaceOne(text,
+    "return platform === 'darwin' && (isGeneratedTrayIconMode(id) || !showProviderBadge);",
+    "return platform === 'darwin' && id !== 'app' && id !== 'custom' && (isGeneratedTrayIconMode(id) || !showProviderBadge);",
+    'preserve color in the app and custom tray artwork');
   text = replaceOne(text,
     '    sized.setTemplateImage(true);',
     '    sized.setTemplateImage(false);',
@@ -579,7 +625,55 @@ function patchDiscordRpc(source) {
     "    return { ...base, details: 'AiGoodBro', state: 'No usage today' };", 'Discord empty-state label');
 }
 
+function patchDeviceRuntime(source) {
+  return replaceOne(source,
+    "      deviceState.updateLimits(summary, 'limits', { epoch });",
+    `      // Quota delivery must not wait for a multi-minute usage baseline.
+      // This channel never creates a zero-usage record or a Hub upload.
+      try { options.onLimits?.(structuredClone(summary)); }
+      catch (error) { try { options.onError?.(error, 'limits-presentation'); } catch (_) {} }
+      deviceState.updateLimits(summary, 'limits', { epoch });`,
+    'independent limits delivery');
+}
+
+function patchCollector(source) {
+  let text = replaceOne(source, '  let debounceTimer = null;',
+    '  let debounceTimer = null;\n  let aigoodbroWatchBatchStartedAt = null;', 'watch batching clock');
+  text = replaceOne(text,
+    '    recordWatchClients(eventClients);\n    if (debounceTimer) clearTimeout(debounceTimer);',
+    `    recordWatchClients(eventClients);
+    const now = Date.now();
+    if (aigoodbroWatchBatchStartedAt === null) aigoodbroWatchBatchStartedAt = now;
+    // Bounded trailing debounce prevents starvation during continuous writes.
+    // Slow scans get idle time too; manual/history refresh paths are unchanged.
+    const batchDeadline = Math.min(now + watchDebounceMs, aigoodbroWatchBatchStartedAt + 10000);
+    const restUntil = Math.max(lastTickSuccessAt, lastTickFailureAt) + Math.min(lastTickDurationMs || 0, 30000);
+    const watchDelay = Math.max(1, batchDeadline - now, restUntil - now);
+    if (debounceTimer) clearTimeout(debounceTimer);`,
+    'bounded scan backpressure');
+  text = replaceOne(text,
+    `      // There is deliberately no cooldown on top of the debounce: the product
+      // promises 3–5 s updates, and a cooldown would break that promise.
+      if (tickInFlight) { scheduleTick(reason); return; }`,
+    `      if (tickInFlight) {
+        // Do not spin at 1 ms after the max-wait deadline while a scan runs.
+        debounceTimer = setTimeout(() => { debounceTimer = null; scheduleTick(reason); }, watchDebounceMs);
+        return;
+      }
+      // The active scan may have finished after this timer was armed.
+      if (Date.now() < Math.max(lastTickSuccessAt, lastTickFailureAt) + Math.min(lastTickDurationMs || 0, 30000)) {
+        scheduleTick(reason);
+        return;
+      }
+      aigoodbroWatchBatchStartedAt = null;`,
+    'preserve pending events until the scan can run');
+  return replaceOne(text, '    }, watchDebounceMs);\n  }\n\n  // chokidar',
+    '    }, watchDelay);\n  }\n\n  // chokidar', 'adaptive watch delay');
+}
+
 const TRANSFORMS = Object.freeze({
+  'src/shared/collector.js': patchCollector,
+  'src/shared/deviceRuntime.js': patchDeviceRuntime,
   'src/electron/main.js': patchMain,
   'src/electron/edgeDock/controller.js': patchEdgeDockController,
   'src/electron/discordRpc.js': patchDiscordRpc,
