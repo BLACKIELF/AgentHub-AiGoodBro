@@ -25,7 +25,7 @@ struct PublicResetAnnouncement: Codable, Equatable, Identifiable {
 
     func isValid(now: Date) -> Bool {
         let safeID = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_"))
-        guard (1...64).contains(id.count), id.unicodeScalars.allSatisfy(safeID.contains),
+        guard (1...64).contains(id.count), id.unicodeScalars.allSatisfy({ safeID.contains($0) }),
             !text.isEmpty, text.utf8.count <= 16_384, announcedAt.timeIntervalSince1970.isFinite,
             announcedAt <= now.addingTimeInterval(300), announcedAt.timeIntervalSince1970 > 1_700_000_000
         else { return false }
@@ -386,7 +386,7 @@ struct PublicResetDeliveryLedger: Codable {
     }
 }
 
-private struct PublicResetDeliveryLock {
+struct PublicResetDeliveryLock {
     let descriptor: Int32
     static func acquire(in directory: URL) throws -> Self? {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
@@ -441,6 +441,9 @@ final class PublicResetAnnouncementMonitor: ObservableObject {
     private var timer: Timer?
     private var task: Task<Void, Never>?
     private var generation: UInt64 = 0
+    private var historyCheckSequence: UInt64 = 0
+    private var fetchedForecastSequence: UInt64?
+    private var verifiedCompletedIDs: Set<String>?
     private var stopped = false
     private let fixtureScheduling: Bool
     private let fetchPage: () async throws -> PublicResetPage
@@ -450,11 +453,14 @@ final class PublicResetAnnouncementMonitor: ObservableObject {
     private let preview: Bool
     private let stateURL: URL
     private let localStateURL: URL
+    private let forecastStateURL: URL
+    private let forecastDeliveryDirectory: URL
     private var notifyLocally: (@MainActor (PublicResetAnnouncement) async -> LocalDelivery)?
     private var channelRevision: @MainActor (MessageChannelKind) -> UUID? = { _ in nil }
     private var sendChannel: (@MainActor (PublicResetAnnouncement, MessageChannelKind, UUID) async -> Result<MessageDeliveryOutcome, MessageChannelError>)?
     private var canSend: () -> Bool = { false }
     private var send: (@MainActor (PublicResetAnnouncement) async -> Result<Void, FeishuWebhookError>)?
+    private var sendForecast: (@MainActor (PublicResetForecastNotification) async -> Result<Void, FeishuWebhookError>)?
 
     init(
         preview: Bool = false, supportDirectory: URL? = nil,
@@ -468,6 +474,8 @@ final class PublicResetAnnouncementMonitor: ObservableObject {
         let directory = supportDirectory ?? DispatchParticipationPaths.supportDirectory()
         stateURL = directory.appendingPathComponent("public-reset-delivery-v1.json")
         localStateURL = directory.appendingPathComponent("public-reset-local-v1.json")
+        forecastStateURL = directory.appendingPathComponent("public-reset-forecast-delivery-v1.json")
+        forecastDeliveryDirectory = directory.appendingPathComponent("public-reset-forecast-delivery", isDirectory: true)
     }
 
     /// Preview fixtures only. Does not start a check or change delivery ledgers.
@@ -485,7 +493,8 @@ final class PublicResetAnnouncementMonitor: ObservableObject {
         send: @escaping @MainActor (PublicResetAnnouncement) async -> Result<Void, FeishuWebhookError>,
         channelRevision: @escaping @MainActor (MessageChannelKind) -> UUID? = { _ in nil },
         sendChannel: (@MainActor (PublicResetAnnouncement, MessageChannelKind, UUID) async -> Result<MessageDeliveryOutcome, MessageChannelError>)? = nil,
-        onChannelResult: @escaping @MainActor (PublicResetChannelResult) -> Void = { _ in }
+        onChannelResult: @escaping @MainActor (PublicResetChannelResult) -> Void = { _ in },
+        sendForecast: (@MainActor (PublicResetForecastNotification) async -> Result<Void, FeishuWebhookError>)? = nil
     ) {
         invalidateLifecycle()
         stopped = false
@@ -495,6 +504,7 @@ final class PublicResetAnnouncementMonitor: ObservableObject {
         self.canSend = canSend
         self.notifyLocally = notifyLocally
         self.send = send
+        self.sendForecast = sendForecast
         schedule()
     }
 
@@ -505,6 +515,7 @@ final class PublicResetAnnouncementMonitor: ObservableObject {
         timer = nil
         task?.cancel()
         task = nil
+        fetchedForecastSequence = nil
         checking = false
     }
 
@@ -593,6 +604,105 @@ final class PublicResetAnnouncementMonitor: ObservableObject {
         }
     }
 
+    private func loadForecastLedger() throws -> PublicResetForecastDeliveryLedger {
+        guard
+            let data = try DispatchParticipationSync.readBoundedRegularFile(
+                forecastStateURL, maximumBytes: 128 * 1024, allowMissing: true
+            )
+        else { return .init() }
+        var ledger = try JSONDecoder().decode(PublicResetForecastDeliveryLedger.self, from: data)
+        guard ledger.isValid else { throw PublicResetFailure.localState }
+        ledger.recoverInterruptedSends()
+        return ledger
+    }
+
+    private func saveForecastLedger(_ ledger: PublicResetForecastDeliveryLedger) throws {
+        do {
+            let data = try JSONEncoder().encode(ledger)
+            guard data.count <= 128 * 1024 else { throw PublicResetFailure.localState }
+            try PrivateLocalFileStore.write(data, to: forecastStateURL)
+        } catch { throw PublicResetFailure.localState }
+    }
+
+    @MainActor
+    private func deliverForecast(
+        _ state: PublicResetForecastPageState, epoch: UInt64, checkSequence: UInt64? = nil
+    ) async {
+        // An unsourced site watch is visible context only. It must not touch
+        // the forecast delivery ledger or establish a notification baseline.
+        if case .siteWatch = state { return }
+        let sequence = checkSequence ?? historyCheckSequence
+        guard enabled, isCurrent(epoch), sequence == historyCheckSequence,
+            canSend(), let sendForecast
+        else { return }
+        do {
+            guard let lock = try PublicResetDeliveryLock.acquire(in: forecastDeliveryDirectory) else { return }
+            defer { lock.release() }
+            guard enabled, isCurrent(epoch), sequence == historyCheckSequence, canSend() else { return }
+            var ledger = try loadForecastLedger()
+            let event = try ledger.observe(state, now: Date())
+            try saveForecastLedger(ledger)
+            guard let event else { return }
+
+            // A forecast may arrive before the completed-history request. Keep
+            // it pending until this check has a validated completed page.
+            guard let verifiedCompletedIDs else { return }
+            let completedLedger = try load()
+            let alreadyCompleted =
+                verifiedCompletedIDs.contains(event.id)
+                || completedLedger.records[event.id] != nil
+                || (completedLedger.retiredThrough.map { event.announcedAt <= $0 } ?? false)
+            if alreadyCompleted {
+                // Baseline is terminal without falsely claiming a forecast send.
+                try ledger.setPhase(.baseline, for: event.id)
+                try saveForecastLedger(ledger)
+                return
+            }
+
+            let notification = try PublicResetForecastNotification(event)
+            guard ledger.records[event.id] == .pending,
+                enabled, isCurrent(epoch), sequence == historyCheckSequence, canSend()
+            else { return }
+
+            // Reserve durably before Keychain access or network I/O. A crash
+            // after this point recovers to uncertain and is never auto-retried.
+            try ledger.setPhase(.sending, for: event.id)
+            try saveForecastLedger(ledger)
+            let result = await sendForecast(notification)
+            guard isCurrent(epoch), sequence == historyCheckSequence else {
+                try ledger.setPhase(.uncertain, for: event.id)
+                try saveForecastLedger(ledger)
+                return
+            }
+            switch result {
+            case .success:
+                try ledger.setPhase(.sent, for: event.id)
+                status = WidgetLanguage.storedOrAutomatic().text(
+                    "重置预告已提交给飞书机器人；仍待来源确认",
+                    "Reset forecast accepted by the Feishu bot; source confirmation is pending.")
+            case .failure(let error):
+                let phase: PublicResetForecastDeliveryLedger.Phase
+                switch error {
+                case .transportFailed, .invalidResponse:
+                    phase = .uncertain
+                case .httpStatus(let code) where code >= 500:
+                    phase = .uncertain
+                default:
+                    phase = .pending
+                }
+                try ledger.setPhase(phase, for: event.id)
+                status = error.localizedDescription
+            }
+            try saveForecastLedger(ledger)
+        } catch let error as PublicResetFailure {
+            if isCurrent(epoch) { status = error.localizedDescription }
+        } catch let error as PublicResetForecastFailure {
+            if isCurrent(epoch) { status = error.localizedDescription }
+        } catch {
+            if isCurrent(epoch) { status = PublicResetFailure.localState.localizedDescription }
+        }
+    }
+
     @MainActor
     private func writableFeishuLedger() -> PublicResetDeliveryLedger? {
         guard canSend(), let ledger = try? load() else { return nil }
@@ -631,11 +741,20 @@ final class PublicResetAnnouncementMonitor: ObservableObject {
     @MainActor
     func check() {
         guard !preview || fixtureScheduling, !stopped, !checking else { return }
-        // Forecast state is intentionally fetched and cached on its own path.
-        // It never enters announcement delivery, and a failure here cannot
-        // erase or block an otherwise valid historical feed refresh.
-        if !preview { PublicResetForecastStore.shared.check() }
         let epoch = generation
+        historyCheckSequence &+= 1
+        let sequence = historyCheckSequence
+        fetchedForecastSequence = nil
+        verifiedCompletedIDs = nil
+        // Forecast state is fetched through its own parser and cache. Its
+        // delivery ledger remains stage-specific and independent of history.
+        if !preview {
+            PublicResetForecastStore.shared.check { [weak self] state in
+                guard let self, self.isCurrent(epoch), self.historyCheckSequence == sequence else { return }
+                self.fetchedForecastSequence = sequence
+                await self.deliverForecast(state, epoch: epoch, checkSequence: sequence)
+            }
+        }
         guard Date() >= notBefore else {
             status = PublicResetFailure.retryLater(max(1, Int(ceil(notBefore.timeIntervalSinceNow)))).localizedDescription
             return
@@ -660,9 +779,17 @@ final class PublicResetAnnouncementMonitor: ObservableObject {
                 announcementsHasMore = page.pagination.hasMore
                 latest = page.data.max { $0.announcedAt < $1.announcedAt }
                 checkedAt = Date()
+                verifiedCompletedIDs = Set(page.data.map(\.id))
                 let language = WidgetLanguage.storedOrAutomatic()
                 status = language.text("公告已更新；来源为第三方汇总，账号额度以官方刷新结果为准", "Announcements updated from a third-party feed. Account limits use official refresh results.")
                 guard enabled else { return }
+                // Drain only a forecast validated by this check's page fetch;
+                // a previous cached post may have been withdrawn on the site.
+                if let forecast = PublicResetForecastStore.shared.forecast,
+                    Self.shouldDrainForecast(forecast, fetchedSequence: fetchedForecastSequence, checkSequence: sequence, now: Date())
+                {
+                    await deliverForecast(.forecast(forecast), epoch: epoch, checkSequence: sequence)
+                }
                 let channelTasks = MessageChannelKind.allCases.map { kind in
                     Task { @MainActor in await self.deliverChannel(page, kind: kind, epoch: epoch) }
                 }
@@ -886,29 +1013,58 @@ final class PublicResetAnnouncementMonitor: ObservableObject {
         }
     }
 
+    private static func shouldDrainForecast(
+        _ forecast: PublicResetForecast, fetchedSequence: UInt64?, checkSequence: UInt64, now: Date
+    ) -> Bool {
+        fetchedSequence == checkSequence && forecast.isRetainableCache(at: now)
+    }
+
     /// Only the explicit CLI authorization path calls this. No app startup,
     /// account activity, preference changes or notification permission prompts.
     @MainActor
     func sendAuthorizedLatest() async -> Int32 {
         let epoch = generation
         guard isCurrent(epoch) else { return 6 }
-        var announcementID = "none"
+        let sources: (PublicResetPage, PublicResetForecastPageState)
         do {
-            let page = try await fetchPage()
-            guard isCurrent(epoch) else { return 6 }
-            guard let event = page.data.max(by: { $0.announcedAt < $1.announcedAt }) else {
-                print("public-reset failure id=none reason=no-announcement")
-                return 3
-            }
-            announcementID = event.id
+            async let historyRequest = fetchPage()
+            async let forecastRequest = PublicResetForecastClient().fetch()
+            sources = try await (historyRequest, forecastRequest)
+        } catch let error as PublicResetFailure {
+            print("public-reset failure id=none reason=\(error.localizedDescription)")
+            return 7
+        } catch let error as PublicResetForecastFailure {
+            print("public-reset failure id=none reason=\(error.localizedDescription)")
+            return 7
+        } catch {
+            // Never render raw URLSession or filesystem errors.
+            print("public-reset failure id=none reason=source-or-ledger-unavailable")
+            return 8
+        }
+
+        guard isCurrent(epoch) else { return 6 }
+        guard
+            let latest = PublicResetMessageCandidate.latest(
+                completed: sources.0.data, forecast: sources.1, now: Date())
+        else {
+            print("public-reset failure id=none reason=no-announcement")
+            return 3
+        }
+        switch latest {
+        case .completed(let event): return await sendAuthorizedCompleted(event, epoch: epoch)
+        case .forecast(let event): return await sendAuthorizedForecast(event, epoch: epoch)
+        }
+    }
+
+    @MainActor
+    private func sendAuthorizedCompleted(_ event: PublicResetAnnouncement, epoch: UInt64) async -> Int32 {
+        do {
             guard let lock = try PublicResetDeliveryLock.acquire(in: stateURL.deletingLastPathComponent()) else {
-                print("public-reset failure id=\(announcementID) reason=delivery-busy")
+                print("public-reset failure id=\(event.id) reason=delivery-busy")
                 return 4
             }
             defer { lock.release() }
             var ledger = try load()
-            // Persist the reservation before reading credentials or sending.
-            // A crash or any failed result requires explicit human resolution.
             try ledger.reserveAuthorizedDelivery(event)
             try save(ledger)
             let service = FeishuWebhookService()
@@ -931,24 +1087,74 @@ final class PublicResetAnnouncementMonitor: ObservableObject {
                 ledger.records[event.id] = .uncertain
             }
             do { try save(ledger) } catch {
-                // The durable sending reservation prevents replay on restart.
-                print("public-reset failure id=\(announcementID) reason=receipt-save-failed-delivery-unverified")
+                print("public-reset failure id=\(event.id) reason=receipt-save-failed-delivery-unverified")
                 return 5
             }
             switch result {
             case .success:
-                print("public-reset success id=\(announcementID)")
+                print("public-reset success stage=completed id=\(event.id)")
                 return 0
             case .failure(let error):
-                print("public-reset failure id=\(announcementID) reason=\(error.localizedDescription)")
+                print("public-reset failure stage=completed id=\(event.id) reason=\(error.localizedDescription)")
                 return 6
             }
         } catch let error as PublicResetFailure {
-            print("public-reset failure id=\(announcementID) reason=\(error.localizedDescription)")
+            print("public-reset failure stage=completed id=\(event.id) reason=\(error.localizedDescription)")
             return 7
         } catch {
-            // Never render raw URLSession or filesystem errors.
-            print("public-reset failure id=\(announcementID) reason=source-or-ledger-unavailable")
+            print("public-reset failure stage=completed id=\(event.id) reason=source-or-ledger-unavailable")
+            return 8
+        }
+    }
+
+    @MainActor
+    private func sendAuthorizedForecast(_ event: PublicResetForecast, epoch: UInt64) async -> Int32 {
+        do {
+            guard let lock = try PublicResetDeliveryLock.acquire(in: forecastDeliveryDirectory) else {
+                print("public-reset failure stage=forecast id=\(event.id) reason=delivery-busy")
+                return 4
+            }
+            defer { lock.release() }
+            var ledger = try loadForecastLedger()
+            try ledger.reserveAuthorizedDelivery(event)
+            try saveForecastLedger(ledger)
+            let notification = try PublicResetForecastNotification(event)
+            let service = FeishuWebhookService()
+            let admission = deliveryAdmission()
+            let result: Result<Void, FeishuWebhookError> = await withCheckedContinuation { continuation in
+                service.sendPublicResetForecast(notification, shouldSend: admission) {
+                    continuation.resume(returning: $0)
+                }
+            }
+            guard isCurrent(epoch) else {
+                try ledger.setPhase(.uncertain, for: event.id)
+                try saveForecastLedger(ledger)
+                return 6
+            }
+            switch result {
+            case .success: try ledger.setPhase(.sent, for: event.id)
+            case .failure: try ledger.setPhase(.uncertain, for: event.id)
+            }
+            do { try saveForecastLedger(ledger) } catch {
+                print("public-reset failure stage=forecast id=\(event.id) reason=receipt-save-failed-delivery-unverified")
+                return 5
+            }
+            switch result {
+            case .success:
+                print("public-reset success stage=forecast id=\(event.id)")
+                return 0
+            case .failure(let error):
+                print("public-reset failure stage=forecast id=\(event.id) reason=\(error.localizedDescription)")
+                return 6
+            }
+        } catch let error as PublicResetFailure {
+            print("public-reset failure stage=forecast id=\(event.id) reason=\(error.localizedDescription)")
+            return 7
+        } catch let error as PublicResetForecastFailure {
+            print("public-reset failure stage=forecast id=\(event.id) reason=\(error.localizedDescription)")
+            return 7
+        } catch {
+            print("public-reset failure stage=forecast id=\(event.id) reason=source-or-ledger-unavailable")
             return 8
         }
     }
@@ -1115,6 +1321,115 @@ extension PublicResetAnnouncementMonitor {
         } catch { return false }
     }
 
+    fileprivate static func forecastDeliverySelfTest(now: Date) async -> Bool {
+        func forecast(_ date: Date) -> PublicResetForecast? {
+            guard let id = PublicResetForecast.sourcePostID(at: date),
+                let sourceURL = URL(string: "https://x.com/thsottiaux/status/\(id)")
+            else { return nil }
+            return PublicResetForecast(id: id, latestBy: nil, announcedAt: date, sourceURL: sourceURL, fetchedAt: now)
+        }
+        guard let first = forecast(now.addingTimeInterval(-120)),
+            let later = forecast(now.addingTimeInterval(-60))
+        else { return false }
+
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("next-public-forecast-delivery-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let monitor = PublicResetAnnouncementMonitor(preview: true, supportDirectory: root)
+        monitor.enabled = false
+        monitor.verifiedCompletedIDs = []
+        monitor.canSend = { true }
+        var submitted: [String] = []
+        monitor.sendForecast = { message in
+            submitted.append(message.id)
+            return .success(())
+        }
+
+        do {
+            guard !shouldDrainForecast(first, fetchedSequence: nil, checkSequence: 2, now: now),
+                !shouldDrainForecast(first, fetchedSequence: 1, checkSequence: 2, now: now),
+                shouldDrainForecast(first, fetchedSequence: 2, checkSequence: 2, now: now)
+            else { return false }
+            await monitor.deliverForecast(.forecast(first), epoch: monitor.generation)
+            guard submitted.isEmpty, !FileManager.default.fileExists(atPath: monitor.forecastStateURL.path) else { return false }
+            monitor.enabled = true
+            await monitor.deliverForecast(
+                .siteWatch(PublicResetSiteWatch(latestBy: now.addingTimeInterval(3600), fetchedAt: now)),
+                epoch: monitor.generation)
+            guard submitted.isEmpty, !FileManager.default.fileExists(atPath: monitor.forecastStateURL.path) else { return false }
+            monitor.canSend = { false }
+            await monitor.deliverForecast(.forecast(first), epoch: monitor.generation)
+            guard !FileManager.default.fileExists(atPath: monitor.forecastStateURL.path) else { return false }
+            monitor.canSend = { true }
+            await monitor.deliverForecast(.forecast(first), epoch: monitor.generation)
+            guard submitted.isEmpty,
+                try monitor.loadForecastLedger().records[first.id] == .baseline
+            else { return false }
+            await monitor.deliverForecast(.forecast(later), epoch: monitor.generation)
+            guard submitted == [later.id], try monitor.loadForecastLedger().records[later.id] == .sent else { return false }
+
+            let restarted = PublicResetAnnouncementMonitor(preview: true, supportDirectory: root)
+            restarted.enabled = true
+            restarted.verifiedCompletedIDs = []
+            restarted.canSend = { true }
+            var replayed: [String] = []
+            restarted.sendForecast = { message in
+                replayed.append(message.id)
+                return .success(())
+            }
+            await restarted.deliverForecast(.forecast(later), epoch: restarted.generation)
+            guard replayed.isEmpty, try restarted.loadForecastLedger().records[later.id] == .sent else { return false }
+
+            let unknownRoot = FileManager.default.temporaryDirectory.appendingPathComponent("next-public-forecast-unknown-\(UUID().uuidString)")
+            defer { try? FileManager.default.removeItem(at: unknownRoot) }
+            let unknown = PublicResetAnnouncementMonitor(preview: true, supportDirectory: unknownRoot)
+            unknown.enabled = true
+            unknown.verifiedCompletedIDs = []
+            unknown.canSend = { true }
+            var attempts = 0
+            unknown.sendForecast = { _ in
+                attempts += 1
+                return .failure(.transportFailed)
+            }
+            await unknown.deliverForecast(.forecast(first), epoch: unknown.generation)
+            await unknown.deliverForecast(.forecast(later), epoch: unknown.generation)
+            let afterUnknown = PublicResetAnnouncementMonitor(preview: true, supportDirectory: unknownRoot)
+            afterUnknown.enabled = true
+            afterUnknown.verifiedCompletedIDs = []
+            afterUnknown.canSend = { true }
+            afterUnknown.sendForecast = { _ in
+                attempts += 1
+                return .success(())
+            }
+            await afterUnknown.deliverForecast(.forecast(later), epoch: afterUnknown.generation)
+            guard attempts == 1, try afterUnknown.loadForecastLedger().records[later.id] == .uncertain else { return false }
+
+            let lifecycleRoot = FileManager.default.temporaryDirectory.appendingPathComponent("next-public-forecast-lifecycle-\(UUID().uuidString)")
+            defer { try? FileManager.default.removeItem(at: lifecycleRoot) }
+            let lifecycle = PublicResetAnnouncementMonitor(preview: true, supportDirectory: lifecycleRoot)
+            lifecycle.enabled = true
+            lifecycle.verifiedCompletedIDs = []
+            lifecycle.canSend = { true }
+            lifecycle.sendForecast = { _ in
+                lifecycle.stop()
+                return .success(())
+            }
+            await lifecycle.deliverForecast(.forecast(first), epoch: lifecycle.generation)
+            await lifecycle.deliverForecast(.forecast(later), epoch: lifecycle.generation)
+            let afterStop = PublicResetAnnouncementMonitor(preview: true, supportDirectory: lifecycleRoot)
+            afterStop.enabled = true
+            afterStop.verifiedCompletedIDs = []
+            afterStop.canSend = { true }
+            var afterStopAttempts = 0
+            afterStop.sendForecast = { _ in
+                afterStopAttempts += 1
+                return .success(())
+            }
+            await afterStop.deliverForecast(.forecast(later), epoch: afterStop.generation)
+            let lifecycleLedger = try afterStop.loadForecastLedger()
+            return afterStopAttempts == 0 && lifecycleLedger.records[later.id] == .uncertain
+        } catch { return false }
+    }
+
     /// Read the same bounded feed page with delivery disabled; no ledger or network.
     fileprivate static func pagePublicationSelfTest(now: Date) async -> Bool {
         actor Replies {
@@ -1196,7 +1511,10 @@ extension PublicResetAnnouncementMonitor {
 
 enum PublicResetAnnouncementSelfTest {
     static func run() -> Bool {
-        guard HomeMessageLinkPolicy.selfTest() else { return false }
+        guard HomeMessageLinkPolicy.selfTest() else {
+            print("Home reset-message URL policy self-test failed")
+            return false
+        }
         guard PublicResetForecastSelfTest.run() else { return false }
         let now = Date()
         let date = ISO8601DateFormatter().string(from: now.addingTimeInterval(-60))
@@ -1342,13 +1660,21 @@ enum PublicResetAnnouncementSelfTest {
             Task.detached {
                 let historyPassed = await historyRecoverySelfTest(now: now)
                 let localPassed = await PublicResetAnnouncementMonitor.deliverySelfTest(now: now)
+                let forecastDeliveryPassed = await PublicResetAnnouncementMonitor.forecastDeliverySelfTest(now: now)
                 let optionalPassed = await PublicResetAnnouncementMonitor.optionalFeishuRecoverySelfTest(now: now)
                 let mainActorPassed = await PublicResetAnnouncementMonitor.mainActorDeliverySelfTest(now: now)
                 let pagePublicationPassed = await PublicResetAnnouncementMonitor.pagePublicationSelfTest(now: now)
                 let inboxPassed = await MainActor.run {
                     HomeMessageInboxStore.visibleLimitSelfTest(now: now)
                 }
-                result.set(historyPassed && localPassed && optionalPassed && mainActorPassed && pagePublicationPassed && inboxPassed)
+                if !historyPassed { print("Public-reset history recovery self-test failed") }
+                if !localPassed { print("Public-reset local delivery self-test failed") }
+                if !forecastDeliveryPassed { print("Public-reset forecast delivery self-test failed") }
+                if !optionalPassed { print("Public-reset optional channel self-test failed") }
+                if !mainActorPassed { print("Public-reset MainActor delivery self-test failed") }
+                if !pagePublicationPassed { print("Public-reset page publication self-test failed") }
+                if !inboxPassed { print("Public-reset inbox self-test failed") }
+                result.set(historyPassed && localPassed && forecastDeliveryPassed && optionalPassed && mainActorPassed && pagePublicationPassed && inboxPassed)
                 completed.signal()
             }
             // The self-test entry point runs on MainActor. Pump its run loop

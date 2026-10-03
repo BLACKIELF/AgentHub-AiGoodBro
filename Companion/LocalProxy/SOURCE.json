@@ -1,0 +1,31 @@
+{
+  "component": "AiGoodBro Local Proxy",
+  "version": "1003v1",
+  "upstream": "https://github.com/router-for-me/CLIProxyAPI",
+  "upstreamVersion": "v8.0.2",
+  "upstreamCommit": "4a2c81864f31f39308e946c4c65e72147855da6e",
+  "moduleSum": "h1:O+sIL8IG/1a3v6utfjuUFDcuOtsAkE3Gnd/L4DkMmtw=",
+  "moduleGoModSum": "h1:j1Mtcj0TrC66O1JwbSBB03lY3uYPx4J7yHNvU6nDBCo=",
+  "license": "MIT",
+  "licenseFile": "LICENSE.CLIProxyAPI",
+  "dependencyNotices": "THIRD-PARTY-NOTICES.txt",
+  "goVersionMinimum": "1.26.0",
+  "runtimeDependencies": [],
+  "sourceModifications": "No upstream module edits; the host adapter in images.go narrowly maps CLIProxyAPI v8.0.2's synchronous first-frame Codex EOF sentinel to a retryable 502, following v8.0.7 commit 9e71c20d016960cd47bb8532a16fcf1f16f5fff3.",
+  "hostAdaptations": [
+    {
+      "upstreamReference": "https://github.com/router-for-me/CLIProxyAPI/commit/9e71c20d016960cd47bb8532a16fcf1f16f5fff3",
+      "behavior": "Convert only a nil stream result carrying v8.0.2's exact request-timeout EOF sentinel into a 502 so the auth manager can try another admitted account.",
+      "guard": "An ordinary HTTP 408 response, non-matching error, or already-started stream is passed through unchanged.",
+      "validation": "Synthetic loopback HTTP 200 empty-stream failover and single-account HTTP 408 preservation tests; go test -race and go vet."
+    }
+  ],
+  "desktopAdapterReference": {
+    "url": "https://github.com/dredozubov/hazmat/blob/c112d222bb53e888dd17a8927927286792f7c20e/scripts/check-codex-desktop-attach-smoke.sh",
+    "use": "CODEX_CLI_PATH stdio wrapper pattern; no Hazmat sandbox or server is included.",
+    "license": "MIT",
+    "licenseFile": "LICENSE.Hazmat"
+  },
+  "compatibility": "Pinned internal executor/registry imports. The local module uses the upstream module's child namespace solely to satisfy Go internal import rules; it is an AiGoodBro adapter, not an upstream-maintained package.",
+  "rollback": "Stop the optional proxy and leave it disabled; remove only this module's helper resource and isolated state when explicitly requested. Legacy dispatch, OAuth and account switching remain independent."
+}

@@ -901,13 +901,16 @@ func (hub *Hub) approveAt(taskID string, request ApproveRequest, now time.Time) 
 			hub.mu.Unlock()
 			return TaskDTO{}, errInvalid
 		}
-		if task.ExecutionPreference != nil && task.ExecutionPreference.SubagentMode != "" {
-			if task.EffectiveExecutionPreference == nil || !executionPreferencesEqual(*task.EffectiveExecutionPreference, derivedExecutionPreference(preference)) {
-				hub.mu.Unlock()
-				return TaskDTO{}, errInvalid
-			}
+		if task.ExecutionPreference != nil && task.ExecutionPreference.SubagentMode != "" && task.EffectiveExecutionPreference == nil {
+			hub.mu.Unlock()
+			return TaskDTO{}, errInvalid
 		}
-		if derivedExecutionStrategy(preference).SubagentsEnabled {
+		strategy, err := frozenTaskExecutionStrategy(task, preference)
+		if err != nil {
+			hub.mu.Unlock()
+			return TaskDTO{}, errInvalid
+		}
+		if strategy.SubagentsEnabled {
 			if task.InputHashes == nil || task.SubagentExecution == nil || task.SubagentExecution.RequestedMode != preference.SubagentMode {
 				hub.mu.Unlock()
 				return TaskDTO{}, errInvalid
@@ -1402,14 +1405,11 @@ func (hub *Hub) commandFor(task *Task, prompt string) (*exec.Cmd, error) {
 			if err != nil {
 				return nil, err
 			}
-			strategy := derivedExecutionStrategy(preference)
-			effective := strategy.Main
-			if task.EffectiveExecutionPreference != nil {
-				if !executionPreferencesEqual(*task.EffectiveExecutionPreference, effective) {
-					return nil, errInvalid
-				}
-				effective = *task.EffectiveExecutionPreference
+			strategy, err := frozenTaskExecutionStrategy(task, preference)
+			if err != nil {
+				return nil, errInvalid
 			}
+			effective := strategy.Main
 			poolArgs := []string{
 				"-m", effective.Model,
 				"-c", "model_reasoning_effort=\"" + effective.ReasoningEffort + "\"",

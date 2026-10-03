@@ -15,6 +15,16 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+trap {
+  # Keep source function/line diagnostics while excluding machine paths.
+  foreach ($frame in ($_.ScriptStackTrace -split '\r?\n')) {
+    if ($frame -match '^at (?<function>[^,]+), .*: line (?<line>\d+)$') {
+      [Console]::Error.WriteLine("Capture call: $($Matches.function), line $($Matches.line)")
+    }
+  }
+  break
+}
+
 $repositoryRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
 $windowsRoot = Join-Path $repositoryRoot 'windows'
 $artifactBase = Join-Path $repositoryRoot '.local-artifacts\windows-visual-captures'
@@ -792,7 +802,7 @@ function Get-PreflightManifest {
   }
 
   return [ordered]@{
-    capture_engine = 'Windows.Graphics.Capture'
+    capture_engine = 'PrintWindow (tool window); Windows.Graphics.Capture (normal window)'
     targeting = 'exact HWND'
     activation_mode = 'non-activating'
     foreground_policy = 'preserve active window'
@@ -936,6 +946,19 @@ function Test-OutputRootIgnored {
   } finally {
     Pop-Location
   }
+}
+
+function Get-CaptureCheckout {
+  param([string] $Root)
+  $branchLines = @(& git -C $Root branch --show-current)
+  if ($LASTEXITCODE -ne 0) { throw 'Could not read the capture checkout branch.' }
+  $branch = ($branchLines -join '').Trim()
+  if ([string]::IsNullOrWhiteSpace($branch)) { $branch = 'detached HEAD' }
+  $shaLines = @(& git -C $Root rev-parse HEAD)
+  if ($LASTEXITCODE -ne 0) { throw 'Could not read the capture checkout commit.' }
+  $sha = ($shaLines -join '').Trim()
+  if ($sha -notmatch '^[0-9a-f]{40,64}$') { throw 'Invalid capture checkout commit.' }
+  return [ordered]@{ branch = $branch; sha = $sha }
 }
 
 function Invoke-LoggedProcess {
@@ -1219,6 +1242,24 @@ function Assert-ForegroundPreserved {
   }
 }
 
+function Wait-WebViewDocument {
+  param([IntPtr] $Window)
+  $condition = New-Object System.Windows.Automation.PropertyCondition(
+    [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+    [System.Windows.Automation.ControlType]::Document
+  )
+  $deadline = (Get-Date).AddSeconds(30)
+  do {
+    $root = [System.Windows.Automation.AutomationElement]::FromHandle($Window)
+    $document = $root.FindFirst(
+      [System.Windows.Automation.TreeScope]::Descendants, $condition
+    )
+    if ($null -ne $document) { return }
+    Start-Sleep -Milliseconds 150
+  } while ((Get-Date) -lt $deadline)
+  throw 'The task WebView2 did not expose a UIA Document within 30 seconds.'
+}
+
 function Find-ElementByAutomationId {
   param([IntPtr] $Window, [string] $AutomationId)
   $root = [System.Windows.Automation.AutomationElement]::FromHandle($Window)
@@ -1246,7 +1287,18 @@ function Wait-ForElement {
     }
     Start-Sleep -Milliseconds 150
   } while ((Get-Date) -lt $deadline)
-  throw "Timed out waiting for UI element $AutomationId."
+  $root = [System.Windows.Automation.AutomationElement]::FromHandle($Window)
+  $documentCondition = New-Object System.Windows.Automation.PropertyCondition(
+    [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+    [System.Windows.Automation.ControlType]::Document
+  )
+  $document = $root.FindFirst(
+    [System.Windows.Automation.TreeScope]::Descendants, $documentCondition
+  )
+  $renderer = [NativeVisualCaptureDriver]::FindRenderer($Window)
+  # Report structure only, never accessible names or user content.
+  throw ("Timed out waiting for UI element $AutomationId. " +
+    "UIA Document present: $($null -ne $document); renderer HWND present: $($renderer -ne [IntPtr]::Zero).")
 }
 
 function Select-DashboardTab {
@@ -1498,6 +1550,7 @@ function Capture-DashboardSurfaceSegments {
       limited_by_page_end = $atPageEnd
       file = $outputPath
       physical_frame = $capture.physical_frame
+      capture_engine = $capture.engine
       bytes = $capture.bytes
     }
     $records += $record
@@ -1570,26 +1623,34 @@ function Invoke-GraphicsCapture {
     [string] $OutputPath,
     [string] $LogPath
   )
-  $output = @(& $CaptureTool ([long]$Window) $OutputPath 2>&1)
-  $exitCode = $LASTEXITCODE
-  $output | Add-Content -LiteralPath $LogPath -Encoding utf8
+  $priorErrorPreference = $ErrorActionPreference
+  try {
+    $ErrorActionPreference = 'Continue'
+    $output = @(& $CaptureTool ([long]$Window) $OutputPath 2>&1)
+    $exitCode = $LASTEXITCODE
+  } finally {
+    $ErrorActionPreference = $priorErrorPreference
+  }
+  $output | ForEach-Object { "$_" } | Add-Content -LiteralPath $LogPath -Encoding utf8
   if ($exitCode -ne 0) {
-    throw "Windows Graphics Capture failed with exit code $exitCode."
+    foreach ($line in $output) { [Console]::Error.WriteLine("$line") }
+    throw "Native window capture failed with exit code $exitCode."
   }
   if (-not (Test-Path -LiteralPath $OutputPath -PathType Leaf)) {
-    throw 'Windows Graphics Capture did not create the expected local PNG.'
+    throw 'Native window capture did not create the expected local PNG.'
   }
   $file = Get-Item -LiteralPath $OutputPath
   if ($file.Length -le 0) {
-    throw 'Windows Graphics Capture created an empty PNG.'
+    throw 'Native window capture created an empty PNG.'
   }
   $captureLine = @($output | Where-Object { "$_" -match '^CAPTURE_OK ' }) |
     Select-Object -Last 1
-  if ($null -eq $captureLine -or "$captureLine" -notmatch '^CAPTURE_OK (?<size>\d+x\d+)$') {
-    throw 'Windows Graphics Capture did not report a physical frame size.'
+  if ($null -eq $captureLine -or "$captureLine" -notmatch '^CAPTURE_OK (?<size>\d+x\d+) (?<engine>PrintWindow|Windows\.Graphics\.Capture)$') {
+    throw 'Native window capture did not report its frame size and engine.'
   }
   return [ordered]@{
     physical_frame = $Matches.size
+    engine = $Matches.engine
     bytes = $file.Length
   }
 }
@@ -1671,11 +1732,18 @@ function Invoke-MaximizedCapture {
     $sizeRecord.window = Set-MaximizedWindow `
       -Window $window `
       -ExpectedForeground $foregroundBefore
+    Wait-WebViewDocument -Window $window
     [void](Wait-ForElement -Window $window -AutomationId 'dashboard-home-tab-tasks')
     $renderer = [NativeVisualCaptureDriver]::FindRenderer($window)
     if ($renderer -eq [IntPtr]::Zero) {
       throw 'Could not identify the task application renderer child HWND.'
     }
+    $sizeRecord.accessibility = [ordered]@{
+      document_present = $true
+      dashboard_tab_present = $true
+      renderer_present = $true
+    }
+    Save-WorkflowManifest
     Update-TaskProcessRecords -RootProcessId $process.Id -Records $records
 
     if ($captureOverview) {
@@ -1693,6 +1761,7 @@ function Invoke-MaximizedCapture {
         framing = 'page top in maximized window'
         file = $overviewPath
         physical_frame = $overviewCapture.physical_frame
+        capture_engine = $overviewCapture.engine
         bytes = $overviewCapture.bytes
       }
       Save-WorkflowManifest
@@ -1816,17 +1885,13 @@ New-Item -ItemType Directory -Path (
 ) | Out-Null
 
 $script:manifestPath = Join-Path $resolvedOutputRoot 'manifest.json'
-$branch = (& git -C $repositoryRoot branch --show-current).Trim()
-$sha = (& git -C $repositoryRoot rev-parse HEAD).Trim()
+$checkout = Get-CaptureCheckout -Root $repositoryRoot
 $script:workflowManifest = [ordered]@{
   status = 'running'
   started_utc = (Get-Date).ToUniversalTime().ToString('o')
   completed_utc = $null
-  checkout = [ordered]@{
-    branch = $branch
-    sha = $sha
-  }
-  capture_engine = 'Windows.Graphics.Capture'
+  checkout = $checkout
+  capture_engine = 'PrintWindow (tool window); Windows.Graphics.Capture (normal window)'
   targeting = 'exact HWND'
   activation_mode = 'non-activating'
   foreground_policy = 'preserve active window'

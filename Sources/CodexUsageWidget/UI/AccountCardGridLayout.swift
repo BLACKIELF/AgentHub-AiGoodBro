@@ -10,7 +10,7 @@ struct AccountCardGridLayout: Layout {
     /// natural width fits.
     var minimumWidth: CGFloat = Self.minimumCardWidth
     static let minimumCardWidth: CGFloat = 320
-    static let spacing: CGFloat = 10
+    static let spacing: CGFloat = 8
 
     /// The resolved dimensions for one complete grid pass.
     ///
@@ -216,7 +216,8 @@ struct AccountCardGridLayout: Layout {
 enum AccountCardDensity: String, CaseIterable {
     case compact, standard, spacious
     var minimumWidth: CGFloat { self == .compact ? 280 : self == .standard ? 320 : 380 }
-    var padding: CGFloat { self == .compact ? 10 : self == .standard ? 14 : 18 }
+    var padding: CGFloat { self == .compact ? 8 : self == .standard ? 12 : 16 }
+    var verticalPadding: CGFloat { self == .compact ? 6 : self == .standard ? 10 : 14 }
     func title(_ language: WidgetLanguage) -> String {
         switch self {
         case .compact: language.text("紧凑", "Compact")

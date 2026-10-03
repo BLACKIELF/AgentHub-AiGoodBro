@@ -1,6 +1,6 @@
 {
   "manifestVersion": 1,
-  "generatedBy": "engine/scripts/stage-deps.cjs",
+  "generatedBy": "scripts/prepare-token-monitor-resources.py",
   "sourceLock": "upstream/package-lock.json",
   "platform": "darwin-arm64",
   "roots": [
@@ -16,54 +16,54 @@
   "tokscalePin": {
     "mode": "override",
     "fork": "Javis603/tokscale",
-    "commit": "8ef7aa98add33f5ff65b495cf30807ce89b78e69",
-    "baseVersion": "4.16.0",
-    "releaseTag": "token-monitor-8ef7aa98",
+    "commit": "06a9f1625d5a505f01b39eff29f7be44a2c52188",
+    "baseVersion": "4.17.0",
+    "releaseTag": "token-monitor-06a9f162",
     "platformSha256": {
       "android-arm64": {
         "package": "@tokscale/cli-android-arm64",
         "asset": "tokscale-android-arm64",
-        "sha256": "6f7943c0019cef72ffae9e31fd1a795791622d620831f75d62f2df9f87914932"
+        "sha256": "e103a0f25c0ad4b27ee341596ac63f5e74aa066247c949aa8057fe97dc34b4b7"
       },
       "darwin-arm64": {
         "package": "@tokscale/cli-darwin-arm64",
         "asset": "tokscale-darwin-arm64",
-        "sha256": "575a4bdeb27f8f2fe0b085985caaec54b39e4240f41bd7fc1628ac9b8ae71751"
+        "sha256": "6c4765cf48790f5799da7c0685fab9a7b1d01f15d877121fff5ef0a14cc4a5f0"
       },
       "darwin-x64": {
         "package": "@tokscale/cli-darwin-x64",
         "asset": "tokscale-darwin-x64",
-        "sha256": "4e6760390451b4e178a49e6f99aff00d6f0ceb412a05a913f994f2a8fd1cd615"
+        "sha256": "7bbbadeb16b67190dada4901b1d51be6f337730afd4f5c6ae9a8ccda80c9d00b"
       },
       "linux-arm64": {
         "package": "@tokscale/cli-linux-arm64-gnu",
         "asset": "tokscale-linux-arm64",
-        "sha256": "8ef1e41a87fd51fe8f7c0826ea9c9b4fef6807ddad875fc88186bbc6114b4d9f"
+        "sha256": "753f951be157db86b6e116dfebb737820aa0af1f6ee9b420fb7b95d42f589e3b"
       },
       "linux-arm64-musl": {
         "package": "@tokscale/cli-linux-arm64-musl",
         "asset": "tokscale-linux-arm64-musl",
-        "sha256": "dc12912da13b01f666567a11418fa6f5d48a6508641aa972360026be9e2c6844"
+        "sha256": "de33f986a140999acc6a9936ebe23c1ed92e803017864d8be24ead9e609ff4c4"
       },
       "linux-x64": {
         "package": "@tokscale/cli-linux-x64-gnu",
         "asset": "tokscale-linux-x64",
-        "sha256": "c75057ba1b45fa2b5feacfaa6ff9fb5a54ddff545b2bbc178ccb89ef27af6f9a"
+        "sha256": "65efa3df41fc63c4513ad713206b8240931a88abdf3e310dddeba73935ecd53f"
       },
       "linux-x64-musl": {
         "package": "@tokscale/cli-linux-x64-musl",
         "asset": "tokscale-linux-x64-musl",
-        "sha256": "a6c748a731165a665cbc17bb87a6855634f0a83fe0c14e950a227f3750ae27eb"
+        "sha256": "5dfc261b15469b50c99cca175e36d481f5fc7c7ff3254c4325f68cbaa9abdb61"
       },
       "win32-arm64": {
         "package": "@tokscale/cli-win32-arm64-msvc",
         "asset": "tokscale-win32-arm64.exe",
-        "sha256": "d133cc39c693e16a31528069deab680939e14b28a0ee33ee9a8de55ff00daa43"
+        "sha256": "1ea26aa1d2176ef9ee6b8fb517ae19e2352985816af76c98b8e4486cc3fb13ad"
       },
       "win32-x64": {
         "package": "@tokscale/cli-win32-x64-msvc",
         "asset": "tokscale-win32-x64.exe",
-        "sha256": "bb0f7a5ea70ea879584bf6a2736b03c79d904354f11f26ac079eadf2bee7f49c"
+        "sha256": "d9fa18103c277e35d2cabb61c852adc795439a5c8010c7ea9a468a592a0fc1da"
       }
     }
   },
@@ -76,18 +76,25 @@
       "integrity": "sha512-wgm9Ehl2jpeqP3zw/7mo3kRHFp5MEDhqAdwy1fTGkHAwnkGOVsgpvQhL8B5n1qlb01jV3n/bI0ZfZp5lWA1k4w=="
     },
     {
+      "path": "node_modules/@koromix/koffi-darwin-arm64",
+      "name": "@koromix/koffi-darwin-arm64",
+      "version": "3.1.5",
+      "resolved": "https://registry.npmjs.org/@koromix/koffi-darwin-arm64/-/koffi-darwin-arm64-3.1.5.tgz",
+      "integrity": "sha512-IpqITl2fJi3QN9bTtNnygWPdK7ScSjw3xtGu8e6feYGvimCysu+spgI5KyeslY2jTnqxGS9xr8pLAbLhGJ8edA=="
+    },
+    {
       "path": "node_modules/@tokscale/cli",
       "name": "@tokscale/cli",
-      "version": "4.16.0",
-      "resolved": "https://registry.npmjs.org/@tokscale/cli/-/cli-4.16.0.tgz",
-      "integrity": "sha512-DJy8mxLpaIXzr5HrZpvgwR232HQY1QjeT1kq8n3t+s4n4qs/8KuKQqND+/6mF3DqVz3O6/vgLlqd0QDalg/h/A=="
+      "version": "4.17.0",
+      "resolved": "https://registry.npmjs.org/@tokscale/cli/-/cli-4.17.0.tgz",
+      "integrity": "sha512-B3OFknGuiv4vKnfm7sX8uVrLj7pq6kk61TZ+GEO/5yLtGEzxc37GxsBUaOvA7jhH+VcWF7YY5SasiVxXgmZ9uA=="
     },
     {
       "path": "node_modules/@tokscale/cli-darwin-arm64",
       "name": "@tokscale/cli-darwin-arm64",
-      "version": "4.16.0",
-      "resolved": "https://registry.npmjs.org/@tokscale/cli-darwin-arm64/-/cli-darwin-arm64-4.16.0.tgz",
-      "integrity": "sha512-p1WhVrLMCzXstm5PgSG3gsn+Dql32y1A4pw51fQcMOf9wjWhU7DVHuLODsO0KVbH9+HrpkZNrrLzTEhdNdIFcQ=="
+      "version": "4.17.0",
+      "resolved": "https://registry.npmjs.org/@tokscale/cli-darwin-arm64/-/cli-darwin-arm64-4.17.0.tgz",
+      "integrity": "sha512-/Hmgh1VxxLdCo6ou+I7r12E0G4T4c0zzZwZ5iwdynlZKm1IEhoqPB0SagTmVEiLZSMV8zLxptO1GFuOKxMqwiQ=="
     },
     {
       "path": "node_modules/chokidar",
@@ -154,7 +161,7 @@
     },
     {
       "path": "node_modules/tar/node_modules/yallist",
-      "name": "yallist",
+      "name": "",
       "version": "5.0.0",
       "resolved": "https://registry.npmjs.org/yallist/-/yallist-5.0.0.tgz",
       "integrity": "sha512-YgvUTfwqyc7UXVMrB+SImsVYSmTS8X/tSrtdNZMImM+n7+QTriRXyXim0mBrTXNeqzVF0KWGgHPeiyViFFrNDw=="
@@ -162,9 +169,9 @@
     {
       "path": "node_modules/tokscale",
       "name": "tokscale",
-      "version": "4.16.0",
-      "resolved": "https://registry.npmjs.org/tokscale/-/tokscale-4.16.0.tgz",
-      "integrity": "sha512-XiCbNIhJzUuaOPWtuYKfFASyMVRfU4Pg56mw0t23EH4tuRFSUgFGaJvvE1j9yf/9QU50cwLlNtCb/2lmHhR6hw=="
+      "version": "4.17.0",
+      "resolved": "https://registry.npmjs.org/tokscale/-/tokscale-4.17.0.tgz",
+      "integrity": "sha512-v3JDNByUgjjT7uf7Wl+HG3jigJkMh3FHohaHzSTwjAxpzWsCXyJi8cwiwaCaddmUF4bdf+cBSJ4GzsRQYiZTOQ=="
     },
     {
       "path": "node_modules/undici",
@@ -175,8 +182,8 @@
     }
   ],
   "totals": {
-    "packages": 15,
-    "staged": 15,
+    "packages": 16,
+    "staged": 16,
     "missing": 0,
     "versionMismatches": 0
   }

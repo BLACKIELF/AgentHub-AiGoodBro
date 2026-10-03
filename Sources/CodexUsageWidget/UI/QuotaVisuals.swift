@@ -179,6 +179,49 @@ private enum QuotaRingHoverTarget {
     }
 }
 
+/// Shared percentage display. Missing data stays empty rather than becoming 0%.
+struct QuotaPercentageRing: View {
+    let percent: Double?
+    var diameter: CGFloat = 40
+    var lineWidth: CGFloat = 3
+    var tint: Color? = nil
+    var showsValue = true
+    var accessibilityTitle: String? = nil
+    @Environment(\.widgetLanguage) private var language
+
+    private var value: Double? {
+        percent.flatMap { $0.isFinite ? max(0, min(100, $0)) : nil }
+    }
+
+    var body: some View {
+        ZStack {
+            Circle().strokeBorder(FixedVisualPalette.surfaceTrack, lineWidth: lineWidth)
+            if let value, value > 0 {
+                if let tint {
+                    Circle().inset(by: lineWidth / 2)
+                        .trim(from: 0, to: CGFloat(value / 100))
+                        .stroke(tint, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
+                        .rotationEffect(.degrees(-90))
+                } else {
+                    QuotaRingSegment(percent: value, lineWidth: lineWidth)
+                }
+            }
+            if showsValue {
+                Text(QuotaAvailabilityPresentation.percentText(value))
+                    .font(.system(size: max(9, diameter * 0.25), weight: .semibold))
+                    .monospacedDigit()
+                    .foregroundStyle(value == nil ? Color.secondary : Color.primary)
+                    .lineLimit(1).minimumScaleFactor(0.8)
+                    .padding(lineWidth + 2)
+            }
+        }
+        .frame(width: diameter, height: diameter)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(accessibilityTitle ?? language.text("剩余额度", "Remaining quota"))
+        .accessibilityValue(value.map { QuotaAvailabilityPresentation.percentText($0) } ?? language.text("未知", "Unknown"))
+    }
+}
+
 struct QuotaRingSegment: View {
     let percent: Double
     let lineWidth: CGFloat

@@ -29,8 +29,8 @@ MAX_ARCHIVE = 256 * 1024 * 1024
 MAX_EXPANDED = 1024 * 1024 * 1024
 MANIFEST = 'PACKAGING.json'
 DEFAULT_CACHE = Path.home() / 'Library/Caches/AiGoodBro/Next/token-monitor-downloads'
-UPSTREAM = 'ef079b6fb494e1cfcb24736cfcf4d4e591222eaf'
-FORK = '8ef7aa98add33f5ff65b495cf30807ce89b78e69'
+UPSTREAM = 'dcccfb01557e2786888fd5479552f392ac6c0d32'
+FORK = '06a9f1625d5a505f01b39eff29f7be44a2c52188'
 BAD_PARTS = {'.git', '.env', '.DS_Store', '__pycache__', '.pytest_cache',
              'auth.json', 'credentials.json', '.npmrc', '.ssh', '.aws',
              'runtime-paths.json', 'runtime-python.txt'}
@@ -201,7 +201,7 @@ def fetch(url, cache, expected, algorithm, offline):
             need(re.fullmatch(r'https://nodejs.org/dist/v22\.23\.2/node-v22\.23\.2-darwin-(arm64|x64)\.tar\.gz', url),
                  'unapproved_download_url')
         else:
-            need(re.fullmatch(r'https://github\.com/Javis603/tokscale/releases/download/token-monitor-8ef7aa98/tokscale-darwin-(arm64|x64)', url),
+            need(re.fullmatch(r'https://github\.com/Javis603/tokscale/releases/download/token-monitor-06a9f162/tokscale-darwin-(arm64|x64)', url),
                  'unapproved_download_url')
         for hop in range(2):
             result = subprocess.run(['/usr/bin/curl', '--disable', '--proto', '=https', '--tlsv1.2',
@@ -412,7 +412,7 @@ def load_production(source, arch):
          'unapproved_node_url')
     tpin = pin['tokscale']['platforms']['darwin-' + arch]
     sha_pin(tpin['sha256'])
-    need(tpin['url'] == f'https://github.com/Javis603/tokscale/releases/download/token-monitor-8ef7aa98/tokscale-darwin-{arch}',
+    need(tpin['url'] == f'https://github.com/Javis603/tokscale/releases/download/token-monitor-06a9f162/tokscale-darwin-{arch}',
          'unapproved_tokscale_url')
     need(tpin['package'] == '@tokscale/cli-darwin-' + arch, 'wrong_tokscale_package')
     return pin

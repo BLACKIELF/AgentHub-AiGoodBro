@@ -28,7 +28,7 @@ test('copied flat resource root uses its own Node, upstream and vendor; producti
       });
       assert.equal(result.status, 0, 'copied process exits successfully');
       const response = JSON.parse(result.stdout);
-      assert.equal(response.engine.commit, 'ef079b6fb494e1cfcb24736cfcf4d4e591222eaf');
+      assert.equal(response.engine.commit, 'dcccfb01557e2786888fd5479552f392ac6c0d32');
       assert.equal(response.requestId, request.requestId);
       assert.ok(!result.stdout.includes(workspace) && !result.stdout.includes(temporary));
       assert.ok(!result.stderr.includes('illegal-fixture-loaded'));

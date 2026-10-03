@@ -11,6 +11,7 @@ struct LocalCLIWorkspaceView: View {
     var embeddedLayout: AccountWorkspaceLayout? = nil
     var compactHomeSummary = false
     var homeDisplayNumber: String? = nil
+    var accountNumbers: [String: String] = [:]
     var onOpenDetails: (() -> Void)? = nil
     var onOpenSetup: (() -> Void)? = nil
     @Environment(\.accountCardDensity) private var cardDensity
@@ -46,6 +47,12 @@ struct LocalCLIWorkspaceView: View {
                     Spacer()
                     AccountCardDensityPicker()
                     Button {
+                        for profile in model.profiles(for: kind) { model.refresh(profile) }
+                    } label: {
+                        Label(language.text("刷新额度", "Refresh limits"), systemImage: "arrow.clockwise")
+                    }
+                    .disabled(model.profiles(for: kind).isEmpty || model.profiles(for: kind).allSatisfy { model.refreshing.contains($0.id) })
+                    Button {
                         newAccountName = language.text(
                             "\(kind.displayName) 账号 \(model.profiles(for: kind).count + 1)", "\(kind.displayName) account \(model.profiles(for: kind).count + 1)")
                         linkedAccountDirectory = nil
@@ -69,9 +76,9 @@ struct LocalCLIWorkspaceView: View {
             }
         }
         .padding(.vertical, onlyProfileID == nil ? 8 : 0)
-        .onAppear { model.checkLocalSignIns() }
+        .onAppear { model.refreshIfNeeded(kind: kind) }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
-            model.checkLocalSignIns()
+            model.refreshIfNeeded(kind: kind)
         }
         .sheet(item: $preparationProfile) { profile in
             let state = readiness(profile)
@@ -315,15 +322,17 @@ struct LocalCLIWorkspaceView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                 compactHomeActions(profile, layout: layout)
             }
-            .padding(11)
+            .padding(8)
             .background { compactHomeSurface }
         } else {
-            VStack(alignment: .leading, spacing: 9) {
-                compactHomeIdentity(profile, layout: layout)
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 5) {
+                    compactHomeIdentity(profile, layout: layout)
+                    compactHomeActions(profile, layout: layout)
+                }
                 compactHomeQuota(profile)
-                compactHomeActions(profile, layout: layout)
             }
-            .padding(12)
+            .padding(8)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background { compactHomeSurface }
         }
@@ -350,6 +359,11 @@ struct LocalCLIWorkspaceView: View {
             }
     }
 
+    private func numberedName(_ profile: LocalCLIProfile) -> String {
+        let number = accountNumbers[profile.id] ?? homeDisplayNumber
+        return number.map { $0 + " · " + profile.displayName } ?? profile.displayName
+    }
+
     private func compactHomeIdentity(_ profile: LocalCLIProfile, layout: AccountWorkspaceLayout) -> some View {
         let result = model.quotas[profile.id]
         let state = readiness(profile)
@@ -357,26 +371,15 @@ struct LocalCLIWorkspaceView: View {
             profileAvatar(profile, slot: .list)
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 5) {
-                    if let homeDisplayNumber {
-                        Text(homeDisplayNumber)
-                            .font(.caption2.monospacedDigit().weight(.semibold))
-                            .foregroundStyle(.secondary)
-                    }
-                    Text(profile.displayName)
-                        .font(.subheadline.weight(.semibold))
+                    Text(numberedName(profile))
+                        .font(.system(size: 12, weight: .semibold))
                         .lineLimit(1)
                     if layout == .cards { Spacer(minLength: 0) }
                 }
-                HStack(spacing: 5) {
-                    Text(kind.displayName)
-                    if let plan = result?.planLabel { Text("· " + plan).lineLimit(1) }
-                }
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                Text(state.title(language))
-                    .font(.caption2)
-                    .foregroundStyle(state.color)
-                    .lineLimit(1)
+                HStack(spacing: 4) {
+                    if let plan = result?.planLabel { Text(plan).foregroundStyle(.secondary) }
+                    if state != .available { Text(state.title(language)).foregroundStyle(state.color) }
+                }.font(.system(size: 10)).lineLimit(1)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -417,27 +420,19 @@ struct LocalCLIWorkspaceView: View {
         }
         if let explanation = LocalCLIAccountPresentation.quotaExplanation(kind: kind, result: result, language: language) {
             Text(explanation).font(.caption2).foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+                .lineLimit(1).help(explanation)
         }
     }
 
     private func compactHomeQuotaWindow(_ window: LocalCLIQuotaWindow) -> some View {
-        let percentages = LocalCLIQuotaWindowDetails.percentages(usedPercent: window.usedPercent, language: language)
-        return VStack(alignment: .leading, spacing: 3) {
-            HStack(spacing: 4) {
-                Text(window.label).fontWeight(.semibold).lineLimit(1)
-                Spacer(minLength: 2)
-                Text(percentages.remaining).fontWeight(.semibold).monospacedDigit().lineLimit(1)
+        VStack(alignment: .leading, spacing: 2) {
+            CompactQuotaView(
+                title: window.label, remaining: 100 - window.usedPercent,
+                reset: window.resetsAt, isExpiry: window.isExpiry, horizontalDetails: compactHomeSummary)
+            if let amount = window.tokenAmountText {
+                Text(amount).font(.system(size: 10).monospacedDigit())
+                    .lineLimit(1).minimumScaleFactor(0.85).help(amount)
             }
-            .font(.caption2)
-            QuotaProgressTrack(percent: 100 - window.usedPercent)
-            Text(language.text("已用 ", "Used ") + percentages.used)
-                .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
-            Text(
-                window.resetsAt.map { language.text("重置 ", "Reset ") + language.dateTime($0) }
-                    ?? language.text("重置 —", "Reset —")
-            )
-            .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
         }
     }
 
@@ -460,20 +455,20 @@ struct LocalCLIWorkspaceView: View {
                 .help(openTitle)
                 .accessibilityLabel(openTitle)
             }
-            if layout == .cards { Spacer(minLength: 0) }
             if let onOpenDetails {
                 Button {
                     onOpenDetails()
                 } label: {
-                    HStack(spacing: 3) {
-                        Text(language.text("管理", "Manage"))
-                        Image(systemName: "chevron.right").font(.caption2)
-                    }
+                    Image(systemName: "ellipsis")
                 }
+                .help(language.text("打开完整账号管理", "Open full account management"))
                 .accessibilityLabel(language.text("打开完整账号管理", "Open full account management"))
             }
         }
-        .buttonStyle(.bordered)
+        .buttonStyle(.borderless)
+        .font(.system(size: 11))
+        .foregroundStyle(.secondary)
+        .fixedSize()
         .controlSize(.small)
     }
 
@@ -482,7 +477,7 @@ struct LocalCLIWorkspaceView: View {
         let result = model.quotas[profile.id]
         let fresh = !model.stale.contains(profile.id) && ResetCardPresentation.isFresh(result?.fetchedAt, now: Date())
         let expiring = ResetCardPresentation.isExpiringSoon(result?.resetCards, now: Date(), evidenceFresh: fresh)
-        let arrangement = layout == .cards ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8)) : AnyLayout(HStackLayout(alignment: .top, spacing: 16))
+        let arrangement = layout == .cards ? AnyLayout(VStackLayout(alignment: .leading, spacing: 6)) : AnyLayout(HStackLayout(alignment: .top, spacing: 10))
         return arrangement {
             VStack(alignment: .leading, spacing: 5) {
                 HStack(spacing: 8) {
@@ -555,7 +550,7 @@ struct LocalCLIWorkspaceView: View {
             }
             .frame(width: layout == .rows ? 168 : nil)
             .frame(maxWidth: layout == .cards ? .infinity : nil, alignment: .topLeading)
-            VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 6) {
                 if layout == .cards { Divider() }
                 HStack(spacing: 6) {
                     primaryAction(profile)
@@ -573,7 +568,7 @@ struct LocalCLIWorkspaceView: View {
                 .buttonStyle(.bordered)
                 .controlSize(.small)
                 DisclosureGroup(language.text("模型与来源", "Models & source")) {
-                    VStack(alignment: .leading, spacing: 10) {
+                    VStack(alignment: .leading, spacing: 6) {
                         modelAvailabilitySummary(for: profile)
                         Button {
                             preparationProfile = profile
@@ -588,7 +583,7 @@ struct LocalCLIWorkspaceView: View {
                             )
                             .font(.caption2).foregroundStyle(.secondary)
                         }
-                    }.padding(.top, 8)
+                    }.padding(.top, 4)
                 }.font(.caption)
                 if model.refreshing.contains(profile.id) {
                     HStack(spacing: 6) {
@@ -615,7 +610,7 @@ struct LocalCLIWorkspaceView: View {
             .frame(maxWidth: layout == .cards ? .infinity : nil, alignment: .leading)
         }
         .padding(.horizontal, cardDensity.padding)
-        .padding(.vertical, cardDensity.padding)
+        .padding(.vertical, cardDensity.verticalPadding)
         .cardBackground(cornerRadius: layout == .cards ? 14 : 12)
         .overlay {
             if expiring {
@@ -625,22 +620,9 @@ struct LocalCLIWorkspaceView: View {
         }
     }
 
-    /// Same slot anatomy as ProfileRow.quotaWindow: label left, large percent on a
-    /// shared first-text-baseline, track, then the reset date as the caption line.
+    /// Keep the same short quota track and precise reset date as Home and Codex.
     private func embeddedQuotaWindow(_ window: LocalCLIQuotaWindow, layout: AccountWorkspaceLayout) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            HStack(alignment: .firstTextBaseline) {
-                Text(window.label).font(.caption.weight(.semibold)).lineLimit(1)
-                Spacer()
-                Text(QuotaAvailabilityPresentation.percentText(100 - window.usedPercent))
-                    .font(layout == .cards ? .system(size: 23, weight: .semibold, design: .rounded).monospacedDigit() : .subheadline.weight(.bold).monospacedDigit())
-                    .lineLimit(1)
-                    .fixedSize(horizontal: true, vertical: false)
-                    .frame(minHeight: layout == .cards ? 28 : nil, alignment: .bottom)
-            }
-            QuotaProgressTrack(percent: 100 - window.usedPercent)
-            LocalCLIQuotaWindowDetails(window: window, language: language)
-        }
+        compactHomeQuotaWindow(window)
     }
 
     private func fullAccountCard(_ profile: LocalCLIProfile) -> some View {
@@ -650,12 +632,12 @@ struct LocalCLIWorkspaceView: View {
             result?.resetCards,
             now: Date(),
             evidenceFresh: !isStale)
-        return VStack(alignment: .leading, spacing: 14) {
+        return VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .top, spacing: 12) {
                 profileAvatar(profile, slot: .detail)
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(spacing: 8) {
-                        Text(profile.displayName).font(.headline).lineLimit(2)
+                        Text(numberedName(profile)).font(.headline).lineLimit(2)
                         Text(environmentLabel(profile)).font(.caption2).foregroundStyle(.secondary)
                     }
                     if let identity = result?.maskedIdentity { Text(identity).font(.caption).foregroundStyle(.secondary) }
@@ -714,19 +696,10 @@ struct LocalCLIWorkspaceView: View {
                 .font(.caption).foregroundStyle(.secondary)
             }
             if let result, !result.windows.isEmpty {
-                HStack(alignment: .top, spacing: 20) {
+                HStack(alignment: .top, spacing: 10) {
                     ForEach(result.windows.prefix(4)) { window in
-                        VStack(alignment: .leading, spacing: 6) {
-                            HStack {
-                                Text(window.label).font(.caption).foregroundStyle(.secondary)
-                                Spacer()
-                                Text("\(Int((100 - window.usedPercent).rounded()))%")
-                                    .font(.system(.headline, design: .rounded).monospacedDigit())
-                            }
-                            ProgressView(value: 100 - window.usedPercent, total: 100)
-                                .tint(isStale ? .secondary : .accentColor)
-                            LocalCLIQuotaWindowDetails(window: window, language: language)
-                        }.frame(maxWidth: .infinity)
+                        embeddedQuotaWindow(window, layout: .cards)
+                            .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
                 Text(language.text("剩余额度", "Remaining limits")).font(.caption2).foregroundStyle(.secondary)
@@ -808,7 +781,8 @@ struct LocalCLIWorkspaceView: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
-        .padding(cardDensity.padding)
+        .padding(.horizontal, cardDensity.padding)
+        .padding(.vertical, cardDensity.verticalPadding)
         .sectionBackground()
         .overlay(
             expiringSoon
@@ -1038,36 +1012,40 @@ struct LocalCLIIcon: View {
             let size = min(proxy.size.width, proxy.size.height)
             let box = size * 0.78
             ZStack {
-                switch kind {
-                case .claudeCode:
-                    RuntimeLogoView(scope: .claudeCode, size: size)
-                case .grok:
-                    Circle().trim(from: 0.08, to: 0.86).stroke(lineWidth: size * 0.10)
-                        .padding(size * 0.11).rotationEffect(.degrees(-30))
-                    Capsule().frame(width: size * 0.10, height: size * 1.04).rotationEffect(.degrees(39))
-                case .openCode:
-                    Image(systemName: "chevron.left.forwardslash.chevron.right")
-                        .resizable().scaledToFit()
-                        .frame(width: box, height: box)
-                case .trae:
-                    Text("T").font(.system(size: size * 1.05, weight: .black, design: .rounded))
-                case .workBuddy:
-                    Image(systemName: "bubble.left.and.bubble.right.fill")
-                        .resizable().scaledToFit()
-                        .frame(width: box, height: box)
-                case .kimi: Text("K").font(.system(size: size * 1.05, weight: .black, design: .rounded))
-                case .mimo:
-                    RoundedRectangle(cornerRadius: size * 0.24).stroke(lineWidth: size * 0.085).padding(size * 0.11)
-                    Text("mi").font(.system(size: size * 0.48, weight: .bold, design: .rounded))
-                case .zcode: Text("Z").font(.system(size: size * 1.05, weight: .black, design: .monospaced))
-                case .gemini:
-                    Image(systemName: "sparkle")
-                        .resizable().scaledToFit()
-                        .frame(width: box, height: box)
-                case .antigravity:
-                    Image(systemName: "a.circle")
-                        .resizable().scaledToFit()
-                        .frame(width: box, height: box)
+                if let image = UpstreamProviderArtwork.image(for: kind.rawValue) {
+                    UpstreamProviderIcon(image: image, size: box)
+                } else {
+                    switch kind {
+                    case .claudeCode:
+                        RuntimeLogoView(scope: .claudeCode, size: size)
+                    case .grok:
+                        Circle().trim(from: 0.08, to: 0.86).stroke(lineWidth: size * 0.10)
+                            .padding(size * 0.11).rotationEffect(.degrees(-30))
+                        Capsule().frame(width: size * 0.10, height: size * 1.04).rotationEffect(.degrees(39))
+                    case .openCode:
+                        Image(systemName: "chevron.left.forwardslash.chevron.right")
+                            .resizable().scaledToFit()
+                            .frame(width: box, height: box)
+                    case .trae:
+                        Text("T").font(.system(size: size * 1.05, weight: .black, design: .rounded))
+                    case .workBuddy:
+                        Image(systemName: "bubble.left.and.bubble.right.fill")
+                            .resizable().scaledToFit()
+                            .frame(width: box, height: box)
+                    case .kimi: Text("K").font(.system(size: size * 1.05, weight: .black, design: .rounded))
+                    case .mimo:
+                        RoundedRectangle(cornerRadius: size * 0.24).stroke(lineWidth: size * 0.085).padding(size * 0.11)
+                        Text("mi").font(.system(size: size * 0.48, weight: .bold, design: .rounded))
+                    case .zcode: Text("Z").font(.system(size: size * 1.05, weight: .black, design: .monospaced))
+                    case .gemini:
+                        Image(systemName: "sparkle")
+                            .resizable().scaledToFit()
+                            .frame(width: box, height: box)
+                    case .antigravity:
+                        Image(systemName: "a.circle")
+                            .resizable().scaledToFit()
+                            .frame(width: box, height: box)
+                    }
                 }
             }.frame(width: proxy.size.width, height: proxy.size.height)
         }.accessibilityHidden(true)

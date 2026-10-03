@@ -198,6 +198,21 @@ struct PaletteFallbackNotice: Equatable {
 }
 
 final class AppSettings: ObservableObject {
+    func migrateEmbeddedEdgeDockIfNeeded(from file: URL? = nil) {
+        guard defaults.object(forKey: TokenMonitorEdgeDockPreferences.storageKey) == nil else { return }
+        let source =
+            file
+            ?? DispatchParticipationPaths.supportDirectory()
+            .appendingPathComponent("TokenMonitorDesktop/settings.json")
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: source.path),
+            attributes[.type] as? FileAttributeType == .typeRegular,
+            ((attributes[.size] as? NSNumber)?.intValue ?? Int.max) <= 2 * 1024 * 1024,
+            let data = try? Data(contentsOf: source),
+            let migrated = TokenMonitorEdgeDockPreferences.migratedEmbeddedSettings(data)
+        else { return }
+        edgeDock = migrated
+    }
+
     @Published var statisticsEngine: StatisticsEngineChoice = .stored() {
         didSet { defaults.set(statisticsEngine.rawValue, forKey: StatisticsEngineChoice.storageKey) }
     }
@@ -212,6 +227,7 @@ final class AppSettings: ObservableObject {
     private static let simpleCustomShowMonitoredQuotaKey = "CodexManagerNext.simpleCustomShowMonitoredQuota"
     private static let simpleCustomShowCodexAccountsKey = "CodexManagerNext.simpleCustomShowCodexAccounts"
     private static let simpleCustomShowUsageAutomationKey = "CodexManagerNext.simpleCustomShowUsageAutomation"
+    private static let localCLIHomeOrderKey = "CodexManagerNext.localCLIHomeOrder"
 
     private let defaults: UserDefaults
     let paletteCatalog: PaletteCatalog
@@ -249,10 +265,18 @@ final class AppSettings: ObservableObject {
         didSet { defaults.set(tokenUsageHomeCustomStart, forKey: TokenUsageHomeRange.customStartKey) }
     }
 
+    @Published var homeDashboardPreferences: HomeDashboardPreferences {
+        didSet { defaults.set(try? JSONEncoder().encode(homeDashboardPreferences), forKey: HomeDashboardPreferences.storageKey) }
+    }
+
     @Published var accountMenuTransparency: AccountMenuTransparency {
         didSet {
             accountMenuTransparency.persist(defaults: defaults)
         }
+    }
+
+    @Published var workspaceGlass: WorkspaceGlassPreferences {
+        didSet { defaults.set(try? JSONEncoder().encode(workspaceGlass), forKey: WorkspaceGlassPreferences.storageKey) }
     }
 
     @Published var homeModuleArrangement: WorkspaceModuleArrangement {
@@ -269,6 +293,10 @@ final class AppSettings: ObservableObject {
 
     @Published var floatingBubble: TokenMonitorFloatingBubblePreferences {
         didSet { defaults.set(try? JSONEncoder().encode(floatingBubble), forKey: TokenMonitorFloatingBubblePreferences.storageKey) }
+    }
+
+    @Published var edgeDock: TokenMonitorEdgeDockPreferences {
+        didSet { defaults.set(try? JSONEncoder().encode(edgeDock.normalized()), forKey: TokenMonitorEdgeDockPreferences.storageKey) }
     }
 
     @Published var onboarding: WorkspaceOnboardingState {
@@ -290,6 +318,13 @@ final class AppSettings: ObservableObject {
 
     @Published var pinnedAccountKey: String? {
         didSet { defaults.set(pinnedAccountKey, forKey: "CodexManagerNext.pinnedAccountKey") }
+    }
+
+    /// Cross-provider order for the draggable local CLI cards on Home. Unknown
+    /// keys are retained until the next projection so a temporarily missing
+    /// profile does not erase the user's chosen order.
+    @Published var localCLIHomeOrder: [String] {
+        didSet { defaults.set(localCLIHomeOrder, forKey: Self.localCLIHomeOrderKey) }
     }
 
     @Published var workspaceDisplayMode: WorkspaceDisplayMode {
@@ -407,11 +442,13 @@ final class AppSettings: ObservableObject {
         particleAnimationMode = ParticleAnimationMode.storedOrDefault(defaults: defaults)
         usageTrendWindow = UsageTrendWindow.storedOrDefault(defaults: defaults)
         tokenUsageHomeRange = TokenUsageHomeRange.storedOrDefault(defaults: defaults)
+        homeDashboardPreferences = HomeDashboardPreferences.load(defaults.data(forKey: HomeDashboardPreferences.storageKey))
         tokenUsageHomeCustomStart =
             (defaults.object(forKey: TokenUsageHomeRange.customStartKey) as? Date)
             ?? Calendar.current.date(byAdding: .day, value: -29, to: Date())
             ?? Date()
         accountMenuTransparency = AccountMenuTransparency.storedOrDefault(defaults: defaults)
+        workspaceGlass = WorkspaceGlassPreferences.load(defaults.data(forKey: WorkspaceGlassPreferences.storageKey))
         homeModuleArrangement = WorkspaceModuleArrangement.load(defaults.data(forKey: WorkspaceModuleArrangement.storageKey))
         var navigationBackup: Data?
         agentNavigation = AgentNavigationState.load(defaults.data(forKey: AgentNavigationState.storageKey), backupRaw: &navigationBackup)
@@ -420,6 +457,7 @@ final class AppSettings: ObservableObject {
         }
         accountAvatars = AccountAvatarTable.load(defaults.data(forKey: AccountAvatarTable.storageKey))
         floatingBubble = TokenMonitorFloatingBubblePreferences.load(defaults.data(forKey: TokenMonitorFloatingBubblePreferences.storageKey))
+        edgeDock = TokenMonitorEdgeDockPreferences.load(defaults.data(forKey: TokenMonitorEdgeDockPreferences.storageKey))
         var onboardingBackup: Data?
         onboarding = WorkspaceOnboardingState.load(defaults.data(forKey: WorkspaceOnboardingState.storageKey), backupRaw: &onboardingBackup)
         if let onboardingBackup {
@@ -435,6 +473,7 @@ final class AppSettings: ObservableObject {
         accountWorkspaceLayout = AccountWorkspaceLayout.storedOrDefault(defaults: defaults)
         let storedPinnedAccountKey = defaults.string(forKey: "CodexManagerNext.pinnedAccountKey")
         pinnedAccountKey = storedPinnedAccountKey
+        localCLIHomeOrder = defaults.stringArray(forKey: Self.localCLIHomeOrderKey) ?? []
         let existingUser =
             defaults.object(forKey: WorkspaceDisplayMode.storageKey) != nil
             || defaults.bool(forKey: "CodexManagerNext.setup.dismissed")

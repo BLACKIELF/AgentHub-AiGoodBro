@@ -89,6 +89,8 @@ func normalizedExecutionPreference(preference *executionPreference) (executionPr
 	}
 	maxEffort := map[string]string{
 		"gpt-6-astra":   "ultra",
+		"gpt-6-sol":     "ultra",
+		"gpt-6-luna":    "max",
 		"gpt-5.6-sol":   "ultra",
 		"gpt-5.6-terra": "ultra",
 		"gpt-5.6-luna":  "max",
@@ -130,7 +132,8 @@ func normalizedExecutionPreference(preference *executionPreference) (executionPr
 }
 
 func validModelEffort(model, effort string) bool {
-	maxima := map[string]int{"gpt-6-astra": 6, "gpt-5.6-sol": 6, "gpt-5.6-terra": 6, "gpt-5.6-luna": 5, "gpt-5.5": 4, "gpt-5.2": 4}
+	maxima := map[string]int{"gpt-6-astra": 6, "gpt-6-sol": 6, "gpt-6-luna": 5,
+		"gpt-5.6-sol": 6, "gpt-5.6-terra": 6, "gpt-5.6-luna": 5, "gpt-5.5": 4, "gpt-5.2": 4}
 	ranks := map[string]int{"low": 1, "medium": 2, "high": 3, "xhigh": 4, "max": 5, "ultra": 6}
 	return maxima[model] > 0 && ranks[effort] > 0 && ranks[effort] <= maxima[model]
 }
@@ -146,9 +149,9 @@ type effectiveExecutionStrategy struct {
 
 func defaultPreset(slot string) executionPreset {
 	defaults := map[string]executionPreset{
-		"standard":    {UseSavedModel: true, Model: "gpt-6-astra", ReasoningEffort: "low", SubagentModel: "gpt-5.6-luna", SubagentReasoningEffort: "max"},
-		"sol_luna":    {Model: "gpt-5.6-sol", ReasoningEffort: "high", SubagentsEnabled: true, SubagentModel: "gpt-5.6-luna", SubagentReasoningEffort: "max"},
-		"luna_direct": {Model: "gpt-5.6-luna", ReasoningEffort: "max", SubagentModel: "gpt-5.6-luna", SubagentReasoningEffort: "max"},
+		"standard":    {UseSavedModel: true, Model: "gpt-6-sol", ReasoningEffort: "low", SubagentModel: "gpt-6-luna", SubagentReasoningEffort: "max"},
+		"sol_luna":    {Model: "gpt-6-sol", ReasoningEffort: "high", SubagentsEnabled: true, SubagentModel: "gpt-6-luna", SubagentReasoningEffort: "max"},
+		"luna_direct": {Model: "gpt-6-luna", ReasoningEffort: "max", SubagentModel: "gpt-6-luna", SubagentReasoningEffort: "max"},
 	}
 	return defaults[slot]
 }
@@ -170,6 +173,55 @@ func derivedExecutionStrategy(preference executionPreference) effectiveExecution
 
 func derivedExecutionPreference(preference executionPreference) executionPreference {
 	return derivedExecutionStrategy(preference).Main
+}
+
+func frozenTaskExecutionStrategy(task *Task, preference executionPreference) (effectiveExecutionStrategy, error) {
+	strategy := derivedExecutionStrategy(preference)
+	if task == nil || task.EffectiveExecutionPreference == nil {
+		return strategy, nil
+	}
+	frozen := *task.EffectiveExecutionPreference
+	if frozen.ServiceTier != preference.ServiceTier || frozen.SubagentMode != preference.SubagentMode ||
+		!validModelEffort(frozen.Model, frozen.ReasoningEffort) {
+		return effectiveExecutionStrategy{}, errInvalid
+	}
+	if !executionPreferencesEqual(frozen, strategy.Main) {
+		if len(preference.CustomPresets) != 0 {
+			return effectiveExecutionStrategy{}, errInvalid
+		}
+		legacy := preference
+		switch preference.SubagentMode {
+		case "sol_luna":
+			legacy.Model, legacy.ReasoningEffort = "gpt-5.6-sol", "high"
+			strategy.SubagentModel, strategy.SubagentReasoningEffort = "gpt-5.6-luna", "max"
+		case "luna_direct":
+			legacy.Model, legacy.ReasoningEffort = "gpt-5.6-luna", "max"
+			strategy.SubagentModel, strategy.SubagentReasoningEffort = "gpt-5.6-luna", "max"
+		default:
+			return effectiveExecutionStrategy{}, errInvalid
+		}
+		if !executionPreferencesEqual(frozen, legacy) {
+			return effectiveExecutionStrategy{}, errInvalid
+		}
+	}
+	strategy.Main = frozen
+	if strategy.SubagentsEnabled && !frozenTaskSubagentMatches(task, strategy) {
+		return effectiveExecutionStrategy{}, errInvalid
+	}
+	return strategy, nil
+}
+
+func frozenTaskSubagentMatches(task *Task, strategy effectiveExecutionStrategy) bool {
+	if task == nil || task.SubagentExecution == nil {
+		return false
+	}
+	frozen := task.SubagentExecution
+	if frozen.RequestedMode != strategy.Main.SubagentMode || frozen.RequestedRole != presetRoleName ||
+		frozen.RequestedModel != strategy.SubagentModel || frozen.RequestedEffort != strategy.SubagentReasoningEffort ||
+		frozen.ConcurrentThreads != strategy.MaximumConcurrentSubagents || frozen.RoleSHA256 == "" {
+		return false
+	}
+	return frozen.RoleSHA256 == hashText(string(generatedPresetRole(frozen.RequestedModel, frozen.RequestedEffort)))
 }
 
 func executionPreferencesEqual(a, b executionPreference) bool {

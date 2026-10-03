@@ -23,20 +23,25 @@ enum HomeInteractionPreview {
         let store = DesignHomePreviewFixture.makeStore(root: root)
         let local = DesignHomePreviewFixture.makeLocalCLIStore(root: root)
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 1440, height: 980),
+            contentRect: NSRect(x: 0, y: 0, width: 1100, height: 760),
             styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
-        window.title = "AiGoodBro · 0923v8 设计验收 · 合成数据"
+        window.title = "AiGoodBro · 界面预览（示例数据）"
         window.minSize = CGSize(width: 820, height: 600)
         window.isReleasedWhenClosed = false
-        window.contentView = NSHostingView(
+        window.isOpaque = false
+        window.backgroundColor = .clear
+        window.collectionBehavior = [.fullScreenPrimary]
+        window.contentView = GlassHostingContainer(
             rootView: HomeReviewFixture(
-                store: store, settings: settings, catalog: catalog, local: local, window: window
+                store: store, settings: settings, catalog: catalog, local: local,
+                updateStore: AppUpdateStore(settings: settings)
             )
             .defaultAppStorage(defaults)
             .environment(\.workspacePreviewDate, DesignHomePreviewFixture.referenceDate)
             .environment(
                 \.workspacePreviewForecastDeadline,
-                DesignHomePreviewFixture.referenceDate.addingTimeInterval(12 * 3_600)))
+                DesignHomePreviewFixture.referenceDate.addingTimeInterval(12 * 3_600)),
+            cornerRadius: 12, allowsWindowDragging: false, settings: settings)
         window.center()
         window.makeKeyAndOrderFront(nil)
         app.activate(ignoringOtherApps: true)
@@ -49,44 +54,37 @@ private struct HomeReviewFixture: View {
     @ObservedObject var settings: AppSettings
     let catalog: PaletteCatalog
     let local: LocalCLIAccountStore
-    let window: NSWindow
-    @State private var generation = 0
+    let updateStore: AppUpdateStore
+    @State private var showingSettings = false
     @State private var showingPalettes = false
-    private let guide = PassthroughSubject<Void, Never>()
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Text("0923v8 · 合成验收 · 2026-09-23 03:00 北京时间 · 不连接真实账号")
-                    .font(.caption)
-                Button("窄窗") { window.setContentSize(CGSize(width: 820, height: 760)) }
-                Button("宽窗") { window.setContentSize(CGSize(width: 1440, height: 980)) }
-                Picker("账号布局", selection: $settings.accountWorkspaceLayout) {
-                    Text("卡片").tag(AccountWorkspaceLayout.cards)
-                    Text("列表").tag(AccountWorkspaceLayout.rows)
+        CodexAccountManagerView(
+            store: store, settings: settings, paletteCatalog: catalog,
+            localCLIAccounts: local,
+            previewReferenceDate: DesignHomePreviewFixture.referenceDate,
+            previewForecastBy: DesignHomePreviewFixture.referenceDate.addingTimeInterval(12 * 3_600),
+            onOpenWorkspaceSettings: { showingSettings = true }
+        )
+        .sheet(isPresented: $showingSettings) {
+            VStack(spacing: 0) {
+                HStack {
+                    Text(settings.language.text("设置", "Settings")).font(.headline)
+                    Spacer()
+                    Button(settings.language.text("完成", "Done")) { showingSettings = false }
+                }.padding(12)
+                SettingsPanelView(
+                    settings: settings, store: store, updateStore: updateStore,
+                    onOpenPaletteLibrary: { showingPalettes = true }
+                )
+                .sheet(isPresented: $showingPalettes) {
+                    PaletteLibraryView(settings: settings).frame(width: 760, height: 560)
                 }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .frame(width: 116)
-                Button("切换明暗") { settings.themeMode = settings.themeMode == .dark ? .light : .dark }
-                Button("选择主题配色") { showingPalettes = true }
-                Button("切换语言") { settings.language = settings.language == .zh ? .en : .zh }
-                Button("重建测试界面") { generation += 1 }
-                Button("检查使用引导") { guide.send(()) }
-                Spacer()
-            }.padding(8)
-            Divider()
-            CodexAccountManagerView(
-                store: store, settings: settings, paletteCatalog: catalog,
-                guideRequests: guide.eraseToAnyPublisher(), localCLIAccounts: local,
-                previewReferenceDate: DesignHomePreviewFixture.referenceDate,
-                previewForecastBy: DesignHomePreviewFixture.referenceDate.addingTimeInterval(12 * 3_600)
-            )
-            .id(generation)
-        }
-        .sheet(isPresented: $showingPalettes) {
-            PaletteLibraryView(settings: settings)
-                .frame(width: 760, height: 560)
+            }
+            .frame(width: 780, height: 640)
+            .environment(\.widgetLanguage, settings.language)
+            .environment(\.locale, settings.language.locale)
+            .preferredColorScheme(settings.themeMode.preferredColorScheme)
         }
     }
 }

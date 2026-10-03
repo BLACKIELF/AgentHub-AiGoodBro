@@ -22,7 +22,7 @@ struct StatisticsSourceSettings: View {
                                 )
                             )
                             .toggleStyle(.checkbox)
-                            .font(.system(size: 11))
+                            .font(.system(size: settingsRowDetailFontSize))
                             .accessibilityIdentifier("next.statistics.source.\(client.id)")
                         }
                     }
@@ -33,16 +33,16 @@ struct StatisticsSourceSettings: View {
                             "MiMo Code may include imported Claude sessions and duplicate their usage. Qoder CN uses an experimental reader. Other sources are enabled by default."
                         )
                     )
-                    .font(.system(size: 10))
+                    .font(.system(size: settingsRowDetailFontSize))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 } label: {
                     Text(language.text("统计来源 · 已启用 \(enabledIDs.count)/\(catalog.clients.count)", "Usage sources · \(enabledIDs.count)/\(catalog.clients.count) enabled"))
-                        .font(.system(size: 12, weight: .medium))
+                        .font(.system(size: settingsRowTitleFontSize, weight: .semibold))
                 }
             } else {
                 Text(language.text("统计组件未就绪，请重新安装应用。", "The statistics component is missing. Reinstall the app."))
-                    .font(.system(size: 11))
+                    .font(.system(size: settingsRowDetailFontSize))
                     .foregroundStyle(.secondary)
             }
         }

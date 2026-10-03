@@ -593,7 +593,8 @@ struct TaskRuntimeReducer {
         case "notLoaded":
             return .idle
         case "systemError":
-            return .failed
+            // A daemon/system error is not a verified terminal turn failure.
+            return .recorded
         default:
             return .recorded
         }
@@ -708,7 +709,8 @@ extension TaskItem {
             displayState: presentation.displayState,
             stateBasis: stateBasis,
             rawStatus: rawStatus,
-            nextRunAt: nextRunAt
+            nextRunAt: nextRunAt,
+            projectPath: projectPath
         )
     }
 }

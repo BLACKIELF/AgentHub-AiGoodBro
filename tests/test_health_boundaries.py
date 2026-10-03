@@ -4,6 +4,7 @@
 import hashlib
 import json
 from pathlib import Path
+import re
 import runpy
 import shutil
 import subprocess
@@ -437,6 +438,9 @@ enum DispatchParticipationSync {
             expected.add('SupportTools/next_runtime_setup.py')
             self.assertEqual(packaged, expected)
             self.assertFalse(any('runtime-paths.json' in path or 'runtime-python.txt' in path for path in packaged))
+            entrypoint = resources / 'CompanionSkill/SKILL.md'
+            for relative in re.findall(r'\]\((references/[^)#]+)', entrypoint.read_text()):
+                self.assertTrue((entrypoint.parent / relative).is_file(), relative)
 
     def test_hub_source_manifest_matches_owned_sources(self):
         hub = ROOT / 'Companion/Hub'
@@ -460,7 +464,7 @@ enum DispatchParticipationSync {
         self.assertIn('BUNDLE_COMPANION=1', wrapper)
         self.assertIn('CompanionHub/manifest.json', wrapper)
         self.assertIn("'runtime-paths.json', 'runtime-python.txt'", wrapper)
-        self.assertIn('BUNDLE_COMPANION ?= 0', makefile)
+        self.assertIn('BUNDLE_COMPANION ?= 1', makefile)
         self.assertIn('--include-hub', makefile)
 
 

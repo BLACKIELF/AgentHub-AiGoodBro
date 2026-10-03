@@ -1,17 +1,30 @@
 import SwiftUI
 
-/// Percentages describe one provider window; they are not token counts or money.
+/// Exact counts are shown only when the provider reports a token allowance.
 struct LocalCLIQuotaWindowDetails: View {
     let window: LocalCLIQuotaWindow
     let language: WidgetLanguage
 
     var body: some View {
-        let percentages = Self.percentages(usedPercent: window.usedPercent, language: language)
         VStack(alignment: .leading, spacing: 2) {
-            Text(language.text("已用 ", "Used ") + percentages.used)
-            Text(language.text("剩余 ", "Remaining ") + percentages.remaining)
+            if let amount = window.tokenAmountText { Text(amount).monospacedDigit() }
+            HStack(spacing: 12) {
+                HStack(spacing: 5) {
+                    Text(language.text("已用", "Used"))
+                    QuotaPercentageRing(
+                        percent: window.usedPercent, diameter: 34,
+                        tint: .secondary, accessibilityTitle: language.text("已用额度", "Used quota"))
+                }
+                HStack(spacing: 5) {
+                    Text(language.text("剩余", "Remaining"))
+                    QuotaPercentageRing(percent: 100 - window.usedPercent, diameter: 34)
+                }
+            }
             Text(
-                window.resetsAt.map { language.text("重置：", "Resets: ") + language.dateTime($0) }
+                window.resetsAt.map {
+                    (window.isExpiry ? language.text("到期：", "Expires: ") : language.text("重置：", "Resets: "))
+                        + language.dateTime($0)
+                }
                     ?? language.text("重置时间：暂不可确认", "Reset time: unavailable"))
         }
         .font(.caption2)

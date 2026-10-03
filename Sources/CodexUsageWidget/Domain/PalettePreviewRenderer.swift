@@ -2,6 +2,7 @@ import AppKit
 import SwiftUI
 
 enum PalettePreviewRenderer {
+    @MainActor
     static func renderSettingsCatalog(to directory: URL) -> Bool {
         let suiteName = "CodexManagerNext.settings-catalog.\(UUID().uuidString)"
         let fixtureRoot = FileManager.default.temporaryDirectory.appendingPathComponent("next-settings-catalog-\(UUID().uuidString)")
@@ -55,16 +56,17 @@ enum PalettePreviewRenderer {
         let catalog = PaletteCatalog.loadFromMainBundle()
         do {
             try FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
-            for paletteID in [PaletteCatalog.defaultPaletteID, "codexu.blue-white-porcelain"] {
+            for descriptor in catalog.descriptors(language: "zh-Hans") {
+                let paletteID = descriptor.id
                 for appearance in PaletteAppearance.allCases {
                     let tokens = catalog.resolve(id: paletteID, appearance: appearance)
                     let scheme: ColorScheme = appearance == .dark ? .dark : .light
-                    let root = PalettePreviewCanvas()
+                    let root = PalettePreviewCanvas(title: descriptor.displayName)
                         .environment(\.visualTokens, tokens)
                         .environment(\.colorScheme, scheme)
-                        .frame(width: 360, height: 230)
+                        .frame(width: 400, height: 250)
                     let host = NSHostingView(rootView: root)
-                    host.frame = NSRect(x: 0, y: 0, width: 360, height: 230)
+                    host.frame = NSRect(x: 0, y: 0, width: 400, height: 250)
                     host.appearance = NSAppearance(named: appearance == .dark ? .darkAqua : .aqua)
                     host.layoutSubtreeIfNeeded()
                     guard let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { return false }
@@ -81,6 +83,7 @@ enum PalettePreviewRenderer {
         }
     }
 
+    @MainActor
     static func renderDocumentationSettings(to outputURL: URL) -> Bool {
         let suiteName = "CodexManagerNext.documentation-screenshot.\(UUID().uuidString)"
         guard let defaults = UserDefaults(suiteName: suiteName) else { return false }
@@ -129,6 +132,7 @@ enum PalettePreviewRenderer {
 }
 
 private struct PalettePreviewCanvas: View {
+    let title: String
     @Environment(\.visualTokens) private var tokens
     @Environment(\.colorScheme) private var colorScheme
 
@@ -154,7 +158,7 @@ private struct PalettePreviewCanvas: View {
             }
 
             VStack(alignment: .leading, spacing: 16) {
-                Text(tokens.identity.paletteID == PaletteCatalog.defaultPaletteID ? "Default" : "青花瓷")
+                Text(title)
                     .font(.system(size: 16, weight: .semibold))
                 QuotaValueProgressBar(currentValue: 5_300, maxValue: 46_500)
                     .frame(width: 150, height: 18)
@@ -168,6 +172,13 @@ private struct PalettePreviewCanvas: View {
         .padding(20)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .foregroundStyle(Color.primary)
-        .background(colorScheme == .dark ? Color(red: 0.08, green: 0.09, blue: 0.11) : Color(red: 0.96, green: 0.97, blue: 0.98))
+        .background(WorkspaceGlassSurface(cornerRadius: 18))
+        .padding(10)
+        .background {
+            ZStack {
+                Color(nsColor: .windowBackgroundColor)
+                WorkspaceGlassBackdrop()
+            }
+        }
     }
 }

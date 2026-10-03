@@ -8,6 +8,7 @@ enum HomeSection: String, CaseIterable {
 
 /// Keep disclosure actions separate from refresh, settings and account controls.
 struct HomeSectionToggle: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let title: String
     var systemImage: String? = nil
     var fillsWidth = true
@@ -22,17 +23,18 @@ struct HomeSectionToggle: View {
                 Image(systemName: "chevron.right")
                     .font(.caption.weight(.semibold))
                     .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                    .animation(WorkspaceMotion.feedback(reduceMotion: reduceMotion), value: isExpanded)
                     .accessibilityHidden(true)
                 if let systemImage {
                     Image(systemName: systemImage).accessibilityHidden(true)
                 }
-                Text(title)
+                Text(title).lineLimit(1)
                 if fillsWidth { Spacer(minLength: 0) }
             }
             .frame(minHeight: 24)
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(WorkspaceQuietButtonStyle(scalesOnPress: false))
         .accessibilityLabel(language.text(isExpanded ? "收起\(title)" : "展开\(title)", isExpanded ? "Collapse \(title)" : "Expand \(title)"))
         .accessibilityValue(language.text(isExpanded ? "已展开" : "已收起", isExpanded ? "Expanded" : "Collapsed"))
     }

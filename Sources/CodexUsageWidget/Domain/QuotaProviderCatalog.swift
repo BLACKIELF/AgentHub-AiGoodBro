@@ -157,6 +157,7 @@ struct QuotaProviderHostAccount: Equatable {
     let workspaceKindID: String
     let available: Bool
     let windows: [QuotaProviderWindow]
+    var stale: Bool = false
 }
 
 struct QuotaProviderFeed: Equatable {
@@ -192,6 +193,11 @@ enum QuotaProviderProjector {
     }
 
     private static func projectUpstream(_ descriptor: QuotaProviderDescriptor, feed: QuotaProviderFeed) -> QuotaProviderRow {
+        if let host = hostMatch(descriptor, feed: feed), host.stale {
+            return QuotaProviderRow(
+                provider: descriptor, status: .unavailable, source: "host-official",
+                windows: [], evidenceTier: "implemented")
+        }
         if let host = hostMatch(descriptor, feed: feed), host.available {
             return QuotaProviderRow(
                 provider: descriptor,
@@ -220,7 +226,7 @@ enum QuotaProviderProjector {
         let matches = feed.hostAccounts.filter {
             WorkspaceProviderIDMapping.catalogProviderID(forWorkspaceKindID: $0.workspaceKindID) == descriptor.id.rawValue
         }
-        return matches.first(where: \.available) ?? matches.first
+        return matches.first(where: { $0.available && !$0.stale }) ?? matches.first
     }
 
     private static func notConfigured(

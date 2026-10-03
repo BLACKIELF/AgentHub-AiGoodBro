@@ -1,6 +1,8 @@
 import Foundation
 @main struct Main {
  static func main() throws {
+  // Archived payload shapes are compatibility fixtures with the current pinned
+  // engine envelope; they are not a fresh v0.62 collector run.
   let directory = URL(fileURLWithPath: CommandLine.arguments[1])
   var failures = 0
   for name in ["usage", "usage-unavailable", "limits", "limits-unavailable"] {
@@ -9,7 +11,25 @@ import Foundation
     let output = try Data(contentsOf: directory.appendingPathComponent("compat-\(name)-response.json"))
     let request = try JSONDecoder().decode(TokenMonitorRequest.self, from: input)
     let response = try TokenMonitorResponse.decode(output, request: request)
-    print("PASS actual corrected bridge original-upstream JSON native decode \(name)")
+    print("PASS pinned-engine compatibility fixture native decode \(name)")
+    if name == "usage" {
+     // A historical or substituted engine must still fail before payload acceptance.
+     var object = try JSONSerialization.jsonObject(with: output) as! [String: Any]
+     var engine = object["engine"] as! [String: Any]
+     engine["commit"] = "ef079b6fb494e1cfcb24736cfcf4d4e591222eaf"
+     object["engine"] = engine
+     let stale = try JSONSerialization.data(withJSONObject: object)
+     do {
+      _ = try TokenMonitorResponse.decode(stale, request: request)
+      failures += 1
+      print("FAIL historical engine commit accepted")
+     } catch TokenMonitorFailure.engineMismatch {
+      print("PASS historical engine commit rejected")
+     } catch {
+      failures += 1
+      print("FAIL historical engine commit category \(String(describing: error))")
+     }
+    }
     if name == "usage" {
      precondition(response.payload["aggregate"]?["today"]?["totalTokens"]?.double == 33)
      precondition(request.sources.allSatisfy { $0.accountId == nil })

@@ -3,4 +3,6 @@ Source: https://github.com/Javis603/token-monitor/blob/ef079b6fb494e1cfcb24736cf
 Commit: ef079b6fb494e1cfcb24736cfcf4d4e591222eaf
 SHA256: 9f7bb053c55afc080342820093b899c156d22754683afab0009fb0d7ee5f9441
 Vendor bytes unchanged. standalone.html/js/css are local integration adapters.
-Only standalone.html is loaded by the native host. No Electron or Hub runtime.
+standalone.html remains the detailed legacy view. home-dashboard.html embeds the dashboard renderer in the native host.
+The desktop/ files are byte-for-byte copies of the existing vendored Token Monitor v0.62.0 renderer and shared helpers; see desktop/SOURCE.json for source paths and hashes.
+Home layout, native data transport, saved controls, tool colors and heatmap start are adapted in home-dashboard.js/css and home-bridge.js. No Electron or Hub runtime is started by either chart view.

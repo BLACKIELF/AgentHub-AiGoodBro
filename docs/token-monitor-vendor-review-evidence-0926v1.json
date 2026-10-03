@@ -1,0 +1,69 @@
+{
+  "darwinArm64RuntimeClosure": {
+    "extractedCacheUsed": false,
+    "installScriptsRun": false,
+    "lockfileVersion": 3,
+    "manifestPackageVersionsMatchClosure": true,
+    "nodeArchiveSHA256": "61130f394c1630d211dd50aecc4353d379480f36d3ac913cd85dbba1aed585c6",
+    "nodeVersion": "22.23.2",
+    "optionalTargetDependenciesIncluded": true,
+    "roots": [
+      "@tokscale/cli-darwin-arm64",
+      "chokidar",
+      "dotenv",
+      "koffi",
+      "semver",
+      "tar",
+      "tokscale",
+      "undici"
+    ],
+    "selectedPackageCount": 16,
+    "sha512ContentAddressedArchivesVerified": 16
+  },
+  "kind": "Token Monitor native vendor source review",
+  "oauthAdaptations": [
+    {
+      "adaptedSHA256": "0713b92419a3cf51e1b233703523f815271ce74c8c6eec2745dd1b159cf6f53e",
+      "path": "upstream/src/shared/providers/antigravity/oauth.js",
+      "reason": "Antigravity OAuth is disabled in this build: remove embedded OAuth client material and fail before discovery, callback listener, browser launch, credential exchange or remote request; preserve local usage parsing and safe imports.",
+      "upstreamSHA256": "dceb6c329696ed8d10915fa6203b07032ad0c50b0509d921c05789856c4449ed"
+    },
+    {
+      "adaptedSHA256": "9e8af5774e40635fb64a56951526148e5a6894d70c1715116a8fe2778d518cf1",
+      "path": "upstream/src/electron/providers/antigravity/oauthLogin.js",
+      "reason": "Antigravity OAuth is disabled in this build: remove embedded OAuth client material and fail before discovery, callback listener, browser launch, credential exchange or remote request; preserve local usage parsing and safe imports.",
+      "upstreamSHA256": "061b2553d409abcc14b97cd684ed763707231efec34ecfe4bea8b48d9f579f88"
+    }
+  ],
+  "scope": [
+    "Verified official stable tag resolutions against git ls-remote and pinned complete commit ids.",
+    "Reviewed package-lock dependency closure against the deterministic Darwin arm64 manifest and SHA512 archive cache.",
+    "Verified OAuth disabled patches against the exact v0.62.0 source files; raw embedded client-secret pattern exists upstream and is absent from the adapted OAuth file.",
+    "Packaging checks remain required to validate the assembled signed runtime, Node/Koffi smoke and absence of unpinned runtime resources."
+  ],
+  "sourceInventory": {
+    "fileCountExcludingSOURCE": 987,
+    "sha256OfCanonicalPathToFileSHA256Map": "d559f60dca93ec36f4b6e148e71c5c0f00e685664ac3c6528796a835764336e9"
+  },
+  "tokscale": {
+    "basePackageVersion": "4.17.0",
+    "darwinArm64BinarySHA256": "6c4765cf48790f5799da7c0685fab9a7b1d01f15d877121fff5ef0a14cc4a5f0",
+    "darwinArm64Package": "@tokscale/cli-darwin-arm64",
+    "releaseTag": "token-monitor-06a9f162",
+    "repository": "Javis603/tokscale",
+    "verifiedTagTargetCommit": "06a9f1625d5a505f01b39eff29f7be44a2c52188"
+  },
+  "upstream": {
+    "license": "MIT",
+    "licenseSHA256": "250136de456c31d659e54c1804c43a27dadad175336b67226e9509d6310f923c",
+    "packageJSONSHA256": "b2af112e55d4ddd97852f949b6ebbdc8e3bbe5c45718eb0390467e6ddec80db0",
+    "packageLockSHA256": "442d0fd357ded322b35e4d6ff60aba294d191f7b5963c0cdda1c9453b4169fa8",
+    "packageName": "token-monitor",
+    "packageVersion": "0.62.0",
+    "repository": "Javis603/token-monitor",
+    "tag": "v0.62.0",
+    "verifiedTagObjectCommit": "64c21fa0b135206d4b3653b5478e3bc46a8fe1db",
+    "verifiedTagTargetCommit": "dcccfb01557e2786888fd5479552f392ac6c0d32"
+  },
+  "version": "0926v1"
+}

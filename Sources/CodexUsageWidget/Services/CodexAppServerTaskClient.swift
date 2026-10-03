@@ -494,6 +494,21 @@ final class CodexAppServerTaskClient: CodexTaskEventClient {
         }
     }
 
+    private final class PauseRequestAdmission: @unchecked Sendable {
+        private let lock = NSLock()
+        private var cancelled = false
+        func cancel() {
+            lock.lock()
+            cancelled = true
+            lock.unlock()
+        }
+        var isActive: Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return !cancelled
+        }
+    }
+
     var onSnapshot: ((CodexTaskLiveSnapshot) -> Void)?
 
     private let queue = DispatchQueue(label: "com.blackielf.codex-account-manager-next.task-app-server", qos: .utility)
@@ -510,6 +525,8 @@ final class CodexAppServerTaskClient: CodexTaskEventClient {
     private var pendingThreadListTimeouts: [Int64: DispatchWorkItem] = [:]
     private var pendingThreadListCompletions: [Int64: [PendingThreadListCompletion]] = [:]
     private var pendingThreadListRequestGenerations: [Int64: UInt64] = [:]
+    private var pendingPauseRequests: [Int64: ([String: Any]?) -> Void] = [:]
+    private var pendingPauseTimeouts: [Int64: DispatchWorkItem] = [:]
     private var initializeTimeout: DispatchWorkItem?
     private var reconnectWorkItem: DispatchWorkItem?
     private var hasRetriedConnection = false
@@ -590,6 +607,82 @@ final class CodexAppServerTaskClient: CodexTaskEventClient {
             return nil
         }
         return waiter.value()
+    }
+
+    /// Pausing never grants access to login, credentials or prompt submission.
+    func desktopPauseRequest(_ method: String, params: [String: Any]) async -> [String: Any]? {
+        guard ["thread/loaded/list", "thread/read", "thread/turns/list", "turn/interrupt"].contains(method)
+        else { return nil }
+        return await desktopQuotaRequest(method, params: params)
+    }
+
+    /// Only the persisted continuation coordinator may submit a continuation in
+    /// an existing, verified thread. No thread/start or authentication RPC exists.
+    func desktopResumeRequest(_ method: String, params: [String: Any]) async -> [String: Any]? {
+        guard ["thread/read", "thread/resume", "thread/turns/list", "turn/start"].contains(method)
+        else { return nil }
+        return await desktopQuotaRequest(method, params: params)
+    }
+
+    /// A single empty thread, requested only after the WeChat controller has
+    /// durably reserved the paired user's dedicated binding. No settings or
+    /// authentication overrides, and no model turn is submitted by this client.
+    func createPersonalWeChatThread(admission: WeChatCodexSendAdmission) async -> WeChatCodexThreadCreation {
+        guard admission.isActive, !Task.isCancelled else { return .unavailable }
+        let workspace = homeDirectory.appendingPathComponent(
+            "Library/Application Support/CodexAccountManagerNext/PersonalWeChat/Workspace", isDirectory: true)
+        guard workspace.standardizedFileURL == workspace.resolvingSymlinksInPath().standardizedFileURL else { return .unavailable }
+        do {
+            try fileManager.createDirectory(at: workspace, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        } catch { return .unavailable }
+        let result = await desktopQuotaRequest(
+            "thread/start", params: ["cwd": workspace.path, "ephemeral": false], shouldSend: { admission.isActive },
+            onSend: { admission.markRequestAttempted() })
+        guard let thread = (result?["thread"] as? [String: Any])?["id"] as? String,
+            UUID(uuidString: thread) != nil
+        else { return admission.wasRequestAttempted ? .uncertain : .unavailable }
+        // Even a cancellation after creation must return the ID for durable
+        // recovery. Naming is optional; its failure must not trigger creation.
+        if admission.isActive, !Task.isCancelled {
+            _ = await desktopQuotaRequest(
+                "thread/name/set", params: ["threadId": thread, "name": "微信专用对话"], shouldSend: { admission.isActive })
+        }
+        return .created(thread)
+    }
+
+    private func desktopQuotaRequest(
+        _ method: String, params: [String: Any], shouldSend: @escaping () -> Bool = { true }, onSend: (() -> Void)? = nil
+    ) async -> [String: Any]? {
+        guard !Task.isCancelled, shouldSend() else { return nil }
+        let admission = PauseRequestAdmission()
+        return await withTaskCancellationHandler(
+            operation: {
+                await withCheckedContinuation { continuation in
+                    queue.async { [weak self] in
+                        guard admission.isActive, shouldSend(), let self, self.isConnected, self.connectionMode == .sharedDaemon,
+                            self.initializeTimeout == nil, self.webSocket != nil
+                        else {
+                            continuation.resume(returning: nil)
+                            return
+                        }
+                        let id = self.nextRequestID
+                        self.nextRequestID &+= 1
+                        self.pendingPauseRequests[id] = { continuation.resume(returning: $0) }
+                        let timeout = DispatchWorkItem { [weak self] in
+                            guard let self else { return }
+                            self.pendingPauseTimeouts.removeValue(forKey: id)
+                            self.pendingPauseRequests.removeValue(forKey: id)?(nil)
+                        }
+                        self.pendingPauseTimeouts[id] = timeout
+                        self.queue.asyncAfter(deadline: .now() + 5, execute: timeout)
+                        onSend?()
+                        if !self.writeJSONObject(["id": id, "method": method, "params": params]) {
+                            self.pendingPauseTimeouts.removeValue(forKey: id)?.cancel()
+                            self.pendingPauseRequests.removeValue(forKey: id)?(nil)
+                        }
+                    }
+                }
+            }, onCancel: { admission.cancel() })
     }
 
     private var defaultDaemonSocket: URL {
@@ -690,6 +783,11 @@ final class CodexAppServerTaskClient: CodexTaskEventClient {
             return
         }
 
+        if let completion = pendingPauseRequests.removeValue(forKey: responseID) {
+            pendingPauseTimeouts.removeValue(forKey: responseID)?.cancel()
+            completion(object["error"] == nil ? object["result"] as? [String: Any] : nil)
+            return
+        }
         guard pendingThreadListIDs.remove(responseID) != nil else { return }
         pendingThreadListTimeouts.removeValue(forKey: responseID)?.cancel()
         let completions = (pendingThreadListCompletions.removeValue(forKey: responseID) ?? [])
@@ -844,6 +942,11 @@ final class CodexAppServerTaskClient: CodexTaskEventClient {
             PerformanceMonitor.shared.end(span, success: false)
         }
         pendingThreadListSpans.removeAll()
+        pendingPauseTimeouts.values.forEach { $0.cancel() }
+        pendingPauseTimeouts.removeAll()
+        let pauseCompletions = Array(pendingPauseRequests.values)
+        pendingPauseRequests.removeAll()
+        pauseCompletions.forEach { $0(nil) }
         connectionMode = .disconnected
         reducer.disconnect()
         publishSnapshot()

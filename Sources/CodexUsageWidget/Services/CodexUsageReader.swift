@@ -368,13 +368,24 @@ final class CodexUsageReader {
         cancellation: TokenMonitorCancellation = TokenMonitorCancellation(),
         selectLimitsProvider: ((TokenMonitorResponse, String) -> TokenMonitorJSON?)? = nil
     ) -> AppServerSnapshot {
-        if profile != nil || managedProfile == nil {
+        let quotaCancellation = context.quotaCancellation ?? cancellation
+        if profile != nil || managedProfile == nil || managedProfile?.isSystemProfile == true {
+            if profile == nil, let managedProfile, managedProfile.isSystemProfile {
+                let systemHome = context.homeDirectory.appendingPathComponent(".codex", isDirectory: true)
+                    .resolvingSymlinksInPath().standardizedFileURL
+                guard context.codexHomeDirectory.resolvingSymlinksInPath().standardizedFileURL == systemHome,
+                    managedProfile.codexHomeURL.resolvingSymlinksInPath().standardizedFileURL == systemHome
+                else {
+                    messages.append(TokenMonitorFailure.invalidSource.rawValue)
+                    return AppServerSnapshot()
+                }
+            }
             return readAppServer(
                 context: context, messages: &messages, quotaOnly: quotaOnly,
                 refreshingMembershipFor: profile, requestTimeout: requestTimeout,
-                cancellation: context.quotaCancellation ?? cancellation)
+                cancellation: quotaCancellation)
         }
-        guard !cancellation.isCancelled else {
+        guard !quotaCancellation.isCancelled else {
             messages.append(TokenMonitorFailure.cancelled.rawValue)
             return AppServerSnapshot()
         }
@@ -387,14 +398,18 @@ final class CodexUsageReader {
         let home = context.codexHomeDirectory.resolvingSymlinksInPath().standardizedFileURL
         let gate = CodexCredentialAccessGate.homeLock(forHomePath: home.path)
         while !gate.try() {
-            guard !cancellation.isCancelled, ProcessInfo.processInfo.systemUptime - started < min(budget, 60) else {
-                messages.append(cancellation.isCancelled ? TokenMonitorFailure.cancelled.rawValue : TokenMonitorFailure.timedOut.rawValue)
+            guard !quotaCancellation.isCancelled, ProcessInfo.processInfo.systemUptime - started < min(budget, 60) else {
+                messages.append(quotaCancellation.isCancelled ? TokenMonitorFailure.cancelled.rawValue : TokenMonitorFailure.timedOut.rawValue)
                 return AppServerSnapshot()
             }
             Thread.sleep(forTimeInterval: 0.01)
         }
         defer { gate.unlock() }
-        guard !cancellation.isCancelled, let managedProfile, !managedProfile.isSystemProfile,
+        guard !quotaCancellation.isCancelled else {
+            messages.append(TokenMonitorFailure.cancelled.rawValue)
+            return AppServerSnapshot()
+        }
+        guard let managedProfile, !managedProfile.isSystemProfile,
             managedProfile.codexHomeURL.resolvingSymlinksInPath().standardizedFileURL == home,
             home != context.homeDirectory.appendingPathComponent(".codex").resolvingSymlinksInPath().standardizedFileURL,
             let before = CodexOfficialProfileReader.credentialIdentity(codexHomeURL: home),
@@ -417,7 +432,7 @@ final class CodexUsageReader {
             return AppServerSnapshot()
         }
         func isStable() -> Bool {
-            guard !cancellation.isCancelled,
+            guard !quotaCancellation.isCancelled,
                 ProcessInfo.processInfo.systemUptime - started < min(budget, 60),
                 let data = try? DispatchParticipationSync.readBoundedRegularFile(
                     home.appendingPathComponent("auth.json"), maximumBytes: 1_048_576), data == stableAuth,
@@ -440,7 +455,8 @@ final class CodexUsageReader {
             guard remaining > 0 else { throw TokenMonitorFailure.timedOut }
             // Reserve a bounded portion for a meaningful same-home fallback.
             request.options.timeoutMs = max(1, Int(min(remaining * 0.7, 12) * 1000))
-            let response = try engine.collect(request: request, cancellation: cancellation)
+            let response = try engine.collect(request: request, cancellation: quotaCancellation)
+            guard !quotaCancellation.isCancelled else { throw TokenMonitorFailure.cancelled }
             guard isStable() else { throw TokenMonitorFailure.invalidSource }
             guard response.status != .error,
                 let bound = TokenMonitorCodexLimits.select(response, sourceID: managedProfile.id),
@@ -461,7 +477,8 @@ final class CodexUsageReader {
                 if remaining > 2 {
                     let auxiliary = readAppServer(
                         context: context, messages: &messages, quotaOnly: quotaOnly,
-                        requestTimeout: min(3, remaining - 1.5), cancellation: cancellation)
+                        requestTimeout: min(3, remaining - 1.5), cancellation: quotaCancellation)
+                    guard !quotaCancellation.isCancelled else { throw TokenMonitorFailure.cancelled }
                     guard isStable() else { throw TokenMonitorFailure.invalidSource }
                     if managedProfile.matchesRecordedAccount(email: auxiliary.account?.email) {
                         result.account = auxiliary.account
@@ -476,17 +493,28 @@ final class CodexUsageReader {
             if result.auxiliaryReadStatus == .unavailable || (!quotaOnly && result.cloudLifetimeTokens == nil) {
                 messages.append("auxiliary_unavailable")
             }
+            guard !quotaCancellation.isCancelled else { throw TokenMonitorFailure.cancelled }
             guard isStable() else { throw TokenMonitorFailure.invalidSource }
             return result
         } catch {
-            let reason = (error as? TokenMonitorFailure) ?? .invalidResponse
+            let reason: TokenMonitorFailure
+            if quotaCancellation.isCancelled {
+                reason = .cancelled
+            } else {
+                reason = (error as? TokenMonitorFailure) ?? .invalidResponse
+            }
             messages.append(reason.rawValue)
+            guard reason != .cancelled else { return AppServerSnapshot() }
             guard isStable() else { return AppServerSnapshot() }
             let remaining = min(budget, 60) - (ProcessInfo.processInfo.systemUptime - started)
             guard remaining > 1.5 else { return AppServerSnapshot() }
             var fallback = readAppServer(
                 context: context, messages: &messages, quotaOnly: quotaOnly,
-                requestTimeout: remaining - 1, cancellation: cancellation)
+                requestTimeout: remaining - 1, cancellation: quotaCancellation)
+            guard !quotaCancellation.isCancelled else {
+                messages.append(TokenMonitorFailure.cancelled.rawValue)
+                return AppServerSnapshot()
+            }
             guard isStable(), managedProfile.matchesRecordedAccount(email: fallback.account?.email) else {
                 messages.append(TokenMonitorFailure.invalidSource.rawValue)
                 return AppServerSnapshot()
@@ -801,7 +829,10 @@ final class CodexUsageReader {
             ), CodexResetCreditVersion.supports(String(data: versionData, encoding: .utf8))
         else { return .failure(.unsupportedCLI) }
 
-        if selectedCard != nil {
+        // Managed accounts have a separate home and an account-scoped maintenance
+        // reservation in the controller. Unrelated CLI/Desktop processes do not
+        // block their reset; the shared system home retains the conservative gate.
+        if selectedCard != nil, profile.isSystemProfile {
             guard
                 let processData = try? BoundedLocalProcess.run(
                     executable: URL(fileURLWithPath: "/usr/bin/pgrep"),
@@ -1124,7 +1155,21 @@ final class CodexUsageReader {
         cancellation: TokenMonitorCancellation? = nil
     ) -> AppServerSnapshot {
         let cancellation = cancellation ?? context.quotaCancellation
-        guard cancellation?.isCancelled != true else { return AppServerSnapshot() }
+        let responseTimeout = requestTimeout.map { min(30, max(0, $0)) } ?? (quotaOnly ? 30 : 12)
+        guard responseTimeout.isFinite, responseTimeout > 0 else {
+            messages.append(TokenMonitorFailure.invalidRequest.rawValue)
+            return AppServerSnapshot()
+        }
+        let responseDeadline = ProcessInfo.processInfo.systemUptime + responseTimeout
+        func stopReason() -> TokenMonitorFailure? {
+            if cancellation?.isCancelled == true { return .cancelled }
+            if ProcessInfo.processInfo.systemUptime >= responseDeadline { return .timedOut }
+            return nil
+        }
+        if let reason = stopReason() {
+            messages.append(reason.rawValue)
+            return AppServerSnapshot()
+        }
         // 系统默认 home 是官方 Codex 正在使用的登录，保持原有全局门禁不变；
         // 其他账号 home 只涉及自身凭据，按 home 互斥即可允许跨账号并行读取。
         let homePath = context.codexHomeDirectory
@@ -1134,7 +1179,10 @@ final class CodexUsageReader {
             .resolvingSymlinksInPath().standardizedFileURL.path
         if profile != nil {
             while !CodexCredentialAccessGate.lock.try() {
-                guard cancellation?.isCancelled != true else { return AppServerSnapshot() }
+                if let reason = stopReason() {
+                    messages.append(reason.rawValue)
+                    return AppServerSnapshot()
+                }
                 Thread.sleep(forTimeInterval: 0.01)
             }
         }
@@ -1144,11 +1192,17 @@ final class CodexUsageReader {
             ? CodexCredentialAccessGate.lock
             : CodexCredentialAccessGate.homeLock(forHomePath: homePath)
         while !gate.try() {
-            guard cancellation?.isCancelled != true else { return AppServerSnapshot() }
+            if let reason = stopReason() {
+                messages.append(reason.rawValue)
+                return AppServerSnapshot()
+            }
             Thread.sleep(forTimeInterval: 0.01)
         }
         defer { gate.unlock() }
-        guard cancellation?.isCancelled != true else { return AppServerSnapshot() }
+        if let reason = stopReason() {
+            messages.append(reason.rawValue)
+            return AppServerSnapshot()
+        }
         if let profile {
             let systemHome = context.homeDirectory.appendingPathComponent(".codex", isDirectory: true)
             let managedRoot = context.homeDirectory.appendingPathComponent(".codex-account-manager-next/profiles", isDirectory: true)
@@ -1164,6 +1218,10 @@ final class CodexUsageReader {
         }
         let performanceSpan = PerformanceMonitor.shared.begin(.appServerQuota)
         defer { PerformanceMonitor.shared.end(performanceSpan) }
+        if let reason = stopReason() {
+            messages.append(reason.rawValue)
+            return AppServerSnapshot()
+        }
         guard let codexPath = resolveCodexExecutablePath() else {
             messages.append(WidgetLanguage.storedOrAutomatic().text("未找到 codex 可执行文件", "The Codex executable was not found."))
             return AppServerSnapshot()
@@ -1199,6 +1257,10 @@ final class CodexUsageReader {
         process.standardOutput = output
         process.standardError = FileHandle.nullDevice
 
+        if let reason = stopReason() {
+            messages.append(reason.rawValue)
+            return AppServerSnapshot()
+        }
         do {
             try process.run()
         } catch {
@@ -1391,21 +1453,26 @@ final class CodexUsageReader {
             ],
         ])
 
-        let responseTimeout = requestTimeout.map { min(30, max(1, $0)) } ?? (quotaOnly ? 30 : 12)
-        let responseDeadline = ProcessInfo.processInfo.systemUptime + responseTimeout
         var responseCompleted = false
-        while cancellation?.isCancelled != true && ProcessInfo.processInfo.systemUptime < responseDeadline {
-            if pendingResponses.group.wait(timeout: .now() + 0.05) == .success {
+        while cancellation?.isCancelled != true {
+            let remaining = responseDeadline - ProcessInfo.processInfo.systemUptime
+            guard remaining > 0 else { break }
+            if pendingResponses.group.wait(timeout: .now() + min(0.05, remaining)) == .success {
                 responseCompleted = true
                 break
             }
         }
         if !responseCompleted {
-            failPendingResponses(
-                WidgetLanguage.storedOrAutomatic().text(
+            let pendingMessage: String
+            if cancellation?.isCancelled == true {
+                pendingMessage = TokenMonitorFailure.cancelled.rawValue
+            } else {
+                pendingMessage = WidgetLanguage.storedOrAutomatic().text(
                     "app-server 响应超时",
                     "app-server response timed out."
-                ))
+                )
+            }
+            failPendingResponses(pendingMessage)
         }
 
         writeLock.lock()
@@ -1420,13 +1487,18 @@ final class CodexUsageReader {
             }
         }
         try? outputHandle.close()
-        _ = readerGroup.wait(timeout: .now() + 1)
+        let cleanupWait = max(0, min(1, responseDeadline - ProcessInfo.processInfo.systemUptime))
+        _ = readerGroup.wait(timeout: .now() + cleanupWait)
 
         lock.lock()
         let finalSnapshot = snapshot
         let finalAppServerMessages = appServerMessages
         lock.unlock()
 
+        if cancellation?.isCancelled == true {
+            messages.append(TokenMonitorFailure.cancelled.rawValue)
+            return AppServerSnapshot()
+        }
         messages.append(contentsOf: finalAppServerMessages)
         messages.append(contentsOf: finalSnapshot.rateLimitDiagnostics)
 
@@ -3182,7 +3254,8 @@ final class CodexUsageReader {
             threadID: rawId,
             sourceKind: .codexThread,
             displayState: displayState,
-            stateBasis: kind == .done ? .archive : .activityWindow
+            stateBasis: kind == .done ? .archive : .activityWindow,
+            projectPath: cwd.isEmpty ? nil : cwd
         )
     }
 

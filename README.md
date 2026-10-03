@@ -1,209 +1,126 @@
-# AiGoodBro · AgentHub
+# AiGoodBro · AgentHub（2.2候选）
 
-**AiGoodBro** 是原生 macOS 的 Codex 多账号工作台，主页名为 **AgentHub**。集中查看额度与多 Agent 的 Token 用量、接收重置消息、一键切换账号，并为其他账号派发独立 CLI 任务。升级保留已有账号与设置。
+**看清额度、用量和任务占用；需要时，让本机任务使用自己的 Codex 账号池。**
+
+AiGoodBro 是面向个人自用的 macOS AI 工作台，汇总 Codex 多账号额度、Token 用量、本机 CLI 和公开重置消息，并提供可选的本地反代。界面支持中文和英文，主页名为 AgentHub。
 
 **中文** | [English](README.en.md)
 
-![AiGoodBro：重置消息，及时提醒](docs/images/0910v1/01-reset-announcements-cover-zh.png)
+最新源码候选为 **2.2 · 1003v1**，内部更新版本为 9.6.64 (114)。本轮补齐批量邀请与官方记录、运行中的每账号反代规则、快照保留与刷新间隔、按数字长度分配宽度的美元／人民币总览，并修补全屏快捷键、CLI 登录与额度读取及桌面切换确认。本机已覆盖安装 114 版；本轮尚未发布官方安装包。见[本轮验证与范围](docs/source-publication-1003v1.md)及[新增预览](docs/images/1002v4/README.md)。
 
-每天开工前，先回答四个问题：还剩多少额度、几点恢复、这个账号现在能不能用、任务进行到哪一步。
+下方图片保留 1002v2 的来源标记；[完整图册](docs/images/1002v2/README.md)包含首页、账号、反代、设置、引导、用量浮层与九套主题。历史实机截图保留在各自版本目录。
 
-AiGoodBro 把额度提醒与消息放在前面，让你及时知道什么时候可以继续工作，再决定使用哪个账号。
+## 一眼看懂工作状态
 
-| 你要做的事 | AiGoodBro 提供的功能 |
+首页查看各账号剩余额度、重置时间和任务占用；公开重置消息与账号实际额度分开显示。用量统计汇总 Token、模型和工具活动，费用是本机数据估算，不是供应商账单。
+
+![AgentHub 首页，9.6.63 (113)，原生模拟数据预览](docs/images/1002v2/home/compact-zh.png)
+
+*紧凑首页支持分区缩放、卡片与列表切换，重置消息两列共用可用宽度，并保存用户调整的比例。*
+
+Codex 独立 CLI 可使用各自的本机登录目录；其他工具按提供商能力读取。账号卡片和列表可以刷新额度、调整顺序、选择模型或启动独立 CLI。可读取范围与限制见[账号与额度说明](docs/local-cli-accounts.md)。
+
+![Codex 账号卡片，9.6.63 (113)，原生模拟数据预览](docs/images/1002v2/accounts/cards-zh-dark.png)
+
+*Codex 账号卡片。*
+
+工作台会显示已连接工具的额度与状态，读取范围随工具和登录状态而异。ZCode 是桌面工具，不是 CLI；WorkBuddy 桌面额度目前不可读。Kimi CLI 页面显示上次快照，使用前请刷新确认。
+
+![工具工作台与多提供商状态，9.6.63 (113)，原生模拟数据预览](docs/images/1002v2/workspace/providers-zh-dark.png)
+
+*工具状态、额度和调用入口按提供商能力展示；无法读取的额度保留明确提示。*
+
+![项目工作台，9.6.63 (113)，原生模拟数据预览](docs/images/1002v2/workbench/workbench-900-dark.png)
+
+*执行状态与成果状态分开显示，保留剩余事项和原聊天入口。*
+
+## 使用引导：连接官方工具和账号
+
+按引导登录官方工具或账号，再回到工作台查看连接状态；需要哪个工具时，再按需连接。
+
+![连接官方工具与账号的引导页，9.6.63 (113)，原生模拟数据预览](docs/images/1002v2/setup/zh-dark-step1.png)
+
+## 本机反代：把请求交给自己的账号池
+
+本地反代是可选的个人工具。兼容客户端把模型请求发到本机代理，再由 AiGoodBro 按参与状态、优先级和保存顺序选择本人已连接的账号。全部参与账号的可用订阅额度先于点数使用；当前 Desktop 账号在每个额度阶段最后尝试。
+
+点数接续默认关闭；只有用户主动开启后，订阅额度用尽才会进入点数档。忙碌或未知状态不算额度用尽；点数底线用于请求间的账号轮换，不是单次请求的硬限额。
+
+反代只转发推理请求。Codex Desktop 保留自己的 OpenAI 登录身份、每段对话的模型和推理强度；使用代理不改系统认证文件或全局配置。未退出并重新接入的现有 Codex 进程不会自动改走代理。
+
+![本机反代控制面板，9.6.63 (113)，原生模拟数据预览](docs/images/1002v2/proxy/zh-dark-830.png)
+
+*模拟预览展示账号队列、额度和点数底线。独立窗口使用连续的圆角玻璃背景，透明标题栏移除顶部黑色分隔线；标题栏实机效果待正常重开窗口后验收。*
+
+**自己开启与停止：**
+
+1. 在 AiGoodBro 中手动开启反代；应用重启后不会自动启动它。
+2. 先退出 Codex。反代成功启动且连接信息就绪后，“接入桌面”按钮才会出现；点击后重新启动 Codex 并使用本机路由。
+3. 工作完成后，在反代面板停用服务。关闭主窗口只会隐藏窗口；退出应用前会确认是否停止反代。停用后正常重新打开 Codex。
+
+已开始输出的流式响应不会切换到另一个账号重放；请求结果不明时也不会自动再次发送，避免重复执行任务。反代开关和“接入桌面”入口已在候选界面中，但界面存在不等于真实端到端验收完成。
+
+反代为个人自用场景设计，用于自己的账号和本机任务；本项目不提供账号、凭据共享、额度转售或公共代理服务。
+
+个人微信通过腾讯官方 iLink 扫码连接，同一入口接收重置通知、查询缓存状态，并在明确开启后继续选定的 Codex 原聊天。项目工作台区分执行状态与成果状态，保留手动暂缓、取消、完成及剩余事项。普通展示不调用模型；手机收件与真实对话仍待验收。详见[微信与项目工作台](docs/wechat-workbench-0930v1.md)。
+
+## 九套主题与原生玻璃
+
+在设置的“外观”中选择配色，分别支持浅色和深色。默认灰保留原有中性界面；其他主题用统一的原生玻璃、颜色和渐变呈现，玻璃透明度与深度可调，系统“减少透明度”和“增强对比度”优先。
+
+| 主题 | 视觉特点 |
 |---|---|
-| 看还剩多少额度 | 读取官方返回的 5 小时、7 天等额度窗口，显示剩余比例、重置时间和数据更新时间；低额度阈值可调整，未知数据显示“—” |
-| 看多 Agent 用量 | 原样复用 [Token Monitor](https://github.com/Javis603/token-monitor) 的统计引擎与图表；按工具、模型、日期汇总，默认年度热图，可切换趋势与明细，保留原有自定义模式 |
-| 及时知道重置消息 | 跟踪 [Codex Resets](https://codex-resets.com/) 的公开公告，区分普通额度重置与可储存重置卡，保留事件时间和原文入口；它与账号自己的重置倒计时分别显示 |
-| 把提醒送到常用渠道 | macOS 本机通知、可选飞书提醒，以及可配置的 Telegram / 企业微信群机器人；各渠道需要相应权限和配置，具体事件范围见下文 |
-| 一键切换账号 | 从账号卡发起 Desktop 切换，展示准备、退出、写入、重新打开和验证进度；隔离 CLI 可独立使用其他账号 |
-| 低额度接续 | 提供低额度提醒、账号推荐和自动切换。自动路径要求开关开启、Codex 已退出、任务状态安全，并在写入前重新核对身份和两个额度窗口；手动与自动共用事务保护 |
-| 多账号协作与排障 | 分别保存 CLI 环境和模型偏好，准备调用即登记占用，记录任务阶段、调用回执及运行问题，便于定位失败原因 |
+| 默认灰 · Default | 中性灰背景与蓝紫强调色，保持默认选择。 |
+| 液态键帽 · Liquid Keycap | 冷调蓝青，轻盈的玻璃层次。 |
+| 青花瓷 · Blue & White Porcelain | 瓷白与钴蓝，清晰克制。 |
+| 蒙特雷曙霞 · Monterey Dawn | 兰紫、粉色与黎明暖色。 |
+| 千里江山 · A Thousand Li of Rivers | 青绿与矿物色。 |
+| 敦煌飞天 · Dunhuang Apsara | 沙金、赭色与青绿。 |
+| 故宫红墙 · Forbidden City Red | 红墙、金色与深色对照。 |
+| 紫蓝流光 · Violet Glow | 默认蓝紫配色的独立玻璃背景变体。 |
+| WAICY 流彩 | 粉红到橙色的三段渐变，借鉴工牌候选的色值。 |
 
-单账号也能只读使用。公开重置公告、某个账号的额度恢复、账号持有的重置卡是三种不同信息：收到公告不会自动使用重置卡，也不能替代账号额度刷新。软件内的微信接入指**企业微信群机器人**；个人微信未接入。
+![WAICY 流彩深色主题，原生模拟数据预览](docs/images/1002v2/themes/codexu.waicy-dark.png)
 
-**当前 macOS 源码基线：V1.0 · 0915v5 · 9.6.1 (50)。** 手动切换桌面不再等待额度刷新，增加刷新频率设置和额度不足自动换号；首页补充用量摘要、热力图明细、重置日历与 AI 热点，保留竖向堆叠趋势图。补充 CLI 登录入口和 Claude Code 图标主题适配。0915v5 让 OpenCode 直接复用保存的服务商配置，保留主动添加或更新入口；该轮 CLI 修复未改动此前已完成的 Codex 切换实现。本版尚无 Release 安装包。[版本记录与验证边界](docs/release-notes-v9.6.1.md)
+[查看九套主题的浅色与深色预览](docs/images/1002v2/README.md#themes)。主题仅提供色值；WAICY 主题没有复制品牌图形、工牌、吉祥物或字体，也不表示官方背书。
 
-**0916v1 更新：** Codex 重新登录改为设备授权码引导，支持复制、重开 Chrome、到期重试和登录后校验；账号行的五个操作按钮统一宽高，加载时不再缩小。内部版本号仍为 9.6.1 (50)，V1.0 标签保持原基线。详见[版本记录与验证边界](docs/release-notes-v9.6.1.md)。
+## 当前候选与验收边界
 
-一句话安装口令和 4 个调用模板都在下面。9.6.1 尚未发布到 GitHub Releases；当前请从源码构建。
+当前源码候选是 **AiGoodBro 9.6.64 (114) · 2.2 / 1003v1**，位于 [`codex/reset-messages-0926v1`](https://github.com/BLACKIELF/AgentHub-AiGoodBro/tree/codex/reset-messages-0926v1)，由 [PR #13](https://github.com/BLACKIELF/AgentHub-AiGoodBro/pull/13) 评审。它仍是候选，尚未合并到 `main`，没有正式下载包。
 
-[![CI](https://github.com/BLACKIELF/AgentHub-AiGoodBro/actions/workflows/ci.yml/badge.svg)](https://github.com/BLACKIELF/AgentHub-AiGoodBro/actions/workflows/ci.yml)
-![macOS 13+](https://img.shields.io/badge/macOS-13%2B-111111?logo=apple)
-[![MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![候选分支 CI](https://github.com/BLACKIELF/AgentHub-AiGoodBro/actions/workflows/ci.yml/badge.svg?branch=codex%2Freset-messages-0926v1)](https://github.com/BLACKIELF/AgentHub-AiGoodBro/pull/13/checks)
 
-## 先装好，少做几次重复操作
+本机已将 **9.6.64 (114)** 覆盖安装到 `/Applications/AiGoodBro.app`；安装后核验了版本、主程序和反代 helper 哈希、签名及架构。安装前确认没有运行中的反代或占用租约，并正常退出了旧版。35 项应用自测、跨语言反代桥接回归、Go race 测试与 vet 已通过；本轮没有切换 Codex 账号，也没有发送真实模型请求。主页、设置、引导、登录、用量浮层和主题图片由原生组件离屏生成，使用模拟数据，不代表真实账号或模型请求。个人微信手机收件、原聊天真实对话、自动暂停后切号续做、真实生图与新标题栏实机效果仍待验收。详细来源和边界见[当前源码发布记录](docs/source-publication-1003v1.md)；远端 CI 以 [PR #13 检查页](https://github.com/BLACKIELF/AgentHub-AiGoodBro/pull/13/checks)为准。
 
-把下面整段发给有本机执行能力的 Agent：
-
-```text
-请从 https://github.com/BLACKIELF/AgentHub-AiGoodBro 安装或升级 AiGoodBro。先读 README，检查系统、依赖和现有安装；记录当前设置，等待应用自己的操作结束，把旧版备份到专用回滚目录，再迁移为唯一的 AiGoodBro.app。保留账号、调度参与状态、模型偏好和当前 Codex 登录，安装后逐项核对应用名称、实际运行版本与设置。不要留下两份可启动 App，不要终止其他 CLI 任务，也不要为验证而启动真实任务、切号或发送通知。需要官方登录时由我手动完成。
-```
-
-需要 macOS 13+、已正常登录的 Codex，以及 Xcode Command Line Tools。只有一个账号也能先用只读监控。CLI 与暖号还需要配置本机 Hub 和账号映射；没有配置时，相关入口保持关闭并提示原因。首次引导会检查现有 Python 3.9+ 和 Codex CLI，按需准备配套 Skill；依赖由用户安装，AiGoodBro 不内置外部 Python 或 Codex。配套 Hub 在确认项目和账号后单独设置，已存在的服务会保留。
-
-自己构建：
+构建 2.2 候选：
 
 ```sh
-git clone https://github.com/BLACKIELF/AgentHub-AiGoodBro.git
-cd AgentHub-AiGoodBro
+git clone --branch codex/reset-messages-0926v1 https://github.com/BLACKIELF/AgentHub-AiGoodBro.git AiGoodBro-2.2
+cd AiGoodBro-2.2
 make build
 ```
 
-构建结果应为 `build/AiGoodBro.app`。构建不会自动安装或启动；升级时先备份旧版，再迁移为唯一的 `AiGoodBro.app`，不要留下两个可启动副本。详见[安装与配置](docs/usage-guide.md#安装与配置)与[品牌兼容表](docs/brand-compat-0911v1.md)。本机构建使用 ad-hoc 签名；9.6.1 没有已发布的 Apple 公证下载包。
+源码构建要求 macOS、Go 1.26+ 和经校验的 Token Monitor v0.62.0 macOS 运行时，详见[构建与发布记录](docs/source-publication-1003v1.md)。当前没有可下载的 2.2 官方安装包；Windows 后续工作仍搁置。
 
-后续若发布，安装包名称应为 `AiGoodBro-<version>-mac-<arch>.dmg`；当前没有可下载的 9.6.1 安装包。
+## 借鉴项目、代码来源与许可证
 
-## 打开后，先看这张工作台
+功能设计借鉴了相关开源项目；实际直接复用或适配的代码与资源在下表列明，并保留对应许可证和版权声明。
 
-0913v6 主页顺序为：可编辑的 Agent 导航、最新额度重置消息、Token 汇总、已登录账号。公告同时保留北京时间、中文说明与原文；缺少系统翻译语言包时，点击后才下载，期间可阅读原文。Token 图表在日期提示中列出当天用量和已获取的重置公告，公告不代表该账号已经到账。
-
-统计默认采用 Token Monitor v0.56.0 的原始采集器与图表，固定源码版本和依赖。上游目录包含 28 种 Agent，遵循其默认启用 26 种的规则；MiMo Code 与 Qoder CN 可在设置中选用。实际读到的工具、模型、会话与项目维度按上游数据展示，未能确认的历史账号归属保持未知。设置 → 工作台 → 统计方式可以切回原有自定义模式，两套结果分别计算。
-
-统计运行时随 App 打包，不需要另外安装 Node.js。首次源码构建需要联网获取固定版本依赖；更新流程与统计边界见 [Token Monitor 集成说明](docs/token-monitor-integration-0913v1.md)。
-
-主页使用统一布局，品牌与 Agent 导航固定在顶部。点“管理”可拖动调整导航，保存或取消；右上角问号打开使用引导。设置使用独立原生窗口，按外观、菜单栏、悬浮窗、自动化、工作台和关于分类。总览按账号显示真实状态，未读到的额度保留“—”。
-
-![新版账号卡片，使用合成演示数据](docs/images/0910v1/02-workspace-cards-zh-dark@2x.png)
-
-卡片并排显示 5 小时和 7 天额度；列数随窗口宽度调整，窄窗减少列数以保留可读宽度。常用按钮集中在底部，详细暖号记录放在“详情”。官方重置时间仍在额度下方。官方未返回的窗口显示“—”，界面以实际返回的数据为准。切换成列表可以连续查看更多账号；卡片适合横向比较，账号顺序与操作保持一致。
-
-首页按账号统一排列各平台，通过账号的更多菜单置顶常用账号；“管理账号”中可调整 Codex 顺序，需要重新登录的账号集中在右侧菜单。有重置卡在未来 72 小时内到期且官方证据仍新鲜的账号优先提示。Grok 官方未返回卡数量与到期信息时明确显示未知。
-
-每个账号都能单独刷新、设模型、打开独立 CLI。执行偏好会传给后续任务，已有任务继续使用启动时的参数。新账号默认 **GPT-6 Astra / Low / 标准速度**；模型是否可用仍由目标账号和服务端决定。
-
-> 以下界面图保留自 0910v1，由当时的生产 SwiftUI 组件原生渲染，使用演示账号、额度和日期，不读取个人凭据。图中的“状态待确认”表示未连接 Hub。[图片来源与制作提示词](docs/images/0910v1/README.md)
-
-> 图片可能展示早期布局，仅用于介绍界面；本次不新增图片。
-
-## 选择 CLI、执行档位和消息内容
-
-工作台顶部可选择本机已安装的 Codex、Grok、Kimi Code、Claude Code、OpenCode、Gemini CLI、MiMo 和 ZCode。每个 CLI 可关联已有登录目录，分别命名和刷新；支持范围见[账号与额度说明](docs/local-cli-accounts.md)。MiMo 与 ZCode 原生订阅的额度暂未接通，界面会明确提示。
-
-模型菜单提供三个可改名称和组合的档位：沿用当前模型、Sol High 配 Luna Max 子代理、Luna Max 直接执行。每档均可更改主模型、强度和子代理配置；启动前校验最终参数。配置显示与实际执行证据分别记录。
-
-飞书设置可选择账号备注、额度、重置时间、重置卡数量及最近或全部到期时间；Agent 名称和官方余额可选。默认省去长编号。主界面余额四舍五入为整数，发生取整时显示“≈”；点击说明可看精确原值、来源与时间。接口未提供币种和换算时不标为美元。
-
-自动化中心新增 [Telegram 与企业微信](docs/message-channels-0911v1.md)，分别开启和配置；默认关闭，保存后可发送测试。Codex 任务完成提醒要求实时观察到同一任务从运行到完成，归档和历史快照不会触发。凭据存入 AiGoodBro 独立 Keychain；本版离线回归没有发送真实消息。
-
-选中账号后可看到“使用重置卡”。此入口仅供用户手动操作，Agent 不得主动使用。它要求三次明确确认，发送前重新核对账号、卡片、期限和占用。**本次没有执行或测试重置流程**；未确认结果会保留原尝试，禁止自动重试。详见[实现和验证边界](docs/reset-credit-control.md)。
-
-## 不用守着倒计时等暖号
-
-5 小时与 7 天暖号分别设置。AiGoodBro 到时先刷新官方额度，再核实账号身份和占用，条件满足才发送一次最小请求，尝试开启下一轮窗口。
-
-需要 AiGoodBro 持续运行、电脑唤醒并联网。暖号会消耗少量额度；账号忙碌、任一已知订阅窗口用尽或状态不明时会等待复核。有额外余额也不会因此继续暖号。到重置时间先只读刷新，确认额度恢复后再继续；普通失败按间隔重试。成功后即使额度仍显示 100%，也不会因此每分钟重复暖号。
-
-“参与调度”只决定能否接新任务。关闭后仍能刷新额度、检查会员日期，并按全局开关维护窗口。暖号不增加额度，也不使用重置券。
-
-## 准备调用时，就让其他任务知道
-
-通过配套调度协议调用时，先预约账号和工作目录，再做环境检查和启动。其他遵守协议的调用可以立即读到占用，AiGoodBro 界面约每 10 秒更新。
-
-| 你看到的状态 | 含义 |
+| 项目 | 来源关系 |
 |---|---|
-| 在线·准备中 | 已占位，尚未证明真实执行 |
-| 在线·运行中 | 有真实进程或 Hub 运行证据 |
-| 在线·维护中 | 暖号或经过授权的维护占位 |
-| 已结束·待验收 | 进程已结束，成果还要检查 |
-| 状态待确认 | 信息不足，继续保留占用 |
+| [Tencent/openclaw-weixin 2.4.9](https://github.com/Tencent/openclaw-weixin/tree/24de5c9eb0dd5e595d7e2d090ed8a3f82870d42c) | iLink 协议与扫码流程的原生适配；MIT 声明保留，不安装 OpenClaw。 |
+| [codexU](https://github.com/shanggqm/codexU) | 历史固定源码的二次开发与宿主适配：SwiftUI、额度、配色和 Windows 基础承接后由 AiGoodBro 维护。 |
+| [Token Monitor v0.62.0](https://github.com/Javis603/token-monitor/tree/dcccfb01557e2786888fd5479552f392ac6c0d32) | 基于固定上游源码的二次开发与原生集成：统计引擎、桌面看板、图表和资源随包保留，AiGoodBro 通过 bridge、hooks 和 Swift 外壳接入。v0.63 以后上游更新的适用性与本机已有零额度修复见[本轮发布记录](docs/source-publication-1003v1.md)。 |
+| [Tokscale fork](https://github.com/Javis603/tokscale) · [原项目](https://github.com/junhoyeo/tokscale) | 基于固定提交的二次开发与原生集成；统计采集基础和许可证随包保留，打包修订为 `06a9f1625d5a505f01b39eff29f7be44a2c52188`。 |
+| [CLIProxyAPI v8.0.2](https://github.com/router-for-me/CLIProxyAPI/tree/v8.0.2) | 固定上游代码的宿主适配：复用 SDK 调度、Codex 执行器和 Responses 处理器，并窄适配 v8.0.7 首帧前断流的 502/failover 行为；未升级整套依赖。 |
+| [Codex-Manager](https://github.com/qxcnm/Codex-Manager) | 协议适配与静态研究参考；暖号请求结构与 SSE 完成规则独立实现，见 [`CodexAccountActions.swift`](Sources/CodexUsageWidget/Services/CodexAccountActions.swift#L850)。 |
+| [Hazmat wrapper 脚本](https://github.com/dredozubov/hazmat/blob/c112d222bb53e888dd17a8927927286792f7c20e/scripts/check-codex-desktop-attach-smoke.sh) | 协议适配与静态研究参考：仅参考 `CODEX_CLI_PATH` 的 stdio wrapper 入口，未集成 Hazmat 沙箱或服务。 |
+| [BlackHole1/aswap v1.1.0](https://github.com/BlackHole1/aswap/releases/tag/v1.1.0) | X 帖子对应的 Claude 多账号 CLI/Chrome 资料隔离工具；协议适配与静态研究参考，未复制、未打包，也未接入 Codex、Feishu 或企业微信。 |
 
-同账号或同一真实项目目录的并发预约会被拒绝。心跳超时不会直接当成空闲。问题按日期追加到同一个日志，后续修复与验证接着记录；工作台有“运行问题日志”入口。
+AiGoodBro 使用 [MIT 许可证](LICENSE)。第三方完整许可和版权文本见 [`Resources/THIRD_PARTY_NOTICES.txt`](Resources/THIRD_PARTY_NOTICES.txt)、[`Companion/LocalProxy/LICENSE.CLIProxyAPI`](Companion/LocalProxy/LICENSE.CLIProxyAPI)、[`Companion/LocalProxy/LICENSE.Hazmat`](Companion/LocalProxy/LICENSE.Hazmat) 与 [`Companion/LocalProxy/THIRD-PARTY-NOTICES.txt`](Companion/LocalProxy/THIRD-PARTY-NOTICES.txt)。
 
-AiGoodBro 的终端按钮会登记占用并等待启动回执；退出码 0 只表示会话结束。配套新版 Hub 在创建和批准时检查共享占用；旧 CLI 和旧 Hub 仍需检查实际进程。AiGoodBro 不会接管旧入口。[协议、接入条件与日志](docs/dispatch-coordination.md)
+## 延伸阅读
 
-## 重置消息来了，先收到提醒再核对账号
+[详细使用说明](docs/usage-guide.md) · [本机 CLI 额度范围](docs/local-cli-accounts.md) · [反代实现与验证记录](docs/local-proxy-0928v1.md) · [当前源码发布记录](docs/source-publication-1003v1.md) · [历史实机截图：0929v2](docs/images/0929v2/README.md) · [历史截图：0927v6](docs/images/0927v6/README.md) · [历史截图：0910v1](docs/images/0910v1/README.md) · [问题反馈](https://github.com/BLACKIELF/AgentHub-AiGoodBro/issues) · [安全说明](SECURITY.md)
 
-“接收重置消息”默认开启。AiGoodBro 运行时每 5 分钟查询 [Codex Resets](https://codex-resets.com/) 的公开记录，不消耗账号额度，也不用选择账号或配置飞书。首次检查记住已有记录，不补发历史消息；后续新消息使用 macOS 通知，需在系统中允许 AiGoodBro 通知。
-
-工作台底部“自动化中心”的第一项就是“重置消息”，可以看最新内容、刷新或关闭。没有通知权限时，消息仍可在这里查看。需要转发到飞书，再展开“同时发送到飞书（可选）”。升级保留已有关闭选择。
-
-飞书消息使用调度编号与账号备注。连接测试、手动切换、测试重启和低额度事件分别标明原因；低额度提醒只列实际达到的条件。
-
-飞书可在“使用引导”直接保存并连接。已有机器人需要权限时点击“授权连接”，只在 macOS 系统弹窗中输入登录密码；可选择“始终允许”记住授权。后台检查不弹密码框。本地 ad-hoc 构建更换后可能需要重新授权一次。
-
-![自动化中心，使用合成演示状态](docs/images/0910v1/04-automation-center-zh-light@2x.png)
-
-这是第三方汇总的公开消息，不能证明你的账号已经重置，也不会自动使用重置卡。账号可用额度和重置卡数量仍以官方刷新结果为准。
-
-“参与调度”旁的时钟可设置允许派单的时段、星期和时区，也支持跨午夜。时段只限制新任务，刷新和暖号继续按自己的开关执行。配套 Skill 会检查时段；Hub API 的同等保护需要部署匹配的 Hub 版本。
-
-## 切换时，知道正在做什么
-
-点击“切换 Desktop”后立即显示准备状态；等待已有刷新结束时可以取消。身份和额度检查在后台并行完成，之后显示退出、切换、打开和验证进度。来源与目标账号同时保留维护占用，避免另一项任务抢先使用。
-
-真正换号仍需安全退出并重新打开 Codex，耗时取决于网络及进程状态。普通切换不会超时后悄悄强退；需要强制切换时会明确提示。请先结束正在进行的工作，再进行真实账号切换。
-
-## 装好后，挑一个真实场景
-
-这些口令交给能操作本机、且已配置相应工具的 Agent；它们不是 AiGoodBro 内置的聊天指令。
-
-**① 开工前看一眼**
-
-```text
-检查 AiGoodBro 当前账号的 5 小时和 7 天剩余额度、上海时区重置时间、任务占用与模型偏好。先只读检查，区分新鲜数据、旧快照和未知状态。
-```
-
-**② 用指定账号做事**
-
-```text
-用账号 A 完成当前已授权任务。先核对目标环境所需工具、工作目录和账号身份，准备调用时立即占位，再刷新额度并验证占用。使用 AiGoodBro 保存的执行偏好；不可用时不要静默换号。实际结束后及时读取成果、验收并释放占用。
-```
-
-**③ 排查暖号没有执行**
-
-```text
-检查 AiGoodBro 的暖号开关、最近成功和失败记录、官方重置时间、周额度及账号占用。把本次发现按日期追加到同一运行问题日志，先给出最小验证，不通过真实请求反复试错。
-```
-
-**④ 升级后恢复原状**
-
-```text
-升级 AiGoodBro 前保存当前设置、账号顺序、参与状态和模型偏好。先等待已有调用结束，再做维护占位，备份旧版并迁移为唯一的 AiGoodBro.app。完成后核对名称与版本、恢复原设置、恢复接单开关并释放占位，不启动测试任务。
-```
-
-## 新用户打开后的默认设置
-
-| 设置 | 默认值 |
-|---|---|
-| 语言、布局、外观 | 中文、列表、跟随系统、默认配色 |
-| 菜单栏 | Classic，显示 7 天剩余额度，不显示重置倒计时 |
-| 快捷键 | ⌘U |
-| 新账号任务参数 | GPT-6 Astra / Low / 标准速度 |
-| 窗口维护 | 5 小时与 7 天暖号开启 |
-| 提醒 | 重置消息、低额度、系统通知、飞书及两类额度事件开启 |
-| 低额度提醒线 | 5 小时 ≤5%，7 天 <10%，可分别调整 |
-
-已有设置优先，升级不会重新覆盖你保存的关闭选择。新用户仍会看到使用引导；系统通知要先获得 macOS 授权，飞书要先配置机器人，开关开启不等于已经送达。每个新账号默认参与调度，现有账号的参与选择保留。
-
-## 这次具体修了什么
-
-0910v1 的既有改动：重置消息默认通过本机提醒，飞书成为可选转发；Desktop 切换改为后台执行和阶段反馈。修复终端启动路径、工作目录与启动状态误报，增加私有回执、参与时段和登录维护占用，保留暖号成功与失败历史。登录子进程未确认退出时继续保留占用。
-
-9.6.1 为源码预览；本轮实际完成的离线验证与未验证边界以[候选记录](docs/release-notes-v9.6.1.md)为准。完整官方重置周期、多 CLI 登录与真实调用、Desktop 切号和通知送达需要各自的运行证据。
-
-既有打包流程会在两种 Mac 安装包中附 `Companion Skill/multi-agent-management` 和中文安装说明；9.6.1 尚未生成 Release 安装包，需在发布包装验证后才能确认。已有 Skill 先比较差异、备份并保留个人配置；安装 Skill 不会自动配置 Hub。
-
-[9.6.1 候选记录](docs/release-notes-v9.6.1.md) · [完整历史](CHANGELOG.md) · [调度 Skill 使用说明](.agents/skills/multi-agent-management/使用说明.md) · [详细使用说明](docs/usage-guide.md)
-
-## 还有哪些功能
-
-单账号菜单栏、完整 PNG 长截图、账号备注与排序、模型与思考强度选择、Standard/Fast、批量应用偏好、独立 Chrome 登录、显式 Desktop 切换、低额度推荐、飞书提醒、配色与工作区设置均保留。
-
-AiGoodBro 是独立的第三方开源项目。它不提供账号、不增加额度；独立 CLI 不改变当前 Desktop 登录，显式“切换 Desktop”才走身份切换事务。Webhook 保存在隔离的 Keychain 命名空间。提交问题前请移除凭据、账号资料、任务正文和私有路径。
-
-开发检查：
-
-```sh
-make build
-scripts/run-self-tests.sh --skip-build --build-dir build
-python3 tests/test_dispatch_activity.py
-python3 tests/test-dispatch-activity-interop.py
-make test-macos-compatibility
-make memory-risk-check
-git diff --check
-```
-
-本轮只开发和验证 macOS。Windows 源码保留，未进行本版验证。
-
-[反馈问题](https://github.com/BLACKIELF/AgentHub-AiGoodBro/issues) · [安全说明](SECURITY.md) · [品牌兼容](docs/brand-compat-0911v1.md) · [设计规范](docs/DESIGN_SYSTEM.md) · [MIT 许可](LICENSE) · [第三方声明](Resources/THIRD_PARTY_NOTICES.txt)
+[MIT 许可证](LICENSE) · [第三方声明](Resources/THIRD_PARTY_NOTICES.txt) · [品牌兼容表](docs/brand-compat-0911v1.md)

@@ -66,6 +66,18 @@ import Foundation
         ]
         var request = TokenMonitorRequest(operation: .collectUsage, timezone: "UTC", cacheDirectory: root.path, sources: sources)
         request.requestId = "fixture-request"
+        var slowRequest = request
+        slowRequest.options.timeoutMs = 180_000
+        try check((try? slowRequest.validated()) != nil, "collectUsage accepts 180-second total deadline")
+        slowRequest.options.timeoutMs = 180_001
+        try rejects("collectUsage rejects deadline above 180 seconds") { _ = try slowRequest.validated() }
+        for operation: TokenMonitorOperation in [.collectLimits, .capabilities] {
+            slowRequest.operation = operation
+            slowRequest.options.timeoutMs = 60_000
+            try check((try? slowRequest.validated()) != nil, "non-usage operation accepts 60-second deadline")
+            slowRequest.options.timeoutMs = 60_001
+            try rejects("non-usage operation rejects deadline above 60 seconds") { _ = try slowRequest.validated() }
+        }
         var response = TokenMonitorResponse(
             schemaVersion: 1, requestId: request.requestId, engine: .init(repository: "Javis603/token-monitor", commit: TokenMonitorResponse.commit, version: "fixture-1"),
             collectedAt: "2026-09-13T00:00:00.000Z", timezone: "UTC", status: .partial,

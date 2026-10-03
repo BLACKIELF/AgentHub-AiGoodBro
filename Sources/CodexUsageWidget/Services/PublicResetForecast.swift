@@ -2,8 +2,8 @@ import Combine
 import Foundation
 
 /// A scheduled public reset claim from the tracker banner. This is deliberately
-/// not a `PublicResetAnnouncement`: forecasts never enter delivery ledgers,
-/// notification queues, historical counts, or account quota state.
+/// not a `PublicResetAnnouncement`: forecasts use a separate delivery ledger
+/// and never enter completed history, history counts, or account quota state.
 struct PublicResetForecast: Codable, Equatable, Identifiable {
     enum Phase: Equatable { case scheduled, awaitingConfirmation }
 
@@ -54,10 +54,43 @@ struct PublicResetForecast: Codable, Equatable, Identifiable {
         return (1...20).contains(id.count) && id.allSatisfy(\.isNumber)
             && (expectedID == nil || expectedID == id)
     }
+
+    static func sourcePostDate(for id: String) -> Date? {
+        guard id.allSatisfy(\.isNumber), let snowflake = UInt64(id) else { return nil }
+        let twitterEpochMilliseconds: UInt64 = 1_288_834_974_657
+        let milliseconds = (snowflake >> 22) + twitterEpochMilliseconds
+        let date = Date(timeIntervalSince1970: TimeInterval(milliseconds) / 1000)
+        return date.timeIntervalSince1970.isFinite ? date : nil
+    }
+
+    static func sourcePostID(at date: Date) -> String? {
+        let milliseconds = date.timeIntervalSince1970 * 1000
+        let twitterEpochMilliseconds: Double = 1_288_834_974_657
+        guard milliseconds.isFinite, milliseconds >= twitterEpochMilliseconds,
+            milliseconds < Double(UInt64.max)
+        else { return nil }
+        return String((UInt64(milliseconds) - UInt64(twitterEpochMilliseconds)) << 22)
+    }
+}
+
+/// An unsourced watch displayed by the third-party tracker. It is not a
+/// forecast, an official announcement, or eligible for notification delivery.
+struct PublicResetSiteWatch: Equatable {
+    let latestBy: Date
+    let fetchedAt: Date
+
+    func isValid(at now: Date) -> Bool {
+        fetchedAt.timeIntervalSince1970.isFinite && latestBy.timeIntervalSince1970.isFinite
+            && fetchedAt <= now.addingTimeInterval(300)
+            && fetchedAt >= now.addingTimeInterval(-300)
+            && latestBy >= fetchedAt.addingTimeInterval(-72 * 60 * 60)
+            && latestBy <= fetchedAt.addingTimeInterval(14 * 24 * 60 * 60)
+    }
 }
 
 enum PublicResetForecastPageState: Equatable {
     case forecast(PublicResetForecast)
+    case siteWatch(PublicResetSiteWatch)
     case none(fetchedAt: Date)
 }
 
@@ -127,23 +160,37 @@ enum PublicResetForecastParser {
         else { throw PublicResetForecastFailure.invalidResponse }
         let watchHTML = String(html[startRange.lowerBound..<closing.upperBound])
         let links = try sourceLinks(in: watchHTML)
-        guard links.count == 1, let sourceURL = links.first,
-            let id = sourceURL.pathComponents.last,
-            let announcedAt = dateFromXPostID(id)
-        else { throw PublicResetForecastFailure.invalidResponse }
-
         let latestBy: Date?
         let deadlineAttribute = role == "scheduled-reset" ? "data-scheduled-for" : "data-expires-at"
         if let rawDeadline = attributes[deadlineAttribute] {
-            guard !rawDeadline.isEmpty, let parsed = parseISO8601(rawDeadline) else {
-                throw PublicResetForecastFailure.invalidResponse
+            if role == "scheduled-reset", rawDeadline.isEmpty {
+                latestBy = nil
+            } else {
+                guard !rawDeadline.isEmpty, let parsed = parseISO8601(rawDeadline) else {
+                    throw PublicResetForecastFailure.invalidResponse
+                }
+                latestBy = parsed
             }
-            latestBy = parsed
         } else if role == "reset-watch" {
             latestBy = nil
         } else {
             throw PublicResetForecastFailure.invalidResponse
         }
+        if links.isEmpty, role == "reset-watch", tagName.lowercased() == "section",
+            let latestBy,
+            // An unlinked rumor is displayed only when the known site marker is
+            // present and there is no other link masquerading as a source.
+            try hasRumorMarker(in: watchHTML),
+            try regex(#"<a\b[^>]{0,8192}>"#).numberOfMatches(in: watchHTML, range: fullRange(watchHTML)) == 0
+        {
+            let watch = PublicResetSiteWatch(latestBy: latestBy, fetchedAt: fetchedAt)
+            guard watch.isValid(at: fetchedAt) else { throw PublicResetForecastFailure.invalidResponse }
+            return .siteWatch(watch)
+        }
+        guard links.count == 1, let sourceURL = links.first,
+            let id = sourceURL.pathComponents.last,
+            let announcedAt = dateFromXPostID(id)
+        else { throw PublicResetForecastFailure.invalidResponse }
         let forecast = PublicResetForecast(
             id: id, latestBy: latestBy, announcedAt: announcedAt,
             sourceURL: sourceURL, fetchedAt: fetchedAt)
@@ -151,6 +198,19 @@ enum PublicResetForecastParser {
             throw PublicResetForecastFailure.invalidResponse
         }
         return .forecast(forecast)
+    }
+
+    private static func hasRumorMarker(in html: String) throws -> Bool {
+        let matches = try regex(#"<p\b[^>]{0,8192}>"#).matches(in: html, range: fullRange(html))
+        var count = 0
+        for match in matches {
+            guard let range = Range(match.range, in: html) else { continue }
+            let attributes = try parsedAttributes(String(html[range]))
+            if attributes["class"]?.split(whereSeparator: \.isWhitespace).contains("watch-rumor") == true {
+                count += 1
+            }
+        }
+        return count == 1
     }
 
     private static func sourceLinks(in html: String) throws -> Set<URL> {
@@ -190,11 +250,7 @@ enum PublicResetForecastParser {
     }
 
     private static func dateFromXPostID(_ value: String) -> Date? {
-        guard let snowflake = UInt64(value) else { return nil }
-        let twitterEpochMilliseconds: UInt64 = 1_288_834_974_657
-        let milliseconds = (snowflake >> 22) + twitterEpochMilliseconds
-        let date = Date(timeIntervalSince1970: TimeInterval(milliseconds) / 1000)
-        return date.timeIntervalSince1970.isFinite ? date : nil
+        PublicResetForecast.sourcePostDate(for: value)
     }
 
     private static func regex(_ pattern: String, dotMatchesLineSeparators: Bool = false) throws -> NSRegularExpression {
@@ -277,6 +333,7 @@ final class PublicResetForecastStore: ObservableObject {
     static let shared = PublicResetForecastStore()
 
     @Published private(set) var forecast: PublicResetForecast?
+    @Published private(set) var siteWatch: PublicResetSiteWatch?
     @Published private(set) var checkedAt: Date?
     @Published private(set) var status: String?
     @Published private(set) var checking = false
@@ -309,11 +366,22 @@ final class PublicResetForecastStore: ObservableObject {
         }
     }
 
-    func check() {
+    func check(
+        now: Date = Date(),
+        onSuccessfulFetch: (@MainActor (PublicResetForecastPageState) async -> Void)? = nil
+    ) {
+        // A rate-limit cooldown must not keep an expired forecast on screen.
+        if forecast?.isRetainableCache(at: now) == false {
+            forecast = nil
+            isShowingCache = false
+        }
+        if let siteWatch, siteWatch.fetchedAt < now.addingTimeInterval(-60 * 60) {
+            self.siteWatch = nil
+        }
         guard !checking else { return }
         let language = WidgetLanguage.storedOrAutomatic()
-        guard Date() >= retryNotBefore else {
-            let seconds = max(1, Int(ceil(retryNotBefore.timeIntervalSinceNow)))
+        guard now >= retryNotBefore else {
+            let seconds = max(1, Int(ceil(retryNotBefore.timeIntervalSince(now))))
             status = PublicResetForecastFailure.retryLater(seconds).localizedDescription
             return
         }
@@ -328,6 +396,8 @@ final class PublicResetForecastStore: ObservableObject {
                 let state = try await fetchForecast()
                 guard !Task.isCancelled else { return }
                 try applyPage(state, now: Date())
+                guard !Task.isCancelled else { return }
+                await onSuccessfulFetch?(state)
             } catch let failure as PublicResetForecastFailure {
                 if case .retryLater(let seconds) = failure {
                     retryNotBefore = Date().addingTimeInterval(Double(seconds))
@@ -345,14 +415,22 @@ final class PublicResetForecastStore: ObservableObject {
     /// advance visible state while leaving a contradictory cache on disk.
     func applyPage(_ state: PublicResetForecastPageState, now: Date) throws {
         let next: PublicResetForecast?
+        let nextWatch: PublicResetSiteWatch?
         let fetchedAt: Date
         switch state {
         case .forecast(let forecast):
             guard forecast.isRetainableCache(at: now) else { throw PublicResetForecastFailure.invalidResponse }
             next = forecast
+            nextWatch = nil
             fetchedAt = forecast.fetchedAt
+        case .siteWatch(let watch):
+            guard watch.isValid(at: now) else { throw PublicResetForecastFailure.invalidResponse }
+            next = nil
+            nextWatch = watch
+            fetchedAt = watch.fetchedAt
         case .none(let date):
             next = nil
+            nextWatch = nil
             fetchedAt = date
         }
         guard fetchedAt.timeIntervalSince1970.isFinite,
@@ -360,13 +438,17 @@ final class PublicResetForecastStore: ObservableObject {
         else { throw PublicResetForecastFailure.invalidResponse }
         do { try save(PublicResetForecastCache(checkedAt: fetchedAt, forecast: next)) } catch { throw PublicResetForecastFailure.cacheWriteFailed }
         forecast = next
+        siteWatch = nextWatch
         checkedAt = fetchedAt
         isShowingCache = false
         let language = WidgetLanguage.storedOrAutomatic()
-        status = next == nil ? language.text("当前没有待确认的重置预告", "There is no pending reset forecast") : nil
+        status =
+            next == nil && nextWatch == nil
+            ? language.text("当前没有待确认的重置预告", "There is no pending reset forecast") : nil
     }
 
     private func retainFreshCacheOrClear(now: Date) {
+        siteWatch = nil
         if forecast?.isRetainableCache(at: now) == true {
             isShowingCache = true
         } else {
@@ -400,10 +482,16 @@ enum PublicResetForecastSelfTest {
         guard let fetchedAt = formatter.date(from: "2026-09-22T10:00:00Z"),
             let announcedAt = formatter.date(from: "2026-09-22T05:00:00Z"),
             let deadline = formatter.date(from: "2026-09-23T06:59:00Z")
-        else { return false }
+        else { return fail(#line) }
         let postID = xPostID(for: announcedAt)
         func page(watch: String) -> Data {
             Data("<html><head><title>Codex-Resets</title></head><body><div class=\"hero-figure\" data-datetime=\"2026-09-12T08:09:00Z\"></div>\(watch)</body></html>".utf8)
+        }
+        func makeForecast(announcedAt: Date, fetchedAt: Date, latestBy: Date? = nil) -> PublicResetForecast {
+            let id = xPostID(for: announcedAt)
+            return PublicResetForecast(
+                id: id, latestBy: latestBy, announcedAt: announcedAt,
+                sourceURL: URL(string: "https://x.com/thsottiaux/status/\(id)")!, fetchedAt: fetchedAt)
         }
         let futureHTML = page(
             watch: """
@@ -416,7 +504,7 @@ enum PublicResetForecastSelfTest {
                 future.latestBy == deadline, future.phase(at: fetchedAt) == .scheduled,
                 future.phase(at: deadline.addingTimeInterval(1)) == .awaitingConfirmation,
                 future.sourceURL.host == "x.com"
-            else { return false }
+            else { return fail(#line) }
 
             let scheduledHTML = page(
                 watch: """
@@ -427,17 +515,54 @@ enum PublicResetForecastSelfTest {
                     """)
             guard case .forecast(let scheduled) = try PublicResetForecastParser.parse(scheduledHTML, fetchedAt: fetchedAt),
                 scheduled.latestBy == deadline, scheduled.id == postID
-            else { return false }
+            else { return fail(#line) }
+
+            let scheduledTimeUnknownHTML = page(
+                watch: "<section data-role=\"scheduled-reset\" data-scheduled-for=\"\"><a href=\"https://x.com/thsottiaux/status/\(postID)\">x</a></section>")
+            guard
+                case .forecast(let scheduledTimeUnknown) = try PublicResetForecastParser.parse(
+                    scheduledTimeUnknownHTML, fetchedAt: fetchedAt
+                ), scheduledTimeUnknown.latestBy == nil,
+                scheduledTimeUnknown.phase(at: fetchedAt) == .awaitingConfirmation
+            else { return fail(#line) }
+
+            let resetWatchWithoutTimeHTML = page(
+                watch: "<section data-role=\"reset-watch\"><a href=\"https://x.com/thsottiaux/status/\(postID)\">x</a></section>")
+            guard
+                case .forecast(let resetWatchWithoutTime) = try PublicResetForecastParser.parse(
+                    resetWatchWithoutTimeHTML, fetchedAt: fetchedAt
+                ), resetWatchWithoutTime.latestBy == nil
+            else { return fail(#line) }
+
+            let unsourcedHTML = page(
+                watch: """
+                    <section class="watch-card watch-card--strong" data-role="reset-watch" data-expires-at="2026-09-23T06:59:00Z">
+                      <p class="watch-rumor">Synthetic site speculation only.</p>
+                    </section><div data-role="pending-reset"></div>
+                    """)
+            guard case .siteWatch(let watch) = try PublicResetForecastParser.parse(unsourcedHTML, fetchedAt: fetchedAt),
+                watch.latestBy == deadline, watch.fetchedAt == fetchedAt,
+                PublicResetMessageCandidate.latest(completed: [], forecast: .siteWatch(watch), now: fetchedAt) == nil
+            else { return fail(#line) }
 
             guard case .none = try PublicResetForecastParser.parse(page(watch: "<div data-role=\"pending-reset\"> </div>"), fetchedAt: fetchedAt) else {
-                return false
+                return fail(#line)
             }
 
             let malformed = [
                 page(watch: ""),
                 page(watch: "<div data-role=\"pending-reset\"><section data-role=\"new-format\">待重置</section></div>"),
                 page(watch: "<section data-role=\"scheduled-reset\"><a href=\"https://x.com/thsottiaux/status/\(postID)\">x</a></section>"),
+                page(watch: "<section data-role=\"scheduled-reset\" data-scheduled-for=\"not-a-date\"><a href=\"https://x.com/thsottiaux/status/\(postID)\">x</a></section>"),
                 page(watch: "<section data-role=\"reset-watch\" data-expires-at=\"not-a-date\"><a href=\"https://x.com/thsottiaux/status/\(postID)\">x</a></section>"),
+                page(watch: "<section data-role=\"reset-watch\" data-expires-at=\"2026-09-23T06:59:00Z\"><p>Rumor with no marker</p></section>"),
+                page(watch: "<section data-role=\"reset-watch\" data-expires-at=\"2026-09-23T06:59:00Z\"><p class=\"not-watch-rumor\">False marker</p></section>"),
+                page(watch: "<section data-role=\"scheduled-reset\" data-scheduled-for=\"2026-09-23T06:59:00Z\"><p class=\"watch-rumor\">Rumor</p></section>"),
+                page(watch: "<section data-role=\"reset-watch\" data-expires-at=\"2026-10-23T06:59:00Z\"><p class=\"watch-rumor\">Far-future rumor</p></section>"),
+                page(
+                    watch:
+                        "<section data-role=\"reset-watch\" data-expires-at=\"2026-09-23T06:59:00Z\"><p class=\"watch-rumor\">Link with no source</p><a href=\"https://example.invalid\">other</a></section>"
+                ),
                 page(
                     watch:
                         "<section data-role=\"reset-watch\" data-expires-at=\"2026-09-23T06:59:00Z\"><a href=\"https://x.com.attacker.invalid/thsottiaux/status/\(postID)\">x</a></section>"
@@ -450,14 +575,14 @@ enum PublicResetForecastSelfTest {
             for fixture in malformed {
                 do {
                     _ = try PublicResetForecastParser.parse(fixture, fetchedAt: fetchedAt)
-                    return false
-                } catch PublicResetForecastFailure.invalidResponse {} catch { return false }
+                    return fail(#line)
+                } catch PublicResetForecastFailure.invalidResponse {} catch { return fail(#line) }
             }
             let oversized = Data(repeating: 0x20, count: PublicResetForecastParser.maximumPayloadBytes + 1)
             do {
                 _ = try PublicResetForecastParser.parse(oversized, fetchedAt: fetchedAt)
-                return false
-            } catch PublicResetForecastFailure.invalidResponse {} catch { return false }
+                return fail(#line)
+            } catch PublicResetForecastFailure.invalidResponse {} catch { return fail(#line) }
 
             let source = URL(string: "https://x.com/thsottiaux/status/\(postID)")!
             let cached = PublicResetForecast(
@@ -465,23 +590,127 @@ enum PublicResetForecastSelfTest {
                 sourceURL: source, fetchedAt: fetchedAt)
             guard cached.isRetainableCache(at: fetchedAt.addingTimeInterval(71 * 60 * 60)),
                 !cached.isRetainableCache(at: fetchedAt.addingTimeInterval(73 * 60 * 60))
-            else { return false }
+            else { return fail(#line) }
             let beijing = PublicResetAnnouncementPresentation.forecastTime(deadline, language: .zh)
             guard beijing.contains("2026年9月23日"), beijing.contains("14:59"),
                 beijing.contains("北京时间"),
-                PublicResetAnnouncementPresentation.forecastCountdown(cached, now: fetchedAt, language: .zh).contains("最晚还有"),
+                PublicResetAnnouncementPresentation.forecastCountdown(cached, now: fetchedAt, language: .zh).contains("预计重置还有"),
                 PublicResetAnnouncementPresentation.forecastCountdown(
                     cached, now: deadline.addingTimeInterval(1), language: .zh
                 ).contains("等待来源确认")
-            else { return false }
+            else { return fail(#line) }
             let cacheData = try JSONEncoder().encode(PublicResetForecastCache(checkedAt: fetchedAt, forecast: cached))
             guard try PublicResetForecastCache.decode(cacheData, now: fetchedAt.addingTimeInterval(60 * 60)).forecast == cached else {
-                return false
+                return fail(#line)
             }
             do {
                 _ = try PublicResetForecastCache.decode(cacheData, now: fetchedAt.addingTimeInterval(73 * 60 * 60))
-                return false
+                return fail(#line)
             } catch {}
+
+            let firstPost = makeForecast(
+                announcedAt: fetchedAt.addingTimeInterval(-300), fetchedAt: fetchedAt, latestBy: nil)
+            let laterPost = makeForecast(
+                announcedAt: fetchedAt.addingTimeInterval(-60), fetchedAt: fetchedAt, latestBy: nil)
+            var deliveryLedger = PublicResetForecastDeliveryLedger()
+            guard try deliveryLedger.observe(.forecast(firstPost), now: fetchedAt) == nil,
+                deliveryLedger.initialized, deliveryLedger.records[firstPost.id] == .baseline,
+                try deliveryLedger.observe(.forecast(laterPost), now: fetchedAt) == laterPost,
+                deliveryLedger.records[laterPost.id] == .pending
+            else { return fail(#line) }
+
+            var interrupted = deliveryLedger
+            try interrupted.setPhase(.sending, for: laterPost.id)
+            interrupted = try JSONDecoder().decode(
+                PublicResetForecastDeliveryLedger.self, from: JSONEncoder().encode(interrupted))
+            interrupted.recoverInterruptedSends()
+            guard interrupted.records[laterPost.id] == .uncertain,
+                try interrupted.observe(.forecast(laterPost), now: fetchedAt) == nil
+            else { return fail(#line) }
+            do {
+                try interrupted.reserveAuthorizedDelivery(laterPost, now: fetchedAt)
+                return fail(#line)
+            } catch PublicResetFailure.localState {} catch { return fail(#line) }
+
+            var restarted = deliveryLedger
+            try restarted.setPhase(.sent, for: laterPost.id)
+            restarted = try JSONDecoder().decode(
+                PublicResetForecastDeliveryLedger.self, from: JSONEncoder().encode(restarted))
+            guard try restarted.observe(.forecast(laterPost), now: fetchedAt) == nil,
+                restarted.records[laterPost.id] == .sent
+            else { return fail(#line) }
+
+            var emptyBaseline = PublicResetForecastDeliveryLedger()
+            guard try emptyBaseline.observe(.none(fetchedAt: fetchedAt), now: fetchedAt) == nil,
+                try emptyBaseline.observe(.forecast(laterPost), now: fetchedAt) == laterPost
+            else { return fail(#line) }
+
+            let legacyLedgerJSON = try JSONSerialization.data(withJSONObject: [
+                "schemaVersion": 1, "initialized": true, "records": [postID: "sent"],
+            ])
+            let legacyLedger = try JSONDecoder().decode(PublicResetDeliveryLedger.self, from: legacyLedgerJSON)
+            guard legacyLedger.records[postID] == .sent else { return fail(#line) }
+
+            var completedStage = PublicResetDeliveryLedger()
+            let samePostCompletion = PublicResetAnnouncement(
+                id: laterPost.id, resetType: .regular, announcedAt: laterPost.announcedAt,
+                text: "completion fixture",
+                source: .init(type: "x_post", author: "thsottiaux", url: laterPost.sourceURL))
+            try completedStage.reserveAuthorizedDelivery(samePostCompletion)
+            guard completedStage.records[laterPost.id] == .sending,
+                restarted.records[laterPost.id] == .sent
+            else { return fail(#line) }
+
+            let oldCompleted = PublicResetAnnouncement(
+                id: "101", resetType: .regular, announcedAt: fetchedAt.addingTimeInterval(-600), text: "old fixture",
+                source: .init(type: "x_post", author: "thsottiaux", url: URL(string: "https://x.com/thsottiaux/status/101")))
+            let latestForecastCandidate = PublicResetMessageCandidate.latest(
+                completed: [oldCompleted], forecast: .forecast(laterPost), now: fetchedAt)
+            guard let latestForecastCandidate,
+                case .forecast(let latestForecast) = latestForecastCandidate,
+                latestForecast.id == laterPost.id
+            else { return fail(#line) }
+            let recentFetchOldPost = makeForecast(
+                announcedAt: fetchedAt.addingTimeInterval(-1_200), fetchedAt: fetchedAt)
+            let latestCompletedCandidate = PublicResetMessageCandidate.latest(
+                completed: [oldCompleted], forecast: .forecast(recentFetchOldPost), now: fetchedAt)
+            guard let latestCompletedCandidate,
+                case .completed(let latestCompleted) = latestCompletedCandidate,
+                latestCompleted.id == oldCompleted.id
+            else { return fail(#line) }
+
+            let forecastCard = try PublicResetForecastNotification(laterPost, referenceDate: fetchedAt)
+            let forecastPayload = try FeishuWebhookService.publicResetForecastPayload(forecastCard, language: .zh)
+            let forecastRoot = try JSONSerialization.jsonObject(with: forecastPayload) as? [String: Any]
+            let forecastCardJSON = forecastRoot?["card"] as? [String: Any]
+            let forecastTitleJSON = forecastCardJSON?["header"] as? [String: Any]
+            let forecastTitle = (forecastTitleJSON?["title"] as? [String: Any])?["content"] as? String
+            let forecastElements = (forecastCardJSON?["body"] as? [String: Any])?["elements"] as? [[String: Any]]
+            let forecastText = forecastElements?.compactMap { $0["content"] as? String }.joined(separator: "\n")
+            guard let forecastTitle, let forecastBody = forecastText,
+                forecastTitle == "重置预告 · 待确认", forecastBody.contains("预计重置时间"),
+                forecastBody.contains("待确认"), forecastBody.contains(forecastCard.sourceURL.absoluteString),
+                forecastTitleJSON?["template"] as? String == "orange",
+                forecastCardJSON?["schema"] as? String == "2.0",
+                forecastBody.contains(PublicResetAnnouncementPresentation.compactEventTime(laterPost.announcedAt, language: .zh)),
+                !forecastBody.contains(PublicResetAnnouncementPresentation.compactEventTime(laterPost.fetchedAt, language: .zh))
+            else { return fail(#line) }
+
+            let mismatchedDate = PublicResetForecast(
+                id: laterPost.id, latestBy: nil, announcedAt: laterPost.announcedAt.addingTimeInterval(1),
+                sourceURL: laterPost.sourceURL, fetchedAt: laterPost.fetchedAt)
+            do {
+                _ = try PublicResetForecastNotification(mismatchedDate, referenceDate: fetchedAt)
+                return fail(#line)
+            } catch FeishuWebhookError.invalidNotification {} catch { return fail(#line) }
+            let hostileURL = PublicResetForecast(
+                id: laterPost.id, latestBy: nil, announcedAt: laterPost.announcedAt,
+                sourceURL: URL(string: "https://x.com.attacker.invalid/thsottiaux/status/\(laterPost.id)")!,
+                fetchedAt: laterPost.fetchedAt)
+            do {
+                _ = try PublicResetForecastNotification(hostileURL, referenceDate: fetchedAt)
+                return fail(#line)
+            } catch FeishuWebhookError.invalidNotification {} catch { return fail(#line) }
 
             let historical = PublicResetAnnouncement(
                 id: "101", resetType: .regular, announcedAt: fetchedAt.addingTimeInterval(-86_400),
@@ -490,12 +719,17 @@ enum PublicResetForecastSelfTest {
             let unchangedHistory = [historical]
             _ = try PublicResetForecastParser.parse(futureHTML, fetchedAt: fetchedAt)
             guard unchangedHistory == [historical], cached.phase(at: deadline.addingTimeInterval(1)) == .awaitingConfirmation else {
-                return false
+                return fail(#line)
             }
             return true
         } catch {
-            return false
+            return fail(#line)
         }
+    }
+
+    private static func fail(_ line: Int) -> Bool {
+        print("Public reset forecast self-test failed at line \(line)")
+        return false
     }
 
     @MainActor
@@ -516,22 +750,31 @@ enum PublicResetForecastSelfTest {
                 persistCache: { _, _ in
                     throw CocoaError(.fileWriteNoPermission)
                 })
+            let watch = PublicResetSiteWatch(latestBy: now.addingTimeInterval(3600), fetchedAt: now.addingTimeInterval(1))
             do {
-                try failing.applyPage(.none(fetchedAt: now.addingTimeInterval(1)), now: now.addingTimeInterval(1))
+                try failing.applyPage(.siteWatch(watch), now: now.addingTimeInterval(1))
                 return false
             } catch PublicResetForecastFailure.cacheWriteFailed {} catch { return false }
-            guard failing.forecast == forecast, failing.checkedAt == now, failing.isShowingCache else { return false }
+            guard failing.forecast == forecast, failing.siteWatch == nil,
+                failing.checkedAt == now, failing.isShowingCache
+            else { return false }
             let restarted = PublicResetForecastStore(supportDirectory: root)
             guard restarted.forecast == failing.forecast, restarted.isShowingCache else { return false }
-            try restarted.applyPage(.none(fetchedAt: now.addingTimeInterval(1)), now: now.addingTimeInterval(1))
-            let withdrawn = PublicResetForecastStore(supportDirectory: root)
-            return withdrawn.forecast == nil && withdrawn.checkedAt == now.addingTimeInterval(1)
+            try restarted.applyPage(.siteWatch(watch), now: now.addingTimeInterval(1))
+            guard restarted.forecast == nil, restarted.siteWatch == watch,
+                restarted.checkedAt == watch.fetchedAt, !restarted.isShowingCache
+            else { return false }
+            let afterRestart = PublicResetForecastStore(supportDirectory: root)
+            guard afterRestart.forecast == nil, afterRestart.siteWatch == nil,
+                afterRestart.checkedAt == watch.fetchedAt
+            else { return false }
+            try restarted.applyPage(.none(fetchedAt: now.addingTimeInterval(2)), now: now.addingTimeInterval(2))
+            return restarted.siteWatch == nil && restarted.forecast == nil
+                && restarted.checkedAt == now.addingTimeInterval(2)
         } catch { return false }
     }
 
     private static func xPostID(for date: Date) -> String {
-        let twitterEpochMilliseconds: UInt64 = 1_288_834_974_657
-        let milliseconds = UInt64(date.timeIntervalSince1970 * 1000)
-        return String((milliseconds - twitterEpochMilliseconds) << 22)
+        PublicResetForecast.sourcePostID(at: date)!
     }
 }

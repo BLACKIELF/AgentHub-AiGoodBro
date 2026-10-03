@@ -60,4 +60,68 @@ Assert-True ($source.Contains('FindTaskMainWindow($Process.Id)')) 'Wait loop mus
 Assert-True ($source.Contains('AddSeconds(60)')) 'Window deadline must not be extended.'
 Assert-True ($source.Contains('Assert-ForegroundPreserved')) 'Foreground guard must remain active.'
 Assert-True ($source.Contains('$Process.HasExited')) 'Exited application must fail promptly.'
+
+# Exercise EnumWindows with real HWNDs: a visible Tao message window appears
+# first while the task UI is still hidden. No focus or on-screen UI is needed.
+Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+public static class NativeWindowSelectionFixture
+{
+    private delegate IntPtr WindowProcedure(IntPtr h, uint m, IntPtr w, IntPtr l);
+    private static readonly WindowProcedure Procedure = DefWindowProc;
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct WindowClass
+    {
+        public uint Style;
+        public WindowProcedure Procedure;
+        public int ClassExtra, WindowExtra;
+        public IntPtr Instance, Icon, Cursor, Background;
+        public string MenuName, ClassName;
+    }
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern ushort RegisterClass(ref WindowClass value);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern IntPtr CreateWindowEx(uint ex, string name, string title,
+        uint style, int x, int y, int width, int height, IntPtr parent,
+        IntPtr menu, IntPtr instance, IntPtr parameter);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern IntPtr DefWindowProc(IntPtr h, uint m, IntPtr w, IntPtr l);
+    [DllImport("user32.dll")]
+    public static extern bool ShowWindow(IntPtr h, int command);
+    [DllImport("user32.dll")]
+    public static extern bool DestroyWindow(IntPtr h);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+    private static extern IntPtr GetModuleHandle(string name);
+    public static IntPtr Create(string className)
+    {
+        var instance = GetModuleHandle(null);
+        var c = new WindowClass { Procedure = Procedure, Instance = instance, ClassName = className };
+        if (RegisterClass(ref c) == 0) throw new Win32Exception(Marshal.GetLastWin32Error());
+        var h = CreateWindowEx(0x08000080, className, "", 0x80000000,
+            -30000, -30000, 1, 1, IntPtr.Zero, IntPtr.Zero, instance, IntPtr.Zero);
+        if (h == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error());
+        return h;
+    }
+}
+'@
+$messageWindow = [IntPtr]::Zero
+$mainWindow = [IntPtr]::Zero
+$foreground = [NativeVisualCaptureDriver]::GetForegroundWindowHandle()
+try {
+  $messageWindow = [NativeWindowSelectionFixture]::Create('Tao Thread Event Target')
+  $mainWindow = [NativeWindowSelectionFixture]::Create('Tauri Window')
+  [void][NativeWindowSelectionFixture]::ShowWindow($messageWindow, 4)
+  for ($poll = 0; $poll -lt 5; $poll++) {
+    Assert-True ([NativeVisualCaptureDriver]::FindTaskMainWindow($PID) -eq [IntPtr]::Zero) 'Live cold start selected the Tao window before the UI appeared.'
+    Start-Sleep -Milliseconds 50
+  }
+  [void][NativeWindowSelectionFixture]::ShowWindow($mainWindow, 4)
+  Assert-True ([NativeVisualCaptureDriver]::FindTaskMainWindow($PID) -eq $mainWindow) 'Live selector did not choose the revealed task UI.'
+  Assert-True ([NativeVisualCaptureDriver]::GetForegroundWindowHandle() -eq $foreground) 'Window selection fixture changed foreground.'
+} finally {
+  if ($mainWindow -ne [IntPtr]::Zero) { [void][NativeWindowSelectionFixture]::DestroyWindow($mainWindow) }
+  if ($messageWindow -ne [IntPtr]::Zero) { [void][NativeWindowSelectionFixture]::DestroyWindow($messageWindow) }
+}
 Write-Output 'PASS: native window selection (cold start, PID, visibility, owner, class, ambiguity and wait-loop wiring)'

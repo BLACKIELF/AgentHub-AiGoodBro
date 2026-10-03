@@ -62,7 +62,7 @@ def fixture_source(source_root: Path) -> str:
     selection_start = read_app_server.index("        let homePath =")
     selection_end = read_app_server.index("        while !gate.try()", selection_start)
     gate_selection = (
-        "\nfunc selectedReaderGate(context: RuntimeLoadContext, profile: CodexProfile? = nil) -> NSRecursiveLock {\n        let cancellation = context.quotaCancellation\n"
+        "\nfunc selectedReaderGate(context: RuntimeLoadContext, profile: CodexProfile? = nil) -> NSRecursiveLock {\n        var messages: [String] = []\n        func stopReason() -> TokenMonitorFailure? { nil }\n"
         + read_app_server[selection_start:selection_end].replace("return AppServerSnapshot()", "return CodexCredentialAccessGate.lock")
         + "        return gate\n}\n"
     )
@@ -239,6 +239,9 @@ import os
 import sys
 
 case = os.environ.get("FIXTURE_CASE", "success")
+launch_marker = os.environ.get("AUTH_STABILITY_LAUNCH_MARKER")
+if launch_marker:
+    open(launch_marker, "w").write("launched")
 blocked = ["OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN", "CODEX_THREAD_ID", "CODEX_INTERNAL_ORIGINATOR_OVERRIDE"]
 args = sys.argv[1:]
 
@@ -278,7 +281,8 @@ for line in sys.stdin:
         if case == "unknown-duplicate":
             print(json.dumps({"id": 999, "error": {"message": "ignored"}}), flush=True)
     elif request_id == 2:
-        print(json.dumps({"id": 2, "result": {"account": {"type": "chatgpt", "email": "managed@example.invalid"}}}), flush=True)
+        if case != "partial-cancel":
+            print(json.dumps({"id": 2, "result": {"account": {"type": "chatgpt", "email": "managed@example.invalid"}}}), flush=True)
         if case == "unknown-duplicate":
             print(json.dumps({"id": 2, "result": {}}), flush=True)
     elif request_id == 3:
@@ -286,6 +290,10 @@ for line in sys.stdin:
             print(json.dumps({"id": 3}), flush=True)
         else:
             print(json.dumps({"id": 3, "result": report()}), flush=True)
+        if case == "partial-cancel":
+            open(os.environ["AUTH_STABILITY_PARTIAL_READY"], "w").write("ready")
+            import time
+            time.sleep(30)
         sys.exit(0)
 """#
 try fakeSource.write(to: fakeScript, atomically: true, encoding: .utf8)
@@ -383,6 +391,61 @@ expect(observed(managed, "unrelatedPresent"), "identity-verified membership bran
 expect(observed(managed, "homeMatches"), "identity-verified membership branch retains intended CODEX_HOME")
 expect(observed(managed, "disableConfig"), "identity-verified membership branch retains quota-only disables")
 expect(observed(managed, "appServerFirst") && !observed(managed, "stdio"), "identity-verified membership branch retains launch shape")
+
+let launchMarker = synthetic.appendingPathComponent("blocked-gate-launch")
+setenv("FIXTURE_CASE", "success", 1)
+setenv("AUTH_STABILITY_LAUNCH_MARKER", launchMarker.path, 1)
+for (name, heldGate) in [
+    ("membership global gate", CodexCredentialAccessGate.lock),
+    ("membership home gate", CodexCredentialAccessGate.homeLock(forHomePath: managedHome.path)),
+] {
+    try? fileManager.removeItem(at: launchMarker)
+    let entered = DispatchSemaphore(value: 0)
+    let exited = DispatchSemaphore(value: 0)
+    DispatchQueue.global().async {
+        heldGate.lock()
+        entered.signal()
+        Thread.sleep(forTimeInterval: 0.45)
+        heldGate.unlock()
+        exited.signal()
+    }
+    entered.wait()
+    let started = ProcessInfo.processInfo.systemUptime
+    var gateMessages: [String] = []
+    let gateResult = CodexUsageReader(fakeScript.path).readAppServer(
+        context: RuntimeLoadContext(codexHomeDirectory: managedHome, homeDirectory: userHome),
+        messages: &gateMessages, quotaOnly: true,
+        refreshingMembershipFor: profile, requestTimeout: 0.1)
+    let elapsed = ProcessInfo.processInfo.systemUptime - started
+    exited.wait()
+    expect(elapsed < 0.3 && !gateResult.quotaReadSucceeded && !fileManager.fileExists(atPath: launchMarker.path),
+        "\(name) consumes the absolute request budget without launching")
+}
+unsetenv("AUTH_STABILITY_LAUNCH_MARKER")
+
+setenv("FIXTURE_CASE", "partial-cancel", 1)
+let partialReady = synthetic.appendingPathComponent("partial-ready")
+setenv("AUTH_STABILITY_PARTIAL_READY", partialReady.path, 1)
+let partialCancellation = TokenMonitorCancellation()
+DispatchQueue.global().async {
+    for _ in 0..<200 {
+        if fileManager.fileExists(atPath: partialReady.path) {
+            Thread.sleep(forTimeInterval: 0.1)
+            partialCancellation.cancel()
+            return
+        }
+        Thread.sleep(forTimeInterval: 0.01)
+    }
+    partialCancellation.cancel()
+}
+var partialMessages: [String] = []
+let partialResult = CodexUsageReader(fakeScript.path).readAppServer(
+    context: RuntimeLoadContext(codexHomeDirectory: b1Home, homeDirectory: synthetic,
+        quotaCancellation: partialCancellation),
+    messages: &partialMessages, quotaOnly: true, requestTimeout: 5)
+expect(fileManager.fileExists(atPath: partialReady.path), "fake transport sent a partial quota before cancellation")
+expect(!partialResult.quotaReadSucceeded && partialMessages.contains(TokenMonitorFailure.cancelled.rawValue),
+    "cancelled app-server read cannot publish a parsed partial quota")
 
 print("RESULT: \(failures) failures")
 exit(Int32(failures == 0 ? 0 : 1))

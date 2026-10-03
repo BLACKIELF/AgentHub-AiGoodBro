@@ -1,176 +1,167 @@
 {
   "schemaVersion": 1,
-  "upstreamCommit": "ef079b6fb494e1cfcb24736cfcf4d4e591222eaf",
-  "source": "https://github.com/Javis603/token-monitor/blob/ef079b6fb494e1cfcb24736cfcf4d4e591222eaf/src/shared/clientCatalog.js",
-  "sourceSHA256": "2aebeae0704d5e3b240d0659a037d03a9a4f879dc3898b2a920991a74213ba14",
+  "upstreamCommit": "dcccfb01557e2786888fd5479552f392ac6c0d32",
+  "source": "https://github.com/Javis603/token-monitor/blob/dcccfb01557e2786888fd5479552f392ac6c0d32/src/shared/clientCatalog.js",
   "clients": [
     {
-      "defaultTracked": true,
-      "locallyParsed": false,
       "id": "claude",
-      "label": "Claude Code"
+      "label": "Claude Code",
+      "defaultTracked": true
     },
     {
-      "defaultTracked": true,
-      "locallyParsed": false,
       "id": "codex",
-      "label": "Codex"
+      "label": "Codex",
+      "defaultTracked": true
     },
     {
-      "defaultTracked": true,
-      "locallyParsed": false,
       "id": "opencode",
-      "label": "OpenCode"
+      "label": "OpenCode",
+      "defaultTracked": true
     },
     {
-      "defaultTracked": true,
-      "locallyParsed": false,
       "id": "hermes",
-      "label": "Hermes Agent"
+      "label": "Hermes Agent",
+      "defaultTracked": true
     },
     {
-      "defaultTracked": true,
-      "locallyParsed": false,
       "id": "openclaw",
-      "label": "OpenClaw"
+      "label": "OpenClaw",
+      "defaultTracked": true
     },
     {
-      "defaultTracked": true,
-      "locallyParsed": false,
       "id": "cursor",
-      "label": "Cursor"
+      "label": "Cursor",
+      "defaultTracked": true
     },
     {
-      "defaultTracked": true,
-      "locallyParsed": false,
       "id": "antigravity",
-      "label": "Antigravity"
+      "label": "Antigravity",
+      "defaultTracked": true
     },
     {
-      "defaultTracked": true,
-      "locallyParsed": false,
       "id": "cline",
-      "label": "Cline"
+      "label": "Cline",
+      "defaultTracked": true
     },
     {
-      "defaultTracked": true,
-      "locallyParsed": false,
+      "id": "amp",
+      "label": "Amp",
+      "defaultTracked": true
+    },
+    {
+      "id": "droid",
+      "label": "Factory Droid",
+      "defaultTracked": true
+    },
+    {
       "id": "kimi",
-      "label": "Kimi"
+      "label": "Kimi",
+      "defaultTracked": true
     },
     {
-      "defaultTracked": true,
-      "locallyParsed": false,
       "id": "qwen",
-      "label": "Qwen"
+      "label": "Qwen",
+      "defaultTracked": true
     },
     {
-      "defaultTracked": true,
-      "locallyParsed": false,
       "id": "grok",
-      "label": "Grok Build"
+      "label": "Grok Build",
+      "defaultTracked": true
     },
     {
-      "defaultTracked": true,
-      "locallyParsed": false,
       "id": "copilot",
-      "label": "GitHub Copilot"
+      "label": "GitHub Copilot",
+      "defaultTracked": true
     },
     {
-      "defaultTracked": true,
-      "locallyParsed": false,
       "id": "pi",
-      "label": "Pi"
+      "label": "Pi",
+      "defaultTracked": true
     },
     {
-      "defaultTracked": true,
-      "locallyParsed": false,
+      "id": "omp",
+      "label": "Oh My Pi",
+      "defaultTracked": true
+    },
+    {
       "id": "zed",
-      "label": "Zed"
+      "label": "Zed",
+      "defaultTracked": true
     },
     {
-      "defaultTracked": true,
-      "locallyParsed": false,
       "id": "kilo",
-      "label": "Kilo"
+      "label": "Kilo",
+      "defaultTracked": true
     },
     {
-      "defaultTracked": true,
-      "locallyParsed": false,
       "id": "commandcode",
-      "label": "Command Code"
+      "label": "Command Code",
+      "defaultTracked": true
     },
     {
-      "defaultTracked": false,
-      "locallyParsed": false,
-      "id": "micode",
-      "label": "MiMo Code"
+      "id": "mimo",
+      "label": "Xiaomi MiMo",
+      "defaultTracked": true
     },
     {
-      "defaultTracked": true,
-      "locallyParsed": false,
       "id": "zcode",
-      "label": "ZCode"
+      "label": "ZCode",
+      "defaultTracked": true
     },
     {
-      "defaultTracked": true,
-      "locallyParsed": false,
       "id": "kiro",
-      "label": "Kiro"
+      "label": "Kiro",
+      "defaultTracked": true
     },
     {
-      "defaultTracked": true,
-      "locallyParsed": false,
       "id": "codebuddy",
-      "label": "CodeBuddy"
+      "label": "CodeBuddy",
+      "defaultTracked": true
     },
     {
-      "defaultTracked": true,
-      "locallyParsed": false,
       "id": "workbuddy",
-      "label": "WorkBuddy"
+      "label": "WorkBuddy",
+      "defaultTracked": true
     },
     {
-      "defaultTracked": true,
-      "locallyParsed": true,
       "id": "proma",
-      "label": "Proma"
+      "label": "Proma",
+      "defaultTracked": true
     },
     {
-      "defaultTracked": false,
-      "locallyParsed": true,
       "id": "qodercn",
-      "label": "Qoder CN"
+      "label": "Qoder CN",
+      "defaultTracked": false
     },
     {
-      "defaultTracked": true,
-      "locallyParsed": false,
       "id": "reasonix",
-      "label": "Reasonix"
+      "label": "Reasonix",
+      "defaultTracked": true
     },
     {
-      "defaultTracked": true,
-      "locallyParsed": false,
       "id": "dsh",
-      "label": "DeepSeek Harness"
+      "label": "DeepSeek Harness",
+      "defaultTracked": true
     },
     {
-      "defaultTracked": true,
-      "locallyParsed": false,
       "id": "cherrystudio",
-      "label": "Cherry Studio"
+      "label": "Cherry Studio",
+      "defaultTracked": true
     },
     {
-      "defaultTracked": true,
-      "locallyParsed": false,
       "id": "lmstudio",
-      "label": "LM Studio"
+      "label": "LM Studio",
+      "defaultTracked": true
     },
     {
-      "defaultTracked": true,
-      "locallyParsed": false,
       "id": "unsloth",
-      "label": "Unsloth"
+      "label": "Unsloth",
+      "defaultTracked": true
+    },
+    {
+      "id": "devin",
+      "label": "Devin",
+      "defaultTracked": true
     }
   ]
 }

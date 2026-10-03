@@ -23,13 +23,16 @@ enum PaletteCatalogSelfTest {
 
         let builtInPaletteIDs = [
             PaletteCatalog.defaultPaletteID,
-            PaletteCatalog.initialPaletteID,
+            "codexu.liquid-keycap",
             "codexu.blue-white-porcelain",
             "codexu.forbidden-city-red",
             "codexu.thousand-li-landscape",
             "codexu.dunhuang-apsara",
             "codexu.orchid-dawn",
+            "codexu.waicy",
+            "codexu.violet-glow",
         ]
+        expect(PaletteCatalog.initialPaletteID == PaletteCatalog.defaultPaletteID, "fresh settings and Reset should preserve the current default")
         for paletteID in builtInPaletteIDs {
             expect(catalog.contains(paletteID), "\(paletteID) should load")
         }
@@ -53,12 +56,41 @@ enum PaletteCatalogSelfTest {
         expect(defaultLight.accent == safeLight.accent, "default package accent tokens should match compiled fallback")
         expect(defaultLight.quota == safeLight.quota, "default package quota tokens should match compiled fallback")
         expect(defaultLight.data == safeLight.data && defaultLight.selection == safeLight.selection, "default package data and selection should match compiled fallback")
+        expect(
+            defaultLight.surfaceTint == safeLight.surfaceTint && defaultLight.ornament == safeLight.ornament,
+            "default package surface and ornament tokens should remain unchanged")
         expect(defaultLight.assets.isEmpty, "default package should use token fallbacks")
         let defaultDark = catalog.resolve(id: PaletteCatalog.defaultPaletteID, appearance: .dark)
         let safeDark = ResolvedVisualTokens.safeDefault(.dark)
         expect(defaultDark.accent == safeDark.accent, "default dark accent tokens should match compiled fallback")
         expect(defaultDark.quota == safeDark.quota, "default dark quota tokens should match compiled fallback")
         expect(defaultDark.data == safeDark.data && defaultDark.selection == safeDark.selection, "default dark data and selection should match compiled fallback")
+        expect(defaultDark.surfaceTint == safeDark.surfaceTint && defaultDark.ornament == safeDark.ornament, "default dark surface and ornament tokens should remain unchanged")
+
+        for appearance in PaletteAppearance.allCases {
+            let violet = catalog.resolve(id: "codexu.violet-glow", appearance: appearance)
+            let baseline = catalog.resolve(id: PaletteCatalog.defaultPaletteID, appearance: appearance)
+            expect(violet.accent == baseline.accent && violet.quota == baseline.quota, "Violet Glow should retain the existing default accent and quota colors")
+            expect(violet.data == baseline.data && violet.selection == baseline.selection, "Violet Glow should retain the existing default data and selection colors")
+            expect(
+                violet.surfaceTint == baseline.surfaceTint && violet.ornament == baseline.ornament,
+                "Violet Glow should retain the existing default surface colors under a separate identity")
+
+            let waicy = catalog.resolve(id: "codexu.waicy", appearance: appearance)
+            let surfaces: [PaletteColor] =
+                appearance == .light
+                ? [PaletteColor(rgba: 0xFFFA_F6FF), PaletteColor(rgba: 0xEFEF_EFFF)]
+                : [PaletteColor(rgba: 0x1C1C_1EFF), PaletteColor(rgba: 0x2C2C_2EFF)]
+            for surface in surfaces {
+                for foreground in [waicy.quota.primary.label, waicy.quota.secondary.label, waicy.selection.foreground] {
+                    expect(contrastRatio(foreground, surface) >= 4.5, "WAICY \(appearance.rawValue) quota and selected text should remain readable on reference surfaces")
+                }
+            }
+        }
+        expect(
+            catalog.resolve(id: "codexu.waicy", appearance: .light).accent
+                != catalog.resolve(id: "codexu.waicy", appearance: .dark).accent,
+            "WAICY should adapt control shades for both appearances")
 
         for appearance in PaletteAppearance.allCases {
             let porcelain = catalog.resolve(id: "codexu.blue-white-porcelain", appearance: appearance)
@@ -92,16 +124,24 @@ enum PaletteCatalogSelfTest {
         expect(unknown.identity.paletteID == PaletteCatalog.defaultPaletteID, "unknown IDs should resolve to default")
 
         let suiteName = "CodexManagerNext.palette-self-test.\(UUID().uuidString)"
+        let avatarRoot = FileManager.default.temporaryDirectory.appendingPathComponent("camnext-palette-avatars-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: avatarRoot) }
         if let defaults = UserDefaults(suiteName: suiteName) {
             defer { defaults.removePersistentDomain(forName: suiteName) }
+            let fresh = AppSettings(defaults: defaults, paletteCatalog: catalog, previewAvatarRoot: avatarRoot)
+            expect(fresh.paletteID == PaletteCatalog.defaultPaletteID, "fresh isolated settings should select the current default")
             defaults.set("community.missing", forKey: "CodexManagerNext.paletteID")
-            let normalized = AppSettings(defaults: defaults, paletteCatalog: catalog)
+            let normalized = AppSettings(defaults: defaults, paletteCatalog: catalog, previewAvatarRoot: avatarRoot)
             expect(normalized.paletteID == PaletteCatalog.defaultPaletteID, "invalid stored ID should normalize to the legacy safety fallback")
             expect(normalized.paletteFallbackNotice != nil, "invalid stored ID should expose a fallback notice")
             expect(normalized.selectPalette("codexu.blue-white-porcelain") == .selected, "valid selection should succeed")
             expect(defaults.string(forKey: "CodexManagerNext.paletteID") == "codexu.blue-white-porcelain", "selection should persist")
             expect(normalized.selectPalette("codexu.thousand-li-landscape") == .selected, "new token palette selection should succeed")
             expect(defaults.string(forKey: "CodexManagerNext.paletteID") == "codexu.thousand-li-landscape", "new token palette selection should persist")
+            for paletteID in ["codexu.waicy", "codexu.violet-glow", "codexu.liquid-keycap"] {
+                expect(normalized.selectPalette(paletteID) == .selected, "\(paletteID) selection should succeed")
+                expect(defaults.string(forKey: "CodexManagerNext.paletteID") == paletteID, "\(paletteID) selection should persist")
+            }
             normalized.resetPalette()
             expect(normalized.paletteID == PaletteCatalog.initialPaletteID, "reset should select the initial palette")
         } else {
@@ -242,5 +282,17 @@ enum PaletteCatalogSelfTest {
         }
         failures.forEach { print("palette self-test failed: \($0)") }
         return false
+    }
+
+    private static func contrastRatio(_ foreground: PaletteColor, _ background: PaletteColor) -> Double {
+        func luminance(_ color: PaletteColor) -> Double {
+            func linear(_ channel: Double) -> Double {
+                channel <= 0.04045 ? channel / 12.92 : pow((channel + 0.055) / 1.055, 2.4)
+            }
+            return 0.2126 * linear(color.red) + 0.7152 * linear(color.green) + 0.0722 * linear(color.blue)
+        }
+        let first = luminance(foreground)
+        let second = luminance(background)
+        return (max(first, second) + 0.05) / (min(first, second) + 0.05)
     }
 }

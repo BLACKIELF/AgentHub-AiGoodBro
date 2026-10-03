@@ -10,9 +10,8 @@ heavy supersampling so Resources PNG/ICNS rebuild byte-identically:
     python3 scripts/generate-ah-brand-icons.py --final
     python3 scripts/generate-ah-brand-icons.py --board docs/images/ah-brand-0911v1/ah-brand-acceptance-board.png
 
-`--final` now builds the accepted five-color open-window sunrise family from
-editable SVG sources.  The older AH-ligature renderers remain available only
-for historical candidate boards; they are not production icon sources.
+`--final` derives the current macOS product icons from the user's approved
+avatar PNG. Older AH-ligature renderers remain only for historical boards.
 """
 
 import argparse
@@ -267,60 +266,17 @@ def write_final(resources_dir):
     print(f"final icons written to {resources_dir}")
 
 
-def write_window_sunrise_final(resources_dir):
-    """Build the accepted SVG icon family and refresh the runtime brand PNG.
-
-    Keeping this behind the long-standing ``--final`` entry point prevents a
-    future production build from silently restoring the retired AH/reset mark.
-    """
+def write_approved_avatar_final(resources_dir):
+    """Keep the long-standing production entry point on the approved avatar."""
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    family_script = os.path.join(root, "scripts", "generate-window-sunrise-icons.py")
-    subprocess.run([sys.executable, family_script], check=True)
-
-    magick = shutil.which("magick")
-    if magick is None:
-        raise RuntimeError("ImageMagick 'magick' is required to export the runtime PNG")
-    source_svg = os.path.join(root, "design", "icons-0912v1", "svg", "01-warm-white.svg")
-    os.makedirs(resources_dir, exist_ok=True)
-    runtime_png = os.path.join(resources_dir, "AiGoodBro-icon.png")
-    with tempfile.TemporaryDirectory(prefix="aigoodbro-runtime-icon-") as tmp:
-        staged_png = os.path.join(tmp, "AiGoodBro-icon.png")
-        subprocess.run(
-            [
-                magick,
-                "-background",
-                "none",
-                "-density",
-                "256",
-                source_svg,
-                "-resize",
-                "1024x1024!",
-                "-alpha",
-                "on",
-                "-depth",
-                "8",
-                "-define",
-                "png:color-type=6",
-                f"PNG32:{staged_png}",
-            ],
-            check=True,
-        )
-        image = Image.open(staged_png)
-        if image.size != (1024, 1024) or image.mode != "RGBA" or image.getchannel("A").getbbox() is None:
-            raise RuntimeError("generated runtime icon must be a non-empty 1024x1024 RGBA PNG")
-        os.replace(staged_png, runtime_png)
-    print(f"window-sunrise icons written; runtime PNG refreshed at {runtime_png}")
+    script = os.path.join(root, "scripts", "prepare-aigoodbro-brand-icons.py")
+    subprocess.run([sys.executable, script, "--resources-dir", resources_dir], check=True)
 
 
-def verify_window_sunrise_icons():
+def verify_approved_avatar_icons():
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    family_script = os.path.join(root, "scripts", "generate-window-sunrise-icons.py")
-    subprocess.run([sys.executable, family_script, "--verify-only"], check=True)
-    runtime_png = os.path.join(root, "Resources", "AiGoodBro-icon.png")
-    image = Image.open(runtime_png)
-    if image.size != (1024, 1024) or image.mode != "RGBA" or image.getchannel("A").getbbox() is None:
-        raise RuntimeError("runtime AiGoodBro-icon.png is not a non-empty 1024x1024 RGBA PNG")
-    print("verified production window-sunrise icon family and runtime PNG")
+    script = os.path.join(root, "scripts", "prepare-aigoodbro-brand-icons.py")
+    subprocess.run([sys.executable, script, "--verify-only"], check=True)
 
 
 def write_board(board_path):
@@ -367,8 +323,8 @@ def write_board(board_path):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--candidates", metavar="DIR", help="render 3 candidate previews into DIR")
-    parser.add_argument("--final", action="store_true", help="build the accepted five-color SVG/PNG/ICNS icon family")
-    parser.add_argument("--verify-icons", action="store_true", help="verify the accepted icon family without rewriting it")
+    parser.add_argument("--final", action="store_true", help="derive production icons from the approved avatar")
+    parser.add_argument("--verify-icons", action="store_true", help="verify production icons against the approved avatar")
     parser.add_argument("--board", metavar="PATH", help="render the brand acceptance board PNG")
     parser.add_argument("--resources", default="Resources", help="resources directory for --final")
     args = parser.parse_args()
@@ -379,9 +335,9 @@ def main():
     if args.candidates:
         write_candidates(args.candidates)
     if args.final:
-        write_window_sunrise_final(args.resources)
+        write_approved_avatar_final(args.resources)
     if args.verify_icons:
-        verify_window_sunrise_icons()
+        verify_approved_avatar_icons()
     if args.board:
         write_board(args.board)
     return 0

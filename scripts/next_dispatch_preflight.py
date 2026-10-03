@@ -575,7 +575,9 @@ def execution_preference(profile: dict[str, Any]) -> dict[str, Any] | None:
         return None
     model, effort, tier = (preference.get(k) for k in ("model", "reasoningEffort", "serviceTier"))
     subagent_mode = preference.get("subagentMode", "standard")
-    maxima = {"gpt-6-astra": 6, "gpt-5.6-sol": 6, "gpt-5.6-terra": 6, "gpt-5.6-luna": 5, "gpt-5.5": 4, "gpt-5.2": 4}
+    maxima = {"gpt-6-astra": 6, "gpt-6.1-sol": 6, "gpt-6-sol": 6, "gpt-6-luna": 5,
+              "gpt-5.6-sol": 6, "gpt-5.6-terra": 6, "gpt-5.6-luna": 5,
+              "gpt-5.5": 4, "gpt-5.2": 4}
     ranks = {"low": 1, "medium": 2, "high": 3, "xhigh": 4, "max": 5, "ultra": 6}
     if not all(isinstance(value, str) for value in (model, effort, tier, subagent_mode)):
         return None
@@ -615,9 +617,9 @@ def execution_preference(profile: dict[str, Any]) -> dict[str, Any] | None:
 
 def effective_strategy(preference: dict[str, Any]) -> dict[str, Any]:
     defaults = {
-        "standard": {"useSavedModel": True, "model": "gpt-6-astra", "reasoningEffort": "low", "subagentsEnabled": False, "subagentModel": "gpt-5.6-luna", "subagentReasoningEffort": "max"},
-        "sol_luna": {"useSavedModel": False, "model": "gpt-5.6-sol", "reasoningEffort": "high", "subagentsEnabled": True, "subagentModel": "gpt-5.6-luna", "subagentReasoningEffort": "max"},
-        "luna_direct": {"useSavedModel": False, "model": "gpt-5.6-luna", "reasoningEffort": "max", "subagentsEnabled": False, "subagentModel": "gpt-5.6-luna", "subagentReasoningEffort": "max"},
+        "standard": {"useSavedModel": True, "model": "gpt-6.1-sol", "reasoningEffort": "low", "subagentsEnabled": False, "subagentModel": "gpt-6-luna", "subagentReasoningEffort": "max"},
+        "sol_luna": {"useSavedModel": False, "model": "gpt-6.1-sol", "reasoningEffort": "high", "subagentsEnabled": True, "subagentModel": "gpt-6-luna", "subagentReasoningEffort": "max"},
+        "luna_direct": {"useSavedModel": False, "model": "gpt-6-luna", "reasoningEffort": "max", "subagentsEnabled": False, "subagentModel": "gpt-6-luna", "subagentReasoningEffort": "max"},
     }
     mode = preference["subagentMode"]
     preset = (preference.get("customPresets") or {}).get(mode, defaults[mode])
@@ -633,8 +635,9 @@ def effective_strategy(preference: dict[str, Any]) -> dict[str, Any]:
 
 def valid_effective_strategy(strategy: dict[str, Any]) -> bool:
     """Validate the values that will actually reach Codex, after CLI overrides."""
-    maxima = {"gpt-6-astra": 6, "gpt-5.6-sol": 6, "gpt-5.6-terra": 6,
-              "gpt-5.6-luna": 5, "gpt-5.5": 4, "gpt-5.2": 4}
+    maxima = {"gpt-6-astra": 6, "gpt-6.1-sol": 6, "gpt-6-sol": 6, "gpt-6-luna": 5,
+              "gpt-5.6-sol": 6, "gpt-5.6-terra": 6, "gpt-5.6-luna": 5,
+              "gpt-5.5": 4, "gpt-5.2": 4}
     ranks = {"low": 1, "medium": 2, "high": 3, "xhigh": 4, "max": 5, "ultra": 6}
 
     def valid_pair(model: Any, effort: Any) -> bool:
@@ -1391,6 +1394,77 @@ def self_test() -> None:
     }
     astra_snapshot["profiles"][0]["executionPreference"]["reasoningEffort"] = "unsupported"
     assert "invalid_execution_preference" in policy_report(before_cutoff, astra_snapshot)["excluded"][0]["reasons"]
+
+    sol_saved = execution_preference({"executionPreference": {
+        "model": "gpt-6-sol", "reasoningEffort": "ultra", "serviceTier": "default",
+    }})
+    assert sol_saved is not None
+    sol61_saved = execution_preference({"executionPreference": {
+        "model": "gpt-6.1-sol", "reasoningEffort": "ultra", "serviceTier": "fast",
+    }})
+    assert sol61_saved is not None
+    assert valid_effective_strategy(effective_strategy(sol61_saved))
+    luna_saved = execution_preference({"executionPreference": {
+        "model": "gpt-6-luna", "reasoningEffort": "max", "serviceTier": "default",
+    }})
+    assert luna_saved is not None
+    assert (effective_strategy(luna_saved)["model"], effective_strategy(luna_saved)["reasoningEffort"]) == (
+        "gpt-6-luna", "max")
+    standard = effective_strategy(sol_saved)
+    assert (standard["model"], standard["reasoningEffort"], standard["useSavedModel"],
+            standard["subagentsEnabled"], standard["subagentModel"],
+            standard["subagentReasoningEffort"]) == (
+        "gpt-6-sol", "ultra", True, False, "gpt-6-luna", "max")
+
+    sol_luna = effective_strategy({**sol_saved, "subagentMode": "sol_luna"})
+    assert (sol_luna["model"], sol_luna["reasoningEffort"], sol_luna["subagentsEnabled"],
+            sol_luna["subagentModel"], sol_luna["subagentReasoningEffort"]) == (
+        "gpt-6.1-sol", "high", True, "gpt-6-luna", "max")
+    luna_direct = effective_strategy({**sol_saved, "subagentMode": "luna_direct"})
+    assert (luna_direct["model"], luna_direct["reasoningEffort"], luna_direct["subagentsEnabled"],
+            luna_direct["subagentModel"], luna_direct["subagentReasoningEffort"]) == (
+        "gpt-6-luna", "max", False, "gpt-6-luna", "max")
+
+    assert valid_effective_strategy({
+        "model": "gpt-6-sol", "reasoningEffort": "ultra", "serviceTier": "default",
+        "subagentsEnabled": True, "subagentModel": "gpt-6-luna",
+        "subagentReasoningEffort": "max",
+    })
+    luna_ultra = {"executionPreference": {
+        "model": "gpt-6-luna", "reasoningEffort": "ultra", "serviceTier": "default",
+    }}
+    assert execution_preference(luna_ultra) is None
+    luna_ultra_subagent = {"sol_luna": {
+        "useSavedModel": False, "model": "gpt-6-sol", "reasoningEffort": "high",
+        "subagentsEnabled": True, "subagentModel": "gpt-6-luna",
+        "subagentReasoningEffort": "ultra",
+    }}
+    assert execution_preference({"executionPreference": {
+        **sol_saved, "subagentMode": "sol_luna", "customPresets": luna_ultra_subagent,
+    }}) is None
+    assert not valid_effective_strategy({
+        "model": "gpt-6-luna", "reasoningEffort": "ultra", "serviceTier": "default",
+        "subagentsEnabled": False,
+    })
+
+    legacy = {"model": "gpt-5.6-sol", "reasoningEffort": "ultra", "serviceTier": "fast"}
+    legacy_preference = execution_preference({"executionPreference": legacy})
+    assert legacy_preference == {**legacy, "subagentMode": "standard"}
+    assert valid_effective_strategy({
+        "model": "gpt-5.6-sol", "reasoningEffort": "ultra", "serviceTier": "default",
+        "subagentsEnabled": True, "subagentModel": "gpt-5.6-luna",
+        "subagentReasoningEffort": "max",
+    })
+    custom_legacy = {"sol_luna": {
+        "useSavedModel": False, "model": "gpt-5.6-sol", "reasoningEffort": "high",
+        "subagentsEnabled": True, "subagentModel": "gpt-5.6-luna",
+        "subagentReasoningEffort": "max",
+    }}
+    preserved = execution_preference({"executionPreference": {
+        **legacy, "subagentMode": "sol_luna", "customPresets": custom_legacy,
+    }})
+    assert preserved is not None and preserved["customPresets"] == custom_legacy
+    assert effective_strategy(preserved)["model"] == "gpt-5.6-sol"
 
 
 def parser() -> argparse.ArgumentParser:

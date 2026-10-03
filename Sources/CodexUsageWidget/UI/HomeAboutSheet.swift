@@ -17,8 +17,13 @@ struct HomeAboutSheet: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Text(settings.language.text("关于 AiGoodBro · 致谢", "About AiGoodBro · Credits"))
-                    .font(.headline)
+                Text(
+                    settings.language.text(
+                        "关于 \(AHBrandIdentity.displayName) \(AHBrandIdentity.publicVersion) · 致谢",
+                        "About \(AHBrandIdentity.displayName) \(AHBrandIdentity.publicVersion) · Credits"
+                    )
+                )
+                .font(.headline)
                 Spacer()
                 Button(settings.language.text("关闭", "Close")) { dismiss() }
                     .keyboardShortcut(.cancelAction)

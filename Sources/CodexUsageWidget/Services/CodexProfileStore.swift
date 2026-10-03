@@ -68,6 +68,46 @@ struct CodexAccountSnapshot: Codable, Equatable {
     }
 }
 
+/// A confirmed balance increase between two official observations. The interval
+/// is evidence of when we observed the change, not the server's grant timestamp.
+struct CodexResetCreditReceipt: Codable, Equatable, Identifiable {
+    let id: UUID
+    let previousObservedAt: Date
+    let observedAt: Date
+    let previousAvailable: Int
+    let available: Int
+
+    var added: Int {
+        guard previousAvailable >= 0, available > previousAvailable else { return 0 }
+        return available - previousAvailable
+    }
+
+    func isValid(at now: Date) -> Bool {
+        added > 0 && previousObservedAt.timeIntervalSince1970.isFinite
+            && observedAt.timeIntervalSince1970.isFinite
+            && previousObservedAt < observedAt && observedAt <= now
+    }
+
+    static func increase(
+        previous: CodexAccountSnapshot?, current: CodexAccountSnapshot
+    ) -> CodexResetCreditReceipt? {
+        guard let previous,
+            previous.quotaReadSucceeded == true, current.quotaReadSucceeded == true,
+            let accountID = current.accountID, !accountID.isEmpty, previous.accountID == accountID,
+            previous.limitId == current.limitId,
+            previous.fetchedAt.timeIntervalSince1970.isFinite,
+            current.fetchedAt.timeIntervalSince1970.isFinite,
+            current.fetchedAt > previous.fetchedAt,
+            let before = previous.availableResetCredits, before >= 0,
+            let after = current.availableResetCredits, after > before
+        else { return nil }
+        return .init(
+            id: UUID(), previousObservedAt: previous.fetchedAt, observedAt: current.fetchedAt,
+            previousAvailable: before, available: after
+        )
+    }
+}
+
 struct CodexCredentialIdentity: Equatable {
     let email: String
     let accountID: String
@@ -115,6 +155,9 @@ struct CodexOfficialProfileSnapshot: Codable, Equatable {
 struct CodexExecutionPreference: Codable, Equatable {
     enum Model: String, Codable, CaseIterable {
         case astra = "gpt-6-astra"
+        case gpt61Sol = "gpt-6.1-sol"
+        case gpt6Sol = "gpt-6-sol"
+        case gpt6Luna = "gpt-6-luna"
         case sol = "gpt-5.6-sol"
         case terra = "gpt-5.6-terra"
         case luna = "gpt-5.6-luna"
@@ -124,6 +167,9 @@ struct CodexExecutionPreference: Codable, Equatable {
         var displayName: String {
             switch self {
             case .astra: return "GPT-6 Astra"
+            case .gpt61Sol: return "GPT-6.1 Sol"
+            case .gpt6Sol: return "GPT-6 Sol"
+            case .gpt6Luna: return "GPT-6 Luna"
             case .sol: return "5.6 Sol"
             case .terra: return "5.6 Terra"
             case .luna: return "5.6 Luna"
@@ -134,9 +180,9 @@ struct CodexExecutionPreference: Codable, Equatable {
 
         var supportedReasoningEfforts: [ReasoningEffort] {
             switch self {
-            case .astra, .sol, .terra:
+            case .astra, .gpt61Sol, .gpt6Sol, .sol, .terra:
                 return ReasoningEffort.allCases
-            case .luna:
+            case .gpt6Luna, .luna:
                 return [.low, .medium, .high, .xhigh, .max]
             case .gpt55, .gpt52:
                 return [.low, .medium, .high, .xhigh]
@@ -243,30 +289,30 @@ struct CodexExecutionPreference: Codable, Equatable {
             return CustomPreset(
                 name: nil,
                 useSavedModel: true,
-                model: .astra,
+                model: .gpt61Sol,
                 reasoningEffort: .low,
                 subagentsEnabled: false,
-                subagentModel: .luna,
+                subagentModel: .gpt6Luna,
                 subagentReasoningEffort: .max
             )
         case .solLuna:
             return CustomPreset(
                 name: nil,
                 useSavedModel: false,
-                model: .sol,
+                model: .gpt61Sol,
                 reasoningEffort: .high,
                 subagentsEnabled: true,
-                subagentModel: .luna,
+                subagentModel: .gpt6Luna,
                 subagentReasoningEffort: .max
             )
         case .lunaDirect:
             return CustomPreset(
                 name: nil,
                 useSavedModel: false,
-                model: .luna,
+                model: .gpt6Luna,
                 reasoningEffort: .max,
                 subagentsEnabled: false,
-                subagentModel: .luna,
+                subagentModel: .gpt6Luna,
                 subagentReasoningEffort: .max
             )
         default:
@@ -490,6 +536,7 @@ struct CodexProfile: Codable, Equatable, Identifiable {
     let isSystemProfile: Bool
     let createdAt: Date
     var lastSnapshot: CodexAccountSnapshot?
+    var resetCreditHistory: [CodexResetCreditReceipt]? = nil
     var officialResetHistory: OfficialResetHistory? = nil
     var officialProfile: CodexOfficialProfileSnapshot? = nil
     var lastMembershipRefreshAt: Date? = nil
@@ -1486,6 +1533,24 @@ final class CodexProfileStore {
         }
     }
 
+    /// Restore only the Desktop record after a switch that started signed out.
+    /// The credential journal must have restored the missing auth file first.
+    func restoreSignedOutSystemProfile(_ original: CodexProfile) throws {
+        guard original.isSystemProfile,
+            try CodexCredentialTransaction.read(original.codexHomeURL.appendingPathComponent("auth.json")) == nil
+        else { throw CodexCredentialTransaction.Failure.superseded }
+        try mutateState {
+            guard let index = self.state.profiles.firstIndex(where: \.isSystemProfile),
+                self.state.profiles[index].id == original.id,
+                self.state.profiles[index].codexHomePath == original.codexHomePath
+            else { throw CodexCredentialTransaction.Failure.superseded }
+            self.state.profiles[index] = original
+            self.state.selectedLaunchProfileID = original.id
+            self.state.selectedMonitorProfileID = original.id
+            return true
+        }
+    }
+
     func setRemark(_ remark: String, for id: String) throws {
         let trimmed = remark.trimmingCharacters(in: .whitespacesAndNewlines)
         try mutateState {
@@ -1762,20 +1827,34 @@ final class CodexProfileStore {
         try mutateState {
             guard let index = self.state.profiles.firstIndex(where: { $0.id == profileID })
             else { return false }
-            let credentialIdentity = CodexOfficialProfileReader.credentialIdentity(
-                codexHomeURL: self.state.profiles[index].codexHomeURL
-            )
+            let profile = self.state.profiles[index]
+            let credentialIdentity = CodexOfficialProfileReader.credentialIdentity(codexHomeURL: profile.codexHomeURL)
             let snapshotEmail = snapshot.account?.email?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
             let identityMatchesSnapshot = credentialIdentity?.email == snapshotEmail
             let verifiedAccountID = identityMatchesSnapshot ? credentialIdentity?.accountID : nil
-            let previousAccountID = self.state.profiles[index].lastSnapshot?.accountID
+            let previousAccountID = profile.lastSnapshot?.accountID
+            let hasRecordedChatGPTIdentity = previousAccountID != nil || profile.lastSnapshot?.email?.isEmpty == false
+            let accountType = snapshot.account?.type.lowercased()
+            let isSystemAPIKeyQuota =
+                profile.isSystemProfile
+                && (accountType == "apikey" || accountType == "api_key")
+                && snapshotEmail == nil
+                && (!hasRecordedChatGPTIdentity || allowSystemAccountChange)
+            let hasBoundCredential =
+                credentialIdentity != nil && identityMatchesSnapshot
+                && (profile.isSystemProfile && allowSystemAccountChange
+                    || profile.matchesRecordedCredential(credentialIdentity))
+            let acceptsQuotaRead = snapshot.quotaReadSucceeded && (isSystemAPIKeyQuota || hasBoundCredential)
             let accountChanged =
-                !self.state.profiles[index].matchesRecordedAccount(email: snapshot.account?.email)
+                !profile.matchesRecordedAccount(email: snapshot.account?.email)
                 || (previousAccountID != nil && verifiedAccountID != nil && previousAccountID != verifiedAccountID)
+            let acceptsAccountOnly =
+                allowAccountOnly && !snapshot.quotaReadSucceeded && hasVerifiedAccount
+                && (!accountChanged || hasBoundCredential)
             let verifiedSystemChange =
-                allowSystemAccountChange && self.state.profiles[index].isSystemProfile
+                allowSystemAccountChange && profile.isSystemProfile
                 && accountChanged && identityMatchesSnapshot && verifiedAccountID != nil
-            if allowSystemAccountChange, self.state.profiles[index].isSystemProfile,
+            if allowSystemAccountChange, profile.isSystemProfile,
                 credentialIdentity != nil, snapshotEmail != nil, !identityMatchesSnapshot
             {
                 return false
@@ -1789,7 +1868,7 @@ final class CodexProfileStore {
                 self.state.profiles[index].lastQuotaReadFailureAt ?? .distantPast
             )
             guard snapshot.refreshedAt >= newestObservationAt || verifiedSystemChange else { return false }
-            guard snapshot.quotaReadSucceeded || (allowAccountOnly && hasVerifiedAccount) else {
+            guard acceptsQuotaRead || acceptsAccountOnly else {
                 let previous = self.state.profiles[index].lastSnapshot
                 let successfulSnapshotAtSameTime =
                     previous?.fetchedAt == snapshot.refreshedAt
@@ -1810,6 +1889,7 @@ final class CodexProfileStore {
             }
             guard !accountChanged || (allowSystemAccountChange && self.state.profiles[index].isSystemProfile) else { return false }
             if accountChanged {
+                self.state.profiles[index].resetCreditHistory = nil
                 self.state.profiles[index].officialResetHistory = nil
                 self.state.profiles[index].officialProfile = nil
                 self.state.profiles[index].lastWarmUpAt = nil
@@ -1872,8 +1952,21 @@ final class CodexProfileStore {
                     || (mergesEqualObservation && (previousSnapshot?.quotaReadSucceeded ?? true))
             )
             let previousSevenDay = self.state.profiles[index].lastSnapshot?.sevenDay
+            if acceptsQuotaRead, let accountID = record.accountID {
+                // Desktop and managed profiles can mirror one account. Compare
+                // against the newest verified observation across those mirrors
+                // so a delayed response cannot report the same increase twice.
+                let previousCreditSnapshot = self.state.profiles.compactMap(\.lastSnapshot)
+                    .filter { $0.accountID == accountID && $0.quotaReadSucceeded == true }
+                    .max { $0.fetchedAt < $1.fetchedAt }
+                if let receipt = CodexResetCreditReceipt.increase(previous: previousCreditSnapshot, current: record) {
+                    var history = self.state.profiles[index].resetCreditHistory ?? []
+                    history.append(receipt)
+                    self.state.profiles[index].resetCreditHistory = Array(history.suffix(32))
+                }
+            }
             self.state.profiles[index].lastSnapshot = record
-            if snapshot.quotaReadSucceeded {
+            if acceptsQuotaRead {
                 self.state.profiles[index].lastQuotaReadFailureAt = nil
                 self.state.profiles[index].lastQuotaReadFailureReason = nil
             }
@@ -2405,7 +2498,9 @@ enum CodexProfileStoreSelfTest {
             .appendingPathComponent("codex-profile-store-\(UUID().uuidString)", isDirectory: true)
         defer { try? fileManager.removeItem(at: root) }
         do {
+            guard try testQuotaCommitCredentialRace(root: root, fileManager: fileManager) else { return false }
             guard try testQuotaObservationOrdering(root: root, fileManager: fileManager) else { return false }
+            guard try testResetCreditReceipts(root: root, fileManager: fileManager) else { return false }
             guard try testSystemSwitchObservationOrdering(root: root, fileManager: fileManager) else { return false }
             guard try testCrossInstanceStateTransactions(root: root, fileManager: fileManager) else { return false }
             guard try testProfileOrderTransactions(root: root, fileManager: fileManager) else { return false }
@@ -2641,6 +2736,21 @@ enum CodexProfileStoreSelfTest {
             func expectsInvalid(_ preference: CodexExecutionPreference) -> Bool {
                 (try? preference.validated()) == nil
             }
+            let unsupportedLunaEffort = CodexExecutionPreference(
+                model: .gpt6Luna,
+                reasoningEffort: .ultra,
+                serviceTier: .standard
+            )
+            let supportedSolEffort = CodexExecutionPreference(
+                model: .gpt6Sol,
+                reasoningEffort: .ultra,
+                serviceTier: .standard
+            )
+            guard expectsInvalid(unsupportedLunaEffort), (try? supportedSolEffort.validated()) != nil
+            else {
+                print("Codex profile store self-test failed: GPT-6 reasoning effort bounds")
+                return false
+            }
             var invalidCustom = singleOverride
             invalidCustom.customPresets[CodexExecutionPreference.SubagentMode.solLuna.rawValue]?.name = String(repeating: "a", count: 65)
             guard expectsInvalid(invalidCustom) else {
@@ -2708,19 +2818,83 @@ enum CodexProfileStoreSelfTest {
                 print("Codex profile store self-test failed: unknown subagent mode accepted")
                 return false
             } catch CodexExecutionPreferenceError.unsupportedExecutionMode {}
-            for mode in CodexExecutionPreference.SubagentMode.allCases {
-                for effort in CodexExecutionPreference.ReasoningEffort.allCases {
-                    for tier in CodexExecutionPreference.ServiceTier.allCases {
-                        let astra = CodexExecutionPreference(
-                            model: .astra,
-                            reasoningEffort: effort,
-                            serviceTier: tier,
-                            subagentMode: mode
-                        )
-                        let encoded = try JSONEncoder().encode(astra.validated())
-                        guard try JSONDecoder().decode(CodexExecutionPreference.self, from: encoded) == astra else {
-                            print("Codex profile store self-test failed: execution preference round trip")
-                            return false
+            let legacyCustomPreferenceJSON = Data(
+                #"""
+                {
+                    "model": "gpt-5.6-terra",
+                    "reasoningEffort": "high",
+                    "serviceTier": "default",
+                    "subagentMode": "sol_luna",
+                    "customPresets": {
+                        "sol_luna": {
+                            "name": "Saved legacy",
+                            "useSavedModel": false,
+                            "model": "gpt-5.6-sol",
+                            "reasoningEffort": "high",
+                            "subagentsEnabled": true,
+                            "subagentModel": "gpt-5.6-luna",
+                            "subagentReasoningEffort": "max"
+                        }
+                    }
+                }
+                """#.utf8
+            )
+            let legacyCustomPreference = try JSONDecoder().decode(
+                CodexExecutionPreference.self,
+                from: legacyCustomPreferenceJSON
+            )
+            guard legacyCustomPreference.model == .terra,
+                legacyCustomPreference.customPresets[CodexExecutionPreference.SubagentMode.solLuna.rawValue]?.model == .sol,
+                legacyCustomPreference.customPresets[CodexExecutionPreference.SubagentMode.solLuna.rawValue]?.subagentModel == .luna,
+                legacyCustomPreference.effectiveStrategy
+                    == .init(
+                        mainModel: .sol,
+                        mainReasoningEffort: .high,
+                        subagentModel: .luna,
+                        subagentReasoningEffort: .max,
+                        maximumConcurrentSubagents: 1
+                    ),
+                try JSONDecoder().decode(
+                    CodexExecutionPreference.self,
+                    from: JSONEncoder().encode(legacyCustomPreference)
+                ) == legacyCustomPreference
+            else {
+                print("Codex profile store self-test failed: saved 5.6 models must remain unchanged")
+                return false
+            }
+            guard Array(CodexExecutionPreference.Model.allCases.prefix(4)) == [.astra, .gpt61Sol, .gpt6Sol, .gpt6Luna],
+                CodexExecutionPreference.Model.gpt61Sol.displayName == "GPT-6.1 Sol",
+                CodexExecutionPreference.Model.gpt61Sol.supportedReasoningEfforts == CodexExecutionPreference.ReasoningEffort.allCases,
+                CodexExecutionPreference.Model.gpt61Sol.supportsFast,
+                CodexExecutionPreference.Model.gpt6Sol.displayName == "GPT-6 Sol",
+                CodexExecutionPreference.Model.gpt6Luna.displayName == "GPT-6 Luna",
+                CodexExecutionPreference.Model.gpt6Sol.supportedReasoningEfforts == CodexExecutionPreference.ReasoningEffort.allCases,
+                CodexExecutionPreference.Model.gpt6Luna.supportedReasoningEfforts
+                    == [.low, .medium, .high, .xhigh, .max],
+                CodexExecutionPreference.defaultPreset(for: .standard)?.model == .gpt61Sol,
+                CodexExecutionPreference.defaultPreset(for: .standard)?.subagentModel == .gpt6Luna,
+                CodexExecutionPreference.defaultPreset(for: .solLuna)?.model == .gpt61Sol,
+                CodexExecutionPreference.defaultPreset(for: .solLuna)?.subagentModel == .gpt6Luna,
+                CodexExecutionPreference.defaultPreset(for: .lunaDirect)?.model == .gpt6Luna
+            else {
+                print("Codex profile store self-test failed: GPT-6 model catalog or preset defaults")
+                return false
+            }
+            for model in [CodexExecutionPreference.Model.astra, .gpt61Sol] {
+                for mode in CodexExecutionPreference.SubagentMode.allCases {
+                    for effort in CodexExecutionPreference.ReasoningEffort.allCases {
+                        for tier in CodexExecutionPreference.ServiceTier.allCases {
+                            let astra = CodexExecutionPreference(
+                                model: model,
+                                reasoningEffort: effort,
+                                serviceTier: tier,
+                                subagentMode: mode
+                            )
+                            let encoded = try JSONEncoder().encode(astra.validated())
+                            guard try JSONDecoder().decode(CodexExecutionPreference.self, from: encoded) == astra else {
+                                print("Codex profile store self-test failed: execution preference round trip")
+                                return false
+                            }
                         }
                     }
                 }
@@ -2765,8 +2939,10 @@ enum CodexProfileStoreSelfTest {
                 return false
             }
 
+            try testWriteAuth(for: added, email: "managed@example.com")
             try first.record(managedSnapshot, for: added.id)
             let duplicate = try first.addManagedProfile()
+            try testWriteAuth(for: duplicate, email: "managed@example.com")
             try first.record(managedSnapshot, for: duplicate.id)
             try first.setPrioritizeDispatch(true, for: added.id)
             guard
@@ -2785,9 +2961,9 @@ enum CodexProfileStoreSelfTest {
             guard
                 fastPreference.effectiveStrategy
                     == .init(
-                        mainModel: .sol,
+                        mainModel: .gpt61Sol,
                         mainReasoningEffort: .high,
-                        subagentModel: .luna,
+                        subagentModel: .gpt6Luna,
                         subagentReasoningEffort: .max,
                         maximumConcurrentSubagents: 1
                     )
@@ -2833,7 +3009,7 @@ enum CodexProfileStoreSelfTest {
             guard
                 standardPreference.effectiveStrategy
                     == .init(
-                        mainModel: .luna,
+                        mainModel: .gpt6Luna,
                         mainReasoningEffort: .max,
                         subagentModel: nil,
                         subagentReasoningEffort: nil,
@@ -2897,9 +3073,9 @@ enum CodexProfileStoreSelfTest {
                 standardCommand.contains("'agents.default_subagent_reasoning_effort=\"low\"'"),
                 standardCommand.contains("'service_tier=\"default\"'"), standardCommand.contains("--disable fast_mode"),
                 standardCommand.contains("'agents.enabled=false'"),
-                fastCommand.contains("--model 'gpt-5.6-sol'"),
+                fastCommand.contains("--model 'gpt-6.1-sol'"),
                 fastCommand.contains("'model_reasoning_effort=\"high\"'"),
-                fastCommand.contains("'agents.default_subagent_model=\"gpt-5.6-luna\"'"),
+                fastCommand.contains("'agents.default_subagent_model=\"gpt-6-luna\"'"),
                 fastCommand.contains("'agents.default_subagent_reasoning_effort=\"max\"'"),
                 fastCommand.contains("'service_tier=\"fast\"'"), fastCommand.contains("--enable fast_mode")
             else {
@@ -2949,6 +3125,7 @@ enum CodexProfileStoreSelfTest {
             try first.setAutomaticSwitchParticipation(false, for: added.id)
             try first.setProTierMultiplier(20, for: added.id)
             try first.record(managedSnapshot, for: added.id)
+            try testWriteAuth(for: first.profiles.first(where: \.isSystemProfile)!, email: "first@example.com")
             try first.record(firstSnapshot, for: "system")
             try first.record(secondSnapshot, for: "system")
             guard first.profiles.first(where: { $0.id == "system" })?.lastSnapshot?.email == "first@example.com" else {
@@ -2969,6 +3146,7 @@ enum CodexProfileStoreSelfTest {
             try first.recordOfficialProfile(systemOfficial, for: "system")
             try first.recordWarmUp(at: Date(timeIntervalSince1970: 360), succeeded: true, for: "system")
             try first.setRemark("旧账号", for: "system")
+            try testWriteAuth(for: first.profiles.first(where: \.isSystemProfile)!, email: "second@example.com")
             try first.record(secondSnapshot, for: "system", allowSystemAccountChange: true)
             guard let reboundSystem = first.profiles.first(where: { $0.id == "system" }),
                 reboundSystem.lastSnapshot?.email == "second@example.com",
@@ -2982,6 +3160,7 @@ enum CodexProfileStoreSelfTest {
                 print("Codex profile store self-test failed: explicit system account rebind")
                 return false
             }
+            try testWriteAuth(for: first.profiles.first(where: \.isSystemProfile)!, email: "managed@example.com")
             try first.record(managedSnapshot, for: "system", allowSystemAccountChange: true)
             guard try first.selectMonitorForSystemAccount() == added.id else {
                 print("Codex profile store self-test failed: current account monitor match")
@@ -2993,6 +3172,7 @@ enum CodexProfileStoreSelfTest {
                 return false
             }
             // Switching back requires a fresh observation, not replaying the old login snapshot.
+            try testWriteAuth(for: first.profiles.first(where: \.isSystemProfile)!, email: "first@example.com")
             try first.record(
                 testSnapshot(email: "first@example.com", usedPercent: 11, at: Date(timeIntervalSince1970: 400), resetCredits: 2),
                 for: "system", allowSystemAccountChange: true
@@ -3158,19 +3338,15 @@ enum CodexProfileStoreSelfTest {
             }
             let systemHome = home.appendingPathComponent(".codex", isDirectory: true)
             try fileManager.createDirectory(at: systemHome, withIntermediateDirectories: true)
-            let systemAuthPayload = Data(#"{"email":"first@example.com","https://api.openai.com/auth":{"chatgpt_account_id":"acct-first"}}"#.utf8)
-                .base64EncodedString()
-                .replacingOccurrences(of: "+", with: "-")
-                .replacingOccurrences(of: "/", with: "_")
-                .replacingOccurrences(of: "=", with: "")
-            let systemAuth = Data(
-                #"{"tokens":{"access_token":"test-only","refresh_token":"synthetic-refresh","account_id":"acct-first","id_token":"e30.\#(systemAuthPayload).sig"}}"#.utf8)
+            let systemAuth = try testAuthData(email: "first@example.com", accessToken: "test-only")
             try systemAuth.write(to: systemHome.appendingPathComponent("auth.json"))
+            let savedSystemAccountID = reordered.profiles.first(where: \.isSystemProfile)?.lastSnapshot?.accountID
             let preserved = try reordered.preserveSystemLogin()
             let preservedAuth = try Data(contentsOf: preserved.codexHomeURL.appendingPathComponent("auth.json"))
             let preservedAgain = try reordered.preserveSystemLogin()
             guard preserved.lastSnapshot?.email == "first@example.com",
-                preserved.lastSnapshot?.accountID == "acct-first",
+                savedSystemAccountID != nil,
+                preserved.lastSnapshot?.accountID == savedSystemAccountID,
                 preserved.lastSnapshot?.availableResetCredits == 2,
                 preserved.lastSnapshot?.resetCreditExpiries == [Date(timeIntervalSince1970: 1_400)],
                 preservedAuth == systemAuth,
@@ -3663,6 +3839,8 @@ enum CodexProfileStoreSelfTest {
                 applicationSupportDirectory: resetSupport
             )
             let resetAccount = try resetStore.addManagedProfile()
+            try testWriteAuth(for: resetAccount, email: "reset@example.com")
+            try testWriteAuth(for: resetStore.profiles.first(where: \.isSystemProfile)!, email: "reset@example.com")
             let week: TimeInterval = 604_800
             let base = Date(timeIntervalSince1970: 1_000_000)
             try resetStore.record(
@@ -3789,6 +3967,8 @@ enum CodexProfileStoreSelfTest {
                 applicationSupportDirectory: backfillSupport
             )
             let backfillAccount = try backfillStore.addManagedProfile()
+            try testWriteAuth(for: backfillAccount, email: "backfill@example.com")
+            try testWriteAuth(for: backfillStore.profiles.first(where: \.isSystemProfile)!, email: "backfill@example.com")
             let backfillWeek: TimeInterval = 604_800
             let backfillBase = Date(timeIntervalSince1970: 2_000_000)
             try backfillStore.record(
@@ -3835,6 +4015,7 @@ enum CodexProfileStoreSelfTest {
                 return false
             }
             let naturalAccount = try backfillStore.addManagedProfile()
+            try testWriteAuth(for: naturalAccount, email: "natural@example.com")
             try backfillStore.record(
                 testResetSnapshot(
                     email: "natural@example.com",
@@ -3842,6 +4023,7 @@ enum CodexProfileStoreSelfTest {
                     resetsAt: backfillBase.addingTimeInterval(backfillWeek),
                     fetchedAt: backfillBase
                 ), for: naturalAccount.id)
+            try testWriteAuth(for: backfillStore.profiles.first(where: \.isSystemProfile)!, email: "natural@example.com")
             try backfillStore.record(
                 testResetSnapshot(
                     email: "natural@example.com",
@@ -3866,6 +4048,8 @@ enum CodexProfileStoreSelfTest {
                 applicationSupportDirectory: syncSupport
             )
             let syncManaged = try syncStore.addManagedProfile()
+            try testWriteAuth(for: syncManaged, email: "sync@example.com")
+            try testWriteAuth(for: syncStore.profiles.first(where: \.isSystemProfile)!, email: "sync@example.com")
             let syncSnapshot = testSnapshot(
                 email: "sync@example.com",
                 usedPercent: 10,
@@ -4038,6 +4222,7 @@ enum CodexProfileStoreSelfTest {
             applicationSupportDirectory: support
         )
         let profile = try seed.addManagedProfile()
+        try testWriteAuth(for: profile, email: "cross-instance@example.invalid")
         let base = Date(timeIntervalSince1970: 3_000_000)
         try seed.record(
             testSnapshot(email: "cross-instance@example.invalid", usedPercent: 10, at: base),
@@ -4218,6 +4403,10 @@ enum CodexProfileStoreSelfTest {
         let independent = try store.addManagedProfile()
         let desktopMatch = try store.addManagedProfile()
         let manualSelection = try store.addManagedProfile()
+        try testWriteAuth(for: independent, email: "monitor@example.invalid")
+        try testWriteAuth(for: desktopMatch, email: "desktop@example.invalid")
+        try testWriteAuth(for: manualSelection, email: "manual@example.invalid")
+        try testWriteAuth(for: store.profiles.first(where: \.isSystemProfile)!, email: "desktop@example.invalid")
         try store.record(
             testSnapshot(email: "monitor@example.invalid", usedPercent: 10, at: Date(timeIntervalSince1970: 1)),
             for: independent.id
@@ -4367,11 +4556,119 @@ enum CodexProfileStoreSelfTest {
         return true
     }
 
+    private static func testQuotaCommitCredentialRace(root: URL, fileManager: FileManager) throws -> Bool {
+        let home = root.appendingPathComponent("quota-credential-race-home", isDirectory: true)
+        let support = root.appendingPathComponent("quota-credential-race-support", isDirectory: true)
+        let store = CodexProfileStore(fileManager: fileManager, homeDirectory: home, applicationSupportDirectory: support)
+        let profile = try store.addManagedProfile()
+        let authURL = profile.codexHomeURL.appendingPathComponent("auth.json")
+        let base = Date(timeIntervalSince1970: 3_000_000)
+        let email = "bound@example.invalid"
+        try testAuthData(email: email, accessToken: "fixture").write(to: authURL)
+        let first = testSnapshot(email: email, usedPercent: 70, at: base)
+        try store.record(first, for: profile.id)
+        let failed = testSnapshot(email: email, usedPercent: 70, at: base.addingTimeInterval(1))
+            .replacingQuotaWindows(
+                fiveHourQuota: nil, sevenDayQuota: nil, monthlyQuota: nil,
+                credits: nil, quotaReadSucceeded: false)
+        try store.record(failed, for: profile.id)
+        guard store.profiles.first(where: { $0.id == profile.id })?.lastQuotaReadFailureAt == failed.refreshedAt else {
+            print("Codex profile store self-test failed: setup missing failed quota observation")
+            return false
+        }
+        try fileManager.removeItem(at: authURL)
+        try store.record(testSnapshot(email: email, usedPercent: 15, at: base.addingTimeInterval(2)), for: profile.id)
+        guard let retained = store.profiles.first(where: { $0.id == profile.id }),
+            retained.lastSnapshot?.fetchedAt == first.refreshedAt,
+            retained.lastQuotaReadFailureAt != nil
+        else {
+            print("Codex profile store self-test failed: missing credential accepted late successful quota")
+            return false
+        }
+        let system = store.profiles.first(where: \.isSystemProfile)!
+        let systemAuthURL = system.codexHomeURL.appendingPathComponent("auth.json")
+        try fileManager.createDirectory(at: system.codexHomeURL, withIntermediateDirectories: true)
+        try testAuthData(email: email, accessToken: "fixture").write(to: systemAuthURL)
+        let systemFirst = testSnapshot(email: email, usedPercent: 60, at: base.addingTimeInterval(10))
+        try store.record(systemFirst, for: system.id, allowSystemAccountChange: true)
+        try fileManager.removeItem(at: systemAuthURL)
+        let systemFailed = testSnapshot(email: email, usedPercent: 60, at: base.addingTimeInterval(11))
+            .replacingQuotaWindows(
+                fiveHourQuota: nil, sevenDayQuota: nil, monthlyQuota: nil,
+                credits: nil, quotaReadSucceeded: false)
+        try store.record(systemFailed, for: system.id)
+        try store.record(
+            testSnapshot(email: email, usedPercent: 10, at: base.addingTimeInterval(12)),
+            for: system.id)
+        guard let systemRetained = store.profiles.first(where: { $0.id == system.id }),
+            systemRetained.lastSnapshot?.fetchedAt == systemFirst.refreshedAt,
+            systemRetained.lastQuotaReadFailureAt != nil
+        else {
+            print("Codex profile store self-test failed: missing system credential accepted ChatGPT quota")
+            return false
+        }
+        let unverifiedChange = testSnapshot(
+            email: "unverified@example.invalid", usedPercent: 10, at: base.addingTimeInterval(13)
+        ).replacingQuotaWindows(
+            fiveHourQuota: nil, sevenDayQuota: nil, monthlyQuota: nil,
+            credits: nil, quotaReadSucceeded: false)
+        try store.record(unverifiedChange, for: system.id, allowAccountOnly: true, allowSystemAccountChange: true)
+        guard store.profiles.first(where: { $0.id == system.id })?.lastSnapshot?.email == email else {
+            print("Codex profile store self-test failed: unverified account-only system change was accepted")
+            return false
+        }
+        let accountOnly = testSnapshot(email: email, usedPercent: 10, at: base.addingTimeInterval(13))
+            .replacingQuotaWindows(
+                fiveHourQuota: nil, sevenDayQuota: nil, monthlyQuota: nil,
+                credits: nil, quotaReadSucceeded: false)
+        try store.record(accountOnly, for: system.id, allowAccountOnly: true)
+        guard store.profiles.first(where: { $0.id == system.id })?.lastQuotaReadFailureAt != nil else {
+            print("Codex profile store self-test failed: account-only enrichment cleared quota failure")
+            return false
+        }
+        let replacementEmail = "replacement@example.invalid"
+        try testAuthData(email: replacementEmail, accessToken: "fixture").write(to: systemAuthURL)
+        let replacement = testSnapshot(email: replacementEmail, usedPercent: 25, at: base.addingTimeInterval(14))
+        try store.record(replacement, for: system.id, allowSystemAccountChange: true)
+        guard let rebound = store.profiles.first(where: { $0.id == system.id }),
+            rebound.lastSnapshot?.email == replacementEmail,
+            rebound.lastQuotaReadFailureAt == nil
+        else {
+            print("Codex profile store self-test failed: verified system account change was blocked")
+            return false
+        }
+        let apiHome = root.appendingPathComponent("quota-api-key-home", isDirectory: true)
+        let apiSupport = root.appendingPathComponent("quota-api-key-support", isDirectory: true)
+        let apiStore = CodexProfileStore(fileManager: fileManager, homeDirectory: apiHome, applicationSupportDirectory: apiSupport)
+        let apiQuota = UsageSnapshot(
+            refreshedAt: base, account: AccountInfo(type: "apiKey", planType: nil, emailPresent: false),
+            limitId: "codex", limitName: nil, quotaReadSucceeded: true,
+            fiveHourQuota: RateWindow(usedPercent: 5, windowDurationMins: 300, resetsAt: nil),
+            sevenDayQuota: nil, monthlyQuota: nil, credits: nil, cloudLifetimeTokens: nil,
+            local: nil, taskBoard: nil, messages: [])
+        try apiStore.record(apiQuota, for: "system")
+        guard let apiSnapshot = apiStore.profiles.first(where: \.isSystemProfile)?.lastSnapshot,
+            apiSnapshot.accountType == "apiKey", apiSnapshot.quotaReadSucceeded == true
+        else {
+            print("Codex profile store self-test failed: unbound system API-key quota was rejected")
+            return false
+        }
+        let noLogin = testSnapshot(email: "unknown@example.invalid", usedPercent: 5, at: base.addingTimeInterval(1))
+        try apiStore.record(noLogin, for: "system")
+        guard apiStore.profiles.first(where: \.isSystemProfile)?.lastSnapshot == apiSnapshot else {
+            print("Codex profile store self-test failed: unverified system ChatGPT quota was accepted")
+            return false
+        }
+        print("Codex quota commit credential race self-test passed")
+        return true
+    }
+
     private static func testQuotaObservationOrdering(root: URL, fileManager: FileManager) throws -> Bool {
         let home = root.appendingPathComponent("quota-ordering-home", isDirectory: true)
         let support = root.appendingPathComponent("quota-ordering-support", isDirectory: true)
         let store = CodexProfileStore(fileManager: fileManager, homeDirectory: home, applicationSupportDirectory: support)
         let profile = try store.addManagedProfile()
+        try testWriteAuth(for: profile, email: "ordering@example.invalid")
         let stateURL =
             support
             .appendingPathComponent(DispatchParticipationPaths.supportDirectoryName, isDirectory: true)
@@ -4470,6 +4767,7 @@ enum CodexProfileStoreSelfTest {
 
         // The ordering watermark is per profile, not global or shared across account cards.
         let second = try store.addManagedProfile()
+        try testWriteAuth(for: second, email: "ordering@example.invalid")
         try store.record(observation(0), for: second.id, allowAccountOnly: true)
         try store.record(observation(0, used: 80), for: second.id)
         expect(
@@ -4478,11 +4776,17 @@ enum CodexProfileStoreSelfTest {
         )
 
         let third = try store.addManagedProfile()
+        try testWriteAuth(for: third, email: "ordering@example.invalid")
         try store.record(observation(50, used: 80, email: nil), for: third.id)
+        expect(
+            store.profiles.first { $0.id == third.id }?.lastSnapshot == nil,
+            "managed quota without account identity must not be saved"
+        )
         try store.record(observation(50), for: third.id, allowAccountOnly: true)
+        try store.record(observation(50, used: 80), for: third.id)
         expect(
             store.profiles.first { $0.id == third.id }?.lastSnapshot?.sevenDay?.usedPercent == 80,
-            "equal-time account enrichment must preserve an existing quota"
+            "equal-time complete quota must enrich an account-only observation"
         )
         expect(
             store.profiles.first { $0.id == third.id }?.lastSnapshot?.email == "ordering@example.invalid",
@@ -4501,6 +4805,7 @@ enum CodexProfileStoreSelfTest {
         )
 
         let fourth = try store.addManagedProfile()
+        try testWriteAuth(for: fourth, email: "ordering@example.invalid")
         try store.record(observation(60, messages: ["app-server 3: oauth-invalidated"]), for: fourth.id)
         try store.record(observation(60), for: fourth.id, allowAccountOnly: true)
         expect(
@@ -4514,6 +4819,7 @@ enum CodexProfileStoreSelfTest {
         )
 
         let fifth = try store.addManagedProfile()
+        try testWriteAuth(for: fifth, email: "ordering@example.invalid")
         try store.record(observation(70, succeeded: true), for: fifth.id)
         let fifthAfterSuccess = store.profiles.first { $0.id == fifth.id }
         try store.record(observation(70, messages: ["app-server 3: oauth-invalidated"]), for: fifth.id)
@@ -4523,6 +4829,7 @@ enum CodexProfileStoreSelfTest {
         )
 
         let balanceProfile = try store.addManagedProfile()
+        try testWriteAuth(for: balanceProfile, email: "ordering@example.invalid")
         try store.record(
             observation(80, succeeded: true, balance: "1,234.50", unlimited: false),
             for: balanceProfile.id
@@ -4771,6 +5078,49 @@ enum CodexProfileStoreSelfTest {
         return failures == 0
     }
 
+    private static func testResetCreditReceipts(root: URL, fileManager: FileManager) throws -> Bool {
+        let home = root.appendingPathComponent("credit-history-home")
+        let support = root.appendingPathComponent("credit-history-support")
+        let store = CodexProfileStore(fileManager: fileManager, homeDirectory: home, applicationSupportDirectory: support)
+        let profile = try store.addManagedProfile()
+        try testWriteAuth(for: profile, email: "credit-fixture@example.com")
+        try testWriteAuth(for: store.profiles.first(where: \.isSystemProfile)!, email: "credit-fixture@example.com")
+        func record(_ time: Int, _ count: Int?, system: Bool = false) throws {
+            try store.record(
+                testSnapshot(
+                    email: "credit-fixture@example.com", usedPercent: 20,
+                    at: Date(timeIntervalSince1970: Double(time)), resetCredits: count),
+                for: system ? "system" : profile.id, allowSystemAccountChange: system)
+        }
+        func history() -> [CodexResetCreditReceipt] { store.profiles.flatMap { $0.resetCreditHistory ?? [] } }
+        try record(100, 1)
+        guard history().isEmpty else { return false }
+        try record(101, 3)
+        guard history().count == 1, history()[0].added == 2,
+            history()[0].previousAvailable == 1, history()[0].available == 3,
+            history()[0].previousObservedAt == Date(timeIntervalSince1970: 100)
+        else { return false }
+        try record(101, 3)
+        try record(102, 3, system: true)
+        try record(100, 4)
+        guard history().count == 1 else { return false }
+        try record(103, nil)
+        try record(104, 5)
+        guard history().count == 1 else { return false }
+        try record(105, 6)
+        guard history().count == 2, history().last?.added == 1 else { return false }
+        let restored = CodexProfileStore(fileManager: fileManager, homeDirectory: home, applicationSupportDirectory: support)
+        guard restored.profiles.flatMap({ $0.resetCreditHistory ?? [] }) == history() else { return false }
+        for time in 106...146 { try record(time, time - 99) }
+        guard history().count == 32, history().last?.available == 47 else { return false }
+        let malformed = CodexResetCreditReceipt(
+            id: UUID(), previousObservedAt: .distantPast,
+            observedAt: .distantFuture, previousAvailable: Int.max, available: Int.min)
+        guard malformed.added == 0, !malformed.isValid(at: Date()) else { return false }
+        print("Reset-credit receipts passed: baseline, increases, mirrors, ordering, unknown gaps, persistence and retention")
+        return true
+    }
+
     private static func testSnapshot(
         email: String,
         usedPercent: Double,
@@ -4823,6 +5173,12 @@ enum CodexProfileStoreSelfTest {
                 "account_id": accountID,
             ]
         ])
+    }
+
+    private static func testWriteAuth(for profile: CodexProfile, email: String) throws {
+        try FileManager.default.createDirectory(at: profile.codexHomeURL, withIntermediateDirectories: true)
+        try testAuthData(email: email, accessToken: "fixture").write(
+            to: profile.codexHomeURL.appendingPathComponent("auth.json"))
     }
 
     private static func testResetSnapshot(
@@ -5458,11 +5814,6 @@ enum CodexWarmUpPolicySelfTest {
             guard expect(store.profiles.first?.warmUpHistory?.count == 2, "success preserves earlier failure history"),
                 expect(store.profiles.first?.warmUpHistory?.first?.failureReason == "timeout", "failure timestamp and reason remain available")
             else { return false }
-            try store.record(
-                testWindowSnapshot(email: "f@example.com", at: now),
-                for: profileID
-            )
-            guard expect(store.profiles.first?.lastQuotaReadFailureAt == nil, "quota success clears failure") else { return false }
             // All credentials below are synthetic and remain under the isolated test root.
             let authURL = home.appendingPathComponent(".codex/auth.json")
             try fileManager.createDirectory(at: authURL.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -5476,6 +5827,11 @@ enum CodexWarmUpPolicySelfTest {
                 ])
             }
             try auth("fixture-A").write(to: authURL, options: .atomic)
+            try store.record(
+                testWindowSnapshot(email: "f@example.com", at: now),
+                for: profileID
+            )
+            guard expect(store.profiles.first?.lastQuotaReadFailureAt == nil, "quota success clears failure") else { return false }
             try store.record(testWindowSnapshot(email: "f@example.com", at: now.addingTimeInterval(1)), for: profileID)
             try store.beginWarmUp(
                 requestID: "request-1", for: profileID, expectedAccountID: "fixture-A",

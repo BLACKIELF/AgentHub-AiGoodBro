@@ -17,7 +17,7 @@
   const missing = () => t('未提供', 'Not provided');
   const number = v => amount(v) === null ? missing() : v.toLocaleString(language === 'en' ? 'en-US' : 'zh-CN');
   const labelStatus = s => s === 'known' ? t('已确认', 'known') : s === 'partial' ? t('部分覆盖', 'partial coverage') : t('完整性未确认', 'completeness unconfirmed');
-  const labels = {overview:['概览','Overview'],trends:['趋势','Trends'],details:['明细','Details'],activity:['每日活跃','Daily activity'],activityHint:['悬停看数值，点击切换下方详情','Hover for values; click to update the details below'],trendTitle:['趋势','Trend'],trendHint:['按工具堆叠，缺失日期保持空白','Stacked by tool; missing dates stay blank'],less:['少','Less'],more:['多','More'],selectedDate:['所选日期','Selected date'],dailyTools:['当天工具用量','Daily tool usage'],composition:['工具构成','Tool composition'],selectedDay:['所选日期','Selected date'],group:['分组','Group'],from:['起始日期','From'],to:['结束日期','To'],date:['日期','Date'],period:['期间','Period'],day:['所选日','Selected day'],today:['今天','Today'],month:['本月','This month'],allTime:['全部时间','All time'],client:['工具','Tool'],model:['模型','Model']};
+  const labels = {overview:['概览','Overview'],trends:['趋势','Trends'],details:['明细','Details'],activity:['每日活跃','Daily activity'],activityHint:['悬停看数值，点击切换下方详情','Hover for values; click to update the details below'],trendTitle:['趋势','Trend'],trendHint:['按工具堆叠，缺失日期保持空白','Stacked by tool; missing dates stay blank'],less:['少','Less'],more:['多','More'],dayDetails:['所选日期与工具构成','Selected day and tool composition'],selectedDate:['所选日期','Selected date'],dailyTools:['当天工具用量','Daily tool usage'],composition:['工具构成','Tool composition'],selectedDay:['所选日期','Selected date'],group:['分组','Group'],from:['起始日期','From'],to:['结束日期','To'],date:['日期','Date'],period:['期间','Period'],day:['所选日','Selected day'],today:['今天','Today'],month:['本月','This month'],allTime:['全部时间','All time'],client:['工具','Tool'],model:['模型','Model']};
   function localize() {
     document.documentElement.lang = language;
     document.querySelector('nav').setAttribute('aria-label', t('用量视图','Usage view'));
@@ -324,7 +324,7 @@
     const available = [...state.byDate.values()].filter(r => r.date >= start && r.date <= end).sort((a,b) => a.date.localeCompare(b.date));
     const rows = available.filter(r => dimension(r, field)?.some(([,v]) => amount(v?.tokens) !== null)).map(r => ({date:r.date, [field]:Object.fromEntries(dimension(r, field).filter(([,v]) => amount(v?.tokens) !== null).map(([k,v]) => [k,{tokens:v.tokens}]))}));
     if (!rows.length) { $('bars').textContent = t('此范围未提供该维度','Dimension unavailable in this range'); $('legend').textContent = t('无法从每日总量推断模型或工具分组。','No model/tool grouping inferred from daily totals.'); return; }
-    const model = api.dailyBarsChart(rows,{width:barsWidth(),height:150,padLeft:56,stackBy:$('group').value,metric:'tokens'});
+    const model = api.dailyBarsChart(rows,{width:barsWidth(),height:state.compact ? 100 : 150,padLeft:56,stackBy:$('group').value,metric:'tokens'});
     const colorFor = k => `hsl(${(model.keys.indexOf(k)*67+205)%360},65%,52%)`;
     const labelStride = Math.max(1, Math.ceil(rows.length / Math.max(2, Math.floor(model.plot.w / 72))));
     const tickFormat = new Intl.NumberFormat(language === 'en' ? 'en-US' : 'zh-CN', {notation:'compact',maximumFractionDigits:1});
@@ -353,6 +353,7 @@
   }
   root.__renderTrend = function (input, options = {}) {
     language = options.language === 'en' ? 'en' : 'zh'; localize();
+    document.body.setAttribute('data-compact', String(Number.isFinite(options.height) && options.height <= 180));
     // Native sends the bounded JSON once per snapshot/navigation. Presentation
     // updates carry only its identity and options, reusing this realm's object.
     const snapshotID = options.snapshotID;
@@ -381,6 +382,7 @@
     const previousFrom = $('from').value, previousTo = $('to').value;
     state = normalize(input,options.resetAnnotations);
     state.snapshotID = snapshotID;
+    state.compact = Number.isFinite(options.height) && options.height <= 180;
     state.width = Number.isFinite(options.width) ? Math.max(320,Math.min(2000,options.width)) : 650;
     $('context').textContent = `${t('每日 Token','Daily tokens')} · ${publicText(input.timezone)} · ${t('仅汇总已记录用量','Recorded usage only')}`;
     const rows = [...state.byDate.values()].filter(r => amount(r.tokens) !== null);
@@ -427,6 +429,7 @@
     return svg;
   };
   document.querySelectorAll('[data-mode]').forEach(el => el.addEventListener('click', () => mode(el.getAttribute('data-mode'))));
+  $('day-disclosure')?.addEventListener('toggle', reportSize);
   for (const id of ['group','from','to']) $(id).addEventListener('change',() => { if (state && (id === 'from' || id === 'to')) state.userRange = true; bars(); reportSize(); });
   $('period').addEventListener('change',details);
   $('date').addEventListener('change', () => select($('date').value));

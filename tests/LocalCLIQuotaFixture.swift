@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 #if canImport(FoundationNetworking)
 import FoundationNetworking
@@ -41,13 +42,85 @@ struct LocalCLIQuotaFixture {
         try testPublicModel()
         try testParsers()
         try testBoundedRegularFiles()
+        try await testCredentialRenewal()
         try await testGrokLoad()
         try await testKimiLoadAndDeviceIsolation()
         try await testClaudeLoadAndProfileIsolation()
+        try await testClaudeCredentialChangesDiscardQuota()
+        try await testClaudeRelay()
         try await testOpenCodeProviderIsolation()
+        try await testOpenCodeAuthorizationStates()
         try await testUnsupportedKindsRemainUnknown()
         try await testHTTPStatesAndResponseBound()
         print("PASS local-cli-quota fixture")
+    }
+
+    private static func testCredentialRenewal() async throws {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let original = data(#"{"access_token":"old","refresh_token":"refresh","user_id":"same-user","custom":7}"#)
+        let reply = data(#"{"access_token":"new","refresh_token":"rotated","expires_in":"3600"}"#)
+        let updated = try LocalCLIQuotaRefresh.renewedKimiCredential(original, response: reply, now: now)
+        let kimi = try JSONSerialization.jsonObject(with: updated) as! [String: Any]
+        try expect(kimi["user_id"] as? String == "same-user" && kimi["custom"] as? Int == 7, "Kimi refresh preserves account and unknown fields")
+        try expect(kimi["expires_at"] as? Double == now.timeIntervalSince1970 + 3600, "Kimi computes expiry")
+        let request = try LocalCLIQuotaRefresh.kimiRefreshRequest(refreshToken: "a+b&c", deviceID: "synthetic-device")
+        try expect(request.url?.absoluteString == "https://auth.kimi.com/api/oauth/token", "Kimi fixed refresh origin")
+        try expect(String(decoding: request.httpBody!, as: UTF8.self).contains("refresh_token=a%2Bb%26c"), "form secrets cannot add parameters")
+        for invalid in [#"{"access_token":"a","refresh_token":"b","expires_in":true}"#,
+                        #"{"access_token":"a","refresh_token":"b","expires_in":-1}"#,
+                        #"{"access_token":"a","expires_in":3600}"#] {
+            try expectThrows("invalid refresh must not alter credentials") {
+                _ = try LocalCLIQuotaRefresh.renewedKimiCredential(original, response: data(invalid), now: now)
+            }
+        }
+        try withDirectory { directory in
+            let file = directory.appendingPathComponent("credential.json")
+            try original.write(to: file)
+            try LocalCLIQuotaRefresh.replaceCredential(file, expected: original, updated: updated)
+            let persisted = try Data(contentsOf: file)
+            try expect(persisted == updated, "atomic credential replacement")
+            try expectThrows("concurrent account changes prevent overwrite") {
+                try LocalCLIQuotaRefresh.replaceCredential(file, expected: original, updated: data("{}"))
+            }
+            let attributes = try FileManager.default.attributesOfItem(atPath: file.path)
+            try expect(attributes[.posixPermissions] as? Int == 0o600, "refreshed credentials remain private")
+        }
+        let sessionKey = "https://auth.x.ai::fixture-client"
+        let entry: [String: Any] = ["key":"old", "refresh_token":"refresh", "user_id":"same-user",
+            "oidc_issuer":"https://auth.x.ai", "oidc_client_id":"fixture-client", "principal_type":"team", "principal_id":"fixture-team"]
+        let grokOriginal = try JSONSerialization.data(withJSONObject: [sessionKey:entry,"unrelated":["retained":true]])
+        let grokReply = data(#"{"access_token":"renewed","expires_in":3600,"token_type":"Bearer"}"#)
+        let grokUpdated = try LocalCLIQuotaRefresh.renewedGrokCredential(grokOriginal, sessionKey: sessionKey, response: grokReply, now: now)
+        let grok = try JSONSerialization.jsonObject(with: grokUpdated) as! [String: Any]
+        let saved = grok[sessionKey] as! [String: Any]
+        try expect(saved["refresh_token"] as? String == "refresh" && saved["user_id"] as? String == "same-user" && saved["principal_id"] as? String == "fixture-team", "Grok preserves session when refresh token is not rotated")
+        try expect(grok["unrelated"] != nil, "other credentials retained")
+        var wrongIssuer = entry; wrongIssuer["oidc_issuer"] = "https://other.invalid"
+        try expectThrows("Grok token never sent to arbitrary issuer") {
+            _ = try LocalCLIQuotaRefresh.grokRefreshRequest(wrongIssuer, sessionKey: sessionKey)
+        }
+        try await withDirectory { directory in
+            let file = directory.appendingPathComponent("auth.json")
+            try grokOriginal.write(to: file)
+            let transport = MockTransport(data: grokReply)
+            try await LocalCLIQuotaRefresh.renewGrokCredential(directory: directory, transport: transport)
+            let renewed = try JSONSerialization.jsonObject(with: Data(contentsOf: file)) as! [String: Any]
+            try expect((renewed[sessionKey] as? [String: Any])?["key"] as? String == "renewed", "Grok refresh persisted")
+            try expect(transport.request?.url?.absoluteString == "https://auth.x.ai/oauth2/token", "official Grok refresh endpoint")
+            let body = String(decoding: transport.request!.httpBody!, as: UTF8.self)
+            try expect(body.contains("principal_id=fixture-team"), "principal selection preserved")
+            let lockURL = directory.appendingPathComponent("auth.json.lock")
+            let descriptor = open(lockURL.path, O_RDWR)
+            try expect(descriptor >= 0 && flock(descriptor, LOCK_EX | LOCK_NB) == 0, "fixture holds official lock")
+            defer { _ = flock(descriptor, LOCK_UN); close(descriptor) }
+            let unused = MockTransport(data: grokReply)
+            do {
+                try await LocalCLIQuotaRefresh.renewGrokCredential(directory: directory, transport: unused)
+                throw FixtureFailure.assertion("must not break Grok lock")
+            } catch is FixtureFailure { throw FixtureFailure.assertion("must not break Grok lock") }
+            catch {}
+            try expect(unused.request == nil && FileManager.default.fileExists(atPath: lockURL.path), "held lock prevents network and stays on disk")
+        }
     }
 
     private static func testPublicModel() throws {
@@ -71,6 +144,24 @@ struct LocalCLIQuotaFixture {
             LocalCLIProfile.self,
             from: JSONEncoder().encode(profile))
         try expect(roundTrip == profile, "profile Codable")
+    }
+
+    private static func testClaudeRelay() async throws {
+        try expect(CCSwitchClaudeRelay.selfTest(), "relay parser and fixed endpoint")
+        let profile = LocalCLIProfile(id: "relay", kind: .claudeCode, displayName: "Synthetic", configDirectory: LocalCLIKind.claudeCode.defaultConfigDirectory(home: FileManager.default.homeDirectoryForCurrentUser).path, isDefault: true)
+        let transport = MockTransport(data: Data("{\"remaining\":46.72,\"unit\":\"USD\"}".utf8))
+        var keychainReads = 0
+        let reader = LocalCLIQuotaReader(transport: transport, fileReader: { _,_,_ in nil }, claudeKeychainReader: { keychainReads += 1; return nil },
+            claudeRelayReader: { CCSwitchClaudeRelay.Credential(token: "synthetic-only", fingerprint: "synthetic-moylor") })
+        let value = await reader.load(profile: profile)
+        try expect(value.state == .available && value.balance == 46.72 && value.balanceCurrency == "USD", "relay balance result")
+        try expect(value.sourceLabel == "CC Switch · moylor" && value.windows.isEmpty && value.identityFingerprint == "synthetic-moylor", "relay separate from subscription")
+        try expect(transport.request?.url?.absoluteString == "https://claude.moylor.com/v1/usage" && keychainReads == 0, "relay cannot use Anthropic OAuth")
+        var generation = 0
+        let changed = LocalCLIQuotaReader(transport: transport, fileReader: { _,_,_ in nil }, claudeKeychainReader: { nil },
+            claudeRelayReader: { generation += 1; return CCSwitchClaudeRelay.Credential(token: "synthetic-only", fingerprint: "synthetic-\(generation)") })
+        let stale = await changed.load(profile: profile)
+        try expect(stale.state == .unavailable && stale.balance == nil, "provider switch rejects stale relay balance")
     }
 
     private static func testParsers() throws {
@@ -290,7 +381,7 @@ struct LocalCLIQuotaFixture {
             profile: defaultProfile,
             now: Date(timeIntervalSince1970: 1_800_000_000))
         try expect(keychainResult.state == .available, "Claude default noninteractive Keychain fixture")
-        try expect(keychainReads == 1, "Claude default Keychain query is scoped")
+        try expect(keychainReads == 2, "Claude default Keychain is rechecked in the same scope")
 
         var recoveryReads = 0
         let recoveryTransport = MockTransport(data: data(#"{"five_hour":{"utilization":29}}"#))
@@ -302,10 +393,83 @@ struct LocalCLIQuotaFixture {
                 return data(#"{"claudeAiOauth":{"accessToken":"synthetic-fresh-keychain","expiresAt":2000000000000}}"#)
             })
         let recovered = await recoveryReader.load(profile: defaultProfile, now: Date(timeIntervalSince1970: 1_800_000_000))
-        try expect(recovered.state == .available && recoveryReads == 1, "expired default Claude file recovers current Keychain login")
+        try expect(recovered.state == .available && recoveryReads == 2, "expired default Claude file recovers current Keychain login")
         try expect(recoveryTransport.request?.value(forHTTPHeaderField: "Authorization") == "Bearer synthetic-fresh-keychain", "recovery uses the fresh same-scope token")
         let isolated = await recoveryReader.load(profile: profile(.claudeCode, URL(fileURLWithPath: "/synthetic-linked")), now: Date(timeIntervalSince1970: 1_800_000_000))
-        try expect(isolated.state == .needsLogin && recoveryReads == 1, "expired linked Claude account never reads global Keychain")
+        try expect(isolated.state == .needsLogin && recoveryReads == 2, "expired linked Claude account never reads global Keychain")
+    }
+
+    private static func testClaudeCredentialChangesDiscardQuota() async throws {
+        let original = data(#"{"claudeAiOauth":{"accessToken":"synthetic-original","expiresAt":2000000000000}}"#)
+        let replacement = data(#"{"claudeAiOauth":{"accessToken":"synthetic-replacement","expiresAt":2000000000000}}"#)
+        let expired = data(#"{"claudeAiOauth":{"accessToken":"synthetic-expired","expiresAt":1000}}"#)
+        let defaultDirectory = LocalCLIKind.claudeCode.defaultConfigDirectory(
+            home: FileManager.default.homeDirectoryForCurrentUser)
+        let defaultProfile = LocalCLIProfile(
+            id: "synthetic-default-claude", kind: .claudeCode, displayName: "Synthetic",
+            configDirectory: defaultDirectory.path, isDefault: true)
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        // All reads and transport responses below are synthetic. The second
+        // source read happens only after the mocked usage request has returned.
+        for changesTo in [replacement, nil] as [Data?] {
+            var fileReads = 0
+            var keychainReads = 0
+            let transport = MockTransport(data: data(#"{"five_hour":{"utilization":21}}"#))
+            let reader = LocalCLIQuotaReader(
+                transport: transport,
+                fileReader: { _, _, _ in
+                    fileReads += 1
+                    return fileReads == 1 ? original : changesTo
+                },
+                claudeKeychainReader: { keychainReads += 1; return replacement })
+            let result = await reader.load(
+                profile: profile(.claudeCode, URL(fileURLWithPath: "/synthetic-linked")), now: now)
+            try expect(transport.request != nil && fileReads == 2, "Claude rechecks file after usage")
+            try expect(result.state == .unavailable && result.windows.isEmpty && result.identityFingerprint == nil
+                       && result.messageCode == "local_cli_claude_credentials_changed",
+                       "changed or removed Claude file cannot publish old quota")
+            try expect(keychainReads == 0, "linked Claude profile never reads default Keychain")
+        }
+        for fileSeed in [nil, expired] as [Data?] {
+            for changesTo in [replacement, nil] as [Data?] {
+                var keychainReads = 0
+                let transport = MockTransport(data: data(#"{"five_hour":{"utilization":22}}"#))
+                let reader = LocalCLIQuotaReader(
+                    transport: transport, fileReader: { _, _, _ in fileSeed },
+                    claudeKeychainReader: {
+                        keychainReads += 1
+                        return keychainReads == 1 ? original : changesTo
+                    })
+                let result = await reader.load(profile: defaultProfile, now: now)
+                try expect(transport.request != nil && keychainReads == 2, "Claude selected Keychain is rechecked")
+                try expect(result.state == .unavailable && result.windows.isEmpty && result.identityFingerprint == nil
+                       && result.messageCode == "local_cli_claude_credentials_changed",
+                           "changed or missing Keychain discards direct and expired-file recovery quota")
+            }
+        }
+        var fileReads = 0
+        let appearingFile = LocalCLIQuotaReader(
+            transport: MockTransport(data: data(#"{"five_hour":{"utilization":23}}"#)),
+            fileReader: { _, _, _ in
+                fileReads += 1
+                return fileReads == 1 ? nil : replacement
+            }, claudeKeychainReader: { original })
+        let appeared = await appearingFile.load(profile: defaultProfile, now: now)
+        try expect(appeared.state == .unavailable && appeared.windows.isEmpty
+                   && appeared.messageCode == "local_cli_claude_credentials_changed",
+                   "new file source cannot inherit in-flight Keychain quota")
+        var keychainReads = 0
+        let deniedKeychain = LocalCLIQuotaReader(
+            transport: MockTransport(data: data(#"{"five_hour":{"utilization":24}}"#)),
+            fileReader: { _, _, _ in nil }, claudeKeychainReader: {
+                keychainReads += 1
+                if keychainReads > 1 { throw CocoaError(.fileReadNoPermission) }
+                return original
+            })
+        let denied = await deniedKeychain.load(profile: defaultProfile, now: now)
+        try expect(denied.state == .unavailable && denied.windows.isEmpty
+                   && denied.messageCode == "local_cli_keychain_unavailable",
+                   "Keychain recheck denial fails closed without credential fallback")
     }
 
     private static func testOpenCodeProviderIsolation() async throws {
@@ -341,9 +505,60 @@ struct LocalCLIQuotaFixture {
         }
     }
 
+    private static func testOpenCodeAuthorizationStates() async throws {
+        try await withDirectory { directory in
+            let selected = profile(.openCode, directory)
+            try data(#"{"opencode-go":{"type":"api","key":"synthetic-go-key"}}"#)
+                .write(to: directory.appendingPathComponent("auth.json"))
+            func upstreamResponse(status: String, reason: String? = nil) -> TokenMonitorResponse {
+                var snapshot: [String: TokenMonitorJSON] = [
+                    "providers": .array([.object([
+                        "provider": .string("opencode"),
+                        "source": .string(TokenMonitorLocalCLIQuotaReader.sourceLabel),
+                        "balanceUsd": .null,
+                        "status": .string(status),
+                    ])]),
+                ]
+                if let reason { snapshot["reasonCode"] = .string(reason) }
+                return TokenMonitorResponse(
+                    schemaVersion: 1, requestId: "synthetic", operation: .collectLimits,
+                    engine: .init(repository: "synthetic", commit: "synthetic", version: "synthetic"),
+                    collectedAt: ISO8601DateFormatter().string(from: Date()), timezone: "UTC", status: .partial,
+                    sources: [.init(id: selected.id, providerId: "opencode", status: .unavailable,
+                                    coverage: .unknown, reasonCode: nil)],
+                    payload: .object(["limits": .object(["targets": .array([.object([
+                        "sourceId": .string(selected.id), "providerId": .string("opencode"),
+                        "accountId": .string(selected.id), "snapshot": .object(snapshot),
+                    ])])])]),
+                    coverage: .init(entries: [], days: [], cost: .unknown), errors: [])
+            }
+            let now = Date(timeIntervalSince1970: 1_800_000_000)
+            let unauthorized = try TokenMonitorLocalCLIQuotaReader.map(
+                upstreamResponse(status: "unauthorized"), sourceID: selected.id, accountID: selected.id, now: now)
+            let upstreamTransport = MockTransport(status: 401, data: Data())
+            let upstream = await LocalCLIQuotaReader(
+                transport: upstreamTransport, upstreamReader: { _, _ in unauthorized })
+                .load(profile: selected, now: now)
+            try expect(upstream.state == .unavailable && upstream.messageCode == "local_cli_authorization_unverified",
+                       "upstream OpenCode 401 is unverified quota access")
+            try expect(upstreamTransport.request == nil, "accepted upstream 401 does not call native fallback")
+            let native = await LocalCLIQuotaReader(transport: MockTransport(status: 401, data: Data()))
+                .load(profile: selected, now: now)
+            try expect(native.state == .unavailable && native.messageCode == upstream.messageCode,
+                       "upstream and native OpenCode 401 agree")
+            let noGoPlan = try TokenMonitorLocalCLIQuotaReader.map(
+                upstreamResponse(status: "notConfigured", reason: "unsupported_go_plan"),
+                sourceID: selected.id, accountID: selected.id, now: now)
+            try expect(noGoPlan.state == .unsupported, "confirmed absence of Go subscription remains unsupported")
+            let forbidden = await LocalCLIQuotaReader(transport: MockTransport(status: 403, data: Data()))
+                .load(profile: selected, now: now)
+            try expect(forbidden.state == .unavailable, "generic OpenCode 403 does not imply sign-out")
+        }
+    }
+
     private static func testHTTPStatesAndResponseBound() async throws {
         try await withDirectory { directory in
-            try data(#"{"https://auth.x.ai::synthetic":{"key":"synthetic-token"}}"#)
+            try data(#"{"https://auth.x.ai::synthetic":{"key":"synthetic-token","user_id":"synthetic-user","expires_at":"2030-01-01T00:00:00Z"}}"#)
                 .write(to: directory.appendingPathComponent("auth.json"))
             let unauthorized = await LocalCLIQuotaReader(
                 transport: MockTransport(status: 401, data: Data())).load(profile: profile(.grok, directory))

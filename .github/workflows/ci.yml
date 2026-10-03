@@ -3,7 +3,7 @@ name: CI
 on:
   pull_request:
   push:
-    branches: [main, "codex/**"]
+    branches: [main]
   workflow_dispatch:
     inputs:
       windows:
@@ -37,22 +37,44 @@ jobs:
 
   macos:
     runs-on: macos-14
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - name: Prepare companion build toolchain
         uses: actions/setup-go@v5
         with:
-          go-version-file: Companion/Hub/go.mod
+          go-version-file: Companion/LocalProxy/go.mod
           cache: false
       - name: Lint Swift sources
         run: make lint
+      - name: Validate native local proxy host with synthetic accounts
+        run: python3 scripts/test-local-proxy-host.py
+      - name: Mount pinned Token Monitor desktop runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = arm64
+          dmg="$RUNNER_TEMP/Token-Monitor-0.62.0-arm64.dmg"
+          mountpoint="$RUNNER_TEMP/token-monitor-0.62.0"
+          curl --fail --location --retry 3 --silent --show-error \
+            --output "$dmg" \
+            https://github.com/Javis603/token-monitor/releases/download/v0.62.0/Token-Monitor-0.62.0-arm64.dmg
+          expected="$(python3 -c 'import json; print(json.load(open("Companion/TokenMonitorDesktop/SOURCE.json"))["runtime"]["officialDMGSHA256"])')"
+          printf '%s  %s\n' "$expected" "$dmg" | shasum -a 256 --check -
+          mkdir -p "$mountpoint"
+          hdiutil attach -readonly -nobrowse -mountpoint "$mountpoint" "$dmg"
+          test -d "$mountpoint/Token Monitor.app"
+          printf 'TOKEN_MONITOR_DESKTOP_RUNTIME=%s/Token Monitor.app\n' "$mountpoint" >> "$GITHUB_ENV"
+          printf 'TOKEN_MONITOR_DESKTOP_DMG=%s\n' "$dmg" >> "$GITHUB_ENV"
       - name: Build, verify runtime resources, and run self-tests
         run: make test
       - name: Verify Token Monitor and credential integration
         run: |
           python3 -m unittest tests.test_token_monitor_packaging
+          AIGOODBRO_TOKEN_CORE_APP="build/AiGoodBro.app/Contents/Helpers/AiGoodBro Token Core.app" python3 scripts/test-token-monitor-desktop-package.py
+          python3 scripts/test-token-monitor-desktop-lifecycle.py
           python3 scripts/test-statistics-integration.py
+          python3 scripts/test-statistics-cache-identity.py
           python3 tests/token-monitor-native/run.py
           build/AiGoodBro.app/Contents/Resources/TokenMonitorEngine/runtime/node tests/token-monitor-native/protocol-boundaries.cjs
           python3 tests/token-monitor-home/run.py
@@ -68,6 +90,7 @@ jobs:
           python3 scripts/test-automatic-switch-wiring.py
           python3 -m unittest tests.test_account_refresh_frequency
           python3 scripts/test-public-reset-translation.py
+          python3 tests/test_public_reset_forecast_boundaries.py
       - name: Check shared dispatch coordination and Swift interoperability
         run: |
           python3 scripts/next_dispatch_preflight.py --self-test
@@ -76,6 +99,14 @@ jobs:
           python3 scripts/test-message-channels.py
           bash scripts/test-grok-reset-cards.sh
           python3 -m unittest tests.test_local_cli_quota tests.test_additional_cli_quota tests.test_zcode_cli_quota
+      - name: Validate independent local proxy with synthetic accounts
+        run: |
+          python3 scripts/test-invite-purchase-link.py
+          python3 scripts/test-local-proxy-quota-refresh.py
+          python3 Companion/LocalProxy/fixtures/test-cross-language.py --helper build/AiGoodBro.app/Contents/Resources/LocalProxy/aigoodbro-local-proxy
+          cd Companion/LocalProxy
+          go test -mod=readonly -race -timeout=3m ./...
+          go vet -mod=readonly ./...
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -84,6 +115,17 @@ jobs:
           npm install --no-save --no-package-lock --no-audit --no-fund playwright@1.62.1
           npx playwright install chromium
           node scripts/test-upstream-dashboard-dom-0918v1.js
+          node scripts/test-home-dashboard-cost-0928v4.cjs
+          node scripts/test-home-dashboard-0928v1.cjs
+      - name: Unmount pinned Token Monitor desktop runtime
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mountpoint="$RUNNER_TEMP/token-monitor-0.62.0"
+          if mount | grep -F " on $mountpoint (" >/dev/null; then
+            hdiutil detach "$mountpoint"
+          fi
 
   windows-rust-format:
     needs: changes
@@ -164,10 +206,53 @@ jobs:
           npm run test:visual
 
 
+  windows-native-visual:
+    needs: changes
+    if: needs.changes.outputs.windows == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: windows/apps/codexu-tauri/web/package-lock.json
+      - uses: dtolnay/rust-toolchain@1.97.1
+      - uses: actions/cache/restore@v4
+        id: native-cache
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            windows/target
+          key: windows-native-${{ hashFiles('windows/Cargo.lock') }}
+      - name: Build the packaged Windows frontend
+        working-directory: windows/apps/codexu-tauri/web
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+      - name: Build the native release application
+        working-directory: windows
+        run: cargo build --release --locked -p codexu-tauri --features custom-protocol
+      - name: Verify two independent cold-start captures and cleanup
+        shell: powershell
+        run: |
+          .\windows\scripts\tests\Test-NativeVisualCaptureCoverage.ps1
+          .\windows\scripts\tests\Test-NativeVisualCaptureCoverage.ps1
+      - uses: actions/cache/save@v4
+        if: ${{ always() && !cancelled() && steps.native-cache.outputs.cache-hit != 'true' }}
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            windows/target
+          key: windows-native-${{ hashFiles('windows/Cargo.lock') }}
+
   required:
     name: CI required
     if: ${{ always() && !cancelled() }}
-    needs: [changes, macos, windows-rust-format, windows-web]
+    needs: [changes, macos, windows-rust-format, windows-web, windows-native-visual]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -178,14 +263,17 @@ jobs:
           WINDOWS_REQUIRED: ${{ needs.changes.outputs.windows }}
           RUST_RESULT: ${{ needs.windows-rust-format.result }}
           WEB_RESULT: ${{ needs.windows-web.result }}
+          NATIVE_RESULT: ${{ needs.windows-native-visual.result }}
         run: |
           test "$SCOPE_RESULT" = success
           test "$MACOS_RESULT" = success
           if [ "$WINDOWS_REQUIRED" = true ]; then
             test "$RUST_RESULT" = success
             test "$WEB_RESULT" = success
+            test "$NATIVE_RESULT" = success
           else
             test "$WINDOWS_REQUIRED" = false
             test "$RUST_RESULT" = skipped
             test "$WEB_RESULT" = skipped
+            test "$NATIVE_RESULT" = skipped
           fi

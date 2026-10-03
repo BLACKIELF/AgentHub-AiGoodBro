@@ -36,6 +36,15 @@ enum BundledSkill: String, CaseIterable, Identifiable {
         }
     }
 
+    func purpose(_ language: WidgetLanguage) -> String {
+        switch self {
+        case .oracle: language.text("方案复核", "Review a plan")
+        case .handoff: language.text("接续任务", "Continue work")
+        case .typesafeAI: language.text("结构化判断", "Typed decisions")
+        case .quickToggle: language.text("快捷呼出", "App hotkeys")
+        }
+    }
+
     private var installBoundary: String {
         switch self {
         case .oracle:
@@ -82,6 +91,10 @@ enum BundledSkill: String, CaseIterable, Identifiable {
             parts.scheme == "codex", parts.host == "threads", parts.path == "/new",
             parts.queryItems == [URLQueryItem(name: "prompt", value: prompt), URLQueryItem(name: "mode", value: "codex")]
         else { return false }
+        guard BundledRecommendationFilter.all.items.count == 4,
+            BundledRecommendationFilter.skills.items.count == 3,
+            BundledRecommendationFilter.apps.items == [.quickToggle]
+        else { return false }
         for skill in allCases {
             if skill == .quickToggle {
                 guard let prompt = skill.prompt, prompt.contains("https://github.com/BLACKIELF/QuickToggle"), !prompt.contains("/Users/") else { return false }
@@ -97,27 +110,55 @@ enum BundledSkill: String, CaseIterable, Identifiable {
     }
 }
 
+enum BundledRecommendationFilter: String, CaseIterable {
+    case all, skills, apps
+
+    var items: [BundledSkill] {
+        BundledSkill.allCases.filter {
+            switch self {
+            case .all: true
+            case .skills: $0 != .quickToggle
+            case .apps: $0 == .quickToggle
+            }
+        }
+    }
+
+    func label(_ language: WidgetLanguage) -> String {
+        switch self {
+        case .all: language.text("全部", "All")
+        case .skills: "Skills"
+        case .apps: language.text("应用", "Apps")
+        }
+    }
+}
+
 struct HomeSkillShelf: View {
     let language: WidgetLanguage
     @State private var selected: BundledSkill?
+    @State private var filter: BundledRecommendationFilter = .all
     @AppStorage(HomeSection.recommendations.storageKey) private var isExpanded = true
     static let quickToggleURL = URL(string: "https://github.com/BLACKIELF/QuickToggle/releases")!
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                HomeSectionToggle(
-                    title: language.text("推荐 Skills 与应用", "Recommended skills and apps"),
-                    systemImage: "square.stack.3d.up", language: language, isExpanded: $isExpanded
-                )
-                .font(.subheadline.weight(.semibold))
-                Text(language.text("精选工具 · 按需安装", "Selected tools · install as needed"))
-                    .font(.caption2).foregroundStyle(.secondary)
-            }
+        VStack(alignment: .leading, spacing: 6) {
+            HomeSectionToggle(
+                title: language.text("推荐 Skills 与应用", "Recommended skills and apps"),
+                systemImage: "square.stack.3d.up", language: language, isExpanded: $isExpanded
+            ).font(.subheadline.weight(.semibold))
             if isExpanded {
+                HStack(spacing: 8) {
+                    Picker(language.text("类别", "Category"), selection: $filter) {
+                        ForEach(BundledRecommendationFilter.allCases, id: \.self) { value in
+                            Text(value.label(language)).tag(value)
+                        }
+                    }.pickerStyle(.segmented).labelsHidden().frame(maxWidth: 210)
+                    Spacer(minLength: 0)
+                    Text(language.text("\(filter.items.count) 项 · 按需安装", "\(filter.items.count) items · optional"))
+                        .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                }
                 ViewThatFits(in: .horizontal) {
-                    recommendationGrid(columns: 4).frame(minWidth: 996)
-                    recommendationGrid(columns: 2).frame(minWidth: 492)
+                    recommendationGrid(columns: 4).frame(minWidth: 720)
+                    recommendationGrid(columns: 2).frame(minWidth: 400)
                     recommendationGrid(columns: 1)
                 }
             }
@@ -126,21 +167,23 @@ struct HomeSkillShelf: View {
     }
 
     private func recommendationGrid(columns: Int) -> some View {
-        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: columns), spacing: 10) {
-            ForEach(BundledSkill.allCases) { skill in
+        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: min(columns, filter.items.count)), spacing: 6) {
+            ForEach(filter.items) { skill in
                 Button {
                     selected = skill
                 } label: {
-                    HStack(spacing: 10) {
-                        Image(systemName: skill.symbol).foregroundStyle(.tint).font(.title3)
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(skill.title).font(.callout.weight(.semibold))
-                            Text(skill.summary(language)).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                    HStack(spacing: 6) {
+                        Image(systemName: skill.symbol).foregroundStyle(.tint).font(.system(size: 12))
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(skill.title).font(.system(size: 11, weight: .semibold)).lineLimit(1)
+                            Text(skill.purpose(language)).font(.system(size: 9)).foregroundStyle(.tint)
+                            Text(skill.summary(language)).font(.system(size: 10)).foregroundStyle(.secondary)
+                                .lineLimit(2).fixedSize(horizontal: false, vertical: true).help(skill.summary(language))
                         }
                         Spacer(minLength: 0)
                         Image(systemName: "arrow.up.forward").font(.caption).foregroundStyle(.secondary)
                     }
-                    .padding(12).frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(7).frame(maxWidth: .infinity, minHeight: 66, alignment: .leading)
                     .background(Color.accentColor.opacity(0.05), in: RoundedRectangle(cornerRadius: 10))
                     .contentShape(Rectangle())
                 }

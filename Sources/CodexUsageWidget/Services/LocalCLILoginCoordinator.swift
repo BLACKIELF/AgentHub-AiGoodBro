@@ -5,26 +5,62 @@ import Foundation
 /// `LocalCLILoginCapability`; this type does not inspect credentials or start
 /// a process itself.
 actor LocalCLILoginCoordinator {
+    /// Provider stages that are awaited directly and therefore need a bounded
+    /// wait. Every deadline is identified by the attempt id plus a monotonic
+    /// stage generation, so a stale timer can never terminate a later stage of
+    /// the same attempt or a different attempt.
+    private enum LoginStage: Sendable, Equatable {
+        case detection
+        case identityDiscovery
+        case authorizationLaunch
+        case quotaRead
+        case modelVerification(model: String)
+    }
+
+    /// Default per-stage bound. It matches the 15-second network request
+    /// timeout used by LocalCLIQuotaReader so one provider stage cannot outwait
+    /// the repo's own remote reads. Fixtures inject shorter deterministic
+    /// deadlines through the initializers.
+    static let defaultStageDeadline: Duration = .seconds(15)
+
     private struct ActiveAttempt {
         let id: UUID
         let target: LocalCLILoginTarget
         let capability: any LocalCLILoginCapability
         var workflow: LocalCLILoginWorkflow
         var receipt: LocalCLILoginLaunchReceipt?
+        var stageGeneration = 0
+        var watchdog: Task<Void, Never>? = nil
     }
 
     private let capabilities: [LocalCLILoginProvider: any LocalCLILoginCapability]
+    private let stageDeadline: Duration
     private var activeAttempt: ActiveAttempt?
+    // Attempt ids whose launch call may still return a receipt that must be
+    // cancelled exactly once. An entry is consumed when that launch call
+    // returns or throws. A launch that never returns leaves its id here for
+    // the process lifetime (one UUID and one suspended task each); no TTL or
+    // timed sweep exists because sweeping could drop a late receipt's
+    // cancellation. Manual cancels while a launch is in flight use the same
+    // mechanism and inherit the same residual.
     private var pendingCancellations: Set<UUID> = []
     private var driverTask: Task<Void, Never>?
     private(set) var status: LocalCLILoginStatus = .empty
 
-    init(capability: any LocalCLILoginCapability) {
+    init(
+        capability: any LocalCLILoginCapability,
+        stageDeadline: Duration = LocalCLILoginCoordinator.defaultStageDeadline
+    ) {
         self.capabilities = [capability.descriptor.provider: capability]
+        self.stageDeadline = stageDeadline
     }
 
-    init(capabilities: [LocalCLILoginProvider: any LocalCLILoginCapability]) {
+    init(
+        capabilities: [LocalCLILoginProvider: any LocalCLILoginCapability],
+        stageDeadline: Duration = LocalCLILoginCoordinator.defaultStageDeadline
+    ) {
         self.capabilities = capabilities
+        self.stageDeadline = stageDeadline
     }
 
     func descriptor(for provider: LocalCLILoginProvider) -> LocalCLILoginCapabilityDescriptor? {
@@ -89,6 +125,7 @@ actor LocalCLILoginCoordinator {
         activeAttempt = nil
         driverTask?.cancel()
         driverTask = nil
+        current.watchdog?.cancel()
 
         if let receipt = current.receipt {
             await current.capability.cancelAuthorization(target: current.target, receipt: receipt)
@@ -155,7 +192,9 @@ actor LocalCLILoginCoordinator {
             return
         }
 
+        armStageWatchdog(attemptID: attemptID, stage: .detection)
         let detection = await capability.detect(target: target)
+        disarmStageWatchdog(attemptID: attemptID)
         guard activeAttempt?.id == attemptID else {
             pendingCancellations.remove(attemptID)
             return
@@ -165,7 +204,9 @@ actor LocalCLILoginCoordinator {
             return
         }
 
+        armStageWatchdog(attemptID: attemptID, stage: .identityDiscovery)
         let identity = await capability.discoverIdentity(target: target)
+        disarmStageWatchdog(attemptID: attemptID)
         guard activeAttempt?.id == attemptID else {
             pendingCancellations.remove(attemptID)
             return
@@ -219,8 +260,10 @@ actor LocalCLILoginCoordinator {
             return
         }
 
+        armStageWatchdog(attemptID: attemptID, stage: .authorizationLaunch)
         do {
             let receipt = try await capability.startAuthorization(target: target)
+            disarmStageWatchdog(attemptID: attemptID)
             guard var current = activeAttempt, current.id == attemptID else {
                 if pendingCancellations.remove(attemptID) != nil {
                     await capability.cancelAuthorization(target: target, receipt: receipt)
@@ -236,6 +279,7 @@ actor LocalCLILoginCoordinator {
             activeAttempt = current
             status = current.workflow.status
         } catch let error as LocalCLILoginCapabilityError {
+            disarmStageWatchdog(attemptID: attemptID)
             if activeAttempt?.id != attemptID {
                 pendingCancellations.remove(attemptID)
                 return
@@ -244,6 +288,7 @@ actor LocalCLILoginCoordinator {
                 attemptID: attemptID,
                 reason: error == .unsupported ? .unsupported : .authorizationFailed)
         } catch {
+            disarmStageWatchdog(attemptID: attemptID)
             if activeAttempt?.id != attemptID {
                 pendingCancellations.remove(attemptID)
                 return
@@ -258,7 +303,9 @@ actor LocalCLILoginCoordinator {
         capability: any LocalCLILoginCapability
     ) async {
         guard activeAttempt?.id == attemptID else { return }
+        armStageWatchdog(attemptID: attemptID, stage: .identityDiscovery)
         let evidence = await capability.discoverIdentity(target: target)
+        disarmStageWatchdog(attemptID: attemptID)
         guard activeAttempt?.id == attemptID else { return }
         await advanceIdentity(
             attemptID: attemptID,
@@ -311,7 +358,9 @@ actor LocalCLILoginCoordinator {
 
         // Re-read identity at the quota boundary so an account switch cannot
         // reuse a result from the identity stage.
+        armStageWatchdog(attemptID: attemptID, stage: .identityDiscovery)
         let identityEvidence = await capability.discoverIdentity(target: target)
+        disarmStageWatchdog(attemptID: attemptID)
         guard let current = activeAttempt, current.id == attemptID else { return }
         guard case .verified(let identity) = identityEvidence,
             current.workflow.status.identityFingerprint == identity.fingerprint,
@@ -321,7 +370,9 @@ actor LocalCLILoginCoordinator {
             return
         }
 
+        armStageWatchdog(attemptID: attemptID, stage: .quotaRead)
         let quota = await capability.readQuota(target: target)
+        disarmStageWatchdog(attemptID: attemptID)
         guard var latest = activeAttempt, latest.id == attemptID else { return }
         guard quota.status == .verified else {
             let reason: LocalCLILoginFailureReason
@@ -347,7 +398,11 @@ actor LocalCLILoginCoordinator {
 
         if latest.workflow.targetModels.isEmpty {
             // No requested model means there is no model-availability evidence.
-            // Stay pending instead of treating an empty list as proof of readiness.
+            // Stay pending instead of treating an empty list as proof of
+            // readiness, but release the active attempt so the same provider
+            // can start again; no provider call is in flight here.
+            activeAttempt = nil
+            driverTask = nil
             return
         }
         await runModels(attemptID: attemptID, target: target, capability: capability)
@@ -363,7 +418,9 @@ actor LocalCLILoginCoordinator {
             guard activeAttempt?.id == attemptID else { return }
 
             // Each model gets a fresh identity check and its own evidence.
+            armStageWatchdog(attemptID: attemptID, stage: .identityDiscovery)
             let identityEvidence = await capability.discoverIdentity(target: target)
+            disarmStageWatchdog(attemptID: attemptID)
             guard let latest = activeAttempt, latest.id == attemptID else { return }
             guard case .verified(let identity) = identityEvidence,
                 latest.workflow.status.identityFingerprint == identity.fingerprint,
@@ -373,7 +430,9 @@ actor LocalCLILoginCoordinator {
                 return
             }
 
+            armStageWatchdog(attemptID: attemptID, stage: .modelVerification(model: model))
             let evidence = await capability.verifyModel(target: target, model: model)
+            disarmStageWatchdog(attemptID: attemptID)
             guard var verified = activeAttempt, verified.id == attemptID else { return }
             guard evidence.model == model else {
                 failActive(attemptID: attemptID, reason: .modelMismatch, model: model)
@@ -417,9 +476,74 @@ actor LocalCLILoginCoordinator {
         model: String? = nil
     ) {
         guard var current = activeAttempt, current.id == attemptID else { return }
+        current.watchdog?.cancel()
+        // Ask the suspended driver task to stop cooperatively, but never wait
+        // for it: a non-cooperative capability stays parked, and its late
+        // values are discarded by the attempt guards. For the authorization
+        // launch the pending-cancellation tombstone (armed by the timeout)
+        // still cancels a receipt that arrives after this cancellation.
+        driverTask?.cancel()
         _ = current.workflow.markFailed(reason, model: model)
         status = current.workflow.status
         activeAttempt = nil
         driverTask = nil
+    }
+
+    /// Arms the deadline for one in-flight capability call. Arming bumps the
+    /// attempt's monotonic stage generation, which invalidates any watchdog
+    /// left over from an earlier stage or a different attempt.
+    private func armStageWatchdog(attemptID: UUID, stage: LoginStage) {
+        guard var current = activeAttempt, current.id == attemptID else { return }
+        current.watchdog?.cancel()
+        current.stageGeneration += 1
+        let generation = current.stageGeneration
+        let deadline = stageDeadline
+        current.watchdog = Task { [weak self] in
+            // A cancelled sleep surfaces through `try?` and execution would
+            // otherwise continue; a disarmed watchdog must never fire.
+            try? await Task.sleep(for: deadline)
+            guard !Task.isCancelled else { return }
+            await self?.stageDeadlineFired(
+                attemptID: attemptID,
+                stage: stage,
+                generation: generation)
+        }
+        activeAttempt = current
+    }
+
+    /// Cancels the watchdog as soon as the awaited call returns so no timer
+    /// stays armed while no provider call is in flight — for example while the
+    /// workflow waits for the user to return from authorization. Bumping the
+    /// stage generation also invalidates a watchdog that already woke up from
+    /// its cancelled sleep.
+    private func disarmStageWatchdog(attemptID: UUID) {
+        guard var current = activeAttempt, current.id == attemptID else { return }
+        current.watchdog?.cancel()
+        current.stageGeneration += 1
+        current.watchdog = nil
+        activeAttempt = current
+    }
+
+    /// Fired by a watchdog after its injected deadline. Valid only while the
+    /// same attempt is still active in the exact stage that armed it; anything
+    /// else (new stage, new attempt, cancelled or finished attempt) makes this
+    /// a stale timer that must not change state.
+    private func stageDeadlineFired(
+        attemptID: UUID,
+        stage: LoginStage,
+        generation: Int
+    ) {
+        guard let current = activeAttempt,
+            current.id == attemptID,
+            current.stageGeneration == generation
+        else { return }
+
+        if stage == .authorizationLaunch, current.receipt == nil {
+            // The launch call is still in flight past its deadline. If it
+            // eventually returns a receipt, the existing pending-cancellation
+            // path cancels that receipt exactly once.
+            pendingCancellations.insert(attemptID)
+        }
+        failActive(attemptID: attemptID, reason: .providerTimeout)
     }
 }

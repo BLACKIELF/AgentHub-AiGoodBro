@@ -361,24 +361,26 @@ final class HubAccountTaskStatusModel: ObservableObject {
 enum HubConsoleModel {
     private static let overviewURL = URL(string: "http://127.0.0.1:8787/api/overview")!
 
-    static func warmUpAvailability(for accountAlias: String, excludingLocalLease: String? = nil) async -> HubWarmUpAvailability {
+    static func warmUpAvailability(for accountAlias: String, excludingLocalLease: String? = nil, deadline: TimeInterval? = nil) async -> HubWarmUpAvailability {
         let alias = HubAccountTaskStatusResolver.canonicalAlias(accountAlias)
         guard !alias.isEmpty else { return .unavailable }
         do {
+            if let deadline, ProcessInfo.processInfo.systemUptime >= deadline { return .unavailable }
             let local = try DispatchActivityStore.live.read()
             let aliasKey = DispatchActivityStore.hash(alias)
             if local.leases.contains(where: { $0.aliasKey == aliasKey && $0.occupied && $0.leaseId != excludingLocalLease }) {
                 return .busy
             }
-            let overview = try await fetchInspectionOverview()
+            let overview = try await fetchInspectionOverview(timeout: deadline.map { min(6, max(0.001, $0 - ProcessInfo.processInfo.systemUptime)) } ?? 6)
+            if let deadline, ProcessInfo.processInfo.systemUptime >= deadline { return .unavailable }
             return HubWarmUpAvailability.resolve(for: alias, overview: overview)
         } catch {
             return .unavailable
         }
     }
 
-    static func fetchInspectionOverview() async throws -> HubOverview {
-        var request = URLRequest(url: overviewURL, timeoutInterval: 6)
+    static func fetchInspectionOverview(timeout: TimeInterval = 6) async throws -> HubOverview {
+        var request = URLRequest(url: overviewURL, timeoutInterval: timeout)
         request.httpMethod = "GET"
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let response = response as? HTTPURLResponse,

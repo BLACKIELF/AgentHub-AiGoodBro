@@ -219,7 +219,7 @@ class InvocationTests(unittest.TestCase):
         for mode, subagent_mode, expected_model, expected_effort, expected_code, expected_state, expected_verified in [
                 ('success', 'standard', 'gpt-5.6-sol', 'medium', 0, 'awaiting_acceptance', True),
                 ('empty', 'sol_luna', 'gpt-5.6-terra', 'xhigh', None, 'failed', False),
-                ('nonzero', 'luna_direct', 'gpt-5.6-luna', 'max', 17, 'failed', False)]:
+                ('nonzero', 'luna_direct', 'gpt-6-luna', 'max', 17, 'failed', False)]:
             with self.subTest(mode=mode):
                 case = self.root / mode
                 case.mkdir()
@@ -249,7 +249,7 @@ class InvocationTests(unittest.TestCase):
                 now = datetime.now(timezone.utc)
                 apple_now = now.timestamp() - preflight.APPLE_EPOCH_OFFSET
                 profile_preference = self.preference
-                child_model, child_effort = 'gpt-5.6-luna', 'max'
+                child_model, child_effort = 'gpt-6-luna', 'max'
                 if subagent_mode == 'sol_luna':
                     child_model, child_effort = 'gpt-5.5', 'high'
                     profile_preference = {**self.preference, 'customPresets': {'sol_luna': {

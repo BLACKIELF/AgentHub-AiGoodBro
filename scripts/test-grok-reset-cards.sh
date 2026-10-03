@@ -35,6 +35,9 @@ xcrun swiftc \
   Sources/CodexUsageWidget/Services/DispatchParticipationSync.swift \
   Sources/CodexUsageWidget/Services/GrokResetStatusObservationReader.swift \
   Sources/CodexUsageWidget/Services/LocalCLIQuotaReader.swift \
+  Sources/CodexUsageWidget/Services/LocalCLIQuotaRefresh.swift \
+  Sources/CodexUsageWidget/Services/CCSwitchClaudeRelay.swift \
+  Sources/CodexUsageWidget/Services/BoundedLocalProcess.swift \
   tests/GrokResetCardsFixture.swift \
   -o "$OUTPUT"
 

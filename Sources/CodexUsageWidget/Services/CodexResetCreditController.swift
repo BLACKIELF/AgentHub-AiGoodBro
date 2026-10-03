@@ -7,7 +7,6 @@ final class CodexResetCreditController: ObservableObject {
     enum ConfirmationStep: Equatable {
         case idle
         case reviewing(CodexResetCreditReview)
-        case impact(CodexResetCreditReview)
         case consumption(CodexResetCreditReview)
     }
 
@@ -130,25 +129,11 @@ final class CodexResetCreditController: ObservableObject {
             invalidate(with: .expiredChallenge)
             return
         }
-        step = .impact(review)
-    }
-
-    func confirmImpact(profile: CodexProfile, selectedProfileID: String?) {
-        guard case .impact(let review) = step,
-            current(profile: profile, selectedProfileID: selectedProfileID, matches: review)
-        else {
-            invalidate(with: .selectionChanged)
-            return
-        }
-        guard challengeIsFresh(review) else {
-            invalidate(with: .expiredChallenge)
-            return
-        }
         step = .consumption(review)
     }
 
     /// This is the only controller edge that can reach the reader's consume call.
-    /// It is reachable only from `ConfirmationStep.consumption` (the third dialog).
+    /// It is reachable only from `ConfirmationStep.consumption` (the second dialog).
     func confirmConsumption(
         profile: CodexProfile,
         selectedProfileID: String?,
@@ -275,7 +260,7 @@ final class CodexResetCreditController: ObservableObject {
         guard step != .idle else { return }
         let review: CodexResetCreditReview
         switch step {
-        case .reviewing(let value), .impact(let value), .consumption(let value): review = value
+        case .reviewing(let value), .consumption(let value): review = value
         case .idle: return
         }
         if !current(profile: profile, selectedProfileID: selectedProfileID, matches: review) {

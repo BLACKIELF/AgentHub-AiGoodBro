@@ -22,7 +22,7 @@ struct PublisherMessage: Codable, Identifiable, Equatable {
     }
 }
 
-struct PublisherMessageFeed: Decodable {
+struct PublisherMessageFeed: Codable {
     let version: Int
     let messages: [PublisherMessage]
 
@@ -31,11 +31,14 @@ struct PublisherMessageFeed: Decodable {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         let feed = try decoder.decode(Self.self, from: data)
-        let idCharacters = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_")
         guard feed.version == 1, feed.messages.count <= 50,
             Set(feed.messages.map(\.id)).count == feed.messages.count,
             feed.messages.allSatisfy({ item in
-                (1...64).contains(item.id.utf8.count) && item.id.unicodeScalars.allSatisfy(idCharacters.contains)
+                (1...64).contains(item.id.utf8.count)
+                    && item.id.utf8.allSatisfy { byte in
+                        (65...90).contains(byte) || (97...122).contains(byte) || (48...57).contains(byte)
+                            || byte == 45 || byte == 95
+                    }
                     && !item.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && item.title.utf8.count <= 240
                     && !item.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && item.body.utf8.count <= 2_000
                     && item.publishedAt.timeIntervalSince1970.isFinite && item.expiresAt.timeIntervalSince1970.isFinite
@@ -61,7 +64,7 @@ struct PublisherMessageLedger: Codable {
     var seenIDs: [String] = []
 
     static func record(
-        _ feed: PublisherMessageFeed, now: Date, notificationsEnabled: Bool, at url: URL
+        _ feed: PublisherMessageFeed, now: Date, at url: URL
     ) throws -> PublisherMessage? {
         try FileManager.default.createDirectory(
             at: url.deletingLastPathComponent(), withIntermediateDirectories: true,
@@ -72,7 +75,7 @@ struct PublisherMessageLedger: Codable {
             guard ledger.seenIDs.count <= 500, ledger.seenIDs.allSatisfy({ (1...64).contains($0.utf8.count) }),
                 ledger.baselineAt.map({ $0.timeIntervalSince1970.isFinite }) ?? true
             else { throw PublicResetFailure.localState }
-            let candidate = ledger.observe(feed, now: now, notificationsEnabled: notificationsEnabled)
+            let candidate = ledger.observe(feed, now: now)
             let data = try JSONEncoder().encode(ledger)
             guard data.count <= 64 * 1024 else { throw PublicResetFailure.localState }
             try DispatchParticipationSync.writeSnapshot(data, at: url, replacing: previous)
@@ -80,7 +83,7 @@ struct PublisherMessageLedger: Codable {
         }
     }
 
-    mutating func observe(_ feed: PublisherMessageFeed, now: Date, notificationsEnabled: Bool) -> PublisherMessage? {
+    mutating func observe(_ feed: PublisherMessageFeed, now: Date) -> PublisherMessage? {
         let wasInitialized = baselineAt != nil
         let eligible = feed.visible(at: now).filter {
             !seenIDs.contains($0.id) && $0.publishedAt > (baselineAt ?? now)
@@ -90,7 +93,7 @@ struct PublisherMessageLedger: Codable {
         // Time watermark also prevents pruned old history from being re-notified.
         let latestObserved = feed.messages.filter { $0.publishedAt <= now }.map(\.publishedAt).max()
         baselineAt = max(baselineAt ?? now, latestObserved ?? (baselineAt ?? now))
-        return wasInitialized && notificationsEnabled ? eligible.first : nil
+        return wasInitialized ? eligible.first : nil
     }
 }
 
@@ -107,18 +110,18 @@ enum PublisherMessageSelfTest {
         let first = PublisherMessageFeed(version: 1, messages: [historical, scheduled])
         var ledger = PublisherMessageLedger()
         guard first.visible(at: now).map(\.id) == ["old"],
-            ledger.observe(first, now: now, notificationsEnabled: true) == nil,
-            ledger.observe(first, now: now.addingTimeInterval(61), notificationsEnabled: true)?.id == "scheduled",
-            ledger.observe(first, now: now.addingTimeInterval(62), notificationsEnabled: true) == nil,
+            ledger.observe(first, now: now) == nil,
+            ledger.observe(first, now: now.addingTimeInterval(61))?.id == "scheduled",
+            ledger.observe(first, now: now.addingTimeInterval(62)) == nil,
             first.visible(at: now.addingTimeInterval(4_000)).isEmpty
         else { return false }
         let later = PublisherMessageFeed(version: 1, messages: [message("new", seconds: 90)])
-        guard ledger.observe(later, now: now.addingTimeInterval(91), notificationsEnabled: false) == nil,
-            ledger.observe(later, now: now.addingTimeInterval(92), notificationsEnabled: true) == nil
+        guard ledger.observe(later, now: now.addingTimeInterval(91))?.id == "new",
+            ledger.observe(later, now: now.addingTimeInterval(92)) == nil
         else { return false }
         let burst = PublisherMessageFeed(version: 1, messages: (1...5).map { message("burst-\($0)", seconds: Double(100 + $0)) })
         guard burst.visible(at: now.addingTimeInterval(110)).count == 3,
-            ledger.observe(burst, now: now.addingTimeInterval(110), notificationsEnabled: true)?.id == "burst-5",
+            ledger.observe(burst, now: now.addingTimeInterval(110))?.id == "burst-5",
             !PublisherMessage.allowedURL(URL(string: "https://github.com.attacker.invalid/BLACKIELF/repo")!),
             !PublisherMessage.allowedURL(URL(string: "https://github.com/other/repo")!),
             !PublisherMessage.allowedURL(URL(string: "file:///tmp/test")!),
@@ -126,29 +129,39 @@ enum PublisherMessageSelfTest {
         else { return false }
         do {
             _ = try PublisherMessageFeed.decode(Data(#"{"version":1,"messages":[]}"#.utf8))
+            let allowedID = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"
+            let validFeed = PublisherMessageFeed(version: 1, messages: [message(allowedID, seconds: 0)])
+            guard try PublisherMessageFeed.decode(PublisherMessagePublishing.encode(validFeed)).messages == validFeed.messages else { return false }
+            for invalidID in ["", String(repeating: "a", count: 65), "notice.dot", "notice/part", "notice space", "notice\n", "提示", "notice😀"] {
+                let invalidFeed = PublisherMessageFeed(version: 1, messages: [message(invalidID, seconds: 0)])
+                do {
+                    _ = try PublisherMessageFeed.decode(PublisherMessagePublishing.encode(invalidFeed))
+                    return false
+                } catch PublicResetFailure.invalidResponse {}
+            }
             let root = FileManager.default.temporaryDirectory.appendingPathComponent("publisher-message-test-" + UUID().uuidString)
             defer { try? FileManager.default.removeItem(at: root) }
             let state = root.appendingPathComponent("ledger.json")
-            guard try PublisherMessageLedger.record(first, now: now, notificationsEnabled: true, at: state) == nil,
-                try PublisherMessageLedger.record(first, now: now.addingTimeInterval(61), notificationsEnabled: true, at: state)?.id == "scheduled",
-                try PublisherMessageLedger.record(first, now: now.addingTimeInterval(62), notificationsEnabled: true, at: state) == nil
+            guard try PublisherMessageLedger.record(first, now: now, at: state) == nil,
+                try PublisherMessageLedger.record(first, now: now.addingTimeInterval(61), at: state)?.id == "scheduled",
+                try PublisherMessageLedger.record(first, now: now.addingTimeInterval(62), at: state) == nil
             else { return false }
             let broken = Data("broken-ledger".utf8)
             try broken.write(to: state)
             do {
-                _ = try PublisherMessageLedger.record(later, now: now.addingTimeInterval(91), notificationsEnabled: true, at: state)
+                _ = try PublisherMessageLedger.record(later, now: now.addingTimeInterval(91), at: state)
                 return false
             } catch {}
             guard try Data(contentsOf: state) == broken else { return false }
             let symlink = root.appendingPathComponent("linked.json")
             try FileManager.default.createSymbolicLink(at: symlink, withDestinationURL: state)
             do {
-                _ = try PublisherMessageLedger.record(first, now: now, notificationsEnabled: true, at: symlink)
+                _ = try PublisherMessageLedger.record(first, now: now, at: symlink)
                 return false
             } catch {}
             let saved = try JSONEncoder().encode(ledger)
             var restored = try JSONDecoder().decode(PublisherMessageLedger.self, from: saved)
-            guard restored.observe(burst, now: now.addingTimeInterval(111), notificationsEnabled: true) == nil else { return false }
+            guard restored.observe(burst, now: now.addingTimeInterval(111)) == nil else { return false }
             for invalid in [Data(#"{"version":2,"messages":[]}"#.utf8), Data(repeating: 32, count: 65 * 1024)] {
                 do {
                     _ = try PublisherMessageFeed.decode(invalid)
@@ -156,7 +169,7 @@ enum PublisherMessageSelfTest {
                 } catch {}
             }
         } catch { return false }
-        print("Publisher message self-test passed: baseline, schedule, expiry, disabled, latest-three, dedupe and URL boundaries")
+        print("Publisher message self-test passed: baseline, automatic delivery, schedule, expiry, latest-three, dedupe and URL boundaries")
         return true
     }
 }
@@ -170,17 +183,15 @@ private final class PublisherMessageRedirectGuard: NSObject, URLSessionTaskDeleg
 }
 
 final class PublisherMessageMonitor: ObservableObject {
-    static let endpoint = URL(string: "https://raw.githubusercontent.com/BLACKIELF/AgentHub-AiGoodBro/main/Resources/AppMessages/messages-v1.json")!
+    static let endpoint = PublisherMessagePublishing.feedURL
     private static let cacheKey = "AiGoodBro.publisherMessages.cache.v1"
     @Published private(set) var messages: [PublisherMessage] = []
     @Published private(set) var checking = false
     @Published private(set) var status: String?
-    @Published var notificationsEnabled: Bool {
-        didSet { defaults.set(notificationsEnabled, forKey: "AiGoodBro.publisherMessages.notify") }
-    }
     private let defaults: UserDefaults
     private let stateURL: URL
     private let preview: Bool
+    var isPreview: Bool { preview }
     private var task: Task<Void, Never>?
     private var timer: Timer?
     private var generation = 0
@@ -194,7 +205,7 @@ final class PublisherMessageMonitor: ObservableObject {
             stateURL
             ?? FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/CodexAccountManagerNext/publisher-messages/ledger-v1.json")
-        notificationsEnabled = defaults.bool(forKey: "AiGoodBro.publisherMessages.notify")
+        // Publisher updates are automatic; the legacy opt-out is no longer read.
         if !preview, let cache = defaults.data(forKey: Self.cacheKey), let feed = try? PublisherMessageFeed.decode(cache) {
             messages = feed.visible(at: Date())
         }
@@ -244,12 +255,12 @@ final class PublisherMessageMonitor: ObservableObject {
                 let now = Date()
                 messages = feed.visible(at: now)
                 defaults.set(data, forKey: Self.cacheKey)
-                let candidate = try PublisherMessageLedger.record(feed, now: now, notificationsEnabled: notificationsEnabled, at: stateURL)
+                let candidate = try PublisherMessageLedger.record(feed, now: now, at: stateURL)
                 status = WidgetLanguage.storedOrAutomatic().text("消息已更新", "Messages updated")
                 if let candidate, let notify {
                     let accepted = await notify(candidate) { [weak self] in
                         guard let self else { return false }
-                        return self.running && self.generation == epoch && self.notificationsEnabled && candidate.isActive(at: Date())
+                        return self.running && self.generation == epoch && candidate.isActive(at: Date())
                     }
                     guard generation == epoch, running else { return }
                     status =

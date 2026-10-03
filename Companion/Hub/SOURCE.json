@@ -37,11 +37,11 @@
     },
     {
       "path": "hub.go",
-      "sha256": "700b841c67b74c091bea8ea5a7c8be99960bce295a63f7581d345c4502aa5d23"
+      "sha256": "2b7b9877abc6562e962850f0b84749deea800b9f16d8d586ba58bbbf1f20f919"
     },
     {
       "path": "hub_test.go",
-      "sha256": "fc98d928ce8fbfcef43091851c484b1c63730f7672b40852f7bb64d6c1d3899c"
+      "sha256": "2a5bf2093646c9e8092f83dbd62a48ab3d93bc3f6350e2f7007c190fcee269ea"
     },
     {
       "path": "kimi_tasks.go",
@@ -57,7 +57,7 @@
     },
     {
       "path": "manager_overview.go",
-      "sha256": "1075a48b97b02c4a1e65b8d91220713a2ab16c8e93e8cad4eb36f6ed618e9f80"
+      "sha256": "f0a3e7096a2cae5604338ba5ceebd9e0a162649fb0146dee44e6daa0130bed23"
     },
     {
       "path": "process_other.go",

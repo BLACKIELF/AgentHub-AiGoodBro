@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import pathlib
 import platform
 import subprocess
@@ -18,7 +19,11 @@ class AdditionalCLIQuotaTests(unittest.TestCase):
             ROOT / "Sources/CodexUsageWidget/Services/TokenMonitorEngine.swift",
             ROOT / "Sources/CodexUsageWidget/Services/TokenMonitorLocalCLIQuotaReader.swift",
             ROOT / "Sources/CodexUsageWidget/Services/LocalCLIQuotaReader.swift",
+            ROOT / "Sources/CodexUsageWidget/Services/LocalCLIQuotaRefresh.swift",
+            ROOT / "Sources/CodexUsageWidget/Services/CCSwitchClaudeRelay.swift",
+            ROOT / "Sources/CodexUsageWidget/Services/BoundedLocalProcess.swift",
             ROOT / "Sources/CodexUsageWidget/Services/AdditionalCLIQuotaReader.swift",
+            ROOT / "Sources/CodexUsageWidget/Services/TraeCLIQuotaReader.swift",
             ROOT / "tests/AdditionalCLIQuotaFixture.swift",
         ]
         for source in sources:
@@ -59,6 +64,9 @@ class AdditionalCLIQuotaTests(unittest.TestCase):
                 0,
                 f"swiftc failed:\n{compile_result.stdout}\n{compile_result.stderr}",
             )
+            fixture_home = pathlib.Path(directory) / "synthetic-home"
+            fixture_home.mkdir()
+            fixture_env = {**os.environ, "CFFIXED_USER_HOME": str(fixture_home)}
             run_result = subprocess.run(
                 [str(executable)],
                 cwd=ROOT,
@@ -66,6 +74,7 @@ class AdditionalCLIQuotaTests(unittest.TestCase):
                 capture_output=True,
                 timeout=30,
                 check=False,
+                env=fixture_env,
             )
             self.assertEqual(
                 run_result.returncode,
@@ -79,8 +88,10 @@ class AdditionalCLIQuotaTests(unittest.TestCase):
             ROOT / "Sources/CodexUsageWidget/Services/AdditionalCLIQuotaReader.swift"
         ).read_text(encoding="utf-8")
         fixture = (ROOT / "tests/AdditionalCLIQuotaFixture.swift").read_text(encoding="utf-8")
-        self.assertIn("case .workBuddy, .trae:", source)
-        self.assertIn('messageCode: "local_cli_unsupported"', source)
+        self.assertIn("case .workBuddy:", source)
+        self.assertIn("case .trae:", source)
+        self.assertIn('messageCode: "local_cli_workbuddy_app_session_read_limited"', source)
+        self.assertIn('TraeCLIQuotaReader(transport: transport, fileReader: fileReader)', source)
         self.assertIn("case .workBuddy: \"WorkBuddy CLI\"", source)
         self.assertIn("case .trae: \"TRAE SOLO\"", source)
         self.assertNotIn("ProcessInfo.processInfo.environment", source)
@@ -90,7 +101,8 @@ class AdditionalCLIQuotaTests(unittest.TestCase):
         self.assertNotIn("/api/v1/zcode-plan/billing", source)
         self.assertIn("testWorkBuddyAndTraeUnsupportedWithoutIO", fixture)
         self.assertIn("LocalCLIKind.workBuddy, .trae", fixture)
-        self.assertIn("local_cli_unsupported", fixture)
+        self.assertIn("local_cli_workbuddy_app_session_read_limited", fixture)
+        self.assertIn("local_cli_trae_default_required", fixture)
         self.assertIn("testGeminiExhaustedRemainsAvailable", fixture)
         self.assertIn("remainingFraction\": 0.0", fixture)
         self.assertNotIn("sk-ant-", fixture)

@@ -1,0 +1,16 @@
+{
+  "kind": "AiGoodBro quota bridge provenance alignment",
+  "priorVendorReview": "token-monitor-vendor-review-evidence-0926v1.json",
+  "priorVendorReviewSHA256": "5596ae30c65b1d81fe504dc80539714a912b84b5a9d197082a8620925fe016b1",
+  "regression": "scripts/test-opencode-native-0913v1.sh against the packaged engine reproduced identityMismatch with synthetic Zen-only credentials; rerun after packaging is required.",
+  "reviewedChanges": [
+    {
+      "afterSHA256": "2769b0e96252d0098c78c3a70038026eb3ac3b6e35c595cad9bd5634e850452e",
+      "beforeSHA256": "2c7ce819702bb632d632e5def1301fff4040ebcd325c6eb95c592ac49c805a30",
+      "change": "Align OpenCode provider source label with the v0.62 native quota mapper. Request hosts, credentials, identity binding, and network gates are unchanged.",
+      "path": "lib/opencode-limits.cjs"
+    }
+  ],
+  "upstreamUnchanged": "dcccfb01557e2786888fd5479552f392ac6c0d32",
+  "version": "0927v5"
+}

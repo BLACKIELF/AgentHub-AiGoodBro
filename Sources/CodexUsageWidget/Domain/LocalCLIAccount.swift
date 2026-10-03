@@ -119,6 +119,17 @@ struct LocalCLIQuotaWindow: Identifiable, Equatable {
     let label: String
     let usedPercent: Double
     let resetsAt: Date?
+    var remainingTokens: Int64? = nil
+    var totalTokens: Int64? = nil
+    var isExpiry = false
+
+    var tokenAmountText: String? {
+        guard let remainingTokens, let totalTokens,
+            remainingTokens >= 0, totalTokens > 0, remainingTokens <= totalTokens
+        else { return nil }
+        let format = IntegerFormatStyle<Int64>.number.locale(Locale(identifier: "en_US"))
+        return remainingTokens.formatted(format) + " / " + totalTokens.formatted(format) + " Tokens"
+    }
 }
 
 /// A read-only observation copied from the signed-in official Grok Usage page.

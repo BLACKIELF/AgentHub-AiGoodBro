@@ -21,7 +21,7 @@ const OVERLAYS = Object.freeze([
   { id: 'limits-provider-helpers', overlay: 'limits-provider-helpers.cjs', upstreamFile: 'shared/limits/providerHelpers.js' }
 ]);
 
-const EXPECTED_COMMIT = 'ef079b6fb494e1cfcb24736cfcf4d4e591222eaf';
+const EXPECTED_COMMIT = 'dcccfb01557e2786888fd5479552f392ac6c0d32';
 const EXPECTED_REPOSITORY = 'Javis603/token-monitor';
 
 let prepared = false;

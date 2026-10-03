@@ -4,14 +4,15 @@ import Foundation
 /// separate observations and must not be inferred from one another.
 enum LocalCLIAccountPresentation {
     static func balanceTitle(kind: LocalCLIKind, language: WidgetLanguage) -> String {
-        kind == .grok ? language.text("购入余额", "Purchased balance") : language.text("余额", "Balance")
+        if kind == .trae || kind == .workBuddy { return language.text("积分", "Credits") }
+        return kind == .grok ? language.text("购入余额", "Purchased balance") : language.text("余额", "Balance")
     }
 
     static func balanceText(kind: LocalCLIKind, result: LocalCLIQuotaResult, language: WidgetLanguage) -> String? {
         guard let balance = result.balance, balance.isFinite else { return nil }
         let currency = result.balanceCurrency ?? (kind == .grok ? "USD" : nil)
         return balance.formatted(.number.precision(.fractionLength(0...4)).locale(language.locale))
-            + (currency.map { " " + $0 } ?? "")
+            + (currency.map { $0 == "CREDITS" ? language.text(" 点", " credits") : " " + $0 } ?? "")
     }
 
     static func quotaExplanation(kind: LocalCLIKind, result: LocalCLIQuotaResult?, language: WidgetLanguage) -> String? {
@@ -44,12 +45,47 @@ enum LocalCLIAccountPresentation {
                 "This is historical Antigravity IDE quota; its observation time was not provided. Open Antigravity and refresh to verify.")
         case "local_cli_opencode_go_not_connected", "local_cli_upstream_provider_missing", "local_cli_upstream_unsupported_go_plan":
             return language.text(
-                "未连接 OpenCode Go 额度；其他服务商的登录状态和余额需分别核对。",
-                "OpenCode Go quota is not connected. Other providers' sign-in and balances are separate.")
+                "当前没有可查询的 OpenCode Go 凭据。OpenCode Zen 和其他服务商的 API Key 不提供 Go 订阅额度，请在对应服务商查看余额。",
+                "No queryable OpenCode Go credentials were found. OpenCode Zen and other providers' API keys do not expose Go subscription limits; check balances with the matching provider."
+            )
         case "local_cli_gemini_oauth_personal_required":
             return language.text(
                 "当前使用 API Key 或其他认证方式，不能读取 Google 个人订阅额度。",
                 "This authentication uses an API key or another method; Google personal subscription quota is unavailable.")
+        case "local_cli_kimi_token_refresh_required":
+            return language.text(
+                "Kimi 会话已过期，本次自动续期未成功。请稍后刷新；若登录已失效，请在官方 CLI 重新登录。",
+                "The Kimi session expired and automatic renewal did not succeed. Retry later; sign in through the official CLI if the login has expired.")
+        case "local_cli_trae_default_required":
+            return language.text("TRAE 积分读取使用本机默认登录。", "TRAE credits use the default local sign-in.")
+        case "local_cli_trae_session_unreadable":
+            return language.text("TRAE 本机登录信息暂不可读，请在官方应用确认登录。", "The local TRAE session is unreadable. Check sign-in in the official app.")
+        case "local_cli_gemini_access_refresh_required":
+            return language.text(
+                "Google 登录凭据已保存，但当前会话已过期。打开官方 Gemini CLI 更新会话后，返回这里会自动刷新额度。",
+                "Google sign-in credentials are saved, but the current session expired. Open the official Gemini CLI to update it; limits refresh when you return here.")
+        case "local_cli_workbuddy_app_session_read_limited":
+            return language.text(
+                "WorkBuddy 额度依赖官方桌面会话；当前连接无法读取该会话。请先在 WorkBuddy 内查看额度，这不表示账号已退出。",
+                "WorkBuddy limits require its official desktop session, which this connection cannot read. Check limits in WorkBuddy; this does not mean the account signed out.")
+        case "local_cli_trae_app_session_read_limited":
+            return language.text(
+                "TRAE 额度查询需要可读取的官方访问令牌，当前连接尚未取得。请先在 TRAE 内查看额度，本机登录状态不由此判断。",
+                "TRAE limits require a readable official access token, which this connection does not have. Check limits in TRAE; local sign-in status is not inferred from this.")
+        case "local_cli_zcode_inactive_provider":
+            return language.text(
+                "ZCode 当前选择的 Coding Plan 未启用。请在 ZCode 中恢复该服务商后刷新；不会读取其他账号或旧配置的额度。",
+                "The Coding Plan selected in ZCode is inactive. Enable that provider in ZCode, then refresh; limits from other accounts or old configurations are not used.")
+        case "local_cli_zcode_partial_quota":
+            return language.text("部分额度暂时未读到，当前显示已核实的额度。", "Some limits are unavailable; verified limits are shown.")
+        case "local_cli_zcode_no_quota":
+            return language.text("当前账号暂无有效额度，已到期的赠送额度不计入可用余额。", "No active allowance was returned. Expired grants are excluded.")
+        case "local_cli_zcode_no_coding_plan":
+            return language.text("官方返回：当前 ZCode 账号未开通 Coding Plan。", "The provider reports no Coding Plan for the current ZCode account.")
+        case "local_cli_zcode_account_unverified":
+            return language.text(
+                "尚未确认 ZCode 当前账号与所选 Coding Plan 的对应关系。请在官方 ZCode 中确认账号与服务商，再刷新额度。",
+                "The current ZCode account could not be matched to its selected Coding Plan. Confirm the account and provider in ZCode, then refresh limits.")
         case "local_cli_mimo_native_quota_unsupported":
             return language.text("已识别 MiMo 配置，当前未提供可读取的官方额度接口。", "MiMo configuration is recognized; a readable official quota endpoint is not available.")
         case "local_cli_zcode_native_quota_unsupported", "local_cli_zcode_coding_plan_unsupported":
@@ -58,11 +94,20 @@ enum LocalCLIAccountPresentation {
         case "local_cli_authorization_unverified":
             return language.text(
                 "服务商未确认额度查询权限，请在官方账号页核对；这不表示账号已退出。", "The provider did not confirm quota access. Check the official account page; this does not mean the account signed out.")
+        case "local_cli_remote_unauthorized":
+            return language.text(
+                "登录配置仍在，但官方额度接口未接受当前凭据。请在官方工具中更新会话后刷新，不会自动删除登录。",
+                "Sign-in configuration is still present, but the quota endpoint did not accept it. Update the session in the official tool, then refresh; saved sign-in is not deleted."
+            )
+        case "local_cli_remote_forbidden":
+            return language.text(
+                "官方接口未允许当前账号查询额度。请核对所选订阅与查询权限，这不表示账号已退出。",
+                "The official endpoint did not allow quota access for this account. Check its subscription and permissions; this does not mean it signed out.")
         case "local_cli_invalid_credentials":
             return language.text("已保存的认证无法通过额度校验，请在官方登录流程中更新后刷新。", "Saved authentication did not pass quota validation. Update it through the official sign-in flow, then refresh.")
         case "local_cli_keychain_unavailable":
             return language.text("暂时无法读取登录钥匙串，请允许访问后刷新。", "Sign-in Keychain data is unavailable. Allow access, then refresh.")
-        case "local_cli_upstream_auth_changed", "local_cli_upstream_target_changed", "local_cli_upstream_identity_mismatch":
+        case "local_cli_upstream_auth_changed", "local_cli_upstream_target_changed", "local_cli_upstream_identity_mismatch", "local_cli_zcode_account_changed":
             return language.text("查询期间账号配置发生变化，已停止合并额度，请刷新当前账号。", "Account configuration changed during the read. Quota was not merged; refresh the current account.")
         case "local_cli_upstream_invalid_auth_file":
             return language.text("已关联的认证配置无法安全读取，请重新选择有效的官方配置。", "The linked authentication cannot be read safely. Select a valid official configuration again.")

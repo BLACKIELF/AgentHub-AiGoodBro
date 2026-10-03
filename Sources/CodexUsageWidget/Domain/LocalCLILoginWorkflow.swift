@@ -295,6 +295,10 @@ enum LocalCLILoginFailureReason: String, Codable, Equatable, Sendable {
     case modelUnsupported
     case modelMismatch
     case invalidTarget
+    /// A provider capability stage exceeded its injected deadline. No provider
+    /// verdict exists for this attempt, so it failed instead of staying
+    /// in-progress; the same provider can start a new attempt immediately.
+    case providerTimeout
     case cancelled
 }
 

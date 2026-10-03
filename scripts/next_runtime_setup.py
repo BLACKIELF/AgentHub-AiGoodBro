@@ -28,14 +28,16 @@ HUB_LABEL = 'com.blackielf.codex-account-manager-next.hub'
 LEGACY_LABEL = 'com.agenthub.arc-hub'
 MANAGED_BEGIN = '<!-- next-runtime-setup:start -->'
 MANAGED_END = '<!-- next-runtime-setup:end -->'
-MANAGED_NOTE = (MANAGED_BEGIN + '\n## 运行环境引导（0915v3）\n'
+MANAGED_NOTE = (MANAGED_BEGIN + '\n## 运行环境引导\n'
     '配套应用检测已有 Codex 与 Python，缺少时引导官方安装。优先使用 `bin/next-dispatch`；先 `plan`，中断后用 `status` / `result` 收取原任务。'
     '安装、诊断、参数与验收边界见 [运行环境说明](references/runtime-setup.md)。'
     '首次连接多个工具见 [连接清单](references/onboarding-login.md)：ZCode 走桌面登录，OpenCode 走 CLI；本人确认与账号、额度证据分别显示。'
-    '三个可自定义执行档位及配置与实测证据的区别见 [执行档位](references/luna-presets.md)。\n' + MANAGED_END + '\n')
+    '三个可自定义执行档位及配置与实测证据的区别见 [执行档位](references/luna-presets.md)。'
+    '需要 Jev 协作时，读取 [Jev 协作流程](references/jev-coordination.md)；文档与实际执行能力分别验证。\n' + MANAGED_END + '\n')
 MANAGED_SKILL_FILES = ('bin/next-dispatch', 'scripts/next_dispatch_activity.py',
     'scripts/next_dispatch_preflight.py', 'scripts/next_dispatch_invocation.py',
-    'references/runtime-setup.md', 'references/luna-presets.md', 'references/onboarding-login.md')
+    'references/runtime-setup.md', 'references/luna-presets.md', 'references/onboarding-login.md',
+    'references/jev-coordination.md', 'references/update-0927v1.md')
 
 
 class SetupError(RuntimeError):

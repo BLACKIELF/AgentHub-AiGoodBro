@@ -13,15 +13,41 @@ struct MessageChannelsView: View {
     @Binding var telegramTargetDraft: String
     @Binding var weChatEnabled: Bool
     @Binding var weChatKeyDraft: String
+    @Binding var weChatMessageOptions: FeishuMessageOptions
+    @Binding var personalWeChatEnabled: Bool
+    @Binding var personalPairingCode: String
+    var personalWeChatConnected: Bool
+    var personalWeChatHasContext: Bool
+    var personalLoginInProgress: Bool
+    var personalLoginQRCode: String?
+    var personalLoginNeedsCode: Bool
 
     var onSaveTelegram: () -> Void
     var onTestTelegram: () -> Void
     var onSaveWeChat: () -> Void
     var onTestWeChat: () -> Void
+    var onConnectPersonalWeChat: () -> Void
+    var onCancelPersonalWeChat: () -> Void
+    var onSubmitPersonalWeChatCode: (String) -> Void
+    var onTestPersonalWeChat: () -> Void
     var onOpenHelp: (URL) -> Void
 
     var actionInFlight: Bool = false
     var statusText: String? = nil
+
+    var personalWeChatNeedsAuthorization = false
+    var personalWeChatBindingMissing = false
+    var personalWeChatRestoreInProgress = false
+    var personalWeChatStatusText: String? = nil
+    var onRestorePersonalWeChat: (() -> Void)? = nil
+
+    var personalChatEnabled: Binding<Bool> = .constant(false)
+    var personalChatThreadID: Binding<String> = .constant("")
+    var personalChatTargets: [WeChatCodexConversationTarget] = []
+    var personalAutomaticThreadID = ""
+    var personalBotIsReplying = false
+    var onRefreshPersonalChatTargets: () -> Void = {}
+    var onOpenPersonalChat: () -> Void = {}
 
     @Environment(\.widgetLanguage) private var language
 
@@ -45,6 +71,69 @@ struct MessageChannelsView: View {
                         .fixedSize(horizontal: false, vertical: true)
                         .textSelection(.enabled)
                 }
+            }
+
+            Section(language.text("微信机器人", "WeChat bot")) {
+                PersonalWeChatSettingsView(
+                    enabled: $personalWeChatEnabled, pairingCode: $personalPairingCode,
+                    connected: personalWeChatConnected, hasContext: personalWeChatHasContext,
+                    connecting: personalLoginInProgress, qrContent: personalLoginQRCode,
+                    needsCode: personalLoginNeedsCode, disabled: actionInFlight,
+                    onConnect: onConnectPersonalWeChat, onCancel: onCancelPersonalWeChat,
+                    onSubmitCode: onSubmitPersonalWeChatCode, onTest: onTestPersonalWeChat,
+                    needsAuthorization: personalWeChatNeedsAuthorization,
+                    bindingMissing: personalWeChatBindingMissing,
+                    restoring: personalWeChatRestoreInProgress,
+                    connectionStatus: personalWeChatStatusText,
+                    onRestore: onRestorePersonalWeChat)
+                Toggle(language.text("允许微信与 Codex 对话", "Chat with Codex from WeChat"), isOn: personalChatEnabled)
+                    .disabled(actionInFlight || personalLoginInProgress)
+                if personalChatEnabled.wrappedValue {
+                    Picker(language.text("使用哪个对话", "Conversation"), selection: personalChatThreadID) {
+                        Text(language.text("自动绑定微信专用对话", "Automatic dedicated WeChat chat")).tag("")
+                        if !personalChatThreadID.wrappedValue.isEmpty,
+                            !personalChatTargets.contains(where: { $0.id == personalChatThreadID.wrappedValue })
+                        {
+                            Text(language.text("已选聊天（暂未刷新）", "Selected chat (not refreshed)")).tag(personalChatThreadID.wrappedValue)
+                        }
+                        ForEach(personalChatTargets) { target in
+                            Text(target.title).tag(target.id)
+                        }
+                    }.disabled(actionInFlight)
+                    HStack {
+                        Button(language.text("刷新聊天列表", "Refresh chats"), action: onRefreshPersonalChatTargets)
+                        Button(language.text("打开对话", "Open chat"), action: onOpenPersonalChat)
+                            .disabled(personalChatThreadID.wrappedValue.isEmpty && personalAutomaticThreadID.isEmpty)
+                    }
+                    if personalChatThreadID.wrappedValue.isEmpty {
+                        Text(
+                            personalAutomaticThreadID.isEmpty
+                                ? language.text("第一次发消息时自动建立专用对话，以后固定续聊。", "Your first message creates a dedicated chat; later messages continue it.")
+                                : language.text("微信专用对话已绑定，重启后继续使用同一对话。", "Dedicated chat linked. The same conversation is reused after restart.")
+                        )
+                        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    }
+                    if personalBotIsReplying {
+                        Label(language.text("Codex 正在回复", "Codex is replying"), systemImage: "ellipsis.message")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    Text(
+                        language.text(
+                            "新对话沿用 Codex 默认设置，已有对话保留原设置。保持 Codex 和 AiGoodBro 运行；审批、登录在电脑上完成。",
+                            "New chats use Codex defaults; existing chats keep their settings. Keep Codex and AiGoodBro running. Complete approvals and sign-in on your computer.")
+                    )
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
+                Text(language.text("微信发送 /状态、/任务、/重置卡、/帮助，即可查询。", "Send /status, /tasks, /reset or /help in WeChat to query."))
+                    .font(.caption).foregroundStyle(.secondary)
+                DisclosureGroup(language.text("通知内容与提醒", "Notification content and alerts")) {
+                    FeishuMessageOptionsView(options: $weChatMessageOptions, disabled: actionInFlight || personalLoginInProgress)
+                    Text(language.text("个人微信与企业微信共用这些内容选项。", "These content options apply to personal WeChat and WeCom."))
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Button(language.text("腾讯官方说明", "Tencent documentation")) {
+                    onOpenHelp(PersonalWeChatMessageChannel.documentation)
+                }.font(.caption)
             }
 
             Section(language.text("Telegram Bot", "Telegram Bot")) {
@@ -86,8 +175,8 @@ struct MessageChannelsView: View {
                 }
             }
 
-            Section(language.text("微信", "WeChat")) {
-                ForEach(weChatCapabilities, id: \.variant) { capability in
+            Section(language.text("企业微信与公众号", "WeCom and Official Accounts")) {
+                ForEach(weChatCapabilities.filter { $0.variant != .personal }, id: \.variant) { capability in
                     VStack(alignment: .leading, spacing: 4) {
                         VStack(alignment: .leading, spacing: 4) {
                             Text(capability.variant.displayName(language))
@@ -113,6 +202,7 @@ struct MessageChannelsView: View {
                                 .disabled(capability.phase != .pendingVerification && capability.phase != .ready)
                         }
                         .disabled(actionInFlight)
+                        FeishuMessageOptionsView(options: $weChatMessageOptions, disabled: actionInFlight)
                     }
                     if let helpURL = capability.helpURL {
                         Button(language.text("官方说明", "Official documentation")) {
@@ -123,8 +213,8 @@ struct MessageChannelsView: View {
                 }
                 Text(
                     language.text(
-                        "个人微信没有官方消息接口；本应用只接入企业微信群机器人的官方 Webhook，不冒充个人微信已接通。",
-                        "Personal WeChat has no official message API; this app integrates only the official WeCom group-robot webhook and never claims personal WeChat is connected."
+                        "企业微信与个人微信分别开关；公众号仍需单独部署服务端。",
+                        "WeCom and personal WeChat have separate switches. Official Accounts still require a separate server deployment."
                     )
                 )
                 .font(.caption)
@@ -133,6 +223,7 @@ struct MessageChannelsView: View {
             }
         }
         .formStyle(.grouped)
+        .tint(.blue)
     }
 
     private func isConfigurable(_ phase: MessageChannelPhase) -> Bool {

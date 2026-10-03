@@ -1207,6 +1207,12 @@ final class CodexAccountActions {
         do { return try loadPendingSwitchJournal(fileManager: .default) == nil } catch { return false }
     }
 
+    static func systemAuthIsMissing() -> Bool {
+        let authURL = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".codex/auth.json")
+        return (try? authState(at: authURL)) == .missing
+    }
+
     func commitPendingSwitch(completion: @escaping (Error?) -> Void) {
         let fileManager = FileManager.default
         let switchLock: Int32
@@ -1377,7 +1383,7 @@ final class CodexAccountActions {
     func launchCodex(
         profile: CodexProfile,
         sourceBackupProfile: CodexProfile? = nil,
-        expectedSourceIdentity: CodexCredentialIdentity,
+        expectedSourceIdentity: CodexCredentialIdentity?,
         retainRecoveryJournal: Bool = false,
         allowForcedTermination: Bool = false,
         progress: @escaping (String) -> Void = { _ in },
@@ -2302,11 +2308,20 @@ final class CodexAccountActions {
         Data(SHA256.hash(data: data))
     }
 
-    fileprivate static func validateSwitchSource(_ auth: AuthState, expected: CodexCredentialIdentity) throws {
-        guard !expected.email.isEmpty, !expected.accountID.isEmpty,
-            case .data(let data) = auth,
-            CodexOfficialProfileReader.credentialIdentity(fromAuthData: data) == expected
-        else {
+    fileprivate static func validateSwitchSource(_ auth: AuthState, expected: CodexCredentialIdentity?) throws {
+        let matches: Bool
+        if let expected {
+            if case .data(let data) = auth {
+                matches =
+                    !expected.email.isEmpty && !expected.accountID.isEmpty
+                    && CodexOfficialProfileReader.credentialIdentity(fromAuthData: data) == expected
+            } else {
+                matches = false
+            }
+        } else {
+            matches = auth == .missing
+        }
+        guard matches else {
             throw switchError(
                 WidgetLanguage.storedOrAutomatic().text(
                     "准备期间 Codex 账号已变化；已取消切换，请重新检查后再试", "The Codex account changed during preparation. Switching was canceled; check it and try again."))
@@ -3196,6 +3211,12 @@ enum CodexAccountSwitchSafetySelfTest {
             let expectedSource = CodexCredentialIdentity(email: "source@example.com", accountID: "acct-source")
             try CodexAccountActions.validateSwitchSource(.data(originalAuth), expected: expectedSource)
             try CodexAccountActions.validateSwitchSource(.data(rotatedOriginalAuth), expected: expectedSource)
+            try CodexAccountActions.validateSwitchSource(.missing, expected: nil)
+            do {
+                try CodexAccountActions.validateSwitchSource(.data(originalAuth), expected: nil)
+                print("Codex account switch safety self-test failed: signed-out source accepted existing credentials")
+                return false
+            } catch {}
             let sameEmailDifferentIdentity = makeAuth(email: "source@example.com", accountID: "acct-other", accessToken: "external")
             for changed in [CodexAccountActions.AuthState.data(externalAuth), .data(sameEmailDifferentIdentity), .missing] {
                 do {
@@ -3263,6 +3284,24 @@ enum CodexAccountSwitchSafetySelfTest {
                 )
             else {
                 print("Codex account switch safety self-test failed: journal decision or permissions")
+                return false
+            }
+            let signedOutPending = CodexAccountActions.PendingSwitchJournal(
+                originalAuth: .missing,
+                targetAuthFingerprint: CodexAccountActions.authFingerprint(auth),
+                targetIdentity: CodexCredentialIdentity(email: "person@example.com", accountID: "acct-person"),
+                originalCodexWasRunning: false,
+                originalDaemonWasRunning: false
+            )
+            guard
+                CodexAccountActions.pendingSwitchRecoveryDecision(
+                    current: .missing, journal: signedOutPending) == .originalAlreadyPresent,
+                CodexAccountActions.pendingSwitchRecoveryDecision(
+                    current: .data(auth), journal: signedOutPending) == .rollbackOriginal,
+                CodexAccountActions.pendingSwitchRecoveryDecision(
+                    current: .data(externalAuth), journal: signedOutPending) == .preserveExternal
+            else {
+                print("Codex account switch safety self-test failed: signed-out recovery decision")
                 return false
             }
             let updatedPending = CodexAccountActions.PendingSwitchJournal(

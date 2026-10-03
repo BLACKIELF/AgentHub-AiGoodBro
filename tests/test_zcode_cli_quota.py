@@ -16,6 +16,9 @@ class ZCodeCLIQuotaTests(unittest.TestCase):
             ROOT / "Sources/CodexUsageWidget/Services/TokenMonitorEngine.swift",
             ROOT / "Sources/CodexUsageWidget/Services/TokenMonitorLocalCLIQuotaReader.swift",
             ROOT / "Sources/CodexUsageWidget/Services/LocalCLIQuotaReader.swift",
+            ROOT / "Sources/CodexUsageWidget/Services/LocalCLIQuotaRefresh.swift",
+            ROOT / "Sources/CodexUsageWidget/Services/CCSwitchClaudeRelay.swift",
+            ROOT / "Sources/CodexUsageWidget/Services/BoundedLocalProcess.swift",
             ROOT / "Sources/CodexUsageWidget/Services/ZCodeCLIQuotaReader.swift",
             ROOT / "tests/ZCodeCLIQuotaFixture.swift",
         ]
@@ -42,12 +45,14 @@ class ZCodeCLIQuotaTests(unittest.TestCase):
 
     def test_static_privacy_and_scope_contract(self):
         source = (ROOT / "Sources/CodexUsageWidget/Services/ZCodeCLIQuotaReader.swift").read_text()
-        self.assertIn('"builtin:zai-coding-plan"', source)
+        self.assertIn('"builtin:\\(family)-coding-plan"', source)
         self.assertIn('"open.bigmodel.cn", "api.z.ai"', source)
         self.assertIn('"/api/monitor/usage/quota/limit"', source)
-        self.assertIn('identityFingerprint: nil', source)
-        self.assertNotIn("credentials.json", source)
-        self.assertNotIn("ProcessInfo.processInfo.environment", source)
+        self.assertIn('identityFingerprint: fingerprint', source)
+        self.assertIn('"credentials.json"', source)
+        self.assertIn('"setting.json"', source)
+        self.assertIn("credentialsUnreadable", source)
+        self.assertIn('ProcessInfo.processInfo.environment["ZCODE_CREDENTIAL_SECRET"]', source)
         self.assertNotIn("Data(contentsOf:", source)
         self.assertNotIn("URLSession.shared", source)
 
@@ -56,7 +61,7 @@ class ZCodeCLIQuotaTests(unittest.TestCase):
         fixture = (ROOT / "tests/ZCodeCLIQuotaFixture.swift").read_text()
         self.assertIn("parsed >= now", source)
         self.assertIn("1_700_000_000_000", fixture)
-        self.assertNotIn("credentials.json", source)
+        self.assertIn("testAccountSwitchRefusesOldQuota", fixture)
 
 
 if __name__ == "__main__":

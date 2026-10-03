@@ -36,8 +36,8 @@ async function collect(request, deps = {}) {
 test('the pinned upstream commit and version are reported verbatim', () => {
   const engine = loader.describeEngine();
   assert.equal(engine.repository, 'Javis603/token-monitor');
-  assert.equal(engine.commit, 'ef079b6fb494e1cfcb24736cfcf4d4e591222eaf');
-  assert.equal(engine.version, '0.56.0');
+  assert.equal(engine.commit, 'dcccfb01557e2786888fd5479552f392ac6c0d32');
+  assert.equal(engine.version, '0.62.0');
   assert.equal(engine.pinned, true);
 });
 
