@@ -62,6 +62,20 @@ final class FakeTransport: MessageChannelTransport {
     }
 }
 
+final class AdvancingWeChatTransport: MessageChannelTransport {
+    let response: Data
+    let onResponse: () -> Void
+    init(response: Data, onResponse: @escaping () -> Void) {
+        self.response = response
+        self.onResponse = onResponse
+    }
+    func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        await Task.yield()
+        onResponse()
+        return (response, HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+    }
+}
+
 enum MessageChannelsTests {
     static let syntheticToken = "1234567890:AAExampleSyntheticToken0000000000000"
     static let syntheticChatID = "-100200300"
@@ -532,6 +546,37 @@ enum MessageChannelsTests {
                 let parsed = try PersonalWeChatMessageChannel.bindingFromUpdates(["msgs": [inbound]], credential: unbound, now: now)
                 expect(parsed.messages.isEmpty, "invalid message ID admitted a command")
             }
+            // Exercise the production async entry: the poll returns 21 seconds
+            // after it starts, with a command written during that wait.
+            let pollStart = Date(timeIntervalSince1970: 1_800_000_000)
+            let pollReturn = pollStart.addingTimeInterval(21)
+            func timedMessage(id: String, createdAt: Date, user: String = "scanner@im.wechat", text: String = "/状态") -> [String: Any] {
+                ["message_type": 1, "message_state": 2, "message_id": id,
+                 "from_user_id": user, "to_user_id": "fixture-bot", "context_token": "context-" + id,
+                 "create_time_ms": Int(createdAt.timeIntervalSince1970 * 1000),
+                 "item_list": [["type": 1, "text_item": ["text": text]]]]
+            }
+            let delayedBody = try JSONSerialization.data(withJSONObject: ["msgs": [
+                timedMessage(id: "during-poll", createdAt: pollStart.addingTimeInterval(20)),
+                timedMessage(id: "ordinary-during-poll", createdAt: pollStart.addingTimeInterval(20.5), text: "synthetic ordinary message"),
+                timedMessage(id: "expired", createdAt: pollReturn.addingTimeInterval(-121)),
+                timedMessage(id: "future", createdAt: pollReturn.addingTimeInterval(6)),
+                timedMessage(id: "other-owner", createdAt: pollReturn, user: "other@im.wechat")
+            ], "get_updates_buf": "after-long-poll"])
+            var responseReturned = false
+            var clockSamples = 0
+            let advancing = AdvancingWeChatTransport(response: delayedBody) { responseReturned = true }
+            let delayedChannel = PersonalWeChatMessageChannel(transport: advancing, clock: {
+                clockSamples += 1
+                expect(responseReturned, "updates sampled its clock before the transport returned")
+                return responseReturned ? pollReturn : pollStart
+            })
+            let delayedUpdate = runAsync { try? await delayedChannel.updates(unbound) }
+            expect(delayedUpdate?.messages.map(\.id) == ["during-poll", "ordinary-during-poll"], "long-poll arrival was lost or stale/future/non-owner command admitted")
+            expect(clockSamples == 1 && delayedUpdate?.binding.updatesCursor == "after-long-poll", "long-poll result did not use one response-time clock sample")
+            // Context permits its existing 60-second future tolerance; the
+            // stricter command guard still excludes this genuine future item.
+            expect(delayedUpdate?.binding.contextCheckedAt == pollReturn.addingTimeInterval(6), "context timestamp did not preserve newest eligible server evidence")
             let credential = MessageChannelCredential(secret: unbound.secret, target: unbound.target, personalBinding: updates.binding)
             let roundTrip = try JSONDecoder().decode(MessageChannelCredential.self, from: JSONEncoder().encode(credential))
             expect(roundTrip.personalBinding == updates.binding, "encrypted-record session round trip lost context/cursor")

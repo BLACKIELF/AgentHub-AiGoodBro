@@ -71,10 +71,12 @@ final class PersonalWeChatMessageChannel {
 
     private let transport: MessageChannelTransport
     private let deduplicator: MessageEventDeduplicator
+    private let clock: () -> Date
 
-    init(transport: MessageChannelTransport, deduplicator: MessageEventDeduplicator = MessageEventDeduplicator()) {
+    init(transport: MessageChannelTransport, deduplicator: MessageEventDeduplicator = MessageEventDeduplicator(), clock: @escaping () -> Date = Date.init) {
         self.transport = transport
         self.deduplicator = deduplicator
+        self.clock = clock
     }
 
     static func validatedToken(_ value: String, limit: Int = 4096) throws -> String {
@@ -282,9 +284,10 @@ final class PersonalWeChatMessageChannel {
         }
     }
 
-    func updates(_ credential: MessageChannelCredential, now: Date = Date()) async throws -> Updates {
+    func updates(_ credential: MessageChannelCredential, now: Date? = nil) async throws -> Updates {
         let object = try await fetch(Self.updatesRequest(credential), requiresAcceptance: false)
-        return try Self.bindingFromUpdates(object, credential: credential, now: now)
+        // Long polling can receive messages created after the request started.
+        return try Self.bindingFromUpdates(object, credential: credential, now: now ?? clock())
     }
 
     static func bindingFromUpdates(_ object: [String: Any], credential: MessageChannelCredential, now: Date) throws -> Updates {
