@@ -130,21 +130,33 @@ enum TokenMonitorDesktopLifecycleFixture {
         let test = try TestDirectory()
         defer { test.remove() }
         test.configure(mode: "never-ready")
-        let controller = test.controller(startupAttempts: 3, graceSeconds: 0.2)
+        let graceSeconds = 0.4
+        let controller = test.controller(startupAttempts: 3, graceSeconds: graceSeconds)
         defer { controller.shutdown() }
-        var actorTicks = 0
+        var actorTicks: [TimeInterval] = []
         let ticker = Task { @MainActor in
-            for _ in 0..<30 {
-                try? await Task.sleep(nanoseconds: 50_000_000)
-                actorTicks += 1
+            while !Task.isCancelled {
+                do { try await Task.sleep(nanoseconds: 25_000_000) } catch { return }
+                actorTicks.append(ProcessInfo.processInfo.systemUptime)
             }
         }
+        defer { ticker.cancel() }
         controller.open(.dashboard)
         try await waitFor("failed startup completed", timeout: 5) { controller.lastError != nil }
         ticker.cancel()
-        try require(actorTicks >= 12, "startup cleanup blocked the main actor")
-        try require(test.pids.count == 1, "failed startup launched duplicate helpers")
         let child = try ownedProcess(controller)
+        defer { if child.isRunning { Darwin.kill(child.processIdentifier, SIGKILL) } }
+        let cleanupStartText = try String(contentsOf: test.quitEnteredFile, encoding: .utf8)
+        guard let cleanupStart = TimeInterval(cleanupStartText) else {
+            throw FixtureFailure(description: "failed helper did not record cleanup entry")
+        }
+        // Observe the exit-wait phase itself. Startup ticks cannot prove cleanup
+        // yields, and a fixed total tick count depends on runner scheduling.
+        let cleanupTicks = actorTicks.filter {
+            $0 >= cleanupStart + graceSeconds && $0 < cleanupStart + 2 * graceSeconds
+        }
+        try require(!cleanupTicks.isEmpty, "startup cleanup blocked the main actor (cleanup ticks=0, total ticks=\(actorTicks.count))")
+        try require(test.pids.count == 1, "failed startup launched duplicate helpers")
         try require(child.isRunning, "failure fixture did not exercise refusal to exit")
         controller.open(.dashboard)
         try await sleep(milliseconds: 900)
@@ -215,7 +227,8 @@ enum TokenMonitorDesktopLifecycleFixture {
         guard let path = environment["AIGOODBRO_TOKEN_MONITOR_SOCKET"],
             let launchLog = environment["AIGOODBRO_TEST_LAUNCH_LOG"],
             let failedPIDFile = environment["AIGOODBRO_TEST_FAILED_PID_FILE"],
-            let statusEnteredFile = environment["AIGOODBRO_TEST_STATUS_ENTERED_FILE"]
+            let statusEnteredFile = environment["AIGOODBRO_TEST_STATUS_ENTERED_FILE"],
+            let quitEnteredFile = environment["AIGOODBRO_TEST_QUIT_ENTERED_FILE"]
         else { exit(2) }
         let mode = environment["AIGOODBRO_TEST_MODE"] ?? "normal"
         let logDescriptor = Darwin.open(launchLog, O_WRONLY | O_CREAT | O_APPEND, 0o600)
@@ -260,6 +273,9 @@ enum TokenMonitorDesktopLifecycleFixture {
                 _ = FileManager.default.createFile(atPath: statusEnteredFile, contents: Data())
                 usleep(220_000)
             }
+            if mode == "never-ready", command == "quit" {
+                try? String(ProcessInfo.processInfo.systemUptime).write(toFile: quitEnteredFile, atomically: true, encoding: .utf8)
+            }
             let failedPID = (try? String(contentsOf: URL(fileURLWithPath: failedPIDFile), encoding: .utf8))?
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             let disconnected = failedPID == String(getpid())
@@ -282,12 +298,14 @@ private final class TestDirectory {
     let launchLog: URL
     let failedPIDFile: URL
     let statusEnteredFile: URL
+    let quitEnteredFile: URL
 
     init() throws {
         root = FileManager.default.temporaryDirectory.appendingPathComponent("agb-helper-test-\(UUID().uuidString)", isDirectory: true)
         launchLog = root.appendingPathComponent("launches")
         failedPIDFile = root.appendingPathComponent("failed-pid")
         statusEnteredFile = root.appendingPathComponent("status-entered")
+        quitEnteredFile = root.appendingPathComponent("quit-entered")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
     }
 
@@ -302,6 +320,7 @@ private final class TestDirectory {
         setenv("AIGOODBRO_TEST_LAUNCH_LOG", launchLog.path, 1)
         setenv("AIGOODBRO_TEST_FAILED_PID_FILE", failedPIDFile.path, 1)
         setenv("AIGOODBRO_TEST_STATUS_ENTERED_FILE", statusEnteredFile.path, 1)
+        setenv("AIGOODBRO_TEST_QUIT_ENTERED_FILE", quitEnteredFile.path, 1)
         setenv("AIGOODBRO_TEST_STARTUP_DELAY_MS", String(startupDelayMilliseconds), 1)
     }
 
