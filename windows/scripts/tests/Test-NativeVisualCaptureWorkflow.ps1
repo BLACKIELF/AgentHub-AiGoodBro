@@ -207,7 +207,7 @@ Assert-True (
   "$($blockedResult.error)".Contains('windows_metadata')
 ) 'A blocked preflight result omitted the missing Windows metadata diagnostic.'
 
-Assert-True ($manifest.capture_engine -eq 'Windows.Graphics.Capture') 'Preflight selected the wrong capture engine.'
+Assert-True ($manifest.capture_engine -eq 'PrintWindow (tool window); Windows.Graphics.Capture (normal window)') 'Preflight selected the wrong capture engines.'
 Assert-True ($manifest.targeting -eq 'exact HWND') 'Preflight did not declare exact-HWND targeting.'
 Assert-Sequence @($manifest.capture_runs) @('fullscreen') 'Preflight capture-run coverage changed.'
 Assert-True (@($manifest.client_sizes).Count -eq 0) 'Preflight retained obsolete fixed client-size runs.'

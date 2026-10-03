@@ -802,7 +802,7 @@ function Get-PreflightManifest {
   }
 
   return [ordered]@{
-    capture_engine = 'Windows.Graphics.Capture'
+    capture_engine = 'PrintWindow (tool window); Windows.Graphics.Capture (normal window)'
     targeting = 'exact HWND'
     activation_mode = 'non-activating'
     foreground_policy = 'preserve active window'
@@ -1242,6 +1242,24 @@ function Assert-ForegroundPreserved {
   }
 }
 
+function Wait-WebViewDocument {
+  param([IntPtr] $Window)
+  $condition = New-Object System.Windows.Automation.PropertyCondition(
+    [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+    [System.Windows.Automation.ControlType]::Document
+  )
+  $deadline = (Get-Date).AddSeconds(30)
+  do {
+    $root = [System.Windows.Automation.AutomationElement]::FromHandle($Window)
+    $document = $root.FindFirst(
+      [System.Windows.Automation.TreeScope]::Descendants, $condition
+    )
+    if ($null -ne $document) { return }
+    Start-Sleep -Milliseconds 150
+  } while ((Get-Date) -lt $deadline)
+  throw 'The task WebView2 did not expose a UIA Document within 30 seconds.'
+}
+
 function Find-ElementByAutomationId {
   param([IntPtr] $Window, [string] $AutomationId)
   $root = [System.Windows.Automation.AutomationElement]::FromHandle($Window)
@@ -1532,6 +1550,7 @@ function Capture-DashboardSurfaceSegments {
       limited_by_page_end = $atPageEnd
       file = $outputPath
       physical_frame = $capture.physical_frame
+      capture_engine = $capture.engine
       bytes = $capture.bytes
     }
     $records += $record
@@ -1615,22 +1634,23 @@ function Invoke-GraphicsCapture {
   $output | ForEach-Object { "$_" } | Add-Content -LiteralPath $LogPath -Encoding utf8
   if ($exitCode -ne 0) {
     foreach ($line in $output) { [Console]::Error.WriteLine("$line") }
-    throw "Windows Graphics Capture failed with exit code $exitCode."
+    throw "Native window capture failed with exit code $exitCode."
   }
   if (-not (Test-Path -LiteralPath $OutputPath -PathType Leaf)) {
-    throw 'Windows Graphics Capture did not create the expected local PNG.'
+    throw 'Native window capture did not create the expected local PNG.'
   }
   $file = Get-Item -LiteralPath $OutputPath
   if ($file.Length -le 0) {
-    throw 'Windows Graphics Capture created an empty PNG.'
+    throw 'Native window capture created an empty PNG.'
   }
   $captureLine = @($output | Where-Object { "$_" -match '^CAPTURE_OK ' }) |
     Select-Object -Last 1
-  if ($null -eq $captureLine -or "$captureLine" -notmatch '^CAPTURE_OK (?<size>\d+x\d+)$') {
-    throw 'Windows Graphics Capture did not report a physical frame size.'
+  if ($null -eq $captureLine -or "$captureLine" -notmatch '^CAPTURE_OK (?<size>\d+x\d+) (?<engine>PrintWindow|Windows\.Graphics\.Capture)$') {
+    throw 'Native window capture did not report its frame size and engine.'
   }
   return [ordered]@{
     physical_frame = $Matches.size
+    engine = $Matches.engine
     bytes = $file.Length
   }
 }
@@ -1712,11 +1732,18 @@ function Invoke-MaximizedCapture {
     $sizeRecord.window = Set-MaximizedWindow `
       -Window $window `
       -ExpectedForeground $foregroundBefore
+    Wait-WebViewDocument -Window $window
     [void](Wait-ForElement -Window $window -AutomationId 'dashboard-home-tab-tasks')
     $renderer = [NativeVisualCaptureDriver]::FindRenderer($window)
     if ($renderer -eq [IntPtr]::Zero) {
       throw 'Could not identify the task application renderer child HWND.'
     }
+    $sizeRecord.accessibility = [ordered]@{
+      document_present = $true
+      dashboard_tab_present = $true
+      renderer_present = $true
+    }
+    Save-WorkflowManifest
     Update-TaskProcessRecords -RootProcessId $process.Id -Records $records
 
     if ($captureOverview) {
@@ -1734,6 +1761,7 @@ function Invoke-MaximizedCapture {
         framing = 'page top in maximized window'
         file = $overviewPath
         physical_frame = $overviewCapture.physical_frame
+        capture_engine = $overviewCapture.engine
         bytes = $overviewCapture.bytes
       }
       Save-WorkflowManifest
@@ -1863,7 +1891,7 @@ $script:workflowManifest = [ordered]@{
   started_utc = (Get-Date).ToUniversalTime().ToString('o')
   completed_utc = $null
   checkout = $checkout
-  capture_engine = 'Windows.Graphics.Capture'
+  capture_engine = 'PrintWindow (tool window); Windows.Graphics.Capture (normal window)'
   targeting = 'exact HWND'
   activation_mode = 'non-activating'
   foreground_policy = 'preserve active window'

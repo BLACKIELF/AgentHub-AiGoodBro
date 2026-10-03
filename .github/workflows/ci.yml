@@ -235,9 +235,11 @@ jobs:
       - name: Build the native release application
         working-directory: windows
         run: cargo build --release --locked -p codexu-tauri --features custom-protocol
-      - name: Verify cold-start native capture and cleanup
+      - name: Verify two independent cold-start captures and cleanup
         shell: powershell
-        run: .\windows\scripts\tests\Test-NativeVisualCaptureCoverage.ps1
+        run: |
+          .\windows\scripts\tests\Test-NativeVisualCaptureCoverage.ps1
+          .\windows\scripts\tests\Test-NativeVisualCaptureCoverage.ps1
       - uses: actions/cache/save@v4
         if: ${{ always() && !cancelled() && steps.native-cache.outputs.cache-hit != 'true' }}
         with:

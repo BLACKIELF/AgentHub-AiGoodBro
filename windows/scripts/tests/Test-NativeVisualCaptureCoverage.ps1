@@ -58,6 +58,11 @@ Assert-True (@($manifest.size_runs).Count -eq 0) 'Coverage capture retained obso
 $fullscreenRun = $manifest.fullscreen_run
 Assert-True ($null -ne $fullscreenRun) 'Coverage capture did not record its fullscreen run.'
 Assert-True ($fullscreenRun.status -eq 'complete') 'Fullscreen Overview capture is not complete.'
+Assert-True (
+  [bool]$fullscreenRun.accessibility.document_present -and
+  [bool]$fullscreenRun.accessibility.dashboard_tab_present -and
+  [bool]$fullscreenRun.accessibility.renderer_present
+) 'Native capture must verify a real UIA Document, Dashboard tab and renderer.'
 Assert-True ([bool]$fullscreenRun.window.maximized) 'Overview was not captured from a maximized window.'
 Assert-True (
   $fullscreenRun.window.activation_mode -eq 'non-activating' -and
