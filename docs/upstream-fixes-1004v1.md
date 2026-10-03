@@ -31,3 +31,9 @@ Reports were read from GitHub on 2026-10-04. Similar reports or comments establi
 Quota-before-history, no invented Hub record, observer failure isolation, stopped-runtime callbacks, bounded debounce, slow-scan idle time, client preservation and shutdown are exercised against the transformed production functions with synthetic data. Packaging checks enforce exact vendor hashes and the allowlisted staged changes.
 
 Native checks cover the 48-hour boundary, stale/failed evidence, duplicate dates, saved ordering, appearance-specific foreground contrast and the real proxy-window host. Runtime previews contain only synthetic accounts. Live model requests, actual upstream 429 recovery, phone delivery and prolonged real-history energy consumption require separate evidence.
+
+## 1004v2 correction: visible cold-start quotas
+
+The 115 test replaced `renderLimits` and `signalContentReady` with counters. It proved event delivery but missed the production hidden panel and the readiness guard requiring stats. The default Home module also read only combined stats, and the initial local empty aggregate could masquerade as a completed baseline.
+
+116 reuses Home quota rows and the Limits panel while keeping usage unknown until a real local record exists. A real zero-token record remains known zero. The initial embedded local placeholder carries an explicit pending marker; current pending quotas replay after renderer reload and are invalidated by stop or real collection. Tests extract the production render, quota builders, panel visibility and readiness functions instead of replacing those guards. Vendor inputs and hash checks remain pinned.
