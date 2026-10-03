@@ -334,15 +334,65 @@ struct DispatchParticipationSync {
         }
 
         var hubObject = try object(hub, error: .invalidHub)
-        guard var accounts = hubObject["accounts"] as? [[String: Any]], !accounts.isEmpty,
+        guard var accounts = hubObject["accounts"] as? [[String: Any]],
             accounts.allSatisfy({
                 nonempty($0["alias"]) != nil && canonicalHome($0["home"]) != nil
                     && ($0["dispatchDisabled"] == nil || boolean($0["dispatchDisabled"]) != nil)
             }),
             Set(accounts.compactMap { normalized($0["alias"]) }).count == accounts.count
         else { throw DispatchParticipationError.invalidHub }
-        let matches = accounts.indices.filter { index in
+        var matches = accounts.indices.filter { index in
             group.contains { canonicalHome($0["codexHomePath"]) == canonicalHome(accounts[index]["home"]) }
+        }
+        if enabled {
+            // A click identifies an execution home, even when Desktop is signed
+            // into the same account. Never dispatch from the system auth home.
+            let managed =
+                boolean(selected["isSystemProfile"]) == true
+                ? group.filter { boolean($0["isSystemProfile"]) != true } : [selected]
+            guard managed.count == 1, let target = managed.first,
+                let targetHome = nonempty(target["codexHomePath"]), let targetID = nonempty(target["id"])
+            else { throw DispatchParticipationError.ambiguousAccount }
+            let exact = accounts.indices.filter {
+                canonicalHome(accounts[$0]["home"]) == canonicalHome(targetHome)
+            }
+            guard exact.count <= 1 else { throw DispatchParticipationError.ambiguousAccount }
+            if exact.isEmpty {
+                // Register a newly saved, credential-verified managed profile in
+                // the same backed-up transaction as its first participation toggle.
+                guard targetID.range(of: #"^[A-Za-z0-9_-]{1,100}$"#, options: .regularExpression) != nil else {
+                    throw DispatchParticipationError.identityMismatch
+                }
+                let alias = "profile-" + targetID.lowercased()
+                guard !accounts.contains(where: { normalized($0["alias"]) == alias }) else {
+                    throw DispatchParticipationError.ambiguousAccount
+                }
+                accounts.append(["alias": alias, "home": targetHome, "dispatchDisabled": false])
+                matches = [accounts.count - 1]
+            } else {
+                matches = exact
+            }
+        }
+        // An account absent from Hub still needs a working opt-out. No new Hub
+        // identity is created, and entries belonging to other homes stay intact.
+        if !enabled && matches.isEmpty {
+            var catalog = try codes.map { try object($0, error: .invalidCodes) } ?? ["schemaVersion": 1, "accounts": []]
+            try normalizeCatalog(&catalog, profiles: profiles, hub: hubObject, accounts: accounts)
+            var entries = try validatedEntries(catalog)
+            for index in entries.indices where groupIDs.contains(nonempty(entries[index]["profileId"]) ?? "") {
+                guard entries[index]["email"] == nil || normalized(entries[index]["email"]) == email,
+                    !accounts.contains(where: { normalized($0["alias"]) == normalized(entries[index]["alias"]) })
+                else { throw DispatchParticipationError.ambiguousAccount }
+                entries[index]["active"] = false
+            }
+            for index in profiles.indices where groupIDs.contains(nonempty(profiles[index]["id"]) ?? "") {
+                profiles[index]["automaticSwitchParticipation"] = false
+                if let priority { profiles[index]["prioritizeDispatch"] = priority }
+            }
+            next["profiles"] = profiles
+            catalog["accounts"] = entries
+            try validatePreflightCatalog(catalog)
+            return [try encode(next), hub, try encode(catalog)]
         }
         // Exclusion can safely cover every validated home of the same identity.
         // Joining still requires one unambiguous execution home.

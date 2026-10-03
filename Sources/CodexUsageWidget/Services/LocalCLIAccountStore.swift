@@ -22,9 +22,14 @@ final class LocalCLIAccountStore: ObservableObject {
     private var loginTasks: [String: Task<Void, Never>] = [:]
     private var authenticationTasks: [String: Task<Void, Never>] = [:]
     private var loginVerification: Set<String> = []
+    private var quotaAttemptedAt: [String: Date] = [:]
+    private var quotaAttemptState: [String: LocalCLIQuotaState] = [:]
+    private var quotaCredentialVersions: [String: CredentialVersion] = [:]
+    private var queuedCredentialRefresh: Set<String> = []
     private var saved: [LocalCLIProfile] = []
     private var savedDigest: Data?
     private var storageValid = true
+    private var previewOnly = false
     private let home: URL
     private let support: URL
     private let applicationsDirectory: URL
@@ -38,11 +43,13 @@ final class LocalCLIAccountStore: ObservableObject {
         applicationsDirectory: URL = URL(fileURLWithPath: "/Applications", isDirectory: true),
         quotaLoader: @escaping QuotaLoader = { profile in
             switch profile.kind {
-            case .gemini, .mimo:
+            case .gemini, .mimo, .trae, .workBuddy:
                 await AdditionalCLIQuotaReader().load(profile: profile)
             case .zcode:
                 await ZCodeCLIQuotaReader().load(profile: profile)
-            case .claudeCode, .grok, .openCode, .kimi, .trae, .workBuddy:
+            case .antigravity:
+                await AntigravityCLIQuotaReader().load(profile: profile)
+            case .claudeCode, .grok, .openCode, .kimi:
                 await LocalCLIQuotaReader().load(profile: profile)
             }
         },
@@ -59,6 +66,7 @@ final class LocalCLIAccountStore: ObservableObject {
 
     static func preview(profiles: [LocalCLIProfile], quotas: [String: LocalCLIQuotaResult], root: URL) -> LocalCLIAccountStore {
         let model = LocalCLIAccountStore(home: root, support: root, applicationsDirectory: root)
+        model.previewOnly = true
         model.profiles = profiles
         model.quotas = quotas
         for profile in profiles {
@@ -120,6 +128,14 @@ final class LocalCLIAccountStore: ObservableObject {
                 }
                 continue
             }
+            if kind == .antigravity {
+                if let app = applicationRoots.map({ $0.appendingPathComponent("Antigravity.app", isDirectory: true) })
+                    .first(where: isOfficialAntigravity)
+                {
+                    found[kind] = app.path
+                }
+                continue
+            }
             var candidates = [
                 home.appendingPathComponent(".local/bin/\(kind.commandName)").path,
                 "/opt/homebrew/bin/\(kind.commandName)", "/usr/local/bin/\(kind.commandName)",
@@ -152,34 +168,110 @@ final class LocalCLIAccountStore: ObservableObject {
 
     func profiles(for kind: LocalCLIKind) -> [LocalCLIProfile] { profiles.filter { $0.kind == kind } }
 
+    /// Only expose creation where the official launcher isolates credentials,
+    /// configuration and runtime state without replacing the user's HOME.
+    func canCreateAccount(kind: LocalCLIKind) -> Bool {
+        guard !previewOnly, storageValid, saved.count < 64 else { return false }
+        switch kind {
+        case .grok, .openCode, .kimi:
+            return installed[kind] != nil
+        case .workBuddy:
+            return !workBuddyInstalled.isEmpty
+        default:
+            return false
+        }
+    }
+
     func createGrokAccount(name: String) -> LocalCLIProfile? {
-        guard storageValid, validName(name), installed[.grok] != nil, saved.count < 64 else {
+        createAccount(kind: .grok, name: name)
+    }
+
+    func createAccount(
+        kind: LocalCLIKind,
+        name: String,
+        workBuddyEdition: WorkBuddyEdition? = nil
+    ) -> LocalCLIProfile? {
+        guard canCreateAccount(kind: kind), validName(name) else {
             fail(Failure.invalid)
             return nil
         }
+        guard
+            !profiles.contains(where: {
+                $0.kind == kind && $0.displayName.caseInsensitiveCompare(name) == .orderedSame
+            })
+        else {
+            message = language.text("该平台已有同名账号，请换一个名称。", "This provider already has an account with that name. Choose another name.")
+            return nil
+        }
+        let edition: WorkBuddyEdition?
+        if kind == .workBuddy {
+            edition = workBuddyEdition ?? WorkBuddyEdition.allCases.first { workBuddyInstalled[$0] != nil }
+            guard let edition, workBuddyInstalled[edition] != nil else {
+                fail(Failure.invalid)
+                return nil
+            }
+        } else {
+            guard workBuddyEdition == nil else {
+                fail(Failure.invalid)
+                return nil
+            }
+            edition = nil
+        }
         let id = UUID().uuidString.lowercased()
-        let root = home.appendingPathComponent(".codex-account-manager-next/grok", isDirectory: true)
-        let directory = root.appendingPathComponent(id.replacingOccurrences(of: "-", with: ""), isDirectory: true)
+        let managedRoot = home.appendingPathComponent(".codex-account-manager-next", isDirectory: true)
+        let root = managedRoot.appendingPathComponent(kind.rawValue, isDirectory: true)
+        let accountRoot = root.appendingPathComponent(id.replacingOccurrences(of: "-", with: ""), isDirectory: true)
+        let directory: URL
+        switch kind {
+        case .openCode:
+            // Must match the launcher's XDG suffix contract. All four XDG roots
+            // are then derived inside this account's unique root.
+            directory = accountRoot.appendingPathComponent(".local/share/opencode", isDirectory: true)
+        case .workBuddy:
+            guard let edition else { return nil }
+            directory = accountRoot.appendingPathComponent(edition.directoryName, isDirectory: true)
+        default:
+            directory = accountRoot
+        }
+        var createdAccountRoot = false
         do {
-            guard validDirectory(root.path), directory.appendingPathComponent("leader.sock").path.utf8.count < 104 else {
+            guard validDirectory(directory.path),
+                kind != .grok || directory.appendingPathComponent("leader.sock").path.utf8.count < 104
+            else {
                 throw Failure.invalid
             }
-            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-            var info = stat()
-            guard lstat(root.path, &info) == 0, info.st_mode & S_IFMT == S_IFDIR,
-                info.st_uid == geteuid(), info.st_mode & 0o077 == 0
-            else { throw Failure.invalid }
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
-            let profile = LocalCLIProfile(id: id, kind: .grok, displayName: name, configDirectory: directory.path, isDefault: false)
+            try prepareManagedAccountDirectory(managedRoot)
+            try prepareManagedAccountDirectory(root)
+            // A preexisting or replaced slot is never adopted or deleted.
+            guard mkdir(accountRoot.path, 0o700) == 0 else { throw Failure.invalid }
+            createdAccountRoot = true
+            if kind == .openCode {
+                for relative in [".local", ".local/share", ".local/share/opencode", ".config", ".local/state", ".cache"] {
+                    try prepareManagedAccountDirectory(accountRoot.appendingPathComponent(relative, isDirectory: true))
+                }
+            } else if directory != accountRoot {
+                try prepareManagedAccountDirectory(directory)
+            }
+            let profile = LocalCLIProfile(id: id, kind: kind, displayName: name, configDirectory: directory.path, isDefault: false)
             guard save(saved + [profile]) else {
-                try? FileManager.default.removeItem(at: directory)
+                try? FileManager.default.removeItem(at: accountRoot)
                 return nil
             }
             return profile
         } catch {
+            if createdAccountRoot { try? FileManager.default.removeItem(at: accountRoot) }
             fail(error)
             return nil
         }
+    }
+
+    private func prepareManagedAccountDirectory(_ directory: URL) throws {
+        guard validDirectory(directory.path) else { throw Failure.invalid }
+        if mkdir(directory.path, 0o700) != 0, errno != EEXIST { throw Failure.invalid }
+        var info = stat()
+        guard lstat(directory.path, &info) == 0, info.st_mode & S_IFMT == S_IFDIR,
+            info.st_uid == geteuid(), info.st_mode & 0o077 == 0
+        else { throw Failure.invalid }
     }
 
     func signIn(_ profile: LocalCLIProfile, updateProvider: Bool = false) {
@@ -225,10 +317,10 @@ final class LocalCLIAccountStore: ObservableObject {
                 language.text(
                     "请在 WorkBuddy 内置 CLI 中输入 /login 完成登录，再选择账号可用的模型。",
                     "Enter /login in WorkBuddy's bundled CLI, then choose a model available to your account.")
-            case .zcode:
+            case .zcode, .antigravity:
                 language.text(
-                    "请在 ZCode 桌面应用中完成登录。",
-                    "Complete sign-in in the ZCode desktop app.")
+                    "请在 \(profile.kind.displayName) 桌面应用中完成登录。",
+                    "Complete sign-in in the \(profile.kind.displayName) desktop app.")
             case .gemini:
                 language.text(
                     "在 Gemini CLI 中使用 Google 登录或 API Key；已有配置会复用。需要更换方式时输入 /auth。完成后自动检测，不必退出终端；额度单独读取。",
@@ -287,7 +379,13 @@ final class LocalCLIAccountStore: ObservableObject {
         else { return }
         if profile.kind.isDesktopApplication {
             let app = URL(fileURLWithPath: executable, isDirectory: true)
-            guard profile.kind == .zcode ? isOfficialZCode(app) : isOfficialTRAESOLO(app) else { return }
+            let verified =
+                switch profile.kind {
+                case .zcode: isOfficialZCode(app)
+                case .antigravity: isOfficialAntigravity(app)
+                default: isOfficialTRAESOLO(app)
+                }
+            guard verified else { return }
             Task { [weak self] in
                 do {
                     _ = try await NSWorkspace.shared.openApplication(
@@ -338,6 +436,55 @@ final class LocalCLIAccountStore: ObservableObject {
         for profile in profiles { checkLocalSignIn(profile) }
     }
 
+    /// Recheck the visible provider after an external CLI may have changed its
+    /// credentials. File metadata is only a change signal; quota and identity
+    /// still come from the profile's own official reader.
+    func refreshIfNeeded(kind: LocalCLIKind? = nil, profileIDs: Set<String>? = nil, maximumAge: TimeInterval = 5 * 60) {
+        guard !previewOnly else { return }
+        let now = clock()
+        let ageLimit = maximumAge.isFinite ? max(0, maximumAge) : 5 * 60
+        for profile in profiles
+        where (kind == nil || profile.kind == kind)
+            && (profileIDs == nil || profileIDs!.contains(profile.id))
+        {
+            let previousAuthentication = authentication[profile.id]
+            checkLocalSignIn(profile)
+            let version = credentialVersion(for: profile)
+            let credentialsChanged = quotaCredentialVersions[profile.id].map { $0 != version } ?? false
+            let authenticationChanged =
+                previousAuthentication != nil
+                && previousAuthentication != authentication[profile.id]
+            if credentialsChanged || authenticationChanged {
+                quotas.removeValue(forKey: profile.id)
+                stale.remove(profile.id)
+            }
+            if refreshing.contains(profile.id) {
+                if credentialsChanged || authenticationChanged { queuedCredentialRefresh.insert(profile.id) }
+                continue
+            }
+            if let attemptedAt = quotaAttemptedAt[profile.id] {
+                let elapsed = max(0, now.timeIntervalSince(attemptedAt))
+                if quotaAttemptState[profile.id] == .rateLimited, elapsed < 15 * 60 { continue }
+                // Successful reads use the original snapshot age below. A
+                // slow success must not add another 60 seconds after completion.
+                // Failed reads and rate limits retain their existing backoff.
+                if quotaAttemptState[profile.id] != .available,
+                    !credentialsChanged && !authenticationChanged, elapsed < 60
+                {
+                    continue
+                }
+            }
+            if !credentialsChanged && !authenticationChanged,
+                let quota = quotas[profile.id], quota.state == .available,
+                !stale.contains(profile.id),
+                (0..<ageLimit).contains(now.timeIntervalSince(quota.fetchedAt))
+            {
+                continue
+            }
+            refresh(profile)
+        }
+    }
+
     private func checkLocalSignIn(_ profile: LocalCLIProfile) {
         let evidence = LocalCLIAuthenticationReader().read(profile)
         authentication[profile.id] = evidence
@@ -363,7 +510,7 @@ final class LocalCLIAccountStore: ObservableObject {
     }
 
     func canOpen(_ profile: LocalCLIProfile) -> Bool {
-        profile.kind.supportsNativeOpen && profiles.contains(profile)
+        !previewOnly && profile.kind.supportsNativeOpen && profiles.contains(profile)
             && executable(for: profile) != nil
             && (!profile.kind.requiresDefaultEnvironmentForLaunch || profile.isDefault)
     }
@@ -393,6 +540,12 @@ final class LocalCLIAccountStore: ObservableObject {
                 return
             }
         }
+        if kind == .antigravity, !AntigravityCLIQuotaReader.hasLinkedCache(at: directory) {
+            message = language.text(
+                "请选择包含 User/globalStorage/state.vscdb 的 Antigravity 独立配置目录。关联只读取该档案，不切换桌面当前账号。",
+                "Choose an Antigravity profile containing User/globalStorage/state.vscdb. Linking reads that profile only; it never changes the desktop account.")
+            return
+        }
         guard !profiles.contains(where: { $0.kind == kind && $0.configDirectory == path }) else {
             message = language.text("这个账号目录已经关联。", "This account directory is already linked.")
             return
@@ -402,16 +555,17 @@ final class LocalCLIAccountStore: ObservableObject {
         save(next)
     }
 
-    func rename(_ profile: LocalCLIProfile, name: String) {
+    @discardableResult
+    func rename(_ profile: LocalCLIProfile, name: String) -> Bool {
         guard profiles.contains(profile), validName(name) else {
             fail(Failure.invalid)
-            return
+            return false
         }
-        var next = saved.filter { $0.id != profile.id }
+        var next = saved
         var value = profile
         value.displayName = name
-        next.append(value)
-        save(next)
+        if let index = next.firstIndex(where: { $0.id == profile.id }) { next[index] = value } else { next.append(value) }
+        return save(next)
     }
 
     func unlink(_ profile: LocalCLIProfile) {
@@ -426,12 +580,32 @@ final class LocalCLIAccountStore: ObservableObject {
             loginVerification.remove(profile.id)
             authentication.removeValue(forKey: profile.id)
             authenticationTasks.removeValue(forKey: profile.id)?.cancel()
+            quotaAttemptedAt.removeValue(forKey: profile.id)
+            quotaAttemptState.removeValue(forKey: profile.id)
+            quotaCredentialVersions.removeValue(forKey: profile.id)
+            queuedCredentialRefresh.remove(profile.id)
         }
     }
 
     func refresh(_ profile: LocalCLIProfile) {
-        authentication[profile.id] = LocalCLIAuthenticationReader().read(profile)
-        guard !refreshing.contains(profile.id), profiles.contains(profile) else { return }
+        guard !previewOnly else { return }
+        guard profiles.contains(profile) else { return }
+        let previousAuthentication = authentication[profile.id]
+        let currentAuthentication = LocalCLIAuthenticationReader().read(profile)
+        authentication[profile.id] = currentAuthentication
+        let requestCredentialVersion = credentialVersion(for: profile)
+        let credentialsChanged = quotaCredentialVersions[profile.id].map { $0 != requestCredentialVersion } ?? false
+        let authenticationChanged = previousAuthentication != nil && previousAuthentication != currentAuthentication
+        if credentialsChanged || authenticationChanged {
+            quotas.removeValue(forKey: profile.id)
+            stale.remove(profile.id)
+        }
+        if refreshing.contains(profile.id) {
+            if credentialsChanged || authenticationChanged { queuedCredentialRefresh.insert(profile.id) }
+            return
+        }
+        quotaAttemptedAt[profile.id] = clock()
+        quotaCredentialVersions[profile.id] = requestCredentialVersion
         let request = UUID()
         requests[profile.id] = request
         refreshing.insert(profile.id)
@@ -439,10 +613,34 @@ final class LocalCLIAccountStore: ObservableObject {
             guard let self else { return }
             let loaded = await self.quotaLoader(profile)
             guard !Task.isCancelled, self.requests[profile.id] == request,
-                self.profiles.contains(where: { $0.id == profile.id && $0.configDirectory == profile.configDirectory })
+                let currentProfile = self.profiles.first(where: {
+                    $0.id == profile.id && $0.kind == profile.kind && $0.configDirectory == profile.configDirectory
+                })
             else { return }
             self.refreshing.remove(profile.id)
             self.tasks.removeValue(forKey: profile.id)
+            let queuedRefresh = self.queuedCredentialRefresh.remove(profile.id) != nil
+            if self.credentialVersion(for: profile) != requestCredentialVersion || queuedRefresh {
+                self.requests.removeValue(forKey: profile.id)
+                self.quotas.removeValue(forKey: profile.id)
+                self.stale.remove(profile.id)
+                self.quotaCredentialVersions.removeValue(forKey: profile.id)
+                let now = self.clock()
+                let previousRateLimitStillActive =
+                    self.quotaAttemptState[profile.id] == .rateLimited
+                    && self.quotaAttemptedAt[profile.id].map { max(0, now.timeIntervalSince($0)) < 15 * 60 } == true
+                if loaded.state == .rateLimited {
+                    self.quotaAttemptedAt[profile.id] = now
+                    self.quotaAttemptState[profile.id] = .rateLimited
+                } else if !previousRateLimitStillActive {
+                    self.quotaAttemptedAt.removeValue(forKey: profile.id)
+                    self.quotaAttemptState.removeValue(forKey: profile.id)
+                }
+                if queuedRefresh || loaded.state == .available, loaded.state != .rateLimited, !previousRateLimitStillActive {
+                    self.refresh(currentProfile)
+                }
+                return
+            }
             let previous = self.quotas[profile.id]
             let now = self.clock()
             let observation =
@@ -455,6 +653,8 @@ final class LocalCLIAccountStore: ObservableObject {
                 profileKind: profile.kind,
                 observation: observation,
                 now: now)
+            self.quotaAttemptedAt[profile.id] = now
+            self.quotaAttemptState[profile.id] = loaded.state
             if self.loginVerification.remove(profile.id) != nil {
                 self.loginMessages[profile.id] =
                     result.state == .available
@@ -465,7 +665,15 @@ final class LocalCLIAccountStore: ObservableObject {
                         "已检查登录配置；额度暂未提供，可打开官方工具继续使用。",
                         "Sign-in configuration checked. Quota is unavailable; open the official tool to continue.")
             }
-            if result.state != .available, result.state != .needsLogin, previous?.state == .available {
+            let credentialSourceChanged =
+                profile.kind == .claudeCode
+                && loaded.messageCode == "local_cli_claude_credentials_changed"
+            if credentialSourceChanged {
+                // Keychain rotations have no file metadata generation. Never
+                // retain the old account's quota or derived identity on this signal.
+                self.quotaCredentialVersions.removeValue(forKey: profile.id)
+            }
+            if !credentialSourceChanged, result.state != .available, result.state != .needsLogin, previous?.state == .available {
                 self.stale.insert(profile.id)
             } else {
                 self.quotas[profile.id] = result
@@ -483,6 +691,56 @@ final class LocalCLIAccountStore: ObservableObject {
     private var language: WidgetLanguage { WidgetLanguage.storedOrAutomatic() }
     private enum Failure: Error, Equatable { case invalid, conflict }
 
+    private struct CredentialVersion: Equatable {
+        struct File: Equatable {
+            let device: dev_t
+            let inode: ino_t
+            let size: off_t
+            let modified: timespec
+            let changed: timespec
+
+            static func == (lhs: Self, rhs: Self) -> Bool {
+                lhs.device == rhs.device && lhs.inode == rhs.inode && lhs.size == rhs.size
+                    && lhs.modified.tv_sec == rhs.modified.tv_sec && lhs.modified.tv_nsec == rhs.modified.tv_nsec
+                    && lhs.changed.tv_sec == rhs.changed.tv_sec && lhs.changed.tv_nsec == rhs.changed.tv_nsec
+            }
+        }
+
+        let directory: String
+        let files: [File?]
+    }
+
+    private func credentialVersion(for profile: LocalCLIProfile) -> CredentialVersion {
+        let names: [String] =
+            switch profile.kind {
+            case .kimi: ["credentials/kimi-code.json", "device_id"]
+            case .grok, .openCode, .mimo: ["auth.json"]
+            case .claudeCode: [".credentials.json", "settings.json"]
+            case .gemini: ["settings.json", "oauth_creds.json", ".env"]
+            case .zcode: ["v2/setting.json", "v2/config.json", "v2/credentials.json"]
+            case .trae, .workBuddy, .antigravity: []
+            }
+        let directory = URL(fileURLWithPath: profile.configDirectory, isDirectory: true)
+        var urls = names.map { directory.appendingPathComponent($0) }
+        if profile.kind == .claudeCode, profile.isDefault,
+            directory.standardizedFileURL == LocalCLIKind.claudeCode.defaultConfigDirectory(home: home).standardizedFileURL
+        {
+            let relay = home.appendingPathComponent(".cc-switch", isDirectory: true)
+            urls += ["cc-switch.db", "cc-switch.db-wal"].map { relay.appendingPathComponent($0) }
+        }
+        let files = urls.map { url -> CredentialVersion.File? in
+            var info = stat()
+            let path = url.path
+            guard lstat(path, &info) == 0, info.st_mode & S_IFMT == S_IFREG,
+                info.st_uid == geteuid(), info.st_nlink == 1
+            else { return nil }
+            return CredentialVersion.File(
+                device: info.st_dev, inode: info.st_ino, size: info.st_size,
+                modified: info.st_mtimespec, changed: info.st_ctimespec)
+        }
+        return CredentialVersion(directory: profile.configDirectory, files: files)
+    }
+
     private func mergeImportedGrokObservation() {
         let now = clock()
         guard let observation = grokObservationReader.load(from: support, now: now) else { return }
@@ -498,8 +756,9 @@ final class LocalCLIAccountStore: ObservableObject {
     }
 
     private func rebuildProfiles() {
+        let previousScopes = Dictionary(uniqueKeysWithValues: profiles.map { ($0.id, $0) })
         var result: [LocalCLIProfile] = []
-        for kind in LocalCLIKind.allCases where installed[kind] != nil {
+        for kind in LocalCLIKind.allCases where installed[kind] != nil || (kind == .claudeCode && hasClaudeAPIConfiguration()) {
             if kind == .workBuddy {
                 for edition in WorkBuddyEdition.allCases where workBuddyInstalled[edition] != nil {
                     let directory = home.appendingPathComponent(edition.directoryName).standardizedFileURL.path
@@ -526,24 +785,45 @@ final class LocalCLIAccountStore: ObservableObject {
             result += saved.filter { $0.kind == kind && !$0.isDefault }
         }
         profiles = result
-        let activeIDs = Set(result.map(\.id))
-        for id in Array(tasks.keys) where !activeIDs.contains(id) {
+        let retainedIDs = Set(
+            result.filter {
+                previousScopes[$0.id]?.kind == $0.kind && previousScopes[$0.id]?.configDirectory == $0.configDirectory
+            }.map(\.id))
+        for id in Array(tasks.keys) where !retainedIDs.contains(id) {
             tasks.removeValue(forKey: id)?.cancel()
         }
-        requests = requests.filter { activeIDs.contains($0.key) }
-        quotas = quotas.filter { activeIDs.contains($0.key) }
-        stale.formIntersection(activeIDs)
-        refreshing.formIntersection(activeIDs)
-        for id in Array(loginTasks.keys) where !activeIDs.contains(id) {
+        requests = requests.filter { retainedIDs.contains($0.key) }
+        quotas = quotas.filter { retainedIDs.contains($0.key) }
+        stale.formIntersection(retainedIDs)
+        refreshing.formIntersection(retainedIDs)
+        for id in Array(loginTasks.keys) where !retainedIDs.contains(id) {
             loginTasks.removeValue(forKey: id)?.cancel()
         }
-        for id in Array(authenticationTasks.keys) where !activeIDs.contains(id) {
+        for id in Array(authenticationTasks.keys) where !retainedIDs.contains(id) {
             authenticationTasks.removeValue(forKey: id)?.cancel()
         }
-        authentication = authentication.filter { activeIDs.contains($0.key) }
-        signingIn.formIntersection(activeIDs)
-        loginVerification.formIntersection(activeIDs)
-        loginMessages = loginMessages.filter { activeIDs.contains($0.key) }
+        authentication = authentication.filter { retainedIDs.contains($0.key) }
+        signingIn.formIntersection(retainedIDs)
+        loginVerification.formIntersection(retainedIDs)
+        loginMessages = loginMessages.filter { retainedIDs.contains($0.key) }
+        quotaAttemptedAt = quotaAttemptedAt.filter { retainedIDs.contains($0.key) }
+        quotaAttemptState = quotaAttemptState.filter { retainedIDs.contains($0.key) }
+        quotaCredentialVersions = quotaCredentialVersions.filter { retainedIDs.contains($0.key) }
+        queuedCredentialRefresh.formIntersection(retainedIDs)
+    }
+
+    /// A configured API account can report a balance before its CLI is installed.
+    /// This discovers a profile only; launch readiness still requires an executable.
+    private func hasClaudeAPIConfiguration() -> Bool {
+        let file = LocalCLIKind.claudeCode.defaultConfigDirectory(home: home).appendingPathComponent("settings.json")
+        guard let data = try? DispatchParticipationSync.readBoundedRegularFile(file, maximumBytes: 256 * 1024, allowMissing: false),
+            let settings = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let environment = settings["env"] as? [String: Any]
+        else { return false }
+        return ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"].contains { key in
+            guard let value = environment[key] as? String else { return false }
+            return !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
     }
 
     private func validName(_ value: String) -> Bool {
@@ -589,6 +869,17 @@ final class LocalCLIAccountStore: ObservableObject {
             let identifier = Bundle(url: app)?.bundleIdentifier?.lowercased()
         else { return false }
         return identifier == "cn.trae.solo.app" || identifier == "com.trae.solo.app"
+    }
+
+    private func isOfficialAntigravity(_ app: URL) -> Bool {
+        guard app.lastPathComponent == "Antigravity.app", validDirectory(app.path),
+            regularFile(app.appendingPathComponent("Contents/MacOS/Antigravity"), executable: true),
+            let data = try? DispatchParticipationSync.readBoundedRegularFile(
+                app.appendingPathComponent("Contents/Info.plist"), maximumBytes: 256 * 1024, allowMissing: false),
+            let info = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any]
+        else { return false }
+        return info["CFBundleIdentifier"] as? String == "com.google.antigravity"
+            && info["CFBundleExecutable"] as? String == "Antigravity"
     }
 
     private func validProfile(_ profile: LocalCLIProfile) -> Bool {

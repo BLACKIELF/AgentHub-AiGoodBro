@@ -33,6 +33,7 @@ const WSL_DATA_MARKERS = [
   '.gemini/antigravity-cli/conversations',
   '.config/Code/User/globalStorage/saoudrizwan.claude-dev/tasks',
   '.vscode-server/data/User/globalStorage/saoudrizwan.claude-dev/tasks',
+  '.local/share/amp/threads',
   '.pi/agent/sessions',
   '.omp/agent/sessions',
   '.local/share/zed/threads/threads.db',
@@ -41,6 +42,7 @@ const WSL_DATA_MARKERS = [
   '.vscode-server/data/User/globalStorage/kilocode.kilo-code/tasks',
   '.commandcode/projects',
   '.dsh/sessions',
+  '.factory/sessions',
   '.local/share/mimocode/mimocode.db',
   '.zcode/projects',
   '.zcode/cli/db',
@@ -50,9 +52,16 @@ const WSL_DATA_MARKERS = [
   '.config/kiro/User/globalStorage/kiro.kiroagent',
   '.codebuddy/projects',
   '.workbuddy',
+  '.workbuddy-ai',
   '.proma/agent-sessions',
   '.lmstudio/server-logs',
-  '.unsloth/studio/studio.db'
+  '.unsloth/studio/studio.db',
+  '.local/share/devin/cli/sessions.db',
+  'AppData/Roaming/devin/cli/sessions.db',
+  '.config/Devin/User/acp-events',
+  '.config/devin/User/acp-events',
+  'AppData/Roaming/Devin/User/acp-events',
+  'Library/Application Support/Devin/User/acp-events'
 ];
 
 // Maps every WSL_DATA_MARKERS entry to the tracked-client id that owns it, so a
@@ -79,15 +88,17 @@ const MARKER_CLIENTS = {
   '.gemini/antigravity-cli/conversations': 'antigravity',
   '.config/Code/User/globalStorage/saoudrizwan.claude-dev/tasks': 'cline',
   '.vscode-server/data/User/globalStorage/saoudrizwan.claude-dev/tasks': 'cline',
+  '.local/share/amp/threads': 'amp',
   '.pi/agent/sessions': 'pi',
-  '.omp/agent/sessions': 'pi',
+  '.omp/agent/sessions': 'omp',
   '.local/share/zed/threads/threads.db': 'zed',
   '.local/share/kilo/kilo.db': 'kilo',
   '.config/Code/User/globalStorage/kilocode.kilo-code/tasks': 'kilo',
   '.vscode-server/data/User/globalStorage/kilocode.kilo-code/tasks': 'kilo',
   '.commandcode/projects': 'commandcode',
   '.dsh/sessions': 'dsh',
-  '.local/share/mimocode/mimocode.db': 'micode',
+  '.factory/sessions': 'droid',
+  '.local/share/mimocode/mimocode.db': 'mimo',
   '.zcode/projects': 'zcode',
   '.zcode/cli/db': 'zcode',
   '.kiro/sessions': 'kiro',
@@ -96,9 +107,16 @@ const MARKER_CLIENTS = {
   '.config/kiro/User/globalStorage/kiro.kiroagent': 'kiro',
   '.codebuddy/projects': 'codebuddy',
   '.workbuddy': 'workbuddy',
+  '.workbuddy-ai': 'workbuddy',
   '.proma/agent-sessions': 'proma',
   '.lmstudio/server-logs': 'lmstudio',
-  '.unsloth/studio/studio.db': 'unsloth'
+  '.unsloth/studio/studio.db': 'unsloth',
+  '.local/share/devin/cli/sessions.db': 'devin',
+  'AppData/Roaming/devin/cli/sessions.db': 'devin',
+  '.config/Devin/User/acp-events': 'devin',
+  '.config/devin/User/acp-events': 'devin',
+  'AppData/Roaming/Devin/User/acp-events': 'devin',
+  'Library/Application Support/Devin/User/acp-events': 'devin'
 };
 
 // Default command runner. reg output is ANSI/utf8; wsl.exe output is UTF-16LE.

@@ -19,6 +19,12 @@ enum QuotaAvailabilityPresentation {
         return fiveHour
     }
 
+    /// A missing official short window stays unknown, including weekly-only Pro.
+    static func reportedFiveHourRemaining(_ fiveHour: Double?, sevenDay: Double?) -> Double? {
+        guard let fiveHour else { return nil }
+        return fiveHourRemaining(fiveHour, sevenDay: sevenDay)
+    }
+
     static func fiveHourWindow(_ fiveHour: RateWindow?, sevenDay: RateWindow?) -> RateWindow? {
         guard isWeeklyExhausted(sevenDay?.remainingPercent) else { return fiveHour }
         return RateWindow(
@@ -37,6 +43,9 @@ enum QuotaAvailabilityPresentation {
             && fiveHourRemaining(nil, sevenDay: 83) == nil
             && fiveHourRemaining(82, sevenDay: 0.1) == 82
             && fiveHourRemaining(82, sevenDay: .nan) == 82
+            && reportedFiveHourRemaining(56, sevenDay: 0) == 0
+            && reportedFiveHourRemaining(nil, sevenDay: 0) == nil
+            && reportedFiveHourRemaining(56, sevenDay: 20) == 56
             && fiveHourWindow(fiveHour, sevenDay: exhausted)?.remainingPercent == 0
             && fiveHourWindow(nil, sevenDay: exhausted)?.remainingPercent == 0
             && fiveHourWindow(nil, sevenDay: nil) == nil
@@ -204,6 +213,34 @@ enum AccountSnapshotHealth: Equatable {
         }
     }
 
+    func updatedLabel(snapshotAt: Date?, now: Date, language: WidgetLanguage) -> String {
+        guard let snapshotAt else {
+            return self == .failed
+                ? language.text("读取失败 · 尚无额度快照", "Refresh failed · no quota snapshot")
+                : language.text("尚无额度快照", "No quota snapshot")
+        }
+        let age = now.timeIntervalSince(snapshotAt)
+        guard age.isFinite, age >= -30, let minutes = Int(exactly: floor(max(0, age) / 60)) else {
+            return language.text("快照时间异常 · 请刷新", "Invalid snapshot time · refresh")
+        }
+        let elapsed: String
+        if minutes == 0 {
+            elapsed = language.text("刚刚", "just now")
+        } else if minutes < 60 {
+            elapsed = language.text("\(minutes) 分钟前", "\(minutes)m ago")
+        } else if minutes < 24 * 60 {
+            elapsed = language.text("\(minutes / 60) 小时前", "\(minutes / 60)h ago")
+        } else {
+            elapsed = language.text("\(minutes / (24 * 60)) 天前", "\(minutes / (24 * 60))d ago")
+        }
+        switch self {
+        case .current: return language.text("额度更新 · ", "Quota updated · ") + elapsed
+        case .failed: return language.text("刷新失败 · 上次快照 ", "Refresh failed · snapshot ") + elapsed
+        case .stale: return language.text("上次快照 ", "Snapshot ") + elapsed + language.text(" · 请刷新", " · refresh")
+        case .missing: return language.text("尚无额度快照", "No quota snapshot")
+        }
+    }
+
     static func selfTest() -> Bool {
         let now = Date(timeIntervalSince1970: 100_000)
         return classify(snapshotAt: nil, lastFailureAt: nil, now: now) == .missing
@@ -212,5 +249,10 @@ enum AccountSnapshotHealth: Equatable {
             && classify(snapshotAt: now.addingTimeInterval(31), lastFailureAt: nil, now: now) == .stale
             && classify(snapshotAt: now.addingTimeInterval(-10), lastFailureAt: now, now: now) == .failed
             && classify(snapshotAt: now, lastFailureAt: now.addingTimeInterval(-10), now: now) == .current
+            && Self.current.updatedLabel(snapshotAt: now.addingTimeInterval(-120), now: now, language: .zh) == "额度更新 · 2 分钟前"
+            && Self.stale.updatedLabel(snapshotAt: now.addingTimeInterval(-3_600), now: now, language: .en) == "Snapshot 1h ago · refresh"
+            && Self.failed.updatedLabel(snapshotAt: nil, now: now, language: .zh) == "读取失败 · 尚无额度快照"
+            && Self.stale.updatedLabel(snapshotAt: now.addingTimeInterval(31), now: now, language: .zh) == "快照时间异常 · 请刷新"
+            && Self.stale.updatedLabel(snapshotAt: Date(timeIntervalSince1970: -.greatestFiniteMagnitude), now: now, language: .en) == "Invalid snapshot time · refresh"
     }
 }

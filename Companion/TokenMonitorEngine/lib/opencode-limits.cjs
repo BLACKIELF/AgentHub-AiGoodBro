@@ -6,7 +6,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const MAX_BYTES = 1_048_576;
 const URL = 'https://opencode.ai/zen/go/v1/usage';
-const provenance = 'token-monitor ef079b6 OpenCode Go';
+const provenance = 'token-monitor v0.62 OpenCode Go';
 const fail = code => Object.assign(new Error(code), { code });
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 

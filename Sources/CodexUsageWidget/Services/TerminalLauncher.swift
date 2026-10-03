@@ -194,16 +194,16 @@ struct TerminalAppLauncher: TerminalLaunching {
             guard let role = try NativeExecutionPreset.freezeRole(middle, base: roleDirectory),
                 try NativeExecutionPreset.freezeRole(middle, base: roleDirectory) == role,
                 try DispatchParticipationSync.readBoundedRegularFile(role, maximumBytes: 1024, allowMissing: false)
-                    == Data("model = \"gpt-5.6-luna\"\nmodel_reasoning_effort = \"max\"\n".utf8)
+                    == Data("model = \"gpt-6-luna\"\nmodel_reasoning_effort = \"max\"\n".utf8)
             else { return false }
             let middleCommand = try configuredCodexCommand(executable: "/fixture/codex", preference: middle, roleURL: role)
             let direct = CodexExecutionPreference(model: .astra, reasoningEffort: .low, serviceTier: .standard, subagentMode: .lunaDirect)
             let directCommand = try configuredCodexCommand(executable: "/fixture/codex", preference: direct)
-            guard middleCommand.contains("--model 'gpt-5.6-sol'"), middleCommand.contains("model_reasoning_effort=\"high\""),
+            guard middleCommand.contains("--model 'gpt-6.1-sol'"), middleCommand.contains("model_reasoning_effort=\"high\""),
                 middleCommand.contains("agents.max_concurrent_threads_per_session=1"),
                 middleCommand.contains("agents.next_preset_worker.config_file="),
                 !middleCommand.contains("developer_instructions="),
-                directCommand.contains("--model 'gpt-5.6-luna'"), directCommand.contains("agents.enabled=false"),
+                directCommand.contains("--model 'gpt-6-luna'"), directCommand.contains("agents.enabled=false"),
                 directCommand.contains("features.multi_agent_v2=false"), !directCommand.contains("next_preset_worker")
             else { return false }
             do {

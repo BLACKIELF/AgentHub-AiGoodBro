@@ -40,6 +40,32 @@ enum UsageTrendWindow: Int, CaseIterable, Identifiable, Equatable {
     }
 }
 
+enum TokenUsageHomeRange: String, CaseIterable, Identifiable {
+    case sevenDays
+    case thirtyDays
+    case ninetyDays
+    case all
+    case custom
+
+    static let storageKey = "AiGoodBro.tokenUsage.homeRange"
+    static let customStartKey = "AiGoodBro.tokenUsage.homeCustomStart"
+    var id: String { rawValue }
+
+    func title(_ language: WidgetLanguage) -> String {
+        switch self {
+        case .sevenDays: return language.text("近 7 天", "Last 7 days")
+        case .thirtyDays: return language.text("近 30 天", "Last 30 days")
+        case .ninetyDays: return language.text("近 90 天", "Last 90 days")
+        case .all: return language.text("全部", "All time")
+        case .custom: return language.text("自定义", "Custom")
+        }
+    }
+
+    static func storedOrDefault(defaults: UserDefaults = .standard) -> TokenUsageHomeRange {
+        TokenUsageHomeRange(rawValue: defaults.string(forKey: storageKey) ?? "") ?? .thirtyDays
+    }
+}
+
 struct ModelUsageMetricSummary: Equatable {
     let recentValue: Double
     let dailyAverageValue: Double

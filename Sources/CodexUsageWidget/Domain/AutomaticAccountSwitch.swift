@@ -1,7 +1,7 @@
 import Foundation
 
 struct LowQuotaAlertThresholds: Equatable {
-    static let choices = [5, 10, 15, 20, 25]
+    static let choices = [1, 5, 10, 15, 20, 25]
     static let standard = LowQuotaAlertThresholds(fiveHour: 5, sevenDay: 10)
     static let fiveHourKey = "CodexManagerNext.lowQuotaAlerts.fiveHourThreshold"
     static let sevenDayKey = "CodexManagerNext.lowQuotaAlerts.sevenDayThreshold"
@@ -72,18 +72,58 @@ enum AutomaticQuotaWindow: String, CaseIterable, Equatable {
 struct AutomaticSwitchQuotaState: Equatable {
     let fiveHourRemaining: Double?
     let sevenDayRemaining: Double?
+    /// Proven only by a successful official Pro/Prolite response with no 5h field.
+    let fiveHourNotApplicable: Bool
 
-    init(fiveHourRemaining: Double?, sevenDayRemaining: Double?) {
+    init(fiveHourRemaining: Double?, sevenDayRemaining: Double?, fiveHourNotApplicable: Bool = false) {
         self.fiveHourRemaining = Self.valid(fiveHourRemaining)
         self.sevenDayRemaining = Self.valid(sevenDayRemaining)
+        self.fiveHourNotApplicable = fiveHourRemaining == nil && fiveHourNotApplicable
     }
 
     init(snapshot: UsageSnapshot) {
         self.init(
             // Validate raw values before the presentation layer clamps them.
             fiveHourRemaining: snapshot.fiveHourQuota.map { 100 - $0.usedPercent },
-            sevenDayRemaining: snapshot.sevenDayQuota.map { 100 - $0.usedPercent }
+            sevenDayRemaining: snapshot.sevenDayQuota.map { 100 - $0.usedPercent },
+            fiveHourNotApplicable: snapshot.quotaReadSucceeded && snapshot.fiveHourQuota == nil
+                && Self.isSupportedPlan(snapshot.account?.planType)
         )
+    }
+
+    init(savedSnapshot: CodexAccountSnapshot) {
+        self.init(
+            fiveHourRemaining: savedSnapshot.fiveHour.map { 100 - $0.usedPercent },
+            sevenDayRemaining: savedSnapshot.sevenDay.map { 100 - $0.usedPercent },
+            fiveHourNotApplicable: savedSnapshot.quotaReadSucceeded == true && savedSnapshot.fiveHour == nil
+                && Self.isSupportedPlan(savedSnapshot.planType)
+        )
+    }
+
+    var hasCompleteApplicableWindows: Bool {
+        sevenDayRemaining != nil && (fiveHourRemaining != nil || fiveHourNotApplicable)
+    }
+
+    var hasPositiveApplicableWindows: Bool {
+        guard let week = sevenDayRemaining, week > 0 else { return false }
+        return fiveHourNotApplicable || (fiveHourRemaining.map { $0 > 0 } ?? false)
+    }
+
+    func simulatingLowQuota() -> Self? {
+        guard hasPositiveApplicableWindows else { return nil }
+        if fiveHourRemaining != nil {
+            return .init(fiveHourRemaining: 0.99, sevenDayRemaining: sevenDayRemaining)
+        }
+        return .init(fiveHourRemaining: nil, sevenDayRemaining: 0.99, fiveHourNotApplicable: true)
+    }
+
+    func candidateRemaining(for window: AutomaticQuotaWindow) -> Double? {
+        window == .fiveHour && fiveHourNotApplicable ? sevenDayRemaining : remaining(for: window)
+    }
+
+    private static func isSupportedPlan(_ planType: String?) -> Bool {
+        guard let plan = planType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() else { return false }
+        return plan == "pro" || plan == "prolite"
     }
 
     func remaining(for window: AutomaticQuotaWindow) -> Double? {
@@ -100,7 +140,7 @@ struct AutomaticSwitchQuotaState: Equatable {
             case .fiveHour:
                 return remaining <= Double(thresholds.fiveHour)
             case .sevenDay:
-                return remaining < Double(thresholds.sevenDay)
+                return thresholds.sevenDay == 1 ? remaining <= 1 : remaining < Double(thresholds.sevenDay)
             }
         }
     }
@@ -149,15 +189,43 @@ enum CodexAutomaticSwitchPolicy {
         }
     }
 
+    /// A continuation may have started earlier turns in its own batch. Fresh
+    /// task evidence must still reject any other active or uncertain work.
+    static func hasNoUnexpectedActiveTasks(
+        _ snapshot: CodexTaskLiveSnapshot,
+        startedTurns: [String: String],
+        legacyManagerRunning: Bool,
+        now: Date = Date()
+    ) -> Bool {
+        guard
+            CodexDesktopQuotaPause.canPrepare(
+                snapshot,
+                legacyManagerRunning: legacyManagerRunning, now: now)
+        else { return false }
+        return snapshot.records.values.allSatisfy { record in
+            switch record.state {
+            case .running, .waitingInput:
+                return record.turnID != nil && startedTurns[record.threadID] == record.turnID
+            case .recorded, .disconnected:
+                return false
+            case .idle, .failed, .completed, .interrupted:
+                return true
+            }
+        }
+    }
+
     static func hasSafeTaskState(
         _ snapshot: CodexTaskLiveSnapshot,
         codexInactiveSince: Date?,
         legacyManagerRunning: Bool,
+        allowForeground: Bool = false,
         now: Date = Date()
     ) -> Bool {
-        guard let codexInactiveSince,
-            now.timeIntervalSince(codexInactiveSince) >= codexInactivePeriod
-        else { return false }
+        if !allowForeground {
+            guard let codexInactiveSince,
+                now.timeIntervalSince(codexInactiveSince) >= codexInactivePeriod
+            else { return false }
+        }
         return hasNoActiveTasks(
             snapshot,
             legacyManagerRunning: legacyManagerRunning,
@@ -175,21 +243,20 @@ enum CodexAutomaticSwitchPolicy {
         lastAttemptAt: Date?,
         lastSucceededAt: Date?,
         thresholds: LowQuotaAlertThresholds = .standard,
+        pauseAtOnePercent: Bool = false,
         now: Date = Date()
     ) -> Bool {
         let quotaAge = now.timeIntervalSince(sourceRefreshedAt)
         guard enabled,
             quotaAge >= -5,
             quotaAge <= quotaSnapshotMaximumAge,
-            sourceQuota.fiveHourRemaining != nil,
-            sourceQuota.sevenDayRemaining != nil,
+            sourceQuota.hasCompleteApplicableWindows,
             !sourceQuota.triggeredWindows(thresholds: thresholds).isEmpty,
-            hasSafeTaskState(
-                taskSnapshot,
-                codexInactiveSince: codexInactiveSince,
-                legacyManagerRunning: legacyManagerRunning,
-                now: now
-            )
+            pauseAtOnePercent && CodexDesktopQuotaPause.isCritical(sourceQuota)
+                ? CodexDesktopQuotaPause.canPrepare(taskSnapshot, legacyManagerRunning: legacyManagerRunning, now: now)
+                : hasSafeTaskState(
+                    taskSnapshot, codexInactiveSince: codexInactiveSince,
+                    legacyManagerRunning: legacyManagerRunning, now: now)
         else { return false }
         if let lastSucceededAt,
             now.timeIntervalSince(lastSucceededAt) < successCooldown
@@ -212,10 +279,8 @@ enum CodexAutomaticSwitchPolicy {
         return candidates.compactMap { candidate -> (Candidate, Double)? in
             // A healthy triggered window cannot compensate for an exhausted
             // or unknown other window. Keep ranking on the triggered windows.
-            guard let fiveHour = candidate.quota.fiveHourRemaining, fiveHour > 0,
-                let sevenDay = candidate.quota.sevenDayRemaining, sevenDay > 0
-            else { return nil }
-            let remaining = triggeredWindows.compactMap(candidate.quota.remaining(for:))
+            guard candidate.quota.hasPositiveApplicableWindows else { return nil }
+            let remaining = triggeredWindows.compactMap(candidate.quota.candidateRemaining(for:))
             guard remaining.count == triggeredWindows.count,
                 let score = remaining.min(),
                 score >= minimumCandidateRemainingPercent
@@ -235,7 +300,171 @@ enum CodexAutomaticSwitchPolicy {
     }
 }
 
+/// Explicit, process-local permission for one Desktop pause/switch/resume.
+/// It never changes the scheduled low-quota automation settings.
+struct CodexOneShotSwitchIntent: Equatable {
+    enum QuotaPolicy: String, Codable {
+        case complete = "complete"
+        case reportedWeek = "reported-week"
+
+        func accepts(_ snapshot: UsageSnapshot, target: Bool, now: Date = Date()) -> Bool {
+            let age = now.timeIntervalSince(snapshot.refreshedAt)
+            guard snapshot.quotaReadSucceeded, age >= -5,
+                age <= CodexAutomaticSwitchPolicy.quotaSnapshotMaximumAge,
+                CodexOneShotSwitchIntent.targetMultiplier(for: snapshot.account?.planType) != nil,
+                let week = AutomaticSwitchQuotaState(snapshot: snapshot).sevenDayRemaining,
+                week > 0,
+                !target || week >= CodexAutomaticSwitchPolicy.minimumCandidateRemainingPercent
+            else { return false }
+            let five = AutomaticSwitchQuotaState(snapshot: snapshot).fiveHourRemaining
+            if self == .reportedWeek {
+                guard snapshot.fiveHourQuota != nil else { return true }
+                guard let five else { return false }
+                return target ? five >= CodexAutomaticSwitchPolicy.minimumCandidateRemainingPercent : five > 0
+            }
+            guard let five else { return false }
+            return !target || five >= CodexAutomaticSwitchPolicy.minimumCandidateRemainingPercent
+        }
+    }
+
+    let profileID: String
+    let quotaPolicy: QuotaPolicy
+    let operationID: UUID
+    let simulateLowQuota: Bool
+
+    static func targetMultiplier(for planType: String?) -> Int? {
+        guard let plan = planType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() else { return nil }
+        switch plan {
+        case "prolite": return 5
+        case "pro": return 20
+        default: return nil
+        }
+    }
+
+    static func targetPlanMatches(_ planType: String?, displayedMultiplier: Int?) -> Bool {
+        guard let expected = targetMultiplier(for: planType) else { return false }
+        return displayedMultiplier == expected
+    }
+
+    private static let consumedOperationsKey = "AiGoodBro.oneShotDesktopSwitch.consumedOperationIDs"
+
+    /// Claim before Desktop work begins; a restart with the same launch intent
+    /// cannot interrupt the same task a second time.
+    func claim(defaults: UserDefaults = .standard) -> Bool {
+        let value = operationID.uuidString.lowercased()
+        guard
+            defaults.object(forKey: Self.consumedOperationsKey) == nil
+                || defaults.stringArray(forKey: Self.consumedOperationsKey) != nil
+        else { return false }
+        var consumed = defaults.stringArray(forKey: Self.consumedOperationsKey) ?? []
+        guard !consumed.contains(value) else { return false }
+        consumed.append(value)
+        defaults.set(consumed, forKey: Self.consumedOperationsKey)
+        return defaults.synchronize() && defaults.stringArray(forKey: Self.consumedOperationsKey)?.contains(value) == true
+    }
+
+    static func parse(_ arguments: [String]) -> Self? {
+        let profileFlag = "--pause-switch-profile-id"
+        let policyFlag = "--pause-switch-quota-policy"
+        let operationFlag = "--pause-switch-operation-id"
+        let simulationFlag = "--simulate-low-quota"
+        guard arguments.filter({ $0 == profileFlag }).count == 1,
+            arguments.filter({ $0 == policyFlag }).count == 1,
+            arguments.filter({ $0 == operationFlag }).count == 1,
+            arguments.filter({ $0 == simulationFlag }).count <= 1,
+            !arguments.contains("--switch-profile-id"),
+            let profileIndex = arguments.firstIndex(of: profileFlag),
+            let policyIndex = arguments.firstIndex(of: policyFlag),
+            let operationIndex = arguments.firstIndex(of: operationFlag),
+            arguments.indices.contains(profileIndex + 1),
+            arguments.indices.contains(policyIndex + 1),
+            arguments.indices.contains(operationIndex + 1),
+            let policy = QuotaPolicy(rawValue: arguments[policyIndex + 1]),
+            let operationID = UUID(uuidString: arguments[operationIndex + 1]),
+            ![profileIndex + 1, policyIndex + 1, operationIndex + 1].contains(profileIndex),
+            ![profileIndex + 1, policyIndex + 1, operationIndex + 1].contains(policyIndex),
+            ![profileIndex + 1, policyIndex + 1, operationIndex + 1].contains(operationIndex)
+        else { return nil }
+        let id = arguments[profileIndex + 1]
+        guard !id.isEmpty, id.utf8.count <= 128,
+            id.range(of: "^[A-Za-z0-9._-]+$", options: .regularExpression) != nil
+        else { return nil }
+        return .init(
+            profileID: id, quotaPolicy: policy, operationID: operationID,
+            simulateLowQuota: arguments.contains(simulationFlag))
+    }
+}
+
 enum CodexAutomaticSwitchPolicySelfTest {
+    private static func oneShotSelfTest() -> Bool {
+        let operation = UUID(uuidString: "56EFD677-35B5-4A33-8A85-46F810B5639B")!
+        let arguments = [
+            "AiGoodBro", "--pause-switch-profile-id", "fixture-20x",
+            "--pause-switch-quota-policy", "reported-week", "--pause-switch-operation-id", operation.uuidString,
+        ]
+        guard let intent = CodexOneShotSwitchIntent.parse(arguments),
+            intent.profileID == "fixture-20x", intent.quotaPolicy == .reportedWeek,
+            intent.operationID == operation, !intent.simulateLowQuota,
+            CodexOneShotSwitchIntent.parse(arguments + ["--simulate-low-quota"])?.simulateLowQuota == true,
+            CodexOneShotSwitchIntent.parse(arguments + ["--simulate-low-quota", "--simulate-low-quota"]) == nil,
+            CodexOneShotSwitchIntent.parse(Array(arguments.dropLast())) == nil,
+            CodexOneShotSwitchIntent.parse(arguments + ["--pause-switch-profile-id", "other"]) == nil,
+            CodexOneShotSwitchIntent.parse(arguments + ["--switch-profile-id", "other"]) == nil
+        else { return false }
+        let suite = "CodexManagerNext.one-shot-test.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suite) else { return false }
+        defer { defaults.removePersistentDomain(forName: suite) }
+        guard intent.claim(defaults: defaults), !intent.claim(defaults: defaults) else { return false }
+
+        let now = Date()
+        func snapshot(
+            plan: String = "pro", weekUsed: Double = 8, fiveUsed: Double? = nil,
+            balance: String? = "0.00", unlimited: Bool = false,
+            age: TimeInterval = 0
+        ) -> UsageSnapshot {
+            UsageSnapshot(
+                refreshedAt: now.addingTimeInterval(-age),
+                account: AccountInfo(
+                    type: "chatgpt", planType: plan, emailPresent: true,
+                    email: "fixture@example.invalid"), limitId: nil, limitName: nil,
+                quotaReadSucceeded: true,
+                fiveHourQuota: fiveUsed.map {
+                    RateWindow(
+                        usedPercent: $0,
+                        windowDurationMins: 300, resetsAt: nil)
+                },
+                sevenDayQuota: RateWindow(
+                    usedPercent: weekUsed,
+                    windowDurationMins: 10_080, resetsAt: nil), monthlyQuota: nil,
+                credits: balance.map {
+                    CreditsInfo(
+                        hasCredits: true, unlimited: unlimited,
+                        balance: $0, resetCredits: nil, resetCreditDetails: nil)
+                },
+                cloudLifetimeTokens: nil, local: nil, taskBoard: nil, messages: [])
+        }
+        let policy = CodexOneShotSwitchIntent.QuotaPolicy.reportedWeek
+        return policy.accepts(snapshot(), target: true, now: now)
+            && CodexOneShotSwitchIntent.targetPlanMatches("prolite", displayedMultiplier: 5)
+            && CodexOneShotSwitchIntent.targetPlanMatches(" Pro ", displayedMultiplier: 20)
+            && !CodexOneShotSwitchIntent.targetPlanMatches("prolite", displayedMultiplier: 20)
+            && !CodexOneShotSwitchIntent.targetPlanMatches("pro", displayedMultiplier: 5)
+            && !CodexOneShotSwitchIntent.targetPlanMatches("plus", displayedMultiplier: 5)
+            && !CodexOneShotSwitchIntent.targetPlanMatches("prolite", displayedMultiplier: nil)
+            && policy.accepts(snapshot(plan: "prolite", weekUsed: 14), target: true, now: now)
+            && policy.accepts(snapshot(plan: "prolite", weekUsed: 14), target: false, now: now)
+            && !policy.accepts(snapshot(weekUsed: 75), target: true, now: now)
+            && !policy.accepts(snapshot(fiveUsed: 100), target: true, now: now)
+            && !policy.accepts(snapshot(fiveUsed: 75), target: true, now: now)
+            && !policy.accepts(snapshot(fiveUsed: .nan), target: true, now: now)
+            && policy.accepts(snapshot(balance: "1.00"), target: true, now: now)
+            && policy.accepts(snapshot(balance: nil), target: true, now: now)
+            && policy.accepts(snapshot(unlimited: true), target: true, now: now)
+            && !policy.accepts(snapshot(age: 46), target: true, now: now)
+            && !policy.accepts(snapshot(plan: "plus"), target: true, now: now)
+            && !CodexOneShotSwitchIntent.QuotaPolicy.complete.accepts(snapshot(), target: true, now: now)
+    }
+
     private static func settingsSelfTest() -> Bool {
         let suite = "CodexManagerNext.alert-settings-test.\(UUID().uuidString)"
         guard let defaults = UserDefaults(suiteName: suite) else { return false }
@@ -282,7 +511,9 @@ enum CodexAutomaticSwitchPolicySelfTest {
     }
 
     static func run() -> Bool {
-        guard settingsSelfTest() else { return false }
+        guard oneShotSelfTest(), settingsSelfTest(), CodexDesktopQuotaPause.selfTest(), CodexDesktopQuotaPauseSelfTest.run(),
+            CodexQuotaResumeSelfTest.run()
+        else { return false }
         let now = Date(timeIntervalSince1970: 100_000)
         let idle = CodexTaskLiveSnapshot(connectionMode: .sharedDaemon, records: [:], refreshedAt: now)
         let active = CodexTaskLiveSnapshot(

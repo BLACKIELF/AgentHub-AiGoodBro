@@ -10,38 +10,65 @@ private func fourCharCode(_ value: String) -> OSType {
 }
 
 final class DraggableHostingView<Content: View>: NSHostingView<Content> {
-    override var mouseDownCanMoveWindow: Bool { true }
+    var allowsWindowDragging = true
+    override var mouseDownCanMoveWindow: Bool { allowsWindowDragging }
 }
 
 final class GlassHostingContainer<Content: View>: NSView {
     private let cornerRadius: CGFloat
+    private let reduceTransparency: Bool
+    private let allowsWindowDragging: Bool
+    private var glassTint: NSView?
+    private var glassMaterial: NSVisualEffectView?
+    private var glassPreferences = WorkspaceGlassPreferences()
+    private var glassSubscription: AnyCancellable?
+    private var accessibilitySubscription: AnyCancellable?
+    private var paletteSubscription: AnyCancellable?
+    private let preservesDefaultOpaqueBackground: Bool
+    private var usesDefaultOpaqueBackground: Bool
 
-    init(rootView: Content, cornerRadius: CGFloat) {
+    init(
+        rootView: Content, cornerRadius: CGFloat, reduceTransparency: Bool = false, allowsWindowDragging: Bool = true, settings: AppSettings? = nil,
+        preservesDefaultOpaqueBackground: Bool = false
+    ) {
         self.cornerRadius = cornerRadius
+        self.reduceTransparency = reduceTransparency
+        self.allowsWindowDragging = allowsWindowDragging
+        self.preservesDefaultOpaqueBackground = preservesDefaultOpaqueBackground
+        usesDefaultOpaqueBackground =
+            preservesDefaultOpaqueBackground
+            && (settings?.paletteCatalog.resolve(id: settings?.paletteID ?? PaletteCatalog.defaultPaletteID, appearance: .light).identity.paletteID
+                ?? PaletteCatalog.defaultPaletteID) == PaletteCatalog.defaultPaletteID
         super.init(frame: .zero)
 
         wantsLayer = true
         layer?.cornerRadius = cornerRadius
+        layer?.masksToBounds = true
 
         let host = DraggableHostingView(rootView: rootView)
         host.frame = bounds
         host.autoresizingMask = [.width, .height]
+        host.allowsWindowDragging = allowsWindowDragging
 
-        #if compiler(>=6.2) && CAMNEXT_HAS_LIQUID_GLASS
-            if #available(macOS 26.0, *) {
-                let glass = NSGlassEffectView(frame: bounds)
-                glass.autoresizingMask = [.width, .height]
-                glass.cornerRadius = cornerRadius
-                glass.style = .regular
-                glass.tintColor = nil
-                glass.contentView = host
-                addSubview(glass)
-            } else {
-                installMaterialFallback(host: host)
+        // AppKit HUD vibrancy is the single window-wide glass pass. The
+        // macOS 26 clear glass style washed out light desktops behind white
+        // labels; regular glass flattened the backdrop to grey. HUD retains
+        // the underlying desktop color and readable native contrast.
+        installMaterialFallback(host: host)
+        if let settings {
+            glassSubscription = settings.$workspaceGlass.sink { [weak self] value in
+                self?.glassPreferences = value
+                self?.updateGlassTint()
             }
-        #else
-            installMaterialFallback(host: host)
-        #endif
+            if preservesDefaultOpaqueBackground {
+                paletteSubscription = settings.$paletteID.sink { [weak self] paletteID in
+                    self?.usesDefaultOpaqueBackground = settings.paletteCatalog.resolve(id: paletteID, appearance: .light).identity.paletteID == PaletteCatalog.defaultPaletteID
+                    self?.updateGlassTint()
+                }
+            }
+        }
+        accessibilitySubscription = NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification)
+            .receive(on: RunLoop.main).sink { [weak self] _ in self?.updateGlassTint() }
     }
 
     private func installMaterialFallback(host: NSView) {
@@ -49,19 +76,55 @@ final class GlassHostingContainer<Content: View>: NSView {
         material.autoresizingMask = [.width, .height]
         material.material = .hudWindow
         material.blendingMode = .behindWindow
-        material.state = .followsWindowActiveState
+        material.state = .active
         material.wantsLayer = true
         material.layer?.cornerRadius = cornerRadius
         material.layer?.masksToBounds = true
-        material.addSubview(host)
+        let tint = NSView(frame: bounds)
+        tint.autoresizingMask = [.width, .height]
+        tint.wantsLayer = true
+        glassMaterial = material
+        glassTint = tint
         addSubview(material)
+        addSubview(tint)
+        // Siblings keep text and hit targets opaque when the backdrop is disabled.
+        addSubview(host)
+        updateGlassTint()
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        updateGlassTint()
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        updateGlassTint()
+    }
+
+    private func updateGlassTint() {
+        let isDark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        let opaque =
+            reduceTransparency || NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency
+            || NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast || usesDefaultOpaqueBackground
+        if preservesDefaultOpaqueBackground {
+            window?.isOpaque = opaque
+            window?.backgroundColor = opaque ? .windowBackgroundColor : .clear
+        }
+        glassMaterial?.isHidden = opaque || !glassPreferences.systemGlass
+        glassTint?.isHidden = opaque
+        layer?.backgroundColor = opaque ? NSColor.windowBackgroundColor.cgColor : NSColor.clear.cgColor
+        glassTint?.layer?.backgroundColor =
+            isDark
+            ? NSColor(srgbRed: 48 / 255, green: 52 / 255, blue: 56 / 255, alpha: glassPreferences.tintOpacity).cgColor
+            : NSColor(srgbRed: 246 / 255, green: 247 / 255, blue: 250 / 255, alpha: glassPreferences.tintOpacity).cgColor
     }
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
     }
 
-    override var mouseDownCanMoveWindow: Bool { true }
+    override var mouseDownCanMoveWindow: Bool { allowsWindowDragging }
 
     /// Native fullscreen fills the screen, so the rounded floating-panel frame
     /// must flatten on entry and restore on exit. Keep every subview layer in
@@ -69,12 +132,6 @@ final class GlassHostingContainer<Content: View>: NSView {
     func updateCornerRadius(_ radius: CGFloat) {
         layer?.cornerRadius = radius
         for subview in subviews {
-            #if compiler(>=6.2) && CAMNEXT_HAS_LIQUID_GLASS
-                if #available(macOS 26.0, *), let glass = subview as? NSGlassEffectView {
-                    glass.cornerRadius = radius
-                    continue
-                }
-            #endif
             if let material = subview as? NSVisualEffectView {
                 material.layer?.cornerRadius = radius
                 material.layer?.masksToBounds = radius > 0
@@ -117,25 +174,114 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     private let startupPerformanceSpan = PerformanceMonitor.shared.begin(.appStartup)
     private let store = UsageStore()
     private let localCLIAccounts = LocalCLIAccountStore()
+    private lazy var localProxy = LocalProxyQueueStore(usageStore: store)
+    private var terminationTask: Task<Void, Never>?
     private let paletteCatalog = PaletteCatalog.loadFromMainBundle()
     private lazy var settings = AppSettings(paletteCatalog: paletteCatalog)
     private lazy var updateStore = AppUpdateStore(settings: settings)
     private var window: MainAppWindow?
     private var paletteLibraryWindow: NSWindow?
     private var settingsWindow: NSWindow?
+    private let settingsNavigation = SettingsWindowNavigation()
     private var taskOverviewController: TaskOverviewPanelController?
     private var accountFloatingPanelController: AccountFloatingPanelController?
     /// token-monitor 风格悬浮窗。此前视图已编译进 App 但无人创建，这里负责真正挂到桌面浮层。
     private let floatingBubbleController = TokenMonitorFloatingBubbleController()
+    private let edgeDockController = TokenMonitorEdgeDockController()
+    private let edgeDockRateTracker = TokenMonitorEdgeDockRateTracker()
+    private struct EdgeDockCodexInput: Equatable {
+        let id: String
+        let name: String
+        let remark: String?
+        let officialName: String?
+        let isSystem: Bool
+        let accountKey: String
+        let email: String?
+        let quotaSucceeded: Bool?
+        let fetchedAt: Date?
+        let fiveHour: CodexQuotaWindowSnapshot?
+        let sevenDay: CodexQuotaWindowSnapshot?
+        let monthly: CodexQuotaWindowSnapshot?
+        let lastFailureAt: Date?
+        let lastFailureReason: String?
+
+        init(_ profile: CodexProfile) {
+            id = profile.id
+            name = profile.name
+            remark = profile.remark
+            officialName = profile.officialProfile?.displayName
+            isSystem = profile.isSystemProfile
+            accountKey = profile.recordedAccountKey
+            email = profile.lastSnapshot?.email
+            quotaSucceeded = profile.lastSnapshot?.quotaReadSucceeded
+            fetchedAt = profile.lastSnapshot?.fetchedAt
+            fiveHour = profile.lastSnapshot?.fiveHour
+            sevenDay = profile.lastSnapshot?.sevenDay
+            monthly = profile.lastSnapshot?.monthly
+            lastFailureAt = profile.lastQuotaReadFailureAt
+            lastFailureReason = profile.lastQuotaReadFailureReason
+        }
+    }
+
+    private struct EdgeDockLocalInput: Equatable {
+        let id: String
+        let kind: LocalCLIKind
+        let name: String
+        let state: LocalCLIQuotaState?
+        let fetchedAt: Date?
+        let hasIdentity: Bool
+        let windows: [LocalCLIQuotaWindow]
+        let balance: Double?
+        let currency: String?
+
+        init(_ profile: LocalCLIProfile, quota: LocalCLIQuotaResult?) {
+            id = profile.id
+            kind = profile.kind
+            name = profile.displayName
+            state = quota?.state
+            fetchedAt = quota?.fetchedAt
+            hasIdentity = quota?.identityFingerprint != nil
+            windows = quota?.windows ?? []
+            balance = quota?.balance
+            currency = quota?.balanceCurrency
+        }
+    }
+
+    private struct EdgeDockInput: Equatable {
+        let preferences: TokenMonitorEdgeDockPreferences
+        let glass: WorkspaceGlassPreferences
+        let language: WidgetLanguage
+        let paletteID: String
+        let preferredColorScheme: ColorScheme?
+        let codex: [EdgeDockCodexInput]
+        let pinnedAccountKey: String?
+        let local: [EdgeDockLocalInput]
+        let staleLocalIDs: Set<String>
+        let engineJSON: String?
+        let engineIsStale: Bool
+        let hubEnabled: Bool
+        let hubConnection: TokenMonitorHubConnectionState
+        let hubLastRefresh: Date?
+        let hubHistory: TokenMonitorHubHistory?
+        let hubDevices: [TokenMonitorHubDevice]
+        let proxyPhase: LocalProxyPhase
+        let proxyRows: [LocalProxyQueueRow]
+    }
+
+    private var edgeDockInputGate = TokenMonitorEdgeDockChangeGate<EdgeDockInput>()
+    private let tokenDesktop = TokenMonitorDesktopController.shared
+    private var edgeDockLastObservedRequestID: String?
+    private var edgeDockRateExpiryTimer: Timer?
     private var floatingBubbleEditorWindow: NSWindow?
+    private var floatingBubbleExpiryTimer: Timer?
     private var floatingBubbleEnabled = false
     private var floatingBubbleShuttingDown = false
     private weak var taskOverviewMenuItem: NSMenuItem?
-    private var titlebarToolbarController: NSTitlebarAccessoryViewController?
     private let screenshotRequests = PassthroughSubject<NSWindow, Never>()
     private let guideRequests = PassthroughSubject<Void, Never>()
     private var statusItem: NSStatusItem?
     private var statusPopover: NSPopover?
+    private var statusPopoverSize = CodexAccountMenuView.preferredSize
     private var statusPopoverEventMonitors: [Any] = []
     private var statusItemAppearanceObservation: NSKeyValueObservation?
     private var activeSpaceObserver: NSObjectProtocol?
@@ -197,9 +343,74 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         store.updateVisibleRuntimeScopes(settings.visibleRuntimeScopes)
         setupStatisticsSources()
         store.start()
-        setupFloatingBubbleSync()
+        if let oneShot = CodexOneShotSwitchIntent.parse(CommandLine.arguments) {
+            store.startOneShotDesktopSwitch(oneShot)
+        }
+        if tokenDesktop.isBundled {
+            settings.migrateEmbeddedEdgeDockIfNeeded()
+            setupTokenMonitorDesktop()
+        } else {
+            setupFloatingBubbleSync()
+        }
+        setupEdgeDockSync()
         showMainWindow()
         PerformanceMonitor.shared.end(startupPerformanceSpan)
+    }
+
+    private func setupTokenMonitorDesktop() {
+        tokenDesktop.hostAction = { [weak self] request in
+            guard let self else { return .failure(request.id, "host-unavailable") }
+            switch request.cmd {
+            case .openWorkbench, .openAccounts, .openTasks:
+                self.showMainWindow()
+                NotificationCenter.default.post(name: TokenMonitorWorkspaceNavigation.notification, object: request.cmd.rawValue)
+            case .openSettings:
+                self.openSettingsWindow()
+            case .openEdgeDockSettings:
+                self.openSettingsWindow(page: .edgeDock)
+            case .checkForUpdates:
+                self.openSettingsWindow(page: .about)
+                self.updateStore.checkNow()
+            case .getManagedCodexAccounts:
+                return TokenMonitorHostReply(id: request.id, ok: true, accounts: self.store.tokenMonitorManagedCodexAccounts())
+            case .quitHost:
+                // Let the helper receive its acknowledgment before shutting
+                // down the private connection and both app processes.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { NSApp.terminate(nil) }
+            case .switchCodexAccount:
+                guard let key = request.recordedAccountKey, let vendorID = request.vendorAccountId else {
+                    return .failure(request.id, "invalid-account")
+                }
+                self.showMainWindow()
+                NotificationCenter.default.post(name: TokenMonitorWorkspaceNavigation.notification, object: "openAccounts")
+                if let failure = await self.store.requestTokenMonitorDesktopSwitch(accountKey: key) {
+                    return .failure(request.id, failure)
+                }
+                return TokenMonitorHostReply(id: request.id, ok: true, accountId: vendorID)
+            }
+            return TokenMonitorHostReply(id: request.id, ok: true)
+        }
+        tokenDesktop.$isReady
+            .combineLatest(tokenDesktop.$hasVisibleTray)
+            .map { $0 && $1 }
+            .removeDuplicates()
+            .receive(on: RunLoop.main)
+            .sink { [weak self] ready in
+                guard let self else { return }
+                if ready {
+                    self.closeStatusPopover()
+                    self.statusItemAppearanceObservation = nil
+                    if let item = self.statusItem { NSStatusBar.system.removeStatusItem(item) }
+                    self.statusItem = nil
+                } else {
+                    self.lastRenderedStatusItemPresentation = nil
+                    self.lastRenderedStatusItemAppearanceName = nil
+                    self.lastRenderedStatusItemPaletteIdentity = nil
+                    self.setupStatusItemIfNeeded()
+                }
+            }
+            .store(in: &cancellables)
+        tokenDesktop.startIfBundled()
     }
 
     private func createMainWindow() {
@@ -224,11 +435,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
                 paletteCatalog: paletteCatalog,
                 screenshotRequests: screenshotRequests.eraseToAnyPublisher(),
                 guideRequests: guideRequests.eraseToAnyPublisher(),
-                localCLIAccounts: localCLIAccounts
+                onSaveWorkspaceScreenshot: { [weak self] in
+                    guard let self, let window = self.window else { return }
+                    self.screenshotRequests.send(window)
+                },
+                localCLIAccounts: localCLIAccounts,
+                localProxy: localProxy
             ),
-            cornerRadius: CodexAccountManagerView.windowCornerRadius
+            cornerRadius: CodexAccountManagerView.windowCornerRadius, settings: settings
         )
-        installTitlebarToolbar(on: mainWindow)
         _ = mainWindow.setFrameAutosaveName("CodexAccountManagerNext.mainWindow")
         window = mainWindow
         applyMainWindowLevel()
@@ -288,33 +503,302 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in self?.syncFloatingBubble() }
             .store(in: &cancellables)
-        store.objectWillChange
+        func changed<P: Publisher>(_ publisher: P) -> AnyPublisher<Void, Never> where P.Failure == Never {
+            publisher.map { _ in () }.eraseToAnyPublisher()
+        }
+        Publishers.MergeMany([
+            changed(settings.$paletteID), changed(settings.$themeMode), changed(settings.$workspaceGlass),
+        ])
+        .receive(on: RunLoop.main)
+        .sink { [weak self] _ in self?.syncFloatingBubble() }
+        .store(in: &cancellables)
+        Publishers.MergeMany([
+            changed(store.$profiles), changed(localCLIAccounts.$profiles),
+            changed(localCLIAccounts.$quotas), changed(localCLIAccounts.$stale),
+        ])
+        .receive(on: RunLoop.main)
+        .throttle(for: .seconds(60), scheduler: RunLoop.main, latest: true)
+        .sink { [weak self] _ in self?.syncFloatingBubble() }
+        .store(in: &cancellables)
+    }
+
+    private func setupEdgeDockSync() {
+        store.onAccountSnapshotRefresh = { [weak self] maximumAge in
+            self?.refreshEdgeDockSnapshots(maximumAge: maximumAge)
+        }
+        settings.$edgeDock.dropFirst()
+            .removeDuplicates { $0.enabled == $1.enabled && $0.items == $1.items }
             .receive(on: RunLoop.main)
-            .sink { [weak self] _ in self?.syncFloatingBubble() }
+            .sink { [weak self] _ in
+                guard let self else { return }
+                self.refreshEdgeDockSnapshots(maximumAge: self.store.accountSnapshotRefreshInterval)
+            }
             .store(in: &cancellables)
-        localCLIAccounts.objectWillChange
-            .receive(on: RunLoop.main)
-            .sink { [weak self] _ in self?.syncFloatingBubble() }
-            .store(in: &cancellables)
+        _ = edgeDockInputGate.accept(edgeDockInput())
+        syncEdgeDock()
+        func changed<P: Publisher>(_ publisher: P) -> AnyPublisher<Void, Never> where P.Failure == Never {
+            publisher.map { _ in () }.eraseToAnyPublisher()
+        }
+        // Direct settings and service-state changes still respond promptly.
+        // Routine usage, quota and queue values are snapshots, not a live feed.
+        Publishers.MergeMany([
+            changed(settings.$workspaceGlass), changed(settings.$edgeDock), changed(settings.$language),
+            changed(settings.$paletteID), changed(settings.$themeMode),
+            changed(settings.$pinnedAccountKey), changed(localProxy.$phase),
+            changed(localProxy.$displayRows),  // Already coalesced by the queue's display publisher.
+            // Completed local quota reads should match the account page. This
+            // publishes an existing snapshot and never starts another fetch.
+            changed(localCLIAccounts.$quotas), changed(localCLIAccounts.$stale),
+        ])
+        .receive(on: RunLoop.main)
+        .throttle(for: .milliseconds(220), scheduler: RunLoop.main, latest: true)
+        .sink { [weak self] _ in self?.syncEdgeDockIfChanged() }
+        .store(in: &cancellables)
+        let hub = store.tokenMonitorHubSync
+        Publishers.MergeMany([
+            changed(store.$profiles), changed(store.$engineState),
+            changed(localCLIAccounts.$profiles),
+            changed(hub.$isEnabled), changed(hub.$connectionState), changed(hub.$lastRefresh),
+            changed(hub.$history), changed(hub.$devices),
+        ])
+        .receive(on: RunLoop.main)
+        // Coalesce before building or comparing the session/history input.
+        // This never changes collection, proxy admission or lease heartbeats.
+        .throttle(for: .seconds(60), scheduler: RunLoop.main, latest: true)
+        .sink { [weak self] _ in self?.syncEdgeDockIfChanged() }
+        .store(in: &cancellables)
+    }
+
+    private func syncEdgeDockIfChanged() {
+        if !settings.edgeDock.enabled {
+            edgeDockInputGate.reset()
+            syncEdgeDock()
+            return
+        }
+        guard edgeDockInputGate.accept(edgeDockInput()) else { return }
+        syncEdgeDock()
+    }
+
+    private func edgeDockInput() -> EdgeDockInput {
+        let hub = store.tokenMonitorHubSync
+        return EdgeDockInput(
+            preferences: settings.edgeDock, glass: settings.workspaceGlass, language: settings.language,
+            paletteID: settings.paletteID, preferredColorScheme: settings.themeMode.preferredColorScheme,
+            codex: store.profiles.map(EdgeDockCodexInput.init),
+            pinnedAccountKey: settings.pinnedAccountKey,
+            local: localCLIAccounts.profiles.map { EdgeDockLocalInput($0, quota: localCLIAccounts.quotas[$0.id]) },
+            staleLocalIDs: localCLIAccounts.stale,
+            engineJSON: store.engineState.dashboardJSON, engineIsStale: store.engineState.isStale,
+            hubEnabled: hub.isEnabled, hubConnection: hub.connectionState,
+            hubLastRefresh: hub.lastRefresh, hubHistory: hub.history, hubDevices: hub.devices,
+            proxyPhase: localProxy.phase, proxyRows: localProxy.displayRows
+        )
+    }
+
+    private func syncEdgeDock() {
+        guard !floatingBubbleShuttingDown else { return }
+        let prefs = settings.edgeDock
+        edgeDockRateExpiryTimer?.invalidate()
+        edgeDockRateExpiryTimer = nil
+        if !prefs.enabled {
+            edgeDockRateTracker.reset()
+            edgeDockLastObservedRequestID = nil
+            edgeDockController.configure(
+                preferences: prefs, cells: [], language: settings.language, glass: settings.workspaceGlass,
+                paletteCatalog: paletteCatalog, paletteID: settings.paletteID,
+                preferredColorScheme: settings.themeMode.preferredColorScheme,
+                onPreferencesChange: { [weak self] next in
+                    guard let self, self.settings.edgeDock != next else { return }
+                    self.settings.edgeDock = next
+                },
+                onOpenDashboard: { [weak self] in self?.showMainWindow() },
+                onOpenUsageOverview: { [weak self] in self?.openUsageOverview() },
+                onOpenProxy: { [weak self] in self?.showProxySettings() }
+            )
+            return
+        }
+        let response = store.engineState.lastGood
+        if response?.requestId != edgeDockLastObservedRequestID {
+            edgeDockLastObservedRequestID = response?.requestId
+            _ = edgeDockRateTracker.observe(response: response)
+        }
+        let rateSample = edgeDockRateTracker.current()
+        // Freshness and subscription-window boundaries change without a new
+        // @Published value. Wake once at the next actual boundary.
+        let now = Date()
+        var expiries: [Date] = []
+        if let rateSample {
+            // The rail presents the last sample, so it needs only the stale
+            // boundary; the former eight-second "live" transition is unused.
+            expiries.append(rateSample.sampledAt.addingTimeInterval(TokenMonitorEdgeDockRateTracker.retentionInterval))
+        }
+        for profile in store.profiles {
+            if let fetched = profile.lastSnapshot?.fetchedAt {
+                expiries.append(fetched.addingTimeInterval(300.05))
+            }
+        }
+        for profile in localCLIAccounts.profiles {
+            guard let quota = localCLIAccounts.quotas[profile.id] else { continue }
+            expiries.append(quota.fetchedAt.addingTimeInterval(300.05))
+            if profile.kind == .grok {
+                expiries.append(contentsOf: quota.windows.compactMap(\.resetsAt))
+            }
+        }
+        if let expiry = expiries.filter({ $0 > now }).min() {
+            let interval = max(0.05, expiry.timeIntervalSince(now) + 0.02)
+            edgeDockRateExpiryTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: false) { [weak self] _ in
+                MainActor.assumeIsolated { self?.syncEdgeDock() }
+            }
+        }
+        let quotaSources = FloatingBubbleEvidence.make(
+            store: store, localAccounts: localCLIAccounts, language: settings.language
+        )
+        let usage = TokenMonitorDashboardSnapshot(state: store.engineState, hub: store.tokenMonitorHubSync)
+        let codexSelection = edgeDockCodexSelection()
+        let cells = TokenMonitorEdgeDockProjection.make(
+            preferences: prefs, quotaSources: quotaSources, usage: usage,
+            language: settings.language, activeCodexAccountID: codexSelection.active,
+            historicalCodexAccountID: codexSelection.historical,
+            liveRateSample: rateSample, proxyPhase: localProxy.phase, proxyRows: localProxy.displayRows
+        )
+        edgeDockController.configure(
+            preferences: prefs, cells: cells, language: settings.language, glass: settings.workspaceGlass,
+            paletteCatalog: paletteCatalog, paletteID: settings.paletteID,
+            preferredColorScheme: settings.themeMode.preferredColorScheme,
+            onPreferencesChange: { [weak self] next in
+                guard let self, self.settings.edgeDock != next else { return }
+                self.settings.edgeDock = next
+            },
+            onOpenDashboard: { [weak self] in self?.showMainWindow() },
+            onOpenUsageOverview: { [weak self] in self?.openUsageOverview() },
+            onOpenProxy: { [weak self] in self?.showProxySettings() },
+            onRefresh: { [weak self] cell in await self?.refreshEdgeDockQuota(cell) }
+        )
+    }
+
+    /// Historical selection describes a previous verified identity only. The
+    /// current-account test below keeps its original freshness/failure gates.
+    private func edgeDockCodexSelection(now: Date = Date()) -> (active: String?, historical: String?) {
+        func hasVerifiedSnapshot(_ profile: CodexProfile) -> Bool {
+            guard let snapshot = profile.lastSnapshot, snapshot.quotaReadSucceeded == true else { return false }
+            return
+                !(profile.lastQuotaReadFailureReason == "oauth-invalidated"
+                && (profile.lastQuotaReadFailureAt ?? .distantPast) >= snapshot.fetchedAt)
+        }
+        func hasFreshQuota(_ profile: CodexProfile) -> Bool {
+            guard let snapshot = profile.lastSnapshot, snapshot.quotaReadSucceeded == true,
+                now.timeIntervalSince(snapshot.fetchedAt) <= 300
+            else { return false }
+            return profile.lastQuotaReadFailureAt.map { $0 < snapshot.fetchedAt } ?? true
+        }
+        guard let system = store.profiles.first(where: \.isSystemProfile), hasVerifiedSnapshot(system) else { return (nil, nil) }
+        let managed = store.profiles.filter { !$0.isSystemProfile && $0.recordedAccountKey == system.recordedAccountKey }
+        let candidate: CodexProfile
+        if managed.count == 1, let match = managed.first { candidate = match } else if managed.isEmpty { candidate = system } else { return (nil, nil) }
+        guard hasVerifiedSnapshot(candidate) else { return (nil, nil) }
+        return hasFreshQuota(system) && hasFreshQuota(candidate) ? (candidate.id, nil) : (nil, candidate.id)
+    }
+
+    private func edgeDockRefreshTargets(itemID: String? = nil) -> [String: Set<String>] {
+        let sources = FloatingBubbleEvidence.make(store: store, localAccounts: localCLIAccounts, language: settings.language)
+        let selection = edgeDockCodexSelection()
+        var preferences = settings.edgeDock
+        if let itemID {
+            preferences.items = (preferences.normalized().items ?? TokenMonitorEdgeDockProjection.automaticItems(sources))
+                .filter { $0.id == itemID }
+        }
+        return TokenMonitorEdgeDockProjection.refreshTargets(
+            preferences: preferences, sources: sources,
+            codexDisplayAccountID: selection.active ?? selection.historical,
+            codexSystemAccountID: store.profiles.first(where: \.isSystemProfile)?.id)
+    }
+
+    private func refreshEdgeDockSnapshots(maximumAge: TimeInterval) {
+        guard !floatingBubbleShuttingDown, settings.edgeDock.enabled else { return }
+        let targets = edgeDockRefreshTargets()
+        store.refreshEdgeDockQuotas(profileIDs: targets["codex"] ?? [], maximumAge: maximumAge)
+        let localIDs = Set(targets.filter { $0.key != "codex" }.values.flatMap { $0 })
+        localCLIAccounts.refreshIfNeeded(profileIDs: localIDs, maximumAge: maximumAge)
+    }
+
+    private func refreshEdgeDockQuota(_ cell: TokenMonitorEdgeDockCell) async {
+        guard let providerID = cell.providerID else { return }
+        let targets = edgeDockRefreshTargets(itemID: cell.id)
+        let localIDs: Set<String>
+        if providerID == AgentNavCatalog.codexID {
+            localIDs = []
+            store.refreshEdgeDockQuotas(profileIDs: targets["codex"] ?? [], maximumAge: 0)
+        } else if let kind = LocalCLIKind.allCases.first(where: { TokenMonitorEdgeDockItem.canonicalProviderID($0.rawValue) == providerID }) {
+            localIDs = targets[providerID] ?? []
+            localCLIAccounts.refreshIfNeeded(kind: kind, profileIDs: localIDs, maximumAge: 0)
+        } else {
+            return
+        }
+        // Use the same readers as the account page, then immediately project
+        // their completed result instead of waiting for the periodic UI tick.
+        for _ in 0..<480 {
+            let busy =
+                providerID == AgentNavCatalog.codexID
+                ? store.isRefreshing || !store.refreshingProfileIDs.isEmpty
+                : !localCLIAccounts.refreshing.isDisjoint(with: localIDs)
+            if !busy { break }
+            do { try await Task.sleep(nanoseconds: 250_000_000) } catch { return }
+        }
+        syncEdgeDock()
+    }
+
+    private func showProxySettings() {
+        LocalProxyQueueWindowController.shared.show(
+            model: localProxy, settings: settings, paletteCatalog: paletteCatalog
+        )
     }
 
     private func syncFloatingBubble(reveal: Bool = false) {
         guard !floatingBubbleShuttingDown else { return }
         let prefs = settings.floatingBubble
         let bubble = floatingBubbleController
-        bubble.language = settings.language
-        bubble.preferences = prefs
-        bubble.snapshot = TokenMonitorFloatingBubbleProjection.resolve(
+        floatingBubbleExpiryTimer?.invalidate()
+        floatingBubbleExpiryTimer = nil
+        guard prefs.enabled else {
+            if floatingBubbleEnabled {
+                bubble.close()
+                closeFloatingBubbleEditor()
+            }
+            floatingBubbleEnabled = false
+            return
+        }
+        let snapshot = TokenMonitorFloatingBubbleProjection.resolve(
             preferences: prefs,
             sources: FloatingBubbleEvidence.make(store: store, localAccounts: localCLIAccounts, language: settings.language)
         )
-        if prefs.enabled {
-            if reveal || !floatingBubbleEnabled { bubble.show() } else { bubble.refreshContent() }
-        } else {
-            bubble.close()
-            closeFloatingBubbleEditor()
+        let changed =
+            bubble.language != settings.language || bubble.preferences != prefs || bubble.snapshot != snapshot
+            || bubble.paletteID != settings.paletteID || bubble.preferredColorScheme != settings.themeMode.preferredColorScheme
+            || bubble.glass != settings.workspaceGlass
+        bubble.language = settings.language
+        bubble.preferences = prefs
+        bubble.snapshot = snapshot
+        bubble.paletteCatalog = paletteCatalog
+        bubble.paletteID = settings.paletteID
+        bubble.preferredColorScheme = settings.themeMode.preferredColorScheme
+        bubble.glass = settings.workspaceGlass
+        if reveal || !floatingBubbleEnabled { bubble.show() } else if changed { bubble.refreshContent() }
+        floatingBubbleEnabled = true
+        // A selected quota can expire without another collection event.
+        let now = Date()
+        var expiries = snapshot.fetchedAt.map { [$0.addingTimeInterval(300.05)] } ?? []
+        if prefs.selectedProviderID == "grok", let accountID = prefs.selectedProfileID,
+            let quota = localCLIAccounts.quotas[accountID]
+        {
+            expiries.append(contentsOf: quota.windows.filter { $0.id == prefs.selectedMetricID }.compactMap(\.resetsAt))
         }
-        floatingBubbleEnabled = prefs.enabled
+        if let expiry = expiries.filter({ $0 > now }).min() {
+            floatingBubbleExpiryTimer = Timer.scheduledTimer(
+                withTimeInterval: max(0.05, expiry.timeIntervalSince(now) + 0.02), repeats: false
+            ) { [weak self] _ in
+                MainActor.assumeIsolated { self?.syncFloatingBubble() }
+            }
+        }
     }
 
     func showFloatingBubble(settings callerSettings: AppSettings, language: WidgetLanguage) {
@@ -340,7 +824,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         editor.isReleasedWhenClosed = false
         editor.delegate = self
         editor.title = settings.language.text("自定义悬浮窗", "Customize floating bubble")
-        editor.contentView = NSHostingView(
+        editor.contentView = GlassHostingContainer(
             rootView: LiveFloatingBubbleEditor(
                 settings: settings,
                 store: store,
@@ -352,7 +836,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
                 },
                 onCancel: { [weak self] in self?.closeFloatingBubbleEditor() },
                 onDone: { [weak self] in self?.closeFloatingBubbleEditor() }
-            ))
+            ), cornerRadius: 0, allowsWindowDragging: false, settings: settings, preservesDefaultOpaqueBackground: true)
         floatingBubbleEditorWindow = editor
         editor.center()
         editor.makeKeyAndOrderFront(nil)
@@ -371,42 +855,66 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         }
     }
 
-    private func installTitlebarToolbar(on window: NSWindow) {
-        let toolbarView = NSHostingView(
-            rootView: TitlebarToolbarView(
-                settings: settings,
-                onOpenSettings: { [weak self] in
-                    self?.openSettingsWindow()
-                },
-                onSaveScreenshot: { [weak self] in
-                    guard let self, let window = self.window else { return }
-                    self.screenshotRequests.send(window)
-                },
-                onOpenGuide: { [weak self] in
-                    self?.guideRequests.send(())
-                }
-            )
-        )
-        toolbarView.frame = NSRect(x: 0, y: 0, width: 136, height: 44)
-
-        let controller = NSTitlebarAccessoryViewController()
-        controller.layoutAttribute = .right
-        controller.view = toolbarView
-        window.addTitlebarAccessoryViewController(controller)
-        titlebarToolbarController = controller
-    }
-
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        store.isLaunchingCodex ? .terminateCancel : .terminateNow
+        if store.isLaunchingCodex { return .terminateCancel }
+        guard terminationTask == nil else { return .terminateLater }
+        terminationTask = Task { @MainActor in
+            if localProxy.requiresStopConfirmation {
+                let alert = NSAlert()
+                alert.alertStyle = .warning
+                alert.messageText = settings.language.text("退出并停止反代？", "Quit and stop the proxy?")
+                alert.informativeText = settings.language.text(
+                    "所有接入反代的对话都会断开，正在执行的任务可能中断。取消可让反代继续运行。",
+                    "All conversations connected to the proxy will disconnect, and active tasks may be interrupted. Cancel to keep the proxy running."
+                )
+                alert.addButton(withTitle: settings.language.text("取消", "Cancel"))
+                alert.addButton(withTitle: settings.language.text("退出并停止", "Quit and stop"))
+                let response: NSApplication.ModalResponse
+                if let window, window.isVisible { response = await alert.beginSheetModal(for: window) } else { response = alert.runModal() }
+                guard response == .alertSecondButtonReturn else {
+                    terminationTask = nil
+                    sender.reply(toApplicationShouldTerminate: false)
+                    return
+                }
+            }
+            if store.isLoggingIn {
+                await store.finishLoginForTermination()
+            }
+            await localProxy.finishForTermination()
+            let canTerminate = localProxy.canFinishTermination
+            if !canTerminate { terminationTask = nil }
+            sender.reply(toApplicationShouldTerminate: canTerminate)
+            if !canTerminate {
+                let alert = NSAlert()
+                alert.messageText = settings.language.text("本地代理尚未停止", "Local proxy has not stopped")
+                alert.informativeText =
+                    localProxy.issue
+                    ?? settings.language.text(
+                        "暂未退出应用。请在本地代理面板重试停止，账号占用会保留至进程确认退出。",
+                        "The app will stay open. Retry Stop in the Local proxy panel. Account reservations remain until the process is confirmed stopped."
+                    )
+                alert.addButton(withTitle: settings.language.text("知道了", "OK"))
+                if let window { await alert.beginSheetModal(for: window) } else { alert.runModal() }
+            }
+        }
+        return .terminateLater
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        tokenDesktop.hostAction = nil
+        tokenDesktop.shutdown()
         floatingBubbleShuttingDown = true
         if TokenMonitorFloatingBubbleSession.owner === self {
             TokenMonitorFloatingBubbleSession.owner = nil
         }
         closeFloatingBubbleEditor()
         floatingBubbleController.shutdown()
+        floatingBubbleExpiryTimer?.invalidate()
+        floatingBubbleExpiryTimer = nil
+        edgeDockController.shutdown()
+        edgeDockRateExpiryTimer?.invalidate()
+        edgeDockRateExpiryTimer = nil
+        edgeDockRateTracker.reset()
         taskOverviewController?.shutdown()
         taskOverviewController = nil
         accountFloatingPanelController?.shutdown()
@@ -424,8 +932,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     func toggleMainWindow() {
         guard let window else { return }
 
-        if window.isVisible, !window.isMiniaturized, window.isKeyWindow {
-            window.orderOut(nil)
+        if !NSApp.isHidden, window.isVisible, !window.isMiniaturized, window.isKeyWindow {
+            if window.styleMask.contains(.fullScreen) {
+                // Let AppKit activate the next app instead of ordering the
+                // main window out of its native full-screen Space.
+                NSApp.hide(nil)
+            } else {
+                window.orderOut(nil)
+            }
             updateTaskBoardPollingActivity()
             return
         }
@@ -460,7 +974,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         if sender === window {
-            if settings.keepRunningWhenMainWindowClosed {
+            if settings.keepRunningWhenMainWindowClosed || localProxy.requiresStopConfirmation {
                 hideMainWindowAfterClose()
             } else {
                 NSApp.terminate(nil)
@@ -531,6 +1045,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         closeStatusPopover()
         paletteLibraryWindow?.orderOut(nil)
         applyMainWindowLevel()
+        if NSApp.isHidden {
+            NSApp.unhide(nil)
+        }
         if window.isMiniaturized {
             window.deminiaturize(nil)
         }
@@ -555,7 +1072,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     }
 
     @objc private func showAboutPanel() {
-        NSApp.orderFrontStandardAboutPanel(nil)
+        openSettingsWindow(page: .about)
     }
 
     @objc private func quitFromMenu() {
@@ -569,7 +1086,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
                 settings: settings,
                 openTask: { [weak self] scope, threadID in
                     guard let self else { return }
-                    self.store.requestTaskFocus(scope: scope, threadID: threadID)
+                    if scope == .codex, let id = threadID, let url = CodexSessionLink.url(threadID: id), NSWorkspace.shared.open(url) { return }
+                    self.store.setTaskBoardSelected(true)
                     self.showMainWindow()
                 },
                 openWorkspace: { [weak self] in
@@ -608,6 +1126,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
                 title: language.text("设置…", "Settings..."),
                 action: #selector(openSettingsFromMenu),
                 keyEquivalent: ","
+            ))
+        appMenu.addItem(
+            NSMenuItem(
+                title: language.text("打开菜单栏面板", "Open Menu Bar Panel"),
+                action: #selector(statusItemClicked),
+                keyEquivalent: ""
             ))
         appMenu.addItem(.separator())
 
@@ -698,21 +1222,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         NSApp.mainMenu = mainMenu
     }
 
-    private func openSettingsWindow() {
+    private func openSettingsWindow(page: SettingsPage? = nil) {
         closeStatusPopover()
+        if let page { settingsNavigation.page = page }
         if settingsWindow == nil {
             let panel = NSWindow(
                 contentRect: NSRect(x: 0, y: 0, width: 780, height: 640),
-                styleMask: [.titled, .closable, .miniaturizable, .resizable],
+                styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
                 backing: .buffered, defer: false
             )
             panel.isReleasedWhenClosed = false
             panel.contentMinSize = NSSize(width: 740, height: 520)
-            panel.contentViewController = NSHostingController(
+            panel.isOpaque = false
+            panel.backgroundColor = .clear
+            panel.titlebarAppearsTransparent = true
+            panel.contentView = GlassHostingContainer(
                 rootView: SettingsWindowContent(
                     settings: settings, store: store, updateStore: updateStore, localAccounts: localCLIAccounts,
+                    navigation: settingsNavigation,
                     onOpenPaletteLibrary: { [weak self] in self?.openPaletteLibraryWindow() }
-                ))
+                ),
+                cornerRadius: 12,
+                allowsWindowDragging: false, settings: settings
+            )
             panel.center()
             settingsWindow = panel
         }
@@ -747,7 +1279,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             paletteLibraryWindow.contentMinSize = NSSize(width: 660, height: 320)
             paletteLibraryWindow.contentView = GlassHostingContainer(
                 rootView: PaletteLibraryView(settings: settings),
-                cornerRadius: 20
+                cornerRadius: 20, settings: settings
             )
             paletteLibraryWindow.center()
             self.paletteLibraryWindow = paletteLibraryWindow
@@ -822,7 +1354,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     }
 
     @objc private func statusItemClicked() {
+        if tokenDesktop.isBundled {
+            closeStatusPopover()
+            tokenDesktop.open(.home)
+            return
+        }
         toggleStatusPopover()
+    }
+
+    private func openUsageOverview() {
+        if tokenDesktop.isBundled {
+            closeStatusPopover()
+            tokenDesktop.open(.home)
+        } else {
+            showStatusPopover(initialScreen: .home)
+        }
     }
 
     private func toggleStatusPopover() {
@@ -847,10 +1393,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             return
         }
         store.refreshIfStale(maximumAge: 5 * 60)
+        statusPopoverSize = preferredStatusPopoverSize(for: button)
         let popover = NSPopover()
         popover.behavior = .applicationDefined
         popover.animates = !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-        popover.contentSize = CodexAccountMenuView.preferredSize
+        popover.contentSize = statusPopoverSize
         popover.delegate = self
         popover.contentViewController = NSHostingController(
             rootView: CodexAccountMenuView(
@@ -871,7 +1418,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
                 },
                 onOpenFloatingPanel: { [weak self] initialScreen in
                     self?.openFloatingAccountPanel(initialScreen: initialScreen)
-                }
+                },
+                preferredContentSize: statusPopoverSize
             )
         )
         statusPopover = popover
@@ -956,7 +1504,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
 
     private func updateStatusPopoverSize() {
         guard statusPopover?.isShown == true else { return }
-        statusPopover?.contentSize = CodexAccountMenuView.preferredSize
+        statusPopover?.contentSize = statusPopoverSize
+    }
+
+    private func preferredStatusPopoverSize(for button: NSStatusBarButton) -> CGSize {
+        let availableHeight = button.window?.screen?.visibleFrame.height ?? NSScreen.main?.visibleFrame.height ?? 800
+        return CGSize(width: 420, height: max(1, min(640, availableHeight - 28)))
     }
 
     func popoverDidClose(_ notification: Notification) {
@@ -1069,6 +1622,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     }
 
     private func setupStatusItemIfNeeded() {
+        guard !(tokenDesktop.isReady && tokenDesktop.hasVisibleTray) else { return }
         guard statusItem == nil else {
             updateStatusItem()
             return
@@ -1117,16 +1671,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         lastRenderedStatusItemPaletteIdentity = visualTokens.identity
 
         let performanceSpan = PerformanceMonitor.shared.begin(.statusRender)
-        statusItem?.length = presentation.itemLength
-        button.image = statusItemRenderer.render(
+        let baseImage = statusItemRenderer.render(
             presentation,
             tokens: visualTokens,
             appearance: appearance
         )
-        button.toolTip = presentation.tooltip
-        button.setAccessibilityLabel("AiGoodBro")
+        button.image = statusItemImageWithMonitorBadge(baseImage)
+        statusItem?.length = presentation.itemLength + 17
+        button.toolTip = "\(presentation.tooltip) · \(AHBrandIdentity.displayName)"
+        button.setAccessibilityLabel(settings.language.text("AiGoodBro 用量统计", "AiGoodBro usage dashboard"))
         button.setAccessibilityValue(presentation.accessibilityValue)
         PerformanceMonitor.shared.end(performanceSpan)
+    }
+
+    private func statusItemImageWithMonitorBadge(_ baseImage: NSImage) -> NSImage {
+        let badgeSide: CGFloat = 14
+        let gap: CGFloat = 3
+        let size = CGSize(width: baseImage.size.width + badgeSide + gap, height: max(baseImage.size.height, badgeSide))
+        let result = NSImage(size: size)
+        result.lockFocus()
+        baseImage.draw(
+            in: NSRect(x: badgeSide + gap, y: (size.height - baseImage.size.height) / 2, width: baseImage.size.width, height: baseImage.size.height),
+            from: .zero,
+            operation: .sourceOver,
+            fraction: 1
+        )
+        let badge = NSRect(x: 0, y: (size.height - badgeSide) / 2, width: badgeSide, height: badgeSide)
+        let brandURL = Bundle.main.url(forResource: "AiGoodBro-icon", withExtension: "png")
+        if let brandImage = brandURL.flatMap(NSImage.init(contentsOf:)) ?? NSApp.applicationIconImage {
+            brandImage.draw(in: badge, from: .zero, operation: .sourceOver, fraction: 1)
+        }
+        result.unlockFocus()
+        result.isTemplate = false
+        return result
     }
 
     private func selectedRuntimeSummary() -> RuntimeMenuSummary? {

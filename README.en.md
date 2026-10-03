@@ -1,6 +1,4 @@
-![AiGoodBro 2.0 · AgentHub overview (user-provided real-machine screenshot)](docs/images/0929v4/00-overview-user.jpg)
-
-# AiGoodBro 2.0 · AgentHub
+# AiGoodBro · AgentHub (2.2 candidate)
 
 **See quota, usage and task occupancy at a glance; when needed, route local work through your own Codex account pool.**
 
@@ -8,39 +6,39 @@ AiGoodBro is a macOS AI workspace for personal use. It brings together quotas fo
 
 [中文](README.md) | **English**
 
-*The lead image was provided by the user and shows the workspace overview with floating usage cards; values show only the state visible at capture time. See the [image source note](docs/images/0929v4/README.md).*
+The latest source candidate is **2.2 · 1003v1**, with internal update version 9.6.64 (114). It adds batch invitations and official history, per-account proxy rules editable while running, retained snapshots and refresh intervals, and a USD/CNY overview sized to its numbers. It also updates fullscreen shortcuts, CLI sign-in and quota readers, and desktop-switch confirmation. Version 114 is installed locally; this update has no official installer. See the [validation and scope](docs/source-publication-1003v1.md) and [new previews](docs/images/1002v4/README.md).
 
-The six interface images below are real 9.6.32 (82) captures from 2026-09-29. See the [screenshot notes](docs/images/0929v2/README.md) for per-image boundaries and provenance.
+The images below retain their 1002v2 provenance. The [full gallery](docs/images/1002v2/README.md) covers home, accounts, proxy, settings, setup, usage panels and all nine themes. Historical real captures retain their version labels.
 
 ## See what is happening
 
 Home shows each account's remaining quota, reset time and task occupancy. Public reset announcements stay distinct from an account's actual quota. Usage views summarize token, model and tool activity; estimated costs are based on local data, not provider bills.
 
-![AgentHub home and usage summary, 9.6.32 (82), captured 2026-09-29](docs/images/0929v2/01-home.jpg)
+![AgentHub home, 9.6.63 (113), native synthetic preview](docs/images/1002v2/home/compact-en.png)
 
-*Usage overview, activity heatmap, trends and account quotas on one page.*
+*Home supports resizable sections, cards and rows. The two reset panels share the available width and preserve the user’s chosen proportions.*
 
-Codex's isolated CLI can use its own local sign-in directory; support for other tools depends on the provider. Account cards and rows let you refresh quota, change order, choose a model or start an isolated CLI. See the [CLI quota coverage](https://github.com/BLACKIELF/AgentHub-AiGoodBro/blob/codex/reset-messages-0926v1/docs/local-cli-accounts.md) for supported providers and limits.
+Codex's isolated CLI can use its own local sign-in directory; support for other tools depends on the provider. Account cards and rows let you refresh quota, change order, choose a model or start an isolated CLI. See the [CLI quota coverage](docs/local-cli-accounts.md) for supported providers and limits.
 
-![Codex account cards, 9.6.32 (82), captured 2026-09-29](docs/images/0929v2/02-codex.jpg)
+![Codex account cards, 9.6.63 (113), native synthetic preview](docs/images/1002v2/accounts/cards-en-dark.png)
 
 *Codex account cards.*
 
-The workspace shows quota and status for connected tools; availability depends on the tool and current sign-in. The ZCode screenshot below shows the desktop page. WorkBuddy desktop quota is currently unreadable. The Kimi CLI view shows its previous snapshot; refresh it before relying on the value.
+The workspace shows quota and status for connected tools; availability depends on the tool and current sign-in. ZCode is a desktop tool, not a CLI. WorkBuddy desktop quota is currently unreadable. The Kimi CLI view shows its previous snapshot; refresh it before relying on the value.
 
-![ZCode desktop account view, 9.6.32 (82), captured 2026-09-29](docs/images/0929v2/03-zcode.jpg)
+![Multi-provider workspace, 9.6.63 (113), native synthetic preview](docs/images/1002v2/workspace/providers-en-dark.png)
 
-*The ZCode desktop account page brings models, expiration dates and token balances together.*
+*Tool status, quotas and controls follow each provider’s capabilities; unreadable quotas retain an explicit notice.*
 
-![Kimi CLI quota view, 9.6.32 (82), captured 2026-09-29](docs/images/0929v2/06-kimi.jpg)
+![Project workbench, 9.6.63 (113), native synthetic preview](docs/images/1002v2/workbench/workbench-900-dark.png)
 
-*Kimi shows its previous snapshot; refresh before use.*
+*The project workbench distinguishes execution from accepted outcomes and keeps remaining work and the original chat available. This preview is in Chinese.*
 
 ## Setup guide: connect official tools and accounts
 
 Follow the guide to sign in to an official tool or account, then return to the workspace to check its connection status. Connect each tool when you need it.
 
-![Guide to connecting official tools and accounts, 9.6.32 (82), captured 2026-09-29](docs/images/0929v2/05-guide.jpg)
+![Guide to connecting official tools and accounts, 9.6.63 (113), native synthetic preview](docs/images/1002v2/setup/en-dark-step1.png)
 
 ## Local proxy: route requests through your own account pool
 
@@ -50,9 +48,9 @@ Credit continuation is off by default. Only if the user enables it does the prox
 
 The proxy routes inference requests only. Codex Desktop keeps its OpenAI sign-in, each conversation's model and reasoning effort; using the proxy does not change system authentication files or global configuration. An already-running Codex process does not switch routes until it is restarted and connected again.
 
-![Local proxy controls, 9.6.32 (82), captured 2026-09-29](docs/images/0929v2/04-proxy.jpg)
+![Local proxy controls, 9.6.63 (113), native synthetic preview](docs/images/1002v2/proxy/en-dark-830.png)
 
-*The proxy was stopped and showed an unavailable notice in this screenshot. It shows the controls only; the proxy was not enabled for the capture and request forwarding was not tested.*
+*The synthetic preview shows account order, quotas and credit floors. The standalone window now uses one rounded glass surface with a transparent titlebar and no dark separator. The AppKit frame still needs a real-window check after a normal restart.*
 
 **Start and stop it yourself:**
 
@@ -60,43 +58,69 @@ The proxy routes inference requests only. Codex Desktop keeps its OpenAI sign-in
 2. Quit Codex. The **Connect Desktop** button appears only after the proxy starts successfully and its connection details are ready; choose it to relaunch Codex with the local route.
 3. When finished, stop the service in the proxy panel. Closing the main window only hides it; quitting the app asks whether to stop the proxy. Reopen Codex normally after stopping it.
 
-Once a streamed response has begun, an error is not replayed through another account. An uncertain result is not sent again automatically, avoiding duplicate task execution. The proxy entry points are present in the 2.0 candidate UI; their presence does not prove end-to-end acceptance.
+Once a streamed response has begun, an error is not replayed through another account. An uncertain result is not sent again automatically, avoiding duplicate task execution. Proxy controls and the Connect Desktop entry are present in the candidate UI; their presence does not prove end-to-end acceptance.
 
 The proxy is designed for personal use with your own accounts and local tasks. This project does not provide accounts, credential sharing, quota resale or a public proxy service.
 
-## 2.0 project status and acceptance limits
+Personal WeChat uses the official Tencent iLink QR connection for reset notifications, cached status commands and explicitly enabled conversation in a chosen original Codex chat. The project workbench separates execution and outcome, preserving manual pause, cancellation, acceptance and remaining work. Normal display does not call a model; phone delivery and real conversation remain unaccepted. See the [WeChat and workbench guide (Chinese)](docs/wechat-workbench-0930v1.md).
 
-This page introduces **AiGoodBro 2.0 · AgentHub**. The latest 2.0 implementation and source are integrated in [PR #13](https://github.com/BLACKIELF/AgentHub-AiGoodBro/pull/13) on the candidate branch [`codex/reset-messages-0926v1`](https://github.com/BLACKIELF/AgentHub-AiGoodBro/tree/codex/reset-messages-0926v1); `main` remains the existing code baseline, and no 2.0 download package has been released. Windows work is paused.
+## Nine themes and native glass
 
-See the [candidate source publication record](https://github.com/BLACKIELF/AgentHub-AiGoodBro/blob/codex/reset-messages-0926v1/docs/source-publication-0929v1.md) and [proxy integration notes](https://github.com/BLACKIELF/AgentHub-AiGoodBro/blob/codex/reset-messages-0926v1/docs/local-proxy-0928v1.md) for implementation sources, validation scope and uncovered behavior. Current build 82 Desktop routing, real proxy image generation, long-conversation recovery, automatic pause → account switch → continuation and final UI regression remain unaccepted.
+Choose a palette in Settings → Appearance. Each theme supports light and dark modes. Default keeps the neutral interface; other palettes share the native glass renderer with adjustable transparency and depth. macOS Reduce Transparency and Increase Contrast take precedence.
 
-Build the latest 2.0 candidate:
+| Theme | Visual character |
+|---|---|
+| Default | Neutral gray with blue-violet accents; remains the default. |
+| Liquid Keycap | Cool blue and cyan with light glass layers. |
+| Blue & White Porcelain | Porcelain white and cobalt blue. |
+| Monterey Dawn | Orchid purple, pink and warm dawn tones. |
+| A Thousand Li of Rivers | Mineral green and blue. |
+| Dunhuang Apsara | Sand gold, ochre and turquoise. |
+| Forbidden City Red | Red walls, gold and deep contrasting surfaces. |
+| Violet Glow | An independent glass variant of the existing default blue-violet tokens. |
+| WAICY Sunset | A three-stop pink-to-orange gradient based on badge-candidate colors. |
+
+![WAICY Sunset dark palette, native synthetic preview](docs/images/1002v2/themes/codexu.waicy-dark.png)
+
+[View light and dark previews of all nine themes](docs/images/1002v2/README.md#themes). Themes supply color tokens only. WAICY artwork, logos, mascots and fonts are not copied, and the palette does not imply official endorsement.
+
+## Candidate status and acceptance limits
+
+The current source candidate is **AiGoodBro 9.6.64 (114) · 2.2 / 1003v1**, on [`codex/reset-messages-0926v1`](https://github.com/BLACKIELF/AgentHub-AiGoodBro/tree/codex/reset-messages-0926v1) and under review in [PR #13](https://github.com/BLACKIELF/AgentHub-AiGoodBro/pull/13). It remains a candidate, is not merged into `main`, and has no official download.
+
+[![Candidate branch CI](https://github.com/BLACKIELF/AgentHub-AiGoodBro/actions/workflows/ci.yml/badge.svg?branch=codex%2Freset-messages-0926v1)](https://github.com/BLACKIELF/AgentHub-AiGoodBro/pull/13/checks)
+
+Version **9.6.64 (114)** is installed at `/Applications/AiGoodBro.app`; the app version, executable and proxy-helper hashes, signature and architecture were verified. Before replacement, no proxy helper process or occupied proxy lease was present, and the old app quit normally. The 35 selected app self-tests, cross-language proxy regressions, Go race suite and `go vet` passed. No Codex account was switched and no real model request was sent. Home, settings, setup, login, usage-panel and theme previews use synthetic data; they do not show live accounts. Phone delivery, real original-chat conversation, automatic pause/switch/resume, real image generation and the new AppKit titlebar remain unaccepted. See the [current publication record](docs/source-publication-1003v1.md) and [PR #13 checks](https://github.com/BLACKIELF/AgentHub-AiGoodBro/pull/13/checks).
+
+Build the 2.2 candidate:
 
 ```sh
-git clone --branch codex/reset-messages-0926v1 https://github.com/BLACKIELF/AgentHub-AiGoodBro.git AiGoodBro-2.0
-cd AiGoodBro-2.0
+git clone --branch codex/reset-messages-0926v1 https://github.com/BLACKIELF/AgentHub-AiGoodBro.git AiGoodBro-2.2
+cd AiGoodBro-2.2
 make build
 ```
 
-Building the 2.0 candidate above requires Go 1.26+ and the verified Token Monitor v0.62.0 macOS runtime; see the [candidate source publication record](https://github.com/BLACKIELF/AgentHub-AiGoodBro/blob/codex/reset-messages-0926v1/docs/source-publication-0929v1.md). To build the existing mainline, use `main`; it is the current baseline and does not include candidate 82. No 2.0 installer is currently available.
+Source builds require macOS, Go 1.26+ and the verified Token Monitor v0.62.0 macOS runtime; see the [build and publication record](docs/source-publication-1003v1.md). No official 2.2 installer is currently available. Further Windows work remains on hold.
 
 ## Inspiration, code sources and licenses
 
-The 2.0 candidate's feature design borrows from related open-source projects. Code and resources directly reused or adapted in the candidate are listed below, with their applicable licenses and copyright notices retained.
+Feature design borrows from related open-source projects. Code and resources directly reused or adapted are listed below, with their applicable licenses and copyright notices retained.
 
 | Project | Relationship |
 |---|---|
-| [codexU](https://github.com/shanggqm/codexU) | Historical SwiftUI, quota, palette and Windows foundations inherited. |
-| [Token Monitor v0.62.0](https://github.com/Javis603/token-monitor/tree/dcccfb01557e2786888fd5479552f392ac6c0d32) | Statistics engine, desktop dashboard, charts and resources directly reused with host adaptation. |
-| [Tokscale fork](https://github.com/Javis603/tokscale) · [original](https://github.com/junhoyeo/tokscale) | Statistics collection foundation; bundled revision `06a9f1625d5a505f01b39eff29f7be44a2c52188`, as recorded in [`SOURCE.json`](https://github.com/BLACKIELF/AgentHub-AiGoodBro/blob/codex/reset-messages-0926v1/Companion/TokenMonitorEngine/SOURCE.json). |
-| [CLIProxyAPI v8.0.2](https://github.com/router-for-me/CLIProxyAPI/tree/v8.0.2) | SDK scheduler, Codex executor and Responses handler directly reused. |
-| [Codex-Manager](https://github.com/qxcnm/Codex-Manager) | Warm-up request structure and SSE completion rules adapted in the implementation; see [`CodexAccountActions.swift`](https://github.com/BLACKIELF/AgentHub-AiGoodBro/blob/codex/reset-messages-0926v1/Sources/CodexUsageWidget/Services/CodexAccountActions.swift#L850). |
-| [Hazmat wrapper script](https://github.com/dredozubov/hazmat/blob/c112d222bb53e888dd17a8927927286792f7c20e/scripts/check-codex-desktop-attach-smoke.sh) | Reference for the `CODEX_CLI_PATH` stdio-wrapper entry point; no Hazmat sandbox or service is integrated. |
+| [Tencent/openclaw-weixin 2.4.9](https://github.com/Tencent/openclaw-weixin/tree/24de5c9eb0dd5e595d7e2d090ed8a3f82870d42c) | Native adaptation of iLink protocol and QR pairing; MIT notice retained, without installing OpenClaw. |
+| [codexU](https://github.com/shanggqm/codexU) | Second-developed host integration from the historical fixed source: SwiftUI, quota, palette and Windows foundations were inherited and are maintained by AiGoodBro. |
+| [Token Monitor v0.62.0](https://github.com/Javis603/token-monitor/tree/dcccfb01557e2786888fd5479552f392ac6c0d32) | Second-developed native integration from the fixed upstream source: the statistics engine, dashboard, charts and resources remain bundled with the AiGoodBro bridge and Swift host. The local zero-quota fix and review of later releases are in the [current publication record](docs/source-publication-1003v1.md). |
+| [Tokscale fork](https://github.com/Javis603/tokscale) · [original](https://github.com/junhoyeo/tokscale) | Second-developed native integration from the pinned revision; the collection foundation and license remain bundled as revision `06a9f1625d5a505f01b39eff29f7be44a2c52188`. |
+| [CLIProxyAPI v8.0.2](https://github.com/router-for-me/CLIProxyAPI/tree/v8.0.2) | Host adapter over fixed upstream code: the SDK scheduler, Codex executor and Responses handler are reused, with a narrow adaptation of v8.0.7's pre-first-frame disconnect 502/failover behavior. The dependency was not upgraded wholesale. |
+| [Codex-Manager](https://github.com/qxcnm/Codex-Manager) | Protocol adaptation and static research reference; the warm-up request structure and SSE completion rules are independently implemented in [`CodexAccountActions.swift`](Sources/CodexUsageWidget/Services/CodexAccountActions.swift#L850). |
+| [Hazmat wrapper script](https://github.com/dredozubov/hazmat/blob/c112d222bb53e888dd17a8927927286792f7c20e/scripts/check-codex-desktop-attach-smoke.sh) | Protocol adaptation and static research reference for the `CODEX_CLI_PATH` stdio-wrapper entry point; no Hazmat sandbox or service is integrated. |
+| [BlackHole1/aswap v1.1.0](https://github.com/BlackHole1/aswap/releases/tag/v1.1.0) | The Claude multi-account CLI/Chrome profile tool from the referenced X post; protocol adaptation and static research reference only, with no copied, bundled or Codex, Feishu or WeCom integration. |
 
-AiGoodBro is licensed under [MIT](LICENSE). Full third-party license texts and copyright notices are in the candidate branch's [`THIRD_PARTY_NOTICES.txt`](https://github.com/BLACKIELF/AgentHub-AiGoodBro/blob/codex/reset-messages-0926v1/Resources/THIRD_PARTY_NOTICES.txt), [CLIProxyAPI license](https://github.com/BLACKIELF/AgentHub-AiGoodBro/blob/codex/reset-messages-0926v1/Companion/LocalProxy/LICENSE.CLIProxyAPI), [Hazmat license](https://github.com/BLACKIELF/AgentHub-AiGoodBro/blob/codex/reset-messages-0926v1/Companion/LocalProxy/LICENSE.Hazmat) and [third-party notices](https://github.com/BLACKIELF/AgentHub-AiGoodBro/blob/codex/reset-messages-0926v1/Companion/LocalProxy/THIRD-PARTY-NOTICES.txt).
+AiGoodBro is licensed under [MIT](LICENSE). Full third-party license texts and copyright notices are in [`Resources/THIRD_PARTY_NOTICES.txt`](Resources/THIRD_PARTY_NOTICES.txt), [`Companion/LocalProxy/LICENSE.CLIProxyAPI`](Companion/LocalProxy/LICENSE.CLIProxyAPI), [`Companion/LocalProxy/LICENSE.Hazmat`](Companion/LocalProxy/LICENSE.Hazmat) and [`Companion/LocalProxy/THIRD-PARTY-NOTICES.txt`](Companion/LocalProxy/THIRD-PARTY-NOTICES.txt).
 
 ## More information
 
-[Detailed guide (Chinese)](https://github.com/BLACKIELF/AgentHub-AiGoodBro/blob/codex/reset-messages-0926v1/docs/usage-guide.md) · [CLI quota coverage](https://github.com/BLACKIELF/AgentHub-AiGoodBro/blob/codex/reset-messages-0926v1/docs/local-cli-accounts.md) · [Proxy implementation and validation](https://github.com/BLACKIELF/AgentHub-AiGoodBro/blob/codex/reset-messages-0926v1/docs/local-proxy-0928v1.md) · [Candidate source publication record](https://github.com/BLACKIELF/AgentHub-AiGoodBro/blob/codex/reset-messages-0926v1/docs/source-publication-0929v1.md) · [Historical screenshots: 0927v6](https://github.com/BLACKIELF/AgentHub-AiGoodBro/tree/codex/reset-messages-0926v1/docs/images/0927v6) · [Historical screenshots: 0910v1](docs/images/0910v1/README.md) · [Report an issue](https://github.com/BLACKIELF/AgentHub-AiGoodBro/issues) · [Security](SECURITY.md)
+[Detailed guide (Chinese)](docs/usage-guide.md) · [CLI quota coverage](docs/local-cli-accounts.md) · [Proxy implementation and validation](docs/local-proxy-0928v1.md) · [Current source publication record](docs/source-publication-1003v1.md) · [Historical real captures: 0929v2](docs/images/0929v2/README.md) · [Historical screenshots: 0927v6](docs/images/0927v6/README.md) · [Historical screenshots: 0910v1](docs/images/0910v1/README.md) · [Report an issue](https://github.com/BLACKIELF/AgentHub-AiGoodBro/issues) · [Security](SECURITY.md)
 
-[MIT license](LICENSE) · [Third-party notices](https://github.com/BLACKIELF/AgentHub-AiGoodBro/blob/codex/reset-messages-0926v1/Resources/THIRD_PARTY_NOTICES.txt) · [Brand compatibility](https://github.com/BLACKIELF/AgentHub-AiGoodBro/blob/codex/reset-messages-0926v1/docs/brand-compat-0911v1.md)
+[MIT license](LICENSE) · [Third-party notices](Resources/THIRD_PARTY_NOTICES.txt) · [Brand compatibility](docs/brand-compat-0911v1.md)

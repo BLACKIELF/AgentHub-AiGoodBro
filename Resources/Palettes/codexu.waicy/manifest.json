@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "id": "codexu.waicy",
+  "version": "1.0.0",
+  "minimumAppVersion": "1.0.5",
+  "lifecycle": "stable",
+  "defaultLocale": "zh-Hans",
+  "localizations": {
+    "zh-Hans": "localizations/zh-Hans.json",
+    "en": "localizations/en.json"
+  },
+  "variants": {
+    "light": "tokens/light.json",
+    "dark": "tokens/dark.json"
+  },
+  "assetManifest": "assets/manifest.json",
+  "author": {
+    "name": "AiGoodBro contributors"
+  },
+  "license": "MIT",
+  "source": {
+    "type": "original-design-translation",
+    "note": "Color-only adaptation of the current WAICY badge candidate 1001v1. Its layout.py background uses #FE478A -> #FF7CA0 -> #FFA74D on #FFFAF6 with #352832 ink. Adaptive control shades are derived for light and dark system surfaces; the broader brand guideline values are separate reference values. No logo, mascot, font, website texture or badge artwork is included."
+  },
+  "capabilities": [
+    "color-tokens"
+  ]
+}

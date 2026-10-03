@@ -27,6 +27,7 @@
 
 const { REASONIX_SOURCE_CHECK_ID } = require('./providers/reasonix/paths');
 const { DSH_SOURCE_CHECK_ID } = require('./providers/dsh/paths');
+const { DEVIN_CLI_SOURCE_CHECK_ID, DEVIN_DESKTOP_SOURCE_CHECK_ID } = require('./providers/devin/paths');
 
 const CLIENT_HEALTH_VERSION = 1;
 
@@ -172,6 +173,7 @@ const CLIENT_SOURCE_CHECK_IDS = Object.freeze([
   // installed only there has no host directory, and its usage is merged into the
   // same periods, so it has to count as a source that exists.
   'wsl-home',
+  'amp-threads',
   'antigravity-cli-data',
   'antigravity-ide-source',
   'cherrystudio-transcripts',
@@ -187,6 +189,10 @@ const CLIENT_SOURCE_CHECK_IDS = Object.freeze([
   'copilot-data',
   'copilot-otel',
   'copilot-otel-exporter',
+  'copilot-session-store',
+  DEVIN_CLI_SOURCE_CHECK_ID,
+  DEVIN_DESKTOP_SOURCE_CHECK_ID,
+  'droid-sessions',
   DSH_SOURCE_CHECK_ID,
   'grok-sessions',
   'grok-unified-log',

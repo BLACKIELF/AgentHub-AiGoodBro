@@ -106,7 +106,7 @@ fi
 require_literal Sources/CodexUsageWidget/Services/CodexAppServerTaskClient.swift \
   'private let maximumOutputBufferBytes' 'app-server 流缺少明确的缓冲区上限'
 require_literal Sources/CodexUsageWidget/Services/BoundedLocalProcess.swift \
-  'count <= maximumOutputBytes - data.count' '本地子进程输出缺少累计字节上限'
+  'count <= maximumOutputBytes - receivedBytes' '本地子进程输出缺少累计字节上限'
 require_literal Sources/CodexUsageWidget/Services/BoundedLocalProcess.swift \
   'POSIX_SPAWN_SETPGROUP' '本地子进程缺少本次启动专用进程组'
 require_literal Sources/CodexUsageWidget/Services/BoundedLocalProcess.swift \

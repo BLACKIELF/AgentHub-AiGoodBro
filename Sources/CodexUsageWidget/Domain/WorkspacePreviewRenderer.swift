@@ -50,6 +50,12 @@ enum WorkspacePreviewRenderer {
                     availableResetCredits: 2, resetCreditExpiries: [now.addingTimeInterval(864_000)],
                     fetchedAt: now, appServerVersion: nil
                 ),
+                resetCreditHistory: index == 0
+                    ? [
+                        .init(
+                            id: UUID(), previousObservedAt: now.addingTimeInterval(-7_200),
+                            observedAt: now.addingTimeInterval(-3_600), previousAvailable: 1, available: 2)
+                    ] : nil,
                 officialProfile: CodexOfficialProfileSnapshot(
                     accountEmail: nil, displayName: nil, username: nil,
                     lifetimeTokens: 82_400_000, peakDailyTokens: nil, planType: isPro ? "pro" : "plus",
@@ -160,7 +166,7 @@ enum WorkspacePreviewRenderer {
         // Absence of a snapshot is the production representation for an account
         // whose quota and reset-credit evidence are both still unknown.
         codexUnknown.lastSnapshot = nil
-        let codexProfiles = [
+        var codexProfiles = [
             codexUnknown,
             codexProfile(
                 id: "acceptance-codex-long",
@@ -179,6 +185,17 @@ enum WorkspacePreviewRenderer {
                 resetExpiries: [now.addingTimeInterval(24 * 3_600)],
                 quotaReadSucceeded: true),
         ]
+        for position in 4...8 {
+            codexProfiles.append(
+                codexProfile(
+                    id: "acceptance-codex-\(position)",
+                    name: language.text("演示账号 \(position)", "Demo account \(position)"),
+                    fiveHour: window(usedPercent: Double(position * 9), minutes: 300, resetOffset: 7_200),
+                    sevenDay: window(usedPercent: Double(position * 7), minutes: 10_080, resetOffset: 5 * 86_400),
+                    resetCredits: 0,
+                    resetExpiries: [],
+                    quotaReadSucceeded: true))
+        }
 
         do {
             let support = root.appendingPathComponent("support").appendingPathComponent(DispatchParticipationPaths.supportDirectoryName)
@@ -346,6 +363,12 @@ enum WorkspacePreviewRenderer {
     }
 
     @MainActor static func render(to directory: URL, language: WidgetLanguage = .zh) -> Bool {
+        if CommandLine.arguments.contains("--preview-codex-only") {
+            return renderCodexAccounts(to: directory, language: language)
+        }
+        if CommandLine.arguments.contains("--preview-design-home-only") {
+            return renderDesignHome(to: directory, language: language)
+        }
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("next-ui-preview-\(UUID().uuidString)")
         let suiteName = "CodexManagerNext.workspace-preview.\(UUID().uuidString)"
         guard let defaults = UserDefaults(suiteName: suiteName) else { return false }
@@ -356,8 +379,18 @@ enum WorkspacePreviewRenderer {
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             let catalog = PaletteCatalog.loadFromMainBundle()
-            let settings = AppSettings(defaults: defaults, paletteCatalog: catalog)
+            let settings = AppSettings(
+                defaults: defaults, paletteCatalog: catalog,
+                previewAvatarRoot: root.appendingPathComponent("avatars"))
             settings.language = language
+            settings.agentNavigation = AgentNavigationState(
+                initialized: true, customized: true,
+                orderedVisibleProviderIDs: [
+                    AgentNavCatalog.codexID, LocalCLIKind.kimi.rawValue, LocalCLIKind.workBuddy.rawValue,
+                    LocalCLIKind.trae.rawValue, LocalCLIKind.openCode.rawValue, LocalCLIKind.grok.rawValue,
+                    LocalCLIKind.gemini.rawValue, LocalCLIKind.mimo.rawValue,
+                    LocalCLIKind.claudeCode.rawValue, LocalCLIKind.zcode.rawValue,
+                ])
             for scheme in [ColorScheme.dark, .light] {
                 settings.themeMode = scheme == .dark ? .dark : .light
                 let theme = scheme == .dark ? "dark" : "light"
@@ -435,12 +468,9 @@ enum WorkspacePreviewRenderer {
                 .background(FixedVisualPalette.windowScrim(scheme, reduceTransparency: true))
                 .environment(\.colorScheme, scheme)
                 try renderView(statusExample, size: CGSize(width: 520, height: 56), scheme: scheme, to: directory.appendingPathComponent("warmup-status-\(theme).png"))
-                let toolbar = TitlebarToolbarView(settings: settings, onOpenSettings: {}, onSaveScreenshot: {}, onOpenGuide: {})
-                    .background(FixedVisualPalette.windowScrim(scheme))
-                try renderView(toolbar, size: CGSize(width: 320, height: 44), scheme: scheme, to: directory.appendingPathComponent("toolbar-\(theme).png"))
                 let editor = ExecutionPreferenceControl(
                     preference: .init(model: .astra, reasoningEffort: .max, serviceTier: .standard),
-                    inlineEditor: true, onSave: { _, _ in }
+                    inlineEditor: true, onSave: { _, _ in .success(()) }
                 )
                 .environment(\.widgetLanguage, language)
                 .environment(\.locale, language.locale)
@@ -569,6 +599,12 @@ enum WorkspacePreviewRenderer {
                         to: directory.appendingPathComponent(
                             "acceptance-matrix-\(layout.rawValue)-\(theme)-full.png"),
                         options: .atomic)
+                    let wideCapture = try WorkspaceScreenshotExporter.render(
+                        matrix.screenshotContent, width: 1280, scheme: scheme)
+                    try wideCapture.png.write(
+                        to: directory.appendingPathComponent(
+                            "acceptance-matrix-\(layout.rawValue)-\(theme)-wide.png"),
+                        options: .atomic)
                 }
 
                 for kind in [LocalCLIKind.grok, .openCode, .workBuddy] {
@@ -595,6 +631,311 @@ enum WorkspacePreviewRenderer {
             return true
         } catch {
             print("workspace preview render failed")
+            return false
+        }
+    }
+
+    /// Render the production Codex cards and rows without loading real accounts.
+    @MainActor static func renderCodexAccounts(to directory: URL, language: WidgetLanguage) -> Bool {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("aigoodbro-codex-layout-\(UUID().uuidString)")
+        let suite = "AiGoodBro.codex-layout.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suite) else { return false }
+        defer {
+            defaults.removePersistentDomain(forName: suite)
+            try? FileManager.default.removeItem(at: root)
+        }
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let catalog = PaletteCatalog.loadFromMainBundle()
+            let settings = AppSettings(
+                defaults: defaults, paletteCatalog: catalog,
+                previewAvatarRoot: root.appendingPathComponent("avatars"))
+            settings.language = language
+            settings.agentNavigation = AgentNavigationState(
+                initialized: true, customized: true,
+                orderedVisibleProviderIDs: [AgentNavCatalog.codexID] + LocalCLIKind.allCases.map(\.rawValue)
+            )
+            let store = fixtureStore(accountCount: 9, root: root, language: language, includeQuotaEdgeCases: true)
+            for layout in [AccountWorkspaceLayout.cards, .rows] {
+                settings.accountWorkspaceLayout = layout
+                for width: CGFloat in [820, 1280, 1920, 2560] {
+                    let view = CodexAccountManagerView(
+                        store: store, settings: settings,
+                        paletteCatalog: catalog, previewOpenCodexWorkspace: true)
+                    let capture = try WorkspaceScreenshotExporter.render(
+                        view.screenshotContent.defaultAppStorage(defaults), width: width, scheme: .dark)
+                    try capture.png.write(to: directory.appendingPathComponent("codex-\(layout.rawValue)-\(Int(width)).png"), options: .atomic)
+                }
+            }
+            print("Codex card/list previews rendered with synthetic quota edge cases")
+            return true
+        } catch {
+            print("Codex card/list preview failed: \(error.localizedDescription)")
+            return false
+        }
+    }
+
+    /// A quick, focused visual check of the approved eight-account home design.
+    /// Invoke through the existing --render-workspace-previews entry point with
+    /// --preview-design-home-only; the full acceptance matrix remains unchanged.
+    @MainActor static func renderDesignHome(to directory: URL, language: WidgetLanguage = .zh) -> Bool {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("aigoodbro-design-home-\(UUID().uuidString)")
+        let suite = "AiGoodBro.design-home-render.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suite) else { return false }
+        defer {
+            defaults.removePersistentDomain(forName: suite)
+            try? FileManager.default.removeItem(at: root)
+        }
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let catalog = PaletteCatalog.loadFromMainBundle()
+            let settings = AppSettings(
+                defaults: defaults, paletteCatalog: catalog,
+                previewAvatarRoot: root.appendingPathComponent("avatars"))
+            DesignHomePreviewFixture.configure(settings)
+            settings.language = language
+            let store = DesignHomePreviewFixture.makeStore(root: root)
+            let local = DesignHomePreviewFixture.makeLocalCLIStore(root: root)
+            let referenceDate = DesignHomePreviewFixture.referenceDate
+            let forecastBy = referenceDate.addingTimeInterval(12 * 3_600)
+            func renderViewport(
+                layout: AccountWorkspaceLayout, scheme: ColorScheme,
+                width: CGFloat, reduceTransparency: Bool = false,
+                filename: String
+            ) throws {
+                settings.accountWorkspaceLayout = layout
+                settings.themeMode = scheme == .dark ? .dark : .light
+                let viewport = CodexAccountManagerView(
+                    store: store, settings: settings,
+                    paletteCatalog: catalog, localCLIAccounts: local,
+                    previewReferenceDate: referenceDate, previewForecastBy: forecastBy
+                )
+                .defaultAppStorage(defaults)
+                .environment(\.workspacePreviewDate, referenceDate)
+                .environment(\.workspacePreviewForecastDeadline, forecastBy)
+                .environment(\.workspacePreviewOpaqueSurface, reduceTransparency)
+                .environment(\.colorScheme, scheme)
+                .frame(width: width, height: 980)
+                try renderView(
+                    viewport, size: CGSize(width: width, height: 980), scheme: scheme,
+                    to: directory.appendingPathComponent(filename))
+            }
+            for layout in [AccountWorkspaceLayout.cards, .rows] {
+                settings.accountWorkspaceLayout = layout
+                let view = CodexAccountManagerView(
+                    store: store, settings: settings,
+                    paletteCatalog: catalog, localCLIAccounts: local,
+                    previewReferenceDate: referenceDate, previewForecastBy: forecastBy)
+                let content = view.screenshotContent
+                    .defaultAppStorage(defaults)
+                    .environment(\.workspacePreviewDate, referenceDate)
+                    .environment(\.workspacePreviewForecastDeadline, forecastBy)
+                    .environment(\.colorScheme, ColorScheme.dark)
+                let capture = try WorkspaceScreenshotExporter.render(
+                    content, width: 1_440, scheme: .dark)
+                try capture.png.write(
+                    to: directory.appendingPathComponent(
+                        "home-\(layout.rawValue)-dark-liquid-keycap-1440-full.png"),
+                    options: .atomic)
+                try renderViewport(
+                    layout: layout, scheme: .dark, width: 1_440,
+                    filename: "home-\(layout.rawValue)-dark-liquid-keycap-1440-viewport.png")
+            }
+            try renderViewport(
+                layout: .cards, scheme: .dark, width: 820,
+                filename: "home-cards-dark-liquid-keycap-820-viewport.png")
+            try renderViewport(
+                layout: .rows, scheme: .dark, width: 820,
+                filename: "home-rows-dark-liquid-keycap-820-viewport.png")
+            try renderViewport(
+                layout: .cards, scheme: .light, width: 1_440,
+                reduceTransparency: true,
+                filename: "home-cards-light-liquid-keycap-1440-reduce-transparency-viewport.png")
+            // Compact layout checks include expanded sections, both languages,
+            // and the real proxy view, with synthetic account data only.
+            var proxyPreferences = LocalProxyPreferences()
+            proxyPreferences.creditFallback = true
+            proxyPreferences.accountPolicies = Dictionary(
+                uniqueKeysWithValues: store.profiles.enumerated().map { index, profile in
+                    (
+                        profile.id,
+                        LocalProxyAccountPolicy(
+                            fiveHourUsedLimit: index == 2 ? 80 : 100, allowsCredits: index != 1,
+                            creditPrimaryFloor: index == 2 ? 3000 : nil, creditSecondaryFloor: index == 2 ? 1000 : nil)
+                    )
+                })
+            let proxy = LocalProxyQueueStore(usageStore: store, previewPreferences: proxyPreferences)
+            for locale in [WidgetLanguage.zh, .en] {
+                settings.language = locale
+                defaults.set(true, forKey: "AiGoodBro.home.section.recommended-announcements.expanded")
+                defaults.set(true, forKey: "AiGoodBro.home.section.usage.expanded")
+                defaults.set(true, forKey: HomeSection.reset.storageKey)
+                try renderViewport(
+                    layout: .cards, scheme: .dark, width: 980, reduceTransparency: true,
+                    filename: "compact-home-\(locale.rawValue).png")
+                defaults.set(HomeResetMessageOrder.announcementsFirst.rawValue, forKey: HomeResetMessageOrder.storageKey)
+                try renderViewport(
+                    layout: .cards, scheme: .dark, width: 820, reduceTransparency: true,
+                    filename: "swapped-reset-\(locale.rawValue).png")
+                defaults.set(HomeResetMessageOrder.cardsFirst.rawValue, forKey: HomeResetMessageOrder.storageKey)
+                defaults.set(false, forKey: HomeSection.reset.storageKey)
+                try renderViewport(
+                    layout: .rows, scheme: .dark, width: 820, reduceTransparency: true,
+                    filename: "collapsed-reset-\(locale.rawValue).png")
+                defaults.set(false, forKey: "AiGoodBro.home.section.recommended-announcements.expanded")
+                try renderViewport(
+                    layout: .rows, scheme: .dark, width: 820, reduceTransparency: true,
+                    filename: "collapsed-notices-\(locale.rawValue).png")
+                for (name, amount) in [("250", 250.0), ("500", 500.0), ("1000", 1000.0), ("none", -1.0), ("unknown", -2.0)] {
+                    var payload: [String: Any] = [
+                        "should_show": true, "remaining_send_capacity": 3, "remaining_reward_capacity": 3,
+                        "requires_explicit_confirmation": true,
+                        "rules": [locale.text("演示：奖励需满足官方条件。", "Demo: rewards require the official qualifying actions.")],
+                    ]
+                    if amount >= 0 {
+                        payload["grants"] = [["recipient": "referrer", "grant_type": "personal_credits", "amount": amount]]
+                    } else if amount == -1 {
+                        payload["offer_id"] = "none"
+                    }
+                    let eligibility = try JSONDecoder().decode(CodexReferralEligibility.self, from: JSONSerialization.data(withJSONObject: payload))
+                    let review = CodexReferralReview(context: CodexReferralContext(programID: "codex_referral_consumer"), eligibility: eligibility, checkedAt: referenceDate)
+                    let account = CodexReferralAccount(profile: store.profiles[0], credentialHome: store.profiles[0].codexHomeURL)
+                    let controller = CodexInviteController(previewReview: review)
+                    let sheet = CodexInviteSheet(
+                        account: account, accountLabel: locale.text("演示账号 · 未发送邀请", "Demo account · No invitation sent"), resolveAccount: { account }, controller: controller
+                    )
+                    .environment(\.widgetLanguage, locale)
+                    .environment(\.colorScheme, ColorScheme.dark)
+                    try renderView(
+                        sheet, size: CGSize(width: 600, height: 660), scheme: .dark,
+                        to: directory.appendingPathComponent("invite-\(name)-\(locale.rawValue).png"))
+                }
+                let historyEligibility = try JSONDecoder().decode(
+                    CodexReferralEligibility.self,
+                    from: JSONSerialization.data(withJSONObject: [
+                        "should_show": true, "remaining_send_capacity": 3, "remaining_reward_capacity": 3,
+                        "requires_explicit_confirmation": true,
+                        "grants": [["recipient": "referrer", "grant_type": "personal_credits", "amount": 1000]],
+                    ]))
+                let historyReview = CodexReferralReview(
+                    context: CodexReferralContext(programID: "codex_referral_consumer"), eligibility: historyEligibility, checkedAt: referenceDate)
+                let historyAccount = CodexReferralAccount(profile: store.profiles[0], credentialHome: store.profiles[0].codexHomeURL)
+                let historyRecords = [
+                    CodexReferralRecord(id: "demo-accepted", email: "alex@example.invalid", status: .redeemed),
+                    CodexReferralRecord(id: "demo-pending", email: "sam@example.invalid", status: .pending),
+                    CodexReferralRecord(id: "demo-expired", email: "lee@example.invalid", status: .expired),
+                    CodexReferralRecord(id: "demo-unknown", email: nil, status: .unknown),
+                ]
+                for scheme in [ColorScheme.dark, .light] {
+                    for variant in ["history", "batch", "confirming"] {
+                        let controller = CodexInviteController(
+                            previewReview: historyReview, previewRecords: historyRecords,
+                            previewBatch: variant == "history" ? nil : CodexReferralBatchResult(sent: ["alex@example.invalid"], failed: [], uncertain: ["sam@example.invalid"]),
+                            previewConfirming: variant == "confirming")
+                        controller.email = variant == "history" ? "" : "alex@example.invalid\nsam@example.invalid"
+                        let sheet = CodexInviteSheet(
+                            account: historyAccount,
+                            accountLabel: locale.text("演示账号 · 示例记录", "Demo account · Sample records"), resolveAccount: { historyAccount },
+                            controller: controller, initialHistory: variant == "history"
+                        )
+                        .environment(\.widgetLanguage, locale).environment(\.colorScheme, scheme)
+                        try renderView(
+                            sheet, size: CGSize(width: 600, height: 660), scheme: scheme,
+                            to: directory.appendingPathComponent("invite-\(variant)-\(locale.rawValue)-\(scheme == .dark ? "dark" : "light").png"))
+                    }
+                }
+                for scheme in [ColorScheme.dark, .light] {
+                    let tokens = catalog.resolve(id: settings.paletteID, appearance: scheme == .dark ? .dark : .light)
+                    let proxyView = LocalProxyQueueView(model: proxy, language: locale)
+                        .environment(\.widgetLanguage, locale)
+                        .environment(\.visualTokens, tokens)
+                        .environment(\.workspacePreviewDate, referenceDate)
+                        .environment(\.workspacePreviewOpaqueSurface, true)
+                        .environment(\.colorScheme, scheme)
+                    for width in [CGFloat(680), 830] {
+                        try renderView(
+                            proxyView, size: CGSize(width: width, height: 660), scheme: scheme,
+                            to: directory.appendingPathComponent("compact-proxy-\(locale.rawValue)-\(scheme == .dark ? "dark" : "light")-\(Int(width)).png"))
+                    }
+                }
+            }
+            // Append sizing coverage after the established 33 captures so their
+            // fixtures remain unchanged. Every key belongs to this preview suite.
+            func renderSizingViewport(locale: WidgetLanguage, wide: Bool) throws {
+                let keys =
+                    HomeResizableSectionID.allCases.flatMap { [$0.widthKey, $0.heightKey] }
+                    + HomeSection.allCases.map(\.storageKey)
+                    + [
+                        HomeSectionSizing.resetSplitKey, HomeResetMessageOrder.storageKey,
+                        "AiGoodBro.home.section.recommended-announcements.expanded",
+                        "AiGoodBro.home.section.local-cli.expanded",
+                    ]
+                let previousValues = keys.map { (key: $0, value: defaults.object(forKey: $0)) }
+                let previousLanguage = settings.language
+                let previousLayout = settings.accountWorkspaceLayout
+                let previousTheme = settings.themeMode
+                defer {
+                    for previous in previousValues {
+                        if let value = previous.value {
+                            defaults.set(value, forKey: previous.key)
+                        } else {
+                            defaults.removeObject(forKey: previous.key)
+                        }
+                    }
+                    settings.language = previousLanguage
+                    settings.accountWorkspaceLayout = previousLayout
+                    settings.themeMode = previousTheme
+                }
+                for section in HomeResizableSectionID.allCases {
+                    HomeSectionSize.reset(section, in: defaults)
+                }
+                settings.language = locale
+                defaults.set(true, forKey: "AiGoodBro.home.section.recommended-announcements.expanded")
+                defaults.set(false, forKey: "AiGoodBro.home.section.local-cli.expanded")
+                defaults.set(wide, forKey: HomeSection.reset.storageKey)
+                defaults.set(false, forKey: HomeSection.messages.storageKey)
+                defaults.set(true, forKey: HomeSection.recommendations.storageKey)
+                defaults.set(true, forKey: HomeSection.accounts.storageKey)
+                defaults.set(false, forKey: HomeSection.usage.storageKey)
+                defaults.set(HomeResetMessageOrder.cardsFirst.rawValue, forKey: HomeResetMessageOrder.storageKey)
+                defaults.set(wide ? 0.35 : 0.5, forKey: HomeSectionSizing.resetSplitKey)
+                if wide {
+                    HomeSectionSize(widthFraction: 0.88, height: 248).save(.reset, to: defaults)
+                    HomeSectionSize(height: 152).save(.resetCards, to: defaults)
+                    HomeSectionSize(height: 176).save(.resetAnnouncements, to: defaults)
+                    HomeSectionSize(widthFraction: 0.82, height: 280).save(.accounts, to: defaults)
+                } else {
+                    // Eight real fixture rows exceed this height and enter the
+                    // production HomeResizableSection's native vertical scroll.
+                    HomeSectionSize(height: 320).save(.accounts, to: defaults)
+                }
+                let width = wide ? CodexAccountManagerView.maxWidth : CodexAccountManagerView.minWidth
+                try renderViewport(
+                    layout: wide ? .cards : .rows, scheme: .dark, width: width, reduceTransparency: true,
+                    filename: "home-resized-\(wide ? "wide" : "narrow")-\(locale.rawValue)-\(Int(width))-viewport.png")
+            }
+            for locale in [WidgetLanguage.zh, .en] {
+                try renderSizingViewport(locale: locale, wide: true)
+                try renderSizingViewport(locale: locale, wide: false)
+            }
+            let note = """
+                AiGoodBro 1001v4 UI review, synthetic data only.
+                Shared fixture: eight named accounts from docs/ui-preview-0923v7/index.html.
+                Reference clock: 2026-09-23 03:00 Asia/Shanghai.
+                Production CodexAccountManagerView: full-height 1440-point cards/rows,
+                1440- and 820-point dark viewports, plus a light reduced-transparency viewport.
+                Compact home and collapsed reset/notices in Chinese and English.
+                Saved section sizes and unequal reset columns at 1440 points;
+                expanded Skills and a scrolling account section at 820 points, in both languages.
+                Proxy input and quota layout at 680 and 830 points, in light and dark.
+                """
+            try note.write(
+                to: directory.appendingPathComponent("README.txt"),
+                atomically: true, encoding: .utf8)
+            return true
+        } catch {
+            print("design-home preview render failed: \(error.localizedDescription)")
             return false
         }
     }
@@ -694,7 +1035,14 @@ enum WorkspacePreviewRenderer {
     }
 
     static func renderView<Content: View>(_ view: Content, size: CGSize, scheme: ColorScheme, to url: URL) throws {
-        let host = NSHostingView(rootView: view)
+        // Offscreen previews have no desktop to composite glass against. Supply
+        // a deterministic canvas; the interactive preview still uses live glass.
+        let root =
+            view
+            .frame(width: size.width, height: size.height, alignment: .topLeading)
+            .environment(\.colorScheme, scheme)
+            .background(Color(nsColor: .windowBackgroundColor))
+        let host = NSHostingView(rootView: root)
         // An unattached host rasterizes its SwiftUI layers at 1x. Attach to a
         // non-presented window so AppKit supplies the display's backing scale.
         let window = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: .borderless, backing: .buffered, defer: false)

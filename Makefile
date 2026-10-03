@@ -11,7 +11,6 @@ SOURCES := $(shell find Sources/CodexUsageWidget -name '*.swift' | sort)
 APP_ICON_SOURCE := Resources/AiGoodBro.icns
 APP_ICON := AiGoodBro.icns
 RUNTIME_PNG_RESOURCES := Resources/AiGoodBro-icon.png Resources/codex-color.png Resources/codex-template.png Resources/claudecode-color.png Resources/claudecode-template.png
-ICON_VARIANTS := Resources/AiGoodBro-02-deep-plum.icns Resources/AiGoodBro-03-sage-green.icns Resources/AiGoodBro-04-graphite.icns Resources/AiGoodBro-05-champagne.icns
 LEADERSHIP_BADGES := $(sort $(wildcard Resources/LeadershipBadges/leadership-badge-l*.png))
 SELF_TEST_RUNNER := ./scripts/run-self-tests.sh
 DEPLOYMENT_TARGET ?= 13.0
@@ -24,11 +23,17 @@ DMG_NAME := $(APP_NAME)-$(VERSION)-mac-$(ARCH_NAME).dmg
 DMG_PATH := $(DIST_DIR)/$(DMG_NAME)
 SIGN_IDENTITY ?= -
 BUNDLE_COMPANION ?= 1
+BUNDLE_LOCAL_PROXY ?= 1
+INSTALL_LAUNCH ?= 1
 TOKEN_MONITOR_CACHE ?= $(HOME)/Library/Caches/AiGoodBro/Next/token-monitor-downloads
 TOKEN_MONITOR_RECEIPT_DIR ?= .build-receipts/AiGoodBro/Next
 TOKEN_MONITOR_RECEIPT = $(TOKEN_MONITOR_RECEIPT_DIR)/token-monitor-$(ARCH_NAME).json
 TOKEN_MONITOR_OFFLINE ?= 0
 TOKEN_MONITOR_NODE_ARCHIVE ?=
+BUNDLE_TOKEN_MONITOR_DESKTOP ?= 1
+TOKEN_MONITOR_DESKTOP_RUNTIME ?= /Applications/Token Monitor.app
+TOKEN_MONITOR_DESKTOP_DMG ?=
+TOKEN_MONITOR_DESKTOP_APP = $(APP_DIR)/Contents/Helpers/AiGoodBro Token Core.app
 CODESIGN_EXTRA_FLAGS ?=
 ACTIVE_DEVELOPER_DIR := $(shell xcode-select -p 2>/dev/null)
 DEFAULT_SDK_PATH := $(shell xcrun --sdk macosx --show-sdk-path 2>/dev/null)
@@ -67,12 +72,14 @@ build:
 	rm -rf "$(APP_DIR)"
 	mkdir -p "$(MACOS_DIR)" "$(RESOURCES_DIR)"
 	cp Resources/Info.plist "$(APP_DIR)/Contents/Info.plist"
+	python3 scripts/check-invite-purchase-link.py --plist "$(APP_DIR)/Contents/Info.plist" --receipt "$(BUILD_DIR)/invite-purchase-link.json"
 	cp "$(APP_ICON_SOURCE)" "$(RESOURCES_DIR)/$(APP_ICON)"
-	cp $(ICON_VARIANTS) "$(RESOURCES_DIR)/"
 	cp $(RUNTIME_PNG_RESOURCES) "$(RESOURCES_DIR)/"
+	cp Resources/AiGoodBro-wechat.jpg "$(RESOURCES_DIR)/"
 	cp Resources/THIRD_PARTY_NOTICES.txt "$(RESOURCES_DIR)/"
 	cp docs/third-party-cli-notices.md "$(RESOURCES_DIR)/CLI_PROVIDER_NOTICES.md"
 	cp -R Resources/Palettes "$(RESOURCES_DIR)/Palettes"
+	cp -R Resources/SkillLibrary "$(RESOURCES_DIR)/SkillLibrary"
 	mkdir -p "$(RESOURCES_DIR)/UpstreamCharts"
 	cp -R Resources/UpstreamCharts/ "$(RESOURCES_DIR)/UpstreamCharts/"
 	/usr/bin/xattr -dr com.apple.quarantine "$(APP_DIR)" 2>/dev/null || true
@@ -84,10 +91,13 @@ build:
 		-framework SwiftUI \
 		-framework UserNotifications
 	python3 scripts/prepare-companion-resources.py --resources "$(RESOURCES_DIR)" --arch "$(ARCH_NAME)" --sign-identity "$(SIGN_IDENTITY)" $(if $(filter 1,$(BUNDLE_COMPANION)),--include-hub,)
+	$(if $(filter 1,$(BUNDLE_LOCAL_PROXY)),python3 scripts/prepare-local-proxy-resources.py --resources "$(RESOURCES_DIR)" --arch "$(ARCH_NAME)" --sign-identity "$(SIGN_IDENTITY)",@true)
 	python3 scripts/prepare-token-monitor-resources.py --resources "$(RESOURCES_DIR)" --arch "$(ARCH_NAME)" --cache "$(TOKEN_MONITOR_CACHE)" --trusted-receipt "$(TOKEN_MONITOR_RECEIPT)" --sign-identity "$(SIGN_IDENTITY)" $(if $(filter 1,$(TOKEN_MONITOR_OFFLINE)),--offline,) $(if $(TOKEN_MONITOR_NODE_ARCHIVE),--node-archive "$(TOKEN_MONITOR_NODE_ARCHIVE)",)
+	$(if $(filter 1,$(BUNDLE_TOKEN_MONITOR_DESKTOP)),python3 scripts/prepare-token-monitor-desktop.py --arch "$(ARCH_NAME)" --runtime-app "$(TOKEN_MONITOR_DESKTOP_RUNTIME)" --output "$(TOKEN_MONITOR_DESKTOP_APP)" --replace $(if $(TOKEN_MONITOR_DESKTOP_DMG),--source-dmg "$(TOKEN_MONITOR_DESKTOP_DMG)",),@true)
 	codesign $(filter-out --deep,$(CODESIGN_FLAGS)) "$(APP_DIR)"
 	codesign --verify --deep --strict "$(APP_DIR)"
 	python3 scripts/prepare-token-monitor-resources.py --verify --resources "$(RESOURCES_DIR)" --bundle "$(APP_DIR)" --sign-identity "$(SIGN_IDENTITY)" --arch "$(ARCH_NAME)" --cache "$(TOKEN_MONITOR_CACHE)" --trusted-receipt "$(TOKEN_MONITOR_RECEIPT)"
+	$(if $(filter 1,$(BUNDLE_TOKEN_MONITOR_DESKTOP)),python3 scripts/prepare-token-monitor-desktop.py --arch "$(ARCH_NAME)" --output "$(TOKEN_MONITOR_DESKTOP_APP)" --verify-only,@true)
 
 debug:
 	$(MAKE) build BUILD_DIR=build-debug SWIFT_OPTIMIZATION=-Onone
@@ -103,6 +113,8 @@ lint:
 
 verify-runtime-resources:
 	@python3 scripts/prepare-companion-resources.py --verify --resources "$(RESOURCES_DIR)" --arch "$(ARCH_NAME)" $(if $(filter 1,$(BUNDLE_COMPANION)),--include-hub,)
+	$(if $(filter 1,$(BUNDLE_LOCAL_PROXY)),@python3 scripts/prepare-local-proxy-resources.py --verify --resources "$(RESOURCES_DIR)" --arch "$(ARCH_NAME)",@true)
+	$(if $(filter 1,$(BUNDLE_TOKEN_MONITOR_DESKTOP)),@python3 scripts/prepare-token-monitor-desktop.py --arch "$(ARCH_NAME)" --output "$(TOKEN_MONITOR_DESKTOP_APP)" --verify-only,@true)
 	@for resource in $(RUNTIME_PNG_RESOURCES); do \
 		bundled="$(RESOURCES_DIR)/$$(basename "$$resource")"; \
 		test -s "$$bundled" || { echo "missing runtime resource: $$bundled"; exit 1; }; \
@@ -288,7 +300,7 @@ install: build
 	if [ -d "$$prev" ]; then \
 		rm -rf "$$prev"; \
 	fi
-	open "/Applications/$(APP_NAME).app"
+	$(if $(filter 1,$(INSTALL_LAUNCH)),open "/Applications/$(APP_NAME).app",@true)
 
 dmg: build
 	APP_NAME="$(APP_NAME)" \

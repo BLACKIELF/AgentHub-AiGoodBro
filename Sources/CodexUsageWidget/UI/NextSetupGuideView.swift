@@ -5,22 +5,26 @@ struct NextSetupGuideView: View {
     @ObservedObject var store: UsageStore
     @ObservedObject var settings: AppSettings
     @ObservedObject var localAccounts: LocalCLIAccountStore
+    @ObservedObject private var messageChannels: MessageChannelsController
     var openAutomation: () -> Void
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var webhookDraft = ""
+    @State private var pairingCode = ""
+    @State private var showingMessageSettings = false
     @State private var confirmsCompanionInstall = false
     @StateObject private var runtime: NextRuntimeSetupModel
 
     init(
         store: UsageStore, settings: AppSettings, localAccounts: LocalCLIAccountStore? = nil, openAutomation: @escaping () -> Void,
-        runtime: NextRuntimeSetupModel = NextRuntimeSetupModel()
+        runtime: NextRuntimeSetupModel? = nil
     ) {
         self.store = store
+        self.messageChannels = store.messageChannels
         self.settings = settings
         self.localAccounts = localAccounts ?? LocalCLIAccountStore()
         self.openAutomation = openAutomation
-        _runtime = StateObject(wrappedValue: runtime)
+        _runtime = StateObject(wrappedValue: runtime ?? NextRuntimeSetupModel(preview: store.isPreview))
     }
 
     private var language: WidgetLanguage { settings.language }
@@ -56,14 +60,22 @@ struct NextSetupGuideView: View {
         }
         .environment(\.widgetLanguage, language)
         .environment(\.locale, language.locale)
+        .environment(\.codexDeviceLoginHost, .setupGuide)
+        .modifier(CodexDeviceLoginSheet(store: store, language: language, host: .setupGuide))
         .onAppear {
             if !store.isPreview { store.refreshLocalNotificationAuthorization() }
             if step == .runtime { runtime.refresh() }
         }
+        .sheet(isPresented: $showingMessageSettings) {
+            MessageChannelsSettingsView(controller: messageChannels)
+        }
         .onDisappear {
+            pairingCode = ""
+            messageChannels.cancelPersonalWeChatLogin()
             if settings.onboarding.shouldPresent { settings.onboarding.skip() }
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            guard !store.isPreview else { return }
             store.refreshLocalNotificationAuthorization()
             if step == .runtime { runtime.refresh() }
         }
@@ -224,7 +236,7 @@ struct NextSetupGuideView: View {
             }
             Text(
                 language.text(
-                    "先在工作台添加账号，再启用调度。账号登录、macOS 通知和飞书连接由后续步骤引导完成；已有服务与个人配置会保留。",
+                    "先在工作台添加账号，再启用调度。账号登录、macOS 通知、微信和飞书连接由后续步骤引导完成；已有服务与个人配置会保留。",
                     "Add an account in the workspace before enabling dispatch. The next steps cover sign-in and alerts. Existing services and personal settings are preserved.")
             )
             .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
@@ -325,7 +337,7 @@ struct NextSetupGuideView: View {
                     language.text("获得 Reset 卡提醒", "New reset credit alerts"), symbol: "ticket", value: store.feishuResetCreditEnabled, paused: .feishu,
                     action: store.setFeishuResetCreditEnabled)
             }
-            Text(language.text("通知授权与飞书连接在下一步完成。Reset 卡始终由你手动使用。", "Set up notification permission and Feishu next. Reset credits are always used manually."))
+            Text(language.text("通知授权、微信和飞书连接在下一步完成。Reset 卡始终由你手动使用。", "Set up notification permission, WeChat and Feishu next. Reset credits are always used manually."))
                 .font(.caption).foregroundStyle(.secondary)
             if !store.pausedAutomationFeatures.isEmpty {
                 Label(language.text("维护期间部分功能暂停，原设置已保留。", "Some features are paused for maintenance. Saved choices are preserved."), systemImage: "pause.circle")
@@ -356,6 +368,34 @@ struct NextSetupGuideView: View {
                         ) { store.configureLocalNotifications() }
                         .disabled(store.isRequestingLocalNotificationPermission || store.pausedAutomationFeatures.contains(.localNotification))
                         if store.isRequestingLocalNotificationPermission { ProgressView().controlSize(.small) }
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading).padding(8)
+            }
+            GroupBox {
+                VStack(alignment: .leading, spacing: 12) {
+                    Label(language.text("微信", "WeChat"), systemImage: "bubble.left.and.bubble.right")
+                        .font(.subheadline.weight(.semibold))
+                    PersonalWeChatSettingsView(
+                        enabled: Binding(get: { messageChannels.personalWeChatEnabled }, set: { messageChannels.setEnabled($0, for: .personalWeChat) }),
+                        pairingCode: $pairingCode,
+                        connected: messageChannels.personalWeChatConnected,
+                        hasContext: messageChannels.personalWeChatHasContext,
+                        connecting: messageChannels.personalLoginInProgress,
+                        qrContent: messageChannels.personalLoginQRCode,
+                        needsCode: messageChannels.personalLoginNeedsCode,
+                        disabled: messageChannels.actionInFlight,
+                        onConnect: { messageChannels.connectPersonalWeChat() },
+                        onCancel: { messageChannels.cancelPersonalWeChatLogin() },
+                        onSubmitCode: { messageChannels.submitPersonalWeChatCode($0) },
+                        onTest: { messageChannels.sendTest(.personalWeChat) },
+                        needsAuthorization: messageChannels.personalWeChatNeedsAuthorization,
+                        bindingMissing: messageChannels.personalWeChatBindingMissing,
+                        restoring: messageChannels.personalWeChatRestoreInProgress,
+                        connectionStatus: messageChannels.personalWeChatStatusText,
+                        onRestore: { messageChannels.restorePersonalWeChatConnection() })
+                    Button(language.text("微信对话与通知设置", "WeChat conversation and notification settings")) {
+                        showingMessageSettings = true
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading).padding(8)
@@ -421,6 +461,11 @@ struct NextSetupGuideView: View {
                     ready: store.localNotificationsEnabled && store.localNotificationAuthorizationReady)
                 Divider()
                 connectionTitle(
+                    language.text("微信", "WeChat"), symbol: "bubble.left.and.bubble.right",
+                    status: messageChannels.personalWeChatConnected ? language.text("已连接", "Connected") : language.text("待连接", "Setup needed"),
+                    ready: messageChannels.personalWeChatConnected)
+                Divider()
+                connectionTitle(
                     language.text("飞书通知", "Feishu notifications"), symbol: "paperplane", status: feishuStatus,
                     ready: store.feishuNotificationsEnabled && store.feishuWebhookConfigured)
             }
@@ -454,11 +499,16 @@ struct NextSetupGuideView: View {
     private var footer: some View {
         HStack(spacing: 10) {
             Button(language.text("以后再说", "Not now")) {
+                if store.isLoggingIn, store.deviceLogin?.phase.canCancelAuthorization == true {
+                    store.cancelLogin()
+                }
+                store.migrateDeviceLoginHostIfNeeded(from: .setupGuide)
                 settings.setupProgress.dismissed = true
                 if settings.onboarding.shouldPresent { settings.onboarding.skip() }
                 dismiss()
             }
             .keyboardShortcut(.cancelAction)
+            .disabled(store.isLoggingIn && store.deviceLogin?.phase.canCancelAuthorization == false)
             Spacer()
             if step != NextSetupStep.allCases.first {
                 Button(language.text("上一步", "Back")) { go(to: step.previous) }

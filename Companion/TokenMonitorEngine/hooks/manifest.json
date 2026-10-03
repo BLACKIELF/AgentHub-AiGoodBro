@@ -2,8 +2,8 @@
   "manifestVersion": 2,
   "upstream": {
     "repository": "Javis603/token-monitor",
-    "commit": "ef079b6fb494e1cfcb24736cfcf4d4e591222eaf",
-    "version": "0.56.0"
+    "commit": "dcccfb01557e2786888fd5479552f392ac6c0d32",
+    "version": "0.62.0"
   },
   "note": "The pinned upstream checkout is never edited. Each entry below is a minimal capability hook applied as a require-cache overlay at load time (engine/lib/upstream/loader.cjs). 'upstreamSha256' pins the exact upstream file the overlay was written against, so drift is detectable. 'patch.anchorLine' + 'patch.insertLines' describe the same gate as a source edit; engine/scripts/generate-hook-patch.cjs renders them into hooks.patch as a review artifact. Entries that share a file and an anchorLine are merged into one hunk in manifest order.",
   "hooks": [
@@ -121,7 +121,7 @@
   ],
   "collectorBindings": {
     "upstreamFile": "src/shared/collector.js",
-    "upstreamSha256": "36216cb8954828f62f9ce3684d1c7d9f5aed67d8db5906022aee5fc2eb4f3d84",
+    "upstreamSha256": "be7956dd85a124d9714d0fda67a09ecc57182a2fb61d4d081df76b17a155e746",
     "appendFile": "hooks/collector-bindings.cjs",
     "purpose": "Expose original scan/graph runners; select only bundled native scanner, never downloaded pointer or JS shim.",
     "scopedProma": {

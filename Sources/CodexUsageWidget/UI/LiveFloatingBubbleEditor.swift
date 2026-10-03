@@ -7,6 +7,7 @@ struct LiveFloatingBubbleEditor: View {
     var onShowDesktop: () -> Void
     var onCancel: () -> Void
     var onDone: () -> Void
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         let sources = FloatingBubbleEvidence.make(store: store, localAccounts: localAccounts, language: settings.language)
@@ -21,5 +22,16 @@ struct LiveFloatingBubbleEditor: View {
             onCancel: onCancel,
             onDone: onDone
         )
+        .background {
+            if settings.paletteCatalog.resolve(id: settings.paletteID, appearance: PaletteAppearance(colorScheme)).identity.paletteID != PaletteCatalog.defaultPaletteID {
+                WorkspaceGlassBackdrop()
+            }
+        }
+        .environment(\.workspaceGlass, settings.workspaceGlass)
+        .appVisualEnvironment(
+            catalog: settings.paletteCatalog, paletteID: settings.paletteID,
+            appearance: PaletteAppearance(settings.themeMode.preferredColorScheme ?? colorScheme)
+        )
+        .preferredColorScheme(settings.themeMode.preferredColorScheme)
     }
 }

@@ -1,5 +1,7 @@
 import defaultDark from '../../../../../../Resources/Palettes/codexu.default/tokens/dark.json';
 import defaultLight from '../../../../../../Resources/Palettes/codexu.default/tokens/light.json';
+import liquidKeycapDark from '../../../../../../Resources/Palettes/codexu.liquid-keycap/tokens/dark.json';
+import liquidKeycapLight from '../../../../../../Resources/Palettes/codexu.liquid-keycap/tokens/light.json';
 import porcelainDark from '../../../../../../Resources/Palettes/codexu.blue-white-porcelain/tokens/dark.json';
 import porcelainLight from '../../../../../../Resources/Palettes/codexu.blue-white-porcelain/tokens/light.json';
 import dunhuangDark from '../../../../../../Resources/Palettes/codexu.dunhuang-apsara/tokens/dark.json';
@@ -56,6 +58,7 @@ export type PaletteTokens = {
 };
 
 export type PaletteId =
+  | 'codexu.liquid-keycap'
   | 'codexu.default'
   | 'codexu.blue-white-porcelain'
   | 'codexu.dunhuang-apsara'
@@ -73,9 +76,19 @@ export interface PaletteDescriptor {
   dark: PaletteTokens;
 }
 
-export const DEFAULT_PALETTE_ID: PaletteId = 'codexu.default';
+export const DEFAULT_PALETTE_ID: PaletteId = 'codexu.liquid-keycap';
 
 export const PALETTE_CATALOG: readonly PaletteDescriptor[] = [
+  {
+    id: 'codexu.liquid-keycap',
+    displayName: { 'zh-Hans': '液态键帽', en: 'Liquid Keycap' },
+    shortDescription: {
+      'zh-Hans': '克制的蓝色玻璃与暖金刻度',
+      en: 'Blue glass with restrained warm-gold accents',
+    },
+    light: liquidKeycapLight as PaletteTokens,
+    dark: liquidKeycapDark as PaletteTokens,
+  },
   {
     id: 'codexu.default',
     displayName: { 'zh-Hans': '默认', en: 'Default' },
@@ -139,5 +152,6 @@ export const PALETTE_CATALOG: readonly PaletteDescriptor[] = [
 ];
 
 export function resolvePalette(id: string | null | undefined): PaletteDescriptor {
-  return PALETTE_CATALOG.find((palette) => palette.id === id) ?? PALETTE_CATALOG[0];
+  return PALETTE_CATALOG.find((palette) => palette.id === id)
+    ?? PALETTE_CATALOG.find((palette) => palette.id === 'codexu.default')!;
 }

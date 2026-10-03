@@ -5,6 +5,7 @@ import SwiftUI
 @MainActor
 final class TaskOverviewPanelViewModel: ObservableObject {
     @Published var presentation: TaskOverviewPresentation?
+    @Published var workbench: TaskWorkbenchPresentation?
     @Published var isExpanded = false
     @Published var language: WidgetLanguage
 
@@ -15,7 +16,7 @@ final class TaskOverviewPanelViewModel: ObservableObject {
 
 @MainActor
 final class TaskOverviewPanelController: NSObject, NSWindowDelegate {
-    static let compactSize = NSSize(width: 360, height: 168)
+    static let compactSize = NSSize(width: 360, height: 370)
     static let expandedSize = NSSize(width: 400, height: 492)
 
     private let store: UsageStore
@@ -140,15 +141,11 @@ final class TaskOverviewPanelController: NSObject, NSWindowDelegate {
     private func startObserving(_ model: TaskOverviewPanelViewModel) {
         cancellables.removeAll()
 
-        store.$runtimeSnapshots
-            .combineLatest(store.$codexLiveTasks)
+        store.taskWorkbench.$presentation
             .receive(on: RunLoop.main)
-            .sink { [weak model] runtimeSnapshots, liveTasks in
-                model?.presentation = TaskOverviewPresentationBuilder.make(
-                    runtimeSnapshots: runtimeSnapshots,
-                    codexLiveTasks: liveTasks,
-                    now: Date()
-                )
+            .sink { [weak model] workbench in
+                model?.presentation = workbench?.overview
+                model?.workbench = workbench
             }
             .store(in: &cancellables)
 

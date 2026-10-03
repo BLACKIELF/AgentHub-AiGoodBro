@@ -108,10 +108,9 @@ struct UsageSurfaceTableView: View {
                         Spacer()
                         Text("\(row.tokens)")
                             .font(WorkspaceVisualMetrics.metaFont().monospacedDigit())
-                        Text(row.share.map { QuotaAvailabilityPresentation.percentText($0 * 100) } ?? "—")
-                            .font(WorkspaceVisualMetrics.metaFont().monospacedDigit())
-                            .foregroundStyle(.secondary)
-                            .frame(width: 44, alignment: .trailing)
+                        QuotaPercentageRing(
+                            percent: row.share.map { $0 * 100 }, diameter: 34,
+                            tint: .accentColor, accessibilityTitle: language.text("占比", "Share"))
                     }
                 }
             }

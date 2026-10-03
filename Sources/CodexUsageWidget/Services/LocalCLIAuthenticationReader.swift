@@ -42,7 +42,7 @@ struct LocalCLIAuthenticationReader {
             switch auth?["selectedType"] as? String {
             case "gemini-api-key":
                 let env = fileReader(root.appendingPathComponent(".env")).flatMap { String(data: $0, encoding: .utf8) } ?? ""
-                if Self.hasEnvironmentValue(env, names: ["GEMINI_API_KEY", "GOOGLE_API_KEY"])
+                if Self.hasEnvironmentValue(env, names: ["GEMINI_API_KEY"])
                     || (usesSystemKeychain && keychainReader("gemini-cli-api-key", "default-api-key") != nil)
                 {
                     return .apiKey
@@ -75,6 +75,10 @@ struct LocalCLIAuthenticationReader {
                 return .oauth
             }
         case .claudeCode:
+            let env = object("settings.json")["env"] as? [String: Any] ?? [:]
+            // An explicit CLI API configuration (including CC Switch) is the
+            // active route; do not consult an unrelated subscription Keychain item.
+            if Self.nonempty(env["ANTHROPIC_API_KEY"]) || Self.nonempty(env["ANTHROPIC_AUTH_TOKEN"]) { return .apiKey }
             var credentials = object(".credentials.json")
             if credentials.isEmpty, usesSystemKeychain,
                 let data = keychainReader("Claude Code-credentials", nil),
@@ -87,9 +91,7 @@ struct LocalCLIAuthenticationReader {
             {
                 return .oauth
             }
-            let env = object("settings.json")["env"] as? [String: Any] ?? [:]
-            if Self.nonempty(env["ANTHROPIC_API_KEY"]) || Self.nonempty(env["ANTHROPIC_AUTH_TOKEN"]) { return .apiKey }
-        case .workBuddy, .zcode, .trae: break
+        case .workBuddy, .zcode, .trae, .antigravity: break
         }
         return .unknown
     }

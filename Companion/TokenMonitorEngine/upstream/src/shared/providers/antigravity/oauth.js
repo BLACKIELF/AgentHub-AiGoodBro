@@ -1,9 +1,6 @@
 'use strict';
 
 const crypto = require('node:crypto');
-const fs = require('node:fs');
-const os = require('node:os');
-const path = require('node:path');
 
 const AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
 const TOKEN_URL = 'https://oauth2.googleapis.com/token';
@@ -25,10 +22,7 @@ const SCOPES = Object.freeze([
   'https://www.googleapis.com/auth/cclog',
   'https://www.googleapis.com/auth/experimentsandconfigs'
 ]);
-const REFRESH_SAFETY_MS = 60_000;
-const OAUTH_CLIENT_ID_PATTERN = /(?<![A-Za-z0-9_-])[0-9]+-[A-Za-z0-9_-]+\.apps\.googleusercontent\.com(?![A-Za-z0-9._-])/g;
-const OAUTH_CLIENT_SECRET_PATTERN = /(?<![A-Za-z0-9_-])GOCSPX-[A-Za-z0-9_-]{28}(?![A-Za-z0-9_-])/g;
-// AiGoodBro does not enable Antigravity OAuth or distribute its client credentials.
+// Antigravity OAuth is disabled here; local usage parsing remains available.
 const ANTIGRAVITY_METADATA = Object.freeze({ ideType: 'ANTIGRAVITY' });
 const ANTIGRAVITY_CONTROL_PLANE_METADATA = Object.freeze({
   ide_type: 'ANTIGRAVITY',
@@ -366,6 +360,7 @@ module.exports = {
   normalizeManagedAccounts,
   parseClientFromText,
   refreshCredential,
+  _disabledOAuthError: disabledOAuthError,
   _mergeVerifiedModels: mergeVerifiedModels,
   _planFromLoadResponse: planFromLoadResponse,
   _officialOAuthClient: officialOAuthClient

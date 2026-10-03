@@ -25,7 +25,14 @@ pub struct CodexAppServerQuotaSnapshot {
     pub account: Option<AccountInfo>,
     pub limit_id: Option<String>,
     pub limit_name: Option<String>,
+    pub credit_balance_usd: Option<f64>,
+    pub credit_balance_points: Option<f64>,
+    pub reset_credit_count: Option<u32>,
     pub quota_read_succeeded: bool,
+    /// The official response included period-window fields, even if both were
+    /// explicitly null. Credit-only reads must not certify the dashboard's
+    /// period quota or erase a previously verified window.
+    pub window_topology_reported: bool,
     pub five_hour_quota: Option<RateWindow>,
     pub seven_day_quota: Option<RateWindow>,
     pub monthly_quota: Option<RateWindow>,
@@ -73,7 +80,12 @@ impl CodexAppServerQuotaSnapshot {
             ) && !is_monthly_duration(window.window_duration_mins)
         });
 
-        let quota_read_succeeded = has_window_fields
+        let (credit_balance_usd, credit_balance_points) = parse_credit_balance(limits);
+        let reset_credit_count = parse_reset_credit_count(response);
+        let has_verified_credits = credit_balance_usd.is_some()
+            || credit_balance_points.is_some()
+            || reset_credit_count.is_some();
+        let quota_read_succeeded = (has_window_fields || has_verified_credits)
             && !has_malformed_window
             && five_hour_matches.len() <= 1
             && seven_day_matches.len() <= 1
@@ -94,7 +106,11 @@ impl CodexAppServerQuotaSnapshot {
                 .get("limitName")
                 .and_then(Value::as_str)
                 .map(str::to_owned),
+            credit_balance_usd,
+            credit_balance_points,
+            reset_credit_count,
             quota_read_succeeded,
+            window_topology_reported: has_window_fields,
             five_hour_quota: single_window(five_hour_matches),
             seven_day_quota: single_window(seven_day_matches),
             monthly_quota: single_window(monthly_matches),
@@ -106,7 +122,11 @@ impl CodexAppServerQuotaSnapshot {
             account: None,
             limit_id: None,
             limit_name: None,
+            credit_balance_usd: None,
+            credit_balance_points: None,
+            reset_credit_count: None,
             quota_read_succeeded: false,
+            window_topology_reported: false,
             five_hour_quota: None,
             seven_day_quota: None,
             monthly_quota: None,
@@ -125,8 +145,24 @@ pub trait AppServerTransport {
 /// Reads the installed Codex CLI through a short-lived loopback-only
 /// app-server. The API calls themselves are read-only account lookups.
 pub async fn read_installed_codex_quota() -> anyhow::Result<CodexAppServerQuotaSnapshot> {
+    read_quota_with_home(None).await
+}
+
+pub async fn read_codex_quota_for_home(
+    home: &std::path::Path,
+) -> anyhow::Result<CodexAppServerQuotaSnapshot> {
+    anyhow::ensure!(
+        home.is_absolute() && home.is_dir(),
+        "Codex directory unavailable"
+    );
+    read_quota_with_home(Some(home)).await
+}
+
+async fn read_quota_with_home(
+    home: Option<&std::path::Path>,
+) -> anyhow::Result<CodexAppServerQuotaSnapshot> {
     let port = reserve_loopback_port().await?;
-    let mut child = launch_app_server(port)?;
+    let mut child = launch_app_server(port, home)?;
     let endpoint = format!("ws://127.0.0.1:{port}");
 
     let result = timeout(APP_SERVER_REQUEST_TIMEOUT, async {
@@ -230,6 +266,17 @@ pub async fn read_quota_from_transport<T: AppServerTransport>(
 
     let mut quota = CodexAppServerQuotaSnapshot::from_rate_limit_response(&rate_limits_result);
     quota.account = parse_account(&account_result);
+    // rateLimits is the fresh subscription observation; account/read may still
+    // carry the previous plan following an upgrade or downgrade.
+    if let Some(account) = quota.account.as_mut() {
+        if let Some(plan) = selected_rate_limits(&rate_limits_result)
+            .and_then(|limits| limits.get("planType"))
+            .and_then(Value::as_str)
+            .and_then(canonical_plan)
+        {
+            account.plan_type = Some(plan);
+        }
+    }
     Ok(quota)
 }
 
@@ -247,16 +294,95 @@ async fn request_result<T: AppServerTransport>(
         .ok_or_else(|| anyhow::anyhow!("Codex app-server returned no result for a quota request"))
 }
 
+fn canonical_plan(value: &str) -> Option<String> {
+    let value = value.trim().to_ascii_lowercase().replace(['_', '-'], " ");
+    let plan = match value.as_str() {
+        "prolite" | "pro lite" | "codex pro lite" | "openai codex pro lite" => "prolite",
+        "pro" | "codex pro" | "openai codex pro" => "pro",
+        "free" => "free",
+        "plus" => "plus",
+        "team" | "teams" => "team",
+        "business" => "business",
+        "enterprise" => "enterprise",
+        "edu" => "edu",
+        _ => return None,
+    };
+    Some(plan.to_owned())
+}
+
 fn parse_account(value: &Value) -> Option<AccountInfo> {
     let account = value.get("account")?;
     Some(AccountInfo {
-        r#type: account.get("type")?.as_str()?.to_owned(),
+        r#type: match account.get("type")?.as_str()? {
+            "chatgpt" => "chatgpt",
+            "apiKey" => "apiKey",
+            _ => return None,
+        }
+        .to_owned(),
         plan_type: account
             .get("planType")
             .and_then(Value::as_str)
-            .map(str::to_owned),
-        email_present: account.get("email").is_some_and(|email| !email.is_null()),
+            .and_then(canonical_plan),
+        email_present: account
+            .get("email")
+            .and_then(Value::as_str)
+            .is_some_and(|email| !email.trim().is_empty()),
     })
+}
+
+fn parse_reset_credit_count(value: &Value) -> Option<u32> {
+    let count = value
+        .get("rateLimitResetCredits")?
+        .get("availableCount")?
+        .as_u64()?;
+    (count <= 1_000_000).then(|| count as u32)
+}
+
+/// `credits.balance` is a points number or a currency-labelled string. A
+/// unitless value is deliberately never promoted to money.
+fn parse_credit_balance(limits: &Value) -> (Option<f64>, Option<f64>) {
+    let Some(balance) = limits.get("credits").and_then(|value| value.get("balance")) else {
+        return (None, None);
+    };
+    if let Some(points) = balance.as_f64().filter(|value| valid_balance(*value)) {
+        return (None, Some(points));
+    }
+    let Some(raw) = balance
+        .as_str()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return (None, None);
+    };
+    let upper = raw.to_ascii_uppercase();
+    let usd = upper
+        .strip_prefix("USD ")
+        .or_else(|| upper.strip_prefix('$'))
+        .or_else(|| upper.strip_suffix(" USD"))
+        .and_then(parse_balance_number);
+    if let Some(value) = usd {
+        return (Some(value), None);
+    }
+    let points = upper
+        .strip_suffix(" POINTS")
+        .unwrap_or(&upper)
+        .trim()
+        .parse::<f64>()
+        .ok()
+        .filter(|value| valid_balance(*value));
+    (None, points)
+}
+
+fn parse_balance_number(value: &str) -> Option<f64> {
+    value
+        .trim()
+        .parse::<f64>()
+        .ok()
+        .filter(|value| valid_balance(*value))
+}
+
+fn valid_balance(value: f64) -> bool {
+    value.is_finite() && (0.0..=1_000_000_000.0).contains(&value)
 }
 
 fn selected_rate_limits(response: &Value) -> Option<&Value> {
@@ -267,17 +393,117 @@ fn selected_rate_limits(response: &Value) -> Option<&Value> {
         .filter(|value| value.is_object())
 }
 
-fn launch_app_server(port: u16) -> anyhow::Result<Child> {
+fn launch_app_server(port: u16, home: Option<&std::path::Path>) -> anyhow::Result<Child> {
     let executable = resolve_codex_executable()
         .ok_or_else(|| anyhow::anyhow!("Could not locate the installed Codex CLI executable"))?;
-    Command::new(executable)
+    app_server_command(&executable, port, home)
+        .spawn()
+        .map_err(|_| anyhow::anyhow!("Could not launch the installed Codex CLI"))
+}
+
+fn app_server_command(
+    executable: &std::path::Path,
+    port: u16,
+    home: Option<&std::path::Path>,
+) -> Command {
+    let mut command = Command::new(executable);
+    if let Some(home) = home {
+        command.env("CODEX_HOME", home);
+    }
+    command
         .args(["app-server", "--listen", &format!("ws://127.0.0.1:{port}")])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(|_| anyhow::anyhow!("Could not launch the installed Codex CLI"))
+        .kill_on_drop(true);
+    command
+}
+
+#[cfg(test)]
+mod command_tests {
+    use super::*;
+
+    #[test]
+    fn preserves_verified_credit_only_payloads_without_inventing_windows() {
+        for balance in [serde_json::json!("USD 0"), serde_json::json!(0)] {
+            let value = CodexAppServerQuotaSnapshot::from_rate_limit_response(&serde_json::json!({
+                "rateLimits": { "credits": { "balance": balance } }
+            }));
+            assert!(value.quota_read_succeeded);
+            assert!(!value.window_topology_reported);
+            assert!(value.five_hour_quota.is_none());
+            assert!(value.seven_day_quota.is_none());
+            assert!(value.monthly_quota.is_none());
+            assert!(
+                value.credit_balance_usd == Some(0.0) || value.credit_balance_points == Some(0.0)
+            );
+            assert!(value.reset_credit_count.is_none());
+        }
+        let cards = CodexAppServerQuotaSnapshot::from_rate_limit_response(&serde_json::json!({
+            "rateLimits": {}, "rateLimitResetCredits": { "availableCount": 0 }
+        }));
+        assert!(cards.quota_read_succeeded);
+        assert!(!cards.window_topology_reported);
+        assert_eq!(cards.reset_credit_count, Some(0));
+        assert!(cards.credit_balance_usd.is_none() && cards.credit_balance_points.is_none());
+        let explicit_empty =
+            CodexAppServerQuotaSnapshot::from_rate_limit_response(&serde_json::json!({
+                "rateLimits": { "primary": null, "secondary": null }
+            }));
+        assert!(explicit_empty.quota_read_succeeded);
+        assert!(explicit_empty.window_topology_reported);
+    }
+
+    #[test]
+    fn credit_metadata_never_accepts_malformed_or_unknown_window_topology() {
+        for primary in [
+            serde_json::json!({ "usedPercent": -1, "windowDurationMins": 300 }),
+            serde_json::json!({ "usedPercent": 101, "windowDurationMins": 300 }),
+            serde_json::json!({ "usedPercent": 10, "windowDurationMins": 123 }),
+            serde_json::json!("invalid"),
+        ] {
+            let value = CodexAppServerQuotaSnapshot::from_rate_limit_response(&serde_json::json!({
+                "rateLimits": { "primary": primary, "credits": { "balance": "USD 12" } }
+            }));
+            assert!(!value.quota_read_succeeded);
+            assert!(value.credit_balance_usd.is_none());
+        }
+        for balance in [
+            serde_json::json!(-1),
+            serde_json::json!("NaN"),
+            serde_json::json!(null),
+        ] {
+            let value = CodexAppServerQuotaSnapshot::from_rate_limit_response(&serde_json::json!({
+                "rateLimits": { "credits": { "balance": balance } }
+            }));
+            assert!(!value.quota_read_succeeded);
+        }
+    }
+
+    #[test]
+    fn selected_home_is_child_only_and_listener_is_loopback() {
+        let prior = env::var_os("CODEX_HOME");
+        let home = env::temp_dir().join("synthetic-selected-codex");
+        let command = app_server_command(
+            std::path::Path::new("synthetic-codex.exe"),
+            12345,
+            Some(&home),
+        );
+        let envs: Vec<_> = command.as_std().get_envs().collect();
+        assert_eq!(
+            envs,
+            vec![(std::ffi::OsStr::new("CODEX_HOME"), Some(home.as_os_str()))]
+        );
+        let args: Vec<_> = command
+            .as_std()
+            .get_args()
+            .map(|arg| arg.to_str().unwrap())
+            .collect();
+        assert_eq!(args, ["app-server", "--listen", "ws://127.0.0.1:12345"]);
+        assert_eq!(env::var_os("CODEX_HOME"), prior);
+        let default = app_server_command(std::path::Path::new("synthetic-codex.exe"), 12345, None);
+        assert_eq!(default.as_std().get_envs().count(), 0);
+    }
 }
 
 fn resolve_codex_executable() -> Option<PathBuf> {
@@ -334,6 +560,9 @@ async fn stop_child(child: &mut Child) {
 
 fn parse_rate_window(value: &Value) -> Option<RateWindow> {
     let used_percent = value.get("usedPercent")?.as_f64()?;
+    if !used_percent.is_finite() || !(0.0..=100.0).contains(&used_percent) {
+        return None;
+    }
     let resets_at = value
         .get("resetsAt")
         .and_then(Value::as_i64)

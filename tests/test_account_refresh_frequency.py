@@ -23,6 +23,7 @@ class AccountRefreshFrequencyTests(unittest.TestCase):
         usage = (ROOT / 'Sources/CodexUsageWidget/Services/UsageStore.swift').read_text()
         policy = (ROOT / 'Sources/CodexUsageWidget/Domain/AccountRefreshFrequency.swift').read_text()
         methods = '\n'.join(declaration(usage, needle) for needle in [
+            'var accountSnapshotRefreshInterval:',
             'private var foregroundFullRefreshInterval:', 'private var backgroundFullRefreshInterval:',
             'private func scheduleFullRefreshTimer()', 'private func scheduleWarmUpMaintenanceTimer()',
             'func setAccountRefreshFrequency(',
@@ -54,7 +55,9 @@ final class UsageStore {
     var lastFullRefreshCompletedAt: Date?, warmUpRefreshStartedAt: Date?
     var accountManagerMessage: String?
     var reads = 0
+    var monitorConnectionRefreshes = 0
     func refresh() { reads += 1 }
+    func refreshTokenMonitorConnections() { monitorConnectionRefreshes += 1 }
     func refreshWarmUpProfilesThenSchedule(performWarmUpAfterRefresh: Bool, quotaOnly: Bool, retryQuotaReadOnce: Bool) { reads += 1 }
     // METHODS
 }
@@ -69,7 +72,7 @@ let originalFull = store.fullTimer!, originalPool = store.warmUpMaintenanceTimer
 store.setAccountRefreshFrequency(.oneMinute)
 precondition(!originalFull.isValid && !originalPool.isValid)
 precondition(store.fullTimer?.timeInterval == 60 && store.warmUpMaintenanceTimer?.timeInterval == 60)
-precondition(AccountRefreshFrequency.load() == .oneMinute && store.reads == 0)
+precondition(AccountRefreshFrequency.load() == .oneMinute && store.reads == 0 && store.monitorConnectionRefreshes == 0)
 let unchanged = store.fullTimer
 store.setAccountRefreshFrequency(.oneMinute)
 precondition(unchanged === store.fullTimer)

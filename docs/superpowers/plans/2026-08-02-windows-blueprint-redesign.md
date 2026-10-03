@@ -107,7 +107,7 @@ Include: selected architecture image and source links; one-paragraph Windows pos
 Run:
 
 ```powershell
-uv run --with pyyaml python C:\Users\ADMIN\.cc-switch\skills\blueprint\scripts\validate_blueprint.py --schema docs/windows-port/blueprint/schema.yaml --artifacts-dir docs/windows-port/blueprint
+uv run --with pyyaml python "$env:USERPROFILE\.cc-switch\skills\blueprint\scripts\validate_blueprint.py" --schema docs/windows-port/blueprint/schema.yaml --artifacts-dir docs/windows-port/blueprint
 @'
 import pathlib, yaml
 s = yaml.safe_load(pathlib.Path("docs/windows-port/blueprint/schema.yaml").read_text(encoding="utf-8"))
@@ -175,7 +175,7 @@ Expected: `diagram.svg` and `diagram.html` are rewritten and non-empty.
 Run:
 
 ```powershell
-python C:\Users\ADMIN\.cc-switch\skills\blueprint\scripts\html_to_png.py docs/windows-port/blueprint/diagram.html docs/windows-port/blueprint/diagram.render.png --width 1800 --height 1400
+python "$env:USERPROFILE\.cc-switch\skills\blueprint\scripts\html_to_png.py" docs/windows-port/blueprint/diagram.html docs/windows-port/blueprint/diagram.render.png --width 1800 --height 1400
 ```
 
 Expected: `diagram.render.png` exists and is non-empty. Record browser fallback in `BLUEPRINT.md`; do not claim CairoSVG was used.
@@ -185,7 +185,7 @@ Expected: `diagram.render.png` exists and is non-empty. Record browser fallback 
 Run:
 
 ```powershell
-python C:\Users\ADMIN\.cc-switch\skills\blueprint\scripts\check_svg_geometry.py docs/windows-port/blueprint/diagram.svg --json-out docs/windows-port/blueprint/geometry.json --overlay-out docs/windows-port/blueprint/geometry-overlay.svg --screenshot-out docs/windows-port/blueprint/geometry-screenshot.png --fail-on-error
+python "$env:USERPROFILE\.cc-switch\skills\blueprint\scripts\check_svg_geometry.py" docs/windows-port/blueprint/diagram.svg --json-out docs/windows-port/blueprint/geometry.json --overlay-out docs/windows-port/blueprint/geometry-overlay.svg --screenshot-out docs/windows-port/blueprint/geometry-screenshot.png --fail-on-error
 ```
 
 Expected: zero geometry errors. Inspect `diagram.render.png` and `geometry-overlay.svg`; fix clipped text, card/group overlap, unintended crossings, or weak spacing in schema/layout/renderer, then rerun until clean. Remove diagnostic `geometry.json`, `geometry-overlay.svg`, and `geometry-screenshot.png` before committing because they are review intermediates, not canonical Blueprint assets.
@@ -253,8 +253,8 @@ In `BLUEPRINT.md`, state which candidate was selected, how the deterministic PNG
 Run:
 
 ```powershell
-uv run --with pyyaml python C:\Users\ADMIN\.cc-switch\skills\blueprint\scripts\validate_blueprint.py --schema docs/windows-port/blueprint/schema.yaml --artifacts-dir docs/windows-port/blueprint
-python C:\Users\ADMIN\.cc-switch\skills\blueprint\scripts\check_svg_geometry.py docs/windows-port/blueprint/diagram.svg --json-out docs/windows-port/blueprint/geometry.json --overlay-out docs/windows-port/blueprint/geometry-overlay.svg --fail-on-error
+uv run --with pyyaml python "$env:USERPROFILE\.cc-switch\skills\blueprint\scripts\validate_blueprint.py" --schema docs/windows-port/blueprint/schema.yaml --artifacts-dir docs/windows-port/blueprint
+python "$env:USERPROFILE\.cc-switch\skills\blueprint\scripts\check_svg_geometry.py" docs/windows-port/blueprint/diagram.svg --json-out docs/windows-port/blueprint/geometry.json --overlay-out docs/windows-port/blueprint/geometry-overlay.svg --fail-on-error
 @'
 from pathlib import Path
 d = Path("docs/windows-port/blueprint")

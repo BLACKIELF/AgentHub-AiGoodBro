@@ -1,0 +1,17 @@
+# 换行规则（来源：上游 issue #4 答复，BLACKIELF 2026-09-16）
+# 原则：类 Unix 环境执行的脚本固定 LF；Windows 批处理固定 CRLF；二进制不参与换行转换。
+# 其余源码保持 Git 自动识别，因此不做全仓 renormalize。
+
+* text=auto
+
+*.sh text eol=lf
+Makefile text eol=lf
+
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+*.png binary
+*.ico binary
+*.exe binary
+*.msi binary
+*.dll binary

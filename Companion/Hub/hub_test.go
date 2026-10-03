@@ -553,11 +553,21 @@ func TestExecutionPreferenceValidation(t *testing.T) {
 	if got.Model != "gpt-6-astra" || got.ReasoningEffort != "low" || got.ServiceTier != "default" || got.SubagentMode != "standard" {
 		t.Fatalf("missing preference did not align with native/Python defaults: %#v", got)
 	}
+	standardPreset := defaultPreset("standard")
+	if defaultExecutionPreference.Model != "gpt-6-astra" || !standardPreset.UseSavedModel ||
+		standardPreset.Model != "gpt-6-sol" || standardPreset.SubagentModel != "gpt-6-luna" {
+		t.Fatalf("standard preset did not preserve saved-model defaults: %#v", standardPreset)
+	}
 
 	valid := []executionPreference{
 		{Model: "gpt-6-astra", ReasoningEffort: "low", ServiceTier: "default"},
 		{Model: "gpt-6-astra", ReasoningEffort: "high", ServiceTier: "default"},
 		{Model: "gpt-6-astra", ReasoningEffort: "ultra", ServiceTier: "fast"},
+		{Model: "gpt-6-sol", ReasoningEffort: "ultra", ServiceTier: "default"},
+		{Model: "gpt-6-luna", ReasoningEffort: "max", ServiceTier: "fast"},
+		{Model: "gpt-6-sol", ReasoningEffort: "ultra", ServiceTier: "default", SubagentMode: "sol_luna",
+			CustomPresets: map[string]executionPreset{"sol_luna": {Model: "gpt-6-sol", ReasoningEffort: "high",
+				SubagentsEnabled: true, SubagentModel: "gpt-6-luna", SubagentReasoningEffort: "max"}}},
 		{Model: "gpt-5.6-sol", ReasoningEffort: "ultra", ServiceTier: "fast"},
 		{Model: "gpt-5.6-terra", ReasoningEffort: "ultra", ServiceTier: "default"},
 		{Model: "gpt-5.6-luna", ReasoningEffort: "max", ServiceTier: "fast"},
@@ -579,6 +589,10 @@ func TestExecutionPreferenceValidation(t *testing.T) {
 	invalid := []executionPreference{
 		{Model: "gpt-6-astra", ReasoningEffort: "minimal", ServiceTier: "default"},
 		{Model: "gpt-6-astra", ReasoningEffort: "high", ServiceTier: "priority"},
+		{Model: "gpt-6-luna", ReasoningEffort: "ultra", ServiceTier: "default"},
+		{Model: "gpt-6-sol", ReasoningEffort: "high", ServiceTier: "default", SubagentMode: "sol_luna",
+			CustomPresets: map[string]executionPreset{"sol_luna": {Model: "gpt-6-sol", ReasoningEffort: "high",
+				SubagentsEnabled: true, SubagentModel: "gpt-6-luna", SubagentReasoningEffort: "ultra"}}},
 		{Model: "gpt-5.6-luna", ReasoningEffort: "ultra", ServiceTier: "default"},
 		{Model: "gpt-5.5", ReasoningEffort: "max", ServiceTier: "default"},
 		{Model: "gpt-5.2", ReasoningEffort: "high", ServiceTier: "fast"},
@@ -603,15 +617,15 @@ func TestExecutionPreferenceValidation(t *testing.T) {
 		t.Fatal("legacy task action hash compatibility changed")
 	}
 	saved := executionPreference{Model: "gpt-6-astra", ReasoningEffort: "low", ServiceTier: "fast", SubagentMode: "sol_luna"}
-	if got := derivedExecutionPreference(saved); got.Model != "gpt-5.6-sol" || got.ReasoningEffort != "high" || got.ServiceTier != "fast" {
+	if got := derivedExecutionPreference(saved); got.Model != "gpt-6-sol" || got.ReasoningEffort != "high" || got.ServiceTier != "fast" {
 		t.Fatalf("sol_luna effective strategy mismatch: %#v", got)
 	}
 	saved.SubagentMode = "luna_direct"
-	if got := derivedExecutionPreference(saved); got.Model != "gpt-5.6-luna" || got.ReasoningEffort != "max" || got.ServiceTier != "fast" {
+	if got := derivedExecutionPreference(saved); got.Model != "gpt-6-luna" || got.ReasoningEffort != "max" || got.ServiceTier != "fast" {
 		t.Fatalf("luna_direct effective strategy mismatch: %#v", got)
 	}
 	fastSavedUnsupported := executionPreference{Model: "gpt-5.2", ReasoningEffort: "xhigh", ServiceTier: "fast", SubagentMode: "sol_luna"}
-	if got, err := normalizedExecutionPreference(&fastSavedUnsupported); err != nil || derivedExecutionPreference(got).Model != "gpt-5.6-sol" {
+	if got, err := normalizedExecutionPreference(&fastSavedUnsupported); err != nil || derivedExecutionPreference(got).Model != "gpt-6-sol" {
 		t.Fatalf("inactive saved model incorrectly blocked effective Fast strategy: %#v %v", got, err)
 	}
 	name := "自定义中蹬"
@@ -627,6 +641,73 @@ func TestExecutionPreferenceValidation(t *testing.T) {
 	saved.CustomPresets["sol_luna"] = executionPreset{Name: &badName, Model: "gpt-5.6-sol", ReasoningEffort: "high", SubagentModel: "gpt-5.6-luna", SubagentReasoningEffort: "max"}
 	if _, err := normalizedExecutionPreference(&saved); !errors.Is(err, errInvalid) {
 		t.Fatal("invalid custom name accepted")
+	}
+}
+
+func TestFrozenTaskExecutionStrategySupportsExactLegacyDefaults(t *testing.T) {
+	makeTask := func(preference, effective executionPreference, childModel, childEffort string) *Task {
+		savedPreference, frozenPreference := preference, effective
+		task := &Task{ID: "legacy-frozen-task", Agent: "codex", Project: "demo", AccountAlias: "pool-a",
+			ExecutionPreference: &savedPreference, EffectiveExecutionPreference: &frozenPreference}
+		if childModel != "" {
+			roleSHA := hashText(string(generatedPresetRole(childModel, childEffort)))
+			task.SubagentExecution = &subagentExecution{RequestedMode: preference.SubagentMode, RequestedRole: presetRoleName,
+				RequestedModel: childModel, RequestedEffort: childEffort, ConcurrentThreads: 1, RoleSHA256: roleSHA}
+		}
+		return task
+	}
+
+	saved := executionPreference{Model: "gpt-6-astra", ReasoningEffort: "low", ServiceTier: "default", SubagentMode: "sol_luna"}
+	normalized, err := normalizedExecutionPreference(&saved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyEffective := saved
+	legacyEffective.Model, legacyEffective.ReasoningEffort = "gpt-5.6-sol", "high"
+	legacyTask := makeTask(saved, legacyEffective, "gpt-5.6-luna", "max")
+	legacyTask.ActionHash = taskActionHash(legacyTask)
+	legacyHash := legacyTask.ActionHash
+	legacyStrategy, err := frozenTaskExecutionStrategy(legacyTask, normalized)
+	if err != nil || legacyStrategy.Main.Model != "gpt-5.6-sol" || legacyStrategy.SubagentModel != "gpt-5.6-luna" ||
+		legacyStrategy.SubagentReasoningEffort != "max" || taskActionHash(legacyTask) != legacyHash {
+		t.Fatalf("legacy frozen preset did not remain executable without changing its action hash: %#v %v", legacyStrategy, err)
+	}
+
+	currentEffective := derivedExecutionStrategy(normalized).Main
+	currentTask := makeTask(saved, currentEffective, "gpt-6-luna", "max")
+	currentStrategy, err := frozenTaskExecutionStrategy(currentTask, normalized)
+	if err != nil || currentStrategy.Main.Model != "gpt-6-sol" || currentStrategy.SubagentModel != "gpt-6-luna" {
+		t.Fatalf("current frozen preset did not retain the new defaults: %#v %v", currentStrategy, err)
+	}
+
+	badEffective := legacyEffective
+	badEffective.Model = "gpt-5.6-terra"
+	if _, err := frozenTaskExecutionStrategy(makeTask(saved, badEffective, "gpt-5.6-luna", "max"), normalized); !errors.Is(err, errInvalid) {
+		t.Fatalf("unknown frozen default was accepted: %v", err)
+	}
+	badRoleTask := makeTask(saved, legacyEffective, "gpt-5.6-luna", "max")
+	badRoleTask.SubagentExecution.RequestedModel = "gpt-6-luna"
+	if _, err := frozenTaskExecutionStrategy(badRoleTask, normalized); !errors.Is(err, errInvalid) {
+		t.Fatalf("mismatched frozen role metadata was accepted: %v", err)
+	}
+
+	custom := saved
+	custom.CustomPresets = map[string]executionPreset{"sol_luna": {
+		Model: "gpt-5.6-terra", ReasoningEffort: "xhigh", SubagentsEnabled: true,
+		SubagentModel: "gpt-5.5", SubagentReasoningEffort: "high",
+	}}
+	normalizedCustom, err := normalizedExecutionPreference(&custom)
+	if err != nil {
+		t.Fatal(err)
+	}
+	customEffective := derivedExecutionStrategy(normalizedCustom).Main
+	customTask := makeTask(custom, customEffective, "gpt-5.5", "high")
+	customStrategy, err := frozenTaskExecutionStrategy(customTask, normalizedCustom)
+	if err != nil || customStrategy.Main.Model != "gpt-5.6-terra" || customStrategy.SubagentModel != "gpt-5.5" {
+		t.Fatalf("saved custom preset did not remain intact: %#v %v", customStrategy, err)
+	}
+	if _, err := frozenTaskExecutionStrategy(makeTask(custom, legacyEffective, "gpt-5.6-luna", "max"), normalizedCustom); !errors.Is(err, errInvalid) {
+		t.Fatalf("legacy builtin fallback overrode a saved custom preset: %v", err)
 	}
 }
 
@@ -2358,7 +2439,7 @@ func TestLunaDirectDerivesMainAndDisablesSubagents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	expected := executionPreference{Model: "gpt-5.6-luna", ReasoningEffort: "max", ServiceTier: "fast", SubagentMode: "luna_direct"}
+	expected := executionPreference{Model: "gpt-6-luna", ReasoningEffort: "max", ServiceTier: "fast", SubagentMode: "luna_direct"}
 	if created.ExecutionPreference == nil || !executionPreferencesEqual(*created.ExecutionPreference, saved) || created.EffectiveExecutionPreference == nil || !executionPreferencesEqual(*created.EffectiveExecutionPreference, expected) {
 		t.Fatalf("saved/effective preferences were not distinct: %#v", created)
 	}
@@ -2370,7 +2451,7 @@ func TestLunaDirectDerivesMainAndDisablesSubagents(t *testing.T) {
 		t.Fatal(err)
 	}
 	args := strings.Join(command.Args, "\x00")
-	for _, required := range []string{"-m\x00gpt-5.6-luna", "model_reasoning_effort=\"max\"", "agents.enabled=false", "features.multi_agent_v2=false", "--enable\x00fast_mode"} {
+	for _, required := range []string{"-m\x00gpt-6-luna", "model_reasoning_effort=\"max\"", "agents.enabled=false", "features.multi_agent_v2=false", "--enable\x00fast_mode"} {
 		if !strings.Contains(args, required) {
 			t.Fatalf("direct command missing %q: %q", required, command.Args)
 		}
@@ -2381,6 +2462,42 @@ func TestLunaDirectDerivesMainAndDisablesSubagents(t *testing.T) {
 	stdin, _ := io.ReadAll(command.Stdin)
 	if string(stdin) != "direct brief" {
 		t.Fatalf("direct prompt changed: %q", stdin)
+	}
+
+	legacySaved := executionPreference{Model: "gpt-6-astra", ReasoningEffort: "low", ServiceTier: "default", SubagentMode: "sol_luna"}
+	legacyEffective := legacySaved
+	legacyEffective.Model, legacyEffective.ReasoningEffort = "gpt-5.6-sol", "high"
+	legacyRole := generatedPresetRole("gpt-5.6-luna", "max")
+	legacyRoleSHA := hashText(string(legacyRole))
+	legacyCLISHA, err := hashRegularFile("/usr/bin/true")
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyTask := &Task{ID: "legacy-frozen-sol-luna-0001", Agent: "codex", Project: "demo", AccountAlias: account.Alias,
+		ExecutionPreference: &legacySaved, EffectiveExecutionPreference: &legacyEffective,
+		InputHashes: &inputHashes{EffectiveInputSHA256: hashText(presetCollaborationPolicy("sol_luna", true) + "legacy brief")},
+		SubagentExecution: &subagentExecution{RequestedMode: "sol_luna", RequestedRole: presetRoleName,
+			RequestedModel: "gpt-5.6-luna", RequestedEffort: "max", ConcurrentThreads: 1,
+			RoleSHA256: legacyRoleSHA, CLISHA256: legacyCLISHA},
+	}
+	legacyTask.ActionHash = taskActionHash(legacyTask)
+	legacyHash := legacyTask.ActionHash
+	if err := hub.freezePresetRole(legacyTask.ID, legacyRole); err != nil {
+		t.Fatal(err)
+	}
+	legacyCommand, err := hub.commandFor(legacyTask, "legacy brief")
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyArgs := strings.Join(legacyCommand.Args, "\x00")
+	for _, required := range []string{"-m\x00gpt-5.6-sol", "agents.default_subagent_model=\"gpt-5.6-luna\"",
+		"agents.default_subagent_reasoning_effort=\"max\"", "agents.enabled=true"} {
+		if !strings.Contains(legacyArgs, required) {
+			t.Fatalf("legacy frozen command missing %q: %q", required, legacyCommand.Args)
+		}
+	}
+	if legacyTask.ActionHash != legacyHash || taskActionHash(legacyTask) != legacyHash {
+		t.Fatal("legacy frozen command changed its action hash")
 	}
 }
 

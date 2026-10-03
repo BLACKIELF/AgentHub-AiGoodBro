@@ -3,6 +3,8 @@
 [CmdletBinding()]
 param(
   [string] $OutputRoot,
+  [string] $PreflightResultPath,
+  [string] $WindowsSdkRoot,
   [switch] $PreflightOnly,
   [switch] $SkipBuild,
   [Alias('Surface')]
@@ -13,11 +15,22 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+trap {
+  # Keep source function/line diagnostics while excluding machine paths.
+  foreach ($frame in ($_.ScriptStackTrace -split '\r?\n')) {
+    if ($frame -match '^at (?<function>[^,]+), .*: line (?<line>\d+)$') {
+      [Console]::Error.WriteLine("Capture call: $($Matches.function), line $($Matches.line)")
+    }
+  }
+  break
+}
+
 $repositoryRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
 $windowsRoot = Join-Path $repositoryRoot 'windows'
 $artifactBase = Join-Path $repositoryRoot '.local-artifacts\windows-visual-captures'
 $helperSource = Join-Path $PSScriptRoot 'native-visual-capture\GraphicsCaptureSnapshot.cs'
 $appPath = Join-Path $windowsRoot 'target\release\codexu-tauri.exe'
+$requiredRustToolchain = '1.97.1-x86_64-pc-windows-msvc'
 $captureRuns = @('fullscreen')
 $segmentOverlapRatio = 0.2
 $maxSegmentsPerSurface = 12
@@ -91,7 +104,99 @@ function Get-NormalizedOutputRoot {
   return $fullPath
 }
 
+function Get-NormalizedPreflightResultPath {
+  param([string] $RequestedPath)
+
+  if ([string]::IsNullOrWhiteSpace($RequestedPath)) {
+    return $null
+  }
+  if (-not [System.IO.Path]::IsPathRooted($RequestedPath)) {
+    $RequestedPath = Join-Path $repositoryRoot $RequestedPath
+  }
+
+  $fullPath = [System.IO.Path]::GetFullPath($RequestedPath)
+  $basePath = [System.IO.Path]::GetFullPath($artifactBase)
+  $basePrefix = $basePath.TrimEnd([char[]]"\/") + [System.IO.Path]::DirectorySeparatorChar
+  if (-not $fullPath.StartsWith(
+    $basePrefix,
+    [System.StringComparison]::OrdinalIgnoreCase
+  )) {
+    throw 'PreflightResultPath must be a new JSON file under .local-artifacts/windows-visual-captures.'
+  }
+  if ([System.IO.Path]::GetExtension($fullPath) -ne '.json') {
+    throw 'PreflightResultPath must use the .json extension.'
+  }
+  if (Test-Path -LiteralPath $fullPath) {
+    throw 'Refusing to overwrite an existing preflight result file.'
+  }
+  return $fullPath
+}
+
+function Get-WindowsSdkRootCandidates {
+  param([string] $ExplicitRoot)
+
+  $rawCandidates = @()
+  if (-not [string]::IsNullOrWhiteSpace($ExplicitRoot)) {
+    $rawCandidates += [pscustomobject]@{
+      source = 'parameter'
+      path = $ExplicitRoot
+    }
+  } else {
+    foreach ($registryPath in @(
+      'Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows Kits\Installed Roots',
+      'Registry::HKEY_LOCAL_MACHINE\SOFTWARE\WOW6432Node\Microsoft\Windows Kits\Installed Roots'
+    )) {
+      try {
+        $installedRoots = Get-ItemProperty -LiteralPath $registryPath -ErrorAction Stop
+        if (-not [string]::IsNullOrWhiteSpace($installedRoots.KitsRoot10)) {
+          $rawCandidates += [pscustomobject]@{
+            source = 'registry KitsRoot10'
+            path = $installedRoots.KitsRoot10
+          }
+        }
+      } catch {
+      }
+    }
+
+    $programFilesX86 = [Environment]::GetFolderPath(
+      [Environment+SpecialFolder]::ProgramFilesX86
+    )
+    if (-not [string]::IsNullOrWhiteSpace($programFilesX86)) {
+      $rawCandidates += [pscustomobject]@{
+        source = 'SpecialFolder ProgramFilesX86'
+        path = (Join-Path $programFilesX86 'Windows Kits\10')
+      }
+    }
+
+    $programFilesX86Environment = [Environment]::GetEnvironmentVariable('ProgramFiles(x86)')
+    if (-not [string]::IsNullOrWhiteSpace($programFilesX86Environment)) {
+      $rawCandidates += [pscustomobject]@{
+        source = 'environment ProgramFiles(x86)'
+        path = (Join-Path $programFilesX86Environment 'Windows Kits\10')
+      }
+    }
+  }
+
+  $seen = @{}
+  foreach ($candidate in $rawCandidates) {
+    try {
+      $fullPath = [System.IO.Path]::GetFullPath($candidate.path)
+    } catch {
+      continue
+    }
+    if (-not $seen.ContainsKey($fullPath)) {
+      $seen[$fullPath] = $true
+      [pscustomobject]@{
+        source = $candidate.source
+        path = $fullPath
+      }
+    }
+  }
+}
+
 function Get-CaptureCompiler {
+  param([string] $ExplicitWindowsSdkRoot)
+
   $windowsDirectory = [Environment]::GetFolderPath(
     [Environment+SpecialFolder]::Windows
   )
@@ -105,10 +210,11 @@ function Get-CaptureCompiler {
     }
   ) | Select-Object -First 1
 
-  $programFilesX86 = [Environment]::GetEnvironmentVariable('ProgramFiles(x86)')
-  $metadataCandidates = @()
-  if (-not [string]::IsNullOrWhiteSpace($programFilesX86)) {
-    $unionMetadata = Join-Path $programFilesX86 'Windows Kits\10\UnionMetadata'
+  $windowsMetadataItem = $null
+  $windowsSdkSource = $null
+  $resolvedWindowsSdkRoot = $null
+  foreach ($sdkCandidate in @(Get-WindowsSdkRootCandidates -ExplicitRoot $ExplicitWindowsSdkRoot)) {
+    $unionMetadata = Join-Path $sdkCandidate.path 'UnionMetadata'
     if (Test-Path -LiteralPath $unionMetadata -PathType Container) {
       $metadataCandidates = @(
         Get-ChildItem -LiteralPath $unionMetadata -Directory |
@@ -119,9 +225,14 @@ function Get-CaptureCompiler {
               -ErrorAction SilentlyContinue
           }
       )
+      $windowsMetadataItem = @($metadataCandidates) | Select-Object -First 1
+      if ($null -ne $windowsMetadataItem) {
+        $windowsSdkSource = $sdkCandidate.source
+        $resolvedWindowsSdkRoot = $sdkCandidate.path
+        break
+      }
     }
   }
-  $windowsMetadataItem = @($metadataCandidates) | Select-Object -First 1
   $windowsMetadata = $null
   $windowsMetadataVersion = $null
   if ($null -ne $windowsMetadataItem) {
@@ -144,6 +255,8 @@ function Get-CaptureCompiler {
     compiler = $compiler
     windows_metadata = $windowsMetadata
     windows_metadata_version = $windowsMetadataVersion
+    windows_sdk_root = $resolvedWindowsSdkRoot
+    windows_sdk_source = $windowsSdkSource
     runtime_windows = $runtimeWindows
     runtime = $runtime
     drawing = $drawing
@@ -170,6 +283,7 @@ function Initialize-NativeVisualDriver {
 
   Add-Type -TypeDefinition @'
 using System;
+using System.Collections.Generic;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -208,6 +322,55 @@ public static class NativeVisualCaptureDriver
     }
 
     private delegate bool EnumChildProc(IntPtr hwnd, IntPtr lParam);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool EnumWindows(EnumChildProc callback, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint processId);
+
+    [DllImport("user32.dll")]
+    private static extern bool IsWindowVisible(IntPtr hwnd);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetWindow(IntPtr hwnd, uint command);
+
+    public static bool IsTaskMainWindowCandidate(
+        int expectedProcessId, uint processId, bool visible, IntPtr owner, string className)
+    {
+        return expectedProcessId > 0
+            && processId == (uint)expectedProcessId
+            && visible
+            && owner == IntPtr.Zero
+            && String.Equals(className, "Tauri Window", StringComparison.Ordinal);
+    }
+
+    public static IntPtr SelectUniqueTaskWindow(IntPtr[] candidates)
+    {
+        if (candidates.Length > 1)
+            throw new InvalidOperationException("Multiple visible Tauri windows belong to the task process; refusing ambiguous capture.");
+        return candidates.Length == 1 ? candidates[0] : IntPtr.Zero;
+    }
+
+    public static IntPtr FindTaskMainWindow(int expectedProcessId)
+    {
+        var candidates = new List<IntPtr>();
+        EnumChildProc callback = delegate(IntPtr hwnd, IntPtr ignored)
+        {
+            uint processId;
+            GetWindowThreadProcessId(hwnd, out processId);
+            var className = new StringBuilder(256);
+            GetClassName(hwnd, className, className.Capacity);
+            // GW_OWNER = 4. Tao's visible message window is not the Tauri UI.
+            if (IsTaskMainWindowCandidate(expectedProcessId, processId,
+                IsWindowVisible(hwnd), GetWindow(hwnd, 4), className.ToString()))
+                candidates.Add(hwnd);
+            return true;
+        };
+        if (!EnumWindows(callback, IntPtr.Zero))
+            throw new Win32Exception(Marshal.GetLastWin32Error());
+        return SelectUniqueTaskWindow(candidates.ToArray());
+    }
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern bool GetWindowRect(IntPtr hwnd, out RECT rect);
@@ -587,8 +750,30 @@ public static class NativeVisualCaptureDriver
 '@
 }
 
+function Test-CargoToolchain {
+  param(
+    [System.Management.Automation.CommandInfo] $Cargo,
+    [string] $Toolchain
+  )
+
+  if ($null -eq $Cargo) {
+    return $false
+  }
+
+  try {
+    & $Cargo.Source "+$Toolchain" --version *> $null
+    return $LASTEXITCODE -eq 0
+  } catch {
+    return $false
+  }
+}
+
 function Get-PreflightManifest {
-  param([string] $ResolvedOutputRoot, [pscustomobject] $Compiler)
+  param(
+    [string] $ResolvedOutputRoot,
+    [string] $ResolvedPreflightResultPath,
+    [pscustomobject] $Compiler
+  )
 
   $uiAutomationReady = $true
   try {
@@ -608,13 +793,16 @@ function Get-PreflightManifest {
   if ($null -eq $cargo) {
     $cargo = Get-Command cargo -ErrorAction SilentlyContinue
   }
+  $cargoToolchainReady = Test-CargoToolchain `
+    -Cargo $cargo `
+    -Toolchain $requiredRustToolchain
   $git = Get-Command git.exe -ErrorAction SilentlyContinue
   if ($null -eq $git) {
     $git = Get-Command git -ErrorAction SilentlyContinue
   }
 
   return [ordered]@{
-    capture_engine = 'Windows.Graphics.Capture'
+    capture_engine = 'PrintWindow (tool window); Windows.Graphics.Capture (normal window)'
     targeting = 'exact HWND'
     activation_mode = 'non-activating'
     foreground_policy = 'preserve active window'
@@ -637,17 +825,31 @@ function Get-PreflightManifest {
     segment_overlap_ratio = $segmentOverlapRatio
     max_segments_per_surface = $maxSegmentsPerSurface
     surface_file_pattern = $surfaceFilePattern
-    build_command = 'cargo +1.97.1-x86_64-pc-windows-msvc tauri build --no-bundle'
+    required_rust_toolchain = $requiredRustToolchain
+    build_command = "cargo +$requiredRustToolchain tauri build --no-bundle"
     app_executable_relative = 'windows/target/release/codexu-tauri.exe'
     output_root = $ResolvedOutputRoot
+    diagnostic_result_path = $ResolvedPreflightResultPath
+    windows_sdk_root = $Compiler.windows_sdk_root
+    windows_sdk_source = $Compiler.windows_sdk_source
     prerequisites = [ordered]@{
       windows = (
         [Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT
       )
       cargo = ($null -ne $cargo)
+      cargo_toolchain = $cargoToolchainReady
       git = ($null -ne $git)
       helper_source = (Test-Path -LiteralPath $helperSource -PathType Leaf)
-      csharp_compiler = (Test-CompilerReady -Compiler $Compiler)
+      csharp_compiler = (
+        $null -ne $Compiler.compiler -and
+        (Test-Path -LiteralPath $Compiler.compiler -PathType Leaf)
+      )
+      runtime_assemblies = (
+        $null -ne $Compiler.runtime_windows -and
+        (Test-Path -LiteralPath $Compiler.runtime_windows -PathType Leaf) -and
+        (Test-Path -LiteralPath $Compiler.runtime -PathType Leaf) -and
+        (Test-Path -LiteralPath $Compiler.drawing -PathType Leaf)
+      )
       windows_metadata = (
         $null -ne $Compiler.windows_metadata -and
         (Test-Path -LiteralPath $Compiler.windows_metadata -PathType Leaf)
@@ -660,15 +862,74 @@ function Get-PreflightManifest {
   }
 }
 
+function Write-PreflightResult {
+  param(
+    [string] $Path,
+    [string] $RunId,
+    [ValidateSet('ready', 'blocked')]
+    [string] $Status,
+    [System.Collections.IDictionary] $Preflight,
+    [string] $ErrorMessage
+  )
+
+  if ([string]::IsNullOrWhiteSpace($Path)) {
+    return
+  }
+
+  $parent = Split-Path -Parent $Path
+  if (-not (Test-Path -LiteralPath $parent -PathType Container)) {
+    New-Item -ItemType Directory -Path $parent | Out-Null
+  }
+  $temporaryPath = "$Path.$RunId.tmp"
+  $result = [ordered]@{
+    schema_version = 1
+    run_id = $RunId
+    status = $Status
+    error = if ([string]::IsNullOrWhiteSpace($ErrorMessage)) { $null } else { $ErrorMessage }
+    diagnostic_write_performed = $true
+    runtime_writes_performed = $false
+    manifest = $Preflight
+  }
+  try {
+    [System.IO.File]::WriteAllText(
+      $temporaryPath,
+      ($result | ConvertTo-Json -Depth 8),
+      [System.Text.UTF8Encoding]::new($false)
+    )
+    if (Test-Path -LiteralPath $Path) {
+      throw 'Refusing to overwrite an existing preflight result file.'
+    }
+    [System.IO.File]::Move($temporaryPath, $Path)
+  } finally {
+    if (Test-Path -LiteralPath $temporaryPath) {
+      Remove-Item -LiteralPath $temporaryPath -Force
+    }
+  }
+}
+
 function Assert-PreflightReady {
   param([System.Collections.IDictionary] $Preflight)
-  $missing = @(
+  $problems = @()
+  if (-not [bool]$Preflight.prerequisites.cargo) {
+    $problems += 'cargo was not found in PATH; install Rust with rustup and reopen the shell'
+  } elseif (-not [bool]$Preflight.prerequisites.cargo_toolchain) {
+    $toolchain = $Preflight.required_rust_toolchain
+    $problems += (
+      "required Rust toolchain '$toolchain' is unavailable; run " +
+      "'rustup toolchain install $toolchain --profile minimal --component rustfmt'"
+    )
+  }
+
+  $problems += @(
     $Preflight.prerequisites.GetEnumerator() |
-      Where-Object { -not [bool]$_.Value } |
+      Where-Object {
+        $_.Key -notin @('cargo', 'cargo_toolchain') -and
+        -not [bool]$_.Value
+      } |
       ForEach-Object { $_.Key }
   )
-  if ($missing.Count -gt 0) {
-    throw ('Native visual preflight failed: ' + ($missing -join ', '))
+  if ($problems.Count -gt 0) {
+    throw ('Native visual preflight failed: ' + ($problems -join '; '))
   }
 }
 
@@ -685,6 +946,19 @@ function Test-OutputRootIgnored {
   } finally {
     Pop-Location
   }
+}
+
+function Get-CaptureCheckout {
+  param([string] $Root)
+  $branchLines = @(& git -C $Root branch --show-current)
+  if ($LASTEXITCODE -ne 0) { throw 'Could not read the capture checkout branch.' }
+  $branch = ($branchLines -join '').Trim()
+  if ([string]::IsNullOrWhiteSpace($branch)) { $branch = 'detached HEAD' }
+  $shaLines = @(& git -C $Root rev-parse HEAD)
+  if ($LASTEXITCODE -ne 0) { throw 'Could not read the capture checkout commit.' }
+  $sha = ($shaLines -join '').Trim()
+  if ($sha -notmatch '^[0-9a-f]{40,64}$') { throw 'Invalid capture checkout commit.' }
+  return [ordered]@{ branch = $branch; sha = $sha }
 }
 
 function Invoke-LoggedProcess {
@@ -936,6 +1210,7 @@ function Wait-TaskWindow {
     [IntPtr] $ExpectedForeground
   )
   $deadline = (Get-Date).AddSeconds(60)
+  $taskWindow = [IntPtr]::Zero
   do {
     if ($Process.HasExited) {
       throw 'The task application exited before its main window was ready.'
@@ -945,11 +1220,12 @@ function Wait-TaskWindow {
       -ExpectedForeground $ExpectedForeground `
       -Stage 'startup polling before window preparation'
     $Process.Refresh()
-  } while ($Process.MainWindowHandle -eq [IntPtr]::Zero -and (Get-Date) -lt $deadline)
-  if ($Process.MainWindowHandle -eq [IntPtr]::Zero) {
-    throw 'Timed out waiting for the task application main window.'
+    $taskWindow = [NativeVisualCaptureDriver]::FindTaskMainWindow($Process.Id)
+  } while ($taskWindow -eq [IntPtr]::Zero -and (Get-Date) -lt $deadline)
+  if ($taskWindow -eq [IntPtr]::Zero) {
+    throw 'Timed out waiting for a visible, unowned Tauri Window belonging to the task process.'
   }
-  return $Process.MainWindowHandle
+  return $taskWindow
 }
 
 function Assert-ForegroundPreserved {
@@ -964,6 +1240,24 @@ function Assert-ForegroundPreserved {
   if ($actualForeground -ne $ExpectedForeground) {
     throw "Background capture changed the active foreground window during $Stage."
   }
+}
+
+function Wait-WebViewDocument {
+  param([IntPtr] $Window)
+  $condition = New-Object System.Windows.Automation.PropertyCondition(
+    [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+    [System.Windows.Automation.ControlType]::Document
+  )
+  $deadline = (Get-Date).AddSeconds(30)
+  do {
+    $root = [System.Windows.Automation.AutomationElement]::FromHandle($Window)
+    $document = $root.FindFirst(
+      [System.Windows.Automation.TreeScope]::Descendants, $condition
+    )
+    if ($null -ne $document) { return }
+    Start-Sleep -Milliseconds 150
+  } while ((Get-Date) -lt $deadline)
+  throw 'The task WebView2 did not expose a UIA Document within 30 seconds.'
 }
 
 function Find-ElementByAutomationId {
@@ -993,7 +1287,18 @@ function Wait-ForElement {
     }
     Start-Sleep -Milliseconds 150
   } while ((Get-Date) -lt $deadline)
-  throw "Timed out waiting for UI element $AutomationId."
+  $root = [System.Windows.Automation.AutomationElement]::FromHandle($Window)
+  $documentCondition = New-Object System.Windows.Automation.PropertyCondition(
+    [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+    [System.Windows.Automation.ControlType]::Document
+  )
+  $document = $root.FindFirst(
+    [System.Windows.Automation.TreeScope]::Descendants, $documentCondition
+  )
+  $renderer = [NativeVisualCaptureDriver]::FindRenderer($Window)
+  # Report structure only, never accessible names or user content.
+  throw ("Timed out waiting for UI element $AutomationId. " +
+    "UIA Document present: $($null -ne $document); renderer HWND present: $($renderer -ne [IntPtr]::Zero).")
 }
 
 function Select-DashboardTab {
@@ -1245,6 +1550,7 @@ function Capture-DashboardSurfaceSegments {
       limited_by_page_end = $atPageEnd
       file = $outputPath
       physical_frame = $capture.physical_frame
+      capture_engine = $capture.engine
       bytes = $capture.bytes
     }
     $records += $record
@@ -1317,26 +1623,34 @@ function Invoke-GraphicsCapture {
     [string] $OutputPath,
     [string] $LogPath
   )
-  $output = @(& $CaptureTool ([long]$Window) $OutputPath 2>&1)
-  $exitCode = $LASTEXITCODE
-  $output | Add-Content -LiteralPath $LogPath -Encoding utf8
+  $priorErrorPreference = $ErrorActionPreference
+  try {
+    $ErrorActionPreference = 'Continue'
+    $output = @(& $CaptureTool ([long]$Window) $OutputPath 2>&1)
+    $exitCode = $LASTEXITCODE
+  } finally {
+    $ErrorActionPreference = $priorErrorPreference
+  }
+  $output | ForEach-Object { "$_" } | Add-Content -LiteralPath $LogPath -Encoding utf8
   if ($exitCode -ne 0) {
-    throw "Windows Graphics Capture failed with exit code $exitCode."
+    foreach ($line in $output) { [Console]::Error.WriteLine("$line") }
+    throw "Native window capture failed with exit code $exitCode."
   }
   if (-not (Test-Path -LiteralPath $OutputPath -PathType Leaf)) {
-    throw 'Windows Graphics Capture did not create the expected local PNG.'
+    throw 'Native window capture did not create the expected local PNG.'
   }
   $file = Get-Item -LiteralPath $OutputPath
   if ($file.Length -le 0) {
-    throw 'Windows Graphics Capture created an empty PNG.'
+    throw 'Native window capture created an empty PNG.'
   }
   $captureLine = @($output | Where-Object { "$_" -match '^CAPTURE_OK ' }) |
     Select-Object -Last 1
-  if ($null -eq $captureLine -or "$captureLine" -notmatch '^CAPTURE_OK (?<size>\d+x\d+)$') {
-    throw 'Windows Graphics Capture did not report a physical frame size.'
+  if ($null -eq $captureLine -or "$captureLine" -notmatch '^CAPTURE_OK (?<size>\d+x\d+) (?<engine>PrintWindow|Windows\.Graphics\.Capture)$') {
+    throw 'Native window capture did not report its frame size and engine.'
   }
   return [ordered]@{
     physical_frame = $Matches.size
+    engine = $Matches.engine
     bytes = $file.Length
   }
 }
@@ -1418,11 +1732,18 @@ function Invoke-MaximizedCapture {
     $sizeRecord.window = Set-MaximizedWindow `
       -Window $window `
       -ExpectedForeground $foregroundBefore
+    Wait-WebViewDocument -Window $window
     [void](Wait-ForElement -Window $window -AutomationId 'dashboard-home-tab-tasks')
     $renderer = [NativeVisualCaptureDriver]::FindRenderer($window)
     if ($renderer -eq [IntPtr]::Zero) {
       throw 'Could not identify the task application renderer child HWND.'
     }
+    $sizeRecord.accessibility = [ordered]@{
+      document_present = $true
+      dashboard_tab_present = $true
+      renderer_present = $true
+    }
+    Save-WorkflowManifest
     Update-TaskProcessRecords -RootProcessId $process.Id -Records $records
 
     if ($captureOverview) {
@@ -1440,6 +1761,7 @@ function Invoke-MaximizedCapture {
         framing = 'page top in maximized window'
         file = $overviewPath
         physical_frame = $overviewCapture.physical_frame
+        capture_engine = $overviewCapture.engine
         bytes = $overviewCapture.bytes
       }
       Save-WorkflowManifest
@@ -1507,14 +1829,37 @@ function Invoke-MaximizedCapture {
   }
 }
 
+$resolvedPreflightResultPath = Get-NormalizedPreflightResultPath `
+  -RequestedPath $PreflightResultPath
+if ($null -ne $resolvedPreflightResultPath -and -not $PreflightOnly) {
+  throw 'PreflightResultPath requires -PreflightOnly.'
+}
+$preflightRunId = [guid]::NewGuid().ToString('N')
 $resolvedOutputRoot = Get-NormalizedOutputRoot -RequestedPath $OutputRoot
-$compiler = Get-CaptureCompiler
+$compiler = Get-CaptureCompiler -ExplicitWindowsSdkRoot $WindowsSdkRoot
 $preflight = Get-PreflightManifest `
   -ResolvedOutputRoot $resolvedOutputRoot `
+  -ResolvedPreflightResultPath $resolvedPreflightResultPath `
   -Compiler $compiler
-Assert-PreflightReady -Preflight $preflight
+try {
+  Assert-PreflightReady -Preflight $preflight
+} catch {
+  Write-PreflightResult `
+    -Path $resolvedPreflightResultPath `
+    -RunId $preflightRunId `
+    -Status 'blocked' `
+    -Preflight $preflight `
+    -ErrorMessage $_.Exception.Message
+  throw
+}
 
 if ($PreflightOnly) {
+  Write-PreflightResult `
+    -Path $resolvedPreflightResultPath `
+    -RunId $preflightRunId `
+    -Status 'ready' `
+    -Preflight $preflight `
+    -ErrorMessage $null
   Write-Output (
     'NATIVE_VISUAL_PREFLIGHT=' +
     ($preflight | ConvertTo-Json -Depth 6 -Compress)
@@ -1540,17 +1885,13 @@ New-Item -ItemType Directory -Path (
 ) | Out-Null
 
 $script:manifestPath = Join-Path $resolvedOutputRoot 'manifest.json'
-$branch = (& git -C $repositoryRoot branch --show-current).Trim()
-$sha = (& git -C $repositoryRoot rev-parse HEAD).Trim()
+$checkout = Get-CaptureCheckout -Root $repositoryRoot
 $script:workflowManifest = [ordered]@{
   status = 'running'
   started_utc = (Get-Date).ToUniversalTime().ToString('o')
   completed_utc = $null
-  checkout = [ordered]@{
-    branch = $branch
-    sha = $sha
-  }
-  capture_engine = 'Windows.Graphics.Capture'
+  checkout = $checkout
+  capture_engine = 'PrintWindow (tool window); Windows.Graphics.Capture (normal window)'
   targeting = 'exact HWND'
   activation_mode = 'non-activating'
   foreground_policy = 'preserve active window'
@@ -1599,7 +1940,7 @@ try {
     Invoke-LoggedProcess `
       -FileName $cargo.Source `
       -Arguments @(
-        '+1.97.1-x86_64-pc-windows-msvc',
+        "+$requiredRustToolchain",
         'tauri',
         'build',
         '--no-bundle'

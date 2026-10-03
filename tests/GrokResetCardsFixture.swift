@@ -100,8 +100,8 @@ struct GrokResetCardsFixture {
         let grok = ResetCardPresentation.localKey(kind: "grok", profileID: "fixture-grok")
         let other = ResetCardPresentation.codexKey("fixture-other")
         try expect(
-            ResetCardPresentation.prioritizedOrder([other, pin, grok], expiring: [grok], pinnedAccountID: pin) == [pin, grok, other],
-            "cross-provider pin stays first and expiring Grok becomes second")
+            ResetCardPresentation.savedOrder([other, pin, grok], pinnedAccountID: pin) == [pin, other, grok],
+            "cross-provider pin stays first without expiry reordering")
         let valid = now.addingTimeInterval(3600)
         try expect(ResetCardPresentation.codexIsExpiring(available: 1, expiries: [valid], fetchedAt: now, readSucceeded: true, now: now), "fresh Codex card expires")
         try expect(
@@ -526,26 +526,26 @@ struct GrokResetCardsFixture {
         try expect(components.hour == 8, "epoch is 08:00 in Shanghai")
     }
 
-    // Sorting contract: pinned first, expiring second, everything else stable.
+    // Sorting contract: only the explicit pin overrides saved order.
     private static func testSorting() throws {
         try expect(
-            ResetCardPresentation.prioritizedOrder(["p1", "g1", "p2", "g2"], expiring: ["g1"], pinnedAccountID: "p1")
+            ResetCardPresentation.savedOrder(["p1", "g1", "p2", "g2"], pinnedAccountID: "p1")
                 == ["p1", "g1", "p2", "g2"],
-            "pinned first, expiring second, rest unchanged")
+            "pinned first, saved order unchanged")
         try expect(
-            ResetCardPresentation.prioritizedOrder(["g1", "p1", "p2"], expiring: ["g1"], pinnedAccountID: "p1")
+            ResetCardPresentation.savedOrder(["g1", "p1", "p2"], pinnedAccountID: "p1")
                 == ["p1", "g1", "p2"],
-            "expiring account moves behind pinned")
+            "explicit pin moves first")
         try expect(
-            ResetCardPresentation.prioritizedOrder(["a", "b", "c"], expiring: ["c", "a"], pinnedAccountID: nil)
-                == ["a", "c", "b"],
-            "without pinned, expiring accounts keep their relative order first")
+            ResetCardPresentation.savedOrder(["a", "b", "c"], pinnedAccountID: nil)
+                == ["a", "b", "c"],
+            "without pinned, accounts stay in their saved order")
         try expect(
-            ResetCardPresentation.prioritizedOrder(["a", "b"], expiring: [], pinnedAccountID: "missing")
+            ResetCardPresentation.savedOrder(["a", "b"], pinnedAccountID: "missing")
                 == ["a", "b"],
             "unknown pinned id is ignored")
         try expect(
-            ResetCardPresentation.prioritizedOrder(["a", "b"], expiring: ["zz"], pinnedAccountID: nil)
+            ResetCardPresentation.savedOrder(["a", "b"], pinnedAccountID: nil)
                 == ["a", "b"],
             "unknown expiring id changes nothing")
     }

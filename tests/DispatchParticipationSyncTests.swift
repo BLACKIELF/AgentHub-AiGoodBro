@@ -658,11 +658,24 @@ test("conflicting alias and profile mapping fails closed") {
     try require(f.contents() == originals)
 }
 
-test("multiple hub homes for one account fail closed") {
+test("desktop mirror does not block the explicitly selected managed home") {
     let f = try DispatchFixture()
     try mutate(f.paths.hubConfig) { hub in
         var accounts = hub["accounts"] as! [[String: Any]]
         accounts.append(["alias": "fixture-mirror", "home": f.root.appendingPathComponent("system-home").path])
+        hub["accounts"] = accounts
+    }
+    _ = try f.sync.setParticipation(true, identity: f.identity)
+    try f.checkState(enabled: true, code: "D")
+    let accounts = try object(f.paths.hubConfig)["accounts"] as! [[String: Any]]
+    try require(accounts[2]["dispatchDisabled"] == nil)
+}
+
+test("two aliases for the selected home still fail without changing files") {
+    let f = try DispatchFixture()
+    try mutate(f.paths.hubConfig) { hub in
+        var accounts = hub["accounts"] as! [[String: Any]]
+        accounts.append(["alias": "fixture-duplicate", "home": f.identity.homePath])
         hub["accounts"] = accounts
     }
     let originals = try f.contents()
@@ -707,12 +720,53 @@ test("mismatched account ID in an email mirror fails closed") {
     try require(f.contents() == originals)
 }
 
-test("missing hub account fails closed") {
+test("missing hub account can opt out without creating or changing a Hub identity") {
+    let f = try DispatchFixture()
+    try mutate(f.paths.hubConfig) { hub in
+        hub["accounts"] = (hub["accounts"] as! [[String: Any]]).filter { $0["alias"] as? String != "fixture-primary" }
+    }
+    try mutate(f.paths.snapshot) { snapshot in
+        var profiles = snapshot["profiles"] as! [[String: Any]]
+        for i in [0, 1] { profiles[i]["automaticSwitchParticipation"] = true; profiles[i]["prioritizeDispatch"] = true }
+        snapshot["profiles"] = profiles
+    }
+    let hubBefore = try Data(contentsOf: f.paths.hubConfig)
+    _ = try f.sync.setParticipation(false, identity: f.identity)
+    let profiles = try object(f.paths.snapshot)["profiles"] as! [[String: Any]]
+    try require(profiles[0]["automaticSwitchParticipation"] as? Bool == false)
+    try require(profiles[1]["automaticSwitchParticipation"] as? Bool == false)
+    try require(profiles[0]["prioritizeDispatch"] as? Bool == false)
+    try require(profiles[2]["automaticSwitchParticipation"] as? Bool == true)
+    try require(Data(contentsOf: f.paths.hubConfig) == hubBefore)
+    try require((object(f.paths.codes)["accounts"] as! [[String: Any]]).count == 1)
+}
+
+test("an empty Hub catalog does not prevent opting out") {
+    let f = try DispatchFixture(catalogExists: false)
+    try mutate(f.paths.hubConfig) { $0["accounts"] = [[String: Any]]() }
+    _ = try f.sync.setParticipation(false, identity: f.identity)
+    let profiles = try object(f.paths.snapshot)["profiles"] as! [[String: Any]]
+    try require(profiles[0]["automaticSwitchParticipation"] as? Bool == false)
+    try require((object(f.paths.codes)["accounts"] as! [[String: Any]]).isEmpty)
+}
+
+test("new managed account joins Hub, numbering and priority in one transaction") {
     let f = try DispatchFixture()
     try mutate(f.paths.hubConfig) { $0["accounts"] = [(($0["accounts"] as! [[String: Any]])[1])] }
-    let originals = try f.contents()
-    try expectError(.ambiguousAccount) { _ = try f.sync.setParticipation(true, identity: f.identity) }
-    try require(f.contents() == originals)
+    _ = try f.sync.apply(.priority(true), identity: f.identity)
+    let accounts = try object(f.paths.hubConfig)["accounts"] as! [[String: Any]]
+    try require(accounts.count == 2)
+    try require(accounts[1]["home"] as? String == f.identity.homePath)
+    try require(accounts[1]["dispatchDisabled"] as? Bool == false)
+    let profiles = try object(f.paths.snapshot)["profiles"] as! [[String: Any]]
+    try require(profiles[0]["automaticSwitchParticipation"] as? Bool == true)
+    try require(profiles[0]["prioritizeDispatch"] as? Bool == true)
+    let entries = try object(f.paths.codes)["accounts"] as! [[String: Any]]
+    try require(entries.last?["profileId"] as? String == f.identity.profileID)
+    try require(entries.last?["alias"] as? String == accounts[1]["alias"] as? String)
+    let first = try f.contents()
+    _ = try f.sync.apply(.priority(true), identity: f.identity)
+    try require(f.contents() == first)
 }
 
 for identityKind in ["email", "home", "account-id", "missing-email"] {

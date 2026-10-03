@@ -8,11 +8,14 @@ struct MessageChannelsSettingsView: View {
     @State private var telegramToken = ""
     @State private var telegramTarget = ""
     @State private var weChatKey = ""
+    @State private var personalPairingCode = ""
+    @State private var personalTextDraft = ""
+    @State private var showingPersonalText = false
 
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Text(language.text("Telegram 与企业微信", "Telegram and WeCom")).font(.title2.weight(.semibold))
+                Text(language.text("微信与其他通知", "WeChat and other notifications")).font(.title2.weight(.semibold))
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer()
                 Button(language.text("完成", "Done")) { dismiss() }.keyboardShortcut(.cancelAction)
@@ -22,6 +25,7 @@ struct MessageChannelsSettingsView: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text(language.text("通知渠道", "Notification channels")).font(.headline)
                 channelStatus("Telegram", phase: controller.telegramPhase)
+                channelStatus(language.text("个人微信", "Personal WeChat"), phase: controller.personalWeChatPhase)
                 channelStatus(language.text("企业微信群机器人", "WeCom group bot"), phase: controller.weChatPhase)
                 ForEach(Array(recentOutcomes.enumerated()), id: \.offset) { _, outcome in
                     HStack {
@@ -37,14 +41,46 @@ struct MessageChannelsSettingsView: View {
                 )
                 .font(.caption).foregroundStyle(.secondary)
             }.padding(.horizontal, 20).padding(.vertical, 10)
+            if controller.personalWeChatEnabled {
+                DisclosureGroup(language.text("发送微信文本", "Send WeChat text"), isExpanded: $showingPersonalText) {
+                    TextEditor(text: $personalTextDraft)
+                        .frame(height: 90)
+                        .accessibilityLabel(language.text("微信发送内容", "WeChat message text"))
+                        .accessibilityIdentifier("wechat-message-text")
+                        .disabled(controller.actionInFlight)
+                    Button(language.text("发送到已绑定的微信", "Send to paired WeChat")) {
+                        let submitted = personalTextDraft
+                        controller.sendPersonalWeChatText(submitted) { accepted in
+                            if accepted, personalTextDraft == submitted { personalTextDraft = "" }
+                        }
+                    }
+                    .accessibilityIdentifier("wechat-send-text")
+                    .disabled(
+                        controller.actionInFlight || !controller.personalWeChatConnected || !controller.personalWeChatHasContext
+                            || personalTextDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                            || personalTextDraft.utf8.count > WeChatMessageChannel.contentByteLimit)
+                }.padding(.horizontal, 20).padding(.bottom, 10)
+            }
             MessageChannelsView(
                 telegramPhase: controller.telegramPhase,
-                weChatCapabilities: WeChatChannelCapabilities.all(workGroupBotPhase: controller.weChatPhase),
+                weChatCapabilities: WeChatChannelCapabilities.all(
+                    workGroupBotPhase: controller.weChatPhase,
+                    personalPhase: controller.personalWeChatPhase),
                 telegramEnabled: Binding(get: { controller.telegramEnabled }, set: { controller.setEnabled($0, for: .telegram) }),
                 telegramTokenDraft: $telegramToken,
                 telegramTargetDraft: $telegramTarget,
                 weChatEnabled: Binding(get: { controller.weChatEnabled }, set: { controller.setEnabled($0, for: .weChat) }),
                 weChatKeyDraft: $weChatKey,
+                weChatMessageOptions: Binding(
+                    get: { controller.weChatMessageOptions },
+                    set: { controller.setWeChatMessageOptions($0) }),
+                personalWeChatEnabled: Binding(get: { controller.personalWeChatEnabled }, set: { controller.setEnabled($0, for: .personalWeChat) }),
+                personalPairingCode: $personalPairingCode,
+                personalWeChatConnected: controller.personalWeChatConnected,
+                personalWeChatHasContext: controller.personalWeChatHasContext,
+                personalLoginInProgress: controller.personalLoginInProgress,
+                personalLoginQRCode: controller.personalLoginQRCode,
+                personalLoginNeedsCode: controller.personalLoginNeedsCode,
                 onSaveTelegram: {
                     let submittedToken = telegramToken
                     let submittedTarget = telegramTarget
@@ -63,16 +99,38 @@ struct MessageChannelsSettingsView: View {
                     }
                 },
                 onTestWeChat: { controller.sendTest(.weChat) },
+                onConnectPersonalWeChat: { controller.connectPersonalWeChat() },
+                onCancelPersonalWeChat: { controller.cancelPersonalWeChatLogin() },
+                onSubmitPersonalWeChatCode: { controller.submitPersonalWeChatCode($0) },
+                onTestPersonalWeChat: { controller.sendTest(.personalWeChat) },
                 onOpenHelp: { NSWorkspace.shared.open($0) },
                 actionInFlight: controller.actionInFlight,
-                statusText: controller.statusText
+                statusText: controller.statusText,
+                personalWeChatNeedsAuthorization: controller.personalWeChatNeedsAuthorization,
+                personalWeChatBindingMissing: controller.personalWeChatBindingMissing,
+                personalWeChatRestoreInProgress: controller.personalWeChatRestoreInProgress,
+                personalWeChatStatusText: controller.personalWeChatStatusText,
+                onRestorePersonalWeChat: { controller.restorePersonalWeChatConnection() },
+                personalChatEnabled: Binding(get: { controller.personalChatEnabled }, set: { controller.setPersonalChatEnabled($0) }),
+                personalChatThreadID: Binding(get: { controller.personalChatThreadID }, set: { controller.setPersonalChatThread($0) }),
+                personalChatTargets: controller.personalChatTargets,
+                personalAutomaticThreadID: controller.personalAutomaticThreadID,
+                personalBotIsReplying: controller.personalBotIsReplying,
+                onRefreshPersonalChatTargets: { controller.refreshPersonalChatTargets() },
+                onOpenPersonalChat: {
+                    if let url = CodexSessionLink.url(threadID: controller.personalEffectiveChatThreadID) { NSWorkspace.shared.open(url) }
+                }
             )
         }
         .frame(minWidth: 320, idealWidth: 580, maxWidth: 580, minHeight: 280, idealHeight: 680, maxHeight: 680)
+        .onAppear { controller.openPersonalWeChatSettings() }
         .onDisappear {
             telegramToken = ""
             telegramTarget = ""
             weChatKey = ""
+            personalPairingCode = ""
+            personalTextDraft = ""
+            controller.cancelPersonalWeChatLogin()
         }
     }
     private func channelStatus(_ title: String, phase: MessageChannelPhase) -> some View {

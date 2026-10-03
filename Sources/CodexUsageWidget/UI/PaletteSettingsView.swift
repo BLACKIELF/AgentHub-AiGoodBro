@@ -100,7 +100,11 @@ struct PaletteLibraryView: View {
 
     var body: some View {
         ZStack {
-            LiquidGlassWindowBackdrop(colorScheme: colorScheme)
+            if settings.paletteCatalog.resolve(id: settings.paletteID, appearance: PaletteAppearance(colorScheme)).identity.paletteID == PaletteCatalog.defaultPaletteID {
+                LiquidGlassWindowBackdrop(colorScheme: colorScheme)
+            } else {
+                WorkspaceGlassBackdrop().ignoresSafeArea()
+            }
 
             VStack(spacing: 0) {
                 HStack {
@@ -117,8 +121,8 @@ struct PaletteLibraryView: View {
                     .buttonStyle(.plain)
                     .frame(width: 40, height: 34)
                     .contentShape(Rectangle())
-                    .disabled(settings.paletteID == PaletteCatalog.defaultPaletteID)
-                    .opacity(settings.paletteID == PaletteCatalog.defaultPaletteID ? 0.34 : 1)
+                    .disabled(settings.paletteID == PaletteCatalog.initialPaletteID)
+                    .opacity(settings.paletteID == PaletteCatalog.initialPaletteID ? 0.34 : 1)
                     .help(settings.language.text("恢复默认配色", "Restore Default Palette"))
                     .accessibilityLabel(settings.language.text("恢复默认配色", "Restore Default Palette"))
                 }
@@ -146,6 +150,7 @@ struct PaletteLibraryView: View {
             }
         }
         .frame(minWidth: 660, minHeight: 300)
+        .environment(\.workspaceGlass, settings.workspaceGlass)
         .appVisualEnvironment(
             catalog: settings.paletteCatalog,
             paletteID: settings.paletteID,
@@ -287,67 +292,82 @@ private struct PaletteArtworkHalf: View {
         GeometryReader { geometry in
             let size = geometry.size
             ZStack {
-                LinearGradient(
-                    colors: backgroundColors,
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                )
-
-                Circle()
-                    .fill(
-                        RadialGradient(
-                            colors: [tokens.accent.highlight.color.opacity(0.92), tokens.accent.primary.color.opacity(0)],
-                            center: .center,
-                            startRadius: 0,
-                            endRadius: max(size.width, size.height) * 0.44
-                        )
+                if tokens.identity.paletteID == PaletteCatalog.defaultPaletteID {
+                    LinearGradient(
+                        colors: appearance == .light
+                            ? [Color(red: 0.96, green: 0.97, blue: 0.98), Color(red: 0.80, green: 0.83, blue: 0.87)]
+                            : [Color(red: 0.28, green: 0.30, blue: 0.33), Color(red: 0.12, green: 0.14, blue: 0.17)],
+                        startPoint: .topLeading, endPoint: .bottomTrailing
                     )
-                    .frame(width: size.width * 1.18, height: size.width * 1.18)
-                    .offset(x: -size.width * 0.34, y: -size.height * 0.28)
-                    .blur(radius: 8)
-
-                PaletteFlowBand(amplitude: 0.20, verticalPosition: 0.34)
-                    .fill(
-                        LinearGradient(
-                            colors: [tokens.accent.secondary.color.opacity(0.22), tokens.accent.secondaryStrong.color.opacity(0.92)],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
+                    PaletteFlowBand(amplitude: 0.20, verticalPosition: 0.34)
+                        .fill(Color.white.opacity(appearance == .light ? 0.50 : 0.12))
+                    LinearGradient(
+                        colors: [Color.white.opacity(appearance == .light ? 0.50 : 0.18), .clear],
+                        startPoint: .topLeading, endPoint: .bottomTrailing
                     )
-                    .blur(radius: 1.2)
-
-                PaletteFlowBand(amplitude: 0.15, verticalPosition: 0.63)
-                    .fill(
-                        LinearGradient(
-                            colors: [tokens.quota.primary.start.color.opacity(0.35), tokens.quota.primary.end.color.opacity(0.94)],
-                            startPoint: .leading,
-                            endPoint: .trailing
-                        )
+                } else {
+                    LinearGradient(
+                        colors: backgroundColors,
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
                     )
-                    .offset(y: size.height * 0.10)
 
-                Ellipse()
-                    .fill(
-                        LinearGradient(
-                            colors: [tokens.ornament.metal.color.opacity(0.76), tokens.accent.highlight.color.opacity(0.08)],
-                            startPoint: .top,
-                            endPoint: .bottom
+                    Circle()
+                        .fill(
+                            RadialGradient(
+                                colors: [tokens.accent.highlight.color.opacity(0.92), tokens.accent.primary.color.opacity(0)],
+                                center: .center,
+                                startRadius: 0,
+                                endRadius: max(size.width, size.height) * 0.44
+                            )
                         )
-                    )
-                    .frame(width: size.width * 0.76, height: size.height * 0.23)
-                    .rotationEffect(.degrees(-23))
-                    .offset(x: size.width * 0.30, y: -size.height * 0.26)
-                    .blur(radius: 2.5)
+                        .frame(width: size.width * 1.18, height: size.width * 1.18)
+                        .offset(x: -size.width * 0.34, y: -size.height * 0.28)
+                        .blur(radius: 8)
 
-                LinearGradient(
-                    colors: [
-                        Color.white.opacity(appearance == .light ? 0.48 : 0.16),
-                        Color.clear,
-                        Color.black.opacity(appearance == .dark ? 0.20 : 0.04),
-                    ],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
+                    PaletteFlowBand(amplitude: 0.20, verticalPosition: 0.34)
+                        .fill(
+                            LinearGradient(
+                                colors: [tokens.accent.secondary.color.opacity(0.22), tokens.accent.secondaryStrong.color.opacity(0.92)],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        )
+                        .blur(radius: 1.2)
+
+                    PaletteFlowBand(amplitude: 0.15, verticalPosition: 0.63)
+                        .fill(
+                            LinearGradient(
+                                colors: [tokens.quota.primary.start.color.opacity(0.35), tokens.quota.primary.end.color.opacity(0.94)],
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            )
+                        )
+                        .offset(y: size.height * 0.10)
+
+                    Ellipse()
+                        .fill(
+                            LinearGradient(
+                                colors: [tokens.ornament.metal.color.opacity(0.76), tokens.accent.highlight.color.opacity(0.08)],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                        )
+                        .frame(width: size.width * 0.76, height: size.height * 0.23)
+                        .rotationEffect(.degrees(-23))
+                        .offset(x: size.width * 0.30, y: -size.height * 0.26)
+                        .blur(radius: 2.5)
+
+                    LinearGradient(
+                        colors: [
+                            Color.white.opacity(appearance == .light ? 0.48 : 0.16),
+                            Color.clear,
+                            Color.black.opacity(appearance == .dark ? 0.20 : 0.04),
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                }
             }
             .compositingGroup()
         }

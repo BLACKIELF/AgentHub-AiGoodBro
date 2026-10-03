@@ -29,7 +29,7 @@ enum FloatingBubbleEvidence {
             }
             return TokenMonitorFloatingBubbleAccount(
                 providerID: AgentNavCatalog.codexID, providerName: "Codex",
-                accountID: profile.id, accountName: AccountDisplay.profileName(profile, allProfiles: store.profiles),
+                accountID: profile.id, accountName: AccountDisplay.numberedName(profile, allProfiles: store.profiles),
                 isLoggedIn: loggedIn, metrics: metrics)
         }
         for profile in localAccounts.profiles {
@@ -39,10 +39,11 @@ enum FloatingBubbleEvidence {
             let stale = localAccounts.stale.contains(profile.id) || quota.map { now.timeIntervalSince($0.fetchedAt) > 300 } == true
             var metrics = (quota?.windows ?? []).map { window in
                 let valid = window.usedPercent.isFinite && (0...100).contains(window.usedPercent)
+                let expired = provider.id == "grok" && window.resetsAt.map { $0 <= now } == true
                 return TokenMonitorFloatingBubbleMetric(
                     id: window.id, name: window.label,
                     sourceID: "\(provider.id):\(profile.id):\(window.id)", fetchedAt: quota?.fetchedAt,
-                    isStale: stale, isAvailable: loggedIn,
+                    isStale: stale || expired, isAvailable: loggedIn && !expired,
                     value: valid ? .percentRemaining(100 - window.usedPercent) : .unknown,
                     resetLabel: window.resetsAt.map { language.dateTime($0) } ?? "—")
             }

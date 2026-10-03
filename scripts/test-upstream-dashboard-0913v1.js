@@ -8,7 +8,7 @@ const crypto = require('node:crypto');
 const root = path.resolve(__dirname, '..');
 const resource = name => fs.readFileSync(path.join(root,'Resources/UpstreamCharts',name),'utf8');
 class Element {
-  constructor(attrs = {}) { this.attrs = attrs; this.hidden = false; this.value = ''; this.listeners = {}; this.children = []; this.style = {}; this.textContent = ''; this.classes = new Set(); this.classList = {add:x => this.classes.add(x)}; }
+  constructor(attrs = {}) { this.attrs = attrs; this.hidden = false; this.value = ''; this.listeners = {}; this.children = []; this.style = {setProperty:(k,v) => { this.style[k] = v; }}; this.textContent = ''; this.classes = new Set(); this.classList = {add:x => this.classes.add(x)}; }
   set textContent(value) { this.text = value; this.children = []; }
   get textContent() { return this.text; }
   setAttribute(k,v) { this.attrs[k] = v; }
@@ -33,10 +33,10 @@ class Element {
   get innerHTML() { return this.html; }
   querySelectorAll(selector) { const key = selector.slice(1,-1); return this.children.filter(x => x.attrs[key] !== undefined); }
 }
-const ids = Object.fromEntries(['context','overview','trends','details','calendar','month','group','from','to','date','bars','legend','selection','dimensions','period','day-summary','day-total','day-tools','hover-tooltip'].map(id => [id,new Element()]));
+const ids = Object.fromEntries(['context','charts','overview','trends','details','calendar','month','group','from','to','date','bars','legend','selection','dimensions','period','day-summary','day-total','day-tools','day-donut','hover-tooltip'].map(id => [id,new Element()]));
 ids.group.value = 'client'; ids.period.value = 'day';
 const tabs = ['overview','trends','details'].map(mode => new Element({'data-mode':mode}));
-const document = {documentElement:{clientWidth:650,clientHeight:320},querySelector:()=>new Element(),getElementById:id => ids[id], querySelectorAll:selector => selector === '[data-mode]' ? tabs : [], createElement:() => new Element()};
+const document = {documentElement:{clientWidth:650,clientHeight:320},body:new Element(),querySelector:()=>new Element(),getElementById:id => ids[id], querySelectorAll:selector => selector === '[data-mode]' ? tabs : [], createElement:() => new Element(), createElementNS:() => new Element()};
 const window = {};
 const context = vm.createContext({window,document,Intl,Date,Map,Set,Number,Error,TextEncoder});
 vm.runInContext(resource('usageCharts.js'),context);
@@ -68,6 +68,36 @@ const selectedDayDetails = () => {
 };
 render(fixture);
 assert.equal(JSON.stringify(fixture),before);
+assert.equal(ids.overview.hidden, false);
+assert.equal(ids.trends.hidden, false, 'overview keeps bars visible in the split layout');
+assert.equal(ids.details.hidden, true);
+window.__renderTrend(fixture,{language:'en',from:'2026-09-12',to:'2026-09-13'});
+assert.equal(ids.from.value,'2026-09-12');
+assert.equal(ids.to.value,'2026-09-13');
+assert(cell('2026-09-12'), 'selected window still includes recorded days');
+assert.equal(cell('2026-09-11'), undefined, 'leading week padding must not expose out-of-range records');
+cell('2026-09-13').fire('click');
+window.__renderTrend(fixture,{language:'en',from:'2026-09-11',to:'2026-09-12'});
+assert.equal(ids.date.value,'2026-09-12','selection follows the native window instead of retaining a hidden day');
+ids.date.value='2026-09-13'; ids.date.fire('change');
+assert.match(contents(ids.selection),/outside the selected range/);
+assert.match(contents(ids['day-total']),/2026-09-12/,'rejected selection does not change day details');
+
+// Size feedback must be independent of the old host viewport; it must shrink.
+const sizes = [];
+window.requestAnimationFrame = callback => callback();
+window.webkit = {messageHandlers:{chartSize:{postMessage: value => sizes.push(value)}}};
+document.documentElement.scrollHeight = 1400;
+document.body.getBoundingClientRect = () => ({height:420});
+document.body.scrollHeight = 1400;
+window.__renderTrend(JSON.stringify(fixture),{snapshotID:'geometry:1',language:'en'});
+assert.equal(sizes.at(-1).height,424,'size report excludes viewport-backed scrollHeight');
+document.body.getBoundingClientRect = () => ({height:240});
+tabs[1].fire('click');
+assert.equal(sizes.at(-1).height,244,'switching to shorter content shrinks the host');
+delete window.requestAnimationFrame; delete window.webkit;
+console.log('PASS 0921v1 native range boundaries and grow/shrink size feedback (VM contract).');
+render(fixture);
 assert(!cell('2026-09-12').classes.has('unknown'));
 assert(!cell('2026-09-13').classes.has('unknown'));
 assert(cell('2026-09-10').classes.has('unknown'));
@@ -80,6 +110,9 @@ cell('2026-09-12').fire('click');assert.match(selectedDayDetails(),/0 Token · k
 const enginePeriod = {"capabilities":{"tokenComponents":true,"throughput":true},"totalTokens":130,"costUsd":0,"cacheReadTokens":20,"cacheWriteTokens":0,"outputTokens":30,"unclassifiedTokens":0,"timedTokens":130,"timedOutputTokens":30,"timedDurationMs":1000,"clients":{"codex":130},"clientCosts":{},"clientCacheReads":{"codex":20},"clientCacheWrites":{},"clientOutputs":{"codex":30},"clientUnclassifiedTokens":{},"models":{"gpt-5.4":130},"modelCosts":{},"modelCacheReads":{"gpt-5.4":20},"modelCacheWrites":{},"modelOutputs":{"gpt-5.4":30},"modelUnclassifiedTokens":{},"clientModels":{"codex":{"gpt-5.4":130}},"clientModelCosts":{},"projects":{"opaque-244210e48437b6556980a702":{"label":"opaque-244210e48437b6556980a702","tokens":130,"costUsd":0,"clients":{"codex":130}}},"sessions":{"opaque-deb796c0ba7af201b9f3edbe":{"client":"codex","sessionId":"opaque-0a9099c0e3a5c4355f05a10c","totalTokens":130,"costUsd":0,"messageCount":1,"inputTokens":80,"outputTokens":30,"cacheReadTokens":20,"cacheWriteTokens":0,"reasoningTokens":0,"startedAt":"2026-09-12T16:00:00.000Z","lastUsedAt":"2026-09-13T00:00:02.000Z","projectId":"opaque-70a7729322b4764bb2d0ac22","projectLabel":"opaque-244210e48437b6556980a702","title":"opaque-e3b0c44298fc1c149afbf4c8","sessionKind":"","models":{"gpt-5.4":130},"modelCosts":{},"providers":{"openai":130}}}};
 const engine = {schemaVersion:1,collectedAt:"2026-09-13T00:00:10Z",timezone:"Asia/Shanghai",status:"ok",coverage:{"entries":[{"sourceId":"managed-a","providerId":"codex","date":"2026-09-13","metric":"tokens","status":"known"},{"sourceId":"managed-a","providerId":"codex","date":"2026-09-13","metric":"cost","status":"unknown"},{"sourceId":"managed-a","providerId":"codex","date":"2026-09-13","metric":"quota","status":"unknown"}],"days":[{"date":"2026-09-13","status":"known"}],"cost":"unknown"},payload:{aggregate:Object.fromEntries(['today','month','allTime'].map(name=>[name,JSON.parse(JSON.stringify(enginePeriod))])),history:{daily:[{"date":"2026-09-13","tokens":130,"cost":0,"messages":1,"cacheReadTokens":20,"cacheWriteTokens":0,"outputTokens":30,"unclassifiedTokens":0,"tokenComponentsAvailable":true,"activeTimeMs":1000,"perClient":{"codex":{"tokens":130,"cost":0,"messages":1,"unclassifiedTokens":0,"cacheReadTokens":20,"outputTokens":30}},"perModel":{"gpt-5.4":{"tokens":130,"cost":0,"unclassifiedTokens":0,"cacheReadTokens":20,"outputTokens":30}},"tokenIntensity":4,"costIntensity":0,"intensity":0}]}}};
 render(engine);cell('2026-09-13').fire('click');
+assert(ids['day-tools'].children.some(child => child.className === 'tool-row'),'selected day renders real tool bars below the chart');
+assert.equal(ids['day-donut'].children[0].attrs.role,'img','selected day renders an accessible composition chart');
+assert.equal(ids['day-donut'].children[1].className,'day-legend','selected day renders a clear tool legend');
 assert.match(selectedDayDetails(),/Cost \(USD\): Not provided/,'original engine unknown zero must be unavailable');
 assert.match(selectedDayDetails(),/130 Token · known/);
 for (const language of ['zh','en']) {

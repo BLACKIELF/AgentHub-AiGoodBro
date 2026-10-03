@@ -100,7 +100,7 @@ final class AccountFloatingPanelController: NSObject, NSWindowDelegate {
         panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
         panel.standardWindowButton(.zoomButton)?.isHidden = true
         panel.escapeHandler = { [weak self] in self?.close() }
-        panel.contentViewController = NSHostingController(
+        panel.contentView = GlassHostingContainer(
             rootView: CodexAccountMenuView(
                 store: store,
                 settings: settings,
@@ -122,8 +122,11 @@ final class AccountFloatingPanelController: NSObject, NSWindowDelegate {
                     self?.quit()
                 },
                 onClose: { [weak self] in self?.close() },
-                onTogglePinned: { [weak self] in self?.togglePinned() }
-            )
+                onTogglePinned: { [weak self] in self?.togglePinned() },
+                preferredContentSize: Self.expandedSize
+            ),
+            cornerRadius: 20,
+            allowsWindowDragging: false, settings: settings
         )
         self.panel = panel
         position(panel, persisted: persistedState)
@@ -141,7 +144,7 @@ final class AccountFloatingPanelController: NSObject, NSWindowDelegate {
         saveState()
         panel.delegate = nil
         panel.escapeHandler = nil
-        panel.contentViewController = nil
+        panel.contentView = nil
         self.panel = nil
         self.model = nil
         cancellables.removeAll()
@@ -163,7 +166,7 @@ final class AccountFloatingPanelController: NSObject, NSWindowDelegate {
         else { return }
         saveState()
         closingPanel.delegate = nil
-        closingPanel.contentViewController = nil
+        closingPanel.contentView = nil
         panel = nil
         model = nil
         cancellables.removeAll()

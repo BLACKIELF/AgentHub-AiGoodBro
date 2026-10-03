@@ -57,6 +57,11 @@ struct ZCodeCLIQuotaReader {
     func load(profile: LocalCLIProfile) async -> LocalCLIQuotaResult { unsupportedQuota(profile) }
 }
 
+struct AntigravityCLIQuotaReader {
+    func load(profile: LocalCLIProfile) async -> LocalCLIQuotaResult { unsupportedQuota(profile) }
+    static func hasLinkedCache(at root: URL) -> Bool { false }
+}
+
 private func expect(_ condition: @autoclosure () -> Bool, _ message: String) throws {
     if !condition() { throw FixtureFailure.failed(message) }
 }
@@ -107,12 +112,14 @@ private func makeStore(home: URL, support: URL,
                                                identityFingerprint: nil, planLabel: nil, windows: [],
                                                balance: nil, balanceCurrency: nil,
                                                sourceLabel: profile.kind.displayName, messageCode: nil)
-                       }) -> LocalCLIAccountStore {
+                       },
+                       clock: @escaping @Sendable () -> Date = { Date() }) -> LocalCLIAccountStore {
     LocalCLIAccountStore(
         home: home,
         support: support,
         applicationsDirectory: home.appendingPathComponent("empty-system-applications", isDirectory: true),
-        quotaLoader: loader)
+        quotaLoader: loader,
+        clock: clock)
 }
 
 private func storage(_ support: URL) -> URL {
@@ -359,6 +366,49 @@ private func testManagedGrokIsolationAndStaleWriter() throws {
     try expect(fm.fileExists(atPath: auth.path), "unlink preserves Grok CLI-owned credentials")
 }
 
+private actor ClaudeCredentialReadSequence {
+    private var calls = 0
+    func next() -> LocalCLIQuotaResult {
+        calls += 1
+        let available = calls == 1
+        return LocalCLIQuotaResult(
+            state: available ? .available : .unavailable, fetchedAt: Date(), maskedIdentity: nil,
+            identityFingerprint: available ? "synthetic-previous-identity" : nil, planLabel: nil,
+            windows: available ? [.init(id: "session", label: "5-hour", usedPercent: 20, resetsAt: nil)] : [],
+            balance: nil, balanceCurrency: nil, sourceLabel: "Synthetic",
+            messageCode: available ? nil : "local_cli_claude_credentials_changed")
+    }
+}
+
+@MainActor
+private func testClaudeKeychainChangeClearsCachedIdentity() async throws {
+    let paths = try makeRoot("claude-keychain-change")
+    defer { try? FileManager.default.removeItem(at: paths.root) }
+    let executable = paths.home.appendingPathComponent(".local/bin/claude")
+    try Data("synthetic executable".utf8).write(to: executable)
+    guard chmod(executable.path, 0o700) == 0 else { throw FixtureFailure.failed("synthetic Claude chmod") }
+    let directory = paths.home.appendingPathComponent(".claude", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    // This synthetic home is not the system home, so no real Keychain is queried.
+    try Data(#"{"claudeAiOauth":{"accessToken":"synthetic-local-token"}}"#.utf8)
+        .write(to: directory.appendingPathComponent(".credentials.json"))
+    let sequence = ClaudeCredentialReadSequence()
+    let store = makeStore(home: paths.home, support: paths.support, loader: { _ in await sequence.next() })
+    store.discover()
+    guard let profile = store.profiles(for: .claudeCode).first else {
+        throw FixtureFailure.failed("synthetic Claude profile missing")
+    }
+    store.refresh(profile)
+    try await waitForVisibleRefresh(store, ids: [profile.id])
+    try expect(store.quotas[profile.id]?.identityFingerprint == "synthetic-previous-identity",
+               "baseline synthetic identity is cached")
+    store.refresh(profile)
+    try await waitForVisibleRefresh(store, ids: [profile.id])
+    try expect(store.quotas[profile.id]?.state == .unavailable && store.quotas[profile.id]?.windows.isEmpty == true
+               && store.quotas[profile.id]?.identityFingerprint == nil && !store.stale.contains(profile.id),
+               "Keychain change clears the old quota and identity even without a file metadata change")
+}
+
 private actor QuotaReadSequence {
     private var states: [LocalCLIQuotaState] = [.available, .unavailable, .needsLogin, .available]
     func next() -> LocalCLIQuotaResult {
@@ -428,6 +478,17 @@ private func testAuthenticationWithoutQuotaOrTerminalExit() async throws {
         return nil
     }
     try expect(reader.read(profile) == .unknown, "API selection cannot borrow an old Google OAuth credential")
+    for (env, expected) in [
+        ("GOOGLE_API_KEY=synthetic-vertex-key\n", LocalCLIAuthentication.unknown),
+        ("GEMINI_API_KEY=synthetic-gemini-key\n", LocalCLIAuthentication.apiKey),
+    ] {
+        reader.fileReader = { url in
+            if url.lastPathComponent == "settings.json" { return Data(#"{"security":{"auth":{"selectedType":"gemini-api-key"}}}"#.utf8) }
+            if url.lastPathComponent == ".env" { return Data(env.utf8) }
+            return nil
+        }
+        try expect(reader.read(profile) == expected, "Gemini API mode does not borrow a Vertex-only key")
+    }
     let opencode = LocalCLIProfile(id: "synthetic", kind: .openCode, displayName: "Synthetic", configDirectory: directory.path, isDefault: false)
     reader.fileReader = { _ in Data(#"{"anthropic":{"type":"oauth","refresh":"synthetic"},"provider":{"type":"api","key":"synthetic"},"invalid":{"type":"api","key":""}}"#.utf8) }
     try expect(reader.read(opencode) == .providers(2), "OpenCode provider credentials do not require OpenCode Go")
@@ -469,9 +530,576 @@ private func testOpenCodeReusesSavedProviderUnlessUpdateRequested() async throws
     try expect(after == credentials, "reuse and provider-update launch never rewrite stored credentials")
 }
 
+@MainActor
+private func testRenameKeepsOrderAndReportsFailure() throws {
+    let paths = try makeRoot("rename-order")
+    defer { try? FileManager.default.removeItem(at: paths.root) }
+    let store = makeStore(home: paths.home, support: paths.support)
+    store.discover()
+    for name in ["first", "second"] {
+        let directory = paths.root.appendingPathComponent(name)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        store.link(kind: .zcode, directory: directory, name: name)
+    }
+    let before = store.profiles(for: .zcode).filter { !$0.isDefault }
+    guard before.count == 2 else { throw FixtureFailure.failed("rename fixtures missing") }
+    try expect(store.rename(before[0], name: "renamed"), "successful rename reports success")
+    let after = store.profiles(for: .zcode).filter { !$0.isDefault }
+    try expect(after.map(\.id) == before.map(\.id), "renaming first account cannot move it to the end")
+    let saved = try Data(contentsOf: storage(paths.support))
+    try expect(!store.rename(after[0], name: ""), "invalid rename reports failure")
+    try expect(tryData(storage(paths.support)) == saved, "invalid rename leaves persisted bytes unchanged")
+    try Data("corrupt".utf8).write(to: storage(paths.support))
+    try expect(!store.rename(after[0], name: "must-not-save"), "write conflict reports failure")
+    try expect(store.profiles(for: .zcode).filter { !$0.isDefault } == after, "failed rename cannot change visible state")
+}
+
+private func tryData(_ url: URL) -> Data? { try? Data(contentsOf: url) }
+
+private final class FixtureClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = Date(timeIntervalSince1970: 1_800_000_000)
+
+    func now() -> Date {
+        lock.lock()
+        defer { lock.unlock() }
+        return value
+    }
+
+    func advance(_ seconds: TimeInterval) {
+        lock.lock()
+        value = value.addingTimeInterval(seconds)
+        lock.unlock()
+    }
+}
+
+private actor VisibleQuotaProbe {
+    enum Mode { case credentialDriven, alwaysAvailable, availableThenUnavailable, rateLimited }
+    private let mode: Mode
+    private var reads: [String: Int] = [:]
+
+    init(mode: Mode) { self.mode = mode }
+
+    func count(_ id: String) -> Int { reads[id, default: 0] }
+
+    func load(_ profile: LocalCLIProfile, now: Date) async -> LocalCLIQuotaResult {
+        reads[profile.id, default: 0] += 1
+        let readNumber = reads[profile.id, default: 0]
+        try? await Task.sleep(nanoseconds: 20_000_000)
+        let credential = URL(fileURLWithPath: profile.configDirectory)
+            .appendingPathComponent("credentials/kimi-code.json")
+        let state: LocalCLIQuotaState = switch mode {
+        case .credentialDriven: FileManager.default.fileExists(atPath: credential.path) ? .available : .needsLogin
+        case .alwaysAvailable: .available
+        case .availableThenUnavailable: readNumber == 1 ? .available : .unavailable
+        case .rateLimited: .rateLimited
+        }
+        return LocalCLIQuotaResult(
+            state: state, fetchedAt: now, maskedIdentity: nil,
+            identityFingerprint: state == .available ? "synthetic-\(profile.id)" : nil,
+            planLabel: nil,
+            windows: state == .available
+                ? [LocalCLIQuotaWindow(id: "weekly", label: "7-day", usedPercent: 12, resetsAt: nil)] : [],
+            balance: nil, balanceCurrency: nil, sourceLabel: "Synthetic", messageCode: nil)
+    }
+}
+
+private actor SuspendedQuotaProbe {
+    private var observations: [String: [String?]] = [:]
+    private var held: [String: [Int: CheckedContinuation<Void, Never>]] = [:]
+    private let rateLimitedReads: Set<Int>
+
+    init(rateLimitedReads: Set<Int> = []) { self.rateLimitedReads = rateLimitedReads }
+
+    func count(_ id: String) -> Int { observations[id]?.count ?? 0 }
+    func token(_ id: String, read: Int) -> String? { observations[id]?[read - 1] ?? nil }
+    func release(_ id: String, read: Int) { held[id]?.removeValue(forKey: read)?.resume() }
+
+    func load(_ profile: LocalCLIProfile, now: Date) async -> LocalCLIQuotaResult {
+        let credential = URL(fileURLWithPath: profile.configDirectory)
+            .appendingPathComponent("credentials/kimi-code.json")
+        let data = try? Data(contentsOf: credential)
+        let object = data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+        let token = object?["access_token"] as? String
+        let readNumber = (observations[profile.id]?.count ?? 0) + 1
+        observations[profile.id, default: []].append(token)
+        await withCheckedContinuation { continuation in
+            held[profile.id, default: [:]][readNumber] = continuation
+        }
+        let state: LocalCLIQuotaState = rateLimitedReads.contains(readNumber)
+            ? .rateLimited : token == nil ? .needsLogin : .available
+        return LocalCLIQuotaResult(
+            state: state, fetchedAt: now, maskedIdentity: nil,
+            identityFingerprint: state == .available ? token : nil,
+            planLabel: nil,
+            windows: state == .available
+                ? [LocalCLIQuotaWindow(id: "weekly", label: "7-day", usedPercent: 12, resetsAt: nil)] : [],
+            balance: nil, balanceCurrency: nil, sourceLabel: "Synthetic", messageCode: nil)
+    }
+}
+
+@MainActor
+private func syntheticKimiStore(_ paths: (root: URL, home: URL, support: URL),
+                                clock: FixtureClock, probe: VisibleQuotaProbe) throws -> LocalCLIAccountStore {
+    let executable = paths.home.appendingPathComponent(".local/bin/kimi")
+    try Data("synthetic executable".utf8).write(to: executable)
+    guard chmod(executable.path, 0o700) == 0 else { throw FixtureFailure.failed("Kimi executable mode") }
+    let store = makeStore(home: paths.home, support: paths.support,
+                          loader: { profile in await probe.load(profile, now: clock.now()) },
+                          clock: { clock.now() })
+    store.discover()
+    return store
+}
+
+@MainActor
+private func syntheticKimiStore(_ paths: (root: URL, home: URL, support: URL),
+                                clock: FixtureClock, probe: SuspendedQuotaProbe) throws -> LocalCLIAccountStore {
+    let executable = paths.home.appendingPathComponent(".local/bin/kimi")
+    try Data("synthetic executable".utf8).write(to: executable)
+    guard chmod(executable.path, 0o700) == 0 else { throw FixtureFailure.failed("Kimi executable mode") }
+    let store = makeStore(home: paths.home, support: paths.support,
+                          loader: { profile in await probe.load(profile, now: clock.now()) },
+                          clock: { clock.now() })
+    store.discover()
+    return store
+}
+
+private func waitForProbeRead(_ probe: SuspendedQuotaProbe, id: String, count: Int) async throws {
+    for _ in 0..<200 {
+        if await probe.count(id) >= count { return }
+        try await Task.sleep(nanoseconds: 5_000_000)
+    }
+    throw FixtureFailure.failed("synthetic quota read did not start")
+}
+
+private func writeSyntheticKimiCredential(_ directory: URL, marker: String = "one") throws {
+    let credentials = directory.appendingPathComponent("credentials", isDirectory: true)
+    try FileManager.default.createDirectory(at: credentials, withIntermediateDirectories: true)
+    let body = ["access_token": "synthetic-\(marker)", "refresh_token": "synthetic-refresh"]
+    try JSONSerialization.data(withJSONObject: body).write(
+        to: credentials.appendingPathComponent("kimi-code.json"), options: .atomic)
+}
+
+@MainActor
+private func waitForVisibleRefresh(_ store: LocalCLIAccountStore, ids: [String]) async throws {
+    for _ in 0..<100 {
+        if ids.allSatisfy({ !store.refreshing.contains($0) }) { return }
+        try await Task.sleep(nanoseconds: 5_000_000)
+    }
+    throw FixtureFailure.failed("visible quota refresh did not finish")
+}
+
+@MainActor
+private func testVisibleKimiRefreshAfterExternalLogin() async throws {
+    let paths = try makeRoot("visible-kimi")
+    defer { try? FileManager.default.removeItem(at: paths.root) }
+    let clock = FixtureClock()
+    let probe = VisibleQuotaProbe(mode: .credentialDriven)
+    let store = try syntheticKimiStore(paths, clock: clock, probe: probe)
+    guard let profile = store.profiles(for: .kimi).first else { throw FixtureFailure.failed("Kimi profile") }
+
+    store.refreshIfNeeded(kind: .kimi)
+    store.refreshIfNeeded(kind: .kimi)
+    try await waitForVisibleRefresh(store, ids: [profile.id])
+    let firstReadCount = await probe.count(profile.id)
+    try expect(store.quotas[profile.id]?.state == .needsLogin && firstReadCount == 1,
+               "repeated focus shares the first quota read")
+    store.refreshIfNeeded(kind: .kimi)
+    let unchangedReadCount = await probe.count(profile.id)
+    try expect(unchangedReadCount == 1, "unchanged sign-in failure is throttled")
+
+    try writeSyntheticKimiCredential(URL(fileURLWithPath: profile.configDirectory))
+    store.refreshIfNeeded(kind: .kimi)
+    try await waitForVisibleRefresh(store, ids: [profile.id])
+    try expect(store.authentication[profile.id] == .oauth && store.quotas[profile.id]?.state == .available,
+               "external CLI credentials replace stale needsLogin on the next visible check")
+    let recoveredReadCount = await probe.count(profile.id)
+    try expect(recoveredReadCount == 2, "credential change bypasses failure retry delay")
+    clock.advance(299)
+    store.refreshIfNeeded(kind: .kimi)
+    let freshReadCount = await probe.count(profile.id)
+    try expect(freshReadCount == 2, "fresh success is reused for five minutes")
+    clock.advance(1)
+    store.refreshIfNeeded(kind: .kimi)
+    try await waitForVisibleRefresh(store, ids: [profile.id])
+    let agedReadCount = await probe.count(profile.id)
+    try expect(agedReadCount == 3, "success is refreshed after five minutes")
+}
+
+@MainActor
+private func testVisibleKimiLinkedProfilesStayIsolated() async throws {
+    let paths = try makeRoot("visible-linked-kimi")
+    defer { try? FileManager.default.removeItem(at: paths.root) }
+    let clock = FixtureClock()
+    let probe = VisibleQuotaProbe(mode: .credentialDriven)
+    let store = try syntheticKimiStore(paths, clock: clock, probe: probe)
+    let firstDirectory = paths.root.appendingPathComponent("first", isDirectory: true)
+    let secondDirectory = paths.root.appendingPathComponent("second", isDirectory: true)
+    try writeSyntheticKimiCredential(firstDirectory)
+    try writeSyntheticKimiCredential(secondDirectory)
+    store.link(kind: .kimi, directory: firstDirectory, name: "First")
+    store.link(kind: .kimi, directory: secondDirectory, name: "Second")
+    guard let first = store.profiles(for: .kimi).first(where: { $0.configDirectory == firstDirectory.path }),
+        let second = store.profiles(for: .kimi).first(where: { $0.configDirectory == secondDirectory.path })
+    else { throw FixtureFailure.failed("linked Kimi profiles") }
+
+    store.refreshIfNeeded()
+    try await waitForVisibleRefresh(store, ids: [first.id, second.id])
+    let firstInitialCount = await probe.count(first.id)
+    let secondInitialCount = await probe.count(second.id)
+    try expect(firstInitialCount == 1 && secondInitialCount == 1,
+               "all-provider check reads both selected linked directories")
+    try writeSyntheticKimiCredential(firstDirectory, marker: "updated-longer")
+    store.refreshIfNeeded(kind: .kimi)
+    try await waitForVisibleRefresh(store, ids: [first.id])
+    let firstChangedCount = await probe.count(first.id)
+    let secondUnchangedCount = await probe.count(second.id)
+    try expect(firstChangedCount == 2 && secondUnchangedCount == 1,
+               "one linked credential change cannot refresh another profile")
+    store.unlink(first)
+    store.refreshIfNeeded(kind: .kimi)
+    let unlinkedReadCount = await probe.count(first.id)
+    try expect(unlinkedReadCount == 2 && store.quotas[first.id] == nil,
+               "unlink removes pending refresh evidence and cached quota")
+}
+
+@MainActor
+private func testVisibleKimiRateLimitBackoff() async throws {
+    let paths = try makeRoot("visible-rate-limit")
+    defer { try? FileManager.default.removeItem(at: paths.root) }
+    let clock = FixtureClock()
+    let probe = VisibleQuotaProbe(mode: .rateLimited)
+    let store = try syntheticKimiStore(paths, clock: clock, probe: probe)
+    guard let profile = store.profiles(for: .kimi).first else { throw FixtureFailure.failed("Kimi profile") }
+    try writeSyntheticKimiCredential(URL(fileURLWithPath: profile.configDirectory))
+    store.refreshIfNeeded(kind: .kimi)
+    try await waitForVisibleRefresh(store, ids: [profile.id])
+    let firstRateLimitCount = await probe.count(profile.id)
+    try expect(store.quotas[profile.id]?.state == .rateLimited && firstRateLimitCount == 1,
+               "first rate limit is retained")
+    clock.advance(60)
+    try writeSyntheticKimiCredential(URL(fileURLWithPath: profile.configDirectory), marker: "rotated")
+    store.refreshIfNeeded(kind: .kimi)
+    let heldRateLimitCount = await probe.count(profile.id)
+    try expect(heldRateLimitCount == 1, "page focus and credential rotation respect 429 backoff")
+    clock.advance(840)
+    store.refreshIfNeeded(kind: .kimi)
+    try await waitForVisibleRefresh(store, ids: [profile.id])
+    let retriedRateLimitCount = await probe.count(profile.id)
+    try expect(retriedRateLimitCount == 2, "429 retry resumes after fifteen minutes")
+}
+
+@MainActor
+private func testCredentialRotationDuringReadDropsOldQuota() async throws {
+    let paths = try makeRoot("rotating-kimi")
+    defer { try? FileManager.default.removeItem(at: paths.root) }
+    let clock = FixtureClock()
+    let probe = SuspendedQuotaProbe()
+    let store = try syntheticKimiStore(paths, clock: clock, probe: probe)
+    guard let profile = store.profiles(for: .kimi).first else { throw FixtureFailure.failed("Kimi profile") }
+    let directory = URL(fileURLWithPath: profile.configDirectory)
+    try writeSyntheticKimiCredential(directory)
+    store.refreshIfNeeded(kind: .kimi)
+    try await waitForProbeRead(probe, id: profile.id, count: 1)
+    await probe.release(profile.id, read: 1)
+    try await waitForVisibleRefresh(store, ids: [profile.id])
+    try expect(store.quotas[profile.id]?.identityFingerprint == "synthetic-one", "first account quota loaded")
+
+    clock.advance(300)
+    store.refreshIfNeeded(kind: .kimi)
+    try await waitForProbeRead(probe, id: profile.id, count: 2)
+    try writeSyntheticKimiCredential(directory, marker: "replacement-longer")
+    await probe.release(profile.id, read: 2)
+    try await waitForProbeRead(probe, id: profile.id, count: 3)
+    try expect(store.quotas[profile.id] == nil && !store.stale.contains(profile.id),
+               "credential rotation discards both in-flight result and old account cache")
+    let replacementToken = await probe.token(profile.id, read: 3)
+    try expect(replacementToken == "synthetic-replacement-longer", "automatic reread uses replacement credential")
+    await probe.release(profile.id, read: 3)
+    try await waitForVisibleRefresh(store, ids: [profile.id])
+    let recoveredCount = await probe.count(profile.id)
+    try expect(recoveredCount == 3
+               && store.quotas[profile.id]?.state == .available
+               && store.quotas[profile.id]?.identityFingerprint == "synthetic-replacement-longer",
+               "credential rotation clears the old cache and automatically reads the replacement")
+}
+
+@MainActor
+private func testInFlightCredentialChangesClearVisibleQuotaAndCoalesce() async throws {
+    let paths = try makeRoot("inflight-kimi")
+    defer { try? FileManager.default.removeItem(at: paths.root) }
+    let clock = FixtureClock()
+    let probe = SuspendedQuotaProbe()
+    let store = try syntheticKimiStore(paths, clock: clock, probe: probe)
+    guard let profile = store.profiles(for: .kimi).first else { throw FixtureFailure.failed("Kimi profile") }
+    let directory = URL(fileURLWithPath: profile.configDirectory)
+    try writeSyntheticKimiCredential(directory, marker: "account-a")
+    store.refreshIfNeeded(kind: .kimi)
+    try await waitForProbeRead(probe, id: profile.id, count: 1)
+    await probe.release(profile.id, read: 1)
+    try await waitForVisibleRefresh(store, ids: [profile.id])
+    try expect(store.quotas[profile.id]?.identityFingerprint == "synthetic-account-a", "account A quota loaded")
+
+    clock.advance(300)
+    store.refreshIfNeeded(kind: .kimi)
+    try await waitForProbeRead(probe, id: profile.id, count: 2)
+    try writeSyntheticKimiCredential(directory, marker: "account-b-longer")
+    store.refresh(profile)
+    try expect(store.quotas[profile.id] == nil, "manual refresh clears A during in-flight B switch")
+    try writeSyntheticKimiCredential(directory, marker: "account-c-longest")
+    store.refreshIfNeeded(kind: .kimi)
+    store.refreshIfNeeded(kind: .kimi)
+    let heldCount = await probe.count(profile.id)
+    try expect(store.quotas[profile.id] == nil && heldCount == 2,
+               "focus retains no A quota and does not overlap the in-flight read")
+    await probe.release(profile.id, read: 2)
+    try await waitForProbeRead(probe, id: profile.id, count: 3)
+    let queuedToken = await probe.token(profile.id, read: 3)
+    try expect(queuedToken == "synthetic-account-c-longest",
+               "one queued read uses latest C credential")
+    await probe.release(profile.id, read: 3)
+    try await waitForVisibleRefresh(store, ids: [profile.id])
+    let finalReadCount = await probe.count(profile.id)
+    try expect(finalReadCount == 3
+               && store.quotas[profile.id]?.identityFingerprint == "synthetic-account-c-longest",
+               "C quota replaces A without a duplicate B read")
+}
+
+@MainActor
+private func testInFlightCredentialRemovalNeverReusesOldQuota() async throws {
+    let paths = try makeRoot("inflight-kimi-removal")
+    defer { try? FileManager.default.removeItem(at: paths.root) }
+    let clock = FixtureClock()
+    let probe = SuspendedQuotaProbe()
+    let store = try syntheticKimiStore(paths, clock: clock, probe: probe)
+    guard let profile = store.profiles(for: .kimi).first else { throw FixtureFailure.failed("Kimi profile") }
+    let directory = URL(fileURLWithPath: profile.configDirectory)
+    let credential = directory.appendingPathComponent("credentials/kimi-code.json")
+    try writeSyntheticKimiCredential(directory, marker: "account-a")
+    store.refreshIfNeeded(kind: .kimi)
+    try await waitForProbeRead(probe, id: profile.id, count: 1)
+    await probe.release(profile.id, read: 1)
+    try await waitForVisibleRefresh(store, ids: [profile.id])
+    try expect(store.quotas[profile.id]?.identityFingerprint == "synthetic-account-a", "account A initially visible")
+
+    clock.advance(300)
+    store.refreshIfNeeded(kind: .kimi)
+    try await waitForProbeRead(probe, id: profile.id, count: 2)
+    try FileManager.default.removeItem(at: credential)
+    store.refreshIfNeeded(kind: .kimi)
+    try expect(store.quotas[profile.id] == nil, "foreground focus clears A before old request finishes")
+    await probe.release(profile.id, read: 2)
+    try await waitForProbeRead(probe, id: profile.id, count: 3)
+    let queuedToken = await probe.token(profile.id, read: 3)
+    try expect(queuedToken == nil, "queued read observes missing B credential")
+    await probe.release(profile.id, read: 3)
+    try await waitForVisibleRefresh(store, ids: [profile.id])
+    let finalReadCount = await probe.count(profile.id)
+    try expect(finalReadCount == 3 && store.quotas[profile.id]?.state == .needsLogin
+               && store.quotas[profile.id]?.identityFingerprint == nil,
+               "missing B credential cannot restore A quota or identity")
+}
+
+@MainActor
+private func testQueuedCredentialRefreshCannotReviveDeletedProfile() async throws {
+    let paths = try makeRoot("inflight-kimi-unlink")
+    defer { try? FileManager.default.removeItem(at: paths.root) }
+    let clock = FixtureClock()
+    let probe = SuspendedQuotaProbe()
+    let store = try syntheticKimiStore(paths, clock: clock, probe: probe)
+    let directory = paths.root.appendingPathComponent("linked-kimi", isDirectory: true)
+    try writeSyntheticKimiCredential(directory, marker: "account-a")
+    store.link(kind: .kimi, directory: directory, name: "Linked")
+    guard let profile = store.profiles(for: .kimi).first(where: { $0.configDirectory == directory.path })
+    else { throw FixtureFailure.failed("linked Kimi profile") }
+    store.refresh(profile)
+    try await waitForProbeRead(probe, id: profile.id, count: 1)
+    try writeSyntheticKimiCredential(directory, marker: "account-b-longer")
+    store.refresh(profile)
+    store.unlink(profile)
+    await probe.release(profile.id, read: 1)
+    try await Task.sleep(nanoseconds: 50_000_000)
+    let readCount = await probe.count(profile.id)
+    try expect(readCount == 1 && !store.profiles.contains(where: { $0.id == profile.id })
+               && store.quotas[profile.id] == nil && !store.refreshing.contains(profile.id),
+               "unlinked profile cannot publish or start a queued read")
+}
+
+@MainActor
+private func testInFlightRateLimitPreservesBackoffAfterCredentialChange() async throws {
+    let paths = try makeRoot("inflight-kimi-rate-limit")
+    defer { try? FileManager.default.removeItem(at: paths.root) }
+    let clock = FixtureClock()
+    let probe = SuspendedQuotaProbe(rateLimitedReads: [2])
+    let store = try syntheticKimiStore(paths, clock: clock, probe: probe)
+    guard let profile = store.profiles(for: .kimi).first else { throw FixtureFailure.failed("Kimi profile") }
+    let directory = URL(fileURLWithPath: profile.configDirectory)
+    try writeSyntheticKimiCredential(directory, marker: "account-a")
+    store.refreshIfNeeded(kind: .kimi)
+    try await waitForProbeRead(probe, id: profile.id, count: 1)
+    await probe.release(profile.id, read: 1)
+    try await waitForVisibleRefresh(store, ids: [profile.id])
+
+    clock.advance(300)
+    store.refreshIfNeeded(kind: .kimi)
+    try await waitForProbeRead(probe, id: profile.id, count: 2)
+    try writeSyntheticKimiCredential(directory, marker: "account-b-longer")
+    store.refreshIfNeeded(kind: .kimi)
+    try expect(store.quotas[profile.id] == nil, "rate-limited in-flight change clears old account quota")
+    await probe.release(profile.id, read: 2)
+    try await waitForVisibleRefresh(store, ids: [profile.id])
+    let heldReadCount = await probe.count(profile.id)
+    try expect(heldReadCount == 2, "429 response does not launch queued B read")
+    clock.advance(899)
+    store.refreshIfNeeded(kind: .kimi)
+    let beforeDeadline = await probe.count(profile.id)
+    try expect(beforeDeadline == 2, "focus cannot bypass the 429 backoff")
+    clock.advance(1)
+    store.refreshIfNeeded(kind: .kimi)
+    try await waitForProbeRead(probe, id: profile.id, count: 3)
+    await probe.release(profile.id, read: 3)
+    try await waitForVisibleRefresh(store, ids: [profile.id])
+    let finalReadCount = await probe.count(profile.id)
+    try expect(finalReadCount == 3 && store.quotas[profile.id]?.identityFingerprint == "synthetic-account-b-longer",
+               "B refresh resumes once after the 429 deadline")
+}
+
+@MainActor
+private func testKimiDeviceIDInvalidatesFreshQuota() async throws {
+    let paths = try makeRoot("kimi-device-change")
+    defer { try? FileManager.default.removeItem(at: paths.root) }
+    let clock = FixtureClock()
+    let probe = VisibleQuotaProbe(mode: .credentialDriven)
+    let store = try syntheticKimiStore(paths, clock: clock, probe: probe)
+    guard let profile = store.profiles(for: .kimi).first else { throw FixtureFailure.failed("Kimi profile") }
+    let directory = URL(fileURLWithPath: profile.configDirectory)
+    try writeSyntheticKimiCredential(directory)
+    let deviceID = directory.appendingPathComponent("device_id")
+    try Data("synthetic-device-a".utf8).write(to: deviceID, options: .atomic)
+    store.refreshIfNeeded(kind: .kimi)
+    try await waitForVisibleRefresh(store, ids: [profile.id])
+    let initialReadCount = await probe.count(profile.id)
+    try expect(initialReadCount == 1, "initial Kimi device input read")
+    try Data("synthetic-device-b-longer".utf8).write(to: deviceID, options: .atomic)
+    store.refreshIfNeeded(kind: .kimi)
+    try await waitForVisibleRefresh(store, ids: [profile.id])
+    let readCount = await probe.count(profile.id)
+    try expect(readCount == 2, "device ID change invalidates fresh Kimi quota cache")
+}
+
+@MainActor
+private func testFailedNewAccountReadNeverKeepsOldQuota() async throws {
+    let paths = try makeRoot("changed-kimi-failure")
+    defer { try? FileManager.default.removeItem(at: paths.root) }
+    let clock = FixtureClock()
+    let probe = VisibleQuotaProbe(mode: .availableThenUnavailable)
+    let store = try syntheticKimiStore(paths, clock: clock, probe: probe)
+    guard let profile = store.profiles(for: .kimi).first else { throw FixtureFailure.failed("Kimi profile") }
+    let directory = URL(fileURLWithPath: profile.configDirectory)
+    try writeSyntheticKimiCredential(directory, marker: "account-a")
+    store.refreshIfNeeded(kind: .kimi)
+    try await waitForVisibleRefresh(store, ids: [profile.id])
+    try expect(store.quotas[profile.id]?.state == .available
+               && store.quotas[profile.id]?.identityFingerprint != nil,
+               "account A has a verified quota before rotation")
+
+    try writeSyntheticKimiCredential(directory, marker: "account-b-longer")
+    store.refreshIfNeeded(kind: .kimi)
+    try expect(store.quotas[profile.id] == nil && !store.stale.contains(profile.id),
+               "account A quota is cleared before querying account B")
+    try await waitForVisibleRefresh(store, ids: [profile.id])
+    let readCount = await probe.count(profile.id)
+    try expect(readCount == 2 && store.quotas[profile.id]?.state == .unavailable
+               && store.quotas[profile.id]?.identityFingerprint == nil,
+               "failed account B query cannot restore account A quota or identity")
+}
+
+@MainActor
+private func testZCodeCredentialFilesInvalidateFreshQuota() async throws {
+    let paths = try makeRoot("visible-zcode")
+    defer { try? FileManager.default.removeItem(at: paths.root) }
+    let clock = FixtureClock()
+    let probe = VisibleQuotaProbe(mode: .alwaysAvailable)
+    let store = makeStore(home: paths.home, support: paths.support,
+                          loader: { profile in await probe.load(profile, now: clock.now()) },
+                          clock: { clock.now() })
+    store.discover()
+    guard let profile = store.profiles(for: .zcode).first else { throw FixtureFailure.failed("ZCode profile") }
+    store.refreshIfNeeded(kind: .zcode)
+    try await waitForVisibleRefresh(store, ids: [profile.id])
+    for (index, name) in ["setting.json", "config.json", "credentials.json"].enumerated() {
+        let file = URL(fileURLWithPath: profile.configDirectory).appendingPathComponent("v2/\(name)")
+        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("synthetic \(index)".utf8).write(to: file)
+        store.refreshIfNeeded(kind: .zcode)
+        try await waitForVisibleRefresh(store, ids: [profile.id])
+        let count = await probe.count(profile.id)
+        try expect(count == index + 2, "ZCode \(name) invalidates fresh quota")
+    }
+    let preview = LocalCLIAccountStore.preview(profiles: [profile], quotas: [:], root: paths.root)
+    preview.refreshIfNeeded(kind: .zcode)
+    try expect(preview.refreshing.isEmpty && preview.quotas.isEmpty, "preview never schedules a quota read")
+}
+
+@MainActor
+private func testConfiguredClaudeWithoutExecutable() async throws {
+    let paths = try makeRoot("claude-api-discovery")
+    defer { try? FileManager.default.removeItem(at: paths.root) }
+    let directory = paths.home.appendingPathComponent(".claude", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let settings = directory.appendingPathComponent("settings.json")
+    let clock = FixtureClock()
+    let probe = VisibleQuotaProbe(mode: .alwaysAvailable)
+    let store = makeStore(home: paths.home, support: paths.support,
+        loader: { profile in await probe.load(profile, now: clock.now()) }, clock: { clock.now() })
+    try Data("{\"env\":{}}".utf8).write(to: settings)
+    store.discover()
+    try expect(store.profiles(for: .claudeCode).isEmpty, "empty settings do not invent a Claude account")
+    try Data("{\"env\":{\"ANTHROPIC_AUTH_TOKEN\":\"synthetic-relay\"}}".utf8).write(to: settings, options: .atomic)
+    store.discover()
+    guard let profile = store.profiles(for: .claudeCode).first else { throw FixtureFailure.failed("configured Claude was hidden") }
+    try expect(store.executable(for: profile) == nil && !store.canOpen(profile) && !store.canSignIn(profile),
+               "balance discovery must not claim an installed CLI or enable launch")
+    store.refreshIfNeeded(kind: .claudeCode)
+    try await waitForVisibleRefresh(store, ids: [profile.id])
+    let initialReads = await probe.count(profile.id)
+    try expect(initialReads == 1, "configured Claude can refresh without its executable")
+    let relay = paths.home.appendingPathComponent(".cc-switch", isDirectory: true)
+    try FileManager.default.createDirectory(at: relay, withIntermediateDirectories: true)
+    for (index, name) in ["cc-switch.db", "cc-switch.db-wal"].enumerated() {
+        try Data("synthetic metadata \(index)".utf8).write(to: relay.appendingPathComponent(name))
+        store.refreshIfNeeded(kind: .claudeCode)
+        try expect(store.quotas[profile.id] == nil, "relay change immediately hides old account balance")
+        try await waitForVisibleRefresh(store, ids: [profile.id])
+        let reads = await probe.count(profile.id)
+        try expect(reads == index + 2, "relay database and WAL changes invalidate fresh quota")
+    }
+    try expect(store.rename(profile, name: "My Claude CLI"), "configured-only profile preserves custom name")
+    let executable = paths.home.appendingPathComponent(".local/bin/claude")
+    try Data("synthetic executable".utf8).write(to: executable)
+    guard chmod(executable.path, 0o700) == 0 else { throw FixtureFailure.failed("synthetic Claude chmod") }
+    store.discover()
+    guard let installed = store.profiles(for: .claudeCode).first else { throw FixtureFailure.failed("installed Claude profile") }
+    try expect(installed.id == profile.id && installed.displayName == "My Claude CLI" && store.canOpen(installed),
+               "installing the CLI keeps the same profile and custom name")
+    var keychainReads = 0
+    var reader = LocalCLIAuthenticationReader()
+    reader.fileReader = { url in
+        url.lastPathComponent == "settings.json"
+            ? Data("{\"env\":{\"ANTHROPIC_AUTH_TOKEN\":\"synthetic-api\"}}".utf8) : nil
+    }
+    reader.keychainReader = { _, _ in keychainReads += 1; return nil }
+    let systemProfile = LocalCLIProfile(id: "synthetic-system-claude", kind: .claudeCode,
+        displayName: "Synthetic", configDirectory: LocalCLIKind.claudeCode.defaultConfigDirectory(
+            home: FileManager.default.homeDirectoryForCurrentUser).path, isDefault: true)
+    try expect(reader.read(systemProfile) == .apiKey && keychainReads == 0,
+               "explicit API configuration is detected without a subscription Keychain request")
+}
+
 @main enum Main {
     @MainActor static func main() async throws {
         try await testDiscoveryLinkRenameUnlinkAndPermissions()
+        try testRenameKeepsOrderAndReportsFailure()
         try testWorkBuddyInternationalOnlyDiscovery()
         try await testStaleWriterConflictPreservesWinner()
         try await testInvalidStoredProfilesRemainUntouched()
@@ -479,8 +1107,21 @@ private func testOpenCodeReusesSavedProviderUnlessUpdateRequested() async throws
         try await testRediscoveryRemovesOtherWritersAccountState()
         try testManagedGrokIsolationAndStaleWriter()
         try await testTransientFailureAndConfirmedSignOut()
+        try await testClaudeKeychainChangeClearsCachedIdentity()
         try await testAuthenticationWithoutQuotaOrTerminalExit()
         try await testOpenCodeReusesSavedProviderUnlessUpdateRequested()
+        try await testVisibleKimiRefreshAfterExternalLogin()
+        try await testVisibleKimiLinkedProfilesStayIsolated()
+        try await testVisibleKimiRateLimitBackoff()
+        try await testCredentialRotationDuringReadDropsOldQuota()
+        try await testInFlightCredentialChangesClearVisibleQuotaAndCoalesce()
+        try await testInFlightCredentialRemovalNeverReusesOldQuota()
+        try await testQueuedCredentialRefreshCannotReviveDeletedProfile()
+        try await testInFlightRateLimitPreservesBackoffAfterCredentialChange()
+        try await testKimiDeviceIDInvalidatesFreshQuota()
+        try await testFailedNewAccountReadNeverKeepsOldQuota()
+        try await testZCodeCredentialFilesInvalidateFreshQuota()
+        try await testConfiguredClaudeWithoutExecutable()
         print("local-cli-account-fixture: ok")
     }
 }

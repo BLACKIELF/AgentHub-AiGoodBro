@@ -49,23 +49,11 @@ enum ResetCardPresentation {
         return remaining > 0 && remaining <= expiringWindow
     }
 
-    /// Stable ordering contract: the pinned account keeps the first position,
-    /// accounts with an expiring card move just behind it, and every other
-    /// account keeps its relative order. Unknown pinned/expiring IDs are ignored.
-    static func prioritizedOrder(_ ids: [String], expiring: Set<String>, pinnedAccountID: String?) -> [String] {
-        var expiringNext: [String] = []
-        var rest: [String] = []
-        for id in ids where id != pinnedAccountID {
-            if expiring.contains(id) {
-                expiringNext.append(id)
-            } else {
-                rest.append(id)
-            }
-        }
-        if let pinnedAccountID, ids.contains(pinnedAccountID) {
-            return [pinnedAccountID] + expiringNext + rest
-        }
-        return expiringNext + rest
+    /// Quota refresh and expiry badges must never move accounts under the pointer.
+    /// Only an explicit pin overrides the saved order.
+    static func savedOrder(_ ids: [String], pinnedAccountID: String?) -> [String] {
+        guard let pinnedAccountID, ids.contains(pinnedAccountID) else { return ids }
+        return [pinnedAccountID] + ids.filter { $0 != pinnedAccountID }
     }
 
     /// One-line card summary: the unavailable text for unknown data, nothing for a

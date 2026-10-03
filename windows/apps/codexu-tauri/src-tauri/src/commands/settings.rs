@@ -96,6 +96,7 @@ pub async fn set_settings(
     if let Some(path) = req.cache_dir.as_ref() {
         validate_settings_path("Cache directory", path)?;
     }
+    let source_changed = req.codex_root.is_some() || req.cache_dir.is_some();
 
     let config = state
         .update_config(|config| {
@@ -125,7 +126,7 @@ pub async fn set_settings(
             }
         })
         .await
-        .map_err(|e| format!("Failed to save settings: {}", e))?;
+        .map_err(|_| "Failed to save settings; prior settings retained".to_string())?;
 
     apply_theme(&app, config.theme);
     if config.language != InterfaceLanguage::Auto {
@@ -135,6 +136,10 @@ pub async fn set_settings(
     }
     let dto = SettingsDto::from_config(&config);
     let _ = app.emit("settings:changed", dto.clone());
+    if source_changed {
+        let _ = app.emit("profiles:changed", ());
+        let _ = app.emit("usage:source-changed", ());
+    }
     Ok(dto)
 }
 

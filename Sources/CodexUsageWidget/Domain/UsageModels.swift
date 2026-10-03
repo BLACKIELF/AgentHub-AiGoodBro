@@ -344,6 +344,7 @@ struct TaskItem: Identifiable, Equatable {
     let stateBasis: TaskStateBasis
     let rawStatus: String?
     let nextRunAt: Date?
+    let projectPath: String?
 
     init(
         id: String,
@@ -361,7 +362,8 @@ struct TaskItem: Identifiable, Equatable {
         displayState: TaskDisplayState,
         stateBasis: TaskStateBasis,
         rawStatus: String? = nil,
-        nextRunAt: Date? = nil
+        nextRunAt: Date? = nil,
+        projectPath: String? = nil
     ) {
         self.id = id
         self.code = code
@@ -379,6 +381,7 @@ struct TaskItem: Identifiable, Equatable {
         self.stateBasis = stateBasis
         self.rawStatus = rawStatus
         self.nextRunAt = nextRunAt
+        self.projectPath = projectPath
     }
 }
 

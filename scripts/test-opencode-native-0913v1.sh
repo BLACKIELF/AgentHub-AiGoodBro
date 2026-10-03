@@ -19,6 +19,9 @@ xcrun swiftc -swift-version 5 -module-cache-path "$fixture_dir/modules" \
   Sources/CodexUsageWidget/Domain/TokenMonitorEngineModels.swift \
   Sources/CodexUsageWidget/Services/TokenMonitorEngine.swift \
   Sources/CodexUsageWidget/Services/LocalCLIQuotaReader.swift \
+  Sources/CodexUsageWidget/Services/LocalCLIQuotaRefresh.swift \
+  Sources/CodexUsageWidget/Services/CCSwitchClaudeRelay.swift \
+  Sources/CodexUsageWidget/Services/BoundedLocalProcess.swift \
   Sources/CodexUsageWidget/Services/TokenMonitorLocalCLIQuotaReader.swift \
   "$fixture_dir/BoundedFile.swift" scripts/test-opencode-native-0913v1.swift -o "$fixture_dir/fixture"
-"$fixture_dir/fixture"
+"$fixture_dir/fixture" "$@"

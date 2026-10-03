@@ -1,7 +1,7 @@
 import Darwin
 import Foundation
 
-enum BoundedLocalProcessError: Error { case outputTooLarge, failed, timedOut }
+enum BoundedLocalProcessError: Error { case outputTooLarge, failed, timedOut, cancelled }
 
 /// Runs one command in its own process group and drains stdout with byte/time limits.
 enum BoundedLocalProcess {
@@ -11,7 +11,11 @@ enum BoundedLocalProcess {
         environment: [String: String]? = nil,
         maximumOutputBytes: Int = 1_024 * 1_024,
         timeout: TimeInterval = 5,
-        allowedExitCodes: Set<Int32> = [0]
+        allowedExitCodes: Set<Int32> = [0],
+        stream: ((Data) throws -> Void)? = nil,
+        isCancelled: (() -> Bool)? = nil,
+        includeStandardError: Bool = false,
+        awaitCleanup: Bool = false
     ) throws -> Data {
         guard maximumOutputBytes >= 0, !allowedExitCodes.isEmpty else {
             throw BoundedLocalProcessError.failed
@@ -41,7 +45,9 @@ enum BoundedLocalProcess {
         }
         guard posix_spawn_file_actions_adddup2(&actions, writeDescriptor, STDOUT_FILENO) == 0,
             posix_spawn_file_actions_addopen(&actions, STDIN_FILENO, "/dev/null", O_RDONLY, 0) == 0,
-            posix_spawn_file_actions_addopen(&actions, STDERR_FILENO, "/dev/null", O_WRONLY, 0) == 0,
+            (includeStandardError
+                ? posix_spawn_file_actions_adddup2(&actions, writeDescriptor, STDERR_FILENO)
+                : posix_spawn_file_actions_addopen(&actions, STDERR_FILENO, "/dev/null", O_WRONLY, 0)) == 0,
             posix_spawn_file_actions_addclose(&actions, readDescriptor) == 0,
             posix_spawn_file_actions_addclose(&actions, writeDescriptor) == 0,
             posix_spawnattr_setflags(
@@ -110,6 +116,12 @@ enum BoundedLocalProcess {
             Darwin.close(readDescriptor)
             if !completedSuccessfully {
                 terminateProcessGroup(pid: pid, didReap: &didReap, waitStatus: &waitStatus)
+                // Login reservations and staging must outlive every owned process.
+                // This runs on the session's worker, never the UI thread.
+                while awaitCleanup && (!didReap || processGroupExists(pid: pid)) {
+                    Thread.sleep(forTimeInterval: 1)
+                    terminateProcessGroup(pid: pid, didReap: &didReap, waitStatus: &waitStatus)
+                }
             }
         }
 
@@ -117,13 +129,15 @@ enum BoundedLocalProcess {
         guard flags >= 0, fcntl(readDescriptor, F_SETFL, flags | O_NONBLOCK) == 0 else {
             throw BoundedLocalProcessError.failed
         }
-        let duration = timeout.isFinite ? max(0.05, min(timeout, 60)) : 5
+        let duration = timeout.isFinite ? max(0.05, min(timeout, stream == nil ? 60 : 15 * 60)) : 5
         let deadline = DispatchTime.now().uptimeNanoseconds + UInt64(duration * 1_000_000_000)
         var data = Data()
+        var receivedBytes = 0
         var buffer = [UInt8](repeating: 0, count: 64 * 1_024)
         var reachedEOF = false
 
         while !reachedEOF || !didReap {
+            if isCancelled?() == true { throw BoundedLocalProcessError.cancelled }
             guard DispatchTime.now().uptimeNanoseconds < deadline else {
                 throw BoundedLocalProcessError.timedOut
             }
@@ -132,10 +146,12 @@ enum BoundedLocalProcess {
                 Darwin.read(readDescriptor, $0.baseAddress, $0.count)
             }
             if count > 0 {
-                guard data.count <= maximumOutputBytes,
-                    count <= maximumOutputBytes - data.count
+                guard receivedBytes <= maximumOutputBytes,
+                    count <= maximumOutputBytes - receivedBytes
                 else { throw BoundedLocalProcessError.outputTooLarge }
-                data.append(contentsOf: buffer.prefix(count))
+                receivedBytes += count
+                let chunk = Data(buffer.prefix(count))
+                if let stream { try stream(chunk) } else { data.append(chunk) }
             } else if count == 0 {
                 reachedEOF = true
                 if !didReap { Thread.sleep(forTimeInterval: 0.01) }

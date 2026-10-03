@@ -25,7 +25,7 @@ private struct FakeTransport: LocalCLIQuotaTransport {
 
 @main
 struct OpenCodeNativeFixture {
-    static func response(_ request: TokenMonitorRequest, account: String? = nil, duplicate: Bool = false) -> TokenMonitorResponse {
+    static func response(_ request: TokenMonitorRequest, account: String? = nil, duplicate: Bool = false, operation: TokenMonitorOperation? = .collectLimits) -> TokenMonitorResponse {
         let source = request.sources[0]
         let row: TokenMonitorJSON = .object([
             "provider": .string("opencode"), "source": .string(TokenMonitorLocalCLIQuotaReader.sourceLabel), "status": .string("ok"), "balanceUsd": .null,
@@ -38,7 +38,7 @@ struct OpenCodeNativeFixture {
             "snapshot": .object(["providers": .array([row]), "reasonCode": .string("ok")]),
         ])
         return TokenMonitorResponse(
-            schemaVersion: 1, requestId: request.requestId, operation: .collectLimits,
+            schemaVersion: 1, requestId: request.requestId, operation: operation,
             engine: .init(repository: "Javis603/token-monitor", commit: TokenMonitorResponse.commit, version: "1"),
             collectedAt: request.now, timezone: request.timezone, status: .ok,
             sources: [.init(id: source.id, providerId: "opencode", status: .ok, coverage: .known)],
@@ -67,6 +67,15 @@ struct OpenCodeNativeFixture {
         precondition(mapped.state == .available && mapped.windows[0].usedPercent == 0 && mapped.windows[0].label == "Rolling")
         precondition(mapped.identityFingerprint == nil && mapped.maskedIdentity == nil && mapped.balance == nil)
         precondition(engineCalls.value == 1)
+        // The actual pinned Node bridge omits operation, unlike the older mock.
+        let bridgeShape = TokenMonitorLocalCLIQuotaReader(collector: { request, _ in response(request, operation: nil) })
+        let bridgeValue = try await bridgeShape.load(profile: profile, now: now)
+        precondition(bridgeValue.windows == mapped.windows)
+        let wrongOperation = TokenMonitorLocalCLIQuotaReader(collector: { request, _ in response(request, operation: .collectUsage) })
+        do {
+            _ = try await wrongOperation.load(profile: profile, now: now)
+            preconditionFailure("wrong response operation accepted")
+        } catch TokenMonitorFailure.requestMismatch {}
         for duplicate in [false, true] {
             let mismatch = TokenMonitorLocalCLIQuotaReader(collector: { request, _ in response(request, account: duplicate ? nil : "other", duplicate: duplicate) })
             do {
@@ -126,6 +135,24 @@ struct OpenCodeNativeFixture {
                 _ = try TokenMonitorSource.validated([source], operation: operation)
                 preconditionFailure("wrong operation accepted")
             } catch TokenMonitorFailure.invalidSource {}
+        }
+        if CommandLine.arguments.count == 2 {
+            // Exercise the shipped JS -> JSON -> Swift boundary, without a Go
+            // credential or any provider network call. Synthetic Zen-only auth
+            // must map to a precise unsupported-Go result, not identityMismatch.
+            let resources = URL(fileURLWithPath: CommandLine.arguments[1], isDirectory: true)
+            let engine = TokenMonitorEngine(fixture: .init(
+                executable: resources.appendingPathComponent("runtime/node"),
+                bridge: resources.appendingPathComponent("bridge.cjs")))
+            try Data(#"{"opencode":{"type":"api","key":"synthetic-zen-only"}}"#.utf8).write(to: file)
+            let packaged = TokenMonitorLocalCLIQuotaReader(collector: { request, cancellation in
+                let decoded = try engine.collect(request: request, cancellation: cancellation)
+                precondition(decoded.operation == nil)
+                return decoded
+            })
+            let unsupported = try await packaged.load(profile: profile, now: now)
+            precondition(unsupported.state == .unsupported && unsupported.messageCode == "local_cli_upstream_provider_missing")
+            print("PASS packaged Node bridge -> Swift decoder -> quota mapper (synthetic Zen-only, no network)")
         }
         print("PASS compiled Swift synthetic: exact mapping, nil identity/balance, background collection, rotation/deletion, native injection/fallback, cancellation, role")
     }

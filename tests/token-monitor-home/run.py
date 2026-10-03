@@ -13,6 +13,12 @@ ui=root/'UI/CodexAccountManagerView.swift'
 s=ui.read_text()
 def read(p): return (root/p).read_text()
 projection=s[s.index('enum HomeEngineProjection {'):s.index('private struct UpstreamHomeStatistics:')]
+token_range='''
+enum TokenUsageHomeRange: String, CaseIterable, Identifiable {
+    case sevenDays, thirtyDays, ninetyDays, all, custom
+    var id: String { rawValue }
+}
+'''
 announcement=read('Services/PublicResetAnnouncements.swift').split('struct PublicResetAnnouncement:',1)[1].split('    enum CodingKeys:',1)[0]
 channel=read('Domain/MessageChannel.swift')
 result=channel[channel.index('struct PublicResetChannelResult:'):channel.index('    var statusText:')]+ '}\n'
@@ -23,7 +29,7 @@ prefix='''import Foundation
 '''
 source=prefix+read('Domain/TokenMonitorEngineModels.swift')+'\n'+read('Services/TokenMonitorEngine.swift')+'\n'+read('Domain/StatisticsTimeZone.swift').split('enum StatisticsTimeZoneSelfTest')[0]+'\n'
 source+='struct PublicResetAnnouncement:'+announcement+'}\n'+kind+result
-source+='enum UpstreamTrendView {\n'+annotation+'}\n'+projection
+source+='enum UpstreamTrendView {\n'+annotation+'}\n'+token_range+projection
 source+='''
 func check(_ condition: Bool, _ label: String) { precondition(condition, label); print("PASS " + label) }
 var r = TokenMonitorResponse(schemaVersion: 1, requestId: "fixture", operation: .collectUsage,
@@ -103,6 +109,29 @@ r.payload = .object(["aggregate": .object(["history": .object(["daily": .array([
  .object(["date": .string("2026-03-08"), "tokens": .number(1)])
 ])])])])
 check(HomeEngineProjection.recentPeriods(r, now: periodNow)[1].tokens == nil, "period overflow is unavailable")
+r.payload = canonicalPayload
+let thirty = HomeEngineProjection.window(r, range: .thirtyDays, customStart: periodNow, now: periodNow)
+check(thirty.calendarDays == 30 && thirty.recordedDays == 3 && thirty.tokens == 12, "thirty-day window uses canonical days")
+let chart30 = HomeEngineProjection.chartWindow(r, range: .thirtyDays, customStart: periodNow, now: periodNow)
+check(chart30?.from == "2026-02-07" && chart30?.to == "2026-03-08", "chart window follows statistics timezone")
+let lifetime = HomeEngineProjection.window(r, range: .all, customStart: periodNow, now: periodNow)
+check(lifetime.calendarDays == 0 && thirty.calendarDays == 30, "all-time is not a 30-day window")
+r.sources = [.init(id: "a", providerId: "tool-one", status: .ok, coverage: .known)]
+r.coverage.entries = [.init(sourceId: "a", providerId: "tool-one", date: "2026-09-17", metric: "tokens", status: .known)]
+r.timezone = "Asia/Shanghai"
+let windowNow = ISO8601DateFormatter().date(from: "2026-09-17T04:00:00Z")!
+r.payload = .object(["aggregate": .object(["allTime": .object(["totalTokens": .number(100)]), "history": .object(["daily": .array([
+ .object(["date": .string("2026-08-08"), "tokens": .number(70)]),
+ .object(["date": .string("2026-09-15"), "tokens": .number(0)]),
+ .object(["date": .string("2026-09-16"), "tokens": .number(20)]),
+ .object(["date": .string("2026-09-17"), "tokens": .number(10)])
+])])])])
+let oracleThirty = HomeEngineProjection.window(r, range: .thirtyDays, customStart: windowNow, now: windowNow)
+let oracleAll = HomeEngineProjection.window(r, range: .all, customStart: windowNow, now: windowNow)
+let oracleChart = HomeEngineProjection.chartWindow(r, range: .thirtyDays, customStart: windowNow, now: windowNow)
+check(oracleThirty.tokens == 30 && oracleThirty.recordedDays == 3, "thirty-day window is 10+20 plus recorded zero")
+check(oracleAll.tokens == 100, "all-time total stays 100 outside the window")
+check(oracleChart?.from == "2026-08-19" && oracleChart?.to == "2026-09-17", "chart window excludes the 40-day-old bucket")
 '''
 (q/'consumer-fixture-0913v5.swift').write_text(source)
 with (q/'consumer-tests-0913v5.log').open('w') as log:

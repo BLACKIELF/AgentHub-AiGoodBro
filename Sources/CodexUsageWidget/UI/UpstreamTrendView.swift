@@ -6,6 +6,10 @@ import WebKit
 /// Standalone adapter uses the unchanged upstream heatmap and stacked-bar algorithms.
 @MainActor
 struct UpstreamTrendView: View {
+    struct SummaryCost: Equatable {
+        let value: Double?
+        var isPartial = false
+    }
     struct Point: Codable, Equatable {
         let date: String
         let tokens: Double
@@ -38,7 +42,12 @@ struct UpstreamTrendView: View {
     let points: [Point]
     let dashboardJSON: String?
     let resetAnnotations: [ResetAnnotation]
+    let chartFrom: String?
+    let chartTo: String?
     var height: CGFloat = 40
+    var homePreferences: HomeDashboardPreferences?
+    var onHomePreferences: ((HomeDashboardPreferences) -> Void)?
+    var summaryCost: SummaryCost? = nil
     @StateObject private var renderer: Renderer
     @Environment(\.widgetLanguage) private var language
     @Environment(\.workspaceTrendScreenshots) private var screenshots
@@ -84,21 +93,37 @@ struct UpstreamTrendView: View {
         self.points = points
         self.dashboardJSON = nil
         self.resetAnnotations = []
+        self.chartFrom = nil
+        self.chartTo = nil
         self.height = height
         _renderer = StateObject(wrappedValue: Renderer())
     }
 
-    init(dashboardJSON: String, resetAnnotations: [ResetAnnotation] = [], height: CGFloat = 260) {
+    init(
+        dashboardJSON: String, resetAnnotations: [ResetAnnotation] = [], height: CGFloat = 260,
+        chartFrom: String? = nil, chartTo: String? = nil,
+        homePreferences: HomeDashboardPreferences? = nil,
+        onHomePreferences: ((HomeDashboardPreferences) -> Void)? = nil,
+        summaryCost: SummaryCost? = nil
+    ) {
         self.points = []
         self.dashboardJSON = dashboardJSON
         self.resetAnnotations = resetAnnotations
+        self.chartFrom = chartFrom
+        self.chartTo = chartTo
         self.height = height
-        _renderer = StateObject(wrappedValue: Renderer())
+        self.homePreferences = homePreferences
+        self.onHomePreferences = onHomePreferences
+        self.summaryCost = summaryCost
+        _renderer = StateObject(wrappedValue: Renderer(homeDashboard: homePreferences != nil))
     }
 
     private func updateRenderer() {
+        renderer.onHomePreferences = onHomePreferences
         if let dashboardJSON {
-            renderer.update(dashboardJSON: dashboardJSON, resetAnnotations: resetAnnotations, height: height, language: language)
+            renderer.update(
+                dashboardJSON: dashboardJSON, resetAnnotations: resetAnnotations, height: height, language: language,
+                from: chartFrom, to: chartTo, homePreferences: homePreferences, summaryCost: summaryCost)
         } else {
             renderer.update(points: points, height: height)
         }
@@ -139,8 +164,12 @@ struct UpstreamTrendView: View {
             updateRenderer()
         }
         .onChange(of: language) { _ in updateRenderer() }
+        .onChange(of: homePreferences) { _ in updateRenderer() }
         .onChange(of: dashboardJSON) { _ in updateRenderer() }
+        .onChange(of: summaryCost) { _ in updateRenderer() }
         .onChange(of: resetAnnotations) { _ in updateRenderer() }
+        .onChange(of: chartFrom) { _ in updateRenderer() }
+        .onChange(of: chartTo) { _ in updateRenderer() }
         .onChange(of: height) { updated in
             updateRenderer()
         }
@@ -189,7 +218,14 @@ struct UpstreamTrendView: View {
     }
 
     private var safeHeight: CGFloat {
-        if dashboardJSON != nil { return renderer.state == .ready ? renderer.contentHeight : 120 }
+        if dashboardJSON != nil {
+            if homePreferences != nil {
+                return min(
+                    CGFloat(HomeDashboardPreferences.maximumHeight),
+                    max(CGFloat(HomeDashboardPreferences.minimumHeight), height.isFinite ? height : CGFloat(HomeDashboardPreferences.defaultHeight)))
+            }
+            return renderer.state == .ready ? renderer.contentHeight : 120
+        }
         guard height.isFinite else { return 40 }
         return min(600, max(24, height))
     }
@@ -228,9 +264,10 @@ struct UpstreamTrendView: View {
             private var probingLoadID: UInt64?
 
             mutating func updateInput(_ status: InputStatus) {
+                let preserveReady = status == .valid && state == .ready && canRender
                 inputStatus = status
                 invalidateRender()
-                state = stateForCurrentInput()
+                state = preserveReady ? .ready : stateForCurrentInput()
             }
 
             mutating func beginLoad() -> UInt64 {
@@ -294,7 +331,7 @@ struct UpstreamTrendView: View {
                     loadID == currentLoadID
                 else { return nil }
                 currentRenderID &+= 1
-                state = .loading
+                if state != .ready { state = .loading }
                 return RenderID(load: loadID, render: currentRenderID)
             }
 
@@ -366,23 +403,65 @@ struct UpstreamTrendView: View {
         private var renderPending = false
         private var resetAnnotations: [ResetAnnotation] = []
         private var language: WidgetLanguage = .zh
+        private var chartFrom: String?
+        private var chartTo: String?
+        private let homeDashboard: Bool
+        var usesInternalScrolling: Bool { homeDashboard }
+        private var homePreferences: HomeDashboardPreferences?
+        private var homeSummaryCost: [String: Any]?
+        private var summaryCostOverride: SummaryCost?
+        var onHomePreferences: ((HomeDashboardPreferences) -> Void)?
+
+        init(homeDashboard: Bool = false) {
+            self.homeDashboard = homeDashboard
+            super.init()
+        }
+
+        private var resourceName: String { homeDashboard ? "home-dashboard" : "standalone" }
 
         func permitsNavigation(_ url: URL?) -> Bool {
             guard let url, let resourceURL else { return false }
             return url.isFileURL && url.standardizedFileURL == resourceURL.standardizedFileURL
         }
 
-        func update(dashboardJSON incoming: String, resetAnnotations: [ResetAnnotation], height incomingHeight: CGFloat, language: WidgetLanguage = .zh) {
-            let nextHeight = incomingHeight.isFinite ? min(600, max(24, incomingHeight)) : 260
-            guard self.language != language || dashboardJSON != incoming || self.resetAnnotations != resetAnnotations || height != nextHeight else {
-                return
-            }
+        func update(
+            dashboardJSON incoming: String, resetAnnotations: [ResetAnnotation], height incomingHeight: CGFloat,
+            language: WidgetLanguage = .zh, from: String? = nil, to: String? = nil,
+            homePreferences: HomeDashboardPreferences? = nil,
+            summaryCost: SummaryCost? = nil
+        ) {
+            let nextHeight =
+                incomingHeight.isFinite
+                ? min(
+                    homeDashboard ? CGFloat(HomeDashboardPreferences.maximumHeight) : 600,
+                    max(homeDashboard ? CGFloat(HomeDashboardPreferences.minimumHeight) : 24, incomingHeight))
+                : CGFloat(HomeDashboardPreferences.defaultHeight)
+            var previousRenderingPreferences = self.homePreferences
+            var nextRenderingPreferences = homePreferences
+            previousRenderingPreferences?.height = HomeDashboardPreferences.defaultHeight
+            nextRenderingPreferences?.height = HomeDashboardPreferences.defaultHeight
+            let needsRender =
+                self.language != language || dashboardJSON != incoming
+                || self.resetAnnotations != resetAnnotations || (!homeDashboard && height != nextHeight)
+                || chartFrom != from || chartTo != to
+                || previousRenderingPreferences != nextRenderingPreferences
+                || summaryCostOverride != summaryCost
+            self.homePreferences = homePreferences
+            summaryCostOverride = summaryCost
+            height = nextHeight
+            guard needsRender else { return }
             if dashboardJSON != incoming {
                 let data = incoming.data(using: .utf8)
                 let object = data.flatMap { $0.count <= 16 * 1_024 * 1_024 ? (try? JSONSerialization.jsonObject(with: $0)) : nil } as? [String: Any]
                 dashboardSnapshotIsValid = (object?["schemaVersion"] as? Int) == 1 && object?["payload"] is [String: Any]
                 dashboardSnapshotRevision &+= 1
                 transferredDashboardID = nil
+                homeSummaryCost = nil
+                if homeDashboard, let data, data.count <= 16 * 1_024 * 1_024, let response = try? JSONDecoder().decode(TokenMonitorResponse.self, from: data) {
+                    // Use exactly the same cumulative cost projection as the tray.
+                    let cost = TokenMonitorDashboardSnapshot(response: response).value(for: .total, metric: .cost)
+                    homeSummaryCost = ["value": cost.map { $0 as Any } ?? NSNull(), "status": response.coverage.cost.rawValue]
+                }
             }
             // Match the validated public-announcement text bound; long lawful
             // announcements must not invalidate the independent usage snapshot.
@@ -393,7 +472,8 @@ struct UpstreamTrendView: View {
             self.language = language
             dashboardJSON = incoming
             self.resetAnnotations = resetAnnotations
-            height = nextHeight
+            chartFrom = from
+            chartTo = to
             inputStatus = nextStatus
             lifecycle.updateInput(nextStatus)
             publishLifecycleState()
@@ -426,6 +506,22 @@ struct UpstreamTrendView: View {
             else { return }
             let measured = min(2_400, max(96, ceil(value)))
             if abs(contentHeight - measured) >= 1 { contentHeight = measured }
+        }
+
+        func receiveHomePreferences(body: Any, from web: WKWebView, isMainFrame: Bool, url: URL?) {
+            guard homeDashboard, web === webView, isMainFrame, permitsNavigation(url),
+                let body = body as? [String: Any],
+                body["snapshotID"] as? String == "\(lifecycle.currentLoadID):\(dashboardSnapshotRevision)",
+                let object = body["preferences"] as? [String: Any],
+                let data = try? JSONSerialization.data(withJSONObject: object), data.count <= 1024,
+                var value = try? JSONDecoder().decode(HomeDashboardPreferences.self, from: data), value.isValid
+            else { return }
+            // Height belongs to the native drag control. A delayed web callback
+            // may carry its old value after the user resized the panel.
+            value.height = homePreferences?.height ?? value.height
+            guard homePreferences != value else { return }
+            homePreferences = value
+            onHomePreferences?(value)
         }
 
         func isAttached(to web: WKWebView) -> Bool {
@@ -461,7 +557,7 @@ struct UpstreamTrendView: View {
             attach(web)
             guard
                 let resourceURL = Bundle.main.url(
-                    forResource: "standalone", withExtension: "html", subdirectory: "UpstreamCharts"
+                    forResource: resourceName, withExtension: "html", subdirectory: "UpstreamCharts"
                 )
             else {
                 self.resourceURL = nil
@@ -487,7 +583,7 @@ struct UpstreamTrendView: View {
             let resolvedResourceURL =
                 resourceURL
                 ?? Bundle.main.url(
-                    forResource: "standalone", withExtension: "html", subdirectory: "UpstreamCharts"
+                    forResource: resourceName, withExtension: "html", subdirectory: "UpstreamCharts"
                 )
             guard let resolvedResourceURL else {
                 lifecycle.failWithoutNavigation(.resourceUnavailable)
@@ -546,6 +642,20 @@ struct UpstreamTrendView: View {
             }
             let width = web.bounds.width.isFinite && web.bounds.width > 0 ? min(4_096, web.bounds.width) : 650
             var options: [String: Any] = ["width": width, "height": height, "resetAnnotations": annotationObject, "language": language.rawValue]
+            if let homeSummaryCost { options["summaryCost"] = homeSummaryCost }
+            if let summaryCostOverride {
+                options["summaryCost"] = [
+                    "value": summaryCostOverride.value.map { $0 as Any } ?? NSNull(),
+                    "status": summaryCostOverride.isPartial ? "partial" : "known",
+                ]
+            }
+            if let homePreferences, let data = try? JSONEncoder().encode(homePreferences),
+                let object = try? JSONSerialization.jsonObject(with: data)
+            {
+                options["homePreferences"] = object
+            }
+            if let chartFrom { options["from"] = chartFrom }
+            if let chartTo { options["to"] = chartTo }
             let snapshotID: String?
             let input: Any
             if let dashboardJSON {
@@ -726,7 +836,11 @@ private struct TrendWebView: NSViewRepresentable {
         func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
             Task { @MainActor in
                 guard let web = message.webView else { return }
-                renderer.receiveContentSize(body: message.body, from: web, isMainFrame: message.frameInfo.isMainFrame, url: message.frameInfo.request.url)
+                if message.name == "chartPreferences" {
+                    renderer.receiveHomePreferences(body: message.body, from: web, isMainFrame: message.frameInfo.isMainFrame, url: message.frameInfo.request.url)
+                } else {
+                    renderer.receiveContentSize(body: message.body, from: web, isMainFrame: message.frameInfo.isMainFrame, url: message.frameInfo.request.url)
+                }
             }
         }
 
@@ -771,10 +885,12 @@ private struct TrendWebView: NSViewRepresentable {
     func makeNSView(context: Context) -> ResizeAwareTrendWebView {
         let configuration = WKWebViewConfiguration()
         configuration.userContentController.add(context.coordinator, name: "chartSize")
+        configuration.userContentController.add(context.coordinator, name: "chartPreferences")
         let web = ResizeAwareTrendWebView(frame: .zero, configuration: configuration)
         web.renderer = renderer
         web.navigationDelegate = context.coordinator
         web.setValue(false, forKey: "drawsBackground")
+        if !renderer.usesInternalScrolling { web.startScrollWheelForwarding() }
         web.onSizeChange = { [weak renderer, weak web] in
             guard let renderer, let web else { return }
             Task { @MainActor in
@@ -786,7 +902,9 @@ private struct TrendWebView: NSViewRepresentable {
     }
 
     static func dismantleNSView(_ web: ResizeAwareTrendWebView, coordinator: Coordinator) {
+        web.stopScrollWheelForwarding()
         web.configuration.userContentController.removeScriptMessageHandler(forName: "chartSize")
+        web.configuration.userContentController.removeScriptMessageHandler(forName: "chartPreferences")
         web.onSizeChange = nil
         web.navigationDelegate = nil
     }
@@ -798,10 +916,70 @@ private struct TrendWebView: NSViewRepresentable {
 }
 
 @MainActor
-private final class ResizeAwareTrendWebView: WKWebView {
+final class ResizeAwareTrendWebView: WKWebView {
     weak var renderer: UpstreamTrendView.Renderer?
     var onSizeChange: (() -> Void)?
+    var onScrollWheelForwardedForTest: (() -> Void)?
     private var previousSize: CGSize = .zero
+    private var scrollWheelMonitor: Any?
+
+    func startScrollWheelForwarding() {
+        guard scrollWheelMonitor == nil else { return }
+        scrollWheelMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
+            guard let self, self.contains(event: event), self.forwardScrollWheel(event) else { return event }
+            return nil
+        }
+    }
+
+    func stopScrollWheelForwarding() {
+        if let scrollWheelMonitor {
+            NSEvent.removeMonitor(scrollWheelMonitor)
+            self.scrollWheelMonitor = nil
+        }
+    }
+
+    func outerScrollViewForRegression() -> NSScrollView? {
+        var ancestor = superview
+        while let view = ancestor {
+            if let scroll = view as? NSScrollView { return scroll }
+            ancestor = view.superview
+        }
+        return nil
+    }
+
+    override func scrollWheel(with event: NSEvent) {
+        if renderer?.usesInternalScrolling == true {
+            super.scrollWheel(with: event)
+            return
+        }
+        // A direct responder callback is the fallback for events that bypass
+        // the local monitor (for example, an AppKit responder-chain dispatch).
+        // Do not call super: that would restore WKWebView's inner ownership.
+        _ = forwardScrollWheel(event)
+    }
+
+    private func contains(event: NSEvent) -> Bool {
+        containsScrollLocation(event.locationInWindow, in: event.window)
+    }
+
+    fileprivate func containsScrollLocation(_ location: NSPoint, in eventWindow: NSWindow?) -> Bool {
+        guard let window, eventWindow === window, !isHiddenOrHasHiddenAncestor,
+            visibleRect.contains(convert(location, from: nil)),
+            let content = window.contentView,
+            let target = content.hitTest(content.convert(location, from: nil))
+        else { return false }
+        // The monitor observes every window. Only intercept a hit on this
+        // chart, not a covered/clipped chart or a different window's content.
+        return target === self || target.isDescendant(of: self)
+    }
+
+    @discardableResult
+    private func forwardScrollWheel(_ event: NSEvent) -> Bool {
+        guard let outer = outerScrollViewForRegression() else { return false }
+        onScrollWheelForwardedForTest?()
+        outer.scrollWheel(with: event)
+        return true
+    }
 
     override func setFrameSize(_ newSize: NSSize) {
         let changed = previousSize.width != newSize.width
@@ -810,6 +988,70 @@ private final class ResizeAwareTrendWebView: WKWebView {
         if changed {
             onSizeChange?()
         }
+    }
+}
+
+/// Executable geometry/ownership regression for the embedded chart. A real
+/// synthetic wheel exercises the responder route; hosted AppKit geometry tests
+/// the monitor's hit test without injecting any user input into the desktop.
+@MainActor
+enum UpstreamTrendWebViewScrollSelfTest {
+    private final class RecordingScrollView: NSScrollView {
+        private(set) var forwardedEvents = 0
+
+        override func scrollWheel(with event: NSEvent) {
+            forwardedEvents += 1
+        }
+    }
+
+    static func run() -> Bool {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 320, height: 180),
+            styleMask: .borderless, backing: .buffered, defer: false)
+        let other = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 320, height: 180),
+            styleMask: .borderless, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        other.isReleasedWhenClosed = false
+        defer {
+            window.close()
+            other.close()
+        }
+        let outer = RecordingScrollView(frame: NSRect(x: 0, y: 0, width: 320, height: 180))
+        window.contentView = outer
+        let host = NSView(frame: NSRect(x: 0, y: 0, width: 320, height: 720))
+        outer.documentView = host
+        let web = ResizeAwareTrendWebView(
+            frame: NSRect(x: 0, y: 0, width: 320, height: 420), configuration: WKWebViewConfiguration())
+        host.addSubview(web)
+        outer.contentView.scroll(to: .zero)
+        let visible = web.visibleRect
+        guard !visible.isEmpty else { return false }
+        let point = web.convert(NSPoint(x: visible.midX, y: visible.midY), to: nil)
+        guard web.containsScrollLocation(point, in: window),
+            !web.containsScrollLocation(point, in: other),
+            !web.containsScrollLocation(point, in: nil)
+        else { return false }
+        let clipped = web.convert(NSPoint(x: 20, y: visible.maxY + 20), to: nil)
+        guard !web.containsScrollLocation(clipped, in: window) else { return false }
+        web.isHidden = true
+        guard !web.containsScrollLocation(point, in: window) else { return false }
+        web.isHidden = false
+        let cover = NSView(frame: web.frame)
+        host.addSubview(cover, positioned: .above, relativeTo: web)
+        guard !web.containsScrollLocation(point, in: window) else { return false }
+        cover.removeFromSuperview()
+        let target = web.outerScrollViewForRegression()
+        guard
+            let cgEvent = CGEvent(
+                scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1,
+                wheel1: 12, wheel2: 0, wheel3: 0),
+            let event = NSEvent(cgEvent: cgEvent)
+        else { return false }
+        web.scrollWheel(with: event)
+        let passed = target === outer && outer.forwardedEvents == 1
+        web.removeFromSuperview()
+        return passed
     }
 }
 

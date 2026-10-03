@@ -4,7 +4,7 @@ import SwiftUI
 let titlebarControlHeight: CGFloat = 18
 let settingsAccessoryColumnWidth: CGFloat = 184
 let settingsControlCornerRadius: CGFloat = 8
-let settingsSegmentHeight: CGFloat = 30
+let settingsSegmentHeight: CGFloat = 24
 let settingsControlVisualHeight: CGFloat = settingsSegmentHeight + 6
 let settingsRowTitleFontSize: CGFloat = 12.5
 let settingsRowDetailFontSize: CGFloat = 10.5
@@ -79,77 +79,14 @@ struct HeaderActionButton: View {
     }
 }
 
-struct TitlebarToolbarView: View {
-    @ObservedObject var settings: AppSettings
-    @Environment(\.colorScheme) private var colorScheme
-    let onOpenSettings: () -> Void
-    let onSaveScreenshot: () -> Void
-    let onOpenGuide: () -> Void
-
-    private var language: WidgetLanguage { settings.language }
-    private var themeMode: WidgetThemeMode { settings.themeMode }
-    private var effectiveColorScheme: ColorScheme {
-        themeMode.preferredColorScheme ?? colorScheme
-    }
-
-    var body: some View {
-        HStack(spacing: 10) {
-            Spacer(minLength: 0)
-            HeaderActionButton(
-                systemName: "questionmark.circle",
-                help: language.text("使用引导", "Getting started"),
-                accessibilityLabel: language.text("使用引导", "Getting started")
-            ) {
-                onOpenGuide()
-            }
-
-            HStack(spacing: 2) {
-                HeaderActionButton(
-                    systemName: "camera.viewfinder",
-                    help: language.text("保存主界面长截图（PNG）", "Save full workspace screenshot (PNG)"),
-                    accessibilityLabel: language.text("保存主界面长截图", "Save full workspace screenshot")
-                ) {
-                    onSaveScreenshot()
-                }
-                HeaderActionButton(
-                    systemName: "gearshape",
-                    help: language.text("设置", "Settings"),
-                    accessibilityLabel: language.text("设置", "Settings")
-                ) {
-                    onOpenSettings()
-                }
-            }
-            .padding(3)
-            .background(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(FixedVisualPalette.controlFill(effectiveColorScheme))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .strokeBorder(FixedVisualPalette.controlStroke(effectiveColorScheme), lineWidth: 0.8)
-                    )
-            )
-        }
-        .padding(.top, 12)
-        .padding(.bottom, 2)
-        .padding(.trailing, 18)
-        .frame(maxWidth: .infinity, minHeight: 44, maxHeight: 44, alignment: .topTrailing)
-        .appVisualEnvironment(
-            catalog: settings.paletteCatalog,
-            paletteID: settings.paletteID,
-            appearance: PaletteAppearance(effectiveColorScheme)
-        )
-        .environment(\.colorScheme, effectiveColorScheme)
-        .preferredColorScheme(themeMode.preferredColorScheme)
-        .readableForegroundHierarchy(effectiveColorScheme)
-    }
-}
-
 enum SettingsPage: String, CaseIterable, Identifiable {
     case appearance
     case menuBar
     case floatingBubble
+    case edgeDock
     case automation
     case workspace
+    case tokenMonitor
     case about
 
     var id: String { rawValue }
@@ -159,8 +96,10 @@ enum SettingsPage: String, CaseIterable, Identifiable {
         case .appearance: return language.text("显示与图标", "Display & Icons")
         case .menuBar: return language.text("菜单栏", "Menu Bar")
         case .floatingBubble: return language.text("悬浮窗", "Floating window")
+        case .edgeDock: return language.text("右侧边栏", "Edge Dock")
         case .automation: return language.text("自动化", "Automation")
         case .workspace: return language.text("工作区", "Workspace")
+        case .tokenMonitor: return language.text("用量统计", "Usage dashboard")
         case .about: return language.text("关于", "About")
         }
     }
@@ -170,9 +109,11 @@ enum SettingsPage: String, CaseIterable, Identifiable {
         case .appearance: return language.text("主题、语言、透明度与额度环动效；账号头像在账号详情中修改。", "Theme, language, opacity and ring motion. Change account avatars in account details.")
         case .menuBar: return language.text("选择菜单栏显示的账号与指标。", "Choose the account and metrics shown in the menu bar.")
         case .floatingBubble: return language.text("选择桌面上持续显示的账号、用量与外观。", "Choose the account, usage and appearance shown on the desktop.")
+        case .edgeDock: return language.text("在屏幕边缘查看额度与 Token 统计。", "View limits and token usage at the screen edge.")
         case .automation: return language.text("按各账号的额度窗口安排自动维护。", "Schedule automatic maintenance around each account’s quota windows.")
         case .workspace: return language.text("数据口径、窗口行为与快捷入口。", "Data, window behavior and shortcuts.")
-        case .about: return language.text("版本、更新与开源来源。", "Version, updates and open-source attribution.")
+        case .tokenMonitor: return language.text("查看官方服务状态，并设置可选的用量同步。", "Check official service status and configure optional usage sync.")
+        case .about: return language.text("版本、联系小助理与开源来源。", "Version, contact and open-source attribution.")
         }
     }
 
@@ -181,8 +122,10 @@ enum SettingsPage: String, CaseIterable, Identifiable {
         case .appearance: return "paintpalette"
         case .menuBar: return "menubar.rectangle"
         case .floatingBubble: return "macwindow.on.rectangle"
+        case .edgeDock: return "sidebar.right"
         case .automation: return "bolt.badge.clock"
         case .workspace: return "rectangle.3.group"
+        case .tokenMonitor: return "chart.xyaxis.line"
         case .about: return "info.circle"
         }
     }
@@ -230,17 +173,23 @@ struct NextSettingsHeader: View {
     }
 }
 
+final class SettingsWindowNavigation: ObservableObject {
+    @Published var page: SettingsPage = .appearance
+}
+
 struct SettingsWindowContent: View {
     @ObservedObject var settings: AppSettings
     @ObservedObject var store: UsageStore
     @ObservedObject var updateStore: AppUpdateStore
     @ObservedObject var localAccounts: LocalCLIAccountStore
+    @ObservedObject var navigation: SettingsWindowNavigation
     let onOpenPaletteLibrary: () -> Void
 
     var body: some View {
         SettingsPanelView(
             settings: settings, store: store, updateStore: updateStore,
             onOpenPaletteLibrary: onOpenPaletteLibrary,
+            pageSelection: $navigation.page,
             floatingBubbleSources: FloatingBubbleEvidence.make(store: store, localAccounts: localAccounts, language: settings.language)
         )
         .environment(\.widgetLanguage, settings.language)
@@ -260,8 +209,18 @@ struct SettingsPanelView: View {
     var floatingBubbleSources: [TokenMonitorFloatingBubbleAccount]
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.visualTokens) private var visualTokens
-    @State private var selectedPage: SettingsPage
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.colorSchemeContrast) private var colorSchemeContrast
+    @State private var localSelectedPage: SettingsPage
+    private let pageSelection: Binding<SettingsPage>?
     @State private var showsAutomationCenter = false
+
+    private var selectedPage: SettingsPage {
+        get { pageSelection?.wrappedValue ?? localSelectedPage }
+        nonmutating set {
+            if let pageSelection { pageSelection.wrappedValue = newValue } else { localSelectedPage = newValue }
+        }
+    }
 
     init(
         settings: AppSettings,
@@ -271,6 +230,7 @@ struct SettingsPanelView: View {
         compact: Bool = false,
         showsHeader: Bool = true,
         initialPage: SettingsPage = .appearance,
+        pageSelection: Binding<SettingsPage>? = nil,
         floatingBubbleSources: [TokenMonitorFloatingBubbleAccount] = []
     ) {
         self.settings = settings
@@ -280,10 +240,16 @@ struct SettingsPanelView: View {
         self.compact = compact
         self.showsHeader = showsHeader
         self.floatingBubbleSources = floatingBubbleSources
-        _selectedPage = State(initialValue: initialPage)
+        _localSelectedPage = State(initialValue: initialPage)
+        self.pageSelection = pageSelection
     }
 
     private var language: WidgetLanguage { settings.language }
+    private var solidSurfaceFallback: Bool { reduceTransparency || colorSchemeContrast == .increased }
+    private var sidebarFill: Color {
+        if solidSurfaceFallback { return Color(nsColor: .controlBackgroundColor) }
+        return colorScheme == .dark ? Color.white.opacity(0.025) : Color.black.opacity(0.014)
+    }
 
     var body: some View {
         Group {
@@ -304,7 +270,8 @@ struct SettingsPanelView: View {
             }
         }
         .frame(maxHeight: .infinity)
-        .background(Color(nsColor: .windowBackgroundColor))
+        .background(WorkspaceGlassBackdrop())
+        .environment(\.workspaceGlass, settings.workspaceGlass)
         .appVisualEnvironment(catalog: settings.paletteCatalog, paletteID: settings.paletteID, appearance: PaletteAppearance(colorScheme))
         .readableForegroundHierarchy(colorScheme)
         .sheet(isPresented: $showsAutomationCenter) { AccountAutomationCenterView(store: store) }
@@ -315,7 +282,7 @@ struct SettingsPanelView: View {
 
     private var pageScroll: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
+            VStack(alignment: .leading, spacing: 12) {
                 VStack(alignment: .leading, spacing: 6) {
                     Text(selectedPage.title(language))
                         .font(.system(size: compact ? 18 : 24, weight: .semibold))
@@ -326,7 +293,7 @@ struct SettingsPanelView: View {
                 .accessibilityAddTraits(.isHeader)
                 pageContent
             }
-            .padding(compact ? 18 : 28)
+            .padding(compact ? 12 : 18)
             .frame(maxWidth: .infinity, alignment: .leading)
             .accessibilityIdentifier("next.settings.page.\(selectedPage.rawValue)")
         }
@@ -361,11 +328,25 @@ struct SettingsPanelView: View {
         .padding(12)
         .frame(width: 172)
         .frame(maxHeight: .infinity)
-        .background(.bar)
+        .background {
+            Rectangle()
+                .fill(sidebarFill)
+                .overlay {
+                    if !solidSurfaceFallback {
+                        Rectangle()
+                            .fill(visualTokens.surfaceTint.color.color.opacity(visualTokens.surfaceTint.maximumOpacity * 0.45))
+                    }
+                }
+                .overlay(alignment: .trailing) {
+                    Rectangle()
+                        .fill(FixedVisualPalette.sectionStroke(colorScheme, increasedContrast: colorSchemeContrast == .increased))
+                        .frame(width: colorSchemeContrast == .increased ? 1 : 0.7)
+                }
+        }
     }
 
     private var pageNavigation: some View {
-        Picker(language.text("设置分类", "Settings category"), selection: $selectedPage) {
+        Picker(language.text("设置分类", "Settings category"), selection: Binding(get: { selectedPage }, set: { selectedPage = $0 })) {
             ForEach(SettingsPage.allCases) { page in
                 Label(page.title(language), systemImage: page.symbol).tag(page)
             }
@@ -378,26 +359,46 @@ struct SettingsPanelView: View {
         switch selectedPage {
         case .appearance: appearancePage
         case .menuBar:
-            StatusItemSettingsView(settings: settings, store: store)
-        case .floatingBubble:
-            VStack(spacing: 6) {
-                TokenMonitorFloatingBubbleEditor(
-                    preferences: $settings.floatingBubble,
-                    snapshot: TokenMonitorFloatingBubbleProjection.resolve(
-                        preferences: settings.floatingBubble, sources: floatingBubbleSources
-                    ),
-                    language: language,
-                    providers: AgentNavCatalog.workspaceProviders,
-                    previewUsesSyntheticData: false,
-                    sources: floatingBubbleSources,
-                    embeddedInSettings: true,
-                    onShowDesktop: { TokenMonitorFloatingBubbleSession.show(settings: settings, language: language) },
-                    onCancel: {},
-                    onDone: {}
-                )
+            if !store.isPreview, TokenMonitorDesktopController.shared.isBundled {
+                TokenMonitorDesktopEntryView(language: language, route: .menuBarSettings)
+            } else {
+                StatusItemSettingsView(settings: settings, store: store)
             }
+        case .floatingBubble:
+            if !store.isPreview, TokenMonitorDesktopController.shared.isBundled {
+                TokenMonitorDesktopEntryView(language: language, route: .floatingBubbleSettings)
+            } else {
+                VStack(spacing: 6) {
+                    TokenMonitorFloatingBubbleEditor(
+                        preferences: $settings.floatingBubble,
+                        snapshot: TokenMonitorFloatingBubbleProjection.resolve(
+                            preferences: settings.floatingBubble, sources: floatingBubbleSources
+                        ),
+                        language: language,
+                        providers: AgentNavCatalog.workspaceProviders,
+                        previewUsesSyntheticData: false,
+                        sources: floatingBubbleSources,
+                        embeddedInSettings: true,
+                        onShowDesktop: { TokenMonitorFloatingBubbleSession.show(settings: settings, language: language) },
+                        onCancel: {},
+                        onDone: {}
+                    )
+                }
+            }
+        case .edgeDock:
+            TokenMonitorEdgeDockSettingsView(settings: settings, store: store, quotaSources: floatingBubbleSources, language: language)
         case .automation: automationPage
         case .workspace: workspacePage
+        case .tokenMonitor:
+            if !store.isPreview, TokenMonitorDesktopController.shared.isBundled {
+                TokenMonitorDesktopEntryView(language: language, route: .settings)
+            } else {
+                TokenMonitorSettingsPage(
+                    hub: store.tokenMonitorHubSync,
+                    serviceStatus: store.serviceStatus,
+                    language: language
+                )
+            }
         case .about: aboutPage
         }
     }
@@ -422,20 +423,7 @@ struct SettingsPanelView: View {
                     width: settingsAccessoryColumnWidth
                 )
             }
-            SettingsPickerRow(
-                title: language.text("面板透明度", "Panel opacity"),
-                detail: language.text("调整菜单栏面板的背景浓度", "Adjust the menu bar panel's background opacity")
-            ) {
-                SettingsSegmentedControl(
-                    selection: $settings.accountMenuTransparency,
-                    options: [
-                        SettingsSegmentOption(value: .clear, title: language.text("清晰", "Clear")),
-                        SettingsSegmentOption(value: .standard, title: language.text("标准", "Standard")),
-                        SettingsSegmentOption(value: .frosted, title: language.text("磨砂", "Frosted")),
-                    ],
-                    width: settingsAccessoryColumnWidth
-                )
-            }
+            WorkspaceGlassControls(settings: settings)
             SettingsPickerRow(
                 title: language.text("额度环动效", "Ring motion"),
                 detail: language.text("默认仅前台聚焦时播放；省电仅悬停时播放", "Default: active window only. Power Saving: pointer hover only.")
@@ -525,6 +513,20 @@ struct SettingsPanelView: View {
                 )
                 .disabled(store.pausedAutomationFeatures.contains(.lowQuota))
             }
+            SettingsToggleRow(
+                title: language.text("剩余 1% 自动暂停并换号", "Pause and switch at 1%"),
+                detail: language.text(
+                    "5 小时或周额度剩余 ≤1% 时暂停桌面任务；确认停止后切换，并保留原对话与续做记录",
+                    "At ≤1% in either quota window, pause Desktop tasks, confirm they stopped, then switch while retaining their conversations and continuation records.")
+            ) {
+                SettingsSwitchToggle(
+                    isOn: Binding(
+                        get: { store.pauseDesktopTasksAtOnePercent }, set: { store.setPauseDesktopTasksAtOnePercent($0) })
+                )
+                .disabled(store.pausedAutomationFeatures.contains(.lowQuota))
+                .accessibilityIdentifier("next.accounts.pauseAtOnePercent")
+            }
+            CodexQuotaResumeControls(store: store)
             SettingsPickerRow(
                 title: language.text("统计方式", "Statistics mode"),
                 detail: language.text("主页按所选方式汇总；切换后分别计算，不混加", "The home page uses the selected engine. Each mode keeps its own totals.")
@@ -539,7 +541,7 @@ struct SettingsPanelView: View {
                         }
                     )
                 ) {
-                    Text(language.text("Token Monitor（默认）", "Token Monitor (default)")).tag(StatisticsEngineChoice.upstream)
+                    Text(language.text("多来源统计（默认）", "Multi-source usage (default)")).tag(StatisticsEngineChoice.upstream)
                     Text(language.text("自定义（原有模式）", "Custom (previous mode)")).tag(StatisticsEngineChoice.custom)
                     if store.statisticsEngineChoice == .nativeLegacy {
                         Text(language.text("旧版统计", "Legacy statistics")).tag(StatisticsEngineChoice.nativeLegacy)
@@ -643,18 +645,29 @@ struct SettingsPanelView: View {
             HStack(alignment: .center, spacing: 10) {
                 AHBrandSymbol(size: 28)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(AHBrandIdentity.displayName)
+                    Text("\(AHBrandIdentity.displayName) \(AHBrandIdentity.publicVersion)")
                         .font(.system(size: 16, weight: .semibold))
                     Text(AHBrandIdentity.workspaceName)
                         .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                Text(updateStore.result.currentVersion)
-                    .font(.system(size: 12, weight: .medium, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .monospacedDigit()
+                let buildNumber = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
+                Text(
+                    language.text(
+                        "内部构建 \(updateStore.result.currentVersion) (\(buildNumber))",
+                        "Internal build \(updateStore.result.currentVersion) (\(buildNumber))"
+                    )
+                )
+                .font(.system(size: 10, weight: .medium, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .monospacedDigit()
+                .multilineTextAlignment(.trailing)
             }
+            Text(AHBrandIdentity.productDescription(language))
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
             Text(AHBrandIdentity.aboutAttribution(language))
                 .font(.system(size: 10))
                 .foregroundStyle(.secondary)
@@ -669,6 +682,17 @@ struct SettingsPanelView: View {
             }
             .font(.callout.weight(.medium))
             .padding(.vertical, 8)
+            HStack(spacing: 16) {
+                Link(destination: AHBrandIdentity.helpURL) {
+                    Label(language.text("使用说明", "User guide"), systemImage: "book")
+                }
+                Link(destination: AHBrandIdentity.feedbackURL) {
+                    Label(language.text("问题与反馈", "Issues & feedback"), systemImage: "bubble.left")
+                }
+            }
+            .font(.callout)
+            AssistantContactCard(language: language, compact: compact)
+                .padding(.bottom, 14)
             SettingsValueRow(
                 title: language.text("当前 Runtime", "Current runtime"),
                 detail: language.text("当前工作台的数据范围", "Data scope of the current workspace"),
@@ -723,8 +747,8 @@ struct SettingsPanelView: View {
             acknowledgement(
                 "Codex Resets", url: "https://codex-resets.com/",
                 detail: language.text(
-                    "感谢持续追踪和整理公开重置公告，为消息时间线与重置日历提供可核对的来源。",
-                    "Thank you for tracking and preserving public reset announcements, providing verifiable sources for the update timeline and calendar."
+                    "感谢持续追踪和整理公开重置公告，为重置消息提供可核对的来源。",
+                    "Thank you for tracking and preserving public reset announcements, providing verifiable sources for reset updates."
                 ))
             acknowledgement(
                 "AIHOT · Tibo 重置监控", url: "https://aihot.news/codex-reset",
@@ -791,6 +815,389 @@ struct SettingsPanelView: View {
             return language.text("UTC 日界线，便于对照官方", "UTC day boundary for official comparison")
         case .fixed:
             return identity.resolvedIdentifier
+        }
+    }
+}
+
+private struct TokenMonitorSettingsPage: View {
+    @ObservedObject var hub: TokenMonitorHubSyncStore
+    @ObservedObject var serviceStatus: TokenMonitorServiceStatusStore
+    let language: WidgetLanguage
+
+    @State private var serverURLDraft: String
+    @State private var bearerSecretDraft = ""
+    @State private var formMessage: String?
+    @State private var showsPublishingConfirmation = false
+    @State private var showsClearConfirmation = false
+    @State private var isProbing = false
+
+    init(
+        hub: TokenMonitorHubSyncStore,
+        serviceStatus: TokenMonitorServiceStatusStore,
+        language: WidgetLanguage
+    ) {
+        self.hub = hub
+        self.serviceStatus = serviceStatus
+        self.language = language
+        _serverURLDraft = State(initialValue: hub.serverURL)
+    }
+
+    private var hasStoredCredential: Bool { hub.credentialStatus == .stored }
+    private var isConfigured: Bool { !hub.serverURL.isEmpty && hasStoredCredential }
+    private var canProbe: Bool { !serverURLDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && hasStoredCredential }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            hubConfigurationSection
+            officialStatusSection
+        }
+        .onChange(of: hub.serverURL) { serverURLDraft = $0 }
+        .confirmationDialog(
+            language.text("允许发布本机用量？", "Allow this device to publish usage?"),
+            isPresented: $showsPublishingConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button(language.text("允许发布", "Allow publishing")) {
+                hub.setPublishingThisDevice(true, confirmed: true)
+            }
+            Button(language.text("取消", "Cancel"), role: .cancel) {}
+        } message: {
+            Text(
+                language.text(
+                    "这会允许本机向已配置的 Hub 发布 AiGoodBro 用量数据。Bearer 密钥仅保存在钥匙串中。",
+                    "This allows this device to publish AiGoodBro usage data to the configured Hub. The bearer secret stays in Keychain."
+                ))
+        }
+        .confirmationDialog(
+            language.text("清除 Hub 配置？", "Clear Hub configuration?"),
+            isPresented: $showsClearConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button(language.text("清除配置", "Clear configuration"), role: .destructive) {
+                clearConfiguration()
+            }
+            Button(language.text("取消", "Cancel"), role: .cancel) {}
+        } message: {
+            Text(language.text("这会关闭 Hub 同步并从钥匙串移除保存的密钥。", "This disables Hub sync and removes the saved secret from Keychain."))
+        }
+    }
+
+    private var hubConfigurationSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: "externaldrive.connected.to.line.below")
+                    .foregroundStyle(Color.accentColor)
+                    .accessibilityHidden(true)
+                Text(language.text("用量同步 Hub", "Usage sync Hub"))
+                    .font(.headline)
+                Spacer()
+                Text(hub.connectionState.title(language))
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(connectionColor(hub.connectionState))
+            }
+
+            Text(
+                language.text(
+                    "配置你自己的 Hub 地址与共享密钥。保存后保持关闭；启用同步和发布本机用量是两个独立开关。",
+                    "Configure your Hub address and shared secret. Saving leaves sync disabled; enabling sync and publishing this device are separate controls."
+                )
+            )
+            .font(.system(size: settingsRowDetailFontSize))
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+
+            SettingsToggleRow(
+                title: language.text("启用 Hub 同步", "Enable Hub sync"),
+                detail: language.text("启用后读取已配置 Hub 的统计数据。", "When enabled, reads statistics from the configured Hub.")
+            ) {
+                SettingsSwitchToggle(
+                    isOn: Binding(get: { hub.isEnabled }, set: { hub.setEnabled($0) }),
+                    isDisabled: !isConfigured,
+                    help: language.text("先保存 Hub 地址和共享密钥", "Save a Hub address and shared secret first")
+                )
+            }
+
+            VStack(alignment: .leading, spacing: 7) {
+                Text(language.text("Hub 地址", "Hub address"))
+                    .font(.system(size: settingsRowTitleFontSize, weight: .semibold))
+                TextField("https://hub.example.com", text: $serverURLDraft)
+                    .textFieldStyle(.roundedBorder)
+                    .accessibilityLabel(language.text("Hub 地址", "Hub address"))
+
+                Text(language.text("共享密钥", "Shared secret"))
+                    .font(.system(size: settingsRowTitleFontSize, weight: .semibold))
+                    .padding(.top, 3)
+                SecureField(language.text("仅在首次配置或更换地址时输入", "Enter for first setup or when changing the address"), text: $bearerSecretDraft)
+                    .textFieldStyle(.roundedBorder)
+                    .textContentType(.password)
+                    .accessibilityLabel(language.text("Hub 共享密钥", "Hub shared secret"))
+                Text(
+                    language.text(
+                        "密钥只存入系统钥匙串；更换 Hub 地址时需要重新输入。",
+                        "The secret is stored only in Keychain. Enter it again when changing the Hub address."
+                    )
+                )
+                .font(.system(size: settingsRowDetailFontSize))
+                .foregroundStyle(.tertiary)
+            }
+
+            HStack(spacing: 8) {
+                Label(
+                    hasStoredCredential
+                        ? language.text("密钥已存入钥匙串", "Secret stored in Keychain")
+                        : language.text("未配置密钥", "No secret configured"),
+                    systemImage: hasStoredCredential ? "key.fill" : "key"
+                )
+                .font(.system(size: settingsRowDetailFontSize, weight: .medium))
+                .foregroundStyle(hasStoredCredential ? FixedVisualPalette.statusSuccess : Color.secondary)
+                Spacer(minLength: 4)
+                Button {
+                    probeConnection()
+                } label: {
+                    if isProbing {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Text(language.text("测试连接", "Test connection"))
+                    }
+                }
+                .disabled(!canProbe || isProbing)
+                .help(language.text("只读测试 Hub，不会启用同步或上传数据", "Runs a read-only Hub check; does not enable sync or upload data"))
+
+                Button(language.text("保存配置", "Save configuration")) {
+                    saveConfiguration()
+                }
+                .buttonStyle(.borderedProminent)
+
+                if isConfigured {
+                    Button(language.text("清除", "Clear"), role: .destructive) {
+                        showsClearConfirmation = true
+                    }
+                }
+            }
+            .controlSize(.small)
+
+            SettingsToggleRow(
+                title: language.text("发布本机用量", "Publish this device's usage"),
+                detail: language.text(
+                    "需单独确认；开启后才允许将本机 AiGoodBro 用量数据发送到 Hub。",
+                    "Requires separate confirmation. Only then may this device send AiGoodBro usage data to the Hub."
+                )
+            ) {
+                SettingsSwitchToggle(isOn: publishingBinding, isDisabled: !hub.isEnabled || !isConfigured)
+            }
+
+            if let lastRefresh = hub.lastRefresh {
+                Text(language.text("上次读取：\(timeText(lastRefresh))", "Last read: \(timeText(lastRefresh))"))
+                    .font(.system(size: settingsRowDetailFontSize))
+                    .foregroundStyle(.secondary)
+            }
+            if let error = hub.localizedError(language) {
+                Label(error, systemImage: "exclamationmark.triangle.fill")
+                    .font(.system(size: settingsRowDetailFontSize))
+                    .foregroundStyle(FixedVisualPalette.statusDanger)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if let formMessage {
+                Text(formMessage)
+                    .font(.system(size: settingsRowDetailFontSize, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(10)
+        .sectionBackground()
+    }
+
+    private var officialStatusSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(language.text("官方服务状态", "Official service status"))
+                        .font(.headline)
+                    Text(language.text("公开读取 Claude 与 OpenAI 状态页。", "Public status for Claude and OpenAI."))
+                        .font(.system(size: settingsRowDetailFontSize))
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button {
+                    Task { await serviceStatus.refresh(force: true) }
+                } label: {
+                    Label(language.text("刷新", "Refresh"), systemImage: "arrow.clockwise")
+                }
+                .controlSize(.small)
+                .disabled(serviceStatus.isLoading)
+            }
+
+            serviceStatusRow(.claude)
+            serviceStatusRow(.openAI)
+
+            HStack(spacing: 6) {
+                if serviceStatus.isLoading { ProgressView().controlSize(.small) }
+                if let lastChecked = serviceStatus.lastChecked {
+                    Text(language.text("检查时间：\(timeText(lastChecked))", "Checked: \(timeText(lastChecked))"))
+                } else {
+                    Text(language.text("尚未检查", "Not checked yet"))
+                }
+            }
+            .font(.system(size: settingsRowDetailFontSize))
+            .foregroundStyle(.secondary)
+            if let error = serviceStatus.localizedError(language) {
+                Label(error, systemImage: "exclamationmark.triangle.fill")
+                    .font(.system(size: settingsRowDetailFontSize))
+                    .foregroundStyle(FixedVisualPalette.statusDanger)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(10)
+        .sectionBackground()
+    }
+
+    @ViewBuilder
+    private func serviceStatusRow(_ provider: TokenMonitorServiceStatusProvider) -> some View {
+        if let entry = serviceStatus.entries[provider] {
+            HStack(alignment: .top, spacing: 9) {
+                Circle()
+                    .fill(statusColor(entry.indicator))
+                    .frame(width: 8, height: 8)
+                    .padding(.top, 4)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 6) {
+                        Text(entry.label)
+                            .font(.system(size: settingsRowTitleFontSize, weight: .semibold))
+                        Text(healthLabel(entry.state))
+                            .font(.system(size: settingsRowDetailFontSize, weight: .semibold))
+                            .foregroundStyle(statusColor(entry.indicator))
+                        if entry.isStale {
+                            Text(language.text("可能已过期", "May be stale"))
+                                .font(.system(size: settingsRowDetailFontSize))
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    if !entry.description.isEmpty {
+                        Text(entry.description)
+                            .font(.system(size: settingsRowDetailFontSize))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    if let incidentTitle = entry.incidentTitle, !incidentTitle.isEmpty {
+                        Text(incidentTitle)
+                            .font(.system(size: settingsRowDetailFontSize, weight: .medium))
+                            .foregroundStyle(.primary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    if !entry.componentIssues.isEmpty {
+                        Text(
+                            language.text(
+                                "受影响组件：\(entry.componentIssues.prefix(3).map(\.name).joined(separator: "、"))",
+                                "Affected components: \(entry.componentIssues.prefix(3).map(\.name).joined(separator: ", "))"
+                            )
+                        )
+                        .font(.system(size: settingsRowDetailFontSize))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    }
+                    if let error = entry.localizedError(language) {
+                        Label(error, systemImage: "exclamationmark.triangle.fill")
+                            .font(.system(size: settingsRowDetailFontSize))
+                            .foregroundStyle(FixedVisualPalette.statusDanger)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+            .padding(.vertical, 5)
+        } else {
+            HStack(spacing: 9) {
+                Circle().fill(FixedVisualPalette.statusNeutral).frame(width: 8, height: 8)
+                Text(provider == .claude ? "Claude" : "OpenAI")
+                    .font(.system(size: settingsRowTitleFontSize, weight: .semibold))
+                Text(language.text("尚无状态数据", "No status data yet"))
+                    .font(.system(size: settingsRowDetailFontSize))
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.vertical, 5)
+        }
+    }
+
+    private var publishingBinding: Binding<Bool> {
+        Binding(
+            get: { hub.isPublishingThisDevice },
+            set: { enabled in
+                if enabled {
+                    showsPublishingConfirmation = true
+                } else {
+                    hub.setPublishingThisDevice(false, confirmed: true)
+                }
+            }
+        )
+    }
+
+    private func saveConfiguration() {
+        do {
+            try hub.saveConfiguration(serverURL: serverURLDraft, bearerSecret: bearerSecretDraft)
+            bearerSecretDraft = ""
+            formMessage = language.text("配置已保存；同步仍保持关闭。", "Configuration saved. Sync remains disabled.")
+        } catch {
+            formMessage = TokenMonitorIntegrationFailure.localizedMessage(error.localizedDescription, language: language)
+        }
+    }
+
+    private func clearConfiguration() {
+        do {
+            try hub.clearConfiguration()
+            serverURLDraft = ""
+            bearerSecretDraft = ""
+            formMessage = language.text("Hub 配置已清除。", "Hub configuration cleared.")
+        } catch {
+            formMessage = TokenMonitorIntegrationFailure.localizedMessage(error.localizedDescription, language: language)
+        }
+    }
+
+    private func probeConnection() {
+        isProbing = true
+        Task {
+            await hub.probe()
+            isProbing = false
+        }
+    }
+
+    private func connectionColor(_ value: TokenMonitorHubConnectionState) -> Color {
+        switch value {
+        case .connected: return FixedVisualPalette.statusSuccess
+        case .connecting: return FixedVisualPalette.statusInfo
+        case .failed: return FixedVisualPalette.statusDanger
+        case .stale: return FixedVisualPalette.statusWarning
+        default: return FixedVisualPalette.statusNeutral
+        }
+    }
+
+    private func timeText(_ date: Date) -> String {
+        date.formatted(
+            Date.FormatStyle(
+                date: .omitted,
+                time: .shortened,
+                locale: language.locale,
+                calendar: .autoupdatingCurrent,
+                timeZone: .autoupdatingCurrent
+            ))
+    }
+
+    private func healthLabel(_ value: TokenMonitorServiceHealth) -> String {
+        switch value {
+        case .operational: return language.text("正常", "Operational")
+        case .degraded: return language.text("性能下降", "Degraded")
+        case .outage: return language.text("服务中断", "Outage")
+        case .unknown: return language.text("未知", "Unknown")
+        }
+    }
+
+    private func statusColor(_ value: TokenMonitorServiceStatusIndicator) -> Color {
+        switch value {
+        case .none: return FixedVisualPalette.statusSuccess
+        case .minor: return FixedVisualPalette.statusWarning
+        case .major, .critical: return FixedVisualPalette.statusDanger
+        case .unknown: return FixedVisualPalette.statusNeutral
         }
     }
 }
@@ -1120,7 +1527,7 @@ struct SettingsBaseRow<Accessory: View>: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
-        .padding(.vertical, 10)
+        .padding(.vertical, 6)
         .frame(maxWidth: .infinity, alignment: .leading)
         .overlay(alignment: .bottom) {
             Rectangle()
@@ -1134,28 +1541,38 @@ struct SectionBackgroundModifier: ViewModifier {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.colorSchemeContrast) private var colorSchemeContrast
+    @Environment(\.visualTokens) private var visualTokens
+
+    private var solidSurfaceFallback: Bool { reduceTransparency || colorSchemeContrast == .increased }
 
     func body(content: Content) -> some View {
         content
-            .background(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(
-                        FixedVisualPalette.sectionFill(
-                            colorScheme,
-                            reduceTransparency: reduceTransparency
-                        )
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 12, style: .continuous)
-                            .strokeBorder(
-                                FixedVisualPalette.sectionStroke(
-                                    colorScheme,
-                                    increasedContrast: colorSchemeContrast == .increased
-                                ),
-                                lineWidth: colorSchemeContrast == .increased ? 1.0 : 0.8
+            .background {
+                let shape = RoundedRectangle(cornerRadius: 12, style: .continuous)
+                shape
+                    .fill(FixedVisualPalette.sectionFill(colorScheme, reduceTransparency: solidSurfaceFallback))
+                    .overlay {
+                        if !solidSurfaceFallback {
+                            shape.fill(visualTokens.surfaceTint.color.color.opacity(visualTokens.surfaceTint.maximumOpacity * 0.20))
+                            shape.fill(
+                                LinearGradient(
+                                    colors: [Color.white.opacity(colorScheme == .dark ? 0.040 : 0.10), .clear],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                )
                             )
-                    )
-            )
+                        }
+                    }
+                    .overlay {
+                        shape.strokeBorder(
+                            FixedVisualPalette.sectionStroke(
+                                colorScheme,
+                                increasedContrast: colorSchemeContrast == .increased
+                            ),
+                            lineWidth: colorSchemeContrast == .increased ? 1.0 : 0.6
+                        )
+                    }
+            }
     }
 }
 
@@ -1163,32 +1580,47 @@ struct CardBackgroundModifier: ViewModifier {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.colorSchemeContrast) private var colorSchemeContrast
+    @Environment(\.visualTokens) private var visualTokens
     let cornerRadius: CGFloat
     let elevated: Bool
 
+    private var solidSurfaceFallback: Bool { reduceTransparency || colorSchemeContrast == .increased }
+
     func body(content: Content) -> some View {
         content
-            .background(
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+            .background {
+                let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                shape
                     .fill(
                         FixedVisualPalette.cardFill(
                             colorScheme,
                             elevated: elevated,
-                            reduceTransparency: reduceTransparency
+                            reduceTransparency: solidSurfaceFallback
                         )
                     )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                            .strokeBorder(
-                                FixedVisualPalette.cardStroke(
-                                    colorScheme,
-                                    elevated: elevated,
-                                    increasedContrast: colorSchemeContrast == .increased
-                                ),
-                                lineWidth: colorSchemeContrast == .increased ? 1.0 : 0.8
+                    .overlay {
+                        if !solidSurfaceFallback {
+                            shape.fill(visualTokens.surfaceTint.color.color.opacity(visualTokens.surfaceTint.maximumOpacity * 0.25))
+                            shape.fill(
+                                LinearGradient(
+                                    colors: [Color.white.opacity(colorScheme == .dark ? 0.045 : 0.13), .clear],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                )
                             )
-                    )
-            )
+                        }
+                    }
+                    .overlay {
+                        shape.strokeBorder(
+                            FixedVisualPalette.cardStroke(
+                                colorScheme,
+                                elevated: elevated,
+                                increasedContrast: colorSchemeContrast == .increased
+                            ),
+                            lineWidth: colorSchemeContrast == .increased ? 1.0 : 0.65
+                        )
+                    }
+            }
     }
 }
 

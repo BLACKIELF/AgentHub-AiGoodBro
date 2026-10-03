@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import type { AppConfig, SettingsDto, SettingsResponse } from '../types/settings';
+import { DEFAULT_PALETTE_ID, PALETTE_CATALOG, resolvePalette } from '../utils/paletteCatalog';
 import {
   isTauriRuntimeAvailable,
   requireTauriRuntime,
@@ -11,6 +12,7 @@ export function useSettings() {
   const [settings, setSettings] = useState<SettingsDto | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [paletteFallbackNotice, setPaletteFallbackNotice] = useState(false);
 
   const normalizeSettings = (payload: SettingsResponse): SettingsDto => ({
     config: {
@@ -23,7 +25,7 @@ export function useSettings() {
       refresh_interval_secs: payload.refresh_interval_secs,
       tray_density: payload.tray_density,
       language: payload.language ?? 'auto',
-      palette_id: payload.palette_id ?? 'codexu.default',
+      palette_id: payload.palette_id == null ? DEFAULT_PALETTE_ID : resolvePalette(payload.palette_id).id,
     },
   });
 
@@ -33,6 +35,7 @@ export function useSettings() {
     try {
       requireTauriRuntime();
       const dto = await invoke<SettingsResponse>('get_settings');
+      setPaletteFallbackNotice(dto.palette_id != null && !PALETTE_CATALOG.some(palette => palette.id === dto.palette_id));
       setSettings(normalizeSettings(dto));
     } catch (e) {
       setError(String(e));
@@ -46,6 +49,7 @@ export function useSettings() {
     try {
       requireTauriRuntime();
       const updated = await invoke<SettingsResponse>('set_settings', { req: patch });
+      setPaletteFallbackNotice(updated.palette_id != null && !PALETTE_CATALOG.some(palette => palette.id === updated.palette_id));
       const normalized = normalizeSettings(updated);
       setSettings(normalized);
       return normalized.config;
@@ -87,5 +91,5 @@ export function useSettings() {
     };
   }, [load]);
 
-  return { settings, loading, update, reload: load, error };
+  return { settings, loading, update, reload: load, error, paletteFallbackNotice };
 }

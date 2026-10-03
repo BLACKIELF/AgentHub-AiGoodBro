@@ -5,7 +5,7 @@ import Foundation
 /// API-only, selected local profile observation. A local ID is not a remote identity.
 struct TokenMonitorLocalCLIQuotaReader: Sendable {
     typealias Collector = @Sendable (TokenMonitorRequest, TokenMonitorCancellation) throws -> TokenMonitorResponse
-    static let sourceLabel = "token-monitor ef079b6 OpenCode Go"
+    static let sourceLabel = "token-monitor v0.62 OpenCode Go"
     enum Reason: String, Sendable {
         case authMissing = "auth_missing"
         case providerMissing = "provider_missing"
@@ -108,7 +108,9 @@ struct TokenMonitorLocalCLIQuotaReader: Sendable {
     }
 
     static func map(_ response: TokenMonitorResponse, sourceID: String, accountID: String, now: Date) throws -> LocalCLIQuotaResult {
-        guard response.status != .error, response.operation == .collectLimits,
+        // The pinned bridge omits operation. The response decoder already binds
+        // it to the request; reject an explicitly different operation here too.
+        guard response.status != .error, response.operation == nil || response.operation == .collectLimits,
             response.sources.count == 1, response.sources[0].id == sourceID, response.sources[0].providerId == "opencode",
             response.sources[0].status == .ok || response.sources[0].status == .unavailable,
             let targets = response.payload["limits"]?["targets"]?.array, targets.count == 1,
@@ -146,7 +148,7 @@ struct TokenMonitorLocalCLIQuotaReader: Sendable {
             }
             guard LocalCLIQuotaPresentation.validWindows(windows) else { throw Failure.rejected(.invalidResponse) }
             state = .available
-        case "unauthorized": state = .needsLogin
+        case "unauthorized": state = .unavailable
         case "sourceRateLimited": state = .rateLimited
         case "notConfigured":
             guard snapshot["reasonCode"]?.string == "unsupported_go_plan" else { throw Failure.rejected(.invalidResponse) }
@@ -169,6 +171,9 @@ struct TokenMonitorLocalCLIQuotaReader: Sendable {
         return LocalCLIQuotaResult(
             state: state, fetchedAt: now, maskedIdentity: nil, identityFingerprint: nil,
             planLabel: nil, windows: windows, balance: nil, balanceCurrency: nil,
-            sourceLabel: sourceLabel, messageCode: state == .available ? nil : "local_cli_upstream_" + reason)
+            sourceLabel: sourceLabel,
+            messageCode: state == .available
+                ? nil
+                : status == "unauthorized" ? "local_cli_authorization_unverified" : "local_cli_upstream_" + reason)
     }
 }

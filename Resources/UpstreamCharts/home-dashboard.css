@@ -1,0 +1,91 @@
+:root { color-scheme: light dark; }
+html, body { height: 100%; min-width: 0; overflow: hidden; }
+body { display: flow-root; background: transparent; font-size: 12px; }
+body.flat { background: transparent; }
+[hidden], .hidden { display: none !important; }
+/* Content-sized rows must not shrink into the fixed, scrollable host height. */
+#homeDashboard { box-sizing: border-box; display: grid; grid-template-columns: minmax(0, var(--activity-ratio, .34fr)) 12px minmax(0, var(--trend-ratio, .66fr)); grid-auto-rows: max-content; gap: 8px 0; height: 100%; overflow: auto; align-content: start; scrollbar-gutter: stable; }
+#homeDashboard:focus-visible { outline: 2px solid var(--line); outline-offset: -2px; }
+.dash-pane { min-width: 0; padding: 0; gap: 5px; }
+.dash-pane h2 { margin: 0; font-size: 13px; font-weight: 600; }
+#activityPane { grid-column: 1; align-self: start; padding-right: 12px; }
+#trendsPane { grid-column: 3; padding-left: 12px; }
+#dashSplitter { grid-column: 2; grid-row: 2; align-self: stretch; min-height: 120px; position: relative; cursor: col-resize; touch-action: none; }
+#dashSplitter::before { content: ''; position: absolute; inset: 0 5px; background: var(--line); opacity: .7; border-radius: 999px; transition: background-color 140ms ease-out, opacity 140ms ease-out; }
+#dashSplitter::after { content: ''; position: absolute; left: 1px; top: 50%; width: 10px; height: 42px; transform: translateY(-50%); border-radius: 999px; background: transparent; }
+#dashSplitter:hover::before, #dashSplitter:focus-visible::before, #dashSplitter.is-dragging::before { background: #68b5ef; opacity: 1; }
+#dashSplitter:focus-visible { outline: 2px solid #68b5ef; outline-offset: 2px; border-radius: 4px; }
+.dash-cards { grid-column: 1 / -1; display: flex !important; flex-wrap: wrap; }
+.dash-card { box-sizing: border-box; position: relative; min-width: 0; padding: 6px 10px; gap: 3px; border-right: 1px solid rgba(var(--overlay-rgb), .12); border-bottom: 1px solid rgba(var(--overlay-rgb), .06); }
+.dash-card-v { font-size: 15px; line-height: 1.25; white-space: normal; overflow-wrap: anywhere; text-overflow: clip; font-variant-numeric: tabular-nums; }
+.dash-card-v.is-dual-cost { display: flex; align-items: baseline; flex-wrap: wrap; gap: 2px 8px; }
+.dash-cost-usd, .dash-cost-cny { min-width: 0; }
+.dash-cost-cny { font-size: .85em; opacity: .8; }
+.dash-card-k { font-size: 9px; letter-spacing: 0; }
+.dash-card:last-child { border-right: 0; }
+.dash-card.is-row-end { border-right: 0; }
+.dash-card.is-last-row { border-bottom: 0; }
+.summary-resize { position: absolute; z-index: 2; top: 0; bottom: 0; right: 0; width: 8px; cursor: col-resize; touch-action: none; user-select: none; }
+.summary-resize::after { content: ''; position: absolute; top: 6px; bottom: 6px; left: 4px; width: 2px; border-radius: 2px; }
+.summary-resize:hover::after, .summary-resize:focus-visible::after, .summary-resize.is-dragging::after { background: #68b5ef; }
+.summary-resize:focus-visible { outline: 2px solid #68b5ef; outline-offset: -2px; }
+.dash-heatmap-block { gap: 5px; }
+.dash-heatmap-title { font-size: 12px; }
+.heatmap-start { display: flex; align-items: center; gap: 7px; font-size: 10px; color: rgba(var(--line-rgb), .7); }
+.heatmap-start input, .heatmap-start button { font: inherit; color: var(--text); background: rgba(var(--overlay-rgb), .06); border: 1px solid var(--line); border-radius: 5px; padding: 2px 5px; }
+.heatmap-start input { min-width: 0; }
+.heatmap-start button { cursor: pointer; }
+.dash-heatmap-wrap { overflow: hidden; }
+.dash-heatmap-wrap svg { display: block; max-width: 100%; height: auto; }
+.dash-breakdown-details { grid-column: 1 / -1; min-width: 0; font-size: 11px; }
+.dash-breakdown-details summary { cursor: pointer; color: rgba(var(--line-rgb), .7); }
+.dash-breakdown-details[open] .dash-breakdown { padding-top: 6px; }
+.dash-breakdown { gap: 14px; padding-top: 1px; }
+.dash-breakdown-col { gap: 4px; }
+.dash-breakdown-title { font-size: 11px; }
+.dash-bd-row { display: grid; grid-template-columns: minmax(54px, 1.4fr) minmax(22px, 1fr) auto auto; gap: 5px; font-size: 10px; }
+.dash-bd-name { width: auto; display: block; }
+.dash-bd-pct { width: auto; font-size: 9px; }
+.dash-bd-bar-bg { height: 3px; }
+.dash-control-row { gap: 5px; }
+.dash-control-row h2 { margin-right: 3px; }
+.range-btn { font-size: 11px; padding: 3px 5px; }
+.seg-btn { font-family: inherit; font-size: 11px; padding: 3px 7px; }
+.dash-range-group { gap: 1px; }
+#dashChart { min-height: 160px; height: 170px; flex: none; }
+.dash-legend { display: flex; flex-direction: row; flex-wrap: wrap; max-height: none; gap: 4px 12px; overflow: visible; }
+.dash-legend-row { display: inline-flex; gap: 5px; padding: 0; font-size: 10px; }
+.dash-legend-swatch { width: 7px; height: 7px; border-radius: 50%; }
+.dash-legend-val, .dash-legend-pct { display: none; }
+.dash-tooltip { max-width: calc(100vw - 16px); }
+.dash-empty { position: static; min-height: 80px; }
+/* Only control feedback moves. Chart geometry stays stable when changing modes. */
+.seg-btn, .range-btn, #heatmapStartReset {
+  transition: background-color 140ms ease-out, color 140ms ease-out;
+  min-height: 24px;
+}
+.seg-btn:focus-visible, .range-btn:focus-visible, #heatmapStart:focus-visible,
+#heatmapStartReset:focus-visible, #breakdownSummary:focus-visible {
+  outline: 2px solid #68b5ef;
+  outline-offset: 2px;
+}
+@media (hover: hover) and (pointer: fine) {
+  .seg-btn:hover, .range-btn:hover, #heatmapStartReset:hover { background-color: rgba(var(--overlay-rgb), .12); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .seg-btn, .range-btn, #heatmapStartReset { transition: none; }
+}
+@media (prefers-color-scheme: light) {
+  :root { --text: #26313b; --line-rgb: 50, 60, 74; --overlay-rgb: 30, 40, 55; --panel-rgb: 246, 248, 251; }
+  .dash-tooltip { box-shadow: 0 5px 18px #0002; }
+}
+@media (max-width: 760px) {
+  #homeDashboard { grid-template-columns: minmax(0, 1fr); gap: 8px 0; }
+  #activityPane, #trendsPane { grid-column: 1; }
+  #dashSplitter { display: none; }
+  #trendsPane { border-top: 1px solid var(--line); padding: 10px 0 0; }
+  #dashChart { flex: none; }
+}
+@media (max-width: 540px) {
+  .dash-breakdown { flex-direction: column; }
+}

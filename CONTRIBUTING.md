@@ -4,9 +4,9 @@
 
 Changes since 0915v1: clarify external Windows contributions, scope-based acceptance and shared resources; retire the historical UI integration branch and include shared-resource changes in Windows CI.
 
-## Source baseline and branch lifecycle · 0915v1
+## Source baseline and branch lifecycle · 0927v6
 
-Changes since the earlier branch workflow: use `main` as the integration entry, keep the rebuilt V1.0 application as the accepted macOS baseline, and distinguish source integration from native acceptance.
+Use `main` for AiGoodBro 2.0 source integration. Product version 2.0 retains internal build version 9.6.18 (67) for update compatibility. Source integration, installed builds and real account-operation acceptance remain separate; see the [current validation scope](docs/source-snapshot-0927v6.md).
 
 - `V1.0` permanently identifies commit `517f2daeccca54fe9c388660c52889aef48f54dd`, corresponding to macOS 9.6.1 (50). Later documentation, CI or Windows fixes must not move this tag or restore an older macOS implementation.
 - Compare branch contents and commit ancestry before integration. Old branch names and timestamps are not evidence that a feature is missing from the current app.

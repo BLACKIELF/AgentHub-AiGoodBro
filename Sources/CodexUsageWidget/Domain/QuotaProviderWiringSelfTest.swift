@@ -8,6 +8,7 @@ enum QuotaProviderWiringSelfTest {
         }
 
         expect(QuotaProviderID.allCases.count == 24, "catalog has 24 providers")
+        expect(CCSwitchClaudeRelay.selfTest(), "configured Claude relay balance, identity and endpoint boundaries")
         expect(QuotaProviderCatalog.all.count == 24, "descriptor list has 24 rows")
         expect(Set(QuotaProviderCatalog.all.map(\.id)).count == 24, "provider IDs are unique")
         expect(QuotaProviderCatalog.all.filter(\.usesExistingProduction).map(\.id) == [.codex], "only Codex is existing-production")
@@ -50,6 +51,16 @@ enum QuotaProviderWiringSelfTest {
         expect(mapped.first { $0.provider.id == .claude }?.windows.first?.remainingPercent == 17, "official local quota is used")
         expect(mapped.first { $0.provider.id == .zai }?.status == .notConfigured, "unavailable host quota does not fake a balance")
         expect(!mapped.contains { $0.provider.id.rawValue == "gemini" }, "gemini is not a catalog provider")
+
+        var stale = local
+        stale.hostAccounts[0].stale = true
+        let staleRow = QuotaProviderProjector.project(stale).first { $0.provider.id == .claude }
+        expect(staleRow?.status == .unavailable, "failed refresh does not present old local quota as connected")
+        expect(staleRow?.windows.isEmpty == true, "old local quota is not presented as current percentage")
+        stale.hostAccounts.append(
+            QuotaProviderHostAccount(workspaceKindID: "claudeCode", available: true, windows: [QuotaProviderWindow(kind: "session", remainingPercent: 53)]))
+        let freshRow = QuotaProviderProjector.project(stale).first { $0.provider.id == .claude }
+        expect(freshRow?.status == .ok && freshRow?.windows.first?.remainingPercent == 53, "fresh account precedes a stale account for the same provider")
 
         var probe = QuotaProviderFeed()
         probe.probeByProvider = [

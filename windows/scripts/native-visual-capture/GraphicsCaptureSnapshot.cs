@@ -184,6 +184,67 @@ internal sealed class DeviceResources : IDisposable
 
 internal static class GraphicsCaptureSnapshot
 {
+    [StructLayout(LayoutKind.Sequential)]
+    private struct WindowRect
+    {
+        public int Left, Top, Right, Bottom;
+    }
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool GetWindowRect(IntPtr hwnd, out WindowRect rect);
+
+    [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")]
+    private static extern IntPtr GetWindowLongPtr(IntPtr hwnd, int index);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool PrintWindow(IntPtr hwnd, IntPtr dc, uint flags);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr SetThreadDpiAwarenessContext(IntPtr value);
+
+    private static void SaveToolWindow(IntPtr hwnd, string outputPath)
+    {
+        // GraphicsCaptureItem rejects tool windows excluded from Alt+Tab.
+        // PrintWindow renders the same HWND, including its WebView2 content,
+        // without changing visibility, z-order, focus or task-switcher styles.
+        IntPtr previousDpi = SetThreadDpiAwarenessContext(new IntPtr(-4));
+        try
+        {
+            WindowRect rect;
+            if (!GetWindowRect(hwnd, out rect))
+                throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+            int width = rect.Right - rect.Left;
+            int height = rect.Bottom - rect.Top;
+            using (var bitmap = new Bitmap(width, height, PixelFormat.Format32bppRgb))
+            {
+                using (var graphics = Graphics.FromImage(bitmap))
+                {
+                    IntPtr dc = graphics.GetHdc();
+                    try
+                    {
+                        const uint PW_RENDERFULLCONTENT = 2;
+                        if (!PrintWindow(hwnd, dc, PW_RENDERFULLCONTENT))
+                            throw new InvalidOperationException("PrintWindow did not render the target HWND.");
+                    }
+                    finally { graphics.ReleaseHdc(dc); }
+                }
+                // Reject a blank/solid client area; window chrome alone is not evidence.
+                var colors = new System.Collections.Generic.HashSet<int>();
+                for (int y = height / 5; y < height * 4 / 5; y += 7)
+                    for (int x = width / 5; x < width * 4 / 5; x += 7)
+                        colors.Add(bitmap.GetPixel(x, y).ToArgb());
+                if (colors.Count < 8)
+                    throw new InvalidOperationException("PrintWindow returned a blank or solid client area.");
+                bitmap.Save(outputPath, ImageFormat.Png);
+                Console.WriteLine("CAPTURE_OK " + width + "x" + height + " PrintWindow");
+            }
+        }
+        finally
+        {
+            if (previousDpi != IntPtr.Zero) SetThreadDpiAwarenessContext(previousDpi);
+        }
+    }
+
     private const uint DxgiFormatB8G8R8A8Unorm = 87;
     private const uint D3D11UsageStaging = 3;
     private const uint D3D11CpuAccessRead = 0x20000;
@@ -400,6 +461,13 @@ internal static class GraphicsCaptureSnapshot
         {
             var hwnd = new IntPtr(long.Parse(args[0]));
             var outputPath = args[1];
+            const int GWL_EXSTYLE = -20;
+            const long WS_EX_TOOLWINDOW = 0x80;
+            if ((GetWindowLongPtr(hwnd, GWL_EXSTYLE).ToInt64() & WS_EX_TOOLWINDOW) != 0)
+            {
+                SaveToolWindow(hwnd, outputPath);
+                return 0;
+            }
             using (var resources = DeviceResources.Create())
             {
                 var item = CreateCaptureItem(hwnd);
@@ -437,7 +505,7 @@ internal static class GraphicsCaptureSnapshot
                             "CAPTURE_OK " +
                             frame.ContentSize.Width +
                             "x" +
-                            frame.ContentSize.Height
+                            frame.ContentSize.Height + " Windows.Graphics.Capture"
                         );
                         return 0;
                     }
@@ -446,7 +514,17 @@ internal static class GraphicsCaptureSnapshot
         }
         catch (Exception error)
         {
-            Console.Error.WriteLine(error.GetType().Name + ": " + error.Message);
+            Console.Error.WriteLine(error.GetType().Name + ": " + error.Message +
+                " (HRESULT 0x" + error.HResult.ToString("X8") + ")");
+            var frames = new System.Diagnostics.StackTrace(error, false).GetFrames();
+            if (frames != null)
+            {
+                foreach (var frame in frames)
+                {
+                    var method = frame.GetMethod();
+                    Console.Error.WriteLine("Capture call: " + method.DeclaringType.Name + "." + method.Name);
+                }
+            }
             return 1;
         }
     }

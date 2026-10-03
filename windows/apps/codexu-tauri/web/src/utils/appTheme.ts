@@ -8,11 +8,11 @@ import {
 
 const FIXED_VISUAL_TOKENS = {
   light: {
-    surface: '#ffffff',
-    surfaceElevated: 'rgba(255, 255, 255, 0.8)',
-    surfaceElevatedStrong: 'rgba(255, 255, 255, 0.94)',
-    surfaceInset: 'rgba(255, 255, 255, 0.6)',
-    pageBg: '#ffffff',
+    surface: '#fafbfe',
+    surfaceElevated: 'rgba(250, 251, 254, 0.88)',
+    surfaceElevatedStrong: 'rgba(250, 251, 254, 0.96)',
+    surfaceInset: 'rgba(233, 236, 242, 0.68)',
+    pageBg: '#e9ecf2',
     textPrimary: '#111827',
     textSecondary: '#4b5563',
     textTertiary: '#6b7280',
@@ -23,15 +23,15 @@ const FIXED_VISUAL_TOKENS = {
     shadowSoft: '0 16px 42px -30px rgba(15, 23, 42, 0.33)',
   },
   dark: {
-    surface: '#0f172a',
-    surfaceElevated: 'rgba(15, 23, 42, 0.86)',
-    surfaceElevatedStrong: 'rgba(15, 23, 42, 0.96)',
-    surfaceInset: 'rgba(15, 23, 42, 0.64)',
-    pageBg: '#0f172a',
-    textPrimary: '#f8fafc',
-    textSecondary: '#cbd5e1',
-    textTertiary: '#94a3b8',
-    border: 'rgba(148, 163, 184, 0.32)',
+    surface: '#292c34',
+    surfaceElevated: 'rgba(53, 56, 65, 0.72)',
+    surfaceElevatedStrong: 'rgba(53, 56, 65, 0.9)',
+    surfaceInset: 'rgba(18, 20, 26, 0.52)',
+    pageBg: '#15171e',
+    textPrimary: '#f4f5f8',
+    textSecondary: '#c6cad3',
+    textTertiary: '#969ba7',
+    border: 'rgba(255, 255, 255, 0.10)',
     statusOk: '#30d158',
     statusWarn: '#f59e0b',
     statusError: '#ff453a',
@@ -107,6 +107,7 @@ const applyPaletteVariables = (theme: ThemeMode, paletteId: PaletteId) => {
   root.style.setProperty('--ornament-metal', palette.ornament.metal);
   root.style.setProperty('--palette-surface-tint', palette.surfaceTint.color);
   root.style.setProperty('--palette-surface-tint-opacity', String(palette.surfaceTint.maximumOpacity));
+  root.style.setProperty('--palette-tint-strength', `${Math.min(palette.surfaceTint.maximumOpacity * 100, 8)}%`);
 
   const paletteVisual = isDark ? FIXED_VISUAL_TOKENS.dark : FIXED_VISUAL_TOKENS.light;
   root.style.setProperty('--surface', paletteVisual.surface);

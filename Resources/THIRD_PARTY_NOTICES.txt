@@ -7,6 +7,13 @@ not state a partnership, endorsement, or current product affiliation.
 Historical SwiftUI, usage, palette and Windows foundations
 Source: https://github.com/shanggqm/codexU
 
+The Token Monitor and Tokscale source areas are also bundled as fixed-source
+second-developed native integrations. Their upstream directories and notices
+remain identifiable; AiGoodBro maintains the bridge, hooks and Swift host.
+CodexBar, subswap, QuotaBar, zcode-acp, Codex-Manager and BlackHole1/aswap
+are protocol or static research references only and are not bundled runtime
+dependencies.
+
 MIT License
 
 Copyright (c) 2026 Guomeiqing
@@ -29,9 +36,9 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-token-monitor statistics engine, charts and dashboard resources
+token-monitor desktop companion, statistics engine, charts and dashboard resources
 Source: https://github.com/Javis603/token-monitor
-Current revision: ef079b6fb494e1cfcb24736cfcf4d4e591222eaf
+Current desktop revision: dcccfb01557e2786888fd5479552f392ac6c0d32 (v0.62.0)
 Earlier chart reference: 2f60827e3028d283969dd74cde5b3f5664220442
 
 MIT License
@@ -92,4 +99,43 @@ Revision: 8ef7aa98add33f5ff65b495cf30807ce89b78e69
 Original project: https://github.com/junhoyeo/tokscale
 Pinned package versions and each original package license are retained in
 TokenMonitorEngine/vendor/node_modules. Build provenance is in TokenMonitorEngine/SOURCE.json.
-The app does not run Electron or the upstream self-hosted Hub.
+The AiGoodBro Token Core companion embeds the upstream Electron runtime and
+desktop modules. Electron and Chromium notices remain in the companion's
+Contents/Resources directory. Hub modules are retained; remote synchronization
+is not enabled by bundling them. The original signed macOS WidgetKit extension
+is archived and disabled pending an AiGoodBro signing identity and App Group.
+
+Tencent personal WeChat iLink protocol adapter
+Source: https://github.com/Tencent/openclaw-weixin
+Protocol reference: 2.4.9, commit 24de5c9eb0dd5e595d7e2d090ed8a3f82870d42c
+Files referenced: docs/protocol_zh_CN.md, src/api/api.ts, src/auth/login-qr.ts, src/messaging/send.ts
+The native Swift adapter implements QR pairing, bounded updates and text notifications; OpenClaw is not bundled.
+
+Tencent is pleased to support the open source community by making openclaw-weixin available.
+
+Copyright (C) 2026 Tencent.  All rights reserved.
+
+openclaw-weixin is licensed under the MIT.
+
+
+Terms of the MIT:
+--------------------------------------------------------------------
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of this software and associated documentation files (the
+"Software"), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to
+permit persons to whom the Software is furnished to do so, subject to
+the following conditions:
+
+The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+AiGoodBro includes fixed Token Monitor, Tokscale and codexU source areas as second-developed native integrations. Their upstream directories and applicable notices remain identifiable; AiGoodBro bridge, hooks and Swift host changes are maintained separately. Protocol references such as CodexBar, subswap, QuotaBar, zcode-acp, Codex-Manager and BlackHole1/aswap are independently implemented research references and are not bundled runtime dependencies.

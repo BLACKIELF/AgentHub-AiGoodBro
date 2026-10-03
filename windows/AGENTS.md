@@ -1,12 +1,14 @@
 # Windows AGENTS.md
 
-> 0916v1：相对历史规则，统一以 main 为 PR 集成入口；提交、推送与合并遵守任务授权，补充外部贡献验收入口。
+> 0919v1：相对 0916v1，明确 Windows 尚缺的 macOS 对齐能力允许在 Windows 原生架构内实现，并以固定路线图避免移动目标。
 
 本文件补充根目录 `AGENTS.md`，只适用于 `windows/` 及其子目录中的 Windows Tauri、Rust 和 React/Vite 工作。Windows 专属规则不得反向扩展到 macOS 主实现。
 
 ## Overview
 
 `windows/` 是将 codexU 已有 macOS 产品能力迁移到 Windows 的实现目录。它以 macOS 版本的产品语义、数据口径和设计语言为参考，但不要求逐文件或逐分支复制；Windows 端应采用自身的 Tauri、Rust 和 React/Vite 架构完成兼容实现，且不得为迁移而改动 macOS 主实现。
+
+Windows 当前没有的账号管理、切换、调度或通知能力，只要已存在于确认的 macOS 产品契约中，就属于允许的对齐实现，不是被禁止的“新功能”。实现顺序、固定基线、安全不变量与双方文件所有权见 [`docs/windows-port/WINDOWS_PARITY_ROADMAP_0919v1.md`](../docs/windows-port/WINDOWS_PARITY_ROADMAP_0919v1.md)。两端都没有的新产品行为仍须先单独确认。
 
 ## 开发运行实例
 

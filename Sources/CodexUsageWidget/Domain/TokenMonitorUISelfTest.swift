@@ -11,6 +11,31 @@ enum TokenMonitorUISelfTest {
         }
 
         reproduceFloatingBubble(expect: expect)
+        expect(TokenMonitorEdgeDockNativeGeometrySelfTest.run(), "native Edge Dock keeps the rail and detail card inside right, left, dragged and short multi-display work areas")
+        expect(TokenMonitorEdgeDockSelfTest.run(), "edge dock composition, exact data and sampled rate")
+        let dock = TokenMonitorEdgeDockController()
+        let dockCells = TokenMonitorEdgeDockProjection.make(
+            preferences: .init(items: [.limit("codex"), .limit("grok"), .proxy()]),
+            quotaSources: [], usage: TokenMonitorDashboardSnapshot(response: nil), language: .en)
+        var usageOpens = 0
+        var proxyOpens = 0
+        var dashboardOpens = 0
+        // Disabled preferences exercise the actual click routing without
+        // creating windows, collecting data or starting the desktop runtime.
+        dock.configure(
+            preferences: .init(), cells: dockCells, language: .en,
+            onPreferencesChange: { _ in }, onOpenDashboard: { dashboardOpens += 1 },
+            onOpenUsageOverview: { usageOpens += 1 }, onOpenProxy: { proxyOpens += 1 })
+        dock.activateCell(at: 0)
+        dock.activateCell(at: 1)
+        dock.activateCell(at: 2)
+        dock.activateCell(at: 99)
+        expect(
+            usageOpens == 1 && proxyOpens == 1 && dashboardOpens == 0,
+            "Codex click opens the existing usage overview; Grok, proxy and invalid indexes keep their own routes")
+        dock.shutdown()
+        expect(TokenMonitorEdgeDockController.navigationSelfTest(), "GPT and both proxy-settings entries dismiss the hover card until pointer re-entry")
+        expect(TokenMonitorHostSelfTest.run(), "embedded desktop IPC and account identity boundaries")
         reproduceNavigation(expect: expect)
         reproduceAvatars(expect: expect)
         reproduceIcons(expect: expect)
@@ -20,34 +45,274 @@ enum TokenMonitorUISelfTest {
         reproduceLocalUsageCoverage(expect: expect)
         reproduceTrendRendererBoundaries(expect: expect)
         reproduceResetAnnouncementPresentation(expect: expect)
-        reproducePublicResetCalendar(expect: expect)
-        expect(OnboardingModesSelfTest.run(), "onboarding modes, 6pt track and skip/back fixtures")
+        reproduceResetCountdown(expect: expect)
+        reproduceLocalCLIQuotaPresentation(expect: expect)
+        expect(
+            TokenMonitorNativePreviewRenderer.fixtureSelfTest(),
+            "native Token Monitor preview fixtures preserve normal, empty and Int64-max snapshots without account data"
+        )
+        expect(PublicResetForecastSelfTest.persistenceSelfTest(), "forecast withdrawal commits atomically and survives restart; failed writes preserve explicitly cached state")
+        let quotaNow = Date()
+        var quotaProfile = CodexProfile(
+            id: "quota-fixture", name: "Fixture", codexHomePath: "", isSystemProfile: false,
+            createdAt: quotaNow,
+            lastSnapshot: CodexAccountSnapshot(
+                accountType: "chatgpt", planType: "plus", email: nil,
+                limitId: nil, limitName: nil, fiveHour: nil, sevenDay: nil, monthly: nil,
+                fetchedAt: quotaNow, appServerVersion: nil))
+        let activeWindow = CodexQuotaWindowSnapshot(RateWindow(usedPercent: 100, windowDurationMins: 300, resetsAt: quotaNow.addingTimeInterval(3600)))
+        let expiredWindow = CodexQuotaWindowSnapshot(RateWindow(usedPercent: 100, windowDurationMins: 300, resetsAt: quotaNow.addingTimeInterval(-1)))
+        expect(AccountInformationView.shouldShowQuota(activeWindow, profile: quotaProfile, now: quotaNow), "fresh exhausted allowance is still an accurate zero")
+        expect(!AccountInformationView.shouldShowQuota(expiredWindow, profile: quotaProfile, now: quotaNow), "expired exhausted allowance is not displayed as a current zero")
+        expect(!AccountInformationView.shouldShowQuota(activeWindow, profile: quotaProfile, now: quotaNow.addingTimeInterval(901)), "stale allowance loses actionable percentages")
+        quotaProfile.lastQuotaReadFailureAt = quotaNow.addingTimeInterval(1)
+        expect(!AccountInformationView.shouldShowQuota(activeWindow, profile: quotaProfile, now: quotaNow), "a failed newer read does not make the old quota current")
+        reproducePublicResetHistory(expect: expect)
+        reproduceResetCreditSummary(expect: expect)
+        reproduceResetDashboardLayout(expect: expect)
+        let quotaPair = LocalCLIQuotaWindowDetails.percentages(usedPercent: 23.5, language: .en)
+        expect(quotaPair.used == "23.5%" && quotaPair.remaining == "76.5%", "used and remaining quota preserve precision and total 100 percent")
+        let emptyQuota = LocalCLIQuotaWindowDetails.percentages(usedPercent: .nan, language: .en)
+        expect(emptyQuota.used == "—" && emptyQuota.remaining == "—", "invalid quota is not presented as zero or full availability")
+        expect(LocalCLIQuotaWindowDetails.percentages(usedPercent: 100, language: .zh).remaining == "0%", "exhausted quota remains zero")
+        expect(ResetCardPresentation.savedOrder(["a", "b", "c"], pinnedAccountID: nil) == ["a", "b", "c"], "account order remains saved without a pin")
+        expect(ResetCardPresentation.savedOrder(["a", "b", "c"], pinnedAccountID: "c") == ["c", "a", "b"], "only an explicit pin changes presentation order")
+        expect(HomeMessageInboxStore.visibleAnnouncementLimit == 3, "homepage shows only three reset messages")
+        expect(PublisherMessageSelfTest.run(), "publisher announcements respect delivery and URL boundaries")
+        expect(PublisherMessagePublishingSelfTest.run(), "only the verified owner publishes; conflicts and retries preserve messages")
+        expect(OnboardingModesSelfTest.run(), "onboarding modes, 3pt track and skip/back fixtures")
 
         if failures.isEmpty {
-            print("token-monitor UI self-test passed: floating geometry, navigation, avatars, icons, menu/model, responsive totals, calendar, chart states, announcements")
+            print("token-monitor UI self-test passed: floating geometry, navigation, avatars, icons, menu/model, responsive totals, reset history, chart states, announcements")
             return true
         }
         failures.forEach { print("token-monitor UI self-test failed: \($0)") }
         return false
     }
 
-    private static func reproducePublicResetCalendar(expect: (Bool, String) -> Void) {
+    private static func reproduceLocalCLIQuotaPresentation(expect: (Bool, String) -> Void) {
+        let now = Date(timeIntervalSince1970: 1_790_000_000)
+        func result(balance: Double?, currency: String? = nil, code: String? = nil) -> LocalCLIQuotaResult {
+            LocalCLIQuotaResult(
+                state: .unsupported, fetchedAt: now, maskedIdentity: nil, identityFingerprint: nil,
+                planLabel: nil, windows: [], balance: balance, balanceCurrency: currency,
+                sourceLabel: "Fixture", messageCode: code, periodResetsAt: now.addingTimeInterval(3_600))
+        }
+        let zero = result(balance: 0, code: "local_cli_usage_not_reported")
+        expect(LocalCLIAccountPresentation.balanceTitle(kind: .grok, language: .zh) == "购入余额", "Grok credits are identified as purchased balance, not points")
+        expect(LocalCLIAccountPresentation.balanceText(kind: .grok, result: zero, language: .en) == "0 USD", "a confirmed zero purchased balance stays visible with its currency")
+        expect(LocalCLIAccountPresentation.balanceText(kind: .grok, result: result(balance: nil), language: .en) == nil, "missing balance is never replaced with zero")
+        expect(LocalCLIAccountPresentation.balanceText(kind: .grok, result: result(balance: .nan), language: .en) == nil, "invalid balance is never displayed as a number")
+        expect(
+            LocalCLIAccountPresentation.balanceText(kind: .kimi, result: result(balance: 12.5, currency: "CNY"), language: .en) == "12.5 CNY",
+            "known provider currency is preserved")
+        expect(zero.windows.isEmpty && zero.periodResetsAt != nil, "a reset boundary does not require a fabricated quota window")
+        expect(LocalCLIReadiness.resolve(installed: true, result: zero) != .available, "balance and reset metadata do not promote unsupported quota to available")
+        let missingUsage = LocalCLIAccountPresentation.quotaExplanation(kind: .grok, result: zero, language: .zh)
+        expect(missingUsage?.contains("官方未提供") == true && missingUsage?.contains("登录") == false, "missing percentages do not become a login failure")
+        let goCodes = ["local_cli_opencode_go_not_connected", "local_cli_upstream_provider_missing", "local_cli_upstream_unsupported_go_plan"]
+        let explanations = goCodes.compactMap {
+            LocalCLIAccountPresentation.quotaExplanation(kind: .openCode, result: result(balance: nil, code: $0), language: .zh)
+        }
+        expect(explanations.count == goCodes.count && Set(explanations).count == 1, "native and upstream OpenCode Go missing-provider states have one explanation")
+        expect(explanations.first?.contains("其他服务商") == true, "OpenCode Go availability never stands in for every provider's login or balance")
+    }
+
+    private static func reproduceResetCountdown(expect: (Bool, String) -> Void) {
+        let start = Date(timeIntervalSince1970: 1_790_000_000)
+        func countdown(_ seconds: TimeInterval, now: Date? = nil, kind: ResetCountdownPresentation.Kind = .publicForecast, language: WidgetLanguage = .zh) -> String {
+            ResetCountdownPresentation.label(deadline: start.addingTimeInterval(seconds), now: now ?? start, kind: kind, language: language)
+        }
+        expect(countdown(90_061) == "预计重置还有 1 天 01:01:01", "countdown includes days, hours, minutes and seconds")
+        expect(countdown(90_061, language: .en) == "Expected reset in 1d 01:01:01", "English countdown retains day precision")
+        expect(countdown(60.1) == "预计重置还有 00:01:01", "fractional seconds do not report zero early")
+        expect(countdown(0.1) == "预计重置还有 00:00:01", "last fraction of a second is still pending")
+        expect(countdown(0).contains("等待来源确认"), "deadline never claims public delivery")
+        expect(countdown(-10, kind: .accountWindow).contains("等待额度更新"), "expired account window never implies restored quota")
+        expect(countdown(3_661, now: start.addingTimeInterval(3_600)) == "预计重置还有 00:01:01", "sleep or missed ticks cannot accumulate drift")
+        expect(countdown(60, now: start.addingTimeInterval(-60)) == "预计重置还有 00:02:00", "clock corrections rederive the remaining duration")
+        expect(countdown(.infinity).contains("待公开来源公布"), "invalid timestamps do not trap or create a fake timer")
+        expect(ResetCountdownPresentation.label(deadline: nil, now: start, kind: .accountWindow, language: .zh) == "重置时间未知", "missing reset time stays unknown")
+    }
+
+    private static func reproduceResetDashboardLayout(expect: (Bool, String) -> Void) {
+        // Regression: the production dashboard has two children after calendar removal.
+        // A mismatched count previously returned no frames and a zero height.
+        for width: CGFloat in [1, 320, 619, 620, 820, 939, 940, 1600] {
+            for count in 0...4 {
+                let frames = ResetDashboardLayout.frames(width: width, count: count) { index, proposedWidth in
+                    CGFloat(index + 1) * 80 + (proposedWidth < 300 ? 140 : 0)
+                }
+                expect(frames.count == count, "every reset dashboard child gets a frame")
+                for (index, frame) in frames.enumerated() {
+                    expect(frame.height > 0 && frame.width > 0, "reset dashboard never collapses visible content to zero")
+                    expect(frame.minX >= 0 && frame.maxX <= width + 0.01, "reset dashboard stays within its proposed width")
+                    for other in frames.dropFirst(index + 1) {
+                        expect(!frame.intersects(other), "announcement and account windows never overlap")
+                    }
+                }
+            }
+        }
+        expect(Set(HomeSection.allCases.map(\.storageKey)).count == HomeSection.allCases.count, "home section preferences are independent")
+    }
+
+    private static func reproduceResetCreditSummary(expect: (Bool, String) -> Void) {
+        let now = Date(timeIntervalSince1970: 1_790_000_000)
+        func profile(
+            _ id: String, account: String?, count: Int?, age: TimeInterval = 0, credit: String? = nil, unlimited: Bool? = nil,
+            plan: String? = "plus", multiplier: Int? = nil, verified: Bool? = true
+        ) -> CodexProfile {
+            CodexProfile(
+                id: id, name: "Fixture", codexHomePath: "", isSystemProfile: false, createdAt: now,
+                lastSnapshot: CodexAccountSnapshot(
+                    accountType: "chatgpt", planType: plan, email: nil,
+                    accountID: account, limitId: "codex", limitName: nil, fiveHour: nil, sevenDay: nil, monthly: nil,
+                    availableResetCredits: count, creditBalance: credit, creditBalanceUnlimited: unlimited,
+                    fetchedAt: now.addingTimeInterval(-age), appServerVersion: nil, quotaReadSucceeded: verified),
+                proTierMultiplier: multiplier)
+        }
+        let first = profile("one", account: "a", count: 2, age: 30)
+        let mirror = profile("mirror", account: "a", count: 3)
+        let second = profile("two", account: "b", count: 1, age: 60)
+        let summary = ResetCreditLocalSummary(profiles: [first, mirror, second], now: now)
+        expect(summary.availableCards == 4 && summary.accountsWithCards == 2, "mirrors count once while distinct verified account IDs remain separate")
+        expect(summary.checkedAt == now.addingTimeInterval(-60), "combined balance freshness uses the oldest included account")
+        expect(summary.latestIncrease == nil, "existing balances never invent receipt history")
+        expect(summary.availableCardsByPlan == ["PLUS": 4], "mirrored reset-card balances contribute to their newest plan once")
+        let planProfiles = [
+            profile("pro", account: "pro", count: 1, plan: "pro", multiplier: 20),
+            profile("plus-one", account: "plus-one", count: 20),
+            profile("plus-two", account: "plus-two", count: 4),
+            profile("zero", account: "zero", count: 0, plan: "free"),
+        ]
+        let planSummary = ResetCreditLocalSummary(profiles: planProfiles, now: now)
+        expect(
+            planSummary.availableCards == 25 && planSummary.availableCardsByPlan == ["PRO 20x": 1, "PLUS": 24],
+            "plan breakdown sums reset cards across distinct accounts and omits confirmed zero buckets")
+        expect(planSummary.planBreakdown(.zh) == "Pro 20倍 ×1、Plus ×24", "Chinese plan breakdown identifies the Pro tier and actual card counts")
+        expect(planSummary.planBreakdown(.en) == "Pro 20x ×1 · Plus ×24", "English plan breakdown preserves plan tiers and actual card counts")
+        expect(
+            ResetCreditLocalSummary(profiles: Array(planProfiles.reversed()), now: now).planBreakdown(.zh) == planSummary.planBreakdown(.zh),
+            "plan breakdown ordering is independent of profile order")
+        let upgraded = ResetCreditLocalSummary(
+            profiles: [profile("old-plan", account: "mirror-plan", count: 99, age: 30, plan: "pro", multiplier: 20), profile("new-plan", account: "mirror-plan", count: 2)],
+            now: now)
+        expect(upgraded.availableCardsByPlan == ["PLUS": 2], "the plan and card balance come from the same newest verified snapshot")
+        let unknownPlan = ResetCreditLocalSummary(
+            profiles: [profile("old-plan", account: "unknown-plan", count: 99, age: 30), profile("new-plan", account: "unknown-plan", count: 3, plan: nil)], now: now)
+        expect(
+            unknownPlan.availableCards == 3 && unknownPlan.availableCardsByPlan == ["": 3] && !unknownPlan.hasUnknownAccounts,
+            "verified cards with unknown plans stay in the total without making their account balance unknown")
+        expect(unknownPlan.planBreakdown(.zh) == "套餐未知 ×3" && unknownPlan.planBreakdown(.en) == "Unknown plan ×3", "a missing newest plan never borrows an older mirror's plan")
+        let fiveTimes = ResetCreditLocalSummary(profiles: [profile("lite", account: "lite", count: 2, plan: "prolite")], now: now)
+        expect(fiveTimes.planBreakdown(.zh) == "Pro 5倍 ×2", "Pro Lite uses the existing verified five-times tier label")
+        let zeroCards = ResetCreditLocalSummary(profiles: [profile("zero", account: "zero", count: 0)], now: now)
+        expect(
+            zeroCards.availableCards == 0 && zeroCards.availableCardsByPlan.isEmpty && zeroCards.planBreakdown(.zh) == nil,
+            "confirmed zero cards remain a known total without empty plan rows")
+        let unknown = ResetCreditLocalSummary(profiles: [first, profile("mirror", account: "a", count: nil)], now: now)
+        expect(unknown.availableCards == nil && unknown.hasUnknownAccounts, "newer unknown balances supersede older known balances")
+        let partial = ResetCreditLocalSummary(profiles: [first, profile("unverified", account: nil, count: 99)], now: now)
+        expect(partial.availableCards == 2 && partial.hasUnknownAccounts, "unverified identity is excluded without presenting a full total")
+        expect(partial.availableCardsByPlan == ["PLUS": 2], "unknown account identities cannot contribute card plan buckets")
+        expect(
+            ResetCreditLocalSummary(profiles: [profile("old", account: "a", count: 2, age: 901)], now: now).isStale,
+            "stale balances do not claim current verification")
+        let future = ResetCreditLocalSummary(profiles: [profile("future", account: "a", count: 4, age: -60)], now: now)
+        expect(future.availableCards == nil, "future observations are not shown as verified")
+        let overflow = ResetCreditLocalSummary(profiles: [profile("max", account: "a", count: Int.max), second], now: now)
+        expect(overflow.availableCards == nil && overflow.hasUnknownAccounts, "malformed totals fail closed without overflow")
+        expect(overflow.availableCardsByPlan.isEmpty && overflow.planBreakdown(.zh) == nil, "an overflow cannot display an inconsistent plan breakdown")
+        let invalidNewest = ResetCreditLocalSummary(
+            profiles: [first, profile("invalid-newest", account: "a", count: 100, verified: false)], now: now)
+        expect(invalidNewest.availableCards == nil && invalidNewest.availableCardsByPlan.isEmpty, "a newer unverified snapshot cannot contribute cards or plan counts")
+        var received = mirror
+        received.resetCreditHistory = [
+            .init(
+                id: UUID(), previousObservedAt: now.addingTimeInterval(-30), observedAt: now,
+                previousAvailable: 1, available: 3)
+        ]
+        expect(
+            ResetCreditLocalSummary(profiles: [received], now: now).latestIncrease?.added == 2,
+            "verified receipt history appears independently of forecasts")
+        let creditTotal = ResetCreditPointSummary(
+            profiles: [
+                profile("old", account: "a", count: nil, age: 30, credit: "9,999"),
+                profile("new", account: "a", count: nil, credit: "1,250.25"),
+                profile("other", account: "b", count: nil, credit: "70.30"),
+            ], now: now)
+        expect(
+            creditTotal.points == Decimal(string: "1320.55") && !creditTotal.hasUnknownAccounts, "all distinct account balances sum exactly, independent of reset-card availability"
+        )
+        expect(creditTotal.dollarText == "$52.82", "remaining credits convert at 25 points per dollar")
+        expect(
+            creditTotal.pointText == "1,320.55" && creditTotal.pointSummaryText(.zh) == "点数总额 1,320.55",
+            "the green reset-card section displays raw decimal points without converting card counts")
+        let decimalPoints = ResetCreditPointSummary(
+            profiles: [profile("decimal-one", account: "decimal-one", count: 1, credit: "76,700.28"), profile("decimal-two", account: "decimal-two", count: 24, credit: "92.30")],
+            now: now)
+        expect(
+            decimalPoints.pointSummaryText(.zh) == "点数总额 76,792.58" && decimalPoints.pointSummaryText(.en) == "Total points 76,792.58",
+            "decimal point totals retain exact sums and grouping in both languages")
+        let fractionalPoints = ResetCreditPointSummary(profiles: [profile("fractional", account: "fractional", count: 1, credit: "0.001")], now: now)
+        expect(fractionalPoints.pointText == "0.001", "raw points preserve reported fractional precision beyond currency rounding")
+        let precisePoints = ResetCreditPointSummary(profiles: [profile("precise", account: "precise", count: nil, credit: "12345678901234567890.123456789012345678")], now: now)
+        expect(
+            precisePoints.pointText == "12,345,678,901,234,567,890.123456789012345678", "raw Decimal point text does not lose significant digits through floating-point formatting")
+        let zeroCredit = ResetCreditPointSummary(profiles: [profile("zero", account: "a", count: nil, credit: "0")], now: now)
+        expect(zeroCredit.dollarText == "$0.00", "verified zero is a real dollar balance")
+        expect(zeroCredit.pointText == "0" && zeroCredit.pointSummaryText(.zh) == "点数总额 0", "verified zero points remain an explicit zero")
+        let missingCredit = ResetCreditPointSummary(profiles: [profile("missing", account: "a", count: 1)], now: now)
+        expect(missingCredit.points == nil && missingCredit.dollarText == "$—", "missing credit balances never become zero")
+        expect(missingCredit.pointText == "—" && missingCredit.pointSummaryText(.zh) == "点数总额尚未核实", "unknown point balances cannot be presented as a zero total")
+        let partialCredit = ResetCreditPointSummary(profiles: [profile("known", account: "a", count: nil, credit: "25"), profile("unknown", account: "b", count: nil)], now: now)
+        expect(partialCredit.dollarText == "$1.00" && partialCredit.hasUnknownAccounts, "partial totals retain the known amount and the missing-account flag")
+        expect(
+            partialCredit.pointSummaryText(.zh) == "已核实点数 25 · 部分账号尚未确认" && partialCredit.pointSummaryText(.en) == "Known points 25 · Some accounts unverified",
+            "partial point text labels the known subtotal instead of claiming a complete total")
+        let newerMissing = ResetCreditPointSummary(profiles: [profile("old", account: "a", count: nil, age: 30, credit: "25"), profile("new", account: "a", count: nil)], now: now)
+        expect(newerMissing.points == nil && newerMissing.hasUnknownAccounts, "a newer missing balance supersedes an old mirrored balance")
+        expect(
+            ResetCreditPointSummary(profiles: [profile("stale", account: "a", count: nil, age: 901, credit: "25")], now: now).isStale,
+            "old credit totals are marked as previous records")
+        let stalePoints = ResetCreditPointSummary(profiles: [profile("stale", account: "a", count: nil, age: 901, credit: "25")], now: now)
+        expect(stalePoints.pointSummaryText(.zh) == "上次记录点数 25", "stale point balances never claim a current total")
+        let stalePartial = ResetCreditPointSummary(
+            profiles: [profile("stale", account: "a", count: nil, age: 901, credit: "25"), profile("unknown", account: "b", count: nil)], now: now)
+        expect(stalePartial.pointSummaryText(.zh) == "上次记录的已知点数 25 · 部分账号尚未确认", "stale partial balances preserve both qualifications")
+        expect(
+            ResetCreditPointSummary(profiles: [profile("future", account: "a", count: nil, age: -60, credit: "25")], now: now).points == nil,
+            "future credit observations are excluded")
+        expect(
+            ResetCreditPointSummary(profiles: [profile("unverified", account: nil, count: nil, credit: "25")], now: now).points == nil,
+            "unverified identities cannot contribute a credit balance")
+        expect(ResetCreditPointSummary(profiles: [profile("invalid", account: "a", count: nil, credit: "NaN")], now: now).points == nil, "malformed balances stay unknown")
+        expect(
+            ResetCreditPointSummary(profiles: [profile("unlimited", account: "a", count: nil, unlimited: true)], now: now).dollarText == "$∞",
+            "unlimited credit is never invented as a finite balance")
+        let unlimitedPoints = ResetCreditPointSummary(profiles: [profile("unlimited", account: "a", count: nil, unlimited: true)], now: now)
+        expect(unlimitedPoints.pointText == "∞" && unlimitedPoints.pointSummaryText(.zh) == "点数总额 无限", "unlimited points never become a finite zero")
+        let partialUnlimited = ResetCreditPointSummary(
+            profiles: [profile("unlimited", account: "a", count: nil, unlimited: true), profile("unknown", account: "b", count: nil)], now: now)
+        expect(partialUnlimited.pointSummaryText(.zh) == "已核实点数 无限 · 部分账号尚未确认", "unlimited balance text retains unknown-account coverage")
+    }
+
+    private static func reproducePublicResetHistory(expect: (Bool, String) -> Void) {
         let parser = ISO8601DateFormatter()
-        let lateUTC = parser.date(from: "2026-09-03T23:12:00Z")!
-        let beijingDay = parser.date(from: "2026-09-03T16:00:00Z")!
-        let earlierDay = parser.date(from: "2026-09-02T16:00:00Z")!
+        let date = parser.date(from: "2026-09-03T23:12:00Z")!
         let event = PublicResetAnnouncement(
-            id: "fixture-reset-calendar", resetType: .banked, announcedAt: lateUTC, text: "A public reset announcement", source: .init(type: "observed", author: nil, url: nil))
-        expect(PublicResetCalendarModel.events(on: beijingDay, from: [event]).count == 1, "reset calendar uses Beijing day boundaries")
-        expect(PublicResetCalendarModel.events(on: earlierDay, from: [event]).isEmpty, "UTC date is not incorrectly used as Beijing calendar day")
-        expect(PublicResetCalendarModel.normalized([event, event]).count == 1, "latest announcement and API page do not duplicate calendar counts")
-        let leap = PublicResetCalendarModel.days(in: parser.date(from: "2024-02-12T00:00:00Z")!)
-        expect(leap.compactMap { $0 }.count == 29 && leap.count.isMultiple(of: 7), "reset calendar preserves leap days and complete weeks")
-        let september = PublicResetCalendarModel.days(in: lateUTC)
-        expect(september.first! == nil && september[1] != nil, "calendar starts Monday with correct leading empty cells")
-        let january = PublicResetCalendarModel.days(in: parser.date(from: "2027-01-12T00:00:00Z")!)
-        expect(january.compactMap { $0 }.count == 31, "calendar month navigation crosses year boundaries")
-        expect(PublicResetCalendarModel.events(on: beijingDay, from: []).isEmpty, "missing historical records are not invented")
+            id: "fixture-reset-history", resetType: .banked, announcedAt: date,
+            text: "A public reset announcement", source: .init(type: "observed", author: nil, url: nil))
+        let older = PublicResetAnnouncement(
+            id: "fixture-reset-history-older", resetType: .regular, announcedAt: date.addingTimeInterval(-60),
+            text: "An earlier announcement", source: .init(type: "observed", author: nil, url: nil))
+        expect(
+            PublicResetAnnouncementPresentation.normalized([older, event, event]).map(\.id) == [event.id, older.id],
+            "history stays newest-first and does not duplicate the latest announcement")
+        expect(
+            PublicResetAnnouncementPresentation.compactEventTime(date, language: .zh).contains("2026-09-04 07:12"),
+            "history timestamps preserve Beijing time across UTC date boundaries")
+        expect(PublicResetAnnouncementPresentation.normalized([]).isEmpty, "missing history is not invented")
     }
 
     private static func reproduceFloatingBubble(expect: (Bool, String) -> Void) {
@@ -545,7 +810,7 @@ enum TokenMonitorUISelfTest {
             PublicResetAnnouncementPresentation.sourceLinkTitle(observedSource, language: .zh).contains("来源"),
             "an aggregator URL is labeled as its source"
         )
-        expect(PublicResetAnnouncementPresentation.title(.zh) == "额度重置公告", "announcement section uses the critical label")
+        expect(PublicResetAnnouncementPresentation.title(.zh) == "历史重置记录", "completed history stays distinct from pending forecasts")
         expect(
             PublicResetAnnouncementPresentation.typeTitle(.regular, language: .zh).contains("常规额度"),
             "regular quota announcements stay distinct from reset cards"
@@ -563,13 +828,61 @@ enum TokenMonitorUISelfTest {
         )
         let event = ISO8601DateFormatter().date(from: "2026-09-12T08:09:17Z")!
         let compactTime = PublicResetAnnouncementPresentation.compactEventTime(event, language: .zh)
-        expect(compactTime.contains("9月12日") && compactTime.contains("4:09") && compactTime.contains("下午"), "home announcement converts UTC into the Beijing afternoon clock")
+        expect(compactTime.contains("2026-09-12 16:09"), "home announcement keeps the full Beijing year and clock")
         expect(
             PublicResetAnnouncementPresentation.relativeEventTime(event, now: event.addingTimeInterval(7 * 3600), language: .zh).contains("7"),
             "home announcement age uses its event time")
         expect(
             PublicResetAnnouncementPresentation.relativeEventTime(event, now: event.addingTimeInterval(-30), language: .zh) == "刚刚",
             "allowed source clock skew does not create a future reset claim")
+        let now = ISO8601DateFormatter().date(from: "2026-09-19T00:00:00Z")!
+        let recent = PublicResetAnnouncement(
+            id: "456", resetType: .regular, announcedAt: now.addingTimeInterval(-86_400), text: "recent",
+            source: .init(type: "x_post", author: "thsottiaux", url: URL(string: "https://x.com/thsottiaux/status/456")))
+        let old = PublicResetAnnouncement(
+            id: "457", resetType: .regular, announcedAt: now.addingTimeInterval(-31 * 86_400), text: "old",
+            source: .init(type: "x_post", author: "thsottiaux", url: URL(string: "https://x.com/thsottiaux/status/457")))
+        let future = PublicResetAnnouncement(
+            id: "458", resetType: .regular, announcedAt: now.addingTimeInterval(60), text: "future",
+            source: .init(type: "x_post", author: "thsottiaux", url: URL(string: "https://x.com/thsottiaux/status/458")))
+        expect(
+            PublicResetAnnouncementPresentation.recentVerifiableAnnouncement([old, future, recent], now: now)?.id == "456",
+            "homepage announcements use only verifiable, non-future items from the last 30 days"
+        )
+        expect(
+            PublicResetAnnouncementPresentation.recentVerifiableAnnouncement([old, future], now: now) == nil,
+            "old and future announcements stay out of the homepage current-message slot"
+        )
+
+        let iso = ISO8601DateFormatter()
+        let todaysForecastPost = iso.date(from: "2026-09-26T00:07:13Z")!
+        let beijingNoon = iso.date(from: "2026-09-26T04:00:00Z")!
+        let yesterdayInBeijing = iso.date(from: "2026-09-25T15:00:00Z")!
+        let tomorrowInBeijing = iso.date(from: "2026-09-26T16:00:00Z")!
+        let laterTodayInBeijing = iso.date(from: "2026-09-26T05:00:00Z")!
+        expect(
+            PublicResetAnnouncementPresentation.wasAnnouncedToday(todaysForecastPost, now: beijingNoon),
+            "the site's forecast post is marked new from announcedAt in Beijing time"
+        )
+        expect(
+            !PublicResetAnnouncementPresentation.wasAnnouncedToday(yesterdayInBeijing, now: beijingNoon),
+            "yesterday's Beijing announcement is not highlighted today"
+        )
+        expect(
+            !PublicResetAnnouncementPresentation.wasAnnouncedToday(tomorrowInBeijing, now: beijingNoon),
+            "a future Beijing date is not highlighted as today's message"
+        )
+        expect(
+            !PublicResetAnnouncementPresentation.wasAnnouncedToday(laterTodayInBeijing, now: beijingNoon),
+            "a future post within today's Beijing date is not highlighted early"
+        )
+        let minuteBeforeBeijingMidnight = iso.date(from: "2026-09-26T15:59:59Z")!
+        let beijingMidnight = iso.date(from: "2026-09-26T16:00:00Z")!
+        expect(
+            PublicResetAnnouncementPresentation.wasAnnouncedToday(minuteBeforeBeijingMidnight, now: minuteBeforeBeijingMidnight)
+                && !PublicResetAnnouncementPresentation.wasAnnouncedToday(minuteBeforeBeijingMidnight, now: beijingMidnight),
+            "a message highlight rolls off at Beijing midnight without relying on the local timezone"
+        )
     }
 
     private static func solidPNG(color: NSColor) -> Data {

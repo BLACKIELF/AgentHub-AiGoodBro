@@ -32,6 +32,8 @@ def main():
         announcement = (repo / "Sources/CodexUsageWidget/Services/PublicResetAnnouncements.swift").read_text()
         announcement = announcement[announcement.index("struct PublicResetAnnouncement:"):announcement.index("struct PublicResetPage:")]
         translation = (repo / "Sources/CodexUsageWidget/Services/PublicResetTranslation.swift").read_text()
+        quota_event = (repo / "Sources/CodexUsageWidget/Domain/CodexQuotaEventTracker.swift").read_text().split("/// Compares", 1)[0]
+        message_options = (repo / "Sources/CodexUsageWidget/Domain/FeishuMessageOptions.swift").read_text().split("\nenum FeishuQuotaValue", 1)[0]
         if "--typecheck-only" in os.sys.argv:
             # WidgetLanguage plus its EnvironmentKey and EnvironmentValues
             # extension: everything the message-channel UI needs, without the
@@ -46,12 +48,20 @@ def main():
                 + "\n" + language)
             announcement_file = work / "public-reset-announcement-extract.swift"
             announcement_file.write_text(translation + "\n" + announcement)
+            options_file = work / "message-options-extract.swift"
+            options_file.write_text(quota_event + "\n" + message_options)
             source_paths = [announcement_file,
                 language_file,
+                options_file,
                 repo / "Sources/CodexUsageWidget/Domain/MessageChannel.swift",
                 repo / "Sources/CodexUsageWidget/Services/TelegramMessageChannel.swift",
                 repo / "Sources/CodexUsageWidget/Services/WeChatMessageChannel.swift",
+                repo / "Sources/CodexUsageWidget/Services/PersonalWeChatMessageChannel.swift",
+                repo / "Sources/CodexUsageWidget/Services/CodexDesktopIPC.swift",
+                repo / "Sources/CodexUsageWidget/Services/WeChatCodexConversation.swift",
                 repo / "Sources/CodexUsageWidget/UI/MessageChannelsView.swift",
+                repo / "Sources/CodexUsageWidget/UI/PersonalWeChatSettingsView.swift",
+                repo / "Sources/CodexUsageWidget/UI/FeishuMessageOptionsView.swift",
             ]
             print(f"Typechecking {len(source_paths)} message-channel sources; no app build or launch.", flush=True)
             result = subprocess.run(
@@ -70,9 +80,12 @@ def main():
             language,
             translation,
             announcement,
+            quota_event,
+            message_options,
             (repo / "Sources/CodexUsageWidget/Domain/MessageChannel.swift").read_text(),
             (repo / "Sources/CodexUsageWidget/Services/TelegramMessageChannel.swift").read_text(),
             (repo / "Sources/CodexUsageWidget/Services/WeChatMessageChannel.swift").read_text(),
+            (repo / "Sources/CodexUsageWidget/Services/PersonalWeChatMessageChannel.swift").read_text(),
             (repo / "tests/MessageChannelsTests.swift").read_text(),
         ]
         script = work / "message-channel-tests.swift"

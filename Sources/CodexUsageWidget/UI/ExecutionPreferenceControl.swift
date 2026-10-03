@@ -9,7 +9,7 @@ struct ExecutionPreferenceControl: View {
     var expanded = false
     var compact = false
     var inlineEditor = false
-    let onSave: (CodexExecutionPreference, Bool) -> Void
+    let onSave: (CodexExecutionPreference, Bool) -> Result<Void, Error>
 
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
@@ -30,7 +30,7 @@ struct ExecutionPreferenceControl: View {
         compact: Bool = false,
         inlineEditor: Bool = false,
         initialEditingMode: CodexExecutionPreference.SubagentMode? = nil,
-        onSave: @escaping (CodexExecutionPreference, Bool) -> Void
+        onSave: @escaping (CodexExecutionPreference, Bool) -> Result<Void, Error>
     ) {
         self.preference = preference
         self.allowsApplyToAll = allowsApplyToAll
@@ -160,8 +160,7 @@ struct ExecutionPreferenceControl: View {
             if allowsApplyToAll, editingMode == nil {
                 Divider()
                 Button {
-                    onSave(draft, true)
-                    isPresented = false
+                    if saveValidated(draft, applyToAll: true) { isPresented = false }
                 } label: {
                     Label(language.text("应用到所有账号", "Apply to all profiles"), systemImage: "person.2")
                         .frame(maxWidth: .infinity)
@@ -185,9 +184,10 @@ struct ExecutionPreferenceControl: View {
                     .font(.subheadline.weight(.semibold))
                 Spacer()
                 Button {
-                    saveValidated(.defaultValue)
-                    editingMode = nil
-                    presetDraft = nil
+                    if saveValidated(.defaultValue) {
+                        editingMode = nil
+                        presetDraft = nil
+                    }
                 } label: {
                     Image(systemName: "arrow.counterclockwise").frame(width: 24, height: 24)
                 }
@@ -292,9 +292,10 @@ struct ExecutionPreferenceControl: View {
         return Button {
             var updated = draft
             updated.subagentMode = mode
-            saveValidated(updated)
-            editingMode = nil
-            presetDraft = nil
+            if saveValidated(updated) {
+                editingMode = nil
+                presetDraft = nil
+            }
         } label: {
             VStack(alignment: .leading, spacing: 3) {
                 Text(title)
@@ -365,9 +366,10 @@ struct ExecutionPreferenceControl: View {
 
             HStack {
                 Button(language.text("恢复此档默认", "Restore preset default")) {
-                    saveValidated(draft.restoringDefault(for: mode))
-                    editingMode = nil
-                    presetDraft = nil
+                    if saveValidated(draft.restoringDefault(for: mode)) {
+                        editingMode = nil
+                        presetDraft = nil
+                    }
                 }
                 .buttonStyle(.borderless)
                 Spacer()
@@ -526,25 +528,22 @@ struct ExecutionPreferenceControl: View {
         }
         var updated = draft
         updated.customPresets[mode.rawValue] = preset
-        do {
-            draft = try updated.validated()
-            onSave(draft, false)
+        if saveValidated(updated) {
             editingMode = nil
             presetDraft = nil
-            editorError = nil
-        } catch {
-            editorError = error.localizedDescription
         }
     }
 
-    private func saveValidated(_ updated: CodexExecutionPreference) {
-        guard updated != draft else { return }
-        do {
-            draft = try updated.validated()
-            onSave(draft, false)
+    @discardableResult
+    private func saveValidated(_ updated: CodexExecutionPreference, applyToAll: Bool = false) -> Bool {
+        switch ExecutionPreferenceSave.save(updated, applyToAll: applyToAll, persist: onSave) {
+        case .success(let saved):
+            draft = saved
             editorError = nil
-        } catch {
+            return true
+        case .failure(let error):
             editorError = error.localizedDescription
+            return false
         }
     }
 

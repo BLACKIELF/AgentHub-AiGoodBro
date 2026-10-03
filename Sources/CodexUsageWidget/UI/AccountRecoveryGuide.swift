@@ -6,6 +6,8 @@ struct AccountRecoveryGuide: View {
     let language: WidgetLanguage
     @State private var selectedID = ""
     @State private var confirmingLogin = false
+    @State private var loginFeedback: String?
+    @Environment(\.codexDeviceLoginHost) private var loginHost
 
     private var candidates: [CodexProfile] { store.profiles.filter { Self.isIsolated($0) } }
     private var selected: CodexProfile? { candidates.first { $0.id == selectedID } }
@@ -32,7 +34,7 @@ struct AccountRecoveryGuide: View {
             Picker(language.text("目标账号", "Target account"), selection: $selectedID) {
                 Text(language.text("先选择要恢复的账号", "Choose an account first")).tag("")
                 ForEach(candidates) { profile in
-                    Text(AccountDisplay.profileName(profile) + " · " + String(profile.id.prefix(8))).tag(profile.id)
+                    Text(AccountDisplay.numberedName(profile, allProfiles: store.profiles) + " · " + String(profile.id.prefix(8))).tag(profile.id)
                 }
             }.disabled(store.isLoggingIn)
             if let profile = selected {
@@ -46,14 +48,18 @@ struct AccountRecoveryGuide: View {
                 if let date = profile.lastSnapshot?.fetchedAt {
                     Text(language.text("快照时间：", "Snapshot: ") + language.dateTime(date)).font(.caption).foregroundStyle(.secondary)
                 }
+                if let reason = store.canLoginProfile(profile.id) {
+                    Text(reason.message(language)).font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                }
                 HStack {
                     Button(language.text("登录这个账号", "Sign in to this account")) { confirmingLogin = true }
-                        .buttonStyle(.borderedProminent).disabled(store.isPreview || store.isLoggingIn)
+                        .buttonStyle(.borderedProminent)
+                        .disabled(store.isPreview || store.canLoginProfile(profile.id) != nil)
                     Button(language.text("检查额度", "Check limits")) { store.refreshProfile(profile.id) }
                         .disabled(store.isPreview || store.isLoggingIn || store.refreshingProfileIDs.contains(profile.id))
-                    if store.isLoggingIn {
-                        Button(language.text("取消登录", "Cancel sign-in")) { store.cancelLogin() }
-                    }
+                }
+                if let loginFeedback {
+                    Text(loginFeedback).font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
                 }
                 if let message = store.accountManagerMessage {
                     Text(message).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
@@ -91,13 +97,18 @@ struct AccountRecoveryGuide: View {
             if let profile = selected {
                 Button(language.text("继续登录", "Continue sign-in")) {
                     guard !store.isPreview, Self.isIsolated(profile), candidates.contains(where: { $0.id == profile.id }) else { return }
-                    store.loginProfile(profile.id)
+                    switch store.loginProfile(profile.id, host: loginHost) {
+                    case .accepted:
+                        loginFeedback = nil
+                    case .blocked(let reason):
+                        loginFeedback = reason.message(language)
+                    }
                 }
             }
         } message: {
             if let profile = selected {
                 Text(
-                    AccountDisplay.profileName(profile) + "\n" + profile.id + "\n"
+                    AccountDisplay.numberedName(profile, allProfiles: store.profiles) + "\n" + profile.id + "\n"
                         + language.text("仅此独立账号。先检查占用；浏览器中请再次确认身份。", "Only this isolated account. Occupancy is checked first; verify identity again in the browser."))
             }
         }

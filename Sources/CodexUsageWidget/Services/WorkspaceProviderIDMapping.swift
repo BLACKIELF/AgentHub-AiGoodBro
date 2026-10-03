@@ -25,6 +25,7 @@ enum WorkspaceProviderIDMapping {
         case "kimi": return "kimi"
         case "mimo": return "mimo"
         case "zcode": return "zai"
+        case "antigravity": return "antigravity"
         default: return nil
         }
     }
@@ -43,6 +44,7 @@ enum WorkspaceProviderIDMapping {
         case "kimi": return "kimi"
         case "mimo": return "mimo"
         case "zai": return "zcode"
+        case "antigravity": return "antigravity"
         default: return nil
         }
     }

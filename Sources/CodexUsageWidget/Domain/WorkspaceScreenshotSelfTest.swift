@@ -106,7 +106,7 @@ enum WorkspaceScreenshotSelfTest {
         expect(AccountCardGridLayout.columnCount(width: 1_064, itemCount: 9) == 3, "the 1100pt window content fits three cards")
         expect(AccountCardGridLayout.columnCount(width: 1_404, itemCount: 9) == 4, "the 1440pt window content fits four cards")
         expect(AccountCardGridLayout.columnCount(width: .infinity, itemCount: 9) == 1, "nonfinite probes must be safe")
-        expect(AccountCardGridLayout.selfTest(), "all card rows must share one global measured size at 720 and 980 points")
+        expect(AccountCardGridLayout.selfTest(), "cards align within each row without inheriting unrelated rows' height at 720 and 980 points")
         expect(CrossProviderQuotaSummary.selfTest(), "provider summaries must preserve unknown values and never add unrelated percentages")
         expect(ProfileReorderMotion.animation(reduceMotion: true) == nil, "reordering must respect reduced motion")
         let originalOrder = ["one", "two", "three", "four"]
@@ -266,7 +266,8 @@ enum WorkspaceScreenshotSelfTest {
             }
             for scheme in [ColorScheme.light, .dark] {
                 settings.themeMode = scheme == .dark ? .dark : .light
-                for width: CGFloat in [820, 980, 1280] {
+                // Reserve 15pt for the live ScrollView scroller at the minimum window width.
+                for width: CGFloat in [805, 820, 980, 1280] {
                     let eightAccountStore = WorkspacePreviewRenderer.fixtureStore(
                         accountCount: 8,
                         root: root.appendingPathComponent(UUID().uuidString)
@@ -291,7 +292,9 @@ enum WorkspaceScreenshotSelfTest {
                         "the ninth account row must increase the complete export height at every layout"
                     )
                     let rowHeight = captured.plan.size.height - eightAccountCapture.plan.size.height
-                    expect(rowHeight <= 118, "each comfortably spaced compact row must remain under 118 points including its gap at all supported widths")
+                    // Identity, parallel quota windows and dispatch controls
+                    // remain visible in a single compact row.
+                    expect(rowHeight >= 48 && rowHeight <= 90, "account rows retain their visible controls within 90 points including the gap")
                     print("Compact layout: width=\(Int(width)), scheme=\(scheme), row=\(Int(rowHeight))pt")
                     expect(NSBitmapImageRep(data: captured.png)?.pixelsHigh == captured.plan.pixelsHigh, "long PNG must retain its full planned height")
                     expect(store.isPreview && store.profiles.count == 9, "export must retain all nine fixture accounts")
@@ -317,7 +320,7 @@ enum WorkspaceScreenshotSelfTest {
         }
         if failures.isEmpty {
             print(
-                "Workspace screenshot self-test passed: live chart pixels and stale/missing source rejection, bounds, 2x/1x, offscreen bottom, cancel/save/failure, row growth through nine, 6 nine-account layouts"
+                "Workspace screenshot self-test passed: live chart pixels and stale/missing source rejection, bounds, 2x/1x, offscreen bottom, cancel/save/failure, row growth through nine, 8 nine-account layouts"
             )
             return true
         }

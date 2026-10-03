@@ -3,6 +3,7 @@ import SwiftUI
 
 /// UI reorganization must keep the existing preference keys and round trips.
 enum SettingsPresentationSelfTest {
+    @MainActor
     static func run() -> Bool {
         let application = NSApplication.shared
         let previousAppearance = application.appearance
@@ -15,7 +16,9 @@ enum SettingsPresentationSelfTest {
             if !condition { failures.append(message) }
         }
 
-        expect(SettingsPage.allCases == [.appearance, .menuBar, .floatingBubble, .automation, .workspace, .about], "all six settings categories remain reachable")
+        expect(
+            SettingsPage.allCases == [.appearance, .menuBar, .floatingBubble, .edgeDock, .automation, .workspace, .tokenMonitor, .about],
+            "all eight settings categories remain reachable")
         expect(AHBrandIdentity.displayName == "AiGoodBro", "settings chrome uses the AiGoodBro display name")
         expect(AHBrandIdentity.shortName == "AH", "settings chrome uses the AH short name")
         expect(AHBrandIdentity.workspaceName == "AgentHub", "the in-app workspace name remains AgentHub")
@@ -38,8 +41,43 @@ enum SettingsPresentationSelfTest {
 
         let catalog = PaletteCatalog.loadFromMainBundle()
         let settings = AppSettings(defaults: defaults, paletteCatalog: catalog)
-        expect(settings.language == .zh && settings.themeMode == .system, "fresh installs use Chinese and follow system appearance")
-        expect(settings.accountWorkspaceLayout == .rows && settings.paletteID == PaletteCatalog.defaultPaletteID, "fresh installs use the list and standard palette")
+        let migrationURL = FileManager.default.temporaryDirectory.appendingPathComponent("edge-dock-migration-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: migrationURL) }
+        try? Data(#"{"edgeDockEnabled":true,"edgeDockMode":"always","edgeDockItems":[]}"#.utf8).write(to: migrationURL)
+        settings.migrateEmbeddedEdgeDockIfNeeded(from: migrationURL)
+        expect(settings.edgeDock.enabled && settings.edgeDock.mode == .always && settings.edgeDock.items == [], "first native launch preserves embedded dock choice")
+        settings.edgeDock.enabled = false
+        settings.migrateEmbeddedEdgeDockIfNeeded(from: migrationURL)
+        expect(!settings.edgeDock.enabled, "native dock edits win over old embedded preferences on later launches")
+        settings.edgeDock = .init()
+        expect(settings.workspaceGlass == WorkspaceGlassPreferences(), "glass defaults match Token Monitor")
+        let glassWindow = GlassHostingContainer(rootView: Text("Synthetic glass check"), cornerRadius: 12, settings: settings)
+        let material = glassWindow.subviews.compactMap { $0 as? NSVisualEffectView }.first
+        let host = glassWindow.subviews.last
+        settings.workspaceGlass = WorkspaceGlassPreferences(systemGlass: false, opacity: 24, depth: 75)
+        expect(material?.isHidden == true && host?.isHidden == false, "transparent backdrop must keep content visible")
+        settings.workspaceGlass.systemGlass = true
+        if !NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency && !NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast {
+            expect(material?.isHidden == false, "system glass updates in an existing window")
+        }
+        glassWindow.updateCornerRadius(0)
+        expect(glassWindow.layer?.cornerRadius == 0 && material?.layer?.cornerRadius == 0, "full-screen removes both clipping radii")
+        glassWindow.updateCornerRadius(12)
+        expect(glassWindow.layer?.cornerRadius == 12 && material?.layer?.cornerRadius == 12, "exiting full-screen restores glass shape")
+        let savedGlass = AppSettings(defaults: defaults, paletteCatalog: catalog)
+        expect(savedGlass.workspaceGlass == settings.workspaceGlass, "glass sliders and backdrop survive reopen")
+        let invalidGlass = Data(#"{"opacity":900,"depth":-10}"#.utf8)
+        expect(WorkspaceGlassPreferences.load(invalidGlass) == .init(opacity: 100, depth: 0), "invalid glass values cannot overflow opacity or contrast")
+        expect(WorkspaceGlassPreferences.load(Data("invalid".utf8)) == .init(), "corrupt glass preferences use safe defaults")
+        settings.workspaceGlass = .init()
+        expect(settings.language == .zh && settings.themeMode == .dark, "fresh installs use Chinese and dark appearance")
+        expect(
+            settings.accountWorkspaceLayout == .rows && settings.paletteID == PaletteCatalog.initialPaletteID,
+            "fresh installs use the list and liquid-keycap palette")
+        expect(
+            settings.paletteFallbackNotice == nil
+                && defaults.string(forKey: "CodexManagerNext.paletteID") == PaletteCatalog.initialPaletteID,
+            "an absent palette ID becomes the new initial palette without a warning")
         expect(settings.statusItemPreferences == .accountRing && settings.globalShortcut == .default, "fresh installs show weekly remaining quota and enable Command-U")
         expect(settings.setupProgress.shouldPresentAutomatically, "general defaults must not copy another user's completed setup")
         expect(
@@ -47,7 +85,7 @@ enum SettingsPresentationSelfTest {
             "new account task defaults use Astra Low at standard speed")
         for mode in WidgetThemeMode.allCases {
             settings.themeMode = mode
-            expect(WidgetThemeMode.storedOrAutomatic(defaults: defaults) == mode, "theme tiles preserve existing persistence")
+            expect(WidgetThemeMode.storedOrDefault(defaults: defaults) == mode, "theme tiles preserve existing persistence")
         }
         for language in WidgetLanguage.allCases {
             settings.language = language
@@ -71,6 +109,34 @@ enum SettingsPresentationSelfTest {
         expect(!restored.automaticUpdateChecksEnabled, "update opt-out survives reopen")
         expect(restored.themeMode == settings.themeMode && restored.language == settings.language, "appearance and language survive reopen")
         expect(restored.globalShortcut == nil, "a saved shortcut opt-out survives the new defaults")
+
+        let existingSuite = "CodexManagerNext.settings-existing-self-test.\(UUID().uuidString)"
+        if let existingDefaults = UserDefaults(suiteName: existingSuite) {
+            defer { existingDefaults.removePersistentDomain(forName: existingSuite) }
+            existingDefaults.set(WidgetThemeMode.system.rawValue, forKey: WidgetThemeMode.storageKey)
+            existingDefaults.set(PaletteCatalog.defaultPaletteID, forKey: "CodexManagerNext.paletteID")
+            let existing = AppSettings(defaults: existingDefaults, paletteCatalog: catalog)
+            expect(
+                existing.themeMode == .system && existing.paletteID == PaletteCatalog.defaultPaletteID
+                    && existing.paletteFallbackNotice == nil,
+                "explicitly saved appearance and legacy palette survive the new defaults")
+        } else {
+            failures.append("could not create an existing-settings UserDefaults suite")
+        }
+
+        let invalidSuite = "CodexManagerNext.settings-invalid-self-test.\(UUID().uuidString)"
+        if let invalidDefaults = UserDefaults(suiteName: invalidSuite) {
+            defer { invalidDefaults.removePersistentDomain(forName: invalidSuite) }
+            invalidDefaults.set("missing.palette", forKey: "CodexManagerNext.paletteID")
+            let invalid = AppSettings(defaults: invalidDefaults, paletteCatalog: catalog)
+            expect(
+                invalid.paletteID == PaletteCatalog.defaultPaletteID
+                    && invalid.paletteFallbackNotice == PaletteFallbackNotice(unavailableID: "missing.palette")
+                    && invalidDefaults.string(forKey: "CodexManagerNext.paletteID") == PaletteCatalog.defaultPaletteID,
+                "an unavailable saved palette falls back to the legacy safe palette and shows a notice")
+        } else {
+            failures.append("could not create an invalid-settings UserDefaults suite")
+        }
 
         let outputRoot = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
             .appendingPathComponent("review-outputs/0911v11", isDirectory: true)

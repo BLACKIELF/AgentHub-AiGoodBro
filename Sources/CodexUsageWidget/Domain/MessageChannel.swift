@@ -5,11 +5,13 @@ import Foundation
 enum MessageChannelKind: String, CaseIterable {
     case telegram
     case weChat = "wechat"
+    case personalWeChat = "personal-wechat"
 
     func displayName(_ language: WidgetLanguage) -> String {
         switch self {
         case .telegram: return "Telegram Bot"
-        case .weChat: return language.text("微信", "WeChat")
+        case .weChat: return language.text("企业微信", "WeCom")
+        case .personalWeChat: return language.text("个人微信", "Personal WeChat")
         }
     }
 }
@@ -25,17 +27,11 @@ enum MessageChannelPhase: Equatable {
 }
 
 enum MessageChannelUnavailableReason: String {
-    /// Personal WeChat exposes no official per-user message API.
-    case noOfficialPersonalAPI
     /// Official Accounts need approved server-side deployment outside this app.
     case officialAccountRequiresServerApproval
 
     func summary(_ language: WidgetLanguage) -> String {
         switch self {
-        case .noOfficialPersonalAPI:
-            return language.text(
-                "个人微信没有官方消息接口，本应用不接第三方冒充实现。",
-                "Personal WeChat has no official message API; the app does not ship third-party impersonation.")
         case .officialAccountRequiresServerApproval:
             return language.text(
                 "公众号需要已备案的服务端配置，无法在本应用内完成。",
@@ -50,6 +46,8 @@ enum MessageChannelError: LocalizedError, Equatable {
     case invalidCredential
     case missingTarget
     case invalidTarget
+    case weChatContextRequired
+    case weChatSessionExpired
     case staleStatus
     case invalidStatus
     case messageTooLong(limit: Int)
@@ -75,6 +73,10 @@ enum MessageChannelError: LocalizedError, Equatable {
             return language.text("尚未配置消息目标。", "No message target has been saved.")
         case .invalidTarget:
             return language.text("消息目标格式无效。", "The message target is malformed.")
+        case .weChatContextRequired:
+            return language.text("请在微信里给扫码绑定的机器人发一句话，再发送通知。", "Send a message in WeChat to the bot you paired, then send a notification.")
+        case .weChatSessionExpired:
+            return language.text("个人微信登录会话已失效，请重新扫码连接。", "The personal WeChat login has expired. Scan again to reconnect.")
         case .staleStatus:
             return language.text("任务状态已陈旧，拒绝发送。", "The task status is stale and was not sent.")
         case .invalidStatus:
@@ -142,7 +144,7 @@ struct MessageChannelAccountLabel: Equatable {
         let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: " ._-*•()（）"))
         guard !name.isEmpty,
             name.count <= 64,
-            name.unicodeScalars.allSatisfy(allowed.contains),
+            name.unicodeScalars.allSatisfy({ allowed.contains($0) }),
             name.contains("***") || name.contains("•••")
         else {
             throw MessageChannelError.invalidStatus
@@ -161,7 +163,7 @@ struct MessageChannelTaskLabel: Equatable {
         let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: " .-_·()（）"))
         guard !name.isEmpty,
             name.count <= 48,
-            name.unicodeScalars.allSatisfy(allowed.contains)
+            name.unicodeScalars.allSatisfy({ allowed.contains($0) })
         else {
             throw MessageChannelError.invalidStatus
         }
@@ -294,6 +296,28 @@ struct PublicResetChannelResult: Equatable {
     }
 }
 
+/// Optional official snapshot fields; no credential or account identifier is representable.
+struct MessageChannelAccountFacts: Equatable {
+    let fiveHourResetsAt: Date?
+    let sevenDayResetsAt: Date?
+    let availableResetCredits: Int?
+    let resetCreditExpiries: [Date]
+
+    init(
+        fiveHourResetsAt: Date? = nil, sevenDayResetsAt: Date? = nil,
+        availableResetCredits: Int? = nil, resetCreditExpiries: [Date] = []
+    ) throws {
+        let dates = [fiveHourResetsAt, sevenDayResetsAt].compactMap { $0 } + resetCreditExpiries
+        guard availableResetCredits.map({ $0 >= 0 }) ?? true,
+            dates.allSatisfy({ $0.timeIntervalSince1970.isFinite })
+        else { throw MessageChannelError.invalidStatus }
+        self.fiveHourResetsAt = fiveHourResetsAt
+        self.sevenDayResetsAt = sevenDayResetsAt
+        self.availableResetCredits = availableResetCredits
+        self.resetCreditExpiries = resetCreditExpiries.sorted()
+    }
+}
+
 /// The only payload a message channel may transmit. Fields are structured and
 /// bounded: prompts, model responses, file paths, raw account identifiers and
 /// private free-form text are unrepresentable. Public wording requires a validated context.
@@ -340,6 +364,8 @@ struct MessageTaskStatus: Equatable {
     let occurredAt: Date
     let eventID: UUID
     let publicResetContext: PublicResetContext?
+    let quotaChange: CodexQuotaEvent?
+    let accountFacts: MessageChannelAccountFacts?
 
     init(
         eventKind: EventKind,
@@ -351,7 +377,9 @@ struct MessageTaskStatus: Equatable {
         failureReason: FailureReason? = nil,
         occurredAt: Date,
         eventID: UUID = UUID(),
-        publicResetContext: PublicResetContext? = nil
+        publicResetContext: PublicResetContext? = nil,
+        quotaChange: CodexQuotaEvent? = nil,
+        accountFacts: MessageChannelAccountFacts? = nil
     ) throws {
         let percentages = [fiveHourRemainingPercent, sevenDayRemainingPercent].compactMap { $0 }
         guard percentages.allSatisfy({ $0.isFinite && (0...100).contains($0) }) else {
@@ -363,8 +391,18 @@ struct MessageTaskStatus: Equatable {
         if let context = publicResetContext {
             guard eventKind == (context.kind == .regular ? .publicRegularReset : .publicBankedReset),
                 accountLabel == nil, taskLabel == nil, taskState == nil,
-                percentages.isEmpty, failureReason == nil
+                percentages.isEmpty, failureReason == nil, quotaChange == nil, accountFacts == nil
             else { throw MessageChannelError.invalidStatus }
+        }
+        if let quotaChange {
+            switch quotaChange {
+            case .quotaReset(let fiveHour, let sevenDay):
+                guard eventKind == .quotaReset, fiveHour || sevenDay else { throw MessageChannelError.invalidStatus }
+            case .resetCreditsAdded(let added, let available):
+                guard eventKind == .resetCreditsAdded, added > 0, available >= added,
+                    accountFacts?.availableResetCredits.map({ $0 == available }) ?? true
+                else { throw MessageChannelError.invalidStatus }
+            }
         }
         self.publicResetContext = publicResetContext
         self.eventKind = eventKind
@@ -376,6 +414,22 @@ struct MessageTaskStatus: Equatable {
         self.failureReason = failureReason
         self.occurredAt = occurredAt
         self.eventID = eventID
+        self.quotaChange = quotaChange
+        self.accountFacts = accountFacts
+    }
+
+    func selectingQuotaWindows(_ options: FeishuMessageOptions) -> MessageTaskStatus? {
+        guard eventKind == .quotaReset else { return self }
+        guard let quotaChange else {
+            return options.notifiesFiveHourReset || options.notifiesSevenDayReset ? self : nil
+        }
+        guard let selected = options.selectedQuotaEvent(quotaChange) else { return nil }
+        return try? MessageTaskStatus(
+            eventKind: eventKind, accountLabel: accountLabel, taskLabel: taskLabel,
+            taskState: taskState, fiveHourRemainingPercent: fiveHourRemainingPercent,
+            sevenDayRemainingPercent: sevenDayRemainingPercent, failureReason: failureReason,
+            occurredAt: occurredAt, eventID: eventID, publicResetContext: publicResetContext,
+            quotaChange: selected, accountFacts: accountFacts)
     }
 
     /// One canonical line rendering shared by every channel so Telegram and
@@ -438,6 +492,32 @@ struct MessageTaskStatus: Equatable {
 
 /// Credentials are provided only by the host app through this protocol. The
 /// channel never persists, displays, logs them, or embeds them in errors.
+struct MessageChannelCredential: Codable {
+    let secret: String
+    let target: String?
+    let personalBinding: PersonalWeChatBinding?
+
+    init(secret: String, target: String?, personalBinding: PersonalWeChatBinding? = nil) {
+        self.secret = secret
+        self.target = target
+        self.personalBinding = personalBinding
+    }
+
+    func validated(for kind: MessageChannelKind) throws -> Self {
+        switch kind {
+        case .telegram:
+            return try Self(secret: TelegramMessageChannel.validatedBotToken(secret), target: TelegramMessageChannel.validatedChatID(target ?? ""))
+        case .weChat:
+            return try Self(secret: WeChatMessageChannel.validatedWebhookKey(secret), target: nil)
+        case .personalWeChat:
+            guard let personalBinding else { throw MessageChannelError.invalidCredential }
+            return try Self(
+                secret: PersonalWeChatMessageChannel.validatedToken(secret),
+                target: PersonalWeChatMessageChannel.validatedID(target ?? ""), personalBinding: personalBinding.validated())
+        }
+    }
+}
+
 protocol MessageChannelCredentialProviding: AnyObject {
     func isEnabled(_ kind: MessageChannelKind) -> Bool
     func credential(for kind: MessageChannelKind) -> String?
@@ -526,10 +606,13 @@ final class URLSessionMessageChannelTransport: MessageChannelTransport {
 
     private let session: URLSession
 
-    init(sessionConfiguration: URLSessionConfiguration = .ephemeral) {
+    init(
+        sessionConfiguration: URLSessionConfiguration = .ephemeral, requestTimeout: TimeInterval = 12,
+        resourceTimeout: TimeInterval = 20
+    ) {
         let configuration = sessionConfiguration
-        configuration.timeoutIntervalForRequest = 12
-        configuration.timeoutIntervalForResource = 20
+        configuration.timeoutIntervalForRequest = requestTimeout
+        configuration.timeoutIntervalForResource = resourceTimeout
         configuration.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
         configuration.urlCache = nil
         configuration.httpCookieStorage = nil

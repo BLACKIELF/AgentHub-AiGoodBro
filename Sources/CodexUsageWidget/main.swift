@@ -3,7 +3,15 @@ import Darwin
 
 @main
 struct CodexAccountManagerNextMain {
-    @MainActor static func main() {
+    @MainActor static func main() async {
+        if CommandLine.arguments.contains("--self-test-section-sizes") {
+            exit(HomeSectionSizingSelfTest.run() ? 0 : 1)
+        }
+
+        if CommandLine.arguments.contains("--self-test-referrals") {
+            exit(await CodexReferralSelfTest.run() ? 0 : 1)
+        }
+
         if CommandLine.arguments.contains("--self-test-global-shortcut") {
             exit(GlobalShortcutSelfTest.run() ? 0 : 1)
         }
@@ -22,6 +30,13 @@ struct CodexAccountManagerNextMain {
 
         if CommandLine.arguments.contains("--self-test-palettes") {
             exit(PaletteCatalogSelfTest.run() ? 0 : 1)
+        }
+
+        if let index = CommandLine.arguments.firstIndex(of: "--render-workbench-previews"),
+            CommandLine.arguments.indices.contains(index + 1)
+        {
+            _ = NSApplication.shared
+            exit(TaskWorkbenchPreviewRenderer.render(to: URL(fileURLWithPath: CommandLine.arguments[index + 1], isDirectory: true)) ? 0 : 1)
         }
 
         if let previewIndex = CommandLine.arguments.firstIndex(of: "--render-palette-previews"),
@@ -55,6 +70,14 @@ struct CodexAccountManagerNextMain {
             exit(WorkspacePreviewRenderer.renderWorkbench(to: URL(fileURLWithPath: CommandLine.arguments[previewIndex + 1], isDirectory: true)) ? 0 : 1)
         }
 
+        if let previewIndex = CommandLine.arguments.firstIndex(of: "--render-token-monitor-native-previews"),
+            CommandLine.arguments.indices.contains(previewIndex + 1)
+        {
+            _ = NSApplication.shared
+            let outputURL = URL(fileURLWithPath: CommandLine.arguments[previewIndex + 1], isDirectory: true)
+            exit(TokenMonitorNativePreviewRenderer.render(to: outputURL) ? 0 : 1)
+        }
+
         if let previewIndex = CommandLine.arguments.firstIndex(of: "--render-workspace-previews"),
             CommandLine.arguments.indices.contains(previewIndex + 1)
         {
@@ -64,12 +87,33 @@ struct CodexAccountManagerNextMain {
             exit(WorkspacePreviewRenderer.render(to: outputURL, language: language) ? 0 : 1)
         }
 
+        if CommandLine.arguments.contains("--preview-home-interaction") {
+            HomeInteractionPreview.show()
+            return
+        }
+
+        if CommandLine.arguments.contains("--preview-device-login-interaction") {
+            CodexDeviceLoginPreviewRenderer.showInteractive()
+            return
+        }
+
+        if let previewIndex = CommandLine.arguments.firstIndex(of: "--render-device-login-previews"),
+            CommandLine.arguments.indices.contains(previewIndex + 1)
+        {
+            _ = NSApplication.shared
+            exit(CodexDeviceLoginPreviewRenderer.render(to: URL(fileURLWithPath: CommandLine.arguments[previewIndex + 1], isDirectory: true)) ? 0 : 1)
+        }
+
         if let previewIndex = CommandLine.arguments.firstIndex(of: "--render-setup-previews"),
             CommandLine.arguments.indices.contains(previewIndex + 1)
         {
             _ = NSApplication.shared
             let outputURL = URL(fileURLWithPath: CommandLine.arguments[previewIndex + 1], isDirectory: true)
             exit(NextSetupPreviewRenderer.render(to: outputURL) ? 0 : 1)
+        }
+
+        if CommandLine.arguments.contains("--self-test-webview-bridge") {
+            exit(WKWebViewBridgeSelfTest.run() ? 0 : 1)
         }
 
         if CommandLine.arguments.contains("--self-test-particle-animation") {
@@ -109,6 +153,9 @@ struct CodexAccountManagerNextMain {
                 POSIXPipeReaderSelfTest.run()
                     && CodexThreadHistoryProbeSelfTest.run()
                     && CodexAccountLoginProtocolSelfTest.run()
+                    && CodexDeviceLoginSelfTest.run()
+                    && UsageStore.deviceLoginTargetSelfTest()
+                    && UsageStore.deviceLoginEscapeShortcutSelfTest()
                     ? 0 : 1
             )
         }
@@ -168,6 +215,11 @@ struct CodexAccountManagerNextMain {
             exit(TokenMonitorUISelfTest.run() ? 0 : 1)
         }
 
+        if CommandLine.arguments.contains("--self-test-token-monitor-integration") {
+            let passed = await TokenMonitorIntegrationSelfTest.run()
+            exit(passed ? 0 : 1)
+        }
+
         if CommandLine.arguments == [CommandLine.arguments[0], "--send-authorized-public-reset-update"] {
             IntegrationPushCommand.sendAuthorizedPublicResetUpdate()
         }
@@ -219,7 +271,7 @@ struct CodexAccountManagerNextMain {
         }
 
         if CommandLine.arguments.contains("--self-test-task-runtime") {
-            exit(TaskRuntimeSelfTest.run() ? 0 : 1)
+            exit(TaskRuntimeSelfTest.run() && TaskOverviewPresentationSelfTest.run() && TaskWorkbenchSelfTest.run() ? 0 : 1)
         }
 
         if CommandLine.arguments.contains("--self-test-leadership-model") {
@@ -227,7 +279,7 @@ struct CodexAccountManagerNextMain {
         }
 
         if CommandLine.arguments.contains("--self-test-codex-session-link") {
-            exit(CodexSessionLinkSelfTest.run() ? 0 : 1)
+            exit(CodexSessionLinkSelfTest.run() && BundledSkill.selfTest() ? 0 : 1)
         }
 
         if CommandLine.arguments.contains("--self-test-performance-monitor") {

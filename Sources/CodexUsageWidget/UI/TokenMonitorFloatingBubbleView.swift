@@ -12,6 +12,7 @@ struct TokenMonitorFloatingBubbleView: View {
     var language: WidgetLanguage
     var onToggle: () -> Void
     var onOpenEditor: () -> Void
+    @Environment(\.visualTokens) private var tokens
 
     var body: some View {
         Group {
@@ -29,6 +30,12 @@ struct TokenMonitorFloatingBubbleView: View {
         Button(action: onToggle) {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .fill(.regularMaterial)
+                .overlay {
+                    if tokens.identity.paletteID != PaletteCatalog.defaultPaletteID {
+                        WorkspaceGlassBackdrop()
+                            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    }
+                }
                 .overlay { Capsule().fill(Color.accentColor).frame(width: 4, height: 18) }
                 .frame(width: TokenMonitorFloatingBubbleGeometry.handleWidth, height: TokenMonitorFloatingBubbleGeometry.handleHeight)
         }
@@ -58,12 +65,13 @@ struct TokenMonitorFloatingBubbleView: View {
             if !snapshot.metricName.isEmpty {
                 Text(snapshot.metricName).font(.caption2).foregroundStyle(.secondary)
             }
-            if preferences.showQuotaBar, snapshot.valueLabel == nil {
-                QuotaProgressTrack(percent: displayedPercent)
-            }
             HStack {
-                if preferences.showPercent {
-                    Text(percentText).font(valueFont)
+                if preferences.showPercent || preferences.showQuotaBar {
+                    if let value = snapshot.valueLabel {
+                        if preferences.showPercent { Text(value).font(valueFont) }
+                    } else {
+                        QuotaPercentageRing(percent: displayedPercent, diameter: 48, showsValue: preferences.showPercent)
+                    }
                 }
                 Spacer()
                 if preferences.showResetTime {
@@ -92,7 +100,16 @@ struct TokenMonitorFloatingBubbleView: View {
         }
         .padding(12)
         .frame(width: 280, alignment: side == "right" ? .trailing : .leading)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .background {
+            ZStack {
+                RoundedRectangle(cornerRadius: 12, style: .continuous).fill(.regularMaterial)
+                if tokens.identity.paletteID != PaletteCatalog.defaultPaletteID {
+                    WorkspaceGlassBackdrop()
+                    WorkspaceGlassSurface(cornerRadius: 12)
+                }
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        }
         .overlay {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .strokeBorder(Color.primary.opacity(0.10), lineWidth: 0.5)
@@ -231,7 +248,7 @@ struct TokenMonitorFloatingBubbleEditor: View {
         VStack(alignment: .leading, spacing: 12) {
             Text(language.text("自定义悬浮窗", "Customize floating bubble")).font(.headline)
             Toggle(language.text("显示图标", "Show icon"), isOn: $session.preferences.showIcon)
-            Toggle(language.text("显示额度条", "Show quota bar"), isOn: $session.preferences.showQuotaBar)
+            Toggle(language.text("显示额度环", "Show quota ring"), isOn: $session.preferences.showQuotaBar)
             Toggle(language.text("显示百分比", "Show percent"), isOn: $session.preferences.showPercent)
             Toggle(language.text("显示恢复时间", "Show reset time"), isOn: $session.preferences.showResetTime)
             if draftSnapshot.hasCost {
@@ -389,12 +406,16 @@ enum TokenMonitorFloatingBubbleSession {
 @MainActor
 final class TokenMonitorFloatingBubbleController: NSObject, NSWindowDelegate {
     private var panel: NSPanel?
-    private var hosting: NSHostingView<TokenMonitorFloatingBubbleView>?
+    private var hosting: NSHostingView<NativePaletteRoot<TokenMonitorFloatingBubbleView>>?
     private var expanded = TokenMonitorFloatingBubbleGeometry.Rect(x: 80, y: 120, width: 304, height: 168)
     private var collapsed: TokenMonitorFloatingBubbleGeometry.Rect?
     private var isCollapsed = false
     private var side = "left"
     var language: WidgetLanguage = .zh
+    var paletteCatalog = PaletteCatalog.loadFromMainBundle()
+    var paletteID = PaletteCatalog.defaultPaletteID
+    var preferredColorScheme: ColorScheme?
+    var glass = WorkspaceGlassPreferences()
     var snapshot = TokenMonitorFloatingBubbleSnapshot(
         providerID: "codex", providerName: "Codex", percentRemaining: nil,
         resetLabel: "—", costLabel: "—", customText: "",
@@ -482,7 +503,7 @@ final class TokenMonitorFloatingBubbleController: NSObject, NSWindowDelegate {
 
     func refreshContent() {
         guard let panel else { return }
-        let view = TokenMonitorFloatingBubbleView(
+        let content = TokenMonitorFloatingBubbleView(
             snapshot: snapshot,
             preferences: preferences,
             collapsed: isCollapsed,
@@ -490,6 +511,10 @@ final class TokenMonitorFloatingBubbleController: NSObject, NSWindowDelegate {
             language: language,
             onToggle: { [weak self] in self?.toggle() },
             onOpenEditor: { [weak self] in self?.onOpenEditor?() }
+        )
+        let view = NativePaletteRoot(
+            content: content, catalog: paletteCatalog, paletteID: paletteID,
+            preferredColorScheme: preferredColorScheme, glass: glass
         )
         if let hosting {
             hosting.rootView = view
@@ -503,7 +528,7 @@ final class TokenMonitorFloatingBubbleController: NSObject, NSWindowDelegate {
         fitExpandedContent(host, panel: panel)
     }
 
-    private func fitExpandedContent(_ host: NSHostingView<TokenMonitorFloatingBubbleView>, panel: NSPanel) {
+    private func fitExpandedContent(_ host: NSHostingView<NativePaletteRoot<TokenMonitorFloatingBubbleView>>, panel: NSPanel) {
         guard !isCollapsed else { return }
         let height = max(168, ceil(host.fittingSize.height))
         guard height.isFinite, abs(expanded.height - height) > 1 else { return }

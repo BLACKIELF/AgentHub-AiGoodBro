@@ -32,16 +32,16 @@ cargo +1.97.1-x86_64-pc-windows-msvc tauri build --no-bundle
 
 1. 验证 Windows、Cargo、Git、UI Automation、.NET C# compiler 与 Windows SDK metadata。
 2. 验证输出是 `.local-artifacts/windows-visual-captures/` 下尚不存在的目录，并确认 Git ignore 生效。
-3. 将仓库内的 Windows Graphics Capture helper 源码编译到本次本地产物目录。
+3. 将仓库内的原生截图 helper 源码编译到本次本地产物目录。
 4. 构建真实 Tauri release 应用。
 5. 拒绝接管已经运行的同一精确 release executable。
 6. 只启动一个带 `--codexu-native-capture-background` 参数的任务实例；capture-only 窗口使用
    non-activating background tool-window 样式，从任务栏和 Alt-Tab 排除，再通过 Win32 最大化；
    Overview 与所有子板块都保持这一最大化状态，不改变用户当前前台窗口。
 7. 重新读取并记录最大化状态、client area、DPI 与原生外框尺寸。
-8. 先在页面顶部采集一张 Overview，再用 UI Automation 依次选择 Tasks、AI Leadership、Usage、Projects、Skills。
+8. 先确认 WebView2 暴露 UIA Document、Dashboard tab 和 renderer，再在页面顶部采集一张 Overview，用 UI Automation 依次选择 Tasks、AI Leadership、Usage、Projects、Skills。
 9. 每个子板块先对齐自身起点，再按约 20% 纵向重叠连续采集原生视口，直到板块底部可见。Projects 是明确例外：只采集最大化窗口下的首个板块视口，不滚动内部项目列表。
-10. 滚动消息只发送给当前任务 app 的 renderer HWND；每次滚轮后等待 WebView2 平滑滚动落定。Windows Graphics Capture 始终按该 app 的精确主 HWND 采集完整原生窗口帧。
+10. 滚动消息只发送给当前任务 app 的 renderer HWND；每次滚轮后等待 WebView2 平滑滚动落定。截图始终针对同一个精确主 HWND：tool window 使用 `PrintWindow(PW_RENDERFULLCONTENT)`，普通窗口使用 Windows Graphics Capture。拒绝空白或纯色客户区，并逐图记录实际引擎。
 11. 单一运行完成或发生失败/中断时，清理并复核本任务记录的精确 app/WebView2 PID 身份。
 
 ## 本地产物
@@ -75,7 +75,7 @@ cargo +1.97.1-x86_64-pc-windows-msvc tauri build --no-bundle
   和后台 Z-order 显示，不以截图像素猜测窗口状态。
 - capture-only 窗口设置 `WS_EX_TOOLWINDOW` 并移除 `WS_EX_APPWINDOW`，manifest 必须记录
   `foreground_preserved=true`、`taskbar_policy=excluded` 和 `alt_tab_policy=excluded`；正常启动窗口不使用这组样式。
-- Windows Graphics Capture 输出包含原生窗口装饰，物理帧会随当前屏幕和 DPI scaling 改变。
+- 原生截图输出包含窗口装饰，物理帧会随当前屏幕和 DPI scaling 改变。
 - `manifest.json` 记录 maximized、verified client、outer window、DPI、每张图的 physical frame 与动态截图总数；人工验收只比较本次记录，不建立 baseline。
 
 ## 进程边界与清理
@@ -143,9 +143,23 @@ cd ..\..\..\..
 git diff --check
 ```
 
+## CI 与冷启动回归
+
+`windows-native-visual` 构建当前 checkout 的前端与 release exe，随后运行两次
+`Test-NativeVisualCaptureCoverage.ps1`。每次创建独立的 app/WebView2 数据目录，
+保留 Document、面板起止位置、前台保护、PNG 和清理断言；失败会阻止 `CI required` 通过。
+运行产物只保留在 runner 本地，不上传截图、WebView2 数据或本机路径。
+
+`Test-NativeWindowSelection.ps1` 还创建真实的 Win32 HWND，先显示模拟的 Tao 消息窗口，
+延迟显示 Tauri 主窗，验证生产枚举器在等待期间不选错窗口、主窗出现后选择正确句柄。
+
+tool window 的截图接口限制见
+[微软 Windows Capture 维护者说明](https://github.com/microsoft/Windows.UI.Composition-Win32-Samples/issues/48)。
+不能通过移除 tool-window 样式、短暂抢焦点或截取整个桌面来绕过后台采集要求。
+
 ## 已知限制
 
 - 结果只证明本次 checkout、当前真实数据和当前 Windows/DPI 环境。
 - 流程不建立像素基准，不自动判断视觉优劣；最终结论来自逐张人工检查。
 - 只验收 Overview 与五个 Dashboard Tab，不覆盖主题矩阵、系统菜单、dialog 或未实际出现的终态错误。
-- Windows Graphics Capture helper 需要可用的 D3D11、Windows SDK metadata 与 .NET Framework C# compiler。
+- helper 编译需要 Windows SDK metadata 与 .NET Framework C# compiler；普通窗口的 Windows Graphics Capture 路径还需要可用的 D3D11。

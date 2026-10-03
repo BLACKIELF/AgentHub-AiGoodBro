@@ -3,7 +3,9 @@
 param(
     [Parameter(Mandatory = $true)]
     [string]$Version,
-    [string]$OutputDirectory
+    [string]$OutputDirectory,
+    # The readiness entry point records these checks before invoking packaging.
+    [switch]$SkipValidation
 )
 
 Set-StrictMode -Version Latest
@@ -56,6 +58,15 @@ function Invoke-Checked {
     }
 }
 
+function Select-FreshBundle {
+    param([object[]] $Files, [string] $ReleaseVersion, [DateTime] $StartedUtc)
+    $pattern = '_' + [regex]::Escape($ReleaseVersion) + '_x64(?:_|-)'
+    return $Files |
+        Where-Object { $_.LastWriteTimeUtc -ge $StartedUtc -and $_.Name -match $pattern } |
+        Sort-Object LastWriteTimeUtc -Descending |
+        Select-Object -First 1
+}
+
 if (-not (Get-Command rustup -ErrorAction SilentlyContinue)) {
     throw "rustup is required to build the Windows release."
 }
@@ -72,25 +83,28 @@ if ($InstalledToolchains -notmatch [regex]::Escape($Toolchain)) {
     Invoke-Checked "rustup" @("toolchain", "install", $Toolchain, "--profile", "minimal", "--component", "rustfmt")
 }
 
-Push-Location $WindowsRoot
-try {
-    Invoke-Checked "cargo" @("+$Toolchain", "fmt", "--all", "--", "--check")
-    Invoke-Checked "cargo" @("+$Toolchain", "test", "--workspace", "--locked")
-}
-finally {
-    Pop-Location
+if (-not $SkipValidation) {
+    Push-Location $WindowsRoot
+    try {
+        Invoke-Checked "cargo" @("+$Toolchain", "fmt", "--all", "--", "--check")
+        Invoke-Checked "cargo" @("+$Toolchain", "test", "--workspace", "--locked")
+    }
+    finally {
+        Pop-Location
+    }
+
+    Push-Location $WebRoot
+    try {
+        Invoke-Checked "npm" @("ci", "--no-audit", "--no-fund")
+        Invoke-Checked "npm" @("test")
+        Invoke-Checked "npm" @("run", "build")
+    }
+    finally {
+        Pop-Location
+    }
 }
 
-Push-Location $WebRoot
-try {
-    Invoke-Checked "npm" @("ci", "--no-audit", "--no-fund")
-    Invoke-Checked "npm" @("test")
-    Invoke-Checked "npm" @("run", "build")
-}
-finally {
-    Pop-Location
-}
-
+$BuildStartedUtc = [DateTime]::UtcNow
 $TauriConfig = '{"version":"' + $Version + '"}'
 Push-Location $AppRoot
 try {
@@ -127,20 +141,18 @@ if (-not $BundleRoots) {
     throw "Tauri did not produce a release bundle directory."
 }
 
-$Msi = $BundleRoots |
-    ForEach-Object { Get-ChildItem -LiteralPath (Join-Path $_ "msi") -Filter "*.msi" -File -ErrorAction SilentlyContinue } |
-    Sort-Object LastWriteTime -Descending |
-    Select-Object -First 1
-$Nsis = $BundleRoots |
-    ForEach-Object { Get-ChildItem -LiteralPath (Join-Path $_ "nsis") -Filter "*-setup.exe" -File -ErrorAction SilentlyContinue } |
-    Sort-Object LastWriteTime -Descending |
-    Select-Object -First 1
+$Msi = Select-FreshBundle -Files @($BundleRoots |
+    ForEach-Object { Get-ChildItem -LiteralPath (Join-Path $_ "msi") -Filter "*.msi" -File -ErrorAction SilentlyContinue }) `
+    -ReleaseVersion $Version -StartedUtc $BuildStartedUtc
+$Nsis = Select-FreshBundle -Files @($BundleRoots |
+    ForEach-Object { Get-ChildItem -LiteralPath (Join-Path $_ "nsis") -Filter "*-setup.exe" -File -ErrorAction SilentlyContinue }) `
+    -ReleaseVersion $Version -StartedUtc $BuildStartedUtc
 
 if (-not $Msi) {
-    throw "No MSI installer was found under the Tauri release bundle."
+    throw "No fresh MSI installer matching the requested version was produced."
 }
 if (-not $Nsis) {
-    throw "No NSIS setup executable was found under the Tauri release bundle."
+    throw "No fresh NSIS setup executable matching the requested version was produced."
 }
 
 $Artifacts = @(

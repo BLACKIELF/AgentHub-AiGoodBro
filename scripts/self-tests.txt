@@ -26,6 +26,10 @@
 --self-test-workspace-screenshot
 --self-test-quota-provider-wiring
 --self-test-token-monitor-ui
+--self-test-token-monitor-integration
 --self-test-main-window-layout
 --self-test-account-floating-panel
 --self-test-brand-assets
+--self-test-webview-bridge
+--self-test-referrals
+--self-test-section-sizes

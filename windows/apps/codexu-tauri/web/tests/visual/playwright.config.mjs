@@ -38,7 +38,7 @@ export default defineConfig({
     // Uses the browser shipped with the OS instead of downloading a bundled
     // Chromium, so `npm ci` stays cheap. Pin a bundled browser if the project
     // later needs byte-identical rendering across contributor machines.
-    channel: 'msedge',
+    channel: process.env.CODEXU_VISUAL_BROWSER === 'chromium' ? undefined : 'msedge',
     viewport: { width: 1440, height: 900 },
     deviceScaleFactor: 1,
     locale: 'en-US',

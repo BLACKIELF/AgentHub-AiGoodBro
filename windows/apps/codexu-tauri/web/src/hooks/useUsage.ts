@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import type { CodexDashboardSnapshot } from '../types/models';
@@ -11,8 +11,10 @@ export function useUsage() {
   const [dashboard, setDashboard] = useState<CodexDashboardSnapshot | null | undefined>(undefined);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const generation = useRef(0);
 
   const load = useCallback(async (force = false) => {
+    const epoch = ++generation.current;
     setLoading(true);
     setError(null);
     try {
@@ -20,45 +22,40 @@ export function useUsage() {
       const result = await invoke<CodexDashboardSnapshot | null>(
         force ? 'refresh_usage' : 'get_local_usage'
       );
-      setDashboard(result);
+      if (epoch === generation.current) setDashboard(result);
     } catch (e) {
-      setError(String(e));
+      if (epoch === generation.current) setError(String(e));
     } finally {
-      setLoading(false);
+      if (epoch === generation.current) setLoading(false);
     }
   }, []);
 
-useEffect(() => {
-  load();
+  const changeSource = useCallback(() => {
+    setDashboard(undefined);
+    // Backend source keys invalidate the cache; ordinary reads coalesce across windows.
+    void load();
+  }, [load]);
 
-  if (!isTauriRuntimeAvailable()) {
-    return;
-  }
-
-  let unlisten: (() => void) | null = null;
-  let cancelled = false;
-
-  const subscribe = async () => {
-    try {
-      const unlistenFn = await listen('usage:updated', () => {
-        load();
-      });
-      if (cancelled) {
-        unlistenFn();
-      } else {
-        unlisten = unlistenFn;
+  useEffect(() => {
+    void load();
+    let cancelled = false;
+    const unlisteners: (() => void)[] = [];
+    if (isTauriRuntimeAvailable()) {
+      for (const [event, callback] of [
+        ['usage:updated', () => { void load(); }],
+        ['usage:source-changed', changeSource],
+      ] as const) {
+        void listen(event, callback).then(unlisten => {
+          if (cancelled) unlisten(); else unlisteners.push(unlisten);
+        }).catch(e => { if (!cancelled) setError(String(e)); });
       }
-    } catch (e) {
-      setError(String(e));
     }
-  };
-  subscribe();
+    return () => {
+      cancelled = true;
+      generation.current++;
+      unlisteners.forEach(unlisten => unlisten());
+    };
+  }, [load, changeSource]);
 
-  return () => {
-    cancelled = true;
-    unlisten?.();
-  };
-}, [load]);
-
-  return { dashboard, loading, error, refresh: () => load(true) };
+  return { dashboard, loading, error, refresh: () => load(true), changeSource };
 }
