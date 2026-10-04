@@ -9,6 +9,18 @@ struct GlobalShortcut: Hashable {
         keyLabel: "U"
     )
 
+    static let edgeDock = GlobalShortcut(keyCode: UInt32(kVK_ANSI_I), carbonModifiers: UInt32(cmdKey), keyLabel: "I")
+    enum Action { case mainWindow, edgeDock }
+    static func action(signature: OSType, id: UInt32) -> Action? {
+        guard signature == 0x4341_4D4E else { return nil }  // CAMN
+        switch id {
+        case 1, 2: return .mainWindow
+        case 3: return .edgeDock
+        default: return nil
+        }
+    }
+    static func shouldHideEdgeDock(enabled: Bool, railVisible: Bool) -> Bool { enabled && railVisible }
+
     static let keyCodeStorageKey = "CodexManagerNext.globalShortcut.keyCode"
     static let modifiersStorageKey = "CodexManagerNext.globalShortcut.modifiers"
     static let keyLabelStorageKey = "CodexManagerNext.globalShortcut.keyLabel"

@@ -226,6 +226,8 @@ struct TokenMonitorEdgeDockRailView: View {
     let focusedIndex: Int?
     var pageIndex = 0
     var pageCount = 1
+    var isPinned = false
+    var onPin: () -> Void = {}
     var onPage: (Int) -> Void = { _ in }
     let onSelect: (Int) -> Void
     let onDrag: (CGSize) -> Void
@@ -260,8 +262,9 @@ struct TokenMonitorEdgeDockRailView: View {
                 .frame(width: 64)
                 .frame(maxHeight: .infinity, alignment: .top)
         )
-        .overlay(alignment: .top) {
-            Color.clear.frame(width: 64, height: 28)
+        .overlay(alignment: .topLeading) {
+            Color.clear.frame(width: 30, height: 28)
+                .padding(.leading, 3)
                 .contentShape(Rectangle())
                 .gesture(
                     DragGesture(minimumDistance: 3)
@@ -269,6 +272,20 @@ struct TokenMonitorEdgeDockRailView: View {
                         .onEnded { onDrop($0.translation) }
                 )
                 .accessibilityLabel(language.text("拖动侧边栏", "Drag Edge Dock"))
+        }
+        .overlay(alignment: .topTrailing) {
+            Button(action: onPin) {
+                Image(systemName: isPinned ? "pin.fill" : "pin")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 26, height: 28)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(language.text(isPinned ? "隐藏侧边栏 · ⌘I" : "固定侧边栏 · ⌘I", isPinned ? "Hide Edge Dock · ⌘I" : "Pin Edge Dock · ⌘I"))
+            .accessibilityLabel(language.text(isPinned ? "隐藏侧边栏" : "固定侧边栏", isPinned ? "Hide Edge Dock" : "Pin Edge Dock"))
+            .accessibilityIdentifier("edge-dock-rail-pin")
+            .padding(.trailing, 3)
         }
         .overlay(alignment: .bottom) {
             if pageCount > 1 {
