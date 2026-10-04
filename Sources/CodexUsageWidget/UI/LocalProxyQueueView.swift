@@ -101,7 +101,23 @@ struct LocalProxyQueueView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-            if let issue = model.issue {
+            if let failure = model.preferencesFailure {
+                Label(
+                    failure == .save
+                        ? language.text(
+                            "刚才的规则未保存，仍使用原规则，新请求暂不可用。请检查本地偏好目录权限或磁盘空间；修复并等待已有任务结束后，正常退出并重新打开应用。",
+                            "The rule change was not saved; previous rules remain and new requests are blocked. Check local preferences folder permissions or disk space. After fixing them and waiting for active tasks to finish, quit normally and reopen the app."
+                        )
+                        : language.text(
+                            "反代偏好读取失败，已暂停新请求。请检查偏好文件及目录权限；修复并等待已有任务结束后，正常退出并重新打开应用。",
+                            "Proxy preferences could not be read; new requests are blocked. Check the preferences file and folder permissions. After fixing them and waiting for active tasks to finish, quit normally and reopen the app."
+                        ),
+                    systemImage: "exclamationmark.triangle"
+                )
+                .font(.callout).foregroundStyle(WorkspaceStatusForeground.warning)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+            if let issue = model.visibleIssue {
                 Label(issue, systemImage: "exclamationmark.triangle")
                     .font(.callout).foregroundStyle(WorkspaceStatusForeground.warning)
                     .fixedSize(horizontal: false, vertical: true)

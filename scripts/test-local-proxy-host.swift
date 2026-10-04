@@ -240,6 +240,30 @@ import Foundation
         expect(reloaded.isEnabled && reloaded.rows.first?.isEnabled == false && reloaded.rows.first?.isPriority == true, "independent queue preferences persisted")
         expect(liveFixtureUsage.profiles == [profile] && !profile.isDispatchPriorityEnabled, "dispatch profile source unchanged")
         expect(reloaded.phase == .stopped && reloaded.endpoint == nil, "saved opt-in never auto-starts")
+        let preferenceRoot = DispatchParticipationPaths.supportDirectory()
+        let preferenceURL = preferenceRoot.appendingPathComponent("local-proxy-queue-v1.json")
+        let preferenceBaseline = try Data(contentsOf: preferenceURL)
+        let failureStore = LocalProxyQueueStore(usageStore: liveFixtureUsage)
+        let memoryBeforeFailure = failureStore.preferences.enabledIDs
+        let membersBeforeFailure = failureStore.activeIDs
+        let blockedDestination = URL(fileURLWithPath: preferenceURL.path + ".blocked")
+        try FileManager.default.createDirectory(at: blockedDestination, withIntermediateDirectories: false)
+        LocalProxyFixtureRuntime.failPreferenceRename = true
+        failureStore.setAccountEnabled(id: profile.id, enabled: true)
+        failureStore.flushDisplayRows()
+        LocalProxyFixtureRuntime.failPreferenceRename = false
+        try expect(Data(contentsOf: preferenceURL) == preferenceBaseline, "rename failure preserves previous preference bytes")
+        expect(failureStore.preferences.enabledIDs == memoryBeforeFailure && failureStore.activeIDs == membersBeforeFailure,
+            "failed commit preserves memory and running membership")
+        expect(failureStore.displayRows.first?.isEnabled == false && failureStore.preferencesFailure == .save,
+            "failed commit keeps published membership and persistent save error")
+        failureStore.issue = nil
+        expect(failureStore.preferencesFailure == .save && !failureStore.canToggleAccount(id: profile.id), "runtime issue clearing cannot erase preference failure")
+        var preferenceInfo = stat()
+        expect(lstat(preferenceURL.path, &preferenceInfo) == 0 && preferenceInfo.st_mode & 0o777 == 0o600,
+            "successful preference commits retain mode 0600")
+        try expect(FileManager.default.contentsOfDirectory(atPath: preferenceRoot.path).allSatisfy { !$0.hasPrefix(".camnext-dispatch-") },
+            "success and rename failure leave no temporary preference files")
         let resetTarget = editable.resetCreditTarget(for: profile.id)!
         expect(resetTarget.selectedProfileID == profile.id && resetTarget.hubAccountAlias == "fixture-alias", "queue reset-card entry binds only its current profile and alias")
         let beforeResetPreferences = editable.preferences
@@ -709,6 +733,24 @@ import Foundation
         })
         membershipStore.activeIDs = [memberA.id, memberB.id]
         expect(membershipStore.canToggleAccount(id: memberA.id), "idle live proxy permits existing verified member edits")
+        let liveFailure = LocalProxyQueueStore(usageStore: memberUsage)
+        liveFailure.process = membershipChild
+        liveFailure.phase = .running
+        liveFailure.registeredPool = membershipStore.registeredPool
+        liveFailure.activeIDs = membershipStore.activeIDs
+        liveFailure.setAccountEnabled(id: memberA.id, enabled: true)
+        liveFailure.flushDisplayRows()
+        expect(liveFailure.displayRows.first(where: { $0.id == memberA.id })?.isEnabled == true, "live save failure fixture starts with enabled participant")
+        let livePreferenceBytes = try Data(contentsOf: preferenceURL)
+        let liveIDs = liveFailure.activeIDs
+        LocalProxyFixtureRuntime.failPreferenceRename = true
+        liveFailure.setAccountEnabled(id: memberA.id, enabled: false)
+        liveFailure.flushDisplayRows()
+        LocalProxyFixtureRuntime.failPreferenceRename = false
+        expect(liveFailure.activeIDs == liveIDs && liveFailure.displayRows.first(where: { $0.id == memberA.id })?.isEnabled == true,
+            "real precommit rename failure preserves live membership and display")
+        try expect(Data(contentsOf: preferenceURL) == livePreferenceBytes, "live failed save preserves disk bytes")
+        liveFailure.process = nil
         func memberRequest(_ command: String, id: String, profileID: String? = nil) -> LocalProxyRequest {
             LocalProxyRequest(schemaVersion: 1, runID: run, key: "fixture-secret", command: command,
                 requestID: id, profileID: profileID ?? memberA.id, leaseID: nil)

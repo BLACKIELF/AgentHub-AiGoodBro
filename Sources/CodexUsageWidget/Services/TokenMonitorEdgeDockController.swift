@@ -867,6 +867,7 @@ final class TokenMonitorEdgeDockController: NSObject {
         next.displayID = target
         let changed = next.normalized() != preferences
         preferences = next.normalized()
+        if changed { configurationGate.reset() }
         self.layout = makeLayout(using: screens)
         updateSurfaces()
         if changed { onPreferencesChange?(preferences) }

@@ -2058,6 +2058,15 @@ struct CodexAccountManagerView: View {
         if !showingHome {
             AutomationMaintenanceNotice(features: store.pausedAutomationFeatures, language: language)
         }
+        if !showingHome && localProxy.preferencesFailure != nil {
+            HStack(spacing: 6) {
+                Label(language.text("反代规则读写失败，已暂停新请求", "Proxy preferences unavailable; new requests blocked"), systemImage: "exclamationmark.triangle")
+                    .font(.caption).foregroundStyle(WorkspaceStatusForeground.warning)
+                Button(language.text("查看处理方法", "View recovery steps")) {
+                    LocalProxyQueueWindowController.shared.show(model: localProxy, settings: settings, paletteCatalog: paletteCatalog)
+                }.buttonStyle(.borderless).font(.caption)
+            }
+        }
         workspace
     }
 

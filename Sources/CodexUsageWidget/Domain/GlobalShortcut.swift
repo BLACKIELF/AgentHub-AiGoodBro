@@ -19,6 +19,13 @@ struct GlobalShortcut: Hashable {
         default: return nil
         }
     }
+    static func ensureEdgeDockRegistration(
+        isRegistered: Bool,
+        register: () -> Result<Void, GlobalShortcutRegistrationFailure>
+    ) -> Result<Void, GlobalShortcutRegistrationFailure> {
+        isRegistered ? .success(()) : register()
+    }
+
     static func shouldHideEdgeDock(enabled: Bool, railVisible: Bool) -> Bool { enabled && railVisible }
 
     static let keyCodeStorageKey = "CodexManagerNext.globalShortcut.keyCode"

@@ -54,7 +54,12 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
     @Published private(set) var phase: LocalProxyPhase = .stopped
     @Published private(set) var membershipChangeWaiting = false
     @Published private(set) var endpoint: String?
+    enum PreferencesFailure { case read, save }
+    @Published private(set) var preferencesFailure: PreferencesFailure?
     @Published private(set) var issue: String?
+    var visibleIssue: String? {
+        preferencesFailure != nil && issue == message(.unavailable) ? nil : issue
+    }
     @Published private(set) var isEnabled = false
     @Published private(set) var desktopAvailable = false
     @Published private(set) var creditFallbackEnabled = false
@@ -160,6 +165,7 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
                 }
             } catch {
                 preferencesBlocked = true
+                preferencesFailure = .read
                 issue = message(.unavailable)
             }
         }
@@ -1168,12 +1174,11 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
             let url = directory.appendingPathComponent("local-proxy-queue-v1.json")
             let data = try JSONEncoder().encode(preferences)
             guard data.count <= 65536 else { throw LocalProxyFailure.unavailable }
-            // Atomic replacement cannot follow a destination symlink; permissions stay private.
-            try data.write(to: url, options: [.atomic])
-            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+            try DispatchParticipationSync.writePrivateProxyPreferences(data, at: url)
             return true
         } catch {
             preferencesBlocked = true
+            preferencesFailure = .save
             issue = message(.unavailable)
             return false
         }

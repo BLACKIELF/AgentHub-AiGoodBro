@@ -719,10 +719,17 @@ struct DispatchParticipationSync {
         try replaceAtomically(data, at: snapshotURL, expectation: .matching(original))
     }
 
+    /// Proxy preferences commit only after private temporary-file validation; nothing throws after rename.
+    static func writePrivateProxyPreferences(_ data: Data, at url: URL) throws {
+        guard data.count <= 65536 else { throw DispatchParticipationError.writeFailed }
+        try replaceAtomically(data, at: url, verifyPrivateTemporary: true)
+    }
+
     private static func replaceAtomically(
         _ data: Data,
         at url: URL,
         expectation: ReplacementExpectation = .unchecked,
+        verifyPrivateTemporary: Bool = false,
         checkpointIndex: Int? = nil,
         checkpoint: ((Checkpoint) throws -> Void)? = nil
     ) throws {
@@ -744,6 +751,12 @@ struct DispatchParticipationSync {
             guard try Data(contentsOf: temporary) == data,
                 (try? JSONSerialization.jsonObject(with: data)) != nil
             else { throw DispatchParticipationError.writeFailed }
+            if verifyPrivateTemporary {
+                var info = stat()
+                guard lstat(temporary.path, &info) == 0, info.st_mode & S_IFMT == S_IFREG,
+                    info.st_uid == geteuid(), info.st_mode & 0o777 == 0o600
+                else { throw DispatchParticipationError.writeFailed }
+            }
             switch expectation {
             case .unchecked:
                 let result = temporary.path.withCString { source in

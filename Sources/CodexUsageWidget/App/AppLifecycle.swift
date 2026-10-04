@@ -336,14 +336,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         } else if settings.globalShortcut == nil {
             _ = installGlobalHotKeyHandler()
         }
-        if installGlobalHotKeyHandler() {
-            let status = registerHotKeyReference(.edgeDock, id: 3, reference: &edgeDockHotKeyRef)
-            if status != noErr {
-                settings.edgeDockShortcutError = status == eventHotKeyExistsErr ? "occupied" : "failed"
-            }
-        } else {
-            settings.edgeDockShortcutError = "failed"
-        }
+        settings.edgeDockShortcutRetry = { [weak self] in self?.registerEdgeDockHotKey() }
+        registerEdgeDockHotKey()
         if let argumentIndex = CommandLine.arguments.firstIndex(of: "--switch-profile-id"),
             CommandLine.arguments.indices.contains(argumentIndex + 1)
         {
@@ -617,8 +611,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
                 paletteCatalog: paletteCatalog, paletteID: settings.paletteID,
                 preferredColorScheme: settings.themeMode.preferredColorScheme,
                 onPreferencesChange: { [weak self] next in
-                    guard let self, self.settings.edgeDock != next else { return }
-                    self.settings.edgeDock = next
+                    guard let self else { return }
+                    self.edgeDockInputGate.reset()
+                    if self.settings.edgeDock != next { self.settings.edgeDock = next }
                 },
                 onOpenDashboard: { [weak self] in self?.showMainWindow() },
                 onOpenUsageOverview: { [weak self] in self?.openUsageOverview() },
@@ -675,8 +670,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             paletteCatalog: paletteCatalog, paletteID: settings.paletteID,
             preferredColorScheme: settings.themeMode.preferredColorScheme,
             onPreferencesChange: { [weak self] next in
-                guard let self, self.settings.edgeDock != next else { return }
-                self.settings.edgeDock = next
+                guard let self else { return }
+                self.edgeDockInputGate.reset()
+                if self.settings.edgeDock != next { self.settings.edgeDock = next }
             },
             onOpenDashboard: { [weak self] in self?.showMainWindow() },
             onOpenUsageOverview: { [weak self] in self?.openUsageOverview() },
@@ -1861,7 +1857,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         )
     }
 
+    private func registerEdgeDockHotKey() {
+        let result = GlobalShortcut.ensureEdgeDockRegistration(isRegistered: edgeDockHotKeyRef != nil) {
+            guard installGlobalHotKeyHandler() else { return .failure(.failed) }
+            let status = registerHotKeyReference(.edgeDock, id: 3, reference: &edgeDockHotKeyRef)
+            return status == noErr ? .success(()) : .failure(status == eventHotKeyExistsErr ? .occupied : .failed)
+        }
+        switch result {
+        case .success: settings.edgeDockShortcutError = nil
+        case .failure(let failure): settings.edgeDockShortcutError = failure == .occupied ? "occupied" : "failed"
+        }
+    }
+
     private func unregisterGlobalHotKey() {
+        settings.edgeDockShortcutRetry = nil
         _ = unregisterGlobalHotKeyReference()
         if let edgeDockHotKeyRef { UnregisterEventHotKey(edgeDockHotKeyRef) }
         edgeDockHotKeyRef = nil

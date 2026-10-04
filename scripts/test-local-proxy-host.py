@@ -25,7 +25,7 @@ enum AccountDisplay { static func profileName(_ p:CodexProfile,allProfiles:[Code
 struct CodexExecutionPreference { enum Model:String,CaseIterable { case fixture="fixture-model" } }
 @MainActor final class UsageStore:ObservableObject { @Published var profiles:[CodexProfile]; var isPreview=true; var refreshCount=0; var onRefresh:((Set<String>)->Void)?; init(_ profiles:[CodexProfile]) { self.profiles=profiles }; func refreshLocalProxyQuotas(profileIDs:Set<String>){refreshCount += 1; onRefresh?(profileIDs)}; func creditBalancePresentation(for:CodexProfile)->CreditBalancePresentation { .init() }; func availableResetCredits(for:CodexProfile)->Int? { nil } }
 enum CodexExecutable { static func path()->String? { "/usr/bin/true" }; static func bundledPath()->String? { nil } }
-enum LocalProxyFixtureRuntime { static var allowStopSignals = true; static var afterReserve:(()->Void)?; static var afterRunning:(()->Void)?; static var helper:URL { DispatchParticipationPaths.supportDirectory().appendingPathComponent("fixture-helper") } }
+enum LocalProxyFixtureRuntime { static var allowStopSignals = true; static var failPreferenceRename=false; static var afterReserve:(()->Void)?; static var afterRunning:(()->Void)?; static var helper:URL { DispatchParticipationPaths.supportDirectory().appendingPathComponent("fixture-helper") } }
 struct DispatchParticipationPaths { static func supportDirectory()->URL { URL(fileURLWithPath:ProcessInfo.processInfo.environment["PROXY_FIXTURE_ROOT"]!) }; static let snapshotFileName="fixture.json"; var hubConfig:URL; static func live(snapshot:URL)throws->Self { throw LocalProxyFailure.unavailable } }
 '''
 with tempfile.TemporaryDirectory(prefix='aigoodbro-proxy-host-fixture-') as temporary:
@@ -35,6 +35,13 @@ with tempfile.TemporaryDirectory(prefix='aigoodbro-proxy-host-fixture-') as temp
     bounded='enum DispatchParticipationError:Error { case fileAccess }\nstruct DispatchParticipationSync {\n'+next(x for x in text.splitlines() if 'static let maximumConfigurationBytes =' in x)+'\n'+text[a:b]+'\n}\n'
     profiles=(service/'CodexProfileStore.swift').read_text()
     a=profiles.index('    static func credentialIdentity(fromAuthData');b=profiles.index('    private static func parseDate(',a)
+    writer_start=text.index('    /// Proxy preferences commit')
+    writer_end=text.index('    private static func removeAtomicallyIfMatching(',writer_start)
+    writer=text[writer_start:writer_end]
+    expectation=text[text.index('    private enum ReplacementExpectation'):text.index('    let paths:',text.index('    private enum ReplacementExpectation'))]
+    writer=writer.replace('Darwin.rename(source, destination)', '(LocalProxyFixtureRuntime.failPreferenceRename ? String(cString: destination) + \".blocked\" : String(cString: destination)).withCString { Darwin.rename(source, $0) }')
+    bounded=bounded.replace('case fileAccess', 'case fileAccess, writeFailed, concurrentChange, rollbackFailed')
+    bounded=bounded[:-2]+expectation+'    enum Checkpoint { case beforeAtomicSwap(Int), beforeMismatchRestore(Int), afterMismatchRestore(Int) }\n'+writer+'}\n'
     identity='enum CodexOfficialProfileReader {\n'+profiles[a:b]+'\n}\n'
     presentation=(root/'Sources/CodexUsageWidget/Domain/WorkspacePresentation.swift').read_text()
     presentation=presentation[:presentation.index('/// Presentation only:')]

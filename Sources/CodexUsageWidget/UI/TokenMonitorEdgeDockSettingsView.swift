@@ -122,6 +122,12 @@ struct TokenMonitorEdgeDockSettingsView: View {
                     : language.text("⌘I 注册失败或被占用；仍可使用显示开关。", "⌘I could not register or is occupied; use the Show toggle.")
             )
             .font(.caption).foregroundStyle(.secondary)
+            if settings.edgeDockShortcutError != nil {
+                Button(language.text("重试 ⌘I", "Retry ⌘I")) { settings.edgeDockShortcutRetry?() }
+                    .buttonStyle(.borderless).font(.caption)
+                    .disabled(settings.edgeDockShortcutRetry == nil)
+                    .accessibilityIdentifier("edge-dock-shortcut-retry")
+            }
             Text(
                 language.text(
                     "选择多个账号，额度会分别显示在屏幕边缘。悬停查看详情，拖动顶部调整位置；项目较多时可翻页。",
