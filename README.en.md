@@ -86,15 +86,13 @@ Choose a palette in Settings → Appearance. Each theme supports light and dark 
 
 [View light and dark previews of all nine themes](docs/images/1002v2/README.md#themes). Themes supply color tokens only. WAICY artwork, logos, mascots and fonts are not copied, and the palette does not imply official endorsement.
 
-## Candidate status and acceptance limits
+## Current candidate and historical installation
 
-The current source candidate is **AiGoodBro 9.6.64 (114) · 2.2 / 1003v1**, on [`codex/reset-messages-0926v1`](https://github.com/BLACKIELF/AgentHub-AiGoodBro/tree/codex/reset-messages-0926v1) and under review in [PR #13](https://github.com/BLACKIELF/AgentHub-AiGoodBro/pull/13). It remains a candidate, is not merged into `main`, and has no official download.
+Candidate 124 is ready locally; this run has not published a remote download. Isolated automatic-redemption tests and native previews do not validate real redemption, WeChat phone delivery or installed pointer and global-shortcut interaction.
 
-[![Candidate branch CI](https://github.com/BLACKIELF/AgentHub-AiGoodBro/actions/workflows/ci.yml/badge.svg?branch=codex%2Freset-messages-0926v1)](https://github.com/BLACKIELF/AgentHub-AiGoodBro/pull/13/checks)
+The installed version remains **9.6.64 (114)**. Its installation checks, synthetic native previews, 35 app self-tests, proxy bridge and Go checks belong to the historical 1003v1 record. See the [114 publication record](docs/source-publication-1003v1.md) and [historical PR #13 checks](https://github.com/BLACKIELF/AgentHub-AiGoodBro/pull/13/checks); these are not CI evidence for 124.
 
-Version **9.6.64 (114)** is installed at `/Applications/AiGoodBro.app`; the app version, executable and proxy-helper hashes, signature and architecture were verified. Before replacement, no proxy helper process or occupied proxy lease was present, and the old app quit normally. The 35 selected app self-tests, cross-language proxy regressions, Go race suite and `go vet` passed. No Codex account was switched and no real model request was sent. Home, settings, setup, login, usage-panel and theme previews use synthetic data; they do not show live accounts. Phone delivery, real original-chat conversation, automatic pause/switch/resume, real image generation and the new AppKit titlebar remain unaccepted. See the [current publication record](docs/source-publication-1003v1.md) and [PR #13 checks](https://github.com/BLACKIELF/AgentHub-AiGoodBro/pull/13/checks).
-
-Build the 2.2 candidate:
+The following historical 1003v1 source example does not retrieve the unpublished local 124 candidate:
 
 ```sh
 git clone --branch codex/reset-messages-0926v1 https://github.com/BLACKIELF/AgentHub-AiGoodBro.git AiGoodBro-2.2

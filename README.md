@@ -86,15 +86,13 @@ Codex 独立 CLI 可使用各自的本机登录目录；其他工具按提供商
 
 [查看九套主题的浅色与深色预览](docs/images/1002v2/README.md#themes)。主题仅提供色值；WAICY 主题没有复制品牌图形、工牌、吉祥物或字体，也不表示官方背书。
 
-## 当前候选与验收边界
+## 当前候选与历史安装记录
 
-当前源码候选是 **AiGoodBro 9.6.64 (114) · 2.2 / 1003v1**，位于 [`codex/reset-messages-0926v1`](https://github.com/BLACKIELF/AgentHub-AiGoodBro/tree/codex/reset-messages-0926v1)，由 [PR #13](https://github.com/BLACKIELF/AgentHub-AiGoodBro/pull/13) 评审。它仍是候选，尚未合并到 `main`，没有正式下载包。
+当前 124 候选已在本地准备完成；本轮没有发布远端下载包。隔离自动使用回归与原生预览不代表真实兑换、手机微信送达或安装后的鼠标与全局快捷键验收。
 
-[![候选分支 CI](https://github.com/BLACKIELF/AgentHub-AiGoodBro/actions/workflows/ci.yml/badge.svg?branch=codex%2Freset-messages-0926v1)](https://github.com/BLACKIELF/AgentHub-AiGoodBro/pull/13/checks)
+本机安装版本仍是 **9.6.64 (114)**。它的安装核验、原生模拟图与 35 项应用自测、反代桥接及 Go 检查属于 1003v1 历史记录，见[114 发布记录](docs/source-publication-1003v1.md)和[历史 PR #13 检查页](https://github.com/BLACKIELF/AgentHub-AiGoodBro/pull/13/checks)；这些不是 124 的 CI 证据。
 
-本机已将 **9.6.64 (114)** 覆盖安装到 `/Applications/AiGoodBro.app`；安装后核验了版本、主程序和反代 helper 哈希、签名及架构。安装前确认没有运行中的反代或占用租约，并正常退出了旧版。35 项应用自测、跨语言反代桥接回归、Go race 测试与 vet 已通过；本轮没有切换 Codex 账号，也没有发送真实模型请求。主页、设置、引导、登录、用量浮层和主题图片由原生组件离屏生成，使用模拟数据，不代表真实账号或模型请求。个人微信手机收件、原聊天真实对话、自动暂停后切号续做、真实生图与新标题栏实机效果仍待验收。详细来源和边界见[当前源码发布记录](docs/source-publication-1003v1.md)；远端 CI 以 [PR #13 检查页](https://github.com/BLACKIELF/AgentHub-AiGoodBro/pull/13/checks)为准。
-
-构建 2.2 候选：
+以下命令保留为历史 1003v1 源码获取示例，不会取得尚未发布的本地 124 候选：
 
 ```sh
 git clone --branch codex/reset-messages-0926v1 https://github.com/BLACKIELF/AgentHub-AiGoodBro.git AiGoodBro-2.2

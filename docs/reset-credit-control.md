@@ -79,8 +79,8 @@ that already passed admission still needs its outcome reconciled.
 
 An atomic private auto journal claims each account/card attempt before the existing pending record and
 RPC. The terminal auto result is persisted before the pending record is cleared. Only the matching
-attempt, account, card and expiry can finish a claim. Crashed or uncertain attempts remain blocked and
-visible for manual review; restarting does not issue another key. Expired terminal records may be
+attempt, account, card and expiry can finish a claim. Crashed or uncertain journal entries survive restarts and block replay. When the runner encounters
+them again, the account page reports that manual review is needed; restarting does not issue another key. Expired terminal records may be
 compacted with a rejection watermark, while pending and uncertain records are preserved. Corrupt or
 oversized storage fails closed.
 
@@ -89,7 +89,7 @@ claiming a new redemption. `nothingToReset` waits at least 60 seconds and also r
 fingerprint from the same official review before another attempt. A positively unsent request may be
 reviewed again after cooldown; unknown outcomes are never automatically replayed.
 
-The Codex account page provides the account toggles and persistent outcome status. An existing opt-in
+The Codex account page provides the account toggles and the latest in-session outcome status. An existing opt-in
 can still be switched off when its account becomes temporarily ineligible. Manual redemption retains
 its two confirmations. No real automatic redemption was performed during candidate development;
 isolated tests use synthetic RPC, identity, activity and storage fixtures.
