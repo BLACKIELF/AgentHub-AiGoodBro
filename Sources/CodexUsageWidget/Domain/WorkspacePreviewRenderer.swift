@@ -721,7 +721,7 @@ enum WorkspacePreviewRenderer {
                 ("default-light", ColorScheme.light, PaletteCatalog.defaultPaletteID),
                 ("keycap-dark", ColorScheme.dark, "codexu.liquid-keycap"),
             ] {
-                settings.paletteID = palette
+                guard settings.selectPalette(palette) == .selected else { throw CocoaError(.fileReadCorruptFile) }
                 settings.themeMode = scheme == .dark ? .dark : .light
                 for (name, layout, width, codexOnly) in [
                     ("narrow-card", AccountWorkspaceLayout.cards, CGFloat(820), true),
@@ -734,10 +734,11 @@ enum WorkspacePreviewRenderer {
                         localCLIAccounts: local, localProxy: proxy, previewOpenCodexWorkspace: codexOnly,
                         previewReferenceDate: reference
                     )
-                    .defaultAppStorage(defaults)
-                    .environment(\.workspacePreviewDate, reference)
-                    .environment(\.workspacePreviewOpaqueSurface, true)
-                    let capture = try WorkspaceScreenshotExporter.render(view.screenshotContent, width: width, scheme: scheme)
+                    let content = view.screenshotContent
+                        .defaultAppStorage(defaults)
+                        .environment(\.workspacePreviewDate, reference)
+                        .environment(\.workspacePreviewOpaqueSurface, true)
+                    let capture = try WorkspaceScreenshotExporter.render(content, width: width, scheme: scheme)
                     let filename = "reset-expiries-\(name)-\(theme).png"
                     try capture.png.write(to: directory.appendingPathComponent(filename), options: .atomic)
                     manifest.append(["file": filename, "width": Int(width), "productionUI": name])
