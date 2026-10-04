@@ -257,3 +257,83 @@ with tempfile.TemporaryDirectory(prefix='edge-dock-state-') as temp:
                 assert all('(equal-settings callback)' in line for line in failed), failed
             print(f'PASS negative control {variant}: {expected_failures} intended A restoration failures')
 print('BOUNDARY: frozen verbatim dropRail/configure/syncEdgeDockIfChanged/callbacks/ChangeGate/preference models; synthetic screen/UI/timer scheduling; no native window or real event debounce')
+
+# Real layout calculation and the state prefix of updateSurfaces, before native rendering.
+layout_method = extract(controller, 'private func makeLayout(')
+layout_type = extract(controller, 'private struct Layout {').replace('private struct', 'struct', 1)
+page_model = extract(model, 'struct TokenMonitorEdgeDockPage {')
+idle_model = extract(model, 'enum TokenMonitorEdgeDockIdlePolicy {')
+surface_prefix = controller[controller.index('        guard let layout else { return }', controller.index('private func updateSurfaces()')):controller.index('        let peek = peekPanel', controller.index('private func updateSurfaces()'))]
+pagination = r'''
+import Foundation
+import CoreGraphics
+typealias NSRect = CGRect
+typealias NSPoint = CGPoint
+struct NSDeviceDescriptionKey: Hashable { init(_ value:String) {} }
+final class NSScreen {
+    static var main: NSScreen? { nil }
+    var deviceDescription: [NSDeviceDescriptionKey: NSNumber] { [:] }
+    var visibleFrame = CGRect(x:0,y:0,width:1440,height:1200)
+}
+struct TokenMonitorEdgeDockCell { enum Kind { case stat, provider }; var kind=Kind.provider }
+enum TokenMonitorEdgeDockScreenCatalog {
+ struct Entry { var screen:NSScreen;var identity:TokenMonitorEdgeDockScreenTarget.Identity }
+ static var fixture=Entry(screen:NSScreen(),identity:.init(numericID:1,uuid:nil,isBuiltIn:true))
+ static func connected()->[Entry] {[fixture]}
+}
+enum WidgetLanguage { case zh;func text(_ a:String,_ b:String)->String {b} }
+''' + models + '\n' + 'enum TokenMonitorSource {\n' + safe_id + '\n}\n' + page_model + '\n' + idle_model + '\n' + geometry + r'''
+class Pagination {
+ var preferences=TokenMonitorEdgeDockPreferences(enabled:true,mode:.autoHide)
+ var cells=Array(repeating:TokenMonitorEdgeDockCell(),count:14)
+ var pageIndex=0
+ var layout:Layout?
+ var cardIndex:Int?=13;var cardPinned=true;var railPinned=true
+ var hoveredIndex:Int?=13;var hoverStartedAt:Date?=Date();var outsideStartedAt:Date?=Date()
+''' + layout_type + '\n' + layout_method + '\nfunc updateSurfaces(){\n' + surface_prefix + r'''
+}
+func run()->Bool {
+layout=makeLayout();updateSurfaces()
+guard cardIndex==13 && cardPinned else {print("FAIL pagination initial in-page pinned detail");return false}
+print("PASS pagination initial in-page pinned detail")
+TokenMonitorEdgeDockScreenCatalog.fixture.screen.visibleFrame.size.height=800
+layout=makeLayout();updateSurfaces()
+guard layout?.page.indices == 0..<12, cardIndex == nil, !cardPinned, hoveredIndex == nil, hoverStartedAt == nil, outsideStartedAt == nil, railPinned else {print("FAIL pagination off-page pinned detail after shrink");return false}
+print("PASS pagination off-page clear after shrink preserves rail pin")
+cardIndex=3;cardPinned=true;updateSurfaces()
+guard cardIndex==3 && cardPinned else {print("FAIL pagination in-page pin preservation");return false}
+print("PASS pagination in-page pin preservation")
+cardIndex=13;updateSurfaces() // Same selected ID after configuration moves it off the current page.
+guard cardIndex==nil && !cardPinned else{print("FAIL pagination moved selected detail");return false}
+print("PASS pagination moved selected detail clears")
+railPinned=false;cardIndex=13;cardPinned=true;updateSurfaces()
+guard cardIndex==nil && !cardPinned && !railPinned else{print("FAIL pagination unpinned rail preservation");return false}
+print("PASS pagination unpinned rail preservation")
+let canHide=TokenMonitorEdgeDockIdlePolicy.shouldClearOutside(hasCard:false,railVisible:true,mode:.autoHide,pinned:railPinned,cardPinned:cardPinned)
+updateSurfaces()
+guard canHide && !cardPinned && cardIndex == nil else {print("FAIL pagination no-card refresh and auto-hide");return false}
+print("PASS pagination no-card refresh and auto-hide");return true
+}
+}
+let result=Pagination().run();exit(result ? 0 : 1)
+'''
+with tempfile.TemporaryDirectory(prefix='edge-dock-pagination-') as temp:
+    temp=Path(temp)
+    for variant in ['production', 'without-page-validation']:
+        content=pagination
+        if variant != 'production':
+            assert 'if let cardIndex,' in surface_prefix
+            content=content.replace(surface_prefix, '        guard let layout else { return }\n', 1)
+        source=temp/(variant+'.swift'); binary=temp/variant
+        source.write_text(content)
+        subprocess.run(['xcrun','swiftc','-swift-version','5',str(source),'-o',str(binary)],check=True)
+        result=subprocess.run([str(binary)],capture_output=True,text=True)
+        if variant == 'production':
+            print(result.stdout,end='')
+            if result.returncode: raise RuntimeError('Pagination regression failed')
+        else:
+            assert result.returncode == 1, 'Page negative control must fail assertion, not crash'
+            assert [line for line in result.stdout.splitlines() if line.startswith('FAIL ')] == ['FAIL pagination off-page pinned detail after shrink'], result.stdout
+            assert not result.stderr, result.stderr
+            print('PASS negative control pagination without-page-validation: off-page detail stays pinned')
+print('BOUNDARY pagination: verbatim makeLayout and updateSurfaces pre-render state, production page/idle/geometry; synthetic screen objects, native rendering omitted; selected index moving across pages simulated after configuration')

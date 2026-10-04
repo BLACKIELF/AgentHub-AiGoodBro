@@ -431,6 +431,13 @@ final class TokenMonitorEdgeDockController: NSObject {
 
     private func updateSurfaces() {
         guard let layout else { return }
+        if let cardIndex, !cells.indices.contains(cardIndex) || !layout.page.indices.contains(cardIndex) {
+            self.cardIndex = nil
+            cardPinned = false
+            hoveredIndex = nil
+            hoverStartedAt = nil
+            outsideStartedAt = nil
+        }
         let peek = peekPanel
         let rail = railPanel
         let card = cardPanel
