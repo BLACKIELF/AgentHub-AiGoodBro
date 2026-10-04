@@ -2826,7 +2826,10 @@ struct CodexAccountManagerView: View {
                     hubAccountAlias: store.accountTaskAlias(for: profile),
                     referralAccount: !store.isPreview && linkedProfile == nil ? { try store.referralAccount(for: profile.id) } : nil,
                     resetCreditExpiries: store.resetCreditExpiries(for: profile),
-                    resetCardsExpiring: codexCardExpiring(profile, now: now)
+                    resetCardsExpiring: codexCardExpiring(profile, now: now),
+                    resetCreditsFetchedAt: profile.id == store.selectedMonitorProfileID ? store.snapshot.refreshedAt : profile.lastSnapshot?.fetchedAt,
+                    resetCreditsReadSucceeded: linkedProfile == nil && profile.lastQuotaReadFailureAt == nil
+                        && (profile.id == store.selectedMonitorProfileID ? store.snapshot.quotaReadSucceeded : profile.lastSnapshot?.quotaReadSucceeded == true)
                 ))
         }
         return AnyView(
@@ -2871,6 +2874,9 @@ struct CodexAccountManagerView: View {
                 availableResetCredits: store.availableResetCredits(for: profile),
                 resetCreditExpiries: store.resetCreditExpiries(for: profile),
                 resetCardsExpiring: codexCardExpiring(profile, now: now),
+                resetCreditsFetchedAt: profile.id == store.selectedMonitorProfileID ? store.snapshot.refreshedAt : profile.lastSnapshot?.fetchedAt,
+                resetCreditsReadSucceeded: linkedProfile == nil && profile.lastQuotaReadFailureAt == nil
+                    && (profile.id == store.selectedMonitorProfileID ? store.snapshot.quotaReadSucceeded : profile.lastSnapshot?.quotaReadSucceeded == true),
                 localResetHistoryCount: store.localResetHistoryCount(for: profile),
                 proxyParticipation: localProxy.displayRows.first(where: { $0.id == profile.id }).map(\.isEnabled),
                 proxyPriority: localProxy.displayRows.first(where: { $0.id == profile.id }).map(\.isPriority),
@@ -5716,6 +5722,8 @@ private struct ProfileRow: View {
     let availableResetCredits: Int?
     let resetCreditExpiries: [Date]
     let resetCardsExpiring: Bool
+    var resetCreditsFetchedAt: Date? = nil
+    var resetCreditsReadSucceeded = false
     let localResetHistoryCount: Int
     /// Nil means this account is not currently eligible for the proxy queue.
     /// It stays distinct from an explicit opt-out so the card never presents
@@ -5851,11 +5859,8 @@ private struct ProfileRow: View {
                     }
                 }
             }
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 5) { compactAccountFacts }
-                VStack(alignment: .leading, spacing: 2) { compactAccountFacts }
-            }
-            .font(.system(size: 10)).foregroundStyle(.secondary)
+            HStack(alignment: .top, spacing: 5) { compactAccountFacts }
+                .font(.system(size: 10)).foregroundStyle(.secondary)
             if needsCredentialRelogin || linkedAccountName != nil {
                 Text(language.text("需要登录 · 更多", "Sign-in needed · More"))
                     .font(.system(size: 10)).foregroundStyle(FixedVisualPalette.statusWarningForeground(colorScheme))
@@ -5902,13 +5907,10 @@ private struct ProfileRow: View {
     @ViewBuilder private var compactAccountFacts: some View {
         Text(planBadge.name).fontWeight(.medium).lineLimit(1)
         if linkedAccountName == nil { CreditBalanceView(presentation: creditBalance, compact: true) }
-        Text(
-            availableResetCredits.map { language.text("重置卡 \($0)", "\($0) reset cards") }
-                ?? language.text("重置卡 —", "Reset cards —")
-        )
-        .monospacedDigit().lineLimit(1)
-        .foregroundStyle(resetCardsExpiring ? FixedVisualPalette.statusWarningForeground(colorScheme) : Color.secondary)
-        .help(ResetCardPresentation.orderedExpiries(resetCreditExpiries, now: currentDate).first.map { language.text("到期 ", "Expires ") + language.dateTime($0) } ?? "")
+        ResetCardExpiryFactsView(
+            count: availableResetCredits, expiries: resetCreditExpiries,
+            fetchedAt: resetCreditsFetchedAt, readSucceeded: resetCreditsReadSucceeded,
+            now: currentDate, expiring: resetCardsExpiring)
     }
 
     private var compactIdentity: some View {

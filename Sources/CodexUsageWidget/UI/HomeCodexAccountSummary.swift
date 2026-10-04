@@ -32,6 +32,8 @@ struct HomeCodexAccountSummary: View {
     var referralAccount: (() throws -> CodexReferralAccount)? = nil
     var resetCreditExpiries: [Date] = []
     var resetCardsExpiring = false
+    var resetCreditsFetchedAt: Date? = nil
+    var resetCreditsReadSucceeded = false
 
     @Environment(\.widgetLanguage) private var language
     @Environment(\.colorScheme) private var colorScheme
@@ -117,12 +119,10 @@ struct HomeCodexAccountSummary: View {
             Text("·")
             CreditBalanceView(presentation: creditBalance, compact: true)
             Text("·")
-            Text(
-                resetCardCount.map { language.text("重置卡 \($0)", "\($0) reset cards") }
-                    ?? language.text("重置卡 —", "Reset cards —")
-            )
-            .monospacedDigit().lineLimit(1)
-            .foregroundStyle(resetCardsExpiring ? FixedVisualPalette.statusWarningForeground(colorScheme) : Color.secondary)
+            ResetCardExpiryFactsView(
+                count: resetCardCount, expiries: resetCreditExpiries,
+                fetchedAt: resetCreditsFetchedAt, readSucceeded: resetCreditsReadSucceeded,
+                now: currentDate, expiring: resetCardsExpiring)
             Spacer(minLength: 0)
         }
         .font(.system(size: 10)).foregroundStyle(.secondary)
@@ -681,5 +681,36 @@ private extension View {
             .foregroundStyle(.primary)
             .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 5))
             .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(Color.primary.opacity(0.10), lineWidth: 0.7).allowsHitTesting(false))
+    }
+}
+
+/// Shared facts preserve every reported date without treating missing dates as inferred cards.
+struct ResetCardExpiryFactsView: View {
+    let count: Int?
+    let expiries: [Date]
+    let fetchedAt: Date?
+    let readSucceeded: Bool
+    let now: Date
+    let expiring: Bool
+    @Environment(\.widgetLanguage) private var language
+    @Environment(\.colorScheme) private var colorScheme
+    var body: some View {
+        let disclosure = ResetCardPresentation.expiryDisclosure(
+            count: count, expiries: expiries, fetchedAt: fetchedAt,
+            readSucceeded: readSucceeded, now: now, language: language)
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 5) { facts(disclosure) }
+            VStack(alignment: .leading, spacing: 2) { facts(disclosure) }
+        }
+    }
+    @ViewBuilder private func facts(_ disclosure: ResetCardPresentation.ExpiryDisclosure) -> some View {
+        Text(count.flatMap { $0 >= 0 ? $0 : nil }.map { language.text("重置卡 \($0)", "\($0) reset cards") } ?? language.text("重置卡 —", "Reset cards —"))
+            .monospacedDigit().lineLimit(1)
+            .foregroundStyle(expiring ? FixedVisualPalette.statusWarningForeground(colorScheme) : Color.secondary)
+            .help(disclosure.tooltip)
+        if let text = disclosure.inlineText {
+            Text(text).monospacedDigit().foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true).help(disclosure.tooltip)
+        }
     }
 }
