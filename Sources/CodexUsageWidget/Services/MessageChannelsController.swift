@@ -1075,7 +1075,7 @@ final class MessageChannelsController: ObservableObject {
                         self?.wakePersonalSlotWaiter()
                     }
                 }
-            }, onCancel: { [weak self] in Task { @MainActor in self?.wakePersonalSlotWaiter() } })
+            }, onCancel: { [weak self] in Task { @MainActor [weak self] in self?.wakePersonalSlotWaiter() } })
     }
 
     @MainActor
