@@ -8,7 +8,7 @@ import shutil
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location('runtime_setup', ROOT / 'scripts/next_runtime_setup.py')
@@ -266,6 +266,39 @@ class RuntimeSetupTests(unittest.TestCase):
             setup.bounded_command([sys.executable, '-c', 'print("x"*100000)'])
         with self.assertRaisesRegex(setup.SetupError, 'timeout'):
             setup.bounded_command([sys.executable, '-c', 'import time; time.sleep(2)'], timeout=0.05)
+
+    def test_cleanup_reaps_before_signaling_but_keeps_live_descendants(self):
+        child = Mock(pid=987654321)
+        child.poll.return_value = 0
+        with patch.object(setup, 'process_group_exists', return_value=False), patch.object(setup.os, 'killpg') as kill:
+            setup.cleanup_process_group(child, timeout=0)
+            child.poll.assert_called()
+            kill.assert_not_called()
+        with patch.object(setup, 'process_group_exists', side_effect=[True, True, True, True, False, False, False]), \
+                patch.object(setup.os, 'killpg') as kill:
+            setup.cleanup_process_group(child, timeout=0)
+            self.assertEqual(kill.call_args_list, [unittest.mock.call(child.pid, setup.signal.SIGTERM),
+                                                  unittest.mock.call(child.pid, setup.signal.SIGKILL)])
+
+    def test_cleanup_permission_error_requires_verified_group_absence(self):
+        child = Mock(pid=987654321)
+        child.poll.return_value = 0
+        with patch.object(setup, 'process_group_exists', side_effect=[True, False, False]), \
+                patch.object(setup.os, 'killpg', side_effect=PermissionError(1, 'synthetic denial')):
+            with self.assertRaisesRegex(setup.SetupError, 'command_output_too_large'):
+                try:
+                    raise setup.SetupError('command_output_too_large')
+                finally:
+                    setup.cleanup_process_group(child, timeout=0)
+
+    def test_cleanup_permission_error_with_remaining_group_fails_closed(self):
+        child = Mock(pid=987654321)
+        child.poll.return_value = 0
+        with patch.object(setup, 'process_group_exists', return_value=True), \
+                patch.object(setup.os, 'killpg', side_effect=PermissionError(1, 'synthetic denial')):
+            with self.assertRaisesRegex(setup.SetupError, 'command_cleanup_failed') as result:
+                setup.cleanup_process_group(child, timeout=0)
+            self.assertIsInstance(result.exception.__cause__, PermissionError)
 
     def test_bounded_command_cleans_its_process_group(self):
         for parent_exits in (False, True):
