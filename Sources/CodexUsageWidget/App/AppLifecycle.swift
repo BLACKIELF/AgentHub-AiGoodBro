@@ -285,6 +285,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     private var statusPopoverEventMonitors: [Any] = []
     private var statusItemAppearanceObservation: NSKeyValueObservation?
     private var activeSpaceObserver: NSObjectProtocol?
+    private var edgeDockHotKeyRef: EventHotKeyRef?
     private var globalHotKeyRef: EventHotKeyRef?
     private var globalHotKeyHandler: EventHandlerRef?
     private var cancellables = Set<AnyCancellable>()
@@ -334,6 +335,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             settings.handleInitialGlobalShortcutFailure(defaultRegistered: defaultRegistered)
         } else if settings.globalShortcut == nil {
             _ = installGlobalHotKeyHandler()
+        }
+        if installGlobalHotKeyHandler() {
+            let status = registerHotKeyReference(.edgeDock, id: 3, reference: &edgeDockHotKeyRef)
+            if status != noErr {
+                settings.edgeDockShortcutError = status == eventHotKeyExistsErr ? "occupied" : "failed"
+            }
+        } else {
+            settings.edgeDockShortcutError = "failed"
         }
         if let argumentIndex = CommandLine.arguments.firstIndex(of: "--switch-profile-id"),
             CommandLine.arguments.indices.contains(argumentIndex + 1)
@@ -1745,11 +1754,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
 
         let handlerStatus = InstallEventHandler(
             GetApplicationEventTarget(),
-            { _, _, userData in
-                guard let userData else { return noErr }
+            { _, event, userData in
+                guard let userData, let event else { return OSStatus(eventNotHandledErr) }
+                var hotKey = EventHotKeyID()
+                guard
+                    GetEventParameter(
+                        event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID),
+                        nil, MemoryLayout<EventHotKeyID>.size, nil, &hotKey) == noErr,
+                    let action = GlobalShortcut.action(signature: hotKey.signature, id: hotKey.id)
+                else { return OSStatus(eventNotHandledErr) }
                 let delegate = Unmanaged<AppDelegate>.fromOpaque(userData).takeUnretainedValue()
                 DispatchQueue.main.async {
-                    delegate.toggleMainWindow()
+                    switch action {
+                    case .mainWindow: delegate.toggleMainWindow()
+                    case .edgeDock: delegate.toggleEdgeDockFromShortcut()
+                    }
                 }
                 return noErr
             },
@@ -1766,9 +1785,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         return true
     }
 
+    private func toggleEdgeDockFromShortcut() {
+        if GlobalShortcut.shouldHideEdgeDock(enabled: settings.edgeDock.enabled, railVisible: edgeDockController.isRailVisible) {
+            settings.edgeDock.enabled = false
+            syncEdgeDock()
+        } else {
+            settings.edgeDock.enabled = true
+            syncEdgeDock()
+            edgeDockController.revealFromShortcut()
+        }
+    }
+
     private func replaceGlobalHotKey(
         with shortcut: GlobalShortcut
     ) -> Result<Void, GlobalShortcutRegistrationFailure> {
+        guard !shortcut.matchesRegistration(of: .edgeDock) else { return .failure(.occupied) }
         guard installGlobalHotKeyHandler() else { return .failure(.failed) }
         let replacement: Result<EventHotKeyRef, GlobalShortcutRegistrationFailure> =
             GlobalShortcutRegistrationTransaction.replace(
@@ -1832,6 +1863,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
 
     private func unregisterGlobalHotKey() {
         _ = unregisterGlobalHotKeyReference()
+        if let edgeDockHotKeyRef { UnregisterEventHotKey(edgeDockHotKeyRef) }
+        edgeDockHotKeyRef = nil
         if let globalHotKeyHandler {
             RemoveEventHandler(globalHotKeyHandler)
         }

@@ -2864,6 +2864,9 @@ struct CodexAccountManagerView: View {
                 resetCardsExpiring: codexCardExpiring(profile, now: now),
                 localResetHistoryCount: store.localResetHistoryCount(for: profile),
                 proxyParticipation: localProxy.displayRows.first(where: { $0.id == profile.id }).map(\.isEnabled),
+                proxyPriority: localProxy.displayRows.first(where: { $0.id == profile.id }).map(\.isPriority),
+                canToggleProxy: localProxy.canToggleAccount(id: profile.id),
+                canPrioritizeProxy: localProxy.canReorder && localProxy.displayRows.first(where: { $0.id == profile.id })?.isEnabled == true,
                 chromeProfiles: store.availableChromeProfiles,
                 onMonitor: { store.selectMonitorProfile(profile.id) },
                 onRefresh: { store.refreshProfile(profile.id) },
@@ -2895,6 +2898,10 @@ struct CodexAccountManagerView: View {
                 },
                 onSetProxyParticipation: { enabled in
                     localProxy.setAccountEnabled(id: profile.id, enabled: enabled)
+                    localProxy.flushDisplayRows()
+                },
+                onSetProxyPriority: { priority in
+                    localProxy.setAccountPriority(id: profile.id, priority: priority)
                     localProxy.flushDisplayRows()
                 },
                 onSetProTierMultiplier: { store.setProTierMultiplier($0, for: profile.id) },
@@ -5705,6 +5712,9 @@ private struct ProfileRow: View {
     /// It stays distinct from an explicit opt-out so the card never presents
     /// a false participation state before identity verification.
     let proxyParticipation: Bool?
+    let proxyPriority: Bool?
+    let canToggleProxy: Bool
+    let canPrioritizeProxy: Bool
     let chromeProfiles: [ChromeProfileBinding]
     let onMonitor: () -> Void
     let onRefresh: () -> Void
@@ -5717,6 +5727,7 @@ private struct ProfileRow: View {
     let onSetDispatchPriority: (Bool) -> Void
     let onSetDispatchParticipationWindow: (DispatchParticipationWindow) -> Bool
     let onSetProxyParticipation: ((Bool) -> Void)?
+    let onSetProxyPriority: (Bool) -> Void
     let onSetProTierMultiplier: (Int?) -> Void
     let onSetExecutionPreference: (CodexExecutionPreference, Bool) -> Result<Void, Error>
     let onRename: (String) -> Result<Void, Error>
@@ -5973,6 +5984,14 @@ private struct ProfileRow: View {
                     .disabled(isRefreshingProfile || isWarmingProfile || isLoggingIn || isLaunching)
                 Button(isMonitoring ? language.text("已监控", "Monitoring") : language.text("监控此账号", "Monitor account"), action: onMonitor)
                     .disabled(linkedAccountName != nil || isMonitoring)
+                Toggle(
+                    language.text("调度优先（预留标记）", "Dispatch priority (reserved flag)"),
+                    isOn: Binding(get: { prioritizesDispatch }, set: onSetDispatchPriority)
+                )
+                .help(
+                    language.text(
+                        "保留独立调度设置；当前 Hub 尚未消费此优先标记。反代优先请用卡片底部开关。",
+                        "Preserves the independent dispatch setting; the current Hub does not consume this priority flag. Use the card's bottom toggle for proxy priority."))
                 Divider()
                 Button(
                     linkedAccountName != nil || profile.isSystemProfile
@@ -6009,6 +6028,7 @@ private struct ProfileRow: View {
                     )
                 )
                 .accessibilityLabel(language.text("参与反代", "Use for proxy requests"))
+                .disabled(!canToggleProxy)
             }
             Toggle(
                 language.text("调度", "Auto"),
@@ -6016,9 +6036,13 @@ private struct ProfileRow: View {
             )
             .help(language.text("参与调度；不影响额度刷新和暖号", "Join dispatch; quota refresh and warm-up are independent"))
             .accessibilityLabel(language.text("参与调度", "Dispatch participation"))
-            Toggle(language.text("优先", "First"), isOn: Binding(get: { prioritizesDispatch }, set: onSetDispatchPriority))
-                .foregroundStyle(prioritizesDispatch ? FixedVisualPalette.statusDangerForeground(colorScheme) : Color.secondary)
-                .accessibilityLabel(language.text("优先标记", "Dispatch priority"))
+            if let proxyPriority {
+                Toggle(language.text("优先", "Priority"), isOn: Binding(get: { proxyPriority }, set: onSetProxyPriority))
+                    .foregroundStyle(proxyPriority ? FixedVisualPalette.statusDangerForeground(colorScheme) : Color.secondary)
+                    .disabled(!canPrioritizeProxy)
+                    .help(language.text("与反代队列的优先调用同步；不改变调度设置。", "Shares proxy-queue priority; dispatch settings remain independent."))
+                    .accessibilityLabel(language.text("反代优先调用", "Proxy priority"))
+            }
             Spacer(minLength: 0)
 
         }

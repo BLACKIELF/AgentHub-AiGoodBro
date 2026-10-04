@@ -117,6 +117,12 @@ struct TokenMonitorEdgeDockSettingsView: View {
                 .font(.system(size: 13, weight: .semibold))
                 .accessibilityIdentifier("edge-dock-enabled")
             Text(
+                settings.edgeDockShortcutError == nil
+                    ? language.text("⌘I 唤出或隐藏侧栏；自动隐藏时会展开并临时固定。", "⌘I reveals or hides Edge Dock; auto-hidden docks expand and stay pinned temporarily.")
+                    : language.text("⌘I 注册失败或被占用；仍可使用显示开关。", "⌘I could not register or is occupied; use the Show toggle.")
+            )
+            .font(.caption).foregroundStyle(.secondary)
+            Text(
                 language.text(
                     "选择多个账号，额度会分别显示在屏幕边缘。悬停查看详情，拖动顶部调整位置；项目较多时可翻页。",
                     "Choose multiple accounts to show their limits separately at the screen edge. Hover for details, drag the top to move, and page through longer lists.")

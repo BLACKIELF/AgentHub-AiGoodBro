@@ -18,6 +18,20 @@ enum GlobalShortcutSelfTest {
     static func run() -> Bool {
         _ = NSApplication.shared
         var failures: [String] = []
+        if GlobalShortcut.action(signature: 0x4341_4D4E, id: 3) != .edgeDock
+            || GlobalShortcut.action(signature: 0x4341_4D4E, id: 1) != .mainWindow
+            || GlobalShortcut.action(signature: 0x4341_4D4E, id: 2) != .mainWindow
+            || GlobalShortcut.action(signature: 0x4341_4D4E, id: 4) != nil
+            || GlobalShortcut.action(signature: 0x4341_4D54, id: 3) != nil
+        {
+            failures.append("independent Carbon action routing")
+        }
+        if GlobalShortcut.shouldHideEdgeDock(enabled: true, railVisible: false)
+            || !GlobalShortcut.shouldHideEdgeDock(enabled: true, railVisible: true)
+            || GlobalShortcut.shouldHideEdgeDock(enabled: false, railVisible: true)
+        {
+            failures.append("auto-hidden shortcut reveals before hiding")
+        }
         checkValidationRules(failures: &failures)
         checkPersistence(failures: &failures)
         checkSettingsMutations(failures: &failures)
