@@ -87,10 +87,20 @@ def process_group_exists(group_id):
 def cleanup_process_group(child, timeout=0.5):
     group_id = child.pid
     for process_signal in (signal.SIGTERM, signal.SIGKILL):
+        child.poll()  # Reap an exited leader before signaling its remaining group.
+        if not process_group_exists(group_id):
+            break
         try:
             os.killpg(group_id, process_signal)
         except ProcessLookupError:
             pass
+        except PermissionError as error:
+            # Darwin may deny a zombie-only group. Only a verified absent group
+            # is safe; a reaped leader alone says nothing about descendants.
+            child.poll()
+            if not process_group_exists(group_id):
+                break
+            raise SetupError('command_cleanup_failed') from error
         deadline = time.monotonic() + timeout
         while process_group_exists(group_id) and time.monotonic() < deadline:
             child.poll()
