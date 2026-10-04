@@ -16,8 +16,10 @@ enum WorkspacePreviewRenderer {
         let localCLI: LocalCLIAccountStore
     }
 
-    static func fixtureStore(accountCount: Int, root: URL, language: WidgetLanguage = .zh, includeQuotaEdgeCases: Bool = false, includeExpiryEdgeCases: Bool = false, includeResetExpiryDisclosureFixtures: Bool = false, referenceDate: Date? = nil) -> UsageStore
-    {
+    static func fixtureStore(
+        accountCount: Int, root: URL, language: WidgetLanguage = .zh, includeQuotaEdgeCases: Bool = false, includeExpiryEdgeCases: Bool = false,
+        includeResetExpiryDisclosureFixtures: Bool = false, referenceDate: Date? = nil
+    ) -> UsageStore {
         let now = referenceDate ?? Date()
         let fiveHour = RateWindow(usedPercent: 18, windowDurationMins: 300, resetsAt: now.addingTimeInterval(10_800))
         let sevenDay = RateWindow(usedPercent: 37, windowDurationMins: 10_080, resetsAt: now.addingTimeInterval(259_200))
@@ -56,8 +58,8 @@ enum WorkspacePreviewRenderer {
                                 ? [now.addingTimeInterval(86_400), now.addingTimeInterval(3_600), now.addingTimeInterval(3_600)]
                                 : [now.addingTimeInterval(86_400), now.addingTimeInterval(-3_600)])
                         : includeExpiryEdgeCases
-                        ? [now.addingTimeInterval(864_000), now.addingTimeInterval(index.isMultiple(of: 2) ? 129_600 : 259_200)]
-                        : [now.addingTimeInterval(864_000)],
+                            ? [now.addingTimeInterval(864_000), now.addingTimeInterval(index.isMultiple(of: 2) ? 129_600 : 259_200)]
+                            : [now.addingTimeInterval(864_000)],
                     fetchedAt: now, appServerVersion: nil
                 ),
                 resetCreditHistory: index == 0
@@ -709,30 +711,32 @@ enum WorkspacePreviewRenderer {
                 initialized: true, customized: true,
                 orderedVisibleProviderIDs: [AgentNavCatalog.codexID] + LocalCLIKind.allCases.map(\.rawValue))
             let reference = ISO8601DateFormatter().date(from: "2026-12-31T15:00:00Z")!
-            let store = fixtureStore(accountCount: 3, root: root, language: language,
+            let store = fixtureStore(
+                accountCount: 3, root: root, language: language,
                 includeResetExpiryDisclosureFixtures: true, referenceDate: reference)
             let local = LocalCLIAccountStore.preview(profiles: [], quotas: [:], root: root)
             let proxy = LocalProxyQueueStore(usageStore: store, previewPreferences: .init())
             var manifest: [[String: Any]] = []
             for (theme, scheme, palette) in [
                 ("default-light", ColorScheme.light, PaletteCatalog.defaultPaletteID),
-                ("keycap-dark", ColorScheme.dark, "codexu.liquid-keycap")
+                ("keycap-dark", ColorScheme.dark, "codexu.liquid-keycap"),
             ] {
                 settings.paletteID = palette
                 settings.themeMode = scheme == .dark ? .dark : .light
                 for (name, layout, width, codexOnly) in [
                     ("narrow-card", AccountWorkspaceLayout.cards, CGFloat(820), true),
                     ("wide-list", AccountWorkspaceLayout.rows, CGFloat(1280), true),
-                    ("home", AccountWorkspaceLayout.cards, CGFloat(980), false)
+                    ("home", AccountWorkspaceLayout.cards, CGFloat(980), false),
                 ] {
                     settings.accountWorkspaceLayout = layout
                     let view = CodexAccountManagerView(
                         store: store, settings: settings, paletteCatalog: catalog,
                         localCLIAccounts: local, localProxy: proxy, previewOpenCodexWorkspace: codexOnly,
-                        previewReferenceDate: reference)
-                        .defaultAppStorage(defaults)
-                        .environment(\.workspacePreviewDate, reference)
-                        .environment(\.workspacePreviewOpaqueSurface, true)
+                        previewReferenceDate: reference
+                    )
+                    .defaultAppStorage(defaults)
+                    .environment(\.workspacePreviewDate, reference)
+                    .environment(\.workspacePreviewOpaqueSurface, true)
                     let capture = try WorkspaceScreenshotExporter.render(view.screenshotContent, width: width, scheme: scheme)
                     let filename = "reset-expiries-\(name)-\(theme).png"
                     try capture.png.write(to: directory.appendingPathComponent(filename), options: .atomic)
@@ -745,13 +749,16 @@ enum WorkspacePreviewRenderer {
                     count: snapshot.availableResetCredits, expiries: snapshot.resetCreditExpiries ?? [],
                     fetchedAt: snapshot.fetchedAt, readSucceeded: snapshot.quotaReadSucceeded == true,
                     now: reference, language: language)
-                return ["fixture": profile.id, "count": snapshot.availableResetCredits ?? -1,
-                    "inline": disclosure.inlineText ?? "", "hover": disclosure.tooltip]
+                return [
+                    "fixture": profile.id, "count": snapshot.availableResetCredits ?? -1,
+                    "inline": disclosure.inlineText ?? "", "hover": disclosure.tooltip,
+                ]
             }
             let receipt: [String: Any] = [
                 "syntheticOnly": true, "referenceUTC": "2026-12-31T15:00:00Z",
                 "images": manifest, "expectedPresentation": expected,
-                "scope": "Production card/list/home UI; hover helper output recorded, no real pointer-hover interaction"]
+                "scope": "Production card/list/home UI; hover helper output recorded, no real pointer-hover interaction",
+            ]
             try JSONSerialization.data(withJSONObject: receipt, options: [.prettyPrinted, .sortedKeys])
                 .write(to: directory.appendingPathComponent("reset-expiries-manifest.json"), options: .atomic)
             print("Reset-card expiry previews rendered: six production UI images; isolated synthetic fixtures and defaults; helper hover values in manifest")
