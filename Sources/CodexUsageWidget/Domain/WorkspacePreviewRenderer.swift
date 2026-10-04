@@ -60,6 +60,8 @@ enum WorkspacePreviewRenderer {
                         : includeExpiryEdgeCases
                             ? [now.addingTimeInterval(864_000), now.addingTimeInterval(index.isMultiple(of: 2) ? 129_600 : 259_200)]
                             : [now.addingTimeInterval(864_000)],
+                    creditBalance: includeResetExpiryDisclosureFixtures ? "123.45" : nil,
+                    creditBalanceUnlimited: includeResetExpiryDisclosureFixtures ? false : nil,
                     fetchedAt: now, appServerVersion: nil
                 ),
                 resetCreditHistory: index == 0
@@ -752,13 +754,15 @@ enum WorkspacePreviewRenderer {
                     now: reference, language: language)
                 return [
                     "fixture": profile.id, "count": snapshot.availableResetCredits ?? -1,
+                    "plan": snapshot.planType ?? "", "points": snapshot.creditBalance ?? "",
                     "inline": disclosure.inlineText ?? "", "hover": disclosure.tooltip,
                 ]
             }
             let receipt: [String: Any] = [
                 "syntheticOnly": true, "referenceUTC": "2026-12-31T15:00:00Z",
                 "images": manifest, "expectedPresentation": expected,
-                "scope": "Production card/list/home UI; hover helper output recorded, no real pointer-hover interaction",
+                "scope":
+                    "Production card/list/home UI; single earliest future expiry beside count without an extra fact row; hover helper output recorded, no real pointer-hover interaction",
             ]
             try JSONSerialization.data(withJSONObject: receipt, options: [.prettyPrinted, .sortedKeys])
                 .write(to: directory.appendingPathComponent("reset-expiries-manifest.json"), options: .atomic)

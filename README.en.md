@@ -6,7 +6,9 @@ AiGoodBro is a macOS AI workspace for personal use. It brings together quotas fo
 
 [中文](README.md) | **English**
 
-The latest source candidate is **2.2 · 1003v1**, with internal update version 9.6.64 (114). It adds batch invitations and official history, per-account proxy rules editable while running, retained snapshots and refresh intervals, and a USD/CNY overview sized to its numbers. It also updates fullscreen shortcuts, CLI sign-in and quota readers, and desktop-switch confirmation. Version 114 is installed locally; this update has no official installer. See the [validation and scope](docs/source-publication-1003v1.md) and [new previews](docs/images/1002v4/README.md).
+The latest source candidate is **2.2 · 1005v2**, with internal update version 9.6.74 (124). It adds optional reset-card redemption before expiry, one-line expiry dates with complete hover details, compact proxy rules, and a choice of ring or fish quota displays in Edge Dock. Version 114 still runs locally; this candidate is not installed or published as an official installer. See the [usage guide](docs/usage-guide.md) and [changelog](CHANGELOG.md).
+
+**Help avoid forgotten reset cards expiring unused.** Opt in for each account to let the app attempt redemption near expiry, by default 30 minutes beforehand with an adjustable lead time. This is off by default and requires the app to remain running. Only verified, idle independent managed accounts are eligible; the current desktop identity is excluded. Uncertain outcomes pause for review instead of being retried automatically. See the [reset-card behavior and limits](docs/reset-credit-control.md).
 
 The images below retain their 1002v2 provenance. The [full gallery](docs/images/1002v2/README.md) covers home, accounts, proxy, settings, setup, usage panels and all nine themes. Historical real captures retain their version labels.
 

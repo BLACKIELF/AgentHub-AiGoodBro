@@ -698,19 +698,16 @@ struct ResetCardExpiryFactsView: View {
         let disclosure = ResetCardPresentation.expiryDisclosure(
             count: count, expiries: expiries, fetchedAt: fetchedAt,
             readSucceeded: readSucceeded, now: now, language: language)
-        ViewThatFits(in: .horizontal) {
-            HStack(spacing: 5) { facts(disclosure) }
-            VStack(alignment: .leading, spacing: 2) { facts(disclosure) }
-        }
+        HStack(spacing: 5) { facts(disclosure) }
     }
     @ViewBuilder private func facts(_ disclosure: ResetCardPresentation.ExpiryDisclosure) -> some View {
         Text(count.flatMap { $0 >= 0 ? $0 : nil }.map { language.text("重置卡 \($0)", "\($0) reset cards") } ?? language.text("重置卡 —", "Reset cards —"))
-            .monospacedDigit().lineLimit(1)
+            .monospacedDigit().fixedSize(horizontal: true, vertical: false)
             .foregroundStyle(expiring ? FixedVisualPalette.statusWarningForeground(colorScheme) : Color.secondary)
             .help(disclosure.tooltip)
         if let text = disclosure.inlineText {
-            Text(text).monospacedDigit().foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true).help(disclosure.tooltip)
+            Text(text).monospacedDigit().foregroundStyle(.secondary).lineLimit(1)
+                .truncationMode(.tail).help(disclosure.tooltip)
         }
     }
 }

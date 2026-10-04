@@ -12,6 +12,7 @@ struct CodexResetCreditReview: Equatable {
     let accountRemark: String
     let card: CodexResetCreditCard
     let observedAt: Date
+    var quotaFingerprint: String? = nil
 }
 
 enum CodexResetCreditConsumeOutcome: String, Equatable {

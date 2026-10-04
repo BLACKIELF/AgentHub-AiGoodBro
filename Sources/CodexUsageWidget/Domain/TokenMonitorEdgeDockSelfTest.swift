@@ -15,6 +15,12 @@ enum TokenMonitorEdgeDockSelfTest {
             "edge dock defaults match opt-in right-side auto-hide behavior"
         )
         var explicit = defaults
+        expect(defaults.quotaStyle == .ring, "existing users retain the ring style")
+        let oldStyle = TokenMonitorEdgeDockPreferences.load(Data(#"{"enabled":true,"quotaStyle":"future-style"}"#.utf8))
+        expect(oldStyle.enabled && oldStyle.quotaStyle == .ring, "unknown quota style preserves other settings and falls back to rings")
+        var fishStyle = defaults
+        fishStyle.quotaStyle = .fish
+        expect((try? JSONEncoder().encode(fishStyle)).map { TokenMonitorEdgeDockPreferences.load($0).quotaStyle } == .fish, "fish style survives persistence")
         explicit.items = []
         let restored = (try? JSONEncoder().encode(explicit)).map { TokenMonitorEdgeDockPreferences.load($0) }
         expect(restored?.items == [], "explicitly empty items survive persistence")

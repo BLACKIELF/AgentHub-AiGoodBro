@@ -134,6 +134,7 @@ final class TokenMonitorEdgeDockController: NSObject {
         let preferredColorScheme: ColorScheme?
         let compact: Bool
         let warnColors: Bool
+        let quotaStyle: TokenMonitorEdgeDockPreferences.QuotaStyle
         let focusedIndex: Int?
         let startIndex: Int
         let pageIndex: Int
@@ -153,6 +154,7 @@ final class TokenMonitorEdgeDockController: NSObject {
         let canPin: Bool
         let isRefreshing: Bool
         let snapshotDescription: String
+        let quotaStyle: TokenMonitorEdgeDockPreferences.QuotaStyle
     }
 
     private struct Layout {
@@ -475,6 +477,7 @@ final class TokenMonitorEdgeDockController: NSObject {
                 cells: Array(cells[layout.page.indices]), side: preferences.side, language: language, glass: glass,
                 paletteID: paletteID, preferredColorScheme: preferredColorScheme,
                 compact: layout.compact, warnColors: preferences.warnColors,
+                quotaStyle: preferences.quotaStyle,
                 focusedIndex: cardIndex.map { $0 - layout.page.indices.lowerBound },
                 startIndex: layout.page.indices.lowerBound,
                 pageIndex: layout.page.index, pageCount: layout.page.count, isPinned: railPinned
@@ -485,6 +488,7 @@ final class TokenMonitorEdgeDockController: NSObject {
                         cells: content.cells, side: content.side, language: content.language, glass: content.glass,
                         compact: content.compact, warnColors: content.warnColors,
                         focusedIndex: content.focusedIndex, pageIndex: content.pageIndex, pageCount: content.pageCount,
+                        quotaStyle: content.quotaStyle,
                         isPinned: content.isPinned, onPin: { [weak self] in self?.toggleRailPinOrHide() },
                         onPage: { [weak self] direction in self?.changePage(direction) },
                         onSelect: { [weak self] index in self?.activateCell(at: index + content.startIndex) },
@@ -514,7 +518,7 @@ final class TokenMonitorEdgeDockController: NSObject {
                 paletteID: paletteID, preferredColorScheme: preferredColorScheme,
                 tailY: placement.tailY, isPinned: cardPinned,
                 canPin: true, isRefreshing: refreshingCells.contains(cells[index].id),
-                snapshotDescription: cells[index].snapshotDescription(language)
+                snapshotDescription: cells[index].snapshotDescription(language), quotaStyle: preferences.quotaStyle
             )
             if cardHost == nil || lastCardContent != content {
                 let view = themed(
@@ -526,6 +530,7 @@ final class TokenMonitorEdgeDockController: NSObject {
                         onOpenProxy: { [weak self] in self?.openProxySettings() },
                         snapshotDescription: content.snapshotDescription,
                         isRefreshing: content.isRefreshing,
+                        quotaStyle: content.quotaStyle,
                         onRefresh: onRefresh == nil ? nil : { [weak self] in self?.refresh(content.cell) },
                         onContentHeightChange: { [weak self] height in
                             self?.resizeCardForContent(height, cellID: content.cell.id)

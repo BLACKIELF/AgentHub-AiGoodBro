@@ -235,6 +235,10 @@ enum TokenMonitorNativePreviewRenderer {
         }
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            if CommandLine.arguments.contains("--preview-quota-fish-only") {
+                try renderQuotaFish(to: directory)
+                return true
+            }
             try renderProxyActivity(to: directory)
             try renderQuotaDock(to: directory)
             for scheme in [ColorScheme.light, .dark] {
@@ -464,6 +468,50 @@ enum TokenMonitorNativePreviewRenderer {
         } catch {
             print("Token Monitor native preview render failed: \(error.localizedDescription)")
             return false
+        }
+    }
+
+    private static func renderQuotaFish(to directory: URL) throws {
+        let now = referenceDate
+        let account = TokenMonitorFloatingBubbleAccount(
+            providerID: "codex", providerName: "Codex", accountID: "preview-fish",
+            accountName: "01 · Codex",
+            metrics: [
+                .init(id: "five-hour", name: "5 小时额度", sourceID: "fish:five-hour", fetchedAt: now, value: .percentRemaining(76), resetLabel: "10/05 14:30"),
+                .init(id: "seven-day", name: "7 天额度", sourceID: "fish:seven-day", fetchedAt: now, value: .percentRemaining(23), resetLabel: "10/10 14:30"),
+            ])
+        let preferences = TokenMonitorEdgeDockPreferences(enabled: true, mode: .always, items: [.account("codex", account.accountID)], quotaStyle: .fish)
+        guard
+            let cell = TokenMonitorEdgeDockProjection.make(
+                preferences: preferences, quotaSources: [account], usage: .init(response: nil), language: .zh, now: now
+            ).first
+        else { throw NSError(domain: "QuotaFishPreview", code: 1) }
+        for scheme in [ColorScheme.light, .dark] {
+            let view = HStack(spacing: 10) {
+                TokenMonitorEdgeDockCardView(
+                    cell: cell, side: .right, language: .zh, tailY: 120,
+                    isPinned: true, canPin: true, onPin: {}, onOpenDashboard: {}, quotaStyle: .fish
+                )
+                .frame(width: 292, height: 390)
+                TokenMonitorEdgeDockRailView(
+                    cells: [cell], side: .right, language: .zh, compact: false, warnColors: false,
+                    focusedIndex: 0, quotaStyle: .fish, onSelect: { _ in }, onDrag: { _ in }, onDrop: { _ in }
+                )
+                .frame(width: 64, height: 150)
+            }
+            .padding(16).background(Color(nsColor: .windowBackgroundColor))
+            try WorkspacePreviewRenderer.renderView(
+                view, size: CGSize(width: 398, height: 422), scheme: scheme,
+                to: directory.appendingPathComponent("quota-fish-\(scheme == .dark ? "dark" : "light").png"))
+            let values = HStack(spacing: 18) {
+                ForEach(Array([Double?.none, 0, 1, 67, 100].enumerated()), id: \.offset) { entry in
+                    QuotaFishView(percentRemaining: entry.element, tint: .teal, language: .zh).frame(width: 85)
+                }
+            }
+            .padding(16).background(Color(nsColor: .windowBackgroundColor))
+            try WorkspacePreviewRenderer.renderView(
+                values, size: CGSize(width: 529, height: 84), scheme: scheme,
+                to: directory.appendingPathComponent("quota-fish-values-\(scheme == .dark ? "dark" : "light").png"))
         }
     }
 

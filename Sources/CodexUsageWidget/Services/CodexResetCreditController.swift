@@ -132,8 +132,7 @@ final class CodexResetCreditController: ObservableObject {
         step = .consumption(review)
     }
 
-    /// This is the only controller edge that can reach the reader's consume call.
-    /// It is reachable only from `ConfirmationStep.consumption` (the second dialog).
+    /// The manual consume path requires `ConfirmationStep.consumption` (the second dialog).
     func confirmConsumption(
         profile: CodexProfile,
         selectedProfileID: String?,
@@ -234,6 +233,144 @@ final class CodexResetCreditController: ObservableObject {
                 }
             }
         }
+    }
+
+    /// Separate explicit opt-in edge; manual confirmation states are never synthesized.
+    func runAutomatic(
+        profile: CodexProfile, accountID: String, hubAccountAlias: String,
+        lead: TimeInterval, quotaFingerprint: String, admission: CodexResetCreditAutoAdmission,
+        autoStore: CodexResetCreditAutoStateStore = .live,
+        reviewReader: ((CodexProfile, String) async -> Result<CodexResetCreditReview, CodexResetCreditFailure>)? = nil,
+        consumeReader: ((CodexProfile, CodexResetCreditReview, String, CodexResetCreditAutoAdmission) async -> Result<CodexResetCreditConsumeOutcome, CodexResetCreditFailure>)? =
+            nil,
+        hubAvailability: ((String, String) async -> Bool)? = nil,
+        onStatus: ((String) -> Void)? = nil,
+        onConfirmedResult: @escaping () -> Void
+    ) async {
+        guard !isWorking, step == .idle, Self.activeProfileID == nil, !admission.isCancelled,
+            profile.lastSnapshot?.accountID == accountID, profile.lastQuotaReadFailureAt == nil,
+            profile.lastSnapshot?.quotaReadSucceeded == true, !hubAccountAlias.isEmpty
+        else { return }
+        do {
+            guard try pendingStore.pendingAttempt() == nil else {
+                onStatus?("自动使用已暂停：存在待核对的重置卡请求。")
+                return
+            }
+        } catch {
+            onStatus?("自动使用已暂停：无法读取重置卡记录。")
+            return
+        }
+        Self.activeProfileID = profile.id
+        ownedProfileID = profile.id
+        isWorking = true
+        defer {
+            isWorking = false
+            isConsuming = false
+            releaseOwnership()
+        }
+        let context = RuntimeLoadContext.live(codexHomeDirectory: profile.codexHomeURL)
+        let remark = Self.safeRemark(for: profile)
+        let reviewed: Result<CodexResetCreditReview, CodexResetCreditFailure>
+        if let reviewReader {
+            reviewed = await reviewReader(profile, accountID)
+        } else {
+            reviewed = await Task.detached(priority: .utility) {
+                CodexUsageReader().readResetCreditReview(
+                    context: context, profile: profile,
+                    expectedAccountID: accountID, accountRemark: remark)
+            }.value
+        }
+        guard !admission.isCancelled, case .success(let review) = reviewed,
+            let expiry = review.card.expiresAt, expiry > Date(), expiry.timeIntervalSinceNow <= lead,
+            challengeIsFresh(review), let verifiedFingerprint = review.quotaFingerprint
+        else { return }
+        let lease: String
+        do {
+            if try autoStore.requiresReconciliation(accountID: accountID) {
+                onStatus?("自动使用已暂停：存在未完成或不确定记录，请人工核对。")
+                return
+            }
+            guard
+                try autoStore.mayAttempt(
+                    accountID: accountID, cardID: review.card.creditID,
+                    fingerprint: verifiedFingerprint, now: Date())
+            else { return }
+            lease = try activityStore.reserveMaintenance(account: profile.recordedAccountKey, alias: hubAccountAlias)
+        } catch {
+            onStatus?("自动使用暂未执行：记录不可用或账号正在使用。")
+            return
+        }
+        var succeeded = false
+        defer { try? activityStore.finishMaintenance(lease, succeeded: succeeded) }
+        let idle: Bool
+        if let hubAvailability {
+            idle = await hubAvailability(hubAccountAlias, lease)
+        } else {
+            idle = await HubConsoleModel.warmUpAvailability(for: hubAccountAlias, excludingLocalLease: lease) == .idle
+        }
+        guard idle,
+            !admission.isCancelled
+        else { return }
+        var state = CodexResetCreditAutoStateStore.Entry(
+            accountHash: DispatchActivityStore.hash(accountID), cardHash: DispatchActivityStore.hash(review.card.creditID),
+            phase: .prepared, outcome: nil, nextRetry: nil, quotaFingerprint: verifiedFingerprint)
+        state.expiresAt = expiry
+        let pending: ResetCreditPendingAttempt
+        var autoClaimed = false
+        do {
+            guard try pendingStore.pendingAttempt() == nil else { return }
+            guard try autoStore.claim(state) else {
+                onStatus?("自动使用暂停或冷却中；已有记录需要核对或额度尚未变化。")
+                return
+            }
+            autoClaimed = true
+            let created = try pendingStore.loadOrCreate(for: review)
+            guard !created.1 else { throw CodexResetCreditFailure.pendingAttemptRequiresReconciliation }
+            pending = created.0
+        } catch {
+            if autoClaimed {
+                state.phase = .deferred
+                state.outcome = "notSent"
+                state.nextRetry = Date().addingTimeInterval(60)
+                try? autoStore.record(state)  // Never clear a pending request created by another process.
+            }
+            onStatus?("自动使用尚未发送：请求记录冲突或无法保存，请人工核对。")
+            return
+        }
+        isConsuming = true
+        let result: Result<CodexResetCreditConsumeOutcome, CodexResetCreditFailure>
+        if let consumeReader {
+            result = await consumeReader(profile, review, pending.idempotencyKey, admission)
+        } else {
+            result = await Task.detached(priority: .utility) {
+                CodexUsageReader().consumeResetCredit(
+                    context: context, profile: profile, review: review,
+                    idempotencyKey: pending.idempotencyKey, admission: admission)
+            }.value
+        }
+        switch result {
+        case .success(let outcome):
+            state.outcome = outcome.rawValue
+            state.phase = outcome == .nothingToReset ? .deferred : .completed
+            state.nextRetry = outcome == .nothingToReset ? Date().addingTimeInterval(60) : nil
+            succeeded = true
+        case .failure(let failure):
+            state.phase = failure == .outcomeUnknown ? .uncertain : .deferred
+            state.outcome = failure == .outcomeUnknown ? "unknown" : "notSent"
+            state.nextRetry = failure == .outcomeUnknown ? nil : Date().addingTimeInterval(60)
+        }
+        do {
+            try autoStore.record(state)  // Terminal/deferred state precedes clearing the shared pending attempt.
+            if state.phase != .uncertain { try pendingStore.clear(expected: pending) }
+        } catch {
+            onStatus?("自动使用结果未能保存，请人工核对，勿重复使用。")
+            return
+        }
+        switch result {
+        case .success(let outcome): onStatus?(Self.message(for: outcome))
+        case .failure(let failure): onStatus?(failure == .outcomeUnknown ? "自动使用结果不确定，已暂停；请人工核对。" : "自动使用尚未发送；已延后检查。")
+        }
+        if case .success = result { onConfirmedResult() }
     }
 
     func cancel() {

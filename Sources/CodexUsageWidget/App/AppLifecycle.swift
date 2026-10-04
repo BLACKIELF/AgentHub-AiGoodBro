@@ -1301,6 +1301,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     }
 
     private func observeSettings() {
+        // Bind before store.start(), even when the accounts page is never opened.
+        // Keep revocation synchronous with the setting change and RPC admission.
+        settings.$resetCreditAutoPreferences
+            .removeDuplicates()
+            .sink { [weak self] preferences in
+                self?.store.configureResetCreditAuto(preferences)
+            }
+            .store(in: &cancellables)
+
         settings.$keepMainWindowOnTop
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in

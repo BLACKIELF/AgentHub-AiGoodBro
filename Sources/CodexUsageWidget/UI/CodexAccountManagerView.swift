@@ -2067,6 +2067,42 @@ struct CodexAccountManagerView: View {
                 }.buttonStyle(.borderless).font(.caption)
             }
         }
+        if !showingHome {
+            DisclosureGroup(language.text("重置卡到期自动使用", "Use reset cards before expiry")) {
+                VStack(alignment: .leading, spacing: 6) {
+                    if let status = store.resetCreditAutoStatus { Text(status).font(.caption).foregroundStyle(.secondary) }
+                    Stepper(
+                        language.text("提前 \(settings.resetCreditAutoPreferences.leadMinutes) 分钟", "\(settings.resetCreditAutoPreferences.leadMinutes) minutes before expiry"),
+                        value: $settings.resetCreditAutoPreferences.leadMinutes, in: 1...1440)
+                    Text(
+                        language.text(
+                            "默认关闭，应用须保持运行；仅空闲且身份核验通过时尝试，减少忘记操作造成的过期浪费。结果不确定时暂停并提示核对。",
+                            "Off by default; keep the app running. Attempts to use expiring cards only when idle and identity is verified. Uncertain results pause for review.")
+                    )
+                    .font(.caption).foregroundStyle(.secondary)
+                    ForEach(store.profiles) { profile in
+                        if let account = profile.lastSnapshot?.accountID {
+                            Toggle(
+                                AccountDisplay.numberedName(profile, allProfiles: store.profiles),
+                                isOn: Binding(
+                                    get: { settings.resetCreditAutoPreferences.permits(profileID: profile.id, accountID: account) },
+                                    set: { enabled in
+                                        settings.resetCreditAutoPreferences.authorizedAccounts[profile.id] = enabled ? DispatchActivityStore.hash(account) : nil
+                                    })
+                            )
+                            .disabled(
+                                store.isPreview
+                                    || (!settings.resetCreditAutoPreferences.permits(profileID: profile.id, accountID: account)
+                                        && (profile.lastQuotaReadFailureAt != nil || profile.lastSnapshot?.quotaReadSucceeded != true
+                                            || profile.isSystemProfile || (store.profiles.first(where: \.isSystemProfile)?.lastSnapshot?.accountID ?? "").isEmpty
+                                            || account == store.profiles.first(where: \.isSystemProfile)?.lastSnapshot?.accountID))
+                            )
+                            .help(language.text("当前桌面身份及其镜像不能自动使用；请手动确认。", "The current Desktop identity and its mirrors require manual confirmation."))
+                        }
+                    }
+                }
+            }.font(.caption)
+        }
         workspace
     }
 
@@ -2775,7 +2811,7 @@ struct CodexAccountManagerView: View {
         TimelineView(.periodic(from: .now, by: 60)) { timeline in
             profilesLayout {
                 ForEach(Array(directReorder.preview(filteredCodexProfiles, id: { $0.id }).enumerated()), id: \.element.id) { index, profile in
-                    codexAccountRow(profile, index: index, now: timeline.date)
+                    codexAccountRow(profile, index: index, now: presentationPreviewDate ?? timeline.date)
                 }
             }
         }

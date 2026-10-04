@@ -73,7 +73,7 @@ enum ResetCardPresentation {
         }
         if dates.isEmpty { lines.append(language.text("未提供到期时间", "No expiry reported")) }
         formatter.dateFormat = "MM-dd HH:mm"
-        let upcoming = dates.filter { $0 > now }.prefix(ResetCreditDisclosure.inlineDetailLimit)
+        let upcoming = dates.filter { $0 > now }.prefix(1)
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 8 * 3600)!
         let text = upcoming.map { date in
@@ -86,7 +86,7 @@ enum ResetCardPresentation {
             !readSucceeded || !isFresh(fetchedAt, now: now) || count == nil || (count ?? 0) < dates.count
             ? language.text("记录 ", "Recorded ") : ""
         return ExpiryDisclosure(
-            inlineText: text.isEmpty ? nil : prefix + text + language.text(" 北京时间", " UTC+8"),
+            inlineText: text.isEmpty ? nil : (prefix.isEmpty ? language.text("到期 ", "Expires ") : prefix) + text,
             tooltip: lines.joined(separator: "\n"))
     }
 

@@ -226,6 +226,7 @@ struct TokenMonitorEdgeDockRailView: View {
     let focusedIndex: Int?
     var pageIndex = 0
     var pageCount = 1
+    var quotaStyle: TokenMonitorEdgeDockPreferences.QuotaStyle = .ring
     var isPinned = false
     var onPin: () -> Void = {}
     var onPage: (Int) -> Void = { _ in }
@@ -329,7 +330,13 @@ struct TokenMonitorEdgeDockRailView: View {
         } else if cell.kind == .provider {
             VStack(spacing: 2) {
                 ZStack {
-                    if cell.headlineValueLabel == nil {
+                    if cell.headlineValueLabel == nil, quotaStyle == .fish {
+                        QuotaFishView(
+                            percentRemaining: cell.percentRemaining,
+                            tint: warnColors && (cell.severityRemainingPercent ?? 100) < 20
+                                ? Color(red: 0.88, green: 0.48, blue: 0.31) : providerColor(cell.providerID),
+                            language: language, compact: true)
+                    } else if cell.headlineValueLabel == nil {
                         QuotaPercentageRing(
                             percent: cell.percentRemaining, diameter: 42, lineWidth: 3.5,
                             tint: warnColors && (cell.severityRemainingPercent ?? 100) < 20
@@ -453,6 +460,7 @@ struct TokenMonitorEdgeDockCardView: View {
     var onOpenProxy: () -> Void = {}
     var snapshotDescription: String? = nil
     var isRefreshing = false
+    var quotaStyle: TokenMonitorEdgeDockPreferences.QuotaStyle = .ring
     var onRefresh: (() -> Void)? = nil
     var onContentHeightChange: (CGFloat) -> Void = { _ in }
     @State private var byModel = false
@@ -792,6 +800,9 @@ struct TokenMonitorEdgeDockCardView: View {
             HStack(spacing: 10) {
                 if let label = cell.headlineValueLabel {
                     Text(label).font(.system(size: 28, weight: .medium)).monospacedDigit()
+                } else if quotaStyle == .fish {
+                    QuotaFishView(percentRemaining: cell.percentRemaining, tint: providerColor(cell.providerID), language: language)
+                        .frame(width: 126)
                 } else {
                     QuotaPercentageRing(percent: cell.percentRemaining, diameter: 64, lineWidth: 4)
                 }
@@ -841,6 +852,9 @@ struct TokenMonitorEdgeDockCardView: View {
                             Spacer(minLength: 4)
                             if let label = metric.valueLabel {
                                 Text(label).font(.system(size: 11, weight: .semibold)).monospacedDigit()
+                            } else if quotaStyle == .fish {
+                                QuotaFishView(percentRemaining: metric.percentRemaining, tint: providerColor(cell.providerID), language: language)
+                                    .frame(width: 100)
                             } else {
                                 QuotaPercentageRing(percent: metric.percentRemaining, diameter: 38)
                             }

@@ -130,56 +130,61 @@ enum TokenMonitorUISelfTest {
         expect(empty.inlineText == nil && empty.tooltip.contains("没有可用重置卡"), "confirmed zero reset cards keeps count and has no fabricated expiry")
         let one = disclosure(1, [first])
         expect(
-            one.inlineText == "2027-01-01 00:00 北京时间" && dateLines(one.tooltip) == ["2027-01-01 00:00"], "one card crosses year in explicitly Beijing time with full year in hover")
+            one.inlineText == "到期 2027-01-01 00:00" && dateLines(one.tooltip) == ["2027-01-01 00:00"],
+            "one card shows the nearest expiry inline and keeps full Beijing time in hover")
         let two = disclosure(2, [second, first])
-        expect(two.inlineText == "2027-01-01 00:00 · 2027-01-01 23:00 北京时间", "two unsorted cards render both nearest dates and times")
+        expect(two.inlineText == "到期 2027-01-01 00:00", "two unsorted cards render only the nearest date inline")
         let three = disclosure(3, [third, first, second])
         expect(
             three.inlineText == two.inlineText && dateLines(three.tooltip) == ["2027-01-01 00:00", "2027-01-01 23:00", "2027-01-02 23:00"],
-            "three cards show exactly two inline dates and all three ordered hover dates")
-        expect(three.tooltip.contains("UTC+8") && !three.inlineText!.contains("2027-01-02"), "third future expiry is not accidentally appended inline")
+            "three cards show the nearest inline date and all three ordered hover dates")
+        expect(
+            three.tooltip.contains("UTC+8") && !three.inlineText!.contains("北京时间") && !three.inlineText!.contains("2027-01-02"),
+            "inline remains one compact date while hover carries timezone")
         let duplicate = disclosure(3, [second, first, first])
         expect(
-            duplicate.inlineText == "2027-01-01 00:00 · 2027-01-01 00:00 北京时间" && dateLines(duplicate.tooltip).count == 3,
-            "separate cards with identical expiry keep duplicate inline and hover entries")
+            duplicate.inlineText == "到期 2027-01-01 00:00" && dateLines(duplicate.tooltip) == ["2027-01-01 00:00", "2027-01-01 00:00", "2027-01-01 23:00"],
+            "separate cards with identical expiry keep duplicate hover entries")
         let missing = disclosure(3, [first])
         expect(missing.inlineText == one.inlineText && missing.tooltip.contains("另 2 张未提供到期时间"), "partial expiry evidence does not repeat one date to fill count")
         expect(disclosure(2, []).inlineText == nil && disclosure(2, []).tooltip.contains("另 2 张未提供到期时间"), "known positive count with no dates stays explicitly unknown")
         let mixed = disclosure(3, [past, third, first])
         expect(
-            mixed.inlineText == "2027-01-01 00:00 · 2027-01-02 23:00 北京时间" && dateLines(mixed.tooltip).last == "2026-12-31 22:00（已过记录日期）",
-            "expired record remains labeled in hover but never displaces future inline entries")
+            mixed.inlineText == "到期 2027-01-01 00:00" && dateLines(mixed.tooltip).last == "2026-12-31 22:00（已过记录日期）",
+            "expired record remains labeled in hover and never displaces the nearest inline expiry")
         expect(disclosure(1, [now]).inlineText == nil && disclosure(1, [now]).tooltip.contains("已过记录日期"), "expiry equal to now is expired, not upcoming")
         let invalid = disclosure(3, [Date(timeIntervalSince1970: .nan), Date(timeIntervalSince1970: .infinity), first])
         expect(invalid == missing, "nonfinite date values are ignored without inventing two missing card expiries")
         let unknown = disclosure(nil, [first])
-        expect(unknown.inlineText?.hasPrefix("记录 ") == true && unknown.tooltip.contains("可用数量未确认"), "unknown count does not promote record dates to available cards")
+        expect(
+            unknown.inlineText?.hasPrefix("记录 ") == true && !unknown.inlineText!.contains("北京时间") && unknown.tooltip.contains("可用数量未确认"),
+            "unknown count does not promote record dates to available cards")
         expect(disclosure(-1, []).tooltip.contains("可用数量未确认"), "negative count is explicitly unconfirmed")
         let mismatch = disclosure(1, [second, first])
         expect(mismatch.inlineText?.hasPrefix("记录 ") == true && mismatch.tooltip.contains("数量与日期记录不一致"), "extra recorded dates disclose count mismatch")
         expect(disclosure(0, [first]).tooltip.contains("数量与日期记录不一致"), "zero count with a recorded future expiry is disclosed as inconsistent")
         let stale = disclosure(3, [third, second, first], fetchedAt: now.addingTimeInterval(-301))
         expect(
-            stale.inlineText?.hasPrefix("记录 ") == true && stale.tooltip.contains("待刷新") && dateLines(stale.tooltip).count == 3,
+            stale.inlineText?.hasPrefix("记录 ") == true && !stale.inlineText!.contains("北京时间") && stale.tooltip.contains("待刷新") && dateLines(stale.tooltip).count == 3,
             "stale snapshot keeps historical dates and visible refresh caveat")
         expect(disclosure(3, [third, second, first], fetchedAt: now.addingTimeInterval(-300)) == three, "exact five-minute freshness boundary stays current")
         let failed = disclosure(3, [third, second, first], succeeded: false)
         expect(
-            failed.inlineText?.hasPrefix("记录 ") == true && failed.tooltip.contains("读取未成功") && dateLines(failed.tooltip).count == 3,
+            failed.inlineText?.hasPrefix("记录 ") == true && !failed.inlineText!.contains("北京时间") && failed.tooltip.contains("读取未成功") && dateLines(failed.tooltip).count == 3,
             "failed read retains known records with failure caveat")
         expect(disclosure(1, [first], fetchedAt: now.addingTimeInterval(1)).tooltip.contains("待刷新"), "future fetchedAt is not accepted as fresh")
         let noFetchedAt = ResetCardPresentation.expiryDisclosure(count: 1, expiries: [first], fetchedAt: nil, readSucceeded: true, now: now, language: .zh)
         expect(noFetchedAt.tooltip.contains("待刷新"), "missing fetch evidence stays stale")
         let sameYear = ResetCardPresentation.expiryDisclosure(count: 1, expiries: [second], fetchedAt: first, readSucceeded: true, now: first, language: .zh)
-        expect(sameYear.inlineText == "01-01 23:00 北京时间", "same-year inline dates omit redundant year while hover preserves it")
+        expect(sameYear.inlineText == "到期 01-01 23:00", "same-year inline dates omit redundant year while hover preserves it")
         let english = disclosure(3, [third, first, second], language: .en)
         expect(
-            english.inlineText == "2027-01-01 00:00 · 2027-01-01 23:00 UTC+8" && english.tooltip.contains("Beijing time (UTC+8)"),
-            "English uses the same explicit timezone and full hover dates")
+            english.inlineText == "Expires 2027-01-01 00:00" && english.tooltip.contains("Beijing time (UTC+8)"),
+            "English keeps one compact inline expiry and full hover dates")
         // System timezone changes cannot change disclosure; no global timezone is mutated.
         let utcHour = Calendar(identifier: .gregorian).dateComponents(in: TimeZone(secondsFromGMT: 0)!, from: first).hour
         let pacificHour = Calendar(identifier: .gregorian).dateComponents(in: TimeZone(identifier: "America/Los_Angeles")!, from: first).hour
-        expect(utcHour != 0 && pacificHour != 0 && one.inlineText == "2027-01-01 00:00 北京时间", "expiry projection uses Beijing rather than UTC or Pacific local hour")
+        expect(utcHour != 0 && pacificHour != 0 && one.inlineText == "到期 2027-01-01 00:00", "expiry projection uses Beijing rather than UTC or Pacific local hour")
     }
 
     private static func reproduceLocalCLIQuotaPresentation(expect: (Bool, String) -> Void) {
