@@ -38,6 +38,59 @@ struct WeChatBotTests {
         expect(!saved.contains("synthetic-owner") && !saved.contains("one"), "no owner or raw message persisted")
         let attributes = try FileManager.default.attributesOfItem(atPath: directory.appendingPathComponent("events-v1.json").path)
         expect((attributes[.posixPermissions] as? NSNumber)?.intValue == 0o600, "private journal")
+        let capacityDirectory = directory.appendingPathComponent("capacity")
+        let capacity = WeChatBotEventLedger(directory: capacityDirectory)
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        for i in 0..<512 {
+            let time = start.addingTimeInterval(Double(i))
+            let id = try capacity.claim(owner: "synthetic-capacity", messageID: "id-\(i)", receivedAt: time, now: time)!
+            try capacity.mark(id, phase: .replyAttempted)
+            try capacity.mark(id, phase: .accepted)
+        }
+        let current = start.addingTimeInterval(700)
+        let restarted = WeChatBotEventLedger(directory: capacityDirectory)
+        expect(try restarted.claim(owner: "synthetic-capacity", messageID: "fresh", receivedAt: current, now: current) != nil, "accepted records roll without capacity rejection")
+        expect(try restarted.claim(owner: "synthetic-capacity", messageID: "replay-mutated-id", receivedAt: start.addingTimeInterval(500), now: start.addingTimeInterval(500)) == nil, "watermark blocks clock rollback and mutated ID replay")
+        let envelope = try JSONSerialization.jsonObject(with: Data(contentsOf: capacityDirectory.appendingPathComponent("events-v1.json"))) as! [String: Any]
+        expect(envelope["version"] as? Int == 2 && envelope["rejectedThrough"] != nil, "atomic journal envelope retains watermark")
+        let mixedDirectory = directory.appendingPathComponent("mixed")
+        let mixed = WeChatBotEventLedger(directory: mixedDirectory)
+        let retained = try mixed.claim(owner: "synthetic-mixed", messageID: "pending", receivedAt: start, now: start)!
+        let doneTime = start.addingTimeInterval(1)
+        let done = try mixed.claim(owner: "synthetic-mixed", messageID: "done", receivedAt: doneTime, now: doneTime)!
+        try mixed.mark(done, phase: .replyAttempted); try mixed.mark(done, phase: .accepted)
+        _ = try mixed.claim(owner: "synthetic-mixed", messageID: "new", receivedAt: current, now: current)
+        try mixed.mark(retained, phase: .uncertain)
+        expect(try mixed.claim(owner: "synthetic-mixed", messageID: "pending", receivedAt: start, now: start) == nil, "watermark crossing does not erase unresolved ID")
+        expect(try WeChatBotEventLedger(directory: mixedDirectory).claim(owner: "synthetic-mixed", messageID: "done", receivedAt: doneTime, now: doneTime) == nil, "restart rollback cannot replay compacted ID")
+        let boundaryDirectory = directory.appendingPathComponent("boundary")
+        let boundary = WeChatBotEventLedger(directory: boundaryDirectory)
+        let accepted = try boundary.claim(owner: "synthetic-boundary", messageID: "accepted", receivedAt: start, now: start)!
+        try boundary.mark(accepted, phase: .replyAttempted); try boundary.mark(accepted, phase: .accepted)
+        let at125 = start.addingTimeInterval(125)
+        _ = try boundary.claim(owner: "synthetic-boundary", messageID: "at125", receivedAt: at125, now: at125)
+        var boundaryData = try JSONSerialization.jsonObject(with: Data(contentsOf: boundaryDirectory.appendingPathComponent("events-v1.json"))) as! [String: Any]
+        expect((boundaryData["entries"] as? [[String: Any]])?.count == 2, "accepted exact125s is retained")
+        let at126 = start.addingTimeInterval(126)
+        _ = try boundary.claim(owner: "synthetic-boundary", messageID: "at126", receivedAt: at126, now: at126)
+        boundaryData = try JSONSerialization.jsonObject(with: Data(contentsOf: boundaryDirectory.appendingPathComponent("events-v1.json"))) as! [String: Any]
+        expect((boundaryData["entries"] as? [[String: Any]])?.count == 2, "accepted beyond125s is compacted")
+        expect(try boundary.claim(owner: "synthetic-boundary", messageID: "at-watermark", receivedAt: start, now: start) == nil, "exact watermark boundary refuses new claim")
+        let pendingDirectory = directory.appendingPathComponent("pending")
+        let pending = WeChatBotEventLedger(directory: pendingDirectory)
+        for i in 0..<512 { _ = try pending.claim(owner: "synthetic-pending", messageID: "pending-\(i)", receivedAt: start, now: start) }
+        do { _ = try pending.claim(owner: "synthetic-pending", messageID: "overflow", receivedAt: current, now: current); failures.append("unresolved capacity must fail closed") } catch WeChatBotEventLedger.Failure.capacity {}
+        expect(try pending.claim(owner: "synthetic-pending", messageID: "pending-0", receivedAt: current, now: current) == nil, "unresolved duplicates stay protected")
+        let migrationDirectory = directory.appendingPathComponent("legacy")
+        let migration = WeChatBotEventLedger(directory: migrationDirectory)
+        _ = try migration.claim(owner: "synthetic-legacy", messageID: "original", receivedAt: start, now: start)
+        let legacyURL = migrationDirectory.appendingPathComponent("events-v1.json")
+        let originalEnvelope = try JSONSerialization.jsonObject(with: Data(contentsOf: legacyURL)) as! [String: Any]
+        try JSONSerialization.data(withJSONObject: originalEnvelope["entries"]!).write(to: legacyURL)
+        expect(try migration.claim(owner: "synthetic-legacy", messageID: "original", receivedAt: start, now: start) == nil, "legacy array duplicate preserved")
+        _ = try migration.claim(owner: "synthetic-legacy", messageID: "new", receivedAt: start, now: start)
+        let migrated = try JSONSerialization.jsonObject(with: Data(contentsOf: legacyURL)) as! [String: Any]
+        expect(migrated["version"] as? Int == 2, "legacy array migrates on first write")
         var idle: [String: Any] = ["id": thread, "hostId": "local", "resumeState": "resumed", "requests": [Any](), "threadRuntimeStatus": ["type": "idle"]]
         expect(WeChatCodexConversation.isIdle(idle, threadID: thread), "fresh idle")
         var blocked = idle

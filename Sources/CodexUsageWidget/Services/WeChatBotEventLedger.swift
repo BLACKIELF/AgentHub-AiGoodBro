@@ -14,6 +14,11 @@ final class WeChatBotEventLedger {
         var threadID: String?
         var turnID: String?
     }
+    private struct Journal: Codable {
+        let version: Int
+        var entries: [Entry]
+        var rejectedThrough: Date?
+    }
     private let directory: URL
     private static let filename = "events-v1.json"
     private static let maximumEntries = 512
@@ -114,18 +119,30 @@ final class WeChatBotEventLedger {
         else { throw Failure.invalid }
         let id = Self.eventID(owner: owner, messageID: messageID)
         return try locked {
-            var entries = try read().filter { now.timeIntervalSince($0.receivedAt) < 7 * 24 * 3600 }
-            if entries.contains(where: { $0.id == id }) { return nil }
-            guard entries.count < Self.maximumEntries else { throw Failure.capacity }
-            entries.append(Entry(id: id, receivedAt: receivedAt, phase: .received))
-            try write(entries)
+            var journal = try read()
+            if journal.entries.contains(where: { $0.id == id }) { return nil }
+            if let floor = journal.rejectedThrough, receivedAt <= floor { return nil }
+            let removed = journal.entries.filter {
+                let age = now.timeIntervalSince($0.receivedAt)
+                return age >= 7 * 24 * 3600 || ($0.phase == .accepted && age > 125)
+            }
+            if let newest = removed.map(\.receivedAt).max() {
+                journal.rejectedThrough = max(journal.rejectedThrough ?? .distantPast, newest)
+            }
+            let removedIDs = Set(removed.map(\.id))
+            journal.entries.removeAll { removedIDs.contains($0.id) }
+            if let floor = journal.rejectedThrough, receivedAt <= floor { return nil }
+            guard journal.entries.count < Self.maximumEntries else { throw Failure.capacity }
+            journal.entries.append(Entry(id: id, receivedAt: receivedAt, phase: .received))
+            try write(journal)
             return id
         }
     }
 
     func mark(_ id: UUID, phase: Phase, threadID: String? = nil, turnID: String? = nil) throws {
         try locked {
-            var entries = try read()
+            var journal = try read()
+            var entries = journal.entries
             guard let index = entries.firstIndex(where: { $0.id == id }) else { throw Failure.invalid }
             let old = entries[index]
             let permitted: Bool
@@ -147,7 +164,8 @@ final class WeChatBotEventLedger {
             entries[index].phase = phase
             entries[index].threadID = old.threadID ?? threadID
             entries[index].turnID = old.turnID ?? turnID
-            try write(entries)
+            journal.entries = entries
+            try write(journal)
         }
     }
 
@@ -173,9 +191,19 @@ final class WeChatBotEventLedger {
         return try action()
     }
 
-    private func read() throws -> [Entry] {
-        guard let data = try readBytes(filename: Self.filename) else { return [] }
-        let entries = try JSONDecoder().decode([Entry].self, from: data)
+    private func read() throws -> Journal {
+        guard let data = try readBytes(filename: Self.filename) else { return Journal(version: 2, entries: [], rejectedThrough: nil) }
+        let decoder = JSONDecoder()
+        let journal: Journal
+        if data.first == UInt8(ascii: "[") {
+            journal = Journal(version: 2, entries: try decoder.decode([Entry].self, from: data), rejectedThrough: nil)
+        } else {
+            journal = try decoder.decode(Journal.self, from: data)
+        }
+        guard journal.version == 2,
+            journal.rejectedThrough.map({ $0.timeIntervalSince1970.isFinite }) ?? true
+        else { throw Failure.invalid }
+        let entries = journal.entries
         guard entries.count <= Self.maximumEntries, Set(entries.map(\.id)).count == entries.count,
             entries.allSatisfy({
                 $0.receivedAt.timeIntervalSince1970.isFinite
@@ -183,7 +211,7 @@ final class WeChatBotEventLedger {
                     && ($0.turnID.map { UUID(uuidString: $0) != nil } ?? true)
             })
         else { throw Failure.invalid }
-        return entries
+        return journal
     }
 
     private func readBytes(filename: String) throws -> Data? {
@@ -208,8 +236,8 @@ final class WeChatBotEventLedger {
         return Data(bytes)
     }
 
-    private func write(_ entries: [Entry]) throws {
-        try writeBytes(JSONEncoder().encode(entries), filename: Self.filename)
+    private func write(_ journal: Journal) throws {
+        try writeBytes(JSONEncoder().encode(journal), filename: Self.filename)
     }
 
     private func writeBytes(_ data: Data, filename: String) throws {

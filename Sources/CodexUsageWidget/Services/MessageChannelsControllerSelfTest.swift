@@ -41,6 +41,15 @@ enum MessageChannelsControllerSelfTest {
                 lock.unlock()
             }
         }
+        func completePath(_ path: String, responseBody: String) {
+            lock.lock()
+            let callbacks = pending.filter { $0.0.url?.path == path }
+            pending.removeAll { $0.0.url?.path == path }
+            lock.unlock()
+            for (request, callback) in callbacks {
+                callback.resume(returning: (Data(responseBody.utf8), HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!))
+            }
+        }
         func completeAll(status: Int = 200, responseBody: String? = nil) {
             lock.lock()
             let callbacks = pending
@@ -311,17 +320,18 @@ enum MessageChannelsControllerSelfTest {
             ],
         ]
         personalHTTP.completeAll(responseBody: String(data: try! JSONSerialization.data(withJSONObject: incoming), encoding: .utf8)!)
-        spin { personal.personalWeChatHasContext && personalStorage.saves.count == 1 }
+        spin { personal.personalWeChatHasContext && !personalStorage.saves.isEmpty }
         expect(
             personal.personalWeChatPhase == .pendingVerification && personal.personalLoginQRCode == nil,
             "receiving a context falsely marked API delivery verified or retained the login QR")
-        if personalStorage.saves.count == 1 {
+        if !personalStorage.saves.isEmpty {
             let persisted = personalStorage.saves.removeFirst()
             expect(persisted.0.personalBinding?.contextToken == "synthetic-context", "background encrypted-record update lost personal context")
             persisted.2(.success(()))
         } else {
             failures.append("personal context was not saved to the encrypted record")
         }
+        while !personalStorage.saves.isEmpty { personalStorage.saves.removeFirst().2(.success(())) }
         personal.sendTest(.personalWeChat)
         spin { personalHTTP.lastRequest?.url?.path == "/ilink/bot/sendmessage" }
         expect(personal.personalWeChatPhase == .pendingVerification, "personal test was marked accepted before the HTTP response")
@@ -329,6 +339,17 @@ enum MessageChannelsControllerSelfTest {
         spin { personal.personalWeChatPhase == .ready }
         expect(personal.personalWeChatPhase == .ready, "successful personal test did not verify the channel")
         spin { personalHTTP.lastRequest?.url?.path == "/ilink/bot/getupdates" }
+        // Cursor-only progress cannot cancel a held explicit notification.
+        personal.sendTest(.personalWeChat)
+        spin { personalHTTP.hasPending("/ilink/bot/sendmessage") }
+        spin { personalHTTP.hasPending("/ilink/bot/getupdates") }
+        personalHTTP.completePath("/ilink/bot/getupdates", responseBody: #"{"msgs":[],"get_updates_buf":"cursor-only-held-send"}"#)
+        settle()
+        expect(personal.actionInFlight, "cursor-only poll cancelled held notification")
+        personalHTTP.completePath("/ilink/bot/sendmessage", responseBody: "{}")
+        spin { !personal.actionInFlight && personal.personalWeChatPhase == .ready }
+        expect(personal.personalWeChatPhase == .ready, "held notification lost acceptance after cursor-only poll")
+        spin { personalHTTP.hasPending("/ilink/bot/getupdates") }
         let command: [String: Any] = [
             "ret": 0, "get_updates_buf": "synthetic-command-cursor",
             "msgs": [
@@ -353,7 +374,81 @@ enum MessageChannelsControllerSelfTest {
         personalHTTP.completeAll(responseBody: commandBody)
         settle()
         expect(personalHTTP.count == beforeDuplicate, "duplicate command sent a second bot reply")
+        // A batch larger than the active send limit retains its old cursor
+        // until the ninth command receives a durable claim.
+        spin { personalHTTP.hasPending("/ilink/bot/getupdates") }
+        let beforeBurst = personalHTTP.count
+        var burst = command
+        burst["get_updates_buf"] = "synthetic-burst-cursor"
+        burst["msgs"] = (0..<9).map { index -> [String: Any] in
+            var item = (command["msgs"] as! [[String: Any]])[0]
+            item["message_id"] = "synthetic-burst-\(index)"
+            item["create_time_ms"] = Int(Date().timeIntervalSince1970 * 1000)
+            return item
+        }
+        personalStorage.saves.removeAll()
+        personalHTTP.completeAll(responseBody: String(data: try! JSONSerialization.data(withJSONObject: burst), encoding: .utf8)!)
+        spin { personalHTTP.count - beforeBurst == 8 }
+        expect(personalHTTP.count - beforeBurst == 8, "burst exceeded eight active replies")
+        expect(!personalStorage.saves.contains { $0.0.personalBinding?.updatesCursor == "synthetic-burst-cursor" }, "cursor advanced before ninth command admission")
+        personalHTTP.completeAll(responseBody: "{}")
+        spin { personalHTTP.count - beforeBurst == 9 }
+        expect(personalHTTP.count - beforeBurst == 9, "ninth command was silently lost")
+        expect(personalStorage.saves.contains { $0.0.personalBinding?.updatesCursor == "synthetic-burst-cursor" }, "complete burst did not persist its cursor")
+        personalHTTP.completeAll(responseBody: "{}")
+        spin { personalHTTP.hasPending("/ilink/bot/getupdates") }
+        let afterBurst = personalHTTP.count
+        personalHTTP.completeAll(responseBody: String(data: try! JSONSerialization.data(withJSONObject: burst), encoding: .utf8)!)
+        settle()
+        expect(personalHTTP.count == afterBurst, "burst redelivery repeated an already claimed reply")
+        while !personalStorage.saves.isEmpty { personalStorage.saves.removeFirst().2(.success(())) }
+        // A chat-setting change wakes capacity admission without ending polling.
+        spin { personalHTTP.hasPending("/ilink/bot/getupdates") }
+        var cancelledBurst = burst
+        cancelledBurst["get_updates_buf"] = "synthetic-cancelled-cursor"
+        cancelledBurst["msgs"] = (0..<9).map { index -> [String: Any] in
+            var item = (command["msgs"] as! [[String: Any]])[0]
+            item["message_id"] = "synthetic-cancelled-\(index)"
+            item["create_time_ms"] = Int(Date().timeIntervalSince1970 * 1000)
+            return item
+        }
+        let beforeCancellation = personalHTTP.count
+        personalStorage.saves.removeAll()
+        personalHTTP.completeAll(responseBody: String(data: try! JSONSerialization.data(withJSONObject: cancelledBurst), encoding: .utf8)!)
+        spin { personalHTTP.count - beforeCancellation == 8 }
         personal.setPersonalChatEnabled(true)
+        personalHTTP.completeAll(responseBody: "{}")
+        let recoveryDeadline = Date().addingTimeInterval(7)
+        while !personalHTTP.hasPending("/ilink/bot/getupdates") && Date() < recoveryDeadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.005))
+        }
+        expect(personalHTTP.hasPending("/ilink/bot/getupdates"), "chat epoch change permanently stopped polling")
+        expect(!personalStorage.saves.contains { $0.0.personalBinding?.updatesCursor == "synthetic-cancelled-cursor" }, "cancelled batch advanced cursor")
+        while !personalStorage.saves.isEmpty { personalStorage.saves.removeFirst().2(.success(())) }
+        personal.setPersonalChatEnabled(true)
+        // Durable-claim failure must leave cursor unchanged and retry later.
+        spin { personalHTTP.hasPending("/ilink/bot/getupdates") }
+        let journalFile = ledgerDirectory.appendingPathComponent("events-v1.json")
+        let validJournal = try! Data(contentsOf: journalFile)
+        try! Data("invalid-synthetic-journal".utf8).write(to: journalFile)
+        var failedBatch = command
+        failedBatch["get_updates_buf"] = "synthetic-failed-cursor"
+        var failedItem = (command["msgs"] as! [[String: Any]])[0]
+        failedItem["message_id"] = "synthetic-failed-command"
+        failedItem["create_time_ms"] = Int(Date().timeIntervalSince1970 * 1000)
+        failedBatch["msgs"] = [failedItem]
+        personalStorage.saves.removeAll()
+        let beforeFailure = personalHTTP.count
+        personalHTTP.completeAll(responseBody: String(data: try! JSONSerialization.data(withJSONObject: failedBatch), encoding: .utf8)!)
+        settle()
+        expect(personalHTTP.count == beforeFailure, "failed durable claim sent a reply")
+        expect(!personalStorage.saves.contains { $0.0.personalBinding?.updatesCursor == "synthetic-failed-cursor" }, "failed durable claim advanced cursor")
+        try! validJournal.write(to: journalFile)
+        let retryDeadline = Date().addingTimeInterval(7)
+        while !personalHTTP.hasPending("/ilink/bot/getupdates") && Date() < retryDeadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.005))
+        }
+        expect(personalHTTP.hasPending("/ilink/bot/getupdates"), "claim failure did not back off and resume polling")
         func ordinary(_ id: String) -> String {
             let value: [String: Any] = [
                 "ret": 0, "get_updates_buf": "synthetic-command-cursor",
@@ -398,6 +493,13 @@ enum MessageChannelsControllerSelfTest {
             "dedicated binding did not survive a new ledger instance")
         personalHTTP.completeAll(responseBody: #"{"ret":0}"#)
         spin { !personal.personalBotIsReplying }
+        spin { personalHTTP.hasPending("/ilink/bot/getupdates") }
+        let beforeOrdinaryReplay = personalHTTP.count
+        personalHTTP.completeAll(responseBody: ordinary("ordinary-two"))
+        settle()
+        expect(
+            conversationStarts == 2 && creationCount == 1 && personalHTTP.count == beforeOrdinaryReplay,
+            "ordinary duplicate reopened conversation or called model again")
         let longReply = MessageChannelsController.boundedPersonalReply(String(repeating: "测", count: 3000))
         expect(longReply.utf8.count <= 4096 && longReply.contains("全文请在 Codex"), "long bot reply silently truncated or exceeded byte limit")
         personal.sendTest(.personalWeChat)

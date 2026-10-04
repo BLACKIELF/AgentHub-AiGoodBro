@@ -258,6 +258,8 @@ final class MessageChannelsController: ObservableObject {
     private let conversationFactory: @MainActor () -> WeChatCodexConversation
     private var personalConversation: WeChatCodexConversation?
     private var personalChatMessageID: UUID?
+    private var personalSlotWaiter: CheckedContinuation<Void, Never>?
+    private var personalSlotTimeout: Task<Void, Never>?
     private var personalBotTasks: [UUID: Task<Void, Never>] = [:]
     private var personalChatEpoch = UUID()
     private var personalMessagesNotBefore = Date.distantFuture
@@ -334,6 +336,7 @@ final class MessageChannelsController: ObservableObject {
         personalChatEpoch = UUID()
         personalBotTasks.values.forEach { $0.cancel() }
         personalBotTasks.removeAll()
+        wakePersonalSlotWaiter()
         personalChatMessageID = nil
         personalBotIsReplying = false
     }
@@ -899,28 +902,45 @@ final class MessageChannelsController: ObservableObject {
                                 "微信消息连接已恢复。", "WeChat message connection restored."))
                     }
                     failures = 0
-                    let current = MessageChannelCredential(secret: credential.secret, target: credential.target, personalBinding: update.binding)
+                    let context = try PersonalWeChatBinding(
+                        baseURL: update.binding.baseURL, botID: update.binding.botID,
+                        contextToken: update.binding.contextToken, contextCheckedAt: update.binding.contextCheckedAt,
+                        updatesCursor: credential.personalBinding?.updatesCursor ?? ""
+                    ).validated()
+                    let current = MessageChannelCredential(secret: credential.secret, target: credential.target, personalBinding: context)
                     self.credentials[.personalWeChat] = current
                     let previouslyHadContext = self.personalWeChatHasContext
-                    self.personalWeChatHasContext = update.binding.hasFreshContext()
+                    self.personalWeChatHasContext = context.hasFreshContext()
                     if !previouslyHadContext && self.personalWeChatHasContext {
                         self.setPersonalStatus(WidgetLanguage.storedOrAutomatic().text("微信会话已就绪，可以发送测试消息。", "WeChat conversation is ready. You can send a test message."))
                     }
-                    if update.binding != credential.personalBinding {
+                    if update.contextChanged {
                         self.invalidate(.personalWeChat)
-                        self.storage.saveBackground(current, for: .personalWeChat) { [weak self] result in
-                            guard let self, self.personalConnectionEpoch == epoch else { return }
-                            if case .failure = result {
-                                self.setPersonalStatus(
-                                    WidgetLanguage.storedOrAutomatic().text(
-                                        "会话只在本次运行中可用；钥匙串未保存更新。", "The session is available for this run; the Keychain update was not saved."))
-                            }
-                        }
-                        if update.contextChanged { self.onConfigurationChanged?() }
+                        self.persistPersonalPollingCredential(current, epoch: epoch)
+                        self.onConfigurationChanged?()
                     } else if !self.personalWeChatHasContext {
                         self.setPhase(.needsSetup, for: .personalWeChat)
                     }
-                    self.handlePersonalMessages(update.messages)
+                    let chatEpoch = self.personalChatEpoch
+                    let complete = await self.handlePersonalMessages(update.messages)
+                    guard !Task.isCancelled, self.personalConnectionEpoch == epoch,
+                        let latest = self.credentials[.personalWeChat],
+                        latest.secret == credential.secret, latest.target == credential.target,
+                        let binding = latest.personalBinding
+                    else { return }
+                    if complete && self.personalChatEpoch == chatEpoch {
+                        let committed = try PersonalWeChatBinding(
+                            baseURL: binding.baseURL, botID: binding.botID, contextToken: binding.contextToken,
+                            contextCheckedAt: binding.contextCheckedAt, updatesCursor: update.binding.updatesCursor
+                        ).validated()
+                        if committed != binding {
+                            let saved = MessageChannelCredential(secret: latest.secret, target: latest.target, personalBinding: committed)
+                            self.credentials[.personalWeChat] = saved
+                            self.persistPersonalPollingCredential(saved, epoch: epoch)
+                        }
+                    } else {
+                        failures = 1  // Preserve old cursor and back off before redelivery.
+                    }
                 } catch {
                     guard !Task.isCancelled, self.personalConnectionEpoch == epoch else { return }
                     failures += 1
@@ -1016,17 +1036,78 @@ final class MessageChannelsController: ObservableObject {
     }
 
     @MainActor
-    private func handlePersonalMessages(_ messages: [PersonalWeChatMessageChannel.IncomingMessage]) {
+    private func persistPersonalPollingCredential(_ credential: MessageChannelCredential, epoch: UUID) {
+        storage.saveBackground(credential, for: .personalWeChat) { [weak self] result in
+            guard let self, self.personalConnectionEpoch == epoch,
+                self.credentials[.personalWeChat]?.secret == credential.secret,
+                self.credentials[.personalWeChat]?.target == credential.target,
+                self.credentials[.personalWeChat]?.personalBinding == credential.personalBinding
+            else { return }
+            if case .failure = result {
+                self.setPersonalStatus(
+                    WidgetLanguage.storedOrAutomatic().text("会话只在本次运行中可用；钥匙串未保存更新。", "The session is available for this run; the Keychain update was not saved."))
+            }
+        }
+    }
+
+    private func wakePersonalSlotWaiter() {
+        precondition(Thread.isMainThread)
+        personalSlotTimeout?.cancel()
+        personalSlotTimeout = nil
+        let waiter = personalSlotWaiter
+        personalSlotWaiter = nil
+        waiter?.resume()
+    }
+
+    @MainActor
+    private func waitForPersonalSlot(until deadline: Date) async {
+        await withTaskCancellationHandler(
+            operation: {
+                await withCheckedContinuation { continuation in
+                    guard !Task.isCancelled, personalBotTasks.count >= 8 else {
+                        continuation.resume()
+                        return
+                    }
+                    personalSlotWaiter = continuation
+                    personalSlotTimeout = Task { @MainActor [weak self] in
+                        let delay = max(0, deadline.timeIntervalSinceNow)
+                        do { try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000)) } catch { return }
+                        self?.wakePersonalSlotWaiter()
+                    }
+                }
+            }, onCancel: { [weak self] in Task { @MainActor in self?.wakePersonalSlotWaiter() } })
+    }
+
+    @MainActor
+    private func handlePersonalMessages(_ messages: [PersonalWeChatMessageChannel.IncomingMessage]) async -> Bool {
         guard running, personalWeChatEnabled, personalWeChatConnected,
             let binding = credentials[.personalWeChat]?.personalBinding
-        else { return }
+        else { return false }
+        let batchEpoch = personalChatEpoch
+        let connectionEpoch = personalConnectionEpoch
         let owner = binding.botID + "\u{0}" + (credentials[.personalWeChat]?.target ?? "")
         for message in messages where message.receivedAt >= personalMessagesNotBefore {
-            guard personalBotTasks.count < 8 else { break }
+            while personalBotTasks.count >= 8 {
+                guard !Task.isCancelled, personalChatEpoch == batchEpoch,
+                    personalConnectionEpoch == connectionEpoch
+                else { return false }
+                if Date().timeIntervalSince(message.receivedAt) > 120 { break }
+                await waitForPersonalSlot(until: message.receivedAt.addingTimeInterval(120))
+            }
+            guard !Task.isCancelled, personalChatEpoch == batchEpoch,
+                personalConnectionEpoch == connectionEpoch
+            else { return false }
+            if Date().timeIntervalSince(message.receivedAt) > 120 {
+                setPersonalStatus(
+                    WidgetLanguage.storedOrAutomatic().text("微信消息等待过久，未执行；请重新发送。", "The WeChat message expired while waiting and was not executed. Please resend it."))
+                continue
+            }
             let claimed: UUID?
             do { claimed = try botLedger.claim(owner: owner, messageID: message.id, receivedAt: message.receivedAt) } catch {
-                setPersonalStatus("微信消息去重记录不可用，已暂停该消息。")
-                continue
+                setPersonalStatus(
+                    WidgetLanguage.storedOrAutomatic().text(
+                        "微信消息去重记录不可用，已暂停该批并保留读取位置。", "The WeChat message journal is unavailable. This batch is paused and its read position is retained."))
+                return false
             }
             guard let id = claimed else { continue }
             let epoch = personalChatEpoch
@@ -1036,6 +1117,7 @@ final class MessageChannelsController: ObservableObject {
                 defer {
                     if self.personalChatEpoch == epoch {
                         self.personalBotTasks.removeValue(forKey: id)
+                        self.wakePersonalSlotWaiter()
                         if self.personalChatMessageID == id { self.personalChatMessageID = nil }
                         self.personalBotIsReplying = self.personalChatMessageID != nil
                     }
@@ -1121,6 +1203,7 @@ final class MessageChannelsController: ObservableObject {
                 }
             }
         }
+        return true
     }
 
     private static let personalBotHelp = "微信机器人：开启对话后，首次发文字自动建立专用 Codex 对话，以后固定续聊；也可在电脑上选择已有对话。\n/状态 查看连接和任务数量\n/任务 查看需要关注的任务\n/重置卡 查看最新重置卡\n/帮助 查看说明\n审批和登录请在电脑上完成。"
