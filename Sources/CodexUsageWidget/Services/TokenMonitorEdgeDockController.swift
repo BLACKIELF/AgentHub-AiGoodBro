@@ -221,6 +221,7 @@ final class TokenMonitorEdgeDockController: NSObject {
         guard preferences.enabled else { return }
         if railPinned {
             preferences.enabled = false
+            configurationGate.reset()
             hideAll()
             onPreferencesChange?(preferences)
         } else {
@@ -745,7 +746,25 @@ final class TokenMonitorEdgeDockController: NSObject {
         guard !dock.railVisible, !dock.railPinned, dock.peekPanel?.isVisible != true,
             dock.railPanel?.isVisible != true, dock.timer == nil
         else { return false }
-        dock.preferences.enabled = true
+        let shortcutPreferences = TokenMonitorEdgeDockPreferences(
+            enabled: true, mode: .autoHide, displayID: "uuid:" + UUID().uuidString,
+            items: [.limit("codex"), .proxy()])
+        func configureShortcutPreferences() {
+            dock.configure(
+                preferences: shortcutPreferences, cells: cells, language: .en,
+                onPreferencesChange: { _ in }, onOpenDashboard: {},
+                onOpenUsageOverview: { usageOpens += 1 }, onOpenProxy: { proxyOpens += 1 })
+        }
+        configureShortcutPreferences()
+        dock.revealFromShortcut()
+        dock.toggleRailPinOrHide()
+        guard !dock.preferences.enabled, !dock.railVisible, dock.timer == nil else { return false }
+        // No intermediate disabled configuration: the same enabled snapshot must be accepted again.
+        configureShortcutPreferences()
+        dock.revealFromShortcut()
+        guard dock.preferences == shortcutPreferences.normalized(), dock.railVisible, dock.railPinned,
+            dock.timer != nil, dock.peekPanel == nil, dock.railPanel == nil, dock.cardPanel == nil
+        else { return false }
 
         for index in [0, 1] {
             dock.cardIndex = index
