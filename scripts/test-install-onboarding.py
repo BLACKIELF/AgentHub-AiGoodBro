@@ -332,7 +332,7 @@ settings = (ROOT / 'Sources/CodexUsageWidget/Services/AppSettings.swift').read_t
 start = settings.index('        let existingUser =\n')
 end = settings.index('        workspaceDisplayMode =', start)
 predicate = settings[start:end]
-assert 'onboarding.status != .notStarted' in predicate
+assert 'loadedOnboarding.status != .notStarted' in predicate
 # Verify the real view calls the tested production decision, instead of duplicating it.
 view = (ROOT / 'Sources/CodexUsageWidget/UI/CodexAccountManagerView.swift').read_text()
 wire = 'if let scope = settings.installationOnboarding.automaticScope(legacyShouldPresent: settings.onboarding.shouldPresent) {'
