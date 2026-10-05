@@ -528,6 +528,7 @@ struct CodexAccountManagerView: View {
         localProxy: LocalProxyQueueStore? = nil,
         previewOpenCodexWorkspace: Bool = false, previewEditingModules: Bool = false,
         previewReferenceDate: Date? = nil, previewForecastBy: Date? = nil,
+        appStorageDefaults: UserDefaults? = nil,
         onOpenWorkspaceSettings: (() -> Void)? = nil
     ) {
         self.store = store
@@ -545,6 +546,18 @@ struct CodexAccountManagerView: View {
         _showingHome = State(initialValue: !previewOpenCodexWorkspace)
         _isEditingModules = State(initialValue: previewEditingModules)
         _moduleEditOriginal = State(initialValue: previewEditingModules ? settings.homeModuleArrangement : nil)
+        // Screenshot fixtures may evaluate screenshotContent without mounting this owner.
+        if let appStorageDefaults {
+            _homeAccountsExpanded = AppStorage(wrappedValue: true, HomeSection.accounts.storageKey, store: appStorageDefaults)
+            _homeUsageExpanded = AppStorage(wrappedValue: false, HomeSection.usage.storageKey, store: appStorageDefaults)
+            _homeNoticesExpanded = AppStorage(wrappedValue: false, "AiGoodBro.home.section.recommended-announcements.expanded", store: appStorageDefaults)
+            _homeLocalCLIExpanded = AppStorage(wrappedValue: false, "AiGoodBro.home.section.local-cli.expanded", store: appStorageDefaults)
+            _homeResetExpanded = AppStorage(wrappedValue: true, HomeSection.reset.storageKey, store: appStorageDefaults)
+            _homeMessagesExpanded = AppStorage(wrappedValue: true, HomeSection.messages.storageKey, store: appStorageDefaults)
+            _homeSkillsExpanded = AppStorage(wrappedValue: true, HomeSection.recommendations.storageKey, store: appStorageDefaults)
+            _homeMaintenanceExpanded = AppStorage(wrappedValue: true, HomeSection.maintenance.storageKey, store: appStorageDefaults)
+            _savedCardDensity = AppStorage(wrappedValue: AccountCardDensity.compact.rawValue, "AiGoodBro.accountCardDensity", store: appStorageDefaults)
+        }
     }
 
     private var effectiveColorScheme: ColorScheme {
