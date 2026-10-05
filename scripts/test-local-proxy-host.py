@@ -4,11 +4,23 @@ from pathlib import Path
 import subprocess, tempfile, os, sys
 root=Path(__file__).resolve().parent.parent
 service=root/'Sources/CodexUsageWidget/Services'
+
+def declaration(source, needle):
+    start=source.index(needle); opening=source.index('{',start); depth=0
+    for index in range(opening,len(source)):
+        if source[index]=='{': depth+=1
+        elif source[index]=='}':
+            depth-=1
+            if depth==0: return source[start:index+1]
+    raise ValueError(needle)
 stubs=r'''
 import Foundation
 import Combine
 import Darwin
 struct CreditBalancePresentation: Equatable {}
+// Peripheral payloads are unused by the real quota presentation helper.
+struct LocalUsage: Equatable {}
+struct TaskBoard: Equatable {}
 struct CodexQuotaWindowSnapshot: Equatable { var usedPercent: Double; var resetsAt: Date? }
 struct CodexAccountSnapshot: Equatable { var quotaReadSucceeded: Bool? = true; var planType:String? = nil; var creditBalance:String? = nil; var creditBalanceUnlimited:Bool? = nil; var accountID: String? = "account-fixture"; var email: String? = "fixture@example.invalid"; var fetchedAt: Date; var fiveHour: CodexQuotaWindowSnapshot?; var sevenDay: CodexQuotaWindowSnapshot?; var monthly: CodexQuotaWindowSnapshot? = nil }
 struct CodexCredentialIdentity: Equatable { let email: String; let accountID: String }
@@ -45,8 +57,10 @@ with tempfile.TemporaryDirectory(prefix='aigoodbro-proxy-host-fixture-') as temp
     identity='enum CodexOfficialProfileReader {\n'+profiles[a:b]+'\n}\n'
     presentation=(root/'Sources/CodexUsageWidget/Domain/WorkspacePresentation.swift').read_text()
     presentation=presentation[:presentation.index('/// Presentation only:')]
-    rate_window='struct RateWindow { let usedPercent:Double; let windowDurationMins:Int; let resetsAt:Date?; var remainingPercent:Double { 100-usedPercent } }\n'
-    (folder/'Stubs.swift').write_text(stubs+bounded+identity+rate_window+presentation)
+    usage_models=(root/'Sources/CodexUsageWidget/Domain/UsageModels.swift').read_text()
+    quota_models='\n'.join(declaration(usage_models,'struct '+name+':') for name in [
+        'RateWindow','AccountInfo','ResetCreditDetail','CreditsInfo','UsageSnapshot'])+'\n'
+    (folder/'Stubs.swift').write_text(stubs+bounded+identity+quota_models+presentation)
     files=[folder/'Stubs.swift',root/'Sources/CodexUsageWidget/Domain/LocalProxyQueue.swift',service/'CodexCredentialTransaction.swift',service/'DispatchActivityStore.swift',service/'LocalProxyBridge.swift',service/'LocalProxyNetworkSettings.swift',service/'LocalProxyQueueStore.swift',root/'scripts/test-local-proxy-host.swift']
     # Credential transaction fixture only uses its actual read and gate routines.
     raw=(service/'CodexCredentialTransaction.swift').read_text();raw=raw[:raw.index('    private static func tokens(')]+'}\n'
