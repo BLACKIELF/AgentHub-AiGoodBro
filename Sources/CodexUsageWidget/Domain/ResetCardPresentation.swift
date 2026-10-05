@@ -1,9 +1,7 @@
 import Foundation
 
-/// Pure presentation and sorting rules for the reset cards carried by
-/// `LocalCLIQuotaResult.resetCards` (DTO defined next to it in LocalCLIAccount.swift).
-/// See that type's contract: the official Grok response has no card fields today, so
-/// production data is `nil`; the rules below are exercised by synthetic fixtures only.
+/// Pure presentation and sorting rules for Codex reset credits and local CLI reset cards.
+/// Local CLI availability follows each provider's evidence contract; unknown data stays unknown.
 enum ResetCardPresentation {
     /// A card counts as "expiring" only inside (0, 48h] before its expiry.
     static let expiringWindow: TimeInterval = 48 * 60 * 60
@@ -40,6 +38,56 @@ enum ResetCardPresentation {
             if ($0 > now) != ($1 > now) { return $0 > now }
             return $0 < $1
         }
+    }
+
+    struct ExpiryDisclosure: Equatable {
+        let inlineText: String?
+        let tooltip: String
+    }
+
+    static func expiryDisclosure(
+        count: Int?, expiries: [Date], fetchedAt: Date?, readSucceeded: Bool,
+        now: Date, language: WidgetLanguage
+    ) -> ExpiryDisclosure {
+        let dates = orderedExpiries(expiries, now: now)
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 8 * 3600)
+        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        var lines = [language.text("到期时间 · 北京时间（UTC+8）", "Expiry · Beijing time (UTC+8)")]
+        if !readSucceeded {
+            lines.append(language.text("读取未成功 · 上次记录", "Read unsuccessful · previous records"))
+        } else if !isFresh(fetchedAt, now: now) {
+            lines.append(language.text("上次快照 · 待刷新", "Last snapshot · refresh needed"))
+        }
+        for date in dates {
+            lines.append(formatter.string(from: date) + (date <= now ? language.text("（已过记录日期）", " (past recorded date)") : ""))
+        }
+        if let count, count >= 0 {
+            let missing = max(0, count - dates.count)
+            if missing > 0 { lines.append(language.text("另 \(missing) 张未提供到期时间", "\(missing) other cards have no reported expiry")) }
+            if count < dates.count { lines.append(language.text("数量与日期记录不一致 · 待核实", "Count and recorded dates differ · verification needed")) }
+            if count == 0 && dates.isEmpty { lines.append(language.text("没有可用重置卡", "No available reset cards")) }
+        } else {
+            lines.append(language.text("可用数量未确认", "Available count unconfirmed"))
+        }
+        if dates.isEmpty { lines.append(language.text("未提供到期时间", "No expiry reported")) }
+        formatter.dateFormat = "MM-dd HH:mm"
+        let upcoming = dates.filter { $0 > now }.prefix(1)
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 8 * 3600)!
+        let text = upcoming.map { date in
+            formatter.dateFormat =
+                calendar.component(.year, from: date) == calendar.component(.year, from: now)
+                ? "MM-dd HH:mm" : "yyyy-MM-dd HH:mm"
+            return formatter.string(from: date)
+        }.joined(separator: " · ")
+        let prefix =
+            !readSucceeded || !isFresh(fetchedAt, now: now) || count == nil || (count ?? 0) < dates.count
+            ? language.text("记录 ", "Recorded ") : ""
+        return ExpiryDisclosure(
+            inlineText: text.isEmpty ? nil : (prefix.isEmpty ? language.text("到期 ", "Expires ") : prefix) + text,
+            tooltip: lines.joined(separator: "\n"))
     }
 
     /// Earliest future expiry across the known cards, or `nil` when the set of

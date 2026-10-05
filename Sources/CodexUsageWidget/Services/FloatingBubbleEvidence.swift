@@ -17,6 +17,14 @@ enum FloatingBubbleEvidence {
                 ("seven-day", language.text("每周额度", "Weekly quota"), snapshot?.sevenDay),
                 ("monthly", language.text("每月额度", "Monthly quota"), snapshot?.monthly),
             ]
+            if QuotaAvailabilityPresentation.weeklyOnlyPro(profile) {
+                metrics.append(
+                    TokenMonitorFloatingBubbleMetric(
+                        id: "five-hour", name: language.text("五小时额度", "5-hour quota"),
+                        sourceID: "codex:\(profile.id):five-hour", fetchedAt: snapshot?.fetchedAt,
+                        isStale: stale, isAvailable: loggedIn, value: .text("∞"),
+                        resetLabel: QuotaAvailabilityPresentation.weeklyOnlyProHelp(language)))
+            }
             for (id, name, window) in windows {
                 guard let window else { continue }
                 let valid = window.usedPercent.isFinite && (0...100).contains(window.usedPercent)

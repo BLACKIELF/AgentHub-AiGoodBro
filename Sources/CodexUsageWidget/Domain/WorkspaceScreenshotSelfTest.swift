@@ -259,8 +259,8 @@ enum WorkspaceScreenshotSelfTest {
                     accountCount: count,
                     root: root.appendingPathComponent("row-growth-\(count)")
                 )
-                let view = CodexAccountManagerView(store: store, settings: settings, paletteCatalog: catalog, previewOpenCodexWorkspace: true)
-                let captured = try WorkspaceScreenshotExporter.render(view.screenshotContent, width: 980, scheme: .light)
+                let view = CodexAccountManagerView(store: store, settings: settings, paletteCatalog: catalog, previewOpenCodexWorkspace: true, appStorageDefaults: defaults)
+                let captured = try WorkspaceScreenshotExporter.render(view.screenshotContent.defaultAppStorage(defaults), width: 980, scheme: .light)
                 // The Codex page retains the explicit list layout, independent of the home grid.
                 if count > 2 {
                     expect(captured.plan.size.height > previousHeight, "each added account in the multi-account layout must increase export height")
@@ -279,16 +279,16 @@ enum WorkspaceScreenshotSelfTest {
                         store: eightAccountStore,
                         settings: settings,
                         paletteCatalog: catalog,
-                        previewOpenCodexWorkspace: true
+                        previewOpenCodexWorkspace: true, appStorageDefaults: defaults
                     )
                     let eightAccountCapture = try WorkspaceScreenshotExporter.render(
-                        eightAccountView.screenshotContent,
+                        eightAccountView.screenshotContent.defaultAppStorage(defaults),
                         width: width,
                         scheme: scheme
                     )
                     let store = WorkspacePreviewRenderer.fixtureStore(accountCount: 9, root: root.appendingPathComponent(UUID().uuidString))
-                    let view = CodexAccountManagerView(store: store, settings: settings, paletteCatalog: catalog, previewOpenCodexWorkspace: true)
-                    let captured = try WorkspaceScreenshotExporter.render(view.screenshotContent, width: width, scheme: scheme)
+                    let view = CodexAccountManagerView(store: store, settings: settings, paletteCatalog: catalog, previewOpenCodexWorkspace: true, appStorageDefaults: defaults)
+                    let captured = try WorkspaceScreenshotExporter.render(view.screenshotContent.defaultAppStorage(defaults), width: width, scheme: scheme)
                     expect(captured.plan.size.width == width, "export must keep the current workspace width")
                     expect(
                         captured.plan.size.height > eightAccountCapture.plan.size.height,
@@ -303,16 +303,17 @@ enum WorkspaceScreenshotSelfTest {
                     expect(store.isPreview && store.profiles.count == 9, "export must retain all nine fixture accounts")
                     settings.accountWorkspaceLayout = .cards
                     let sixAccountStore = WorkspacePreviewRenderer.fixtureStore(accountCount: 6, root: root.appendingPathComponent(UUID().uuidString))
-                    let sixAccountView = CodexAccountManagerView(store: sixAccountStore, settings: settings, paletteCatalog: catalog, previewOpenCodexWorkspace: true)
-                    let sixCardCapture = try WorkspaceScreenshotExporter.render(sixAccountView.screenshotContent, width: width, scheme: scheme)
-                    let cardCapture = try WorkspaceScreenshotExporter.render(view.screenshotContent, width: width, scheme: scheme)
+                    let sixAccountView = CodexAccountManagerView(
+                        store: sixAccountStore, settings: settings, paletteCatalog: catalog, previewOpenCodexWorkspace: true, appStorageDefaults: defaults)
+                    let sixCardCapture = try WorkspaceScreenshotExporter.render(sixAccountView.screenshotContent.defaultAppStorage(defaults), width: width, scheme: scheme)
+                    let cardCapture = try WorkspaceScreenshotExporter.render(view.screenshotContent.defaultAppStorage(defaults), width: width, scheme: scheme)
                     expect(cardCapture.plan.size.height > sixCardCapture.plan.size.height, "card screenshots must include rows beyond the viewport")
                     expect(NSBitmapImageRep(data: cardCapture.png)?.pixelsHigh == cardCapture.plan.pixelsHigh, "all card rows must survive PNG encoding")
                     print("Card layout: width=\(Int(width)), scheme=\(scheme), height=\(Int(cardCapture.plan.size.height))pt")
-                    let homeSix = CodexAccountManagerView(store: sixAccountStore, settings: settings, paletteCatalog: catalog)
-                    let homeNine = CodexAccountManagerView(store: store, settings: settings, paletteCatalog: catalog)
-                    let homeSixCapture = try WorkspaceScreenshotExporter.render(homeSix.screenshotContent, width: width, scheme: scheme)
-                    let homeNineCapture = try WorkspaceScreenshotExporter.render(homeNine.screenshotContent, width: width, scheme: scheme)
+                    let homeSix = CodexAccountManagerView(store: sixAccountStore, settings: settings, paletteCatalog: catalog, appStorageDefaults: defaults)
+                    let homeNine = CodexAccountManagerView(store: store, settings: settings, paletteCatalog: catalog, appStorageDefaults: defaults)
+                    let homeSixCapture = try WorkspaceScreenshotExporter.render(homeSix.screenshotContent.defaultAppStorage(defaults), width: width, scheme: scheme)
+                    let homeNineCapture = try WorkspaceScreenshotExporter.render(homeNine.screenshotContent.defaultAppStorage(defaults), width: width, scheme: scheme)
                     expect(homeNineCapture.plan.size.height > homeSixCapture.plan.size.height, "the home grid exports every additional account row")
                     expect(NSBitmapImageRep(data: homeNineCapture.png)?.pixelsHigh == homeNineCapture.plan.pixelsHigh, "the full home grid survives PNG encoding")
                     settings.accountWorkspaceLayout = .rows

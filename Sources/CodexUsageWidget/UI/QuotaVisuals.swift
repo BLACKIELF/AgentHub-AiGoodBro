@@ -187,6 +187,7 @@ struct QuotaPercentageRing: View {
     var tint: Color? = nil
     var showsValue = true
     var accessibilityTitle: String? = nil
+    var isWeeklyOnlyPro = false
     @Environment(\.widgetLanguage) private var language
 
     private var value: Double? {
@@ -207,8 +208,8 @@ struct QuotaPercentageRing: View {
                 }
             }
             if showsValue {
-                Text(QuotaAvailabilityPresentation.percentText(value))
-                    .font(.system(size: max(9, diameter * 0.25), weight: .semibold))
+                Text(isWeeklyOnlyPro && value == nil ? "∞" : QuotaAvailabilityPresentation.percentText(value))
+                    .font(.system(size: max(9, diameter * (isWeeklyOnlyPro && value == nil ? 0.42 : 0.25)), weight: .semibold))
                     .monospacedDigit()
                     .foregroundStyle(value == nil ? Color.secondary : Color.primary)
                     .lineLimit(1).minimumScaleFactor(0.8)
@@ -218,7 +219,9 @@ struct QuotaPercentageRing: View {
         .frame(width: diameter, height: diameter)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilityTitle ?? language.text("剩余额度", "Remaining quota"))
-        .accessibilityValue(value.map { QuotaAvailabilityPresentation.percentText($0) } ?? language.text("未知", "Unknown"))
+        .accessibilityValue(
+            isWeeklyOnlyPro && value == nil
+                ? QuotaAvailabilityPresentation.weeklyOnlyProHelp(language) : (value.map { QuotaAvailabilityPresentation.percentText($0) } ?? language.text("未知", "Unknown")))
     }
 }
 

@@ -75,6 +75,7 @@ enum TokenMonitorEdgeDockScreenTarget {
 struct TokenMonitorEdgeDockPreferences: Codable, Equatable {
     enum Mode: String, Codable, CaseIterable { case autoHide, always }
     enum Side: String, Codable, CaseIterable { case right, left }
+    enum QuotaStyle: String, Codable, CaseIterable { case ring, fish }
 
     static let storageKey = "AiGoodBro.edgeDock.v1"
 
@@ -86,6 +87,7 @@ struct TokenMonitorEdgeDockPreferences: Codable, Equatable {
     var items: [TokenMonitorEdgeDockItem]?
     var hapticEnabled = true
     var warnColors = false
+    var quotaStyle: QuotaStyle = .ring
 
     init(
         enabled: Bool = false,
@@ -95,7 +97,8 @@ struct TokenMonitorEdgeDockPreferences: Codable, Equatable {
         displayID: String? = nil,
         items: [TokenMonitorEdgeDockItem]? = nil,
         hapticEnabled: Bool = true,
-        warnColors: Bool = false
+        warnColors: Bool = false,
+        quotaStyle: QuotaStyle = .ring
     ) {
         self.enabled = enabled
         self.mode = mode
@@ -105,10 +108,11 @@ struct TokenMonitorEdgeDockPreferences: Codable, Equatable {
         self.items = items
         self.hapticEnabled = hapticEnabled
         self.warnColors = warnColors
+        self.quotaStyle = quotaStyle
     }
 
     private enum CodingKeys: String, CodingKey {
-        case enabled, mode, side, offset, displayID, items, hapticEnabled, warnColors
+        case enabled, mode, side, offset, displayID, items, hapticEnabled, warnColors, quotaStyle
     }
 
     init(from decoder: Decoder) throws {
@@ -121,6 +125,7 @@ struct TokenMonitorEdgeDockPreferences: Codable, Equatable {
         items = try? values.decodeIfPresent([TokenMonitorEdgeDockItem].self, forKey: .items)
         hapticEnabled = (try? values.decode(Bool.self, forKey: .hapticEnabled)) ?? true
         warnColors = (try? values.decode(Bool.self, forKey: .warnColors)) ?? false
+        quotaStyle = (try? values.decode(QuotaStyle.self, forKey: .quotaStyle)) ?? .ring
         self = normalized()
     }
 
@@ -430,6 +435,8 @@ struct TokenMonitorEdgeDockCell: Equatable, Identifiable {
     var snapshotFetchedAt: Date? = nil
     /// Historical display identity only; never evidence of the current login.
     var isHistoricalAccount = false
+    /// Exact selected quota metric; distinguishes a weekly-only short limit from credits.
+    var headlineMetricID: String? = nil
 
     func snapshotDescription(_ language: WidgetLanguage, now: Date = Date()) -> String {
         guard isAvailable else {

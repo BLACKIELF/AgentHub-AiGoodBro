@@ -2,6 +2,41 @@ import Foundation
 
 /// Effective availability for display only. Never rewrite the official snapshot.
 enum QuotaAvailabilityPresentation {
+    /// A verified official Pro reading without a short window is weekly-only.
+    /// This literal is display evidence, never a numeric allowance or admission.
+    static func weeklyOnlyPro(plan: String?, readSucceeded: Bool, hasFiveHour: Bool, weeklyRemaining: Double?, readFailed: Bool = false) -> Bool {
+        let plan = plan?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return readSucceeded && !readFailed && !hasFiveHour
+            && weeklyRemaining.map { $0.isFinite && (0...100).contains($0) } == true
+            && (plan == "pro" || plan == "prolite")
+    }
+
+    static func weeklyOnlyPro(_ profile: CodexProfile, now: Date = Date()) -> Bool {
+        guard let snapshot = profile.lastSnapshot, let weekly = snapshot.sevenDay,
+            (0...900).contains(now.timeIntervalSince(snapshot.fetchedAt)),
+            weekly.resetsAt.map({ $0 > now }) == true
+        else { return false }
+        return weeklyOnlyPro(
+            plan: snapshot.planType, readSucceeded: snapshot.quotaReadSucceeded == true,
+            hasFiveHour: snapshot.fiveHour != nil, weeklyRemaining: 100 - weekly.usedPercent,
+            readFailed: profile.lastQuotaReadFailureAt.map { $0 >= snapshot.fetchedAt } ?? false)
+    }
+
+    static func weeklyOnlyPro(_ snapshot: UsageSnapshot, lastFailureAt: Date?, now: Date = Date()) -> Bool {
+        guard let weekly = snapshot.sevenDayQuota,
+            (0...900).contains(now.timeIntervalSince(snapshot.refreshedAt)),
+            weekly.resetsAt.map({ $0 > now }) == true
+        else { return false }
+        return weeklyOnlyPro(
+            plan: snapshot.account?.planType, readSucceeded: snapshot.quotaReadSucceeded,
+            hasFiveHour: snapshot.fiveHourQuota != nil, weeklyRemaining: 100 - weekly.usedPercent,
+            readFailed: lastFailureAt.map { $0 >= snapshot.refreshedAt } ?? false)
+    }
+
+    static func weeklyOnlyProHelp(_ language: WidgetLanguage) -> String {
+        language.text("官方未提供五小时限额，以周额度为准", "No official 5-hour limit is reported; the weekly allowance applies")
+    }
+
     static func percentText(_ value: Double?) -> String {
         guard let value, value.isFinite else { return "—" }
         let bounded = max(0, min(100, value))
@@ -26,18 +61,50 @@ enum QuotaAvailabilityPresentation {
     }
 
     static func fiveHourWindow(_ fiveHour: RateWindow?, sevenDay: RateWindow?) -> RateWindow? {
+        guard let fiveHour else { return nil }
         guard isWeeklyExhausted(sevenDay?.remainingPercent) else { return fiveHour }
         return RateWindow(
             usedPercent: 100,
-            windowDurationMins: fiveHour?.windowDurationMins ?? 300,
-            resetsAt: fiveHour?.resetsAt
+            windowDurationMins: fiveHour.windowDurationMins ?? 300,
+            resetsAt: fiveHour.resetsAt
         )
     }
 
     static func selfTest() -> Bool {
         let fiveHour = RateWindow(usedPercent: 18, windowDurationMins: 300, resetsAt: nil)
         let exhausted = RateWindow(usedPercent: 100, windowDurationMins: 10_080, resetsAt: nil)
-        return fiveHourRemaining(82, sevenDay: 0) == 0
+        // Exercise the real adapter: RateWindow.remainingPercent clamps invalid
+        // source values, which must never turn a malformed reading into ∞.
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        func officialSnapshot(_ usedPercent: Double) -> UsageSnapshot {
+            UsageSnapshot(
+                refreshedAt: now,
+                account: AccountInfo(type: "chatgpt", planType: "prolite", emailPresent: false),
+                limitId: "codex", limitName: "Codex", quotaReadSucceeded: true,
+                fiveHourQuota: nil,
+                sevenDayQuota: RateWindow(
+                    usedPercent: usedPercent, windowDurationMins: 10_080,
+                    resetsAt: now.addingTimeInterval(86_400)),
+                monthlyQuota: nil, credits: nil, cloudLifetimeTokens: nil,
+                local: nil, taskBoard: nil, messages: [])
+        }
+        let rejectsMalformedWeekly = [-1.0, 101, .nan, .infinity, -.infinity].allSatisfy {
+            !weeklyOnlyPro(officialSnapshot($0), lastFailureAt: nil, now: now)
+        }
+        let acceptsValidWeekly = [0.0, 55, 100].allSatisfy {
+            weeklyOnlyPro(officialSnapshot($0), lastFailureAt: nil, now: now)
+        }
+        return rejectsMalformedWeekly && acceptsValidWeekly
+            && weeklyOnlyPro(plan: "prolite", readSucceeded: true, hasFiveHour: false, weeklyRemaining: 50)
+            && weeklyOnlyPro(plan: "pro", readSucceeded: true, hasFiveHour: false, weeklyRemaining: 50)
+            && !weeklyOnlyPro(plan: "plus", readSucceeded: true, hasFiveHour: false, weeklyRemaining: 50)
+            && !weeklyOnlyPro(plan: "pro", readSucceeded: false, hasFiveHour: false, weeklyRemaining: 50)
+            && !weeklyOnlyPro(plan: "pro", readSucceeded: true, hasFiveHour: false, weeklyRemaining: 50, readFailed: true)
+            && !weeklyOnlyPro(plan: "pro", readSucceeded: true, hasFiveHour: true, weeklyRemaining: 50)
+            && !weeklyOnlyPro(plan: "prolite", readSucceeded: true, hasFiveHour: false, weeklyRemaining: nil)
+            && !weeklyOnlyPro(plan: "prolite", readSucceeded: true, hasFiveHour: false, weeklyRemaining: .nan)
+            && weeklyOnlyPro(plan: "prolite", readSucceeded: true, hasFiveHour: false, weeklyRemaining: 0)
+            && fiveHourRemaining(82, sevenDay: 0) == 0
             && fiveHourRemaining(nil, sevenDay: 0) == 0
             && fiveHourRemaining(82, sevenDay: nil) == 82
             && fiveHourRemaining(nil, sevenDay: 83) == nil
@@ -47,7 +114,7 @@ enum QuotaAvailabilityPresentation {
             && reportedFiveHourRemaining(nil, sevenDay: 0) == nil
             && reportedFiveHourRemaining(56, sevenDay: 20) == 56
             && fiveHourWindow(fiveHour, sevenDay: exhausted)?.remainingPercent == 0
-            && fiveHourWindow(nil, sevenDay: exhausted)?.remainingPercent == 0
+            && fiveHourWindow(nil, sevenDay: exhausted) == nil
             && fiveHourWindow(nil, sevenDay: nil) == nil
             && fiveHour.remainingPercent == 82
             && percentText(nil) == "—"

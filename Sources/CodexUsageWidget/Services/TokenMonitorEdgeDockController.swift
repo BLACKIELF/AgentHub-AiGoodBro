@@ -134,6 +134,7 @@ final class TokenMonitorEdgeDockController: NSObject {
         let preferredColorScheme: ColorScheme?
         let compact: Bool
         let warnColors: Bool
+        let quotaStyle: TokenMonitorEdgeDockPreferences.QuotaStyle
         let focusedIndex: Int?
         let startIndex: Int
         let pageIndex: Int
@@ -153,6 +154,7 @@ final class TokenMonitorEdgeDockController: NSObject {
         let canPin: Bool
         let isRefreshing: Bool
         let snapshotDescription: String
+        let quotaStyle: TokenMonitorEdgeDockPreferences.QuotaStyle
     }
 
     private struct Layout {
@@ -221,6 +223,7 @@ final class TokenMonitorEdgeDockController: NSObject {
         guard preferences.enabled else { return }
         if railPinned {
             preferences.enabled = false
+            configurationGate.reset()
             hideAll()
             onPreferencesChange?(preferences)
         } else {
@@ -430,6 +433,13 @@ final class TokenMonitorEdgeDockController: NSObject {
 
     private func updateSurfaces() {
         guard let layout else { return }
+        if let cardIndex, !cells.indices.contains(cardIndex) || !layout.page.indices.contains(cardIndex) {
+            self.cardIndex = nil
+            cardPinned = false
+            hoveredIndex = nil
+            hoverStartedAt = nil
+            outsideStartedAt = nil
+        }
         let peek = peekPanel
         let rail = railPanel
         let card = cardPanel
@@ -467,6 +477,7 @@ final class TokenMonitorEdgeDockController: NSObject {
                 cells: Array(cells[layout.page.indices]), side: preferences.side, language: language, glass: glass,
                 paletteID: paletteID, preferredColorScheme: preferredColorScheme,
                 compact: layout.compact, warnColors: preferences.warnColors,
+                quotaStyle: preferences.quotaStyle,
                 focusedIndex: cardIndex.map { $0 - layout.page.indices.lowerBound },
                 startIndex: layout.page.indices.lowerBound,
                 pageIndex: layout.page.index, pageCount: layout.page.count, isPinned: railPinned
@@ -477,6 +488,7 @@ final class TokenMonitorEdgeDockController: NSObject {
                         cells: content.cells, side: content.side, language: content.language, glass: content.glass,
                         compact: content.compact, warnColors: content.warnColors,
                         focusedIndex: content.focusedIndex, pageIndex: content.pageIndex, pageCount: content.pageCount,
+                        quotaStyle: content.quotaStyle,
                         isPinned: content.isPinned, onPin: { [weak self] in self?.toggleRailPinOrHide() },
                         onPage: { [weak self] direction in self?.changePage(direction) },
                         onSelect: { [weak self] index in self?.activateCell(at: index + content.startIndex) },
@@ -506,7 +518,7 @@ final class TokenMonitorEdgeDockController: NSObject {
                 paletteID: paletteID, preferredColorScheme: preferredColorScheme,
                 tailY: placement.tailY, isPinned: cardPinned,
                 canPin: true, isRefreshing: refreshingCells.contains(cells[index].id),
-                snapshotDescription: cells[index].snapshotDescription(language)
+                snapshotDescription: cells[index].snapshotDescription(language), quotaStyle: preferences.quotaStyle
             )
             if cardHost == nil || lastCardContent != content {
                 let view = themed(
@@ -518,6 +530,7 @@ final class TokenMonitorEdgeDockController: NSObject {
                         onOpenProxy: { [weak self] in self?.openProxySettings() },
                         snapshotDescription: content.snapshotDescription,
                         isRefreshing: content.isRefreshing,
+                        quotaStyle: content.quotaStyle,
                         onRefresh: onRefresh == nil ? nil : { [weak self] in self?.refresh(content.cell) },
                         onContentHeightChange: { [weak self] height in
                             self?.resizeCardForContent(height, cellID: content.cell.id)
@@ -745,7 +758,25 @@ final class TokenMonitorEdgeDockController: NSObject {
         guard !dock.railVisible, !dock.railPinned, dock.peekPanel?.isVisible != true,
             dock.railPanel?.isVisible != true, dock.timer == nil
         else { return false }
-        dock.preferences.enabled = true
+        let shortcutPreferences = TokenMonitorEdgeDockPreferences(
+            enabled: true, mode: .autoHide, displayID: "uuid:" + UUID().uuidString,
+            items: [.limit("codex"), .proxy()])
+        func configureShortcutPreferences() {
+            dock.configure(
+                preferences: shortcutPreferences, cells: cells, language: .en,
+                onPreferencesChange: { _ in }, onOpenDashboard: {},
+                onOpenUsageOverview: { usageOpens += 1 }, onOpenProxy: { proxyOpens += 1 })
+        }
+        configureShortcutPreferences()
+        dock.revealFromShortcut()
+        dock.toggleRailPinOrHide()
+        guard !dock.preferences.enabled, !dock.railVisible, dock.timer == nil else { return false }
+        // No intermediate disabled configuration: the same enabled snapshot must be accepted again.
+        configureShortcutPreferences()
+        dock.revealFromShortcut()
+        guard dock.preferences == shortcutPreferences.normalized(), dock.railVisible, dock.railPinned,
+            dock.timer != nil, dock.peekPanel == nil, dock.railPanel == nil, dock.cardPanel == nil
+        else { return false }
 
         for index in [0, 1] {
             dock.cardIndex = index
@@ -848,6 +879,7 @@ final class TokenMonitorEdgeDockController: NSObject {
         next.displayID = target
         let changed = next.normalized() != preferences
         preferences = next.normalized()
+        if changed { configurationGate.reset() }
         self.layout = makeLayout(using: screens)
         updateSurfaces()
         if changed { onPreferencesChange?(preferences) }

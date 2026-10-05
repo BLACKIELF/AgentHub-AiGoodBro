@@ -65,7 +65,7 @@ struct AccountInformationView: View {
                 window(language.text("7 天", "7 days"), profile.lastSnapshot?.sevenDay)
                 if profile.lastSnapshot?.monthly != nil { window(language.text("月额度", "Monthly"), profile.lastSnapshot?.monthly) }
                 row(language.text("额度更新", "Allowance updated"), date(profile.lastSnapshot?.fetchedAt))
-                Text(language.text("未提供的窗口显示 —；不代表额度为零或无限。", "An unreported window is —, not zero or unlimited."))
+                Text(language.text("未核实的窗口显示 —；Pro 五小时 ∞ 表示以周额度为准。", "Unverified windows show —; Pro 5-hour ∞ uses the weekly allowance."))
                     .foregroundStyle(.secondary)
             }
             section(language.text("官方使用统计", "Reported usage statistics")) {
@@ -129,7 +129,9 @@ struct AccountInformationView: View {
         VStack(alignment: .leading, spacing: 3) {
             let current = Self.shouldShowQuota(value, profile: profile, now: now)
             let pair = LocalCLIQuotaWindowDetails.percentages(usedPercent: current ? (value?.usedPercent ?? .nan) : .nan, language: language)
-            row(title, language.text("已用 \(pair.used) · 剩余 \(pair.remaining)", "Used \(pair.used) · Left \(pair.remaining)"))
+            let weeklyOnly = value == nil && title == language.text("5 小时", "5 hours") && QuotaAvailabilityPresentation.weeklyOnlyPro(profile, now: now)
+            row(title, weeklyOnly ? "∞" : language.text("已用 \(pair.used) · 剩余 \(pair.remaining)", "Used \(pair.used) · Left \(pair.remaining)"))
+            if weeklyOnly { Text(QuotaAvailabilityPresentation.weeklyOnlyProHelp(language)).foregroundStyle(.secondary) }
             if let reset = value?.resetsAt, reset <= now {
                 Text(language.text("该窗口已到重置时间，等待官方更新", "This window reached its reset time; awaiting provider data"))
                     .foregroundStyle(.secondary)

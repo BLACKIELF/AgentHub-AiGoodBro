@@ -122,6 +122,12 @@ struct TokenMonitorEdgeDockSettingsView: View {
                     : language.text("⌘I 注册失败或被占用；仍可使用显示开关。", "⌘I could not register or is occupied; use the Show toggle.")
             )
             .font(.caption).foregroundStyle(.secondary)
+            if settings.edgeDockShortcutError != nil {
+                Button(language.text("重试 ⌘I", "Retry ⌘I")) { settings.edgeDockShortcutRetry?() }
+                    .buttonStyle(.borderless).font(.caption)
+                    .disabled(settings.edgeDockShortcutRetry == nil)
+                    .accessibilityIdentifier("edge-dock-shortcut-retry")
+            }
             Text(
                 language.text(
                     "选择多个账号，额度会分别显示在屏幕边缘。悬停查看详情，拖动顶部调整位置；项目较多时可翻页。",
@@ -173,6 +179,22 @@ struct TokenMonitorEdgeDockSettingsView: View {
                 }
             }
 
+            Divider()
+            VStack(alignment: .leading, spacing: 7) {
+                Picker(language.text("额度样式", "Quota style"), selection: binding(\.quotaStyle)) {
+                    Text(language.text("圆环", "Rings")).tag(TokenMonitorEdgeDockPreferences.QuotaStyle.ring)
+                    Text(language.text("小鱼", "Fish")).tag(TokenMonitorEdgeDockPreferences.QuotaStyle.fish)
+                }
+                .pickerStyle(.segmented)
+                .accessibilityIdentifier("edge-dock-quota-style")
+                Text(
+                    language.text(
+                        "小鱼随已用额度向右移动，数字显示剩余百分比；只改变展示，数据与圆环相同。",
+                        "Fish move right as quota is used; numbers show the remaining percentage. Both styles use the same data.")
+                )
+                .font(.system(size: 10)).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
             Divider()
             refreshControls
             Divider()

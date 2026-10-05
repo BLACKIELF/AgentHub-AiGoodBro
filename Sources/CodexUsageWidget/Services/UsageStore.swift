@@ -414,6 +414,86 @@ final class UsageStore: ObservableObject {
 
     private var fullTimer: Timer?
     private var statisticsRolloverTimer: Timer?
+    private var resetCreditAutoDesktopVerified = false
+    private var resetCreditAutoIdentityRetryAt: Date?
+    private var resetCreditAutoTimer: Timer?
+    private var resetCreditAutoPreferences = CodexResetCreditAutoPreferences()
+    private var resetCreditAutoTask: Task<Void, Never>?
+    private var resetCreditAutoAdmission: CodexResetCreditAutoAdmission?
+    private var resetCreditAutoIdentity: (profileID: String, accountID: String, home: URL)?
+    @MainActor private lazy var resetCreditAutoController = CodexResetCreditController()
+    @Published private(set) var resetCreditAutoStatus: String?
+
+    func configureResetCreditAuto(_ preferences: CodexResetCreditAutoPreferences) {
+        guard !isPreview else { return }
+        resetCreditAutoAdmission?.cancel()
+        resetCreditAutoPreferences = preferences.isValid ? preferences : .init()
+        resetCreditAutoTimer?.invalidate()
+        resetCreditAutoTimer = nil
+        guard hasStarted, preferences.isValid, !preferences.authorizedAccounts.isEmpty else { return }
+        let timer = Timer(timeInterval: 60, repeats: true) { [weak self] _ in self?.checkResetCreditAuto() }
+        timer.tolerance = 3
+        RunLoop.main.add(timer, forMode: .common)
+        resetCreditAutoTimer = timer
+        checkResetCreditAuto()
+    }
+
+    private func checkResetCreditAuto() {
+        guard hasStarted, !isPreview, !resetCreditAutoPreferences.authorizedAccounts.isEmpty,
+            identityRefreshCancellation == nil, resetCreditAutoTask == nil,
+            !isLaunchingCodex, !isLoggingIn, !isAccountSwitchTransactionActive
+        else { return }
+        if !resetCreditAutoDesktopVerified {
+            if resetCreditAutoIdentityRetryAt.map({ Date() >= $0 }) ?? true {
+                resetCreditAutoIdentityRetryAt = Date().addingTimeInterval(60)
+                synchronizeMonitorWithCurrentCodex(announce: false)
+            }
+            return
+        }
+        guard let systemID = profiles.first(where: \.isSystemProfile)?.lastSnapshot?.accountID, !systemID.isEmpty else { return }
+        let now = Date()
+        let candidates = profiles.filter { profile in
+            guard !profile.isSystemProfile, let account = profile.lastSnapshot?.accountID,
+                account != systemID,
+                resetCreditAutoPreferences.permits(profileID: profile.id, accountID: account),
+                profile.lastSnapshot?.quotaReadSucceeded == true, profile.lastQuotaReadFailureAt == nil
+            else { return false }
+            return (profile.lastSnapshot?.resetCreditExpiries ?? []).contains { $0 > now && $0.timeIntervalSince(now) <= resetCreditAutoPreferences.leadSeconds }
+        }
+        guard !candidates.isEmpty else { return }
+        resetCreditAutoTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer {
+                self.resetCreditAutoTask = nil
+                self.resetCreditAutoAdmission = nil
+                self.resetCreditAutoIdentity = nil
+            }
+            var seen = Set<String>()
+            for candidate in candidates.prefix(1000) {
+                guard self.hasStarted, self.resetCreditAutoDesktopVerified, self.identityRefreshCancellation == nil,
+                    let profile = self.profiles.first(where: { $0.id == candidate.id }), let account = profile.lastSnapshot?.accountID, !profile.isSystemProfile,
+                    let currentSystemID = self.profiles.first(where: \.isSystemProfile)?.lastSnapshot?.accountID, !currentSystemID.isEmpty, account != currentSystemID,
+                    self.resetCreditAutoPreferences.permits(profileID: profile.id, accountID: account),
+                    let alias = self.accountTaskAlias(for: profile), !seen.contains(account)
+                else { continue }
+                let admission = CodexResetCreditAutoAdmission()
+                self.resetCreditAutoAdmission = admission
+                self.resetCreditAutoIdentity = (profile.id, account, profile.codexHomeURL)
+                let disposition = await self.resetCreditAutoController.runAutomatic(
+                    profile: profile, accountID: account, hubAccountAlias: alias,
+                    lead: self.resetCreditAutoPreferences.leadSeconds, quotaFingerprint: "", admission: admission,
+                    onStatus: { [weak self] status in
+                        guard let self else { return }
+                        if self.resetCreditAutoStatus?.contains("人工核对") != true || status.contains("人工核对") {
+                            self.resetCreditAutoStatus = AccountDisplay.numberedName(profile, allProfiles: self.profiles) + " · " + status
+                        }
+                    },
+                    onConfirmedResult: { [weak self] in self?.refreshProfile(profile.id) })
+                if disposition != .tryNextProfile { seen.insert(account) }
+            }
+        }
+    }
+
     private var warmUpTimer: Timer?
     private var quotaEventTracker = CodexQuotaEventTracker()
     private var warmUpMaintenanceTimer: Timer?
@@ -5978,6 +6058,7 @@ final class UsageStore: ObservableObject {
     @MainActor
     private func startAfterPendingSwitchRecovery() {
         guard hasStarted else { return }
+        configureResetCreditAuto(resetCreditAutoPreferences)
         refreshTokenMonitorConnections()
         publisherMessages.start { [weak self] message, admission in
             await withCheckedContinuation { continuation in
@@ -6157,6 +6238,7 @@ final class UsageStore: ObservableObject {
                 object: nil,
                 queue: .main
             ) { [weak self] _ in
+                self?.checkResetCreditAuto()
                 self?.codexInactiveSince = nil
                 self?.updateCodexForegroundState()
                 self?.taskClient.refreshThreads()
@@ -6299,6 +6381,10 @@ final class UsageStore: ObservableObject {
 
     @MainActor
     func stop() {
+        resetCreditAutoDesktopVerified = false
+        resetCreditAutoAdmission?.cancel()
+        resetCreditAutoTimer?.invalidate()
+        resetCreditAutoTimer = nil
         quotaResumeTask?.cancel()
         quotaResumeTask = nil
         tokenMonitorHubGeneration &+= 1
@@ -7050,9 +7136,17 @@ final class UsageStore: ObservableObject {
     }
 
     private func syncProfiles() {
+        if let identity = resetCreditAutoIdentity,
+            (profileStore.profiles.first(where: \.isSystemProfile)?.lastSnapshot?.accountID ?? "").isEmpty
+                || identity.accountID == profileStore.profiles.first(where: \.isSystemProfile)?.lastSnapshot?.accountID
+                || !profileStore.profiles.contains(where: { $0.id == identity.profileID && $0.lastSnapshot?.accountID == identity.accountID && $0.codexHomeURL == identity.home })
+        {
+            resetCreditAutoAdmission?.cancel()
+        }
         if !isPreview { DispatchCodeCatalog.reload() }
         let previousStatisticsSources = hasStarted ? currentStatisticsEngineScanKey().sources : []
         profiles = profileStore.profiles
+        if hasStarted { DispatchQueue.main.async { [weak self] in self?.checkResetCreditAuto() } }
         if hasStarted, previousStatisticsSources != currentStatisticsEngineScanKey().sources {
             refreshStatisticsEngine()
         }
@@ -7143,6 +7237,8 @@ final class UsageStore: ObservableObject {
         guard let profile = profiles.first(where: \.isSystemProfile) else { return }
         let nextState = authFileState(for: profile)
         guard forceRefresh || nextState != monitoredAuthState else { return }
+        resetCreditAutoDesktopVerified = false
+        resetCreditAutoAdmission?.cancel()
         let wasSignedIn = monitoredAuthState?.exists == true
         monitoredAuthState = nextState
         if isAccountSwitchTransactionActive {
@@ -7169,6 +7265,9 @@ final class UsageStore: ObservableObject {
     }
 
     private func synchronizeMonitorWithCurrentCodex(announce: Bool) {
+        resetCreditAutoIdentityRetryAt = Date().addingTimeInterval(60)
+        resetCreditAutoDesktopVerified = false
+        resetCreditAutoAdmission?.cancel()
         guard let systemProfile = profiles.first(where: \.isSystemProfile) else {
             refresh(queueIfBusy: true)
             return
@@ -7220,6 +7319,14 @@ final class UsageStore: ObservableObject {
                             try self.profileStore.selectMonitor(systemProfile.id)
                         }
                     }
+                    let recordedSystem = self.profileStore.profiles.first(where: \.isSystemProfile)
+                    self.resetCreditAutoDesktopVerified =
+                        systemSnapshot.quotaReadSucceeded
+                        && systemSnapshot.account?.email?.isEmpty == false
+                        && recordedSystem?.lastSnapshot?.accountID?.isEmpty == false
+                        && recordedSystem?.lastSnapshot?.fetchedAt == systemSnapshot.refreshedAt
+                        && recordedSystem?.lastSnapshot?.quotaReadSucceeded == true
+                        && (recordedSystem?.lastQuotaReadFailureAt.map { $0 < systemSnapshot.refreshedAt } ?? true)
                     self.syncProfiles()
                     self.configureAuthMonitoring()
                     if previousMonitorID != self.selectedMonitorProfileID {

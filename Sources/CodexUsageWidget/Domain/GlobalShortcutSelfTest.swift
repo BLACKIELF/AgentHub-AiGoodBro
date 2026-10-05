@@ -32,12 +32,31 @@ enum GlobalShortcutSelfTest {
         {
             failures.append("auto-hidden shortcut reveals before hiding")
         }
+        var dockRegistered = false
+        var attempts = 0
+        func retryDock() -> Result<Void, GlobalShortcutRegistrationFailure> {
+            GlobalShortcut.ensureEdgeDockRegistration(isRegistered: dockRegistered) {
+                attempts += 1
+                guard attempts > 1 else { return .failure(.occupied) }
+                dockRegistered = true
+                return .success(())
+            }
+        }
+        guard case .failure(.occupied) = retryDock(), !dockRegistered else { return false }
+        guard case .success = retryDock(), case .success = retryDock(), attempts == 2, dockRegistered
+        else { return false }
         checkValidationRules(failures: &failures)
         checkPersistence(failures: &failures)
         checkSettingsMutations(failures: &failures)
         checkInvalidStoredValues(failures: &failures)
         checkReplacementTransaction(failures: &failures)
-        checkExclusiveConflictPreservesOldRegistration(failures: &failures)
+        // This opt-in is read only by the command-line self-test entry point.
+        // Default/CI runs retain the real Carbon exclusive-conflict integration test.
+        if ProcessInfo.processInfo.environment["CAMNEXT_SELF_TEST_SKIP_CARBON_INTEGRATION"] == "1" {
+            print("SKIP Carbon exclusive-conflict integration: CAMNEXT_SELF_TEST_SKIP_CARBON_INTEGRATION=1 (no system hotkeys registered)")
+        } else {
+            checkExclusiveConflictPreservesOldRegistration(failures: &failures)
+        }
 
         if failures.isEmpty {
             print("global shortcut self-test passed")

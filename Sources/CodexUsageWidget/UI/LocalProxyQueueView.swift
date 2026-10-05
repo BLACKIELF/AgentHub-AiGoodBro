@@ -4,6 +4,7 @@ struct LocalProxyQueueView: View {
     @ObservedObject var model: LocalProxyQueueStore
     let language: WidgetLanguage
     var onClose: (() -> Void)? = nil
+    var previewExpandedRules = false
     @Environment(\.dismiss) private var dismiss
     @State private var primaryFloorText = ""
     @State private var secondaryFloorText = ""
@@ -20,7 +21,7 @@ struct LocalProxyQueueView: View {
                     .font(.headline)
                 Spacer()
                 Text(phaseTitle).font(.callout.weight(.medium)).foregroundStyle(.secondary)
-                Button(language.text("关闭", "Close")) {
+                Button(language.text("关闭面板", "Close panel")) {
                     if let onClose { onClose() } else { dismiss() }
                 }
                 .keyboardShortcut(.cancelAction)
@@ -34,24 +35,23 @@ struct LocalProxyQueueView: View {
             .font(.callout).foregroundStyle(.secondary)
 
             controls
-            creditSettings
             if let endpoint = model.endpoint {
-                HStack(spacing: 12) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(language.text("本地连接地址", "Local endpoint")).font(.caption).foregroundStyle(.secondary)
-                        Text(endpoint).font(.system(.callout, design: .monospaced)).textSelection(.enabled)
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 12) {
+                        endpointLabel(endpoint)
+                        Spacer(minLength: 0)
+                        connectionActions
                     }
-                    Spacer()
-                    Button(language.text("复制连接配置", "Copy connection config")) { model.copyConnectionDetails() }
-                        .help(language.text("复制本地地址和访问密钥", "Copy the local endpoint and access key"))
-                    if model.desktopAvailable {
-                        Button(language.text("接入桌面", "Connect Desktop")) { model.connectDesktop() }
-                            .help(language.text("先退出 Codex，再从这里重新打开；任务使用各自选择的模型。", "Quit Codex, then reopen it here. Each task keeps its selected model."))
+                    VStack(alignment: .leading, spacing: 8) {
+                        endpointLabel(endpoint)
+                        connectionActions
                     }
                 }
                 .padding(8)
                 .background(WorkspaceGlassSurface(cornerRadius: 10))
             }
+
+            creditSettings
 
             HStack {
                 Text(language.text("代理账号队列", "Proxy account queue")).font(.headline)
@@ -66,14 +66,14 @@ struct LocalProxyQueueView: View {
             }
             Text(
                 language.text(
-                    "编号与主页一致；优先账号先调用，同组按队列顺序。参与和优先开关仅用于反代。",
+                    "编号与主页一致；优先账号先调用，同组按队列顺序。开关仅影响反代。",
                     "Account numbers match Home. Priority accounts run first, then queue order. These switches apply only to the proxy."
                 )
             )
             .font(.caption).foregroundStyle(.secondary)
             Text(
                 language.text(
-                    "请求状态为最近快照，约每分钟更新；手动刷新可立即查看已收集数据。",
+                    "状态约每分钟更新；刷新可立即查看已收集快照。",
                     "Request activity is a recent snapshot, updated about once a minute. Refresh to view collected data now."
                 )
             )
@@ -101,7 +101,23 @@ struct LocalProxyQueueView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-            if let issue = model.issue {
+            if let failure = model.preferencesFailure {
+                Label(
+                    failure == .save
+                        ? language.text(
+                            "刚才的规则未保存，仍使用原规则，新请求暂不可用。请检查本地偏好目录权限或磁盘空间；修复并等待已有任务结束后，正常退出并重新打开应用。",
+                            "The rule change was not saved; previous rules remain and new requests are blocked. Check local preferences folder permissions or disk space. After fixing them and waiting for active tasks to finish, quit normally and reopen the app."
+                        )
+                        : language.text(
+                            "反代偏好读取失败，已暂停新请求。请检查偏好文件及目录权限；修复并等待已有任务结束后，正常退出并重新打开应用。",
+                            "Proxy preferences could not be read; new requests are blocked. Check the preferences file and folder permissions. After fixing them and waiting for active tasks to finish, quit normally and reopen the app."
+                        ),
+                    systemImage: "exclamationmark.triangle"
+                )
+                .font(.callout).foregroundStyle(WorkspaceStatusForeground.warning)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+            if let issue = model.visibleIssue {
                 Label(issue, systemImage: "exclamationmark.triangle")
                     .font(.callout).foregroundStyle(WorkspaceStatusForeground.warning)
                     .fixedSize(horizontal: false, vertical: true)
@@ -109,7 +125,7 @@ struct LocalProxyQueueView: View {
             }
             Text(
                 language.text(
-                    "运行中可保存规则，新请求采用新规则，已开始的请求继续完成。关闭此面板不会停止代理。",
+                    "规则仅影响新请求，已开始的请求继续完成。关闭面板不会停止代理。",
                     "Rules can be saved while running. New requests use them; active requests finish. Closing this panel keeps the proxy running."
                 )
             )
@@ -145,6 +161,25 @@ struct LocalProxyQueueView: View {
             secondaryFloorText = String(model.creditSecondaryFloor)
             creditFloorDraftsInitialized = true
         }
+    }
+
+    private func endpointLabel(_ endpoint: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(language.text("本地连接地址", "Local endpoint")).font(.caption).foregroundStyle(.secondary)
+            Text(endpoint).font(.system(.callout, design: .monospaced)).textSelection(.enabled)
+                .lineLimit(1).help(endpoint)
+        }
+    }
+
+    private var connectionActions: some View {
+        HStack(spacing: 8) {
+            Button(language.text("复制连接配置", "Copy connection config")) { model.copyConnectionDetails() }
+                .help(language.text("复制本地地址和访问密钥", "Copy the local endpoint and access key"))
+            if model.desktopAvailable {
+                Button(language.text("接入桌面", "Connect Desktop")) { model.connectDesktop() }
+                    .help(language.text("先退出 Codex，再从这里重新打开；任务使用各自选择的模型。", "Quit Codex, then reopen it here. Each task keeps its selected model."))
+            }
+        }.fixedSize()
     }
 
     private var parsedCreditFloors: (primary: Int, secondary: Int)? {
@@ -251,28 +286,40 @@ struct LocalProxyQueueView: View {
     }
 
     private var controls: some View {
-        HStack(spacing: 14) {
-            Text(language.text("按账号队列依次调用", "Use accounts in queue order"))
-                .font(.callout)
-            Spacer()
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 12) {
+                Text(language.text("按队列调用", "Use queue order")).font(.callout)
+                Spacer(minLength: 0)
+                runActions
+            }
+            VStack(alignment: .leading, spacing: 8) {
+                Text(language.text("按队列调用", "Use queue order")).font(.callout)
+                runActions
+            }
+        }
+        .padding(8)
+        .background(WorkspaceGlassSurface(cornerRadius: 10))
+    }
+
+    private var runActions: some View {
+        HStack(spacing: 8) {
             if model.phase == .starting || model.phase == .stopping {
                 ProgressView().controlSize(.small)
             }
-            Button(language.text("开启反代模式", "Enable reverse proxy")) {
+            Button(language.text("开启反代", "Start proxy")) {
                 model.setOptIn(true)
                 Task { await model.start() }
             }
             .buttonStyle(WorkspaceActionButtonStyle(prominent: true))
             .disabled(!model.canStart || creditFloorsChanged)
             .accessibilityIdentifier("next.local-proxy.start")
-            Button(language.text("关闭反代", "Disable reverse proxy")) {
+            Button(language.text("停止反代", "Stop proxy")) {
                 if model.requiresStopConfirmation { confirmingStop = true } else { disableProxy() }
             }
             .disabled((!model.canStop && !model.isEnabled) || model.phase == .stopping)
             .accessibilityIdentifier("next.local-proxy.stop")
         }
-        .padding(8)
-        .background(WorkspaceGlassSurface(cornerRadius: 10))
+        .fixedSize()
     }
 
     private func disableProxy() {
@@ -347,7 +394,8 @@ struct LocalProxyQueueView: View {
                     CompactQuotaView(
                         title: window.id, remaining: window.remaining, reset: window.resetsAt,
                         paletteRole: window.id == "5h" ? .primary : .secondary,
-                        constrainedByWeekly: window.constrainedByWeekly, horizontalDetails: true
+                        constrainedByWeekly: window.constrainedByWeekly, horizontalDetails: true,
+                        isWeeklyOnlyPro: window.isWeeklyOnlyPro
                     ).frame(minWidth: 125, maxWidth: .infinity, alignment: .leading)
                 }
                 VStack(alignment: .trailing, spacing: 4) {
@@ -375,6 +423,7 @@ struct LocalProxyQueueView: View {
                 row: row, language: language, enabled: model.canEditPolicy(for: row.id),
                 globalCreditsEnabled: model.creditFallbackEnabled,
                 defaultPrimary: model.creditPrimaryFloor, defaultSecondary: model.creditSecondaryFloor,
+                initiallyExpanded: previewExpandedRules,
                 save: { model.setAccountPolicy(id: row.id, policy: $0) }
             )
             if model.hasStaleRunningBinding(for: row.id) {
@@ -433,6 +482,7 @@ private struct LocalProxyAccountPolicyEditor: View {
     let globalCreditsEnabled: Bool
     let defaultPrimary: Int
     let defaultSecondary: Int
+    var initiallyExpanded = false
     let save: (LocalProxyAccountPolicy) -> Bool
     @State private var limit = ""
     @State private var allowsCredits = true
@@ -441,6 +491,8 @@ private struct LocalProxyAccountPolicyEditor: View {
     @State private var secondary = ""
     @State private var initialized = false
     @State private var dirty = false
+    @State private var expanded = false
+    @State private var saveFailed = false
 
     private var policy: LocalProxyAccountPolicy? {
         guard let value = Double(limit.trimmingCharacters(in: .whitespacesAndNewlines)) else { return nil }
@@ -453,46 +505,67 @@ private struct LocalProxyAccountPolicyEditor: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
-            HStack(spacing: 10) {
-                Text(language.text("5 小时已用上限", "5h used limit"))
-                field("100", text: $limit, label: language.text("5 小时已用百分比上限", "Maximum 5h used percent"))
-                    .help(
-                        language.text(
-                            "低于 100% 时，到达上限便停止此账号，点数不会绕过上限。100% 时可按授权接续点数。",
-                            "Below 100%, this account stops at the limit, including credits. At 100%, authorized credit fallback remains available."))
-                Text("%")
-                Toggle(language.text("允许使用点数", "Allow credits"), isOn: $allowsCredits)
-                    .toggleStyle(WorkspaceCheckboxStyle())
-                    .help(language.text("取消后，此账号订阅额度耗尽就停止参与，不使用点数余额。", "When off, this account stops after its subscription quota is exhausted, without using credits."))
+            HStack(spacing: 8) {
+                Text(summary).foregroundStyle(.secondary).lineLimit(1).help(summary)
                 Spacer(minLength: 0)
-                if dirty { Text(language.text("未保存", "Unsaved")).foregroundStyle(.secondary) }
-                Button(language.text("保存规则", "Save rules")) {
-                    if let policy, save(policy) { dirty = false }
-                }.disabled(!dirty || policy == nil)
-            }
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 10) {
-                    defaultsToggle
-                    creditFloors
-                    Spacer(minLength: 0)
+                if dirty {
+                    Text(language.text("未保存", "Unsaved")).foregroundStyle(WorkspaceStatusForeground.warning).fixedSize()
                 }
-                VStack(alignment: .leading, spacing: 6) {
-                    defaultsToggle
-                    creditFloors
+                Button {
+                    expanded.toggle()
+                } label: {
+                    Label(language.text("规则", "Rules"), systemImage: expanded ? "chevron.up" : "chevron.down")
+                }
+                .accessibilityIdentifier("next.local-proxy.rules-\(row.id)")
+                .help(language.text("展开或收起编辑；未保存草稿会保留。", "Expand or collapse editing; unsaved drafts are retained."))
+            }
+            if expanded {
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 10) {
+                        limitFields
+                        allowCreditsToggle
+                        Spacer(minLength: 0)
+                        saveButton
+                    }
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            limitFields
+                            Spacer(minLength: 0)
+                            saveButton
+                        }
+                        allowCreditsToggle
+                    }
+                }
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 10) {
+                        defaultsToggle
+                        creditFloors
+                        Spacer(minLength: 0)
+                    }
+                    VStack(alignment: .leading, spacing: 6) {
+                        defaultsToggle
+                        creditFloors
+                    }
+                }
+                if dirty && policy == nil {
+                    Text(language.text("上限为 0–100%；底线须为整数，第一档高于第二档，第二档不小于 0。", "Use a limit of 0–100%. Floors must be whole points: first above second, second at least 0."))
+                        .foregroundStyle(WorkspaceStatusForeground.warning).fixedSize(horizontal: false, vertical: true)
+                }
+                if saveFailed {
+                    Text(language.text("规则未保存，草稿已保留。请查看面板中的故障提示。", "Rules were not saved; your draft is retained. Check the panel warning."))
+                        .foregroundStyle(WorkspaceStatusForeground.warning).fixedSize(horizontal: false, vertical: true)
                 }
             }
-            if dirty && policy == nil {
-                Text(language.text("上限为 0–100%；点数底线须为整数，第一档高于第二档，第二档不小于 0。", "Use a limit of 0–100%. Credit floors must be whole points: first above second, second at least 0."))
-                    .foregroundStyle(WorkspaceStatusForeground.warning).fixedSize(horizontal: false, vertical: true)
-            } else if allowsCredits && !globalCreditsEnabled {
+            if allowsCredits && !globalCreditsEnabled {
                 Text(language.text("点数总开关未开启，此账号当前仅用订阅额度。", "Credit fallback is off above. This account currently uses subscription quota only."))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
         }
-        .font(.caption).controlSize(.small).disabled(!enabled)
+        .font(.caption).controlSize(.small)
         .onAppear {
             if !initialized {
                 resetDrafts()
+                expanded = initiallyExpanded
                 initialized = true
             }
         }
@@ -506,9 +579,49 @@ private struct LocalProxyAccountPolicyEditor: View {
         .accessibilityElement(children: .contain)
         .accessibilityLabel(language.text("\(row.label) 的反代规则", "Proxy rules for \(row.label)"))
     }
+
+    private var summary: String {
+        let saved = row.policy
+        let limit = saved.fiveHourUsedLimit.rounded() == saved.fiveHourUsedLimit ? String(Int(saved.fiveHourUsedLimit)) : String(saved.fiveHourUsedLimit)
+        let credits = saved.allowsCredits ? language.text("允许点数", "Credits allowed") : language.text("仅订阅", "Subscription only")
+        let floors = "\(saved.creditPrimaryFloor ?? defaultPrimary) / \(saved.creditSecondaryFloor ?? defaultSecondary)"
+        return language.text("5h 上限 \(limit)% · \(credits) · 保留 \(floors) 点", "5h limit \(limit)% · \(credits) · Keep \(floors) points")
+    }
+
+    private var limitFields: some View {
+        HStack(spacing: 6) {
+            Text(language.text("5 小时已用上限", "5h used limit"))
+            field("100", text: $limit, label: language.text("5 小时已用百分比上限", "Maximum 5h used percent"))
+                .help(
+                    language.text(
+                        "低于 100% 时，到达上限便停止此账号，点数不会绕过上限。100% 时可按授权接续点数。",
+                        "Below 100%, this account stops at the limit, including credits. At 100%, authorized credit fallback remains available."))
+            Text("%")
+        }.fixedSize().disabled(!enabled)
+    }
+
+    private var allowCreditsToggle: some View {
+        Toggle(language.text("允许使用点数", "Allow credits"), isOn: $allowsCredits)
+            .toggleStyle(WorkspaceCheckboxStyle()).fixedSize().disabled(!enabled)
+            .help(language.text("取消后，此账号订阅额度耗尽就停止参与，不使用点数余额。", "When off, this account stops after its subscription quota is exhausted, without using credits."))
+    }
+
+    private var saveButton: some View {
+        Button(language.text("保存规则", "Save rules")) {
+            guard let policy else { return }
+            if save(policy) {
+                dirty = false
+                saveFailed = false
+            } else {
+                saveFailed = true
+                expanded = true
+            }
+        }.disabled(!enabled || !dirty || policy == nil).fixedSize()
+    }
+
     private var defaultsToggle: some View {
         Toggle(language.text("沿用默认点数底线", "Use default credit floors"), isOn: $usesDefaults)
-            .toggleStyle(WorkspaceCheckboxStyle()).fixedSize()
+            .toggleStyle(WorkspaceCheckboxStyle()).fixedSize().disabled(!enabled)
     }
     private var creditFloors: some View {
         HStack(spacing: 6) {
@@ -522,11 +635,14 @@ private struct LocalProxyAccountPolicyEditor: View {
             }
             Text(language.text("点（第一档 / 第二档）", "points (first / second)"))
                 .foregroundStyle(.secondary)
-        }.fixedSize()
+        }.fixedSize().disabled(!enabled)
     }
     private func field(_ placeholder: String, text: Binding<String>, label: String) -> some View {
-        TextField(placeholder, text: text).textFieldStyle(.roundedBorder)
-            .font(.system(.caption, design: .monospaced)).frame(width: 64)
+        TextField(placeholder, text: text).textFieldStyle(.plain)
+            .font(.system(size: 12, weight: .medium).monospacedDigit())
+            .foregroundStyle(.primary).padding(.horizontal, 8).frame(width: 64, height: 30)
+            .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
+            .overlay { RoundedRectangle(cornerRadius: 6).strokeBorder(Color.primary.opacity(0.25), lineWidth: 1) }
             .accessibilityLabel(label)
     }
     private func resetDrafts() {

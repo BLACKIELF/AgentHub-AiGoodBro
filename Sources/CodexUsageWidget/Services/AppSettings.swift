@@ -409,7 +409,15 @@ final class AppSettings: ObservableObject {
     @Published private(set) var statusItemPreferences: StatusItemPreferences
     @Published private(set) var globalShortcut: GlobalShortcut?
     @Published private(set) var globalShortcutError: GlobalShortcutError?
+    @Published var resetCreditAutoPreferences: CodexResetCreditAutoPreferences {
+        didSet {
+            if let data = try? JSONEncoder().encode(resetCreditAutoPreferences) {
+                defaults.set(data, forKey: "CodexManagerNext.resetCreditAuto.v1")
+            }
+        }
+    }
     @Published var edgeDockShortcutError: String?
+    var edgeDockShortcutRetry: (() -> Void)?
     var globalShortcutRegistration: ((GlobalShortcut) -> Result<Void, GlobalShortcutRegistrationFailure>)?
     var globalShortcutUnregistration: (() -> Result<Void, GlobalShortcutRegistrationFailure>)?
 
@@ -506,6 +514,9 @@ final class AppSettings: ObservableObject {
         skippedUpdateVersion = defaults.string(forKey: Self.skippedUpdateVersionKey)
         visibleRuntimeScopes = Self.storedVisibleRuntimeScopes(defaults: defaults)
         statusItemPreferences = StatusItemPreferencesStore.load(defaults: defaults)
+        resetCreditAutoPreferences =
+            defaults.data(forKey: "CodexManagerNext.resetCreditAuto.v1")
+            .flatMap { try? JSONDecoder().decode(CodexResetCreditAutoPreferences.self, from: $0) } ?? .init()
         let storedShortcut = GlobalShortcut.load(defaults: defaults)
         if let storedShortcut, storedShortcut.validationError != nil {
             globalShortcut = .default

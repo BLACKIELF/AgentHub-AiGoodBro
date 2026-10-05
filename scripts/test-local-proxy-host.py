@@ -4,11 +4,23 @@ from pathlib import Path
 import subprocess, tempfile, os, sys
 root=Path(__file__).resolve().parent.parent
 service=root/'Sources/CodexUsageWidget/Services'
+
+def declaration(source, needle):
+    start=source.index(needle); opening=source.index('{',start); depth=0
+    for index in range(opening,len(source)):
+        if source[index]=='{': depth+=1
+        elif source[index]=='}':
+            depth-=1
+            if depth==0: return source[start:index+1]
+    raise ValueError(needle)
 stubs=r'''
 import Foundation
 import Combine
 import Darwin
 struct CreditBalancePresentation: Equatable {}
+// Peripheral payloads are unused by the real quota presentation helper.
+struct LocalUsage: Equatable {}
+struct TaskBoard: Equatable {}
 struct CodexQuotaWindowSnapshot: Equatable { var usedPercent: Double; var resetsAt: Date? }
 struct CodexAccountSnapshot: Equatable { var quotaReadSucceeded: Bool? = true; var planType:String? = nil; var creditBalance:String? = nil; var creditBalanceUnlimited:Bool? = nil; var accountID: String? = "account-fixture"; var email: String? = "fixture@example.invalid"; var fetchedAt: Date; var fiveHour: CodexQuotaWindowSnapshot?; var sevenDay: CodexQuotaWindowSnapshot?; var monthly: CodexQuotaWindowSnapshot? = nil }
 struct CodexCredentialIdentity: Equatable { let email: String; let accountID: String }
@@ -25,7 +37,7 @@ enum AccountDisplay { static func profileName(_ p:CodexProfile,allProfiles:[Code
 struct CodexExecutionPreference { enum Model:String,CaseIterable { case fixture="fixture-model" } }
 @MainActor final class UsageStore:ObservableObject { @Published var profiles:[CodexProfile]; var isPreview=true; var refreshCount=0; var onRefresh:((Set<String>)->Void)?; init(_ profiles:[CodexProfile]) { self.profiles=profiles }; func refreshLocalProxyQuotas(profileIDs:Set<String>){refreshCount += 1; onRefresh?(profileIDs)}; func creditBalancePresentation(for:CodexProfile)->CreditBalancePresentation { .init() }; func availableResetCredits(for:CodexProfile)->Int? { nil } }
 enum CodexExecutable { static func path()->String? { "/usr/bin/true" }; static func bundledPath()->String? { nil } }
-enum LocalProxyFixtureRuntime { static var allowStopSignals = true; static var afterReserve:(()->Void)?; static var afterRunning:(()->Void)?; static var helper:URL { DispatchParticipationPaths.supportDirectory().appendingPathComponent("fixture-helper") } }
+enum LocalProxyFixtureRuntime { static var allowStopSignals = true; static var failPreferenceRename=false; static var afterReserve:(()->Void)?; static var afterRunning:(()->Void)?; static var helper:URL { DispatchParticipationPaths.supportDirectory().appendingPathComponent("fixture-helper") } }
 struct DispatchParticipationPaths { static func supportDirectory()->URL { URL(fileURLWithPath:ProcessInfo.processInfo.environment["PROXY_FIXTURE_ROOT"]!) }; static let snapshotFileName="fixture.json"; var hubConfig:URL; static func live(snapshot:URL)throws->Self { throw LocalProxyFailure.unavailable } }
 '''
 with tempfile.TemporaryDirectory(prefix='aigoodbro-proxy-host-fixture-') as temporary:
@@ -35,11 +47,20 @@ with tempfile.TemporaryDirectory(prefix='aigoodbro-proxy-host-fixture-') as temp
     bounded='enum DispatchParticipationError:Error { case fileAccess }\nstruct DispatchParticipationSync {\n'+next(x for x in text.splitlines() if 'static let maximumConfigurationBytes =' in x)+'\n'+text[a:b]+'\n}\n'
     profiles=(service/'CodexProfileStore.swift').read_text()
     a=profiles.index('    static func credentialIdentity(fromAuthData');b=profiles.index('    private static func parseDate(',a)
+    writer_start=text.index('    /// Proxy preferences commit')
+    writer_end=text.index('    private static func removeAtomicallyIfMatching(',writer_start)
+    writer=text[writer_start:writer_end]
+    expectation=text[text.index('    private enum ReplacementExpectation'):text.index('    let paths:',text.index('    private enum ReplacementExpectation'))]
+    writer=writer.replace('Darwin.rename(source, destination)', '(LocalProxyFixtureRuntime.failPreferenceRename ? String(cString: destination) + \".blocked\" : String(cString: destination)).withCString { Darwin.rename(source, $0) }')
+    bounded=bounded.replace('case fileAccess', 'case fileAccess, writeFailed, concurrentChange, rollbackFailed')
+    bounded=bounded[:-2]+expectation+'    enum Checkpoint { case beforeAtomicSwap(Int), beforeMismatchRestore(Int), afterMismatchRestore(Int) }\n'+writer+'}\n'
     identity='enum CodexOfficialProfileReader {\n'+profiles[a:b]+'\n}\n'
     presentation=(root/'Sources/CodexUsageWidget/Domain/WorkspacePresentation.swift').read_text()
     presentation=presentation[:presentation.index('/// Presentation only:')]
-    rate_window='struct RateWindow { let usedPercent:Double; let windowDurationMins:Int; let resetsAt:Date?; var remainingPercent:Double { 100-usedPercent } }\n'
-    (folder/'Stubs.swift').write_text(stubs+bounded+identity+rate_window+presentation)
+    usage_models=(root/'Sources/CodexUsageWidget/Domain/UsageModels.swift').read_text()
+    quota_models='\n'.join(declaration(usage_models,'struct '+name+':') for name in [
+        'RateWindow','AccountInfo','ResetCreditDetail','CreditsInfo','UsageSnapshot'])+'\n'
+    (folder/'Stubs.swift').write_text(stubs+bounded+identity+quota_models+presentation)
     files=[folder/'Stubs.swift',root/'Sources/CodexUsageWidget/Domain/LocalProxyQueue.swift',service/'CodexCredentialTransaction.swift',service/'DispatchActivityStore.swift',service/'LocalProxyBridge.swift',service/'LocalProxyNetworkSettings.swift',service/'LocalProxyQueueStore.swift',root/'scripts/test-local-proxy-host.swift']
     # Credential transaction fixture only uses its actual read and gate routines.
     raw=(service/'CodexCredentialTransaction.swift').read_text();raw=raw[:raw.index('    private static func tokens(')]+'}\n'

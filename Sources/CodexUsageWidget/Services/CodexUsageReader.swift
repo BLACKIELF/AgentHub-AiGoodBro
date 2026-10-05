@@ -744,7 +744,7 @@ final class CodexUsageReader {
                     accountID: expectedAccountID,
                     accountRemark: accountRemark,
                     card: card,
-                    observedAt: now
+                    observedAt: now, quotaFingerprint: response.quotaFingerprint
                 ))
         case .failure(let failure):
             return .failure(failure)
@@ -758,7 +758,8 @@ final class CodexUsageReader {
         profile: CodexProfile,
         review: CodexResetCreditReview,
         idempotencyKey: String,
-        clock: @escaping () -> Date = Date.init
+        clock: @escaping () -> Date = Date.init,
+        admission: CodexResetCreditAutoAdmission? = nil
     ) -> Result<CodexResetCreditConsumeOutcome, CodexResetCreditFailure> {
         guard !idempotencyKey.isEmpty else { return .failure(.requestNotSent) }
         switch runResetCreditRPC(
@@ -768,7 +769,7 @@ final class CodexUsageReader {
             selectedCard: review.card,
             idempotencyKey: idempotencyKey,
             reviewObservedAt: review.observedAt,
-            clock: clock
+            clock: clock, admission: admission
         ) {
         case .success(let response):
             guard let outcome = response.outcome else { return .failure(.outcomeUnknown) }
@@ -781,6 +782,7 @@ final class CodexUsageReader {
     private struct ResetCreditRPCResponse {
         let card: CodexResetCreditCard?
         let outcome: CodexResetCreditConsumeOutcome?
+        var quotaFingerprint: String? = nil
     }
 
     private func runResetCreditRPC(
@@ -790,7 +792,8 @@ final class CodexUsageReader {
         selectedCard: CodexResetCreditCard?,
         idempotencyKey: String?,
         reviewObservedAt: Date?,
-        clock: @escaping () -> Date
+        clock: @escaping () -> Date,
+        admission: CodexResetCreditAutoAdmission? = nil
     ) -> Result<ResetCreditRPCResponse, CodexResetCreditFailure> {
         guard resetValidField(expectedAccountID, maximumBytes: 256),
             profile.lastSnapshot?.accountID == expectedAccountID,
@@ -995,7 +998,16 @@ final class CodexUsageReader {
                     finishLocked(.failure(failure))
                 case .success(let card):
                     guard let idempotencyKey, let selectedCard else {
-                        finishLocked(.success(ResetCreditRPCResponse(card: card, outcome: nil)))
+                        var snapshot = AppServerSnapshot()
+                        parseRateLimits(result, into: &snapshot)
+                        let windows = [snapshot.fiveHourQuota, snapshot.sevenDayQuota, snapshot.monthlyQuota].compactMap { $0 }
+                        let sanitized = windows.map {
+                            ["used": $0.usedPercent, "duration": Double($0.windowDurationMins ?? -1), "reset": $0.resetsAt?.timeIntervalSince1970 ?? -1]
+                        }
+                        let fingerprint =
+                            snapshot.quotaReadSucceeded && !windows.isEmpty
+                            ? (try? JSONSerialization.data(withJSONObject: sanitized, options: [.sortedKeys])).map { DispatchActivityStore.hash($0.base64EncodedString()) } : nil
+                        finishLocked(.success(ResetCreditRPCResponse(card: card, outcome: nil, quotaFingerprint: fingerprint)))
                         return
                     }
                     guard card.creditID == selectedCard.creditID,
@@ -1017,18 +1029,23 @@ final class CodexUsageReader {
                             return
                         }
                     }
+                    guard admission?.isCancelled != true else {
+                        finishLocked(.failure(.requestNotSent))
+                        return
+                    }
                     stage = .awaitingConsume
-                    // A throwing/partial pipe write is indistinguishable from a
-                    // delivered request, so classify it as uncertain before I/O.
-                    consumeMayHaveBeenSent = true
-                    guard
-                        writeMessageLocked([
+                    let sendConsume = {
+                        // A partial write may have reached the server.
+                        consumeMayHaveBeenSent = true
+                        return writeMessageLocked([
                             "id": 3,
                             "method": "account/rateLimitResetCredit/consume",
                             "params": ["idempotencyKey": idempotencyKey, "creditId": card.creditID],
                         ])
+                    }
+                    guard admission.map({ $0.admit(sendConsume) }) ?? sendConsume()
                     else {
-                        finishLocked(.failure(.outcomeUnknown))
+                        finishLocked(.failure(consumeMayHaveBeenSent ? .outcomeUnknown : .requestNotSent))
                         return
                     }
                 }

@@ -16,9 +16,11 @@ enum WorkspacePreviewRenderer {
         let localCLI: LocalCLIAccountStore
     }
 
-    static func fixtureStore(accountCount: Int, root: URL, language: WidgetLanguage = .zh, includeQuotaEdgeCases: Bool = false, includeExpiryEdgeCases: Bool = false) -> UsageStore
-    {
-        let now = Date()
+    static func fixtureStore(
+        accountCount: Int, root: URL, language: WidgetLanguage = .zh, includeQuotaEdgeCases: Bool = false, includeExpiryEdgeCases: Bool = false,
+        includeResetExpiryDisclosureFixtures: Bool = false, referenceDate: Date? = nil
+    ) -> UsageStore {
+        let now = referenceDate ?? Date()
         let fiveHour = RateWindow(usedPercent: 18, windowDurationMins: 300, resetsAt: now.addingTimeInterval(10_800))
         let sevenDay = RateWindow(usedPercent: 37, windowDurationMins: 10_080, resetsAt: now.addingTimeInterval(259_200))
         let profiles = (0..<max(accountCount, 1)).map { index in
@@ -48,10 +50,18 @@ enum WorkspacePreviewRenderer {
                     accountID: "synthetic-preview-account-\(index)",
                     limitId: "codex", limitName: "Codex", fiveHour: profileFiveHour,
                     sevenDay: profileSevenDay, monthly: nil,
-                    availableResetCredits: 2,
-                    resetCreditExpiries: includeExpiryEdgeCases
-                        ? [now.addingTimeInterval(864_000), now.addingTimeInterval(index.isMultiple(of: 2) ? 129_600 : 259_200)]
-                        : [now.addingTimeInterval(864_000)],
+                    availableResetCredits: includeResetExpiryDisclosureFixtures ? 3 : 2,
+                    resetCreditExpiries: includeResetExpiryDisclosureFixtures
+                        ? (index == 0
+                            ? [now.addingTimeInterval(259_200), now.addingTimeInterval(3_600), now.addingTimeInterval(86_400)]
+                            : index == 1
+                                ? [now.addingTimeInterval(86_400), now.addingTimeInterval(3_600), now.addingTimeInterval(3_600)]
+                                : [now.addingTimeInterval(86_400), now.addingTimeInterval(-3_600)])
+                        : includeExpiryEdgeCases
+                            ? [now.addingTimeInterval(864_000), now.addingTimeInterval(index.isMultiple(of: 2) ? 129_600 : 259_200)]
+                            : [now.addingTimeInterval(864_000)],
+                    creditBalance: includeResetExpiryDisclosureFixtures ? "123.45" : nil,
+                    creditBalanceUnlimited: includeResetExpiryDisclosureFixtures ? false : nil,
                     fetchedAt: now, appServerVersion: nil
                 ),
                 resetCreditHistory: index == 0
@@ -94,7 +104,7 @@ enum WorkspacePreviewRenderer {
                     RateWindow(usedPercent: $0.usedPercent, windowDurationMins: $0.windowDurationMins, resetsAt: $0.resetsAt)
                 }, monthlyQuota: nil,
                 credits: CreditsInfo(
-                    hasCredits: false, unlimited: false, balance: nil, resetCredits: 2,
+                    hasCredits: false, unlimited: false, balance: nil, resetCredits: includeResetExpiryDisclosureFixtures ? 3 : 2,
                     resetCreditDetails: profiles[0].lastSnapshot?.resetCreditExpiries?.enumerated().map {
                         ResetCreditDetail(id: "demo-reset-\($0.offset)", expiresAt: $0.element)
                     }),
@@ -369,6 +379,9 @@ enum WorkspacePreviewRenderer {
     }
 
     @MainActor static func render(to directory: URL, language: WidgetLanguage = .zh) -> Bool {
+        if CommandLine.arguments.contains("--preview-reset-card-expiries-only") {
+            return renderResetCardExpiries(to: directory, language: language)
+        }
         if CommandLine.arguments.contains("--preview-codex-only") {
             return renderCodexAccounts(to: directory, language: language)
         }
@@ -677,6 +690,86 @@ enum WorkspacePreviewRenderer {
             return true
         } catch {
             print("Codex card/list preview failed: \(error.localizedDescription)")
+            return false
+        }
+    }
+
+    /// Six production UI previews only: narrow cards, wide rows and home,
+    /// with synthetic expiry evidence, isolated roots/defaults and no live services.
+    @MainActor static func renderResetCardExpiries(to directory: URL, language: WidgetLanguage) -> Bool {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("aigoodbro-reset-expiry-\(UUID().uuidString)")
+        let suite = "AiGoodBro.reset-expiry-preview.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suite) else { return false }
+        defer {
+            defaults.removePersistentDomain(forName: suite)
+            try? FileManager.default.removeItem(at: root)
+        }
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let catalog = PaletteCatalog.loadFromMainBundle()
+            let settings = AppSettings(defaults: defaults, paletteCatalog: catalog, previewAvatarRoot: root.appendingPathComponent("avatars"))
+            settings.language = language
+            settings.agentNavigation = AgentNavigationState(
+                initialized: true, customized: true,
+                orderedVisibleProviderIDs: [AgentNavCatalog.codexID] + LocalCLIKind.allCases.map(\.rawValue))
+            let reference = ISO8601DateFormatter().date(from: "2026-12-31T15:00:00Z")!
+            let store = fixtureStore(
+                accountCount: 3, root: root, language: language,
+                includeResetExpiryDisclosureFixtures: true, referenceDate: reference)
+            let local = LocalCLIAccountStore.preview(profiles: [], quotas: [:], root: root)
+            let proxy = LocalProxyQueueStore(usageStore: store, previewPreferences: .init())
+            var manifest: [[String: Any]] = []
+            for (theme, scheme, palette) in [
+                ("default-light", ColorScheme.light, PaletteCatalog.defaultPaletteID),
+                ("keycap-dark", ColorScheme.dark, "codexu.liquid-keycap"),
+            ] {
+                guard settings.selectPalette(palette) == .selected else { throw CocoaError(.fileReadCorruptFile) }
+                settings.themeMode = scheme == .dark ? .dark : .light
+                for (name, layout, width, codexOnly) in [
+                    ("narrow-card", AccountWorkspaceLayout.cards, CGFloat(820), true),
+                    ("wide-list", AccountWorkspaceLayout.rows, CGFloat(1280), true),
+                    ("home", AccountWorkspaceLayout.cards, CGFloat(980), false),
+                ] {
+                    settings.accountWorkspaceLayout = layout
+                    let view = CodexAccountManagerView(
+                        store: store, settings: settings, paletteCatalog: catalog,
+                        localCLIAccounts: local, localProxy: proxy, previewOpenCodexWorkspace: codexOnly,
+                        previewReferenceDate: reference
+                    )
+                    let content = view.screenshotContent
+                        .defaultAppStorage(defaults)
+                        .environment(\.workspacePreviewDate, reference)
+                        .environment(\.workspacePreviewOpaqueSurface, true)
+                    let capture = try WorkspaceScreenshotExporter.render(content, width: width, scheme: scheme)
+                    let filename = "reset-expiries-\(name)-\(theme).png"
+                    try capture.png.write(to: directory.appendingPathComponent(filename), options: .atomic)
+                    manifest.append(["file": filename, "width": Int(width), "productionUI": name])
+                }
+            }
+            let expected = store.profiles.map { profile -> [String: Any] in
+                let snapshot = profile.lastSnapshot!
+                let disclosure = ResetCardPresentation.expiryDisclosure(
+                    count: snapshot.availableResetCredits, expiries: snapshot.resetCreditExpiries ?? [],
+                    fetchedAt: snapshot.fetchedAt, readSucceeded: snapshot.quotaReadSucceeded == true,
+                    now: reference, language: language)
+                return [
+                    "fixture": profile.id, "count": snapshot.availableResetCredits ?? -1,
+                    "plan": snapshot.planType ?? "", "points": snapshot.creditBalance ?? "",
+                    "inline": disclosure.inlineText ?? "", "hover": disclosure.tooltip,
+                ]
+            }
+            let receipt: [String: Any] = [
+                "syntheticOnly": true, "referenceUTC": "2026-12-31T15:00:00Z",
+                "images": manifest, "expectedPresentation": expected,
+                "scope":
+                    "Production card/list/home UI; single earliest future expiry beside count without an extra fact row; hover helper output recorded, no real pointer-hover interaction",
+            ]
+            try JSONSerialization.data(withJSONObject: receipt, options: [.prettyPrinted, .sortedKeys])
+                .write(to: directory.appendingPathComponent("reset-expiries-manifest.json"), options: .atomic)
+            print("Reset-card expiry previews rendered: six production UI images; isolated synthetic fixtures and defaults; helper hover values in manifest")
+            return true
+        } catch {
+            print("Reset-card expiry preview failed: \(error.localizedDescription)")
             return false
         }
     }

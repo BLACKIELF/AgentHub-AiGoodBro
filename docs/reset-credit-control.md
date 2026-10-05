@@ -1,9 +1,8 @@
 # Reset-credit control
 
-The 9.6.36 candidate exposes reset-card redemption on every independently signed-in account card,
-with two separate confirmations as requested. No public CLI, Hub, URL, automation, or background
-redemption entry is exposed. There is no automatic reset policy. A user's explicit account-and-count
-request is separate authorization for that operation, not permission for future automatic redemptions.
+Manual reset-card redemption uses two separate confirmations. The 1005v2 / 124 candidate also adds an
+explicitly opt-in expiry policy described below. A one-time manual redemption never enables that policy.
+No public CLI, Hub or URL redemption endpoint is exposed.
 The first performs a fresh `account/rateLimits/read` and shows the account number, remark and
 expiry of one specifically verified card. The second repeats the account, explains that eligible windows
 reset and the weekly reset time changes, and has the sole destructive button for one card. Cancellation, selection/identity
@@ -31,7 +30,7 @@ Purchased usage balance is never used as reset-card evidence.
 The consume conversation re-reads account identity and the exact chosen card before sending one RPC.
 It checks the card expiry against a fresh clock reading and checks the two-minute review lifetime again
 after executable/version/process/app-server preflight, immediately before the write. It always supplies
-`creditId`; it never retries automatically.
+`creditId`; an uncertain request is never retried automatically.
 
 RPC stage, terminal result, write permission, and the "consume may have been sent" bit share one lock.
 Only the expected response ID can advance `initialize -> rateLimits -> consume`; duplicate or
@@ -39,8 +38,9 @@ out-of-order IDs are ignored. Timeout, EOF, output-bound failure, and shutdown a
 close write permission before publishing a terminal result. If timeout wins before response 2, the late
 response sees terminal state and cannot write consume, so the result is `requestNotSent`. If response 2
 wins, it validates and performs the consume write while holding the lock; timeout waits and then reports
-`outcomeUnknown`, retaining the attempt because the write may have reached the child. There is no second
-lock and therefore no cross-lock ordering cycle.
+`outcomeUnknown`, retaining the attempt because the write may have reached the child. Automatic admission
+adds a cancellation lock around the actual write; cancellation never acquires the RPC stage lock, so it
+cannot form a reverse lock cycle.
 
 One logical attempt has one UUID idempotency key. Before the RPC, Next stores a 0600 Next-scoped pending
 envelope in a verified 0700 directory. Creation and clearing use
@@ -56,6 +56,43 @@ generated while uncertainty exists. A different account or card remains blocked.
 no longer reported as available, simply starting the flow again cannot reconcile or clear the attempt;
 there is intentionally no bypass or clear control. Raw account/card identifiers, email, response bodies,
 and private paths are never rendered or logged.
+
+## Optional expiry policy · 1005v2
+
+The purpose is to reduce reset cards expiring unused when their owner forgets to redeem them. It is off
+by default and requires per-profile consent bound to the hash of the verified official account ID.
+The default lead time is 30 minutes, configurable from 1 to 1440 minutes. The app must remain running;
+sleep, offline periods, busy accounts, verification failures or an already expired card can prevent use.
+
+Only independent managed accounts are eligible. The current desktop account and managed mirrors of
+that same official identity are excluded. Startup and desktop identity changes first revoke pending
+admission; a successfully saved fresh identity snapshot is required before automation resumes. An
+unverified identity is retried at most once per minute, without concurrent identity reads. Missing Hub
+alias, unknown occupancy, activity lease conflicts and stale quota evidence block the attempt.
+
+A local timer inspects due cards once per minute. It does not refresh the entire account pool every
+minute. Candidates are deduplicated by official identity; a blocked first account does not prevent later
+eligible accounts from being considered. Before a claim or send, only explicit profile-local identity or CLI review failures allow the next authorized profile of the same account. Pending, uncertain, occupied, cancelled or already-attempted work still blocks duplicates. A fresh official review chooses the exact earliest available
+card. The reader rechecks identity, card and expiry before the actual RPC write. Changing settings,
+removing the account, changing its identity/home or stopping the app revokes unsent admission. A request
+that already passed admission still needs its outcome reconciled.
+
+An atomic private auto journal claims each account/card attempt before the existing pending record and
+RPC. The terminal auto result is persisted before the pending record is cleared. Only the matching
+attempt, account, card and expiry can finish a claim. Crashed or uncertain journal entries survive restarts and block replay. When the runner encounters
+them again, the account page reports that manual review is needed; restarting does not issue another key. Expired terminal records may be
+compacted with a rejection watermark, while pending and uncertain records are preserved. Corrupt or
+oversized storage fails closed.
+
+`reset` means a confirmed reset. `noCredit` and `alreadyRedeemed` stop that card and refresh data without
+claiming a new redemption. `nothingToReset` waits at least 60 seconds and also requires a changed quota
+fingerprint from the same official review before another attempt. A positively unsent request may be
+reviewed again after cooldown; unknown outcomes are never automatically replayed.
+
+The Codex account page provides the account toggles and the latest in-session outcome status. An existing opt-in
+can still be switched off when its account becomes temporarily ineligible. Manual redemption retains
+its two confirmations. No real automatic redemption was performed during candidate development;
+isolated tests use synthetic RPC, identity, activity and storage fixtures.
 
 ## Receipt observations · 0930v2
 
@@ -105,6 +142,8 @@ live redemptions. Two requested accounts each returned `reset`; an identity-matc
 confirmed exactly one fewer card and restored limit windows. This is protocol evidence, not a test of
 the candidate SwiftUI dialogs. Private operation receipts remain outside published source.
 
-The running installed build remains 9.6.35 to preserve its active proxy. Candidate build qualification
-is recorded separately in the current handoff. Installed dialog interaction and real candidate CPU
+The installed bundle has been verified on disk as 9.6.74 (124), including its signature and main executable;
+candidate 125 is not installed. This does not establish which build a running process has loaded or verify
+real automatic redemption. Candidate build qualification is recorded separately in the current handoff.
+Installed dialog interaction and real candidate CPU
 measurements still require a later normal app lifecycle; the ordinary previews exclude redemption.

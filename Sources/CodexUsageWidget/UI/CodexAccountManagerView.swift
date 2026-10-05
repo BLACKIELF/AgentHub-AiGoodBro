@@ -528,6 +528,7 @@ struct CodexAccountManagerView: View {
         localProxy: LocalProxyQueueStore? = nil,
         previewOpenCodexWorkspace: Bool = false, previewEditingModules: Bool = false,
         previewReferenceDate: Date? = nil, previewForecastBy: Date? = nil,
+        appStorageDefaults: UserDefaults? = nil,
         onOpenWorkspaceSettings: (() -> Void)? = nil
     ) {
         self.store = store
@@ -545,6 +546,18 @@ struct CodexAccountManagerView: View {
         _showingHome = State(initialValue: !previewOpenCodexWorkspace)
         _isEditingModules = State(initialValue: previewEditingModules)
         _moduleEditOriginal = State(initialValue: previewEditingModules ? settings.homeModuleArrangement : nil)
+        // Screenshot fixtures may evaluate screenshotContent without mounting this owner.
+        if let appStorageDefaults {
+            _homeAccountsExpanded = AppStorage(wrappedValue: true, HomeSection.accounts.storageKey, store: appStorageDefaults)
+            _homeUsageExpanded = AppStorage(wrappedValue: false, HomeSection.usage.storageKey, store: appStorageDefaults)
+            _homeNoticesExpanded = AppStorage(wrappedValue: false, "AiGoodBro.home.section.recommended-announcements.expanded", store: appStorageDefaults)
+            _homeLocalCLIExpanded = AppStorage(wrappedValue: false, "AiGoodBro.home.section.local-cli.expanded", store: appStorageDefaults)
+            _homeResetExpanded = AppStorage(wrappedValue: true, HomeSection.reset.storageKey, store: appStorageDefaults)
+            _homeMessagesExpanded = AppStorage(wrappedValue: true, HomeSection.messages.storageKey, store: appStorageDefaults)
+            _homeSkillsExpanded = AppStorage(wrappedValue: true, HomeSection.recommendations.storageKey, store: appStorageDefaults)
+            _homeMaintenanceExpanded = AppStorage(wrappedValue: true, HomeSection.maintenance.storageKey, store: appStorageDefaults)
+            _savedCardDensity = AppStorage(wrappedValue: AccountCardDensity.compact.rawValue, "AiGoodBro.accountCardDensity", store: appStorageDefaults)
+        }
     }
 
     private var effectiveColorScheme: ColorScheme {
@@ -2058,6 +2071,51 @@ struct CodexAccountManagerView: View {
         if !showingHome {
             AutomationMaintenanceNotice(features: store.pausedAutomationFeatures, language: language)
         }
+        if !showingHome && localProxy.preferencesFailure != nil {
+            HStack(spacing: 6) {
+                Label(language.text("反代规则读写失败，已暂停新请求", "Proxy preferences unavailable; new requests blocked"), systemImage: "exclamationmark.triangle")
+                    .font(.caption).foregroundStyle(WorkspaceStatusForeground.warning)
+                Button(language.text("查看处理方法", "View recovery steps")) {
+                    LocalProxyQueueWindowController.shared.show(model: localProxy, settings: settings, paletteCatalog: paletteCatalog)
+                }.buttonStyle(.borderless).font(.caption)
+            }
+        }
+        if !showingHome {
+            DisclosureGroup(language.text("重置卡到期自动使用", "Use reset cards before expiry")) {
+                VStack(alignment: .leading, spacing: 6) {
+                    if let status = store.resetCreditAutoStatus { Text(status).font(.caption).foregroundStyle(.secondary) }
+                    Stepper(
+                        language.text("提前 \(settings.resetCreditAutoPreferences.leadMinutes) 分钟", "\(settings.resetCreditAutoPreferences.leadMinutes) minutes before expiry"),
+                        value: $settings.resetCreditAutoPreferences.leadMinutes, in: 1...1440)
+                    Text(
+                        language.text(
+                            "默认关闭，应用须保持运行；仅空闲且身份核验通过时尝试，减少忘记操作造成的过期浪费。结果不确定时暂停并提示核对。",
+                            "Off by default; keep the app running. Attempts to use expiring cards only when idle and identity is verified. Uncertain results pause for review.")
+                    )
+                    .font(.caption).foregroundStyle(.secondary)
+                    ForEach(store.profiles) { profile in
+                        if let account = profile.lastSnapshot?.accountID {
+                            Toggle(
+                                AccountDisplay.numberedName(profile, allProfiles: store.profiles),
+                                isOn: Binding(
+                                    get: { settings.resetCreditAutoPreferences.permits(profileID: profile.id, accountID: account) },
+                                    set: { enabled in
+                                        settings.resetCreditAutoPreferences.authorizedAccounts[profile.id] = enabled ? DispatchActivityStore.hash(account) : nil
+                                    })
+                            )
+                            .disabled(
+                                store.isPreview
+                                    || (!settings.resetCreditAutoPreferences.permits(profileID: profile.id, accountID: account)
+                                        && (profile.lastQuotaReadFailureAt != nil || profile.lastSnapshot?.quotaReadSucceeded != true
+                                            || profile.isSystemProfile || (store.profiles.first(where: \.isSystemProfile)?.lastSnapshot?.accountID ?? "").isEmpty
+                                            || account == store.profiles.first(where: \.isSystemProfile)?.lastSnapshot?.accountID))
+                            )
+                            .help(language.text("当前桌面身份及其镜像不能自动使用；请手动确认。", "The current Desktop identity and its mirrors require manual confirmation."))
+                        }
+                    }
+                }
+            }.font(.caption)
+        }
         workspace
     }
 
@@ -2242,6 +2300,16 @@ struct CodexAccountManagerView: View {
         WorkspacePresentation(profiles: store.profiles, selectedProfileID: store.selectedMonitorProfileID)
     }
 
+    private var overviewWeeklyOnlyPro: Bool {
+        let now = presentationPreviewDate ?? Date()
+        if let profile = presentation.quotaProfile, profile.id != store.selectedMonitorProfileID {
+            return QuotaAvailabilityPresentation.weeklyOnlyPro(profile, now: now)
+        }
+        return QuotaAvailabilityPresentation.weeklyOnlyPro(
+            store.snapshot,
+            lastFailureAt: store.selectedMonitorProfile?.lastQuotaReadFailureAt, now: now)
+    }
+
     private var overviewQuota: (fiveHour: RateWindow?, sevenDay: RateWindow?, readSucceeded: Bool) {
         presentation.quotaSummary(monitored: store.snapshot)
     }
@@ -2421,7 +2489,8 @@ struct CodexAccountManagerView: View {
                     title: language.text("5 小时剩余", "5h available"),
                     icon: "timer",
                     window: overviewQuota.fiveHour,
-                    prominent: true
+                    prominent: true,
+                    isWeeklyOnlyPro: overviewWeeklyOnlyPro
                 )
                 QuotaDetailTile(
                     title: language.text("7 天剩余", "7d remaining"),
@@ -2766,7 +2835,7 @@ struct CodexAccountManagerView: View {
         TimelineView(.periodic(from: .now, by: 60)) { timeline in
             profilesLayout {
                 ForEach(Array(directReorder.preview(filteredCodexProfiles, id: { $0.id }).enumerated()), id: \.element.id) { index, profile in
-                    codexAccountRow(profile, index: index, now: timeline.date)
+                    codexAccountRow(profile, index: index, now: presentationPreviewDate ?? timeline.date)
                 }
             }
         }
@@ -2817,7 +2886,10 @@ struct CodexAccountManagerView: View {
                     hubAccountAlias: store.accountTaskAlias(for: profile),
                     referralAccount: !store.isPreview && linkedProfile == nil ? { try store.referralAccount(for: profile.id) } : nil,
                     resetCreditExpiries: store.resetCreditExpiries(for: profile),
-                    resetCardsExpiring: codexCardExpiring(profile, now: now)
+                    resetCardsExpiring: codexCardExpiring(profile, now: now),
+                    resetCreditsFetchedAt: profile.id == store.selectedMonitorProfileID ? store.snapshot.refreshedAt : profile.lastSnapshot?.fetchedAt,
+                    resetCreditsReadSucceeded: linkedProfile == nil && profile.lastQuotaReadFailureAt == nil
+                        && (profile.id == store.selectedMonitorProfileID ? store.snapshot.quotaReadSucceeded : profile.lastSnapshot?.quotaReadSucceeded == true)
                 ))
         }
         return AnyView(
@@ -2862,6 +2934,9 @@ struct CodexAccountManagerView: View {
                 availableResetCredits: store.availableResetCredits(for: profile),
                 resetCreditExpiries: store.resetCreditExpiries(for: profile),
                 resetCardsExpiring: codexCardExpiring(profile, now: now),
+                resetCreditsFetchedAt: profile.id == store.selectedMonitorProfileID ? store.snapshot.refreshedAt : profile.lastSnapshot?.fetchedAt,
+                resetCreditsReadSucceeded: linkedProfile == nil && profile.lastQuotaReadFailureAt == nil
+                    && (profile.id == store.selectedMonitorProfileID ? store.snapshot.quotaReadSucceeded : profile.lastSnapshot?.quotaReadSucceeded == true),
                 localResetHistoryCount: store.localResetHistoryCount(for: profile),
                 proxyParticipation: localProxy.displayRows.first(where: { $0.id == profile.id }).map(\.isEnabled),
                 proxyPriority: localProxy.displayRows.first(where: { $0.id == profile.id }).map(\.isPriority),
@@ -5137,7 +5212,7 @@ struct CodexAccountMenuView: View {
             HStack(spacing: 8) {
                 profileQuotaWindowLabel(
                     title: text("5 小时", "5h"),
-                    window: profileFiveHourWindow(profile)
+                    window: profileFiveHourWindow(profile), isWeeklyOnlyPro: profileWeeklyOnlyPro(profile)
                 )
                 profileQuotaWindowLabel(
                     title: text("7 天", "7d"),
@@ -5236,14 +5311,23 @@ struct CodexAccountMenuView: View {
                 visibleIDs: filteredVisibleProfiles.map(\.id), language: language))
     }
 
-    private func profileQuotaWindowLabel(title: String, window: RateWindow?) -> some View {
+    private func profileQuotaWindowLabel(title: String, window: RateWindow?, isWeeklyOnlyPro: Bool = false) -> some View {
         HStack(spacing: 3) {
             Text(title)
                 .foregroundStyle(.secondary)
-            QuotaPercentageRing(percent: window?.remainingPercent, diameter: 34)
+            QuotaPercentageRing(percent: window?.remainingPercent, diameter: 34, isWeeklyOnlyPro: isWeeklyOnlyPro)
+                .help(isWeeklyOnlyPro ? QuotaAvailabilityPresentation.weeklyOnlyProHelp(language) : "")
         }
         .font(.system(size: 9.5, weight: .semibold))
         .lineLimit(1)
+    }
+
+    private func profileWeeklyOnlyPro(_ profile: CodexProfile) -> Bool {
+        if profile.id == store.selectedMonitorProfileID {
+            return QuotaAvailabilityPresentation.weeklyOnlyPro(
+                store.snapshot, lastFailureAt: profile.lastQuotaReadFailureAt)
+        }
+        return QuotaAvailabilityPresentation.weeklyOnlyPro(profile)
     }
 
     private func profileFiveHourWindow(_ profile: CodexProfile) -> RateWindow? {
@@ -5528,6 +5612,7 @@ private struct QuotaDetailTile: View {
     let icon: String
     let window: RateWindow?
     var prominent = false
+    var isWeeklyOnlyPro = false
 
     var body: some View {
         HStack(alignment: .top, spacing: 6) {
@@ -5535,7 +5620,7 @@ private struct QuotaDetailTile: View {
                 .font(.caption)
                 .foregroundStyle(PaletteControlForeground())
                 .accessibilityHidden(true)
-            CompactQuotaView(title: title, remaining: window?.remainingPercent, reset: window?.resetsAt)
+            CompactQuotaView(title: title, remaining: isWeeklyOnlyPro ? nil : window?.remainingPercent, reset: window?.resetsAt, isWeeklyOnlyPro: isWeeklyOnlyPro)
         }
         .padding(.horizontal, prominent ? 0 : 8)
         .padding(.vertical, prominent ? 0 : 5)
@@ -5707,6 +5792,8 @@ private struct ProfileRow: View {
     let availableResetCredits: Int?
     let resetCreditExpiries: [Date]
     let resetCardsExpiring: Bool
+    var resetCreditsFetchedAt: Date? = nil
+    var resetCreditsReadSucceeded = false
     let localResetHistoryCount: Int
     /// Nil means this account is not currently eligible for the proxy queue.
     /// It stays distinct from an explicit opt-out so the card never presents
@@ -5842,11 +5929,8 @@ private struct ProfileRow: View {
                     }
                 }
             }
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 5) { compactAccountFacts }
-                VStack(alignment: .leading, spacing: 2) { compactAccountFacts }
-            }
-            .font(.system(size: 10)).foregroundStyle(.secondary)
+            HStack(alignment: .top, spacing: 5) { compactAccountFacts }
+                .font(.system(size: 10)).foregroundStyle(.secondary)
             if needsCredentialRelogin || linkedAccountName != nil {
                 Text(language.text("需要登录 · 更多", "Sign-in needed · More"))
                     .font(.system(size: 10)).foregroundStyle(FixedVisualPalette.statusWarningForeground(colorScheme))
@@ -5893,13 +5977,10 @@ private struct ProfileRow: View {
     @ViewBuilder private var compactAccountFacts: some View {
         Text(planBadge.name).fontWeight(.medium).lineLimit(1)
         if linkedAccountName == nil { CreditBalanceView(presentation: creditBalance, compact: true) }
-        Text(
-            availableResetCredits.map { language.text("重置卡 \($0)", "\($0) reset cards") }
-                ?? language.text("重置卡 —", "Reset cards —")
-        )
-        .monospacedDigit().lineLimit(1)
-        .foregroundStyle(resetCardsExpiring ? FixedVisualPalette.statusWarningForeground(colorScheme) : Color.secondary)
-        .help(ResetCardPresentation.orderedExpiries(resetCreditExpiries, now: currentDate).first.map { language.text("到期 ", "Expires ") + language.dateTime($0) } ?? "")
+        ResetCardExpiryFactsView(
+            count: availableResetCredits, expiries: resetCreditExpiries,
+            fetchedAt: resetCreditsFetchedAt, readSucceeded: resetCreditsReadSucceeded,
+            now: currentDate, expiring: resetCardsExpiring)
     }
 
     private var compactIdentity: some View {
@@ -6164,7 +6245,8 @@ private struct ProfileRow: View {
         HStack(alignment: .top, spacing: 10) {
             CompactQuotaView(
                 title: "5h", remaining: fiveHourRemainingPercent, reset: fiveHourResetsAt,
-                constrainedByWeekly: QuotaAvailabilityPresentation.isWeeklyExhausted(remainingPercent)
+                constrainedByWeekly: QuotaAvailabilityPresentation.isWeeklyExhausted(remainingPercent),
+                isWeeklyOnlyPro: quotaReadSucceeded && QuotaAvailabilityPresentation.weeklyOnlyPro(profile, now: currentDate)
             )
             .frame(maxWidth: .infinity, alignment: .leading)
             CompactQuotaView(title: "7d", remaining: remainingPercent, reset: resetsAt, paletteRole: .secondary)

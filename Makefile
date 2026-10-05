@@ -125,6 +125,9 @@ verify-runtime-resources:
 test: build
 	@$(MAKE) --no-print-directory verify-runtime-resources BUILD_DIR="$(BUILD_DIR)"
 	$(SELF_TEST_RUNNER) --skip-build --build-dir "$(BUILD_DIR)"
+	python3 scripts/test-edge-dock-registration.py
+	python3 scripts/test-edge-dock-state.py
+	python3 scripts/test-reset-credit-auto.py
 	python3 scripts/test-wechat-bot.py
 	python3 scripts/test-dispatch-participation.py --tests-only
 

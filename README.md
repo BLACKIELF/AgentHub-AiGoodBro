@@ -6,7 +6,11 @@ AiGoodBro 是面向个人自用的 macOS AI 工作台，汇总 Codex 多账号�
 
 **中文** | [English](README.en.md)
 
-最新源码候选为 **2.2 · 1003v1**，内部更新版本为 9.6.64 (114)。本轮补齐批量邀请与官方记录、运行中的每账号反代规则、快照保留与刷新间隔、按数字长度分配宽度的美元／人民币总览，并修补全屏快捷键、CLI 登录与额度读取及桌面切换确认。本机已覆盖安装 114 版；本轮尚未发布官方安装包。见[本轮验证与范围](docs/source-publication-1003v1.md)及[新增预览](docs/images/1002v4/README.md)。
+最新源码候选为 **2.2 · 1005v3**，内部更新版本为 9.6.75 (125)。保留临期自动使用重置卡、单行到期与完整悬停明细、紧凑反代规则及圆环／小鱼额度样式；修复同账号失效入口挡住有效入口，并统一显示已核实 Pro 的五小时 ∞。本机已安装 124；125 尚未安装，没有官方安装包。见[使用说明](docs/usage-guide.md)和[变更记录](CHANGELOG.md)。
+
+下一功能版本将加入每次安装后的微信、飞书连接引导，详见[安装重连计划](docs/reinstall-onboarding-plan-1005v1.md)。
+
+**减少重置卡过期浪费：**开启后，应用会在重置卡临近到期时自动尝试使用，减少因忘记操作而过期浪费的情况。默认关闭，逐账号选择；默认提前 30 分钟，可自行调整。应用须保持运行，仅对可核实且空闲的独立托管账号尝试，当前桌面身份不自动使用；结果不明时暂停并提示核对。详见[功能边界](docs/reset-credit-control.md)。
 
 下方图片保留 1002v2 的来源标记；[完整图册](docs/images/1002v2/README.md)包含首页、账号、反代、设置、引导、用量浮层与九套主题。历史实机截图保留在各自版本目录。
 
@@ -84,15 +88,13 @@ Codex 独立 CLI 可使用各自的本机登录目录；其他工具按提供商
 
 [查看九套主题的浅色与深色预览](docs/images/1002v2/README.md#themes)。主题仅提供色值；WAICY 主题没有复制品牌图形、工牌、吉祥物或字体，也不表示官方背书。
 
-## 当前候选与验收边界
+## 当前候选与历史安装记录
 
-当前源码候选是 **AiGoodBro 9.6.64 (114) · 2.2 / 1003v1**，位于 [`codex/reset-messages-0926v1`](https://github.com/BLACKIELF/AgentHub-AiGoodBro/tree/codex/reset-messages-0926v1)，由 [PR #13](https://github.com/BLACKIELF/AgentHub-AiGoodBro/pull/13) 评审。它仍是候选，尚未合并到 `main`，没有正式下载包。
+当前 125 为源码候选；124 安装包已在本地交付。本轮更新 GitHub 源码，不发布远端安装包。隔离自动使用回归与原生预览不代表真实兑换、手机微信送达或安装后的鼠标与全局快捷键验收。
 
-[![候选分支 CI](https://github.com/BLACKIELF/AgentHub-AiGoodBro/actions/workflows/ci.yml/badge.svg?branch=codex%2Freset-messages-0926v1)](https://github.com/BLACKIELF/AgentHub-AiGoodBro/pull/13/checks)
+本机安装版本已核实为 **9.6.74 (124)**。114 的安装核验、原生模拟图与应用自测属于 1003v1 历史记录，见[114 发布记录](docs/source-publication-1003v1.md)和[历史 PR #13 检查页](https://github.com/BLACKIELF/AgentHub-AiGoodBro/pull/13/checks)；这些不是 125 的 CI 证据。
 
-本机已将 **9.6.64 (114)** 覆盖安装到 `/Applications/AiGoodBro.app`；安装后核验了版本、主程序和反代 helper 哈希、签名及架构。安装前确认没有运行中的反代或占用租约，并正常退出了旧版。35 项应用自测、跨语言反代桥接回归、Go race 测试与 vet 已通过；本轮没有切换 Codex 账号，也没有发送真实模型请求。主页、设置、引导、登录、用量浮层和主题图片由原生组件离屏生成，使用模拟数据，不代表真实账号或模型请求。个人微信手机收件、原聊天真实对话、自动暂停后切号续做、真实生图与新标题栏实机效果仍待验收。详细来源和边界见[当前源码发布记录](docs/source-publication-1003v1.md)；远端 CI 以 [PR #13 检查页](https://github.com/BLACKIELF/AgentHub-AiGoodBro/pull/13/checks)为准。
-
-构建 2.2 候选：
+以下命令保留为历史 1003v1 源码获取示例，不会取得当前 125 源码候选：
 
 ```sh
 git clone --branch codex/reset-messages-0926v1 https://github.com/BLACKIELF/AgentHub-AiGoodBro.git AiGoodBro-2.2

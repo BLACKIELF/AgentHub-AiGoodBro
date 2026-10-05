@@ -244,7 +244,8 @@ enum TokenMonitorEdgeDockProjection {
             accountLabel: item.accountID == nil ? nil : matches.first?.accountName,
             accountBindingMissing: item.accountID != nil && matches.isEmpty,
             snapshotFetchedAt: selected?.1.fetchedAt,
-            isHistoricalAccount: historical
+            isHistoricalAccount: historical,
+            headlineMetricID: selected?.1.id
         )
     }
 
