@@ -19,7 +19,7 @@ enum NextFeatureDefaults {
     }
 }
 
-enum NextSetupStep: Int, CaseIterable, Identifiable {
+enum NextSetupStep: Int, CaseIterable, Identifiable, Codable {
     case accounts
     case features
     case notifications
@@ -53,6 +53,28 @@ enum NextSetupStep: Int, CaseIterable, Identifiable {
         case .ready: return "checkmark.circle"
         }
     }
+}
+
+enum NextSetupGuideScope: String, Codable {
+    case full
+    case connections
+
+    var steps: [NextSetupStep] {
+        self == .connections ? [.notifications, .ready] : NextSetupStep.allCases
+    }
+
+    func previous(_ step: NextSetupStep) -> NextSetupStep {
+        steps[max(0, (steps.firstIndex(of: step) ?? 0) - 1)]
+    }
+
+    func next(_ step: NextSetupStep) -> NextSetupStep {
+        steps[min(steps.count - 1, (steps.firstIndex(of: step) ?? 0) + 1)]
+    }
+}
+
+enum NextSetupGuideOutcome {
+    case completed
+    case deferred
 }
 
 struct NextSetupProgress: Equatable {

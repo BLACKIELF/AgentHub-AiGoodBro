@@ -118,6 +118,19 @@ struct CodexAccountManagerNextMain {
             exit(NextSetupPreviewRenderer.render(to: outputURL) ? 0 : 1)
         }
 
+        if let previewIndex = CommandLine.arguments.firstIndex(of: "--render-reset-auto-previews"),
+            CommandLine.arguments.indices.contains(previewIndex + 1)
+        {
+            _ = NSApplication.shared
+            do {
+                try ResetCreditAutoSettingsPreviewFixture.render(to: URL(fileURLWithPath: CommandLine.arguments[previewIndex + 1], isDirectory: true))
+                exit(0)
+            } catch {
+                print("Reset-card settings preview failed")
+                exit(1)
+            }
+        }
+
         if CommandLine.arguments.contains("--self-test-webview-bridge") {
             exit(WKWebViewBridgeSelfTest.run() ? 0 : 1)
         }

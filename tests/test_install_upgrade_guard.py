@@ -11,9 +11,13 @@ Does not call host `ps` / `lsof` / `codesign`.
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
+import plistlib
+import shlex
 import shutil
 import stat
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -398,6 +402,179 @@ class MakefileRecipeTextTests(unittest.TestCase):
             'if mv "$$prev" "$$restore" && [ -d "$$restore" ] && [ ! -L "$$restore" ]; then',
             INSTALL_BLOCK,
         )
+
+    def test_receipt_is_committed_after_promote_validation_before_previous_cleanup(self):
+        receipt = INSTALL_BLOCK.index('python3 scripts/write-install-receipt.py --bundle "$$dest"')
+        validation = INSTALL_BLOCK.index("promote reported success")
+        cleanup = INSTALL_BLOCK.rindex('rm -rf "$$prev"')
+        self.assertLess(validation, receipt)
+        self.assertLess(receipt, cleanup)
+        self.assertIn('mv "$$dest" "$$staging"', INSTALL_BLOCK)
+        self.assertIn("keep $$staging and $$prev for recovery", INSTALL_BLOCK)
+
+
+class InstallShellReceiptTests(unittest.TestCase):
+    """Execute the actual recipe with every external boundary redirected to fixtures."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="next-install-shell-")
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve()
+        self.applications = self.root / "Applications With Spaces"
+        self.applications.mkdir()
+        self.staged = self.root / "build" / f"{APP_NAME}.app"
+        self._bundle(self.staged, APP_NAME, "new")
+        self.dest = self.applications / f"{APP_NAME}.app"
+        self.legacy = self.applications / f"{LEGACY_APP_NAME}.app"
+        self.prev = self.applications / f"{APP_NAME}.app.previous"
+        self.receipt = self.root / "Support/install-receipt-v1.json"
+        self.receipt.parent.mkdir()
+        self.receipt.write_bytes(b"old receipt bytes")
+        self.events = self.root / "events"
+
+    def _bundle(self, path, executable, marker):
+        _write_executable(path / "Contents/MacOS" / executable)
+        (path / "Contents/marker").write_text(marker)
+        (path / "Contents/Info.plist").write_bytes(plistlib.dumps({
+            "CFBundleExecutable": executable,
+            "CFBundleIdentifier": "com.example.next",
+            "CFBundleVersion": "126",
+        }))
+
+    def _run(self, failure=""):
+        # No make invocation, host process probes, signature verification, app
+        # launch or Applications write: only recipe shell logic is exercised.
+        recipe = "\n".join(line.lstrip("\t").removeprefix("@") for line in INSTALL_BLOCK.strip().splitlines())
+        for key, value in {
+            "APP_DIR": str(self.staged), "MACOS_DIR": str(self.staged / "Contents/MacOS"),
+            "APP_NAME": APP_NAME, "LEGACY_APP_NAME": LEGACY_APP_NAME,
+        }.items():
+            recipe = recipe.replace(f"$({key})", value)
+        recipe = recipe.replace('/Applications/', str(self.applications) + "/").replace("$$", "$")
+        recipe = recipe.replace('$(if $(filter 1,$(INSTALL_LAUNCH)),open "' + str(self.dest) + '",@true)', 'open "' + str(self.dest) + '"')
+        self.assertNotIn("$(", recipe.replace('$(/usr/bin/mktemp', 'fixture_mktemp'))
+        functions = f"""
+failure={shlex.quote(failure)}
+fixture_dest={shlex.quote(str(self.dest))}
+fixture_prev={shlex.quote(str(self.prev))}
+fixture_legacy={shlex.quote(str(self.legacy))}
+fixture_events={shlex.quote(str(self.events))}
+codesign() {{
+    case "$*" in *staging*) [ "$failure" != codesign ] ;; *) return 0 ;; esac
+}}
+cp() {{ [ "$failure" != copy ] || return 1; command cp "$@"; }}
+mv() {{
+    case "$1" in
+        "$fixture_prev") case "$failure" in restore|promote-restore) return 1 ;; esac ;;
+        "$fixture_dest"|"$fixture_legacy")
+            case "$2" in
+                "$fixture_prev") [ "$failure" != aside ] || return 1 ;;
+                *staging*) [ "$failure" != withdraw ] || return 1 ;;
+            esac ;;
+        *staging*) case "$failure" in promote|promote-restore) return 1 ;; esac ;;
+    esac
+    command mv "$@"
+}}
+python3() {{
+    case "$1" in
+        scripts/check-build-target-idle.py) [ "$failure" != idle ] ;;
+        scripts/write-install-receipt.py)
+            echo receipt >> "$fixture_events"
+            case "$failure" in receipt|withdraw|restore) return 1 ;; esac
+            command {shlex.quote(sys.executable)} "$@" --receipt {shlex.quote(str(self.receipt))} ;;
+        *) return 99 ;;
+    esac
+}}
+open() {{ echo open >> "$fixture_events"; }}
+"""
+        result = subprocess.run(["/bin/sh", "-c", "set -e\n" + functions + recipe], cwd=ROOT, text=True, capture_output=True)
+        events = self.events.read_text().splitlines() if self.events.exists() else []
+        return result, events
+
+    def test_new_install_commits_receipt_before_launch(self):
+        result, events = self._run()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(events, ["receipt", "open"])
+        receipt = json.loads(self.receipt.read_bytes())
+        self.assertEqual(receipt["bundleIdentity"]["inode"], self.dest.stat().st_ino)
+        self.assertEqual((self.dest / "Contents/marker").read_text(), "new")
+        self.assertFalse(self.prev.exists())
+
+    def test_same_version_overwrite_changes_uuid(self):
+        self._bundle(self.dest, APP_NAME, "old")
+        first, _ = self._run()
+        self.assertEqual(first.returncode, 0, first.stderr)
+        first_id = json.loads(self.receipt.read_bytes())["installationID"]
+        second, _ = self._run()
+        self.assertEqual(second.returncode, 0, second.stderr)
+        self.assertNotEqual(first_id, json.loads(self.receipt.read_bytes())["installationID"])
+        self.assertFalse(self.prev.exists())
+
+    def test_copy_codesign_idle_aside_and_promote_failures_never_write_receipt(self):
+        for failure in ("copy", "codesign", "idle", "aside", "promote"):
+            with self.subTest(failure=failure):
+                self._bundle(self.dest, APP_NAME, "old")
+                result, events = self._run(failure)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(events, [])
+                self.assertEqual(self.receipt.read_bytes(), b"old receipt bytes")
+                self.assertEqual((self.dest / "Contents/marker").read_text(), "old")
+
+    def test_receipt_failure_restores_original_live_location_including_legacy(self):
+        for live, name in ((self.dest, APP_NAME), (self.legacy, LEGACY_APP_NAME)):
+            with self.subTest(name=name):
+                self._bundle(live, name, "old")
+                result, events = self._run("receipt")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(events[-1:], ["receipt"])
+                self.assertNotIn("open", events)
+                self.assertIn("previous installation was restored", result.stderr)
+                self.assertEqual((live / "Contents/marker").read_text(), "old")
+                self.assertFalse(self.prev.exists())
+                self.assertEqual(self.receipt.read_bytes(), b"old receipt bytes")
+                shutil.rmtree(live)
+
+    def test_receipt_failure_on_new_install_withdraws_app(self):
+        result, events = self._run("receipt")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(self.dest.exists())
+        self.assertEqual(events, ["receipt"])
+        self.assertEqual(self.receipt.read_bytes(), b"old receipt bytes")
+        self.assertEqual(list(self.applications.iterdir()), [])
+
+    def test_receipt_withdraw_failure_preserves_both_recovery_bundles(self):
+        self._bundle(self.dest, APP_NAME, "old")
+        result, events = self._run("withdraw")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("could not be withdrawn", result.stderr)
+        self.assertEqual((self.dest / "Contents/marker").read_text(), "new")
+        self.assertEqual((self.prev / "Contents/marker").read_text(), "old")
+        self.assertEqual(events, ["receipt"])
+        self.assertEqual(self.receipt.read_bytes(), b"old receipt bytes")
+
+    def test_receipt_restore_failure_preserves_new_staging_and_previous(self):
+        self._bundle(self.legacy, LEGACY_APP_NAME, "old")
+        result, events = self._run("restore")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("could not be restored", result.stderr)
+        self.assertNotIn("previous installation was restored", result.stderr)
+        self.assertFalse(self.dest.exists())
+        self.assertFalse(self.legacy.exists())
+        self.assertEqual((self.prev / "Contents/marker").read_text(), "old")
+        staging = list(self.applications.glob(f"{APP_NAME}.app.staging.*"))
+        self.assertEqual(len(staging), 1)
+        self.assertEqual((staging[0] / "Contents/marker").read_text(), "new")
+        self.assertEqual(events, ["receipt"])
+        self.assertEqual(self.receipt.read_bytes(), b"old receipt bytes")
+
+    def test_successful_legacy_migration_commits_new_identity(self):
+        self._bundle(self.legacy, LEGACY_APP_NAME, "old")
+        result, events = self._run()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(events, ["receipt", "open"])
+        self.assertFalse(self.legacy.exists())
+        self.assertFalse(self.prev.exists())
+        self.assertEqual(json.loads(self.receipt.read_bytes())["bundleIdentity"]["inode"], self.dest.stat().st_ino)
 
 
 class InstallRollbackModelTests(unittest.TestCase):

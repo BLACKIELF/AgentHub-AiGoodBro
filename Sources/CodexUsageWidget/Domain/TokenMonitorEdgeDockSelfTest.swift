@@ -98,6 +98,83 @@ enum TokenMonitorEdgeDockSelfTest {
             accountName: "Claude alias", metrics: [primary]
         )
         let usage = TokenMonitorDashboardSnapshot(response: response(now: now, tokens: Int64.max))
+        // Bind the headline using official plan evidence, never aliases or metric order.
+        expect(
+            ["pro", " PRO ", "prolite", "pro-lite", "pro_lite"].allSatisfy {
+                TokenMonitorEdgeDockProjection.codexPrimaryMetricID(plan: $0, readSucceeded: true) == "seven-day"
+            }, "verified Pro variants select the weekly headline")
+        expect(
+            TokenMonitorEdgeDockProjection.codexPrimaryMetricID(plan: "Plus", readSucceeded: true) == "five-hour"
+                && TokenMonitorEdgeDockProjection.codexPrimaryMetricID(plan: "pro", readSucceeded: false) == nil
+                && TokenMonitorEdgeDockProjection.codexPrimaryMetricID(plan: nil, readSucceeded: true) == nil
+                && TokenMonitorEdgeDockProjection.codexPrimaryMetricID(plan: "business", readSucceeded: true) == nil,
+            "only a verified supported plan overrides the default window")
+        var planAccount = codex
+        planAccount.edgeDockPrimaryMetricID = "seven-day"
+        planAccount.metrics = [
+            .init(id: "five-hour", name: "5-hour", sourceID: "codex:a:five-hour", fetchedAt: now, value: .text("∞")),
+            .init(id: "seven-day", name: "Weekly", sourceID: "codex:a:seven-day", fetchedAt: now, value: .percentRemaining(73), resetLabel: "weekly-reset"),
+        ]
+        func planCell(_ account: TokenMonitorFloatingBubbleAccount) -> TokenMonitorEdgeDockCell {
+            TokenMonitorEdgeDockProjection.make(
+                preferences: .init(items: [.account("codex", "a")]), quotaSources: [account], usage: usage, language: .en, now: now)[0]
+        }
+        let weeklyHeadline = planCell(planAccount)
+        expect(
+            weeklyHeadline.percentRemaining == 73 && weeklyHeadline.headlineValueLabel == nil
+                && weeklyHeadline.headlineMetricID == "seven-day" && weeklyHeadline.headlineMetricName == "Weekly"
+                && weeklyHeadline.headlineResetLabel == "weekly-reset" && weeklyHeadline.snapshotFetchedAt == now
+                && weeklyHeadline.accounts[0].quotaRows[0].valueLabel == "∞",
+            "Pro ring, percentage, window label and reset share weekly evidence while details preserve short-window infinity")
+        planAccount.metrics[0].value = .percentRemaining(0)
+        expect(
+            planCell(planAccount).percentRemaining == 73,
+            "an exhausted sibling window cannot replace the plan-selected weekly headline")
+        planAccount.metrics[0].isStale = true
+        expect(!planCell(planAccount).isStale, "a stale sibling cannot mark the selected fresh weekly headline stale")
+        planAccount.metrics[0].isStale = false
+        expect(
+            [Double.nan, .infinity, -1, 101].allSatisfy { value in
+                var invalid = planAccount
+                invalid.metrics[1].value = .percentRemaining(value)
+                let cell = planCell(invalid)
+                return !cell.isAvailable && cell.percentRemaining == nil && cell.headlineValueLabel == nil
+            }, "invalid weekly percentages remain unknown and never become infinity")
+        var unavailable = planAccount
+        unavailable.metrics[1].isAvailable = false
+        expect(
+            !planCell(unavailable).isAvailable && planCell(unavailable).headlineValueLabel == nil,
+            "unavailable weekly evidence cannot substitute the short-window infinity")
+        planAccount.metrics[1].value = .unknown
+        let unknownWeekly = planCell(planAccount)
+        expect(
+            !unknownWeekly.isAvailable && unknownWeekly.percentRemaining == nil
+                && unknownWeekly.headlineValueLabel == nil && unknownWeekly.headlineMetricID == "seven-day",
+            "unknown weekly evidence cannot fall back to the short window")
+        planAccount.metrics.removeLast()
+        expect(
+            !planCell(planAccount).isAvailable && planCell(planAccount).headlineMetricID == "seven-day",
+            "a missing weekly window remains explicitly unknown")
+        planAccount.metrics.append(
+            .init(
+                id: "seven-day", name: "Weekly", sourceID: "codex:a:seven-day", fetchedAt: now,
+                isStale: true, value: .percentRemaining(73), resetLabel: "weekly-reset"))
+        let staleWeekly = planCell(planAccount)
+        expect(
+            staleWeekly.percentRemaining == 73 && staleWeekly.isStale && staleWeekly.headlineMetricID == "seven-day",
+            "stale weekly values retain their historical label and selected window")
+        planAccount.edgeDockPrimaryMetricID = "five-hour"
+        planAccount.metrics[0].value = .percentRemaining(82)
+        planAccount.metrics[1].value = .percentRemaining(0)
+        let plusHeadline = planCell(planAccount)
+        expect(
+            plusHeadline.percentRemaining == 82 && plusHeadline.headlineMetricID == "five-hour",
+            "Plus always displays its five-hour window even when the weekly sibling is exhausted")
+        planAccount.edgeDockPrimaryMetricID = nil
+        planAccount.accountName = "🟢 PRO 20x"
+        expect(
+            planCell(planAccount).headlineMetricID == "seven-day" && planCell(planAccount).percentRemaining == 0,
+            "an account alias does not select a plan; unknown plans retain the existing zero-window policy")
         let automatic = TokenMonitorEdgeDockProjection.make(
             preferences: defaults, quotaSources: [codex, claude], usage: usage,
             language: .en, now: now
