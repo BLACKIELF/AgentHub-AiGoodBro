@@ -7,6 +7,7 @@ struct ResetCreditAutoSettingsView: View {
     let status: String?
     let language: WidgetLanguage
     let isPreview: Bool
+    var focusedProfileID: String? = nil
     var onDone: () -> Void = {}
 
     static func summary(profiles: [CodexProfile], preferences: CodexResetCreditAutoPreferences, language: WidgetLanguage) -> String {
@@ -26,7 +27,7 @@ struct ResetCreditAutoSettingsView: View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .top, spacing: 10) {
                 Image(systemName: "clock.arrow.circlepath")
-                    .font(.title2).foregroundStyle(PaletteControlForeground())
+                    .font(.title2).foregroundStyle(.primary)
                 VStack(alignment: .leading, spacing: 4) {
                     Text(language.text("重置卡到期自动使用", "Use reset cards before expiry"))
                         .font(.headline)
@@ -56,18 +57,32 @@ struct ResetCreditAutoSettingsView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             Divider()
-            ScrollView {
-                VStack(alignment: .leading, spacing: 12) {
-                    if profiles.isEmpty {
-                        Text(language.text("添加并登录 Codex 账号后，可在这里逐个开启。", "Add and sign in to Codex accounts to enable them here."))
-                            .font(.caption).foregroundStyle(.secondary)
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 12) {
+                        if profiles.isEmpty {
+                            Text(language.text("添加并登录 Codex 账号后，可在这里逐个开启。", "Add and sign in to Codex accounts to enable them here."))
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        ForEach(profiles) { profile in
+                            accountRow(profile)
+                                .padding(6)
+                                .background(
+                                    focusedProfileID == profile.id ? Color.accentColor.opacity(0.12) : Color.clear,
+                                    in: RoundedRectangle(cornerRadius: 8)
+                                )
+                                .id(profile.id)
+                        }
                     }
-                    ForEach(profiles) { profile in
-                        accountRow(profile)
-                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 2)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.vertical, 2)
+                .onAppear {
+                    if let focusedProfileID { proxy.scrollTo(focusedProfileID, anchor: .center) }
+                }
+                .onChange(of: focusedProfileID) { value in
+                    if let value { proxy.scrollTo(value, anchor: .center) }
+                }
             }
             Divider()
             HStack(spacing: 10) {
@@ -76,7 +91,7 @@ struct ResetCreditAutoSettingsView: View {
                     preferences.authorizedAccounts.removeAll()
                 }
                 .disabled(isPreview || preferences.authorizedAccounts.isEmpty)
-                .foregroundStyle(PaletteControlForeground())
+                .foregroundStyle(.primary)
                 Spacer(minLength: 0)
                 Button(language.text("完成", "Done"), action: onDone)
                     .keyboardShortcut(.defaultAction)
@@ -119,6 +134,10 @@ struct ResetCreditAutoSettingsView: View {
         let reason = blockedReason(profile)
         let hasInactiveAuthorization = preferences.authorizedAccounts[profile.id] != nil && !enabled
         return VStack(alignment: .leading, spacing: 4) {
+            if focusedProfileID == profile.id {
+                Label(language.text("当前选择的账号", "Selected account"), systemImage: "info.circle")
+                    .font(.caption).foregroundStyle(.primary)
+            }
             Toggle(
                 isOn: Binding(
                     get: { isEnabled(profile) },
@@ -182,6 +201,22 @@ enum ResetCreditAutoSettingsPreviewFixture {
             profile("failed", name: "Codex 06", account: "synthetic-failed", failed: true),
         ]
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let focusedPreview = VStack(alignment: .leading, spacing: 8) {
+            ResetCardExpiryFactsView(
+                count: 2, expiries: [now.addingTimeInterval(1800), now.addingTimeInterval(3600)],
+                fetchedAt: now, readSucceeded: true, now: now, expiring: true,
+                onOpenAutoSettings: {}
+            )
+            .font(.system(size: 10))
+            .environment(\.widgetLanguage, WidgetLanguage.zh)
+            .padding(.horizontal, 20)
+            ResetCreditAutoSettingsView(
+                profiles: profiles, preferences: .constant(.init()), status: nil, language: .zh,
+                isPreview: true, focusedProfileID: "ready")
+        }
+        try WorkspacePreviewRenderer.renderView(
+            focusedPreview, size: CGSize(width: 440, height: 650), scheme: .dark,
+            to: directory.appendingPathComponent("zh-dark-account-entry-focused.png"))
         for language in WidgetLanguage.allCases {
             for scheme in [ColorScheme.light, .dark] {
                 for enabled in [false, true] {

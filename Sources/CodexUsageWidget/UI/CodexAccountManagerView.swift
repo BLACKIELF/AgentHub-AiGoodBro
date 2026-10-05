@@ -444,8 +444,10 @@ struct CodexAccountManagerView: View {
     @State private var isAgentBreakdownExpanded = true
     @State private var isAutomationCenterPresented = false
     @State private var isResetCreditAutoSettingsPresented = false
+    @State private var resetCreditAutoFocusedProfileID: String? = nil
     @State private var isSetupGuidePresented = false
     @State private var setupGuideScope = NextSetupGuideScope.full
+    @State private var setupGuideEventID: String?
     @State private var hasCheckedAutomaticGuide = false
     @State private var isPreviewPaletteLibraryPresented = false
     @State private var isHomeAboutPresented = false
@@ -635,6 +637,7 @@ struct CodexAccountManagerView: View {
                 hasCheckedAutomaticGuide = true
                 if let scope = settings.installationOnboarding.automaticScope(legacyShouldPresent: settings.onboarding.shouldPresent) {
                     setupGuideScope = scope
+                    setupGuideEventID = settings.installationOnboarding.shouldPresent ? settings.installationOnboarding.presentationEventID : nil
                     if setupGuideScope == .full { settings.onboarding.begin() }
                     isSetupGuidePresented = true
                 }
@@ -659,7 +662,11 @@ struct CodexAccountManagerView: View {
             ResetCreditAutoSettingsView(
                 profiles: store.profiles, preferences: $settings.resetCreditAutoPreferences,
                 status: store.resetCreditAutoStatus, language: language, isPreview: store.isPreview,
-                onDone: { isResetCreditAutoSettingsPresented = false })
+                focusedProfileID: resetCreditAutoFocusedProfileID,
+                onDone: {
+                    isResetCreditAutoSettingsPresented = false
+                    resetCreditAutoFocusedProfileID = nil
+                })
         }
         .sheet(isPresented: $isPreviewPaletteLibraryPresented) {
             PaletteLibraryView(settings: settings)
@@ -693,13 +700,35 @@ struct CodexAccountManagerView: View {
                 }
             }
         ) {
-            NextSetupGuideView(
-                store: store, settings: settings, localAccounts: localCLIAccounts, scope: setupGuideScope,
-                onOutcome: { settings.installationOnboarding.finish($0, scope: setupGuideScope) },
-                openAutomation: {
-                    openAutomationAfterGuide = true
-                    isSetupGuidePresented = false
-                })
+            let presentedEventID = setupGuideEventID
+            let presentedScope = setupGuideScope
+            if presentedScope == .audience {
+                InstallationAudienceChoiceView(
+                    language: language,
+                    onSelect: { audience in
+                        guard let eventID = presentedEventID,
+                            settings.installationOnboarding.select(audience, eventID: eventID)
+                        else { return }
+                        if audience == .newUser {
+                            settings.setupProgress = NextSetupProgress()
+                            settings.onboarding.begin()
+                        }
+                        setupGuideScope = audience.scope
+                    },
+                    onDefer: {
+                        settings.installationOnboarding.finish(.deferred, scope: .audience, eventID: presentedEventID)
+                        isSetupGuidePresented = false
+                    })
+            } else {
+                NextSetupGuideView(
+                    store: store, settings: settings, localAccounts: localCLIAccounts, scope: presentedScope,
+                    installationEventID: presentedEventID,
+                    onOutcome: { settings.installationOnboarding.finish($0, scope: presentedScope, eventID: presentedEventID) },
+                    openAutomation: {
+                        openAutomationAfterGuide = true
+                        isSetupGuidePresented = false
+                    })
+            }
         }
         .sheet(item: $avatarEditor) { target in
             AccountAvatarEditor(
@@ -790,6 +819,7 @@ struct CodexAccountManagerView: View {
                     accountNumbers: localAccountNumbers,
                     onOpenSetup: {
                         setupGuideScope = .full
+                        setupGuideEventID = nil
                         settings.setupProgress.step = .runtime
                         isSetupGuidePresented = true
                     })
@@ -908,7 +938,7 @@ struct CodexAccountManagerView: View {
                         : language.text("微信与飞书连接", "WeChat & Feishu setup")
                 ) {
                     setupGuideScope = .connections
-                    if !settings.installationOnboarding.shouldPresent { settings.installationOnboarding.connectionStep = .notifications }
+                    setupGuideEventID = nil
                     isSetupGuidePresented = true
                 }
                 Button(language.text("关于 AiGoodBro · 致谢", "About AiGoodBro · Credits")) { isHomeAboutPresented = true }
@@ -1572,6 +1602,7 @@ struct CodexAccountManagerView: View {
                 onOpenDetails: { openLocalCLITab(profile.kind) },
                 onOpenSetup: {
                     setupGuideScope = .full
+                    setupGuideEventID = nil
                     settings.setupProgress.step = .runtime
                     isSetupGuidePresented = true
                 })
@@ -1605,6 +1636,7 @@ struct CodexAccountManagerView: View {
 
     private var resetCreditAutoSettingsButton: some View {
         Button {
+            resetCreditAutoFocusedProfileID = nil
             isResetCreditAutoSettingsPresented = true
         } label: {
             Label(language.text("到期自动使用", "Use before expiry"), systemImage: "clock.arrow.circlepath")
@@ -2175,6 +2207,7 @@ struct CodexAccountManagerView: View {
 
     private func openPrimaryGuide() {
         setupGuideScope = .full
+        setupGuideEventID = nil
         settings.setupProgress.step = .accounts
         isSetupGuidePresented = true
     }
@@ -2902,7 +2935,11 @@ struct CodexAccountManagerView: View {
                     resetCardsExpiring: codexCardExpiring(profile, now: now),
                     resetCreditsFetchedAt: profile.id == store.selectedMonitorProfileID ? store.snapshot.refreshedAt : profile.lastSnapshot?.fetchedAt,
                     resetCreditsReadSucceeded: linkedProfile == nil && profile.lastQuotaReadFailureAt == nil
-                        && (profile.id == store.selectedMonitorProfileID ? store.snapshot.quotaReadSucceeded : profile.lastSnapshot?.quotaReadSucceeded == true)
+                        && (profile.id == store.selectedMonitorProfileID ? store.snapshot.quotaReadSucceeded : profile.lastSnapshot?.quotaReadSucceeded == true),
+                    onOpenResetAutoSettings: {
+                        resetCreditAutoFocusedProfileID = profile.id
+                        isResetCreditAutoSettingsPresented = true
+                    }
                 ))
         }
         return AnyView(
@@ -2950,6 +2987,10 @@ struct CodexAccountManagerView: View {
                 resetCreditsFetchedAt: profile.id == store.selectedMonitorProfileID ? store.snapshot.refreshedAt : profile.lastSnapshot?.fetchedAt,
                 resetCreditsReadSucceeded: linkedProfile == nil && profile.lastQuotaReadFailureAt == nil
                     && (profile.id == store.selectedMonitorProfileID ? store.snapshot.quotaReadSucceeded : profile.lastSnapshot?.quotaReadSucceeded == true),
+                onOpenResetAutoSettings: {
+                    resetCreditAutoFocusedProfileID = profile.id
+                    isResetCreditAutoSettingsPresented = true
+                },
                 localResetHistoryCount: store.localResetHistoryCount(for: profile),
                 proxyParticipation: localProxy.displayRows.first(where: { $0.id == profile.id }).map(\.isEnabled),
                 proxyPriority: localProxy.displayRows.first(where: { $0.id == profile.id }).map(\.isPriority),
@@ -5807,6 +5848,7 @@ private struct ProfileRow: View {
     let resetCardsExpiring: Bool
     var resetCreditsFetchedAt: Date? = nil
     var resetCreditsReadSucceeded = false
+    var onOpenResetAutoSettings: (() -> Void)? = nil
     let localResetHistoryCount: Int
     /// Nil means this account is not currently eligible for the proxy queue.
     /// It stays distinct from an explicit opt-out so the card never presents
@@ -5993,7 +6035,7 @@ private struct ProfileRow: View {
         ResetCardExpiryFactsView(
             count: availableResetCredits, expiries: resetCreditExpiries,
             fetchedAt: resetCreditsFetchedAt, readSucceeded: resetCreditsReadSucceeded,
-            now: currentDate, expiring: resetCardsExpiring)
+            now: currentDate, expiring: resetCardsExpiring, onOpenAutoSettings: onOpenResetAutoSettings)
     }
 
     private var compactIdentity: some View {

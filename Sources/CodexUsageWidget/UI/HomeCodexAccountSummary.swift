@@ -34,6 +34,7 @@ struct HomeCodexAccountSummary: View {
     var resetCardsExpiring = false
     var resetCreditsFetchedAt: Date? = nil
     var resetCreditsReadSucceeded = false
+    var onOpenResetAutoSettings: (() -> Void)? = nil
 
     @Environment(\.widgetLanguage) private var language
     @Environment(\.colorScheme) private var colorScheme
@@ -122,7 +123,7 @@ struct HomeCodexAccountSummary: View {
             ResetCardExpiryFactsView(
                 count: resetCardCount, expiries: resetCreditExpiries,
                 fetchedAt: resetCreditsFetchedAt, readSucceeded: resetCreditsReadSucceeded,
-                now: currentDate, expiring: resetCardsExpiring)
+                now: currentDate, expiring: resetCardsExpiring, onOpenAutoSettings: onOpenResetAutoSettings)
             Spacer(minLength: 0)
         }
         .font(.system(size: 10)).foregroundStyle(.secondary)
@@ -693,13 +694,36 @@ struct ResetCardExpiryFactsView: View {
     let readSucceeded: Bool
     let now: Date
     let expiring: Bool
+    var onOpenAutoSettings: (() -> Void)? = nil
     @Environment(\.widgetLanguage) private var language
     @Environment(\.colorScheme) private var colorScheme
     var body: some View {
         let disclosure = ResetCardPresentation.expiryDisclosure(
             count: count, expiries: expiries, fetchedAt: fetchedAt,
             readSucceeded: readSucceeded, now: now, language: language)
-        HStack(spacing: 5) { facts(disclosure) }
+        if let onOpenAutoSettings {
+            Button(action: onOpenAutoSettings) {
+                HStack(spacing: 5) {
+                    facts(disclosure)
+                    Image(systemName: "info.circle")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.primary)
+                        .accessibilityHidden(true)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(disclosure.tooltip + "\n" + language.text("点击设置此账号的到期自动使用；不会立即使用重置卡。", "Open this account’s use-before-expiry settings. No reset card is used by opening it."))
+            .accessibilityLabel(
+                (count.flatMap { $0 >= 0 ? $0 : nil }.map { language.text("重置卡 \($0)", "\($0) reset cards") }
+                    ?? language.text("重置卡数量未知", "Reset-card count unknown"))
+                    + " · " + language.text("到期自动使用设置", "Use-before-expiry settings")
+            )
+            .accessibilityValue(disclosure.tooltip)
+            .accessibilityIdentifier("next.reset-credit-auto.account-entry")
+        } else {
+            HStack(spacing: 5) { facts(disclosure) }
+        }
     }
     @ViewBuilder private func facts(_ disclosure: ResetCardPresentation.ExpiryDisclosure) -> some View {
         Text(count.flatMap { $0 >= 0 ? $0 : nil }.map { language.text("重置卡 \($0)", "\($0) reset cards") } ?? language.text("重置卡 —", "Reset cards —"))

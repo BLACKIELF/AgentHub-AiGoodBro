@@ -7,6 +7,7 @@ struct NextSetupGuideView: View {
     @ObservedObject var localAccounts: LocalCLIAccountStore
     @ObservedObject private var messageChannels: MessageChannelsController
     let scope: NextSetupGuideScope
+    let installationEventID: String?
     var onOutcome: (NextSetupGuideOutcome) -> Void
     var openAutomation: () -> Void
     @Environment(\.dismiss) private var dismiss
@@ -15,12 +16,14 @@ struct NextSetupGuideView: View {
     @State private var pairingCode = ""
     @State private var personalLoginOperationID: UUID?
     @State private var showingMessageSettings = false
+    @State private var showingResetAutoSettings = false
+    @State private var connectionManualStep: NextSetupStep = .notifications
     @State private var confirmsCompanionInstall = false
     @StateObject private var runtime: NextRuntimeSetupModel
 
     init(
         store: UsageStore, settings: AppSettings, localAccounts: LocalCLIAccountStore? = nil,
-        scope: NextSetupGuideScope = .full, onOutcome: @escaping (NextSetupGuideOutcome) -> Void = { _ in },
+        scope: NextSetupGuideScope = .full, installationEventID: String? = nil, previewStep: NextSetupStep? = nil, onOutcome: @escaping (NextSetupGuideOutcome) -> Void = { _ in },
         openAutomation: @escaping () -> Void,
         runtime: NextRuntimeSetupModel? = nil
     ) {
@@ -30,13 +33,23 @@ struct NextSetupGuideView: View {
         self.localAccounts = localAccounts ?? LocalCLIAccountStore()
         self.openAutomation = openAutomation
         self.scope = scope
+        self.installationEventID = installationEventID
+        _connectionManualStep = State(initialValue: store.isPreview && scope == .connections ? (previewStep ?? .notifications) : .notifications)
         self.onOutcome = onOutcome
         _runtime = StateObject(wrappedValue: runtime ?? NextRuntimeSetupModel(preview: store.isPreview))
     }
 
     private var language: WidgetLanguage { settings.language }
     private var step: NextSetupStep {
-        scope == .connections ? settings.installationOnboarding.connectionStep : settings.setupProgress.step
+        if scope == .connections { return connectionManualStep }
+        if scope == .returning { return settings.installationOnboarding.connectionStep }
+        return settings.setupProgress.step
+    }
+
+    private var installationEventIsCurrent: Bool {
+        guard let installationEventID else { return scope != .returning }
+        let state = settings.installationOnboarding
+        return state.shouldPresent && state.presentationEventID == installationEventID && state.audience?.scope == scope
     }
 
     var body: some View {
@@ -57,6 +70,7 @@ struct NextSetupGuideView: View {
         }
         .frame(width: 900, height: 680)
         .background(Color(nsColor: .windowBackgroundColor))
+        .disabled(!installationEventIsCurrent)
         .confirmationDialog(language.text("安装配套调用工具？", "Install companion tools?"), isPresented: $confirmsCompanionInstall, titleVisibility: .visible) {
             Button(language.text("安装并检查", "Install and check")) { runtime.installTools() }
             Button(language.text("取消", "Cancel"), role: .cancel) {}
@@ -70,13 +84,20 @@ struct NextSetupGuideView: View {
         .environment(\.widgetLanguage, language)
         .environment(\.locale, language.locale)
         .environment(\.codexDeviceLoginHost, .setupGuide)
-        .modifier(CodexDeviceLoginSheet(store: store, language: language, host: .setupGuide))
+        .modifier(CodexDeviceLoginSheet(store: store, language: language, host: .setupGuide, isEnabled: scope == .full && installationEventIsCurrent))
         .onAppear {
-            if !store.isPreview { store.refreshLocalNotificationAuthorization() }
+            guard installationEventIsCurrent else { return }
+            if !store.isPreview && scope != .returning { store.refreshLocalNotificationAuthorization() }
             if !store.isPreview && step == .runtime { runtime.refresh() }
         }
         .sheet(isPresented: $showingMessageSettings) {
             MessageChannelsSettingsView(controller: messageChannels)
+        }
+        .sheet(isPresented: $showingResetAutoSettings) {
+            ResetCreditAutoSettingsView(
+                profiles: store.profiles, preferences: $settings.resetCreditAutoPreferences,
+                status: store.resetCreditAutoStatus, language: language, isPreview: store.isPreview,
+                onDone: { showingResetAutoSettings = false })
         }
         .onDisappear {
             pairingCode = ""
@@ -86,8 +107,8 @@ struct NextSetupGuideView: View {
             personalLoginOperationID = nil
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
-            guard !store.isPreview else { return }
-            store.refreshLocalNotificationAuthorization()
+            guard !store.isPreview && installationEventIsCurrent else { return }
+            if scope != .returning { store.refreshLocalNotificationAuthorization() }
             if step == .runtime { runtime.refresh() }
         }
     }
@@ -101,8 +122,11 @@ struct NextSetupGuideView: View {
                     AHBrandSymbol(size: 24)
                 }.font(.headline)
                     .foregroundStyle(.secondary)
-                Text(scope == .connections ? language.text("微信与飞书连接", "WeChat & Feishu") : language.text("使用引导", "Getting started"))
-                    .font(.title2.weight(.semibold))
+                Text(
+                    scope == .connections
+                        ? language.text("微信与飞书连接", "WeChat & Feishu") : scope == .returning ? language.text("更新后设置", "After your update") : language.text("使用引导", "Getting started")
+                )
+                .font(.title2.weight(.semibold))
             }
             VStack(spacing: 8) {
                 ForEach(scope.steps) { item in
@@ -149,6 +173,7 @@ struct NextSetupGuideView: View {
         case .accounts: SetupAccountsView(store: store, localAccounts: localAccounts, language: language)
         case .features: featuresPage
         case .notifications: notificationsPage
+        case .updates: updatesPage
         case .ready: readyPage
         }
     }
@@ -354,10 +379,12 @@ struct NextSetupGuideView: View {
             }
             Text(
                 language.text(
-                    "通知授权、微信和飞书连接在下一步完成。重置卡自动使用默认关闭，可在账号标题旁逐个授权。",
-                    "Set up notification permission, WeChat and Feishu next. Automatic reset-card use is off by default; authorize accounts beside the account heading.")
+                    "通知授权、微信和飞书连接在下一步完成。重置卡自动使用默认关闭，可从下方入口逐个授权账号。",
+                    "Set up notification permission, WeChat and Feishu next. Automatic reset-card use is off by default; authorize accounts using the entry below.")
             )
             .font(.caption).foregroundStyle(.secondary)
+            Divider()
+            newFeatureControls
             if !store.pausedAutomationFeatures.isEmpty {
                 Label(language.text("维护期间部分功能暂停，原设置已保留。", "Some features are paused for maintenance. Saved choices are preserved."), systemImage: "pause.circle")
                     .font(.caption).foregroundStyle(.orange)
@@ -365,11 +392,66 @@ struct NextSetupGuideView: View {
         }
     }
 
+    private var updatesPage: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            heading(
+                language.text("新功能，按需设置", "Choose your new features"),
+                language.text("保留已有配置，只调整你选择的项目。返回或完成引导不会开启功能。", "Your saved configuration stays in place. Going back or finishing this guide does not enable features."))
+            newFeatureControls
+            Text(language.text("原有工具、账号和日常功能保持现状，可随时从设置中调整。", "Your tools, accounts and daily features keep their current settings. Adjust them anytime in Settings."))
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    private var newFeatureControls: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(alignment: .top, spacing: 12) {
+                    Image(systemName: "clock.arrow.circlepath").foregroundStyle(.secondary).frame(width: 22)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(language.text("重置卡到期自动使用", "Use reset cards before expiry"))
+                            .font(.subheadline.weight(.semibold))
+                        Text(ResetCreditAutoSettingsView.summary(profiles: store.profiles, preferences: settings.resetCreditAutoPreferences, language: language))
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 8)
+                    Button(language.text("选择账号…", "Choose accounts…")) { showingResetAutoSettings = true }
+                }
+                Text(language.text("默认关闭，需逐个授权账号；打开设置不会开始使用重置卡。", "Off by default. Authorize accounts individually; opening settings does not use a reset card."))
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+            Divider()
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Label(language.text("侧栏额度样式", "Sidebar quota style"), systemImage: "chart.pie")
+                        .font(.subheadline.weight(.semibold))
+                    Spacer(minLength: 12)
+                    Picker(language.text("额度样式", "Quota style"), selection: $settings.edgeDock.quotaStyle) {
+                        Text(language.text("圆环", "Rings")).tag(TokenMonitorEdgeDockPreferences.QuotaStyle.ring)
+                        Text(language.text("小鱼", "Fish")).tag(TokenMonitorEdgeDockPreferences.QuotaStyle.fish)
+                    }
+                    .labelsHidden().pickerStyle(.segmented).frame(width: 160)
+                    .disabled(store.isPreview)
+                }
+                Toggle(language.text("显示侧栏", "Show sidebar"), isOn: $settings.edgeDock.enabled)
+                    .toggleStyle(.switch).controlSize(.small).disabled(store.isPreview)
+                Text(
+                    language.text(
+                        "⌘I 显示／隐藏侧栏。悬停查看详情，使用固定按钮保持展开；Pro 显示 7 天，Plus 显示 5 小时额度。",
+                        "⌘I shows or hides the sidebar. Hover for details and use Pin to keep them open. Pro shows weekly limits; Plus shows five-hour limits.")
+                )
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(16)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
+    }
+
     private var notificationsPage: some View {
         VStack(alignment: .leading, spacing: 22) {
             heading(
-                scope == .connections ? language.text("检查微信与飞书连接", "Check WeChat & Feishu") : language.text("让提醒到达你", "Put alerts within reach"),
-                scope == .connections
+                scope != .full ? language.text("检查微信与飞书连接", "Check WeChat & Feishu") : language.text("让提醒到达你", "Put alerts within reach"),
+                scope != .full
                     ? language.text(
                         "升级或重装后，系统可能要求重新授权。已有配置会保留；按下方状态检查，连接和测试均由你选择。",
                         "After an update or reinstall, macOS may require authorization again. Existing configuration stays saved. Check the states below and choose whether to connect or test."
@@ -493,7 +575,7 @@ struct NextSetupGuideView: View {
         VStack(alignment: .leading, spacing: 22) {
             heading(
                 language.text("查看设置，开始使用", "Review your setup"),
-                scope == .connections
+                scope != .full
                     ? language.text(
                         "完成此引导只记录本轮检查已结束，不代表消息已送达。未完成的连接可从工作台继续。",
                         "Finishing this guide records that this review is done, not that a message was delivered. Continue any pending connection from the workspace.")
@@ -503,14 +585,17 @@ struct NextSetupGuideView: View {
                 Button(language.text("查看登录清单", "Review sign-in checklist")) { go(to: .accounts) }
             }
             VStack(alignment: .leading, spacing: 16) {
-                connectionTitle(
-                    language.text("日常功能", "Daily features"), symbol: "switch.2",
-                    status: language.text("\(store.enabledSetupFeatureCount) / 7 已开启", "\(store.enabledSetupFeatureCount) / 7 enabled"), ready: store.enabledSetupFeatureCount == 7)
-                Divider()
-                connectionTitle(
-                    language.text("系统通知", "System notifications"), symbol: "bell", status: localStatus,
-                    ready: store.localNotificationsEnabled && store.localNotificationAuthorizationReady)
-                Divider()
+                if scope != .returning {
+                    connectionTitle(
+                        language.text("日常功能", "Daily features"), symbol: "switch.2",
+                        status: language.text("\(store.enabledSetupFeatureCount) / 7 已开启", "\(store.enabledSetupFeatureCount) / 7 enabled"),
+                        ready: store.enabledSetupFeatureCount == 7)
+                    Divider()
+                    connectionTitle(
+                        language.text("系统通知", "System notifications"), symbol: "bell", status: localStatus,
+                        ready: store.localNotificationsEnabled && store.localNotificationAuthorizationReady)
+                    Divider()
+                }
                 connectionTitle(
                     language.text("微信", "WeChat"), symbol: "bubble.left.and.bubble.right",
                     status: messageChannels.personalWeChatConnected
@@ -525,12 +610,22 @@ struct NextSetupGuideView: View {
             }
             .padding(18)
             .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
-            instruction(
-                "→", title: language.text("从一次新任务开始", "Start with your next task"),
-                detail: language.text(
-                    "回到工作台，确认独立账号已登录、额度为新鲜读取且当前空闲。配套调度先生成 plan，启动后仍需批准；中断时沿用原任务查看 status/result。",
-                    "Return to the workspace and confirm the isolated account is signed in, limits are fresh, and it is idle. Companion dispatch starts with a plan and still requires approval; after interruption, use the original task for status/result."
-                ))
+            if scope == .full {
+                instruction(
+                    "→", title: language.text("从一次新任务开始", "Start with your next task"),
+                    detail: language.text(
+                        "回到工作台，确认独立账号已登录、额度为新鲜读取且当前空闲。配套调度先生成 plan，启动后仍需批准；中断时沿用原任务查看 status/result。",
+                        "Return to the workspace and confirm the isolated account is signed in, limits are fresh, and it is idle. Companion dispatch starts with a plan and still requires approval; after interruption, use the original task for status/result."
+                    ))
+            }
+            if scope == .returning {
+                Text(
+                    language.text(
+                        "本轮只检查微信、飞书和新功能设置。完成仅结束引导；连接授权不等于消息送达，原有功能不会自动开启。",
+                        "This review covers WeChat, Feishu and new features only. Finishing closes the guide; authorization does not confirm delivery or enable other features.")
+                )
+                .font(.subheadline).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
             Text(language.text("“使用引导”入口一直保留；自动化中心可以随时调整全部开关。", "Getting started stays available. Adjust feature switches anytime in Automation."))
                 .font(.caption).foregroundStyle(.secondary)
         }
@@ -553,10 +648,13 @@ struct NextSetupGuideView: View {
     private var footer: some View {
         HStack(spacing: 10) {
             Button(language.text("以后再说", "Not now")) {
-                if store.isLoggingIn, store.deviceLogin?.phase.canCancelAuthorization == true {
-                    store.cancelLogin()
+                guard installationEventIsCurrent else { return }
+                if scope == .full {
+                    if store.isLoggingIn, store.deviceLogin?.phase.canCancelAuthorization == true {
+                        store.cancelLogin()
+                    }
+                    store.migrateDeviceLoginHostIfNeeded(from: .setupGuide)
                 }
-                store.migrateDeviceLoginHostIfNeeded(from: .setupGuide)
                 if !store.isPreview {
                     if scope == .full {
                         settings.setupProgress.dismissed = true
@@ -566,12 +664,13 @@ struct NextSetupGuideView: View {
                 }
                 dismiss()
             }
-            .disabled(store.isLoggingIn && store.deviceLogin?.phase.canCancelAuthorization == false)
+            .disabled(scope == .full && store.isLoggingIn && store.deviceLogin?.phase.canCancelAuthorization == false)
             Spacer()
             if step != scope.steps.first {
                 Button(language.text("上一步", "Back")) { go(to: scope.previous(step)) }
             }
-            Button(step == .ready ? language.text("开始使用", "Open workspace") : language.text("下一步", "Continue")) {
+            Button(step == .ready ? (scope == .full ? language.text("开始使用", "Open workspace") : language.text("完成检查", "Finish review")) : language.text("下一步", "Continue")) {
+                guard installationEventIsCurrent else { return }
                 if step == .ready {
                     if !store.isPreview {
                         if scope == .full {
@@ -592,12 +691,19 @@ struct NextSetupGuideView: View {
     }
 
     private func go(to step: NextSetupStep) {
-        guard scope.steps.contains(step) else { return }
+        guard scope.steps.contains(step), installationEventIsCurrent else { return }
         withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.16)) {
-            if scope == .connections { settings.installationOnboarding.connectionStep = step } else { settings.setupProgress.step = step }
+            if scope == .returning {
+                guard let installationEventID else { return }
+                _ = settings.installationOnboarding.setConnectionStep(step, eventID: installationEventID)
+            } else if scope == .connections {
+                connectionManualStep = step
+            } else {
+                settings.setupProgress.step = step
+            }
         }
         guard !store.isPreview else { return }
-        if step == .notifications { store.refreshLocalNotificationAuthorization() }
+        if step == .notifications && scope != .returning { store.refreshLocalNotificationAuthorization() }
         if step == .runtime { runtime.refresh() }
     }
 
