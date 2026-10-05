@@ -16,7 +16,7 @@ struct ResetCreditAutoSettingsView: View {
         }.count
         return count == 0
             ? language.text("未开启", "Not enabled")
-            : language.text("已开启 \(count) 个账号", "Enabled for \(count) accounts")
+            : language.text("已开启 \(count) 个账号", count == 1 ? "1 account enabled" : "\(count) accounts enabled")
     }
 
     private var summary: String {
@@ -24,64 +24,91 @@ struct ResetCreditAutoSettingsView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(alignment: .top, spacing: 10) {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(spacing: 12) {
                 Image(systemName: "clock.arrow.circlepath")
-                    .font(.title2).foregroundStyle(.primary)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(language.text("重置卡到期自动使用", "Use reset cards before expiry"))
-                        .font(.headline)
-                    Text(summary).font(.subheadline).foregroundStyle(.secondary)
-                }
-                Spacer(minLength: 0)
+                    .font(.system(size: 22, weight: .medium))
+                    .foregroundStyle(Color.blue)
+                    .frame(width: 42, height: 42)
+                    .background(Color.blue.opacity(0.10), in: RoundedRectangle(cornerRadius: 12))
+                Text(language.text("到期自动使用", "Use before expiry"))
+                    .font(.system(size: 18, weight: .semibold))
+                    .lineLimit(2)
+                Spacer(minLength: 8)
+                Text(summary)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 10).padding(.vertical, 6)
+                    .background(Color.primary.opacity(0.05), in: Capsule())
+                    .fixedSize(horizontal: false, vertical: true)
             }
             Text(
                 language.text(
-                    "默认关闭，请逐个选择账号。应用须保持运行，仅空闲且身份核验通过时尝试使用即将过期的卡；结果不确定时暂停，需人工核对。",
-                    "Off by default. Choose accounts individually and keep the app running. Expiring cards are used only when idle and identity is verified; uncertain results pause for manual review."
-                )
+                    "默认关闭，逐个选择账号。应用须保持运行；仅空闲且身份核验通过时尝试，结果不确定时暂停并提示核对。",
+                    "Off by default. Choose accounts individually and keep the app running. Only idle, verified accounts are eligible; uncertain results pause for review.")
             )
-            .font(.caption).foregroundStyle(.secondary)
+            .font(.system(size: 12)).foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
-            Stepper(value: $preferences.leadMinutes, in: 1...1440) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(language.text("到期前 \(preferences.leadMinutes) 分钟", "\(preferences.leadMinutes) minutes before expiry"))
-                    Text(language.text("默认 30 分钟，可选 1–1440 分钟", "Default: 30 minutes · Range: 1–1440"))
-                        .font(.caption).foregroundStyle(.secondary)
+            HStack(spacing: 16) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(language.text("提前使用时间", "Redeem before expiry"))
+                        .font(.system(size: 13, weight: .medium))
+                    Text(language.text("默认 30 分钟 · 可选 1–1440", "Default: 30 min · Range: 1–1440"))
+                        .font(.system(size: 11)).foregroundStyle(.secondary)
                 }
+                Spacer(minLength: 0)
+                Stepper(value: $preferences.leadMinutes, in: 1...1440) {
+                    Text(language.text("\(preferences.leadMinutes) 分钟", "\(preferences.leadMinutes) min"))
+                        .font(.system(size: 13, weight: .medium)).monospacedDigit()
+                        .frame(minWidth: 64, alignment: .trailing)
+                }
+                .fixedSize()
+                .disabled(isPreview)
+                .accessibilityLabel(language.text("到期前使用的分钟数", "Minutes before expiry"))
             }
-            .disabled(isPreview)
+            .padding(12)
+            .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 10))
             if let status, !status.isEmpty {
                 Label(status, systemImage: "info.circle")
                     .font(.caption).foregroundStyle(WorkspaceStatusForeground.warning)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            Divider()
-            ScrollViewReader { proxy in
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 12) {
-                        if profiles.isEmpty {
-                            Text(language.text("添加并登录 Codex 账号后，可在这里逐个开启。", "Add and sign in to Codex accounts to enable them here."))
-                                .font(.caption).foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 8) {
+                Text(language.text("选择账号", "Choose accounts"))
+                    .font(.system(size: 12, weight: .semibold)).foregroundStyle(.secondary)
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 0) {
+                            if profiles.isEmpty {
+                                Text(language.text("添加并登录 Codex 账号后，可在这里逐个开启。", "Add and sign in to Codex accounts to enable them here."))
+                                    .font(.caption).foregroundStyle(.secondary).padding(12)
+                            }
+                            ForEach(profiles) { profile in
+                                accountRow(profile)
+                                    .padding(12)
+                                    .background(
+                                        focusedProfileID == profile.id ? Color.accentColor.opacity(0.08) : Color.clear,
+                                        in: RoundedRectangle(cornerRadius: 8)
+                                    )
+                                    .overlay {
+                                        RoundedRectangle(cornerRadius: 8)
+                                            .strokeBorder(focusedProfileID == profile.id ? Color.accentColor.opacity(0.20) : Color.clear, lineWidth: 1)
+                                    }
+                                    .id(profile.id)
+                                if profile.id != profiles.last?.id {
+                                    Divider().padding(.horizontal, 12)
+                                }
+                            }
                         }
-                        ForEach(profiles) { profile in
-                            accountRow(profile)
-                                .padding(6)
-                                .background(
-                                    focusedProfileID == profile.id ? Color.accentColor.opacity(0.12) : Color.clear,
-                                    in: RoundedRectangle(cornerRadius: 8)
-                                )
-                                .id(profile.id)
-                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(3)
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.vertical, 2)
-                }
-                .onAppear {
-                    if let focusedProfileID { proxy.scrollTo(focusedProfileID, anchor: .center) }
-                }
-                .onChange(of: focusedProfileID) { value in
-                    if let value { proxy.scrollTo(value, anchor: .center) }
+                    .onAppear {
+                        if let focusedProfileID { proxy.scrollTo(focusedProfileID, anchor: .center) }
+                    }
+                    .onChange(of: focusedProfileID) { value in
+                        if let value { proxy.scrollTo(value, anchor: .center) }
+                    }
                 }
             }
             Divider()
@@ -91,14 +118,18 @@ struct ResetCreditAutoSettingsView: View {
                     preferences.authorizedAccounts.removeAll()
                 }
                 .disabled(isPreview || preferences.authorizedAccounts.isEmpty)
-                .foregroundStyle(.primary)
+                .buttonStyle(.borderless)
+                .foregroundStyle(.secondary)
                 Spacer(minLength: 0)
                 Button(language.text("完成", "Done"), action: onDone)
                     .keyboardShortcut(.defaultAction)
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.regular)
             }
         }
-        .padding(20)
-        .frame(minWidth: 400, idealWidth: 480, maxWidth: 560, minHeight: 420, idealHeight: 580, maxHeight: 720)
+        .padding(24)
+        .frame(minWidth: 440, idealWidth: 500, maxWidth: 560, minHeight: 440, idealHeight: 600, maxHeight: 720)
+        .background(Color(nsColor: .windowBackgroundColor))
         .environment(\.locale, language.locale)
         .accessibilityIdentifier("next.reset-credit-auto.settings")
     }
@@ -134,10 +165,6 @@ struct ResetCreditAutoSettingsView: View {
         let reason = blockedReason(profile)
         let hasInactiveAuthorization = preferences.authorizedAccounts[profile.id] != nil && !enabled
         return VStack(alignment: .leading, spacing: 4) {
-            if focusedProfileID == profile.id {
-                Label(language.text("当前选择的账号", "Selected account"), systemImage: "info.circle")
-                    .font(.caption).foregroundStyle(.primary)
-            }
             Toggle(
                 isOn: Binding(
                     get: { isEnabled(profile) },
@@ -151,21 +178,32 @@ struct ResetCreditAutoSettingsView: View {
                     }
                 )
             ) {
-                Text(AccountDisplay.numberedName(profile, allProfiles: profiles))
-                    .lineLimit(2).frame(maxWidth: .infinity, alignment: .leading)
+                HStack(spacing: 8) {
+                    Text(AccountDisplay.numberedName(profile, allProfiles: profiles))
+                        .font(.system(size: 13, weight: .medium))
+                        .lineLimit(2).frame(maxWidth: .infinity, alignment: .leading)
+                    if focusedProfileID == profile.id {
+                        Text(language.text("当前查看", "Viewing"))
+                            .font(.system(size: 10, weight: .medium)).foregroundStyle(.secondary)
+                            .padding(.horizontal, 7).padding(.vertical, 3)
+                            .background(Color.primary.opacity(0.05), in: Capsule())
+                            .fixedSize()
+                    }
+                }
             }
             .toggleStyle(.switch)
             .controlSize(.small)
             .disabled(isPreview || (!enabled && reason != nil))
             if let reason {
                 Text(enabled ? language.text("已暂停 · ", "Paused · ") + reason : reason)
-                    .font(.caption).foregroundStyle(WorkspaceStatusForeground.warning)
+                    .font(.system(size: 11))
+                    .foregroundStyle(enabled ? AnyShapeStyle(WorkspaceStatusForeground.warning) : AnyShapeStyle(.secondary))
                     .fixedSize(horizontal: false, vertical: true)
             }
             if hasInactiveAuthorization {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text(language.text("原身份授权已失效，当前身份未开启。", "The previous identity authorization is inactive; this identity is not enabled."))
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(.system(size: 11)).foregroundStyle(WorkspaceStatusForeground.warning)
                     Button(language.text("清除", "Clear")) {
                         guard !isPreview else { return }
                         preferences.authorizedAccounts[profile.id] = nil
@@ -215,7 +253,7 @@ enum ResetCreditAutoSettingsPreviewFixture {
                 isPreview: true, focusedProfileID: "ready")
         }
         try WorkspacePreviewRenderer.renderView(
-            focusedPreview, size: CGSize(width: 440, height: 650), scheme: .dark,
+            focusedPreview, size: CGSize(width: 500, height: 640), scheme: .dark,
             to: directory.appendingPathComponent("zh-dark-account-entry-focused.png"))
         for language in WidgetLanguage.allCases {
             for scheme in [ColorScheme.light, .dark] {
@@ -225,7 +263,7 @@ enum ResetCreditAutoSettingsPreviewFixture {
                     let view = ResetCreditAutoSettingsView(
                         profiles: profiles, preferences: .constant(preferences), status: nil, language: language, isPreview: true)
                     let name = "\(language.rawValue)-\(scheme == .dark ? "dark" : "light")-\(enabled ? "enabled" : "off").png"
-                    try WorkspacePreviewRenderer.renderView(view, size: CGSize(width: 440, height: 620), scheme: scheme, to: directory.appendingPathComponent(name))
+                    try WorkspacePreviewRenderer.renderView(view, size: CGSize(width: 500, height: 600), scheme: scheme, to: directory.appendingPathComponent(name))
                 }
             }
         }

@@ -33,7 +33,8 @@ enum NextSetupPreviewRenderer {
                         .transaction { $0.disablesAnimations = true }
                         .preferredColorScheme(scheme)
                     let choiceName = "\(language.rawValue)-\(scheme == .dark ? "dark" : "light")-audience.png"
-                    try WorkspacePreviewRenderer.renderView(choice, size: CGSize(width: 640, height: 360), scheme: scheme, to: directory.appendingPathComponent(choiceName))
+                    try WorkspacePreviewRenderer.renderView(
+                        choice, size: InstallationAudienceChoiceView.preferredSize, scheme: scheme, to: directory.appendingPathComponent(choiceName))
                     count += 1
                     let previewEventID = "preview-returning-\(UUID().uuidString)"
                     settings.installationOnboarding = InstallationOnboardingState(
