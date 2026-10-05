@@ -474,7 +474,8 @@ final class AppSettings: ObservableObject {
         floatingBubble = TokenMonitorFloatingBubblePreferences.load(defaults.data(forKey: TokenMonitorFloatingBubblePreferences.storageKey))
         edgeDock = TokenMonitorEdgeDockPreferences.load(defaults.data(forKey: TokenMonitorEdgeDockPreferences.storageKey))
         var onboardingBackup: Data?
-        onboarding = WorkspaceOnboardingState.load(defaults.data(forKey: WorkspaceOnboardingState.storageKey), backupRaw: &onboardingBackup)
+        let loadedOnboarding = WorkspaceOnboardingState.load(defaults.data(forKey: WorkspaceOnboardingState.storageKey), backupRaw: &onboardingBackup)
+        onboarding = loadedOnboarding
         if let onboardingBackup {
             defaults.set(onboardingBackup, forKey: WorkspaceOnboardingState.backupKey)
         }
@@ -494,7 +495,7 @@ final class AppSettings: ObservableObject {
             || defaults.bool(forKey: "CodexManagerNext.setup.dismissed")
             || defaults.bool(forKey: "CodexManagerNext.setup.completed")
             || storedPinnedAccountKey != nil
-            || onboarding.existingUserMigrated || onboarding.status != .notStarted
+            || loadedOnboarding.existingUserMigrated || loadedOnboarding.status != .notStarted
         workspaceDisplayMode =
             defaults.string(forKey: WorkspaceDisplayMode.storageKey).flatMap(WorkspaceDisplayMode.init(rawValue:))
             ?? (existingUser ? .professional : .simple)

@@ -42,6 +42,7 @@ func isolatedDefaults(_ body: (UserDefaults) throws -> Void) throws {
     try body(defaults)
 }
 func existingUser(defaults: UserDefaults, onboarding: WorkspaceOnboardingState) -> Bool {
+    let loadedOnboarding = onboarding
     let storedPinnedAccountKey = defaults.string(forKey: "CodexManagerNext.pinnedAccountKey")
     EXISTING_USER_PRODUCTION
     return existingUser
