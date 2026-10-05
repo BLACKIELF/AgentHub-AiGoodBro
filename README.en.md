@@ -6,9 +6,9 @@ AiGoodBro is a macOS AI workspace for personal use. It brings together quotas fo
 
 [中文](README.md) | **English**
 
-The latest source candidate is **2.2 · 1005v3**, with internal update version 9.6.75 (125). It retains optional reset-card redemption, one-line expiry dates, compact proxy rules and ring/fish displays, fixes a failed profile blocking another valid profile for the same account, and shows ∞ for verified weekly-only Pro quota. Build 124 is installed locally; 125 is not installed and has no official installer. See the [usage guide](docs/usage-guide.md) and [changelog](CHANGELOG.md).
+The latest source candidate is **2.2 · 1005v4**, with internal update version 9.6.76 (126). Home and the Codex account heading offer “Use before expiry”; the Edge Dock shows the 7-day quota for Pro and the 5-hour quota for Plus. Build 125 (9.6.75) remains installed locally; candidate 126 has local ZIP and DMG packages and is not installed. See the [usage guide](docs/usage-guide.md) and [changelog](CHANGELOG.md).
 
-The next feature version will reopen WeChat and Feishu connection onboarding after each installation; see the [reinstallation plan](docs/reinstall-onboarding-plan-1005v1.md).
+Candidate 126 includes WeChat and Feishu connection checks after installation, preserving existing preferences and pending messages. Real reconnection and message delivery still require manual verification after installation; see the [reinstallation plan](docs/reinstall-onboarding-plan-1005v1.md).
 
 **Help avoid forgotten reset cards expiring unused.** Opt in for each account to let the app attempt redemption near expiry, by default 30 minutes beforehand with an adjustable lead time. This is off by default and requires the app to remain running. Only verified, idle independent managed accounts are eligible; the current desktop identity is excluded. Uncertain outcomes pause for review instead of being retried automatically. See the [reset-card behavior and limits](docs/reset-credit-control.md).
 
