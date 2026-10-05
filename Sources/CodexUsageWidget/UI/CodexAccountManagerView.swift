@@ -2287,6 +2287,16 @@ struct CodexAccountManagerView: View {
         WorkspacePresentation(profiles: store.profiles, selectedProfileID: store.selectedMonitorProfileID)
     }
 
+    private var overviewWeeklyOnlyPro: Bool {
+        let now = presentationPreviewDate ?? Date()
+        if let profile = presentation.quotaProfile, profile.id != store.selectedMonitorProfileID {
+            return QuotaAvailabilityPresentation.weeklyOnlyPro(profile, now: now)
+        }
+        return QuotaAvailabilityPresentation.weeklyOnlyPro(
+            store.snapshot,
+            lastFailureAt: store.selectedMonitorProfile?.lastQuotaReadFailureAt, now: now)
+    }
+
     private var overviewQuota: (fiveHour: RateWindow?, sevenDay: RateWindow?, readSucceeded: Bool) {
         presentation.quotaSummary(monitored: store.snapshot)
     }
@@ -2466,7 +2476,8 @@ struct CodexAccountManagerView: View {
                     title: language.text("5 小时剩余", "5h available"),
                     icon: "timer",
                     window: overviewQuota.fiveHour,
-                    prominent: true
+                    prominent: true,
+                    isWeeklyOnlyPro: overviewWeeklyOnlyPro
                 )
                 QuotaDetailTile(
                     title: language.text("7 天剩余", "7d remaining"),
@@ -5188,7 +5199,7 @@ struct CodexAccountMenuView: View {
             HStack(spacing: 8) {
                 profileQuotaWindowLabel(
                     title: text("5 小时", "5h"),
-                    window: profileFiveHourWindow(profile)
+                    window: profileFiveHourWindow(profile), isWeeklyOnlyPro: profileWeeklyOnlyPro(profile)
                 )
                 profileQuotaWindowLabel(
                     title: text("7 天", "7d"),
@@ -5287,14 +5298,23 @@ struct CodexAccountMenuView: View {
                 visibleIDs: filteredVisibleProfiles.map(\.id), language: language))
     }
 
-    private func profileQuotaWindowLabel(title: String, window: RateWindow?) -> some View {
+    private func profileQuotaWindowLabel(title: String, window: RateWindow?, isWeeklyOnlyPro: Bool = false) -> some View {
         HStack(spacing: 3) {
             Text(title)
                 .foregroundStyle(.secondary)
-            QuotaPercentageRing(percent: window?.remainingPercent, diameter: 34)
+            QuotaPercentageRing(percent: window?.remainingPercent, diameter: 34, isWeeklyOnlyPro: isWeeklyOnlyPro)
+                .help(isWeeklyOnlyPro ? QuotaAvailabilityPresentation.weeklyOnlyProHelp(language) : "")
         }
         .font(.system(size: 9.5, weight: .semibold))
         .lineLimit(1)
+    }
+
+    private func profileWeeklyOnlyPro(_ profile: CodexProfile) -> Bool {
+        if profile.id == store.selectedMonitorProfileID {
+            return QuotaAvailabilityPresentation.weeklyOnlyPro(
+                store.snapshot, lastFailureAt: profile.lastQuotaReadFailureAt)
+        }
+        return QuotaAvailabilityPresentation.weeklyOnlyPro(profile)
     }
 
     private func profileFiveHourWindow(_ profile: CodexProfile) -> RateWindow? {
@@ -5579,6 +5599,7 @@ private struct QuotaDetailTile: View {
     let icon: String
     let window: RateWindow?
     var prominent = false
+    var isWeeklyOnlyPro = false
 
     var body: some View {
         HStack(alignment: .top, spacing: 6) {
@@ -5586,7 +5607,7 @@ private struct QuotaDetailTile: View {
                 .font(.caption)
                 .foregroundStyle(PaletteControlForeground())
                 .accessibilityHidden(true)
-            CompactQuotaView(title: title, remaining: window?.remainingPercent, reset: window?.resetsAt)
+            CompactQuotaView(title: title, remaining: isWeeklyOnlyPro ? nil : window?.remainingPercent, reset: window?.resetsAt, isWeeklyOnlyPro: isWeeklyOnlyPro)
         }
         .padding(.horizontal, prominent ? 0 : 8)
         .padding(.vertical, prominent ? 0 : 5)
@@ -6211,7 +6232,8 @@ private struct ProfileRow: View {
         HStack(alignment: .top, spacing: 10) {
             CompactQuotaView(
                 title: "5h", remaining: fiveHourRemainingPercent, reset: fiveHourResetsAt,
-                constrainedByWeekly: QuotaAvailabilityPresentation.isWeeklyExhausted(remainingPercent)
+                constrainedByWeekly: QuotaAvailabilityPresentation.isWeeklyExhausted(remainingPercent),
+                isWeeklyOnlyPro: quotaReadSucceeded && QuotaAvailabilityPresentation.weeklyOnlyPro(profile, now: currentDate)
             )
             .frame(maxWidth: .infinity, alignment: .leading)
             CompactQuotaView(title: "7d", remaining: remainingPercent, reset: resetsAt, paletteRole: .secondary)

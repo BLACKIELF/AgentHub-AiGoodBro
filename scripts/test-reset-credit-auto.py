@@ -5,7 +5,7 @@ Only supportDirectory resolves to a disposable fixture root. Reader and Hub fall
 trap; every runAutomatic call supplies injected readers and availability.
 """
 from pathlib import Path
-import hashlib,json,os,subprocess,tempfile,time
+import hashlib,json,os,re,subprocess,tempfile,time
 ROOT=Path(__file__).resolve().parent.parent
 SOURCES=[ROOT/'Sources/CodexUsageWidget'/p for p in [
  'Domain/CodexResetCredit.swift','Domain/CodexResetCreditAuto.swift',
@@ -13,13 +13,14 @@ SOURCES=[ROOT/'Sources/CodexUsageWidget'/p for p in [
  'Services/DispatchActivityStore.swift']]
 TEST=ROOT/'tests/ResetCreditAutoTests.swift'
 WIRING_TEST=ROOT/'tests/ResetCreditAutoWiringTests.swift'
+FALLBACK_TEST=ROOT/'tests/ResetCreditAutoFallbackTests.swift'
 USAGE=ROOT/'Sources/CodexUsageWidget/Services/UsageStore.swift'
 READER=ROOT/'Sources/CodexUsageWidget/Services/CodexUsageReader.swift'
 STUBS=r'''import Foundation
 import Combine
 struct CodexAccountSnapshot { var accountID:String?; var quotaReadSucceeded:Bool? = true; var resetCreditExpiries:[Date]? = nil }
 struct CodexProfile { let id:String; var lastSnapshot:CodexAccountSnapshot?; var lastQuotaReadFailureAt:Date? = nil; var isSystemProfile = false
- var recordedAccountKey:String { "synthetic-"+id }; var codexHomeURL:URL { URL(fileURLWithPath:ProcessInfo.processInfo.environment["RESET_AUTO_TEST_ROOT"]!).appendingPathComponent("home-"+id) } }
+ var recordedAccountKey:String { "synthetic-"+(lastSnapshot?.accountID ?? id) }; var codexHomeURL:URL { URL(fileURLWithPath:ProcessInfo.processInfo.environment["RESET_AUTO_TEST_ROOT"]!).appendingPathComponent("home-"+id) } }
 enum AccountDisplay { static func profileName(_ profile:CodexProfile)->String { "Synthetic account" }; static func numberedName(_ profile:CodexProfile,allProfiles:[CodexProfile])->String { profile.id } }
 enum WidgetLanguage { case fixture; static func storedOrAutomatic()->Self { .fixture }; func text(_ zh:String,_ en:String)->String { en } }
 enum HubAccountTaskPhase { case maintenance,starting,running,cancelRequested,uncertain,awaitingAcceptance,succeeded,failed,cancelled,unavailable }
@@ -41,7 +42,10 @@ def declaration(source,needle):
    if depth==0:return source[start:i+1]
  raise ValueError(needle)
 def main():
- snapshots={p:p.read_bytes() for p in SOURCES+[TEST,WIRING_TEST,USAGE,READER]}
+ prefix=os.environ.get('RESET_AUTO_EVIDENCE_PREFIX','reset-auto-host')
+ if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,127}',prefix) or prefix=='reset-auto-124-host':
+  raise ValueError('RESET_AUTO_EVIDENCE_PREFIX must be a safe basename and must not overwrite accepted 124 evidence')
+ snapshots={p:p.read_bytes() for p in SOURCES+[TEST,WIRING_TEST,FALLBACK_TEST,USAGE,READER]}
  inputs={str(p.relative_to(ROOT)):hashlib.sha256(data).hexdigest() for p,data in snapshots.items()}
  with tempfile.TemporaryDirectory(prefix='aigoodbro-reset-auto-fixture-') as tmp:
   folder=Path(tmp);frozen=[]
@@ -64,8 +68,8 @@ def main():
   wiring=r'''
 @MainActor final class FixtureAutoController {
  var attempted:[String]=[]; var consumed:[String]=[]; var busyIDs:Set<String>=[]; var onAttempt:(()->Void)?
- func runAutomatic(profile:CodexProfile,accountID:String,hubAccountAlias:String,lead:TimeInterval,quotaFingerprint:String,admission:CodexResetCreditAutoAdmission,onStatus:((String)->Void)?=nil,onConfirmedResult:@escaping()->Void) async {
- attempted.append(profile.id); if !busyIDs.contains(profile.id) { consumed.append(profile.id) }; onAttempt?()
+ func runAutomatic(profile:CodexProfile,accountID:String,hubAccountAlias:String,lead:TimeInterval,quotaFingerprint:String,admission:CodexResetCreditAutoAdmission,onStatus:((String)->Void)?=nil,onConfirmedResult:@escaping()->Void) async -> CodexResetCreditController.AutomaticAttemptDisposition {
+ attempted.append(profile.id); if !busyIDs.contains(profile.id) { consumed.append(profile.id) }; onAttempt?(); return .accountHandledOrBlocked
  }
 }
 @MainActor final class AutomaticRunnerFixture {
@@ -89,11 +93,20 @@ final class ReaderSendFixture {
  let card=self.card;let idempotencyKey=self.idempotencyKey
  func writeMessageLocked(_ request:[String:Any])->Bool { self.writeMessageLocked(request) }
 ''' + send + '\n}\n}\n'
-  stubs=folder/'Stubs.swift';stubs.write_text(STUBS+wiring)
+  realRunner=runner
+  seam='lead: self.resetCreditAutoPreferences.leadSeconds, quotaFingerprint: "", admission: admission,'
+  assert realRunner.count(seam)==1
+  realRunner=realRunner.replace(seam,seam+'\n                    autoStore: self.autoStore, reviewReader: self.reviewReader, consumeReader: self.consumeReader, hubAvailability: self.hubAvailability,',1)
+  verified=declaration(reader,'func verifiedCard(')
+  helpers='\n'.join(declaration(reader,n) for n in ['private func resetExactInt64(', 'private func resetValidField(', 'private func resetExpiry('])
+  verifier='import CoreFoundation\n'+helpers+'\nstruct FallbackVerifier { let expectedAccountID:String; let selectedCard:CodexResetCreditCard?=nil;\n'+verified+'\n}\n'
+  fallback=snapshots[FALLBACK_TEST].decode().replace('// EXTRACTED_RUNNER',realRunner,1)
+  stubs=folder/'Stubs.swift';stubs.write_text(STUBS+wiring+verifier)
+  fallbackTest=folder/FALLBACK_TEST.name;fallbackTest.write_text(fallback)
   wiringTest=folder/WIRING_TEST.name;wiringTest.write_bytes(snapshots[WIRING_TEST])
   test=folder/TEST.name;test.write_bytes(snapshots[TEST])
   binary=folder/'checks';env={**os.environ,'RESET_AUTO_TEST_ROOT':str(folder/'support')}
-  command=['xcrun','swiftc','-swift-version','5','-parse-as-library','-module-cache-path',str(folder/'modules'),str(stubs),*map(str,frozen),str(test),str(wiringTest),'-o',str(binary)]
+  command=['xcrun','swiftc','-swift-version','5','-parse-as-library','-module-cache-path',str(folder/'modules'),str(stubs),*map(str,frozen),str(test),str(wiringTest),str(fallbackTest),'-o',str(binary)]
   compiled=subprocess.run(command,cwd=ROOT,capture_output=True,text=True)
   output=compiled.stdout+compiled.stderr
   run=None
@@ -131,11 +144,24 @@ final class ReaderSendFixture {
    assert nr.returncode==1 and markers==[expected],(nr.returncode,markers,nr.stdout,nr.stderr)
    negative={'compileExitCode':nc.returncode,'expectedExitCode':1,'actualExitCode':nr.returncode,'requiredFailureMarker':expected,'failureMarkers':markers,'mutatedFixtureSHA256':hashlib.sha256(mutated.encode()).hexdigest(),'stdout':nr.stdout,'stderr':nr.stderr,'passed':True}
    output+='PASS expected-failure reader admission removal: exit1, sole intended marker matched\n'
+   early=fallback.replace('!seen.contains(account)','seen.insert(account).inserted',1)
+   assert early != fallback
+   earlySource=folder/'EarlySeenFallback.swift';earlySource.write_text(early)
+   earlyBinary=folder/'early-seen-checks'
+   earlyCommand=[str(earlySource) if item==str(fallbackTest) else str(earlyBinary) if item==str(binary) else item for item in command]
+   ec=subprocess.run(earlyCommand,cwd=ROOT,capture_output=True,text=True);assert ec.returncode==0,ec.stderr
+   er=subprocess.run([str(earlyBinary)],env={**env,'RESET_AUTO_TEST_ROOT':str(folder/'early-support')},capture_output=True,text=True,timeout=60)
+   em=[line for line in er.stdout.splitlines() if line.startswith('FAIL ')]
+   expectedFallback='FAIL same-account identityChanged review falls back to healthy profile exactly once'
+   assert er.returncode==1 and em==[expectedFallback],(er.returncode,em,er.stdout,er.stderr)
+   negative['earlySeen']={'compileExitCode':ec.returncode,'actualExitCode':er.returncode,'failureMarkers':em,'passed':True}
+   output+='PASS expected-failure early dedup restore: exit1, sole fallback marker matched\n'
+
   for private,label in [(str(ROOT),'<repo>'),(tmp,'<fixture>'),(str(Path.home()),'<home>')]:output=output.replace(private,label)
   print(output,end='')
   q=ROOT/'.local-artifacts/theme-upstream-1004v1';q.mkdir(parents=True,exist_ok=True)
-  (q/'reset-auto-124-host.log').write_text(output)
-  receipt={'inputsSHA256':inputs,'scriptSHA256':hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),'frozenSHA256':{p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in [stubs,*frozen,test,wiringTest]},'fullSourceAdjustment':'Only DispatchParticipationSync.supportDirectory resolves to fixture root','extractedRunnerSHA256':hashlib.sha256(runner.encode()).hexdigest(),'extractedReaderSendSHA256':hashlib.sha256(reader[start:end].encode()).hexdigest(),'readerSendTestSeam':'beforeWrite callback immediately after real pre-cancel check; no gate/body changes','readerAdmissionNegative':negative,'swiftAssertions':46,'crossProcessClaimChecks':1,'raceResults':race_results,'logSHA256':hashlib.sha256(output.encode()).hexdigest(),'compileExitCode':compiled.returncode,'testExitCode':run.returncode if run else None,'inputsUnchanged':all(hashlib.sha256((ROOT/p).read_bytes()).hexdigest()==h for p,h in inputs.items()),'scope':'Real complete auto controller/journal/pending/activity/atomic writers plus actual extracted UsageStore runner and Reader consume write admission block; profile/reader/Hub/runner-controller peripheral doubles; no real app/network/auth/hotkeys'}
-  (q/'reset-auto-124-host.json').write_text(json.dumps(receipt,indent=2)+'\n')
-  assert compiled.returncode==0 and run and run.returncode==0 and 'reset-credit auto host: 46 assertions, 0 failures' in run.stdout and receipt['inputsUnchanged'],receipt
+  (q/(prefix+'.log')).write_text(output)
+  receipt={'inputsSHA256':inputs,'scriptSHA256':hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),'frozenSHA256':{p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in [stubs,*frozen,test,wiringTest,fallbackTest]},'fullSourceAdjustment':'Only DispatchParticipationSync.supportDirectory resolves to fixture root','extractedRunnerSHA256':hashlib.sha256(runner.encode()).hexdigest(),'extractedReaderSendSHA256':hashlib.sha256(reader[start:end].encode()).hexdigest(),'readerSendTestSeam':'beforeWrite callback immediately after real pre-cancel check; no gate/body changes','readerAdmissionNegative':negative,'swiftAssertions':57,'crossProcessClaimChecks':1,'raceResults':race_results,'logSHA256':hashlib.sha256(output.encode()).hexdigest(),'compileExitCode':compiled.returncode,'testExitCode':run.returncode if run else None,'inputsUnchanged':all(hashlib.sha256((ROOT/p).read_bytes()).hexdigest()==h for p,h in inputs.items()),'scope':'Real complete auto controller/journal/pending/activity/atomic writers plus actual extracted UsageStore runner and Reader consume write admission block; profile/reader/Hub doubles; original wiring-controller double plus real controller fallback runner and real Reader verifiedCard; no real app/network/auth/hotkeys'}
+  (q/(prefix+'.json')).write_text(json.dumps(receipt,indent=2)+'\n')
+  assert compiled.returncode==0 and run and run.returncode==0 and 'reset-credit auto host: 57 assertions, 0 failures' in run.stdout and receipt['inputsUnchanged'],receipt
 if __name__=='__main__':main()

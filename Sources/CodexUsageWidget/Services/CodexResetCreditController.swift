@@ -235,7 +235,13 @@ final class CodexResetCreditController: ObservableObject {
         }
     }
 
+    enum AutomaticAttemptDisposition: Equatable {
+        case tryNextProfile
+        case accountHandledOrBlocked
+    }
+
     /// Separate explicit opt-in edge; manual confirmation states are never synthesized.
+    @discardableResult
     func runAutomatic(
         profile: CodexProfile, accountID: String, hubAccountAlias: String,
         lead: TimeInterval, quotaFingerprint: String, admission: CodexResetCreditAutoAdmission,
@@ -246,19 +252,23 @@ final class CodexResetCreditController: ObservableObject {
         hubAvailability: ((String, String) async -> Bool)? = nil,
         onStatus: ((String) -> Void)? = nil,
         onConfirmedResult: @escaping () -> Void
-    ) async {
+    ) async -> AutomaticAttemptDisposition {
         guard !isWorking, step == .idle, Self.activeProfileID == nil, !admission.isCancelled,
             profile.lastSnapshot?.accountID == accountID, profile.lastQuotaReadFailureAt == nil,
             profile.lastSnapshot?.quotaReadSucceeded == true, !hubAccountAlias.isEmpty
-        else { return }
+        else { return .accountHandledOrBlocked }
         do {
             guard try pendingStore.pendingAttempt() == nil else {
                 onStatus?("自动使用已暂停：存在待核对的重置卡请求。")
-                return
+                return .accountHandledOrBlocked
+            }
+            if try autoStore.requiresReconciliation(accountID: accountID) {
+                onStatus?("自动使用已暂停：存在未完成或不确定记录，请人工核对。")
+                return .accountHandledOrBlocked
             }
         } catch {
             onStatus?("自动使用已暂停：无法读取重置卡记录。")
-            return
+            return .accountHandledOrBlocked
         }
         Self.activeProfileID = profile.id
         ownedProfileID = profile.id
@@ -280,25 +290,31 @@ final class CodexResetCreditController: ObservableObject {
                     expectedAccountID: accountID, accountRemark: remark)
             }.value
         }
-        guard !admission.isCancelled, case .success(let review) = reviewed,
+        guard !admission.isCancelled else { return .accountHandledOrBlocked }
+        if case .failure(let failure) = reviewed {
+            // Only profile-local review failures before any claim/send may try
+            // another explicitly authorized profile for this same account.
+            switch failure {
+            case .unsupportedCLI, .invalidProfile, .identityUnavailable, .identityChanged:
+                return .tryNextProfile
+            default: return .accountHandledOrBlocked
+            }
+        }
+        guard case .success(let review) = reviewed,
             let expiry = review.card.expiresAt, expiry > Date(), expiry.timeIntervalSinceNow <= lead,
             challengeIsFresh(review), let verifiedFingerprint = review.quotaFingerprint
-        else { return }
+        else { return .accountHandledOrBlocked }
         let lease: String
         do {
-            if try autoStore.requiresReconciliation(accountID: accountID) {
-                onStatus?("自动使用已暂停：存在未完成或不确定记录，请人工核对。")
-                return
-            }
             guard
                 try autoStore.mayAttempt(
                     accountID: accountID, cardID: review.card.creditID,
                     fingerprint: verifiedFingerprint, now: Date())
-            else { return }
+            else { return .accountHandledOrBlocked }
             lease = try activityStore.reserveMaintenance(account: profile.recordedAccountKey, alias: hubAccountAlias)
         } catch {
             onStatus?("自动使用暂未执行：记录不可用或账号正在使用。")
-            return
+            return .accountHandledOrBlocked
         }
         var succeeded = false
         defer { try? activityStore.finishMaintenance(lease, succeeded: succeeded) }
@@ -310,7 +326,7 @@ final class CodexResetCreditController: ObservableObject {
         }
         guard idle,
             !admission.isCancelled
-        else { return }
+        else { return .accountHandledOrBlocked }
         var state = CodexResetCreditAutoStateStore.Entry(
             accountHash: DispatchActivityStore.hash(accountID), cardHash: DispatchActivityStore.hash(review.card.creditID),
             phase: .prepared, outcome: nil, nextRetry: nil, quotaFingerprint: verifiedFingerprint)
@@ -318,10 +334,10 @@ final class CodexResetCreditController: ObservableObject {
         let pending: ResetCreditPendingAttempt
         var autoClaimed = false
         do {
-            guard try pendingStore.pendingAttempt() == nil else { return }
+            guard try pendingStore.pendingAttempt() == nil else { return .accountHandledOrBlocked }
             guard try autoStore.claim(state) else {
                 onStatus?("自动使用暂停或冷却中；已有记录需要核对或额度尚未变化。")
-                return
+                return .accountHandledOrBlocked
             }
             autoClaimed = true
             let created = try pendingStore.loadOrCreate(for: review)
@@ -335,7 +351,7 @@ final class CodexResetCreditController: ObservableObject {
                 try? autoStore.record(state)  // Never clear a pending request created by another process.
             }
             onStatus?("自动使用尚未发送：请求记录冲突或无法保存，请人工核对。")
-            return
+            return .accountHandledOrBlocked
         }
         isConsuming = true
         let result: Result<CodexResetCreditConsumeOutcome, CodexResetCreditFailure>
@@ -364,13 +380,14 @@ final class CodexResetCreditController: ObservableObject {
             if state.phase != .uncertain { try pendingStore.clear(expected: pending) }
         } catch {
             onStatus?("自动使用结果未能保存，请人工核对，勿重复使用。")
-            return
+            return .accountHandledOrBlocked
         }
         switch result {
         case .success(let outcome): onStatus?(Self.message(for: outcome))
         case .failure(let failure): onStatus?(failure == .outcomeUnknown ? "自动使用结果不确定，已暂停；请人工核对。" : "自动使用尚未发送；已延后检查。")
         }
         if case .success = result { onConfirmedResult() }
+        return .accountHandledOrBlocked
     }
 
     func cancel() {

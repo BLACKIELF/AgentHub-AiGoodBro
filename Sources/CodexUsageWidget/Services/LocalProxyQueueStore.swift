@@ -1075,7 +1075,8 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
                             ? QuotaAvailabilityPresentation.reportedFiveHourRemaining(officialRemaining(window), sevenDay: weeklyRemaining)
                             : officialRemaining(window),
                         resetsAt: window?.resetsAt,
-                        constrainedByWeekly: label == "5h" && QuotaAvailabilityPresentation.isWeeklyExhausted(weeklyRemaining))
+                        constrainedByWeekly: label == "5h" && QuotaAvailabilityPresentation.isWeeklyExhausted(weeklyRemaining),
+                        isWeeklyOnlyPro: label == "5h" && QuotaAvailabilityPresentation.weeklyOnlyPro(profile))
                 }
             let quota: String
             if failure == nil || failure == .quota, profile.lastSnapshot != nil {

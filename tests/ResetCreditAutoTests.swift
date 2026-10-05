@@ -158,6 +158,7 @@ struct ResetCreditAutoTests {
 
         try await controllerTests()
         await runAutomaticWiringTests()
+        try await runAutomaticFallbackTests()
         runReaderAdmissionChecks()
         print("reset-credit auto host: \(checks) assertions, \(failures) failures")
         exit(failures == 0 ? 0 : 1)

@@ -394,7 +394,8 @@ struct LocalProxyQueueView: View {
                     CompactQuotaView(
                         title: window.id, remaining: window.remaining, reset: window.resetsAt,
                         paletteRole: window.id == "5h" ? .primary : .secondary,
-                        constrainedByWeekly: window.constrainedByWeekly, horizontalDetails: true
+                        constrainedByWeekly: window.constrainedByWeekly, horizontalDetails: true,
+                        isWeeklyOnlyPro: window.isWeeklyOnlyPro
                     ).frame(minWidth: 125, maxWidth: .infinity, alignment: .leading)
                 }
                 VStack(alignment: .trailing, spacing: 4) {

@@ -72,7 +72,7 @@ alias, unknown occupancy, activity lease conflicts and stale quota evidence bloc
 
 A local timer inspects due cards once per minute. It does not refresh the entire account pool every
 minute. Candidates are deduplicated by official identity; a blocked first account does not prevent later
-eligible accounts from being considered. A fresh official review chooses the exact earliest available
+eligible accounts from being considered. Before a claim or send, only explicit profile-local identity or CLI review failures allow the next authorized profile of the same account. Pending, uncertain, occupied, cancelled or already-attempted work still blocks duplicates. A fresh official review chooses the exact earliest available
 card. The reader rechecks identity, card and expiry before the actual RPC write. Changing settings,
 removing the account, changing its identity/home or stopping the app revokes unsent admission. A request
 that already passed admission still needs its outcome reconciled.
@@ -142,6 +142,8 @@ live redemptions. Two requested accounts each returned `reset`; an identity-matc
 confirmed exactly one fewer card and restored limit windows. This is protocol evidence, not a test of
 the candidate SwiftUI dialogs. Private operation receipts remain outside published source.
 
-The installed build was last verified as 9.6.64 (114); candidate 124 is not installed. Candidate build
-qualification is recorded separately in the current handoff. Installed dialog interaction and real candidate CPU
+The installed bundle has been verified on disk as 9.6.74 (124), including its signature and main executable;
+candidate 125 is not installed. This does not establish which build a running process has loaded or verify
+real automatic redemption. Candidate build qualification is recorded separately in the current handoff.
+Installed dialog interaction and real candidate CPU
 measurements still require a later normal app lifecycle; the ordinary previews exclude redemption.

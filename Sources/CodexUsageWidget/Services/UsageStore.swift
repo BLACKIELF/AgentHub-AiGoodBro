@@ -474,12 +474,12 @@ final class UsageStore: ObservableObject {
                     let profile = self.profiles.first(where: { $0.id == candidate.id }), let account = profile.lastSnapshot?.accountID, !profile.isSystemProfile,
                     let currentSystemID = self.profiles.first(where: \.isSystemProfile)?.lastSnapshot?.accountID, !currentSystemID.isEmpty, account != currentSystemID,
                     self.resetCreditAutoPreferences.permits(profileID: profile.id, accountID: account),
-                    let alias = self.accountTaskAlias(for: profile), seen.insert(account).inserted
+                    let alias = self.accountTaskAlias(for: profile), !seen.contains(account)
                 else { continue }
                 let admission = CodexResetCreditAutoAdmission()
                 self.resetCreditAutoAdmission = admission
                 self.resetCreditAutoIdentity = (profile.id, account, profile.codexHomeURL)
-                await self.resetCreditAutoController.runAutomatic(
+                let disposition = await self.resetCreditAutoController.runAutomatic(
                     profile: profile, accountID: account, hubAccountAlias: alias,
                     lead: self.resetCreditAutoPreferences.leadSeconds, quotaFingerprint: "", admission: admission,
                     onStatus: { [weak self] status in
@@ -489,6 +489,7 @@ final class UsageStore: ObservableObject {
                         }
                     },
                     onConfirmedResult: { [weak self] in self?.refreshProfile(profile.id) })
+                if disposition != .tryNextProfile { seen.insert(account) }
             }
         }
     }

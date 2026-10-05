@@ -435,6 +435,8 @@ struct TokenMonitorEdgeDockCell: Equatable, Identifiable {
     var snapshotFetchedAt: Date? = nil
     /// Historical display identity only; never evidence of the current login.
     var isHistoricalAccount = false
+    /// Exact selected quota metric; distinguishes a weekly-only short limit from credits.
+    var headlineMetricID: String? = nil
 
     func snapshotDescription(_ language: WidgetLanguage, now: Date = Date()) -> String {
         guard isAvailable else {

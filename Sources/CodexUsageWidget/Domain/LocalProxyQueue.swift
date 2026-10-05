@@ -25,6 +25,7 @@ struct LocalProxyQuotaWindow: Identifiable, Equatable {
     let remaining: Double?
     let resetsAt: Date?
     var constrainedByWeekly = false
+    var isWeeklyOnlyPro = false
 }
 struct LocalProxyPreferences: Codable {
     var schemaVersion = 1

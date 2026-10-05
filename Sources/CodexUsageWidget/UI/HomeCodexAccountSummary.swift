@@ -384,7 +384,8 @@ struct HomeCodexAccountSummary: View {
     ) -> some View {
         CompactQuotaView(
             title: title, remaining: remaining, reset: reset, paletteRole: paletteRole,
-            constrainedByWeekly: constrainedByWeekly, horizontalDetails: true
+            constrainedByWeekly: constrainedByWeekly, horizontalDetails: true,
+            isWeeklyOnlyPro: title == "5h" && QuotaAvailabilityPresentation.weeklyOnlyPro(profile, now: previewDate ?? currentDate)
         )
         .frame(maxWidth: .infinity, alignment: .leading)
     }

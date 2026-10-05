@@ -10,6 +10,7 @@ struct CompactQuotaView: View {
     var constrainedByWeekly = false
     var isExpiry = false
     var horizontalDetails = false
+    var isWeeklyOnlyPro = false
     @Environment(\.widgetLanguage) private var language
 
     var body: some View {
@@ -23,12 +24,15 @@ struct CompactQuotaView: View {
         .font(.system(size: 10))
         .lineLimit(1)
         .minimumScaleFactor(0.85)
-        .help(reset.map { language.dateTime($0) } ?? language.text("官方未提供重置时间", "Official reset time unavailable"))
+        .help(
+            isWeeklyOnlyPro
+                ? QuotaAvailabilityPresentation.weeklyOnlyProHelp(language) : (reset.map { language.dateTime($0) } ?? language.text("官方未提供重置时间", "Official reset time unavailable"))
+        )
     }
 
     private var horizontalContent: some View {
         HStack(alignment: .center, spacing: 6) {
-            QuotaPercentageRing(percent: remaining, diameter: 36)
+            QuotaPercentageRing(percent: remaining, diameter: 36, isWeeklyOnlyPro: isWeeklyOnlyPro)
                 .fixedSize()
             VStack(alignment: .leading, spacing: 3) {
                 Text(windowTitle).foregroundStyle(.secondary)
@@ -62,7 +66,7 @@ struct CompactQuotaView: View {
     private var stackedContent: some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 6) {
-                QuotaPercentageRing(percent: remaining, diameter: 36)
+                QuotaPercentageRing(percent: remaining, diameter: 36, isWeeklyOnlyPro: isWeeklyOnlyPro)
                 Text(title).foregroundStyle(.secondary)
             }
             if let reset {
