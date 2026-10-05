@@ -22,11 +22,12 @@ struct PersonalWeChatSettingsView: View {
     var restoring = false
     var connectionStatus: String? = nil
     var onRestore: (() -> Void)? = nil
+    var reconnectBusy = false
     @Environment(\.widgetLanguage) private var language
 
     var body: some View {
         Toggle(language.text("启用个人微信推送", "Enable personal WeChat notifications"), isOn: $enabled)
-            .disabled(disabled)
+            .disabled(disabled && !connecting && !restoring)
         Label(statusLabel, systemImage: connected ? "checkmark.circle.fill" : "qrcode")
             .foregroundStyle(connected ? Color.green : Color.secondary)
         if enabled && connected && !hasContext {
@@ -44,16 +45,16 @@ struct PersonalWeChatSettingsView: View {
         HStack(spacing: 12) {
             if !connected, !bindingMissing, let onRestore {
                 Button(language.text("恢复连接", "Restore connection"), action: onRestore)
-                    .disabled(disabled || !enabled || connecting || restoring)
+                    .disabled(disabled || reconnectBusy || !enabled || connecting || restoring)
                     .accessibilityIdentifier("wechat-restore-connection")
             }
             Button(language.text(connected ? "重新扫码" : "扫码连接微信", connected ? "Scan again" : "Connect with QR"), action: onConnect)
-                .disabled(disabled || !enabled || connecting)
+                .disabled(disabled || reconnectBusy || !enabled || connecting)
             Button(language.text("发送测试消息", "Send test message"), action: onTest)
                 .disabled(disabled || !enabled || !hasContext || connecting)
             if restoring { ProgressView().controlSize(.small) }
             if connecting {
-                Button(language.text("取消扫码", "Cancel"), action: onCancel).disabled(disabled)
+                Button(language.text("取消扫码", "Cancel"), action: onCancel)
             }
         }
         if connecting {
@@ -77,7 +78,7 @@ struct PersonalWeChatSettingsView: View {
                 Button(language.text("确认配对码", "Confirm pairing code")) {
                     onSubmitCode(pairingCode)
                     pairingCode = ""
-                }.disabled(disabled || pairingCode.range(of: "^[0-9]{4,10}$", options: .regularExpression) == nil)
+                }.disabled((disabled && !connecting) || pairingCode.range(of: "^[0-9]{4,10}$", options: .regularExpression) == nil)
             }
         }
         Text(

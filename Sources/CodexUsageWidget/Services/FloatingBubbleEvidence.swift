@@ -31,14 +31,17 @@ enum FloatingBubbleEvidence {
                 metrics.append(
                     TokenMonitorFloatingBubbleMetric(
                         id: id, name: name, sourceID: "codex:\(profile.id):\(id)",
-                        fetchedAt: snapshot?.fetchedAt, isStale: stale, isAvailable: loggedIn,
+                        fetchedAt: snapshot?.fetchedAt,
+                        isStale: stale || window.resetsAt.map { $0 <= now } == true, isAvailable: loggedIn,
                         value: valid ? .percentRemaining(100 - window.usedPercent) : .unknown,
                         resetLabel: window.resetsAt.map { language.dateTime($0) } ?? "—"))
             }
             return TokenMonitorFloatingBubbleAccount(
                 providerID: AgentNavCatalog.codexID, providerName: "Codex",
                 accountID: profile.id, accountName: AccountDisplay.numberedName(profile, allProfiles: store.profiles),
-                isLoggedIn: loggedIn, metrics: metrics)
+                isLoggedIn: loggedIn, metrics: metrics,
+                edgeDockPrimaryMetricID: TokenMonitorEdgeDockProjection.codexPrimaryMetricID(
+                    plan: snapshot?.planType, readSucceeded: snapshot?.quotaReadSucceeded == true))
         }
         for profile in localAccounts.profiles {
             guard let provider = AgentNavCatalog.workspaceProviders.first(where: { $0.localKind == profile.kind }) else { continue }

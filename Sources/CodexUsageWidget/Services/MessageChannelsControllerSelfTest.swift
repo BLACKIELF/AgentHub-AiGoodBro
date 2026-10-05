@@ -284,7 +284,11 @@ enum MessageChannelsControllerSelfTest {
             "personal WeChat performs no I/O without opt-in")
         personal.setEnabled(true, for: .personalWeChat)
         personalStorage.resolve(nil)
-        personal.connectPersonalWeChat()
+        let qrOperation = personal.connectPersonalWeChat()
+        expect(qrOperation != nil && personal.personalReconnectInFlight, "accepted QR login must return its operation token")
+        expect(personal.connectPersonalWeChat() == nil && personal.restorePersonalWeChatConnection() == nil, "duplicate QR or restore superseded active QR")
+        personal.cancelPersonalWeChatLogin(operationID: UUID())
+        expect(personal.personalLoginInProgress, "unowned page cancellation stopped active QR")
         spin { personalHTTP.lastRequest?.url?.path == "/ilink/bot/get_bot_qrcode" }
         expect(personal.personalLoginInProgress && personalStorage.saves.isEmpty, "QR start saved a credential before confirmation")
         personalHTTP.completeAll(responseBody: #"{"qrcode":"synthetic-qr-reference","qrcode_img_content":"https://example.invalid/synthetic-qr"}"#)
@@ -364,6 +368,23 @@ enum MessageChannelsControllerSelfTest {
         let commandBody = String(data: try! JSONSerialization.data(withJSONObject: command), encoding: .utf8)!
         personalHTTP.completeAll(responseBody: commandBody)
         spin { personalHTTP.lastRequest?.url?.path == "/ilink/bot/sendmessage" }
+        expect(
+            personal.personalReconnectInFlight && !personal.personalBotIsReplying && !personal.actionInFlight,
+            "command reply needs scoped reconnect admission without globally blocking channels")
+        let heldCount = personalHTTP.count
+        let heldLoads = personalStorage.loads.count
+        expect(personal.connectPersonalWeChat() == nil && personal.restorePersonalWeChatConnection() == nil, "command reply was cancelled by reconnect")
+        personal.setEnabled(true, for: .personalWeChat)
+        let heldAutomaticTasks = Mirror(reflecting: personal).children.first { $0.label == "personalBotTasks" }?.value as? [UUID: Task<Void, Never>]
+        let heldAutomaticReply = heldAutomaticTasks?.values.first
+        personal.setPersonalChatThread("")
+        expect(
+            heldAutomaticReply?.isCancelled == false && personal.personalBotTasksInFlight,
+            "same empty thread selection cancelled an active command reply")
+        personal.cancelPersonalWeChatLogin(operationID: qrOperation!)
+        expect(
+            personalHTTP.count == heldCount && personalStorage.loads.count == heldLoads && personal.personalBotTasksInFlight,
+            "same enabled value or late QR page cancellation changed held command")
         let botBody = String(data: personalHTTP.lastRequest?.httpBody ?? Data(), encoding: .utf8) ?? ""
         expect(
             botBody.contains("synthetic cached status") && !personal.personalChatEnabled,
@@ -500,6 +521,72 @@ enum MessageChannelsControllerSelfTest {
         expect(
             conversationStarts == 2 && creationCount == 1 && personalHTTP.count == beforeOrdinaryReplay,
             "ordinary duplicate reopened conversation or called model again")
+        // A retained legacy/manual selection never falls back to creating a
+        // new automatic chat, and changed credential identity needs approval.
+        let manualSuite = "message-manual-thread-fixture-\(UUID())"
+        let manualDefaults = UserDefaults(suiteName: manualSuite)!
+        defer { manualDefaults.removePersistentDomain(forName: manualSuite) }
+        manualDefaults.set(dedicatedThread, forKey: "CodexManagerNext.messageChannel.personal-wechat.chatThread.v1")
+        manualDefaults.set(true, forKey: "CodexManagerNext.messageChannel.personal-wechat.chatEnabled.v1")
+        manualDefaults.set(true, forKey: "CodexManagerNext.messageChannel.personal-wechat.enabled")
+        let manualStorage = Storage()
+        let manualHTTP = Transport()
+        var manualCreates = 0
+        let manual = MessageChannelsController(
+            defaults: manualDefaults, storage: manualStorage, transport: { manualHTTP }, personalTransport: { manualHTTP },
+            botLedger: WeChatBotEventLedger(directory: ledgerDirectory.appendingPathComponent("manual")),
+            conversationFactory: { WeChatCodexConversation(connection: dedicatedConnection, pollIntervalNanoseconds: 1_000_000) })
+        manual.onCreatePersonalChat = { _ in
+            manualCreates += 1
+            return .unavailable
+        }
+        defer {
+            manual.stop()
+            manualHTTP.completeAll()
+            settle()
+        }
+        manual.start()
+        let manualBinding = PersonalWeChatBinding(
+            baseURL: URL(string: "https://ilinkai.weixin.qq.com")!, botID: "synthetic-bot",
+            contextToken: "synthetic-context", contextCheckedAt: Date())
+        let manualCredential = MessageChannelCredential(secret: "synthetic-manual-token", target: "scanner@im.wechat", personalBinding: manualBinding)
+        manualStorage.resolve(manualCredential)
+        spin { manualHTTP.hasPending("/ilink/bot/getupdates") }
+        let beforeManualStart = conversationStarts
+        manualHTTP.completePath("/ilink/bot/getupdates", responseBody: ordinary("manual-legacy"))
+        spin { manualHTTP.hasPending("/ilink/bot/sendmessage") }
+        expect(
+            manual.personalChatNeedsConfirmation && manual.personalChatThreadID == dedicatedThread && manual.personalChatEnabled,
+            "legacy manual configuration was reset rather than held for approval")
+        expect(
+            manualCreates == 0 && conversationStarts == beforeManualStart,
+            "unapproved manual thread created or submitted a Codex conversation")
+        manualHTTP.completePath("/ilink/bot/sendmessage", responseBody: "{}")
+        spin { !manual.personalBotTasksInFlight && manualHTTP.hasPending("/ilink/bot/getupdates") }
+        manual.setPersonalChatThread(dedicatedThread)
+        expect(!manual.personalChatNeedsConfirmation, "same thread could not be explicitly approved")
+        manualHTTP.completePath("/ilink/bot/getupdates", responseBody: ordinary("manual-approved"))
+        spin { manualHTTP.hasPending("/ilink/bot/sendmessage") }
+        expect(conversationStarts == beforeManualStart + 1 && manualCreates == 0, "approved manual thread was not submitted exactly once")
+        let heldManualTasks = Mirror(reflecting: manual).children.first { $0.label == "personalBotTasks" }?.value as? [UUID: Task<Void, Never>]
+        let heldManualReply = heldManualTasks?.values.first
+        let heldManualRequestCount = manualHTTP.count
+        manual.setPersonalChatThread(dedicatedThread)
+        expect(
+            heldManualReply?.isCancelled == false && manual.personalBotTasksInFlight && manual.personalBotIsReplying
+                && manualHTTP.count == heldManualRequestCount && !manual.personalChatNeedsConfirmation,
+            "same approved manual thread selection cancelled an active Codex reply")
+        manualHTTP.completePath("/ilink/bot/sendmessage", responseBody: "{}")
+        spin { !manual.personalBotTasksInFlight }
+        expect(manual.restorePersonalWeChatConnection() != nil, "idle manual connection could not restore")
+        manualStorage.resolve(MessageChannelCredential(secret: "synthetic-changed-manual-token", target: manualCredential.target, personalBinding: manualBinding))
+        spin { manualHTTP.hasPending("/ilink/bot/getupdates") }
+        manualHTTP.completePath("/ilink/bot/getupdates", responseBody: ordinary("manual-new-token"))
+        spin { manualHTTP.hasPending("/ilink/bot/sendmessage") }
+        expect(
+            manual.personalChatNeedsConfirmation && manual.personalChatThreadID == dedicatedThread && manualCreates == 0
+                && conversationStarts == beforeManualStart + 1, "changed token reused manual approval or silently created a replacement")
+        manualHTTP.completeAll(responseBody: "{}")
         let longReply = MessageChannelsController.boundedPersonalReply(String(repeating: "测", count: 3000))
         expect(longReply.utf8.count <= 4096 && longReply.contains("全文请在 Codex"), "long bot reply silently truncated or exceeded byte limit")
         personal.sendTest(.personalWeChat)

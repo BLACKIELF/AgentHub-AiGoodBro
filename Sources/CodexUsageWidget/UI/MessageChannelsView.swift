@@ -46,6 +46,10 @@ struct MessageChannelsView: View {
     var personalChatTargets: [WeChatCodexConversationTarget] = []
     var personalAutomaticThreadID = ""
     var personalBotIsReplying = false
+    var personalChatNeedsConfirmation = false
+    var personalBotTasksInFlight = false
+    var personalReconnectInFlight = false
+    var onConfirmPersonalChat: () -> Void = {}
     var onRefreshPersonalChatTargets: () -> Void = {}
     var onOpenPersonalChat: () -> Void = {}
 
@@ -57,8 +61,12 @@ struct MessageChannelsView: View {
                 Section {
                     HStack {
                         ProgressView().controlSize(.small)
-                        Text(language.text("正在处理，请稍候…", "Working, please wait…"))
-                            .fixedSize(horizontal: false, vertical: true)
+                        Text(
+                            personalBotTasksInFlight
+                                ? language.text("微信消息正在处理或发送回复，请稍候…", "A WeChat message or reply is in progress. Please wait…")
+                                : language.text("正在处理，请稍候…", "Working, please wait…")
+                        )
+                        .fixedSize(horizontal: false, vertical: true)
                     }
                 }
             }
@@ -85,7 +93,12 @@ struct MessageChannelsView: View {
                     bindingMissing: personalWeChatBindingMissing,
                     restoring: personalWeChatRestoreInProgress,
                     connectionStatus: personalWeChatStatusText,
-                    onRestore: onRestorePersonalWeChat)
+                    onRestore: onRestorePersonalWeChat,
+                    reconnectBusy: personalReconnectInFlight)
+                if personalBotTasksInFlight {
+                    Text(language.text("微信消息正在处理或发送回复；完成后可以恢复连接或重新扫码。", "A WeChat message or reply is in progress. Restore or scan again after it finishes."))
+                        .font(.caption).foregroundStyle(.secondary)
+                }
                 Toggle(language.text("允许微信与 Codex 对话", "Chat with Codex from WeChat"), isOn: personalChatEnabled)
                     .disabled(actionInFlight || personalLoginInProgress)
                 if personalChatEnabled.wrappedValue {
@@ -104,6 +117,13 @@ struct MessageChannelsView: View {
                         Button(language.text("刷新聊天列表", "Refresh chats"), action: onRefreshPersonalChatTargets)
                         Button(language.text("打开对话", "Open chat"), action: onOpenPersonalChat)
                             .disabled(personalChatThreadID.wrappedValue.isEmpty && personalAutomaticThreadID.isEmpty)
+                    }
+                    if personalChatNeedsConfirmation && !personalChatThreadID.wrappedValue.isEmpty {
+                        Text(language.text("所选对话需要为当前微信连接重新确认；确认前不会提交消息。", "Confirm the selected conversation for this WeChat connection before messages can be submitted."))
+                            .font(.caption).foregroundStyle(.secondary)
+                        Button(language.text("确认继续使用已选对话", "Confirm using selected conversation"), action: onConfirmPersonalChat)
+                            .disabled(actionInFlight || !personalWeChatConnected)
+                            .accessibilityIdentifier("wechat-confirm-selected-chat")
                     }
                     if personalChatThreadID.wrappedValue.isEmpty {
                         Text(

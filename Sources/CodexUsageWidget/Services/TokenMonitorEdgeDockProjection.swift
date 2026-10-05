@@ -3,6 +3,16 @@ import Foundation
 /// Pure projection of already-approved local quota aliases and collected usage.
 /// It performs no account switch, network request, or background collection.
 enum TokenMonitorEdgeDockProjection {
+    /// Only a successful official plan reading chooses a plan-specific window.
+    static func codexPrimaryMetricID(plan: String?, readSucceeded: Bool) -> String? {
+        guard readSucceeded else { return nil }
+        let normalized = plan?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let canonical = normalized == "pro-lite" || normalized == "pro_lite" ? "prolite" : normalized
+        if CodexOneShotSwitchIntent.targetMultiplier(for: canonical) != nil { return "seven-day" }
+        if canonical == "plus" { return "five-hour" }
+        return nil
+    }
+
     private static let providerOrder = [
         "claude", "codex", "opencode", "cursor", "antigravity", "cline", "factory", "kimi",
         "grok", "copilot", "zed", "commandcode", "mimo", "zai", "zaiteam", "kiro",
@@ -169,12 +179,21 @@ enum TokenMonitorEdgeDockProjection {
                 isAvailable: rows.contains { $0.isAvailable }, quotaRows: rows
             )
         }
-        // The account headline follows its primary (first reportable) window,
-        // except that any known exhausted quota must show 0 rather than a
-        // misleading healthy primary percentage. Severity still uses the
-        // tightest known window, independently of the headline.
+        // A verified Codex plan binds the headline to its window, even if that
+        // window is unknown. Other providers retain their first-reportable / zero
+        // policy. Severity still uses the tightest known window independently.
         // "active" is only resolved from a separately verified local account ID.
         let candidates: [(TokenMonitorEdgeDockAccountRow, TokenMonitorEdgeDockQuotaRow)] = accounts.compactMap { account in
+            if providerID == "codex", let primaryID = matches.first(where: { $0.accountID == account.id })?.edgeDockPrimaryMetricID {
+                let row =
+                    account.quotaRows.first(where: { $0.id == primaryID })
+                    ?? TokenMonitorEdgeDockQuotaRow(
+                        id: primaryID,
+                        title: primaryID == "seven-day" ? language.text("每周额度", "Weekly quota") : language.text("五小时额度", "5-hour quota"),
+                        percentRemaining: nil, valueLabel: nil, resetLabel: "—",
+                        fetchedAt: nil, isStale: account.isStale, isAvailable: false)
+                return (account, row)
+            }
             // Display the last verified reading for every provider. Staleness
             // removes severity/actionability, not the historical number. Login,
             // identity and expired-window gates still run upstream.
@@ -208,6 +227,11 @@ enum TokenMonitorEdgeDockProjection {
         let historical =
             providerID == "codex" && item.accountID == nil && item.accountMode == .active
             && activeCodexAccountID == nil && selected != nil
+        let usesPlanHeadline =
+            providerID == "codex"
+            && selected.map { selected in
+                matches.first(where: { $0.accountID == selected.0.id })?.edgeDockPrimaryMetricID != nil
+            } == true
         let severity =
             providerID == "claude" || historical
             ? nil
@@ -228,9 +252,12 @@ enum TokenMonitorEdgeDockProjection {
                 ? language.text("账号未匹配", "Unmatched") : selected?.1.valueLabel,
             metric: nil, percentRemaining: selected?.1.percentRemaining,
             severityRemainingPercent: severity,
-            isStale: historical || accounts.contains { $0.isStale }
-                || (item.accountID == nil && usage.isStale && providerID != "grok" && providerID != "claude"),
-            isAvailable: selected != nil,
+            isStale: historical
+                || (usesPlanHeadline
+                    ? selected?.1.isStale == true
+                    : accounts.contains { $0.isStale }
+                        || (item.accountID == nil && usage.isStale && providerID != "grok" && providerID != "claude")),
+            isAvailable: selected?.1.isAvailable == true,
             tokenCount: item.showUsage ? period.today.tokens : nil,
             costUSD: item.showUsage ? period.today.cost : nil,
             byTool: [], byModel: [], liveRate: nil, accounts: accounts,
@@ -245,7 +272,9 @@ enum TokenMonitorEdgeDockProjection {
             accountBindingMissing: item.accountID != nil && matches.isEmpty,
             snapshotFetchedAt: selected?.1.fetchedAt,
             isHistoricalAccount: historical,
-            headlineMetricID: selected?.1.id
+            headlineMetricID: selected?.1.id,
+            headlineMetricName: selected?.1.title,
+            headlineResetLabel: selected?.1.resetLabel
         )
     }
 

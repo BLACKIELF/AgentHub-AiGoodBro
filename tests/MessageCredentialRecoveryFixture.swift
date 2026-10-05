@@ -89,7 +89,8 @@ struct MessageCredentialRecoveryFixture {
         precondition(controller.personalWeChatStatusText == weChatStatus, "Another channel overwrote WeChat status")
         controller.setEnabled(false, for: .telegram)
 
-        controller.restorePersonalWeChatConnection()
+        let firstRecovery = controller.restorePersonalWeChatConnection()!
+        controller.cancelPersonalWeChatLogin(operationID: UUID())
         precondition(controller.actionInFlight && controller.personalWeChatRestoreInProgress)
         controller.restorePersonalWeChatConnection()
         controller.connectPersonalWeChat()
@@ -100,6 +101,13 @@ struct MessageCredentialRecoveryFixture {
         precondition(!controller.personalWeChatNeedsAuthorization && !controller.personalWeChatBindingMissing)
         controller.stop()  // Stop before its synthetic monitor can run.
         controller.start()
+
+        let secondRecovery = controller.restorePersonalWeChatConnection()!
+        controller.cancelPersonalWeChatLogin(operationID: firstRecovery)
+        precondition(controller.personalWeChatRestoreInProgress, "A departed page cancelled another page's recovery")
+        controller.cancelPersonalWeChatLogin(operationID: secondRecovery)
+        await storage.finish(.success(try credential(fresh: true)))
+        precondition(!controller.personalWeChatConnected, "Cancelled authorization callback restored a connection")
 
         for error in [FeishuWebhookError.keychainBusy, .keychainTimedOut, .keychainAuthorizationRequired] {
             controller.restorePersonalWeChatConnection()
@@ -139,6 +147,7 @@ struct MessageCredentialRecoveryFixture {
         precondition(storage.writes == 0)
         print("PASS saved WeChat recovery: explicit-only authorization, no QR/write, distinct missing/auth/busy/timeout, scoped status, duplicate and stale callback gates")
 
+        try await manualChatAuthorization()
         try await settingsTextDelivery()
         try await keychainPolicy()
         await queuedAuthorization()
@@ -146,6 +155,62 @@ struct MessageCredentialRecoveryFixture {
         try await detachedPersonalWeChatAdmission()
         try await composedPublicResetAdmission()
     }
+    @MainActor static func manualChatAuthorization() async throws {
+        let suite = "wechat-manual-authorization-fixture-\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let thread = UUID().uuidString
+        let threadKey = "CodexManagerNext.messageChannel.personal-wechat.chatThread.v1"
+        let chatKey = "CodexManagerNext.messageChannel.personal-wechat.chatEnabled.v1"
+        let fingerprintKey = "CodexManagerNext.messageChannel.personal-wechat.chatAuthorization.v1"
+        defaults.set(thread, forKey: threadKey)
+        defaults.set(true, forKey: chatKey)
+        let storage = Storage()
+        storage.readResult = .success(try credential(fresh: true))
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("wechat-manual-ledger-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let controller = MessageChannelsController(
+            defaults: defaults, storage: storage, transport: { NoNetwork() }, personalTransport: { NoNetwork() },
+            botLedger: WeChatBotEventLedger(directory: directory))
+        defer { controller.stop() }
+        controller.start()
+        controller.setEnabled(true, for: .personalWeChat)
+        precondition(
+            controller.personalChatNeedsConfirmation && controller.personalChatThreadID == thread && controller.personalChatEnabled,
+            "Legacy manual selection must remain intact and require approval")
+        controller.setPersonalChatThread(thread)
+        let fingerprint = defaults.string(forKey: fingerprintKey)!
+        precondition(!controller.personalChatNeedsConfirmation && fingerprint.count == 64 && !fingerprint.contains("synthetic"))
+        let original = try credential(fresh: true)
+        let changedContext = PersonalWeChatBinding(
+            baseURL: URL(string: "https://ILINKAI.weixin.qq.com:443/")!, botID: "synthetic-bot",
+            contextToken: "synthetic-new-context", contextCheckedAt: Date(), updatesCursor: "synthetic-new-cursor")
+        let refreshed = try MessageChannelCredential(secret: original.secret, target: original.target, personalBinding: changedContext)
+            .validated(for: .personalWeChat)
+        controller.restorePersonalWeChatConnection()
+        await storage.finish(.success(refreshed))
+        precondition(
+            !controller.personalChatNeedsConfirmation && defaults.string(forKey: fingerprintKey) == fingerprint,
+            "Same identity normalized URL/context/cursor refresh invalidated manual approval")
+        for changed in [
+            try MessageChannelCredential(secret: "synthetic-new-token", target: original.target, personalBinding: original.personalBinding).validated(for: .personalWeChat),
+            try MessageChannelCredential(secret: original.secret, target: "synthetic-new-owner", personalBinding: original.personalBinding).validated(for: .personalWeChat),
+        ] {
+            controller.restorePersonalWeChatConnection()
+            await storage.finish(.success(changed))
+            precondition(
+                controller.personalChatNeedsConfirmation && controller.personalChatThreadID == thread && controller.personalChatEnabled,
+                "New token or owner inherited manual thread approval")
+            precondition(defaults.string(forKey: fingerprintKey) == fingerprint, "Rebind silently rewrote prior approval")
+        }
+        controller.setPersonalChatThread(thread)
+        precondition(
+            !controller.personalChatNeedsConfirmation && defaults.string(forKey: fingerprintKey) != fingerprint,
+            "Same thread selection must permit explicit approval for the current owner")
+        precondition(storage.writes == 0)
+        print("PASS manual thread approval: legacy held, normalized identity survives context/cursor refresh, changed token/owner requires explicit same-thread approval")
+    }
+
     final class TextTransport: MessageChannelTransport {
         private let lock = NSLock()
         private var pending: (URLRequest, CheckedContinuation<(Data, HTTPURLResponse), Error>)?

@@ -301,6 +301,26 @@ install: build
 		echo "install: promote reported success but $$dest is not a real app directory." >&2; \
 		exit 1; \
 	fi; \
+	if ! python3 scripts/write-install-receipt.py --bundle "$$dest"; then \
+		if ! mv "$$dest" "$$staging" || [ -e "$$dest" ] || [ -L "$$dest" ] || [ ! -d "$$staging" ] || [ -L "$$staging" ]; then \
+			echo "install: receipt failed and the new app could not be withdrawn; keep $$dest, $$staging and $$prev for recovery." >&2; \
+			exit 1; \
+		fi; \
+		if [ -d "$$prev" ]; then \
+			restore="$$dest"; \
+			if [ -n "$$live" ] && [ "$$live" = "$$legacy" ]; then restore="$$legacy"; fi; \
+			if mv "$$prev" "$$restore" && [ -d "$$restore" ] && [ ! -L "$$restore" ]; then \
+				rm -rf "$$staging"; \
+				echo "install: receipt failed; the previous installation was restored." >&2; \
+			else \
+				echo "install: receipt failed and the previous installation could not be restored at $$restore; keep $$staging and $$prev for recovery." >&2; \
+			fi; \
+		else \
+			rm -rf "$$staging"; \
+			echo "install: receipt failed; the new installation was withdrawn and there was no previous installation to restore." >&2; \
+		fi; \
+		exit 1; \
+	fi; \
 	if [ -d "$$prev" ]; then \
 		rm -rf "$$prev"; \
 	fi

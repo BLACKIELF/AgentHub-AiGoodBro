@@ -4352,7 +4352,7 @@ final class UsageStore: ObservableObject {
             feishuWebhookConfigured = true
             feishuNeedsAuthorization = false
             feishuNotificationMessage = WidgetLanguage.storedOrAutomatic().text(
-                "飞书已连接。后台检查不会弹出密码框。", "Feishu is connected. Background checks will not show password prompts.")
+                "飞书本机授权已就绪，投递待验证。请发送测试并在飞书中核对收到的内容。", "Feishu local authorization is ready; delivery is unverified. Send a test and check receipt in Feishu.")
             quotaEventTracker.reset()
             if hasStarted { scheduleWarmUpMaintenanceTimer() }
             return true

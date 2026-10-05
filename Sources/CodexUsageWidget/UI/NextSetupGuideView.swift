@@ -6,17 +6,22 @@ struct NextSetupGuideView: View {
     @ObservedObject var settings: AppSettings
     @ObservedObject var localAccounts: LocalCLIAccountStore
     @ObservedObject private var messageChannels: MessageChannelsController
+    let scope: NextSetupGuideScope
+    var onOutcome: (NextSetupGuideOutcome) -> Void
     var openAutomation: () -> Void
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var webhookDraft = ""
     @State private var pairingCode = ""
+    @State private var personalLoginOperationID: UUID?
     @State private var showingMessageSettings = false
     @State private var confirmsCompanionInstall = false
     @StateObject private var runtime: NextRuntimeSetupModel
 
     init(
-        store: UsageStore, settings: AppSettings, localAccounts: LocalCLIAccountStore? = nil, openAutomation: @escaping () -> Void,
+        store: UsageStore, settings: AppSettings, localAccounts: LocalCLIAccountStore? = nil,
+        scope: NextSetupGuideScope = .full, onOutcome: @escaping (NextSetupGuideOutcome) -> Void = { _ in },
+        openAutomation: @escaping () -> Void,
         runtime: NextRuntimeSetupModel? = nil
     ) {
         self.store = store
@@ -24,11 +29,15 @@ struct NextSetupGuideView: View {
         self.settings = settings
         self.localAccounts = localAccounts ?? LocalCLIAccountStore()
         self.openAutomation = openAutomation
+        self.scope = scope
+        self.onOutcome = onOutcome
         _runtime = StateObject(wrappedValue: runtime ?? NextRuntimeSetupModel(preview: store.isPreview))
     }
 
     private var language: WidgetLanguage { settings.language }
-    private var step: NextSetupStep { settings.setupProgress.step }
+    private var step: NextSetupStep {
+        scope == .connections ? settings.installationOnboarding.connectionStep : settings.setupProgress.step
+    }
 
     var body: some View {
         HStack(spacing: 0) {
@@ -64,15 +73,17 @@ struct NextSetupGuideView: View {
         .modifier(CodexDeviceLoginSheet(store: store, language: language, host: .setupGuide))
         .onAppear {
             if !store.isPreview { store.refreshLocalNotificationAuthorization() }
-            if step == .runtime { runtime.refresh() }
+            if !store.isPreview && step == .runtime { runtime.refresh() }
         }
         .sheet(isPresented: $showingMessageSettings) {
             MessageChannelsSettingsView(controller: messageChannels)
         }
         .onDisappear {
             pairingCode = ""
-            messageChannels.cancelPersonalWeChatLogin()
-            if settings.onboarding.shouldPresent { settings.onboarding.skip() }
+            if let personalLoginOperationID {
+                messageChannels.cancelPersonalWeChatLogin(operationID: personalLoginOperationID)
+            }
+            personalLoginOperationID = nil
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             guard !store.isPreview else { return }
@@ -90,10 +101,11 @@ struct NextSetupGuideView: View {
                     AHBrandSymbol(size: 24)
                 }.font(.headline)
                     .foregroundStyle(.secondary)
-                Text(language.text("使用引导", "Getting started")).font(.title2.weight(.semibold))
+                Text(scope == .connections ? language.text("微信与飞书连接", "WeChat & Feishu") : language.text("使用引导", "Getting started"))
+                    .font(.title2.weight(.semibold))
             }
             VStack(spacing: 8) {
-                ForEach(NextSetupStep.allCases) { item in
+                ForEach(scope.steps) { item in
                     Button {
                         go(to: item)
                     } label: {
@@ -118,9 +130,12 @@ struct NextSetupGuideView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            Text("\(step.index + 1) / \(NextSetupStep.allCases.count)")
+            Text("\((scope.steps.firstIndex(of: step) ?? 0) + 1) / \(scope.steps.count)")
                 .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                .accessibilityLabel(language.text("第 \(step.index + 1) 步，共 \(NextSetupStep.allCases.count) 步", "Step \(step.index + 1) of \(NextSetupStep.allCases.count)"))
+                .accessibilityLabel(
+                    language.text(
+                        "第 \((scope.steps.firstIndex(of: step) ?? 0) + 1) 步，共 \(scope.steps.count) 步", "Step \((scope.steps.firstIndex(of: step) ?? 0) + 1) of \(scope.steps.count)"
+                    ))
         }
         .padding(22)
         .frame(width: 205)
@@ -337,8 +352,12 @@ struct NextSetupGuideView: View {
                     language.text("获得 Reset 卡提醒", "New reset credit alerts"), symbol: "ticket", value: store.feishuResetCreditEnabled, paused: .feishu,
                     action: store.setFeishuResetCreditEnabled)
             }
-            Text(language.text("通知授权、微信和飞书连接在下一步完成。Reset 卡始终由你手动使用。", "Set up notification permission, WeChat and Feishu next. Reset credits are always used manually."))
-                .font(.caption).foregroundStyle(.secondary)
+            Text(
+                language.text(
+                    "通知授权、微信和飞书连接在下一步完成。重置卡自动使用默认关闭，可在账号标题旁逐个授权。",
+                    "Set up notification permission, WeChat and Feishu next. Automatic reset-card use is off by default; authorize accounts beside the account heading.")
+            )
+            .font(.caption).foregroundStyle(.secondary)
             if !store.pausedAutomationFeatures.isEmpty {
                 Label(language.text("维护期间部分功能暂停，原设置已保留。", "Some features are paused for maintenance. Saved choices are preserved."), systemImage: "pause.circle")
                     .font(.caption).foregroundStyle(.orange)
@@ -349,99 +368,124 @@ struct NextSetupGuideView: View {
     private var notificationsPage: some View {
         VStack(alignment: .leading, spacing: 22) {
             heading(
-                language.text("让提醒到达你", "Put alerts within reach"),
-                language.text("功能开关和通知权限分开管理。你可以现在设置，也可以稍后继续。", "Feature switches and notification permissions are separate. Set them up now or come back later."))
-            GroupBox {
-                VStack(alignment: .leading, spacing: 12) {
-                    connectionTitle(
-                        "macOS", symbol: "bell.badge", status: localStatus,
-                        ready: store.localNotificationsEnabled && store.localNotificationAuthorizationReady)
-                    Text(language.text("在电脑上接收额度不足和重置消息，无需配置飞书。", "Receive low-limit alerts and reset news on this Mac. Feishu setup is optional."))
-                        .font(.subheadline).foregroundStyle(.secondary)
-                    if let message = store.localNotificationMessage {
-                        Text(message).font(.caption).foregroundStyle(.secondary)
-                    }
-                    HStack {
-                        Button(
-                            store.localNotificationUsesSystemSettings
-                                ? language.text("打开通知设置", "Open notification settings") : language.text("允许系统通知", "Allow notifications")
-                        ) { store.configureLocalNotifications() }
-                        .disabled(store.isRequestingLocalNotificationPermission || store.pausedAutomationFeatures.contains(.localNotification))
-                        if store.isRequestingLocalNotificationPermission { ProgressView().controlSize(.small) }
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading).padding(8)
-            }
-            GroupBox {
-                VStack(alignment: .leading, spacing: 12) {
-                    Label(language.text("微信", "WeChat"), systemImage: "bubble.left.and.bubble.right")
-                        .font(.subheadline.weight(.semibold))
-                    PersonalWeChatSettingsView(
-                        enabled: Binding(get: { messageChannels.personalWeChatEnabled }, set: { messageChannels.setEnabled($0, for: .personalWeChat) }),
-                        pairingCode: $pairingCode,
-                        connected: messageChannels.personalWeChatConnected,
-                        hasContext: messageChannels.personalWeChatHasContext,
-                        connecting: messageChannels.personalLoginInProgress,
-                        qrContent: messageChannels.personalLoginQRCode,
-                        needsCode: messageChannels.personalLoginNeedsCode,
-                        disabled: messageChannels.actionInFlight,
-                        onConnect: { messageChannels.connectPersonalWeChat() },
-                        onCancel: { messageChannels.cancelPersonalWeChatLogin() },
-                        onSubmitCode: { messageChannels.submitPersonalWeChatCode($0) },
-                        onTest: { messageChannels.sendTest(.personalWeChat) },
-                        needsAuthorization: messageChannels.personalWeChatNeedsAuthorization,
-                        bindingMissing: messageChannels.personalWeChatBindingMissing,
-                        restoring: messageChannels.personalWeChatRestoreInProgress,
-                        connectionStatus: messageChannels.personalWeChatStatusText,
-                        onRestore: { messageChannels.restorePersonalWeChatConnection() })
-                    Button(language.text("微信对话与通知设置", "WeChat conversation and notification settings")) {
-                        showingMessageSettings = true
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading).padding(8)
-            }
-            GroupBox {
-                VStack(alignment: .leading, spacing: 12) {
-                    connectionTitle(
-                        language.text("飞书", "Feishu"), symbol: "paperplane", status: feishuStatus,
-                        ready: store.feishuNotificationsEnabled && store.feishuWebhookConfigured)
-                    Text(
-                        language.text(
-                            "接收低额度、额度重置和 Reset 卡提醒。先在飞书群添加自定义机器人，再保存机器人地址。",
-                            "Receive low-limit, reset and new-credit alerts. Add a custom bot to a Feishu group, then save its webhook.")
+                scope == .connections ? language.text("检查微信与飞书连接", "Check WeChat & Feishu") : language.text("让提醒到达你", "Put alerts within reach"),
+                scope == .connections
+                    ? language.text(
+                        "升级或重装后，系统可能要求重新授权。已有配置会保留；按下方状态检查，连接和测试均由你选择。",
+                        "After an update or reinstall, macOS may require authorization again. Existing configuration stays saved. Check the states below and choose whether to connect or test."
                     )
+                    : language.text("功能开关和通知权限分开管理。你可以现在设置，也可以稍后继续。", "Feature switches and notification permissions are separate. Set them up now or come back later."))
+            if scope == .full { systemNotificationCard }
+            personalWeChatCard
+            feishuCard
+            if scope == .connections { systemNotificationCard }
+        }
+    }
+
+    private var systemNotificationCard: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 12) {
+                connectionTitle(
+                    "macOS", symbol: "bell.badge", status: localStatus,
+                    ready: store.localNotificationsEnabled && store.localNotificationAuthorizationReady)
+                Text(language.text("在电脑上接收额度不足和重置消息，无需配置飞书。", "Receive low-limit alerts and reset news on this Mac. Feishu setup is optional."))
                     .font(.subheadline).foregroundStyle(.secondary)
-                    if store.feishuNeedsAuthorization {
-                        Button(language.text("授权连接", "Authorize connection"), action: store.authorizeFeishuConnection)
-                            .buttonStyle(.borderedProminent)
-                            .disabled(store.isUpdatingFeishuConnection)
-                    } else if !store.feishuWebhookConfigured {
-                        SecureField(language.text("飞书机器人 Webhook 地址", "Feishu bot webhook URL"), text: $webhookDraft)
-                            .textFieldStyle(.roundedBorder)
-                        Button(language.text("保存并连接", "Save and connect")) {
-                            let submitted = webhookDraft
-                            store.saveFeishuWebhook(submitted) { saved in
-                                if saved, webhookDraft == submitted { webhookDraft = "" }
-                            }
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(webhookDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || store.isUpdatingFeishuConnection)
-                    }
-                    if store.isUpdatingFeishuConnection { ProgressView().controlSize(.small) }
-                    Text(
-                        language.text(
-                            "密码只在 macOS 系统弹窗中输入。如有“始终允许”，选择后可记住授权；升级后可能需重新授权。后台检查不会弹窗。",
-                            "Enter your password only in the macOS dialog. Choose Always Allow, if offered, to remember access. Updates may require authorization again. Background checks stay silent."
-                        )
-                    )
-                    .font(.caption).foregroundStyle(.secondary)
-                    if let message = store.feishuNotificationMessage {
-                        Text(message).font(.caption).foregroundStyle(.secondary)
-                    }
-                    Button(language.text("更多飞书设置", "More Feishu settings"), action: openAutomation)
+                if let message = store.localNotificationMessage {
+                    Text(message).font(.caption).foregroundStyle(.secondary)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading).padding(8)
+                HStack {
+                    Button(
+                        store.localNotificationUsesSystemSettings
+                            ? language.text("打开通知设置", "Open notification settings") : language.text("允许系统通知", "Allow notifications")
+                    ) { store.configureLocalNotifications() }
+                    .disabled(store.isRequestingLocalNotificationPermission || store.pausedAutomationFeatures.contains(.localNotification))
+                    if store.isRequestingLocalNotificationPermission { ProgressView().controlSize(.small) }
+                }
             }
+            .frame(maxWidth: .infinity, alignment: .leading).padding(8)
+        }
+    }
+
+    private var personalWeChatCard: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 12) {
+                Label(language.text("微信", "WeChat"), systemImage: "bubble.left.and.bubble.right")
+                    .font(.subheadline.weight(.semibold))
+                PersonalWeChatSettingsView(
+                    enabled: Binding(get: { messageChannels.personalWeChatEnabled }, set: { messageChannels.setEnabled($0, for: .personalWeChat) }),
+                    pairingCode: $pairingCode,
+                    connected: messageChannels.personalWeChatConnected,
+                    hasContext: messageChannels.personalWeChatHasContext,
+                    connecting: messageChannels.personalLoginInProgress,
+                    qrContent: messageChannels.personalLoginQRCode,
+                    needsCode: messageChannels.personalLoginNeedsCode,
+                    disabled: messageChannels.actionInFlight,
+                    onConnect: {
+                        if let operationID = messageChannels.connectPersonalWeChat() { personalLoginOperationID = operationID }
+                    },
+                    onCancel: {
+                        if let personalLoginOperationID { messageChannels.cancelPersonalWeChatLogin(operationID: personalLoginOperationID) }
+                    },
+                    onSubmitCode: { messageChannels.submitPersonalWeChatCode($0) },
+                    onTest: { messageChannels.sendTest(.personalWeChat) },
+                    needsAuthorization: messageChannels.personalWeChatNeedsAuthorization,
+                    bindingMissing: messageChannels.personalWeChatBindingMissing,
+                    restoring: messageChannels.personalWeChatRestoreInProgress,
+                    connectionStatus: messageChannels.personalWeChatStatusText,
+                    onRestore: {
+                        if let operationID = messageChannels.restorePersonalWeChatConnection() { personalLoginOperationID = operationID }
+                    },
+                    reconnectBusy: messageChannels.personalReconnectInFlight)
+                Button(language.text("微信对话与通知设置", "WeChat conversation and notification settings")) {
+                    showingMessageSettings = true
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading).padding(8)
+        }
+    }
+
+    private var feishuCard: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 12) {
+                connectionTitle(
+                    language.text("飞书", "Feishu"), symbol: "paperplane", status: feishuStatus,
+                    ready: store.feishuNotificationsEnabled && store.feishuWebhookConfigured)
+                Text(
+                    language.text(
+                        "接收低额度、额度重置和 Reset 卡提醒。先在飞书群添加自定义机器人，再保存机器人地址。",
+                        "Receive low-limit, reset and new-credit alerts. Add a custom bot to a Feishu group, then save its webhook.")
+                )
+                .font(.subheadline).foregroundStyle(.secondary)
+                if store.feishuNeedsAuthorization {
+                    Button(language.text("授权连接", "Authorize connection"), action: store.authorizeFeishuConnection)
+                        .buttonStyle(.borderedProminent)
+                        .disabled(store.isUpdatingFeishuConnection)
+                } else if !store.feishuWebhookConfigured {
+                    SecureField(language.text("飞书机器人 Webhook 地址", "Feishu bot webhook URL"), text: $webhookDraft)
+                        .textFieldStyle(.roundedBorder)
+                    Button(language.text("保存并授权", "Save and authorize")) {
+                        let submitted = webhookDraft
+                        store.saveFeishuWebhook(submitted) { saved in
+                            if saved, webhookDraft == submitted { webhookDraft = "" }
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(webhookDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || store.isUpdatingFeishuConnection)
+                }
+                if store.isUpdatingFeishuConnection { ProgressView().controlSize(.small) }
+                Text(
+                    language.text(
+                        "密码只在 macOS 系统弹窗中输入。如有“始终允许”，选择后可记住授权；升级后可能需重新授权。后台检查不会弹窗。",
+                        "Enter your password only in the macOS dialog. Choose Always Allow, if offered, to remember access. Updates may require authorization again. Background checks stay silent."
+                    )
+                )
+                .font(.caption).foregroundStyle(.secondary)
+                if let message = store.feishuNotificationMessage {
+                    Text(message).font(.caption).foregroundStyle(.secondary)
+                }
+                Button(language.text("更多飞书设置", "More Feishu settings"), action: openAutomation)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading).padding(8)
         }
     }
 
@@ -449,8 +493,15 @@ struct NextSetupGuideView: View {
         VStack(alignment: .leading, spacing: 22) {
             heading(
                 language.text("查看设置，开始使用", "Review your setup"),
-                language.text("登录是否完成以工具清单中的结果为准；未完成的工具和通知设置可以继续补齐。", "Check the tool checklist for sign-in results. Finish any pending tools or notification setup when ready."))
-            Button(language.text("查看登录清单", "Review sign-in checklist")) { go(to: .accounts) }
+                scope == .connections
+                    ? language.text(
+                        "完成此引导只记录本轮检查已结束，不代表消息已送达。未完成的连接可从工作台继续。",
+                        "Finishing this guide records that this review is done, not that a message was delivered. Continue any pending connection from the workspace.")
+                    : language.text(
+                        "登录是否完成以工具清单中的结果为准；未完成的工具和通知设置可以继续补齐。", "Check the tool checklist for sign-in results. Finish any pending tools or notification setup when ready."))
+            if scope == .full {
+                Button(language.text("查看登录清单", "Review sign-in checklist")) { go(to: .accounts) }
+            }
             VStack(alignment: .leading, spacing: 16) {
                 connectionTitle(
                     language.text("日常功能", "Daily features"), symbol: "switch.2",
@@ -462,8 +513,11 @@ struct NextSetupGuideView: View {
                 Divider()
                 connectionTitle(
                     language.text("微信", "WeChat"), symbol: "bubble.left.and.bubble.right",
-                    status: messageChannels.personalWeChatConnected ? language.text("已连接", "Connected") : language.text("待连接", "Setup needed"),
-                    ready: messageChannels.personalWeChatConnected)
+                    status: messageChannels.personalWeChatConnected
+                        ? (messageChannels.personalWeChatHasContext
+                            ? language.text("已绑定 · 投递待验证", "Bound · delivery unverified") : language.text("已绑定 · 等待微信消息", "Bound · waiting for a WeChat message"))
+                        : language.text("待连接", "Setup needed"),
+                    ready: messageChannels.personalWeChatConnected && messageChannels.personalWeChatHasContext)
                 Divider()
                 connectionTitle(
                     language.text("飞书通知", "Feishu notifications"), symbol: "paperplane", status: feishuStatus,
@@ -489,11 +543,11 @@ struct NextSetupGuideView: View {
     }
 
     private var feishuStatus: String {
-        if store.isUpdatingFeishuConnection { return language.text("正在连接", "Connecting") }
+        if store.isUpdatingFeishuConnection { return language.text("正在授权", "Authorizing") }
         if store.pausedAutomationFeatures.contains(.feishu) { return language.text("维护暂停", "Paused") }
         if !store.feishuNotificationsEnabled { return language.text("已关闭", "Off") }
         if store.feishuNeedsAuthorization { return language.text("待系统授权", "Permission needed") }
-        return store.feishuWebhookConfigured ? language.text("已连接", "Connected") : language.text("待配置", "Setup needed")
+        return store.feishuWebhookConfigured ? language.text("本机授权就绪 · 投递待验证", "Local authorization ready · delivery unverified") : language.text("待配置", "Setup needed")
     }
 
     private var footer: some View {
@@ -503,23 +557,32 @@ struct NextSetupGuideView: View {
                     store.cancelLogin()
                 }
                 store.migrateDeviceLoginHostIfNeeded(from: .setupGuide)
-                settings.setupProgress.dismissed = true
-                if settings.onboarding.shouldPresent { settings.onboarding.skip() }
+                if !store.isPreview {
+                    if scope == .full {
+                        settings.setupProgress.dismissed = true
+                        if settings.onboarding.shouldPresent { settings.onboarding.skip() }
+                    }
+                    onOutcome(.deferred)
+                }
                 dismiss()
             }
-            .keyboardShortcut(.cancelAction)
             .disabled(store.isLoggingIn && store.deviceLogin?.phase.canCancelAuthorization == false)
             Spacer()
-            if step != NextSetupStep.allCases.first {
-                Button(language.text("上一步", "Back")) { go(to: step.previous) }
+            if step != scope.steps.first {
+                Button(language.text("上一步", "Back")) { go(to: scope.previous(step)) }
             }
             Button(step == .ready ? language.text("开始使用", "Open workspace") : language.text("下一步", "Continue")) {
                 if step == .ready {
-                    settings.setupProgress.completed = true
-                    settings.onboarding.finish(.completed)
+                    if !store.isPreview {
+                        if scope == .full {
+                            settings.setupProgress.completed = true
+                            settings.onboarding.finish(.completed)
+                        }
+                        onOutcome(.completed)
+                    }
                     dismiss()
                 } else {
-                    go(to: step.next)
+                    go(to: scope.next(step))
                 }
             }
             .buttonStyle(.borderedProminent)
@@ -529,7 +592,11 @@ struct NextSetupGuideView: View {
     }
 
     private func go(to step: NextSetupStep) {
-        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.16)) { settings.setupProgress.step = step }
+        guard scope.steps.contains(step) else { return }
+        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.16)) {
+            if scope == .connections { settings.installationOnboarding.connectionStep = step } else { settings.setupProgress.step = step }
+        }
+        guard !store.isPreview else { return }
         if step == .notifications { store.refreshLocalNotificationAuthorization() }
         if step == .runtime { runtime.refresh() }
     }

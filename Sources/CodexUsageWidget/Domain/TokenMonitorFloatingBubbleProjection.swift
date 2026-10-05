@@ -9,6 +9,8 @@ struct TokenMonitorFloatingBubbleAccount: Equatable {
     var accountName: String
     var isLoggedIn = true
     var metrics: [TokenMonitorFloatingBubbleMetric] = []
+    /// Official plan-selected headline for Edge Dock only; other surfaces retain every metric.
+    var edgeDockPrimaryMetricID: String? = nil
 }
 
 struct TokenMonitorFloatingBubbleMetric: Equatable, Identifiable {

@@ -99,6 +99,13 @@ jobs:
           python3 scripts/test-message-channels.py
           bash scripts/test-grok-reset-cards.sh
           python3 -m unittest tests.test_local_cli_quota tests.test_additional_cli_quota tests.test_zcode_cli_quota
+      - name: Validate installation onboarding and credential recovery
+        run: |
+          python3 tests/test_install_receipt.py
+          python3 tests/test_install_upgrade_guard.py
+          python3 scripts/test-install-onboarding.py
+          python3 scripts/test-message-credential-recovery.py
+          python3 scripts/test-message-credential-recovery.py --controller
       - name: Validate independent local proxy with synthetic accounts
         run: |
           python3 scripts/test-invite-purchase-link.py

@@ -11,6 +11,7 @@ struct MessageChannelsSettingsView: View {
     @State private var personalPairingCode = ""
     @State private var personalTextDraft = ""
     @State private var showingPersonalText = false
+    @State private var personalOperationID: UUID?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -99,8 +100,12 @@ struct MessageChannelsSettingsView: View {
                     }
                 },
                 onTestWeChat: { controller.sendTest(.weChat) },
-                onConnectPersonalWeChat: { controller.connectPersonalWeChat() },
-                onCancelPersonalWeChat: { controller.cancelPersonalWeChatLogin() },
+                onConnectPersonalWeChat: {
+                    if let operation = controller.connectPersonalWeChat() { personalOperationID = operation }
+                },
+                onCancelPersonalWeChat: {
+                    if let operation = personalOperationID { controller.cancelPersonalWeChatLogin(operationID: operation) }
+                },
                 onSubmitPersonalWeChatCode: { controller.submitPersonalWeChatCode($0) },
                 onTestPersonalWeChat: { controller.sendTest(.personalWeChat) },
                 onOpenHelp: { NSWorkspace.shared.open($0) },
@@ -110,12 +115,18 @@ struct MessageChannelsSettingsView: View {
                 personalWeChatBindingMissing: controller.personalWeChatBindingMissing,
                 personalWeChatRestoreInProgress: controller.personalWeChatRestoreInProgress,
                 personalWeChatStatusText: controller.personalWeChatStatusText,
-                onRestorePersonalWeChat: { controller.restorePersonalWeChatConnection() },
+                onRestorePersonalWeChat: {
+                    if let operation = controller.restorePersonalWeChatConnection() { personalOperationID = operation }
+                },
                 personalChatEnabled: Binding(get: { controller.personalChatEnabled }, set: { controller.setPersonalChatEnabled($0) }),
                 personalChatThreadID: Binding(get: { controller.personalChatThreadID }, set: { controller.setPersonalChatThread($0) }),
                 personalChatTargets: controller.personalChatTargets,
                 personalAutomaticThreadID: controller.personalAutomaticThreadID,
                 personalBotIsReplying: controller.personalBotIsReplying,
+                personalChatNeedsConfirmation: controller.personalChatNeedsConfirmation,
+                personalBotTasksInFlight: controller.personalBotTasksInFlight,
+                personalReconnectInFlight: controller.personalReconnectInFlight,
+                onConfirmPersonalChat: { controller.setPersonalChatThread(controller.personalChatThreadID) },
                 onRefreshPersonalChatTargets: { controller.refreshPersonalChatTargets() },
                 onOpenPersonalChat: {
                     if let url = CodexSessionLink.url(threadID: controller.personalEffectiveChatThreadID) { NSWorkspace.shared.open(url) }
@@ -123,14 +134,17 @@ struct MessageChannelsSettingsView: View {
             )
         }
         .frame(minWidth: 320, idealWidth: 580, maxWidth: 580, minHeight: 280, idealHeight: 680, maxHeight: 680)
-        .onAppear { controller.openPersonalWeChatSettings() }
+        .onAppear {
+            if let operation = controller.openPersonalWeChatSettings() { personalOperationID = operation }
+        }
         .onDisappear {
             telegramToken = ""
             telegramTarget = ""
             weChatKey = ""
             personalPairingCode = ""
             personalTextDraft = ""
-            controller.cancelPersonalWeChatLogin()
+            if let operation = personalOperationID { controller.cancelPersonalWeChatLogin(operationID: operation) }
+            personalOperationID = nil
         }
     }
     private func channelStatus(_ title: String, phase: MessageChannelPhase) -> some View {

@@ -29,6 +29,17 @@ enum NextSetupPreviewRenderer {
                         try WorkspacePreviewRenderer.renderView(view, size: CGSize(width: 900, height: 680), scheme: scheme, to: directory.appendingPathComponent(name))
                         count += 1
                     }
+                    for step in NextSetupGuideScope.connections.steps {
+                        settings.installationOnboarding.connectionStep = step
+                        let view = NextSetupGuideView(
+                            store: store, settings: settings, scope: .connections, openAutomation: {}, runtime: NextRuntimeSetupModel(preview: true)
+                        )
+                        .transaction { $0.disablesAnimations = true }
+                        .preferredColorScheme(scheme)
+                        let name = "\(language.rawValue)-\(scheme == .dark ? "dark" : "light")-connections-step\(step.rawValue).png"
+                        try WorkspacePreviewRenderer.renderView(view, size: CGSize(width: 900, height: 680), scheme: scheme, to: directory.appendingPathComponent(name))
+                        count += 1
+                    }
                 }
             }
             print("Rendered \(count) setup views with synthetic accounts; no account or notification actions performed")

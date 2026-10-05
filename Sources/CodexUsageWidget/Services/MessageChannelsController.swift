@@ -1,4 +1,5 @@
 import Combine
+import CryptoKit
 import Foundation
 import Security
 
@@ -228,7 +229,10 @@ final class MessageChannelsController: ObservableObject {
     @Published private(set) var personalWeChatBindingMissing = false
     @Published private(set) var personalWeChatRestoreInProgress = false
     @Published private(set) var personalWeChatStatusText: String?
-    @Published private(set) var personalLoginInProgress = false
+    @Published private(set) var personalLoginInProgress = false { didSet { updateActionInFlight() } }
+    @Published private(set) var personalChatNeedsConfirmation = false
+    @Published private(set) var personalBotTasksInFlight = false
+    @Published private(set) var personalReconnectInFlight = false
     @Published private(set) var personalLoginQRCode: String?
     @Published private(set) var personalLoginNeedsCode = false
     @Published private(set) var statusText: String?
@@ -253,6 +257,7 @@ final class MessageChannelsController: ObservableObject {
     private var personalConnectionEpoch = UUID()
     private var personalMonitor: Task<Void, Never>?
     private var personalLogin: Task<Void, Never>?
+    private var personalLoginOperationID: UUID?
     private var personalVerificationCode: String?
     private let botLedger: WeChatBotEventLedger
     private let conversationFactory: @MainActor () -> WeChatCodexConversation
@@ -260,7 +265,7 @@ final class MessageChannelsController: ObservableObject {
     private var personalChatMessageID: UUID?
     private var personalSlotWaiter: CheckedContinuation<Void, Never>?
     private var personalSlotTimeout: Task<Void, Never>?
-    private var personalBotTasks: [UUID: Task<Void, Never>] = [:]
+    private var personalBotTasks: [UUID: Task<Void, Never>] = [:] { didSet { updateActionInFlight() } }
     private var personalChatEpoch = UUID()
     private var personalMessagesNotBefore = Date.distantFuture
     private var personalChatNotBefore = Date()
@@ -279,7 +284,9 @@ final class MessageChannelsController: ObservableObject {
         }
     }
     private func updateActionInFlight() {
+        personalBotTasksInFlight = !personalBotTasks.isEmpty
         actionInFlight = credentialWriteInFlight || explicitTest != nil || personalAuthorizationID != nil
+        personalReconnectInFlight = actionInFlight || personalLoginInProgress || personalBotTasksInFlight
     }
     private var running = false
 
@@ -304,6 +311,7 @@ final class MessageChannelsController: ObservableObject {
         personalChatEnabled = defaults.bool(forKey: Self.personalChatEnabledKey)
         let thread = defaults.string(forKey: Self.personalChatThreadKey) ?? ""
         personalChatThreadID = UUID(uuidString: thread) == nil ? "" : thread
+        personalChatNeedsConfirmation = UUID(uuidString: thread) != nil
         weChatMessageOptions =
             defaults.data(forKey: Self.weChatOptionsKey)
             .flatMap { try? JSONDecoder().decode(FeishuMessageOptions.self, from: $0) } ?? .standard
@@ -312,6 +320,7 @@ final class MessageChannelsController: ObservableObject {
     private static func enabledKey(_ kind: MessageChannelKind) -> String { "CodexManagerNext.messageChannel.\(kind.rawValue).enabled" }
     private static let weChatOptionsKey = "CodexManagerNext.messageChannel.wechat.messageOptions.v1"
     private static let personalChatEnabledKey = "CodexManagerNext.messageChannel.personal-wechat.chatEnabled.v1"
+    private static let personalChatAuthorizationKey = "CodexManagerNext.messageChannel.personal-wechat.chatAuthorization.v1"
     private static let personalChatThreadKey = "CodexManagerNext.messageChannel.personal-wechat.chatThread.v1"
 
     func setPersonalChatEnabled(_ enabled: Bool) {
@@ -323,13 +332,32 @@ final class MessageChannelsController: ObservableObject {
     }
 
     func setPersonalChatThread(_ id: String) {
-        guard !credentialWriteInFlight, id != personalChatThreadID,
-            id.isEmpty || UUID(uuidString: id) != nil && personalChatTargets.contains(where: { $0.id == id })
+        guard !credentialWriteInFlight, id != personalChatThreadID || personalChatNeedsConfirmation,
+            id.isEmpty || UUID(uuidString: id) != nil && (id == personalChatThreadID || personalChatTargets.contains(where: { $0.id == id })),
+            id.isEmpty || personalChatAuthorizationFingerprint() != nil
         else { return }
         cancelPersonalBotTasks()
         personalChatThreadID = id
         personalChatNotBefore = Date()
         defaults.set(id, forKey: Self.personalChatThreadKey)
+        defaults.set(id.isEmpty ? nil : personalChatAuthorizationFingerprint(), forKey: Self.personalChatAuthorizationKey)
+        refreshPersonalChatAuthorization()
+    }
+
+    private func personalChatAuthorizationFingerprint() -> String? {
+        guard let credential = try? credentials[.personalWeChat]?.validated(for: .personalWeChat),
+            let binding = credential.personalBinding, let target = credential.target
+        else { return nil }
+        let fields = [binding.baseURL.absoluteString, binding.botID, target, credential.secret]
+        guard let data = try? JSONEncoder().encode(fields) else { return nil }
+        return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private func refreshPersonalChatAuthorization() {
+        personalChatNeedsConfirmation =
+            !personalChatThreadID.isEmpty
+            && (personalChatAuthorizationFingerprint() == nil
+                || defaults.string(forKey: Self.personalChatAuthorizationKey) != personalChatAuthorizationFingerprint())
     }
 
     private func cancelPersonalBotTasks() {
@@ -396,7 +424,7 @@ final class MessageChannelsController: ObservableObject {
 
     func setEnabled(_ enabled: Bool, for kind: MessageChannelKind) {
         // A pending storage write cannot be superseded by a settings toggle.
-        guard !credentialWriteInFlight else { return }
+        guard !credentialWriteInFlight, enabled != isEnabled(kind) else { return }
         switch kind {
         case .telegram: telegramEnabled = enabled
         case .weChat: weChatEnabled = enabled
@@ -416,7 +444,10 @@ final class MessageChannelsController: ObservableObject {
     }
 
     private func load(_ kind: MessageChannelKind) {
-        if kind == .personalWeChat { stopPersonalConnection() }
+        if kind == .personalWeChat {
+            guard !personalReconnectInFlight else { return }
+            stopPersonalConnection()
+        }
         invalidate(kind)
         let revision = revisions[kind]
         storage.load(kind) { [weak self] result in
@@ -426,14 +457,16 @@ final class MessageChannelsController: ObservableObject {
     }
 
     /// Opening the settings sheet is the explicit authorization action.
-    func openPersonalWeChatSettings() {
-        guard personalWeChatEnabled, !personalWeChatConnected, !personalWeChatBindingMissing else { return }
-        restorePersonalWeChatConnection()
+    @discardableResult
+    func openPersonalWeChatSettings() -> UUID? {
+        guard personalWeChatEnabled, !personalWeChatConnected, !personalWeChatBindingMissing else { return nil }
+        return restorePersonalWeChatConnection()
     }
 
     /// Restores the saved binding without requesting a QR or writing a credential.
-    func restorePersonalWeChatConnection() {
-        guard running, personalWeChatEnabled, !actionInFlight, !personalLoginInProgress else { return }
+    @discardableResult
+    func restorePersonalWeChatConnection() -> UUID? {
+        guard running, personalWeChatEnabled, !personalReconnectInFlight else { return nil }
         stopPersonalConnection()
         invalidate(.personalWeChat)
         let revision = revisions[.personalWeChat]
@@ -449,12 +482,14 @@ final class MessageChannelsController: ObservableObject {
         }
         personalAuthorizationRequest = request
         storage.authorizeStored(.personalWeChat, request: request)
+        return action
     }
 
     private func applyStoredCredential(_ result: Result<MessageChannelCredential?, FeishuWebhookError>, for kind: MessageChannelKind) {
         switch result {
         case .success(let credential):
             credentials[kind] = credential
+            if kind == .personalWeChat { refreshPersonalChatAuthorization() }
             setPhase(credential == nil ? .needsSetup : .pendingVerification, for: kind)
             if kind == .personalWeChat {
                 personalWeChatNeedsAuthorization = false
@@ -770,10 +805,16 @@ final class MessageChannelsController: ObservableObject {
         personalMonitor = nil
         personalLogin?.cancel()
         personalLogin = nil
+        personalLoginOperationID = nil
         personalLoginInProgress = false
         personalLoginQRCode = nil
         personalLoginNeedsCode = false
         personalVerificationCode = nil
+    }
+
+    func cancelPersonalWeChatLogin(operationID: UUID) {
+        guard personalLoginOperationID == operationID || personalAuthorizationID == operationID else { return }
+        cancelPersonalWeChatLogin()
     }
 
     func cancelPersonalWeChatLogin() {
@@ -798,13 +839,16 @@ final class MessageChannelsController: ObservableObject {
         personalLoginNeedsCode = false
     }
 
-    func connectPersonalWeChat() {
-        guard running, personalWeChatEnabled, !actionInFlight else { return }
+    @discardableResult
+    func connectPersonalWeChat() -> UUID? {
+        guard running, personalWeChatEnabled, !personalReconnectInFlight else { return nil }
         stopPersonalConnection()
         credentials.removeValue(forKey: .personalWeChat)
         personalAutomaticThreadID = ""
         personalWeChatConnected = false
         invalidate(.personalWeChat)
+        let operationID = UUID()
+        personalLoginOperationID = operationID
         personalLoginInProgress = true
         let epoch = personalConnectionEpoch
         let channel = PersonalWeChatMessageChannel(transport: personalTransport())
@@ -817,6 +861,7 @@ final class MessageChannelsController: ObservableObject {
                     self.personalLoginNeedsCode = false
                     self.personalVerificationCode = nil
                     self.personalLogin = nil
+                    self.personalLoginOperationID = nil
                 }
             }
             do {
@@ -845,6 +890,7 @@ final class MessageChannelsController: ObservableObject {
                     case .alreadyBound:
                         self.setPersonalStatus(
                             WidgetLanguage.storedOrAutomatic().text("服务端未签发新凭据；正在核对本机已有连接。", "No new credential was issued. Checking the existing local connection."))
+                        self.stopPersonalConnection()
                         self.load(.personalWeChat)
                         return
                     case .confirmed(let credential):
@@ -858,6 +904,7 @@ final class MessageChannelsController: ObservableObject {
                         guard self.running, self.personalWeChatEnabled, self.personalConnectionEpoch == epoch else { return }
                         try saved.get()
                         self.credentials[.personalWeChat] = credential
+                        self.refreshPersonalChatAuthorization()
                         self.personalAutomaticThreadID =
                             (try? self.botLedger.conversationID(
                                 owner: (credential.personalBinding?.botID ?? "") + "\u{0}" + (credential.target ?? ""))) ?? ""
@@ -878,6 +925,7 @@ final class MessageChannelsController: ObservableObject {
                 self.setPersonalStatus((error as? FeishuWebhookError).map { Self.credentialStatus($0, for: .personalWeChat) } ?? error.localizedDescription)
             }
         }
+        return operationID
     }
 
     private func startPersonalMonitor() {
@@ -995,13 +1043,18 @@ final class MessageChannelsController: ObservableObject {
 
     private enum PersonalChatResolution {
         case ready(String)
+        case authorizationRequired
         case unavailable
         case uncertain
     }
 
     @MainActor
     private func resolvePersonalChat(owner: String, valid: @escaping () -> Bool) async -> PersonalChatResolution {
-        if !personalChatThreadID.isEmpty { return .ready(personalChatThreadID) }
+        if !personalChatThreadID.isEmpty {
+            refreshPersonalChatAuthorization()
+            guard !personalChatNeedsConfirmation else { return .authorizationRequired }
+            return .ready(personalChatThreadID)
+        }
         do {
             if let existing = try botLedger.conversationID(owner: owner) {
                 personalAutomaticThreadID = existing
@@ -1149,6 +1202,8 @@ final class MessageChannelsController: ObservableObject {
                     let resolved = await self.resolvePersonalChat(owner: owner, valid: valid)
                     guard valid(), !Task.isCancelled else { return }
                     switch resolved {
+                    case .authorizationRequired:
+                        reply = "微信连接身份已变化或尚未确认所选对话。请在电脑上的微信设置中确认继续使用已选对话，再发送消息。"
                     case .unavailable:
                         reply = "暂时无法连接 Codex，请在电脑上打开 Codex 后再发消息。专用对话尚未创建。"
                     case .uncertain:

@@ -177,7 +177,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     private lazy var localProxy = LocalProxyQueueStore(usageStore: store)
     private var terminationTask: Task<Void, Never>?
     private let paletteCatalog = PaletteCatalog.loadFromMainBundle()
-    private lazy var settings = AppSettings(paletteCatalog: paletteCatalog)
+    private lazy var settings = AppSettings(
+        paletteCatalog: paletteCatalog,
+        installationContext: .observe(receiptURL: DispatchParticipationPaths.supportDirectory().appendingPathComponent("install-receipt-v1.json")))
     private lazy var updateStore = AppUpdateStore(settings: settings)
     private var window: MainAppWindow?
     private var paletteLibraryWindow: NSWindow?

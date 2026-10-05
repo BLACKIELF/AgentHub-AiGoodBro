@@ -437,6 +437,9 @@ struct TokenMonitorEdgeDockCell: Equatable, Identifiable {
     var isHistoricalAccount = false
     /// Exact selected quota metric; distinguishes a weekly-only short limit from credits.
     var headlineMetricID: String? = nil
+    /// Label and reset information from the same row as the headline percentage.
+    var headlineMetricName: String? = nil
+    var headlineResetLabel: String? = nil
 
     func snapshotDescription(_ language: WidgetLanguage, now: Date = Date()) -> String {
         guard isAvailable else {

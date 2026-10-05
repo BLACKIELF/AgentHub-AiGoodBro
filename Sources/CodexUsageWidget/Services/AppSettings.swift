@@ -303,6 +303,10 @@ final class AppSettings: ObservableObject {
         didSet { defaults.set(onboarding.encoded(), forKey: WorkspaceOnboardingState.storageKey) }
     }
 
+    @Published var installationOnboarding: InstallationOnboardingState {
+        didSet { installationOnboarding.save(to: defaults) }
+    }
+
     @Published var appIconStyle: AppIconStyle {
         didSet {
             appIconStyle.persist(defaults: defaults)
@@ -424,12 +428,14 @@ final class AppSettings: ObservableObject {
     init(
         defaults: UserDefaults = .standard,
         paletteCatalog: PaletteCatalog = .loadFromMainBundle(),
-        previewAvatarRoot: URL? = nil
+        previewAvatarRoot: URL? = nil,
+        installationContext: AppInstallationContext? = nil
     ) {
         self.defaults = defaults
         statisticsEngine = .stored(defaults: defaults)
         self.paletteCatalog = paletteCatalog
         setupProgress = .load(from: defaults)
+        installationOnboarding = .load(from: defaults)
         let storedPaletteID = defaults.string(forKey: Self.paletteIDKey)
         let initialPaletteID =
             paletteCatalog.contains(PaletteCatalog.initialPaletteID)
@@ -468,7 +474,8 @@ final class AppSettings: ObservableObject {
         floatingBubble = TokenMonitorFloatingBubblePreferences.load(defaults.data(forKey: TokenMonitorFloatingBubblePreferences.storageKey))
         edgeDock = TokenMonitorEdgeDockPreferences.load(defaults.data(forKey: TokenMonitorEdgeDockPreferences.storageKey))
         var onboardingBackup: Data?
-        onboarding = WorkspaceOnboardingState.load(defaults.data(forKey: WorkspaceOnboardingState.storageKey), backupRaw: &onboardingBackup)
+        let loadedOnboarding = WorkspaceOnboardingState.load(defaults.data(forKey: WorkspaceOnboardingState.storageKey), backupRaw: &onboardingBackup)
+        onboarding = loadedOnboarding
         if let onboardingBackup {
             defaults.set(onboardingBackup, forKey: WorkspaceOnboardingState.backupKey)
         }
@@ -488,6 +495,7 @@ final class AppSettings: ObservableObject {
             || defaults.bool(forKey: "CodexManagerNext.setup.dismissed")
             || defaults.bool(forKey: "CodexManagerNext.setup.completed")
             || storedPinnedAccountKey != nil
+            || loadedOnboarding.existingUserMigrated || loadedOnboarding.status != .notStarted
         workspaceDisplayMode =
             defaults.string(forKey: WorkspaceDisplayMode.storageKey).flatMap(WorkspaceDisplayMode.init(rawValue:))
             ?? (existingUser ? .professional : .simple)
@@ -527,6 +535,10 @@ final class AppSettings: ObservableObject {
         globalShortcutError = nil
         onboarding.bootstrapIfNeeded(existingUser: existingUser)
         defaults.set(onboarding.encoded(), forKey: WorkspaceOnboardingState.storageKey)
+        if let installationContext {
+            installationOnboarding.observe(installationContext, existingUser: existingUser)
+            installationOnboarding.save(to: defaults)
+        }
         _ = appIconStyle.applyToRunningApp()
     }
 

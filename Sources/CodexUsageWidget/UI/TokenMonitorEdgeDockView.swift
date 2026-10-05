@@ -360,12 +360,17 @@ struct TokenMonitorEdgeDockRailView: View {
                             .accessibilityHidden(true)
                     }
                 }
-                Text(cell.headlineValueLabel ?? cell.title)
-                    .font(.system(size: 9, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.6)
-                    .frame(maxWidth: 56)
+                Text(
+                    cell.providerID == "codex" && cell.headlineMetricID == "seven-day"
+                        ? language.text("7 天", "7d")
+                        : cell.providerID == "codex" && cell.headlineMetricID == "five-hour"
+                            ? language.text("5 小时", "5h") : (cell.headlineValueLabel ?? cell.title)
+                )
+                .font(.system(size: 9, weight: .medium))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.6)
+                .frame(maxWidth: 56)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(focused ? Color.white.opacity(0.06) : .clear, in: RoundedRectangle(cornerRadius: 12))
@@ -815,8 +820,12 @@ struct TokenMonitorEdgeDockCardView: View {
                         isWeeklyOnlyPro: cell.providerID == "codex" && cell.headlineMetricID == "five-hour" && cell.headlineValueLabel == "∞")
                 }
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(cell.providerID == "claude" ? language.text("余额", "Balance") : language.text("剩余额度", "Remaining quota"))
+                    Text(cell.providerID == "claude" ? language.text("余额", "Balance") : (cell.headlineMetricName ?? language.text("剩余额度", "Remaining quota")))
                         .font(.system(size: 11, weight: .medium))
+                    if let reset = cell.headlineResetLabel, reset != "—" {
+                        Text(language.text("重置：", "Reset: ") + reset)
+                            .font(.system(size: 9)).monospacedDigit().foregroundStyle(.secondary)
+                    }
                     if cell.isStale {
                         Text(language.text("上次记录 · 待刷新", "Last recorded · Refresh needed")).font(.system(size: 10)).foregroundStyle(.secondary)
                     }
