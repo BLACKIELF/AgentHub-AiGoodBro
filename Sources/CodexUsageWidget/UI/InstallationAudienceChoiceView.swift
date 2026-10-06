@@ -2,15 +2,16 @@ import SwiftUI
 
 /// Presents a choice only. Selecting or deferring is handled by the installation host.
 struct InstallationAudienceChoiceView: View {
-    static let preferredSize = CGSize(width: 620, height: 420)
+    static let preferredSize = CGSize(width: 620, height: 500)
     let language: WidgetLanguage
     var onSelect: (NextSetupAudience) -> Void
     var onDefer: () -> Void
+    var onShowUpdates: () -> Void = {}
     @Environment(\.colorScheme) private var colorScheme
     @FocusState private var focusedAudience: NextSetupAudience?
 
     var body: some View {
-        VStack(spacing: 22) {
+        VStack(spacing: 18) {
             VStack(spacing: 8) {
                 AHBrandSymbol(size: 44)
                     .padding(7)
@@ -32,6 +33,26 @@ struct InstallationAudienceChoiceView: View {
                     detail: language.text("保留已有配置，检查微信、飞书与新功能。", "Keep your setup. Review connections and new features."),
                     action: language.text("检查升级设置", "Review update settings"))
             }
+            HStack(spacing: 10) {
+                Image(systemName: "sparkles")
+                    .font(.system(size: 16))
+                    .foregroundStyle(FixedVisualPalette.statusInfoForeground(colorScheme))
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(language.text("本次更新 · 2 项可选设置", "What's new · 2 optional settings"))
+                        .font(.system(size: 12, weight: .semibold))
+                    Text(language.text("重置卡临期自动使用 · 侧栏额度样式", "Reset-card expiry protection · Sidebar quota style"))
+                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 8)
+                Button(language.text("查看与设置", "Review settings"), action: onShowUpdates)
+                    .buttonStyle(.bordered).controlSize(.small)
+                    .fixedSize()
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
             HStack(spacing: 12) {
                 Label(language.text("保留账号与数据，功能由你选择开启", "Your data stays saved. Features remain opt-in."), systemImage: "lock.shield")
                     .font(.system(size: 11)).foregroundStyle(.secondary)

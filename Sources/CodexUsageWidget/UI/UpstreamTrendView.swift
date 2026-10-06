@@ -10,6 +10,11 @@ struct UpstreamTrendView: View {
         let value: Double?
         var isPartial = false
     }
+    struct SummaryTotals: Equatable {
+        let tokens: Int64?
+        let costUSD: Double?
+        var isPartial = false
+    }
     struct Point: Codable, Equatable {
         let date: String
         let tokens: Double
@@ -48,6 +53,7 @@ struct UpstreamTrendView: View {
     var homePreferences: HomeDashboardPreferences?
     var onHomePreferences: ((HomeDashboardPreferences) -> Void)?
     var summaryCost: SummaryCost? = nil
+    var summaryTotals: SummaryTotals? = nil
     @StateObject private var renderer: Renderer
     @Environment(\.widgetLanguage) private var language
     @Environment(\.workspaceTrendScreenshots) private var screenshots
@@ -104,7 +110,8 @@ struct UpstreamTrendView: View {
         chartFrom: String? = nil, chartTo: String? = nil,
         homePreferences: HomeDashboardPreferences? = nil,
         onHomePreferences: ((HomeDashboardPreferences) -> Void)? = nil,
-        summaryCost: SummaryCost? = nil
+        summaryCost: SummaryCost? = nil,
+        summaryTotals: SummaryTotals? = nil
     ) {
         self.points = []
         self.dashboardJSON = dashboardJSON
@@ -115,6 +122,7 @@ struct UpstreamTrendView: View {
         self.homePreferences = homePreferences
         self.onHomePreferences = onHomePreferences
         self.summaryCost = summaryCost
+        self.summaryTotals = summaryTotals
         _renderer = StateObject(wrappedValue: Renderer(homeDashboard: homePreferences != nil))
     }
 
@@ -123,7 +131,7 @@ struct UpstreamTrendView: View {
         if let dashboardJSON {
             renderer.update(
                 dashboardJSON: dashboardJSON, resetAnnotations: resetAnnotations, height: height, language: language,
-                from: chartFrom, to: chartTo, homePreferences: homePreferences, summaryCost: summaryCost)
+                from: chartFrom, to: chartTo, homePreferences: homePreferences, summaryCost: summaryCost, summaryTotals: summaryTotals)
         } else {
             renderer.update(points: points, height: height)
         }
@@ -167,6 +175,7 @@ struct UpstreamTrendView: View {
         .onChange(of: homePreferences) { _ in updateRenderer() }
         .onChange(of: dashboardJSON) { _ in updateRenderer() }
         .onChange(of: summaryCost) { _ in updateRenderer() }
+        .onChange(of: summaryTotals) { _ in updateRenderer() }
         .onChange(of: resetAnnotations) { _ in updateRenderer() }
         .onChange(of: chartFrom) { _ in updateRenderer() }
         .onChange(of: chartTo) { _ in updateRenderer() }
@@ -410,6 +419,7 @@ struct UpstreamTrendView: View {
         private var homePreferences: HomeDashboardPreferences?
         private var homeSummaryCost: [String: Any]?
         private var summaryCostOverride: SummaryCost?
+        private var summaryTotalsOverride: SummaryTotals?
         var onHomePreferences: ((HomeDashboardPreferences) -> Void)?
 
         init(homeDashboard: Bool = false) {
@@ -428,7 +438,8 @@ struct UpstreamTrendView: View {
             dashboardJSON incoming: String, resetAnnotations: [ResetAnnotation], height incomingHeight: CGFloat,
             language: WidgetLanguage = .zh, from: String? = nil, to: String? = nil,
             homePreferences: HomeDashboardPreferences? = nil,
-            summaryCost: SummaryCost? = nil
+            summaryCost: SummaryCost? = nil,
+            summaryTotals: SummaryTotals? = nil
         ) {
             let nextHeight =
                 incomingHeight.isFinite
@@ -446,8 +457,10 @@ struct UpstreamTrendView: View {
                 || chartFrom != from || chartTo != to
                 || previousRenderingPreferences != nextRenderingPreferences
                 || summaryCostOverride != summaryCost
+                || summaryTotalsOverride != summaryTotals
             self.homePreferences = homePreferences
             summaryCostOverride = summaryCost
+            summaryTotalsOverride = summaryTotals
             height = nextHeight
             guard needsRender else { return }
             if dashboardJSON != incoming {
@@ -648,6 +661,19 @@ struct UpstreamTrendView: View {
                     "value": summaryCostOverride.value.map { $0 as Any } ?? NSNull(),
                     "status": summaryCostOverride.isPartial ? "partial" : "known",
                 ]
+            }
+            if homeDashboard {
+                // One option publishes the two desktop metrics together. Whole
+                // tokens use decimal text to retain native Int64 precision.
+                if let totals = summaryTotalsOverride {
+                    options["summaryTotals"] = [
+                        "tokens": totals.tokens.map { String($0) as Any } ?? NSNull(),
+                        "costUSD": totals.costUSD.map { $0 as Any } ?? NSNull(),
+                        "costStatus": totals.isPartial ? "partial" : "known",
+                    ]
+                } else {
+                    options["summaryTotals"] = NSNull()
+                }
             }
             if let homePreferences, let data = try? JSONEncoder().encode(homePreferences),
                 let object = try? JSONSerialization.jsonObject(with: data)

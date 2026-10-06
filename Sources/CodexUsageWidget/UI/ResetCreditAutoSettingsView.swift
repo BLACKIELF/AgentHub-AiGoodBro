@@ -11,9 +11,14 @@ struct ResetCreditAutoSettingsView: View {
     var onDone: () -> Void = {}
 
     static func summary(profiles: [CodexProfile], preferences: CodexResetCreditAutoPreferences, language: WidgetLanguage) -> String {
-        let count = profiles.filter {
-            preferences.permits(profileID: $0.id, accountID: $0.lastSnapshot?.accountID ?? "")
-        }.count
+        let count = Set(
+            profiles.compactMap { profile -> String? in
+                guard let account = profile.lastSnapshot?.accountID,
+                    preferences.permits(profileID: profile.id, accountID: account)
+                else { return nil }
+                return account
+            }
+        ).count
         return count == 0
             ? language.text("未开启", "Not enabled")
             : language.text("已开启 \(count) 个账号", count == 1 ? "1 account enabled" : "\(count) accounts enabled")
@@ -139,23 +144,30 @@ struct ResetCreditAutoSettingsView: View {
     }
 
     private func blockedReason(_ profile: CodexProfile) -> String? {
-        if profile.isSystemProfile {
-            return language.text("当前桌面账号需手动确认，不能自动使用。", "The current Desktop account requires manual confirmation.")
-        }
         if let type = profile.lastSnapshot?.accountType, type.lowercased() != "chatgpt" {
             return language.text("此账号类型不支持重置卡；仅支持 ChatGPT 登录账号。", "This account type does not support reset cards; a ChatGPT sign-in is required.")
         }
         guard let account = profile.lastSnapshot?.accountID, !account.isEmpty else {
             return language.text("缺少已核验身份，请先登录并刷新额度。", "Verified identity is missing. Sign in and refresh limits first.")
         }
-        guard let systemID = profiles.first(where: \.isSystemProfile)?.lastSnapshot?.accountID, !systemID.isEmpty else {
+        guard profiles.first(where: \.isSystemProfile)?.lastSnapshot?.accountID?.isEmpty == false else {
             return language.text("当前桌面身份尚未核验，请先刷新当前账号。", "The Desktop identity is not verified. Refresh the current account first.")
-        }
-        if account == systemID {
-            return language.text("此账号是当前桌面身份的镜像，需手动确认。", "This account mirrors the current Desktop identity and requires manual confirmation.")
         }
         if profile.lastQuotaReadFailureAt != nil || profile.lastSnapshot?.quotaReadSucceeded != true {
             return language.text("额度读取失败或未完成，请刷新成功后再开启。", "The limits read failed or is incomplete. Refresh successfully before enabling.")
+        }
+        if profile.isSystemProfile {
+            let desktopHome = profile.codexHomeURL.resolvingSymlinksInPath().standardizedFileURL
+            let hasIndependentMirror = profiles.contains {
+                !$0.isSystemProfile && $0.lastSnapshot?.accountID == account
+                    && $0.lastSnapshot?.quotaReadSucceeded == true && $0.lastQuotaReadFailureAt == nil
+                    && $0.codexHomeURL.resolvingSymlinksInPath().standardizedFileURL != desktopHome
+            }
+            if !hasIndependentMirror {
+                return language.text(
+                    "需同账号的独立凭据入口，请先添加该账号并成功刷新额度。",
+                    "An independent sign-in for this account is required. Add it and refresh limits successfully first.")
+            }
         }
         return nil
     }
@@ -194,6 +206,17 @@ struct ResetCreditAutoSettingsView: View {
             .toggleStyle(.switch)
             .controlSize(.small)
             .disabled(isPreview || (!enabled && reason != nil))
+            if let account = profile.lastSnapshot?.accountID,
+                profiles.contains(where: { $0.id != profile.id && $0.lastSnapshot?.accountID == account })
+            {
+                Text(
+                    language.text(
+                        "同账号各入口共用卡池，只使用一次；每个开关独立授权。",
+                        "Entries for this account share one card pool and redeem once; each switch is authorized separately.")
+                )
+                .font(.system(size: 11)).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
             if let reason {
                 Text(enabled ? language.text("已暂停 · ", "Paused · ") + reason : reason)
                     .font(.system(size: 11))
@@ -263,6 +286,24 @@ enum ResetCreditAutoSettingsPreviewFixture {
                     let view = ResetCreditAutoSettingsView(
                         profiles: profiles, preferences: .constant(preferences), status: nil, language: language, isPreview: true)
                     let name = "\(language.rawValue)-\(scheme == .dark ? "dark" : "light")-\(enabled ? "enabled" : "off").png"
+                    try WorkspacePreviewRenderer.renderView(view, size: CGSize(width: 500, height: 600), scheme: scheme, to: directory.appendingPathComponent(name))
+                }
+                for scenario in ["desktop-only", "mirror-only", "shared-pool", "desktop-missing-entry", "desktop-running"] {
+                    var preferences = CodexResetCreditAutoPreferences()
+                    if scenario != "mirror-only" {
+                        preferences.authorizedAccounts["desktop"] = DispatchActivityStore.hash("synthetic-desktop")
+                    }
+                    if scenario == "mirror-only" || scenario == "shared-pool" {
+                        preferences.authorizedAccounts["mirror"] = DispatchActivityStore.hash("synthetic-desktop")
+                    }
+                    let shownProfiles = scenario == "desktop-missing-entry" ? profiles.filter { $0.id != "mirror" } : profiles
+                    let status =
+                        scenario == "desktop-running"
+                        ? "Desktop · 自动使用已暂停：当前桌面任务正在运行或空闲状态尚未核实。" : nil
+                    let view = ResetCreditAutoSettingsView(
+                        profiles: shownProfiles, preferences: .constant(preferences), status: status, language: language,
+                        isPreview: true, focusedProfileID: scenario == "mirror-only" ? "mirror" : "desktop")
+                    let name = "\(language.rawValue)-\(scheme == .dark ? "dark" : "light")-\(scenario).png"
                     try WorkspacePreviewRenderer.renderView(view, size: CGSize(width: 500, height: 600), scheme: scheme, to: directory.appendingPathComponent(name))
                 }
             }

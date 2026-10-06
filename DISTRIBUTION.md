@@ -5,30 +5,30 @@ AiGoodBro supports macOS 13+ on Apple Silicon and Intel. The inherited Windows 1
 ## Local macOS package
 
 ```bash
-make release-arm64 VERSION=8.24.1
-make release-intel VERSION=8.24.1
+make release-package VERSION=9.6.80 RELEASE_ARCHITECTURES=arm64
+make release-check VERSION=9.6.80 RELEASE_ARCHITECTURES=arm64
 ```
 
 Artifacts:
 
 ```text
-dist/AiGoodBro-8.24.1-mac-arm64.dmg
-dist/AiGoodBro-8.24.1-mac-x86_64.dmg
+dist/AiGoodBro-9.6.80-mac-arm64.dmg
+dist/AiGoodBro-9.6.80-mac-arm64.dmg.sha256
 ```
 
-Default builds are ad-hoc signed. Public distribution should use a Developer ID Application certificate, notarization, and checksum verification. The updater only opens a matching browser release page or asset; it never silently downloads or replaces the App.
+Default builds are ad-hoc signed. Public distribution should use a Developer ID Application certificate, notarization, and checksum verification. The update window shows the version and release notes. Clicking Download fetches the matching installer, displays progress, and checks its size and SHA-256 before the user opens it. It never quits or replaces the running App automatically.
 
 ## Release gates
 
 ```bash
 make memory-risk-check
-make release-package VERSION=8.24.1
-make release-cross-platform-check VERSION=8.24.1
+make release-package VERSION=9.6.80 RELEASE_ARCHITECTURES=arm64
+make release-check VERSION=9.6.80 RELEASE_ARCHITECTURES=arm64
 ```
 
-`release-package` builds both macOS architectures and runs the pure self-tests, including automatic-switch policy, switch safety, Feishu serialization, audit storage, profile storage, app-server pipe, quota, rendering, and update checks. It does not perform a real login, account switch, or Feishu send.
+`release-package` defaults to both macOS architectures. Set `RELEASE_ARCHITECTURES=arm64` explicitly for an ARM64-only release; use the same scope for `release-check`. The package wrapper keeps the pure self-tests and resource/signature checks, including automatic-switch policy, switch safety, Feishu serialization, audit storage, profile storage, app-server pipe, quota, rendering, and update checks. `release-check` rechecks metadata, checksums, the mounted DMG and signatures; it does not rerun the application self-tests. Neither performs a real login, account switch, or Feishu send. The v9.6.80 (130), 1006v3 public release provides only macOS 13+ Apple Silicon ARM64 installers; Intel and Windows installers were not built or published for this version. Use `release-cross-platform-check` only for an explicitly approved release that actually includes the required Intel and Windows assets.
 
-The tag-triggered GitHub workflow builds macOS and Windows artifacts but does not create a GitHub Release. Tags, release creation, signing credentials, and notarization remain explicit external actions.
+The tag-triggered GitHub workflow builds macOS artifacts but does not create a GitHub Release. Windows packaging requires the explicit manual Windows option. Tags, release creation, signing credentials, and notarization remain explicit external actions.
 
 ## Windows
 

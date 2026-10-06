@@ -2,8 +2,9 @@ APP_NAME := AiGoodBro
 LEGACY_APP_NAME := CodexAccountManagerNext
 DISPLAY_NAME := AiGoodBro
 VERSION := $(shell /usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" Resources/Info.plist 2>/dev/null || echo 0.1.0)
-BUILD_DIR := build
-DIST_DIR := dist
+BUILD_DIR ?= build
+DIST_DIR ?= dist
+RELEASE_ARCHITECTURES ?= arm64 x86_64
 APP_DIR := $(BUILD_DIR)/$(APP_NAME).app
 MACOS_DIR := $(APP_DIR)/Contents/MacOS
 RESOURCES_DIR := $(APP_DIR)/Contents/Resources
@@ -44,7 +45,7 @@ else
 SDK_PATH ?= $(DEFAULT_SDK_PATH)
 endif
 MODULE_CACHE_PATH ?= $(BUILD_DIR)/ModuleCache
-SWIFTC_TARGET_FLAGS := -target $(TARGET_TRIPLE) -sdk $(SDK_PATH) -module-cache-path $(MODULE_CACHE_PATH)
+SWIFTC_TARGET_FLAGS := -target $(TARGET_TRIPLE) -sdk "$(SDK_PATH)" -module-cache-path "$(MODULE_CACHE_PATH)"
 SWIFT_OPTIMIZATION ?= -O
 SWIFTC_PARALLELISM ?= -j 4
 MACOS_SDK_MAJOR := $(shell /usr/libexec/PlistBuddy -c "Print Version" "$(SDK_PATH)/SDKSettings.plist" 2>/dev/null | cut -d. -f1)
@@ -127,9 +128,16 @@ test: build
 	$(SELF_TEST_RUNNER) --skip-build --build-dir "$(BUILD_DIR)"
 	python3 scripts/test-edge-dock-registration.py
 	python3 scripts/test-edge-dock-state.py
+	python3 scripts/test-host-broken-pipe.py
+	python3 scripts/test-app-updates.py
 	python3 scripts/test-reset-credit-auto.py
 	python3 scripts/test-wechat-bot.py
 	python3 scripts/test-dispatch-participation.py --tests-only
+	$(MAKE) --no-print-directory test-token-monitor-backports
+
+.PHONY: test-token-monitor-backports
+test-token-monitor-backports:
+	TOKEN_MONITOR_TEST_NODE_MODULES="$(abspath $(RESOURCES_DIR)/TokenMonitorEngine/vendor/node_modules)" node --test tests/test-token-monitor-*-1006v1.cjs
 
 test-rate-limits:
 	./scripts/test-rate-limits.sh
@@ -368,6 +376,13 @@ release-all: clean-dist
 	$(MAKE) release-intel
 
 release-package: memory-risk-check
+	BUILD_DIR="$(BUILD_DIR)" DIST_DIR="$(DIST_DIR)" RELEASE_ARCHITECTURES="$(RELEASE_ARCHITECTURES)" \
+	SIGN_IDENTITY="$(SIGN_IDENTITY)" DMG_SIGN_IDENTITY="$(DMG_SIGN_IDENTITY)" \
+	TOKEN_MONITOR_CACHE="$(TOKEN_MONITOR_CACHE)" TOKEN_MONITOR_RECEIPT_DIR="$(TOKEN_MONITOR_RECEIPT_DIR)" \
+	TOKEN_MONITOR_OFFLINE="$(TOKEN_MONITOR_OFFLINE)" TOKEN_MONITOR_NODE_ARCHIVE="$(TOKEN_MONITOR_NODE_ARCHIVE)" \
+	TOKEN_MONITOR_DESKTOP_RUNTIME="$(TOKEN_MONITOR_DESKTOP_RUNTIME)" TOKEN_MONITOR_DESKTOP_DMG="$(TOKEN_MONITOR_DESKTOP_DMG)" \
+	TOKEN_MONITOR_DESKTOP_RUNTIME_ARM64="$(TOKEN_MONITOR_DESKTOP_RUNTIME_ARM64)" TOKEN_MONITOR_DESKTOP_DMG_ARM64="$(TOKEN_MONITOR_DESKTOP_DMG_ARM64)" \
+	TOKEN_MONITOR_DESKTOP_RUNTIME_X86_64="$(TOKEN_MONITOR_DESKTOP_RUNTIME_X86_64)" TOKEN_MONITOR_DESKTOP_DMG_X86_64="$(TOKEN_MONITOR_DESKTOP_DMG_X86_64)" \
 	./scripts/build-release-artifacts.sh "$(VERSION)"
 
 release-windows:
@@ -377,6 +392,7 @@ release-cross-platform-check:
 	./scripts/check-cross-platform-release-assets.sh "$(VERSION)" "$(DIST_DIR)"
 
 release-check: memory-risk-check
+	BUILD_DIR="$(BUILD_DIR)" DIST_DIR="$(DIST_DIR)" RELEASE_ARCHITECTURES="$(RELEASE_ARCHITECTURES)" \
 	./scripts/check-release-ready.sh "$(VERSION)"
 
 notarize: dmg

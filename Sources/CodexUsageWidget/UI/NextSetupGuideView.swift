@@ -16,7 +16,6 @@ struct NextSetupGuideView: View {
     @State private var pairingCode = ""
     @State private var personalLoginOperationID: UUID?
     @State private var showingMessageSettings = false
-    @State private var showingResetAutoSettings = false
     @State private var connectionManualStep: NextSetupStep = .notifications
     @State private var confirmsCompanionInstall = false
     @StateObject private var runtime: NextRuntimeSetupModel
@@ -92,12 +91,6 @@ struct NextSetupGuideView: View {
         }
         .sheet(isPresented: $showingMessageSettings) {
             MessageChannelsSettingsView(controller: messageChannels)
-        }
-        .sheet(isPresented: $showingResetAutoSettings) {
-            ResetCreditAutoSettingsView(
-                profiles: store.profiles, preferences: $settings.resetCreditAutoPreferences,
-                status: store.resetCreditAutoStatus, language: language, isPreview: store.isPreview,
-                onDone: { showingResetAutoSettings = false })
         }
         .onDisappear {
             pairingCode = ""
@@ -384,7 +377,7 @@ struct NextSetupGuideView: View {
             )
             .font(.caption).foregroundStyle(.secondary)
             Divider()
-            newFeatureControls
+            NewFeatureSetupControls(store: store, settings: settings)
             if !store.pausedAutomationFeatures.isEmpty {
                 Label(language.text("维护期间部分功能暂停，原设置已保留。", "Some features are paused for maintenance. Saved choices are preserved."), systemImage: "pause.circle")
                     .font(.caption).foregroundStyle(.orange)
@@ -397,54 +390,10 @@ struct NextSetupGuideView: View {
             heading(
                 language.text("新功能，按需设置", "Choose your new features"),
                 language.text("保留已有配置，只调整你选择的项目。返回或完成引导不会开启功能。", "Your saved configuration stays in place. Going back or finishing this guide does not enable features."))
-            newFeatureControls
+            NewFeatureSetupControls(store: store, settings: settings)
             Text(language.text("原有工具、账号和日常功能保持现状，可随时从设置中调整。", "Your tools, accounts and daily features keep their current settings. Adjust them anytime in Settings."))
                 .font(.caption).foregroundStyle(.secondary)
         }
-    }
-
-    private var newFeatureControls: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            VStack(alignment: .leading, spacing: 10) {
-                HStack(alignment: .top, spacing: 12) {
-                    Image(systemName: "clock.arrow.circlepath").foregroundStyle(.secondary).frame(width: 22)
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(language.text("重置卡到期自动使用", "Use reset cards before expiry"))
-                            .font(.subheadline.weight(.semibold))
-                        Text(ResetCreditAutoSettingsView.summary(profiles: store.profiles, preferences: settings.resetCreditAutoPreferences, language: language))
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                    Spacer(minLength: 8)
-                    Button(language.text("选择账号…", "Choose accounts…")) { showingResetAutoSettings = true }
-                }
-                Text(language.text("默认关闭，需逐个授权账号；打开设置不会开始使用重置卡。", "Off by default. Authorize accounts individually; opening settings does not use a reset card."))
-                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            }
-            Divider()
-            VStack(alignment: .leading, spacing: 10) {
-                HStack {
-                    Label(language.text("侧栏额度样式", "Sidebar quota style"), systemImage: "chart.pie")
-                        .font(.subheadline.weight(.semibold))
-                    Spacer(minLength: 12)
-                    Picker(language.text("额度样式", "Quota style"), selection: $settings.edgeDock.quotaStyle) {
-                        Text(language.text("圆环", "Rings")).tag(TokenMonitorEdgeDockPreferences.QuotaStyle.ring)
-                        Text(language.text("小鱼", "Fish")).tag(TokenMonitorEdgeDockPreferences.QuotaStyle.fish)
-                    }
-                    .labelsHidden().pickerStyle(.segmented).frame(width: 160)
-                    .disabled(store.isPreview)
-                }
-                Toggle(language.text("显示侧栏", "Show sidebar"), isOn: $settings.edgeDock.enabled)
-                    .toggleStyle(.switch).controlSize(.small).disabled(store.isPreview)
-                Text(
-                    language.text(
-                        "⌘I 显示／隐藏侧栏。悬停查看详情，使用固定按钮保持展开；Pro 显示 7 天，Plus 显示 5 小时额度。",
-                        "⌘I shows or hides the sidebar. Hover for details and use Pin to keep them open. Pro shows weekly limits; Plus shows five-hour limits.")
-                )
-                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            }
-        }
-        .padding(16)
-        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
     }
 
     private var notificationsPage: some View {

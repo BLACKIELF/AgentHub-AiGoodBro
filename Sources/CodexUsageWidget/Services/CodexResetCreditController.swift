@@ -251,9 +251,11 @@ final class CodexResetCreditController: ObservableObject {
             nil,
         hubAvailability: ((String, String) async -> Bool)? = nil,
         onStatus: ((String) -> Void)? = nil,
-        onConfirmedResult: @escaping () -> Void
+        onConfirmedResult: @escaping () -> Void,
+        isEligible: (@MainActor () -> Bool)? = nil
     ) async -> AutomaticAttemptDisposition {
         guard !isWorking, step == .idle, Self.activeProfileID == nil, !admission.isCancelled,
+            isEligible?() != false,
             profile.lastSnapshot?.accountID == accountID, profile.lastQuotaReadFailureAt == nil,
             profile.lastSnapshot?.quotaReadSucceeded == true, !hubAccountAlias.isEmpty
         else { return .accountHandledOrBlocked }
@@ -290,7 +292,7 @@ final class CodexResetCreditController: ObservableObject {
                     expectedAccountID: accountID, accountRemark: remark)
             }.value
         }
-        guard !admission.isCancelled else { return .accountHandledOrBlocked }
+        guard !admission.isCancelled, isEligible?() != false else { return .accountHandledOrBlocked }
         if case .failure(let failure) = reviewed {
             // Only profile-local review failures before any claim/send may try
             // another explicitly authorized profile for this same account.
@@ -325,7 +327,7 @@ final class CodexResetCreditController: ObservableObject {
             idle = await HubConsoleModel.warmUpAvailability(for: hubAccountAlias, excludingLocalLease: lease) == .idle
         }
         guard idle,
-            !admission.isCancelled
+            !admission.isCancelled, isEligible?() != false
         else { return .accountHandledOrBlocked }
         var state = CodexResetCreditAutoStateStore.Entry(
             accountHash: DispatchActivityStore.hash(accountID), cardHash: DispatchActivityStore.hash(review.card.creditID),
@@ -334,6 +336,7 @@ final class CodexResetCreditController: ObservableObject {
         let pending: ResetCreditPendingAttempt
         var autoClaimed = false
         do {
+            guard !admission.isCancelled, isEligible?() != false else { return .accountHandledOrBlocked }
             guard try pendingStore.pendingAttempt() == nil else { return .accountHandledOrBlocked }
             guard try autoStore.claim(state) else {
                 onStatus?("自动使用暂停或冷却中；已有记录需要核对或额度尚未变化。")

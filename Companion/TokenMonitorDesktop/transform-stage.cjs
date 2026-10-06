@@ -5,8 +5,14 @@
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
+const exportPrivacy = require('./backports/export-privacy-1006v1.cjs');
+const sessionDetail = require('./backports/session-detail-1006v1.cjs');
+const watcherProcess = require('./backports/watcher-process-1006v1.cjs');
 
 const INPUT_SHA256 = Object.freeze({
+  ...exportPrivacy.INPUT_SHA256,
+  ...sessionDetail.INPUT_SHA256,
+  ...watcherProcess.INPUT_SHA256,
   'src/shared/collector.js': 'be7956dd85a124d9714d0fda67a09ecc57182a2fb61d4d081df76b17a155e746',
   'src/shared/deviceRuntime.js': '423113332c1e2e972c7dedbceea29d693520cdb07281fe56e13108cc1e1c813b',
   'src/electron/main.js': 'f53b96ef53dae5bb695f15305b216c5dc3ab036b6179bd2ab5d958278adc3adb',
@@ -266,7 +272,10 @@ async function switchCodexSystemAccount(id) {`,
       showView: async (viewId) => { await refreshAiGoodBroManagedCodexAccounts(); openViewFromTray(viewId); },
       showSettings: async (section) => { await refreshAiGoodBroManagedCodexAccounts(); focusExistingWindow(); sendMainWindowEvent('settings:open', section); },
       isTrayVisible: () => Boolean(tray && !tray.isDestroyed()),
-      getAllTimeCostUsd: () => electronPresentationStats(latestStats || localStats)?.periods?.allTime?.costUsd,
+      getAllTimeUsage: () => {
+        const stats = electronPresentationStats(latestStats || localStats);
+        return stats?.aigoodbroUsagePending === true ? null : stats?.periods?.allTime;
+      },
       quit: () => requestAppQuit()
     });
   }
@@ -386,6 +395,19 @@ function patchI18n(source) {
     text = replaceOne(text, `'settings.about.reportIssue': '${original}'`,
       `'settings.about.reportIssue': ${JSON.stringify(label)}`, 'AiGoodBro issues and feedback label');
   }
+  const detailErrors = [
+    ['Transcript not found on this machine.', 'Could not read the transcript. Please try again.', 'A transcript entry exceeds the 16 MiB limit. Session details cannot be loaded.'],
+    ['在這台機器上找不到對話紀錄。', '無法讀取對話紀錄，請重試。', '對話紀錄中的單筆資料超過 16 MiB 上限，無法載入會話明細。'],
+    ['在这台机器上找不到对话记录。', '无法读取对话记录，请重试。', '对话记录中的单条数据超过 16 MiB 上限，无法加载会话明细。'],
+    ['이 기기에서 대화 기록을 찾을 수 없습니다.', '대화 기록을 읽을 수 없습니다. 다시 시도해 주세요.', '대화 기록의 단일 항목이 16 MiB 제한을 초과하여 세션 세부 정보를 불러올 수 없습니다.'],
+    ['このマシンで会話記録が見つかりません。', '会話記録を読み取れませんでした。もう一度お試しください。', '会話記録の単一項目が 16 MiB の上限を超えているため、セッションの詳細を読み込めません。']
+  ];
+  for (const [missing, failed, tooLarge] of detailErrors) {
+    const anchor = `'detailNotFound': '${missing}',`;
+    text = replaceOne(text, anchor,
+      `${anchor}\n      'detailReadFailed': ${JSON.stringify(failed)},\n      'detailRecordTooLarge': ${JSON.stringify(tooLarge)},`,
+      'localized session detail read errors');
+  }
   return text;
 }
 
@@ -437,6 +459,14 @@ function patchApp(source) {
     "const TOKEN_MONITOR_REPOSITORY_URL = 'https://github.com/Javis603/token-monitor';\nconst TOKEN_MONITOR_ISSUES_URL = `${TOKEN_MONITOR_REPOSITORY_URL}/issues/new/choose`;\nconst TOKEN_MONITOR_WEBSITE_URL = 'https://javis-ai.com/token-monitor/';\nconst TOKEN_MONITOR_WSL_SQLITE_GUIDE_URL = `${TOKEN_MONITOR_REPOSITORY_URL}/blob/main/docs/wsl-sqlite-setup.md`;",
     "const TOKEN_MONITOR_REPOSITORY_URL = 'https://github.com/BLACKIELF/AgentHub-AiGoodBro';\nconst TOKEN_MONITOR_ISSUES_URL = `${TOKEN_MONITOR_REPOSITORY_URL}/issues`;\nconst TOKEN_MONITOR_WEBSITE_URL = 'https://aigoodbro.com/';\nconst TOKEN_MONITOR_WSL_SQLITE_GUIDE_URL = `${TOKEN_MONITOR_REPOSITORY_URL}/blob/main/docs/usage-guide.md`;",
     'AiGoodBro product links');
+  text = replaceOne(text,
+    "  if (error || (detail && detail.found === false)) { container.append(detailNote(t('detailNotFound') || 'Transcript not found on this machine.')); return; }",
+    `  if (error || detail?.error) {
+    container.append(detailNote(t(detail?.error === 'line-too-large' ? 'detailRecordTooLarge' : 'detailReadFailed')));
+    return;
+  }
+  if (detail && detail.found === false) { container.append(detailNote(t('detailNotFound') || 'Transcript not found on this machine.')); return; }`,
+    'session detail errors remain distinct from missing transcript');
   text = replaceOne(text,
     "window.tokenMonitor.onStatsPush?.((payload) => {\n  if (!payload) return;",
     `window.tokenMonitor.onStatsPush?.((payload) => {
@@ -741,6 +771,10 @@ function patchCollector(source) {
 }
 
 const TRANSFORMS = Object.freeze({
+  ...exportPrivacy.TRANSFORMS,
+  ...watcherProcess.TRANSFORMS,
+  'src/shared/sessionDetail.js': sessionDetail.patchSessionDetail,
+  'src/shared/sessionDetailResolver.js': sessionDetail.patchSessionDetailResolver,
   'src/shared/collector.js': patchCollector,
   'src/shared/deviceRuntime.js': patchDeviceRuntime,
   'src/electron/main.js': patchMain,

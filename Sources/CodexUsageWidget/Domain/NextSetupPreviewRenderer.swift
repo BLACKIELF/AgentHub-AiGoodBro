@@ -37,6 +37,13 @@ enum NextSetupPreviewRenderer {
                         choice, size: InstallationAudienceChoiceView.preferredSize, scheme: scheme, to: directory.appendingPathComponent(choiceName))
                     count += 1
                     let previewEventID = "preview-returning-\(UUID().uuidString)"
+                    let update = NewFeatureUpdateView(store: store, settings: settings, onDone: {})
+                        .transaction { $0.disablesAnimations = true }
+                        .preferredColorScheme(scheme)
+                    let updateName = "\(language.rawValue)-\(scheme == .dark ? "dark" : "light")-new-features.png"
+                    try WorkspacePreviewRenderer.renderView(
+                        update, size: NewFeatureUpdateView.preferredSize, scheme: scheme, to: directory.appendingPathComponent(updateName))
+                    count += 1
                     settings.installationOnboarding = InstallationOnboardingState(
                         installationID: previewEventID, scope: .returning, audience: .returningUser, eventGeneration: previewEventID)
                     for step in NextSetupGuideScope.returning.steps {

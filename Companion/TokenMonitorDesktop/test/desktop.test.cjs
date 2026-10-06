@@ -512,25 +512,41 @@ test('private control socket routes only allowlisted requests after upstream is 
   const before = await request(socketPath, { id: 'before', cmd: 'status' });
   assert.equal(before.ready, false);
   assert.equal(before.trayVisible, false);
+  assert.equal(before.allTimeTokens, null);
   assert.equal(before.allTimeCostUsd, null);
   assert.deepEqual(await request(socketPath, { id: 'notready', cmd: 'showHome' }), { id: 'notready', ok: false, error: 'not-ready' });
   let totalCost = 19755.13;
+  let totalTokens = 27_123_456_789;
+  let usageReads = 0;
   bridge.bind({
     showDashboard: () => calls.push('dashboard'),
     showView: (view) => calls.push(`view:${view}`),
     showSettings: (section) => calls.push(section ? `settings:${section}` : 'settings'),
     isTrayVisible: () => true,
-    getAllTimeCostUsd: () => totalCost,
+    getAllTimeUsage: () => { usageReads += 1; return { totalTokens, costUsd: totalCost }; },
     quit: () => calls.push('quit')
   });
   const ready = await request(socketPath, { id: 'ready', cmd: 'status' });
   assert.equal(ready.ready, true);
   assert.equal(ready.trayVisible, true);
+  assert.equal(ready.allTimeTokens, 27_123_456_789);
   assert.equal(ready.allTimeCostUsd, 19755.13);
+  assert.equal(usageReads, 1, 'both totals must come from one snapshot read');
   for (const value of [0, null, undefined, -1, NaN, Infinity, '100', { token: 'private-fixture' }]) {
     totalCost = value;
     const actual = await request(socketPath, { id: 'cost', cmd: 'status' });
     assert.equal(actual.allTimeCostUsd, value === 0 ? 0 : null);
+    assert.equal(JSON.stringify(actual).includes('private-fixture'), false);
+  }
+  totalCost = 19755.13;
+  for (const value of [0, Number.MAX_SAFE_INTEGER, null, undefined, -1, 0.5,
+    Number.MAX_SAFE_INTEGER + 1, NaN, Infinity, '27123456789', { token: 'private-fixture' }]) {
+    totalTokens = value;
+    const readsBefore = usageReads;
+    const actual = await request(socketPath, { id: 'tokens', cmd: 'status' });
+    assert.equal(actual.allTimeTokens, Number.isSafeInteger(value) && value >= 0 ? value : null);
+    assert.equal(actual.allTimeCostUsd, totalCost, 'missing token evidence retains the same snapshot cost');
+    assert.equal(usageReads, readsBefore + 1);
     assert.equal(JSON.stringify(actual).includes('private-fixture'), false);
   }
   assert.equal((await request(socketPath, { id: 'dash', cmd: 'showDashboard' })).ok, true);
@@ -821,18 +837,26 @@ test('staging patch preserves vendor source and disables its independent updater
   assert.match(main, /\['openWorkbench', 'openAccounts', 'openSettings', 'openEdgeDockSettings', 'checkForUpdates'\]\.includes\(action\)/);
   assert.match(preload, /openAiGoodBroHost: \(action\) => ipcRenderer\.invoke\('aigoodbro:openHost', action\)/);
   assert.match(main, /isTrayVisible: \(\) => Boolean\(tray && !tray\.isDestroyed\(\)\)/);
-  const costRoute = main.match(/getAllTimeCostUsd: (\(\) => [^\n]+),/)?.[1];
-  assert.ok(costRoute);
-  for (const fixture of [{ costUsd: 19755.13 }, { costUsd: 0 }, {}]) {
+  const usageRoute = main.match(/getAllTimeUsage: (\(\) => \{[\s\S]*?\n      \}),/)?.[1];
+  assert.ok(usageRoute);
+  for (const fixture of [{ totalTokens: 27_123_456_789, costUsd: 19755.13 }, { totalTokens: 0, costUsd: 0 }, {}]) {
     const stats = { periods: { allTime: fixture } };
-    let projected = false;
-    const value = vm.runInNewContext(`(${costRoute})()`, {
+    let projected = 0;
+    const value = vm.runInNewContext(`(${usageRoute})()`, {
       latestStats: stats, localStats: null,
-      electronPresentationStats: (input) => { assert.equal(input, stats); projected = true; return input; }
+      electronPresentationStats: (input) => { assert.equal(input, stats); projected += 1; return input; }
     });
-    assert.equal(projected, true);
-    assert.equal(value, fixture.costUsd);
+    assert.equal(projected, 1);
+    assert.equal(value, fixture, 'both metrics retain the tray presentation source and revision');
+    const fallback = vm.runInNewContext(`(${usageRoute})()`, {
+      latestStats: null, localStats: stats, electronPresentationStats: input => input
+    });
+    assert.equal(fallback, fixture, 'local fallback is shared by both totals');
   }
+  assert.equal(vm.runInNewContext(`(${usageRoute})()`, {
+    latestStats: { aigoodbroUsagePending: true, periods: { allTime: { totalTokens: 0, costUsd: 0 } } },
+    localStats: null, electronPresentationStats: input => input
+  }), null, 'a connected quota-only bootstrap must not manufacture usage zero');
   assert.match(main, /if \(IS_AIGOODBRO_EMBEDDED\) return deriveAppUpdateState\(\);/);
   assert.match(main, /requestCodexSwitch\(\{\s*vendorAccountId: account\.id,\s*recordedAccountKey: account\.accountKey/);
   assert.match(main, /response\.accountId !== account\.id/);

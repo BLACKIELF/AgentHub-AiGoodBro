@@ -36,6 +36,37 @@ const fixture = {schemaVersion:1,collectedAt:'2026-09-28T10:00:00Z',timezone:'As
     }}; });
     await page.goto(pathToFileURL(path.join(assets,'home-dashboard.html')).href);
     const render = (input, options = {}) => page.evaluate(({input,options}) => window.__renderTrend(input, options), {input,options:{snapshotID:'test:1',language:'zh',...options}});
+    const nativeScope = structuredClone(fixture);
+    nativeScope.payload.aggregate.history.summary.totalTokens = 15_000_000_000;
+    nativeScope.payload.aggregate.allTime.totalTokens = 19_000_000_000;
+    nativeScope.payload.aggregate.allTime.costUsd = 15000;
+    await render(nativeScope,{summaryTotals:{tokens:'27123456789',costUSD:19732.09,costStatus:'known'}});
+    assert.equal(await page.locator('.dash-card-v').nth(0).textContent(),'27,123,456,789',
+      'Desktop total overrides both native history and aggregate source scopes');
+    assert.equal(await page.locator('.dash-card-v').nth(1).textContent(),'$19732.09 ¥134,178.21');
+    await page.evaluate(() => {window.totalNodes = {heat:document.querySelector('#dashHeatmap svg'),chart:document.querySelector('#dashChart svg')};});
+    for (const [tokens,costUSD,expected] of [
+      ['27123456790',19733.1,'27,123,456,790'],
+      ['9007199254740993',19733.1,'9,007,199,254,740,993'],
+      ['9223372036854775807',19733.1,'9,223,372,036,854,775,807'],
+      ['0',0,'0'],[null,null,'—'],[9007199254740992,null,'—'],['9223372036854775808',null,'—'],
+      ['-1',null,'—'],['12.5',null,'—']
+    ]) {
+      await render(null,{summaryTotals:{tokens,costUSD,costStatus:'known'}});
+      assert.equal(await page.locator('.dash-card-v').nth(0).textContent(),expected);
+      if (costUSD == null) assert.equal(await page.locator('.dash-card-v').nth(1).textContent(),'—');
+      assert.equal(await page.evaluate(() => window.totalNodes.heat === document.querySelector('#dashHeatmap svg')
+        && window.totalNodes.chart === document.querySelector('#dashChart svg')),true,
+        'Total-only updates preserve both chart DOM trees');
+    }
+    await render(null,{summaryTotals:{tokens:null,costUSD:1.25,costStatus:'partial'}});
+    assert.equal(await page.locator('.dash-card-v').nth(0).textContent(),'—');
+    assert.equal(await page.locator('.dash-card-v').nth(1).textContent(),'$1.2500 ¥8.50',
+      'Unknown desktop tokens never borrow the native scope even when desktop cost is known');
+    await render(null,{summaryTotals:null});
+    assert.equal(await page.locator('.dash-card-v').nth(0).textContent(),'15,000,000,000');
+    assert.equal(await page.locator('.dash-card-v').nth(1).textContent(),'$15000.00 ¥102,000.00',
+      'Removing the desktop option restores both native preview totals without a data reload');
     assert.ok((await render(fixture)).startsWith('<svg'));
     await page.waitForTimeout(60);
     assert.equal(await page.locator('#activityPane').isVisible(), true);

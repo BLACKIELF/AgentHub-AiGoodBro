@@ -57,18 +57,26 @@ no longer reported as available, simply starting the flow again cannot reconcile
 there is intentionally no bypass or clear control. Raw account/card identifiers, email, response bodies,
 and private paths are never rendered or logged.
 
-## Optional expiry policy · 1005v2
+## Optional expiry policy · 1006v2
 
 The purpose is to reduce reset cards expiring unused when their owner forgets to redeem them. It is off
 by default and requires per-profile consent bound to the hash of the verified official account ID.
 The default lead time is 30 minutes, configurable from 1 to 1440 minutes. The app must remain running;
 sleep, offline periods, busy accounts, verification failures or an already expired card can prevent use.
 
-Only independent managed accounts are eligible. The current desktop account and managed mirrors of
-that same official identity are excluded. Startup and desktop identity changes first revoke pending
-admission; a successfully saved fresh identity snapshot is required before automation resumes. An
+Managed accounts, including a mirror of the current desktop identity, may be explicitly authorized.
+The current desktop row may also be authorized and uses a verified same-account managed home for execution;
+it does not run a redemption helper against the global Desktop credential home. Both rows share one card
+pool and are deduplicated by official account identity. An unavailable independent execution home pauses
+the attempt with a visible reason. Authorization never transfers to a different account identity.
+Startup and desktop identity changes first revoke pending admission; a successfully saved fresh identity snapshot is required before automation resumes. An
 unverified identity is retried at most once per minute, without concurrent identity reads. Missing Hub
 alias, unknown occupancy, activity lease conflicts and stale quota evidence block the attempt.
+For the current Desktop account, whether authorized through its Desktop or mirror row, a connected
+task snapshot no older than 45 seconds must show no running, waiting or uncertain work. Missing,
+disconnected or stale Desktop task evidence pauses redemption, including when Desktop is closed.
+Review and Hub waits recheck the live origin consent, executor identity/home/alias, Desktop identity
+and activity before claiming; accepted activity or identity changes revoke unsent admission.
 
 A local timer inspects due cards once per minute. It does not refresh the entire account pool every
 minute. Candidates are deduplicated by official identity; a blocked first account does not prevent later

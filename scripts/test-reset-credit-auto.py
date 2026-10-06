@@ -16,16 +16,23 @@ WIRING_TEST=ROOT/'tests/ResetCreditAutoWiringTests.swift'
 FALLBACK_TEST=ROOT/'tests/ResetCreditAutoFallbackTests.swift'
 USAGE=ROOT/'Sources/CodexUsageWidget/Services/UsageStore.swift'
 READER=ROOT/'Sources/CodexUsageWidget/Services/CodexUsageReader.swift'
+POLICY=ROOT/'Sources/CodexUsageWidget/Domain/AutomaticAccountSwitch.swift'
+RUNTIME=ROOT/'Sources/CodexUsageWidget/Domain/TaskRuntime.swift'
+VIEW=ROOT/'Sources/CodexUsageWidget/UI/ResetCreditAutoSettingsView.swift'
 STUBS=r'''import Foundation
 import Combine
-struct CodexAccountSnapshot { var accountID:String?; var quotaReadSucceeded:Bool? = true; var resetCreditExpiries:[Date]? = nil }
-struct CodexProfile { let id:String; var lastSnapshot:CodexAccountSnapshot?; var lastQuotaReadFailureAt:Date? = nil; var isSystemProfile = false
- var recordedAccountKey:String { "synthetic-"+(lastSnapshot?.accountID ?? id) }; var codexHomeURL:URL { URL(fileURLWithPath:ProcessInfo.processInfo.environment["RESET_AUTO_TEST_ROOT"]!).appendingPathComponent("home-"+id) } }
+struct CodexAccountSnapshot { var accountID:String?; var quotaReadSucceeded:Bool? = true; var resetCreditExpiries:[Date]? = nil; var accountType:String? = "chatgpt" }
+struct CodexProfile { let id:String; var lastSnapshot:CodexAccountSnapshot?; var lastQuotaReadFailureAt:Date? = nil; var isSystemProfile = false; var homeOverride:URL? = nil
+ var recordedAccountKey:String { "synthetic-"+(lastSnapshot?.accountID ?? id) }; var codexHomeURL:URL { homeOverride ?? URL(fileURLWithPath:ProcessInfo.processInfo.environment["RESET_AUTO_TEST_ROOT"]!).appendingPathComponent("home-"+id) } }
 enum AccountDisplay { static func profileName(_ profile:CodexProfile)->String { "Synthetic account" }; static func numberedName(_ profile:CodexProfile,allProfiles:[CodexProfile])->String { profile.id } }
 enum WidgetLanguage { case fixture; static func storedOrAutomatic()->Self { .fixture }; func text(_ zh:String,_ en:String)->String { en } }
 enum HubAccountTaskPhase { case maintenance,starting,running,cancelRequested,uncertain,awaitingAcceptance,succeeded,failed,cancelled,unavailable }
 struct HubAccountTaskStatus { let phase:HubAccountTaskPhase; let updatedAt:Date? }
 enum HubWarmUpAvailability { case idle }
+enum TaskColumnKind { case active,done,pending }
+enum NSRunningApplication { static func runningApplications(withBundleIdentifier:String)->[String] { [] } }
+final class FixtureProfileStore { var profiles:[CodexProfile]=[] }
+enum DispatchCodeCatalog { static func reload() {} }
 enum HubConsoleModel { static func warmUpAvailability(for:String,excludingLocalLease:String?) async ->HubWarmUpAvailability { fatalError("Uninjected Hub call forbidden") } }
 struct RuntimeLoadContext { static func live(codexHomeDirectory:URL)->Self { Self() } }
 struct CodexUsageReader {
@@ -45,7 +52,7 @@ def main():
  prefix=os.environ.get('RESET_AUTO_EVIDENCE_PREFIX','reset-auto-host')
  if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,127}',prefix) or prefix=='reset-auto-124-host':
   raise ValueError('RESET_AUTO_EVIDENCE_PREFIX must be a safe basename and must not overwrite accepted 124 evidence')
- snapshots={p:p.read_bytes() for p in SOURCES+[TEST,WIRING_TEST,FALLBACK_TEST,USAGE,READER]}
+ snapshots={p:p.read_bytes() for p in SOURCES+[TEST,WIRING_TEST,FALLBACK_TEST,USAGE,READER,POLICY,RUNTIME,VIEW]}
  inputs={str(p.relative_to(ROOT)):hashlib.sha256(data).hexdigest() for p,data in snapshots.items()}
  with tempfile.TemporaryDirectory(prefix='aigoodbro-reset-auto-fixture-') as tmp:
   folder=Path(tmp);frozen=[]
@@ -58,6 +65,16 @@ def main():
    target=folder/path.name;target.write_text(text);frozen.append(target)
   usage=snapshots[USAGE].decode();reader=snapshots[READER].decode()
   runner=declaration(usage,'private func checkResetCreditAuto()').replace('private func','func',1)
+  # Keep the actual identity invalidation block, omitting unrelated UI/statistics work.
+  sync=declaration(usage,'private func syncProfiles()')
+  sync=sync[:sync.index('        if !isPreview { DispatchCodeCatalog.reload() }')].replace('private func syncProfiles()', 'func syncAutomaticIdentity()',1)+'        profiles = profileStore.profiles\n    }'
+  task_property=declaration(usage,'@Published private(set) var codexLiveTasks:').replace('@Published private(set) var','var',1).replace(' = .disconnected {',' = CodexTaskLiveSnapshot(connectionMode:.sharedDaemon,records:[:],refreshedAt:Date()) {',1)
+  runtime=snapshots[RUNTIME].decode()
+  task_types='\n'.join(declaration(runtime,n) for n in ['enum TaskRuntimeState:', 'enum TaskConnectionMode:', 'struct TaskLiveRecord:', 'struct CodexTaskLiveSnapshot:'])
+  idle=declaration(snapshots[POLICY].decode(),'static func hasNoActiveTasks(')
+  idle_policy='enum CodexAutomaticSwitchPolicy { static let taskSnapshotMaximumAge:TimeInterval = 45\n'+idle+'\n}\n'
+  eligibility=declaration(snapshots[VIEW].decode(),'private func blockedReason(').replace('private func','func',1)
+  eligibility_view='struct FixtureAutoEligibilityView { var profiles:[CodexProfile]; var language:WidgetLanguage = .fixture\n'+eligibility+'\n}\n'
   start=reader.index('                    guard admission?.isCancelled != true else {')
   end=reader.index('                }\n            } else if id == 3',start)
   send=reader[start:end]
@@ -68,18 +85,20 @@ def main():
   wiring=r'''
 @MainActor final class FixtureAutoController {
  var attempted:[String]=[]; var consumed:[String]=[]; var busyIDs:Set<String>=[]; var onAttempt:(()->Void)?
- func runAutomatic(profile:CodexProfile,accountID:String,hubAccountAlias:String,lead:TimeInterval,quotaFingerprint:String,admission:CodexResetCreditAutoAdmission,onStatus:((String)->Void)?=nil,onConfirmedResult:@escaping()->Void) async -> CodexResetCreditController.AutomaticAttemptDisposition {
- attempted.append(profile.id); if !busyIDs.contains(profile.id) { consumed.append(profile.id) }; onAttempt?(); return .accountHandledOrBlocked
+ func runAutomatic(profile:CodexProfile,accountID:String,hubAccountAlias:String,lead:TimeInterval,quotaFingerprint:String,admission:CodexResetCreditAutoAdmission,onStatus:((String)->Void)?=nil,onConfirmedResult:@escaping()->Void,isEligible:(@MainActor ()->Bool)?=nil) async -> CodexResetCreditController.AutomaticAttemptDisposition {
+ guard isEligible?() ?? true else { return .accountHandledOrBlocked }; attempted.append(profile.id); if !busyIDs.contains(profile.id) { consumed.append(profile.id) }; onAttempt?(); return .accountHandledOrBlocked
  }
 }
 @MainActor final class AutomaticRunnerFixture {
  var hasStarted=true; var resetCreditAutoDesktopVerified=true; var resetCreditAutoIdentityRetryAt:Date?=nil; var identityRefreshCancellation:UUID?=nil; var isPreview=false
  func synchronizeMonitorWithCurrentCodex(announce:Bool) {}
- var resetCreditAutoTask:Task<Void,Never>?; var isLaunchingCodex=false; var isLoggingIn=false; var isAccountSwitchTransactionActive=false
- var profiles:[CodexProfile]=[]; var resetCreditAutoPreferences=CodexResetCreditAutoPreferences(); var aliases:[String:String]=[:]
- var resetCreditAutoAdmission:CodexResetCreditAutoAdmission?; var resetCreditAutoIdentity:(String,String,URL)?; var resetCreditAutoController=FixtureAutoController(); var resetCreditAutoStatus:String?
+var resetCreditAutoTask:Task<Void,Never>?; var isLaunchingCodex=false; var isLoggingIn=false; var isAccountSwitchTransactionActive=false
+ var resetCreditAutoOriginIdentity:(profileID:String,accountID:String,home:URL)?; var resetCreditAutoDesktopAccountID:String?
+ let profileStore=FixtureProfileStore()
+var profiles:[CodexProfile]=[]; var resetCreditAutoPreferences=CodexResetCreditAutoPreferences(); var aliases:[String:String]=[:]
+ var resetCreditAutoAdmission:CodexResetCreditAutoAdmission?; var resetCreditAutoIdentity:(profileID:String,accountID:String,home:URL)?; var resetCreditAutoController=FixtureAutoController(); var resetCreditAutoStatus:String?
  func accountTaskAlias(for profile:CodexProfile)->String? { aliases[profile.id] }; func refreshProfile(_ id:String) {}
-''' + runner + r'''
+''' + task_property + '\n' + runner + '\n' + sync + r'''
 }
 final class ReaderSendFixture {
  enum Stage { case awaitingInitialize,awaitingConsume };var stage=Stage.awaitingInitialize
@@ -101,7 +120,8 @@ final class ReaderSendFixture {
   helpers='\n'.join(declaration(reader,n) for n in ['private func resetExactInt64(', 'private func resetValidField(', 'private func resetExpiry('])
   verifier='import CoreFoundation\n'+helpers+'\nstruct FallbackVerifier { let expectedAccountID:String; let selectedCard:CodexResetCreditCard?=nil;\n'+verified+'\n}\n'
   fallback=snapshots[FALLBACK_TEST].decode().replace('// EXTRACTED_RUNNER',realRunner,1)
-  stubs=folder/'Stubs.swift';stubs.write_text(STUBS+wiring+verifier)
+  fallback=fallback.replace('// EXTRACTED_TASK_PROPERTY',task_property,1)
+  stubs=folder/'Stubs.swift';stubs.write_text('\n'.join([STUBS,task_types,idle_policy,eligibility_view,wiring,verifier]))
   fallbackTest=folder/FALLBACK_TEST.name;fallbackTest.write_text(fallback)
   wiringTest=folder/WIRING_TEST.name;wiringTest.write_bytes(snapshots[WIRING_TEST])
   test=folder/TEST.name;test.write_bytes(snapshots[TEST])
@@ -161,7 +181,8 @@ final class ReaderSendFixture {
   print(output,end='')
   q=ROOT/'.local-artifacts/theme-upstream-1004v1';q.mkdir(parents=True,exist_ok=True)
   (q/(prefix+'.log')).write_text(output)
-  receipt={'inputsSHA256':inputs,'scriptSHA256':hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),'frozenSHA256':{p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in [stubs,*frozen,test,wiringTest,fallbackTest]},'fullSourceAdjustment':'Only DispatchParticipationSync.supportDirectory resolves to fixture root','extractedRunnerSHA256':hashlib.sha256(runner.encode()).hexdigest(),'extractedReaderSendSHA256':hashlib.sha256(reader[start:end].encode()).hexdigest(),'readerSendTestSeam':'beforeWrite callback immediately after real pre-cancel check; no gate/body changes','readerAdmissionNegative':negative,'swiftAssertions':57,'crossProcessClaimChecks':1,'raceResults':race_results,'logSHA256':hashlib.sha256(output.encode()).hexdigest(),'compileExitCode':compiled.returncode,'testExitCode':run.returncode if run else None,'inputsUnchanged':all(hashlib.sha256((ROOT/p).read_bytes()).hexdigest()==h for p,h in inputs.items()),'scope':'Real complete auto controller/journal/pending/activity/atomic writers plus actual extracted UsageStore runner and Reader consume write admission block; profile/reader/Hub doubles; original wiring-controller double plus real controller fallback runner and real Reader verifiedCard; no real app/network/auth/hotkeys'}
+  assertion_match=re.search(r'reset-credit auto host: (\d+) assertions, 0 failures',run.stdout if run else '')
+  receipt={'inputsSHA256':inputs,'scriptSHA256':hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),'frozenSHA256':{p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in [stubs,*frozen,test,wiringTest,fallbackTest]},'fullSourceAdjustment':'Only DispatchParticipationSync.supportDirectory resolves to fixture root','extractedRunnerSHA256':hashlib.sha256(runner.encode()).hexdigest(),'extractedIdentityInvalidationSHA256':hashlib.sha256(sync.encode()).hexdigest(),'extractedReaderSendSHA256':hashlib.sha256(reader[start:end].encode()).hexdigest(),'readerSendTestSeam':'beforeWrite callback immediately after real pre-cancel check; no gate/body changes','readerAdmissionNegative':negative,'swiftAssertions':int(assertion_match[1]) if assertion_match else 0,'crossProcessClaimChecks':1,'raceResults':race_results,'logSHA256':hashlib.sha256(output.encode()).hexdigest(),'compileExitCode':compiled.returncode,'testExitCode':run.returncode if run else None,'inputsUnchanged':all(hashlib.sha256((ROOT/p).read_bytes()).hexdigest()==h for p,h in inputs.items()),'scope':'Real complete auto controller/journal/pending/activity/atomic writers plus actual extracted UsageStore runner, identity invalidation block, desktop idle policy, UI eligibility and Reader consume write admission block; profile/reader/Hub and running-app inventory doubles; no real app/network/auth/hotkeys'}
   (q/(prefix+'.json')).write_text(json.dumps(receipt,indent=2)+'\n')
-  assert compiled.returncode==0 and run and run.returncode==0 and 'reset-credit auto host: 57 assertions, 0 failures' in run.stdout and receipt['inputsUnchanged'],receipt
+  assert compiled.returncode==0 and run and run.returncode==0 and assertion_match and receipt['swiftAssertions']>=57 and receipt['inputsUnchanged'],receipt
 if __name__=='__main__':main()

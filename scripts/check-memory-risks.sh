@@ -191,9 +191,11 @@ require_literal Sources/CodexUsageWidget/Services/LocalCLIQuotaReader.swift \
 require_literal Sources/CodexUsageWidget/Services/LocalCLIQuotaReader.swift \
   'defer { session.invalidateAndCancel() }' '本地 CLI 额度会话缺少结束后取消与释放'
 require_literal Sources/CodexUsageWidget/Services/LocalCLIAccountStore.swift \
-  'quotas = quotas.filter { activeIDs.contains($0.key) }' '本地 CLI 账号重新扫描后必须清理失效额度缓存'
+  'quotas = quotas.filter { retainedIDs.contains($0.key) }' '本地 CLI 账号重新扫描后必须清理失效额度缓存'
 require_literal Sources/CodexUsageWidget/Services/LocalCLIAccountStore.swift \
-  'requests = requests.filter { activeIDs.contains($0.key) }' '本地 CLI 账号重新扫描后必须清理失效请求标识'
+  'requests = requests.filter { retainedIDs.contains($0.key) }' '本地 CLI 账号重新扫描后必须清理失效请求标识'
+require_literal Sources/CodexUsageWidget/Services/LocalCLIAccountStore.swift \
+  'previousScopes[$0.id]?.kind == $0.kind && previousScopes[$0.id]?.configDirectory == $0.configDirectory' '本地 CLI 缓存保留必须核对账号类型和配置目录'
 require_literal Sources/CodexUsageWidget/Services/LocalCLIAccountStore.swift \
   'tasks.removeValue(forKey: id)?.cancel()' '本地 CLI 账号移除后必须取消失效刷新任务'
 require_literal Sources/CodexUsageWidget/Services/DispatchParticipationSync.swift \
@@ -232,7 +234,7 @@ pipe_count="$(count_regex 'Pipe\(\)')"
 timer_count="$(count_regex 'Timer\(')"
 observer_count="$(count_regex 'addObserver\(')"
 data_contents_count="$(count_regex 'Data\(contentsOf:')"
-static_collection_count="$(count_regex 'static var .*[\[\(].*[\]\)]')"
+static_collection_count="$(count_regex 'static var .*([([]|Set<|Dictionary<|Array<)')"
 parent_traversal_count="$(count_regex 'deletingLastPathComponent\(\)')"
 
 {

@@ -17,9 +17,13 @@ enum AppArchitecture: String, Codable, Equatable {
 
     init(assetName: String) {
         let normalized = assetName.lowercased()
-        if normalized.contains("arm64") || normalized.contains("apple-silicon") || normalized.contains("aarch64") {
+        let isARM = normalized.contains("arm64") || normalized.contains("apple-silicon") || normalized.contains("aarch64")
+        let isIntel = normalized.contains("x86_64") || normalized.contains("intel") || normalized.contains("amd64")
+        if isARM && isIntel {
+            self = .unknown
+        } else if isARM {
             self = .arm64
-        } else if normalized.contains("x86_64") || normalized.contains("intel") || normalized.contains("amd64") {
+        } else if isIntel {
             self = .x8664
         } else {
             self = .unknown
@@ -139,6 +143,15 @@ struct GitHubReleaseAsset: Codable, Equatable, Identifiable {
     let browserDownloadURL: URL
     let size: Int64
     let contentType: String?
+    let digest: String?
+
+    init(name: String, browserDownloadURL: URL, size: Int64, contentType: String?, digest: String? = nil) {
+        self.name = name
+        self.browserDownloadURL = browserDownloadURL
+        self.size = size
+        self.contentType = contentType
+        self.digest = digest
+    }
 
     var id: String { browserDownloadURL.absoluteString }
     var architecture: AppArchitecture { AppArchitecture(assetName: name) }
@@ -149,6 +162,7 @@ struct GitHubReleaseAsset: Codable, Equatable, Identifiable {
         case browserDownloadURL = "browser_download_url"
         case size
         case contentType = "content_type"
+        case digest
     }
 }
 
@@ -223,8 +237,7 @@ struct GitHubReleaseInfo: Codable, Equatable, Identifiable {
         let expectedVersion = version?.description.lowercased()
         return matching.first { asset in
             let normalized = asset.name.lowercased()
-            return normalized.contains("codexu")
-                && expectedVersion.map { normalized.contains($0) } ?? true
+            return expectedVersion.map { normalized.contains("-\($0)-") } ?? true
         } ?? matching.first
     }
 }

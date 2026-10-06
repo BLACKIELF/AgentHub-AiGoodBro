@@ -6,11 +6,16 @@ final class AppUpdateStore: ObservableObject {
     @Published private(set) var result: AppUpdateResult = .idle()
     @Published private(set) var isChecking = false
 
+    /// The app supplies one native presenter so About and Settings use the same window.
+    static var presentUpdateDetails: ((AppUpdateStore) -> Void)?
+    var onUpdateAvailable: ((AppUpdateStore) -> Void)?
+
     private let settings: AppSettings
     private let checker: any AppUpdateChecking
     private var activeCheckID: UUID?
     private var activeCheckIsAutomatic = false
     private var cancellables = Set<AnyCancellable>()
+    private static var announcedAutomaticUpdates = Set<String>()
 
     init(
         settings: AppSettings,
@@ -34,8 +39,12 @@ final class AppUpdateStore: ObservableObject {
     }
 
     func openPreferredUpdateURL() {
-        guard let url = result.preferredOpenURL else { return }
-        NSWorkspace.shared.open(url)
+        showUpdateDetails()
+    }
+
+    func showUpdateDetails() {
+        guard result.status == .updateAvailable else { return }
+        (onUpdateAvailable ?? Self.presentUpdateDetails)?(self)
     }
 
     func skipCurrentAvailableVersion() {
@@ -99,6 +108,14 @@ final class AppUpdateStore: ObservableObject {
             return
         }
         result = nextResult
+        if nextResult.status == .updateAvailable, let version = nextResult.latestVersionLabel {
+            let reminderID = "\(nextResult.preferredOpenURL?.absoluteString ?? "")|\(version)"
+            guard let presenter = onUpdateAvailable ?? Self.presentUpdateDetails else { return }
+            if force || !Self.announcedAutomaticUpdates.contains(reminderID) {
+                Self.announcedAutomaticUpdates.insert(reminderID)
+                presenter(self)
+            }
+        }
     }
 
     private func observeSettings() {

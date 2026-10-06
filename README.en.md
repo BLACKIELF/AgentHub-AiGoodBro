@@ -1,4 +1,4 @@
-# AiGoodBro · AgentHub (2.2 candidate)
+# AiGoodBro · AgentHub (2.2)
 
 **See quota, usage and task occupancy at a glance; when needed, route local work through your own Codex account pool.**
 
@@ -6,11 +6,11 @@ AiGoodBro is a macOS AI workspace for personal use. It brings together quotas fo
 
 [中文](README.md) | **English**
 
-The latest source candidate is **2.2 · 1005v5**, with internal update version 9.6.77 (127). After a detectable installation or replacement, choose new or returning user: new users get full setup; returning users review WeChat, Feishu and new features. Click an account’s reset-card count or expiry date to open its use-before-expiry settings. Candidate 127 is a local style preview; no installer has been made or published. See the [usage guide](docs/usage-guide.md) and [changelog](CHANGELOG.md).
+This version is **2.2 · 1006v3**, with internal update version **9.6.80 (130)**. Home and the menu bar share the same all-time token and cost snapshot. It includes the unexpected-exit fix, an update dialog with release notes and downloads, and new/returning-user installation setup. After a detectable installation or replacement, new users get full setup; returning users review WeChat, Feishu and new settings while keeping existing preferences. See the [usage guide](docs/usage-guide.md) and [changelog](CHANGELOG.md).
 
-Installation setup preserves existing preferences and pending messages. Real reconnection and message delivery still require manual verification after installation; see the [reinstallation plan](docs/reinstall-onboarding-plan-1005v1.md).
+[Download for Apple Silicon](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v9.6.80/AiGoodBro-9.6.80-mac-arm64.dmg) · [Release notes and alternate ZIP](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/tag/v9.6.80)
 
-**Help avoid forgotten reset cards expiring unused.** Opt in for each account to let the app attempt redemption near expiry, by default 30 minutes beforehand with an adjustable lead time. This is off by default and requires the app to remain running. Only verified, idle independent managed accounts are eligible; the current desktop identity is excluded. Uncertain outcomes pause for review instead of being retried automatically. See the [reset-card behavior and limits](docs/reset-credit-control.md).
+**Help avoid forgotten reset cards expiring unused.** Click an account’s reset-card count, nearest expiry date or information button to open its automatic-use settings. This is off by default and requires per-account opt-in. The default lead time is 30 minutes and can be adjusted. A desktop account uses an existing, verified independent entry for the same identity; missing entries, unknown task state or busy tasks pause the attempt. The app must remain running. Uncertain outcomes require review rather than automatic retries. See the [reset-card behavior and limits](docs/reset-credit-control.md).
 
 The images below retain their 1002v2 provenance. The [full gallery](docs/images/1002v2/README.md) covers home, accounts, proxy, settings, setup, usage panels and all nine themes. Historical real captures retain their version labels.
 
@@ -88,21 +88,20 @@ Choose a palette in Settings → Appearance. Each theme supports light and dark 
 
 [View light and dark previews of all nine themes](docs/images/1002v2/README.md#themes). Themes supply color tokens only. WAICY artwork, logos, mascots and fonts are not copied, and the palette does not imply official endorsement.
 
-## Current candidate and historical installation
+## Downloads and source builds
 
-Build 125 is a source candidate; build 124 was delivered as a local installer. This run updates GitHub source without publishing installer assets. Isolated automatic-redemption tests and native previews do not validate real redemption, WeChat phone delivery or installed pointer and global-shortcut interaction.
+130 provides an Apple Silicon installer for macOS 13+. It is ad-hoc signed and has not been notarized by Apple. The update dialog displays the version and changes, downloads on click, then verifies the size and SHA256. The user completes replacement after opening the installer; downloading does not quit the app or install it automatically.
 
-The verified installed version is **9.6.74 (124)**. Build 114 installation checks, synthetic native previews and app self-tests belong to the historical 1003v1 record. See the [114 publication record](docs/source-publication-1003v1.md) and [historical PR #13 checks](https://github.com/BLACKIELF/AgentHub-AiGoodBro/pull/13/checks); these are not CI evidence for 125.
+Wait for active work to finish and quit the old app normally before replacement. Keep backups of the old app and local data. Installation setup reviews WeChat, Feishu and new settings. Isolated tests and previews do not verify real reset-card redemption, message delivery or global hotkey interactions. See the [validation record and checksums](docs/release-notes-v9.6.80.md).
 
-The following historical 1003v1 source example does not retrieve the current 125 source candidate:
+Source and installer correspond to `v9.6.80`:
 
 ```sh
-git clone --branch codex/reset-messages-0926v1 https://github.com/BLACKIELF/AgentHub-AiGoodBro.git AiGoodBro-2.2
+git clone --branch v9.6.80 https://github.com/BLACKIELF/AgentHub-AiGoodBro.git AiGoodBro-2.2
 cd AiGoodBro-2.2
-make build
 ```
 
-Source builds require macOS, Go 1.26+ and the verified Token Monitor v0.62.0 macOS runtime; see the [build and publication record](docs/source-publication-1003v1.md). No official 2.2 installer is currently available. Further Windows work remains on hold.
+Source builds require macOS, Go 1.26+ and the SHA256-verified Token Monitor v0.62.0 macOS runtime. Set `TOKEN_MONITOR_DESKTOP_RUNTIME` and `TOKEN_MONITOR_DESKTOP_DMG` to those official inputs before running `make build`. This release does not provide Intel or Windows installers; existing Windows sources remain intact. See the [historical 114 publication record](docs/source-publication-1003v1.md).
 
 ## Inspiration, code sources and licenses
 

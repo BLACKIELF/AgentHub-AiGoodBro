@@ -1,4 +1,4 @@
-# AiGoodBro · AgentHub（2.2候选）
+# AiGoodBro · AgentHub（2.2）
 
 **看清额度、用量和任务占用；需要时，让本机任务使用自己的 Codex 账号池。**
 
@@ -6,11 +6,11 @@ AiGoodBro 是面向个人自用的 macOS AI 工作台，汇总 Codex 多账号�
 
 **中文** | [English](README.en.md)
 
-最新源码候选为 **2.2 · 1005v5**，内部更新版本为 9.6.77 (127)。可识别的安装或覆盖后先选择新用户／老用户：新用户走完整引导，老用户只检查微信、飞书和新功能。点击账号的重置卡数量或到期时间，可直接打开该账号的「到期自动使用」设置。127 当前用于本地样式预览，尚未制作安装包或发布。见[使用说明](docs/usage-guide.md)和[变更记录](CHANGELOG.md)。
+本次版本为 **2.2 · 1006v3**，内部更新版本 **9.6.80 (130)**。主页与菜单栏的累计 Token、估算成本共用同一份总计快照；包含异常退出修复、可查看更新内容的下载弹窗，以及新用户／老用户安装引导。可识别的新装或覆盖后，新用户走完整引导，老用户检查微信、飞书和新设置，保留原有配置。见[使用说明](docs/usage-guide.md)和[变更记录](CHANGELOG.md)。
 
-下一功能版本将加入每次安装后的微信、飞书连接引导，详见[安装重连计划](docs/reinstall-onboarding-plan-1005v1.md)。
+[下载 Apple Silicon 安装包](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v9.6.80/AiGoodBro-9.6.80-mac-arm64.dmg) · [更新内容与备用 ZIP](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/tag/v9.6.80)
 
-**减少重置卡过期浪费：**开启后，应用会在重置卡临近到期时自动尝试使用，减少因忘记操作而过期浪费的情况。默认关闭，逐账号选择；默认提前 30 分钟，可自行调整。应用须保持运行，仅对可核实且空闲的独立托管账号尝试，当前桌面身份不自动使用；结果不明时暂停并提示核对。详见[功能边界](docs/reset-credit-control.md)。
+**减少忘记使用造成的重置卡过期浪费：**点击账号的重置卡数量、最近到期时间或信息按钮，打开「到期自动使用」设置。默认关闭，逐账号选择；默认提前 30 分钟，可自行调整。桌面账号通过已核验同身份的独立入口执行；缺少入口、任务状态不明或不空闲时暂停。应用须保持运行，结果不明时提示核对并阻止重发。详见[功能边界](docs/reset-credit-control.md)。
 
 下方图片保留 1002v2 的来源标记；[完整图册](docs/images/1002v2/README.md)包含首页、账号、反代、设置、引导、用量浮层与九套主题。历史实机截图保留在各自版本目录。
 
@@ -88,21 +88,20 @@ Codex 独立 CLI 可使用各自的本机登录目录；其他工具按提供商
 
 [查看九套主题的浅色与深色预览](docs/images/1002v2/README.md#themes)。主题仅提供色值；WAICY 主题没有复制品牌图形、工牌、吉祥物或字体，也不表示官方背书。
 
-## 当前候选与历史安装记录
+## 下载与构建
 
-当前 126 为源码候选；安装包在本地交付，尚未发布远端安装包。隔离自动使用回归与原生预览不代表真实兑换、手机微信送达或安装后的鼠标与全局快捷键验收。
+130 提供 macOS 13+ 的 Apple Silicon 安装包，采用本地 ad-hoc 签名，尚未 Apple 公证。更新弹窗展示版本与内容，点击下载后校验大小和 SHA256；打开安装包后由用户完成覆盖安装。下载不会自动退出应用或替换文件。
 
-本机安装版本已核实为 **9.6.74 (124)**。114 的安装核验、原生模拟图与应用自测属于 1003v1 历史记录，见[114 发布记录](docs/source-publication-1003v1.md)和[历史 PR #13 检查页](https://github.com/BLACKIELF/AgentHub-AiGoodBro/pull/13/checks)；这些不是 125 的 CI 证据。
+安装前等待任务结束并正常退出旧版，保留旧 App 与本机数据备份。新装与覆盖后的引导会检查微信、飞书和新功能。隔离测试及预览不代表真实重置卡兑换、微信／飞书送达或全局快捷键交互验收，详见[本次验证与校验值](docs/release-notes-v9.6.80.md)。
 
-以下命令保留为历史 1003v1 源码获取示例，不会取得当前 125 源码候选：
+源码与安装包对应 `v9.6.80`：
 
 ```sh
-git clone --branch codex/reset-messages-0926v1 https://github.com/BLACKIELF/AgentHub-AiGoodBro.git AiGoodBro-2.2
+git clone --branch v9.6.80 https://github.com/BLACKIELF/AgentHub-AiGoodBro.git AiGoodBro-2.2
 cd AiGoodBro-2.2
-make build
 ```
 
-源码构建要求 macOS、Go 1.26+ 和经校验的 Token Monitor v0.62.0 macOS 运行时，详见[构建与发布记录](docs/source-publication-1003v1.md)。当前没有可下载的 2.2 官方安装包；Windows 后续工作仍搁置。
+源码构建要求 macOS、Go 1.26+ 和经 SHA256 校验的 Token Monitor v0.62.0 macOS 运行时；将 `TOKEN_MONITOR_DESKTOP_RUNTIME` 和 `TOKEN_MONITOR_DESKTOP_DMG` 指向对应官方输入，再运行 `make build`。本次不提供 Intel 或 Windows 安装包，既有 Windows 源码保留。历史安装记录见 [114 发布记录](docs/source-publication-1003v1.md)。
 
 ## 借鉴项目、代码来源与许可证
 

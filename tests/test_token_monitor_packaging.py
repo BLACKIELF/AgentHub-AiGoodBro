@@ -5,6 +5,7 @@ import copy
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import struct
 import subprocess
@@ -432,10 +433,36 @@ class PackagingTests(unittest.TestCase):
         (isolated / 'dist').mkdir()
         recipe = make.split('\nclean-dist:\n', 1)[1].split('\n\n', 1)[0]
         (isolated / 'Makefile').write_text('DIST_DIR := dist\nclean-dist:\n' + recipe)
-        result = subprocess.run(['make', 'clean-dist'], cwd=isolated, capture_output=True)
+        # A parent release make can export command-line variables through
+        # MAKEFLAGS/MFLAGS/MAKEOVERRIDES. Scrub those inherited values and fix
+        # both output roots before exercising the fixture's destructive recipe.
+        fixture_env = os.environ.copy()
+        for key in ('MAKEFLAGS', 'MFLAGS', 'MAKEOVERRIDES', 'BUILD_DIR', 'DIST_DIR'):
+            fixture_env.pop(key, None)
+        fixture_env.update(BUILD_DIR='build', DIST_DIR='dist')
+        result = subprocess.run(['make', 'clean-dist'], cwd=isolated,
+                                env=fixture_env, capture_output=True)
         self.assertEqual(result.returncode, 0)
         self.assertFalse((isolated / 'dist').exists())
         self.assertEqual(sentinel.read_bytes(), b'cached')
+
+        # An explicit absolute DIST_DIR is allowed to remove only the fixture
+        # directory named by that invocation. Keep a production-shaped sibling
+        # sentinel to prove the test cannot clean an unrelated target.
+        absolute_fixture_dist = self.root / 'absolute-fixture-dist'
+        absolute_fixture_dist.mkdir()
+        (absolute_fixture_dist / 'fixture-artifact').write_bytes(b'fixture')
+        protected_dist = self.root / 'production-dist-sentinel'
+        protected_dist.mkdir()
+        protected = protected_dist / 'keep-me'
+        protected.write_bytes(b'production')
+        result = subprocess.run(
+            ['make', f'DIST_DIR={absolute_fixture_dist}', 'clean-dist'],
+            cwd=isolated, env=fixture_env, capture_output=True,
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertFalse(absolute_fixture_dist.exists())
+        self.assertEqual(protected.read_bytes(), b'production')
 
     def test_preserved_guard_and_signing_order(self):
         text = (m.ROOT / 'Makefile').read_text()

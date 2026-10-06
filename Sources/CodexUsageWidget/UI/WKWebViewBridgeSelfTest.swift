@@ -24,6 +24,7 @@ enum WKWebViewBridgeSelfTest {
             print("WKWebView bridge self-test failed: chart scroll ownership")
             return false
         }
+        guard desktopTotalsSelfTest() else { return false }
         let htmlURL = assetURL()
         guard let htmlURL, FileManager.default.fileExists(atPath: htmlURL.path) else {
             print("WKWebView bridge self-test failed: standalone.html not found")
@@ -180,7 +181,7 @@ enum WKWebViewBridgeSelfTest {
         let fixture = """
             {"schemaVersion":1,"collectedAt":"2026-09-28T10:00:00Z","timezone":"Asia/Shanghai","coverage":{"cost":"known"},
             "payload":{"aggregate":{"history":{"daily":[{"date":"2026-09-27","tokens":20,"cost":1,"perClient":{"codex":{"tokens":20}}},
-            {"date":"2026-09-28","tokens":30,"cost":2,"perClient":{"kimi":{"tokens":30}}}],"summary":{"totalTokens":50,"totalCost":3}}}}}
+            {"date":"2026-09-28","tokens":30,"cost":2,"perClient":{"kimi":{"tokens":30}}}],"summary":{"totalTokens":15000000000,"totalCost":3}}}}}
             """
         var received: [HomeDashboardPreferences] = []
         renderer.onHomePreferences = { received.append($0) }
@@ -399,9 +400,156 @@ enum WKWebViewBridgeSelfTest {
             print("Home dashboard native bridge failed: unknown shared cost")
             return false
         }
-        print("Home dashboard native bridge passed: shared tray USD/CNY cost, saved metric widths, split panes, guarded callbacks and snapshot reuse")
+        let shared = TokenMonitorDesktopController.validatedAllTimeUsage(tokens: 27_123_456_789, costUSD: 19732.09)
+        guard shared.totalTokens == 27_123_456_789, shared.totalCostUSD == 19732.09,
+            TokenMonitorDesktopController.validatedAllTimeUsage(tokens: 0, costUSD: 0).totalTokens == 0,
+            TokenMonitorDesktopController.validatedAllTimeUsage(tokens: 9_007_199_254_740_992, costUSD: 0).totalTokens == nil,
+            TokenMonitorDesktopController.validatedAllTimeUsage(tokens: -1, costUSD: -1).totalCostUSD == nil
+        else {
+            print("Home dashboard native bridge failed: desktop whole-token validation")
+            return false
+        }
+        _ = evaluateValue("window.totalHeatmap = document.querySelector('#dashHeatmap svg'); window.totalChart = document.querySelector('#dashChart svg'); true")
+        for (tokens, cost, text): (Int64?, Double?, String) in [
+            (shared.totalTokens, shared.totalCostUSD, "27,123,456,789"),
+            (27_123_456_790, 19733.1, "27,123,456,790"),
+            (9_007_199_254_740_993, 19733.1, "9,007,199,254,740,993"),
+            (Int64.max, 19733.1, "9,223,372,036,854,775,807"),
+            (0, 0, "0"),
+            (nil, nil, "—"),
+            (nil, 1.25, "—"),
+        ] {
+            renderer.update(
+                dashboardJSON: fixture, resetAnnotations: [], height: 480, language: .en,
+                homePreferences: widths, summaryTotals: .init(tokens: tokens, costUSD: cost))
+            let totalsDeadline = Date().addingTimeInterval(3)
+            while Date() < totalsDeadline {
+                if evaluateValue("document.querySelectorAll('.dash-card-v')[0].textContent") as? String == text,
+                    evaluateValue("window.AiGoodBroDashboard.history.summary.totalCost") as? Double == cost
+                {
+                    break
+                }
+                RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+            }
+            guard evaluateValue("document.querySelectorAll('.dash-card-v')[0].textContent") as? String == text,
+                evaluateValue("window.AiGoodBroDashboard.history.summary.totalCost") as? Double == cost,
+                evaluateValue("window.totalHeatmap === document.querySelector('#dashHeatmap svg') && window.totalChart === document.querySelector('#dashChart svg')") as? Bool
+                    == true
+            else {
+                print("Home dashboard native bridge failed: atomic totals/precision/cache update")
+                return false
+            }
+            if cost == nil, evaluateValue("document.querySelectorAll('.dash-card-v')[1].textContent") as? String != "—" {
+                print("Home dashboard native bridge failed: disconnected cost reused native scope")
+                return false
+            }
+        }
+        renderer.update(
+            dashboardJSON: fixture, resetAnnotations: [], height: 480, language: .en,
+            homePreferences: widths)
+        let nativeDeadline = Date().addingTimeInterval(3)
+        while Date() < nativeDeadline {
+            if evaluateValue("document.querySelectorAll('.dash-card-v')[0].textContent") as? String == "15,000,000,000" { break }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+        }
+        guard evaluateValue("document.querySelectorAll('.dash-card-v')[0].textContent") as? String == "15,000,000,000",
+            evaluateValue("window.AiGoodBroDashboard.history.summary.totalCost") as? Double == 3
+        else {
+            print("Home dashboard native bridge failed: native preview fallback after desktop option removal")
+            return false
+        }
+        print(
+            "Home dashboard native bridge passed: atomic tray token/USD/CNY totals, exact integers, unknown/zero, saved metric widths, split panes, guarded callbacks and snapshot reuse"
+        )
         return true
     }
+
+    /// A temporary socket producer exercises production polling and invalidation
+    /// without launching Electron or reading any account/session data.
+    private static func desktopTotalsSelfTest() -> Bool {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("aigoodbro-totals-fixture-\(UUID().uuidString)", isDirectory: true)
+        let support = root.appendingPathComponent("support", isDirectory: true)
+        let producer = root.appendingPathComponent("fixture-helper")
+        let responseURL = support.appendingPathComponent("reply.json")
+        let controller = TokenMonitorDesktopController(executableOverride: producer, supportDirectoryOverride: support, startupAttempts: 40)
+        defer {
+            controller.shutdown()
+            try? FileManager.default.removeItem(at: root)
+        }
+        func writeResponse(_ object: [String: Any]) throws {
+            try JSONSerialization.data(withJSONObject: object).write(to: responseURL, options: .atomic)
+        }
+        func waitFor(_ condition: () -> Bool, seconds: Double = 4) -> Bool {
+            let deadline = Date().addingTimeInterval(seconds)
+            while !condition(), Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.01)) }
+            return condition()
+        }
+        do {
+            try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
+            try writeResponse(["ready": true])
+            let script = """
+                #!/usr/bin/env python3
+                import json, os, socket
+                control = os.environ['AIGOODBRO_TOKEN_MONITOR_SOCKET']
+                response_file = os.path.join(os.path.dirname(os.environ['AIGOODBRO_TOKEN_MONITOR_USER_DATA']), 'reply.json')
+                server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                server.bind(control)
+                os.chmod(control, 0o600)
+                server.listen(4)
+                while True:
+                    connection, _ = server.accept()
+                    with connection:
+                        data = b''
+                        while b'\\n' not in data:
+                            chunk = connection.recv(4096)
+                            if not chunk:
+                                break
+                            data += chunk
+                        request = json.loads(data.split(b'\\n')[0])
+                        if request['cmd'] == 'quit':
+                            connection.sendall((json.dumps({'id': request['id'], 'ok': True}) + '\\n').encode())
+                            break
+                        with open(response_file) as response:
+                            payload = json.load(response)
+                        if payload.pop('exit', False):
+                            break
+                        payload.update({'id': request['id'], 'ok': True, 'trayVisible': False})
+                        connection.sendall((json.dumps(payload) + '\\n').encode())
+                server.close()
+                """
+            try script.write(to: producer, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: producer.path)
+            controller.startIfBundled()
+            guard waitFor({ controller.isReady }), controller.allTimeUsage.totalTokens == nil,
+                controller.allTimeUsage.totalCostUSD == nil
+            else { throw TotalsFixtureFailure.failed("connected unknown bootstrap") }
+            try writeResponse(["ready": true, "allTimeTokens": 27_123_456_789, "allTimeCostUsd": 19732.09])
+            guard waitFor({ controller.allTimeUsage == .init(totalTokens: 27_123_456_789, totalCostUSD: 19732.09) })
+            else { throw TotalsFixtureFailure.failed("snapshot polling") }
+            try writeResponse(["ready": true, "allTimeCostUsd": 1.25])
+            guard waitFor({ controller.allTimeUsage == .init(totalTokens: nil, totalCostUSD: 1.25) }), controller.isReady
+            else { throw TotalsFixtureFailure.failed("connected token evidence loss") }
+            try writeResponse(["ready": true, "allTimeTokens": 0, "allTimeCostUsd": 0])
+            guard waitFor({ controller.allTimeUsage == .init(totalTokens: 0, totalCostUSD: 0) })
+            else { throw TotalsFixtureFailure.failed("recorded zero") }
+            try writeResponse(["ready": false])
+            guard waitFor({ !controller.isReady && controller.allTimeUsage == .init(totalTokens: nil, totalCostUSD: nil) }, seconds: 5)
+            else { throw TotalsFixtureFailure.failed("missed-status stale clearing") }
+            try writeResponse(["ready": true, "allTimeTokens": 28_123_456_789, "allTimeCostUsd": 20732.09])
+            guard waitFor({ controller.isReady && controller.allTimeUsage == .init(totalTokens: 28_123_456_789, totalCostUSD: 20732.09) })
+            else { throw TotalsFixtureFailure.failed("status recovery") }
+            try writeResponse(["exit": true])
+            guard waitFor({ !controller.isReady && controller.allTimeUsage == .init(totalTokens: nil, totalCostUSD: nil) })
+            else { throw TotalsFixtureFailure.failed("owned helper termination") }
+            print("Desktop totals fixture passed: connected unknown, atomic polling, evidence loss, zero, stale clearing, recovery and termination")
+            return true
+        } catch {
+            print("Desktop totals fixture failed: \(error)")
+            return false
+        }
+    }
+
+    private enum TotalsFixtureFailure: Error { case failed(String) }
 
     /// Source asset first: it is the contract under test. The bundled copy is
     /// only a fallback; a make build keeps it identical to source.
