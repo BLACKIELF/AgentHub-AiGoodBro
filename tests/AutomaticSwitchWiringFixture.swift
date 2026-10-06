@@ -230,6 +230,8 @@ final class UsageStore {
     var lowQuotaAlertThresholds = LowQuotaAlertThresholds(fiveHour: 20, sevenDay: 10)
     var desktopSwitchSucceeded = false
     var desktopSwitchTargetID: String?
+    var resetCreditAutoDesktopVerified = false
+    var resetCreditAutoAdmission: TokenMonitorCancellation?
     var canCancelDesktopSwitch = false
     var accountManagerMessage: String?
     var desktopSwitchPreparationTask: Task<Void, Never>?
@@ -369,7 +371,12 @@ final class AtomicProbeFixture {
             await pending?.value
         }
         let valid = store()
+        let resetAdmission = TokenMonitorCancellation()
+        valid.resetCreditAutoDesktopVerified = true
+        valid.resetCreditAutoAdmission = resetAdmission
         valid.evaluateAutomaticAccountSwitch()
+        check("shared switch entry invalidates reset admission",
+              !valid.resetCreditAutoDesktopVerified && resetAdmission.isCancelled)
         valid.evaluateAutomaticAccountSwitch()
         await settle(valid)
         check("shared entry once under duplicate evaluation", valid.transactions == 1 && valid.taskClient.reads == 1)
