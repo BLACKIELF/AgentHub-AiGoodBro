@@ -359,6 +359,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         }
         setupEdgeDockSync()
         showMainWindow()
+        AppUpdateStore.presentUpdateDetails = { [weak self] sourceStore in
+            guard let self else { return }
+            AppUpdateWindowController.shared.show(store: sourceStore, settings: self.settings)
+        }
+        updateStore.startAutomaticCheck()
         PerformanceMonitor.shared.end(startupPerformanceSpan)
     }
 

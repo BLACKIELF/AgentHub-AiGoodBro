@@ -124,9 +124,14 @@ function createHostBridge({ socketPath, hostSocketPath = null, app, logger = () 
   let closed = false;
 
   function status() {
+    let allTimeTokens = null;
     let allTimeCostUsd = null;
     try {
-      const cost = routes?.getAllTimeCostUsd?.();
+      // Read both metrics from one presentation snapshot, including its source
+      // selection. Independent getters can mix revisions or source scopes.
+      const usage = routes?.getAllTimeUsage?.();
+      if (Number.isSafeInteger(usage?.totalTokens) && usage.totalTokens >= 0) allTimeTokens = usage.totalTokens;
+      const cost = usage?.costUsd;
       if (typeof cost === 'number' && Number.isFinite(cost) && cost >= 0) allTimeCostUsd = cost;
     } catch (_) {}
     return {
@@ -134,6 +139,7 @@ function createHostBridge({ socketPath, hostSocketPath = null, app, logger = () 
       trayVisible: routes !== null && typeof routes.isTrayVisible === 'function' && routes.isTrayVisible() === true,
       pid: process.pid,
       version: app.getVersion(),
+      allTimeTokens,
       allTimeCostUsd
     };
   }

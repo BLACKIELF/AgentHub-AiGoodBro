@@ -25,12 +25,13 @@ enum NextSetupStep: Int, CaseIterable, Identifiable, Codable {
     case notifications
     case ready
     case runtime
+    case updates
 
     // Keep persisted 0...3 values from earlier versions while inserting the new first page.
-    static let allCases: [Self] = [.accounts, .runtime, .features, .notifications, .ready]
-    var index: Int { Self.allCases.firstIndex(of: self) ?? 0 }
-    var previous: Self { Self.allCases[max(0, index - 1)] }
-    var next: Self { Self.allCases[min(Self.allCases.count - 1, index + 1)] }
+    static let allCases: [Self] = [.accounts, .runtime, .features, .notifications, .ready, .updates]
+    var index: Int { NextSetupGuideScope.full.steps.firstIndex(of: self) ?? 0 }
+    var previous: Self { NextSetupGuideScope.full.previous(self) }
+    var next: Self { NextSetupGuideScope.full.next(self) }
 
     var id: Int { rawValue }
 
@@ -41,6 +42,7 @@ enum NextSetupStep: Int, CaseIterable, Identifiable, Codable {
         case .features: return language.text("默认功能", "Your features")
         case .notifications: return language.text("连接通知", "Connect alerts")
         case .ready: return language.text("开始使用", "Ready to go")
+        case .updates: return language.text("新功能设置", "New features")
         }
     }
 
@@ -51,6 +53,7 @@ enum NextSetupStep: Int, CaseIterable, Identifiable, Codable {
         case .features: return "switch.2"
         case .notifications: return "bell.badge"
         case .ready: return "checkmark.circle"
+        case .updates: return "sparkles"
         }
     }
 }
@@ -58,18 +61,34 @@ enum NextSetupStep: Int, CaseIterable, Identifiable, Codable {
 enum NextSetupGuideScope: String, Codable {
     case full
     case connections
+    case audience
+    case returning
 
     var steps: [NextSetupStep] {
-        self == .connections ? [.notifications, .ready] : NextSetupStep.allCases
+        switch self {
+        case .full: return [.accounts, .runtime, .features, .notifications, .ready]
+        case .connections: return [.notifications, .ready]
+        case .audience: return []
+        case .returning: return [.notifications, .updates, .ready]
+        }
     }
 
     func previous(_ step: NextSetupStep) -> NextSetupStep {
-        steps[max(0, (steps.firstIndex(of: step) ?? 0) - 1)]
+        guard !steps.isEmpty else { return step }
+        return steps[max(0, (steps.firstIndex(of: step) ?? 0) - 1)]
     }
 
     func next(_ step: NextSetupStep) -> NextSetupStep {
-        steps[min(steps.count - 1, (steps.firstIndex(of: step) ?? 0) + 1)]
+        guard !steps.isEmpty else { return step }
+        return steps[min(steps.count - 1, (steps.firstIndex(of: step) ?? 0) + 1)]
     }
+}
+
+enum NextSetupAudience: String, Codable {
+    case newUser
+    case returningUser
+
+    var scope: NextSetupGuideScope { self == .newUser ? .full : .returning }
 }
 
 enum NextSetupGuideOutcome {

@@ -20,7 +20,7 @@ enum NextSetupPreviewRenderer {
                 settings.language = language
                 for scheme in [ColorScheme.light, .dark] {
                     settings.themeMode = scheme == .dark ? .dark : .light
-                    for step in NextSetupStep.allCases {
+                    for step in NextSetupGuideScope.full.steps {
                         settings.setupProgress = NextSetupProgress(step: step)
                         let view = NextSetupGuideView(store: store, settings: settings, openAutomation: {}, runtime: NextRuntimeSetupModel(preview: true))
                             .transaction { $0.disablesAnimations = true }
@@ -29,10 +29,38 @@ enum NextSetupPreviewRenderer {
                         try WorkspacePreviewRenderer.renderView(view, size: CGSize(width: 900, height: 680), scheme: scheme, to: directory.appendingPathComponent(name))
                         count += 1
                     }
-                    for step in NextSetupGuideScope.connections.steps {
-                        settings.installationOnboarding.connectionStep = step
+                    let choice = InstallationAudienceChoiceView(language: language, onSelect: { _ in }, onDefer: {})
+                        .transaction { $0.disablesAnimations = true }
+                        .preferredColorScheme(scheme)
+                    let choiceName = "\(language.rawValue)-\(scheme == .dark ? "dark" : "light")-audience.png"
+                    try WorkspacePreviewRenderer.renderView(
+                        choice, size: InstallationAudienceChoiceView.preferredSize, scheme: scheme, to: directory.appendingPathComponent(choiceName))
+                    count += 1
+                    let previewEventID = "preview-returning-\(UUID().uuidString)"
+                    let update = NewFeatureUpdateView(store: store, settings: settings, onDone: {})
+                        .transaction { $0.disablesAnimations = true }
+                        .preferredColorScheme(scheme)
+                    let updateName = "\(language.rawValue)-\(scheme == .dark ? "dark" : "light")-new-features.png"
+                    try WorkspacePreviewRenderer.renderView(
+                        update, size: NewFeatureUpdateView.preferredSize, scheme: scheme, to: directory.appendingPathComponent(updateName))
+                    count += 1
+                    settings.installationOnboarding = InstallationOnboardingState(
+                        installationID: previewEventID, scope: .returning, audience: .returningUser, eventGeneration: previewEventID)
+                    for step in NextSetupGuideScope.returning.steps {
+                        _ = settings.installationOnboarding.setConnectionStep(step, eventID: previewEventID)
                         let view = NextSetupGuideView(
-                            store: store, settings: settings, scope: .connections, openAutomation: {}, runtime: NextRuntimeSetupModel(preview: true)
+                            store: store, settings: settings, scope: .returning, installationEventID: previewEventID, openAutomation: {},
+                            runtime: NextRuntimeSetupModel(preview: true)
+                        )
+                        .transaction { $0.disablesAnimations = true }
+                        .preferredColorScheme(scheme)
+                        let name = "\(language.rawValue)-\(scheme == .dark ? "dark" : "light")-returning-step\(step.rawValue).png"
+                        try WorkspacePreviewRenderer.renderView(view, size: CGSize(width: 900, height: 680), scheme: scheme, to: directory.appendingPathComponent(name))
+                        count += 1
+                    }
+                    for step in NextSetupGuideScope.connections.steps {
+                        let view = NextSetupGuideView(
+                            store: store, settings: settings, scope: .connections, previewStep: step, openAutomation: {}, runtime: NextRuntimeSetupModel(preview: true)
                         )
                         .transaction { $0.disablesAnimations = true }
                         .preferredColorScheme(scheme)

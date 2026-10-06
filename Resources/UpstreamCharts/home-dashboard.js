@@ -7,6 +7,14 @@ const dateKey = value => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test
   && new Date(value + 'T00:00:00Z').toISOString().slice(0, 10) === value;
 const presentNumber = value => typeof value === 'number' && Number.isFinite(value) && value >= 0;
 const fullNumber = value => new Intl.NumberFormat(state.locale, {maximumFractionDigits:20}).format(value);
+// Native whole-token counts travel as decimal text; never round them through
+// Number before formatting. Numeric desktop counts must already be safe.
+const wholeTokens = value => {
+  if (Number.isSafeInteger(value) && value >= 0) return value;
+  if (typeof value !== 'string' || !/^(0|[1-9]\d{0,18})$/.test(value)) return null;
+  return BigInt(value) <= 9223372036854775807n ? value : null;
+};
+const fullTokens = value => new Intl.NumberFormat(state.locale).format(typeof value === 'string' ? BigInt(value) : value);
 const splitBounds = Object.freeze({min:0.28, max:0.72, default:0.34});
 const safeSplitRatio = value => Number.isFinite(Number(value))
   ? Math.min(splitBounds.max, Math.max(splitBounds.min, Number(value))) : splitBounds.default;
@@ -138,7 +146,8 @@ renderNow = () => {
     const value = card.querySelector('.dash-card-v');
     if (value) {
       value.classList.remove('is-dual-cost');
-      if (raw == null || (key !== 'favoriteModel' && !presentNumber(raw))) value.textContent = '—';
+      if (key === 'totalTokens') value.textContent = wholeTokens(raw) == null ? '—' : fullTokens(raw);
+      else if (raw == null || (key !== 'favoriteModel' && !presentNumber(raw))) value.textContent = '—';
       else if (key === 'totalCost') {
         const usd = document.createElement('span'); usd.className = 'dash-cost-usd'; usd.textContent = formatCost(raw);
         const cny = document.createElement('span'); cny.className = 'dash-cost-cny'; cny.textContent = fixedCnyCost(raw) ?? '¥—';
@@ -206,6 +215,7 @@ window.__renderTrend = (input, options = {}) => {
     home.revision = (home.revision || 0) + 1;
     home.rawDaily = new Map(daily.map(row => [row.date, row]));
     home.history = {...original, daily:daily.filter(row => presentNumber(row.tokens)), summary:{...original.summary}};
+    home.nativeSummaryTokens = home.history.summary.totalTokens;
     // Total cost follows the same aggregate priority and coverage as the tray;
     // daily graph estimates remain the calendar's separate evidence.
     const allTime = data.payload.aggregate?.allTime;
@@ -214,6 +224,8 @@ window.__renderTrend = (input, options = {}) => {
     const usable = ['known','partial'].includes(data.coverage?.cost) && presentNumber(totalCost);
     home.history.summary.totalCost = usable ? totalCost : null;
     home.totalCostStatus = usable ? data.coverage.cost === 'partial' ? 'partial' : 'estimated' : 'unknown';
+    home.nativeSummaryCost = home.history.summary.totalCost;
+    home.nativeTotalCostStatus = home.totalCostStatus;
     let end = aggregate.periodWindows?.today?.key;
     if (!dateKey(end) && data.collectedAt && data.timezone) {
       const parts = new Intl.DateTimeFormat('en-US', {timeZone:data.timezone,year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date(data.collectedAt));
@@ -223,10 +235,21 @@ window.__renderTrend = (input, options = {}) => {
     home.end = dateKey(end) ? end : daily.at(-1)?.date || charts.localDayKey();
   }
   if (!home.input) throw Error('Missing dashboard snapshot');
+  if ('summaryTotals' in options && !options.summaryTotals) {
+    home.history.summary.totalTokens = home.nativeSummaryTokens;
+    home.history.summary.totalCost = home.nativeSummaryCost;
+    home.totalCostStatus = home.nativeTotalCostStatus;
+  }
   if (options.summaryCost) {
     home.history.summary.totalCost = presentNumber(options.summaryCost.value) ? options.summaryCost.value : null;
     home.totalCostStatus = home.history.summary.totalCost == null ? 'unknown'
       : options.summaryCost.status === 'partial' ? 'partial' : 'estimated';
+  }
+  if (options.summaryTotals) {
+    home.history.summary.totalTokens = wholeTokens(options.summaryTotals.tokens);
+    home.history.summary.totalCost = presentNumber(options.summaryTotals.costUSD) ? options.summaryTotals.costUSD : null;
+    home.totalCostStatus = home.history.summary.totalCost == null ? 'unknown'
+      : options.summaryTotals.costStatus === 'partial' ? 'partial' : 'estimated';
   }
   home.snapshotID = options.snapshotID || home.snapshotID;
   const p = options.homePreferences || home.preferences;

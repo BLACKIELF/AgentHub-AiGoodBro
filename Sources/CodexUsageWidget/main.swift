@@ -4,6 +4,9 @@ import Darwin
 @main
 struct CodexAccountManagerNextMain {
     @MainActor static func main() async {
+        // A helper may close stdin between the liveness check and write. Let
+        // FileHandle report EPIPE so callers handle failure instead of killing the host.
+        signal(SIGPIPE, SIG_IGN)
         if let index = CommandLine.arguments.firstIndex(of: "--render-theme-audit"),
             CommandLine.arguments.indices.contains(index + 1)
         {

@@ -79,16 +79,22 @@ if '--prepare-only' in sys.argv:
     sys.exit(0)
 
 records = []
+def sanitize_output(output):
+    return output.replace(str(Path.cwd())+'/', '').replace(str(Path.home()), '<home>')
+
 def run(command):
     started = time.monotonic()
     proc = subprocess.run(command, capture_output=True, text=True)
-    # Replace only the workspace prefix in compiler diagnostics; keep relative evidence.
+    # Keep relative diagnostics and redact any remaining home-directory prefix.
     records.append({'command': command, 'exit_code': proc.returncode, 'seconds': time.monotonic()-started,
-                    'stdout': proc.stdout.replace(str(Path.cwd())+'/', ''),
-                    'stderr': proc.stderr.replace(str(Path.cwd())+'/', '')})
+                    'stdout': sanitize_output(proc.stdout),
+                    'stderr': sanitize_output(proc.stderr)})
     (OUT / 'fixture-execution.json').write_text(json.dumps(records, indent=2)+'\n')
     print('exit', proc.returncode, command[0])
     if proc.returncode:
+        for output, stream in [(records[-1]['stdout'], sys.stdout), (records[-1]['stderr'], sys.stderr)]:
+            if output:
+                print(output, file=stream, end='' if output.endswith('\n') else '\n')
         sys.exit(proc.returncode)
 
 binary = str(OUT / 'AutomaticSwitchWiringFixture')

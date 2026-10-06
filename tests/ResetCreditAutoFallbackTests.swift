@@ -17,7 +17,10 @@ import Foundation
     var resetCreditAutoPreferences = CodexResetCreditAutoPreferences()
     var aliases: [String: String] = [:]
     var resetCreditAutoAdmission: CodexResetCreditAutoAdmission?
-    var resetCreditAutoIdentity: (String, String, URL)?
+    var resetCreditAutoIdentity: (profileID: String, accountID: String, home: URL)?
+    var resetCreditAutoOriginIdentity: (profileID: String, accountID: String, home: URL)?
+    var resetCreditAutoDesktopAccountID: String?
+    // EXTRACTED_TASK_PROPERTY
     var resetCreditAutoStatus: String?
     let resetCreditAutoController: CodexResetCreditController
     let autoStore: CodexResetCreditAutoStateStore
@@ -184,4 +187,69 @@ func runAutomaticFallbackTests() async throws {
     ResetCreditAutoTests.expect(
         try terminal.reviewed == ["first"] && terminal.consumed == ["first"] && terminal.refreshes.isEmpty && terminal.pendingStore.pendingAttempt() != nil,
         "terminal journal failure retains pending and blocks fallback")
+
+    func desktop(_ name: String) throws -> AutomaticFallbackRunner {
+        let value = try make(name)
+        value.profiles[0].lastSnapshot?.resetCreditExpiries = [Date().addingTimeInterval(600)]
+        value.profiles[1].lastSnapshot?.accountID = "desktop"
+        value.profiles.removeAll { $0.id == "second" }
+        value.resetCreditAutoPreferences.authorizedAccounts = ["system": DispatchActivityStore.hash("desktop")]
+        value.reviewReader = { profile, account in
+            value.reviewed.append(profile.id)
+            return .success(review(profile, account))
+        }
+        return value
+    }
+    let desktopSuccess = try desktop("desktop-success")
+    await run(desktopSuccess)
+    ResetCreditAutoTests.expect(
+        desktopSuccess.reviewed == ["first"] && desktopSuccess.consumed == ["first"] && desktopSuccess.refreshes == ["first"],
+        "real controller redeems desktop consent through independently signed-in mirror")
+    let desktopShared = try desktop("desktop-shared")
+    desktopShared.resetCreditAutoPreferences.authorizedAccounts["first"] = DispatchActivityStore.hash("desktop")
+    await run(desktopShared)
+    ResetCreditAutoTests.expect(desktopShared.reviewed == ["first"] && desktopShared.consumed == ["first"], "real controller deduplicates desktop and mirror shared pool")
+
+    let changes: [(String, (AutomaticFallbackRunner) -> Void)] = [
+        ("login", { $0.isLoggingIn = true }),
+        ("launch", { $0.isLaunchingCodex = true }),
+        ("switch", { $0.isAccountSwitchTransactionActive = true }),
+        ("stop", { $0.hasStarted = false }),
+        ("desktop identity", { $0.profiles[0].lastSnapshot?.accountID = "different" }),
+        ("origin authorization", { $0.resetCreditAutoPreferences.authorizedAccounts = [:] }),
+        ("executor identity", { $0.profiles[1].lastSnapshot?.accountID = "different" }),
+        ("executor removal", { $0.profiles.removeAll { $0.id == "first" } }),
+        ("executor path", { $0.profiles[1].homeOverride = URL(fileURLWithPath: "/synthetic-changed-path") }),
+        ("executor global path", { $0.profiles[1].homeOverride = $0.profiles[0].codexHomeURL }),
+        ("executor alias", { $0.aliases["first"] = "changed-alias" }),
+        ("quota failure", { $0.profiles[1].lastQuotaReadFailureAt = Date() }),
+        ("desktop active task", {
+            $0.codexLiveTasks = .init(connectionMode: .sharedDaemon, records: ["task": .init(threadID: "task", name: nil, state: .running, updatedAt: Date(), turnID: "turn", connectionMode: .sharedDaemon)], refreshedAt: Date())
+        }),
+        ("desktop stale task evidence", { $0.codexLiveTasks = .init(connectionMode: .sharedDaemon, records: [:], refreshedAt: Date().addingTimeInterval(-60)) })
+    ]
+    for stage in ["review", "Hub"] {
+        for (index, change) in changes.enumerated() {
+            let value = try desktop("desktop-\(stage)-\(index)")
+            if stage == "review" {
+                value.reviewReader = { profile, account in
+                    value.reviewed.append(profile.id)
+                    await Task.yield()
+                    change.1(value)
+                    return .success(review(profile, account))
+                }
+            } else {
+                value.hubAvailability = { _, _ in
+                    await Task.yield()
+                    change.1(value)
+                    return true
+                }
+            }
+            await run(value)
+            ResetCreditAutoTests.expect(
+                try value.reviewed == ["first"] && value.consumed.isEmpty && value.pendingStore.pendingAttempt() == nil
+                    && value.refreshes.isEmpty && !value.resetCreditAutoController.isWorking,
+                "real controller \(stage) suspension rechecks \(change.0) before consume")
+        }
+    }
 }

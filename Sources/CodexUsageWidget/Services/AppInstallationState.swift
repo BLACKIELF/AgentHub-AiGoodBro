@@ -85,11 +85,15 @@ struct InstallationOnboardingState: Codable, Equatable {
     var scope: NextSetupGuideScope = .full
     var status: Status = .pending
     var connectionStep: NextSetupStep = .notifications
+    var audience: NextSetupAudience?
+    /// Stable across a file baseline being enriched with a late installation receipt.
+    var eventGeneration: String?
 
     var shouldPresent: Bool { installationID != nil && status == .pending }
+    var presentationEventID: String? { eventGeneration ?? installationID }
 
     func automaticScope(legacyShouldPresent: Bool) -> NextSetupGuideScope? {
-        if shouldPresent { return scope }
+        if shouldPresent { return audience?.scope ?? .audience }
         // Once installation events are tracked, old pending full setup is manual only.
         return installationID == nil && legacyShouldPresent ? .full : nil
     }
@@ -99,7 +103,7 @@ struct InstallationOnboardingState: Codable, Equatable {
             let decodedState = try? JSONDecoder().decode(Self.self, from: data)
         else { return .init() }
         var state = decodedState
-        if !NextSetupGuideScope.connections.steps.contains(state.connectionStep) { state.connectionStep = .notifications }
+        if !NextSetupGuideScope.returning.steps.contains(state.connectionStep) { state.connectionStep = .notifications }
         return state
     }
 
@@ -110,6 +114,7 @@ struct InstallationOnboardingState: Codable, Equatable {
     mutating func observe(_ context: AppInstallationContext, existingUser: Bool) {
         // Unreadable evidence is not a new installation.
         guard let identity = context.identity else { return }
+        if eventGeneration == nil { eventGeneration = installationID }
         let receiptID = context.receipt?.matchingID(for: identity)
         if installationID != nil, observedIdentity == identity, receiptID == nil { return }
         // A receipt becoming readable for the same files does not mean a reinstall.
@@ -119,17 +124,39 @@ struct InstallationOnboardingState: Codable, Equatable {
         }
         let eventID = receiptID ?? identity.eventID
         if installationID != eventID {
-            let hasPreviousInstallation = installationID != nil
-            scope = existingUser || hasPreviousInstallation ? .connections : .full
+            scope = .audience
             status = .pending
             connectionStep = .notifications
+            audience = nil
+            eventGeneration = UUID().uuidString.lowercased()
             installationID = eventID
         }
         observedIdentity = identity
     }
 
-    mutating func finish(_ outcome: NextSetupGuideOutcome, scope completedScope: NextSetupGuideScope) {
-        guard installationID != nil, scope == completedScope else { return }
+    @discardableResult
+    mutating func select(_ selection: NextSetupAudience, eventID: String) -> Bool {
+        guard shouldPresent, presentationEventID == eventID, audience == nil else { return false }
+        audience = selection
+        scope = selection.scope
+        connectionStep = .notifications
+        return true
+    }
+
+    @discardableResult
+    mutating func setConnectionStep(_ step: NextSetupStep, eventID: String) -> Bool {
+        guard shouldPresent, presentationEventID == eventID, audience == .returningUser,
+            NextSetupGuideScope.returning.steps.contains(step)
+        else { return false }
+        connectionStep = step
+        return true
+    }
+
+    mutating func finish(_ outcome: NextSetupGuideOutcome, scope completedScope: NextSetupGuideScope, eventID: String?) {
+        guard shouldPresent, let eventID, presentationEventID == eventID,
+            audience != nil || outcome == .deferred,
+            (audience?.scope ?? .audience) == completedScope
+        else { return }
         status = outcome == .completed ? .completed : .deferred
     }
 }

@@ -342,7 +342,18 @@ final class UsageStore: ObservableObject {
     @Published private(set) var isSwitchingStatisticsTimeZone = false
     @Published private(set) var visualEnergyMode: VisualEnergyMode = .suspended
     @MainActor private(set) lazy var taskWorkbench = TaskWorkbenchStore(previewOnly: isPreview)
-    @Published private(set) var codexLiveTasks: CodexTaskLiveSnapshot = .disconnected
+    @Published private(set) var codexLiveTasks: CodexTaskLiveSnapshot = .disconnected {
+        didSet {
+            if let identity = resetCreditAutoIdentity,
+                identity.accountID == resetCreditAutoDesktopAccountID,
+                !CodexAutomaticSwitchPolicy.hasNoActiveTasks(
+                    codexLiveTasks,
+                    legacyManagerRunning: !NSRunningApplication.runningApplications(withBundleIdentifier: "local.codex.account-manager").isEmpty)
+            {
+                resetCreditAutoAdmission?.cancel()
+            }
+        }
+    }
     @Published private(set) var taskFocusRequest: TaskFocusRequest?
     @Published private(set) var isTaskOverviewVisible = false
     @Published private(set) var profiles: [CodexProfile]
@@ -421,6 +432,8 @@ final class UsageStore: ObservableObject {
     private var resetCreditAutoTask: Task<Void, Never>?
     private var resetCreditAutoAdmission: CodexResetCreditAutoAdmission?
     private var resetCreditAutoIdentity: (profileID: String, accountID: String, home: URL)?
+    private var resetCreditAutoOriginIdentity: (profileID: String, accountID: String, home: URL)?
+    private var resetCreditAutoDesktopAccountID: String?
     @MainActor private lazy var resetCreditAutoController = CodexResetCreditController()
     @Published private(set) var resetCreditAutoStatus: String?
 
@@ -453,8 +466,7 @@ final class UsageStore: ObservableObject {
         guard let systemID = profiles.first(where: \.isSystemProfile)?.lastSnapshot?.accountID, !systemID.isEmpty else { return }
         let now = Date()
         let candidates = profiles.filter { profile in
-            guard !profile.isSystemProfile, let account = profile.lastSnapshot?.accountID,
-                account != systemID,
+            guard let account = profile.lastSnapshot?.accountID,
                 resetCreditAutoPreferences.permits(profileID: profile.id, accountID: account),
                 profile.lastSnapshot?.quotaReadSucceeded == true, profile.lastQuotaReadFailureAt == nil
             else { return false }
@@ -467,29 +479,126 @@ final class UsageStore: ObservableObject {
                 self.resetCreditAutoTask = nil
                 self.resetCreditAutoAdmission = nil
                 self.resetCreditAutoIdentity = nil
+                self.resetCreditAutoOriginIdentity = nil
+                self.resetCreditAutoDesktopAccountID = nil
+            }
+            // The Desktop row authorizes its verified identity, but automatic RPCs
+            // always use an existing independent home. Its mirror switch is not changed.
+            let independentMirrors: (CodexProfile, String) -> [CodexProfile] = { origin, account in
+                let desktopHome = self.profiles.first(where: \.isSystemProfile)?.codexHomeURL.resolvingSymlinksInPath().standardizedFileURL
+                return self.profiles.filter {
+                    !$0.isSystemProfile && $0.lastSnapshot?.accountID == account
+                        && $0.lastSnapshot?.quotaReadSucceeded == true && $0.lastQuotaReadFailureAt == nil
+                        && $0.codexHomeURL.resolvingSymlinksInPath().standardizedFileURL != desktopHome
+                        && $0.codexHomeURL.resolvingSymlinksInPath().standardizedFileURL != origin.codexHomeURL.resolvingSymlinksInPath().standardizedFileURL
+                }
+            }
+            let executors: (CodexProfile, String) -> [(profile: CodexProfile, alias: String)] = { origin, account in
+                let eligible = origin.isSystemProfile ? independentMirrors(origin, account) : [origin]
+                let desktopHome = self.profiles.first(where: \.isSystemProfile)?.codexHomeURL.resolvingSymlinksInPath().standardizedFileURL
+                return eligible.compactMap { profile in
+                    guard !profile.isSystemProfile,
+                        profile.codexHomeURL.resolvingSymlinksInPath().standardizedFileURL != desktopHome,
+                        let alias = self.accountTaskAlias(for: profile), !alias.isEmpty
+                    else { return nil }
+                    return (profile, alias)
+                }
+            }
+            let desktopIsIdle: () -> Bool = {
+                CodexAutomaticSwitchPolicy.hasNoActiveTasks(
+                    self.codexLiveTasks,
+                    legacyManagerRunning: !NSRunningApplication.runningApplications(withBundleIdentifier: "local.codex.account-manager").isEmpty)
             }
             var seen = Set<String>()
             for candidate in candidates.prefix(1000) {
                 guard self.hasStarted, self.resetCreditAutoDesktopVerified, self.identityRefreshCancellation == nil,
-                    let profile = self.profiles.first(where: { $0.id == candidate.id }), let account = profile.lastSnapshot?.accountID, !profile.isSystemProfile,
-                    let currentSystemID = self.profiles.first(where: \.isSystemProfile)?.lastSnapshot?.accountID, !currentSystemID.isEmpty, account != currentSystemID,
-                    self.resetCreditAutoPreferences.permits(profileID: profile.id, accountID: account),
-                    let alias = self.accountTaskAlias(for: profile), !seen.contains(account)
+                    !self.isLaunchingCodex, !self.isLoggingIn, !self.isAccountSwitchTransactionActive,
+                    self.profiles.first(where: \.isSystemProfile)?.lastSnapshot?.accountID == systemID
+                else { break }
+                guard let origin = self.profiles.first(where: { $0.id == candidate.id }),
+                    let account = origin.lastSnapshot?.accountID, account == candidate.lastSnapshot?.accountID,
+                    origin.codexHomeURL == candidate.codexHomeURL,
+                    self.resetCreditAutoPreferences.permits(profileID: origin.id, accountID: account),
+                    origin.lastSnapshot?.quotaReadSucceeded == true, origin.lastQuotaReadFailureAt == nil,
+                    !seen.contains(account)
                 else { continue }
-                let admission = CodexResetCreditAutoAdmission()
-                self.resetCreditAutoAdmission = admission
-                self.resetCreditAutoIdentity = (profile.id, account, profile.codexHomeURL)
-                let disposition = await self.resetCreditAutoController.runAutomatic(
-                    profile: profile, accountID: account, hubAccountAlias: alias,
-                    lead: self.resetCreditAutoPreferences.leadSeconds, quotaFingerprint: "", admission: admission,
-                    onStatus: { [weak self] status in
-                        guard let self else { return }
-                        if self.resetCreditAutoStatus?.contains("人工核对") != true || status.contains("人工核对") {
-                            self.resetCreditAutoStatus = AccountDisplay.numberedName(profile, allProfiles: self.profiles) + " · " + status
-                        }
-                    },
-                    onConfirmedResult: { [weak self] in self?.refreshProfile(profile.id) })
-                if disposition != .tryNextProfile { seen.insert(account) }
+                if account == systemID, !desktopIsIdle() {
+                    if self.resetCreditAutoStatus?.contains("人工核对") != true {
+                        self.resetCreditAutoStatus =
+                            AccountDisplay.numberedName(origin, allProfiles: self.profiles)
+                            + " · 自动使用已暂停：当前桌面任务正在运行或空闲状态尚未核实。"
+                    }
+                    continue
+                }
+                let eligible = executors(origin, account)
+                if eligible.isEmpty {
+                    let status =
+                        origin.isSystemProfile && independentMirrors(origin, account).isEmpty
+                        ? "自动使用已暂停：需要同账号且额度读取成功的独立凭据入口，请先添加或刷新该账号。"
+                        : "自动使用已暂停：独立凭据入口的 Hub 任务身份尚未就绪。"
+                    if self.resetCreditAutoStatus?.contains("人工核对") != true {
+                        self.resetCreditAutoStatus = AccountDisplay.numberedName(origin, allProfiles: self.profiles) + " · " + status
+                    }
+                    continue
+                }
+                for executor in eligible {
+                    guard self.hasStarted, self.resetCreditAutoDesktopVerified, self.identityRefreshCancellation == nil,
+                        !self.isLaunchingCodex, !self.isLoggingIn, !self.isAccountSwitchTransactionActive,
+                        self.profiles.first(where: \.isSystemProfile)?.lastSnapshot?.accountID == systemID,
+                        let currentOrigin = self.profiles.first(where: { $0.id == origin.id }),
+                        currentOrigin.lastSnapshot?.accountID == account, currentOrigin.codexHomeURL == origin.codexHomeURL,
+                        currentOrigin.lastSnapshot?.quotaReadSucceeded == true, currentOrigin.lastQuotaReadFailureAt == nil,
+                        self.resetCreditAutoPreferences.permits(profileID: currentOrigin.id, accountID: account),
+                        let profile = self.profiles.first(where: { $0.id == executor.profile.id }), !profile.isSystemProfile,
+                        profile.lastSnapshot?.accountID == account, profile.codexHomeURL == executor.profile.codexHomeURL,
+                        profile.codexHomeURL.resolvingSymlinksInPath().standardizedFileURL
+                            != self.profiles.first(where: \.isSystemProfile)?.codexHomeURL.resolvingSymlinksInPath().standardizedFileURL,
+                        !currentOrigin.isSystemProfile
+                            || profile.codexHomeURL.resolvingSymlinksInPath().standardizedFileURL != currentOrigin.codexHomeURL.resolvingSymlinksInPath().standardizedFileURL,
+                        profile.lastSnapshot?.quotaReadSucceeded == true, profile.lastQuotaReadFailureAt == nil,
+                        self.accountTaskAlias(for: profile) == executor.alias,
+                        account != systemID || desktopIsIdle()
+                    else { break }
+                    let admission = CodexResetCreditAutoAdmission()
+                    self.resetCreditAutoAdmission = admission
+                    self.resetCreditAutoIdentity = (profile.id, account, profile.codexHomeURL)
+                    self.resetCreditAutoOriginIdentity = (currentOrigin.id, account, currentOrigin.codexHomeURL)
+                    self.resetCreditAutoDesktopAccountID = systemID
+                    let disposition = await self.resetCreditAutoController.runAutomatic(
+                        profile: profile, accountID: account, hubAccountAlias: executor.alias,
+                        lead: self.resetCreditAutoPreferences.leadSeconds, quotaFingerprint: "", admission: admission,
+                        onStatus: { [weak self] status in
+                            guard let self else { return }
+                            if self.resetCreditAutoStatus?.contains("人工核对") != true || status.contains("人工核对") {
+                                self.resetCreditAutoStatus = AccountDisplay.numberedName(origin, allProfiles: self.profiles) + " · " + status
+                            }
+                        },
+                        onConfirmedResult: { [weak self] in self?.refreshProfile(profile.id) },
+                        isEligible: { [weak self] in
+                            if self?.isPreview == false { DispatchCodeCatalog.reload() }
+                            guard let self, self.hasStarted, !self.isPreview, self.resetCreditAutoDesktopVerified,
+                                self.identityRefreshCancellation == nil,
+                                !self.isLaunchingCodex, !self.isLoggingIn, !self.isAccountSwitchTransactionActive,
+                                self.profiles.first(where: \.isSystemProfile)?.lastSnapshot?.accountID == systemID,
+                                self.resetCreditAutoPreferences.permits(profileID: currentOrigin.id, accountID: account),
+                                let latestOrigin = self.profiles.first(where: { $0.id == currentOrigin.id }),
+                                latestOrigin.lastSnapshot?.accountID == account, latestOrigin.codexHomeURL == currentOrigin.codexHomeURL,
+                                latestOrigin.lastSnapshot?.quotaReadSucceeded == true, latestOrigin.lastQuotaReadFailureAt == nil,
+                                let latestExecutor = self.profiles.first(where: { $0.id == profile.id }), !latestExecutor.isSystemProfile,
+                                latestExecutor.lastSnapshot?.accountID == account, latestExecutor.codexHomeURL == profile.codexHomeURL,
+                                latestExecutor.codexHomeURL.resolvingSymlinksInPath().standardizedFileURL
+                                    != self.profiles.first(where: \.isSystemProfile)?.codexHomeURL.resolvingSymlinksInPath().standardizedFileURL,
+                                latestExecutor.lastSnapshot?.quotaReadSucceeded == true, latestExecutor.lastQuotaReadFailureAt == nil,
+                                self.accountTaskAlias(for: latestExecutor) == executor.alias,
+                                account != systemID || desktopIsIdle()
+                            else { return false }
+                            return true
+                        })
+                    if disposition != .tryNextProfile || admission.isCancelled {
+                        seen.insert(account)
+                        break
+                    }
+                }
             }
         }
     }
@@ -561,6 +670,8 @@ final class UsageStore: ObservableObject {
     let isPreview: Bool
 
     private func beginAccountSwitchTransaction() -> UInt64 {
+        resetCreditAutoDesktopVerified = false
+        resetCreditAutoAdmission?.cancel()
         pendingRestoreHandle?.cancel()
         pendingRestoreHandle = nil
         clearCodexHistoryConfirmation()
@@ -1033,6 +1144,7 @@ final class UsageStore: ObservableObject {
         browserChoice: CodexDeviceBrowserChoice,
         requestID: UUID
     ) {
+        resetCreditAutoAdmission?.cancel()
         isLoggingIn = true
         deviceLogin?.phase = .preparing
         accountManagerMessage = WidgetLanguage.storedOrAutomatic().text("请在浏览器中登录新账号…", "Sign in to the new account in your browser…")
@@ -1969,6 +2081,7 @@ final class UsageStore: ObservableObject {
         }
         activeLoginMaintenanceLeases.insert(lease)
         loginPreflightID = requestID
+        resetCreditAutoAdmission?.cancel()
         isLoggingIn = true
         deviceLogin?.phase = verificationOnly ? .verifying : .preparing
         accountManagerMessage = WidgetLanguage.storedOrAutomatic().text("正在核对账号占用…", "Checking account availability…")
@@ -2333,6 +2446,8 @@ final class UsageStore: ObservableObject {
         // the interaction against double-clicks and scheduled warm-up.
         desktopSwitchSucceeded = false
         desktopSwitchTargetID = profileID
+        resetCreditAutoDesktopVerified = false
+        resetCreditAutoAdmission?.cancel()
         isLaunchingCodex = true
         canCancelDesktopSwitch = true
         accountManagerMessage = WidgetLanguage.storedOrAutomatic().text("正在准备切换…", "Preparing to switch…")
@@ -7136,10 +7251,33 @@ final class UsageStore: ObservableObject {
     }
 
     private func syncProfiles() {
+        let desktopProfile = profileStore.profiles.first(where: \.isSystemProfile)
+        let desktopAccountID = desktopProfile?.lastSnapshot?.accountID
+        if desktopAccountID?.isEmpty != false
+            || desktopAccountID != profiles.first(where: \.isSystemProfile)?.lastSnapshot?.accountID
+            || desktopProfile?.lastSnapshot?.quotaReadSucceeded != true || desktopProfile?.lastQuotaReadFailureAt != nil
+        {
+            resetCreditAutoDesktopVerified = false
+            resetCreditAutoAdmission?.cancel()
+        }
         if let identity = resetCreditAutoIdentity,
-            (profileStore.profiles.first(where: \.isSystemProfile)?.lastSnapshot?.accountID ?? "").isEmpty
-                || identity.accountID == profileStore.profiles.first(where: \.isSystemProfile)?.lastSnapshot?.accountID
-                || !profileStore.profiles.contains(where: { $0.id == identity.profileID && $0.lastSnapshot?.accountID == identity.accountID && $0.codexHomeURL == identity.home })
+            desktopAccountID != resetCreditAutoDesktopAccountID
+                || !profileStore.profiles.contains(where: {
+                    $0.id == identity.profileID && !$0.isSystemProfile
+                        && $0.lastSnapshot?.accountID == identity.accountID && $0.codexHomeURL == identity.home
+                        && $0.codexHomeURL.resolvingSymlinksInPath().standardizedFileURL
+                            != profileStore.profiles.first(where: \.isSystemProfile)?.codexHomeURL.resolvingSymlinksInPath().standardizedFileURL
+                        && $0.lastSnapshot?.quotaReadSucceeded == true && $0.lastQuotaReadFailureAt == nil
+                })
+        {
+            resetCreditAutoAdmission?.cancel()
+        }
+        if let origin = resetCreditAutoOriginIdentity,
+            !resetCreditAutoPreferences.permits(profileID: origin.profileID, accountID: origin.accountID)
+                || !profileStore.profiles.contains(where: {
+                    $0.id == origin.profileID && $0.lastSnapshot?.accountID == origin.accountID && $0.codexHomeURL == origin.home
+                        && $0.lastSnapshot?.quotaReadSucceeded == true && $0.lastQuotaReadFailureAt == nil
+                })
         {
             resetCreditAutoAdmission?.cancel()
         }
@@ -7320,6 +7458,7 @@ final class UsageStore: ObservableObject {
                         }
                     }
                     let recordedSystem = self.profileStore.profiles.first(where: \.isSystemProfile)
+                    self.syncProfiles()
                     self.resetCreditAutoDesktopVerified =
                         systemSnapshot.quotaReadSucceeded
                         && systemSnapshot.account?.email?.isEmpty == false
@@ -7327,7 +7466,6 @@ final class UsageStore: ObservableObject {
                         && recordedSystem?.lastSnapshot?.fetchedAt == systemSnapshot.refreshedAt
                         && recordedSystem?.lastSnapshot?.quotaReadSucceeded == true
                         && (recordedSystem?.lastQuotaReadFailureAt.map { $0 < systemSnapshot.refreshedAt } ?? true)
-                    self.syncProfiles()
                     self.configureAuthMonitoring()
                     if previousMonitorID != self.selectedMonitorProfileID {
                         self.clearDisplayedAccount()

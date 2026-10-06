@@ -96,6 +96,8 @@ class AsarPackageTests(unittest.TestCase):
             stage = Path(temporary) / "stage"
             result = PACKAGE.prepare_stage(stage, manifest)
             self.assertIn("src/electron/main.js", result["transformChanged"])
+            for backport in ("exporter", "usage", "sessionDetail", "sessionDetailResolver", "watcherHost", "watcherWorker"):
+                self.assertIn(f"src/shared/{backport}.js", result["transformChanged"])
             self.assertEqual(json.loads((stage / "package.json").read_text())["main"], "aigoodbro/bootstrap.cjs")
             self.assertEqual((stage / "assets/icon.png").read_bytes(), (PACKAGE.ROOT / "Resources/AiGoodBro-icon.png").read_bytes())
             self.assertEqual((stage / "assets/tray-curve.png").read_bytes(), (PACKAGE.ROOT / manifest["helper"]["trayIcon"]).read_bytes())
@@ -149,6 +151,9 @@ class AsarPackageTests(unittest.TestCase):
             "src/electron/renderer/trayComposer.js", "src/electron/tray.js",
             "src/electron/edgeDock/controller.js",
             "src/shared/deviceRuntime.js", "src/shared/collector.js",
+            "src/shared/exporter.js", "src/shared/usage.js",
+            "src/shared/sessionDetail.js", "src/shared/sessionDetailResolver.js",
+            "src/shared/watcherHost.js", "src/shared/watcherWorker.js",
         }
         self.assertEqual(len(source_paths), 364)
         self.assertEqual(changed_from_vendor, transformed | {"assets/icon.png", "package.json"})

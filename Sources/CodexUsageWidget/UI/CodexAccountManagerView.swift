@@ -293,7 +293,7 @@ private struct UpstreamHomeStatistics: View {
     let state: TokenMonitorEngineState
     let language: WidgetLanguage
     @Binding var preferences: HomeDashboardPreferences
-    let summaryCost: UpstreamTrendView.SummaryCost
+    let summaryTotals: UpstreamTrendView.SummaryTotals
     @State private var dragStartHeight: CGFloat?
     @State private var draggingHeight: CGFloat?
     @State private var hoveringResize = false
@@ -336,7 +336,7 @@ private struct UpstreamHomeStatistics: View {
                     UpstreamTrendView(
                         dashboardJSON: dashboardJSON, height: dashboardHeight,
                         homePreferences: preferences, onHomePreferences: { preferences = $0 },
-                        summaryCost: summaryCost
+                        summaryTotals: summaryTotals
                     )
                     .environment(\.widgetLanguage, language)
                     .overlay(alignment: .bottom) {
@@ -444,8 +444,12 @@ struct CodexAccountManagerView: View {
     @State private var isAgentBreakdownExpanded = true
     @State private var isAutomationCenterPresented = false
     @State private var isResetCreditAutoSettingsPresented = false
+    @State private var resetCreditAutoFocusedProfileID: String? = nil
     @State private var isSetupGuidePresented = false
+    @State private var isNewFeatureUpdatePresented = false
+    @State private var installationUpdatesEventID: String?
     @State private var setupGuideScope = NextSetupGuideScope.full
+    @State private var setupGuideEventID: String?
     @State private var hasCheckedAutomaticGuide = false
     @State private var isPreviewPaletteLibraryPresented = false
     @State private var isHomeAboutPresented = false
@@ -635,6 +639,7 @@ struct CodexAccountManagerView: View {
                 hasCheckedAutomaticGuide = true
                 if let scope = settings.installationOnboarding.automaticScope(legacyShouldPresent: settings.onboarding.shouldPresent) {
                     setupGuideScope = scope
+                    setupGuideEventID = settings.installationOnboarding.shouldPresent ? settings.installationOnboarding.presentationEventID : nil
                     if setupGuideScope == .full { settings.onboarding.begin() }
                     isSetupGuidePresented = true
                 }
@@ -659,7 +664,11 @@ struct CodexAccountManagerView: View {
             ResetCreditAutoSettingsView(
                 profiles: store.profiles, preferences: $settings.resetCreditAutoPreferences,
                 status: store.resetCreditAutoStatus, language: language, isPreview: store.isPreview,
-                onDone: { isResetCreditAutoSettingsPresented = false })
+                focusedProfileID: resetCreditAutoFocusedProfileID,
+                onDone: {
+                    isResetCreditAutoSettingsPresented = false
+                    resetCreditAutoFocusedProfileID = nil
+                })
         }
         .sheet(isPresented: $isPreviewPaletteLibraryPresented) {
             PaletteLibraryView(settings: settings)
@@ -686,6 +695,7 @@ struct CodexAccountManagerView: View {
         .sheet(
             isPresented: $isSetupGuidePresented,
             onDismiss: {
+                installationUpdatesEventID = nil
                 store.migrateDeviceLoginHostIfNeeded(from: .setupGuide)
                 if openAutomationAfterGuide {
                     openAutomationAfterGuide = false
@@ -693,13 +703,57 @@ struct CodexAccountManagerView: View {
                 }
             }
         ) {
-            NextSetupGuideView(
-                store: store, settings: settings, localAccounts: localCLIAccounts, scope: setupGuideScope,
-                onOutcome: { settings.installationOnboarding.finish($0, scope: setupGuideScope) },
-                openAutomation: {
-                    openAutomationAfterGuide = true
-                    isSetupGuidePresented = false
-                })
+            let presentedEventID = setupGuideEventID
+            let presentedScope = setupGuideScope
+            if presentedScope == .audience {
+                if let eventID = presentedEventID, installationUpdatesEventID == eventID {
+                    NewFeatureUpdateView(
+                        store: store, settings: settings,
+                        doneTitle: language.text("返回欢迎页", "Back to welcome"),
+                        onDone: {
+                            guard installationUpdatesEventID == eventID else { return }
+                            installationUpdatesEventID = nil
+                        }
+                    )
+                    .disabled(!settings.installationOnboarding.shouldPresent || settings.installationOnboarding.presentationEventID != eventID)
+                } else {
+                    InstallationAudienceChoiceView(
+                        language: language,
+                        onSelect: { audience in
+                            guard let eventID = presentedEventID,
+                                settings.installationOnboarding.select(audience, eventID: eventID)
+                            else { return }
+                            if audience == .newUser {
+                                settings.setupProgress = NextSetupProgress()
+                                settings.onboarding.begin()
+                            }
+                            setupGuideScope = audience.scope
+                        },
+                        onDefer: {
+                            settings.installationOnboarding.finish(.deferred, scope: .audience, eventID: presentedEventID)
+                            isSetupGuidePresented = false
+                        },
+                        onShowUpdates: {
+                            guard let eventID = presentedEventID,
+                                settings.installationOnboarding.shouldPresent,
+                                settings.installationOnboarding.presentationEventID == eventID
+                            else { return }
+                            installationUpdatesEventID = eventID
+                        })
+                }
+            } else {
+                NextSetupGuideView(
+                    store: store, settings: settings, localAccounts: localCLIAccounts, scope: presentedScope,
+                    installationEventID: presentedEventID,
+                    onOutcome: { settings.installationOnboarding.finish($0, scope: presentedScope, eventID: presentedEventID) },
+                    openAutomation: {
+                        openAutomationAfterGuide = true
+                        isSetupGuidePresented = false
+                    })
+            }
+        }
+        .sheet(isPresented: $isNewFeatureUpdatePresented) {
+            NewFeatureUpdateView(store: store, settings: settings, onDone: { isNewFeatureUpdatePresented = false })
         }
         .sheet(item: $avatarEditor) { target in
             AccountAvatarEditor(
@@ -790,6 +844,7 @@ struct CodexAccountManagerView: View {
                     accountNumbers: localAccountNumbers,
                     onOpenSetup: {
                         setupGuideScope = .full
+                        setupGuideEventID = nil
                         settings.setupProgress.step = .runtime
                         isSetupGuidePresented = true
                     })
@@ -908,7 +963,7 @@ struct CodexAccountManagerView: View {
                         : language.text("微信与飞书连接", "WeChat & Feishu setup")
                 ) {
                     setupGuideScope = .connections
-                    if !settings.installationOnboarding.shouldPresent { settings.installationOnboarding.connectionStep = .notifications }
+                    setupGuideEventID = nil
                     isSetupGuidePresented = true
                 }
                 Button(language.text("关于 AiGoodBro · 致谢", "About AiGoodBro · Credits")) { isHomeAboutPresented = true }
@@ -926,6 +981,17 @@ struct CodexAccountManagerView: View {
             .font(.system(size: 11))
             .foregroundStyle(.secondary)
             .buttonStyle(.plain)
+            HStack(spacing: 8) {
+                Button {
+                    isNewFeatureUpdatePresented = true
+                } label: {
+                    Label(language.text("新功能与设置", "What's new & settings"), systemImage: "sparkles")
+                }
+                Text(language.text("重置卡临期自动使用 · 侧栏额度样式", "Reset-card expiry protection · Sidebar quota style"))
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+            }
+            .font(.system(size: 11)).foregroundStyle(.secondary).buttonStyle(.plain)
         }
         .padding(.top, 2)
         .padding(.bottom, 4)
@@ -1132,6 +1198,12 @@ struct CodexAccountManagerView: View {
 
     private var professionalSettingsContent: some View {
         VStack(alignment: .leading, spacing: 10) {
+            Button {
+                isNewFeatureUpdatePresented = true
+            } label: {
+                Label(language.text("新功能与设置", "What's new & settings"), systemImage: "sparkles")
+            }
+            .buttonStyle(.bordered)
             HStack(alignment: .top, spacing: 12) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(language.text("工作台设置", "Workspace settings"))
@@ -1240,11 +1312,13 @@ struct CodexAccountManagerView: View {
         case .upstream:
             let usage = TokenMonitorDashboardSnapshot(state: store.engineState, hub: store.tokenMonitorHubSync)
             let usesDesktop = !store.isPreview && tokenDesktop.isBundled
+            let desktopUsage = tokenDesktop.allTimeUsage
             UpstreamHomeStatistics(
                 state: store.engineState, language: language,
                 preferences: $settings.homeDashboardPreferences,
-                summaryCost: .init(
-                    value: usesDesktop ? tokenDesktop.totalCostUSD : usage.value(for: .total, metric: .cost),
+                summaryTotals: .init(
+                    tokens: usesDesktop ? desktopUsage.totalTokens : usage.tokenCount(for: .total),
+                    costUSD: usesDesktop ? desktopUsage.totalCostUSD : usage.value(for: .total, metric: .cost),
                     isPartial: !usesDesktop && !usage.isHubSource && store.engineState.lastGood?.coverage.cost == .partial))
         case .custom:
             VStack(alignment: .leading, spacing: 10) {
@@ -1572,6 +1646,7 @@ struct CodexAccountManagerView: View {
                 onOpenDetails: { openLocalCLITab(profile.kind) },
                 onOpenSetup: {
                     setupGuideScope = .full
+                    setupGuideEventID = nil
                     settings.setupProgress.step = .runtime
                     isSetupGuidePresented = true
                 })
@@ -1605,6 +1680,7 @@ struct CodexAccountManagerView: View {
 
     private var resetCreditAutoSettingsButton: some View {
         Button {
+            resetCreditAutoFocusedProfileID = nil
             isResetCreditAutoSettingsPresented = true
         } label: {
             Label(language.text("到期自动使用", "Use before expiry"), systemImage: "clock.arrow.circlepath")
@@ -2175,6 +2251,7 @@ struct CodexAccountManagerView: View {
 
     private func openPrimaryGuide() {
         setupGuideScope = .full
+        setupGuideEventID = nil
         settings.setupProgress.step = .accounts
         isSetupGuidePresented = true
     }
@@ -2902,7 +2979,11 @@ struct CodexAccountManagerView: View {
                     resetCardsExpiring: codexCardExpiring(profile, now: now),
                     resetCreditsFetchedAt: profile.id == store.selectedMonitorProfileID ? store.snapshot.refreshedAt : profile.lastSnapshot?.fetchedAt,
                     resetCreditsReadSucceeded: linkedProfile == nil && profile.lastQuotaReadFailureAt == nil
-                        && (profile.id == store.selectedMonitorProfileID ? store.snapshot.quotaReadSucceeded : profile.lastSnapshot?.quotaReadSucceeded == true)
+                        && (profile.id == store.selectedMonitorProfileID ? store.snapshot.quotaReadSucceeded : profile.lastSnapshot?.quotaReadSucceeded == true),
+                    onOpenResetAutoSettings: {
+                        resetCreditAutoFocusedProfileID = profile.id
+                        isResetCreditAutoSettingsPresented = true
+                    }
                 ))
         }
         return AnyView(
@@ -2950,6 +3031,10 @@ struct CodexAccountManagerView: View {
                 resetCreditsFetchedAt: profile.id == store.selectedMonitorProfileID ? store.snapshot.refreshedAt : profile.lastSnapshot?.fetchedAt,
                 resetCreditsReadSucceeded: linkedProfile == nil && profile.lastQuotaReadFailureAt == nil
                     && (profile.id == store.selectedMonitorProfileID ? store.snapshot.quotaReadSucceeded : profile.lastSnapshot?.quotaReadSucceeded == true),
+                onOpenResetAutoSettings: {
+                    resetCreditAutoFocusedProfileID = profile.id
+                    isResetCreditAutoSettingsPresented = true
+                },
                 localResetHistoryCount: store.localResetHistoryCount(for: profile),
                 proxyParticipation: localProxy.displayRows.first(where: { $0.id == profile.id }).map(\.isEnabled),
                 proxyPriority: localProxy.displayRows.first(where: { $0.id == profile.id }).map(\.isPriority),
@@ -5807,6 +5892,7 @@ private struct ProfileRow: View {
     let resetCardsExpiring: Bool
     var resetCreditsFetchedAt: Date? = nil
     var resetCreditsReadSucceeded = false
+    var onOpenResetAutoSettings: (() -> Void)? = nil
     let localResetHistoryCount: Int
     /// Nil means this account is not currently eligible for the proxy queue.
     /// It stays distinct from an explicit opt-out so the card never presents
@@ -5993,7 +6079,7 @@ private struct ProfileRow: View {
         ResetCardExpiryFactsView(
             count: availableResetCredits, expiries: resetCreditExpiries,
             fetchedAt: resetCreditsFetchedAt, readSucceeded: resetCreditsReadSucceeded,
-            now: currentDate, expiring: resetCardsExpiring)
+            now: currentDate, expiring: resetCardsExpiring, onOpenAutoSettings: onOpenResetAutoSettings)
     }
 
     private var compactIdentity: some View {
