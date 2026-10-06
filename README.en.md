@@ -10,6 +10,21 @@ This version is **2.2 · 1006v3**, with internal update version **9.6.80 (130)**
 
 [Download for Apple Silicon](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v9.6.80/AiGoodBro-9.6.80-mac-arm64.dmg) · [Release notes and alternate ZIP](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/tag/v9.6.80)
 
+## Features at a glance
+
+**AiGoodBro is a macOS AI workspace that brings accounts, quotas, tasks and messages together.**
+
+- **Multiple accounts on one page:** See remaining quota, reset times and task occupancy to know which account is ready to use.
+- **Understand token consumption:** Usage totals, heatmaps, trends and cost estimates show which tools and models you use most.
+- **Manage multiple tools:** View quota and status for connected tools such as Codex, Kimi, Grok and Claude Code. AiGoodBro includes Token Monitor, whose [latest upstream version](https://github.com/Javis603/token-monitor/blob/main/README.md) supports **token tracking for 35+ tools and quota detection for 28+ providers**. This version uses a pinned upstream with selected fixes; see [quota coverage](docs/local-cli-accounts.md) for the providers connected in AiGoodBro.
+- **Route requests through your own account pool:** Enable the optional local proxy and set participating accounts, priority and call order. Changes stay synchronized between account cards and the proxy panel.
+- **Invite friends from the workspace:** Send invitations in batches and view invitation status and referral credits. Rewards follow the provider's official requirements.
+- **Help avoid unused reset cards expiring:** See the nearest expiry inline and hover for all expiry times. Opt in per account to use cards before expiry, with an adjustable default lead time of **30 minutes**.
+- **Receive WeChat and Feishu reminders:** Configure quota, reset and reset-card messages. WeChat can also query status and continue a selected Codex conversation.
+- **Show the sidebar when you need it:** Press **⌘I** to show or hide it, or pin it with one click. Choose ring or fish quota styles and check usage from the menu bar.
+- **Guided installation and updates:** New users receive full setup; returning users review WeChat, Feishu and new features. The update dialog shows changes and lets you download an installer; installation remains a user action.
+- **An interface that fits your habits:** Chinese and English, multiple light and dark themes, and card or list layouts keep information clear and controls easy to find.
+
 **Help avoid forgotten reset cards expiring unused.** Click an account’s reset-card count, nearest expiry date or information button to open its automatic-use settings. This is off by default and requires per-account opt-in. The default lead time is 30 minutes and can be adjusted. A desktop account uses an existing, verified independent entry for the same identity; missing entries, unknown task state or busy tasks pause the attempt. The app must remain running. Uncertain outcomes require review rather than automatic retries. See the [reset-card behavior and limits](docs/reset-credit-control.md).
 
 The images below retain their 1002v2 provenance. The [full gallery](docs/images/1002v2/README.md) covers home, accounts, proxy, settings, setup, usage panels and all nine themes. Historical real captures retain their version labels.
