@@ -57,6 +57,10 @@ Public downloads still target build 130. The verified local build 137 and later 
 
 Codex / Claude 卡片和列表、圆形额度进度、侧栏及菜单浮窗继续保留。本次未修改 Swift、Go、Stores、Services、Info.plist、运行资源或 Windows 源码，未改动软件版本、安装包、发布标签或正在运行的 App / 反代。
 
+侧栏的反代详情提供运行状态、请求数、账号列表及每个账号的 5h / 7d 额度圆环、重置倒计时和点数；请求快照每分钟更新，额度为最近一次读取，缺少额度时显示「—」。详情可固定置顶，并保留反代设置入口。其展示来自现有 [`proxyContent`](../Sources/CodexUsageWidget/UI/TokenMonitorEdgeDockView.swift#L618)。
+
+移动指针进入或切换侧栏条目时，会按「触控板轻触反馈」设置调用系统触感反馈；支持触感反馈的触控板可感受到轻触提示。已核对现有[触发位置](../Sources/CodexUsageWidget/Services/TokenMonitorEdgeDockController.swift#L630)与[设置开关](../Sources/CodexUsageWidget/UI/TokenMonitorEdgeDockSettingsView.swift#L204)。用户提供的当前局部截图用于确认这类界面，账号别名和点数未进入公开图片；静态截图不作为触感验收证据。
+
 提交前验证包括：恢复归档逐项 SHA-256、移除目标不存在、文档链接与旧媒体引用扫描、差异范围与隐私检查，以及已公开 130 二进制的既有纯自测。PR 与 main 的必要 CI、合并后远端读回分别验证；文档更新不代替实机登录、额度请求或软件发布验收。
 
 [中文 README](../README.md) · [English README](../README.en.md) · [公开版本说明](release-notes-v9.6.80.md)

@@ -21,7 +21,7 @@ The current public GitHub installer is **2.2 · 1006v3**, with internal update v
 - **Invite friends from the workspace:** Send invitations in batches and view invitation status and referral credits. Rewards follow the provider's official requirements.
 - **Help avoid unused reset cards expiring:** See the nearest expiry inline and hover for all expiry times. Opt in per account to use cards before expiry, with an adjustable default lead time of **30 minutes**.
 - **Receive WeChat and Feishu reminders:** Configure quota, reset and reset-card messages. WeChat can also query status and continue a selected Codex conversation.
-- **Show the sidebar when you need it:** Press **⌘I** to show or hide it, or pin it with one click. Choose ring or fish quota styles and check usage from the menu bar.
+- **Show the sidebar when you need it:** Press **⌘I** to show or hide it, hover for details, or pin it with one click. View quota rings, proxy requests and account status, with optional trackpad haptics as the pointer moves between items.
 - **Guided installation and updates:** New users receive full setup; returning users review WeChat, Feishu and new features. The update dialog shows changes and lets you download an installer; installation remains a user action.
 - **An interface that fits your habits:** Chinese and English, multiple light and dark themes, and card or list layouts keep information clear and controls easy to find.
 
@@ -40,6 +40,14 @@ Codex's isolated CLI can use its own local sign-in directory; support for other 
 The workspace shows quota and status for connected tools; availability depends on the tool and current sign-in. ZCode is a desktop tool, not a CLI. WorkBuddy desktop quota is currently unreadable. The Kimi CLI view shows its previous snapshot; refresh it before relying on the value.
 
 The project workbench distinguishes execution from accepted outcomes and keeps remaining work and the original chat available.
+
+## Sidebar and proxy status panel
+
+The sidebar sits at the screen edge and shows selected account quotas, token statistics and other items. Choose ring or fish quota styles, press **⌘I** to show or hide it, hover for details, and drag the top to move it. Pins keep the sidebar visible or its detail panel on top.
+
+Hover over the proxy item to open its status panel: see its running state, request count and account list, with **5h / 7d quota rings, reset countdowns and credit balances** for each account, plus a Proxy settings shortcut. Request snapshots update every minute; quota comes from the latest read. Unavailable quota appears as “—”.
+
+On a trackpad that supports haptic feedback, entering or switching sidebar items gives a light tactile cue. Turn it off with **Trackpad haptics** in the sidebar settings.
 
 ## Setup guide: connect official tools and accounts
 
