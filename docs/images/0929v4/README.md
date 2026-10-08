@@ -1,7 +1,5 @@
-# 0929v4 overview image
+# 0929v4 界面素材已退出公开展示
 
-Provided by the user as a real machine screenshot. The JPEG was copied byte-for-byte; values show only the state visible at capture time. No independent version or date claim is made.
+该组历史界面图、合成预览或概念封面已于 2026-10-08 从当前公开树移除。图片不能代表当前安装版、真实账号额度或当前功能状态。
 
-- File: [`00-overview-user.jpg`](00-overview-user.jpg)
-- Dimensions: 1287 × 885 pixels.
-- SHA-256: `f67411ed4c93e9405e63f64674b02418141ec788b6a4046c082063f34528e090`.
+原素材及校验信息保留在本地恢复归档；Git 历史未改写。当前版本、素材来源及验证边界见[界面资料说明](../../public-ui-1008v1.md)。

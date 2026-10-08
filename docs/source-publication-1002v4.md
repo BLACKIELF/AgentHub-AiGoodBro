@@ -15,7 +15,7 @@ This source update builds on AiGoodBro 9.6.63 (113). It makes invitations, proxy
 
 ## Verification and previews
 
-The [new gallery](images/1002v4/README.md) uses synthetic data. Native panels are rendered from SwiftUI; the overview is captured in isolated Chromium with network requests blocked. These are source previews, not live-account screenshots.
+The former 1002v4 gallery used synthetic data and has been withdrawn from public display; see [the cleanup record](public-ui-1008v1.md). Native panels are rendered from SwiftUI; the overview is captured in isolated Chromium with network requests blocked. These are source previews, not live-account screenshots.
 
 Local checks cover invitation batches and lifecycle, live policy persistence and admission races, quota-only refresh, purchase-link fallback, numeric-width allocation, manual resizing and bilingual narrow layouts. The final verification counts are recorded in this PR after the candidate completes its build and pure self-tests.
 

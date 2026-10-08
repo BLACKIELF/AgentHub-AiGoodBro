@@ -1,6 +1,6 @@
 # Historical source publication · 0930v6 · 2026-09-30
 
-Current source candidate and gallery: [1002v2 / 9.6.63 (113)](source-publication-1002v2.md).
+This is a historical source record. For the current public installer and withdrawn visual material, see [interface evidence and version scope](public-ui-1008v1.md).
 
 The current source candidate is 9.6.41 (91), integrating the official Tencent iLink WeChat bot, native project workbench, CLI reception repairs and previously verified local build 87 improvements. The existing remote branch history, build 82 screenshot gallery and regression fixes are retained. Current main-program sources are rebuilt after the merge and required style normalization; build 90 receipts do not qualify the changed tree.
 
@@ -36,7 +36,7 @@ Current local checks:
 
 - Optimized Swift compilation, `make lint`, `git diff --check`, all 33 manifest self-tests and 132 isolated dispatch-participation tests pass. The dispatch suite skips its root-only unowned-file case when running without root.
 - Candidate deep/strict signature verification, companion and local-proxy resources, the frozen statistics engine/runtime smoke check, five runtime PNGs, and the Token Core ASAR/signature checks pass. The installed Token Core helper was read and copied only after the current source verifier accepted its pinned resources, adapter and signature; the isolated copy was verified again. The main executable was compiled from this candidate, not copied from the installed app.
-- No installed application was replaced or restarted. The six public screenshots remain the actual 2026-09-29 build 82 captures documented in [their source notes](images/0929v2/README.md); they were not regenerated from synthetic fixtures.
+- No installed application was replaced or restarted. The six screenshots used for this historical record were actual 2026-09-29 build 82 captures. They have since been withdrawn from public display; recovery metadata is retained locally.
 
 Earlier baseline checks retained for context:
 

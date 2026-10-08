@@ -17,7 +17,7 @@ This source update builds on AiGoodBro 9.6.64 (114). It makes invitations, proxy
 
 ## Verification and previews
 
-The [new gallery](images/1002v4/README.md) is the 1003v1 candidate's synthetic preview set (the directory keeps its 1002v4 provenance). Native panels are rendered from SwiftUI; the overview is captured in isolated Chromium with network requests blocked. These are source previews, not live-account screenshots.
+The former 1002v4 gallery was the 1003v1 candidate's synthetic preview set. It has been withdrawn from public display; see [the cleanup record](public-ui-1008v1.md). Native panels are rendered from SwiftUI; the overview is captured in isolated Chromium with network requests blocked. These are source previews, not live-account screenshots.
 
 Local checks cover invitation batches and lifecycle, live policy persistence and admission races, quota-only refresh, purchase-link fallback, numeric-width allocation, manual resizing and bilingual narrow layouts. The installed local candidate compiled 274 Swift sources (main executable SHA-256 `862d67a303386ed121e1eb3d2e0e77951cad0b92ddbc432ef5ce4f80f799eea2`), passed all 35 selected offline self-tests, source/resource checks, relevant Python tests, four cross-language proxy bridge fixtures, the companion proxy's full race-enabled Go suite and `go vet`. The embedded proxy helper SHA-256 is `5e5135edca43066623364f02ae70e55d084ee88dc09a4790aaaebd4634130281`. The Chromium home-dashboard regression could not run locally because Playwright is not installed; CI retains the browser check.
 

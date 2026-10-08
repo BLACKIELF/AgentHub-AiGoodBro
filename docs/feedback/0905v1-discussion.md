@@ -48,11 +48,6 @@
 
 推文正文单独放在 [0905v1 推文](../announcements/0905v1-social-post.md)，这里的分析和发布说明不需要复制进正文。
 
-可沿用这四张未经缩放的生产组件预览。账号、额度和日期均为合成演示数据，不是用户实际账号截图。
-
-- [单账号主界面，2160 × 1520](../images/0905v1/single-account-dark@2x.png)
-- [单账号菜单栏，760 × 1220](../images/0905v1/single-account-menu-dark@2x.png)
-- [多账号界面，2160 × 1520](../images/0905v1/multi-account-light@2x.png)
-- [Astra 模型设置，800 × 940](../images/0905v1/astra-model-dark@2x.png)
+历史四张合成预览已退出公开展示；不再沿用为当前产品配图。见[界面资料清理记录](../public-ui-1008v1.md)。
 
 功能现状以 [README](../../README.md) 为准，运行验证范围见 [0905v1 升级记录](../release-notes-v9.5.1.md)。当前 GitHub 已提供源码；不要把本机完成覆盖安装写成已公开发布新版安装包。独立 Hub 的 Astra 派单适配也不能因 Next 界面出现 Astra 就视为已经部署。

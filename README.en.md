@@ -6,7 +6,7 @@ AiGoodBro is a macOS AI workspace for personal use. It brings together quotas fo
 
 [中文](README.md) | **English**
 
-This version is **2.2 · 1006v3**, with internal update version **9.6.80 (130)**. Home and the menu bar share the same all-time token and cost snapshot. It includes the unexpected-exit fix, an update dialog with release notes and downloads, and new/returning-user installation setup. After a detectable installation or replacement, new users get full setup; returning users review WeChat, Feishu and new settings while keeping existing preferences. See the [usage guide](docs/usage-guide.md) and [changelog](CHANGELOG.md).
+The current public GitHub installer is **2.2 · 1006v3**, with internal update version **9.6.80 (130)**. Home and the menu bar share the same all-time token and cost snapshot. It includes the unexpected-exit fix, an update dialog with release notes and downloads, and new/returning-user installation setup. After a detectable installation or replacement, new users get full setup; returning users review WeChat, Feishu and new settings while keeping existing preferences. See the [usage guide](docs/usage-guide.md) and [changelog](CHANGELOG.md).
 
 [Download for Apple Silicon](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v9.6.80/AiGoodBro-9.6.80-mac-arm64.dmg) · [Release notes and alternate ZIP](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/tag/v9.6.80)
 
@@ -27,37 +27,23 @@ This version is **2.2 · 1006v3**, with internal update version **9.6.80 (130)**
 
 **Help avoid forgotten reset cards expiring unused.** Click an account’s reset-card count, nearest expiry date or information button to open its automatic-use settings. This is off by default and requires per-account opt-in. The default lead time is 30 minutes and can be adjusted. A desktop account uses an existing, verified independent entry for the same identity; missing entries, unknown task state or busy tasks pause the attempt. The app must remain running. Uncertain outcomes require review rather than automatic retries. See the [reset-card behavior and limits](docs/reset-credit-control.md).
 
-The images below retain their 1002v2 provenance. The [full gallery](docs/images/1002v2/README.md) covers home, accounts, proxy, settings, setup, usage panels and all nine themes. Historical real captures retain their version labels.
+**Interface documentation update · 1008v1:** Older screenshots, synthetic galleries and HTML mockups have been withdrawn from public display. As of 2026-10-08, the verified local installation is **2.3.0 (137)**; this build and later candidates have not been publicly released. Verified, redacted live screenshots are pending, so this page currently uses factual descriptions. See [interface evidence and version scope](docs/public-ui-1008v1.md).
 
 ## See what is happening
 
 Home shows each account's remaining quota, reset time and task occupancy. Public reset announcements stay distinct from an account's actual quota. Usage views summarize token, model and tool activity; estimated costs are based on local data, not provider bills.
 
-![AgentHub home, 9.6.63 (113), native synthetic preview](docs/images/1002v2/home/compact-en.png)
-
-*Home supports resizable sections, cards and rows. The two reset panels share the available width and preserve the user’s chosen proportions.*
+Home supports resizable sections, cards and rows. The two reset panels share the available width and preserve the user’s chosen proportions.
 
 Codex's isolated CLI can use its own local sign-in directory; support for other tools depends on the provider. Account cards and rows let you refresh quota, change order, choose a model or start an isolated CLI. See the [CLI quota coverage](docs/local-cli-accounts.md) for supported providers and limits.
 
-![Codex account cards, 9.6.63 (113), native synthetic preview](docs/images/1002v2/accounts/cards-en-dark.png)
-
-*Codex account cards.*
-
 The workspace shows quota and status for connected tools; availability depends on the tool and current sign-in. ZCode is a desktop tool, not a CLI. WorkBuddy desktop quota is currently unreadable. The Kimi CLI view shows its previous snapshot; refresh it before relying on the value.
 
-![Multi-provider workspace, 9.6.63 (113), native synthetic preview](docs/images/1002v2/workspace/providers-en-dark.png)
-
-*Tool status, quotas and controls follow each provider’s capabilities; unreadable quotas retain an explicit notice.*
-
-![Project workbench, 9.6.63 (113), native synthetic preview](docs/images/1002v2/workbench/workbench-900-dark.png)
-
-*The project workbench distinguishes execution from accepted outcomes and keeps remaining work and the original chat available. This preview is in Chinese.*
+The project workbench distinguishes execution from accepted outcomes and keeps remaining work and the original chat available.
 
 ## Setup guide: connect official tools and accounts
 
 Follow the guide to sign in to an official tool or account, then return to the workspace to check its connection status. Connect each tool when you need it.
-
-![Guide to connecting official tools and accounts, 9.6.63 (113), native synthetic preview](docs/images/1002v2/setup/en-dark-step1.png)
 
 ## Local proxy: route requests through your own account pool
 
@@ -67,17 +53,13 @@ Credit continuation is off by default. Only if the user enables it does the prox
 
 The proxy routes inference requests only. Codex Desktop keeps its OpenAI sign-in, each conversation's model and reasoning effort; using the proxy does not change system authentication files or global configuration. An already-running Codex process does not switch routes until it is restarted and connected again.
 
-![Local proxy controls, 9.6.63 (113), native synthetic preview](docs/images/1002v2/proxy/en-dark-830.png)
-
-*The synthetic preview shows account order, quotas and credit floors. The standalone window now uses one rounded glass surface with a transparent titlebar and no dark separator. The AppKit frame still needs a real-window check after a normal restart.*
-
 **Start and stop it yourself:**
 
 1. Turn on the proxy manually in AiGoodBro. It does not start automatically when the app restarts.
 2. Quit Codex. The **Connect Desktop** button appears only after the proxy starts successfully and its connection details are ready; choose it to relaunch Codex with the local route.
 3. When finished, stop the service in the proxy panel. Closing the main window only hides it; quitting the app asks whether to stop the proxy. Reopen Codex normally after stopping it.
 
-Once a streamed response has begun, an error is not replayed through another account. An uncertain result is not sent again automatically, avoiding duplicate task execution. Proxy controls and the Connect Desktop entry are present in the candidate UI; their presence does not prove end-to-end acceptance.
+Once a streamed response has begun, an error is not replayed through another account. An uncertain result is not sent again automatically, avoiding duplicate task execution. The presence of proxy controls and the Connect Desktop entry does not prove end-to-end acceptance.
 
 The proxy is designed for personal use with your own accounts and local tasks. This project does not provide accounts, credential sharing, quota resale or a public proxy service.
 
@@ -99,9 +81,7 @@ Choose a palette in Settings → Appearance. Each theme supports light and dark 
 | Violet Glow | An independent glass variant of the existing default blue-violet tokens. |
 | WAICY Sunset | A three-stop pink-to-orange gradient based on badge-candidate colors. |
 
-![WAICY Sunset dark palette, native synthetic preview](docs/images/1002v2/themes/codexu.waicy-dark.png)
-
-[View light and dark previews of all nine themes](docs/images/1002v2/README.md#themes). Themes supply color tokens only. WAICY artwork, logos, mascots and fonts are not copied, and the palette does not imply official endorsement.
+Themes supply color tokens only. WAICY artwork, logos, mascots and fonts are not copied, and the palette does not imply official endorsement.
 
 ## Downloads and source builds
 
@@ -137,6 +117,6 @@ AiGoodBro is licensed under [MIT](LICENSE). Full third-party license texts and c
 
 ## More information
 
-[Detailed guide (Chinese)](docs/usage-guide.md) · [CLI quota coverage](docs/local-cli-accounts.md) · [Proxy implementation and validation](docs/local-proxy-0928v1.md) · [Current source publication record](docs/source-publication-1003v1.md) · [Historical real captures: 0929v2](docs/images/0929v2/README.md) · [Historical screenshots: 0927v6](docs/images/0927v6/README.md) · [Historical screenshots: 0910v1](docs/images/0910v1/README.md) · [Report an issue](https://github.com/BLACKIELF/AgentHub-AiGoodBro/issues) · [Security](SECURITY.md)
+[Detailed guide (Chinese)](docs/usage-guide.md) · [CLI quota coverage](docs/local-cli-accounts.md) · [Proxy implementation and validation](docs/local-proxy-0928v1.md) · [Public build 130 release record](docs/release-notes-v9.6.80.md) · [Interface evidence and version scope](docs/public-ui-1008v1.md) · [Report an issue](https://github.com/BLACKIELF/AgentHub-AiGoodBro/issues) · [Security](SECURITY.md)
 
 [MIT license](LICENSE) · [Third-party notices](Resources/THIRD_PARTY_NOTICES.txt) · [Brand compatibility](docs/brand-compat-0911v1.md)
