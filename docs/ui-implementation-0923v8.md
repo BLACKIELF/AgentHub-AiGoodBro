@@ -45,7 +45,7 @@ Windows 协作实现的 Web 构建、31 项单元／契约检查、31 项浏览�
 
 ## 对照与续接
 
-- HTML：`docs/ui-preview-0923v7/index.html`，页面版本 0923v8；此前发送飞书的单文件 HTML 保留原样。
+- 历史 HTML 设计稿及静态效果图已退出公开展示；本地原稿与恢复记录保留，见[界面资料清理记录](public-ui-1008v1.md)。
 - 原生最终图：`.local-artifacts/glass-0923v8-final-renders/`，卡片和列表文件名分别为 `home-cards-dark-liquid-keycap-1440-full.png`、`home-rows-dark-liquid-keycap-1440-full.png`。
 - 构建：`.local-artifacts/glass-0923v8-final-build/AiGoodBro.app`；自检回执：`.local-artifacts/glass-0923v8-review/test-summary.json`。
 - [Windows 接手入口](windows-port/WINDOWS_AI_HANDOFF_0922v4.md)。后续继续尚未完成的原生交互验收和代码发布；正式覆盖安装已完成，不重复安装或从旧效果图重新实现。

@@ -1,12 +1,12 @@
-# Current source publication · 1002v2 · 2026-10-02
+# Historical source publication · 1002v2 · 2026-10-02
 
-AiGoodBro 9.6.63 (113) is the current macOS arm64 source candidate on `codex/reset-messages-0926v1`, reviewed in PR 13. It updates the existing candidate with the compact home layout, reset-message ordering and sizing, invitation entry points, nine color-token themes, WeChat/workbench changes, and the standalone proxy-window edge treatment.
+AiGoodBro 9.6.63 (113) was the macOS arm64 source candidate on `codex/reset-messages-0926v1`, reviewed in PR 13. It updates the existing candidate with the compact home layout, reset-message ordering and sizing, invitation entry points, nine color-token themes, WeChat/workbench changes, and the standalone proxy-window edge treatment.
 
 The proxy window now uses a full-size transparent titlebar, removes the default titlebar separator, and lets one rounded glass surface extend under the traffic lights. The content backdrop ignores the safe area so the outer edge reads as one surface. The installed 9.6.62 (112) app was left running; the new AppKit frame was not installed or restarted during this publication pass.
 
 ## Public gallery
 
-The gallery in [`docs/images/1002v2`](images/1002v2/README.md) is rendered from the candidate’s native SwiftUI components with synthetic fixtures. It covers home cards and rows, account layouts, local proxy controls, settings, setup steps, device-login states, usage panels, project workbench states, provider cards, and all nine themes. It does not contain live account names, credentials, prompts, responses, QR codes or provider results. Historical real captures remain in their original versioned directories.
+The former 1002v2 gallery was rendered from the candidate’s native SwiftUI components with synthetic fixtures. It has been withdrawn from public display; see [the cleanup record](public-ui-1008v1.md). It covers home cards and rows, account layouts, local proxy controls, settings, setup steps, device-login states, usage panels, project workbench states, provider cards, and all nine themes. It does not contain live account names, credentials, prompts, responses, QR codes or provider results. Historical real captures have also been withdrawn from public display.
 
 ## Validation
 
