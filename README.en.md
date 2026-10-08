@@ -10,6 +10,12 @@ The current public GitHub installer is **2.2 · 1006v3**, with internal update v
 
 [Download for Apple Silicon](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v9.6.80/AiGoodBro-9.6.80-mac-arm64.dmg) · [Release notes and alternate ZIP](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/tag/v9.6.80)
 
+<p align="center">
+  <img src="docs/images/1009v1/home-live.png" width="1000" alt="Live AiGoodBro home screenshot with reset announcements, token usage heatmap and trends, multi-account quota cards, and other connected tool states.">
+</p>
+
+*Home exported from the running local build 2.3.0 (137) on 2026-10-09. Values are a snapshot; the public download remains build 130. Click the image for its original size.*
+
 ## Features at a glance
 
 **AiGoodBro is a macOS AI workspace that brings accounts, quotas, tasks and messages together.**
@@ -27,7 +33,7 @@ The current public GitHub installer is **2.2 · 1006v3**, with internal update v
 
 **Help avoid forgotten reset cards expiring unused.** Click an account’s reset-card count, nearest expiry date or information button to open its automatic-use settings. This is off by default and requires per-account opt-in. The default lead time is 30 minutes and can be adjusted. A desktop account uses an existing, verified independent entry for the same identity; missing entries, unknown task state or busy tasks pause the attempt. The app must remain running. Uncertain outcomes require review rather than automatic retries. See the [reset-card behavior and limits](docs/reset-credit-control.md).
 
-**Interface documentation update · 1009v1:** Older screenshots, synthetic galleries and HTML mockups have been withdrawn from public display. A user-provided live UI crop is now included. As of 2026-10-08, the verified local installation is **2.3.0 (137)**; this build and later candidates have not been publicly released. Values reflect the moment of capture, and the image does not identify a software build. See [interface evidence and version scope](docs/public-ui-1008v1.md).
+**Interface documentation update · 1009v1:** Older screenshots, synthetic galleries and HTML mockups have been withdrawn from public display. A full live home screenshot and a user-provided sidebar crop are now included. As of 2026-10-09, the verified local installation is **2.3.0 (137)**; this build and later candidates have not been publicly released. Values reflect the moment of capture. The home image comes from local build 137; the sidebar crop does not show a build number. See [interface evidence and version scope](docs/public-ui-1008v1.md).
 
 ## See what is happening
 
