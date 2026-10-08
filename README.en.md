@@ -27,7 +27,7 @@ The current public GitHub installer is **2.2 · 1006v3**, with internal update v
 
 **Help avoid forgotten reset cards expiring unused.** Click an account’s reset-card count, nearest expiry date or information button to open its automatic-use settings. This is off by default and requires per-account opt-in. The default lead time is 30 minutes and can be adjusted. A desktop account uses an existing, verified independent entry for the same identity; missing entries, unknown task state or busy tasks pause the attempt. The app must remain running. Uncertain outcomes require review rather than automatic retries. See the [reset-card behavior and limits](docs/reset-credit-control.md).
 
-**Interface documentation update · 1008v1:** Older screenshots, synthetic galleries and HTML mockups have been withdrawn from public display. As of 2026-10-08, the verified local installation is **2.3.0 (137)**; this build and later candidates have not been publicly released. Verified, redacted live screenshots are pending, so this page currently uses factual descriptions. See [interface evidence and version scope](docs/public-ui-1008v1.md).
+**Interface documentation update · 1009v1:** Older screenshots, synthetic galleries and HTML mockups have been withdrawn from public display. A user-provided live UI crop is now included. As of 2026-10-08, the verified local installation is **2.3.0 (137)**; this build and later candidates have not been publicly released. Values reflect the moment of capture, and the image does not identify a software build. See [interface evidence and version scope](docs/public-ui-1008v1.md).
 
 ## See what is happening
 
@@ -42,6 +42,12 @@ The workspace shows quota and status for connected tools; availability depends o
 The project workbench distinguishes execution from accepted outcomes and keeps remaining work and the original chat available.
 
 ## Sidebar and proxy status panel
+
+<p align="center">
+  <img src="docs/images/1009v1/proxy-status-edge-dock.png" width="360" alt="User-provided live UI screenshot showing the edge sidebar and expanded proxy status panel, with per-account quota rings, reset countdowns and credits.">
+</p>
+
+*User-provided live UI crop; account state, quota and credits reflect the moment of capture.*
 
 The sidebar sits at the screen edge and shows selected account quotas, token statistics and other items. Choose ring or fish quota styles, press **⌘I** to show or hide it, hover for details, and drag the top to move it. Pins keep the sidebar visible or its detail panel on top.
 

@@ -9,9 +9,12 @@
 | GitHub 公开安装包 | [9.6.80 (130)，2.2 / 1006v3](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/tag/v9.6.80) | 下载与发布说明继续指向该正式包 |
 | 本机安装版 | 2.3.0 (137)，二进制与已验候选一致 | 尚未公开发行；没有把本地安装状态写成 GitHub 发布 |
 | 后续 138 候选 | 已因窄窗英文布局回归被拒绝交付 | 不作为正式发布或截图依据 |
-| 最新界面图片 | 137 正式渲染仍使用隔离合成数据；没有已核验可公开的最新实机图 | 先保留有依据的文字，待脱敏实机图核验后补充 |
+| 当前实机局部图片 | 用户提供并明确授权公开的侧栏与反代状态截图；原始 PNG 未重绘 | README 中英文已引用；数值仅代表截图当时的状态，图中未显示 build 编号 |
+| 完整界面图册 | 137 正式渲染仍使用隔离合成数据，尚无已验完整实机图册 | 合成预览不替代最新实机图 |
 
 Public downloads still target build 130. The verified local build 137 and later candidates are not public releases. No synthetic or concept image is presented as a current live screenshot.
+
+1009v1 补充：[用户提供的实机局部截图](images/1009v1/proxy-status-edge-dock.png)已原样公开，展示反代状态浮窗和侧栏额度圆环；SHA-256 为 `1ed2210647d0cd532674b0efd2cd7bda92f0d0662bd3e9d7af800b16922917a2`。截图不证明软件 build 编号、真实额度请求或触控板触感验收。
 
 ## 双圈图片来源
 
@@ -59,7 +62,7 @@ Codex / Claude 卡片和列表、圆形额度进度、侧栏及菜单浮窗继�
 
 侧栏的反代详情提供运行状态、请求数、账号列表及每个账号的 5h / 7d 额度圆环、重置倒计时和点数；请求快照每分钟更新，额度为最近一次读取，缺少额度时显示「—」。详情可固定置顶，并保留反代设置入口。其展示来自现有 [`proxyContent`](../Sources/CodexUsageWidget/UI/TokenMonitorEdgeDockView.swift#L618)。
 
-移动指针进入或切换侧栏条目时，会按「触控板轻触反馈」设置调用系统触感反馈；支持触感反馈的触控板可感受到轻触提示。已核对现有[触发位置](../Sources/CodexUsageWidget/Services/TokenMonitorEdgeDockController.swift#L630)与[设置开关](../Sources/CodexUsageWidget/UI/TokenMonitorEdgeDockSettingsView.swift#L204)。用户提供的当前局部截图用于确认这类界面，账号别名和点数未进入公开图片；静态截图不作为触感验收证据。
+移动指针进入或切换侧栏条目时，会按「触控板轻触反馈」设置调用系统触感反馈；支持触感反馈的触控板可感受到轻触提示。已核对现有[触发位置](../Sources/CodexUsageWidget/Services/TokenMonitorEdgeDockController.swift#L630)与[设置开关](../Sources/CodexUsageWidget/UI/TokenMonitorEdgeDockSettingsView.swift#L204)。用户明确授权后，提供的实机局部截图已公开；静态截图不作为触感验收证据。
 
 提交前验证包括：恢复归档逐项 SHA-256、移除目标不存在、文档链接与旧媒体引用扫描、差异范围与隐私检查，以及已公开 130 二进制的既有纯自测。PR 与 main 的必要 CI、合并后远端读回分别验证；文档更新不代替实机登录、额度请求或软件发布验收。
 
