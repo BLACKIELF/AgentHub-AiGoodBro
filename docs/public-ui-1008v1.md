@@ -8,7 +8,7 @@
 |---|---|---|
 | GitHub 公开安装包 | [9.6.80 (130)，2.2 / 1006v3](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/tag/v9.6.80) | 下载与发布说明继续指向该正式包 |
 | 本机安装版 | 2.3.0 (137)，二进制与已验候选一致 | 尚未公开发行；没有把本地安装状态写成 GitHub 发布 |
-| 后续 138 候选 | 本轮检查时最终资格收据尚未完成 | 不作为正式发布或截图依据 |
+| 后续 138 候选 | 已因窄窗英文布局回归被拒绝交付 | 不作为正式发布或截图依据 |
 | 最新界面图片 | 137 正式渲染仍使用隔离合成数据；没有已核验可公开的最新实机图 | 先保留有依据的文字，待脱敏实机图核验后补充 |
 
 Public downloads still target build 130. The verified local build 137 and later candidates are not public releases. No synthetic or concept image is presented as a current live screenshot.
