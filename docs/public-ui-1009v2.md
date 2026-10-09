@@ -60,6 +60,6 @@ README 总览复用已公开的 **2.3.0 (137)** 主界面长图，账号与用�
 
 ## 发布候选验证
 
-最终 2.4.0 (141) / 1009v2 本地候选已通过 35 组原生自测（Carbon 冲突集成按验证环境设置跳过）、Desktop / 反代 / Companion / Engine 四项资源验证与完整应用递归签名检查。DMG 与 ZIP 均通过完整性、2,144 项文件树、权限、链接及严格递归签名核验；本轮校验值已与最终包文件重新对齐。Desktop 与 Engine 均包含 Grok 提示词标题修复。签名为 ad-hoc，未 Apple 公证；141 未安装、未正常启动验收，截图来源仍为上述 137 / 139 或未显示版本的原图。Go 全量 race 仍待 CI 完成。本轮用户反馈反代再次异常需重启恢复，原因仍在排查；本次不据此宣称永久解决或保证真实反代稳定性。详细边界与最终安装包 SHA256 / 字节数见 [2.4 发布说明](release-notes-v2.4.0.md)。
+最终 2.4.0 (141) / 1009v2 本地候选已通过 35 组原生自测（Carbon 冲突集成按验证环境设置跳过）、Desktop / 反代 / Companion / Engine 四项资源验证与完整应用递归签名检查。DMG 与 ZIP 均通过完整性、2,144 项文件树、权限、链接及严格递归签名核验；本轮校验值已与最终包文件重新对齐。Desktop 与 Engine 均包含 Grok 提示词标题修复。签名为 ad-hoc，未 Apple 公证；141 未安装、未正常启动验收，截图来源仍为上述 137 / 139 或未显示版本的原图。本地 Go race 证据为网关聚焦检查；全量结果以对应提交的 GitHub CI 为准，见 [PR #31](https://github.com/BLACKIELF/AgentHub-AiGoodBro/pull/31) 与 [CI 运行记录](https://github.com/BLACKIELF/AgentHub-AiGoodBro/actions/workflows/ci.yml)。本轮用户反馈反代再次异常需重启恢复，原因仍在排查；本次不据此宣称永久解决或保证真实反代稳定性。详细边界与最终安装包 SHA256 / 字节数见 [2.4 发布说明](release-notes-v2.4.0.md)。
 
 [中文 README](../README.md) · [English README](../README.en.md)

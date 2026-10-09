@@ -4,16 +4,10 @@ import Foundation
     import FoundationNetworking
 #endif
 
-// The production implementation is supplied when this standalone fixture is compiled. The body is
-// intentionally unreachable because every test injects a synthetic file reader.
-enum DispatchParticipationSync {
-    static func readBoundedRegularFile(
-        _ url: URL,
-        maximumBytes: Int,
-        allowMissing: Bool
-    ) throws -> Data? {
-        fatalError("real filesystem reads are forbidden in AdditionalCLIQuotaFixture")
-    }
+// Only the app language dependency is synthetic; the compiled filesystem helpers are real.
+struct WidgetLanguage {
+    static func storedOrAutomatic() -> Self { Self() }
+    func text(_ chinese: String, _ english: String) -> String { english }
 }
 
 private actor FakeTransport: LocalCLIQuotaTransport {
