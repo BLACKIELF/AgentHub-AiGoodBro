@@ -1,255 +1,269 @@
 # AiGoodBro · AgentHub (2.4)
 
-**See quota, usage and task occupancy at a glance; when needed, route local work through your own Codex account pool.**
+**See quotas, usage, reset messages and local work in one place; when needed, route work through your own Codex account pool.**
 
-AiGoodBro is a macOS AI workspace for personal use. It brings together quotas for multiple Codex accounts, token usage, local CLIs and public reset announcements, with an optional local proxy. The interface supports Chinese and English; its home page is called AgentHub.
+AiGoodBro is a macOS AI workspace for personal use. It brings together Codex accounts, Claude subscriptions, connected CLI status and quotas, Token usage, public reset messages and an optional local proxy. The interface supports Chinese and English; the home page is called AgentHub.
 
 [中文](README.md) | **English**
 
-This release is **2.4 · 1009v2**, with update version **2.4.0 (141)**. Compared with public 9.6.80 (130), it upgrades the bundled usage and proxy engines, adds Claude subscription accounts and independent quota rings, and makes account rows more compact. Home, the floating bubble and sidebar share cached TPM. Reset-card controls and new/returning-user setup remain available. See the [2.4 release notes](docs/release-notes-v2.4.0.md), [usage guide](docs/usage-guide.md) and [changelog](CHANGELOG.md).
+This page describes **2.4.0 (141) · 1009v2**. Compared with public 9.6.80 (130), it pins Token Monitor 0.68.0, TokScale 4.18.0 and CLIProxyAPI 8.0.20 while preserving AiGoodBro's existing custom behavior. Check [GitHub Releases](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases) for the actual download state.
 
-[Download Apple Silicon DMG](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.4.0/AiGoodBro-2.4.0-mac-arm64.dmg) · [Alternate ZIP](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.4.0/AiGoodBro-2.4.0-mac-arm64.zip) · [GitHub Release](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/tag/v2.4.0)
+[DMG (Apple Silicon)](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.4.0/AiGoodBro-2.4.0-mac-arm64.dmg) · [ZIP](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.4.0/AiGoodBro-2.4.0-mac-arm64.zip) · [Release notes](docs/release-notes-v2.4.0.md)
 
-[Overview](#overview) · [Accounts](#accounts) · [Usage](#usage) · [Proxy](#proxy) · [Reset cards and messages](#messages) · [Sidebar](#dock) · [Setup](#setup) · [Themes](#themes) · [Downloads](#downloads) · [Sources and docs](#sources)
+[Main UI](#main) · [Reset messages](#reset-messages) · [Proxy](#proxy) · [Accounts](#accounts) · [Claude](#claude) · [Token Monitor](#usage) · [Other CLIs](#other-cli) · [Automatic reset-card use](#reset-cards) · [Invitations](#referrals) · [WeChat](#wechat) · [Feishu](#feishu) · [Sidebar](#dock) · [Task occupancy](#tasks) · [Setup and updates](#setup) · [Themes](#themes) · [Downloads](#downloads) · [Sources and docs](#sources)
 
-<a id="overview"></a>
+<a id="main"></a>
 
-## 01 · Workspace overview
+## 01 · Main UI: see the whole workspace
 
-Home brings accounts, quotas, token usage, reset announcements and connected tools together. Remaining quota, reset times and task occupancy are shown separately. Public announcements stay distinct from actual account limits, and costs are local estimates. Resize sections, switch between cards and rows, and adjust the shared width of reset panels; your chosen proportions are saved.
+**What it does:** The home page gathers the everyday view: announcements and reset messages at the top, connected tools and recommendations in the middle, Token usage below, and Codex accounts, Claude subscriptions and other tool states at the bottom. Public announcements, actual account quotas, local usage and task occupancy stay separate so numbers from different sources are not mixed.
 
-<p align="center">
-  <a href="docs/images/1009v1/home-live.png"><img src="docs/images/1009v1/home-live.png" width="1000" alt="Live AiGoodBro build 137 home screenshot with reset announcements, token usage heatmap and trends, multi-account quota cards, and other connected tool states."></a>
-</p>
-
-*All images come from live UI captures. The account and usage images are crops of the published home image, preserving every pixel within their regions. The published home image was captured from installed 2.3.0 (137) on 2026-10-09. New sign-in, setup and settings images were captured from 2.3.0 (139) that day; 2.4 retains the same presentation of those settings. The user-provided sidebar crop shows no build number. Build 141 is not installed; values reflect capture time and do not establish a build 141 upgrade or real-call acceptance. Click an image for its original size; see the [source and checksum record](docs/public-ui-1009v2.md).*
-
-**Changes since public build 130**
-
-- **Updated usage statistics:** Pinned Token Monitor 0.68.0 and TokScale 4.18.0 update parsing and pricing and fix duplicate and cached Claude tokens. Usage, model, project, session, limits and trend views remain available.
-- **Claude subscriptions together:** Sign in through the official Claude Code CLI, then explicitly save the current subscription. Link existing Claude-swap subscriptions and switch manually. Separate rings show 5-hour and 7-day limits; independent model limits use only names and values actually returned by the API.
-- **Adjust the running proxy queue:** CLIProxyAPI moves to 8.0.20. Disabling participation skips admissions still waiting or retrying; admitted responses finish. Priority, Use last, ordering and credit floors stay synchronized with the account page.
-- **Shared TPM and compact layouts:** Home, the floating bubble footer and sidebar reuse existing token samples. Account rows place adjacent 5h / 7d rings to the right of account details, keep invitations as a small icon and use two rows of controls. Chinese reset-card, available-credit and available-amount labels are clearer.
-- **Sidebar and setup improvements:** Sidebar sizes, 75–150% scaling, optional refresh controls and running indicators are available. Manual Claude setup keeps its progress separate from installation setup, and Claude cards respect the card-size setting.
-
-Build 141 also fixes Claude subscription unlinking and expired-target switching, Grok session titles, proxy failure messages and lease cleanup after a child exits. See the [five fixes and validation boundaries](docs/release-notes-v2.4.0.md#english).
-
-Six separate feature captures: [Claude sign-in](docs/images/1009v2/claude-login.jpg) · [Tool setup](docs/images/1009v2/guide.jpg) · [Reset-card settings](docs/images/1009v2/reset-auto.jpg) · [WeChat / Feishu setup](docs/images/1009v2/notifications-guide.jpg) · [Sidebar settings](docs/images/1009v2/edge-dock-settings.jpg) · [Appearance settings](docs/images/1009v2/appearance-settings.jpg). All are from installed build 139. Separate [Codex account](docs/images/1009v2/accounts-home-137-crop.png) and [usage statistics](docs/images/1009v2/usage-home-137-crop.png) images are cropped from the published build 137 home capture, with no data changes.
-
-The illustrated sections below explain each feature. Use [setup](#setup) to connect tools and review settings; viewing an introduction does not enable optional features.
-
-<a id="accounts"></a>
-
-## 02 · Codex and Claude accounts
-
-**Multiple accounts on one page.** Codex cards and rows show remaining quota, reset times, credits, reset cards and task occupancy, with refresh, ordering, model selection and isolated CLI controls. The 5-hour and 7-day limits are separate. Participation, Priority and Use last settings stay synchronized with the proxy panel.
+**How to use it:** Launch AiGoodBro to open AgentHub. Expand or collapse a section from its heading; switch the account area between cards and rows. Section widths and selected display settings are kept locally.
 
 <p align="center">
-  <a href="docs/images/1009v2/accounts-home-137-crop.png"><img src="docs/images/1009v2/accounts-home-137-crop.png" width="1000" alt="Codex account section cropped from the published live build 137 home capture, preserving its account cards, quotas, reset times and controls pixel for pixel."></a>
+  <a href="docs/images/1009v1/home-live.png"><img src="docs/images/1009v1/home-live.png" width="1000" alt="Live AiGoodBro build 137 home screenshot with reset messages, connected tools, Token usage heatmap and trends, and multi-account quotas."></a>
 </p>
 
-*Cropped from the published 2.3.0 (137) home capture, retaining the full account section without pixel or value changes. This is not a build 141 capture or verification of the new 2.4 layout. [View the full original](docs/images/1009v1/home-live.png).*
+*Real UI long capture from installed 2.3.0 (137). Values are capture-time local snapshots, not build 141 installation or real-call acceptance. The settings images were captured from 2.3.0 (139), whose presentation is retained in 141. See the [image record](docs/public-ui-1009v2.md) for sources, dimensions and checksums.*
 
-Known limitation: the Proxy / Scheduling / Priority / Use last controls can become cramped in the dedicated Codex page at narrow window widths in list mode. A fix is deferred to the next version; use cards or widen the window for now.
+**What the main numbers mean:**
 
-**Connect Claude subscriptions through the official flow.** Sign in through the official Claude Code CLI. After identity verification, choose **Add signed-in account** / **Save subscription**. Link existing Claude-swap subscriptions; saved subscriptions support manual switching and quota refresh. Before adding another account, save the current subscription, sign in to the other account in the official CLI, then return to add it. Do not use `/logout` first, as it may invalidate saved credentials.
+- **Reset messages** are announcements and history from a public source, not a quota already verified for a particular account.
+- **Available credits** are the account credit snapshot; **available amount (USD)** is the amount read from the public reset record. They are not added together, and unknown values are not shown as zero.
+- **Token totals, cost and trends** come from local usage records. Cost is an estimate, not a provider bill.
+- **Account cards** show identity, 5-hour / 7-day windows, reset times, reset cards and task occupancy. Unavailable data remains “—” or an explicitly marked older snapshot.
 
-Claude's 5-hour, 7-day and API-returned independent model limits appear as separate rings under the returned names. Missing limits stay unknown, and previous snapshots are labeled. Quota and local Token statistics remain separate, and Claude cards respect the card-size setting.
+<a id="reset-messages"></a>
+
+## 02 · Reset messages: read the announcement, then verify the account
+
+**What it does:** The Reset messages section receives and displays public quota-reset announcements. It helps you see new reset notices, their content and confirmation state. It is separate from account quota reads, cannot replace account verification and does not redeem a reset card merely because a notice appears.
+
+**How to use it:** Open Reset messages on the home page. “Recent 3” is a quick view; expand a message to see its source, time and state. The first read establishes a history baseline; later reads notify only new messages. A failed history read keeps verified content and marks the missing range.
 
 <p align="center">
-  <a href="docs/images/1009v2/claude-login.jpg"><img src="docs/images/1009v2/claude-login.jpg" width="1000" alt="Live build 139 Claude account page and official sign-in entry."></a>
+  <a href="docs/images/1009v1/home-live.png"><img src="docs/images/1009v1/home-live.png" width="1000" alt="Live home UI showing the Reset messages section, reset-card notices, recent-message entry and separate account data."></a>
 </p>
 
-*Complete official CLI sign-in, then return to save the current subscription. Displaying the sign-in entry does not prove successful sign-in or a quota read.*
+*The same real home capture is used to point out where Reset messages live. It is not a standalone announcement-detail capture; announcements and quotas still retain their separate sources.*
 
-Other tools are read according to provider capabilities; connection state and quota-read results are separate. ZCode is a desktop tool. WorkBuddy desktop quota is currently unreadable. Kimi CLI shows its previous snapshot; refresh it before relying on the value. See [native CLI quota coverage](docs/local-cli-accounts.md).
-
-<p align="center">
-  <a href="docs/images/1009v2/guide.jpg"><img src="docs/images/1009v2/guide.jpg" width="1000" alt="Live build 139 tool setup showing Kimi Code with authentication configuration detected."></a>
-</p>
-
-*Kimi Code shows authentication configuration detected. This setup image does not prove a successful Kimi quota read. Previous quota snapshots are for reference; refresh before use.*
-
-<a id="usage"></a>
-
-## 03 · Token usage, heatmaps and trends
-
-**Bundled Token Monitor: token tracking for 35+ tools and quota detection for 28+ providers.** These figures come from the pinned [Token Monitor 0.68.0 feature list](Companion/TokenMonitorEngine/upstream/README.md#features). Its overview lists 43 tools; 35 table entries support token tracking and 28 support quota reads. The figures describe upstream coverage. Actual local connections depend on the tool, sign-in, provider response and embedded host policies; check the state shown in the interface.
-
-The usage dashboard summarizes all-time tokens, estimated cost, activity heatmaps and trends, with views by tool, device, model, project or session. Session details and export retain their existing statistics controls. Costs come from local records and pricing estimates; they are not provider bills.
-
-The usage section in the live home image shows totals, the heatmap and trends. Open usage from the sidebar or menu bar for more detailed views, then choose a tool or model and time range to inspect the currently read data.
-
-<p align="center">
-  <a href="docs/images/1009v2/usage-home-137-crop.png"><img src="docs/images/1009v2/usage-home-137-crop.png" width="1000" alt="Usage section cropped from the published live build 137 home capture, preserving token totals, estimated cost, heatmap and trends pixel for pixel."></a>
-</p>
-
-*Cropped from the published 2.3.0 (137) home capture, retaining the full usage section without pixel or value changes. Usage still reflects local records at the original capture time; 35+ / 28+ describe upstream support. [View the full original](docs/images/1009v1/home-live.png).*
-
-Home and the menu bar share the same all-time snapshot. Home, the floating bubble footer and sidebar share cached token consumption per minute (TPM), with consistent units and formatting and no extra scans. Token Monitor 0.68.0 and TokScale 4.18.0 update parsing and pricing and fix duplicate and cached Claude tokens. Previously read quotas can appear before history finishes; unfinished usage stays unknown.
+Public messages do not rewrite official account records, change participation or priority, change credit floors or send a task. To use an expiring card, use the Automatic reset-card use section below and opt in per account.
 
 <a id="proxy"></a>
 
-## 04 · Local proxy and account queue
+## 03 · Local proxy: route requests through your account queue
+
+**What it does:** The optional local proxy accepts model requests at a local endpoint and lets AiGoodBro select one of your connected accounts by participation, priority, Use last and saved order. It is for personal accounts and local work; it is not a public proxy and does not provide accounts or resell quota.
 
 <p align="center">
-  <a href="docs/images/1009v1/proxy-status-edge-dock.png"><img src="docs/images/1009v1/proxy-status-edge-dock.png" width="360" alt="Previously published user-provided live proxy status and sidebar image, with no visible build number."></a>
+  <a href="docs/images/1009v1/proxy-status-edge-dock.png"><img src="docs/images/1009v1/proxy-status-edge-dock.png" width="360" alt="User-provided live proxy-status and sidebar crop showing running state, quota rings, reset countdowns and credits."></a>
 </p>
 
-*This published user-provided image shows proxy state, account limits and a settings entry; its build is unknown. It does not establish build 141 installation or real-request acceptance.*
+*This published real status crop has no visible build number and is not the proxy settings page. It explains the status entry and information hierarchy; it does not establish build 141 installation or real-request acceptance.*
 
-The optional local proxy is a personal tool. Compatible clients send model requests to a service on this Mac; AiGoodBro selects an enrolled account by participation, Priority / Normal / Use last groups and saved order. Pro20x defaults to Use last and can be changed; the current Desktop account is a fallback within its group. Available subscription quota across participating accounts is used before credits.
+**How to start and stop it:**
 
-Participation can be disabled while the proxy runs. Admissions still waiting or retrying then skip that account; admitted responses finish. Priority, Use last and ordering apply to new requests, stay synchronized with the account page, and retain credit permissions and floors. Invalid admissions that have been rolled back do not keep waiting on the same abandoned reservation.
+1. Open the AiGoodBro proxy panel and choose **Start proxy**. It does not start automatically after an app restart.
+2. Wait for the connection details, quit Codex, then use **Connect Desktop** to relaunch it with the local route. An already-running Codex process does not switch routes automatically.
+3. Choose **Stop proxy** when finished. Closing the main window only hides it; quitting the app asks whether to stop the service.
 
-Credit continuation is off by default. Only if the user enables it does the proxy enter credit phases after subscription quota is exhausted. Busy or unknown accounts do not count as exhausted. The credit threshold guides account selection between requests; it is not a per-request hard cap.
+Participation, Priority, Use last and order affect new requests and stay synchronized with the account page. Pro20x defaults to Use last and can be changed. Subscription quota is used before credits; credit continuation is off unless the user enables it. Busy or unknown accounts are not treated as exhausted.
 
-The proxy routes inference requests only. Codex Desktop keeps its OpenAI sign-in, each conversation's model and reasoning effort; using the proxy does not change system authentication files or global configuration. An already-running Codex process does not switch routes until it is restarted and connected again.
+Disabling participation skips that account for admissions still waiting or retrying, while an admitted stream finishes. Gateway refusal, timeout, cancellation and ordinary forwarding failures have distinct messages; HTTP 503 remains and there is no automatic reconnect. Cleanup for a confirmed exited child briefly retries a busy lease lock up to three times while protecting a new run and active children. The historical fault that recovered only after a restart is not fully attributed, so this is not a permanent-stability guarantee.
 
-**Start and stop it yourself:**
+<a id="accounts"></a>
 
-1. Turn on the proxy manually in AiGoodBro. It does not start automatically when the app restarts.
-2. Quit Codex. The **Connect Desktop** button appears only after the proxy starts successfully and its connection details are ready; choose it to relaunch Codex with the local route.
-3. When finished, stop the service in the proxy panel. Closing the main window only hides it; quitting the app asks whether to stop the proxy. Reopen Codex normally after stopping it.
+## 04 · Codex accounts: quotas, reset cards and task occupancy
 
-Once a streamed response has begun, an error is not replayed through another account. An uncertain result is not sent again automatically, avoiding duplicate task execution. The presence of proxy controls and the Connect Desktop entry does not prove end-to-end acceptance.
+**What it does:** The account area puts multiple Codex identities on one page. Each card or row can show 5-hour / 7-day quota, reset times, credits, reset cards, the nearest expiry and task occupancy. Cards are for scanning; rows are for line-by-line adjustment. Refresh, order, notes, invitations and isolated CLI entry points remain available.
 
-Build 141 distinguishes gateway connection refusal, timeout, cancellation and general forwarding failures, while retaining HTTP 503 and no automatic reconnection. Lease cleanup for a confirmed exited child retries briefly when its lock is busy, while protecting a new run and active children.
-
-A user-reported proxy fault required a restart to recover during this round. Its cause is still under investigation. These two fixes do not establish that every cause of that fault is covered. Recovery after a restart does not establish a permanent fix, and this validation does not guarantee stability of the real proxy path.
-
-The proxy is designed for personal use with your own accounts and local tasks. This project does not provide accounts, credential sharing, quota resale or a public proxy service.
-
-<a id="messages"></a>
-
-## 05 · Reset cards, invitations, WeChat and Feishu
-
-**Help avoid unused reset cards expiring.** The nearest expiry appears beside the account; hover for all expiry times. Click the reset-card count, expiry date or information button to open automatic-use settings. This is off by default, requires per-account opt-in and has an adjustable default lead time of **30 minutes**.
-
-A desktop account uses an existing, verified independent entry for the same identity. Missing entries, unknown task state or busy tasks pause the attempt. Keep the app running; uncertain outcomes require review and block automatic retries. Opening settings does not redeem a card. See [reset-card behavior and limits](docs/reset-credit-control.md).
+**How to use it:** Switch between Cards and List, refresh for a new snapshot, and use the info, settings or more action on a card for account operations. Participation, scheduling, priority and Use last keep their existing storage; proxy participation and priority share state with the proxy panel and apply to later requests.
 
 <p align="center">
-  <a href="docs/images/1009v2/reset-auto.jpg"><img src="docs/images/1009v2/reset-auto.jpg" width="820" alt="Live build 139 automatic-use settings for expiring reset cards."></a>
+  <a href="docs/images/1009v2/accounts-home-137-crop.png"><img src="docs/images/1009v2/accounts-home-137-crop.png" width="1000" alt="Authorized crop from the published build 137 home capture showing Codex cards, 5-hour and 7-day quotas, reset times, credits and controls."></a>
 </p>
 
-*Choose accounts and adjust the lead time. The pictured 25 minutes is a local custom setting; the product default remains 30 minutes. Automatic use requires the user's choice.*
+*This is an authorized crop of the complete public 2.3.0 (137) home capture. Pixels and values in the region were not changed; it is not a build 141 capture. Narrow dedicated Codex list controls remain a next-version fix; use Cards or widen the window for now.*
 
-**Handle invitations together.** Send invitations in batches and view invitation status and referral credits. Rewards follow the provider's official conditions; accepting an invitation does not mean the reward has arrived.
+<a id="claude"></a>
 
-**Receive WeChat and Feishu reminders.** Configure quota, reset and reset-card messages. Personal WeChat connects through Tencent's official iLink QR flow and supports cached status queries. When explicitly enabled, it can continue a selected original Codex chat.
+## 05 · Claude subscriptions: official sign-in, save and switch
+
+**What it does:** The Claude area manages Claude Code subscription identities, quota refresh and explicit manual switching. It shows 5-hour, 7-day and independent model limits separately, using only official values actually returned by the provider. Missing limits remain unknown.
+
+**How to use it:** Sign in through the official Claude Code CLI, then return to AiGoodBro, verify the identity and choose **Add signed-in account / Save subscription**. Existing Claude-swap subscriptions can be linked. To add another account, save the current one, sign in to the other account in the official CLI and add it; do not run `/logout` first because saved credentials may become invalid. Saved subscriptions support manual switching and refresh.
 
 <p align="center">
-  <a href="docs/images/1009v2/notifications-guide.jpg"><img src="docs/images/1009v2/notifications-guide.jpg" width="1000" alt="Live build 139 notification setup: macOS notifications, WeChat awaiting a conversation, and Feishu delivery awaiting verification."></a>
+  <a href="docs/images/1009v2/claude-login.jpg"><img src="docs/images/1009v2/claude-login.jpg" width="1000" alt="Live build 139 Claude official sign-in and subscription-save entry."></a>
 </p>
 
-*Setup separates feature switches from connection state. WeChat awaits a conversation; Feishu local authorization is ready, but delivery remains unverified.*
+*Seeing the entry does not prove sign-in or quota success; official sign-in, identity verification and saving must complete. Active or unknown-identity subscriptions cannot be unlinked. An expired target is refreshed through the Claude-swap flow only after the user explicitly chooses it.*
 
-The project workbench separates execution and accepted outcomes. It keeps manual pause, cancellation, completion, remaining work and the original chat available. Normal display does not call a model. Phone delivery and real conversation remain unaccepted. See the [WeChat and project workbench guide](docs/wechat-workbench-0930v1.md).
+<a id="usage"></a>
+
+## 06 · Token Monitor: usage, heatmaps, trends and TPM
+
+**What it does:** The embedded Token Monitor shows Token usage, estimated cost, activity heatmaps, trends, models, projects and sessions. Its upstream coverage is **35+ tools for Token tracking and 28+ providers for quota detection**. That describes upstream coverage, not a guarantee that every local tool is signed in or readable.
+
+**How to use it:** Expand Usage statistics on the home page for totals, cost, heatmap and trend. Open the statistics entry from the sidebar or menu bar for detailed tool, model, project, session and quota views, then choose a time range or source. Token Monitor 0.68.0 and TokScale 4.18.0 update parsing and pricing and fix duplicate and cached Claude tokens.
+
+<p align="center">
+  <a href="docs/images/1009v2/usage-home-137-crop.png"><img src="docs/images/1009v2/usage-home-137-crop.png" width="1000" alt="Authorized crop from the published build 137 home capture showing Token totals, estimated cost, heatmap and trends."></a>
+</p>
+
+*The crop preserves the original pixels and capture-time local data. Home, the floating bubble footer and sidebar share cached TPM (Tokens per minute), with no extra high-frequency polling.*
+
+<a id="reset-cards"></a>
+
+<a id="other-cli"></a>
+
+## 07 · Other CLIs: check connection and quota separately
+
+**What it does:** This group keeps connected Kimi, Grok, OpenCode, WorkBuddy, ZCode and TRAE SOLO entries together, so “a login exists” is not confused with “a quota was actually read”. Upstream coverage does not mean that every local tool is connected.
+
+**How to use it:** Choose a product in the setup guide or tool entry, complete that product's official sign-in, then return to AiGoodBro and refresh quota. Kimi CLI's older snapshot should be refreshed before use; Grok uses official `grok login --oauth`; OpenCode uses `opencode auth login`; WorkBuddy, ZCode and TRAE SOLO use their official desktop or CLI entry. Unknown, expired or unverified results remain “—” or an older snapshot instead of treating a process exit code as quota success.
+
+<p align="center">
+  <a href="docs/images/1009v2/guide.jpg"><img src="docs/images/1009v2/guide.jpg" width="1000" alt="Live build 139 tool connection guide showing the Kimi Code authentication entry."></a>
+</p>
+
+*The capture shows local Kimi Code authentication configuration detected. It does not prove a quota read or a successful model call. See [native CLI quota coverage](docs/local-cli-accounts.md) for boundaries.*
+
+## 08 · Automatic reset-card use: avoid forgetting an expiry
+
+**What it does:** The account row shows only the nearest reset-card expiry, while hover reveals all known expiry times, keeping the layout on one line. Automatic use is designed to reduce the awkward “the card expired because I forgot it” situation; opening its settings does not redeem a card.
+
+**How to use it:** On the home page or Codex account area, click the reset-card count, expiry time or info icon to open Automatic use before expiry. Opt in per account and set the lead time. It is off by default and defaults to **30 minutes** before expiry; the value can be changed from 1 to 1,440 minutes. Desktop or same-identity mirror accounts are attempted only after an independent entry, trusted identity and idle state are verified. An uncertain result pauses for manual review rather than retrying repeatedly.
+
+<p align="center">
+  <a href="docs/images/1009v2/reset-auto.jpg"><img src="docs/images/1009v2/reset-auto.jpg" width="820" alt="Live build 139 automatic-use-before-expiry settings for reset cards."></a>
+</p>
+
+*The pictured 25 minutes is a capture-time custom value; the product default remains 30 minutes. Opt in per account and keep the app running. See the [reset-card boundary](docs/reset-credit-control.md).*
+
+<a id="referrals"></a>
+
+## 09 · Invitations: send and inspect referral credits
+
+**What it does:** The account card keeps an invitation entry for batch invitations, official invitation status and referral credits.
+
+**How to use it:** Choose the target account's invitation button or compact icon, complete the recipient and confirmation steps in the official window, then refresh the status. Send up to five addresses at a time. If the account or session changes, close and reopen the invitation window. Rewards depend on official conditions; accepting an invitation does not prove the credit has arrived.
+
+<p align="center">
+  <a href="docs/images/1009v1/home-live.png"><img src="docs/images/1009v1/home-live.png" width="1000" alt="Live home capture showing the account-card area and invitation entry location."></a>
+</p>
+
+*The home capture only marks the entry location; it does not turn an invitation into a claimed success. The invitation window's official response is authoritative.*
+
+<a id="wechat"></a>
+
+## 10 · WeChat: quota and reset reminders
+
+**What it does:** Personal WeChat can receive quota, reset and reset-card messages and, when explicitly enabled, continue a selected original Codex chat. Connection state and actual delivery remain separate.
+
+**How to use it:** Open **Settings → Notifications / WeChat**, pair through Tencent's official iLink QR flow and confirm the conversation, then choose message types. The first read establishes a history baseline; later messages are new events only. Cached status queries do not consume account quota. An unfinished conversation stays labeled as waiting, not delivered.
+
+<p align="center">
+  <a href="docs/images/1009v2/notifications-guide.jpg"><img src="docs/images/1009v2/notifications-guide.jpg" width="1000" alt="Live build 139 WeChat and Feishu notification setup, with WeChat waiting for a conversation."></a>
+</p>
+
+*This real capture contains both notification flows and explains their entry and state separation; it does not prove delivery to a phone.*
+
+<a id="feishu"></a>
+
+## 11 · Feishu: optional message delivery
+
+**What it does:** Feishu can receive Agent status, account notes, quota, reset dates, reset-card expiry details and official balances. The default message stays compact and does not put long task IDs in the card body.
+
+**How to use it:** Paste the bot address in the notification guide and choose **Save and connect**. If an existing connection needs Keychain permission, choose **Authorize connection**. The webhook is kept in macOS Keychain and is not written back to the UI or logs. A real test send requires an explicit user click; local authorization ready is not delivery proof.
+
+<p align="center">
+  <a href="docs/images/1009v2/notifications-guide.jpg"><img src="docs/images/1009v2/notifications-guide.jpg" width="1000" alt="Live build 139 Feishu notification setup showing connection and delivery-pending states."></a>
+</p>
 
 <a id="dock"></a>
 
-## 06 · Sidebar and status panels
+## 12 · Sidebar and status bubble: glanceable state
+
+**What it does:** The edge sidebar gives a quick view of selected account quotas, reset countdowns, Token statistics and proxy state. Its expanded panel shows account rows, 5h / 7d rings and credits, reusing snapshots instead of polling continuously for animation.
+
+**How to use it:** Press **⌘I** to show or hide it. The pin at the top can keep it visible; click again to hide. Hover for details and drag the top to move it. Settings provide ring or fish styles, 75–150% scaling, refresh controls, running indicators and trackpad haptics. Unavailable quota is “—”, not an inferred zero.
 
 <p align="center">
-  <a href="docs/images/1009v1/proxy-status-edge-dock.png"><img src="docs/images/1009v1/proxy-status-edge-dock.png" width="360" alt="User-provided live UI screenshot showing the edge sidebar and expanded proxy status panel, with per-account quota rings, reset countdowns and credits."></a>
+  <a href="docs/images/1009v2/edge-dock-settings.jpg"><img src="docs/images/1009v2/edge-dock-settings.jpg" width="820" alt="Live build 139 sidebar settings showing display mode, scaling, refresh and running indicators."></a>
 </p>
 
-*User-provided live UI crop; account state, quota and credits reflect the moment of capture.*
+<a id="tasks"></a>
 
-The sidebar sits at the screen edge and shows selected account quotas, token statistics and other items. Choose ring or fish quota styles, press **⌘I** to show or hide it, hover for details, and drag the top to move it. Pins keep the sidebar visible or its detail panel on top.
+## 13 · Task occupancy, scheduling and warm-up
 
-Hover over the proxy item to open its status panel: see its running state, request count and account list, with **5h / 7d quota rings, reset countdowns and credit balances** for each account, plus a Proxy settings shortcut. Request snapshots update every minute; quota comes from the latest read. Unavailable quota appears as “—”.
+**What it does:** Local task records distinguish preparing, running, maintenance and awaiting-acceptance states so the account page and scheduler know which identities are occupied. Participation windows, priority and warm-up are existing automation controls; they do not automatically assign every account to a new task.
 
-On a trackpad that supports haptic feedback, entering or switching sidebar items gives a light tactile cue. Turn it off with **Trackpad haptics** in the sidebar settings.
+**How to use it:** In account automation or settings, enable “pause and switch at 1% remaining” or “automatically continue the original task after a successful switch” when desired. AiGoodBro saves the task and round, checks the backup account and task state, then switches. Warm-up refreshes after the quota window expires, then requests only when its evidence is valid; busy, low-quota or uncertain states wait or pause. Without trusted task evidence, it stays off and does not manufacture success notices.
 
 <p align="center">
-  <a href="docs/images/1009v2/edge-dock-settings.jpg"><img src="docs/images/1009v2/edge-dock-settings.jpg" width="820" alt="Live build 139 sidebar settings showing visibility, scaling and refresh controls."></a>
+  <a href="docs/images/1009v1/home-live.png"><img src="docs/images/1009v1/home-live.png" width="1000" alt="Live home capture showing account, quota and task-state areas; occupancy is recorded separately from quota."></a>
 </p>
-
-*Choose a sidebar size, 75–150% scaling, refresh controls and running indicators. Snapshot refresh shares the existing account settings.*
 
 <a id="setup"></a>
 
-## 07 · Official tools and installation setup
+## 14 · Tool connections, install onboarding and update notices
 
-Follow the guide to sign in through an official tool or account entry, then return to the workspace to check its connection state. Connect tools when you need them. Codex's isolated CLI can use its own local sign-in directory; Claude subscriptions follow the explicit-save flow above. Enter credentials only in the official flow.
+**What it does:** For a detectable new or replacement installation, the guide separates sign-in, notification connections and new-feature settings and asks whether this is a new or returning user. New users go through the complete guide; returning users review WeChat, Feishu and new settings while keeping existing configuration. An in-place replacement whose identity cannot be reliably distinguished does not force a duplicate prompt. Manual Claude setup keeps its progress separate.
 
-After a detectable installation or replacement, new users receive full setup. Returning users review WeChat, Feishu and new settings while keeping existing preferences. Manual Claude setup and installation setup retain separate progress. Viewing or dismissing the feature introduction does not complete installation setup or enable optional controls.
-
-The update dialog shows the version and changes and supports download progress, cancellation and retry. It verifies size and SHA256 before opening the installer; replacement is a user action. Downloading does not quit or replace the app automatically.
+**How to use it:** Open the usage guide and connect official tools as needed. Claude, Kimi, Grok, OpenCode, WorkBuddy, ZCode and TRAE SOLO use their own official entry points. The update dialog shows version and changes; after the user starts a download, size and SHA256 are checked before the installer is opened. Downloading does not quit or replace the current app or enable optional features.
 
 <p align="center">
-  <a href="docs/images/1009v2/guide.jpg"><img src="docs/images/1009v2/guide.jpg" width="1000" alt="Live build 139 usage guide."></a>
+  <a href="docs/images/1009v2/guide.jpg"><img src="docs/images/1009v2/guide.jpg" width="1000" alt="Live build 139 tool connection guide with official tool entries and connection state."></a>
 </p>
 
-*Use the guide to connect tools when needed. Sign-in, message connections and optional settings follow the user's choices.*
+*The capture shows Kimi Code with authentication configuration detected; that is not proof of a successful quota read. Login, refresh and real calls are verified independently per tool.*
 
 <a id="themes"></a>
 
-## 08 · Nine themes and native glass
+## 15 · Themes and native glass
 
-Choose a palette in Settings → Display and icons. Each theme supports light and dark modes. Default keeps the neutral interface; other palettes share the native glass renderer with adjustable transparency and depth. macOS Reduce Transparency and Increase Contrast take precedence.
+**What it does:** Appearance settings manage light/dark mode, palette, glass transparency and depth, keeping text readable across themes. macOS Reduce Transparency and Increase Contrast take precedence.
+
+**How to use it:** Open **Settings → Display and icons** and choose palette, language and glass intensity. Nine themes remain available: Default, Liquid Keycap, Blue & White Porcelain, Monterey Dawn, A Thousand Li of Rivers, Dunhuang Apsara, Forbidden City Red, Violet Glow and WAICY Sunset. WAICY uses color values only; it does not copy brand graphics, fonts or mascots.
 
 <p align="center">
-  <a href="docs/images/1009v2/appearance-settings.jpg"><img src="docs/images/1009v2/appearance-settings.jpg" width="820" alt="Live build 139 Display and icons settings with appearance modes, palette entry, language, glass intensity and depth."></a>
+  <a href="docs/images/1009v2/appearance-settings.jpg"><img src="docs/images/1009v2/appearance-settings.jpg" width="820" alt="Live build 139 Display and icons settings with mode, palette, language and glass controls."></a>
 </p>
-
-*The live image shows the current default palette and appearance controls. The table lists available themes.*
-
-| Theme | Visual character |
-|---|---|
-| Default | Neutral gray with blue-violet accents; remains the default. |
-| Liquid Keycap | Cool blue and cyan with light glass layers. |
-| Blue & White Porcelain | Porcelain white and cobalt blue. |
-| Monterey Dawn | Orchid purple, pink and warm dawn tones. |
-| A Thousand Li of Rivers | Mineral green and blue. |
-| Dunhuang Apsara | Sand gold, ochre and turquoise. |
-| Forbidden City Red | Red walls, gold and deep contrasting surfaces. |
-| Violet Glow | An independent glass variant of the existing default blue-violet tokens. |
-| WAICY Sunset | A three-stop pink-to-orange gradient based on badge-candidate colors. |
-
-Themes supply color tokens only. WAICY artwork, logos, mascots and fonts are not copied, and the palette does not imply official endorsement.
 
 <a id="downloads"></a>
 
-## 09 · Downloads, upgrades and source builds
+## 16 · Downloads, upgrades and builds
 
-2.4 provides DMG and ZIP installers for **macOS 13+ on Apple Silicon ARM64**. They are ad-hoc signed and have not been notarized by Apple. The update dialog displays the version and changes, downloads on click, then verifies the size and SHA256. The user completes replacement after opening the installer; downloading does not quit the app or install it automatically.
+This version supports **macOS 13+ on Apple Silicon ARM64**. The package is locally ad-hoc signed and not Apple-notarized. Clients on 9.6.x compare SemVer and treat 2.4.0 as lower, so download the DMG or ZIP manually; 2.3.0 clients can discover 2.4.0. Finish work, quit the old app normally, back up the old app and local data, replace it, then confirm 2.4.0 (141) / 1009v2 and review WeChat, Feishu and new settings.
 
-**Upgrading from 9.6.x requires a manual download:** Older clients compare SemVer versions and consider 2.4.0 lower than 9.6.x, so they do not detect it as an update. Use the DMG or ZIP above to replace the app manually. Clients on 2.3.0 can detect 2.4.0 normally.
-
-Wait for active work to finish and quit the old app normally before replacement. Keep backups of the old app and local data. Installation setup reviews WeChat, Feishu and new settings. This release has not undergone a real installed upgrade or paid upstream-call acceptance. Local tests and previews also do not verify real reset-card redemption, message delivery or global hotkey interactions. See the [validation record and checksums](docs/release-notes-v2.4.0.md).
-
-Source and installer correspond to `v2.4.0`:
+The final candidate's native self-tests, resource checks, recursive signature checks, DMG / ZIP tree checks and SHA256 records are in the [2.4 release record](docs/release-notes-v2.4.0.md). They do not establish real account sign-in, provider calls, reset-card redemption, WeChat / Feishu delivery or global-hotkey acceptance; the installed build and real proxy path still require field verification.
 
 ```sh
 git clone --branch v2.4.0 https://github.com/BLACKIELF/AgentHub-AiGoodBro.git AiGoodBro-2.4
 cd AiGoodBro-2.4
+make build
 ```
 
-Source builds require macOS, Go 1.26+ and the SHA256-verified Token Monitor v0.68.0 macOS runtime. Set `TOKEN_MONITOR_DESKTOP_RUNTIME` and `TOKEN_MONITOR_DESKTOP_DMG` to those official inputs before running `make build`. This release does not provide Intel or Windows installers; existing Windows sources remain intact. See the [historical 114 publication record](docs/source-publication-1003v1.md).
+Builds require macOS, Go 1.26+ and the SHA256-verified Token Monitor 0.68.0 macOS runtime. Intel and Windows installers are not provided.
 
 <a id="sources"></a>
 
-## 10 · Sources, licenses and documentation
+## 17 · Sources, licenses and documentation
 
-Feature design borrows from related open-source projects. Code and resources directly reused or adapted are listed below, with their applicable licenses and copyright notices retained.
+The table lists code and resources actually reused, adapted or consulted as static research. Licenses and copyright notices remain in the repository. Upstream test samples and brand assets are not presented as AiGoodBro capabilities.
 
 | Project | Relationship |
 |---|---|
-| [Tencent/openclaw-weixin 2.4.9](https://github.com/Tencent/openclaw-weixin/tree/24de5c9eb0dd5e595d7e2d090ed8a3f82870d42c) | Native adaptation of iLink protocol and QR pairing; MIT notice retained, without installing OpenClaw. |
-| [codexU](https://github.com/shanggqm/codexU) | Second-developed host integration from the historical fixed source: SwiftUI, quota, palette and Windows foundations were inherited and are maintained by AiGoodBro. |
-| [Token Monitor v0.68.0](https://github.com/Javis603/token-monitor/tree/5d2db368d8313415763860d594de00e46a663418) | Host adaptation of the pinned source and official macOS runtime. The statistics engine, dashboard, charts and resources remain bundled with AiGoodBro's bridge, hooks and Swift host. See the [host adapter](Companion/TokenMonitorDesktop/README.md) for embedded runtime boundaries. |
-| [TokScale 4.18.0 fork](https://github.com/Javis603/tokscale/tree/d5e8ad9b25bfafb43b5b6804940929b728a6f48a) · [original](https://github.com/junhoyeo/tokscale) | Pinned revision `d5e8ad9b25bfafb43b5b6804940929b728a6f48a`, release input `token-monitor-d5e8ad9b`; the collection foundation and license remain bundled. |
-| [CLIProxyAPI v8.0.20](https://github.com/router-for-me/CLIProxyAPI/tree/v8.0.20) | Host adapter over the pinned Go SDK scheduler, Codex executor and Responses handler, preserving identity, quota and credit-floor guards and avoiding replay after a stream has begun. |
-| [Codex-Manager](https://github.com/qxcnm/Codex-Manager) | Protocol adaptation and static research reference; the warm-up request structure and SSE completion rules are independently implemented in [`CodexAccountActions.swift`](Sources/CodexUsageWidget/Services/CodexAccountActions.swift#L850). |
-| [Hazmat wrapper script](https://github.com/dredozubov/hazmat/blob/c112d222bb53e888dd17a8927927286792f7c20e/scripts/check-codex-desktop-attach-smoke.sh) | Protocol adaptation and static research reference for the `CODEX_CLI_PATH` stdio-wrapper entry point; no Hazmat sandbox or service is integrated. |
-| [BlackHole1/aswap v1.1.0](https://github.com/BlackHole1/aswap/releases/tag/v1.1.0) | The Claude multi-account CLI/Chrome profile tool from the referenced X post; protocol adaptation and static research reference only, with no copied, bundled or Codex, Feishu or WeCom integration. |
+| [Tencent/openclaw-weixin 2.4.9](https://github.com/Tencent/openclaw-weixin/tree/24de5c9eb0dd5e595d7e2d090ed8a3f82870d42c) | Native iLink protocol and QR-pairing adaptation; MIT notice retained, without installing OpenClaw. |
+| [codexU](https://github.com/shanggqm/codexU) | Host adaptation and second development from the historical fixed source; AiGoodBro maintains the SwiftUI, quota, palette and Windows foundations. |
+| [Token Monitor v0.68.0](https://github.com/Javis603/token-monitor/tree/5d2db368d8313415763860d594de00e46a663418) | Host adaptation of the pinned source and official macOS runtime; the statistics engine, dashboard, charts and resources remain bundled. |
+| [TokScale 4.18.0 fork](https://github.com/Javis603/tokscale/tree/d5e8ad9b25bfafb43b5b6804940929b728a6f48a) · [original](https://github.com/junhoyeo/tokscale) | Pinned revision used for usage collection and pricing; its license remains bundled. |
+| [CLIProxyAPI v8.0.20](https://github.com/router-for-me/CLIProxyAPI/tree/v8.0.20) | Host adaptation of the pinned Go scheduler, Codex executor and Responses handler, preserving identity, quota, credit-floor and no-replay checks. |
+| [Codex-Manager](https://github.com/qxcnm/Codex-Manager) | Protocol adaptation and static research reference; warm-up and SSE completion rules are independently implemented. |
+| [Hazmat wrapper script](https://github.com/dredozubov/hazmat/blob/c112d222bb53e888dd17a8927927286792f7c20e/scripts/check-codex-desktop-attach-smoke.sh) | Static reference for the `CODEX_CLI_PATH` stdio wrapper entry point; no Hazmat sandbox or service is integrated. |
+| [BlackHole1/aswap v1.1.0](https://github.com/BlackHole1/aswap/releases/tag/v1.1.0) | Static protocol and design reference for a Claude multi-account CLI / Chrome profile tool; not copied or bundled. |
 
-AiGoodBro is licensed under [MIT](LICENSE). Full third-party license texts and copyright notices are in [`Resources/THIRD_PARTY_NOTICES.txt`](Resources/THIRD_PARTY_NOTICES.txt), [`Companion/LocalProxy/LICENSE.CLIProxyAPI`](Companion/LocalProxy/LICENSE.CLIProxyAPI), [`Companion/LocalProxy/LICENSE.Hazmat`](Companion/LocalProxy/LICENSE.Hazmat) and [`Companion/LocalProxy/THIRD-PARTY-NOTICES.txt`](Companion/LocalProxy/THIRD-PARTY-NOTICES.txt).
+AiGoodBro is released under the [MIT License](LICENSE). Third-party notices are in [`Resources/THIRD_PARTY_NOTICES.txt`](Resources/THIRD_PARTY_NOTICES.txt), [`Companion/LocalProxy/LICENSE.CLIProxyAPI`](Companion/LocalProxy/LICENSE.CLIProxyAPI), [`Companion/LocalProxy/LICENSE.Hazmat`](Companion/LocalProxy/LICENSE.Hazmat) and [`Companion/LocalProxy/THIRD-PARTY-NOTICES.txt`](Companion/LocalProxy/THIRD-PARTY-NOTICES.txt).
 
-**Documentation**
-
-[Detailed guide (Chinese)](docs/usage-guide.md) · [CLI quota coverage](docs/local-cli-accounts.md) · [Proxy implementation and validation](docs/local-proxy-0928v1.md) · [2.4 release record](docs/release-notes-v2.4.0.md) · [Historical build 130 release record](docs/release-notes-v9.6.80.md) · [Latest image sources and checksums](docs/public-ui-1009v2.md) · [Report an issue](https://github.com/BLACKIELF/AgentHub-AiGoodBro/issues) · [Security](SECURITY.md)
-
-[MIT license](LICENSE) · [Third-party notices](Resources/THIRD_PARTY_NOTICES.txt) · [Brand compatibility](docs/brand-compat-0911v1.md)
+Documentation: [detailed guide](docs/usage-guide.md) · [native CLI quota coverage](docs/local-cli-accounts.md) · [proxy implementation and validation](docs/local-proxy-0928v1.md) · [2.4 release record](docs/release-notes-v2.4.0.md) · [image sources and checksums](docs/public-ui-1009v2.md) · [issues](https://github.com/BLACKIELF/AgentHub-AiGoodBro/issues) · [security](SECURITY.md)
