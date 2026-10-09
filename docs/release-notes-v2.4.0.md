@@ -31,11 +31,11 @@ Release name: 1009v2 · 2026-10-09
 
 ## 验证依据与运行边界
 
-2.4.0 (141) 正在重新构建与核验。Grok 相关 94 项测试通过；Claude 服务与存储测试使用模拟 Keychain / HTTP，通过不等于真实账号验收。网关错误分类通过聚焦 Go race 检查；租约清理通过 28 项隔离检查，发布工作树复验仍待完成。
+最终 2.4.0 (141) 本地候选通过 **35 / 35 组原生程序自测**；Carbon 冲突集成按验证环境设置明确跳过，未注册系统快捷键。Desktop、反代、Companion 和 Engine 四项资源验证及完整应用递归签名验证通过。DMG 与 ZIP 均完成完整性校验，解包后的 **2,144 项文件树、权限、链接及严格递归签名**与最终候选一致。
 
-Desktop 与 Engine 已从固定来源隔离重建：Desktop 的 ASAR、23 个 Mach-O 文件及签名检查通过，Engine 的依赖、冻结源码、清单与独立 receipt 校验通过，8 项运行时自检通过；两处均包含相同的 Grok 修复源码。**最终 141 应用的 35 组原生自测、全部资源、完整应用签名及 DMG / ZIP 包核验待补**。旧 140 的 SHA256、字节数和 2,144 项文件树记录不适用于 141。
+本轮 Grok 相关 94 项测试、Claude 模拟 Keychain / HTTP 服务与存储测试、网关错误分类聚焦 Go race 检查及退出租约清理 28 项隔离检查通过；提交 `e27b35b` 的 CI 已通过 436 项 Swift 反代宿主检查。**Go 全量 race 仍待 CI 完成**，这些检查不代表真实账号验收。Desktop 与 Engine 均从固定来源重建并包含相同的 Grok 修复源码：Desktop 的 ASAR 与 23 个 Mach-O 签名、Engine 的清单与独立 receipt、8 项运行时自检均通过。
 
-139 功能基线还包含 436 项 Swift 反代检查、248 项 Go race 检查（3 项需主动开启的检查跳过）、Go vet 及 58 项生产 Swift IPC + Go 本机 HTTP 组合检查。这些为已有基线记录，不称为本轮 141 全部重新执行。
+139 功能基线还包含 248 项 Go race 检查（3 项需主动开启的检查跳过）、Go vet 及 58 项生产 Swift IPC + Go 本机 HTTP 组合检查。这些为历史基线记录，不称为本轮 141 已全部重新执行。
 
 141 尚未安装或进行正常启动验收。本轮检查不代表真实账号登录、切换、真实提供方调用、重置卡兑换、微信／飞书送达或全局快捷键交互已验收。本轮用户再次反馈反代异常需重启后恢复，原因仍在排查；重启仅是恢复动作，本次不保证真实反代稳定性，也不声称历史未知退出事件已全部归因。
 
@@ -43,7 +43,7 @@ Desktop 与 Engine 已从固定来源隔离重建：Desktop 的 ASAR、23 个 Ma
 
 内嵌模式保留宿主策略：不自动开启 Dots 观察及 Cursor / Antigravity 自同步，Cloud 按已保存的明确设置运行；原 macOS WidgetKit 扩展保留为不可注册的归档，不提供其功能。实际额度覆盖取决于工具、登录状态和提供方返回，不能把上游功能总数视为本机已接通数量。见[宿主适配说明](../Companion/TokenMonitorDesktop/README.md)。
 
-README 新增 `docs/images/1009v2` 的六张真实登录、引导和设置图，于 2026-10-09 拍摄于已安装的 2.3.0 (139)，所示设置在 2.4 中沿用相同呈现。总览、账号与用量复用已公开的 2.3.0 (137) 主界面原图；反代及侧栏复用用户提供的 `1009v1` 局部图，该图未显示版本编号。所有数值仅代表截图当时状态，不作为 141 实机验收证据；Claude 只展示真实登录入口，未使用测试账号额度图。来源与图片校验值见[最新图片记录](public-ui-1009v2.md)，旧清理记录保留在 [1008v1](public-ui-1008v1.md)。
+README 新增 `docs/images/1009v2` 的六张真实登录、引导和设置图，于 2026-10-09 拍摄于已安装的 2.3.0 (139)，所示设置在 2.4 中沿用相同呈现。总览保留已公开的 2.3.0 (137) 主界面原图；账号与用量分别使用经用户授权从该原图机械裁出的完整功能区，裁剪区域内像素逐字节一致，未修改数据；反代及侧栏复用用户提供的 `1009v1` 局部图，该图未显示版本编号。所有数值仅代表截图当时状态，不作为 141 实机验收证据；Claude 只展示真实登录入口，未使用测试账号额度图。来源与图片校验值见[最新图片记录](public-ui-1009v2.md)，旧清理记录保留在 [1008v1](public-ui-1008v1.md)。
 
 ## 固定来源
 
@@ -57,12 +57,12 @@ README 新增 `docs/images/1009v2` 的六张真实登录、引导和设置图，
 
 ## 安装包与 SHA256
 
-| 文件 | SHA256 |
-|---|---|
-| `AiGoodBro-2.4.0-mac-arm64.dmg` | 待最终 141 安装包核验 |
-| `AiGoodBro-2.4.0-mac-arm64.zip` | 待最终 141 安装包核验 |
+| 文件 | 字节数 | SHA256 |
+|---|---:|---|
+| `AiGoodBro-2.4.0-mac-arm64.dmg` | 210,757,619 | `60c3095ea16a18520881758ca65bcd638f818f2ecc41c78d74ce8caf4b9f2344` |
+| `AiGoodBro-2.4.0-mac-arm64.zip` | 179,736,695 | `90721459d7d7bf1adffdf5017a3c81764828504dd321f39cdaeda606c227dc96` |
 
-最终核验后，每个安装包附同名 `.sha256` 文件；本表的 SHA256、字节数和完整文件树结果待 141 安装包生成后填写。不得使用旧 140 的校验值验证 141。
+每个安装包附同名 `.sha256` 文件。上表来自最终 2.4.0 (141) / 1009v2 安装包验证记录，并已与包文件重新核对；本次校验值取代旧 140 候选记录。
 
 ## English
 
@@ -84,10 +84,12 @@ Home, the floating bubble footer and sidebar share cached TPM without extra scan
 
 **macOS 13+ on Apple Silicon ARM64 only; ad-hoc signed, not Apple-notarized.** Clients on 9.6.x require a manual DMG / ZIP download because SemVer considers 2.4.0 lower. Clients on 2.3.0 can discover 2.4.0 normally. Finish active work, quit normally, back up the old app and local data, replace it, and check 2.4.0 (141) / 1009v2 on reopening.
 
-Build 141 is being rebuilt and verified. The 94 Grok-related tests passed. Claude service and store tests use simulated Keychain / HTTP; gateway error classification passed focused Go race checks. Lease cleanup passed 28 isolated checks, with release-worktree verification still pending. Desktop and Engine were rebuilt from pinned inputs; Desktop ASAR and 23 Mach-O signature checks, Engine manifests and the independent receipt, and eight runtime smoke checks passed. Both payloads contain the same fixed Grok source. **The final build 141 native self-test groups, all resources, whole-app signing and DMG / ZIP validation remain pending.** Build 140 hashes, byte counts and its 2,144-entry package tree do not apply to build 141. Earlier Swift / Go proxy checks remain inherited build 139 evidence.
+The final local build 141 passed all **35 selected native self-test groups**; Carbon conflict integration was explicitly skipped by the verification environment setting, without registering system hotkeys. Desktop, proxy, Companion and Engine resource verification and whole-app recursive signature checks passed. The final DMG and ZIP passed integrity checks and full comparisons of **2,144 tree entries, permissions, links and recursive signatures** against the candidate.
+
+The 94 Grok-related tests, Claude service and store tests with simulated Keychain / HTTP, focused gateway Go race checks and 28 isolated lease-cleanup checks passed. CI for commit `e27b35b` passed 436 Swift proxy-host checks. **The full Go race suite still awaits CI completion.** Desktop and Engine were rebuilt from pinned inputs and contain the same fixed Grok source; Desktop ASAR and 23 Mach-O signature checks, Engine manifests and its independent receipt, and eight runtime smoke checks passed. Earlier Go and Swift / Go HTTP checks remain historical build 139 evidence. These checks do not establish real-account acceptance.
 
 Build 141 has not been installed or accepted through a normal launch. Real provider calls, account sign-in and switching, card redemption, message delivery and global hotkey interactions were not exercised. A user-reported proxy runtime fault required a restart to recover; its cause remains under investigation. This does not establish a permanent fix or guarantee real proxy stability. Historical unexplained exits are not claimed fully resolved. Embedded Dots observation and Cursor / Antigravity self-sync stay disabled; Cloud uses saved explicit settings, and the original WidgetKit extension is archived and inactive.
 
 Known UI limitation: Proxy / Scheduling / Priority / Use last controls can become cramped in narrow list mode on the dedicated Codex page. The user deferred that fix to the next version; existing layout improvements do not resolve every narrow-window case. Use cards or a wider window for now.
 
-The six new 1009v2 sign-in, setup and settings images were captured from installed 2.3.0 (139) on 2026-10-09; 2.4 retains the same presentation of those settings. Overview, accounts and usage reuse the published build 137 home image. The retained user-provided proxy and sidebar crop shows no build number. These are capture-time records, not build 141 acceptance images. Claude is shown through its real sign-in entry, without synthetic quota fixtures. The [image record](public-ui-1009v2.md) lists sources, actual formats and image hashes. The final build 141 package hashes and byte counts above remain pending verification.
+The six new 1009v2 sign-in, setup and settings images were captured from installed 2.3.0 (139) on 2026-10-09; 2.4 retains the same presentation of those settings. The overview retains the published build 137 home image. Accounts and usage use two user-authorized crops of its complete feature sections, verified pixel for pixel against the source with no data changes. The retained user-provided proxy and sidebar crop shows no build number. These are capture-time records, not build 141 acceptance images. Claude is shown through its real sign-in entry, without synthetic quota fixtures. The [image record](public-ui-1009v2.md) lists sources, actual formats and image hashes. The package hashes and byte counts above were verified against the final build 141 DMG and ZIP; each package includes a matching `.sha256` file.

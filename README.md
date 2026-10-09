@@ -22,7 +22,7 @@ AiGoodBro 是面向个人自用的 macOS AI 工作台，汇总 Codex 多账号�
   <a href="docs/images/1009v1/home-live.png"><img src="docs/images/1009v1/home-live.png" width="1000" alt="AiGoodBro 137 主界面实机长截图：重置消息、Token 用量热图与趋势、多账号额度卡片和其他已连接工具状态。"></a>
 </p>
 
-*本页均使用真实界面原图。首页长图于 2026-10-09 采集自已安装的 2.3.0 (137)；新增登录、引导和设置图同日采集自 2.3.0 (139)，所示设置在 2.4 中沿用相同呈现；用户提供的侧栏局部图未显示版本。141 尚未安装，图中数值为拍摄时快照，不作为 141 覆盖升级或真实调用验收。点击图片可查看原尺寸，详见[截图来源与校验值](docs/public-ui-1009v2.md)。*
+*本页均使用真实界面截图；账号与用量图由已公开首页原图裁剪，保留区域内像素。首页长图于 2026-10-09 采集自已安装的 2.3.0 (137)；新增登录、引导和设置图同日采集自 2.3.0 (139)，所示设置在 2.4 中沿用相同呈现；用户提供的侧栏局部图未显示版本。141 尚未安装，图中数值为拍摄时快照，不作为 141 覆盖升级或真实调用验收。点击图片可查看原尺寸，详见[截图来源与校验值](docs/public-ui-1009v2.md)。*
 
 **2.4 相较公开 130 的变化**
 
@@ -34,7 +34,7 @@ AiGoodBro 是面向个人自用的 macOS AI 工作台，汇总 Codex 多账号�
 
 本轮 141 还修正 Claude 订阅解除关联与过期目标切换、Grok 会话标题，以及反代故障提示与退出后的租约清理，详见[五项修复与验证边界](docs/release-notes-v2.4.0.md#本轮-141-修复)。
 
-六张独立功能原图：[Claude 登录](docs/images/1009v2/claude-login.jpg) · [工具连接](docs/images/1009v2/guide.jpg) · [重置卡设置](docs/images/1009v2/reset-auto.jpg) · [微信／飞书引导](docs/images/1009v2/notifications-guide.jpg) · [侧栏设置](docs/images/1009v2/edge-dock-settings.jpg) · [外观设置](docs/images/1009v2/appearance-settings.jpg)。均来自已安装的 139；账号与用量目前仍复用下方已公开的 137 首页原图，独立实拍待补。
+六张独立功能原图：[Claude 登录](docs/images/1009v2/claude-login.jpg) · [工具连接](docs/images/1009v2/guide.jpg) · [重置卡设置](docs/images/1009v2/reset-auto.jpg) · [微信／飞书引导](docs/images/1009v2/notifications-guide.jpg) · [侧栏设置](docs/images/1009v2/edge-dock-settings.jpg) · [外观设置](docs/images/1009v2/appearance-settings.jpg)。均来自已安装的 139。另提供[Codex 账号区](docs/images/1009v2/accounts-home-137-crop.png)和[用量统计区](docs/images/1009v2/usage-home-137-crop.png)独立图，均裁自已公开的 137 首页实拍，未修改数据。
 
 下文按功能配图说明；[使用引导](#setup)可连接工具并查看相关设置。查看介绍不会自动开启可选功能。
 
@@ -45,10 +45,10 @@ AiGoodBro 是面向个人自用的 macOS AI 工作台，汇总 Codex 多账号�
 **多账号一页掌握。** Codex 卡片和列表显示剩余额度、重置时间、点数、重置卡及任务占用，支持刷新、排序、模型选择和独立 CLI 入口。5 小时与 7 天额度分别显示；账号页与反代面板的参与、优先和最后使用设置同步。
 
 <p align="center">
-  <a href="docs/images/1009v1/home-live.png"><img src="docs/images/1009v1/home-live.png" width="1000" alt="本机 137 已公开主界面原图，包含 Codex 账号卡片、额度、重置时间和操作入口。"></a>
+  <a href="docs/images/1009v2/accounts-home-137-crop.png"><img src="docs/images/1009v2/accounts-home-137-crop.png" width="1000" alt="裁自已公开 137 首页实拍的 Codex 账号区：完整账号卡片、额度、重置时间和操作入口，像素与原图对应区域一致。"></a>
 </p>
 
-*复用已公开的 137 主界面原图展示账号区；账号及数值仅代表当时状态，不能据此验证 2.4 新增布局。*
+*裁自已公开的 2.3.0 (137) 首页实拍，仅截取完整账号区，未修改像素或数值；不作为 141 实拍或 2.4 新增布局的验证图。[查看完整原图](docs/images/1009v1/home-live.png)。*
 
 已知限制：Codex 专用页在窄窗口列表模式下，“反代／调度／优先／最后使用”控件可能挤压，已安排下一版修正；当前可使用卡片模式或加宽窗口。
 
@@ -81,10 +81,10 @@ Claude 的 5 小时、7 天与 API 实际返回的独立模型额度分别用圆
 首页实机图中的“用量统计”展示累计总计、热图与趋势；点击侧栏或菜单栏的统计入口，可进入更多分项视图。选择工具／模型和时间范围后，按当前已读取数据查看变化。
 
 <p align="center">
-  <a href="docs/images/1009v1/home-live.png"><img src="docs/images/1009v1/home-live.png" width="1000" alt="本机 137 已公开主界面原始长截图，其中用量统计展示累计 Token、热图与趋势。"></a>
+  <a href="docs/images/1009v2/usage-home-137-crop.png"><img src="docs/images/1009v2/usage-home-137-crop.png" width="1000" alt="裁自已公开 137 首页实拍的用量统计区：累计 Token、估算成本、热图与趋势，像素与原图对应区域一致。"></a>
 </p>
 
-*复用已公开的 137 主界面完整原图展示用量区域；数据来自拍摄时的本机记录，35+／28+ 是上游支持范围。*
+*裁自已公开的 2.3.0 (137) 首页实拍，仅截取完整用量区，未修改像素或数值；数据仍为原图拍摄时的本机记录，35+／28+ 是上游支持范围。[查看完整原图](docs/images/1009v1/home-live.png)。*
 
 主页与菜单栏共用累计总计快照；顶部、浮窗底部与侧栏共用缓存的每分钟 Token 消耗量（TPM），统一单位和格式，不增加扫描频率。Token Monitor 0.68.0 与 TokScale 4.18.0 更新解析和定价，修正 Claude 重复及缓存 Token 统计；历史尚未完成时可先呈现已读取的额度，用量仍保持未知。
 

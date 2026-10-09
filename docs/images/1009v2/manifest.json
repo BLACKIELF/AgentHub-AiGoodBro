@@ -6,7 +6,7 @@
   "releaseVersion": "2.4.0",
   "releaseBuild": "141",
   "releaseBuildInstalled": false,
-  "scope": "Six new original live settings/sign-in/setup captures from installed build 139, plus the previously published build 137 home image and user-provided sidebar image with unknown version. Build 141 is not installed. Capture-time values do not establish current quota or real-provider acceptance.",
+  "scope": "Six new original live settings/sign-in/setup captures from installed build 139, plus the previously published build 137 home image, two pixel-exact crops of its account and usage sections, and the user-provided sidebar image with unknown version. Build 141 is not installed. Capture-time values do not establish current quota or real-provider acceptance.",
   "images": [
     {
       "file": "reset-auto.jpg",
@@ -154,17 +154,78 @@
     }
   ],
   "unavailableNewCaptures": [
-    "separate account view",
-    "separate usage view",
     "new home screenshot",
     "new-features window",
     "Kimi quota page",
     "clean proxy settings panel"
   ],
   "substitutions": {
-    "overview/accounts/usage": "Previously published original home image from build 137.",
     "tools/Kimi": "Build 139 tool setup image only; no claim of a quota read.",
     "proxy": "Previously published user-provided status image; build unknown.",
-    "newFeatures": "Text summary with links to the illustrated feature and setup sections."
-  }
+    "newFeatures": "Text summary with links to the illustrated feature and setup sections.",
+    "overview": "Previously published original home image from build 137.",
+    "accounts/usage": "Separate pixel-exact PNG crops from the previously published build 137 home image, not newly captured build 141 views."
+  },
+  "croppedImages": [
+    {
+      "file": "accounts-home-137-crop.png",
+      "captureDate": "2026-10-09",
+      "cropDate": "2026-10-09",
+      "timezone": "Asia/Shanghai",
+      "installedBuild": "137",
+      "source": "Previously published AiGoodBro 2.3.0 (137) home capture; cropped under explicit user authorization",
+      "sourceFile": "../1009v1/home-live.png",
+      "sourceSHA256": "e844d487e996856daab62f1e297990a6b7d8d7f5b7600982310fc2f39c9c9ee2",
+      "sourceWidth": 2880,
+      "sourceHeight": 2906,
+      "cropBox": [
+        156,
+        1371,
+        2852,
+        2307
+      ],
+      "cropCoordinateConvention": "Source pixels; top-left origin; left/top inclusive and right/bottom exclusive",
+      "width": 2696,
+      "height": 936,
+      "bytes": 2273519,
+      "sha256": "d87448f0b3b1e209bdcdfd1b745db76ca7c9bd3f83d38c20021051608f3fc9ed",
+      "format": "PNG",
+      "mimeType": "image/png",
+      "pixelMode": "RGBA",
+      "pixelSHA256": "888ab4f9a7db378c1b1977526bacc40e4d5d5f36ec98c3f59bd7e6a0d6c1a946",
+      "pixelExactToSourceRegion": true,
+      "processing": "Pillow Image.crop only, saved as lossless PNG. No resize, redraw, masking, annotation, color change, or data change.",
+      "description": "Complete Codex account section cropped from the previously published build 137 home capture."
+    },
+    {
+      "file": "usage-home-137-crop.png",
+      "captureDate": "2026-10-09",
+      "cropDate": "2026-10-09",
+      "timezone": "Asia/Shanghai",
+      "installedBuild": "137",
+      "source": "Previously published AiGoodBro 2.3.0 (137) home capture; cropped under explicit user authorization",
+      "sourceFile": "../1009v1/home-live.png",
+      "sourceSHA256": "e844d487e996856daab62f1e297990a6b7d8d7f5b7600982310fc2f39c9c9ee2",
+      "sourceWidth": 2880,
+      "sourceHeight": 2906,
+      "cropBox": [
+        156,
+        740,
+        2852,
+        1368
+      ],
+      "cropCoordinateConvention": "Source pixels; top-left origin; left/top inclusive and right/bottom exclusive",
+      "width": 2696,
+      "height": 628,
+      "bytes": 1110828,
+      "sha256": "495089bdca34ee4afdddec8c96b863a502724a3d47d99331b83e9212069f5df0",
+      "format": "PNG",
+      "mimeType": "image/png",
+      "pixelMode": "RGBA",
+      "pixelSHA256": "611fdf47006d6b7325632a15f735d244d3460abec1eacb2f43861697ede81a33",
+      "pixelExactToSourceRegion": true,
+      "processing": "Pillow Image.crop only, saved as lossless PNG. No resize, redraw, masking, annotation, color change, or data change.",
+      "description": "Complete usage totals, heatmap and trends section cropped from the previously published build 137 home capture."
+    }
+  ]
 }

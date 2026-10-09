@@ -178,7 +178,12 @@ class AsarPackageTests(unittest.TestCase):
             "assets/icon.png",
             "src/electron/providers/antigravity/oauthLogin.js",
             "src/shared/providers/antigravity/oauth.js",
+            "src/shared/providers/grok/sessionMetadata.js",
         })
+        # Approved Grok fix: writer prompts must not become session titles.
+        grok_metadata = PACKAGE.asar_content(packaged, tree, start, "src/shared/providers/grok/sessionMetadata.js").decode()
+        self.assertNotIn("summary.generated_title", grok_metadata)
+        self.assertNotIn("meta.title", grok_metadata)
         edge_files = [relative for relative in official_paths if relative.startswith("src/electron/renderer/edgeDock/")]
         self.assertEqual(len(edge_files), 8)
         self.assertEqual(changed_from_official.intersection(edge_files), {"src/electron/renderer/edgeDock/index.html"})

@@ -22,7 +22,7 @@ Home brings accounts, quotas, token usage, reset announcements and connected too
   <a href="docs/images/1009v1/home-live.png"><img src="docs/images/1009v1/home-live.png" width="1000" alt="Live AiGoodBro build 137 home screenshot with reset announcements, token usage heatmap and trends, multi-account quota cards, and other connected tool states."></a>
 </p>
 
-*All images are original live UI captures. The published home image was captured from installed 2.3.0 (137) on 2026-10-09. New sign-in, setup and settings images were captured from 2.3.0 (139) that day; 2.4 retains the same presentation of those settings. The user-provided sidebar crop shows no build number. Build 141 is not installed; values reflect capture time and do not establish a build 141 upgrade or real-call acceptance. Click an image for its original size; see the [source and checksum record](docs/public-ui-1009v2.md).*
+*All images come from live UI captures. The account and usage images are crops of the published home image, preserving every pixel within their regions. The published home image was captured from installed 2.3.0 (137) on 2026-10-09. New sign-in, setup and settings images were captured from 2.3.0 (139) that day; 2.4 retains the same presentation of those settings. The user-provided sidebar crop shows no build number. Build 141 is not installed; values reflect capture time and do not establish a build 141 upgrade or real-call acceptance. Click an image for its original size; see the [source and checksum record](docs/public-ui-1009v2.md).*
 
 **Changes since public build 130**
 
@@ -34,7 +34,7 @@ Home brings accounts, quotas, token usage, reset announcements and connected too
 
 Build 141 also fixes Claude subscription unlinking and expired-target switching, Grok session titles, proxy failure messages and lease cleanup after a child exits. See the [five fixes and validation boundaries](docs/release-notes-v2.4.0.md#english).
 
-Six separate feature captures: [Claude sign-in](docs/images/1009v2/claude-login.jpg) · [Tool setup](docs/images/1009v2/guide.jpg) · [Reset-card settings](docs/images/1009v2/reset-auto.jpg) · [WeChat / Feishu setup](docs/images/1009v2/notifications-guide.jpg) · [Sidebar settings](docs/images/1009v2/edge-dock-settings.jpg) · [Appearance settings](docs/images/1009v2/appearance-settings.jpg). All are from installed build 139. Accounts and usage still reuse the published build 137 home image below; separate live captures remain pending.
+Six separate feature captures: [Claude sign-in](docs/images/1009v2/claude-login.jpg) · [Tool setup](docs/images/1009v2/guide.jpg) · [Reset-card settings](docs/images/1009v2/reset-auto.jpg) · [WeChat / Feishu setup](docs/images/1009v2/notifications-guide.jpg) · [Sidebar settings](docs/images/1009v2/edge-dock-settings.jpg) · [Appearance settings](docs/images/1009v2/appearance-settings.jpg). All are from installed build 139. Separate [Codex account](docs/images/1009v2/accounts-home-137-crop.png) and [usage statistics](docs/images/1009v2/usage-home-137-crop.png) images are cropped from the published build 137 home capture, with no data changes.
 
 The illustrated sections below explain each feature. Use [setup](#setup) to connect tools and review settings; viewing an introduction does not enable optional features.
 
@@ -45,10 +45,10 @@ The illustrated sections below explain each feature. Use [setup](#setup) to conn
 **Multiple accounts on one page.** Codex cards and rows show remaining quota, reset times, credits, reset cards and task occupancy, with refresh, ordering, model selection and isolated CLI controls. The 5-hour and 7-day limits are separate. Participation, Priority and Use last settings stay synchronized with the proxy panel.
 
 <p align="center">
-  <a href="docs/images/1009v1/home-live.png"><img src="docs/images/1009v1/home-live.png" width="1000" alt="Previously published live build 137 home capture, including Codex account cards, quotas, reset times and controls."></a>
+  <a href="docs/images/1009v2/accounts-home-137-crop.png"><img src="docs/images/1009v2/accounts-home-137-crop.png" width="1000" alt="Codex account section cropped from the published live build 137 home capture, preserving its account cards, quotas, reset times and controls pixel for pixel."></a>
 </p>
 
-*The previously published build 137 home image illustrates the account section. Its values reflect capture time and do not verify the new 2.4 account layout.*
+*Cropped from the published 2.3.0 (137) home capture, retaining the full account section without pixel or value changes. This is not a build 141 capture or verification of the new 2.4 layout. [View the full original](docs/images/1009v1/home-live.png).*
 
 Known limitation: the Proxy / Scheduling / Priority / Use last controls can become cramped in the dedicated Codex page at narrow window widths in list mode. A fix is deferred to the next version; use cards or widen the window for now.
 
@@ -81,10 +81,10 @@ The usage dashboard summarizes all-time tokens, estimated cost, activity heatmap
 The usage section in the live home image shows totals, the heatmap and trends. Open usage from the sidebar or menu bar for more detailed views, then choose a tool or model and time range to inspect the currently read data.
 
 <p align="center">
-  <a href="docs/images/1009v1/home-live.png"><img src="docs/images/1009v1/home-live.png" width="1000" alt="Previously published original live build 137 home capture, including all-time token totals, the heatmap and trends."></a>
+  <a href="docs/images/1009v2/usage-home-137-crop.png"><img src="docs/images/1009v2/usage-home-137-crop.png" width="1000" alt="Usage section cropped from the published live build 137 home capture, preserving token totals, estimated cost, heatmap and trends pixel for pixel."></a>
 </p>
 
-*The published build 137 home image is repeated to illustrate the usage section. Usage reflects local records at capture time; 35+ / 28+ describe upstream support.*
+*Cropped from the published 2.3.0 (137) home capture, retaining the full usage section without pixel or value changes. Usage still reflects local records at the original capture time; 35+ / 28+ describe upstream support. [View the full original](docs/images/1009v1/home-live.png).*
 
 Home and the menu bar share the same all-time snapshot. Home, the floating bubble footer and sidebar share cached token consumption per minute (TPM), with consistent units and formatting and no extra scans. Token Monitor 0.68.0 and TokScale 4.18.0 update parsing and pricing and fix duplicate and cached Claude tokens. Previously read quotas can appear before history finishes; unfinished usage stays unknown.
 
