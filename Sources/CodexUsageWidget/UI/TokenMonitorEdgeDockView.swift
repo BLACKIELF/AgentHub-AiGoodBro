@@ -239,8 +239,10 @@ struct TokenMonitorEdgeDockPeekView: View {
         Button(action: onReveal) {
             Capsule()
                 .fill(Color.primary.opacity(isNearby ? 0.48 : 0.26))
-                .frame(width: max(5, ((isNearby ? 8 : 6) * scale).rounded()),
-                       height: ((isNearby ? 80 : 72) * scale).rounded())
+                .frame(
+                    width: max(5, ((isNearby ? 8 : 6) * scale).rounded()),
+                    height: ((isNearby ? 80 : 72) * scale).rounded()
+                )
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: side == .right ? .trailing : .leading)
                 .contentShape(Rectangle())
         }
@@ -341,27 +343,29 @@ struct TokenMonitorEdgeDockRailView: View {
         .overlay(alignment: .bottom) {
             VStack(spacing: 4) {
                 if pageCount > 1 {
-                HStack(spacing: 3) {
-                    Button {
-                        onPage(-1)
-                    } label: {
-                        Image(systemName: "chevron.up").frame(width: 18, height: 24)
+                    HStack(spacing: 3) {
+                        Button {
+                            onPage(-1)
+                        } label: {
+                            Image(systemName: "chevron.up").frame(width: 18, height: 24)
+                        }
+                        .disabled(pageIndex == 0)
+                        .accessibilityLabel(language.text("上一页账号", "Previous accounts"))
+                        Text("\(pageIndex + 1)/\(pageCount)").font(.system(size: 8)).monospacedDigit()
+                        Button {
+                            onPage(1)
+                        } label: {
+                            Image(systemName: "chevron.down").frame(width: 18, height: 24)
+                        }
+                        .disabled(pageIndex + 1 == pageCount)
+                        .accessibilityLabel(language.text("下一页账号", "Next accounts"))
                     }
-                    .disabled(pageIndex == 0)
-                    .accessibilityLabel(language.text("上一页账号", "Previous accounts"))
-                    Text("\(pageIndex + 1)/\(pageCount)").font(.system(size: 8)).monospacedDigit()
-                    Button {
-                        onPage(1)
-                    } label: {
-                        Image(systemName: "chevron.down").frame(width: 18, height: 24)
-                    }
-                    .disabled(pageIndex + 1 == pageCount)
-                    .accessibilityLabel(language.text("下一页账号", "Next accounts"))
-                }
-                .font(.system(size: 10)).buttonStyle(.plain)
+                    .font(.system(size: 10)).buttonStyle(.plain)
                 }
                 if refreshEnabled {
-                    Button { onRefreshAll?() } label: {
+                    Button {
+                        onRefreshAll?()
+                    } label: {
                         Group {
                             if isRefreshing {
                                 ProgressView().controlSize(.small).scaleEffect(0.65)
@@ -834,10 +838,12 @@ struct TokenMonitorEdgeDockCardView: View {
         VStack(alignment: .leading, spacing: 9) {
             Text(cell.liveRate.map { $0.formattedValue(language: language) } ?? "—")
                 .font(.system(size: 30, weight: .medium)).monospacedDigit()
-            Text(cell.liveRate?.mode == .speed
-                ? language.text("输出 Token / 秒", "Output tokens / second")
-                : language.text("Token 消耗量 / 分钟 · TPM", "Token consumption / minute · TPM"))
-                .font(.system(size: 10)).foregroundStyle(.secondary)
+            Text(
+                cell.liveRate?.mode == .speed
+                    ? language.text("输出 Token / 秒", "Output tokens / second")
+                    : language.text("Token 消耗量 / 分钟 · TPM", "Token consumption / minute · TPM")
+            )
+            .font(.system(size: 10)).foregroundStyle(.secondary)
             if let rate = cell.liveRate {
                 Text(language.text("采样时间：", "Sampled: ") + language.dateTime(rate.sampledAt))
                     .font(.system(size: 9)).foregroundStyle(.secondary)

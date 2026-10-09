@@ -16,13 +16,16 @@ enum TokenMonitorEdgeDockSelfTest {
         )
         var explicit = defaults
         expect(defaults.quotaStyle == .ring, "existing users retain the ring style")
-        expect(!defaults.refreshEnabled && defaults.runningIndicatorEnabled && defaults.size == .medium && defaults.scale == 1,
-               "0.68 controls retain optional refresh and standard size defaults")
-        let legacySize = TokenMonitorEdgeDockPreferences.load(Data(#"{"enabled":true,"side":"left","offset":0.7,"items":[],"hapticEnabled":false,"warnColors":true,"quotaStyle":"fish"}"#.utf8))
-        expect(legacySize.enabled && legacySize.side == .left && legacySize.offset == 0.7 && legacySize.items == []
-               && !legacySize.hapticEnabled && legacySize.warnColors && legacySize.quotaStyle == .fish
-               && !legacySize.refreshEnabled && legacySize.runningIndicatorEnabled && legacySize.scale == 1,
-               "adding size and running controls preserves every older native preference")
+        expect(
+            !defaults.refreshEnabled && defaults.runningIndicatorEnabled && defaults.size == .medium && defaults.scale == 1,
+            "0.68 controls retain optional refresh and standard size defaults")
+        let legacySize = TokenMonitorEdgeDockPreferences.load(
+            Data(#"{"enabled":true,"side":"left","offset":0.7,"items":[],"hapticEnabled":false,"warnColors":true,"quotaStyle":"fish"}"#.utf8))
+        expect(
+            legacySize.enabled && legacySize.side == .left && legacySize.offset == 0.7 && legacySize.items == []
+                && !legacySize.hapticEnabled && legacySize.warnColors && legacySize.quotaStyle == .fish
+                && !legacySize.refreshEnabled && legacySize.runningIndicatorEnabled && legacySize.scale == 1,
+            "adding size and running controls preserves every older native preference")
         var sizing = TokenMonitorEdgeDockPreferences(size: .custom, customScale: 1.33).normalized()
         expect(sizing.scale == 1.35, "custom size follows the upstream five-percent step")
         sizing.size = .small
@@ -31,14 +34,19 @@ enum TokenMonitorEdgeDockSelfTest {
         expect(sizing.scale == 1.25, "large is the upstream 125 percent preset")
         sizing.size = .custom
         expect(sizing.scale == 1.35, "returning to custom restores its saved size")
-        expect(TokenMonitorEdgeDockPreferences.normalizedCustomScale(.infinity) == 1
-               && TokenMonitorEdgeDockPreferences.normalizedCustomScale(0.1) == 0.75
-               && TokenMonitorEdgeDockPreferences.normalizedCustomScale(3) == 1.5,
-               "invalid custom sizes fall back or clamp without changing other preferences")
-        let newEmbedded = TokenMonitorEdgeDockPreferences.migratedEmbeddedSettings(Data(#"{"edgeDockEnabled":false,"edgeDockItems":[],"edgeDockRefreshEnabled":true,"edgeDockRunningIndicatorEnabled":false,"edgeDockSize":"custom","edgeDockCustomScale":1.2}"#.utf8))
-        expect(newEmbedded?.enabled == false && newEmbedded?.items == [] && newEmbedded?.refreshEnabled == true
-               && newEmbedded?.runningIndicatorEnabled == false && newEmbedded?.scale == 1.2,
-               "0.68 embedded controls migrate while keeping disabled and empty choices")
+        expect(
+            TokenMonitorEdgeDockPreferences.normalizedCustomScale(.infinity) == 1
+                && TokenMonitorEdgeDockPreferences.normalizedCustomScale(0.1) == 0.75
+                && TokenMonitorEdgeDockPreferences.normalizedCustomScale(3) == 1.5,
+            "invalid custom sizes fall back or clamp without changing other preferences")
+        let newEmbedded = TokenMonitorEdgeDockPreferences.migratedEmbeddedSettings(
+            Data(
+                #"{"edgeDockEnabled":false,"edgeDockItems":[],"edgeDockRefreshEnabled":true,"edgeDockRunningIndicatorEnabled":false,"edgeDockSize":"custom","edgeDockCustomScale":1.2}"#
+                    .utf8))
+        expect(
+            newEmbedded?.enabled == false && newEmbedded?.items == [] && newEmbedded?.refreshEnabled == true
+                && newEmbedded?.runningIndicatorEnabled == false && newEmbedded?.scale == 1.2,
+            "0.68 embedded controls migrate while keeping disabled and empty choices")
         let oldStyle = TokenMonitorEdgeDockPreferences.load(Data(#"{"enabled":true,"quotaStyle":"future-style"}"#.utf8))
         expect(oldStyle.enabled && oldStyle.quotaStyle == .ring, "unknown quota style preserves other settings and falls back to rings")
         var fishStyle = defaults
@@ -630,8 +638,9 @@ enum TokenMonitorEdgeDockSelfTest {
                 language: .en, now: now, activeCodexAccountID: "idle", proxyPhase: phase, proxyRows: rows)[0]
         }
         let liveProxyCell = liveProxy(.running, rows: liveRows)
-        expect(liveProxyCell.activeWorkCount == 3 && liveProxy(.running, rows: []).activeWorkCount == 0,
-               "the independent running arc follows admitted proxy requests and clears when idle")
+        expect(
+            liveProxyCell.activeWorkCount == 3 && liveProxy(.running, rows: []).activeWorkCount == 0,
+            "the independent running arc follows admitted proxy requests and clears when idle")
         expect(
             liveProxyCell.proxyAccounts.map(\.id) == ["a", "b"] && liveProxyCell.proxyRequestCount == 3,
             "proxy hover shows all admitted accounts in panel-number order, not the Desktop login or enabled queue")

@@ -765,11 +765,14 @@ struct CodexAccountManagerView: View {
                     onOpenClaude: { requestClaudeFromSetupGuide(eventID: presentedEventID, scope: presentedScope) })
             }
         }
-        .sheet(isPresented: $isNewFeatureUpdatePresented, onDismiss: {
-            let shouldOpenClaude = openClaudeAfterUpdate
-            openClaudeAfterUpdate = false
-            if shouldOpenClaude && !store.isPreview { openLocalCLITab(.claudeCode) }
-        }) {
+        .sheet(
+            isPresented: $isNewFeatureUpdatePresented,
+            onDismiss: {
+                let shouldOpenClaude = openClaudeAfterUpdate
+                openClaudeAfterUpdate = false
+                if shouldOpenClaude && !store.isPreview { openLocalCLITab(.claudeCode) }
+            }
+        ) {
             NewFeatureUpdateView(
                 store: store, settings: settings, onDone: { isNewFeatureUpdatePresented = false },
                 onOpenClaude: {
@@ -993,9 +996,10 @@ struct CodexAccountManagerView: View {
         ResetMessageHeaderSummary(
             language: language, profiles: store.profiles,
             announcements: resetAnnouncementMonitor.announcements + (resetAnnouncementMonitor.latest.map { [$0] } ?? []),
-            forecastDeadline: store.isPreview ? (previewForecastBy ?? previewForecastDeadline) : homeForecastStore.forecast?.latestBy)
-            .font(.system(size: 11))
-            .lineLimit(1)
+            forecastDeadline: store.isPreview ? (previewForecastBy ?? previewForecastDeadline) : homeForecastStore.forecast?.latestBy
+        )
+        .font(.system(size: 11))
+        .lineLimit(1)
     }
 
     @ViewBuilder
@@ -2337,7 +2341,8 @@ struct CodexAccountManagerView: View {
 
     private func openPrimaryGuide() {
         if settings.installationOnboarding.shouldPresent,
-            let scope = settings.installationOnboarding.automaticScope(legacyShouldPresent: false) {
+            let scope = settings.installationOnboarding.automaticScope(legacyShouldPresent: false)
+        {
             setupGuideScope = scope
             setupGuideManualStep = nil
             setupGuideEventID = settings.installationOnboarding.presentationEventID
@@ -6323,18 +6328,22 @@ private struct ProfileRow: View {
                 Toggle(language.text("优先", "Priority"), isOn: Binding(get: { proxyPriority }, set: onSetProxyPriority))
                     .foregroundStyle(proxyPriority ? FixedVisualPalette.statusDangerForeground(colorScheme) : Color.secondary)
                     .disabled(!canPrioritizeProxy)
-                    .help(language.text(
-                        "与反代窗口同步；选择优先会取消最后使用，对新请求生效，不改变调度设置。",
-                        "Synced with the proxy window. Selecting priority clears Use last for new requests; dispatch settings stay independent."))
+                    .help(
+                        language.text(
+                            "与反代窗口同步；选择优先会取消最后使用，对新请求生效，不改变调度设置。",
+                            "Synced with the proxy window. Selecting priority clears Use last for new requests; dispatch settings stay independent.")
+                    )
                     .accessibilityLabel(language.text("反代优先调用", "Proxy priority"))
             }
             if let proxyLast {
                 Toggle(language.text("最后使用", "Use last"), isOn: Binding(get: { proxyLast }, set: onSetProxyLast))
                     .foregroundStyle(proxyLast ? Color.primary : Color.secondary)
                     .disabled(!canSetProxyLast)
-                    .help(language.text(
-                        "与反代窗口同步；各额度阶段最后使用，选择后取消优先，可随时取消；订阅额度先于点数。",
-                        "Synced with the proxy window. Use last in each quota phase; selecting this clears priority and can be undone. Subscriptions precede credits."))
+                    .help(
+                        language.text(
+                            "与反代窗口同步；各额度阶段最后使用，选择后取消优先，可随时取消；订阅额度先于点数。",
+                            "Synced with the proxy window. Use last in each quota phase; selecting this clears priority and can be undone. Subscriptions precede credits.")
+                    )
                     .accessibilityLabel(language.text("反代最后使用", "Use last for proxy requests"))
             }
             Spacer(minLength: 0)

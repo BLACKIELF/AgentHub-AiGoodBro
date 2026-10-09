@@ -25,7 +25,8 @@ struct NextSetupGuideView: View {
 
     init(
         store: UsageStore, settings: AppSettings, localAccounts: LocalCLIAccountStore? = nil,
-        scope: NextSetupGuideScope = .full, installationEventID: String? = nil, manualInitialStep: NextSetupStep? = nil, previewStep: NextSetupStep? = nil, onOutcome: @escaping (NextSetupGuideOutcome) -> Void = { _ in },
+        scope: NextSetupGuideScope = .full, installationEventID: String? = nil, manualInitialStep: NextSetupStep? = nil, previewStep: NextSetupStep? = nil,
+        onOutcome: @escaping (NextSetupGuideOutcome) -> Void = { _ in },
         openAutomation: @escaping () -> Void,
         onOpenClaude: @escaping () -> Void = {},
         runtime: NextRuntimeSetupModel? = nil

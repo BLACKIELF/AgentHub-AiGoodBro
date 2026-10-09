@@ -180,8 +180,7 @@ final class LocalCLIAccountStore: ObservableObject {
 
     func discoverClaudeSubscriptions() {
         guard !previewOnly else { return }
-        do { claudeSubscriptionCandidates = try claudeService.candidates() }
-        catch { claudeSubscriptionCandidates = [] }
+        do { claudeSubscriptionCandidates = try claudeService.candidates() } catch { claudeSubscriptionCandidates = [] }
         reconcileClaudeIdentity()
     }
 
@@ -220,7 +219,8 @@ final class LocalCLIAccountStore: ObservableObject {
         guard !previewOnly else { return }
         guard !profiles.contains(where: { $0.kind == .claudeCode && signingIn.contains($0.id) }) else { return }
         if !claudeIdentityUnavailable, let current = claudeCurrent,
-            (try? claudeService.isCurrent(current)) == true {
+            (try? claudeService.isCurrent(current)) == true
+        {
             claudeActiveProfileID = profiles.first { $0.claudeSubscription?.identityFingerprint == current.fingerprint }?.id
             return
         }
@@ -236,9 +236,10 @@ final class LocalCLIAccountStore: ObservableObject {
                 guard !Task.isCancelled, (try? self.claudeService.isCurrent(current)) == true else { return }
                 self.claudeCurrent = current
                 self.claudeIdentityUnavailable = false
-                self.claudeActiveProfileID = self.profiles.first {
-                    $0.claudeSubscription?.identityFingerprint == current.fingerprint
-                }?.id
+                self.claudeActiveProfileID =
+                    self.profiles.first {
+                        $0.claudeSubscription?.identityFingerprint == current.fingerprint
+                    }?.id
             } catch {
                 guard !Task.isCancelled else { return }
                 self.claudeCurrent = nil
@@ -285,16 +286,21 @@ final class LocalCLIAccountStore: ObservableObject {
         do {
             let reference = try claudeService.reference(candidateID: candidateID)
             guard !saved.contains(where: { $0.claudeSubscription?.identityFingerprint == reference.identityFingerprint }) else {
-                message = language.text("这个订阅账号已保存。", "This subscription is already saved."); return nil
+                message = language.text("这个订阅账号已保存。", "This subscription is already saved.")
+                return nil
             }
             return saveClaudeReference(reference, name: name)
-        } catch { claudeFailure(error); return nil }
+        } catch {
+            claudeFailure(error)
+            return nil
+        }
     }
 
     @discardableResult
     func captureClaudeSubscription(name: String) async -> LocalCLIProfile? {
         guard !previewOnly, storageValid, validName(name), saved.count < 64, claudeSwitching.isEmpty,
-            signingIn.isEmpty, !claudeIdentityUnavailable, claudeOpening.isEmpty else { return nil }
+            signingIn.isEmpty, !claudeIdentityUnavailable, claudeOpening.isEmpty
+        else { return nil }
         let slot = UUID().uuidString.lowercased()
         claudeSwitching.insert(slot)
         defer { claudeSwitching.remove(slot) }
@@ -302,19 +308,29 @@ final class LocalCLIAccountStore: ObservableObject {
             let reference = try await claudeService.capture(slot: slot)
             guard !saved.contains(where: { $0.claudeSubscription?.identityFingerprint == reference.identityFingerprint }) else {
                 try claudeService.removeCaptured(reference)
-                if let existing = saved.first(where: { $0.claudeSubscription?.identityFingerprint == reference.identityFingerprint }), let existingReference = existing.claudeSubscription, existingReference.source == .native {
+                if let existing = saved.first(where: { $0.claudeSubscription?.identityFingerprint == reference.identityFingerprint }),
+                    let existingReference = existing.claudeSubscription, existingReference.source == .native
+                {
                     _ = try await claudeService.capture(slot: existingReference.slot, replacing: existingReference)
-                    quotas.removeValue(forKey: existing.id); stale.remove(existing.id)
+                    quotas.removeValue(forKey: existing.id)
+                    stale.remove(existing.id)
                     discoverClaudeSubscriptions()
                     message = language.text("已更新这个订阅账号的官方登录凭据。", "Official sign-in credentials updated for this subscription.")
                     return existing
                 }
-                message = language.text("这个订阅账号已关联 claude-swap；请使用其原槽管理登录。", "This subscription is linked to claude-swap; manage sign-in in its existing slot."); return nil
+                message = language.text("这个订阅账号已关联 claude-swap；请使用其原槽管理登录。", "This subscription is linked to claude-swap; manage sign-in in its existing slot.")
+                return nil
             }
-            guard let profile = saveClaudeReference(reference, name: name) else { try claudeService.removeCaptured(reference); return nil }
+            guard let profile = saveClaudeReference(reference, name: name) else {
+                try claudeService.removeCaptured(reference)
+                return nil
+            }
             discoverClaudeSubscriptions()
             return profile
-        } catch { claudeFailure(error); return nil }
+        } catch {
+            claudeFailure(error)
+            return nil
+        }
     }
 
     private func saveClaudeReference(_ reference: ClaudeSubscriptionReference, name: String) -> LocalCLIProfile? {
@@ -347,13 +363,24 @@ final class LocalCLIAccountStore: ObservableObject {
             discoverClaudeSubscriptions()
             message = language.text("Claude 订阅账号已切换。重新打开 Claude Code 后使用该账号。", "Claude subscription switched. Reopen Claude Code to use this account.")
             return true
-        } catch { claudeFailure(error); return false }
+        } catch {
+            claudeFailure(error)
+            return false
+        }
     }
 
     private func claudeFailure(_ error: Error) {
-        if (error as? ClaudeSubscriptionService.Failure) == .rollbackFailed { quarantineClaudeIdentity() }
-        else if (error as? ClaudeSubscriptionService.Failure) == .identityChanged
-            || (error as? ClaudeSubscriptionService.Failure) == .readOnly {
+        if (error as? ClaudeSubscriptionService.Failure) == .reauthenticationRequired {
+            message = language.text(
+                "这个订阅的续期未能安全完成。请在官方 Claude Code 重新登录该账号，再保存订阅。",
+                "This subscription could not be renewed safely. Sign in to that account in official Claude Code, then save the subscription again.")
+            return
+        }
+        if (error as? ClaudeSubscriptionService.Failure) == .rollbackFailed {
+            quarantineClaudeIdentity()
+        } else if (error as? ClaudeSubscriptionService.Failure) == .identityChanged
+            || (error as? ClaudeSubscriptionService.Failure) == .readOnly
+        {
             claudeCurrent = nil
             claudeActiveProfileID = nil
         }
@@ -561,7 +588,8 @@ final class LocalCLIAccountStore: ObservableObject {
                     let verified = try await self.claudeService.verifyCurrent()
                     try Task.checkCancellation()
                     guard claudeAttemptID == self.claudeLoginAttemptID else { return }
-                    guard self.profiles.contains(where: {
+                    guard
+                        self.profiles.contains(where: {
                             $0.id == current.id && $0.kind == current.kind
                                 && $0.configDirectory == current.configDirectory
                                 && $0.claudeSubscription == current.claudeSubscription
@@ -570,9 +598,10 @@ final class LocalCLIAccountStore: ObservableObject {
                     guard try self.claudeService.isCurrent(verified) else { throw ClaudeSubscriptionService.Failure.identityChanged }
                     self.claudeCurrent = verified
                     self.claudeIdentityUnavailable = false
-                    self.claudeActiveProfileID = self.profiles.first {
-                        $0.claudeSubscription?.identityFingerprint == verified.fingerprint
-                    }?.id
+                    self.claudeActiveProfileID =
+                        self.profiles.first {
+                            $0.claudeSubscription?.identityFingerprint == verified.fingerprint
+                        }?.id
                     self.signingIn.remove(profile.id)
                     self.loginTasks.removeValue(forKey: profile.id)
                     self.authentication[profile.id] = self.authenticationReader.read(current)
@@ -604,7 +633,9 @@ final class LocalCLIAccountStore: ObservableObject {
                 if profile.kind == .claudeCode { self.claudeLoginAttemptID = nil }
                 self.loginMessages[profile.id] = self.language.text(
                     profile.kind == .claudeCode ? "登录流程结束，但当前订阅身份尚未核验，请重新检查。" : "暂未确认登录结果。若浏览器已授权，点击刷新核验；终端窗口已保留。",
-                    profile.kind == .claudeCode ? "The sign-in flow ended, but the current subscription identity was not verified. Check again." : "Sign-in has not been confirmed. If browser authorization finished, refresh to verify. The terminal was left open.")
+                    profile.kind == .claudeCode
+                        ? "The sign-in flow ended, but the current subscription identity was not verified. Check again."
+                        : "Sign-in has not been confirmed. If browser authorization finished, refresh to verify. The terminal was left open.")
             }
         }
         // `claude auth login` finishes with its own exit receipt. Watching old
@@ -640,7 +671,8 @@ final class LocalCLIAccountStore: ObservableObject {
                 do {
                     guard !Task.isCancelled, self.profiles.contains(profile), self.profiles.contains(localDefault),
                         !self.claudeIdentityUnavailable, !self.signingIn.contains(localDefault.id), current.fingerprint == reference.identityFingerprint,
-                        try self.claudeService.isCurrent(current) else { throw ClaudeSubscriptionService.Failure.identityChanged }
+                        try self.claudeService.isCurrent(current)
+                    else { throw ClaudeSubscriptionService.Failure.identityChanged }
                     try self.rejectClaudeProjectAPIRoute(workingDirectory)
                     try await self.terminalOpener(localDefault, executable, workingDirectory)
                 } catch { self.claudeFailure(error) }
@@ -695,7 +727,10 @@ final class LocalCLIAccountStore: ObservableObject {
     }
 
     private func rejectClaudeProjectAPIRoute(_ directory: URL) throws {
-        let keys = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY", "CLAUDE_CODE_USE_MANTLE"]
+        let keys = [
+            "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX",
+            "CLAUDE_CODE_USE_FOUNDRY", "CLAUDE_CODE_USE_MANTLE",
+        ]
         var current = directory.standardizedFileURL
         while true {
             for name in ["settings.json", "settings.local.json"] {
@@ -878,8 +913,20 @@ final class LocalCLIAccountStore: ObservableObject {
         return save(next)
     }
 
+    func canUnlink(_ profile: LocalCLIProfile) -> Bool {
+        guard !previewOnly, profiles.contains(profile), !profile.isDefault, !signingIn.contains(profile.id) else { return false }
+        guard let reference = profile.claudeSubscription else { return true }
+        guard claudeSwitching.isEmpty, claudeOpening.isEmpty, signingIn.isEmpty,
+            !claudeIdentityUnavailable, profile.id != claudeActiveProfileID,
+            let current = claudeCurrent, (try? claudeService.isCurrent(current)) == true
+        else { return false }
+        return current.fingerprint != reference.identityFingerprint
+    }
+
     func unlink(_ profile: LocalCLIProfile) {
-        guard !profile.isDefault, !signingIn.contains(profile.id) else { return }
+        // Recheck live config at the mutation boundary as an open menu may
+        // outlive an official sign-in or subscription switch.
+        guard canUnlink(profile) else { return }
         if save(saved.filter { $0.id != profile.id }) {
             tasks.removeValue(forKey: profile.id)?.cancel()
             requests.removeValue(forKey: profile.id)
@@ -1101,7 +1148,8 @@ final class LocalCLIAccountStore: ObservableObject {
         profiles = result
         let retainedIDs = Set(
             result.filter {
-                previousScopes[$0.id]?.kind == $0.kind && previousScopes[$0.id]?.configDirectory == $0.configDirectory && previousScopes[$0.id]?.claudeSubscription == $0.claudeSubscription
+                previousScopes[$0.id]?.kind == $0.kind && previousScopes[$0.id]?.configDirectory == $0.configDirectory
+                    && previousScopes[$0.id]?.claudeSubscription == $0.claudeSubscription
             }.map(\.id))
         for id in Array(tasks.keys) where !retainedIDs.contains(id) {
             tasks.removeValue(forKey: id)?.cancel()
@@ -1202,8 +1250,10 @@ final class LocalCLIAccountStore: ObservableObject {
             guard profile.kind == .claudeCode, !profile.isDefault, UUID(uuidString: profile.id) != nil,
                 profile.configDirectory == support.appendingPathComponent("claude-subscriptions/" + profile.id).path,
                 reference.identityFingerprint.count == 64,
-                reference.identityFingerprint.allSatisfy({ $0.isHexDigit }) else { return false }
-            return reference.source == .native ? UUID(uuidString: reference.slot) != nil : Int(reference.slot).map { (1...10000).contains($0) && String($0) == reference.slot } == true
+                reference.identityFingerprint.allSatisfy({ $0.isHexDigit })
+            else { return false }
+            return reference.source == .native
+                ? UUID(uuidString: reference.slot) != nil : Int(reference.slot).map { (1...10000).contains($0) && String($0) == reference.slot } == true
         }
         if profile.isDefault {
             if profile.kind == .workBuddy {

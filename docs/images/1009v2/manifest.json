@@ -4,9 +4,9 @@
   "installedVersion": "2.3.0",
   "installedBuild": "139",
   "releaseVersion": "2.4.0",
-  "releaseBuild": "140",
+  "releaseBuild": "141",
   "releaseBuildInstalled": false,
-  "scope": "Six new original live settings/sign-in/setup captures from installed build 139, plus the previously published build 137 home image and user-provided sidebar image with unknown version. Build 140 is not installed. Capture-time values do not establish current quota or real-provider acceptance.",
+  "scope": "Six new original live settings/sign-in/setup captures from installed build 139, plus the previously published build 137 home image and user-provided sidebar image with unknown version. Build 141 is not installed. Capture-time values do not establish current quota or real-provider acceptance.",
   "images": [
     {
       "file": "reset-auto.jpg",
@@ -154,6 +154,8 @@
     }
   ],
   "unavailableNewCaptures": [
+    "separate account view",
+    "separate usage view",
     "new home screenshot",
     "new-features window",
     "Kimi quota page",

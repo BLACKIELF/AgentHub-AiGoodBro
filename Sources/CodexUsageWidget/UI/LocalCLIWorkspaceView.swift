@@ -57,7 +57,9 @@ struct LocalCLIWorkspaceView: View {
                         .pickerStyle(.segmented).labelsHidden()
                         .accessibilityLabel(language.text("显示方式", "Layout"))
                         .frame(width: 112)
-                        Button { openClaudeSubscriptions() } label: {
+                        Button {
+                            openClaudeSubscriptions()
+                        } label: {
                             Label(language.text("订阅账号", "Subscriptions"), systemImage: "person.crop.circle.badge.checkmark")
                         }
                         .disabled(model.isPreview || !model.claudeSwitching.isEmpty || !model.signingIn.isEmpty)
@@ -139,22 +141,29 @@ struct LocalCLIWorkspaceView: View {
             }.padding(24).frame(width: 420)
         }
         .sheet(isPresented: $addingAccount) { addAccountSheet }
-        .sheet(isPresented: $showsClaudeSubscriptions, onDismiss: {
-            guard linkConfigurationAfterClaude else { return }
-            linkConfigurationAfterClaude = false
-            guard !model.isPreview else { return }
-            newAccountName = language.text("Claude 账号", "Claude account")
-            linkedAccountDirectory = nil
-            accountAdditionMethod = .link
-            addingAccount = true
-        }) { claudeSubscriptionsSheet }
+        .sheet(
+            isPresented: $showsClaudeSubscriptions,
+            onDismiss: {
+                guard linkConfigurationAfterClaude else { return }
+                linkConfigurationAfterClaude = false
+                guard !model.isPreview else { return }
+                newAccountName = language.text("Claude 账号", "Claude account")
+                linkedAccountDirectory = nil
+                accountAdditionMethod = .link
+                addingAccount = true
+            }
+        ) { claudeSubscriptionsSheet }
         .sheet(item: $claudeDetailsProfile) { profile in
             VStack(alignment: .leading, spacing: 14) {
                 HStack {
                     Text(profile.displayName).font(.title3.weight(.semibold))
                     Spacer()
-                    Button { claudeDetailsProfile = nil } label: { Image(systemName: "xmark") }
-                        .buttonStyle(.plain).accessibilityLabel(language.text("关闭", "Close"))
+                    Button {
+                        claudeDetailsProfile = nil
+                    } label: {
+                        Image(systemName: "xmark")
+                    }
+                    .buttonStyle(.plain).accessibilityLabel(language.text("关闭", "Close"))
                 }
                 ScrollView { fullAccountCard(profile) }.frame(maxHeight: 520)
             }.padding(20).frame(width: 620)
@@ -341,7 +350,7 @@ struct LocalCLIWorkspaceView: View {
         if profile.kind == .claudeCode {
             actions.insert(AnchoredMenuAction(id: "claude-subscriptions", title: language.text("订阅账号", "Subscriptions")), at: 1)
         }
-        if includeUnlink {
+        if includeUnlink && model.canUnlink(profile) {
             actions.append(AnchoredMenuAction(id: "unlink", title: language.text("取消关联", "Unlink"), destructive: true))
         }
         return AnchoredMenuRequest(ownerID: profile.id, actions: actions)
@@ -412,9 +421,10 @@ struct LocalCLIWorkspaceView: View {
                 claudeSubscriptionCardStatus(profile, result: result, isStale: isStale, layout: layout)
             }.frame(minWidth: layout == .rows ? 200 : nil, maxWidth: .infinity, alignment: .leading)
             ClaudeSubscriptionQuotaView(
-                result: result, isStale: isStale, language: language)
-                .frame(width: layout == .rows ? 270 : nil)
-                .frame(maxWidth: layout == .cards ? .infinity : nil, alignment: .leading)
+                result: result, isStale: isStale, language: language
+            )
+            .frame(width: layout == .rows ? 270 : nil)
+            .frame(maxWidth: layout == .cards ? .infinity : nil, alignment: .leading)
             if layout == .cards { Spacer(minLength: 0) }
             VStack(alignment: .leading, spacing: 5) {
                 if layout == .rows { claudeCardControls(profile) }
@@ -464,26 +474,34 @@ struct LocalCLIWorkspaceView: View {
     private func claudeCardControls(_ profile: LocalCLIProfile) -> some View {
         HStack(spacing: 1) {
             Spacer(minLength: 0)
-            Button { openClaudeCardDetails(profile) } label: {
+            Button {
+                openClaudeCardDetails(profile)
+            } label: {
                 Image(systemName: "info.circle").frame(width: 26, height: 26)
             }
             .help(language.text("账号详情与模型额度", "Account details and model limits"))
             .accessibilityLabel(language.text("账号详情与模型额度", "Account details and model limits"))
 
-            Button { openClaudeSubscriptions() } label: {
+            Button {
+                openClaudeSubscriptions()
+            } label: {
                 Image(systemName: "slider.horizontal.3").frame(width: 26, height: 26)
             }
             .help(language.text("管理订阅账号", "Manage subscriptions"))
             .accessibilityLabel(language.text("管理订阅账号", "Manage subscriptions"))
 
-            Button { model.refresh(profile) } label: {
+            Button {
+                model.refresh(profile)
+            } label: {
                 Image(systemName: "arrow.clockwise").frame(width: 26, height: 26)
             }
             .disabled(model.refreshing.contains(profile.id))
             .help(language.text("刷新额度", "Refresh limits"))
             .accessibilityLabel(language.text("刷新额度", "Refresh limits"))
 
-            Button { openNative(profile) } label: {
+            Button {
+                openNative(profile)
+            } label: {
                 Image(systemName: "terminal").frame(width: 26, height: 26)
             }
             .disabled(!model.canOpen(profile))
@@ -492,11 +510,12 @@ struct LocalCLIWorkspaceView: View {
 
             AnchoredActionMenu(
                 request: moreMenuRequest(for: profile, includeUnlink: !profile.isDefault), language: language,
-                onSelect: { handleMoreMenu($0, profile: profile) })
-                .frame(width: 26, height: 26)
-                .help(language.text("更多账号操作", "More account actions"))
-                .accessibilityLabel(language.text("更多账号操作", "More account actions"))
-                .id(profile.id)
+                onSelect: { handleMoreMenu($0, profile: profile) }
+            )
+            .frame(width: 26, height: 26)
+            .help(language.text("更多账号操作", "More account actions"))
+            .accessibilityLabel(language.text("更多账号操作", "More account actions"))
+            .id(profile.id)
         }
         .buttonStyle(.plain).font(.system(size: 12)).foregroundStyle(.secondary)
     }
@@ -1064,7 +1083,8 @@ struct LocalCLIWorkspaceView: View {
         let active = model.claudeActiveProfileID == profile.id
         return Label(
             active ? language.text("当前使用", "Active") : language.text("订阅账号", "Subscription account"),
-            systemImage: active ? "checkmark.circle.fill" : "person.crop.circle")
+            systemImage: active ? "checkmark.circle.fill" : "person.crop.circle"
+        )
         .font(.caption2.weight(.medium))
         .foregroundStyle(active ? FixedVisualPalette.statusSuccess : Color.secondary)
     }
@@ -1074,15 +1094,17 @@ struct LocalCLIWorkspaceView: View {
         let switching = model.claudeSwitching.contains(profile.id)
         let needsSaving = profile.claudeSubscription == nil
         return Button {
-            if needsSaving { openClaudeSubscriptions() }
-            else { Task { @MainActor in _ = await model.switchClaudeSubscription(profile) } }
+            if needsSaving { openClaudeSubscriptions() } else { Task { @MainActor in _ = await model.switchClaudeSubscription(profile) } }
         } label: {
-            if switching { ProgressView().controlSize(.small) }
-            else {
+            if switching {
+                ProgressView().controlSize(.small)
+            } else {
                 if compact {
                     Image(systemName: needsSaving ? "person.crop.circle.badge.plus" : active ? "checkmark.circle" : "arrow.triangle.2.circlepath")
                 } else {
-                    Label(needsSaving ? language.text("保存订阅", "Save subscription") : active ? language.text("当前使用", "Active") : language.text("切换", "Switch"), systemImage: active ? "checkmark.circle" : "arrow.triangle.2.circlepath")
+                    Label(
+                        needsSaving ? language.text("保存订阅", "Save subscription") : active ? language.text("当前使用", "Active") : language.text("切换", "Switch"),
+                        systemImage: active ? "checkmark.circle" : "arrow.triangle.2.circlepath")
                 }
             }
         }
@@ -1254,7 +1276,8 @@ struct LocalCLIWorkspaceView: View {
         case .claudeCode:
             language.text(
                 "分别查看 Claude 订阅的 5 小时、7 天与模型额度，保存当前订阅后可手动切换。登录使用官方流程；额度与本机 Token 统计分别计算。",
-                "View each Claude subscription's 5-hour, weekly and model limits. Save the current subscription to switch manually. Sign-in uses the official flow; quota and local Token totals stay separate.")
+                "View each Claude subscription's 5-hour, weekly and model limits. Save the current subscription to switch manually. Sign-in uses the official flow; quota and local Token totals stay separate."
+            )
         case .kimi:
             language.text(
                 "登录和启动使用同一配置目录，完成 Kimi Code 浏览器授权后刷新对应额度。",
@@ -1322,17 +1345,18 @@ struct ClaudeSubscriptionSetupPanel: View {
             VStack(alignment: .leading, spacing: 12) {
                 Label(language.text("当前登录账号", "Current sign-in"), systemImage: "person.crop.circle.badge.checkmark")
                     .font(.system(size: 12, weight: .semibold))
-                Text(language.text(
-                    "先在 Claude Code 登录，再在这里保存当前账号；再次添加会更新由 AiGoodBro 保存的凭据。",
-                    "Sign in to Claude Code, then save the current account here. Adding it again updates credentials saved by AiGoodBro."))
-                    .font(.system(size: 12)).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                Text(
+                    language.text(
+                        "先在 Claude Code 登录，再在这里保存当前账号；再次添加会更新由 AiGoodBro 保存的凭据。",
+                        "Sign in to Claude Code, then save the current account here. Adding it again updates credentials saved by AiGoodBro.")
+                )
+                .font(.system(size: 12)).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
                 HStack(spacing: 10) {
                     TextField(language.text("账号名称，例如：工作账号", "Account name, for example: Work"), text: $subscriptionName)
                         .textFieldStyle(.roundedBorder)
                     Button(action: saveCurrentSubscription) {
-                        if captureInProgress { ProgressView().controlSize(.small) }
-                        else { Text(language.text("添加当前登录账号", "Add signed-in account")) }
+                        if captureInProgress { ProgressView().controlSize(.small) } else { Text(language.text("添加当前登录账号", "Add signed-in account")) }
                     }
                     .buttonStyle(.borderedProminent).controlSize(.small)
                     .fixedSize()
@@ -1346,11 +1370,14 @@ struct ClaudeSubscriptionSetupPanel: View {
             VStack(alignment: .leading, spacing: 10) {
                 Text(language.text("登录或添加另一个账号", "Sign in or add another account"))
                     .font(.system(size: 12, weight: .semibold))
-                Text(language.text(
-                    "先保存要保留的当前账号，再在 Claude Code 登录另一个账号，回到这里添加。不要先 /logout，以免已保存的凭据失效。",
-                    "Save the current account you want to keep, sign in to another account in Claude Code, then return here to add it. Do not use /logout first; it may invalidate saved credentials."))
-                    .font(.system(size: 12)).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                Text(
+                    language.text(
+                        "先保存要保留的当前账号，再在 Claude Code 登录另一个账号，回到这里添加。不要先 /logout，以免已保存的凭据失效。",
+                        "Save the current account you want to keep, sign in to another account in Claude Code, then return here to add it. Do not use /logout first; it may invalidate saved credentials."
+                    )
+                )
+                .font(.system(size: 12)).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
                 Button {
                     guard !model.isPreview else { return }
                     model.startClaudeSubscriptionSignIn()
@@ -1376,11 +1403,13 @@ struct ClaudeSubscriptionSetupPanel: View {
                 Button {
                     guard !model.isPreview else { return }
                     model.discoverClaudeSubscriptions()
-                } label: { Image(systemName: "arrow.clockwise") }
-                    .buttonStyle(.plain)
-                    .help(language.text("重新查找订阅", "Rescan subscriptions"))
-                    .accessibilityLabel(language.text("重新查找订阅", "Rescan subscriptions"))
-                    .disabled(model.isPreview || accountActionBusy)
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .buttonStyle(.plain)
+                .help(language.text("重新查找订阅", "Rescan subscriptions"))
+                .accessibilityLabel(language.text("重新查找订阅", "Rescan subscriptions"))
+                .disabled(model.isPreview || accountActionBusy)
             }
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 8) {

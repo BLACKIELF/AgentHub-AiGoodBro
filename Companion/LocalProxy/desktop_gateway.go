@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
@@ -70,9 +71,7 @@ func startDesktopGatewayWithCatalog(c desktopConnection, environment []string, c
 				request.Out.Header.Del(name)
 			}
 		},
-		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, _ error) {
-			http.Error(w, "AiGoodBro proxy is stopped. Reopen Codex normally to use its signed-in account, or reconnect through AiGoodBro.", http.StatusServiceUnavailable)
-		},
+		ErrorHandler: desktopGatewayForwardingError,
 	}
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !desktopRequestAuthorized(filepath.Join(home, "auth.json"), r.Header.Get("Authorization")) {
@@ -110,6 +109,25 @@ func startDesktopGatewayWithCatalog(c desktopConnection, environment []string, c
 		}
 	}()
 	return server, "http://" + listener.Addr().String() + "/v1", nil
+}
+
+func desktopGatewayForwardingError(w http.ResponseWriter, r *http.Request, err error) {
+	message := "AiGoodBro could not forward this request to the local proxy. The proxy's running state is unknown."
+	var networkError net.Error
+	var operationError *net.OpError
+	switch {
+	case errors.Is(r.Context().Err(), context.Canceled) || errors.Is(err, context.Canceled):
+		message = "AiGoodBro request forwarding was canceled."
+	case errors.Is(r.Context().Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &networkError) && networkError.Timeout()):
+		message = "AiGoodBro request forwarding timed out. The proxy's running state is unknown."
+	case errors.As(err, &operationError) && operationError.Op == "dial" && errors.Is(operationError.Err, syscall.ECONNREFUSED):
+		// A refused saved endpoint may belong to a stopped or restarted pool.
+		// It does not establish whether another pool is currently running.
+		message = "AiGoodBro's saved desktop proxy connection is unavailable. The proxy may have stopped or restarted. Reconnect through AiGoodBro, or reopen Codex normally to use its signed-in account."
+	}
+	// Preserve the existing response status and client retry behavior. Never
+	// expose the transport error: it may contain local paths or credentials.
+	http.Error(w, message, http.StatusServiceUnavailable)
 }
 
 // Read-only validation against the credential Codex itself currently uses.

@@ -1,5 +1,5 @@
 ---
-summary: "Grok Build sessions are named from the local summary.json. Tokscale reports grok tokens with no timestamp, title or project at all, so the card had nothing to list."
+summary: "Grok Build session timestamps and projects come from the local summary.json. Its generated_title contains prompt text and is excluded from display and title-sync metadata."
 ids: [grok]
 read_when:
   - Changing what a grok session's title, timestamps or project come from
@@ -24,7 +24,9 @@ Grok writes nanosecond ISO strings (`2026-08-19T07:53:22.948065400Z`). V8 trunca
 
 ## Title
 
-`generated_title`, whitespace-collapsed and capped at 96 code points — the same cap claude, codex and kimi each carry locally (there is no shared cleaner). Grok titles are the writer's own prompt text and run to ~173 code points, so the cap is load-bearing. A blank title yields no `title` field at all rather than an empty one, and the row still resolves on its timestamps.
+`generated_title` contains the writer's prompt text, not a user-facing session name. The adapter does not promote it to `title`, truncate it into a label, or infer a title from another unverified summary field. This keeps prompt content out of the default embedded session rows and opt-in title synchronization.
+
+The adapter still returns timestamps and project attribution when present; a prompt-only summary yields no metadata. The shared metadata applier retains genuine titles already supplied by other sources. This change stops new prompt-derived titles from this adapter; it does not migrate previously persisted session records.
 
 ## Scope
 

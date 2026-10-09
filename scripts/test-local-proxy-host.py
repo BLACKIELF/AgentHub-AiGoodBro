@@ -5,6 +5,7 @@ import subprocess, tempfile, os, sys, hashlib, json, shutil
 root=Path(__file__).resolve().parent.parent
 service=root/'Sources/CodexUsageWidget/Services'
 dynamic_http='--dynamic-http-only' in sys.argv
+cleanup_retry='--cleanup-retry-only' in sys.argv
 
 def declaration(source, needle):
     start=source.index(needle); opening=source.index('{',start); depth=0
@@ -39,7 +40,7 @@ enum AccountDisplay { static func profileName(_ p:CodexProfile,allProfiles:[Code
 struct CodexExecutionPreference { enum Model:String,CaseIterable { case fixture="fixture-model" } }
 @MainActor final class UsageStore:ObservableObject { @Published var profiles:[CodexProfile]; var isPreview=true; var refreshCount=0; var onRefresh:((Set<String>)->Void)?; init(_ profiles:[CodexProfile]) { self.profiles=profiles }; func refreshLocalProxyQuotas(profileIDs:Set<String>){refreshCount += 1; onRefresh?(profileIDs)}; func creditBalancePresentation(for:CodexProfile)->CreditBalancePresentation { .init() }; func availableResetCredits(for:CodexProfile)->Int? { nil } }
 enum CodexExecutable { static func path()->String? { "/usr/bin/true" }; static func bundledPath()->String? { nil } }
-enum LocalProxyFixtureRuntime { static var allowStopSignals = true; static var failPreferenceRename=false; static var failFirstTerminalCleanup=false; static var failActivityCommit=false; static var afterReserve:(()->Void)?; static var afterRunning:(()->Void)?; static var helper:URL { DispatchParticipationPaths.supportDirectory().appendingPathComponent("fixture-helper") } }
+enum LocalProxyFixtureRuntime { static var allowStopSignals = true; static var failPreferenceRename=false; static var failFirstTerminalCleanup=false; static var failActivityCommit=false; static var cleanupAttemptCount=0; static var afterReserve:(()->Void)?; static var afterRunning:(()->Void)?; static var helper:URL { DispatchParticipationPaths.supportDirectory().appendingPathComponent("fixture-helper") } }
 struct DispatchParticipationPaths { static func supportDirectory()->URL { URL(fileURLWithPath:ProcessInfo.processInfo.environment["PROXY_FIXTURE_ROOT"]!) }; static let snapshotFileName="fixture.json"; var hubConfig:URL; static func live(snapshot:URL)throws->Self { throw LocalProxyFailure.unavailable } }
 '''
 if dynamic_http:
@@ -78,6 +79,8 @@ with tempfile.TemporaryDirectory(prefix='aigoodbro-proxy-host-fixture-', dir=os.
     files=[folder/'Stubs.swift',root/'Sources/CodexUsageWidget/Domain/LocalProxyQueue.swift',service/'CodexCredentialTransaction.swift',service/'DispatchActivityStore.swift',service/'LocalProxyBridge.swift',service/'LocalProxyNetworkSettings.swift',service/'LocalProxyQueueStore.swift',root/'scripts/test-local-proxy-host.swift']
     if dynamic_http:
         files[-1]=root/'scripts/LocalProxyDynamicHTTPFixture.swift'
+    elif cleanup_retry:
+        files[-1]=root/'scripts/LocalProxyCleanupRetryFixture.swift'
     # Credential transaction fixture only uses its actual read and gate routines.
     raw=(service/'CodexCredentialTransaction.swift').read_text();raw=raw[:raw.index('    private static func tokens(')]+'}\n'
     (folder/'Credential.swift').write_text(raw);files[2]=folder/'Credential.swift'
@@ -98,6 +101,10 @@ with tempfile.TemporaryDirectory(prefix='aigoodbro-proxy-host-fixture-', dir=os.
                 # Test-only visibility, without changing production APIs or behavior.
                 content=content.replace('private(set)', '').replace('private ', '')
                 content=content.replace('LocalProxyNetworkSettings.load()', 'LocalProxyNetworkSettings.resolve([:])')
+                if cleanup_retry:
+                    cleanup_attempt='let cleanupID = exitCleanupID'
+                    assert content.count(cleanup_attempt) == 1
+                    content=content.replace(cleanup_attempt, cleanup_attempt + '\n        LocalProxyFixtureRuntime.cleanupAttemptCount += 1')
                 begin=content.index('    func verifiedHelper() throws -> URL {')
                 end=content.index('    func randomKey()',begin)
                 content=content[:begin]+'    func verifiedHelper() throws -> URL { LocalProxyFixtureRuntime.helper }\n'+content[end:]

@@ -188,9 +188,11 @@ struct LocalCLIQuotaReader {
             ?? (transport == nil && fileReader == nil && claudeKeychainReader == nil
                 ? { profile, now in try await TokenMonitorLocalCLIQuotaReader().load(profile: profile, now: now) } : nil)
         self.transport = transport ?? LocalCLIURLSessionTransport()
-        self.claudeSubscriptionService = claudeSubscriptionService
+        self.claudeSubscriptionService =
+            claudeSubscriptionService
             ?? (transport == nil && fileReader == nil && claudeKeychainReader == nil
-                ? ClaudeSubscriptionService(home: FileManager.default.homeDirectoryForCurrentUser,
+                ? ClaudeSubscriptionService(
+                    home: FileManager.default.homeDirectoryForCurrentUser,
                     support: DispatchParticipationPaths.supportDirectory()) : nil)
         self.fileReader =
             fileReader ?? { url, maximumBytes, allowMissing in

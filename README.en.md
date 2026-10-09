@@ -6,7 +6,7 @@ AiGoodBro is a macOS AI workspace for personal use. It brings together quotas fo
 
 [中文](README.md) | **English**
 
-This release is **2.4 · 1009v1**, with update version **2.4.0 (140)**. Compared with public 9.6.80 (130), it upgrades the bundled usage and proxy engines, adds Claude subscription accounts and independent quota rings, and makes account rows more compact. Home, the floating bubble and sidebar share cached TPM. Reset-card controls and new/returning-user setup remain available. See the [2.4 release notes](docs/release-notes-v2.4.0.md), [usage guide](docs/usage-guide.md) and [changelog](CHANGELOG.md).
+This release is **2.4 · 1009v2**, with update version **2.4.0 (141)**. Compared with public 9.6.80 (130), it upgrades the bundled usage and proxy engines, adds Claude subscription accounts and independent quota rings, and makes account rows more compact. Home, the floating bubble and sidebar share cached TPM. Reset-card controls and new/returning-user setup remain available. See the [2.4 release notes](docs/release-notes-v2.4.0.md), [usage guide](docs/usage-guide.md) and [changelog](CHANGELOG.md).
 
 [Download Apple Silicon DMG](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.4.0/AiGoodBro-2.4.0-mac-arm64.dmg) · [Alternate ZIP](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.4.0/AiGoodBro-2.4.0-mac-arm64.zip) · [GitHub Release](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/tag/v2.4.0)
 
@@ -22,7 +22,7 @@ Home brings accounts, quotas, token usage, reset announcements and connected too
   <a href="docs/images/1009v1/home-live.png"><img src="docs/images/1009v1/home-live.png" width="1000" alt="Live AiGoodBro build 137 home screenshot with reset announcements, token usage heatmap and trends, multi-account quota cards, and other connected tool states."></a>
 </p>
 
-*All images are original live UI captures. The published home image was captured from installed 2.3.0 (137) on 2026-10-09. New sign-in, setup and settings images were captured from 2.3.0 (139) that day; 2.4 retains the same presentation of those settings. The user-provided sidebar crop shows no build number. Build 140 is not installed; values reflect capture time and do not establish a build 140 upgrade or real-call acceptance. Click an image for its original size; see the [source and checksum record](docs/public-ui-1009v2.md).*
+*All images are original live UI captures. The published home image was captured from installed 2.3.0 (137) on 2026-10-09. New sign-in, setup and settings images were captured from 2.3.0 (139) that day; 2.4 retains the same presentation of those settings. The user-provided sidebar crop shows no build number. Build 141 is not installed; values reflect capture time and do not establish a build 141 upgrade or real-call acceptance. Click an image for its original size; see the [source and checksum record](docs/public-ui-1009v2.md).*
 
 **Changes since public build 130**
 
@@ -31,6 +31,10 @@ Home brings accounts, quotas, token usage, reset announcements and connected too
 - **Adjust the running proxy queue:** CLIProxyAPI moves to 8.0.20. Disabling participation skips admissions still waiting or retrying; admitted responses finish. Priority, Use last, ordering and credit floors stay synchronized with the account page.
 - **Shared TPM and compact layouts:** Home, the floating bubble footer and sidebar reuse existing token samples. Account rows place adjacent 5h / 7d rings to the right of account details, keep invitations as a small icon and use two rows of controls. Chinese reset-card, available-credit and available-amount labels are clearer.
 - **Sidebar and setup improvements:** Sidebar sizes, 75–150% scaling, optional refresh controls and running indicators are available. Manual Claude setup keeps its progress separate from installation setup, and Claude cards respect the card-size setting.
+
+Build 141 also fixes Claude subscription unlinking and expired-target switching, Grok session titles, proxy failure messages and lease cleanup after a child exits. See the [five fixes and validation boundaries](docs/release-notes-v2.4.0.md#english).
+
+Six separate feature captures: [Claude sign-in](docs/images/1009v2/claude-login.jpg) · [Tool setup](docs/images/1009v2/guide.jpg) · [Reset-card settings](docs/images/1009v2/reset-auto.jpg) · [WeChat / Feishu setup](docs/images/1009v2/notifications-guide.jpg) · [Sidebar settings](docs/images/1009v2/edge-dock-settings.jpg) · [Appearance settings](docs/images/1009v2/appearance-settings.jpg). All are from installed build 139. Accounts and usage still reuse the published build 137 home image below; separate live captures remain pending.
 
 The illustrated sections below explain each feature. Use [setup](#setup) to connect tools and review settings; viewing an introduction does not enable optional features.
 
@@ -92,7 +96,7 @@ Home and the menu bar share the same all-time snapshot. Home, the floating bubbl
   <a href="docs/images/1009v1/proxy-status-edge-dock.png"><img src="docs/images/1009v1/proxy-status-edge-dock.png" width="360" alt="Previously published user-provided live proxy status and sidebar image, with no visible build number."></a>
 </p>
 
-*This published user-provided image shows proxy state, account limits and a settings entry; its build is unknown. It does not establish build 140 installation or real-request acceptance.*
+*This published user-provided image shows proxy state, account limits and a settings entry; its build is unknown. It does not establish build 141 installation or real-request acceptance.*
 
 The optional local proxy is a personal tool. Compatible clients send model requests to a service on this Mac; AiGoodBro selects an enrolled account by participation, Priority / Normal / Use last groups and saved order. Pro20x defaults to Use last and can be changed; the current Desktop account is a fallback within its group. Available subscription quota across participating accounts is used before credits.
 
@@ -110,7 +114,9 @@ The proxy routes inference requests only. Codex Desktop keeps its OpenAI sign-in
 
 Once a streamed response has begun, an error is not replayed through another account. An uncertain result is not sent again automatically, avoiding duplicate task execution. The presence of proxy controls and the Connect Desktop entry does not prove end-to-end acceptance.
 
-A user-reported proxy fault required a restart to recover during this round. Its cause is still under investigation. Recovery after a restart does not establish a permanent fix, and this validation does not guarantee stability of the real proxy path.
+Build 141 distinguishes gateway connection refusal, timeout, cancellation and general forwarding failures, while retaining HTTP 503 and no automatic reconnection. Lease cleanup for a confirmed exited child retries briefly when its lock is busy, while protecting a new run and active children.
+
+A user-reported proxy fault required a restart to recover during this round. Its cause is still under investigation. These two fixes do not establish that every cause of that fault is covered. Recovery after a restart does not establish a permanent fix, and this validation does not guarantee stability of the real proxy path.
 
 The proxy is designed for personal use with your own accounts and local tasks. This project does not provide accounts, credential sharing, quota resale or a public proxy service.
 

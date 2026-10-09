@@ -57,7 +57,9 @@ final class TokenMonitorDesktopController: ObservableObject {
             // A fleet's earliest device may expire before its newest sample.
             // The next status projects the remaining devices; do not infer a
             // fleet reset or repeatedly wake on that already passed boundary.
-            let next = isIdle(at: now) ? sampledAt + 180_000
+            let next =
+                isIdle(at: now)
+                ? sampledAt + 180_000
                 : (now.timeIntervalSince1970 * 1_000 >= expiresAt ? sampledAt + 8_000 : expiresAt)
             return Date(timeIntervalSince1970: next / 1_000)
         }
@@ -431,13 +433,16 @@ final class TokenMonitorDesktopController: ObservableObject {
         guard age.isFinite, age >= 0, age < 180, !value.idle || age >= 8 else { return nil }
         if let previous, previous.contextKey == value.contextKey,
             value.revision < previous.revision || value.sampledAt < previous.sampledAt
-        { return nil }
+        {
+            return nil
+        }
         return value
     }
 
     nonisolated static func isSafeTokenRateDisplayValue(_ value: String?) -> Bool {
         guard let value, !value.isEmpty, value.count <= 32 else { return false }
-        return value.range(of: #"^(?:<0\.1|[0-9]+(?:[.,][0-9]+)?(?:K|M|B|万|萬|亿|億|만|억)?)$"#,
+        return value.range(
+            of: #"^(?:<0\.1|[0-9]+(?:[.,][0-9]+)?(?:K|M|B|万|萬|亿|億|만|억)?)$"#,
             options: .regularExpression) == value.startIndex..<value.endIndex
     }
 

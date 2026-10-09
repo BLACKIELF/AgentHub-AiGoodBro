@@ -58,7 +58,8 @@ struct ClaudeSubscriptionQuotaView: View {
                 HStack(spacing: 6) {
                     Label(
                         isStale ? language.text("上次快照", "Previous snapshot") : language.text("已更新", "Updated"),
-                        systemImage: isStale ? "clock.badge.exclamationmark" : "clock")
+                        systemImage: isStale ? "clock.badge.exclamationmark" : "clock"
+                    )
                     .foregroundStyle(isStale ? FixedVisualPalette.statusWarningForeground(colorScheme) : Color.secondary)
                     Spacer(minLength: 4)
                     Text(language.dateTime(result.fetchedAt))
@@ -89,8 +90,9 @@ struct ClaudeSubscriptionQuotaView: View {
         VStack(alignment: .leading, spacing: compact ? 2 : 3) {
             QuotaPercentageRing(
                 percent: item.usedPercent.map { 100 - $0 }, diameter: compact ? 32 : 38,
-                accessibilityTitle: item.title + " " + language.text("剩余额度", "remaining quota"))
-                .fixedSize()
+                accessibilityTitle: item.title + " " + language.text("剩余额度", "remaining quota")
+            )
+            .fixedSize()
             Text(item.title)
                 .font(.system(size: compact ? 9 : 10, weight: .medium))
                 .foregroundStyle(.secondary)
@@ -98,14 +100,17 @@ struct ClaudeSubscriptionQuotaView: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .help(item.title)
             if let reset = item.resetsAt {
-                Text(language.text("重置 ", "Reset ") + reset.formatted(
-                    .dateTime.month(.twoDigits).day(.twoDigits).hour().minute().locale(language.locale)))
-                    .font(.system(size: compact ? 8 : 9))
-                    .monospacedDigit()
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.75)
-                    .foregroundStyle(.secondary)
-                    .help(language.dateTime(reset))
+                Text(
+                    language.text("重置 ", "Reset ")
+                        + reset.formatted(
+                            .dateTime.month(.twoDigits).day(.twoDigits).hour().minute().locale(language.locale))
+                )
+                .font(.system(size: compact ? 8 : 9))
+                .monospacedDigit()
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
+                .foregroundStyle(.secondary)
+                .help(language.dateTime(reset))
                 ResetCountdownText(deadline: reset, kind: .accountWindow, language: language, compact: true)
                     .font(.system(size: compact ? 8 : 9))
                     .lineLimit(1)

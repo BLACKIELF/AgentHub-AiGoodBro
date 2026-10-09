@@ -368,9 +368,11 @@ struct LocalProxyQueueView: View {
                     )
                 )
                 .disabled(!model.canReorder)
-                .help(language.text(
-                    "选择优先会取消最后使用；保存后对新请求生效。未参与的账号可预先设置。",
-                    "Selecting priority clears Use last and applies to new requests. You can configure accounts before enabling participation."))
+                .help(
+                    language.text(
+                        "选择优先会取消最后使用；保存后对新请求生效。未参与的账号可预先设置。",
+                        "Selecting priority clears Use last and applies to new requests. You can configure accounts before enabling participation.")
+                )
                 .accessibilityLabel(language.text("\(accountTitle(row)) 优先调用", "Prioritize \(accountTitle(row)) for proxy requests"))
                 Toggle(
                     language.text("最后使用", "Use last"),
@@ -383,9 +385,11 @@ struct LocalProxyQueueView: View {
                     )
                 )
                 .disabled(!model.canSetAccountLast(id: row.id))
-                .help(language.text(
-                    "各额度阶段在其他账号之后使用，选择后取消优先；可以随时取消，订阅额度仍先于点数。",
-                    "Use after other accounts in each quota phase. Selecting this clears priority and can be undone at any time. Subscriptions still precede credits."))
+                .help(
+                    language.text(
+                        "各额度阶段在其他账号之后使用，选择后取消优先；可以随时取消，订阅额度仍先于点数。",
+                        "Use after other accounts in each quota phase. Selecting this clears priority and can be undone at any time. Subscriptions still precede credits.")
+                )
                 .accessibilityLabel(language.text("\(accountTitle(row)) 最后使用", "Use \(accountTitle(row)) last"))
                 HStack(spacing: 2) {
                     Button {
@@ -395,7 +399,11 @@ struct LocalProxyQueueView: View {
                         Image(systemName: "chevron.up")
                     }
                     .disabled(!model.canMoveAccount(id: row.id, by: -1))
-                    .help(language.text("上移一位；跨优先或最后使用分组时同步调整本账号设置。桌面账号保留组内后备位置。", "Move up one position, updating this account's Priority or Use last setting when crossing groups. Desktop accounts stay fallback within their group."))
+                    .help(
+                        language.text(
+                            "上移一位；跨优先或最后使用分组时同步调整本账号设置。桌面账号保留组内后备位置。",
+                            "Move up one position, updating this account's Priority or Use last setting when crossing groups. Desktop accounts stay fallback within their group.")
+                    )
                     .accessibilityLabel(language.text("上移 \(accountTitle(row))", "Move \(accountTitle(row)) up"))
                     Button {
                         model.moveAccount(id: row.id, by: 1)
@@ -404,7 +412,11 @@ struct LocalProxyQueueView: View {
                         Image(systemName: "chevron.down")
                     }
                     .disabled(!model.canMoveAccount(id: row.id, by: 1))
-                    .help(language.text("下移一位；跨优先或最后使用分组时同步调整本账号设置。桌面账号保留组内后备位置。", "Move down one position, updating this account's Priority or Use last setting when crossing groups. Desktop accounts stay fallback within their group."))
+                    .help(
+                        language.text(
+                            "下移一位；跨优先或最后使用分组时同步调整本账号设置。桌面账号保留组内后备位置。",
+                            "Move down one position, updating this account's Priority or Use last setting when crossing groups. Desktop accounts stay fallback within their group.")
+                    )
                     .accessibilityLabel(language.text("下移 \(accountTitle(row))", "Move \(accountTitle(row)) down"))
                 }.buttonStyle(WorkspaceActionButtonStyle(compact: true))
             }
@@ -735,8 +747,9 @@ private struct LocalProxyAccountSummaryLayout: Layout {
 
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
         for (view, frame) in zip(subviews, frames(width: bounds.width, subviews: subviews)) {
-            view.place(at: CGPoint(x: bounds.minX + frame.minX, y: bounds.minY + frame.minY),
-                       anchor: .topLeading, proposal: .init(width: frame.width, height: frame.height))
+            view.place(
+                at: CGPoint(x: bounds.minX + frame.minX, y: bounds.minY + frame.minY),
+                anchor: .topLeading, proposal: .init(width: frame.width, height: frame.height))
         }
     }
 
@@ -753,7 +766,7 @@ private struct LocalProxyAccountSummaryLayout: Layout {
                 return [
                     CGRect(x: 0, y: (height - quota.height) / 2, width: quota.width, height: quota.height),
                     CGRect(x: quota.width + 14, y: (height - summary.height) / 2, width: summaryWidth, height: summary.height),
-                    CGRect(x: width - actions.width, y: (height - actions.height) / 2, width: actions.width, height: actions.height)
+                    CGRect(x: width - actions.width, y: (height - actions.height) / 2, width: actions.width, height: actions.height),
                 ]
             }
             let summary = subviews[1].sizeThatFits(.init(width: besideQuota, height: nil))
@@ -763,7 +776,7 @@ private struct LocalProxyAccountSummaryLayout: Layout {
             return [
                 CGRect(x: 0, y: (height - quota.height) / 2, width: quota.width, height: quota.height),
                 CGRect(x: quota.width + 14, y: informationY, width: besideQuota, height: summary.height),
-                CGRect(x: width - actions.width, y: informationY + summary.height + 6, width: actions.width, height: actions.height)
+                CGRect(x: width - actions.width, y: informationY + summary.height + 6, width: actions.width, height: actions.height),
             ]
         }
         let summaryWidth = width - actions.width - 12
@@ -773,15 +786,17 @@ private struct LocalProxyAccountSummaryLayout: Layout {
         return [
             CGRect(x: 0, y: 0, width: quota.width, height: quota.height),
             CGRect(x: 0, y: informationY, width: horizontal ? summaryWidth : width, height: summary.height),
-            CGRect(x: width - actions.width, y: horizontal ? informationY : informationY + summary.height + 6,
-                   width: actions.width, height: actions.height)
+            CGRect(
+                x: width - actions.width, y: horizontal ? informationY : informationY + summary.height + 6,
+                width: actions.width, height: actions.height),
         ]
     }
 }
 
 private struct LocalProxyInlineInfoLayout: Layout {
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        let idealWidth = subviews.map { $0.sizeThatFits(.unspecified).width }.reduce(0, +)
+        let idealWidth =
+            subviews.map { $0.sizeThatFits(.unspecified).width }.reduce(0, +)
             + CGFloat(max(0, subviews.count - 1)) * 8
         let width = proposal.width.flatMap { $0.isFinite ? max(0, $0) : nil } ?? idealWidth
         return CGSize(width: width, height: frames(width: width, subviews: subviews).map(\.maxY).max() ?? 0)
@@ -789,8 +804,9 @@ private struct LocalProxyInlineInfoLayout: Layout {
 
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
         for (view, frame) in zip(subviews, frames(width: bounds.width, subviews: subviews)) {
-            view.place(at: CGPoint(x: bounds.minX + frame.minX, y: bounds.minY + frame.minY),
-                       anchor: .topLeading, proposal: .init(width: frame.width, height: frame.height))
+            view.place(
+                at: CGPoint(x: bounds.minX + frame.minX, y: bounds.minY + frame.minY),
+                anchor: .topLeading, proposal: .init(width: frame.width, height: frame.height))
         }
     }
 
@@ -800,8 +816,9 @@ private struct LocalProxyInlineInfoLayout: Layout {
         let sizes = horizontal ? ideal : subviews.map { $0.sizeThatFits(.init(width: width, height: nil)) }
         var offset: CGFloat = 0
         return sizes.map { size in
-            let frame = CGRect(x: horizontal ? offset : 0, y: horizontal ? 0 : offset,
-                               width: horizontal ? size.width : width, height: size.height)
+            let frame = CGRect(
+                x: horizontal ? offset : 0, y: horizontal ? 0 : offset,
+                width: horizontal ? size.width : width, height: size.height)
             offset += (horizontal ? size.width + 8 : size.height + 4)
             return frame
         }

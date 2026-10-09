@@ -8,6 +8,8 @@ const test = require('node:test');
 
 const { applySessionMetadata, projectIdentity } = require('../../src/shared/sessionMetadata');
 const grok = require('../../src/shared/providers/grok/sessionMetadata');
+const { buildSyncPayload } = require('../../src/shared/syncPayload');
+const { sessionRowsForPeriod } = require('../../src/electron/renderer/sessionRows');
 
 const tmpDirs = [];
 test.after(() => {
@@ -41,7 +43,7 @@ function context(home, overrides = {}) {
   };
 }
 
-test('names a session from summary.json, which tokscale never emits', () => {
+test('reads timestamps and project metadata without promoting the generated prompt to a title', () => {
   const home = makeHome();
   const id = writeSession(home, 'D%3A%5Cwork', 'sess-1', {
     info: { id: 'sess-1', cwd: 'D:\\work' },
@@ -52,7 +54,8 @@ test('names a session from summary.json, which tokscale never emits', () => {
   });
   const meta = grok.resolveSessionMetadata(new Set([id]), context(home)).get(id);
   assert.equal(meta.startedAt, '2026-09-28T12:35:29.829Z');
-  assert.equal(meta.title, 'Review MiniMax card mapping');
+  assert.equal(meta.title, undefined);
+  assert.equal(meta.lastUsedAt, '2026-09-28T12:51:40.045Z');
   assert.equal(meta.projectLabel, 'work');
 });
 
@@ -96,7 +99,7 @@ test('a session with no activity timestamps falls back to creation time, so the 
   } } };
   applySessionMetadata(periods, home);
   const session = periods.month.sessions[`grok:${id}`];
-  assert.equal(session.title, 'Only a title');
+  assert.equal(session.title, '');
   assert.equal(session.startedAt, '2026-09-28T12:35:29.829Z');
   assert.ok(Number.isFinite(Date.parse(session.lastUsedAt || session.startedAt || '')));
 });
@@ -127,16 +130,54 @@ test('updated_at is the fallback only where no activity was recorded', () => {
   assert.equal(meta.lastUsedAt, '2026-08-19T08:00:00.000Z');
 });
 
-test('a long generated title is truncated to the shared cap', () => {
+test('prompt-only summaries do not create display metadata, even with long or Unicode content', () => {
   const home = makeHome();
-  const id = writeSession(home, 'D%3A%5Cwork', 'sess-long', {
-    info: { id: 'sess-long', cwd: 'D:\\work' },
-    generated_title: 'x'.repeat(173)
-  });
-  const meta = grok.resolveSessionMetadata(new Set([id]), context(home)).get(id);
-  assert.equal(Array.from(meta.title).length, grok.TITLE_MAX_CODE_POINTS);
-  assert.ok(meta.title.endsWith('…'));
-  assert.equal(Array.from('x'.repeat(173)).length, 173);
+  for (const [index, prompt] of ['Synthetic private instruction', 'x'.repeat(173), '合成测试 🧪\n不要展示'.repeat(20)].entries()) {
+    const id = `sess-prompt-only-${index}`;
+    writeSession(home, '%2Fwork', id, { info: { id }, generated_title: prompt });
+    assert.equal(grok.resolveSessionMetadata(new Set([id]), context(home)).has(id), false);
+  }
+});
+
+test('prompt exclusion survives metadata application, default row rendering and opt-in title sync', () => {
+  const home = makeHome();
+  const prompt = 'Synthetic private instruction: never use this as a session name';
+  const ids = ['sess-prompt', 'sess-catalog-title'];
+  const realTitle = 'Saved catalog title';
+  const sessions = {};
+  for (const id of ids) {
+    writeSession(home, '%2Fwork', id, {
+      info: { id, cwd: '/work' },
+      generated_title: prompt,
+      created_at: '2026-09-28T12:00:00Z',
+      last_active_at: '2026-09-28T12:05:00Z'
+    });
+    sessions[`grok:${id}`] = {
+      client: 'grok', sessionId: id, totalTokens: 15, costUsd: 0.01,
+      ...(id === 'sess-catalog-title' ? { title: realTitle } : {})
+    };
+  }
+  const periods = { today: { sessions } };
+  applySessionMetadata(periods, home, { env: {} });
+  assert.equal(sessions['grok:sess-prompt'].title, undefined);
+  assert.equal(sessions['grok:sess-catalog-title'].title, realTitle);
+  for (const session of Object.values(sessions)) {
+    assert.equal(session.startedAt, '2026-09-28T12:00:00.000Z');
+    assert.equal(session.lastUsedAt, '2026-09-28T12:05:00.000Z');
+    assert.equal(session.projectId, projectIdentity('/work').projectId);
+  }
+  const rows = sessionRowsForPeriod(periods.today, { clientLabels: { grok: 'Grok' } });
+  assert.equal(rows.length, 2);
+  assert.equal(rows.find((row) => row.key === 'session:grok:sess-catalog-title').name, realTitle);
+  assert.equal(JSON.stringify(rows).includes(prompt), false);
+  for (const syncSessionTitles of [false, true]) {
+    const payload = buildSyncPayload({ deviceId: 'grok-prompt-fixture', ...periods }, { syncSessionTitles });
+    assert.equal(JSON.stringify(payload).includes(prompt), false);
+    assert.equal(payload.today.sessions['grok:sess-prompt'].title, undefined);
+    assert.equal(payload.today.sessions['grok:sess-catalog-title'].title, syncSessionTitles ? realTitle : undefined);
+    assert.equal(payload.today.sessions['grok:sess-prompt'].totalTokens, 15);
+    assert.equal(payload.today.sessions['grok:sess-prompt'].projectId, projectIdentity('/work').projectId);
+  }
 });
 
 test('a whitespace-only or missing title leaves no name behind', () => {
@@ -199,7 +240,7 @@ test('a duplicate directory without a summary does not make a persisted session 
     info: { id: 'sess-single-summary', cwd: '/work-a' }, generated_title: 'Only summary'
   });
   fs.mkdirSync(path.join(home, '.grok', 'sessions', '%2Fwork-b', id), { recursive: true });
-  assert.equal(grok.resolveSessionMetadata(new Set([id]), context(home)).get(id).title, 'Only summary');
+  assert.equal(grok.resolveSessionMetadata(new Set([id]), context(home)).get(id).projectId, projectIdentity('/work-a').projectId);
 });
 
 test('a scoped home ignores the host GROK_HOME', () => {
@@ -214,7 +255,7 @@ test('a scoped home ignores the host GROK_HOME', () => {
   const scoped = context(home, { deps: { scopedHome: true, env: { GROK_HOME: path.join(decoy, '.grok') } } });
   const resolved = grok.resolveSessionMetadata(new Set([id, 'sess-host']), scoped);
   // The host's store must not answer a WSL distro's session, and vice versa.
-  assert.equal(resolved.get(id).title, 'Inside the distro');
+  assert.equal(resolved.get(id).projectLabel, 'distro');
   assert.equal(resolved.has('sess-host'), false);
 });
 
@@ -228,7 +269,7 @@ test('GROK_HOME redirects the lookup when the home is not scoped', () => {
     new Set([id]),
     context(home, { deps: { env: { GROK_HOME: path.join(custom, '.grok') } } })
   );
-  assert.equal(resolved.get(id).title, 'From GROK_HOME');
+  assert.equal(resolved.get(id).projectLabel, 'work');
 });
 
 test('the collector resolves Grok sessions from an extra scan root', async () => {
@@ -254,7 +295,7 @@ test('the collector resolves Grok sessions from an extra scan root', async () =>
     ] })
   });
   const session = summary.allTime.sessions[`grok:${id}`];
-  assert.equal(session.title, 'Alternate root session');
+  assert.equal(session.title, '');
   assert.equal(session.startedAt, '2026-09-28T12:35:29.000Z');
   assert.equal(session.projectId, projectIdentity('/work').projectId);
 });
@@ -272,7 +313,7 @@ test('extra Grok roots accept a home or a nested session path, but stay out of s
     const meta = grok.resolveSessionMetadata(new Set([id]), context(home, {
       deps: { env: {}, customScanPaths: { grok: [scanPath] } }
     })).get(id);
-    assert.equal(meta.title, 'Alternate root shapes');
+    assert.equal(meta.projectId, projectIdentity('/work').projectId);
   }
   const scoped = grok.resolveSessionMetadata(new Set([id]), context(home, {
     deps: { scopedHome: true, env: { TOKSCALE_EXTRA_DIRS: `grok:${grokHome}` }, customScanPaths: { grok: [grokHome] } }
@@ -281,7 +322,7 @@ test('extra Grok roots accept a home or a nested session path, but stay out of s
   const inherited = grok.resolveSessionMetadata(new Set([id]), context(home, {
     deps: { env: { TOKSCALE_EXTRA_DIRS: `claude:/irrelevant,grok:${grokHome}` } }
   })).get(id);
-  assert.equal(inherited.title, 'Alternate root shapes');
+  assert.equal(inherited.projectId, projectIdentity('/work').projectId);
 });
 
 // An alternate home that happens to live below a directory named `sessions`
@@ -297,7 +338,7 @@ test('an extra root resolves its own sessions directory before an ancestor named
   const meta = grok.resolveSessionMetadata(new Set([id]), context(home, {
     deps: { env: {}, customScanPaths: { grok: [belowSessions] } }
   })).get(id);
-  assert.equal(meta.title, 'Below a sessions dir');
+  assert.equal(meta.projectId, projectIdentity('/work').projectId);
 });
 
 test('an unparseable or malformed summary is skipped, not thrown', () => {
@@ -310,7 +351,7 @@ test('an unparseable or malformed summary is skipped, not thrown', () => {
   });
   const resolved = grok.resolveSessionMetadata(new Set(['broken', 'good']), context(home));
   assert.equal(resolved.has('broken'), false);
-  assert.equal(resolved.get('good').title, 'Readable');
+  assert.equal(resolved.get('good').projectLabel, 'work');
 });
 
 test('a session id tokscale reports but grok has no directory for is simply absent', () => {
@@ -323,13 +364,14 @@ test('a session id tokscale reports but grok has no directory for is simply abse
 test('projects are withheld when the collector has them switched off', () => {
   const home = makeHome();
   const id = writeSession(home, 'D%3A%5Cwork', 'sess-noproject', {
-    info: { id: 'sess-noproject', cwd: 'D:\\work' }, generated_title: 'No project please'
+    info: { id: 'sess-noproject', cwd: 'D:\\work' }, created_at: '2026-09-28T12:35:29Z', generated_title: 'No project please'
   });
   const meta = grok.resolveSessionMetadata(
     new Set([id]),
     context(home, { resolveProjects: false })
   ).get(id);
-  assert.equal(meta.title, 'No project please');
+  assert.equal(meta.title, undefined);
+  assert.equal(meta.startedAt, '2026-09-28T12:35:29.000Z');
   assert.equal(meta.projectId, undefined);
   assert.equal(meta.projectLabel, undefined);
 });

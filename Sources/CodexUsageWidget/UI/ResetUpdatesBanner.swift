@@ -1356,7 +1356,10 @@ struct ResetMessageHeaderSummary: View {
     private func noticeDetails(current: PublicResetAnnouncement?, forecastDeadline: Date?) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             Text(
-                current.map { language.text($0.resetType == .banked ? "重置卡" : "额度重置", $0.resetType == .banked ? "Reset cards" : "Quota reset") + " · " + PublicResetAnnouncementPresentation.readableText($0.text) }
+                current.map {
+                    language.text($0.resetType == .banked ? "重置卡" : "额度重置", $0.resetType == .banked ? "Reset cards" : "Quota reset") + " · "
+                        + PublicResetAnnouncementPresentation.readableText($0.text)
+                }
                     ?? language.text("暂无公告", "No notices")
             )
             .lineLimit(2)
@@ -1384,8 +1387,9 @@ struct ResetMessageHeaderSummary: View {
             systemImage: "ticket"
         )
         .fixedSize()
-        .help(language.text("全部 Codex 账号的剩余重置卡；同一账号的镜像只统计一次。", "Remaining reset cards across Codex accounts; account mirrors are counted once.")
-            + recordedStatus(isStale: cards.isStale, hasUnknownAccounts: cards.hasUnknownAccounts))
+        .help(
+            language.text("全部 Codex 账号的剩余重置卡；同一账号的镜像只统计一次。", "Remaining reset cards across Codex accounts; account mirrors are counted once.")
+                + recordedStatus(isStale: cards.isStale, hasUnknownAccounts: cards.hasUnknownAccounts))
         Label(
             hasKnownCredits
                 ? language.text("可用点数 ", "Available points ") + credits.pointText + language.text(" 点", "")
@@ -1403,8 +1407,9 @@ struct ResetMessageHeaderSummary: View {
             systemImage: "banknote"
         )
         .fixedSize().monospacedDigit()
-        .help(language.text("按现有换算比例显示：1 美元 = 25 点；金额为点数的换算值。", "Converted at the existing rate: $1 = 25 points; this amount is derived from points.")
-            + recordedStatus(isStale: credits.isStale, hasUnknownAccounts: credits.hasUnknownAccounts))
+        .help(
+            language.text("按现有换算比例显示：1 美元 = 25 点；金额为点数的换算值。", "Converted at the existing rate: $1 = 25 points; this amount is derived from points.")
+                + recordedStatus(isStale: credits.isStale, hasUnknownAccounts: credits.hasUnknownAccounts))
     }
 
     private func recordedStatus(isStale: Bool, hasUnknownAccounts: Bool) -> String {

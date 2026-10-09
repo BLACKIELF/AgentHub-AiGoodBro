@@ -1174,10 +1174,22 @@ private final class ClaudeStoreTransport: LocalCLIQuotaTransport, @unchecked Sen
     }
     try await waitForActive(b.id)
     try expect(store.canSwitchClaudeSubscription(a), "captured current identity permits switching")
+    let beforeUnlink = store.profiles
+    try expect(!store.canUnlink(b) && store.canUnlink(a), "only inactive Claude subscriptions expose unlink")
+    store.unlink(b)
+    try expect(store.profiles == beforeUnlink, "active subscription remains a saved switch source")
     try setCurrent("a")
+    try expect(!store.canUnlink(a), "live config blocks unlink before cached active identity catches up")
+    store.unlink(a)
+    try expect(store.profiles == beforeUnlink, "stale open menu cannot unlink new active subscription")
     store.refreshIfNeeded(kind: .claudeCode)
     try await waitForActive(a.id)
     try expect(store.canOpen(a) && !store.canOpen(b), "external sign-in refresh updates active subscription")
+    keychain.items[keychain.key("Claude Code-credentials", ClaudeSubscriptionService.keychainAccount)] = credential("b")
+    try expect(!store.canUnlink(a) && !store.canUnlink(b), "unverified config and credential identity mismatch blocks all subscription unlink")
+    store.unlink(b)
+    try expect(store.profiles == beforeUnlink, "unknown live identity cannot remove a possible switch source")
+    try setCurrent("a")
     let beforeReader = transport.calls
     let isolated = await LocalCLIQuotaReader(transport: transport).load(profile: a, now: now)
     try expect(isolated.state != .available && transport.calls == beforeReader, "injected reader never constructs real subscription service")
@@ -1249,6 +1261,11 @@ private final class ClaudeStoreTransport: LocalCLIQuotaTransport, @unchecked Sen
     let captureAfterOpening = await store.captureClaudeSubscription(name: "Synthetic A Again")
     try expect(captureAfterOpening?.id == a.id && store.profiles.count == countWhileOpening,
         "capture resumes after the default open finishes without duplicating the current subscription")
+    try expect(store.canUnlink(b), "inactive subscription can still be unlinked")
+    let savedCredentials = keychain.items
+    store.unlink(b)
+    try expect(!store.profiles.contains(b) && store.profiles.contains(a) && keychain.items == savedCredentials,
+        "inactive unlink preserves credentials and the active switch source")
 }
 
 @MainActor private func testClaudeSubscriptionSignInRequiresExitVerificationAndExplicitCapture() async throws {

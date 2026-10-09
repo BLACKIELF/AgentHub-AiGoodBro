@@ -254,7 +254,9 @@ struct DispatchActivityStore {
                 $0["runID"] as? String == runID && $0["requestID"] as? String == requestID
                     && $0["profileKey"] as? String == profileKey && $0["abandoned"] as? Bool == true
                     && $0["ownerPID"] as? Int == Int(getpid())
-            }) { throw Failure.acquireAbandoned }
+            }) {
+                throw Failure.acquireAbandoned
+            }
             guard
                 !keys.contains(where: {
                     $0["runID"] as? String == runID && $0["requestID"] as? String == requestID
@@ -469,7 +471,9 @@ struct DispatchActivityStore {
             guard let index = records.firstIndex(where: { $0["leaseId"] as? String == id }) else { return }
             let row = records[index]
             guard UUID(uuidString: id) != nil,
-                Set(row.keys).isSubset(of: ["leaseId", "ownerThreadId", "taskId", "accountKey", "aliasKey", "projectKey", "route", "state", "createdAt", "updatedAt", "heartbeatDueAt", "warmUpTransport"]),
+                Set(row.keys).isSubset(of: [
+                    "leaseId", "ownerThreadId", "taskId", "accountKey", "aliasKey", "projectKey", "route", "state", "createdAt", "updatedAt", "heartbeatDueAt", "warmUpTransport",
+                ]),
                 row["route"] as? String == "warmup", row["state"] as? String == "preparing",
                 row["taskId"] as? String == "warmup-\(id)",
                 row["accountKey"] as? String == accountKey, row["aliasKey"] as? String == aliasKey,

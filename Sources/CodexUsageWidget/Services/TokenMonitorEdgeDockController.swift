@@ -84,16 +84,18 @@ enum TokenMonitorEdgeDockNativeGeometry {
     static func peekFrame(rail: NSRect, workArea: NSRect, side: TokenMonitorEdgeDockPreferences.Side, scale: CGFloat) -> NSRect {
         let width = max(10, (10 * scale).rounded())
         let height = (88 * scale).rounded()
-        return NSRect(x: side == .right ? workArea.maxX - width : workArea.minX,
-                      y: rail.midY - height / 2, width: width, height: height)
+        return NSRect(
+            x: side == .right ? workArea.maxX - width : workArea.minX,
+            y: rail.midY - height / 2, width: width, height: height)
     }
 
     /// Pointer approach depths and slack stay in screen points at every size.
     static func handleZone(peek: NSRect, side: TokenMonitorEdgeDockPreferences.Side, approaching: Bool) -> NSRect {
         let depth: CGFloat = approaching ? 48 : 24
         let slack: CGFloat = approaching ? 24 : 0
-        return NSRect(x: side == .right ? peek.maxX - depth : peek.minX,
-                      y: peek.minY - slack, width: depth, height: peek.height + 2 * slack)
+        return NSRect(
+            x: side == .right ? peek.maxX - depth : peek.minX,
+            y: peek.minY - slack, width: depth, height: peek.height + 2 * slack)
     }
 
     static func placementAfterDrag(
@@ -504,8 +506,10 @@ final class TokenMonitorEdgeDockController: NSObject {
                 )
                 if peekHost == nil || lastPeekContent != content {
                     let view = themed(
-                        TokenMonitorEdgeDockPeekView(side: content.side, language: content.language, glass: content.glass,
-                                                     scale: content.scale, isNearby: content.isNearby) { [weak self] in self?.revealRail() }
+                        TokenMonitorEdgeDockPeekView(
+                            side: content.side, language: content.language, glass: content.glass,
+                            scale: content.scale, isNearby: content.isNearby
+                        ) { [weak self] in self?.revealRail() }
                     )
                     if let peekHost {
                         peekHost.rootView = view
@@ -627,7 +631,8 @@ final class TokenMonitorEdgeDockController: NSObject {
 
     private func refreshAll() {
         guard preferences.enabled, preferences.refreshEnabled, !isRefreshingAll,
-              refreshAllTask == nil, refreshingCells.isEmpty, let onRefreshAll else { return }
+            refreshAllTask == nil, refreshingCells.isEmpty, let onRefreshAll
+        else { return }
         let generation = UUID()
         refreshAllGeneration = generation
         refreshAllTask = Task { @MainActor [weak self] in

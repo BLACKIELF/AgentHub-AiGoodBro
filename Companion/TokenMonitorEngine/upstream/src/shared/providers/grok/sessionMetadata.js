@@ -42,22 +42,6 @@ function sessionsRootFromScanPath(scanPath) {
   return path.join(resolved, 'sessions');
 }
 
-// The same cap the other adapters apply to a derived session name. There is no
-// shared cleaner: claude, codex and kimi each carry their own. grok's
-// `generated_title` is the writer's own prompt text and runs to ~173 code
-// points, so this one is load-bearing rather than decorative.
-const TITLE_MAX_CODE_POINTS = 96;
-
-function cleanTitle(value) {
-  if (typeof value !== 'string') return '';
-  const text = value.replace(/\s+/g, ' ').trim();
-  if (!text) return '';
-  const points = Array.from(text);
-  return points.length > TITLE_MAX_CODE_POINTS
-    ? `${points.slice(0, TITLE_MAX_CODE_POINTS - 1).join('')}…`
-    : text;
-}
-
 // grok writes nanosecond ISO strings (`2026-08-19T07:53:22.948065400Z`). V8
 // truncates rather than rejects them, but `applySessionMetadata` compares and
 // stores this string as-is, so it is normalized here rather than passed through.
@@ -178,25 +162,24 @@ function resolveSessionMetadata(sessionIds, context) {
     if (startedAt) meta.startedAt = startedAt;
     const used = lastUsedAt(summary, isoFromDate);
     if (used) meta.lastUsedAt = used;
-    const title = cleanTitle(summary.generated_title);
-    if (title) meta.title = title;
+    // `generated_title` is a writer prompt, not a user-facing session name.
+    // Reading it here would expose prompt text in the embedded dashboard and
+    // make it eligible for opt-in title synchronization. Omit title metadata
+    // so the shared applier preserves genuine titles from other sources.
     if (resolveProjects && projectFor) {
       const source = typeof summary.source_workspace_dir === 'string' ? summary.source_workspace_dir.trim() : '';
       const identity = projectFor(source || summary?.info?.cwd || '');
       if (identity?.projectId) meta.projectId = identity.projectId;
       if (identity?.projectLabel) meta.projectLabel = identity.projectLabel;
     }
-    // A session with only a title is still worth recording: the applier writes
-    // each field it is given, so dropping the row here would lose the name even
-    // though the dock's row label prefers it over the bare uuid.
+    // A prompt alone is not metadata; timestamps and project attribution still
+    // resolve independently when present.
     if (Object.keys(meta).length) result.set(sessionId, meta);
   }
   return result;
 }
 
 module.exports = {
-  TITLE_MAX_CODE_POINTS,
-  cleanTitle,
   grokSessionsRoot,
   resolveSessionMetadata,
   timestamp

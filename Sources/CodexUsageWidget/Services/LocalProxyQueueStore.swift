@@ -18,22 +18,26 @@ private final class LocalProxyReleaseFence: @unchecked Sendable {
     private var pending: Set<Tuple> = []
 
     func mark(runID: String, requestID: String, profileID: String, leaseID: String) {
-        lock.lock(); defer { lock.unlock() }
+        lock.lock()
+        defer { lock.unlock() }
         pending.insert(Tuple(runID: runID, requestID: requestID, profileID: profileID, leaseID: leaseID))
     }
 
     func clear(runID: String, requestID: String, profileID: String, leaseID: String) {
-        lock.lock(); defer { lock.unlock() }
+        lock.lock()
+        defer { lock.unlock() }
         pending.remove(Tuple(runID: runID, requestID: requestID, profileID: profileID, leaseID: leaseID))
     }
 
     func clear(runID: String) {
-        lock.lock(); defer { lock.unlock() }
+        lock.lock()
+        defer { lock.unlock() }
         pending = pending.filter { $0.runID != runID }
     }
 
     func contains(runID: String, profileID: String) -> Bool {
-        lock.lock(); defer { lock.unlock() }
+        lock.lock()
+        defer { lock.unlock() }
         return pending.contains { $0.runID == runID && $0.profileID == profileID }
     }
 }
@@ -101,7 +105,7 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
     @Published private(set) var creditFallbackEnabled = false
     @Published private(set) var creditPrimaryFloor = 2000
     @Published private(set) var creditSecondaryFloor = 1500
-    var canEdit: Bool { process == nil && (phase == .stopped || phase == .failed) && leases.isEmpty }
+    var canEdit: Bool { process == nil && (phase == .stopped || phase == .failed) && leases.isEmpty && exitCleanupID == nil }
     var canReorder: Bool {
         !usageStore.isPreview && !preferencesBlocked && !finishing
             && (canEdit || (phase == .running && process?.isRunning == true))
@@ -129,10 +133,10 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
         // differs; re-enabling requires the binding verified at startup.
         return preferences.enabledIDs.contains(id) || isRegisteredBindingCurrent(id)
     }
-    var canStop: Bool { process != nil && phase != .stopping }
-    var canFinishTermination: Bool { process == nil && leases.isEmpty }
+    var canStop: Bool { (process != nil || exitCleanupID != nil) && phase != .stopping }
+    var canFinishTermination: Bool { process == nil && leases.isEmpty && exitCleanupID == nil }
     var requiresStopConfirmation: Bool {
-        process != nil || !leases.isEmpty || phase == .starting || phase == .stopping
+        process != nil || !leases.isEmpty || exitCleanupID != nil || phase == .starting || phase == .stopping
     }
 
     private let usageStore: UsageStore
@@ -183,6 +187,8 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
     private var creditRefreshAfter: [String: Date] = [:]
     private var outputTask: Task<Void, Never>?
     private var quotaTask: Task<Void, Never>?
+    private var exitCleanupTask: Task<Void, Never>?
+    private var exitCleanupID: UUID?
     private var finishing = false
     private var requestedExitReason: ExitReason?
 
@@ -190,7 +196,8 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
         self.usageStore = usageStore
         directory = DispatchParticipationPaths.supportDirectory()
         if usageStore.isPreview, let previewPreferences, previewPreferences.validAccountPolicies,
-            previewPreferences.validLastIDs, previewPreferences.validLastOverrides {
+            previewPreferences.validLastIDs, previewPreferences.validLastOverrides
+        {
             preferences = previewPreferences
         }
         if !usageStore.isPreview {
@@ -302,7 +309,9 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
         if priority {
             setLastPreference(id: id, last: false)
             preferences.priorityIDs.insert(id)
-        } else { preferences.priorityIDs.remove(id) }
+        } else {
+            preferences.priorityIDs.remove(id)
+        }
         if !savePreferences() { preferences = previous }
         rebuildRows()
     }
@@ -321,12 +330,15 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
         preferences.priorityIDs.remove(id)
         if last {
             ids.insert(id)
-        } else { ids.remove(id) }
+        } else {
+            ids.remove(id)
+        }
         preferences.lastIDs = ids
     }
     private func orderingGroup(for id: String) -> Int? {
         usageStore.profiles.first { $0.id == id }.map {
-            LocalProxyRouting.group($0, userLast: preferences.lastIDs?.contains(id) == true,
+            LocalProxyRouting.group(
+                $0, userLast: preferences.lastIDs?.contains(id) == true,
                 lastOverride: preferences.lastOverrides?[id])
         }
     }
@@ -344,8 +356,7 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
         // Participation, identity, spending limits and leases are untouched.
         if source.isLast != target.isLast || source.isPriority != target.isPriority {
             setLastPreference(id: id, last: target.isLast)
-            if target.isPriority { preferences.priorityIDs.insert(id) }
-            else { preferences.priorityIDs.remove(id) }
+            if target.isPriority { preferences.priorityIDs.insert(id) } else { preferences.priorityIDs.remove(id) }
         }
         preferences.order = ids
         if !savePreferences() { preferences = previous }
@@ -489,6 +500,8 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
 
     func start() async {
         guard canStart, isEnabled else { return }
+        exitCleanupTask?.cancel()
+        exitCleanupTask = nil
         phase = .starting
         issue = nil
         finishing = false
@@ -695,7 +708,10 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
     func stop(reason: ExitReason = .requestedStop) async {
         if phase == .stopping {
             for _ in 0..<90 {
-                if phase != .stopping { return }
+                if phase != .stopping {
+                    await exitCleanupTask?.value
+                    return
+                }
                 try? await Task.sleep(nanoseconds: 100_000_000)
             }
             return
@@ -707,6 +723,7 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
         input = nil
         guard let child = process else {
             cleanupConfirmedExit()
+            await exitCleanupTask?.value
             return
         }
         for _ in 0..<40 {
@@ -725,6 +742,7 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
         }
         if !child.isRunning {
             childExited(child)
+            await exitCleanupTask?.value
         } else {
             phase = .failed
             issue = message(.stopping)
@@ -752,28 +770,63 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
             issue = message(.unavailable)
         }
     }
-    private func cleanupConfirmedExit() {
+    private func cleanupConfirmedExit(retryID: UUID? = nil, remainingRetries: Int = 3) {
         guard process?.isRunning != true else { return }
+        // A delayed cleanup must never act on a subsequently started run, or
+        // replace the task owned by a newer manual cleanup attempt.
+        if let retryID {
+            guard exitCleanupID == retryID, process == nil, runID == nil, phase == .failed else { return }
+        } else {
+            exitCleanupTask?.cancel()
+            // An instance that never owned a run has no local retirement to
+            // await; unrelated registry contention must not prevent quitting.
+            let ownsCleanup = process != nil || runID != nil || !leases.isEmpty || exitCleanupID != nil
+            exitCleanupID = ownsCleanup ? UUID() : nil
+        }
+        exitCleanupTask = nil
+        let cleanupID = exitCleanupID
         if let runID {
             DispatchActivityStore.closeProxyRun(runID)
             localProxyReleaseFence.clear(runID: runID)
         }
         var registryCleanupFailed = false
+        var cleanupBusy = false
+        var cleanupNonRetryable = false
         for lease in Array(leases.values) {
             do {
                 try retireLeaseAfterExit(lease)
-            } catch { issue = message(.unavailable) }
+            } catch {
+                if let failure = error as? DispatchActivityStore.Failure, case .busy = failure {
+                    cleanupBusy = true
+                } else {
+                    cleanupNonRetryable = true
+                }
+                issue = message(.unavailable)
+            }
         }
         do { try DispatchActivityStore.live.finishStoppedProxyRuns(retiringCurrentRun: true) } catch {
             registryCleanupFailed = true
+            if let failure = error as? DispatchActivityStore.Failure, case .busy = failure {
+                cleanupBusy = true
+            } else {
+                cleanupNonRetryable = true
+            }
             issue = message(.unavailable)
         }
         if !registryCleanupFailed {
+            cleanupNonRetryable = false
             // A contended per-lease write can precede a successful batch
             // retirement. Reconcile its exact terminal record before dropping
             // the run identity; otherwise an old UI mirror blocks the next start.
             for lease in Array(leases.values) {
-                do { try retireLeaseAfterExit(lease) } catch { issue = message(.unavailable) }
+                do { try retireLeaseAfterExit(lease) } catch {
+                    if let failure = error as? DispatchActivityStore.Failure, case .busy = failure {
+                        cleanupBusy = true
+                    } else {
+                        cleanupNonRetryable = true
+                    }
+                    issue = message(.unavailable)
+                }
             }
         }
         try? input?.close()
@@ -797,10 +850,25 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
         registeredPool = [:]
         membershipSnapshots = [:]
         refreshMembershipWaitState()
-        phase = leases.isEmpty && !registryCleanupFailed ? .stopped : .failed
+        let complete = leases.isEmpty && !registryCleanupFailed
+        if complete { exitCleanupID = nil }
+        phase = complete ? .stopped : .failed
         accountStates = [:]
         cooldowns = [:]
         rebuildRows()
+        guard let cleanupID, !complete, cleanupBusy, !cleanupNonRetryable, remainingRetries > 0 else { return }
+        // Retry only the existing exact-lease/closed-run retirement after the
+        // child is proven gone. Three 200 ms waits bound recovery and quit.
+        exitCleanupTask = Task { [weak self] in
+            do { try await Task.sleep(nanoseconds: 200_000_000) } catch { return }
+            guard let self, !Task.isCancelled, self.exitCleanupID == cleanupID,
+                self.process == nil, self.runID == nil, self.phase == .failed
+            else { return }
+            self.cleanupConfirmedExit(retryID: cleanupID, remainingRetries: remainingRetries - 1)
+            // stop()/finishForTermination() await this chain before their
+            // callers decide whether disabling or quitting has completed.
+            await self.exitCleanupTask?.value
+        }
     }
 
     private func retireLeaseAfterExit(_ lease: Lease) throws {
@@ -859,7 +927,8 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
             let now = ProcessInfo.processInfo.systemUptime
             pruneMembershipSnapshots(at: now)
             if let existing = membershipSnapshots[request.requestID] {
-                return LocalProxyReply(ok: true, order: existing.order, lastResortIDs: existing.lastResortIDs, deferredIDs: existing.deferredIDs, creditFallback: existing.creditFallback)
+                return LocalProxyReply(
+                    ok: true, order: existing.order, lastResortIDs: existing.lastResortIDs, deferredIDs: existing.deferredIDs, creditFallback: existing.creditFallback)
             }
             guard membershipSnapshots.count < maximumMembershipSnapshots else { return .failure(.controlBusy) }
             let order = rows.map(\.id).filter { activeIDs.contains($0) && isRegisteredBindingCurrent($0) }
@@ -902,7 +971,9 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
         let revision = policyRevision
         let floor: Int? = request.command.hasSuffix("primary") ? policy.creditPrimaryFloor : request.command.hasSuffix("secondary") ? policy.creditSecondaryFloor : nil
         guard floor == nil || (creditFallbackEnabled && policy.allowsCredits) else { return .failure(.quota) }
-        if floor != nil && requestMembers.intersection(activeIDs).intersection(preferences.enabledIDs).contains(where: { localProxyReleaseFence.contains(runID: request.runID, profileID: $0) }) {
+        if floor != nil
+            && requestMembers.intersection(activeIDs).intersection(preferences.enabledIDs).contains(where: { localProxyReleaseFence.contains(runID: request.runID, profileID: $0) })
+        {
             // A prior paid lease has committed its terminal registry state, but
             // its quota refresh has not yet crossed back to the UI projection.
             // Unknown balance must never authorize another paid admission.
@@ -925,12 +996,17 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
             // under superseded spending limits is never allowed. A rolled-back
             // tuple stays denied; a fresh request can use the current policy.
             guard revision == policyRevision else { return .policyChanged }
-            if floor != nil && requestMembers.intersection(activeIDs).intersection(preferences.enabledIDs).contains(where: { localProxyReleaseFence.contains(runID: request.runID, profileID: $0) }) {
+            if floor != nil
+                && requestMembers.intersection(activeIDs).intersection(preferences.enabledIDs).contains(where: {
+                    localProxyReleaseFence.contains(runID: request.runID, profileID: $0)
+                })
+            {
                 return .quotaUnknown
             }
             if floor != nil,
                 let failure = LocalProxyAdmission.creditPool(
-                    usageStore.profiles, activeIDs: requestMembers.intersection(activeIDs).intersection(preferences.enabledIDs), refreshAfter: creditRefreshAfter, policies: preferences.accountPolicies ?? [:])
+                    usageStore.profiles, activeIDs: requestMembers.intersection(activeIDs).intersection(preferences.enabledIDs), refreshAfter: creditRefreshAfter,
+                    policies: preferences.accountPolicies ?? [:])
             {
                 return failure
             }
@@ -1052,10 +1128,12 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
             do {
                 persistedActive = try DispatchActivityStore.live.isProxyLeaseActive(
                     lease.id, runID: lease.runID, requestID: lease.requestID,
-                    profileID: lease.profileID, childPID: child.processIdentifier) {
-                        if let failure = admission(final) { throw failure }
-                    }
-            } catch let failure as LocalProxyFailure { return await reject(failure)
+                    profileID: lease.profileID, childPID: child.processIdentifier
+                ) {
+                    if let failure = admission(final) { throw failure }
+                }
+            } catch let failure as LocalProxyFailure {
+                return await reject(failure)
             } catch { return await reject(.admissionUnknown) }
             guard persistedActive else { return await reject(.stopping) }
             leases[lease.id]?.isAdmitted = true
@@ -1097,13 +1175,14 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
             try activity.updateProxy(
                 id, runID: run, requestID: request.requestID, profileID: request.profileID,
                 state: request.command == "release" ? "accepted" : "running",
-                onCommit: request.command == "release" ? {
-                    localProxyReleaseFence.mark(runID: request.runID, requestID: request.requestID,
-                        profileID: request.profileID, leaseID: id)
-                } : nil)
+                onCommit: request.command == "release"
+                    ? {
+                        localProxyReleaseFence.mark(
+                            runID: request.runID, requestID: request.requestID,
+                            profileID: request.profileID, leaseID: id)
+                    } : nil)
             return LocalProxyReply(ok: true)
-        } catch DispatchActivityStore.Failure.busy { return .failure(.controlBusy) }
-        catch { return .failure(.unavailable) }
+        } catch DispatchActivityStore.Failure.busy { return .failure(.controlBusy) } catch { return .failure(.unavailable) }
     }
 
     private func completeLeaseRelease(_ request: LocalProxyRequest) {
@@ -1116,7 +1195,8 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
             creditRefreshAfter[lease.profileID] = Date()
             usageStore.refreshLocalProxyQuotas(profileIDs: [lease.profileID])
         }
-        localProxyReleaseFence.clear(runID: request.runID, requestID: request.requestID,
+        localProxyReleaseFence.clear(
+            runID: request.runID, requestID: request.requestID,
             profileID: request.profileID, leaseID: id)
         rebuildRows()
     }
@@ -1279,7 +1359,8 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
                 snapshotStale: profile.lastQuotaReadFailureAt != nil || profile.lastSnapshot.map { Date().timeIntervalSince($0.fetchedAt) > 1_800 } != false,
                 isDesktopAccount: isDesktop(id),
                 isEnabled: preferences.enabledIDs.contains(id),
-                isPriority: preferences.priorityIDs.contains(id) && orderingGroup(for: id) != 1, isCurrent: state == "current", quotaText: quota, state: state, cooldownUntil: cooldowns[id],
+                isPriority: preferences.priorityIDs.contains(id) && orderingGroup(for: id) != 1, isCurrent: state == "current", quotaText: quota, state: state,
+                cooldownUntil: cooldowns[id],
                 activeRequestCount: activeRequestCount, policy: policy,
                 usesDefaultCreditFloors: preferences.policy(for: id).creditPrimaryFloor == nil,
                 isLast: orderingGroup(for: id) == 1)

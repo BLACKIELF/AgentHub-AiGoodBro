@@ -91,7 +91,8 @@ final class LocalProxyBridge: @unchecked Sendable {
                         request.receivedAt = ProcessInfo.processInfo.systemUptime
                         // Reconciliation must remain available even when other
                         // control requests are waiting on host work.
-                        let capacity = request.command == "acquire_resolve"
+                        let capacity =
+                            request.command == "acquire_resolve"
                             ? resolutionSlots
                             : ["heartbeat", "release", "order_end"].contains(request.command) ? controlSlots : slots
                         guard Self.takeSlot(capacity) else {

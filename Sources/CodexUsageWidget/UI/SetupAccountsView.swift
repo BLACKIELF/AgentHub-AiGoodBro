@@ -182,8 +182,8 @@ struct SetupAccountsView: View {
                     ? language.text("管理 Claude 订阅", "Manage Claude subscriptions")
                     : id == "codex" && phase(id) == .verified ? language.text("检查额度", "Check limits") : phase(id).actionTitle(language)
             ) { performPrimaryAction(id) }
-                .controlSize(.small)
-                .disabled(store.isPreview || primaryActionDisabled(id))
+            .controlSize(.small)
+            .disabled(store.isPreview || primaryActionDisabled(id))
         }
         .padding(.vertical, 5)
     }
@@ -343,10 +343,12 @@ struct SetupAccountsView: View {
             }
             if installed(pendingTool) {
                 if pendingTool != "codex", verified(pendingTool) {
-                    Text(pendingTool == "claudeCode"
-                        ? language.text("当前订阅已核验并保存，可继续下一项。", "The current subscription is verified and saved. Continue to the next tool.")
-                        : language.text("已检测到登录配置，可继续下一项。", "Sign-in configuration detected. Continue to the next tool."))
-                        .foregroundStyle(.green)
+                    Text(
+                        pendingTool == "claudeCode"
+                            ? language.text("当前订阅已核验并保存，可继续下一项。", "The current subscription is verified and saved. Continue to the next tool.")
+                            : language.text("已检测到登录配置，可继续下一项。", "Sign-in configuration detected. Continue to the next tool.")
+                    )
+                    .foregroundStyle(.green)
                 }
                 Button(language.text("我已在官方工具完成，检查并继续", "I finished in the official tool — check and continue")) {
                     let current = pendingTool
@@ -423,7 +425,8 @@ struct SetupAccountsView: View {
         case "claudeCode":
             return language.text(
                 "先在 Claude Code 登录，再到 Claude 账号页选择“添加当前登录账号”保存。添加另一个账号时，先保存当前账号，再在官方 CLI 登录另一个并回来添加；不要先 /logout，以免已保存的凭据失效。",
-                "Sign in to Claude Code, then choose Add signed-in account on the Claude page. To add another account, save the current one first, sign in to the other account in the official CLI, then return to add it. Do not use /logout first; it may invalidate saved credentials.")
+                "Sign in to Claude Code, then choose Add signed-in account on the Claude page. To add another account, save the current one first, sign in to the other account in the official CLI, then return to add it. Do not use /logout first; it may invalidate saved credentials."
+            )
         case "zcode":
             return language.text(
                 "在 ZCode 桌面应用中登录，然后返回确认。这里不启动 ZCode CLI，也不将 Coding Plan 额度当成桌面登录凭据。",

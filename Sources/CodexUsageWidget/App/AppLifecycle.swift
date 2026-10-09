@@ -647,8 +647,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
                     speed: rate.speedPerSecond, burn: rate.burnPerMinute, sampledAt: rate.sampledDate,
                     expiresAt: rate.nextExpiry(at: now), isIdle: rate.isIdle(at: now),
                     mode: rate.mode == "burn" ? .burn : .speed, displayValue: rate.formattedValue)
-            } else { rateSample = nil }
-        } else { rateSample = edgeDockRateTracker.current(now: now) }
+            } else {
+                rateSample = nil
+            }
+        } else {
+            rateSample = edgeDockRateTracker.current(now: now)
+        }
         // Freshness and subscription-window boundaries change without a new
         // @Published value. Wake once at the next actual boundary.
         var expiries: [Date] = []
@@ -760,7 +764,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         // selected dock accounts through the account-page readers.
         store.refreshEdgeDockSnapshotsNow()
         for _ in 0..<800 {
-            let busy = store.isRefreshing || store.engineState.phase == .loading || store.isRefreshingAccountQuotas
+            let busy =
+                store.isRefreshing || store.engineState.phase == .loading || store.isRefreshingAccountQuotas
                 || !store.refreshingProfileIDs.isEmpty
                 || !localCLIAccounts.refreshing.isDisjoint(with: localIDs)
             if !busy { break }

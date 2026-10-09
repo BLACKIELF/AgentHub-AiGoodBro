@@ -2150,11 +2150,13 @@ final class CodexProfileStore {
                 self.state.profiles[$0].recordedAccountKey == expectedAccountKey
                     && self.state.profiles[$0].lastSnapshot?.accountID == request.accountID
             }
-            guard indices.allSatisfy({
-                let current = self.state.profiles[$0]
-                return current.warmUpRequest == request && current.lastWarmUpSucceeded == false
-                    && ["pending", "interrupted"].contains(current.lastWarmUpFailureReason ?? "")
-            }) else { throw WarmUpStateError.unverifiedIdentityOrState }
+            guard
+                indices.allSatisfy({
+                    let current = self.state.profiles[$0]
+                    return current.warmUpRequest == request && current.lastWarmUpSucceeded == false
+                        && ["pending", "interrupted"].contains(current.lastWarmUpFailureReason ?? "")
+                })
+            else { throw WarmUpStateError.unverifiedIdentityOrState }
             var changed = false
             for index in indices where self.state.profiles[index].lastWarmUpFailureReason == "pending" {
                 var history = self.state.profiles[index].warmUpHistory ?? []
@@ -5909,8 +5911,10 @@ enum CodexWarmUpPolicySelfTest {
             guard let interruptedProfile = interrupted.profiles.first,
                 expect(interruptedProfile.lastWarmUpFailureReason == "interrupted", "interruption survives actual persistence and restart"),
                 expect(interruptedProfile.warmUpRequest == pendingRequest, "interruption retains quota-window baseline"),
-                expect(!CodexWarmUpPolicy.isDue(interruptedProfile, selection: .all, unexpected: [.fiveHour, .sevenDay],
-                    now: now.addingTimeInterval(4)), "interruption cannot replay inference in its selected windows")
+                expect(
+                    !CodexWarmUpPolicy.isDue(
+                        interruptedProfile, selection: .all, unexpected: [.fiveHour, .sevenDay],
+                        now: now.addingTimeInterval(4)), "interruption cannot replay inference in its selected windows")
             else { return false }
             let savedInterruption = try Data(contentsOf: interruptionStateURL)
             try interrupted.recordInterruptedWarmUp(

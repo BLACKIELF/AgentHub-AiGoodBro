@@ -103,6 +103,8 @@ jobs:
           ELECTRON_RUN_AS_NODE=1 "$token_node" tests/token-monitor-native/protocol-boundaries.cjs
           python3 tests/token-monitor-home/run.py
           python3 -m unittest tests.test_aihot_topics tests.test_local_cli_terminal_launcher tests.test_local_cli_accounts tests.test_runtime_setup
+          python3 tests/test_claude_subscriptions.py
+          NODE_PATH="$PWD/build/AiGoodBro.app/Contents/Resources/TokenMonitorEngine/vendor/node_modules" ELECTRON_RUN_AS_NODE=1 "$token_node" --test Companion/TokenMonitorEngine/upstream/tests/shared/grokSessionMetadata.test.js
           python3 tests/token-monitor-engine/run.py --resource-root build/AiGoodBro.app/Contents/Resources/TokenMonitorEngine --trusted-receipt ".build-receipts/AiGoodBro/Next/token-monitor-$(uname -m).json"
           ELECTRON_RUN_AS_NODE=1 "$token_node" scripts/test-upstream-dashboard-0913v1.js
           python3 scripts/test-upstream-dashboard-cache-0913v1.py
@@ -134,6 +136,7 @@ jobs:
         run: |
           python3 scripts/test-invite-purchase-link.py
           python3 scripts/test-local-proxy-quota-refresh.py
+          python3 scripts/test-local-proxy-host.py --cleanup-retry-only
           python3 Companion/LocalProxy/fixtures/test-cross-language.py --helper build/AiGoodBro.app/Contents/Resources/LocalProxy/aigoodbro-local-proxy
           cd Companion/LocalProxy
           go test -mod=readonly -race -timeout=3m ./...
