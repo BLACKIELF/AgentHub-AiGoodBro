@@ -27,9 +27,9 @@ function stagedSource(t, relativePath) {
 }
 
 test('limits arrive before history without publishing invented usage, and stopped runtimes stay silent', (t) => {
-  const source = stagedSource(t, 'src/shared/deviceRuntime.js');
+  const source = stagedSource(t, 'src/shared/usage/deviceRuntime.js');
   const context = { module: { exports: {} }, structuredClone, require(name) {
-    if (name === './deviceState') return require(path.join(upstreamRoot, 'src/shared/deviceState'));
+    if (name === './deviceState') return require(path.join(upstreamRoot, 'src/shared/usage/deviceState'));
     return {};
   } };
   vm.runInNewContext(source, context);
@@ -78,11 +78,15 @@ test('stopping a collector clears presented quotas and invalidates deferred old 
   assert.ok(stop && observer);
   const events = [];
   let stopped = 0;
+  let rate = { burnPerMinute: 1200 };
+  const rateStates = [];
   const context = {
     IS_AIGOODBRO_EMBEDDED: true,
     usageRuntimeReconciler: { cancel() {}, setActiveKey() {} },
     deviceRuntimeHandle: { stop() { stopped++; } },
     localDevice: {}, localStats: {},
+    resetAiGoodBroTokenRate() { rate = null; },
+    aigoodbroTokenRateSnapshot() { rateStates.push(rate); return rate; },
     sendMainWindowEvent(channel, payload, current) { events.push({ channel, payload, current }); }
   };
   vm.runInNewContext(`${stop}\nconst publishLimits = ${observer};\nthis.fixture = { stopLocalCollector, publishLimits };`, context);
@@ -90,6 +94,8 @@ test('stopping a collector clears presented quotas and invalidates deferred old 
   assert.equal(events[0].current(), true);
   context.fixture.stopLocalCollector();
   assert.equal(stopped, 1);
+  assert.equal(rate, null, 'a stopped collector cannot retain the prior rate sample');
+  assert.deepEqual(rateStates, [null], 'source reset publishes unknown before any replacement sample');
   assert.equal(events[0].current(), false, 'a deferred old quota must never reach the renderer');
   assert.equal(events[1].payload.data.limits, null, 'already-visible quota is cleared too');
   assert.equal(events[1].current(), true);
@@ -97,6 +103,39 @@ test('stopping a collector clears presented quotas and invalidates deferred old 
   context.fixture.publishLimits({ providers: [] });
   assert.equal(events[1].current(), false, 'a deferred clear cannot erase newer quota');
   assert.equal(events[2].current(), true);
+});
+
+test('rate-only events replace cached stats before render deduplication and cannot revive expired state', (t) => {
+  const source = stagedSource(t, 'src/electron/renderer/app.js');
+  const functions = ['receiveAiGoodBroTokenRate', 'observeLiveTokenRate'].map((name) => {
+    const body = source.match(new RegExp('function ' + name + '\\([^\\n]*\\) \\{[\\s\\S]*?\\n\\}'))?.[0];
+    assert.ok(body, name);
+    return body;
+  }).join('\n');
+  const initial = { mode: 'burn', formattedValue: '1.3K', idle: false, revision: 1 };
+  let renders = 0;
+  const context = { isAiGoodBroSharedTokenRate: true,
+    state: { settings: { showLiveTokenRate: true }, stats: { aigoodbroTokenRate: initial }, aigoodbroTokenRate: initial },
+    renderTokenRate() { renders += 1; },
+    scheduleLiveTokenRateExpiry() { throw new Error('shared rate must not add an expiry timer'); } };
+  vm.runInNewContext(functions, context);
+  context.receiveAiGoodBroTokenRate(null);
+  context.observeLiveTokenRate(context.state.stats);
+  assert.equal(context.state.stats.aigoodbroTokenRate, null);
+  assert.equal(context.state.aigoodbroTokenRate, null);
+  assert.equal(renders, 1, 'a settings toggle cannot resurrect the expired stats DTO');
+  const idle = { ...initial, idle: true };
+  const speed = { ...idle, mode: 'speed', formattedValue: '0.5' };
+  for (const sample of [idle, speed]) {
+    context.receiveAiGoodBroTokenRate(sample);
+    context.observeLiveTokenRate(context.state.stats);
+    assert.equal(context.state.aigoodbroTokenRate, sample);
+  }
+  const before = renders;
+  context.state.stats.aigoodbroTokenRate = initial;
+  context.receiveAiGoodBroTokenRate(speed);
+  assert.equal(context.state.stats.aigoodbroTokenRate, speed, 'equal events still repair stale stats');
+  assert.equal(renders, before, 'equal values do not repaint');
 });
 
 test('local bootstrap and renderer reload preserve only current pending quota evidence', (t) => {
@@ -111,7 +150,7 @@ test('local bootstrap and renderer reload preserve only current pending quota ev
     sendMainWindowEvent: (_channel, payload, current) => events.push({ payload, current }) };
   const pull = () => vm.runInNewContext(`(() => {${bootstrap}})()`, context);
   assert.equal(pull().aigoodbroUsagePending, true);
-  const { projectLimitStatsForDisplay } = require(path.join(upstreamRoot, 'src/electron/limitStatsPresentation'));
+  const { projectLimitStatsForDisplay } = require(path.join(upstreamRoot, 'src/electron/limits/statsPresentation'));
   const { projectModelAliasStats } = require(path.join(upstreamRoot, 'src/electron/modelAliasPresentation'));
   assert.equal(projectModelAliasStats(projectLimitStatsForDisplay(pull(), { syncActive: false }), []).aigoodbroUsagePending, true, 'production display projections retain pending evidence');
   context.localDevice = { today: { tokens: 0 } };
@@ -160,7 +199,7 @@ test('production quota-only rendering reveals Home and Limits without inventing 
     LIMIT_PROVIDERS: [{ id: 'codex', label: 'Codex' }], clientColors: {},
     limitProviderOrderApi: { orderedLimitProviders: rows => rows },
     limitProviderPresentationApi: { limitProviderCompactWindows: (_p, windows) => windows },
-    homeOverviewApi: { homeLimitAccountsForProviders: ({ providers, hiddenProviderIds }) => providers.filter(p => !hiddenProviderIds.includes(p.provider)).map(p => ({ name: 'Codex', providerId: p.provider, windows: p.windows || [] })) },
+    homeOverviewApi: { homeLimitsAwaitingFirstData: require(path.join(upstreamRoot, 'src/electron/renderer/homeOverview')).homeLimitsAwaitingFirstData, homeLimitAccountsForProviders: ({ providers, hiddenProviderIds }) => providers.filter(p => !hiddenProviderIds.includes(p.provider)).map(p => ({ name: 'Codex', providerId: p.provider, windows: p.windows || [] })) },
     homeModuleShell() { const module = node(false), body = node(false); module.append(body); return { module, body }; },
     applyHomeListMark() {}, iconKindFor() {},
     limitDetailTooltipShouldHoldRender: () => false,
@@ -214,7 +253,7 @@ test('production quota-only rendering reveals Home and Limits without inventing 
   els.settingsPanel.classList.add('hidden'); context.renderFixture();
   assert.equal(ready, 1);
   // Execute the real stats branch up to its scheduler, with only outer helpers stubbed.
-  Object.assign(context, { overlayAllTimeSessions: x => x, observeLiveTokenRate() {}, observeDisplayLiveTokenRates() {}, applyCodexActiveAccountFromStats() {}, fixedPeriodRangesApi: { isDerived: () => false }, warmFixedPeriodHistory() {}, maybeUpdateBarsIcon() {}, restartTimer() {} });
+  Object.assign(context, { allTimeSessions: { attach: x => x, invalidate() {} }, sessionStatsForDisplay: x => x, overlayAllTimeSessions: x => x, observeLiveTokenRate() {}, observeDisplayLiveTokenRates() {}, applyCodexActiveAccountFromStats() {}, fixedPeriodRangesApi: { isDerived: () => false }, warmFixedPeriodHistory() {}, maybeUpdateBarsIcon() {}, restartTimer() {} });
   const stats = { periods: { today: { totalTokens: 19, costUsd: 0.25 } }, limits };
   onPush({ event: 'stats', data: { stats, reason: 'local' } });
   assert.equal(state.stats, stats);
@@ -244,11 +283,11 @@ test('production quota-only rendering reveals Home and Limits without inventing 
       window.LIMIT_PROVIDERS = [{ id: 'codex', label: 'Codex' }]; window.clientColors = {};
       window.limitProviderOrderApi = { orderedLimitProviders: x => x };
       window.limitProviderPresentationApi = { limitProviderCompactWindows: (_p, w) => w };
-      window.homeOverviewApi = { homeLimitAccountsForProviders: ({providers}) => providers.map(p => ({ name: 'Codex', providerId: p.provider, windows: [] })) };
+      window.homeOverviewApi = { homeLimitsAwaitingFirstData: () => false, homeLimitAccountsForProviders: ({providers}) => providers.map(p => ({ name: 'Codex', providerId: p.provider, windows: [] })) };
       window.renderLimitProviderSolo = () => { const row = document.createElement('div'); row.textContent = '75%'; return row; };
       window.statsRenderScheduler = { request() {} };
       (0, eval)(`let contentReadySignaled = false;${production}\n${handler}\nwindow.paint = render;`);
-    }, { functions, production: ['homeLimitRows', 'renderHomeLimitModule', 'renderLimits', 'hidePeriodContentForMessage', 'signalContentReady', 'render'].map(extract).join('\n'), handler });
+    }, { functions, production: ['homeLimitRows', 'renderHomeLimitModule', 'renderLimits', 'hidePeriodContentForMessage', 'signalContentReady', 'setTotalCost', 'render'].map(extract).join('\n'), handler });
     await page.evaluate(limits => push({ event: 'aigoodbro:limits', data: { limits } }), limits);
     assert.equal(await page.locator('#homePanel .home-limit-account').isVisible(), true);
     const quotaBounds = await page.locator('#homePanel .home-limit-account').boundingBox();
@@ -262,8 +301,9 @@ test('production quota-only rendering reveals Home and Limits without inventing 
     assert.equal(await page.locator('#limitsPanel').isVisible(), false);
     await page.evaluate(() => {
       state.breakdown = 'home'; state.suppressInitialNumberAnimation = true;
+      window.allTimeSessions = { attach: x => x, invalidate() {}, ensure() {} };
       window.fixedPeriodRangesApi = { isDerived: () => false };
-      for (const name of ['syncLiveTokenRateFooterState','renderSessionUsageArchiveStatus','ensureBreakdownVisible','cancelNumberAnimation','updateTotalCompact','renderTokenRate','setRefreshButtonState','stopServiceStatusTicker','renderFloatingBubbleContent']) window[name] = () => {};
+      for (const name of ['stopHomeSessionRepaint','stopSessionStatusRepaint','syncLiveTokenRateFooterState','renderSessionUsageArchiveStatus','ensureBreakdownVisible','cancelNumberAnimation','updateTotalCompact','renderTokenRate','setRefreshButtonState','stopServiceStatusTicker','renderFloatingBubbleContent']) window[name] = () => {};
       window.numberAnimValue = 0; window.formatNumber = n => String(n); window.formatCost = n => `$${n}`;
       window.headlineNumberIsAnimatingTo = () => false;
       window.renderHome = () => { els.homePanel.textContent = `Total ${state.stats.periods.today.totalTokens}`; };
@@ -286,9 +326,9 @@ function watchHarness(t) {
   let now = 100000, nextTimer = 0, scheduled = 0;
   const timers = new Map(), scans = [];
   const context = {
-    Date: { now: () => now }, Math, Set, Array,
-    stopped: false, tickInFlight: false, debounceTimer: null,
-    aigoodbroWatchBatchStartedAt: null, watchDebounceMs: 1000,
+    Date: { now: () => now }, performance: { now: () => now }, Math, Set, Array,
+    stopped: false, tickInFlight: false, debounceTimer: null, codexLocalSource: null,
+    watchDeadlineAt: 0, watchMaxWaitMs: 10000, watchDebounceMs: 1000,
     lastTickSuccessAt: 0, lastTickFailureAt: 0, lastTickDurationMs: null,
     scheduledWatchClients: new Set(), scheduledWatchNeedsFullScan: false,
     sourceSyncQueue: { takeDue: () => [] },
@@ -377,7 +417,7 @@ function runBootstrap({ env, execPath, ppid = 4321 }) {
   const calls = { exit: [], opened: [], setPath: [], bridgeStarted: 0, upstreamLoaded: 0 };
   const app = {
     exit: (code) => calls.exit.push(code), setPath: (...args) => calls.setPath.push(args),
-    once() {}, quit() {}, getVersion: () => '0.62.0'
+    once() {}, quit() {}, getVersion: () => '0.68.0'
   };
   const bridge = {
     start: async () => { calls.bridgeStarted += 1; }, close() {}
@@ -464,14 +504,26 @@ test('trusted host launch keeps private paths and parent PID checks', async () =
       AIGOODBRO_TOKEN_MONITOR_HOST_SOCKET: path.join(ipc, 'host.sock'),
       TOKEN_MONITOR_SHARED_DIR: shared,
       TOKEN_MONITOR_DEVICE_ID: 'aigoodbro-test',
+      TOKEN_MONITOR_CODEX_LOCAL_USAGE: '1',
+      TOKEN_MONITOR_HUB_URL: 'https://inherited.invalid',
+      TOKEN_MONITOR_SECRET: 'synthetic-inherited-secret',
+      TOKEN_MONITOR_PORT: '19191',
+      TOKEN_MONITOR_SYNC_SESSION_TITLES: '1',
       AIGOODBRO_TOKEN_MONITOR_PARENT_PID: '4321'
     };
+    const outsideDots = process.env.TOKEN_MONITOR_CODEX_LOCAL_USAGE;
+    const cloudKeys = ['TOKEN_MONITOR_HUB_URL', 'TOKEN_MONITOR_SECRET', 'TOKEN_MONITOR_PORT', 'TOKEN_MONITOR_SYNC_SESSION_TITLES'];
+    const outsideCloud = cloudKeys.map((key) => process.env[key]);
     const trusted = runBootstrap({ env, execPath: '/fixture/AiGoodBro Token Core' });
     await new Promise((resolve) => setImmediate(resolve));
     assert.deepEqual(trusted.exit, []);
     assert.equal(trusted.bridgeStarted, 1);
     assert.equal(trusted.upstreamLoaded, 1);
     assert.deepEqual(trusted.setPath, [['userData', support]]);
+    assert.equal(env.TOKEN_MONITOR_CODEX_LOCAL_USAGE, '0', 'hostile inherited opt-in is closed before upstream loads');
+    assert.equal(process.env.TOKEN_MONITOR_CODEX_LOCAL_USAGE, outsideDots, 'the caller environment is never changed');
+    assert.ok(cloudKeys.every((key) => env[key] === undefined), 'inherited Cloud startup fields are closed before upstream loads');
+    assert.deepEqual(cloudKeys.map((key) => process.env[key]), outsideCloud, 'the caller Cloud environment is never changed');
 
     const wrongParent = runBootstrap({ env, execPath: '/fixture/AiGoodBro Token Core', ppid: 9999 });
     assert.deepEqual(wrongParent.exit, [1]);
@@ -505,7 +557,7 @@ test('private control socket routes only allowlisted requests after upstream is 
   fs.chmodSync(directory, 0o700);
   const socketPath = path.join(directory, 'bridge.sock');
   const calls = [];
-  const bridge = createHostBridge({ socketPath, app: { getVersion: () => '0.62.0', quit: () => calls.push('appQuit') } });
+  const bridge = createHostBridge({ socketPath, app: { getVersion: () => '0.68.0', quit: () => calls.push('appQuit') } });
   t.after(() => { bridge.close(); fs.rmSync(directory, { recursive: true, force: true }); });
   await bridge.start();
   assert.equal(fs.statSync(socketPath).mode & 0o777, 0o600);
@@ -605,7 +657,7 @@ test('Codex switch reaches only the private native guard socket with an opaque i
   fs.chmodSync(hostSocketPath, 0o600);
   const bridge = createHostBridge({
     socketPath: path.join(directory, 'control.sock'), hostSocketPath,
-    app: { getVersion: () => '0.62.0', quit() {} }
+    app: { getVersion: () => '0.68.0', quit() {} }
   });
   assert.equal((await bridge.requestCodexSwitch({ vendorAccountId: 'bad/id', recordedAccountKey: 'sha256:x' })).ok, false);
   const key = `sha256:${'a'.repeat(64)}`;
@@ -873,7 +925,7 @@ test('staging patch preserves vendor source and disables its independent updater
   assert.match(updater, /const GITHUB_REPO = 'BLACKIELF\/AgentHub-AiGoodBro'/);
   assert.match(main, /parsed\.pathname === '\/BLACKIELF\/AgentHub-AiGoodBro'/);
   assert.match(main, /parsed\.hostname === 'aigoodbro\.com'/);
-  assert.match(main, /parsed\.hostname === 'claude\.ai'/);
+  assert.match(main, /limitProviderUrlAllowed\(parsed.hostname, parsed.pathname\)/);
   assert.match(main, /parsed\.pathname\.startsWith\('\/junhoyeo\/tokscale'\)/);
   const externalUrlFunction = main.match(/function isAllowedExternalUrl\(value\) \{[\s\S]*?\n\}\n\n(?=function revealWindow\()/)?.[0];
   assert.ok(externalUrlFunction);
@@ -881,7 +933,7 @@ test('staging patch preserves vendor source and disables its independent updater
     `const settings = {}; const STATUS_PAGE_HOSTS = new Set(['status.openai.com']);
      const isAllowedVerificationUrl = () => false; const isAllowedCodexLoginUrl = () => false;
      ${externalUrlFunction} isAllowedExternalUrl;`,
-    { URL, process: { env: {} } }
+    { URL, process: { env: {} }, limitProviderUrlAllowed: require(path.join(upstreamRoot, 'src/shared/limits/accounts')).limitProviderUrlAllowed }
   );
   for (const url of [
     'https://aigoodbro.com/',
@@ -921,10 +973,10 @@ test('staging patch preserves vendor source and disables its independent updater
   assert.equal(i18n.translate('en', 'settings.host.accounts'), 'Accounts & auto-resume');
   assert.match(index, /data-i18n="settings.appUpdate.managedByHost"/);
   assert.match(styles, /\.app-update-settings\.aigoodbro-host-updates > :not\(\.settings-group-header\):not\(\.aigoodbro-managed-updates-note\):not\(\.aigoodbro-host-update-action\) \{\s*display: none !important;/);
-  assert.match(rendererApp, /els\.aboutVersion\.textContent = 'v2\.0'/);
-  assert.match(rendererApp, /t\('settings\.about\.embeddedEngine', \{ version: state\.appInfo\?\.version \|\| '0\.62\.0' \}\)/);
-  assert.equal(i18n.translate('en', 'settings.about.embeddedEngine', { version: '0.62.0' }), 'Built-in Token Monitor engine v0.62.0 (MIT).');
-  assert.equal(i18n.translate('zh-CN', 'settings.about.embeddedEngine', { version: '0.62.0' }), '内置 Token Monitor 引擎 v0.62.0（MIT）。');
+  assert.match(rendererApp, /els\.aboutVersion\.textContent = 'v2\.3'/);
+  assert.match(rendererApp, /t\('settings\.about\.embeddedEngine', \{ version: state\.appInfo\?\.version \|\| '0\.68\.0' \}\)/);
+  assert.equal(i18n.translate('en', 'settings.about.embeddedEngine', { version: '0.68.0' }), 'Built-in Token Monitor engine v0.68.0 (MIT).');
+  assert.equal(i18n.translate('zh-CN', 'settings.about.embeddedEngine', { version: '0.68.0' }), '内置 Token Monitor 引擎 v0.68.0（MIT）。');
   assert.equal(i18n.translate('en', 'settings.host.title'), 'AiGoodBro');
   assert.equal(i18n.translate('zh-CN', 'settings.host.title'), 'AiGoodBro');
   assert.equal(i18n.translate('en', 'settings.host.checkUpdates'), 'Check for updates');

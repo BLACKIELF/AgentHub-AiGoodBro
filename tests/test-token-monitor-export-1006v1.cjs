@@ -6,30 +6,18 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
-const { INPUT_SHA256, transformExportPrivacy, patchExporter, patchUsage } = require('../Companion/TokenMonitorDesktop/backports/export-privacy-1006v1.cjs');
+const { INPUT_SHA256 } = require('../Companion/TokenMonitorDesktop/transform-stage.cjs');
 
 const upstreamRoot = path.resolve(__dirname, '..', 'Companion/TokenMonitorEngine/upstream');
 
 function transformedModules(t) {
-  const sourceMap = {};
-  for (const relativePath of Object.keys(INPUT_SHA256)) {
-    const source = fs.readFileSync(path.join(upstreamRoot, relativePath), 'utf8');
-    assert.equal(crypto.createHash('sha256').update(source).digest('hex'), INPUT_SHA256[relativePath]);
-    sourceMap[relativePath] = source;
-  }
-  const outputs = transformExportPrivacy(sourceMap);
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'token-monitor-export-privacy-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   fs.cpSync(path.join(upstreamRoot, 'src/shared'), path.join(root, 'src/shared'), { recursive: true });
-  for (const { relativePath, output } of outputs) {
-    const target = path.join(root, relativePath);
-    fs.mkdirSync(path.dirname(target), { recursive: true });
-    fs.writeFileSync(target, output);
-  }
   return {
     exporter: require(path.join(root, 'src/shared/exporter.js')),
     usage: require(path.join(root, 'src/shared/usage.js')),
-    archive: require(path.join(root, 'src/shared/sessionUsageArchive.js'))
+    archive: require(path.join(root, 'src/shared/usage/sessionUsageArchive.js'))
   };
 }
 
@@ -61,21 +49,18 @@ function assertCleanSession(session) {
   for (const [key, value] of Object.entries(expected)) assert.deepEqual(session[key], value);
 }
 
-test('source transforms fail closed on hash drift, missing anchors and repeat application', () => {
-  const sourceMap = Object.fromEntries(Object.keys(INPUT_SHA256).map((file) => [file, fs.readFileSync(path.join(upstreamRoot, file), 'utf8')]));
-  assert.throws(() => transformExportPrivacy({ ...sourceMap, 'src/shared/exporter.js': sourceMap['src/shared/exporter.js'] + '\n' }), /hash changed/);
-  assert.throws(() => transformExportPrivacy({}), /Missing staged source/);
-  assert.throws(() => patchExporter(''), /exactly one source anchor/);
-  assert.throws(() => patchUsage(''), /exactly one source anchor/);
-  assert.throws(() => patchExporter(patchExporter(sourceMap['src/shared/exporter.js'])), /exactly one source anchor/);
-  assert.throws(() => patchUsage(patchUsage(sourceMap['src/shared/usage.js'])), /exactly one source anchor/);
+test('merged export privacy modules remain exact frozen upstream without a duplicate backport', () => {
+  const pins = JSON.parse(fs.readFileSync(path.join(upstreamRoot, '../SOURCE.json'))).finalSource.files;
+  for (const file of ['src/shared/exporter.js', 'src/shared/usage.js']) {
+    assert.equal(crypto.createHash('sha256').update(fs.readFileSync(path.join(upstreamRoot, file))).digest('hex'), pins['upstream/' + file]);
+    assert.equal(Object.hasOwn(INPUT_SHA256, file), false);
+  }
 });
 
-test('negative control: pinned vendor exporter leaks recognized session text', () => {
+test('pinned 0.68 vendor exporter already removes recognized session text', () => {
   const vendor = require(path.join(upstreamRoot, 'src/shared/exporter.js'));
   const text = vendor.renderExportJson({ periods: { today: { totalTokens: 20, sessions: { 'codex:abc': poisonedSession() } } }, history: {} });
-  assert.match(text, /private title/);
-  assert.match(text, /private prompt/);
+  assert.doesNotMatch(text, /private title|private prompt/);
 });
 
 test('transformed production exporter strips session text and preserves usage dimensions', (t) => {

@@ -284,6 +284,12 @@ def prepare_stage(stage: Path, manifest: dict) -> dict:
         shutil.copytree(source / folder, stage / folder)
     for name in ("package.json", "LICENSE"):
         shutil.copy2(source / name, stage / name)
+    # The collector and Advanced settings read this declarative fork build pin
+    # at runtime. Keep the exact inventoried manifest, without build scripts.
+    vendor_manifest = "scripts/vendor/tokscale.json"
+    require(digest_file(source / vendor_manifest) == inventory["finalSource"]["files"][f"upstream/{vendor_manifest}"], "Vendored scanner manifest changed")
+    (stage / "scripts/vendor").mkdir(parents=True)
+    shutil.copy2(source / vendor_manifest, stage / vendor_manifest)
     shutil.copy2(ROOT / manifest["helper"]["brandIcon"], stage / "assets/icon.png")
     shutil.copy2(ROOT / manifest["helper"]["trayIcon"], stage / "assets/tray-curve.png")
     stage.joinpath("aigoodbro").mkdir()

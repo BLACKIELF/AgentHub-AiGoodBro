@@ -44,6 +44,16 @@ enum NextSetupPreviewRenderer {
                     try WorkspacePreviewRenderer.renderView(
                         update, size: NewFeatureUpdateView.preferredSize, scheme: scheme, to: directory.appendingPathComponent(updateName))
                     count += 1
+                    // Render the real sign-in panel with an empty, isolated
+                    // preview store. No sample subscriptions or limits are added.
+                    let claudeModel = LocalCLIAccountStore.preview(profiles: [], quotas: [:], root: root)
+                    let claudePanel = ClaudeSubscriptionSetupPanel(model: claudeModel, language: language)
+                        .transaction { $0.disablesAnimations = true }
+                        .preferredColorScheme(scheme)
+                    let claudeName = "\(language.rawValue)-\(scheme == .dark ? "dark" : "light")-claude-sign-in.png"
+                    let claudeCapture = try WorkspaceScreenshotExporter.render(claudePanel, width: 560, scheme: scheme)
+                    try claudeCapture.png.write(to: directory.appendingPathComponent(claudeName), options: .atomic)
+                    count += 1
                     settings.installationOnboarding = InstallationOnboardingState(
                         installationID: previewEventID, scope: .returning, audience: .returningUser, eventGeneration: previewEventID)
                     for step in NextSetupGuideScope.returning.steps {

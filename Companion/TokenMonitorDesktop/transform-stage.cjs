@@ -5,28 +5,25 @@
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
-const exportPrivacy = require('./backports/export-privacy-1006v1.cjs');
-const sessionDetail = require('./backports/session-detail-1006v1.cjs');
-const watcherProcess = require('./backports/watcher-process-1006v1.cjs');
 
 const INPUT_SHA256 = Object.freeze({
-  ...exportPrivacy.INPUT_SHA256,
-  ...sessionDetail.INPUT_SHA256,
-  ...watcherProcess.INPUT_SHA256,
-  'src/shared/collector.js': 'be7956dd85a124d9714d0fda67a09ecc57182a2fb61d4d081df76b17a155e746',
-  'src/shared/deviceRuntime.js': '423113332c1e2e972c7dedbceea29d693520cdb07281fe56e13108cc1e1c813b',
-  'src/electron/main.js': 'f53b96ef53dae5bb695f15305b216c5dc3ab036b6179bd2ab5d958278adc3adb',
-  'src/electron/edgeDock/controller.js': '3fa64b1a5796bcfce200935ac31e2b9427fb2067d305d24a2f93f60b1499dc97',
-  'src/electron/discordRpc.js': '9abb5b304fdf8c45cf1321d3bb8a3422bd9888399b0e5a94b8f6e7c0d26cf7bb',
-  'src/electron/preload.js': '2ce435965fa7bda95991df72e73533866abf524e8dbc84fa638074d2c95789cd',
+  'src/shared/collector.js': '7c76f724e9b8ccd32d76b6640456ec87cfe3a25cc51386fab14de816b80c383b',
+  'src/shared/usage/deviceRuntime.js': 'f91fbde1b03220f171bd460c657cb41148f738d35ee4f89c0258b3c5e8babce0',
+  'src/shared/sessionDetail.js': '5445afa37b277d992c2c46f63dc29bcec4804a2ef86d398f4c52577211398546',
+  'src/shared/providers/cursor/selfSync.js': 'd85903c15f9b7881e6afb1e54b4100aea6297f96c6f91273e2e49c0d42c8b734',
+  'src/shared/providers/antigravity/selfSync.js': '0fd43baf9d818557644ef730edec1eb8968d4811d74d344c98eb0f79efca99b6',
+  'src/electron/main.js': 'd9ac675becf19d11f1ea95e0c8766c3d2081d2e743910b2339312807538af1c1',
+  'src/electron/edgeDock/controller.js': '9be6e6cf46757edf367644b7e6b788afeef5de2ca5bf49e35d613c45b27c383a',
+  'src/electron/discordRpc.js': 'bcd2a36e03a54c04ceadf23a433d7f961684bd1a4265bfd9f5546a7d556c402d',
+  'src/electron/preload.js': '05b8ffc8c1eff34aa2249829c9394bdc8dc92357afb686615127b669948a3687',
   'src/shared/appUpdater.js': '1c437d8ca2c05322ec97327f197105547f0db2451f37525c3251315340b8b852',
-  'src/electron/renderer/index.html': '93e710a435a23962eaace93bf3a4342c8e72705a7c274cbefbcc53e98e38d9a7',
-  'src/electron/renderer/i18n.js': '4d7f919ce9247feaebc7d109d38afb9006b081bffcaba5b77965da02bd581b19',
-  'src/electron/renderer/edgeDock/index.html': '1c43eeac359d8b35519a02c58220763c4ebe27f813b89ba6b5d25a4e9fb585e3',
-  'src/electron/renderer/styles.css': '84b1af7910c3d76d503c86ebc9a792cef3336e9db2c7c5904e96effe217dd23f',
-  'src/electron/renderer/app.js': '57d8356c4e19aa125b636a1e920cc74b29e6d9ae904d1ee680e5acdc7281db03',
+  'src/electron/renderer/index.html': '01a9dfb19def0fba854493484ab3552d45ff78b9c1b0ba74a78ba630c69b6c2e',
+  'src/electron/renderer/i18n.js': '82ffac80a8fe3bb719254b1e1089322f2d642ac3bac66509258e5da903ab14b4',
+  'src/electron/renderer/edgeDock/index.html': '6f8542791c01f67d5c28429b4a7271d3c5145cf53ef6ad15ff33b20cbb40088c',
+  'src/electron/renderer/styles.css': 'd6788eae0b0ff6c660fb3a8568f8d47e21926771aee8f197a998c2b0ed04c95a',
+  'src/electron/renderer/app.js': '8b2620f5c5439237160ce38655eda198e0a6b6a67df0e71b5ebdd0e4a0511025',
   'src/electron/renderer/trayComposer.js': '3c2a3c4ad01c10fd0a6eda7f0893de568a2169d307a8a16f99d74e4790af5ef4',
-  'src/electron/tray.js': 'da5712a1e59e5f3273798c645eaa91fd52c59e4ff518191fe5fea48db6f173d9'
+  'src/electron/tray.js': 'bd8559cefbac6e9caea401f6514856d882f4d67ba23d30a5f93e4e6284eb3bd3'
 });
 
 function replaceOne(content, needle, replacement, label) {
@@ -43,10 +40,179 @@ function patchMain(source) {
     "const IS_AIGOODBRO_EMBEDDED = process.env.AIGOODBRO_TOKEN_MONITOR_EMBEDDED === '1';\nconst APP_NAME = IS_AIGOODBRO_EMBEDDED ? 'AiGoodBro' : 'Token Monitor';",
     'main brand');
   text = replaceOne(text,
+    "const { normalizeCompactTokenUnits } = require('../shared/compactTokens');",
+    "const { normalizeCompactTokenUnits, formatCompactTokens } = require('../shared/compactTokens');",
+    'shared upstream compact rate formatter');
+  text = replaceOne(text,
+    "    tokenRateMode: 'speed',",
+    "    tokenRateMode: IS_AIGOODBRO_EMBEDDED ? 'burn' : 'speed',",
+    'embedded TPM preference default');
+  text = replaceOne(text,
+    '  rendererViewState = normalizeInitialRendererViewState(settings.lastViewState, rendererViewState);',
+    `  if (IS_AIGOODBRO_EMBEDDED && !(Number.isSafeInteger(settings.aigoodbroTokenRatePreferenceVersion)
+    && settings.aigoodbroTokenRatePreferenceVersion >= 1)) {
+    settings.tokenRateMode = 'burn';
+    settings.aigoodbroTokenRatePreferenceVersion = 1;
+    if (!saveSettings()) {
+      // Keep the requested framing in memory and retry the marker with the next
+      // ordinary save; a failed preference write must not enable any service.
+      settings.tokenRateMode = 'burn';
+      settings.aigoodbroTokenRatePreferenceVersion = 1;
+    }
+  }
+  rendererViewState = normalizeInitialRendererViewState(settings.lastViewState, rendererViewState);`,
+    'one-time embedded TPM migration preserves later speed choices');
+  text = replaceOne(text,
+    'const allTimeSessionsCache = createStatsPresentationCache();',
+    `// AiGoodBro's renderer and native sidebar share this one matched-counter
+// cache. Reads project expiry only; observing happens on existing stats paths.
+let aigoodbroTokenRateTracker = null;
+let aigoodbroTokenRateSettingsContext = '';
+let aigoodbroTokenRateSourceContext = '';
+let aigoodbroTokenRateContextGeneration = 0;
+let aigoodbroTokenRateCounters = new Map();
+let aigoodbroTokenRatePublishedSignature = 'null';
+
+function aigoodbroTokenRateSettingsKey() {
+  const day = new Date();
+  return JSON.stringify([mode, hubModeGeneration, settings?.hubMode || '',
+    settings?.hubUrl || '', settings?.deviceId || '', settings?.clients || '',
+    settings?.liveTokenRateScope || 'all', day.getFullYear(), day.getMonth(),
+    day.getDate(), day.getTimezoneOffset()]);
+}
+
+function resetAiGoodBroTokenRate() {
+  if (!IS_AIGOODBRO_EMBEDDED) return;
+  aigoodbroTokenRateTracker = null;
+  aigoodbroTokenRateSettingsContext = '';
+  aigoodbroTokenRateSourceContext = '';
+  aigoodbroTokenRateCounters = new Map();
+  aigoodbroTokenRateContextGeneration += 1;
+}
+
+function aigoodbroFormattedTokenRate(value) {
+  const rate = Math.max(0, Number(value) || 0);
+  if (rate > 0 && rate < 0.1) return '<0.1';
+  const locale = trayMenuLocale();
+  if (rate > 0 && rate < 1) {
+    return rate.toLocaleString(locale, { maximumFractionDigits: 1 });
+  }
+  return formatCompactTokens(rate, settings?.compactTokenUnits, locale);
+}
+
+function aigoodbroTokenRateSnapshot() {
+  if (!IS_AIGOODBRO_EMBEDDED) return null;
+  if (aigoodbroTokenRateSettingsContext
+    && aigoodbroTokenRateSettingsContext !== aigoodbroTokenRateSettingsKey()) resetAiGoodBroTokenRate();
+  const sample = aigoodbroTokenRateTracker?.getSample();
+  const snapshot = sample ? {
+    mode: settings?.tokenRateMode === 'speed' ? 'speed' : 'burn',
+    formattedValue: aigoodbroFormattedTokenRate(settings?.tokenRateMode === 'speed' ? sample.speed : sample.burn),
+    scope: tokenRateApi.isSharedSyncMode(settings?.hubMode)
+      && settings?.liveTokenRateScope !== 'device' ? 'all' : 'local',
+    burnPerMinute: sample.burn, speedPerSecond: sample.speed,
+    sampledAt: sample.sampledAt, expiresAt: sample.expiresAt,
+    idle: sample.idle === true, revision: sample.revision,
+    contextKey: 'rate-' + process.pid + '-' + aigoodbroTokenRateContextGeneration
+  } : null;
+  const signature = JSON.stringify(snapshot);
+  if (signature !== aigoodbroTokenRatePublishedSignature) {
+    aigoodbroTokenRatePublishedSignature = signature;
+    sendMainWindowEvent('stats:push', { event: 'aigoodbro:tokenRate', data: { tokenRate: snapshot } },
+      () => aigoodbroTokenRatePublishedSignature === signature);
+  }
+  return snapshot;
+}
+
+function observeAiGoodBroTokenRate(stats) {
+  if (!IS_AIGOODBRO_EMBEDDED) return;
+  if (!stats || stats.aigoodbroUsagePending === true) {
+    resetAiGoodBroTokenRate();
+    aigoodbroTokenRateSnapshot();
+    return;
+  }
+  const settingsKey = aigoodbroTokenRateSettingsKey();
+  const scope = tokenRateApi.isSharedSyncMode(settings?.hubMode)
+    && settings?.liveTokenRateScope !== 'device' ? 'all' : 'device';
+  const selection = tokenRateApi.selectLiveTokenRatePeriods(stats, settings?.deviceId, settings?.hubMode, scope);
+  const sourceKey = JSON.stringify([settingsKey, selection.source,
+    selection.entries.map((entry) => [entry.id, entry.period?.capabilities?.throughput !== false]).sort()]);
+  const counters = new Map(selection.entries.map((entry) => [entry.id,
+    ['timedTokens', 'timedOutputTokens', 'timedDurationMs'].map((field) => {
+      const value = entry.period?.[field];
+      return value === null || value === undefined || value === '' ? null : Number(value);
+    })]));
+  const regressed = [...counters].some(([id, values]) => {
+    const previous = aigoodbroTokenRateCounters.get(id);
+    return previous && values.some((value, i) => Number.isFinite(value)
+      && Number.isFinite(previous[i]) && value < previous[i]);
+  });
+  if (!aigoodbroTokenRateTracker || sourceKey !== aigoodbroTokenRateSourceContext || regressed) {
+    resetAiGoodBroTokenRate();
+    aigoodbroTokenRateTracker = tokenRateApi.createLiveTokenRateGroupTracker({
+      now: Date.now, activeMs: 8000, clearMs: 180000
+    });
+    aigoodbroTokenRateTracker.reset(selection.entries);
+    aigoodbroTokenRateSettingsContext = settingsKey;
+    aigoodbroTokenRateSourceContext = sourceKey;
+  } else {
+    aigoodbroTokenRateTracker.observe(selection.entries);
+  }
+  aigoodbroTokenRateCounters = counters;
+  aigoodbroTokenRateSnapshot();
+}
+
+function aigoodbroRendererStats(stats) {
+  const result = rendererStats(stats);
+  return IS_AIGOODBRO_EMBEDDED && result && typeof result === 'object'
+    ? { ...result, aigoodbroTokenRate: aigoodbroTokenRateSnapshot() } : result;
+}
+
+const allTimeSessionsCache = createStatsPresentationCache();`,
+    'single shared live token rate cache');
+  text = replaceOne(text,
+    '    const visibleStats = electronPresentationStats(latestStats);\n    migrateCodexAdditionalLimits(visibleStats);',
+    '    const visibleStats = electronPresentationStats(latestStats);\n    observeAiGoodBroTokenRate(visibleStats);\n    migrateCodexAdditionalLimits(visibleStats);',
+    'observe existing stats publications without additional collection');
+  text = replaceOne(text,
+    '    return rendererSnapshots.stamp(stats, rendererStats(electronPresentationStats(stats)));',
+    `    const visibleStats = electronPresentationStats(stats);
+    observeAiGoodBroTokenRate(visibleStats);
+    return rendererSnapshots.stamp(stats, aigoodbroRendererStats(visibleStats));`,
+    'existing stats reads share the presentation rate cache');
+  // Both the real stats publication and cached presentation refresh carry the
+  // same cache DTO. These are the two pinned call sites, not a new IPC reader.
+  const rendererRateAnchor = 'rendererStats(visibleStats)';
+  for (let i = 0; i < 2; i += 1) {
+    const index = text.indexOf(rendererRateAnchor);
+    if (index < 0) throw new Error('shared renderer rate: missing source anchor');
+    text = text.slice(0, index) + 'aigoodbroRendererStats(visibleStats)' + text.slice(index + rendererRateAnchor.length);
+  }
+  text = replaceOne(text,
+    "  const envHubUrl = process.env.TOKEN_MONITOR_HUB_URL || '';",
+    "  const envHubUrl = IS_AIGOODBRO_EMBEDDED ? '' : process.env.TOKEN_MONITOR_HUB_URL || '';",
+    'embedded settings failure cannot inherit Cloud opt-in');
+  text = replaceOne(text,
+    '    hubHostPort: Math.max(1, Math.min(65535, Number(process.env.TOKEN_MONITOR_PORT) || HUB_DEFAULT_PORT)),',
+    '    hubHostPort: IS_AIGOODBRO_EMBEDDED ? HUB_DEFAULT_PORT : Math.max(1, Math.min(65535, Number(process.env.TOKEN_MONITOR_PORT) || HUB_DEFAULT_PORT)),',
+    'embedded Cloud port defaults require saved settings');
+  for (const field of ['hubHostSecret', 'secret']) {
+    text = replaceOne(text,
+      `    ${field}: process.env.TOKEN_MONITOR_SECRET || '',`,
+      `    ${field}: IS_AIGOODBRO_EMBEDDED ? '' : process.env.TOKEN_MONITOR_SECRET || '',`,
+      `embedded Cloud ${field} defaults require saved credentials`);
+  }
+  text = replaceOne(text,
+    '    hubSyncSessionTitles: parseBoolean(process.env.TOKEN_MONITOR_SYNC_SESSION_TITLES, false),',
+    '    hubSyncSessionTitles: IS_AIGOODBRO_EMBEDDED ? false : parseBoolean(process.env.TOKEN_MONITOR_SYNC_SESSION_TITLES, false),',
+    'embedded title sync defaults require saved settings');
+  text = replaceOne(text,
     'function stopLocalCollector(options = {}) {',
     `let aigoodbroPendingLimits = null;
 function stopLocalCollector(options = {}) {
   aigoodbroPendingLimits = null;
+  resetAiGoodBroTokenRate();
+  aigoodbroTokenRateSnapshot();
   if (IS_AIGOODBRO_EMBEDDED) {
     sendMainWindowEvent('stats:push', { event: 'aigoodbro:limits', data: { limits: null } },
       () => aigoodbroPendingLimits === null);
@@ -276,11 +442,16 @@ async function switchCodexSystemAccount(id) {`,
         const stats = electronPresentationStats(latestStats || localStats);
         return stats?.aigoodbroUsagePending === true ? null : stats?.periods?.allTime;
       },
+      getTokenRate: () => aigoodbroTokenRateSnapshot(),
       quit: () => requestAppQuit()
     });
   }
 });`,
     'main host route binding');
+  text = replaceOne(text,
+    'function pushSettingsToRenderer() {\n  const payload = settingsForRenderer();',
+    'function pushSettingsToRenderer() {\n  aigoodbroTokenRateSnapshot();\n  const payload = settingsForRenderer();',
+    'rate framing and source changes publish from the same cache');
   text = replaceOne(text,
     "  ipcMain.handle('settings:get', () => settingsForRenderer());",
     `  ipcMain.handle('aigoodbro:openHost', async (event, action) => {
@@ -347,7 +518,7 @@ function patchUpdater(source) {
 function patchPreload(source) {
   let text = replaceOne(source,
     "  getSettings: () => ipcRenderer.invoke('settings:get'),",
-    "  openAiGoodBroHost: (action) => ipcRenderer.invoke('aigoodbro:openHost', action),\n  getSettings: () => ipcRenderer.invoke('settings:get'),",
+    "  embeddedHost: process.env.AIGOODBRO_TOKEN_MONITOR_EMBEDDED === '1',\n  openAiGoodBroHost: (action) => ipcRenderer.invoke('aigoodbro:openHost', action),\n  getSettings: () => ipcRenderer.invoke('settings:get'),",
     'private native workspace action');
   return replaceOne(text,
     "  onOpenSettings: (callback) => {\n    const listener = () => { try { callback(); } catch (_) {} };",
@@ -394,19 +565,6 @@ function patchI18n(source) {
     const original = sourceLabels[reportLabels.indexOf(label)];
     text = replaceOne(text, `'settings.about.reportIssue': '${original}'`,
       `'settings.about.reportIssue': ${JSON.stringify(label)}`, 'AiGoodBro issues and feedback label');
-  }
-  const detailErrors = [
-    ['Transcript not found on this machine.', 'Could not read the transcript. Please try again.', 'A transcript entry exceeds the 16 MiB limit. Session details cannot be loaded.'],
-    ['在這台機器上找不到對話紀錄。', '無法讀取對話紀錄，請重試。', '對話紀錄中的單筆資料超過 16 MiB 上限，無法載入會話明細。'],
-    ['在这台机器上找不到对话记录。', '无法读取对话记录，请重试。', '对话记录中的单条数据超过 16 MiB 上限，无法加载会话明细。'],
-    ['이 기기에서 대화 기록을 찾을 수 없습니다.', '대화 기록을 읽을 수 없습니다. 다시 시도해 주세요.', '대화 기록의 단일 항목이 16 MiB 제한을 초과하여 세션 세부 정보를 불러올 수 없습니다.'],
-    ['このマシンで会話記録が見つかりません。', '会話記録を読み取れませんでした。もう一度お試しください。', '会話記録の単一項目が 16 MiB の上限を超えているため、セッションの詳細を読み込めません。']
-  ];
-  for (const [missing, failed, tooLarge] of detailErrors) {
-    const anchor = `'detailNotFound': '${missing}',`;
-    text = replaceOne(text, anchor,
-      `${anchor}\n      'detailReadFailed': ${JSON.stringify(failed)},\n      'detailRecordTooLarge': ${JSON.stringify(tooLarge)},`,
-      'localized session detail read errors');
   }
   return text;
 }
@@ -460,17 +618,66 @@ function patchApp(source) {
     "const TOKEN_MONITOR_REPOSITORY_URL = 'https://github.com/BLACKIELF/AgentHub-AiGoodBro';\nconst TOKEN_MONITOR_ISSUES_URL = `${TOKEN_MONITOR_REPOSITORY_URL}/issues`;\nconst TOKEN_MONITOR_WEBSITE_URL = 'https://aigoodbro.com/';\nconst TOKEN_MONITOR_WSL_SQLITE_GUIDE_URL = `${TOKEN_MONITOR_REPOSITORY_URL}/blob/main/docs/usage-guide.md`;",
     'AiGoodBro product links');
   text = replaceOne(text,
-    "  if (error || (detail && detail.found === false)) { container.append(detailNote(t('detailNotFound') || 'Transcript not found on this machine.')); return; }",
-    `  if (error || detail?.error) {
-    container.append(detailNote(t(detail?.error === 'line-too-large' ? 'detailRecordTooLarge' : 'detailReadFailed')));
+    'function currentTokenRateValue() {',
+    `const isAiGoodBroSharedTokenRate = window.tokenMonitor.embeddedHost === true;
+function aigoodbroRendererTokenRate() {
+  const sample = state.aigoodbroTokenRate;
+  return sample ? { ...sample, burn: sample.burnPerMinute, speed: sample.speedPerSecond } : null;
+}
+function receiveAiGoodBroTokenRate(sample) {
+  const next = sample || null;
+  if (state.stats) state.stats.aigoodbroTokenRate = next;
+  if (JSON.stringify(state.aigoodbroTokenRate || null) === JSON.stringify(next)) return;
+  state.aigoodbroTokenRate = next;
+  renderTokenRate();
+}
+function currentTokenRateValue() {
+  if (isAiGoodBroSharedTokenRate) {
+    const sample = aigoodbroRendererTokenRate();
+    const burn = (sample?.mode || state.settings?.tokenRateMode) !== 'speed';
+    return { burn, mode: burn ? 'burn' : 'speed', rate: sample ? (burn ? sample.burn : sample.speed) : null };
+  }`,
+    'title rate reads the shared live sample instead of a period average');
+  text = replaceOne(text,
+    "  canStart: () => els.shell?.classList.contains('title-icon-only') || els.shell?.classList.contains('title-collapsed'),",
+    "  canStart: () => !isAiGoodBroSharedTokenRate && (els.shell?.classList.contains('title-icon-only') || els.shell?.classList.contains('title-collapsed')),",
+    'embedded title hold cannot boost real consumption');
+  text = replaceOne(text,
+    'function observeLiveTokenRate(stats) {\n  if (state.settings?.showLiveTokenRate !== true) return;',
+    `function observeLiveTokenRate(stats) {
+  if (isAiGoodBroSharedTokenRate) {
+    receiveAiGoodBroTokenRate(stats?.aigoodbroTokenRate);
     return;
   }
-  if (detail && detail.found === false) { container.append(detailNote(t('detailNotFound') || 'Transcript not found on this machine.')); return; }`,
-    'session detail errors remain distinct from missing transcript');
+  if (state.settings?.showLiveTokenRate !== true) return;`,
+    'embedded footer does not create an independent tracker or timer');
+  text = replaceOne(text,
+    "  const burn = state.settings?.tokenRateMode === 'burn';\n  const sample = liveTokenRateTracker.getSample();",
+    `  const sample = isAiGoodBroSharedTokenRate ? aigoodbroRendererTokenRate() : liveTokenRateTracker.getSample();
+  const burn = isAiGoodBroSharedTokenRate ? (sample?.mode || state.settings?.tokenRateMode) !== 'speed'
+    : state.settings?.tokenRateMode === 'burn';`,
+    'footer framing uses the same published DTO as the title and native host');
+  text = replaceOne(text,
+    "  const value = rate === null ? '—' : formatLiveTokenRate(rate);",
+    "  const value = isAiGoodBroSharedTokenRate ? sample?.formattedValue || '—' : rate === null ? '—' : formatLiveTokenRate(rate);",
+    'footer uses the one upstream-formatted presentation value');
+  text = replaceOne(text,
+    'function tokenRateText(rate, burn) {',
+    `function tokenRateText(rate, burn) {
+  if (isAiGoodBroSharedTokenRate) return (state.aigoodbroTokenRate?.formattedValue || '—') + (burn ? ' TPM' : ' tok/s');`,
+    'shared rate labels keep real zero and unknown distinct');
+  text = replaceOne(text,
+    '    const boost = tokenRateBoost.getSnapshot();',
+    '    const boost = isAiGoodBroSharedTokenRate ? null : tokenRateBoost.getSnapshot();',
+    'embedded title always shows the cached measurement');
   text = replaceOne(text,
     "window.tokenMonitor.onStatsPush?.((payload) => {\n  if (!payload) return;",
     `window.tokenMonitor.onStatsPush?.((payload) => {
   if (!payload) return;
+  if (payload.event === 'aigoodbro:tokenRate') {
+    if (isAiGoodBroSharedTokenRate) receiveAiGoodBroTokenRate(payload.data?.tokenRate);
+    return;
+  }
   if (payload.event === 'aigoodbro:limits') {
     state.aigoodbroLimits = payload.data?.limits || null;
     state.limitPanelRenderSignature = '';
@@ -480,7 +687,7 @@ function patchApp(source) {
   if (payload.data?.stats && payload.data.stats.aigoodbroUsagePending !== true) state.aigoodbroLimits = null;`,
     'quota-only presentation never seeds usage with zero');
   text = replaceOne(text,
-    "  if (!state.stats) return;\n  els.toolDetailFooter.classList.add('hidden');",
+    "  if (!state.stats) return;\n  allTimeSessions.ensure();",
     `  if (!state.stats || state.stats.aigoodbroUsagePending === true) {
     renderViewSwitcher();
     els.totalTokens.textContent = '—';
@@ -505,7 +712,7 @@ function patchApp(source) {
     signalContentReady();
     return;
   }
-  els.toolDetailFooter.classList.add('hidden');`,
+  allTimeSessions.ensure();`,
     'cold quota view preserves unknown usage and selected navigation');
   text = replaceOne(text,
     '  if (contentReadySignaled || !state.settings || !state.stats) return;',
@@ -526,8 +733,8 @@ function patchApp(source) {
   if (contentReadySignaled || !state.settings || (usagePending && !quotaContentVisible)) return;`,
     'content ready requires visible quota content or real usage');
   text = replaceOne(text,
-    '    state.stats = nextStats;',
-    '    if (nextStats?.aigoodbroUsagePending !== true) state.aigoodbroLimits = null;\n    state.stats = nextStats;',
+    '    state.stats = sessionStatsForDisplay(allTimeSessions.attach(nextStats));',
+    '    if (nextStats?.aigoodbroUsagePending !== true) state.aigoodbroLimits = null;\n    state.stats = sessionStatsForDisplay(allTimeSessions.attach(nextStats));',
     'real pulled history supersedes quota-only presentation');
   text = replaceOne(text,
     'providers: (state.stats?.limits?.providers || []).map((provider) => ({',
@@ -589,7 +796,7 @@ function renderFloatingBubbleContent() {`,
     'bubble brand renderer');
   text = replaceOne(text,
     '  i18n.applyTranslations(document, currentLocale());\n  setThirdPartyAdapterFields();',
-    "  i18n.applyTranslations(document, currentLocale());\n  const embeddedEngineVersion = document.getElementById('aboutEngineVersion');\n  if (embeddedEngineVersion) embeddedEngineVersion.textContent = t('settings.about.embeddedEngine', { version: state.appInfo?.version || '0.62.0' });\n  setThirdPartyAdapterFields();",
+    "  i18n.applyTranslations(document, currentLocale());\n  const embeddedEngineVersion = document.getElementById('aboutEngineVersion');\n  if (embeddedEngineVersion) embeddedEngineVersion.textContent = t('settings.about.embeddedEngine', { version: state.appInfo?.version || '0.68.0' });\n  setThirdPartyAdapterFields();",
     'localize embedded engine version after language changes');
   text = replaceOne(text,
     "      input.checked = account.enabled !== false;\n      input.setAttribute('aria-label', t('settings.codex.toggleAccount', {",
@@ -625,7 +832,7 @@ function renderFloatingBubbleContent() {`,
     'custom tray text fallback');
   text = replaceOne(text,
     "  if (els.aboutVersion) els.aboutVersion.textContent = state.appInfo?.version ? `v${state.appInfo.version}` : '—';",
-    "  if (els.aboutVersion) els.aboutVersion.textContent = 'v2.0';\n  const embeddedEngineVersion = document.getElementById('aboutEngineVersion');\n  if (embeddedEngineVersion) embeddedEngineVersion.textContent = t('settings.about.embeddedEngine', { version: state.appInfo?.version || '0.62.0' });",
+    "  if (els.aboutVersion) els.aboutVersion.textContent = 'v2.3';\n  const embeddedEngineVersion = document.getElementById('aboutEngineVersion');\n  if (embeddedEngineVersion) embeddedEngineVersion.textContent = t('settings.about.embeddedEngine', { version: state.appInfo?.version || '0.68.0' });",
     'public version and bundled engine version');
   return text;
 }
@@ -736,47 +943,81 @@ function patchDeviceRuntime(source) {
 }
 
 function patchCollector(source) {
-  let text = replaceOne(source, '  let debounceTimer = null;',
-    '  let debounceTimer = null;\n  let aigoodbroWatchBatchStartedAt = null;', 'watch batching clock');
+  // v0.68 supplies monotonic bounded debounce and child-process watching.
+  // Preserve AGB's additional idle interval after expensive scans, without
+  // replacing the new upstream deadline, targeted queues or termination gate.
+  let text = replaceOne(source,
+    'async function collectUsageOnce(options) {',
+    `async function collectUsageOnce(options) {
+  if (process.env.AIGOODBRO_TOKEN_MONITOR_EMBEDDED === '1') {
+    options = { ...options, codexLocalUsageEnabled: false, codexDotsEnabled: false, codexDotsVisible: false };
+  }`,
+    'embedded one-shot Dots capability remains closed');
   text = replaceOne(text,
-    '    recordWatchClients(eventClients);\n    if (debounceTimer) clearTimeout(debounceTimer);',
-    `    recordWatchClients(eventClients);
-    const now = Date.now();
-    if (aigoodbroWatchBatchStartedAt === null) aigoodbroWatchBatchStartedAt = now;
-    // Bounded trailing debounce prevents starvation during continuous writes.
-    // Slow scans get idle time too; manual/history refresh paths are unchanged.
-    const batchDeadline = Math.min(now + watchDebounceMs, aigoodbroWatchBatchStartedAt + 10000);
+    'function startCollector(options) {',
+    `function startCollector(options) {
+  if (process.env.AIGOODBRO_TOKEN_MONITOR_EMBEDDED === '1') {
+    options = { ...options, codexLocalUsageEnabled: false, codexDotsEnabled: false, codexDotsVisible: false };
+  }`,
+    'embedded live Dots capability remains closed');
+  text = replaceOne(text,
+    '    const delayMs = watchDeadlineAt === 0',
+    '    const debounceDelayMs = watchDeadlineAt === 0',
+    'retain upstream bounded debounce');
+  text = replaceOne(text,
+    '      : Math.max(1, Math.min(watchDebounceMs, watchDeadlineAt - nowMs));',
+    `      : Math.max(1, Math.min(watchDebounceMs, watchDeadlineAt - nowMs));
     const restUntil = Math.max(lastTickSuccessAt, lastTickFailureAt) + Math.min(lastTickDurationMs || 0, 30000);
-    const watchDelay = Math.max(1, batchDeadline - now, restUntil - now);
-    if (debounceTimer) clearTimeout(debounceTimer);`,
-    'bounded scan backpressure');
-  text = replaceOne(text,
+    const delayMs = Math.max(debounceDelayMs, restUntil - Date.now());`,
+    'idle interval after expensive scans');
+  return replaceOne(text,
     `      // There is deliberately no cooldown on top of the debounce: the product
       // promises 3–5 s updates, and a cooldown would break that promise.
       if (tickInFlight) { scheduleTick(reason); return; }`,
-    `      if (tickInFlight) {
-        // Do not spin at 1 ms after the max-wait deadline while a scan runs.
-        debounceTimer = setTimeout(() => { debounceTimer = null; scheduleTick(reason); }, watchDebounceMs);
-        return;
-      }
-      // The active scan may have finished after this timer was armed.
+    `      if (tickInFlight) { scheduleTick(reason); return; }
+      // An independent refresh may have completed after this timer was armed.
       if (Date.now() < Math.max(lastTickSuccessAt, lastTickFailureAt) + Math.min(lastTickDurationMs || 0, 30000)) {
         scheduleTick(reason);
         return;
-      }
-      aigoodbroWatchBatchStartedAt = null;`,
+      }`,
     'preserve pending events until the scan can run');
-  return replaceOne(text, '    }, watchDebounceMs);\n  }\n\n  // chokidar',
-    '    }, watchDelay);\n  }\n\n  // chokidar', 'adaptive watch delay');
+}
+
+function patchSessionMalformedRecords(source) {
+  let text = source;
+  for (const parser of ['parseClaudeTranscriptLines', 'parseCodexTranscriptData']) {
+    const start = text.indexOf(`function ${parser}(`);
+    const end = text.indexOf('\nfunction ', start + 1);
+    if (start < 0 || end < 0) throw new Error(`${parser}: expected a bounded parser body`);
+    const body = replaceOne(text.slice(start, end),
+      '    try { obj = JSON.parse(trimmed); } catch (_) { continue; }',
+      '    try { obj = JSON.parse(trimmed); } catch (_) { continue; }\n    if (!obj || typeof obj !== \'object\') continue;',
+      `${parser} retained malformed record guard`);
+    text = text.slice(0, start) + body + text.slice(end);
+  }
+  return text;
+}
+
+function patchEmbeddedSelfSync(source, provider) {
+  const title = provider === 'cursor' ? 'Cursor' : 'Antigravity';
+  const signature = provider === 'cursor' ? '{ selfSyncThrottle }' : '{ selfSyncThrottle, tokscaleCommand }';
+  return replaceOne(source,
+    `function create${title}SelfSync(${signature}) {`,
+    `function create${title}SelfSync(${signature}) {
+  // Embedded collection shares the native host's closed self-sync policy.
+  // Preserve the upstream implementation for an independently launched app.
+  if (process.env.AIGOODBRO_TOKEN_MONITOR_EMBEDDED === '1') {
+    return { async maybeSync${title}() {} };
+  }`,
+    `${provider} embedded automatic self-sync capability remains closed`);
 }
 
 const TRANSFORMS = Object.freeze({
-  ...exportPrivacy.TRANSFORMS,
-  ...watcherProcess.TRANSFORMS,
-  'src/shared/sessionDetail.js': sessionDetail.patchSessionDetail,
-  'src/shared/sessionDetailResolver.js': sessionDetail.patchSessionDetailResolver,
   'src/shared/collector.js': patchCollector,
-  'src/shared/deviceRuntime.js': patchDeviceRuntime,
+  'src/shared/usage/deviceRuntime.js': patchDeviceRuntime,
+  'src/shared/sessionDetail.js': patchSessionMalformedRecords,
+  'src/shared/providers/cursor/selfSync.js': (source) => patchEmbeddedSelfSync(source, 'cursor'),
+  'src/shared/providers/antigravity/selfSync.js': (source) => patchEmbeddedSelfSync(source, 'antigravity'),
   'src/electron/main.js': patchMain,
   'src/electron/edgeDock/controller.js': patchEdgeDockController,
   'src/electron/discordRpc.js': patchDiscordRpc,
@@ -820,4 +1061,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { transformStage, replaceOne, INPUT_SHA256 };
+module.exports = { transformStage, replaceOne, INPUT_SHA256, patchSessionMalformedRecords };

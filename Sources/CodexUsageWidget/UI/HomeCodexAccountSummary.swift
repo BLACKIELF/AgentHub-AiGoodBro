@@ -50,7 +50,7 @@ struct HomeCodexAccountSummary: View {
                 card
             } else {
                 ViewThatFits(in: .horizontal) {
-                    wideRow.frame(minWidth: 640)
+                    wideRow.frame(minWidth: 620, idealWidth: 620, maxWidth: .infinity)
                     narrowRow
                 }
             }
@@ -103,12 +103,15 @@ struct HomeCodexAccountSummary: View {
         }
     }
 
-    private var quotas: some View {
+    private var quotas: some View { quotaWindows(horizontalDetails: true) }
+
+    private func quotaWindows(horizontalDetails: Bool) -> some View {
         HStack(alignment: .top, spacing: 10) {
             quotaWindow(
                 language.text("5h", "5h"), remaining: fiveHourRemaining, reset: fiveHourReset,
-                constrainedByWeekly: QuotaAvailabilityPresentation.isWeeklyExhausted(sevenDayRemaining))
-            quotaWindow(language.text("7d", "7d"), remaining: sevenDayRemaining, reset: sevenDayReset, paletteRole: .secondary)
+                constrainedByWeekly: QuotaAvailabilityPresentation.isWeeklyExhausted(sevenDayRemaining),
+                horizontalDetails: horizontalDetails)
+            quotaWindow(language.text("7d", "7d"), remaining: sevenDayRemaining, reset: sevenDayReset, paletteRole: .secondary, horizontalDetails: horizontalDetails)
         }
     }
 
@@ -130,17 +133,21 @@ struct HomeCodexAccountSummary: View {
     }
 
     private var wideRow: some View {
-        HStack(alignment: .center, spacing: 14) {
-            VStack(alignment: .leading, spacing: 3) {
-                identity
-                balanceSummary
-                resetExpiryNotice
-            }
-            .frame(minWidth: 300, maxWidth: .infinity, alignment: .leading)
-            VStack(alignment: .leading, spacing: 3) {
-                quotas
-                quotaFreshness
-            }.frame(minWidth: 320, maxWidth: 360)
+        HStack(alignment: .top, spacing: 10) {
+            rowAccountFacts
+                .frame(minWidth: 220, maxWidth: 300, alignment: .leading)
+            quotas.frame(width: 260, alignment: .leading)
+            Spacer(minLength: 0)
+            rowActions
+        }
+    }
+
+    private var rowAccountFacts: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            accountIdentity(includesActions: false, includesInvite: false)
+            balanceSummary
+            resetExpiryNotice
+            quotaFreshness
         }
     }
 
@@ -245,14 +252,24 @@ struct HomeCodexAccountSummary: View {
     }
 
     private var narrowRow: some View {
-        card
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .top, spacing: 10) {
+                rowAccountFacts
+                rowActions
+            }
+            quotas
+        }
     }
 
-    private var identity: some View {
+    private var identity: some View { accountIdentity(includesActions: true) }
+
+    private func accountIdentity(includesActions: Bool, includesInvite: Bool = true) -> some View {
         HStack(spacing: 6) {
             Text(String(format: "%02d", displayNumber))
                 .font(.system(size: 11, weight: .medium).monospacedDigit())
                 .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
             StoredCodexAvatar(profile: profile, slot: .compactRow)
             Text(AccountDisplay.profileName(profile, allProfiles: allProfiles))
                 .font(.system(size: 12, weight: .semibold))
@@ -265,11 +282,9 @@ struct HomeCodexAccountSummary: View {
             )
             .fixedSize()
             .disabled(!allowsResetCreditAction)
-            CodexInviteButton(
-                accountLabel: String(format: "%02d · ", displayNumber) + AccountDisplay.profileName(profile, allProfiles: allProfiles),
-                resolveAccount: referralAccount
-            )
-            .fixedSize()
+            if includesInvite {
+                inviteButton(iconOnly: false)
+            }
             if loginEligibility != .loggedIn {
                 HomeCodexLoginStatusIndicator(
                     eligibility: loginEligibility,
@@ -283,7 +298,9 @@ struct HomeCodexAccountSummary: View {
                     .accessibilityLabel(language.text("显示上次额度快照", "Showing last usage snapshot"))
             }
             Spacer(minLength: 0)
-            if layout == .cards { moreActions } else { headerActions }
+            if includesActions {
+                if layout == .cards { moreActions } else { headerActions }
+            }
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel(
@@ -381,14 +398,33 @@ struct HomeCodexAccountSummary: View {
 
     private func quotaWindow(
         _ title: String, remaining: Double?, reset: Date?, constrainedByWeekly: Bool = false,
-        paletteRole: QuotaPaletteRole = .primary
+        paletteRole: QuotaPaletteRole = .primary, horizontalDetails: Bool = true
     ) -> some View {
         CompactQuotaView(
             title: title, remaining: remaining, reset: reset, paletteRole: paletteRole,
-            constrainedByWeekly: constrainedByWeekly, horizontalDetails: true,
+            constrainedByWeekly: constrainedByWeekly, horizontalDetails: horizontalDetails,
             isWeeklyOnlyPro: title == "5h" && QuotaAvailabilityPresentation.weeklyOnlyPro(profile, now: previewDate ?? currentDate)
         )
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func inviteButton(iconOnly: Bool) -> some View {
+        CodexInviteButton(
+            accountLabel: String(format: "%02d · ", displayNumber) + AccountDisplay.profileName(profile, allProfiles: allProfiles),
+            resolveAccount: referralAccount, iconOnly: iconOnly
+        )
+        .fixedSize()
+    }
+
+    private var rowActions: some View {
+        VStack(alignment: .trailing, spacing: 2) {
+            frequentActions
+            HStack(spacing: 2) {
+                inviteButton(iconOnly: true)
+                moreActions
+            }
+        }
+        .fixedSize()
     }
 
     private var headerActions: some View {

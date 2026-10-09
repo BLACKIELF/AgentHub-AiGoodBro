@@ -5,10 +5,10 @@ import Foundation
     import FoundationNetworking
 #endif
 
-enum DispatchParticipationSync {
-    static func readBoundedRegularFile(_ url: URL, maximumBytes: Int, allowMissing: Bool) throws -> Data? {
-        fatalError("production filesystem access is not used by this synthetic fixture")
-    }
+// Only the app language dependency is synthetic; the compiled filesystem helpers are real.
+struct WidgetLanguage {
+    static func storedOrAutomatic() -> Self { Self() }
+    func text(_ chinese: String, _ english: String) -> String { english }
 }
 
 private actor Transport: LocalCLIQuotaTransport {

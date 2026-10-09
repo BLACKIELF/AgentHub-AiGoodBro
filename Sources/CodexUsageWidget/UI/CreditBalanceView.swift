@@ -3,6 +3,7 @@ import SwiftUI
 struct CreditBalanceView: View {
     let presentation: CreditBalancePresentation
     var compact = false
+    var title: String? = nil
     @Environment(\.widgetLanguage) private var language
     @State private var showingDetails = false
 
@@ -12,7 +13,7 @@ struct CreditBalanceView: View {
                 Button {
                     showingDetails.toggle()
                 } label: {
-                    Text(language.text("点数 ", "Credits ") + creditText)
+                    Text((title ?? language.text("点数", "Credits")) + " " + creditText)
                         .monospacedDigit().lineLimit(1)
                         .foregroundStyle(.secondary)
                         .contentShape(Rectangle())
@@ -30,7 +31,7 @@ struct CreditBalanceView: View {
 
     private var fullLabel: some View {
         HStack(spacing: 6) {
-            Text(language.text("点数 ", "Credits ") + creditText)
+            Text((title ?? language.text("点数", "Credits")) + " " + creditText)
                 .fontWeight(.semibold)
                 .foregroundStyle(.secondary)
                 .monospacedDigit()

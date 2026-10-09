@@ -65,7 +65,7 @@ def run(helper=None):
         domain=(ROOT/'Sources/CodexUsageWidget/Domain/LocalProxyQueue.swift').read_text()
         # Compile only the shared IPC DTOs. UI rows and quota admission have
         # native application dependencies and are covered by host fixtures.
-        domain='import Foundation\n'+domain[domain.index('enum LocalProxyFailure:'):domain.index('enum LocalProxyAdmission {')]
+        domain='import Foundation\n'+domain[domain.index('enum LocalProxyFailure:'):domain.index('enum LocalProxyRouting {')]
         (folder/'Bridge.swift').write_text(bridge_source)
         (folder/'Domain.swift').write_text(domain)
         subprocess.run(['xcrun','swiftc','-swift-version','5','-parse-as-library',str(folder/'Bridge.swift'),str(folder/'Domain.swift'),str(MODULE/'fixtures/BridgeFixture.swift'),'-o',str(folder/'bridge')],check=True)

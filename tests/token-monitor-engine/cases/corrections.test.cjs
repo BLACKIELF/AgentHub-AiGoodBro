@@ -181,22 +181,20 @@ test('additional-only original Codex windows remain payload data but cannot cert
   } finally { f.cleanup(home); }
 });
 
-test('original locally parsed Proma reads each explicit userHome instead of its module-load home', async () => {
+test('pinned fork parses Proma from each explicit userHome without module-load home leakage', async () => {
   const home = f.makeHome();
   try {
     const sources = [];
     for (const [id, tokens] of [['a', 4], ['b', 9]]) {
       const root = path.join(home, id);
       const logs = path.join(root, '.proma/agent-sessions'); fs.mkdirSync(logs, { recursive: true });
-      fs.writeFileSync(path.join(logs, 'synthetic.jsonl'), JSON.stringify({ type: 'assistant', timestamp: '2026-09-13T00:00:00Z',
+      fs.writeFileSync(path.join(logs, 'synthetic.jsonl'), JSON.stringify({ type: 'assistant', _createdAt: '2026-09-13T00:00:00Z',
         message: { id: 'synthetic-message', model: 'public/model@route', usage: { input_tokens: tokens, output_tokens: 0 } } }) + '\n');
       sources.push(f.source({ id, providerId: 'proma', canonicalPath: root, pathRole: 'userHome' }));
     }
-    const result = await handleRequest(f.baseRequest(home, { sources }), {
-      runTokscale: () => { throw Error('native-run-forbidden'); },
-      runGraph: () => { throw Error('native-graph-forbidden'); }
-    });
-    assert.equal(result.payload.aggregate.today.totalTokens, 13);
+    const result = await handleRequest(f.baseRequest(home, { sources }));
+    assert.equal(result.payload.aggregate.allTime.totalTokens, 13);
+    assert.deepEqual(result.payload.usage.targets.map(target => target.allTime.totalTokens), [4, 9]);
     assert.equal(result.payload.history.daily[0].tokens, 13);
     assert.equal(result.coverage.days[0].status, 'known');
   } finally { f.cleanup(home); }

@@ -5,6 +5,7 @@ const { civilDate } = require('./coverage.cjs');
 const { isCredentialEndpoint } = require('./upstream/credential-endpoints.cjs');
 const custom = require('./custom.cjs');
 const { withTarget, scopedEnvironment } = require('./runtime/source-scope.cjs');
+const { readTokscalePricingCatalog } = require('./upstream/pricing-catalog.cjs');
 
 // Orchestration over the original upstream entry points.
 //
@@ -152,6 +153,11 @@ function usageOptionsFor(target, request, deps, scope, todayKey) {
     historyEnabled: false,
     wslScanEnabled: false,
     projectsEnabled: true,
+    // Dots collection and presentation remain explicit desktop opt-ins. This
+    // closed engine request contract never starts a local Codex executor.
+    codexLocalUsageEnabled: false,
+    codexDotsEnabled: false,
+    codexDotsVisible: false,
     lookupModelPricing: buildPriceLookup(request, deps),
     logger: () => {},
     runTokscale: deps.runTokscale,
@@ -208,7 +214,7 @@ async function collectUsagePerTarget(up, targets, request, deps, scope, todayKey
         // A cached upstream price is evidence; permission to fetch is not.
         target.evidence.pricedModels = new Set(Object.keys(result.allTime?.models || {}).filter(model =>
           (() => {
-            const pricing = up.collector.readTokscalePricingCatalog(model, { env: scoped.env, homeDir: scoped.homeDir });
+            const pricing = readTokscalePricingCatalog(model, { env: scoped.env, homeDir: scoped.homeDir });
             return ['inputCostPerToken', 'outputCostPerToken', 'cacheReadInputTokenCost', 'cacheCreationInputTokenCost']
               .every(field => Number.isFinite(pricing?.[field]) && pricing[field] >= 0);
           })()));
@@ -236,8 +242,7 @@ async function collectHistoryPerTarget(up, targets, request, deps, scope, todayK
       const targetGraphs = [];
       const history = await withTarget(target, request.timezone, scoped => up.collector.collectHistoryOnce({
         ...scoped,
-        clients: target.providerIds[0] === 'proma' ? '' : target.providerIds.join(','),
-        ...(target.providerIds[0] === 'proma' ? { promaGraph: up.proma.buildPromaHistoryGraph({ rows: up.proma.collectPromaRows() }) } : {}),
+        clients: target.providerIds.join(','),
         runGraph: async input => {
           const graph = await (deps.runGraph || up.collector.bridgeRunGraph)({ ...input, ...scoped });
           targetGraphs.push(graph);
@@ -267,8 +272,7 @@ async function collectHistoryPerTarget(up, targets, request, deps, scope, todayK
   }
   const history = histories.length === 0 ? null : histories.length === 1
     ? histories[0] : up.history.mergeHistories(histories, { todayKey });
-  const incomplete = targets.some(target => !target.evidence.historySucceeded
-    || target.providerIds.includes('proma'));
+  const incomplete = targets.some(target => !target.evidence.historySucceeded);
   return { history, costEstimates: mergeGraphCostEvidence(costGraphs, history, incomplete) };
 }
 

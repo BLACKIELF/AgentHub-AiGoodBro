@@ -18,7 +18,8 @@ enum CCSwitchClaudeRelay {
         let data = try BoundedLocalProcess.run(
             executable: URL(fileURLWithPath: "/usr/bin/sqlite3"),
             arguments: [
-                "-readonly", "-json", database.path,
+                // Background reads must not execute a user's sqlite3 init commands.
+                "-init", "/dev/null", "-readonly", "-json", database.path,
                 "PRAGMA query_only=ON; SELECT settings_config, meta FROM providers WHERE app_type='claude' AND is_current=1 LIMIT 2;",
             ],
             timeout: 3)

@@ -5,6 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
+const { createDeviceState } = require('../../src/shared/usage/deviceState');
 const { installInProcessWatchHost } = require('../helpers/watchHost');
 
 installInProcessWatchHost(test);
@@ -81,6 +82,69 @@ test('collectHistoryOnce returns null when the graph run throws', async () => {
   assert.deepEqual(statuses.map(({ failureCode, successAt }) => ({ failureCode, successAt })), [
     { failureCode: 'history-graph-failed', successAt: null }
   ]);
+});
+
+test('native graph failure with Dots usage preserves the previous complete device history', async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dots-history-failure-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const now = new Date(2026, 5, 7, 12);
+  const common = {
+    clients: 'claude,codex', deviceId: 'dots-history-failure', allTimeSince: '2026-01-01', now,
+    homeDir: dir, env: { TOKEN_MONITOR_SHARED_DIR: dir, CODEX_HOME: path.join(dir, '.codex') },
+    projectsEnabled: false, limitsEnabled: false, wslScanEnabled: false,
+    historyEnabled: true, includeHistory: true, deferLiveHistoryCapture: true,
+    runTokscale: async () => ({ entries: [] }),
+    codexLocalUsageStore: { rows: () => [{
+      threadId: 'dots-history-failure-thread', model: 'unknown', observedAt: now.toISOString(),
+      usage: { input: 10, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0, total: 10 }
+    }] }
+  };
+  const first = await collectUsageOnce({ ...common, runGraph: async () => SAMPLE_GRAPH });
+  assert.equal(first.history.summary.totalTokens, 40);
+  assert.equal(first.history.daily[0].perClient.claude.tokens, 30);
+  assert.equal(first.history.daily[0].perClient.codex.tokens, 10);
+  const state = createDeviceState();
+  state.updateUsage(first);
+  const corruptArchive = path.join(dir, 'corrupt-history.json');
+  fs.writeFileSync(corruptArchive, 'invalid json');
+  for (const archive of [
+    { dailyHistoryArchiveEnabled: false },
+    { dailyHistoryArchiveEnabled: true, dailyHistoryArchiveOptions: { path: path.join(dir, 'missing-history.json') } },
+    { dailyHistoryArchiveEnabled: true, dailyHistoryArchiveOptions: { path: corruptArchive } }
+  ]) {
+    const status = [];
+    const failed = await collectUsageOnce({
+      ...common, ...archive, onHistoryStatus: (value) => status.push(value),
+      runGraph: async () => { throw new Error('temporary graph failure'); }
+    });
+    assert.equal(failed.today.totalTokens, 10, 'live Dots periods still update');
+    assert.equal(Object.hasOwn(failed, 'history'), false, 'partial history must not replace the complete snapshot');
+    assert.equal(status[0].successAt, null);
+    assert.equal(status[0].failureCode, 'history-graph-failed');
+    const record = state.updateUsage(failed);
+    assert.deepEqual(record.history, first.history);
+  }
+});
+
+test('Dots history still merges after a successful empty native scan or a graph failure with retained native history', async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dots-history-retained-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const options = {
+    clients: 'claude,codex', todayKey: '2026-06-07',
+    codexLocalGraph: { contributions: [{ date: '2026-06-07', clients: [{
+      client: 'codex', modelId: 'unknown', tokens: { input: 10 }, cost: 0, messages: 1
+    }] }] }
+  };
+  const emptyNative = await collectHistoryOnce({ ...options, runGraph: async () => ({ contributions: [] }) });
+  assert.equal(emptyNative.summary.totalTokens, 10);
+  const archiveOptions = { dailyHistoryArchiveEnabled: true, dailyHistoryArchiveOptions: { path: path.join(dir, 'history.json') } };
+  await collectHistoryOnce({ ...options, ...archiveOptions, runGraph: async () => SAMPLE_GRAPH });
+  const fallback = await collectHistoryOnce({
+    ...options, ...archiveOptions, runGraph: async () => { throw new Error('temporary graph failure'); }
+  });
+  assert.equal(fallback.summary.totalTokens, 40);
+  assert.equal(fallback.daily[0].perClient.claude.tokens, 30);
+  assert.equal(fallback.daily[0].perClient.codex.tokens, 10);
 });
 
 test('collector preserves the last successful history timestamp after a failed refresh', async () => {
@@ -446,6 +510,7 @@ test('startCollector retains a transformed watch total until the next history ti
 
   try {
     await waitForCondition(() => updates.length >= 1);
+    await runtime.whenIdle();
     await runtime.tick('watch', { todayOnly: true });
     await runtime.tick('manual', { forceHistory: true });
 
@@ -456,6 +521,91 @@ test('startCollector retains a transformed watch total until the next history ti
       Object.values(stored.liveDays[todayKey].observations).reduce((sum, item) => sum + item.tokens, 0),
       300
     );
+  } finally {
+    runtime.stop();
+  }
+});
+
+test('startCollector does not subtract a stale Dots view after the current read fails', async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'token-monitor-stale-dots-history-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const archivePath = path.join(dir, 'daily-history.json');
+  const now = new Date();
+  const todayKey = localTodayKey(now);
+  const env = {
+    CODEX_HOME: path.join(dir, '.codex'),
+    TOKEN_MONITOR_CODEX_LOCAL_USAGE: '0',
+    TOKEN_MONITOR_SHARED_DIR: dir
+  };
+  const localRow = {
+    threadId: 'local-dots-thread',
+    model: 'gpt-test',
+    observedAt: now.toISOString(),
+    cwd: path.join(dir, 'project'),
+    title: 'Local test task',
+    turnEnded: false,
+    contextTokens: 10,
+    contextWindow: 100,
+    usage: { input: 10, cacheRead: 0, cacheWrite: 0, output: 0, reasoning: 0, total: 10 }
+  };
+  let usageReads = 0;
+  let todayScans = 0;
+  const usageStore = {
+    rows() {
+      usageReads += 1;
+      if (usageReads === 2) throw new Error('temporary ledger read failure');
+      return [localRow];
+    }
+  };
+  const runtime = startCollector({
+    clients: 'codex',
+    env,
+    homeDir: dir,
+    pricingPath: path.join(dir, 'pricing.json'),
+    codexLocalUsageEnabled: true,
+    codexLocalUsageStore: usageStore,
+    allTimeSince: '2025-01-01',
+    now,
+    deviceId: 'stale-dots-history',
+    intervalMs: 60 * 60 * 1000,
+    historyIntervalMs: 15 * 60 * 1000,
+    watchEnabled: false,
+    watchTriggersCollection: false,
+    historyEnabled: true,
+    dailyHistoryArchiveEnabled: true,
+    dailyHistoryArchiveWriteEnabled: true,
+    dailyHistoryArchiveOptions: { path: archivePath, env },
+    projectsEnabled: false,
+    limitsEnabled: false,
+    wslScanEnabled: false,
+    anchorPersistenceEnabled: false,
+    runTokscale: async ({ flags }) => {
+      if (flags.includes('--today')) {
+        todayScans += 1;
+        const input = todayScans === 1 ? 100 : 200;
+        return { entries: [{ client: 'codex', sessionId: 'native-session', model: 'gpt-test', input, output: 0, messages: 1 }] };
+      }
+      return { entries: [] };
+    },
+    runGraph: async () => ({ contributions: [] })
+  });
+
+  const retainedTokens = () => {
+    const stored = JSON.parse(fs.readFileSync(archivePath, 'utf8'));
+    return Object.values(stored.liveDays[todayKey].observations)
+      .reduce((sum, item) => sum + item.tokens, 0);
+  };
+
+  try {
+    await waitForCondition(() => runtime.getDiagnostics().lastTickSuccessAt != null);
+    await runtime.whenIdle();
+    assert.equal(usageReads, 1);
+    assert.equal(retainedTokens(), 100);
+
+    await runtime.tick('manual', { forceHistory: true });
+
+    assert.equal(usageReads, 2);
+    assert.equal(retainedTokens(), 200);
   } finally {
     runtime.stop();
   }
@@ -525,35 +675,6 @@ test('collectHistoryOnce preserves a lazy archive ownership guard until write ti
   assert.equal(history.daily[0].tokens, 30);
 });
 
-test('collectHistoryOnce merges Proma history with tokscale graph history', async () => {
-  const promaGraph = {
-    contributions: [{ date: '2026-06-07', clients: [
-      { client: 'proma', modelId: 'gpt-5', tokens: { input: 5, output: 5 }, cost: 0, messages: 1 }
-    ] }]
-  };
-  const history = await collectHistoryOnce({
-    clients: 'claude', promaGraph, todayKey: '2026-06-07', runGraph: async () => SAMPLE_GRAPH
-  });
-  assert.equal(history.daily[0].tokens, 40);
-  assert.equal(history.daily[0].perClient.proma.tokens, 10);
-  assert.equal(history.daily[0].perModel['gpt-5'].tokens, 10);
-});
-
-test('collectHistoryOnce builds Proma-only history without starting tokscale graph', async () => {
-  let graphCalled = false;
-  const history = await collectHistoryOnce({
-    clients: '',
-    promaGraph: { contributions: [{ date: '2026-06-07', clients: [
-      { client: 'proma', modelId: 'gpt-5', tokens: { input: 8 }, cost: 0, messages: 1 }
-    ] }] },
-    todayKey: '2026-06-07',
-    runGraph: async () => { graphCalled = true; return SAMPLE_GRAPH; }
-  });
-  assert.equal(graphCalled, false);
-  assert.equal(history.summary.totalTokens, 8);
-  assert.equal(history.daily[0].perClient.proma.messages, 1);
-});
-
 test('collectHistoryOnce skips graph collection when history is disabled', async () => {
   let graphCalled = false;
   const history = await collectHistoryOnce({
@@ -588,35 +709,22 @@ test('collectUsageOnce omits history entirely on a non-history tick', async () =
   assert.equal(Object.hasOwn(summary, 'history'), false);
 });
 
-test('collectUsageOnce includes Proma history without starting tokscale graph', async () => {
-  const promaPath = require.resolve('../../src/shared/providers/proma/usage');
-  const collectorPath = require.resolve('../../src/shared/collector');
-  const promaUsage = require(promaPath);
-  const originalRows = promaUsage.collectPromaRows;
-  const originalPeriods = promaUsage.buildPromaPeriods;
-  const originalHistory = promaUsage.buildPromaHistoryGraph;
-  promaUsage.collectPromaRows = () => [{ model: 'gpt-5', input: 8, output: 0, cacheRead: 0, cacheWrite: 0, createdAt: Date.parse('2026-06-07T12:00:00.000Z') }];
-  promaUsage.buildPromaPeriods = () => ({ today: { entries: [] }, month: { entries: [] }, allTime: { entries: [] } });
-  promaUsage.buildPromaHistoryGraph = () => ({ contributions: [{ date: '2026-06-07', clients: [
-    { client: 'proma', modelId: 'gpt-5', tokens: { input: 8 }, cost: 0, messages: 1 }
-  ] }] });
-  delete require.cache[collectorPath];
-  try {
-    const { collectUsageOnce: collectPromaUsageOnce } = require(collectorPath);
-    const summary = await collectPromaUsageOnce({
-      clients: 'proma', allTimeSince: '2026-01-01', deviceId: 'proma-only',
-      includeHistory: true, limitsEnabled: false,
-      lookupModelPricing: async () => null,
-      runGraph: async () => { throw new Error('tokscale graph must not run for Proma-only tracking'); }
-    });
-    assert.equal(summary.history.summary.totalTokens, 8);
-    assert.equal(summary.history.daily[0].perClient.proma.messages, 1);
-  } finally {
-    promaUsage.collectPromaRows = originalRows;
-    promaUsage.buildPromaPeriods = originalPeriods;
-    promaUsage.buildPromaHistoryGraph = originalHistory;
-    delete require.cache[collectorPath];
-  }
+test('collectUsageOnce requests fork-only Proma history from tokscale graph', async () => {
+  const graphClients = [];
+  const summary = await collectUsageOnce({
+    clients: 'proma', allTimeSince: '2026-01-01', deviceId: 'proma-only',
+    includeHistory: true, limitsEnabled: false, projectsEnabled: false,
+    runTokscale: async () => ({ entries: [] }),
+    runGraph: async ({ clients }) => {
+      graphClients.push(clients);
+      return { contributions: [{ date: '2026-06-07', clients: [
+        { client: 'proma', modelId: 'gpt-5', tokens: { input: 8 }, cost: 0, messages: 1 }
+      ] }] };
+    }
+  });
+  assert.deepEqual(graphClients, ['proma']);
+  assert.equal(summary.history.summary.totalTokens, 8);
+  assert.equal(summary.history.daily[0].perClient.proma.messages, 1);
 });
 
 test('shouldIncludeHistory: first call, throttle window, and force', () => {
@@ -630,4 +738,23 @@ test('shouldIncludeHistory: first call, throttle window, and force', () => {
 
 test('shouldIncludeHistory returns false when history collection is disabled', () => {
   assert.equal(shouldIncludeHistory(1_000_000_000_000, 0, 0, true, false), false);
+});
+
+
+test('a failed Dots ledger and throwing diagnostic observer do not discard native scans', async (t) => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'dots-diagnostic-'));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const diagnostics = [];
+  const summary = await collectUsageOnce({
+    clients: 'codex', deviceId: 'diagnostic-fixture', homeDir: home,
+    env: { TOKEN_MONITOR_SHARED_DIR: home, CODEX_HOME: path.join(home, '.codex') },
+    projectsEnabled: false, limitsEnabled: false, wslScanEnabled: false,
+    historyEnabled: false, includeHistory: false, codexLocalUsageEnabled: true,
+    codexLocalUsageStore: { rows() { throw new Error('fixture ledger failure'); } },
+    onDiagnosticEvent(event) { diagnostics.push(event.code); throw new Error('fixture observer failure'); },
+    runTokscale: async () => ({ entries: [{ client: 'codex', model: 'gpt-test', input: 100, cost: 1 }] })
+  });
+  assert.equal(summary.today.totalTokens, 100);
+  assert.equal(summary.today.costUsd, 1);
+  assert.ok(diagnostics.includes('codex-local-usage-read-failed'));
 });

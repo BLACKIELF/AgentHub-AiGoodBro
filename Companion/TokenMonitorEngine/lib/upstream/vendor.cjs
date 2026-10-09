@@ -22,7 +22,6 @@ const VENDOR_ROOT = path.resolve(__dirname, '..', '..', 'vendor', 'node_modules'
 //   dotenv   lazy require in shared/config.js loadDotEnv()
 //   chokidar lazy require in shared/watcherHost.js createInProcessWatcherHost()
 //   undici   top-level require in shared/outboundFetch.js
-//   tar      top-level require in shared/tokscaleUpdater.js
 //   koffi    guarded lazy require in shared/providers/claude/limits.js (Windows
 //            credential store); absent on non-Windows is the upstream behaviour
 //   tokscale shared/collector.js resolves 'tokscale/bin.js' at module load, and
@@ -32,7 +31,6 @@ const VENDOR_PACKAGES = Object.freeze([
   'dotenv',
   'chokidar',
   'undici',
-  'tar',
   'koffi',
   'tokscale'
 ]);

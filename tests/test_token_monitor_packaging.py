@@ -61,7 +61,7 @@ class PackagingTests(unittest.TestCase):
         self.pin = {'schemaVersion': 1, 'dependencyRoots': ['demo'],
                     'finalSource': {'files': {}},
                     'node': {'platforms': {'darwin-arm64': {'url': 'https://nodejs.org/dist/v22.23.2/node-v22.23.2-darwin-arm64.tar.gz', 'archiveSHA256': m.digest(node), 'binaryPreSignSHA256': m.digest(macho())}}},
-                    'tokscale': {'platforms': {'darwin-arm64': {'url': 'https://github.com/Javis603/tokscale/releases/download/token-monitor-06a9f162/tokscale-darwin-arm64', 'sha256': m.digest(binary), 'package': '@tokscale/cli-darwin-arm64'}}}}
+                    'tokscale': {'platforms': {'darwin-arm64': {'url': 'https://github.com/Javis603/tokscale/releases/download/token-monitor-d5e8ad9b/tokscale-darwin-arm64', 'sha256': m.digest(binary), 'package': '@tokscale/cli-darwin-arm64'}}}}
         files = {'bridge.cjs': b'"use strict";', 'client-catalog.json': b'{"clients":[]}', 'provenance.json': b'{"license":"MIT"}', 'lib/index.cjs': b'module.exports = {};',
                  'hooks/index.cjs': b'module.exports = {};', 'upstream/LICENSE': b'Original MIT license',
                  'upstream/package-lock.json': m.canonical(self.lock)}
@@ -118,6 +118,21 @@ class PackagingTests(unittest.TestCase):
         (tree / 'client-catalog.json').unlink()
         with self.assertRaisesRegex(m.PackagingError, 'missing_engine_resource'):
             m.validate_layout(tree, {})
+
+    def test_public_diagnostic_comment_does_not_allow_private_paths(self):
+        tree, manifest = self.stage()
+        diagnostic = tree / 'upstream/src/shared/diagnosticReport.js'
+        diagnostic.parent.mkdir(parents=True)
+        comment = '  // (including a username-bearing /Users/... path) is replaced before the\n'
+        diagnostic.write_text(comment + 'module.exports = {};\n')
+        m.validate_layout(tree, manifest['packages'])
+        diagnostic.write_text(comment + "const path = '/Users/synthetic/private';\n")
+        with self.assertRaisesRegex(m.PackagingError, 'private_runtime_path'):
+            m.validate_layout(tree, manifest['packages'])
+        diagnostic.write_text('module.exports = {};\n')
+        (tree / 'lib/index.cjs').write_text(comment)
+        with self.assertRaisesRegex(m.PackagingError, 'private_runtime_path'):
+            m.validate_layout(tree, manifest['packages'])
 
     def test_node_signing_reviewed_entitlements_only(self):
         def sign(cmd, **kwargs):
@@ -327,7 +342,7 @@ class PackagingTests(unittest.TestCase):
             self.assertEqual(run.call_count, 1)
 
     def test_redirect_to_unapproved_host_rejected(self):
-        url = 'https://github.com/Javis603/tokscale/releases/download/token-monitor-06a9f162/tokscale-darwin-arm64'
+        url = 'https://github.com/Javis603/tokscale/releases/download/token-monitor-d5e8ad9b/tokscale-darwin-arm64'
         result = subprocess.CompletedProcess([], 0, b'302\nhttps://evil.example/binary', b'')
         with patch.object(m.subprocess, 'run', return_value=result), self.assertRaisesRegex(m.PackagingError, 'download_redirect_forbidden'):
             m.fetch(url, self.cache, '0' * 64, 'sha256', False)
@@ -470,6 +485,46 @@ class PackagingTests(unittest.TestCase):
         self.assertLess(build.index('check-build-target-idle.py'), build.index('rm -rf'))
         self.assertLess(build.index('prepare-token-monitor-resources.py'), build.index('codesign $(filter-out --deep,$(CODESIGN_FLAGS))'))
         self.assertGreater(build.index('prepare-token-monitor-resources.py --verify'), build.index('codesign --verify'))
+
+    def test_shared_electron_disabled_unknown_or_ambiguous_fuse_fails_closed(self):
+        enabled = m.FUSE_SENTINEL + bytes([1, 9]) + b'100000000'
+        self.assertTrue(m.verify_electron_node_fuse(enabled))
+        for wire in [bytes([1, 9]) + b'000000000', bytes([2, 9]) + b'100000000',
+                     bytes([1, 0]) + b'1', b'']:
+            with self.assertRaises(m.PackagingError):
+                m.verify_electron_node_fuse(m.FUSE_SENTINEL + wire)
+        with self.assertRaisesRegex(m.PackagingError, 'electron_fuse_wire_missing'):
+            m.verify_electron_node_fuse(enabled + enabled)
+        with self.assertRaisesRegex(m.PackagingError, 'electron_fuse_wire_missing'):
+            m.verify_electron_node_fuse(b'no-fuse-wire')
+
+    def test_shared_runtime_omits_only_node_and_preserves_engine_closure(self):
+        standalone, original = self.stage()
+        shared = {'schemaVersion': 1, 'mode': 'shared-electron-node', 'executable': m.SHARED_EXECUTABLE,
+                  'binarySHA256': 'a' * 64, 'frameworkSHA256': 'b' * 64,
+                  'versions': {'node': '24.18.1', 'napi': '10', 'electron': '43.4.0'}, 'runAsNodeFuse': True}
+        tree = self.root / 'shared'
+        with patch.object(m.subprocess, 'run', side_effect=AssertionError('unexpected subprocess/network')):
+            manifest = m.assemble(self.source, tree, self.pin, 'arm64', self.cache, True, shared)
+        self.assertFalse((tree / 'runtime/node').exists())
+        self.assertEqual(m.read_json(tree / 'RUNTIME.json'), shared)
+        self.assertEqual(manifest['packages'], original['packages'])
+        before, after = m.inventory(standalone), m.inventory(tree)
+        for key in before.keys() - {'runtime/node', 'runtime/LICENSE.txt'}:
+            self.assertEqual(before[key], after[key], key)
+        (tree / 'RUNTIME.json').write_bytes(m.canonical({**shared, 'executable': '/tmp/node'}))
+        with self.assertRaisesRegex(m.PackagingError, 'invalid_shared_runtime_descriptor'):
+            m.validate_layout(tree, manifest['packages'])
+
+    def test_shared_runtime_rejects_redundant_or_changed_manifest(self):
+        tree, expected = self.stage()
+        (tree / 'RUNTIME.json').write_bytes(m.canonical({'mode': 'shared-electron-node',
+                                                      'executable': m.SHARED_EXECUTABLE}))
+        with self.assertRaisesRegex(m.PackagingError, 'redundant_shared_node'):
+            m.validate_layout(tree, expected['packages'])
+        with self.assertRaisesRegex(m.PackagingError, 'manifest_content_mismatch|manifest_file_set_mismatch'):
+            (tree / m.MANIFEST).write_bytes(m.canonical({**expected, 'postSignFiles': expected['preSignFiles']}))
+            m.check_manifest(tree, expected, lambda _: None)
 
 
 if __name__ == '__main__':

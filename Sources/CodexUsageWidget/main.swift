@@ -87,6 +87,14 @@ struct CodexAccountManagerNextMain {
             exit(TokenMonitorNativePreviewRenderer.render(to: outputURL) ? 0 : 1)
         }
 
+        if let previewIndex = CommandLine.arguments.firstIndex(of: "--render-claude-subscription-previews"),
+            CommandLine.arguments.indices.contains(previewIndex + 1)
+        {
+            _ = NSApplication.shared
+            let outputURL = URL(fileURLWithPath: CommandLine.arguments[previewIndex + 1], isDirectory: true)
+            exit(ClaudeSubscriptionPreviewRenderer.render(to: outputURL) ? 0 : 1)
+        }
+
         if let previewIndex = CommandLine.arguments.firstIndex(of: "--render-workspace-previews"),
             CommandLine.arguments.indices.contains(previewIndex + 1)
         {

@@ -47,6 +47,7 @@ struct LocalCLIQuotaFixture {
         try await testKimiLoadAndDeviceIsolation()
         try await testClaudeLoadAndProfileIsolation()
         try await testClaudeCredentialChangesDiscardQuota()
+        try testCCSwitchSchema20()
         try await testClaudeRelay()
         try await testOpenCodeProviderIsolation()
         try await testOpenCodeAuthorizationStates()
@@ -144,6 +145,50 @@ struct LocalCLIQuotaFixture {
             LocalCLIProfile.self,
             from: JSONEncoder().encode(profile))
         try expect(roundTrip == profile, "profile Codable")
+    }
+
+    private static func testCCSwitchSchema20() throws {
+        try withDirectory { directory in
+            let database = directory.appendingPathComponent("synthetic-cc-switch.db")
+            let missing = directory.appendingPathComponent("synthetic-missing.db")
+            let absent = try CCSwitchClaudeRelay.currentCredential(databaseURL: missing)
+            try expect(absent == nil && !FileManager.default.fileExists(atPath: missing.path), "missing relay DB is not created")
+            let settings = #"{"env":{"ANTHROPIC_BASE_URL":"https://claude.moylor.com/v1/","ANTHROPIC_AUTH_TOKEN":"synthetic-schema20-token"}}"#
+            let meta = #"{"usage_script":{"enabled":true,"code":"throw new Error('synthetic script must never execute')"},"future_field":{"retained":true}}"#
+            func quoted(_ value: String) -> String { "'" + value.replacingOccurrences(of: "'", with: "''") + "'" }
+            func execute(_ sql: String) throws {
+                _ = try BoundedLocalProcess.run(executable: URL(fileURLWithPath: "/usr/bin/sqlite3"),
+                    arguments: ["-init", "/dev/null", database.path, sql])
+            }
+            // Exact providers columns from CC Switch v4.0.4. Its schema-20
+            // migration only adds enabled_pi to the separate MCP table.
+            try execute("""
+                PRAGMA user_version=20;
+                CREATE TABLE providers (
+                    id TEXT NOT NULL, app_type TEXT NOT NULL, name TEXT NOT NULL,
+                    settings_config TEXT NOT NULL, website_url TEXT, category TEXT,
+                    created_at INTEGER, sort_index INTEGER, notes TEXT, icon TEXT,
+                    icon_color TEXT, meta TEXT NOT NULL DEFAULT '{}',
+                    is_current BOOLEAN NOT NULL DEFAULT 0,
+                    in_failover_queue BOOLEAN NOT NULL DEFAULT 0,
+                    PRIMARY KEY (id, app_type)
+                );
+                CREATE TABLE mcp_servers (id TEXT PRIMARY KEY, enabled_pi BOOLEAN NOT NULL DEFAULT 0);
+                INSERT INTO providers (id, app_type, name, settings_config, meta, is_current)
+                VALUES ('synthetic-active', 'claude', 'synthetic', \(quoted(settings)), \(quoted(meta)), 1),
+                       ('synthetic-other', 'codex', 'synthetic', '{}', '{}', 1);
+                """)
+            let before = try Data(contentsOf: database)
+            let credential = try CCSwitchClaudeRelay.currentCredential(databaseURL: database)
+            try expect(credential?.token == "synthetic-schema20-token" && credential?.fingerprint.count == 64, "actual schema-20 SQLite relay is compatible")
+            let after = try Data(contentsOf: database)
+            try expect(before == after && !FileManager.default.fileExists(atPath: database.path + "-journal"), "relay DB remains unchanged after background read")
+            try execute("INSERT INTO providers (id, app_type, name, settings_config, meta, is_current) VALUES ('synthetic-second', 'claude', 'synthetic', \(quoted(settings)), \(quoted(meta)), 1);")
+            try expectThrows("ambiguous current providers fail closed") { _ = try CCSwitchClaudeRelay.currentCredential(databaseURL: database) }
+            try execute("UPDATE providers SET is_current=0 WHERE app_type='claude';")
+            let inactive = try CCSwitchClaudeRelay.currentCredential(databaseURL: database)
+            try expect(inactive == nil, "inactive relay never becomes current")
+        }
     }
 
     private static func testClaudeRelay() async throws {

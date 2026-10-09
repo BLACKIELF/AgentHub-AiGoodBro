@@ -31,9 +31,7 @@ enum TerminalAppLauncher {
 private func forbiddenQuotaRequest() -> LocalCLIQuotaResult {
     fatalError("account creation must not request quota")
 }
-struct LocalCLIQuotaReader {
-    func load(profile: LocalCLIProfile) async -> LocalCLIQuotaResult { forbiddenQuotaRequest() }
-}
+
 struct AdditionalCLIQuotaReader {
     func load(profile: LocalCLIProfile) async -> LocalCLIQuotaResult { forbiddenQuotaRequest() }
 }

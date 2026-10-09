@@ -112,6 +112,23 @@ struct LocalCLIProfile: Identifiable, Codable, Equatable {
     var displayName: String
     var configDirectory: String
     var isDefault: Bool
+    var claudeSubscription: ClaudeSubscriptionReference? = nil
+}
+
+struct ClaudeSubscriptionReference: Codable, Equatable {
+    enum Source: String, Codable { case native, cswap }
+    var source: Source
+    var slot: String
+    var identityFingerprint: String
+}
+
+struct ClaudeSubscriptionCandidate: Identifiable, Equatable {
+    let id: String
+    let label: String
+    let maskedIdentity: String?
+    let planLabel: String?
+    let sourceLabel: String
+    let canImport: Bool
 }
 
 struct LocalCLIQuotaWindow: Identifiable, Equatable {

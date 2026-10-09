@@ -1,10 +1,10 @@
 {
   "provenanceVersion": 1,
-  "recordedAt": "2026-09-26T00:00:00+08:00",
+  "recordedAt": "2026-10-08T00:00:00+08:00",
   "upstream": {
     "repository": "Javis603/token-monitor",
-    "commit": "dcccfb01557e2786888fd5479552f392ac6c0d32",
-    "version": "0.62.0",
+    "commit": "5d2db368d8313415763860d594de00e46a663418",
+    "version": "0.68.0",
     "license": "MIT",
     "licenseFile": "upstream/LICENSE",
     "licenseCopyright": "Copyright (c) 2026 Javis",
@@ -13,21 +13,21 @@
       "node": ">=22.15.0"
     },
     "hashes": {
-      "upstream/package.json": "b2af112e55d4ddd97852f949b6ebbdc8e3bbe5c45718eb0390467e6ddec80db0",
-      "upstream/package-lock.json": "442d0fd357ded322b35e4d6ff60aba294d191f7b5963c0cdda1c9453b4169fa8",
+      "upstream/package.json": "1fe962279a0b6bdb3422cfa6be7f55ebfb7986a5b55b7cd4f4639b6fa8c53b9f",
+      "upstream/package-lock.json": "a852bf87ba2d8f31d0045b0e027a897d8b4d04ef6b8ad850cb87301f00b857d8",
       "upstream/LICENSE": "250136de456c31d659e54c1804c43a27dadad175336b67226e9509d6310f923c"
     },
-    "edits": "Official v0.62.0 source pinned; Antigravity OAuth disabled by reviewed local adaptation; capability overlays listed in hooks/manifest.json.",
-    "sourceTag": "v0.62.0"
+    "edits": "Official v0.68.0 fixed source; retained reviewed Antigravity OAuth denial. Capability overlays and source-scoped bundled scanner are preserved; native Proma/Qoder CN now use the mandatory fork.",
+    "sourceTag": "v0.68.0"
   },
   "tokscale": {
     "mode": "override",
     "upstream": "junhoyeo/tokscale",
     "fork": "Javis603/tokscale",
-    "commit": "06a9f1625d5a505f01b39eff29f7be44a2c52188",
+    "commit": "d5e8ad9b25bfafb43b5b6804940929b728a6f48a",
     "commitTitle": "feat(report): join sessions to workspaces and expose session activity",
-    "releaseTag": "token-monitor-06a9f162",
-    "baseVersion": "4.17.0",
+    "releaseTag": "token-monitor-d5e8ad9b",
+    "baseVersion": "4.18.0",
     "manifest": "upstream/scripts/vendor/tokscale.json",
     "note": "The staged native binary must match the Javis603/tokscale fork hash in upstream/scripts/vendor/tokscale.json; the npm binary is not accepted as an equivalent pin."
   },
@@ -45,8 +45,8 @@
     "note": "Architecture-specific runtime and Javis tokscale override hashes must be verified during resource staging; no development machine path is packaged."
   },
   "repository": "Javis603/token-monitor",
-  "commit": "dcccfb01557e2786888fd5479552f392ac6c0d32",
-  "version": "0.62.0",
+  "commit": "5d2db368d8313415763860d594de00e46a663418",
+  "version": "0.68.0",
   "hostCorrection": {
     "version": "0913v2",
     "changes": [

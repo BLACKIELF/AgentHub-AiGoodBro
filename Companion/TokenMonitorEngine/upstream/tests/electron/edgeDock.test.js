@@ -108,7 +108,51 @@ test('a long detail total shrinks beside its compact reading instead of wrapping
   fitCardTotal({ querySelector: () => row });
   assert.equal(number.style.fontSize, undefined);
   assert.match(css, /\.edge-dock-total-row \{[^}]*white-space: nowrap/);
-  assert.ok(dock.indexOf('fitCardTotal(card);') < dock.indexOf('const height = Math.ceil(card.getBoundingClientRect().height)'));
+  const bubble = dock.slice(dock.indexOf('function renderBubble('));
+  assert.ok(bubble.indexOf('fitCardTotal(card);') < bubble.indexOf('const height = '));
+});
+
+test('a card commits after its reported height is clamped to the work area', () => {
+  const dock = readRendererFile(path.join('edgeDock', 'dock.js'));
+  const source = dock.slice(dock.indexOf('function renderBubble('), dock.indexOf('// ---- Wiring'));
+  for (const kind of ['provider', 'stat']) {
+    for (const { measured, maxCardHeight, expected } of [
+      // Chromium at 175% scaling can measure a max-height: 851px card this way.
+      { measured: 851.000061, maxCardHeight: 851, expected: 851 },
+      { measured: 260.25, maxCardHeight: 851, expected: 261 },
+      { measured: 260.25, expected: 261 }
+    ]) {
+      let visibleId = 'previous-card';
+      const reports = [];
+      const card = { dataset: {}, style: {}, getBoundingClientRect: () => ({ height: measured }) };
+      const renderBubble = Function('deps', `
+        const { root, stagingLayer, providerCard, statCard, fitCardTotal,
+          clampBreakdownList, bridge, commitCard } = deps;
+        ${source}
+        return renderBubble;
+      `)({
+        root: { dataset: {} },
+        stagingLayer: { replaceChildren() {} },
+        providerCard: () => card,
+        statCard: () => card,
+        fitCardTotal() {},
+        clampBreakdownList() {},
+        bridge: { reportBubbleSize: (cellId, height) => reports.push({ cellId, height }) },
+        commitCard: (_card, cellId) => { visibleId = cellId; }
+      });
+      const cell = { id: `next-${kind}`, kind };
+      const payload = { side: 'right', cell, maxCardHeight };
+      renderBubble(payload);
+      assert.deepEqual(reports, [{ cellId: cell.id, height: expected }]);
+      assert.equal(visibleId, 'previous-card', 'wait for the main process to place the new card');
+      // Mirror the main process acknowledgement, including its height cap.
+      renderBubble({ ...payload, placed: {
+        cellId: cell.id, height: Math.min(reports[0].height, maxCardHeight || Infinity)
+      } });
+      assert.equal(visibleId, cell.id, `${kind} card must replace the previous card`);
+      assert.equal(reports.length, 1, 'a placed card must not keep reporting its size');
+    }
+  }
 });
 
 const {
@@ -119,19 +163,28 @@ const {
   edgeDockCellAt,
   edgeDockCellLayout,
   edgeDockCorridorBounds,
+  edgeDockHandleBounds,
+  edgeDockHandleZones,
   edgeDockPeekBounds,
   edgeDockPlacementForDrop,
   edgeDockRailBounds,
+  edgeDockRefreshBounds,
+  edgeDockRefreshCorridor,
   edgeDockTriggerBounds,
   normalizeEdgeDockDisplayId,
   normalizeEdgeDockOffset,
+  edgeDockFittingScale,
+  edgeDockScale,
+  normalizeEdgeDockCustomScale,
   normalizeEdgeDockSide,
-  railLength
+  normalizeEdgeDockSize,
+  railLength,
+  scaledEdgeDockMetrics
 } = require('../../src/electron/edgeDock/geometry');
 const { canUseEdgeDock } = require('../../src/electron/edgeDock/controller');
-const { bubbleCommands, railCommands, toPolygons, toSvgPath } = require('../../src/electron/renderer/edgeDock/shapes');
+const { bubbleCommands, peekCommands, railCommands, toPolygons, toSvgPath } = require('../../src/electron/renderer/edgeDock/shapes');
 const { rasterizeMask, shapeRectsFromPolygons } = require('../../src/electron/edgeDock/mask');
-const { DEFAULT_LIMIT_COUNT, normalizeEdgeDockItems, reorderEdgeDockItems } = require('../../src/electron/renderer/edgeDock/items');
+const { DEFAULT_LIMIT_COUNT, limitWindowKey, normalizeEdgeDockItems, reorderEdgeDockItems } = require('../../src/electron/renderer/edgeDock/items');
 const { SESSIONS_METRIC } = require('../../src/electron/renderer/edgeDock/presentation');
 const edgeDockPresentation = require('../../src/electron/renderer/edgeDock/presentation');
 // The predicate the projection, the rail and the card all answer with, so these
@@ -210,7 +263,8 @@ test('the Sessions list uses a plain dot, not the dock card glyph stack', () => 
   const app = readRendererFile('app.js');
   const styles = readRendererFile('styles.css');
   assert.match(app, /rowLiveMarkup = '<span class="row-live-dot"><\/span>'/);
-  assert.doesNotMatch(app, /sessionStateMarkup\(\{/);
+  const sessionList = app.slice(app.indexOf('function updateRowLive('), app.indexOf('function updateRow(', app.indexOf('function updateRowLive(')));
+  assert.doesNotMatch(sessionList, /sessionStateMarkup\(\{/);
   assert.doesNotMatch(styles, /row-live-spin|row-live-check|row-live-idle/);
   assert.match(styles, /\.row-live-dot\s*\{[\s\S]*?background: var\(--success\)/);
   // The dot is drawn only while the agent works, so a quiet row shows nothing.
@@ -267,10 +321,15 @@ test('the dock keeps the token total, adds headroom, and dots running rows inste
   // meta line rather than taking the token column.
   const sessions = dock.slice(dock.indexOf('function sessionsNode('), dock.indexOf('function providerCard('));
   assert.match(sessions, /edge-dock-session-meta/);
+  // The meta line must compose through the shared helper — a projection that
+  // still handed the card a flattened top model would pass the map assertions.
+  assert.match(sessions, /sessionRowsApi\.sessionModelLabel\(session\)/);
   assert.match(sessions, /if \(context\) meta\.append\(context\)/);
   // Running is a dot beside the name, not a recoloured title.
   assert.match(sessions, /nameNode\.append\(stateMark\(session, key, state\)\)/);
-  assert.match(sessions, /nameNode\.append\(document\.createTextNode\(name\)\)/);
+  assert.match(sessions, /el\('span', 'edge-dock-session-title', name\)/);
+  assert.match(sessions, /overflowText\.bind\(title\)/);
+  assert.match(sessions, /nameNode\.append\(title\)/);
   assert.doesNotMatch(css, /\.edge-dock-session\.is-running \.edge-dock-session-name\s*\{[^}]*color/);
   // Three states: a spinner while working, a check once the transcript said the
   // turn finished, and a faint dot for a session that has gone quiet. The
@@ -321,6 +380,73 @@ test('the dock keeps the token total, adds headroom, and dots running rows inste
   const i18n = readRendererFile('i18n.js');
   assert.doesNotMatch(i18n, /'session\.calls':/);
   assert.doesNotMatch(i18n, /'session\.callsOne':/);
+});
+
+test('Home session preview uses the sidebar timeline and keeps running rows within its cap', () => {
+  const now = Date.now();
+  const at = (minutesAgo) => new Date(now - minutesAgo * 60_000).toISOString();
+  const session = (id, minutesAgo, extra = {}) => ({
+    client: 'codex', sessionId: id, lastUsedAt: at(minutesAgo),
+    title: id, totalTokens: minutesAgo * 100, models: { 'gpt-6-sol': 1 }, ...extra
+  });
+  const stats = {
+    periods: {
+      month: { sessions: {
+        'codex:new': session('new', 1),
+        'codex:running': session('running', 9),
+        'codex:old-running': session('old-running', 8),
+        'codex:quiet': session('quiet', 40),
+        'codex:older': session('older', 50),
+        'codex:oldest': session('oldest', 60),
+        'codex:review': session('review', 0, { sessionKind: 'background-review' })
+      } },
+      today: { sessions: {
+        'codex:new': session('new', 1, { totalTokens: 999_999 }),
+        'codex:today-only': session('today-only', 30)
+      } }
+    },
+    limits: { providers: [] }
+  };
+  const sidebar = buildEdgeDockCells(stats, { items: [{ type: 'stat', metric: SESSIONS_METRIC }] })[0].sessions;
+  assert.deepEqual(edgeDockPresentation.recentSessionRows(stats), sidebar);
+  const home = edgeDockPresentation.recentSessionRows(stats, 5);
+  assert.deepEqual(home.map((row) => row.sessionId), ['new', 'old-running', 'running', 'today-only', 'quiet']);
+  assert.equal(home[0].totalTokens, 100, 'the month record wins when today has a different total');
+  assert.equal(home.filter((row) => row.running).length, 3);
+
+  const lateRunning = { periods: { month: { sessions: {} }, today: { sessions: {} } } };
+  for (let index = 0; index < 6; index++) {
+    lateRunning.periods.month.sessions[`codex:${index}`] = session(String(index), index + 1, {
+      turnEnded: index < 5
+    });
+  }
+  assert.deepEqual(
+    edgeDockPresentation.recentSessionRows(lateRunning, 5, { includeRunningBeyondCap: true })
+      .map((row) => row.sessionId),
+    ['0', '1', '2', '3', '4', '5']
+  );
+});
+
+test('a startedAt-only session keeps its display age without becoming running', () => {
+  const startedAt = new Date(Date.now() - 60_000).toISOString();
+  const stats = { periods: { month: { sessions: {
+    'codex:new': { client: 'codex', sessionId: 'new', startedAt, lastUsedAt: '', totalTokens: 0 }
+  } } } };
+  const original = stats.periods.month.sessions['codex:new'];
+  assert.equal(sessionLive.sessionActivityState(original), 'idle');
+
+  const [home] = edgeDockPresentation.recentSessionRows(stats, 5, { includeRunningBeyondCap: true });
+  const [sidebar] = buildEdgeDockCells(stats, { items: [{ type: 'stat', metric: SESSIONS_METRIC }] })[0].sessions;
+  for (const row of [home, sidebar]) {
+    assert.equal(row.lastUsedAt, null);
+    assert.equal(row.startedAt, startedAt);
+    assert.equal(row.running, false);
+    assert.equal(sessionLive.sessionActivityState(row), 'idle');
+  }
+  assert.equal(edgeDockPresentation.runningSessionSummary([home]).count, 0);
+  assert.equal(edgeDockPresentation.nextRunningExpiryAt([home]), 0);
+  assert.match(readRendererFile('app.js'), /homeSessionAgo\(Date\.parse\(row\.lastUsedAt \|\| row\.startedAt \|\| ''\)\)/);
+  assert.match(readRendererFile(path.join('edgeDock', 'dock.js')), /relativeAgo\(session\.lastUsedAt \|\| session\.startedAt\)/);
 });
 
 test('running sessions are never truncated by the recent cap, and the count matches the rows', () => {
@@ -1071,6 +1197,8 @@ test('rail hugs the chosen edge and its peek handle is flush with it', () => {
   assert.equal(right.height, railLength(3));
   const peek = edgeDockPeekBounds({ workArea, side: 'right', railBounds: right });
   assert.equal(peek.x + peek.width, workArea.width);
+  assert.equal(peek.height, EDGE_DOCK_METRICS.peekLength);
+  assert.equal(peek.y + peek.height / 2, right.y + right.height / 2);
 
   const left = edgeDockRailBounds({ workArea, side: 'left', offset: 1, cellCount: 3 });
   assert.equal(left.x, EDGE_DOCK_METRICS.edgeInset);
@@ -1148,6 +1276,48 @@ test('an explicit empty cell list keeps the rail empty instead of reserving a ce
   assert.equal(edgeDockCellLayout(workArea, null).kinds.length, 1);
 });
 
+test('the handle sits flush and centred inside its larger window, and grows in place', () => {
+  const m = EDGE_DOCK_METRICS;
+  const rail = edgeDockRailBounds({ workArea, side: 'right', offset: 0.5, cellCount: 3 });
+  const peek = edgeDockPeekBounds({ workArea, side: 'right', railBounds: rail });
+  const rest = edgeDockHandleBounds({ side: 'right', peekBounds: peek });
+  assert.equal(rest.x + rest.width, peek.x + peek.width);
+  assert.equal(rest.y + rest.height / 2, peek.y + peek.height / 2);
+  assert.deepEqual([rest.width, rest.height], [m.handleWidth, m.handleLength]);
+  assert.ok(rest.width < peek.width && rest.height < peek.height, 'the window margin is not the handle');
+  const near = edgeDockHandleBounds({ side: 'right', peekBounds: peek, handle: { width: m.handleNearWidth, length: m.handleNearLength } });
+  assert.equal(near.x, peek.x + peek.width - m.handleNearWidth);
+  const leftPeek = edgeDockPeekBounds({ workArea, side: 'left', railBounds: rail });
+  assert.equal(edgeDockHandleBounds({ side: 'left', peekBounds: leftPeek }).x, leftPeek.x);
+});
+
+test('handle zones reach into the desktop from the handle, not along the whole rail', () => {
+  const m = EDGE_DOCK_METRICS;
+  const rail = edgeDockRailBounds({ workArea, side: 'right', offset: 0.5, cellCount: 3 });
+  const peek = edgeDockPeekBounds({ workArea, side: 'right', railBounds: rail });
+  const right = edgeDockHandleZones({ side: 'right', peekBounds: peek });
+  assert.deepEqual(right.wake, { x: workArea.x + workArea.width - m.wakeDepth, y: peek.y, width: m.wakeDepth, height: peek.height });
+  assert.equal(right.approach.x + right.approach.width, workArea.x + workArea.width);
+  assert.equal(right.approach.width, m.approachDepth);
+  assert.equal(right.approach.y, peek.y - m.approachSlack);
+  assert.equal(right.approach.height, peek.height + m.approachSlack * 2);
+  assert.ok(right.approach.height < rail.height);
+
+  const leftPeek = edgeDockPeekBounds({ workArea, side: 'left', railBounds: rail });
+  const left = edgeDockHandleZones({ side: 'left', peekBounds: leftPeek });
+  assert.equal(left.wake.x, workArea.x);
+  assert.equal(left.approach.x, workArea.x);
+  assert.equal(left.approach.width, m.approachDepth);
+  assert.equal(edgeDockHandleZones({ side: 'right', peekBounds: null }), null);
+});
+
+test('intent: the wake zone reveals after the deliberate delay, not the handle fast path', () => {
+  const intent = createEdgeDockIntent();
+  assert.deepEqual(intent.tick({ inWake: true }, 0), []);
+  assert.deepEqual(intent.tick({ inWake: true }, 60), []);
+  assert.deepEqual(intent.tick({ inWake: true }, EDGE_DOCK_TIMING.revealDelayMs), [{ type: 'reveal' }]);
+});
+
 test('intent: always-visible mode reveals once and only lets the card go', () => {
   const intent = createEdgeDockIntent();
   assert.deepEqual(intent.setAlways(true), [{ type: 'reveal' }]);
@@ -1187,6 +1357,24 @@ test('rail silhouette starts and ends on the screen edge and mirrors for the lef
   const left = railCommands({ width: 64, height: 300, side: 'left', shoulder: 28, radius: 20 });
   assert.deepEqual(left[0], ['M', 0, 0]);
   assert.match(toSvgPath(right), /^M64 0 C/);
+});
+
+test('the handle is a tab flush with either screen edge, centred in its window', () => {
+  const right = peekCommands({ width: 10, height: 88, handleWidth: 6, handleLength: 72 });
+  assert.deepEqual(right[0], ['M', 10, 8]);
+  assert.deepEqual(right.at(-2), ['L', 10, 80]);
+  assert.deepEqual(right.at(-1), ['Z']);
+  assert.notDeepEqual(peekCommands({ width: 10, height: 88, open: true }).at(-1), ['Z']);
+  assert.deepEqual(peekCommands({ width: 10, height: 88, side: 'left', handleWidth: 6, handleLength: 72 })[0], ['M', 0, 8]);
+  const { buffer, pixelWidth } = rasterizeMask(toPolygons(right), 10, 88);
+  const alpha = (x, y) => buffer[(y * pixelWidth + x) * 4 + 3];
+  assert.equal(alpha(9, 4), 0, 'the window leaves room around the resting handle');
+  assert.equal(alpha(3, 44), 0);
+  assert.equal(alpha(4, 8), 0, 'the corner facing the desktop is rounded');
+  assert.equal(alpha(9, 9), 255, 'the screen-edge side stays square');
+  assert.equal(alpha(4, 44), 255);
+  const near = rasterizeMask(toPolygons(peekCommands({ width: 10, height: 88, handleWidth: 8, handleLength: 80 })), 10, 88);
+  assert.equal(near.buffer[(44 * near.pixelWidth + 3) * 4 + 3], 255, 'the approached handle reaches further in');
 });
 
 test('bubble tail tip lands on tailY and stays clear of the corners', () => {
@@ -1311,6 +1499,196 @@ test('automatic items follow the limits order and enabled set, capped at the def
   assert.equal(edgeDockCellSignature(buildEdgeDockCells(stats, { limitsEnabled: false })), '');
 });
 
+test('the rail headline reports the pool that gates the account, not just the session', () => {
+  const exhausted = provider('codex', {
+    windows: [
+      { kind: 'session', label: '', remainingPercent: 100 },
+      { kind: 'weekly', label: 'Weekly', remainingPercent: 0 }
+    ]
+  });
+  const stats = { limits: { providers: [exhausted] } };
+  const cells = buildEdgeDockCells(stats, { limitProviders: 'codex' });
+  // A full session bar beside an empty weekly pool is still a blocked account:
+  // the rail must say so, the way the tray's worst-window headline does.
+  assert.equal(cells[0].remainingPercent, 0);
+  assert.equal(cells[0].windowKind, 'weekly');
+  assert.equal(cells[0].severityPercent, 0);
+
+  const drained = provider('codex', {
+    windows: [
+      { kind: 'session', label: '', remainingPercent: 90 },
+      { kind: 'weekly', label: 'Weekly', remainingPercent: 30 }
+    ]
+  });
+  const cells2 = buildEdgeDockCells({ limits: { providers: [drained] } }, { limitProviders: 'codex' });
+  // A partially-used weekly pool does not gate the account, so the rail keeps
+  // reading the primary session window; only an empty pool overrides it.
+  assert.equal(cells2[0].remainingPercent, 90);
+  assert.equal(cells2[0].windowKind, 'session');
+  // ...but the warn colour follows the tightest window, so an almost-gated
+  // account still flags before its headline flips to 0%.
+  assert.equal(cells2[0].severityPercent, 30);
+
+  const drainedMonthly = provider('codex', {
+    windows: [
+      { kind: 'session', label: '', remainingPercent: 80 },
+      { kind: 'billing', label: 'Monthly', remainingPercent: 0 }
+    ]
+  });
+  const cells3 = buildEdgeDockCells({ limits: { providers: [drainedMonthly] } }, { limitProviders: 'codex' });
+  assert.equal(cells3[0].remainingPercent, 0);
+  assert.equal(cells3[0].windowKind, 'billing');
+
+  // A spent money figure is not a spent quota: balances can bill past zero or
+  // share funding with a top-up pool, so credits windows never exhaust the
+  // headline even when their meter reads 0%.
+  const brokeBalance = provider('codex', {
+    windows: [
+      { kind: 'session', label: '', remainingPercent: 80 },
+      { kind: 'billing', metric: 'credits', label: 'Balance', remainingPercent: 0, showMeter: true }
+    ]
+  });
+  const cells4 = buildEdgeDockCells({ limits: { providers: [brokeBalance] } }, { limitProviders: 'codex' });
+  assert.equal(cells4[0].remainingPercent, 80);
+  assert.equal(cells4[0].windowKind, 'session');
+  // The warn colour still follows the tightest pool, money included.
+  assert.equal(cells4[0].severityPercent, 0);
+
+  // A scoped or model-specific pool is not the account gate: Claude's Fable
+  // weekly at 0% leaves every other Claude model usable, so the canonical
+  // weekly stays the headline. The tightest-pool severity still sees it.
+  const scopedOut = provider('claude', {
+    windows: [
+      { kind: 'weekly', label: 'Weekly', remainingPercent: 80 },
+      { kind: 'weekly', label: 'Fable', remainingPercent: 0 }
+    ]
+  });
+  const cells5 = buildEdgeDockCells({ limits: { providers: [scopedOut] } }, { limitProviders: 'claude' });
+  assert.equal(cells5[0].remainingPercent, 80);
+  assert.equal(cells5[0].windowKind, 'weekly');
+  assert.equal(cells5[0].severityPercent, 0);
+
+  // The same scoped pool is still not a gate when it has no aggregate sibling:
+  // preferredWindow() returns a lone window without checking its label, so
+  // gatingWindow() re-checks canonical labels for the single-window case.
+  const fableOnly = provider('claude', {
+    windows: [
+      { kind: 'session', label: '', remainingPercent: 80 },
+      { kind: 'weekly', label: 'Fable', remainingPercent: 0 }
+    ]
+  });
+  const cells5b = buildEdgeDockCells({ limits: { providers: [fableOnly] } }, { limitProviders: 'claude' });
+  assert.equal(cells5b[0].remainingPercent, 80);
+  assert.equal(cells5b[0].windowKind, 'session');
+
+  // Provider-declared additional pools never gate either: Factory's Core
+  // Monthly carries additional: true, so a drained Core pool beside a live
+  // aggregate Monthly leaves the headline at the aggregate's figure.
+  const factoryAdditional = provider('factory', {
+    windows: [
+      { kind: 'billing', label: 'Monthly', remainingPercent: 50 },
+      { kind: 'billing', label: 'Core Monthly', remainingPercent: 0, additional: true }
+    ]
+  });
+  const cells5c = buildEdgeDockCells({ limits: { providers: [factoryAdditional] } }, { limitProviders: 'factory' });
+  assert.equal(cells5c[0].remainingPercent, 50);
+  assert.equal(cells5c[0].severityPercent, 0);
+
+  // Several same-kind pools with no canonical sibling can also hide a scoped
+  // 0%: per-model pools (Antigravity's Gemini/Claude weeklies) have no
+  // aggregate, and the tightest one must not be read as the account gate.
+  const modelPools = provider('antigravity', {
+    windows: [
+      { kind: 'session', label: 'Gemini', remainingPercent: 80 },
+      { kind: 'weekly', label: 'Gemini Pro', remainingPercent: 72 },
+      { kind: 'weekly', label: 'Gemini Flash', remainingPercent: 0 },
+      { kind: 'weekly', label: 'Claude', remainingPercent: 35 }
+    ]
+  });
+  const cells5d = buildEdgeDockCells({ limits: { providers: [modelPools] } }, { limitProviders: 'antigravity' });
+  assert.equal(cells5d[0].remainingPercent, 80);
+  assert.equal(cells5d[0].severityPercent, 0);
+
+  // Codex additional pools are invisible to the headline entirely, but the
+  // warn colour still sees a drained one — the same contract Factory's
+  // additional pools get.
+  const codexAdditional = provider('codex', {
+    windows: [
+      { kind: 'weekly', label: 'Weekly', remainingPercent: 70 },
+      { kind: 'weekly', label: 'GPT reserve', remainingPercent: 0, additional: true }
+    ]
+  });
+  const cells5e = buildEdgeDockCells({ limits: { providers: [codexAdditional] } }, { limitProviders: 'codex' });
+  assert.equal(cells5e[0].remainingPercent, 70);
+  assert.equal(cells5e[0].severityPercent, 0);
+
+  // A hub older than the spend metric strips it but keeps the window, so the
+  // same money figure arrives unlabeled. It must still not read as an
+  // exhausted quota — identity, not the metric flag, is what excludes it.
+  const legacySpend = provider('codex', {
+    windows: [
+      { kind: 'session', label: '', remainingPercent: 80 },
+      { kind: 'billing', label: 'Usage credits', usedPercent: 100 }
+    ]
+  });
+  const cells6 = buildEdgeDockCells({ limits: { providers: [legacySpend] } }, { limitProviders: 'codex' });
+  assert.equal(cells6[0].remainingPercent, 80);
+  assert.equal(cells6[0].windowKind, 'session');
+});
+
+test('a pinned rail window ignores automatic exhaustion and keeps its identity across refreshes', () => {
+  const session = { kind: 'session', label: 'Session', remainingPercent: 85 };
+  const weekly = { kind: 'weekly', label: 'Weekly', remainingPercent: 0 };
+  const scoped = { kind: 'session', label: 'Fable', remainingPercent: 35 };
+  const record = provider('claude', { windows: [session, weekly, scoped] });
+  const key = limitWindowKey(session);
+  const items = normalizeEdgeDockItems([{ type: 'limit', provider: 'claude', windowKey: key }]);
+  const build = (windows) => buildEdgeDockCells({ limits: { providers: [provider('claude', { windows })] } }, { items })[0];
+  const pinned = build(record.windows);
+  assert.equal(pinned.remainingPercent, 85);
+  assert.equal(pinned.windowKind, 'session');
+  assert.equal(pinned.severityPercent, 85);
+  assert.equal(build([scoped, weekly, { ...session, remainingPercent: 72 }]).remainingPercent, 72);
+  assert.equal(build([scoped, weekly]).remainingPercent, null);
+  assert.equal(build([scoped, weekly]).status, 'error');
+});
+
+test('backend identity separates same-label windows and survives label changes', () => {
+  const first = { kind: 'session', label: 'Some quota', limitId: 'feature-a', windowMinutes: 300, additional: true, remainingPercent: 30 };
+  const second = { ...first, limitId: 'feature-b', remainingPercent: 70 };
+  const secondary = { ...second, windowMinutes: 600, remainingPercent: 55 };
+  const items = normalizeEdgeDockItems([{ type: 'limit', provider: 'codex', windowKey: limitWindowKey(second) }]);
+  assert.notEqual(limitWindowKey(first), limitWindowKey(second));
+  assert.notEqual(limitWindowKey(second), limitWindowKey(secondary));
+  assert.equal(items[0].windowKey, limitWindowKey(second));
+  const renamed = { ...second, label: 'New display name' };
+  assert.equal(limitWindowKey(second), limitWindowKey(renamed));
+  const [cell] = buildEdgeDockCells({ limits: { providers: [provider('codex', { windows: [secondary, renamed, first] })] } }, { items });
+  assert.equal(cell.remainingPercent, 70);
+  assert.equal(cell.accounts[0].headlineWindow.label, 'New display name');
+
+  // A saved pre-identity pin is safe only when its structural match is unique.
+  const legacyItems = [{ ...items[0], windowKey: JSON.stringify(['session', 'Some quota', '', true]) }];
+  const build = (windows) => buildEdgeDockCells({ limits: { providers: [provider('codex', { windows })] } }, { items: legacyItems })[0];
+  assert.equal(build([second]).remainingPercent, 70);
+  assert.equal(build([first, second]).remainingPercent, null);
+});
+
+test('turning off Codex additional limits suspends a pinned window until re-enabled', () => {
+  const additional = { kind: 'session', label: 'Some quota', limitId: 'feature-a', windowMinutes: 300, additional: true, remainingPercent: 30 };
+  const canonical = { kind: 'session', label: 'Session', remainingPercent: 90 };
+  const stats = { limits: { providers: [provider('codex', { windows: [canonical, additional] })] } };
+  const items = normalizeEdgeDockItems([{ type: 'limit', provider: 'codex', windowKey: limitWindowKey(additional) }]);
+  const build = (showCodexAdditionalLimits) => buildEdgeDockCells(stats, { items, showCodexAdditionalLimits })[0];
+  assert.equal(build(true).remainingPercent, 30);
+  assert.equal(build(false).remainingPercent, null);
+  assert.equal(build(false).severityPercent, null);
+  assert.equal(build(false).accounts[0].headlineWindow, null);
+  assert.equal(build(true).remainingPercent, 30);
+  const automatic = buildEdgeDockCells(stats, { showCodexAdditionalLimits: false })[0];
+  assert.equal(automatic.remainingPercent, 90);
+});
+
 test('explicit items keep their order, their empty providers, and add usage readouts', () => {
   const stats = {
     periods: {
@@ -1413,7 +1791,7 @@ test('provider cards list the newest sessions of their own clients this month', 
         sessions: {
           'codex:a': session('codex', 'a', '2026-09-10T00:00:00Z'),
           'codex:b': session('codex', 'b', '2026-09-16T00:00:00Z', { projectLabel: 'token-monitor' }),
-          'claude:c': session('claude', 'c', '2026-09-17T00:00:00Z'),
+          'claude:c': session('claude', 'c', '2026-09-17T00:00:00Z', { models: { 'claude-opus-5-5': 8, 'swe-2': 2 } }),
           'codex:r': session('codex', 'r', '2026-09-17T01:00:00Z', { sessionKind: 'background-review' }),
           'codex:d': session('codex', 'd', '2026-09-15T00:00:00Z'),
           'codex:e': session('codex', 'e', '2026-09-01T00:00:00Z')
@@ -1427,7 +1805,12 @@ test('provider cards list the newest sessions of their own clients this month', 
   assert.deepEqual(codex.sessions.map((entry) => entry.sessionId), ['t', 'b', 'd']);
   assert.equal(codex.sessions[0].title, 'Fix dock');
   assert.equal(codex.sessions[1].projectLabel, 'token-monitor');
-  assert.equal(codex.sessions[1].model, 'gpt-5');
+  // The whole model map rides the row: the card labels it with the Sessions
+  // list's own sessionModelLabel(), which a flattened top-model string could
+  // never reproduce ("N models" for a multi-model session).
+  assert.deepEqual(codex.sessions[1].models, { 'gpt-5': 10 });
+  const [claude] = buildEdgeDockCells({ ...stats, limits: { providers: [provider('claude')] } }, {});
+  assert.deepEqual(claude.sessions[0].models, { 'claude-opus-5-5': 8, 'swe-2': 2 });
   // The rows are the rail's activity reading as well as this card's list, so hiding
   // the list is a choice the cell carries rather than one it applies: the rows stay.
   const [hidden] = buildEdgeDockCells(stats, { items: [{ type: 'limit', provider: 'codex', showSessions: false }] });
@@ -1435,7 +1818,7 @@ test('provider cards list the newest sessions of their own clients this month', 
   assert.deepEqual(hidden.sessions.map((entry) => entry.sessionId), ['t', 'b', 'd']);
 });
 
-// The card's list and the rail's breathing mark read the same rows, so a switch
+// The card's list and the rail's spinning arc read the same rows, so a switch
 // labelled "Show recent sessions in card" is a choice about the card. Emptying the
 // cell instead made it an off switch for the mark - a reading the label never
 // mentions, and one the card was never asked about.
@@ -1918,8 +2301,10 @@ test('item settings normalize to null for automatic and drop unknown entries', (
   ]);
   assert.deepEqual(
     normalizeEdgeDockItems([{ type: 'limit', provider: 'CODEX', hiddenAccounts: ['k', 'k', 7, ''] }]),
-    [{ type: 'limit', provider: 'codex', hiddenAccounts: ['k', '7'], showUsage: true, showSessions: true, accountMode: 'active' }]
+    [{ type: 'limit', provider: 'codex', hiddenAccounts: ['k', '7'], showUsage: true, showSessions: true, windowKey: '', accountMode: 'active' }]
   );
+  assert.equal(normalizeEdgeDockItems([{ type: 'limit', provider: 'codex', windowKey: '["weekly","Weekly","",false]' }])[0].windowKey, '["weekly","Weekly","",false]');
+  assert.equal(normalizeEdgeDockItems([{ type: 'limit', provider: 'codex', windowKey: 'junk' }])[0].windowKey, '');
   assert.equal(normalizeEdgeDockItems([{ type: 'limit', provider: 'codex', accountMode: 'lowest' }])[0].accountMode, 'lowest');
   assert.equal(normalizeEdgeDockItems([{ type: 'limit', provider: 'claude', accountMode: 'active' }])[0].accountMode, 'lowest');
 });
@@ -2075,65 +2460,39 @@ test('the rail entrance moves the whole surface and stops under reduced motion',
   assert.match(dock, /if \(railReveal !== null && reveal !== railReveal\) playRailReveal\(\);/);
 });
 
-// The halo the running mark breathes is bounded on both sides, and both bounds are
-// invisible in a diff because every number involved is deliberate. It fades out too
-// early and it is already at zero where the glyph ends, showing only through the
-// counters of the letterform; it reaches too far and it stops reading as light around
-// the mark and becomes a second, larger circle behind the ring. The numbers were
-// re-tuned once by eye against the real stylesheet; these bounds are what has to hold
-// whatever they are re-tuned to.
-test('the running halo lights the mark without becoming the ring', () => {
+// The work indicator must fit between the provider mark and the quota reading,
+// including the corners of a square mark as the arc rotates around it.
+test('the running arc clears the mark and stays inside the quota ring', () => {
   const css = readRendererFile(path.join('edgeDock', 'dock.css')).replace(/\/\*[\s\S]*?\*\//g, ' ');
-  const ring = Number(css.match(/\n\.edge-dock-ring \{[^}]*?width: ([\d.]+)px/)[1]);
-  const mark = Number(css.match(/\n\.edge-dock-mark \{[^}]*?width: ([\d.]+)px/)[1]);
-  const arcWidth = Number(css.match(/\n\.edge-dock-ring-fill \{[^}]*?stroke-width: ([\d.]+)/)[1]);
   const dock = readRendererFile(path.join('edgeDock', 'dock.js'));
-  const arcRadius = Number(dock.match(/const RING_RADIUS = ([\d.]+);/)[1]);
-  const glow = css.slice(css.indexOf('.edge-dock-ring-glow {'), css.indexOf('.edge-dock-cell[data-running="yes"]'));
-  const size = Number(glow.match(/width: ([\d.]+)%/)[1]) / 100;
-  // Both gradient forms are legal here: a held stop (`colour 30%, transparent 100%`) and
-  // the plain falloff this uses (`colour, transparent 72%`), which holds nothing at all.
-  const stops = glow.match(/(?:([\d.]+)%, )?transparent ([\d.]+)%/);
-  assert.ok(stops, 'the halo should be a falloff this can read');
-  const hold = Number(stops[1] ?? 0) / 100;
-  const zero = Number(stops[2]) / 100;
-
-  const radius = (size * ring) / 2;
-  // It has to reach past the mark, or there is nothing beside the glyph to see.
-  assert.ok(radius * zero > mark / 2, `the halo is spent at ${radius * zero}px, inside the mark's ${mark / 2}px`);
-  // Anything that is held at full colour has to be held *under* the glyph, so what shows
-  // beside the letterform is always falloff rather than the flat edge of a disc.
-  assert.ok(hold * radius < mark / 2, `colour is held to ${hold * radius}px, past the mark's ${mark / 2}px`);
-  // And it has to be spent inside the arc, or the halo laps under the ring and the
-  // arc stops being the ring's outer edge - the arc is the quota reading, so a glow
-  // that reaches it reads as a fatter, brighter version of the same circle. The bound
-  // is the midpoint between the two landmarks this sits between: a halo that reaches
-  // past it has crossed from light around the glyph into a disc behind the ring.
-  const arcInner = arcRadius - arcWidth / 2;
-  assert.ok(
-    radius * zero < (mark / 2 + arcInner) / 2,
-    `the halo reaches ${radius * zero}px, into the ring's half of the space at ${(mark / 2 + arcInner) / 2}px`
-  );
+  const mark = Number(css.match(/\n\.edge-dock-mark \{[^}]*?width: ([\d.]+)px/)[1]);
+  const quotaWidth = Number(css.match(/\n\.edge-dock-ring-fill \{[^}]*?stroke-width: ([\d.]+)/)[1]);
+  const quotaRadius = Number(dock.match(/const RING_RADIUS = ([\d.]+);/)[1]);
+  const spinRadius = Number(dock.match(/arc\.setAttribute\('r', '([\d.]+)'\)/)[1]);
+  const spinWidth = Number(css.match(/\.edge-dock-ring-spinner circle \{[^}]*?stroke-width: ([\d.]+)/)[1]);
+  assert.ok(spinRadius - spinWidth / 2 > mark / Math.sqrt(2), 'the rotating arc must clear the mark corners');
+  assert.ok(spinRadius + spinWidth / 2 < quotaRadius - quotaWidth / 2, 'work and quota must have separate rings');
+  const spinnerStart = css.indexOf('.edge-dock-ring-spinner {');
+  const spinnerEnd = css.indexOf('.edge-dock-ring-complete {', spinnerStart);
+  assert.ok(spinnerStart >= 0 && spinnerEnd > spinnerStart, 'spinner CSS must have valid boundaries');
+  const spinner = css.slice(spinnerStart, spinnerEnd);
+  assert.match(spinner, /stroke: var\(--text\)/);
+  assert.match(spinner, /opacity: 0;/);
+  assert.match(spinner, /data-running="yes"[^}]*opacity: 1;/);
+  assert.doesNotMatch(spinner, /edge-dock-ring-fill/);
 });
 
-// The breath is the dock's longest-running animation and the rail rebuilds every cell
-// on every stats push, so the element it is declared on is new each time. A phase that
-// lived on that element restarted at 0% with each push - and the pushes come closest
-// together while a session is working, which is exactly when the mark is worth
-// something, so it could stutter or never reach the top of the swing at all. It is
-// anchored to the clock instead, which means the two numbers that anchor it have to
-// agree: the modulo has to be the animation's own period.
-test('the running halo resumes its phase rather than restarting on every repaint', () => {
+// Stats pushes rebuild the rail. The rotation must retain its phase across those
+// swaps, including frequent pushes while an agent is working.
+test('the running arc resumes its phase rather than restarting on every repaint', () => {
   const css = readRendererFile(path.join('edgeDock', 'dock.css'));
   const dock = readRendererFile(path.join('edgeDock', 'dock.js'));
-  const period = Number(css.match(/animation: edge-dock-mark-breathe (\d+)ms/)[1]);
-  assert.equal(Number(dock.match(/const BREATH_MS = (\d+);/)[1]), period, 'the phase anchor has to be the animation\'s period');
-  // A negative delay is what starts a fresh node partway through the cycle - the
-  // point of the whole thing, since a delay of zero is the restart this avoids.
-  assert.match(dock, /glow\.style\.animationDelay = `-\$\{Date\.now\(\) % BREATH_MS\}ms`;/);
-  // And it is set where the glow is made, so no node can reach the document without it.
+  const period = Number(css.match(/animation: edge-dock-running-spin (\d+)ms/)[1]);
+  assert.equal(Number(dock.match(/const RUNNING_SPIN_MS = (\d+);/)[1]), period, 'the phase anchor must use the animation period');
+  assert.match(dock, /spinner\.style\.animationDelay = `-\$\{Date\.now\(\) % RUNNING_SPIN_MS\}ms`;/);
   const ring = dock.slice(dock.indexOf('function ringNode('), dock.indexOf('function providerCellNode('));
-  assert.match(ring, /glow\.style\.animationDelay/);
+  assert.match(ring, /spinner\.style\.animationDelay/);
+  assert.match(ring, /spinner\.setAttribute\('aria-hidden', 'true'\)/);
 });
 
 // The handle's exit is a move now rather than a blink. The window's fade is the main
@@ -2143,11 +2502,11 @@ test('the running halo resumes its phase rather than restarting on every repaint
 // the retreat lives on the withdrawn state and one transition carries it both ways.
 test('the handle retreats into the edge while the window can still show it', () => {
   const css = readRendererFile(path.join('edgeDock', 'dock.css')).replace(/\/\*[\s\S]*?\*\//g, ' ');
-  assert.match(css, /\.edge-dock-root\[data-side="right"\] \{ --edge-dock-grip-retreat: 4px; \}/);
-  assert.match(css, /\.edge-dock-root\[data-side="left"\] \{ --edge-dock-grip-retreat: -4px; \}/);
+  assert.match(css, /\.edge-dock-root\[data-side="right"\] \{ --edge-dock-handle-retreat: 100%; \}/);
+  assert.match(css, /\.edge-dock-root\[data-side="left"\] \{ --edge-dock-handle-retreat: -100%; \}/);
   assert.match(
     css,
-    /\.is-handle-hidden \.edge-dock-grip \{\s*opacity: 0;\s*transform: translateX\(var\(--edge-dock-grip-retreat\)\) scaleY\(0\.2\);\s*transition: opacity 110ms ease-out, transform 110ms ease-out;/
+    /\.is-handle-hidden \.edge-dock-shape \{\s*opacity: 0;\s*transform: translateX\(var\(--edge-dock-handle-retreat\)\) scaleY\(0\.2\);\s*transition: opacity 110ms ease-out, transform 110ms ease-out;/
   );
   assert.match(css, /transition: opacity 150ms ease, transform 150ms cubic-bezier\(0\.33, 1, 0\.68, 1\);/);
 
@@ -2155,4 +2514,131 @@ test('the handle retreats into the edge while the window can still show it', () 
   // and a page that loads with the rail already open starts in the withdrawn pose.
   const dock = readRendererFile(path.join('edgeDock', 'dock.js'));
   assert.match(dock, /root\.classList\.toggle\('is-handle-hidden', payload\.peeking !== true\);/);
+});
+
+test('live rate card renders device model rows with vendor marks and retains every row', () => {
+  const devices = [{ id: 'a', name: 'MacBook', models: [{ model: 'gpt-6.1-sol', speed: 40, burn: 2400 }] }, { id: 'b', name: 'Desktop', models: Array.from({ length: 8 }, (_, i) => ({ model: `claude-${i}`, speed: i + 1, burn: 60 * (i + 1) })) }];
+  const [cell] = buildEdgeDockCells({}, { items: [{ type: 'stat', metric: 'liveRate' }], liveRate: { speed: 76, burn: 4560, idle: false, devices } });
+  assert.deepEqual(cell.rateDevices, devices);
+  const dock = readRendererFile(path.join('edgeDock', 'dock.js'));
+  const body = dock.slice(dock.indexOf('function appendLiveRateDetails('), dock.indexOf('function statCard('));
+  const node = (tag, className, text) => ({ tag, className, text, children: [], classes: new Set(), classList: { toggle(name, enabled) { if (enabled) this.owner.classes.add(name); else this.owner.classes.delete(name); } }, setAttribute() {}, append(...children) { this.children.push(...children); } });
+  const createNode = (...args) => { const result = node(...args); result.classList.owner = result; return result; };
+  const render = Function('window', 'el', 'formatRate', 'markNode', 'modelVendorFor', `return (${body})`)(
+    { TokenMonitorTokenRate: require('../../src/electron/renderer/tokenRatePresentation') }, createNode, String,
+    (vendor) => createNode('span', vendor), require('../../src/electron/renderer/usageCharts').modelVendorFor
+  );
+  const card = node('section', '');
+  render(card, cell);
+  const rows = card.children[0].children.filter((row) => row.className === 'edge-dock-rate-model');
+  assert.equal(rows.length, 9);
+  assert.equal(rows[0].children[0].className, 'codex');
+  assert.equal(rows[0].children[2].text, '40 tok/s');
+  assert.equal(rows[1].children[0].className, 'claude');
+  const headings = card.children[0].children.filter((row) => row.className === 'edge-dock-rate-device');
+  assert.deepEqual(headings.map((row) => row.text), ['MacBook', 'Desktop']);
+  assert.deepEqual(headings.map((row) => row.classes.has('is-separated')), [false, true]);
+  const single = node('section', '');
+  render(single, { rateDevices: [devices[0]] });
+  assert.equal(single.children[0].children.some((row) => row.className === 'edge-dock-rate-device'), false);
+  const mixed = node('section', '');
+  render(mixed, { rateDevices: [devices[0]], deviceCount: 2 });
+  assert.equal(mixed.children[0].children[0].text, 'MacBook');
+  const empty = node('section', '');
+  render(empty, { rateDevices: [] });
+  assert.equal(empty.children.length, 0);
+});
+
+test('refresh placement preserves rail bounds and stays accessible at either display edge', () => {
+  const area = { x: -1200, y: 80, width: 1200, height: 700 };
+  for (const side of ['left', 'right']) {
+    for (const offset of [0, 0.3, 1]) {
+      const rail = edgeDockRailBounds({ workArea: area, side, offset, cellKinds: ['provider', 'provider'] });
+      const before = structuredClone(rail);
+      const button = edgeDockRefreshBounds({ workArea: area, railBounds: rail });
+      assert.deepEqual(rail, before);
+      if (offset === 1) {
+        assert.equal(button.y + button.height, rail.y + rail.height);
+      } else {
+        assert.equal(button.x + button.width / 2, rail.x + rail.width / 2);
+        assert.equal(rail.y + rail.height - button.y, Math.round(EDGE_DOCK_METRICS.shoulder * 0.7) - EDGE_DOCK_METRICS.refreshGap);
+      }
+      assert.equal(button.x + button.width / 2, rail.x + rail.width / 2);
+      assert.ok(button.y >= area.y + EDGE_DOCK_METRICS.screenMargin);
+      assert.ok(button.y + button.height <= area.y + area.height - EDGE_DOCK_METRICS.screenMargin);
+      const corridor = edgeDockRefreshCorridor(rail, button);
+      assert.equal(corridor.width, 0);
+    }
+    const full = edgeDockRailBounds({ workArea: area, side, offset: 1, cellKinds: Array(30).fill('provider') });
+    const button = edgeDockRefreshBounds({ workArea: area, railBounds: full });
+    assert.equal(button.x + button.width / 2, full.x + full.width / 2);
+    assert.ok(button.y + button.height <= area.y + area.height - EDGE_DOCK_METRICS.screenMargin);
+    assert.equal(edgeDockRefreshCorridor(full, button).width, 0);
+    for (const count of [2, 12, 30]) {
+      for (const offset of [0, 0.3, 0.75, 0.95, 1]) {
+        const rail = edgeDockRailBounds({ workArea: area, side, offset, cellKinds: Array(count).fill('provider') });
+        const action = edgeDockRefreshBounds({ workArea: area, railBounds: rail });
+        assert.equal(action.x + action.width / 2, rail.x + rail.width / 2);
+        assert.ok(action.y >= rail.y + rail.height - action.height, 'refresh must stay at the bottom, never above the rail');
+        assert.ok(action.y + action.height <= area.y + area.height - EDGE_DOCK_METRICS.screenMargin);
+      }
+    }
+  }
+});
+
+test('refresh retains its original bottom position when the display extends below the work area', () => {
+  const area = { x: 0, y: 24, width: 1200, height: 820 };
+  const displayBounds = { x: 0, y: 0, width: 1200, height: 900 };
+  for (const side of ['left', 'right']) {
+    const rail = edgeDockRailBounds({ workArea: area, side, offset: 1, cellKinds: Array(12).fill('provider') });
+    const button = edgeDockRefreshBounds({ workArea: area, displayBounds, railBounds: rail });
+    assert.equal(button.x + button.width / 2, rail.x + rail.width / 2);
+    assert.equal(button.y, rail.y + rail.height - Math.round(EDGE_DOCK_METRICS.shoulder * 0.7) + EDGE_DOCK_METRICS.refreshGap);
+    assert.ok(button.y + button.height > area.y + area.height - EDGE_DOCK_METRICS.screenMargin);
+    assert.ok(button.y + button.height <= displayBounds.y + displayBounds.height - EDGE_DOCK_METRICS.screenMargin);
+  }
+});
+
+test('the dock size resolves to a preset or the custom scale, which survives a preset', () => {
+  assert.equal(normalizeEdgeDockSize('large'), 'large');
+  assert.equal(normalizeEdgeDockSize('huge'), 'medium');
+  assert.equal(normalizeEdgeDockSize(undefined), 'medium');
+  assert.equal(normalizeEdgeDockCustomScale(1.234), 1.25, 'snapped to the slider step');
+  assert.equal(normalizeEdgeDockCustomScale(9), 1.5);
+  assert.equal(normalizeEdgeDockCustomScale(0.1), 0.75);
+  assert.equal(normalizeEdgeDockCustomScale('x'), 1);
+  assert.equal(edgeDockScale({}), 1, 'settings from before the option keep today\'s size');
+  assert.equal(edgeDockScale({ edgeDockSize: 'small' }), 0.85);
+  assert.equal(edgeDockScale({ edgeDockSize: 'large', edgeDockCustomScale: 0.8 }), 1.25);
+  assert.equal(edgeDockScale({ edgeDockSize: 'custom', edgeDockCustomScale: 0.8 }), 0.8);
+});
+
+test('scaled metrics grow the dock but not the distances the pointer opens it from', () => {
+  assert.equal(scaledEdgeDockMetrics(1), EDGE_DOCK_METRICS);
+  const large = scaledEdgeDockMetrics(1.5);
+  assert.equal(large.railWidth, 96);
+  assert.equal(large.cellHeight, 105);
+  assert.equal(large.bubbleWidth, 420);
+  for (const key of ['wakeDepth', 'approachDepth', 'approachSlack', 'triggerDepth', 'screenMargin', 'edgeInset']) {
+    assert.equal(large[key], EDGE_DOCK_METRICS[key], key);
+  }
+  for (const value of Object.values(large)) assert.equal(Number.isInteger(value), true);
+
+  const small = scaledEdgeDockMetrics(0.75);
+  assert.equal(small.peekWidth, EDGE_DOCK_METRICS.peekWidth, 'the handle window stays as wide as AppKit allows');
+  assert.ok(small.handleWidth >= 5, 'the handle stays wide enough to find');
+  assert.ok(small.handleNearWidth > small.handleWidth, 'and still grows on approach');
+});
+
+test('a larger dock that would not fit shrinks to the largest size that keeps full density', () => {
+  const kinds = ['stat', 'provider', 'provider', 'provider', 'provider', 'provider', 'provider', 'stat', 'stat'];
+  const workArea = { x: 0, y: 33, width: 1280, height: 799 };
+  const fitted = edgeDockFittingScale({ workArea, cellKinds: kinds, scale: 1.25 });
+  assert.ok(fitted > 1 && fitted < 1.25, `fitted ${fitted}`);
+  assert.equal(edgeDockCellLayout(workArea, kinds, scaledEdgeDockMetrics(fitted)).compact, false);
+  assert.equal(edgeDockCellLayout(workArea, kinds, scaledEdgeDockMetrics(fitted + 0.01)).compact, true, 'and no larger');
+
+  assert.equal(edgeDockFittingScale({ workArea, cellKinds: ['provider'], scale: 1.25 }), 1.25, 'a dock that fits keeps its size');
+  assert.equal(edgeDockFittingScale({ workArea, cellKinds: kinds, scale: 0.85 }), 0.85, 'a smaller one is left alone');
+  assert.equal(edgeDockFittingScale({ workArea: { ...workArea, height: 400 }, cellKinds: kinds, scale: 1.5 }), 1, 'one too long even at 100% keeps today\'s density');
 });

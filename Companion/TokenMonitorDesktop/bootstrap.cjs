@@ -49,6 +49,14 @@ if (!process.versions.electron) {
           throw new Error('Private data directory mismatch');
         }
       }
+      // The host has no approved Dots observer capability. Never inherit the
+      // standalone application's opt-in from a shell or Launch Services.
+      process.env.TOKEN_MONITOR_CODEX_LOCAL_USAGE = '0';
+      // Cloud startup is a saved user choice, never an inherited shell choice.
+      for (const name of ['TOKEN_MONITOR_HUB_URL', 'TOKEN_MONITOR_SECRET',
+        'TOKEN_MONITOR_PORT', 'TOKEN_MONITOR_SYNC_SESSION_TITLES']) {
+        delete process.env[name];
+      }
       app.setPath('userData', userData);
       const bridge = createHostBridge({ socketPath, hostSocketPath, app, logger: (message) => console.warn(`[aigoodbro-desktop] ${message}`) });
       globalThis.__AIGOODBRO_TOKEN_MONITOR_BRIDGE__ = bridge;

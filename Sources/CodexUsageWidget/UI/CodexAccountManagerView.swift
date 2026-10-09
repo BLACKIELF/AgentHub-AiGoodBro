@@ -449,7 +449,11 @@ struct CodexAccountManagerView: View {
     @State private var isNewFeatureUpdatePresented = false
     @State private var installationUpdatesEventID: String?
     @State private var setupGuideScope = NextSetupGuideScope.full
+    @State private var setupGuideManualStep: NextSetupStep?
     @State private var setupGuideEventID: String?
+    @State private var openClaudeAfterGuide = false
+    @State private var openClaudeGuideEventID: String?
+    @State private var openClaudeAfterUpdate = false
     @State private var hasCheckedAutomaticGuide = false
     @State private var isPreviewPaletteLibraryPresented = false
     @State private var isHomeAboutPresented = false
@@ -639,6 +643,7 @@ struct CodexAccountManagerView: View {
                 hasCheckedAutomaticGuide = true
                 if let scope = settings.installationOnboarding.automaticScope(legacyShouldPresent: settings.onboarding.shouldPresent) {
                     setupGuideScope = scope
+                    setupGuideManualStep = nil
                     setupGuideEventID = settings.installationOnboarding.shouldPresent ? settings.installationOnboarding.presentationEventID : nil
                     if setupGuideScope == .full { settings.onboarding.begin() }
                     isSetupGuidePresented = true
@@ -695,9 +700,14 @@ struct CodexAccountManagerView: View {
         .sheet(
             isPresented: $isSetupGuidePresented,
             onDismiss: {
+                let shouldOpenClaude = openClaudeAfterGuide && setupGuideClaudeEventIsCurrent(openClaudeGuideEventID)
+                openClaudeAfterGuide = false
+                openClaudeGuideEventID = nil
                 installationUpdatesEventID = nil
                 store.migrateDeviceLoginHostIfNeeded(from: .setupGuide)
-                if openAutomationAfterGuide {
+                if shouldOpenClaude && !store.isPreview {
+                    openLocalCLITab(.claudeCode)
+                } else if openAutomationAfterGuide {
                     openAutomationAfterGuide = false
                     isAutomationCenterPresented = true
                 }
@@ -713,7 +723,8 @@ struct CodexAccountManagerView: View {
                         onDone: {
                             guard installationUpdatesEventID == eventID else { return }
                             installationUpdatesEventID = nil
-                        }
+                        },
+                        onOpenClaude: { requestClaudeFromSetupGuide(eventID: presentedEventID, scope: presentedScope) }
                     )
                     .disabled(!settings.installationOnboarding.shouldPresent || settings.installationOnboarding.presentationEventID != eventID)
                 } else {
@@ -745,15 +756,30 @@ struct CodexAccountManagerView: View {
                 NextSetupGuideView(
                     store: store, settings: settings, localAccounts: localCLIAccounts, scope: presentedScope,
                     installationEventID: presentedEventID,
+                    manualInitialStep: setupGuideManualStep,
                     onOutcome: { settings.installationOnboarding.finish($0, scope: presentedScope, eventID: presentedEventID) },
                     openAutomation: {
                         openAutomationAfterGuide = true
                         isSetupGuidePresented = false
-                    })
+                    },
+                    onOpenClaude: { requestClaudeFromSetupGuide(eventID: presentedEventID, scope: presentedScope) })
             }
         }
-        .sheet(isPresented: $isNewFeatureUpdatePresented) {
-            NewFeatureUpdateView(store: store, settings: settings, onDone: { isNewFeatureUpdatePresented = false })
+        .sheet(
+            isPresented: $isNewFeatureUpdatePresented,
+            onDismiss: {
+                let shouldOpenClaude = openClaudeAfterUpdate
+                openClaudeAfterUpdate = false
+                if shouldOpenClaude && !store.isPreview { openLocalCLITab(.claudeCode) }
+            }
+        ) {
+            NewFeatureUpdateView(
+                store: store, settings: settings, onDone: { isNewFeatureUpdatePresented = false },
+                onOpenClaude: {
+                    guard !store.isPreview else { return }
+                    openClaudeAfterUpdate = true
+                    isNewFeatureUpdatePresented = false
+                })
         }
         .sheet(item: $avatarEditor) { target in
             AccountAvatarEditor(
@@ -845,7 +871,7 @@ struct CodexAccountManagerView: View {
                     onOpenSetup: {
                         setupGuideScope = .full
                         setupGuideEventID = nil
-                        settings.setupProgress.step = .runtime
+                        setupGuideManualStep = .runtime
                         isSetupGuidePresented = true
                     })
             } else {
@@ -881,39 +907,7 @@ struct CodexAccountManagerView: View {
 
     private var homeNotices: some View {
         VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 9) {
-                HomeSectionToggle(
-                    title: language.text("推荐与公告", "Recommendations and notices"),
-                    systemImage: "bell", fillsWidth: false, language: language, isExpanded: $homeNoticesExpanded
-                )
-                .font(.system(size: 12, weight: .semibold))
-                Group {
-                    if !homeNoticesExpanded {
-                        ResetMessageHeaderSummary(
-                            language: language, profiles: store.profiles,
-                            announcements: resetAnnouncementMonitor.announcements + (resetAnnouncementMonitor.latest.map { [$0] } ?? []),
-                            forecastDeadline: store.isPreview ? (previewForecastBy ?? previewForecastDeadline) : homeForecastStore.forecast?.latestBy)
-                    } else if let deadline = store.isPreview ? (previewForecastBy ?? previewForecastDeadline) : homeForecastStore.forecast?.latestBy {
-                        ResetCountdownText(deadline: deadline, kind: .publicForecast, language: language)
-                            .layoutPriority(1)
-                        Text("· " + PublicResetAnnouncementPresentation.compactEventTime(deadline, language: language))
-                            .foregroundStyle(.secondary)
-                        Text(language.text("· 待确认", "· Unconfirmed")).foregroundStyle(.secondary)
-                        Spacer(minLength: 3)
-                    } else {
-                        Text(language.text("公开预告 · AiGoodBro 公告 · Skills", "Public forecast · AiGoodBro notices · Skills"))
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                .font(.system(size: 11))
-                .lineLimit(1)
-                if homeNoticesExpanded {
-                    ResetMessageHeaderSummary(
-                        language: language, profiles: store.profiles, announcements: [],
-                        forecastDeadline: nil, balancesOnly: true)
-                }
-            }
-            .frame(minHeight: 26)
+            homeNoticesHeader.frame(minHeight: 26)
             if homeNoticesExpanded {
                 resetUpdatesBanner.padding(.horizontal, 7).padding(.vertical, homeResetExpanded ? 5 : 3)
                     .homeResizable(.reset, title: language.text("重置消息", "Reset updates"), language: language, expanded: homeResetExpanded, minimumWidth: 420, allowsWidth: false)
@@ -927,6 +921,85 @@ struct CodexAccountManagerView: View {
         .padding(.horizontal, 13).padding(.vertical, homeNoticesExpanded ? 7 : 3)
         .frame(maxWidth: .infinity, alignment: .leading)
         .homeResizable(.notices, title: language.text("推荐与公告", "Recommendations and notices"), language: language, expanded: homeNoticesExpanded, minimumWidth: 420)
+    }
+
+    @ViewBuilder
+    private var homeNoticesHeader: some View {
+        if homeNoticesExpanded {
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 9) {
+                    homeNoticesTitle
+                    homeNoticesForecast
+                    homeNoticesBalances
+                }
+                .fixedSize(horizontal: true, vertical: false)
+                VStack(alignment: .leading, spacing: 5) {
+                    HStack(spacing: 9) {
+                        homeNoticesTitle
+                        homeNoticesForecast
+                    }
+                    homeNoticesBalances
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        } else {
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 9) {
+                    homeNoticesTitle
+                    homeNoticesCollapsedSummary
+                }
+                .fixedSize(horizontal: true, vertical: false)
+                VStack(alignment: .leading, spacing: 5) {
+                    homeNoticesTitle
+                    homeNoticesCollapsedSummary
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+    }
+
+    private var homeNoticesTitle: some View {
+        HomeSectionToggle(
+            title: language.text("推荐与公告", "Recommendations and notices"),
+            systemImage: "bell", fillsWidth: false, language: language, isExpanded: $homeNoticesExpanded
+        )
+        .font(.system(size: 12, weight: .semibold))
+    }
+
+    private var homeNoticesForecast: some View {
+        Group {
+            if let deadline = store.isPreview ? (previewForecastBy ?? previewForecastDeadline) : homeForecastStore.forecast?.latestBy {
+                ResetCountdownText(deadline: deadline, kind: .publicForecast, language: language)
+                    .layoutPriority(1)
+                Text("· " + PublicResetAnnouncementPresentation.compactEventTime(deadline, language: language))
+                    .foregroundStyle(.secondary)
+                Text(language.text("· 待确认", "· Unconfirmed")).foregroundStyle(.secondary)
+                Spacer(minLength: 3)
+            } else {
+                Text(language.text("公开预告 · AiGoodBro 公告 · Skills", "Public forecast · AiGoodBro notices · Skills"))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .font(.system(size: 11))
+        .lineLimit(1)
+    }
+
+    private var homeNoticesBalances: some View {
+        ResetMessageHeaderSummary(
+            language: language, profiles: store.profiles, announcements: [],
+            forecastDeadline: nil, balancesOnly: true)
+    }
+
+    private var homeNoticesCollapsedSummary: some View {
+        ResetMessageHeaderSummary(
+            language: language, profiles: store.profiles,
+            announcements: resetAnnouncementMonitor.announcements + (resetAnnouncementMonitor.latest.map { [$0] } ?? []),
+            forecastDeadline: store.isPreview ? (previewForecastBy ?? previewForecastDeadline) : homeForecastStore.forecast?.latestBy
+        )
+        .font(.system(size: 11))
+        .lineLimit(1)
     }
 
     @ViewBuilder
@@ -987,7 +1060,7 @@ struct CodexAccountManagerView: View {
                 } label: {
                     Label(language.text("新功能与设置", "What's new & settings"), systemImage: "sparkles")
                 }
-                Text(language.text("重置卡临期自动使用 · 侧栏额度样式", "Reset-card expiry protection · Sidebar quota style"))
+                Text(language.text("Claude 订阅账号与额度 · 重置卡临期自动使用 · 侧栏额度样式", "Claude subscriptions & limits · Reset-card expiry protection · Sidebar quota style"))
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 0)
             }
@@ -1647,7 +1720,7 @@ struct CodexAccountManagerView: View {
                 onOpenSetup: {
                     setupGuideScope = .full
                     setupGuideEventID = nil
-                    settings.setupProgress.step = .runtime
+                    setupGuideManualStep = .runtime
                     isSetupGuidePresented = true
                 })
         }
@@ -2189,6 +2262,23 @@ struct CodexAccountManagerView: View {
         }
     }
 
+    private func setupGuideClaudeEventIsCurrent(_ eventID: String?) -> Bool {
+        guard setupGuideEventID == eventID else { return false }
+        guard let eventID else { return true }
+        return settings.installationOnboarding.shouldPresent
+            && settings.installationOnboarding.presentationEventID == eventID
+    }
+
+    private func requestClaudeFromSetupGuide(eventID: String?, scope: NextSetupGuideScope) {
+        guard !store.isPreview, isSetupGuidePresented, setupGuideScope == scope,
+            setupGuideClaudeEventIsCurrent(eventID)
+        else { return }
+        openClaudeAfterGuide = true
+        openClaudeGuideEventID = eventID
+        openAutomationAfterGuide = false
+        isSetupGuidePresented = false
+    }
+
     @ViewBuilder
     private var codexWorkspaceContent: some View {
         if !showingHome {
@@ -2250,9 +2340,18 @@ struct CodexAccountManagerView: View {
     }
 
     private func openPrimaryGuide() {
+        if settings.installationOnboarding.shouldPresent,
+            let scope = settings.installationOnboarding.automaticScope(legacyShouldPresent: false)
+        {
+            setupGuideScope = scope
+            setupGuideManualStep = nil
+            setupGuideEventID = settings.installationOnboarding.presentationEventID
+            isSetupGuidePresented = true
+            return
+        }
         setupGuideScope = .full
         setupGuideEventID = nil
-        settings.setupProgress.step = .accounts
+        setupGuideManualStep = .accounts
         isSetupGuidePresented = true
     }
 
@@ -3038,8 +3137,10 @@ struct CodexAccountManagerView: View {
                 localResetHistoryCount: store.localResetHistoryCount(for: profile),
                 proxyParticipation: localProxy.displayRows.first(where: { $0.id == profile.id }).map(\.isEnabled),
                 proxyPriority: localProxy.displayRows.first(where: { $0.id == profile.id }).map(\.isPriority),
+                proxyLast: localProxy.displayRows.first(where: { $0.id == profile.id }).map(\.isLast),
                 canToggleProxy: localProxy.canToggleAccount(id: profile.id),
-                canPrioritizeProxy: localProxy.canReorder && localProxy.displayRows.first(where: { $0.id == profile.id })?.isEnabled == true,
+                canPrioritizeProxy: localProxy.canReorder,
+                canSetProxyLast: localProxy.canSetAccountLast(id: profile.id),
                 chromeProfiles: store.availableChromeProfiles,
                 onMonitor: { store.selectMonitorProfile(profile.id) },
                 onRefresh: { store.refreshProfile(profile.id) },
@@ -3075,6 +3176,10 @@ struct CodexAccountManagerView: View {
                 },
                 onSetProxyPriority: { priority in
                     localProxy.setAccountPriority(id: profile.id, priority: priority)
+                    localProxy.flushDisplayRows()
+                },
+                onSetProxyLast: { last in
+                    localProxy.setAccountLast(id: profile.id, last: last)
                     localProxy.flushDisplayRows()
                 },
                 onSetProTierMultiplier: { store.setProTierMultiplier($0, for: profile.id) },
@@ -5899,8 +6004,10 @@ private struct ProfileRow: View {
     /// a false participation state before identity verification.
     let proxyParticipation: Bool?
     let proxyPriority: Bool?
+    let proxyLast: Bool?
     let canToggleProxy: Bool
     let canPrioritizeProxy: Bool
+    let canSetProxyLast: Bool
     let chromeProfiles: [ChromeProfileBinding]
     let onMonitor: () -> Void
     let onRefresh: () -> Void
@@ -5914,6 +6021,7 @@ private struct ProfileRow: View {
     let onSetDispatchParticipationWindow: (DispatchParticipationWindow) -> Bool
     let onSetProxyParticipation: ((Bool) -> Void)?
     let onSetProxyPriority: (Bool) -> Void
+    let onSetProxyLast: (Bool) -> Void
     let onSetProTierMultiplier: (Int?) -> Void
     let onSetExecutionPreference: (CodexExecutionPreference, Bool) -> Result<Void, Error>
     let onRename: (String) -> Result<Void, Error>
@@ -6220,8 +6328,23 @@ private struct ProfileRow: View {
                 Toggle(language.text("优先", "Priority"), isOn: Binding(get: { proxyPriority }, set: onSetProxyPriority))
                     .foregroundStyle(proxyPriority ? FixedVisualPalette.statusDangerForeground(colorScheme) : Color.secondary)
                     .disabled(!canPrioritizeProxy)
-                    .help(language.text("与反代队列的优先调用同步；不改变调度设置。", "Shares proxy-queue priority; dispatch settings remain independent."))
+                    .help(
+                        language.text(
+                            "与反代窗口同步；选择优先会取消最后使用，对新请求生效，不改变调度设置。",
+                            "Synced with the proxy window. Selecting priority clears Use last for new requests; dispatch settings stay independent.")
+                    )
                     .accessibilityLabel(language.text("反代优先调用", "Proxy priority"))
+            }
+            if let proxyLast {
+                Toggle(language.text("最后使用", "Use last"), isOn: Binding(get: { proxyLast }, set: onSetProxyLast))
+                    .foregroundStyle(proxyLast ? Color.primary : Color.secondary)
+                    .disabled(!canSetProxyLast)
+                    .help(
+                        language.text(
+                            "与反代窗口同步；各额度阶段最后使用，选择后取消优先，可随时取消；订阅额度先于点数。",
+                            "Synced with the proxy window. Use last in each quota phase; selecting this clears priority and can be undone. Subscriptions precede credits.")
+                    )
+                    .accessibilityLabel(language.text("反代最后使用", "Use last for proxy requests"))
             }
             Spacer(minLength: 0)
 

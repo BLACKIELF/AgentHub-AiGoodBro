@@ -3,7 +3,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 
-const { createDeviceRuntime } = require('../../src/shared/deviceRuntime');
+const { createDeviceRuntime } = require('../../src/shared/usage/deviceRuntime');
 
 function harness(options = {}) {
   const {
@@ -93,6 +93,25 @@ test('usage transforms run only for usage events, not limits-only publishes', ()
   assert.equal(visible.transformed, true);
   assert.equal(records.length, 2);
   assert.equal(records[1].record.transformed, true);
+});
+
+test('summaries a worker-hosted runtime already transformed are not transformed again', () => {
+  const transformed = [];
+  const { records, usageOptions } = harness({
+    progressive: true,
+    transformUsage(summary, reason) {
+      transformed.push(reason);
+      return { ...summary, transformedHere: true };
+    }
+  });
+  usageOptions.onPreview({ updatedAt: 'preview-time', today: { totalTokens: 2 } }, 'progress', { transformed: true });
+  const visible = usageOptions.onUpdate({ updatedAt: 'usage-time', today: { totalTokens: 4 } }, 'startup', { transformed: true });
+  usageOptions.onUpdate({ updatedAt: 'usage-time-2', today: { totalTokens: 5 } }, 'watch');
+
+  assert.deepEqual(transformed, ['watch']);
+  assert.equal(visible.transformedHere, undefined);
+  assert.equal(records[0].record.transformedHere, undefined);
+  assert.equal(records.at(-1).record.transformedHere, true);
 });
 
 test('progressive cold-start previews wait for the first complete usage record', () => {
@@ -279,4 +298,18 @@ test('runtime control wrappers do not delegate after stop', async () => {
   await runtime.flush();
 
   assert.deepEqual(calls, [['usageStop'], ['limitsStop']]);
+});
+
+test('Dots visibility delegates to the active producer without stopping it', async () => {
+  const { runtime, calls, usageOptionsHistory } = harness({
+    createUsageRuntime(_options, handle) {
+      handle.setCodexDotsVisible = (value) => { calls.push(['dotsVisibility', value]); return Promise.resolve(true); };
+      return handle;
+    }
+  });
+  assert.equal(await runtime.setCodexDotsVisible(false), true);
+  assert.equal(usageOptionsHistory.length, 1);
+  assert.deepEqual(calls, [['dotsVisibility', false]]);
+  runtime.stop();
+  assert.equal(await runtime.setCodexDotsVisible(true), false);
 });

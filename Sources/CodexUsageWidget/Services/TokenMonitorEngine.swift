@@ -24,7 +24,15 @@ struct TokenMonitorEngine: Sendable {
     struct Fixture: Sendable {
         let executable: URL
         let bridge: URL
+        var electronNode = false
     }
+    private struct SharedRuntime: Decodable {
+        let schemaVersion: Int
+        let mode: String
+        let executable: String
+        let runAsNodeFuse: Bool
+    }
+    private static let sharedExecutable = "Contents/Helpers/AiGoodBro Token Core.app/Contents/MacOS/AiGoodBro Token Core"
     private let fixture: Fixture?
     init(fixture: Fixture? = nil) { self.fixture = fixture }
 
@@ -36,13 +44,30 @@ struct TokenMonitorEngine: Sendable {
         guard input.count <= Self.maximumInputBytes else { throw TokenMonitorFailure.inputTooLarge }
         let runtime: URL
         let bridge: URL
+        var electronNode = false
         if let fixture {
             runtime = fixture.executable
             bridge = fixture.bridge
+            electronNode = fixture.electronNode
         } else {
             guard let resources = Bundle.main.resourceURL else { throw TokenMonitorFailure.missingBundle }
             let root = resources.appendingPathComponent("TokenMonitorEngine", isDirectory: true)
-            runtime = root.appendingPathComponent("runtime/node")
+            let descriptor = root.appendingPathComponent("RUNTIME.json")
+            if FileManager.default.fileExists(atPath: descriptor.path) {
+                guard let data = try? Data(contentsOf: descriptor), data.count <= 16_384,
+                    let shared = try? JSONDecoder().decode(SharedRuntime.self, from: data),
+                    shared.schemaVersion == 1, shared.mode == "shared-electron-node",
+                    shared.executable == Self.sharedExecutable, shared.runAsNodeFuse
+                else { throw TokenMonitorFailure.missingBundle }
+                let bundleRoot = resources.deletingLastPathComponent().deletingLastPathComponent()
+                let candidate = bundleRoot.appendingPathComponent(Self.sharedExecutable)
+                guard candidate.resolvingSymlinksInPath().path.hasPrefix(bundleRoot.resolvingSymlinksInPath().path + "/")
+                else { throw TokenMonitorFailure.missingBundle }
+                runtime = candidate
+                electronNode = true
+            } else {
+                runtime = root.appendingPathComponent("runtime/node")
+            }
             bridge = root.appendingPathComponent("bridge.cjs")
         }
         guard FileManager.default.isExecutableFile(atPath: runtime.path),
@@ -55,10 +80,12 @@ struct TokenMonitorEngine: Sendable {
             throw TokenMonitorFailure.spawnFailed
         }
         defer { try? FileManager.default.removeItem(at: scratch) }
-        let environment = [
+        var environment = [
             "HOME": scratch.path, "TMPDIR": scratch.path, "LANG": "en_US.UTF-8", "TZ": request.timezone,
             "PATH": runtime.deletingLastPathComponent().path,
         ]
+        // Build-selected mode only. Caller/global ELECTRON_RUN_AS_NODE and NODE_OPTIONS never enter.
+        if electronNode { environment["ELECTRON_RUN_AS_NODE"] = "1" }
         let output = try Self.run(
             executable: runtime, arguments: [bridge.path], environment: environment,
             input: input, timeoutMs: request.options.timeoutMs, cancellation: cancellation)

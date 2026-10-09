@@ -150,6 +150,79 @@ func TestControlMaintenanceHasReservedCapacity(t *testing.T) {
 	}
 }
 
+func TestControlReconciliationHasReservedCapacity(t *testing.T) {
+	entered, unblock := make(chan struct{}, 2), make(chan struct{})
+	var wg sync.WaitGroup
+	var resolutions atomic.Int32
+	b := controlTestBridge(t, func(conn net.Conn, q bridgeRequest) {
+		if q.Command == "heartbeat" || q.Command == "release" {
+			entered <- struct{}{}
+			<-unblock
+		}
+		if q.Command == "acquire_resolve" {
+			resolutions.Add(1)
+		}
+		_ = json.NewEncoder(conn).Encode(bridgeReply{OK: true, Resolution: "not_reserved"})
+	})
+	b.resolveTimeout = 100 * time.Millisecond
+	defer func() { close(unblock); wg.Wait() }()
+	for _, command := range []string{"heartbeat", "release"} {
+		wg.Add(1)
+		go func(command string) {
+			defer wg.Done()
+			_, _ = b.call(context.Background(), command, "request", "profile", "lease")
+		}(command)
+	}
+	for i := 0; i < 2; i++ {
+		select {
+		case <-entered:
+		case <-time.After(time.Second):
+			t.Fatal("maintenance lanes did not fill")
+		}
+	}
+	start := time.Now()
+	reply, err := b.call(context.Background(), "acquire_resolve", "request", "profile", "")
+	if err != nil || !reply.OK || reply.Resolution != "not_reserved" || resolutions.Load() != 1 {
+		t.Fatalf("reconciliation blocked by maintenance: reply=%+v err=%v sent=%d elapsed=%v", reply, err, resolutions.Load(), time.Since(start))
+	}
+}
+
+func TestControlReconciliationCapacityIsBoundedAndCancellable(t *testing.T) {
+	entered, unblock := make(chan struct{}, 3), make(chan struct{})
+	var wg sync.WaitGroup
+	b := controlTestBridge(t, func(conn net.Conn, q bridgeRequest) {
+		entered <- struct{}{}
+		<-unblock
+		_ = json.NewEncoder(conn).Encode(bridgeReply{OK: true, Resolution: "not_reserved"})
+	})
+	defer func() { close(unblock); wg.Wait() }()
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _ = b.call(context.Background(), "acquire_resolve", "request", "profile", "")
+		}()
+	}
+	for i := 0; i < 2; i++ {
+		select {
+		case <-entered:
+		case <-time.After(time.Second):
+			t.Fatal("reconciliation lanes did not fill")
+		}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	reply, err := b.call(ctx, "acquire_resolve", "cancelled", "profile", "")
+	if err != nil || reply.Error != "control_busy" {
+		t.Fatalf("cancelled resolver queue became ambiguous: %+v %v", reply, err)
+	}
+	select {
+	case <-entered:
+		t.Fatal("cancelled resolver exceeded bounded capacity")
+	default:
+	}
+}
+
 func TestControlExchangeReceivesFullDeadlineAfterQueue(t *testing.T) {
 	entered := make(chan struct{}, 6)
 	release := make(chan struct{})

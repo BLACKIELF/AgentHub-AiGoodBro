@@ -59,6 +59,9 @@ struct TokenMonitorEdgeDockSettingsView: View {
 
     private var refreshControls: some View {
         VStack(alignment: .leading, spacing: 7) {
+            Toggle(language.text("在侧栏显示刷新按钮", "Show a refresh button in the dock"), isOn: binding(\.refreshEnabled))
+                .font(.system(size: 11))
+                .accessibilityIdentifier("edge-dock-refresh-enabled")
             HStack(spacing: 7) {
                 Text(language.text("快照刷新", "Snapshot refresh"))
                     .font(.system(size: 11, weight: .semibold))
@@ -194,6 +197,28 @@ struct TokenMonitorEdgeDockSettingsView: View {
                 )
                 .font(.system(size: 10)).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+            }
+            Divider()
+            VStack(alignment: .leading, spacing: 7) {
+                Picker(language.text("侧栏大小", "Dock size"), selection: binding(\.size)) {
+                    ForEach(TokenMonitorEdgeDockPreferences.Size.allCases, id: \.self) { size in
+                        Text(size.title(language)).tag(size)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .accessibilityIdentifier("edge-dock-size")
+                if preferences.size == .custom {
+                    HStack {
+                        Slider(value: binding(\.customScale), in: 0.75...1.5, step: 0.05)
+                            .accessibilityLabel(language.text("自定义侧栏大小", "Custom dock size"))
+                            .accessibilityIdentifier("edge-dock-custom-scale")
+                        Text("\(Int((preferences.customScale * 100).rounded()))%")
+                            .font(.system(size: 11)).monospacedDigit().frame(width: 38)
+                    }
+                }
+                Toggle(language.text("显示工作运行环", "Show the running indicator"), isOn: binding(\.runningIndicatorEnabled))
+                    .font(.system(size: 11))
+                    .accessibilityIdentifier("edge-dock-running-indicator-enabled")
             }
             Divider()
             refreshControls

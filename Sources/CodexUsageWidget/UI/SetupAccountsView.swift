@@ -7,6 +7,7 @@ struct SetupAccountsView: View {
     @ObservedObject var store: UsageStore
     @ObservedObject var localAccounts: LocalCLIAccountStore
     let language: WidgetLanguage
+    var onOpenClaude: () -> Void = {}
     @AppStorage("AiGoodBro.setup.selectedTools.v2") private var selectedTools = "codex"
     @AppStorage("AiGoodBro.setup.reviewedTools.v2") private var reviewedTools = ""
     @AppStorage("AiGoodBro.setup.pendingTool.v2") private var pendingTool = ""
@@ -32,6 +33,13 @@ struct SetupAccountsView: View {
             return store.profiles.contains {
                 !$0.isSystemProfile && $0.lastSnapshot?.accountID?.isEmpty == false && AccountRecoveryGuide.quotaVerified($0)
             }
+        }
+        if id == "claudeCode" {
+            // A configured credential is not enough for the Claude guide: the
+            // official login must have been freshly verified and saved.
+            return localAccounts.claudeActiveProfileID != nil
+                && !localAccounts.claudeIdentityUnavailable
+                && !profiles(id).contains(where: { localAccounts.signingIn.contains($0.id) })
         }
         // Coding Plan evidence cannot confirm the ZCode desktop session.
         if id == "zcode" || id == "trae" { return false }
@@ -71,6 +79,8 @@ struct SetupAccountsView: View {
                 Text(selectionSummary).font(.caption)
             }
             ForEach(tools, id: \.self) { id in toolRow(id) }
+            ClaudeFeatureIntroductionPanel(language: language, isPreview: store.isPreview, onOpenClaude: onOpenClaude)
+                .sectionBackground()
             Divider()
             if !pendingTool.isEmpty && selected.contains(pendingTool) { activeStep }
             HStack {
@@ -108,7 +118,7 @@ struct SetupAccountsView: View {
                 : language.text("登录尚未完成，可重试或稍后处理。", "Sign-in is incomplete. Retry or leave it for later.")
         }
         .onChange(of: localAccounts.authentication) { _ in
-            if let launchedTool, launchedTool != "codex", verified(launchedTool) {
+            if let launchedTool, launchedTool != "codex", launchedTool != "claudeCode", verified(launchedTool) {
                 self.launchedTool = nil
                 feedback = language.text("已检测到登录配置，可以继续下一项；终端保持打开。", "Sign-in configuration detected. Continue to the next tool; the terminal stays open.")
             }
@@ -167,9 +177,13 @@ struct SetupAccountsView: View {
                 .font(.caption2).foregroundStyle(.secondary)
             Spacer(minLength: 4)
             Text(phase(id).title(language)).font(.caption).foregroundStyle(phase(id).isReady ? Color.green : Color.secondary)
-            Button(id == "codex" && phase(id) == .verified ? language.text("检查额度", "Check limits") : phase(id).actionTitle(language)) { performPrimaryAction(id) }
-                .controlSize(.small)
-                .disabled(store.isPreview || primaryActionDisabled(id))
+            Button(
+                id == "claudeCode" && installed(id) && phase(id) != .signingIn
+                    ? language.text("管理 Claude 订阅", "Manage Claude subscriptions")
+                    : id == "codex" && phase(id) == .verified ? language.text("检查额度", "Check limits") : phase(id).actionTitle(language)
+            ) { performPrimaryAction(id) }
+            .controlSize(.small)
+            .disabled(store.isPreview || primaryActionDisabled(id))
         }
         .padding(.vertical, 5)
     }
@@ -233,6 +247,10 @@ struct SetupAccountsView: View {
 
     private func performPrimaryAction(_ id: String) {
         pendingTool = id
+        if id == "claudeCode", installed(id), phase(id) != .signingIn {
+            onOpenClaude()
+            return
+        }
         switch phase(id) {
         case .notInstalled, .unverifiable, .signingIn:
             feedback = instruction(id)
@@ -290,21 +308,27 @@ struct SetupAccountsView: View {
         VStack(alignment: .leading, spacing: 10) {
             Text(name(pendingTool)).font(.headline)
             Text(instruction(pendingTool)).font(.callout).fixedSize(horizontal: false, vertical: true)
-            ForEach(profiles(pendingTool)) { profile in
-                HStack {
-                    Text(profile.kind == .workBuddy ? profile.displayName : profile.kind.displayName).font(.caption)
-                    Spacer()
-                    Button(
-                        profile.kind == .openCode && localAccounts.hasConfiguredAuthentication(profile)
-                            ? language.text("使用已保存的 API 打开 OpenCode", "Open OpenCode with saved API configuration")
-                            : profile.kind.isDesktopApplication ? language.text("打开桌面版登录", "Open desktop sign-in") : language.text("打开官方登录", "Open official sign-in")
-                    ) {
-                        launch(profile)
-                    }.disabled(
-                        store.isPreview || store.isLoggingIn || !localAccounts.signingIn.isEmpty || launchedTool != nil
-                            || (!localAccounts.canSignIn(profile) && !profile.kind.isDesktopApplication))
+            if pendingTool == "claudeCode" {
+                Button(language.text("打开 Claude 账号页", "Open Claude accounts"), action: onOpenClaude)
+                    .buttonStyle(.borderedProminent)
+                    .disabled(store.isPreview || store.isLoggingIn || !localAccounts.signingIn.isEmpty)
+            } else {
+                ForEach(profiles(pendingTool)) { profile in
+                    HStack {
+                        Text(profile.kind == .workBuddy ? profile.displayName : profile.kind.displayName).font(.caption)
+                        Spacer()
+                        Button(
+                            profile.kind == .openCode && localAccounts.hasConfiguredAuthentication(profile)
+                                ? language.text("使用已保存的 API 打开 OpenCode", "Open OpenCode with saved API configuration")
+                                : profile.kind.isDesktopApplication ? language.text("打开桌面版登录", "Open desktop sign-in") : language.text("打开官方登录", "Open official sign-in")
+                        ) {
+                            launch(profile)
+                        }.disabled(
+                            store.isPreview || store.isLoggingIn || !localAccounts.signingIn.isEmpty || launchedTool != nil
+                                || (!localAccounts.canSignIn(profile) && !profile.kind.isDesktopApplication))
+                    }
+                    if let message = localAccounts.loginMessages[profile.id] { Text(message).font(.caption).foregroundStyle(.secondary) }
                 }
-                if let message = localAccounts.loginMessages[profile.id] { Text(message).font(.caption).foregroundStyle(.secondary) }
             }
             if pendingTool == "codex", !signedInCodex {
                 Button(language.text("添加并登录 Codex 账号", "Add and sign in to Codex")) {
@@ -319,16 +343,27 @@ struct SetupAccountsView: View {
             }
             if installed(pendingTool) {
                 if pendingTool != "codex", verified(pendingTool) {
-                    Text(language.text("已检测到登录配置，可继续下一项。", "Sign-in configuration detected. Continue to the next tool.")).foregroundStyle(.green)
+                    Text(
+                        pendingTool == "claudeCode"
+                            ? language.text("当前订阅已核验并保存，可继续下一项。", "The current subscription is verified and saved. Continue to the next tool.")
+                            : language.text("已检测到登录配置，可继续下一项。", "Sign-in configuration detected. Continue to the next tool.")
+                    )
+                    .foregroundStyle(.green)
                 }
                 Button(language.text("我已在官方工具完成，检查并继续", "I finished in the official tool — check and continue")) {
                     let current = pendingTool
-                    for profile in profiles(current) { localAccounts.checkInteractiveSignIn(profile) }
+                    if current != "claudeCode" {
+                        for profile in profiles(current) { localAccounts.checkInteractiveSignIn(profile) }
+                    } else {
+                        localAccounts.discoverClaudeSubscriptions()
+                    }
                     reviewedTools = reviewed.union([current]).sorted().joined(separator: ",")
                     launchedTool = nil
                     pendingTool = ""
                     advance()
-                }.disabled(store.isPreview || (pendingTool == "codex" && store.isLoggingIn))
+                }.disabled(
+                    store.isPreview || (pendingTool == "codex" && store.isLoggingIn)
+                        || (pendingTool == "claudeCode" && !verified("claudeCode")))
             }
         }.padding(14).sectionBackground()
     }
@@ -349,6 +384,11 @@ struct SetupAccountsView: View {
     }
 
     private func launch(_ profile: LocalCLIProfile) {
+        if profile.kind == .claudeCode {
+            pendingTool = profile.kind.rawValue
+            onOpenClaude()
+            return
+        }
         launchedTool = profile.kind.rawValue
         if profile.kind.isDesktopApplication || (profile.kind == .openCode && localAccounts.hasConfiguredAuthentication(profile)) {
             if profile.kind == .openCode { launchedTool = nil }
@@ -382,6 +422,11 @@ struct SetupAccountsView: View {
         if !installed(id) { return language.text("先安装此工具的官方版本，再点击“重新检测”。也可以将这项留到以后。", "Install the official tool, then Scan again, or leave this item for later.") }
         switch id {
         case "codex": return language.text("使用独立账号登录；已有账号可在下方管理，不重复创建特殊账号。", "Use an isolated account. Manage existing accounts below; no special account is required.")
+        case "claudeCode":
+            return language.text(
+                "先在 Claude Code 登录，再到 Claude 账号页选择“添加当前登录账号”保存。添加另一个账号时，先保存当前账号，再在官方 CLI 登录另一个并回来添加；不要先 /logout，以免已保存的凭据失效。",
+                "Sign in to Claude Code, then choose Add signed-in account on the Claude page. To add another account, save the current one first, sign in to the other account in the official CLI, then return to add it. Do not use /logout first; it may invalidate saved credentials."
+            )
         case "zcode":
             return language.text(
                 "在 ZCode 桌面应用中登录，然后返回确认。这里不启动 ZCode CLI，也不将 Coding Plan 额度当成桌面登录凭据。",

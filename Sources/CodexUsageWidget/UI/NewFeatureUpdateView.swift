@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// A standalone reminder. Closing it never completes an installation guide.
@@ -8,6 +9,7 @@ struct NewFeatureUpdateView: View {
     @ObservedObject var settings: AppSettings
     var doneTitle: String? = nil
     var onDone: () -> Void
+    var onOpenClaude: () -> Void = {}
 
     @Environment(\.colorScheme) private var colorScheme
     private var language: WidgetLanguage { settings.language }
@@ -22,20 +24,20 @@ struct NewFeatureUpdateView: View {
                 VStack(alignment: .leading, spacing: 5) {
                     Text(language.text("新功能与设置", "New features & settings"))
                         .font(.system(size: 20, weight: .semibold))
-                    Text(language.text("两项可选设置，按需开启。", "Two optional settings. Choose what suits you."))
+                    Text(language.text("了解用量、反代和侧栏更新，已有设置继续保留。", "Explore usage, proxy and sidebar updates. Your existing settings are preserved."))
                         .font(.system(size: 12)).foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 0)
             }
             .padding(.bottom, 22)
             ScrollView {
-                NewFeatureSetupControls(store: store, settings: settings)
+                NewFeatureSetupControls(store: store, settings: settings, onOpenClaude: onOpenClaude)
                     .padding(.bottom, 2)
             }
             .scrollIndicators(.hidden)
             Divider().padding(.top, 16).padding(.bottom, 16)
             HStack(spacing: 16) {
-                Text(language.text("已有设置保留，不会自动开启。", "Your settings stay saved. Nothing turns on automatically."))
+                Text(language.text("查看介绍不会改变账号或设置；可选设置由你手动开启。", "Viewing this introduction does not change accounts or settings. Enable optional settings yourself."))
                     .font(.system(size: 11)).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 0)
@@ -60,6 +62,7 @@ struct NewFeatureUpdateView: View {
 struct NewFeatureSetupControls: View {
     @ObservedObject var store: UsageStore
     @ObservedObject var settings: AppSettings
+    var onOpenClaude: () -> Void = {}
     @State private var showingResetAutoSettings = false
 
     @Environment(\.colorScheme) private var colorScheme
@@ -67,6 +70,29 @@ struct NewFeatureSetupControls: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 12) {
+                featureHeading(language.text("本次更新", "What's new"), symbol: "arrow.triangle.2.circlepath")
+                Text(
+                    language.text(
+                        "Token Monitor 0.68.0 · Tokscale 4.18.0：更新用量解析和定价，修正 Claude 重复与缓存 Token 统计。",
+                        "Token Monitor 0.68.0 · Tokscale 4.18.0: Updated usage parsing and pricing, with fixes for duplicate and cached Claude tokens.")
+                )
+                .font(.system(size: 12)).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                Text(
+                    language.text(
+                        "反代引擎更新至 8.0.20：取消参与后，等待与重试也会跳过该账号；已接入的响应继续完成。保留优先、最后使用及点数底线，并修正连接错误提示与退出后的租约清理。",
+                        "Proxy engine 8.0.20: Disabling participation also skips waiting admissions and retries; admitted responses finish. Priority, Use last and credit floors are preserved, with clearer connection errors and improved lease cleanup after exit."
+                    )
+                )
+                .font(.system(size: 12)).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(18)
+            Divider().padding(.horizontal, 18)
+            ClaudeFeatureIntroductionPanel(
+                language: language, isPreview: store.isPreview, onOpenClaude: onOpenClaude)
+            Divider().padding(.horizontal, 18)
             VStack(alignment: .leading, spacing: 12) {
                 featureHeading(
                     language.text("重置卡临期自动使用", "Use expiring reset cards"),
@@ -128,6 +154,19 @@ struct NewFeatureSetupControls: View {
                 )
                 .font(.system(size: 12)).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+                Text(
+                    language.text(
+                        "新增侧栏大小与 75–150% 自定义缩放、可选刷新按钮及运行指示设置。",
+                        "New sidebar sizes, custom scaling from 75–150%, and optional refresh and running indicators.")
+                )
+                .font(.system(size: 12)).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                Button(language.text("更多侧栏设置…", "More sidebar settings…")) {
+                    _ = NSApp.sendAction(NSSelectorFromString("openEdgeDockSettingsFromMenu"), to: NSApp.delegate, from: nil)
+                }
+                .controlSize(.regular)
+                .disabled(store.isPreview)
+                .accessibilityIdentifier("next.new-feature.sidebar-settings")
             }
             .padding(18)
         }
@@ -148,5 +187,49 @@ struct NewFeatureSetupControls: View {
                 .foregroundStyle(FixedVisualPalette.statusInfoForeground(colorScheme)).frame(width: 18)
             Text(title).font(.system(size: 13, weight: .semibold))
         }
+    }
+}
+
+/// Informational content shared by the account guide and feature updates.
+@MainActor
+struct ClaudeFeatureIntroductionPanel: View {
+    let language: WidgetLanguage
+    var isPreview = false
+    var onOpenClaude: () -> Void = {}
+
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Image(systemName: "person.crop.circle.badge.checkmark")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(FixedVisualPalette.statusInfoForeground(colorScheme))
+                    .frame(width: 18)
+                Text(language.text("Claude 订阅账号与额度", "Claude subscriptions & limits"))
+                    .font(.system(size: 13, weight: .semibold))
+            }
+            Text(
+                language.text(
+                    "先在 Claude Code 登录，再用“添加当前登录账号”保存；已有 Claude-swap 订阅可直接关联。在账号卡片上手动切换、刷新额度。当前账号不可解除关联；切换时可安全续期已过期的保存凭据，无法续期时提示重新登录。",
+                    "Sign in to Claude Code, then choose Add signed-in account to save it. Link existing Claude-swap subscriptions; switch manually and refresh limits from account cards. The current account cannot be unlinked. Expired saved credentials are renewed during an explicit switch, or you are asked to sign in again."
+                )
+            )
+            .font(.system(size: 12)).foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+            Text(
+                language.text(
+                    "用圆环分别查看 5 小时和 7 天额度；API 实际返回 Fable 等独立模型额度时，按返回名称显示。",
+                    "View 5-hour and 7-day limits in separate rings. When the API returns independent model limits such as Fable, they appear under the returned names.")
+            )
+            .font(.system(size: 12)).foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+            Button(language.text("查看 Claude 账号", "View Claude accounts"), action: onOpenClaude)
+                .controlSize(.regular)
+                .disabled(isPreview)
+                .accessibilityIdentifier("next.open-claude-accounts")
+        }
+        .padding(18)
+        .accessibilityIdentifier("next.claude-feature-introduction")
     }
 }

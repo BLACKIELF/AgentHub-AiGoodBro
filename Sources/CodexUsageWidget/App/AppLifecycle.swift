@@ -255,12 +255,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         let language: WidgetLanguage
         let paletteID: String
         let preferredColorScheme: ColorScheme?
+        let isRefreshing: Bool
         let codex: [EdgeDockCodexInput]
         let pinnedAccountKey: String?
         let local: [EdgeDockLocalInput]
         let staleLocalIDs: Set<String>
         let engineJSON: String?
         let engineIsStale: Bool
+        let desktopRate: TokenMonitorDesktopController.TokenRate?
         let hubEnabled: Bool
         let hubConnection: TokenMonitorHubConnectionState
         let hubLastRefresh: Date?
@@ -559,6 +561,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             // Completed local quota reads should match the account page. This
             // publishes an existing snapshot and never starts another fetch.
             changed(localCLIAccounts.$quotas), changed(localCLIAccounts.$stale),
+            changed(store.$isRefreshing), changed(store.$refreshingProfileIDs), changed(localCLIAccounts.$refreshing),
+            changed(tokenDesktop.$tokenRate),
         ])
         .receive(on: RunLoop.main)
         .throttle(for: .milliseconds(220), scheduler: RunLoop.main, latest: true)
@@ -594,11 +598,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         return EdgeDockInput(
             preferences: settings.edgeDock, glass: settings.workspaceGlass, language: settings.language,
             paletteID: settings.paletteID, preferredColorScheme: settings.themeMode.preferredColorScheme,
+            isRefreshing: isEdgeDockRefreshing,
             codex: store.profiles.map(EdgeDockCodexInput.init),
             pinnedAccountKey: settings.pinnedAccountKey,
             local: localCLIAccounts.profiles.map { EdgeDockLocalInput($0, quota: localCLIAccounts.quotas[$0.id]) },
             staleLocalIDs: localCLIAccounts.stale,
             engineJSON: store.engineState.dashboardJSON, engineIsStale: store.engineState.isStale,
+            desktopRate: tokenDesktop.tokenRate,
             hubEnabled: hub.isEnabled, hubConnection: hub.connectionState,
             hubLastRefresh: hub.lastRefresh, hubHistory: hub.history, hubDevices: hub.devices,
             proxyPhase: localProxy.phase, proxyRows: localProxy.displayRows
@@ -633,15 +639,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             edgeDockLastObservedRequestID = response?.requestId
             _ = edgeDockRateTracker.observe(response: response)
         }
-        let rateSample = edgeDockRateTracker.current()
+        let now = Date()
+        let rateSample: TokenMonitorEdgeDockRateSample?
+        if tokenDesktop.isBundled {
+            if let rate = TokenMonitorDesktopController.validatedTokenRate(tokenDesktop.tokenRate, now: now) {
+                rateSample = TokenMonitorEdgeDockRateSample(
+                    speed: rate.speedPerSecond, burn: rate.burnPerMinute, sampledAt: rate.sampledDate,
+                    expiresAt: rate.nextExpiry(at: now), isIdle: rate.isIdle(at: now),
+                    mode: rate.mode == "burn" ? .burn : .speed, displayValue: rate.formattedValue)
+            } else {
+                rateSample = nil
+            }
+        } else {
+            rateSample = edgeDockRateTracker.current(now: now)
+        }
         // Freshness and subscription-window boundaries change without a new
         // @Published value. Wake once at the next actual boundary.
-        let now = Date()
         var expiries: [Date] = []
         if let rateSample {
-            // The rail presents the last sample, so it needs only the stale
-            // boundary; the former eight-second "live" transition is unused.
-            expiries.append(rateSample.sampledAt.addingTimeInterval(TokenMonitorEdgeDockRateTracker.retentionInterval))
+            expiries.append(rateSample.expiresAt)
         }
         for profile in store.profiles {
             if let fetched = profile.lastSnapshot?.fetchedAt {
@@ -684,7 +700,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             onOpenDashboard: { [weak self] in self?.showMainWindow() },
             onOpenUsageOverview: { [weak self] in self?.openUsageOverview() },
             onOpenProxy: { [weak self] in self?.showProxySettings() },
-            onRefresh: { [weak self] cell in await self?.refreshEdgeDockQuota(cell) }
+            onRefresh: { [weak self] cell in await self?.refreshEdgeDockQuota(cell) },
+            onRefreshAll: { [weak self] in await self?.refreshEdgeDockAll() },
+            isRefreshingAll: isEdgeDockRefreshing
         )
     }
 
@@ -731,6 +749,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         store.refreshEdgeDockQuotas(profileIDs: targets["codex"] ?? [], maximumAge: maximumAge)
         let localIDs = Set(targets.filter { $0.key != "codex" }.values.flatMap { $0 })
         localCLIAccounts.refreshIfNeeded(profileIDs: localIDs, maximumAge: maximumAge)
+    }
+
+    private var isEdgeDockRefreshing: Bool {
+        store.isRefreshing || store.engineState.phase == .loading || store.isRefreshingAccountQuotas
+            || !store.refreshingProfileIDs.isEmpty || !localCLIAccounts.refreshing.isEmpty
+    }
+
+    private func refreshEdgeDockAll() async {
+        guard !floatingBubbleShuttingDown, settings.edgeDock.enabled else { return }
+        let targets = edgeDockRefreshTargets()
+        let localIDs = Set(targets.filter { $0.key != "codex" }.values.flatMap { $0 })
+        // The existing manual refresh collects usage and refreshes only the
+        // selected dock accounts through the account-page readers.
+        store.refreshEdgeDockSnapshotsNow()
+        for _ in 0..<800 {
+            let busy =
+                store.isRefreshing || store.engineState.phase == .loading || store.isRefreshingAccountQuotas
+                || !store.refreshingProfileIDs.isEmpty
+                || !localCLIAccounts.refreshing.isDisjoint(with: localIDs)
+            if !busy { break }
+            do { try await Task.sleep(nanoseconds: 250_000_000) } catch { return }
+        }
+        syncEdgeDock()
     }
 
     private func refreshEdgeDockQuota(_ cell: TokenMonitorEdgeDockCell) async {
@@ -1081,6 +1122,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
 
     @objc private func openSettingsFromMenu() {
         openSettingsWindow()
+    }
+
+    @objc private func openEdgeDockSettingsFromMenu() {
+        openSettingsWindow(page: .edgeDock)
     }
 
     @objc private func showAboutPanel() {

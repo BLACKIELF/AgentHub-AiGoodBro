@@ -92,7 +92,7 @@ struct DispatchActivityStore {
         }
     }
 
-    enum Failure: Error { case invalidState, busy, unavailable, deadline }
+    enum Failure: Error { case invalidState, busy, unavailable, deadline, acquireAbandoned }
 
     /// A stopped run cannot admit a detached reservation even if an earlier
     /// task resumes after the next bridge has been created in this process.
@@ -193,11 +193,11 @@ struct DispatchActivityStore {
         return try body()
     }
 
-    private func mutate(_ action: (inout [[String: Any]]) throws -> Void) throws {
-        try mutateProxy { records, _, _ in try action(&records) }
+    private func mutate(onCommit: (() -> Void)? = nil, _ action: (inout [[String: Any]]) throws -> Void) throws {
+        try mutateProxy(onCommit: onCommit) { records, _, _ in try action(&records) }
     }
 
-    private func mutateProxy(_ action: (inout [[String: Any]], inout [[String: Any]], inout [String: Int64]) throws -> Void) throws {
+    private func mutateProxy(onCommit: (() -> Void)? = nil, _ action: (inout [[String: Any]], inout [[String: Any]], inout [String: Int64]) throws -> Void) throws {
         try withLock {
             var object: [String: Any]
             if let data = try stateData() {
@@ -228,6 +228,9 @@ struct DispatchActivityStore {
             guard written == data.count, fsync(fd) == 0,
                 rename(temporary.path, directory.appendingPathComponent(Self.stateName).path) == 0
             else { throw Failure.unavailable }
+            // Publish local admission fences only after the durable swap, while
+            // competing registry admissions still cannot acquire the file lock.
+            onCommit?()
         }
     }
 
@@ -247,6 +250,13 @@ struct DispatchActivityStore {
             guard admissionDeadline == nil || ProcessInfo.processInfo.systemUptime < admissionDeadline! else { throw Failure.deadline }
             let requestTime = try Self.checkRequestTime(requestID, runID: runID, highwater: &highwater, now: now, enforced: enforceFreshness)
             let profileKey = Self.hash(profileID)
+            if keys.contains(where: {
+                $0["runID"] as? String == runID && $0["requestID"] as? String == requestID
+                    && $0["profileKey"] as? String == profileKey && $0["abandoned"] as? Bool == true
+                    && $0["ownerPID"] as? Int == Int(getpid())
+            }) {
+                throw Failure.acquireAbandoned
+            }
             guard
                 !keys.contains(where: {
                     $0["runID"] as? String == runID && $0["requestID"] as? String == requestID
@@ -296,21 +306,24 @@ struct DispatchActivityStore {
 
     /// A detached registry update can finish after an off-main resolver has
     /// cancelled the same request, before its MainActor cleanup runs.
-    func isProxyLeaseActive(_ id: String, runID: String, requestID: String, profileID: String, childPID: pid_t) throws -> Bool {
-        let snapshot = try read()
-        let profileKey = Self.hash(profileID)
-        guard
-            snapshot.proxyAcquireKeys?.contains(where: {
-                $0.runID == runID && $0.requestID == requestID && $0.profileKey == profileKey
-                    && $0.ownerPID == Int(getpid()) && $0.wasReserved && !$0.abandoned
-            }) == true
-        else { return false }
-        return snapshot.leases.contains {
-            $0.leaseId == id && $0.ownerThreadId == "next-\(getpid())"
-                && $0.taskId == "proxy-\(runID)-\(requestID)" && $0.route == "proxy"
-                && $0.proxyRunID == runID && $0.proxyRequestID == requestID
-                && $0.proxyProfileKey == profileKey && $0.pid == Int(childPID)
-                && $0.state == "running"
+    func isProxyLeaseActive(_ id: String, runID: String, requestID: String, profileID: String, childPID: pid_t, verifyAdmission: (() throws -> Void)? = nil) throws -> Bool {
+        try withLock {
+            let snapshot = try read()
+            try verifyAdmission?()
+            let profileKey = Self.hash(profileID)
+            guard
+                snapshot.proxyAcquireKeys?.contains(where: {
+                    $0.runID == runID && $0.requestID == requestID && $0.profileKey == profileKey
+                        && $0.ownerPID == Int(getpid()) && $0.wasReserved && !$0.abandoned
+                }) == true
+            else { return false }
+            return snapshot.leases.contains {
+                $0.leaseId == id && $0.ownerThreadId == "next-\(getpid())"
+                    && $0.taskId == "proxy-\(runID)-\(requestID)" && $0.route == "proxy"
+                    && $0.proxyRunID == runID && $0.proxyRequestID == requestID
+                    && $0.proxyProfileKey == profileKey && $0.pid == Int(childPID)
+                    && $0.state == "running"
+            }
         }
     }
 
@@ -369,17 +382,27 @@ struct DispatchActivityStore {
         return resolution
     }
 
-    func updateProxy(_ id: String, runID: String, requestID: String, profileID: String, state: String, now: Date = Date()) throws {
-        guard ["running", "uncertain", "accepted", "cancelled"].contains(state) else { throw Failure.invalidState }
-        try mutate { records in
+    func updateProxy(
+        _ id: String, runID: String, requestID: String, profileID: String, state: String,
+        allowTerminalCleanup: Bool = false, now: Date = Date(), onCommit: (() -> Void)? = nil
+    ) throws {
+        guard ["running", "uncertain", "accepted", "cancelled"].contains(state),
+            !allowTerminalCleanup || state == "cancelled"
+        else { throw Failure.invalidState }
+        try mutate(onCommit: onCommit) { records in
             guard
                 let index = records.firstIndex(where: {
                     $0["leaseId"] as? String == id && $0["ownerThreadId"] as? String == "next-\(getpid())"
                         && $0["route"] as? String == "proxy" && $0["proxyRunID"] as? String == runID
                         && $0["proxyRequestID"] as? String == requestID && $0["proxyProfileKey"] as? String == Self.hash(profileID)
-                        && Self.activeStates.contains($0["state"] as? String ?? "")
                 })
             else { throw Failure.invalidState }
+            let currentState = records[index]["state"] as? String ?? ""
+            // A release can commit off-main before its UI cleanup runs. Once
+            // the child is proven gone, retire that exact in-memory mirror
+            // without changing its terminal outcome or reviving ownership.
+            if allowTerminalCleanup, Self.terminalStates.contains(currentState) { return }
+            guard Self.activeStates.contains(currentState) else { throw Failure.invalidState }
             records[index]["state"] = state
             records[index]["updatedAt"] = now.timeIntervalSince1970
             records[index]["heartbeatDueAt"] = now.timeIntervalSince1970 + (Self.activeStates.contains(state) ? 60 : 0)
@@ -431,6 +454,55 @@ struct DispatchActivityStore {
 
     func reserveWarmUp(account: String, alias: String, now: Date = Date()) throws -> String {
         try reserveAccountActivity(account: account, alias: alias, route: "warmup", now: now)
+    }
+
+    /// Native warm-up uses an ephemeral, in-process URLSession, not a CLI child.
+    /// An expired heartbeat is never enough: a live/reused/unknown owner keeps
+    /// its reservation. Persist the ambiguous result before ending the lease.
+    @discardableResult
+    func finishInterruptedWarmUp(
+        id: String, account: String, alias: String, requestStartedAt: Date,
+        now: Date = Date(), persistInterruptedResult: () throws -> Void
+    ) throws -> Bool {
+        let accountKey = Self.hash(account)
+        let aliasKey = Self.hash(alias.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+        var recovered = false
+        try mutate { records in
+            guard let index = records.firstIndex(where: { $0["leaseId"] as? String == id }) else { return }
+            let row = records[index]
+            guard UUID(uuidString: id) != nil,
+                Set(row.keys).isSubset(of: [
+                    "leaseId", "ownerThreadId", "taskId", "accountKey", "aliasKey", "projectKey", "route", "state", "createdAt", "updatedAt", "heartbeatDueAt", "warmUpTransport",
+                ]),
+                row["route"] as? String == "warmup", row["state"] as? String == "preparing",
+                row["taskId"] as? String == "warmup-\(id)",
+                row["accountKey"] as? String == accountKey, row["aliasKey"] as? String == aliasKey,
+                row["projectKey"] as? String == Self.hash("warmup:\(accountKey)"),
+                row["pid"] == nil, row["childPID"] == nil, row["childPIDBirth"] == nil,
+                row["processGroupID"] == nil, row["processGroupBirth"] == nil,
+                row["proxyRunID"] == nil, row["proxyRequestID"] == nil, row["proxyProfileKey"] == nil,
+                row["warmUpTransport"] == nil || row["warmUpTransport"] as? String == "native-ephemeral-http-v1",
+                let owner = row["ownerThreadId"] as? String, owner.hasPrefix("next-"),
+                let ownerPID = pid_t(owner.dropFirst(5)), owner == "next-\(ownerPID)", ownerPID > 1, ownerPID != getpid(),
+                let created = row["createdAt"] as? Double, let updated = row["updatedAt"] as? Double,
+                let due = row["heartbeatDueAt"] as? Double,
+                [created, updated, due, requestStartedAt.timeIntervalSince1970, now.timeIntervalSince1970].allSatisfy({ $0.isFinite }),
+                created > 0, updated == created, due == created + 600,
+                requestStartedAt.timeIntervalSince1970 >= created, requestStartedAt.timeIntervalSince1970 <= due,
+                now.timeIntervalSince1970 > due,
+                kill(ownerPID, 0) != 0, errno == ESRCH
+            else { return }
+            // The profile lock is acquired only here; existing warm-up paths
+            // release that lock before touching the activity registry.
+            try persistInterruptedResult()
+            // Recheck after the profile write; PID reuse must remain fail-closed.
+            guard kill(ownerPID, 0) != 0, errno == ESRCH else { return }
+            records[index]["state"] = "failed"
+            records[index]["updatedAt"] = now.timeIntervalSince1970
+            records[index]["heartbeatDueAt"] = now.timeIntervalSince1970
+            recovered = true
+        }
+        return recovered
     }
 
     func reserveMaintenance(account: String, alias: String, now: Date = Date()) throws -> String {
@@ -503,6 +575,7 @@ struct DispatchActivityStore {
                 "projectKey": Self.hash("\(route):\(accountKey)"), "route": route, "state": "preparing",
                 "createdAt": current, "updatedAt": current, "heartbeatDueAt": current + 600,
             ])
+            if route == "warmup" { records[records.count - 1]["warmUpTransport"] = "native-ephemeral-http-v1" }
         }
         return id
     }

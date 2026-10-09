@@ -205,7 +205,8 @@ final class GitHubReleaseUpdateChecker: AppUpdateChecking {
         let candidates = releases.compactMap { release -> (release: GitHubReleaseInfo, version: AppVersion)? in
             guard !release.draft, release.publishedAt != nil,
                 includePrereleases || !release.prerelease,
-                let version = release.version
+                let version = release.version,
+                !AppUpdateReleasePolicy.blocksLegacyRelease(version, currentVersion: currentVersion)
             else { return nil }
             return (release, version)
         }

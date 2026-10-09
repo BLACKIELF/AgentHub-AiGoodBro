@@ -37,7 +37,36 @@ final class TokenMonitorDesktopController: ObservableObject {
         let totalCostUSD: Double?
     }
 
+    /// One cached upstream reading, shared by the renderer and native rail.
+    /// Status polling never starts collection or reads account credentials.
+    struct TokenRate: Decodable, Equatable, Sendable {
+        let mode: String
+        let scope: String
+        let burnPerMinute: Double
+        let speedPerSecond: Double
+        let sampledAt: Double
+        let expiresAt: Double
+        let idle: Bool
+        let revision: Int64
+        let contextKey: String
+        var formattedValue: String? = nil
+
+        var sampledDate: Date { Date(timeIntervalSince1970: sampledAt / 1_000) }
+        func isIdle(at now: Date) -> Bool { idle || now.timeIntervalSince1970 * 1_000 >= sampledAt + 8_000 }
+        func nextExpiry(at now: Date) -> Date {
+            // A fleet's earliest device may expire before its newest sample.
+            // The next status projects the remaining devices; do not infer a
+            // fleet reset or repeatedly wake on that already passed boundary.
+            let next =
+                isIdle(at: now)
+                ? sampledAt + 180_000
+                : (now.timeIntervalSince1970 * 1_000 >= expiresAt ? sampledAt + 8_000 : expiresAt)
+            return Date(timeIntervalSince1970: next / 1_000)
+        }
+    }
+
     @Published private(set) var allTimeUsage = AllTimeUsage(totalTokens: nil, totalCostUSD: nil)
+    @Published private(set) var tokenRate: TokenRate?
     var totalCostUSD: Double? { allTimeUsage.totalCostUSD }
     @Published private(set) var lastError: String?
     var hostAction: (@MainActor (TokenMonitorHostRequest) async -> TokenMonitorHostReply)?
@@ -342,6 +371,7 @@ final class TokenMonitorDesktopController: ObservableObject {
                     self.hasVisibleTray = reply?.trayVisible == true
                     self.updateAllTimeUsage(reply)
                 } else {
+                    self.updateTokenRate(nil)
                     missed += 1
                     if missed >= 3 {
                         self.isReady = false
@@ -383,6 +413,42 @@ final class TokenMonitorDesktopController: ObservableObject {
     private func updateAllTimeUsage(_ reply: DesktopReply?) {
         let next = Self.validatedAllTimeUsage(tokens: reply?.allTimeTokens, costUSD: reply?.allTimeCostUsd)
         if allTimeUsage != next { allTimeUsage = next }
+        updateTokenRate(reply?.tokenRate)
+    }
+
+    nonisolated static func validatedTokenRate(_ value: TokenRate?, previous: TokenRate? = nil, now: Date = Date()) -> TokenRate? {
+        guard let value, ["burn", "speed"].contains(value.mode), ["all", "local"].contains(value.scope),
+            value.burnPerMinute.isFinite, value.burnPerMinute >= 0,
+            value.speedPerSecond.isFinite, value.speedPerSecond >= 0,
+            value.sampledAt.isFinite, value.sampledAt > 0, value.sampledAt <= 9_007_199_254_740_991,
+            value.expiresAt.isFinite, value.expiresAt > value.sampledAt,
+            value.expiresAt <= value.sampledAt + (value.idle ? 180_000 : 8_000),
+            !value.idle || value.expiresAt == value.sampledAt + 180_000,
+            value.revision >= 0, value.revision <= 9_007_199_254_740_991,
+            isSafeTokenRateDisplayValue(value.formattedValue),
+            !value.contextKey.isEmpty, value.contextKey.utf8.count <= 128,
+            value.contextKey.utf8.allSatisfy({ (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0) || $0 == 45 || $0 == 95 })
+        else { return nil }
+        let age = now.timeIntervalSince(value.sampledDate)
+        guard age.isFinite, age >= 0, age < 180, !value.idle || age >= 8 else { return nil }
+        if let previous, previous.contextKey == value.contextKey,
+            value.revision < previous.revision || value.sampledAt < previous.sampledAt
+        {
+            return nil
+        }
+        return value
+    }
+
+    nonisolated static func isSafeTokenRateDisplayValue(_ value: String?) -> Bool {
+        guard let value, !value.isEmpty, value.count <= 32 else { return false }
+        return value.range(
+            of: #"^(?:<0\.1|[0-9]+(?:[.,][0-9]+)?(?:K|M|B|万|萬|亿|億|만|억)?)$"#,
+            options: .regularExpression) == value.startIndex..<value.endIndex
+    }
+
+    private func updateTokenRate(_ value: TokenRate?) {
+        let next = Self.validatedTokenRate(value, previous: tokenRate)
+        if tokenRate != next { tokenRate = next }
     }
 }
 
@@ -402,6 +468,21 @@ private struct DesktopReply: Decodable, Sendable {
     let trayVisible: Bool?
     let allTimeTokens: Int64?
     let allTimeCostUsd: Double?
+    let tokenRate: TokenMonitorDesktopController.TokenRate?
+
+    enum CodingKeys: String, CodingKey { case id, ok, ready, trayVisible, allTimeTokens, allTimeCostUsd, tokenRate }
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(String.self, forKey: .id)
+        ok = try values.decode(Bool.self, forKey: .ok)
+        ready = try values.decodeIfPresent(Bool.self, forKey: .ready)
+        trayVisible = try values.decodeIfPresent(Bool.self, forKey: .trayVisible)
+        allTimeTokens = try values.decodeIfPresent(Int64.self, forKey: .allTimeTokens)
+        allTimeCostUsd = try values.decodeIfPresent(Double.self, forKey: .allTimeCostUsd)
+        // A malformed additive rate must not discard the atomic totals or
+        // interfere with existing helper readiness and lifecycle behavior.
+        tokenRate = try? values.decode(TokenMonitorDesktopController.TokenRate.self, forKey: .tokenRate)
+    }
 }
 
 private enum DesktopSocket {

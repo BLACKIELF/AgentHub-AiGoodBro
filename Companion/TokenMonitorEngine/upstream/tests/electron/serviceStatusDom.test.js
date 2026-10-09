@@ -162,7 +162,7 @@ test('Home overview list markers use the shared tool icon path when enabled', ()
   const app = readRendererFile('app.js');
   assert.match(app, /function applyHomeListMark/);
   assert.match(app, /iconKindFor\(\{ key: row\.iconId \|\| row\.providerId \|\| row\.key \}, 'limits'\)/);
-  assert.match(app, /iconKindFor\(\{ key: row\.key \|\| row\.name \}, 'model'\)/);
+  assert.match(app, /iconKindFor\(\{ key: row\.key \|\| row\.name, modelSource: row\.modelSource \}, 'model'\)/);
   assert.match(app, /home-list-mark row-icon/);
 });
 
@@ -212,7 +212,7 @@ test('Home module jump icons align optically with their titles', () => {
 
 test('Home limit percentages use the compact Limits view typography', () => {
   const css = readRendererFile('styles.css');
-  assert.match(cssRule(css, '.home-limit-window .home-list-value'), /font-size:\s*10px/);
+  assert.match(cssRule(css, '.home-limit-window .home-list-value'), /font-size:\s*0\.625rem/);
   assert.match(cssRule(css, '.home-limit-window .home-list-value'), /line-height:\s*1\.1/);
 });
 
@@ -299,8 +299,9 @@ test('view switcher preserves click-to-cycle and direct selection without crowdi
   assert.match(cssRule(css, '.view-switcher-menu'), /transition:[\s\S]*opacity 190ms/);
   assert.match(cssRule(css, '.view-switcher-menu'), /visibility 0s linear 0s/);
   assert.doesNotMatch(cssRule(css, '.view-switcher-menu'), /width:\s*154px/);
-  assert.match(cssRule(css, '.view-switcher-menu'), /background:[\s\S]*var\(--glass-rgb\)/);
-  assert.doesNotMatch(cssRule(css, '.view-switcher-menu'), /var\(--panel-rgb\)/);
+  const menuSurface = cssRule(css, '.view-switcher-menu,\n.select-control-popup,\n.sync-content-dialog,\n.settings-help-popover');
+  assert.match(menuSurface, /background:[\s\S]*var\(--glass-rgb\)/);
+  assert.doesNotMatch(menuSurface, /var\(--panel-rgb\)/);
   assert.doesNotMatch(cssRule(css, '.view-switcher-menu.hidden'), /display:\s*none/);
   assert.match(cssRule(css, '.view-switcher-menu.hidden'), /transition-duration:\s*130ms, 130ms, 130ms, 0s/);
   assert.match(cssRule(css, '.view-switcher-menu.hidden'), /transition-delay:\s*0s, 0s, 0s, 130ms/);
@@ -403,7 +404,7 @@ test('row accordions expose keyboard and aria interactions', () => {
   assert.match(app, /hasAccordion,/);
   assert.match(app, /expanded: row\.classList\.contains\('expanded'\)/);
   assert.match(app, /\$\{name\}, \$\{t\('dashboard\.stat\.totalTokens'\)\}/);
-  assert.match(app, /\$\{t\('dashboard\.stat\.totalCost'\)\}: \$\{formatCost\(cost \|\| 0\)\}/);
+  assert.match(app, /\$\{t\('dashboard\.stat\.totalCost'\)\}: \$\{formatCost\(cost \|\| 0, unpricedTokens\)\}/);
 });
 
 test('project accordions retain unchanged DOM between live refreshes', () => {

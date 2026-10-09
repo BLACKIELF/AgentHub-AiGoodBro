@@ -56,12 +56,12 @@ enum LocalCLITerminalLauncher {
                     workingDirectory: workingDirectory,
                     executableParts: [executable] + (action == .signIn ? ["auth", "login"] : []),
                     unsetEnvironment: [
-                        "CLAUDE_CONFIG_DIR", "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR",
+                        "CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR", "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR",
                         "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL",
                         "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY",
                         "CLAUDE_CODE_USE_MANTLE", "DISABLE_LOGIN_COMMAND",
                     ],
-                    environment: ["CLAUDE_CONFIG_DIR": profileDirectory.path, "DISABLE_AUTOUPDATER": "1"])
+                    environment: ["CLAUDE_SECURESTORAGE_CONFIG_DIR": "", "DISABLE_AUTOUPDATER": "1"])
             }
             // Gemini uses its interactive authentication selector. A positional
             // "login" would instead become a model prompt.

@@ -7,11 +7,19 @@ const {pathToFileURL} = require('node:url');
 const {chromium} = require('playwright');
 const root = path.resolve(__dirname, '..');
 const assets = path.join(root, 'Resources/UpstreamCharts');
-const manifest = JSON.parse(fs.readFileSync(path.join(assets, 'desktop/SOURCE.json')));
+const manifestPath = path.join(assets, 'desktop/SOURCE.json');
+const manifestBytes = fs.readFileSync(manifestPath);
+const manifest = JSON.parse(manifestBytes);
+const APPROVED_HOME_MANIFEST_SHA256 = '71b4799a996584e03aa2f84ed1f28f6056092fd1b26d79b6adfbecac125e6a44';
+// Home dashboard assets are independently pinned to the approved Token Monitor
+// v0.62.0 renderer. The embedded engine may advance independently; do not
+// recopy its newer renderer sources into this frozen Home resource set.
+assert.equal(createHash('sha256').update(manifestBytes).digest('hex'), APPROVED_HOME_MANIFEST_SHA256);
+assert.equal(manifest.version, '0.62.0');
+assert.equal(manifest.repository, 'https://github.com/Javis603/token-monitor');
 for (const [name, entry] of Object.entries(manifest.files)) {
   const copy = fs.readFileSync(path.join(assets, 'desktop', name));
   assert.equal(createHash('sha256').update(copy).digest('hex'), entry.sha256);
-  assert.deepEqual(copy, fs.readFileSync(path.join(root, 'Companion/TokenMonitorEngine/upstream/src', entry.source)));
 }
 const tools = ['codex','zcode','workbuddy','grok','kimi','codebuddy','opencode','hermes','dsh','claude'];
 const daily = Array.from({length:95}, (_,i) => {

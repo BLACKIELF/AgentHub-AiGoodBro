@@ -39,9 +39,10 @@ struct InstallationAudienceChoiceView: View {
                     .foregroundStyle(FixedVisualPalette.statusInfoForeground(colorScheme))
                     .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(language.text("本次更新 · 2 项可选设置", "What's new · 2 optional settings"))
+                    Text(language.text("本次更新 · Claude 订阅账号与额度", "What's new · Claude subscriptions & limits"))
                         .font(.system(size: 12, weight: .semibold))
-                    Text(language.text("重置卡临期自动使用 · 侧栏额度样式", "Reset-card expiry protection · Sidebar quota style"))
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text(language.text("还有可选设置：重置卡临期自动使用 · 侧栏额度样式", "Optional settings: Reset-card expiry protection · Sidebar quota style"))
                         .font(.system(size: 11)).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }

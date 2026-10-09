@@ -19,6 +19,8 @@ struct LocalProxyQueueRow: Identifiable, Equatable {
     var activeRequestCount = 0
     var policy = LocalProxyAccountPolicy()
     var usesDefaultCreditFloors = true
+    var isLast = false
+    var isFixedLast = false
 }
 struct LocalProxyQuotaWindow: Identifiable, Equatable {
     let id: String
@@ -34,6 +36,9 @@ struct LocalProxyPreferences: Codable {
     var enabledIDs: Set<String> = []
     var knownIDs: Set<String> = []
     var priorityIDs: Set<String> = []
+    var lastIDs: Set<String>? = nil
+    // Absence keeps the inherited/default rule; false is an explicit opt-out.
+    var lastOverrides: [String: Bool]? = nil
     var creditFallback: Bool? = nil
     var creditPrimaryFloor: Int? = nil
     var creditSecondaryFloor: Int? = nil
@@ -55,6 +60,14 @@ struct LocalProxyPreferences: Codable {
     var validAccountPolicies: Bool {
         guard let accountPolicies else { return true }
         return accountPolicies.count <= 1000 && accountPolicies.allSatisfy { !$0.key.isEmpty && $0.key.utf8.count <= 256 && $0.value.isValid }
+    }
+    var validLastIDs: Bool {
+        guard let lastIDs else { return true }
+        return lastIDs.count <= 1000 && lastIDs.allSatisfy { !$0.isEmpty && $0.utf8.count <= 256 }
+    }
+    var validLastOverrides: Bool {
+        guard let lastOverrides else { return true }
+        return lastOverrides.count <= 1000 && lastOverrides.keys.allSatisfy { !$0.isEmpty && $0.utf8.count <= 256 }
     }
 }
 
@@ -78,7 +91,9 @@ enum LocalProxyFailure: String, Error {
     case subscriptionPending = "subscription_pending"
     case loginExpired = "login_expired"
     case stageNotApplicable = "stage_not_applicable"
+    case notParticipating = "not_participating"
     case admissionUnknown = "admission_unknown"
+    case acquireAbandoned = "acquire_abandoned"
     case admissionDeadline = "admission_deadline"
     case usageLimit = "usage_limit"
     case policyChanged = "policy_changed"
@@ -100,6 +115,8 @@ struct LocalProxyRequest: Decodable, Sendable {
 struct LocalProxyReply: Encodable, Sendable {
     var ok: Bool
     var order: [String]? = nil
+    var lastResortIDs: [String]? = nil
+    var deferredIDs: [String]? = nil
     var creditFallback: Bool? = nil
     var leaseID: String? = nil
     var accessToken: String? = nil
@@ -109,6 +126,21 @@ struct LocalProxyReply: Encodable, Sendable {
     var retryAt: Int64? = nil
     var resolution: String? = nil
     static func failure(_ reason: LocalProxyFailure) -> Self { Self(ok: false, error: reason.rawValue) }
+}
+
+/// This affects selection order only; quota and identity admission stay separate.
+enum LocalProxyRouting {
+    static func isLastResort(_ profile: CodexProfile) -> Bool {
+        // Keep an official Pro plan at the end unless its known tier is 5x.
+        // Unknown plans and account names are never treated as tier evidence.
+        profile.resolvedPlanType == "pro" && profile.displayedProTierMultiplier != 5
+    }
+    static func group(_ profile: CodexProfile, userLast: Bool, lastOverride: Bool? = nil) -> Int {
+        // Default and explicit last choices share one movable group. Only a
+        // missing override inherits the default; a saved false survives reloads
+        // and plan changes instead of silently putting Pro back at the end.
+        (lastOverride ?? (userLast || isLastResort(profile))) ? 1 : 0
+    }
 }
 
 /// Paid credits are admitted only by an explicit queue opt-in and a fresh,

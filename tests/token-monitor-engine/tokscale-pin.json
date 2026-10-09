@@ -1,54 +1,54 @@
 {
   "mode": "override",
   "fork": "Javis603/tokscale",
-  "commit": "06a9f1625d5a505f01b39eff29f7be44a2c52188",
-  "baseVersion": "4.17.0",
-  "releaseTag": "token-monitor-06a9f162",
+  "commit": "d5e8ad9b25bfafb43b5b6804940929b728a6f48a",
+  "baseVersion": "4.18.0",
+  "releaseTag": "token-monitor-d5e8ad9b",
   "platformSha256": {
     "android-arm64": {
       "package": "@tokscale/cli-android-arm64",
       "asset": "tokscale-android-arm64",
-      "sha256": "e103a0f25c0ad4b27ee341596ac63f5e74aa066247c949aa8057fe97dc34b4b7"
+      "sha256": "0d95e60e97a62c2e76c6f43ac927aadcd7cf67f4bdad2320330ffe514d4b65b6"
     },
     "darwin-arm64": {
       "package": "@tokscale/cli-darwin-arm64",
       "asset": "tokscale-darwin-arm64",
-      "sha256": "6c4765cf48790f5799da7c0685fab9a7b1d01f15d877121fff5ef0a14cc4a5f0"
+      "sha256": "3c206a727b5f1fb5265858f0e7008c002e3fb9efec722688350bc11210c87850"
     },
     "darwin-x64": {
       "package": "@tokscale/cli-darwin-x64",
       "asset": "tokscale-darwin-x64",
-      "sha256": "7bbbadeb16b67190dada4901b1d51be6f337730afd4f5c6ae9a8ccda80c9d00b"
+      "sha256": "0065945d95ba0a73b8d175f87896c5cd47b1b7002996ab3c190a7515ffbbf796"
     },
     "linux-arm64": {
       "package": "@tokscale/cli-linux-arm64-gnu",
       "asset": "tokscale-linux-arm64",
-      "sha256": "753f951be157db86b6e116dfebb737820aa0af1f6ee9b420fb7b95d42f589e3b"
+      "sha256": "ab6fba3a1376fe1e0b26761c8fff713c4e4f6a74114134f9518893c5cc70c8e7"
     },
     "linux-arm64-musl": {
       "package": "@tokscale/cli-linux-arm64-musl",
       "asset": "tokscale-linux-arm64-musl",
-      "sha256": "de33f986a140999acc6a9936ebe23c1ed92e803017864d8be24ead9e609ff4c4"
+      "sha256": "e9dd40cac40bb04cc46ed0e2d6a66c64e62681782805b6075ee2bc9ba57696b3"
     },
     "linux-x64": {
       "package": "@tokscale/cli-linux-x64-gnu",
       "asset": "tokscale-linux-x64",
-      "sha256": "65efa3df41fc63c4513ad713206b8240931a88abdf3e310dddeba73935ecd53f"
+      "sha256": "3a7dca98b8d6d249f8a92b730c564579ad44fc93cdedc73e104b1a38904dca43"
     },
     "linux-x64-musl": {
       "package": "@tokscale/cli-linux-x64-musl",
       "asset": "tokscale-linux-x64-musl",
-      "sha256": "5dfc261b15469b50c99cca175e36d481f5fc7c7ff3254c4325f68cbaa9abdb61"
+      "sha256": "b9c91bafb45e83384cae08f551a951c33ae370d869b7c9af0e7a87d5dee6bdec"
     },
     "win32-arm64": {
       "package": "@tokscale/cli-win32-arm64-msvc",
       "asset": "tokscale-win32-arm64.exe",
-      "sha256": "1ea26aa1d2176ef9ee6b8fb517ae19e2352985816af76c98b8e4486cc3fb13ad"
+      "sha256": "cffcae8cd9ba7fd74675cf4a20743449e09757ddcdb4e00de16fa99f0839d5a6"
     },
     "win32-x64": {
       "package": "@tokscale/cli-win32-x64-msvc",
       "asset": "tokscale-win32-x64.exe",
-      "sha256": "d9fa18103c277e35d2cabb61c852adc795439a5c8010c7ea9a468a592a0fc1da"
+      "sha256": "0d9c6b6e2c23ffcfe0b2a1ebf5b2e27e9fa726465a89f70d86a72a45214118a2"
     }
   }
 }

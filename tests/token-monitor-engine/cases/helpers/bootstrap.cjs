@@ -14,6 +14,7 @@ const mode = process.env.TOKEN_MONITOR_ENGINE_FIXTURES_MODE;
 const testContext = process.env.NODE_TEST_CONTEXT;
 for (const key of Object.keys(process.env)) delete process.env[key];
 Object.assign(process.env, scopedEnvironment(home));
+if (process.versions.electron) process.env.ELECTRON_RUN_AS_NODE = '1';
 if (testContext) process.env.NODE_TEST_CONTEXT = testContext;
 if (mode) process.env.TOKEN_MONITOR_ENGINE_FIXTURES_MODE = mode;
 process.on('exit', () => fs.rmSync(home, { recursive: true, force: true }));

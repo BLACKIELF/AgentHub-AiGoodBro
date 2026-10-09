@@ -93,8 +93,8 @@ build:
 		-framework UserNotifications
 	python3 scripts/prepare-companion-resources.py --resources "$(RESOURCES_DIR)" --arch "$(ARCH_NAME)" --sign-identity "$(SIGN_IDENTITY)" $(if $(filter 1,$(BUNDLE_COMPANION)),--include-hub,)
 	$(if $(filter 1,$(BUNDLE_LOCAL_PROXY)),python3 scripts/prepare-local-proxy-resources.py --resources "$(RESOURCES_DIR)" --arch "$(ARCH_NAME)" --sign-identity "$(SIGN_IDENTITY)",@true)
-	python3 scripts/prepare-token-monitor-resources.py --resources "$(RESOURCES_DIR)" --arch "$(ARCH_NAME)" --cache "$(TOKEN_MONITOR_CACHE)" --trusted-receipt "$(TOKEN_MONITOR_RECEIPT)" --sign-identity "$(SIGN_IDENTITY)" $(if $(filter 1,$(TOKEN_MONITOR_OFFLINE)),--offline,) $(if $(TOKEN_MONITOR_NODE_ARCHIVE),--node-archive "$(TOKEN_MONITOR_NODE_ARCHIVE)",)
 	$(if $(filter 1,$(BUNDLE_TOKEN_MONITOR_DESKTOP)),python3 scripts/prepare-token-monitor-desktop.py --arch "$(ARCH_NAME)" --runtime-app "$(TOKEN_MONITOR_DESKTOP_RUNTIME)" --output "$(TOKEN_MONITOR_DESKTOP_APP)" --replace $(if $(TOKEN_MONITOR_DESKTOP_DMG),--source-dmg "$(TOKEN_MONITOR_DESKTOP_DMG)",),@true)
+	python3 scripts/prepare-token-monitor-resources.py --resources "$(RESOURCES_DIR)" --arch "$(ARCH_NAME)" --cache "$(TOKEN_MONITOR_CACHE)" --trusted-receipt "$(TOKEN_MONITOR_RECEIPT)" --sign-identity "$(SIGN_IDENTITY)" $(if $(filter 1,$(TOKEN_MONITOR_OFFLINE)),--offline,) $(if $(TOKEN_MONITOR_NODE_ARCHIVE),--node-archive "$(TOKEN_MONITOR_NODE_ARCHIVE)",) $(if $(filter 1,$(BUNDLE_TOKEN_MONITOR_DESKTOP)),--shared-desktop-runtime,)
 	codesign $(filter-out --deep,$(CODESIGN_FLAGS)) "$(APP_DIR)"
 	codesign --verify --deep --strict "$(APP_DIR)"
 	python3 scripts/prepare-token-monitor-resources.py --verify --resources "$(RESOURCES_DIR)" --bundle "$(APP_DIR)" --sign-identity "$(SIGN_IDENTITY)" --arch "$(ARCH_NAME)" --cache "$(TOKEN_MONITOR_CACHE)" --trusted-receipt "$(TOKEN_MONITOR_RECEIPT)"

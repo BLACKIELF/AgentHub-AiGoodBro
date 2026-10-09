@@ -13,7 +13,7 @@ import (
 type bridge struct {
 	socket, key, runID                            string
 	once                                          sync.Once
-	normal, maintenance                           chan struct{}
+	normal, maintenance, reconciliation           chan struct{}
 	queueTimeout, exchangeTimeout, resolveTimeout time.Duration // Test overrides; zero selects production bounds.
 }
 type bridgeRequest struct {
@@ -28,6 +28,8 @@ type bridgeRequest struct {
 type bridgeReply struct {
 	OK             bool     `json:"ok"`
 	Order          []string `json:"order,omitempty"`
+	LastResortIDs  []string `json:"lastResortIDs,omitempty"`
+	DeferredIDs    []string `json:"deferredIDs,omitempty"`
 	CreditFallback bool     `json:"creditFallback,omitempty"`
 	LeaseID        string   `json:"leaseID"`
 	AccessToken    string   `json:"accessToken"`
@@ -55,9 +57,14 @@ func (b *bridge) call(ctx context.Context, command, requestID, profileID, leaseI
 	b.once.Do(func() {
 		b.normal = make(chan struct{}, 6)
 		b.maintenance = make(chan struct{}, 2)
+		b.reconciliation = make(chan struct{}, 2)
 	})
 	capacity := b.normal
-	if command == "heartbeat" || command == "release" || command == "acquire_resolve" || command == "order_end" {
+	if command == "acquire_resolve" {
+		// Resolving an ambiguous acquire must not queue behind maintenance
+		// exchanges that may themselves be stalled waiting for the host.
+		capacity = b.reconciliation
+	} else if command == "heartbeat" || command == "release" || command == "order_end" {
 		capacity = b.maintenance
 	}
 	busy := bridgeReply{Error: "control_busy"}
@@ -95,7 +102,7 @@ func (b *bridge) call(ctx context.Context, command, requestID, profileID, leaseI
 			return reply, err
 		}
 		// A busy response is authoritative only with no success or lease data.
-		if reply.OK || reply.LeaseID != "" || reply.AccessToken != "" || reply.AccountID != "" || len(reply.Order) != 0 || reply.ExpiresAt != 0 {
+		if reply.OK || reply.LeaseID != "" || reply.AccessToken != "" || reply.AccountID != "" || len(reply.Order) != 0 || len(reply.LastResortIDs) != 0 || len(reply.DeferredIDs) != 0 || reply.ExpiresAt != 0 {
 			return bridgeReply{}, errors.New("bridge_invalid")
 		}
 		delay := time.Duration(50*(1<<min(attempt, 2))) * time.Millisecond

@@ -48,6 +48,28 @@
     return side === 'left' ? mirrorX(commands, w) : commands;
   }
 
+  // The handle: a tab flush with the screen edge, rounded on the side facing the
+  // desktop and centred along the window, which is larger to leave it room to
+  // grow. Drawn for the right edge and mirrored for the left; `open: true` drops
+  // the segment along the display edge, as the rail's outline does.
+  function peekCommands({ width, height, side = 'right', open = false, handleWidth = width, handleLength = height }) {
+    const w = width;
+    const x = w - Math.min(handleWidth, w);
+    const top = Math.max(0, (height - handleLength) / 2);
+    const bottom = height - top;
+    const r = Math.min(w - x, (bottom - top) / 2, 5);
+    const commands = [
+      ['M', w, top],
+      ['L', x + r, top],
+      ['C', x + r * ARC, top, x, top + r * ARC, x, top + r],
+      ['L', x, bottom - r],
+      ['C', x, bottom - r * ARC, x + r * ARC, bottom, x + r, bottom],
+      ['L', w, bottom]
+    ];
+    if (!open) commands.push(['Z']);
+    return side === 'left' ? mirrorX(commands, w) : commands;
+  }
+
   // A rounded card with a broad-necked tail pointing at the rail. `tailY` is the
   // tip's offset from the top; it is clamped so the neck never runs into a
   // corner. Drawn with the tail on the right and mirrored for a left rail.
@@ -117,7 +139,18 @@
   }
 
   return {
+    refreshCommands({ width, height }) {
+      const x = width / 2;
+      const y = height / 2;
+      const r = Math.min(x, y) - 0.5;
+      const k = r * 0.5522847498;
+      return [['M', x, y - r], ['C', x + k, y - r, x + r, y - k, x + r, y],
+        ['C', x + r, y + k, x + k, y + r, x, y + r],
+        ['C', x - k, y + r, x - r, y + k, x - r, y],
+        ['C', x - r, y - k, x - k, y - r, x, y - r], ['Z']];
+    },
     bubbleCommands,
+    peekCommands,
     railCommands,
     toPolygons,
     toSvgPath

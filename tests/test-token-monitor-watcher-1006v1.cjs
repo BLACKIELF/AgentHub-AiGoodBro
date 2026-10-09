@@ -9,7 +9,7 @@ const test = require('node:test');
 const vm = require('node:vm');
 const { createRequire } = require('node:module');
 const { fork } = require('node:child_process');
-const { INPUT_SHA256, TRANSFORMS } = require('../Companion/TokenMonitorDesktop/backports/watcher-process-1006v1.cjs');
+const { INPUT_SHA256 } = require('../Companion/TokenMonitorDesktop/transform-stage.cjs');
 
 const upstreamRoot = path.resolve(__dirname, '../Companion/TokenMonitorEngine/upstream');
 const nodeModules = process.env.TOKEN_MONITOR_TEST_NODE_MODULES
@@ -23,11 +23,6 @@ function stageWatcher(t) {
   fs.copyFileSync(path.join(upstreamRoot, 'package.json'), path.join(root, 'package.json'));
   assert.ok(fs.existsSync(path.join(nodeModules, 'chokidar/package.json')), 'existing frozen chokidar runtime is required');
   fs.symlinkSync(nodeModules, path.join(root, 'node_modules'), 'dir');
-  for (const relative of Object.keys(TRANSFORMS)) {
-    const sourcePath = path.join(shared, path.basename(relative));
-    const stagedPath = path.join(root, 'src/shared', path.basename(relative));
-    fs.writeFileSync(stagedPath, TRANSFORMS[relative](fs.readFileSync(sourcePath, 'utf8')));
-  }
   return root;
 }
 
@@ -76,19 +71,16 @@ async function until(predicate, timeoutMs = 15000) {
   return false;
 }
 
-test('watcher transforms pin exact upstream hashes and reject drift or repeat application', () => {
-  for (const [relative, hash] of Object.entries(INPUT_SHA256)) {
+test('merged process watchers remain exact frozen upstream without duplicate transforms', () => {
+  const pins = JSON.parse(fs.readFileSync(path.join(upstreamRoot, '../SOURCE.json'))).finalSource.files;
+  for (const relative of ['src/shared/watcherHost.js', 'src/shared/watcherWorker.js']) {
     const sourcePath = path.join(upstreamRoot, relative);
-    assert.equal(crypto.createHash('sha256').update(fs.readFileSync(sourcePath)).digest('hex'), hash);
+    assert.equal(crypto.createHash('sha256').update(fs.readFileSync(sourcePath)).digest('hex'), pins['upstream/' + relative]);
+    assert.equal(Object.hasOwn(INPUT_SHA256, relative), false);
   }
-  const host = fs.readFileSync(path.join(shared, 'watcherHost.js'), 'utf8');
-  const worker = fs.readFileSync(path.join(shared, 'watcherWorker.js'), 'utf8');
-  assert.throws(() => TRANSFORMS['src/shared/watcherHost.js'](host.replace('const WORKER_PATH', 'const CHANGED_PATH')), /exactly one patch anchor/);
-  assert.throws(() => TRANSFORMS['src/shared/watcherHost.js'](TRANSFORMS['src/shared/watcherHost.js'](host)), /exactly one patch anchor/);
-  assert.throws(() => TRANSFORMS['src/shared/watcherWorker.js'](worker.replace('const { parentPort', 'const { alteredPort')), /exactly one patch anchor/);
 });
 
-test('staging hash failure rejects a changed watcher before writing any prepared outputs', (t) => {
+test('staging hash failure rejects collector drift before writing any prepared outputs', (t) => {
   const { INPUT_SHA256: stageHashes, transformStage } = require('../Companion/TokenMonitorDesktop/transform-stage.cjs');
   const stage = fs.mkdtempSync(path.join(os.tmpdir(), 'agb-watcher-hash-'));
   t.after(() => fs.rmSync(stage, { recursive: true, force: true }));
@@ -97,10 +89,10 @@ test('staging hash failure rejects a changed watcher before writing any prepared
     fs.mkdirSync(path.dirname(target), { recursive: true });
     fs.copyFileSync(path.join(upstreamRoot, relative), target);
   }
-  const watcher = path.join(stage, 'src/shared/watcherHost.js');
+  const watcher = path.join(stage, 'src/shared/collector.js');
   fs.appendFileSync(watcher, '\n// synthetic source drift\n');
   const before = Object.fromEntries(Object.keys(stageHashes).map(relative => [relative, fs.readFileSync(path.join(stage, relative), 'utf8')]));
-  assert.throws(() => transformStage(stage), /Pinned upstream hash changed: src\/shared\/watcherHost.js/);
+  assert.throws(() => transformStage(stage), /Pinned upstream hash changed: src\/shared\/collector.js/);
   for (const [relative, source] of Object.entries(before)) {
     assert.equal(fs.readFileSync(path.join(stage, relative), 'utf8'), source, `hash rejection partially wrote ${relative}`);
   }

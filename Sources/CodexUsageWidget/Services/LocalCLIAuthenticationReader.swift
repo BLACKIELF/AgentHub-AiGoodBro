@@ -23,6 +23,7 @@ struct LocalCLIAuthenticationReader {
         try? DispatchParticipationSync.readBoundedRegularFile($0, maximumBytes: 1024 * 1024, allowMissing: true)
     }
     var keychainReader: (String, String?) -> Data? = Self.keychainData
+    var claudeSubscriptionService: ClaudeSubscriptionService?
 
     func read(_ profile: LocalCLIProfile) -> LocalCLIAuthentication {
         let root = URL(fileURLWithPath: profile.configDirectory, isDirectory: true)
@@ -75,6 +76,10 @@ struct LocalCLIAuthenticationReader {
                 return .oauth
             }
         case .claudeCode:
+            if let reference = profile.claudeSubscription {
+                guard let service = claudeSubscriptionService else { return .unknown }
+                return (try? service.credential(reference)) != nil ? .oauth : .unknown
+            }
             let env = object("settings.json")["env"] as? [String: Any] ?? [:]
             // An explicit CLI API configuration (including CC Switch) is the
             // active route; do not consult an unrelated subscription Keychain item.

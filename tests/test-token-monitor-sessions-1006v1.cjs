@@ -8,17 +8,19 @@ const path = require('node:path');
 const vm = require('node:vm');
 const test = require('node:test');
 const { createRequire } = require('node:module');
-const { INPUT_SHA256, patchSessionDetail, patchSessionDetailResolver } = require('../Companion/TokenMonitorDesktop/backports/session-detail-1006v1.cjs');
+const { INPUT_SHA256, patchSessionMalformedRecords } = require('../Companion/TokenMonitorDesktop/transform-stage.cjs');
 
 const upstream = path.resolve(__dirname, '../Companion/TokenMonitorEngine/upstream');
 const detailPath = path.join(upstream, 'src/shared/sessionDetail.js');
-const detailSource = fs.readFileSync(detailPath, 'utf8');
+const originalDetailSource = fs.readFileSync(detailPath, 'utf8');
+const detailSource = patchSessionMalformedRecords(originalDetailSource);
 const resolverPath = path.join(upstream, 'src/shared/sessionDetailResolver.js');
 const resolverSource = fs.readFileSync(resolverPath, 'utf8');
 
-function loadDetail(source = patchSessionDetail(detailSource), filePath) {
+function loadDetail(source = detailSource, filePath, fileSystem = fs) {
   const localRequire = createRequire(detailPath);
   const context = { module: { exports: {} }, Buffer, require(name) {
+    if (name === 'node:fs') return fileSystem;
     if (name === './sessionFiles') return { resolveSessionFile: () => filePath };
     return localRequire(name);
   } };
@@ -50,13 +52,15 @@ function trackedFs(overrides = {}) {
   }, counts: () => ({ opened, closed }) };
 }
 
-test('hashes pin unchanged 0.62 sources and anchors reject drift or repeated application', () => {
-  for (const [relative, expected] of Object.entries(INPUT_SHA256)) {
-    assert.equal(crypto.createHash('sha256').update(fs.readFileSync(path.join(upstream, relative))).digest('hex'), expected);
+test('merged 0.68 session readers retain only the original AGB malformed-record guard', () => {
+  const pins = JSON.parse(fs.readFileSync(path.join(upstream, '../SOURCE.json'))).finalSource.files;
+  for (const relative of ['src/shared/sessionDetail.js', 'src/shared/sessionDetailResolver.js']) {
+    assert.equal(crypto.createHash('sha256').update(fs.readFileSync(path.join(upstream, relative))).digest('hex'), pins['upstream/' + relative]);
+    assert.equal(Object.hasOwn(INPUT_SHA256, relative), relative.endsWith('/sessionDetail.js'));
   }
-  assert.throws(() => patchSessionDetail(detailSource.replace('function parseClaudeTranscript(text)', 'function changed(text)')), /source anchor/);
-  assert.throws(() => patchSessionDetail(patchSessionDetail(detailSource)), /source anchor/);
-  assert.throws(() => patchSessionDetailResolver(patchSessionDetailResolver(resolverSource)), /source anchor/);
+  assert.equal(detailSource, originalDetailSource.replaceAll(
+    '    try { obj = JSON.parse(trimmed); } catch (_) { continue; }',
+    '    try { obj = JSON.parse(trimmed); } catch (_) { continue; }\n    if (!obj || typeof obj !== \'object\') continue;'));
 });
 
 test('production parser APIs preserve complete ordered Codex rows, malformed skips and costs', (t) => {
@@ -122,7 +126,7 @@ test('64 KiB chunk boundaries preserve UTF-8, CRLF and unterminated final record
   const lines = ['x'.repeat(65535) + '中文', JSON.stringify(codexPrompt('末行'))];
   fs.writeFileSync(file, lines.join('\r\n'));
   const tracked = trackedFs();
-  const { lines: readLines } = loadDetail(undefined, file);
+  const { lines: readLines } = loadDetail(undefined, file, tracked.module);
   assert.deepEqual(Array.from(readLines(file, tracked.module)), [lines[0] + '\r', lines[1]]);
   assert.deepEqual(tracked.counts(), { opened: 1, closed: 1 });
 });
@@ -134,8 +138,8 @@ test('oversized records and read failures discard partial results and close ever
   const chunk = Buffer.alloc(1024 * 1024, 120);
   for (let i = 0; i < 17; i++) fs.writeSync(fd, chunk);
   fs.closeSync(fd);
-  const { api } = loadDetail(undefined, file);
   const tracked = trackedFs();
+  const { api } = loadDetail(undefined, file, tracked.module);
   const tooLarge = api.readSessionDetail({ client: 'codex', sessionId: 'synthetic', deps: { fsModule: tracked.module } });
   assert.equal(tooLarge.error, 'line-too-large');
   assert.equal(tooLarge.found, false);
@@ -147,7 +151,7 @@ test('oversized records and read failures discard partial results and close ever
     if (++reads === 2) throw Object.assign(new Error('synthetic read error'), { code: 'EIO' });
     return fs.readSync(...args);
   } });
-  const failed = api.readSessionDetail({ client: 'claude', sessionId: 'synthetic', deps: { fsModule: failing.module } });
+  const failed = loadDetail(undefined, file, failing.module).api.readSessionDetail({ client: 'claude', sessionId: 'synthetic' });
   assert.equal(failed.error, 'read-failed');
   assert.equal(failed.exchanges.length, 0);
   assert.deepEqual(failing.counts(), { opened: 1, closed: 1 });
@@ -157,30 +161,30 @@ test('exact 16 MiB line is accepted; aborting iteration releases the descriptor'
   const file = tempFile(t);
   fs.writeFileSync(file, Buffer.alloc(16 * 1024 * 1024, 32));
   const tracked = trackedFs();
-  const { lines: readLines } = loadDetail(undefined, file);
+  const { lines: readLines } = loadDetail(undefined, file, tracked.module);
   assert.equal(Array.from(readLines(file, tracked.module))[0].length, 16 * 1024 * 1024);
   fs.writeFileSync(file, 'one\ntwo\n');
   for (const line of readLines(file, tracked.module)) { assert.equal(line, 'one'); break; }
   assert.deepEqual(tracked.counts(), { opened: 2, closed: 2 });
 });
 
-test('ENOENT stays missing while actual errors stop native and WSL fallback searches', (t) => {
+test('ENOENT stays missing while actual errors stop native and WSL fallback searches', async (t) => {
   const file = tempFile(t);
   const missing = loadDetail(undefined, file).api.readSessionDetail({ client: 'codex', sessionId: 'missing' });
   assert.equal(missing.found, false);
   assert.equal(missing.error, undefined);
   const context = { module: { exports: {} }, require: createRequire(resolverPath), process, setTimeout, clearTimeout };
-  vm.runInNewContext(patchSessionDetailResolver(resolverSource), context);
+  vm.runInNewContext(resolverSource, context);
   const resolve = context.module.exports.resolveSessionDetailForPlatform;
   let searches = 0, reads = 0;
-  const native = resolve({ client: 'codex' }, {
+  const native = await resolve({ client: 'codex' }, {
     platform: 'win32', homedir: () => 'native',
     readSessionDetail: () => ({ found: false, error: 'line-too-large' }),
     wslUsageHomes: () => { searches++; return ['wsl']; }
   });
   assert.equal(native.error, 'line-too-large');
   assert.equal(searches, 0);
-  const fallback = resolve({ client: 'claude' }, {
+  const fallback = await resolve({ client: 'claude' }, {
     platform: 'win32', homedir: () => 'native', wslUsageHomes: () => ['first', 'second'],
     readSessionDetail: () => (++reads === 1 ? { found: false } : { found: false, error: 'read-failed' })
   });
@@ -188,7 +192,7 @@ test('ENOENT stays missing while actual errors stop native and WSL fallback sear
   assert.equal(reads, 2);
 });
 
-test('synthetic transcript beyond V8 string length streams fully; unchanged vendor is the negative control', (t) => {
+test('merged 0.68 readers stream synthetic transcripts beyond V8 string length for Codex and Claude', (t) => {
   const file = tempFile(t);
   const fd = fs.openSync(file, 'w');
   try {
@@ -203,15 +207,11 @@ test('synthetic transcript beyond V8 string length streams fully; unchanged vend
     fs.writeSync(fd, JSON.stringify({ type: 'assistant', timestamp: '2026-10-06T02:00:01Z', message: { usage: { input_tokens: 2, output_tokens: 3 } } }));
   } finally { fs.closeSync(fd); }
   assert.ok(fs.statSync(file).size > require('node:buffer').constants.MAX_STRING_LENGTH);
-  const old = loadDetail(detailSource, file).api.readSessionDetail({ client: 'codex', sessionId: 'synthetic' });
-  assert.equal(old.found, false, 'unchanged vendor cannot decode a string beyond the V8 limit');
   const current = loadDetail(undefined, file).api.readSessionDetail({ client: 'codex', sessionId: 'synthetic', sessionCost: 4 });
   assert.equal(current.found, true);
   assert.deepEqual(Array.from(current.exchanges, ex => ex.promptPreview), ['first', 'last']);
   assert.equal(current.totals.totalTokens, 30);
   assert.equal(current.totals.costUsd, 4);
-  const oldClaude = loadDetail(detailSource, file).api.readSessionDetail({ client: 'claude', sessionId: 'synthetic' });
-  assert.equal(oldClaude.found, false);
   const currentClaude = loadDetail(undefined, file).api.readSessionDetail({ client: 'claude', sessionId: 'synthetic' });
   assert.equal(currentClaude.found, true);
   assert.deepEqual(Array.from(currentClaude.exchanges, ex => ex.promptPreview), ['first-Claude', 'last-Claude']);

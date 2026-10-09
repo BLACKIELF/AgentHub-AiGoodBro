@@ -3,39 +3,39 @@
   "purpose": "Repackage the pinned Token Monitor desktop source into an AiGoodBro-owned Electron helper",
   "upstream": {
     "repository": "Javis603/token-monitor",
-    "version": "0.62.0",
-    "commit": "dcccfb01557e2786888fd5479552f392ac6c0d32",
+    "version": "0.68.0",
+    "commit": "5d2db368d8313415763860d594de00e46a663418",
     "license": "MIT",
     "sourceInventory": "Companion/TokenMonitorEngine/SOURCE.json"
   },
   "runtime": {
     "sourceBundleID": "com.javis.tokenmonitor",
     "sourceTeamID": "Z9JR236A9N",
-    "version": "0.62.0",
+    "version": "0.68.0",
     "architecture": "arm64",
-    "officialDMGURL": "https://github.com/Javis603/token-monitor/releases/download/v0.62.0/Token-Monitor-0.62.0-arm64.dmg",
-    "officialDMGSHA256": "a424730200bf75e5547a7b5fa62705c6d015788a94d66f664caf99965167aba1",
-    "officialAsarHeaderSHA256": "6e50be79b16e1421292999f3cad3cc9cebcb0e9ae29c1b1e3015746228191a28",
-    "officialUnpackedTreeSHA256": "2a026ddd52a0635d9f6f07d510f66edd240d267ae3ba4db77e4e896dc1a7b55d",
-    "officialNodeModulesMembers": 1857,
-    "runtimeInput": "/Applications/Token Monitor.app",
+    "officialDMGURL": "https://github.com/Javis603/token-monitor/releases/download/v0.68.0/Token-Monitor-0.68.0-arm64.dmg",
+    "officialDMGSHA256": "bb08ea475bc230cedc4cd95791ed733270840279149c52178a5661e4a4417b8e",
+    "officialAsarHeaderSHA256": "cf55a27f35c4213d1d49ec84d58bbcc62c105681eeda7205f89b839295359897",
+    "officialUnpackedTreeSHA256": "1c8cbf5a454d67644939d2b17a4117512505b4c3f4226198213f185b362abcbf",
+    "officialNodeModulesMembers": 1613,
+    "runtimeInput": "--runtime-app (read-only SHA-pinned v0.68.0 arm64 DMG mount)",
     "rule": "Read-only input; preserve Electron Frameworks and the complete packaged node_modules/native-module closure. Three native unpacked binaries in the official SHA-pinned arm64 DMG differ from their pre-signing ASAR header size/hash; pin their real unpacked tree and regenerate output member integrity."
   },
   "architectures": {
     "x86_64": {
       "runtime": {
         "architecture": "x86_64",
-        "officialDMGURL": "https://github.com/Javis603/token-monitor/releases/download/v0.62.0/Token-Monitor-0.62.0-x64.dmg",
-        "officialDMGSHA256": "b5014b69f81ed5516cec105a85c11e9e1d96e54e250ad979809c4fc701d83958",
-        "officialAsarHeaderSHA256": "1a3849bece5dcfff51641f320f1b92cabeffdb441c9f2f4b890b202822b876dd",
-        "officialUnpackedTreeSHA256": "70f443698190d748c218b8644ad2e57e87c443a458653e707c0d299f93231c8e",
-        "officialNodeModulesMembers": 1856
+        "officialDMGURL": "https://github.com/Javis603/token-monitor/releases/download/v0.68.0/Token-Monitor-0.68.0-x64.dmg",
+        "officialDMGSHA256": "3c39d644ab46a88faa71ed89f870430ceb89a96a753cd236b673202bbbbd900b",
+        "officialAsarHeaderSHA256": "6f2810c50223765820f8fd4d5b55445afa8c208ae72b4c8b283faeecc3db7714",
+        "officialUnpackedTreeSHA256": "4458f6195c023b13b043e3196be228f9f81de96dba551b4a1277420ce248091f",
+        "officialNodeModulesMembers": 1612
       },
       "widget": {
-        "originalTreeSHA256": "0405edfb5bfad2683fd8313256b9c699e11afc741d577e4f6463a41f4950c00d",
-        "originalConfigSHA256": "6679179bd27403a1d22a26beee6585c048c79522f6294ac73aba4179a585cea3"
+        "originalTreeSHA256": "1960ee72de1b4b6c42ff2eadf954eeddeefed28071a4831f3516877c263027cc",
+        "originalConfigSHA256": "907075f26330910786a53a630ee2ad138b0b8be67838ffd829b7db7f57930d28"
       },
-      "verification": "Hashes and architecture were read from the official v0.62.0 x64 release DMG after SHA256 and original Team ID/signature verification; this is a packaging input, not an Intel execution result."
+      "verification": "Exact pins read from SHA256-pinned v0.68.0 x64 official DMG; no Intel code was executed. Packaging input only, not Intel runtime acceptance."
     }
   },
   "helper": {
@@ -51,10 +51,10 @@
   "widget": {
     "policy": "archive-inert",
     "originalBundleID": "com.javis.tokenmonitor.widget",
-    "originalTreeSHA256": "5b11534135abfbc91b648c3508e2143e42aad18c1962f3749fe1de6cf942942f",
+    "originalTreeSHA256": "b71060afb668efd7d4a62d905d13fc5a607ac18cc55d11bb99b890005c1901d1",
     "archive": "Contents/Resources/DisabledOriginalWidget.zip",
     "configArchive": "Contents/Resources/DisabledOriginalWidget-config.json",
-    "originalConfigSHA256": "d5662055830811e7dd9bf2e97075442924b514bf9ecafd0132747987863cee94",
+    "originalConfigSHA256": "2c28c8a32659d07dbe4232866fade5dc1dda9667d5cd807d4981f3c2b4a7dd20",
     "reason": "The original extension requires the original Team/App Group. Its exact files are retained outside Contents/PlugIns as a non-registerable archive; no WidgetKit functionality is claimed."
   }
 }
