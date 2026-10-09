@@ -287,7 +287,7 @@ test('production quota-only rendering reveals Home and Limits without inventing 
       window.renderLimitProviderSolo = () => { const row = document.createElement('div'); row.textContent = '75%'; return row; };
       window.statsRenderScheduler = { request() {} };
       (0, eval)(`let contentReadySignaled = false;${production}\n${handler}\nwindow.paint = render;`);
-    }, { functions, production: ['homeLimitRows', 'renderHomeLimitModule', 'renderLimits', 'hidePeriodContentForMessage', 'signalContentReady', 'render'].map(extract).join('\n'), handler });
+    }, { functions, production: ['homeLimitRows', 'renderHomeLimitModule', 'renderLimits', 'hidePeriodContentForMessage', 'signalContentReady', 'setTotalCost', 'render'].map(extract).join('\n'), handler });
     await page.evaluate(limits => push({ event: 'aigoodbro:limits', data: { limits } }), limits);
     assert.equal(await page.locator('#homePanel .home-limit-account').isVisible(), true);
     const quotaBounds = await page.locator('#homePanel .home-limit-account').boundingBox();
@@ -301,8 +301,9 @@ test('production quota-only rendering reveals Home and Limits without inventing 
     assert.equal(await page.locator('#limitsPanel').isVisible(), false);
     await page.evaluate(() => {
       state.breakdown = 'home'; state.suppressInitialNumberAnimation = true;
+      window.allTimeSessions = { attach: x => x, invalidate() {}, ensure() {} };
       window.fixedPeriodRangesApi = { isDerived: () => false };
-      for (const name of ['syncLiveTokenRateFooterState','renderSessionUsageArchiveStatus','ensureBreakdownVisible','cancelNumberAnimation','updateTotalCompact','renderTokenRate','setRefreshButtonState','stopServiceStatusTicker','renderFloatingBubbleContent']) window[name] = () => {};
+      for (const name of ['stopHomeSessionRepaint','stopSessionStatusRepaint','syncLiveTokenRateFooterState','renderSessionUsageArchiveStatus','ensureBreakdownVisible','cancelNumberAnimation','updateTotalCompact','renderTokenRate','setRefreshButtonState','stopServiceStatusTicker','renderFloatingBubbleContent']) window[name] = () => {};
       window.numberAnimValue = 0; window.formatNumber = n => String(n); window.formatCost = n => `$${n}`;
       window.headlineNumberIsAnimatingTo = () => false;
       window.renderHome = () => { els.homePanel.textContent = `Total ${state.stats.periods.today.totalTokens}`; };
