@@ -29,7 +29,7 @@ This page describes **2.4.0 (141) · 1009v2**. Compared with public 9.6.80 (130)
 **What the main numbers mean:**
 
 - **Reset messages** are announcements and history from a public source, not a quota already verified for a particular account.
-- **Available credits** are the account credit snapshot; **available amount (USD)** is the amount read from the public reset record. They are not added together, and unknown values are not shown as zero.
+- **Available credits** are the account credit snapshot; **available amount (USD)** converts the same credits at the existing rate ($1 = 25 credits), rather than representing a separate balance. Unknown values are not shown as zero.
 - **Token totals, cost and trends** come from local usage records. Cost is an estimate, not a provider bill.
 - **Account cards** show identity, 5-hour / 7-day windows, reset times, reset cards and task occupancy. Unavailable data remains “—” or an explicitly marked older snapshot.
 
