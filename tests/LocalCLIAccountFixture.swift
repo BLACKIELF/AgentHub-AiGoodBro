@@ -13,6 +13,7 @@ private enum FixtureFailure: Error { case failed(String) }
 enum LocalCLITerminalLauncher {
     @MainActor static var permitsSyntheticSession = false
     @MainActor static var launchCount = 0
+    @MainActor static var syntheticExitCode: Int32?
     enum Action { case signIn, open }
     struct Session {}
     @MainActor static func launch(profile: LocalCLIProfile, executable: String, action: Action, workingDirectory: URL) async throws -> Session {
@@ -24,8 +25,11 @@ enum LocalCLITerminalLauncher {
     }
     @MainActor static func waitForExit(_ session: Session) async throws -> Int32 {
         if permitsSyntheticSession {
-            try await Task.sleep(nanoseconds: 30_000_000_000)
-            return 0
+            while true {
+                try Task.checkCancellation()
+                if let code = syntheticExitCode { return code }
+                try await Task.sleep(nanoseconds: 5_000_000)
+            }
         }
         throw FixtureFailure.failed("interactive launcher must not run in the persistence fixture")
     }
@@ -45,9 +49,7 @@ private func unsupportedQuota(_ profile: LocalCLIProfile) -> LocalCLIQuotaResult
         messageCode: "synthetic_unsupported")
 }
 
-struct LocalCLIQuotaReader {
-    func load(profile: LocalCLIProfile) async -> LocalCLIQuotaResult { unsupportedQuota(profile) }
-}
+
 
 struct AdditionalCLIQuotaReader {
     func load(profile: LocalCLIProfile) async -> LocalCLIQuotaResult { unsupportedQuota(profile) }
@@ -1096,6 +1098,328 @@ private func testConfiguredClaudeWithoutExecutable() async throws {
                "explicit API configuration is detected without a subscription Keychain request")
 }
 
+
+private enum ClaudeStoreTestFailure: Error { case synthetic, failed(String) }
+private final class ClaudeStoreKeychain {
+    var items: [String: Data] = [:]
+    var breaksRollback = false
+    func key(_ service: String, _ account: String) -> String { service + "|" + account }
+    func read(_ service: String, _ account: String) throws -> Data? { items[key(service, account)] }
+    func write(_ service: String, _ account: String, _ data: Data?) throws {
+        if service == "Claude Code-credentials", breaksRollback {
+            if String(decoding: data ?? Data(), as: UTF8.self).contains("synthetic-b") { items[key(service, account)] = data }
+            throw ClaudeStoreTestFailure.synthetic
+        }
+        items[key(service, account)] = data
+    }
+}
+private final class ClaudeStoreTransport: LocalCLIQuotaTransport, @unchecked Sendable {
+    var calls = 0
+    var profileCalls = 0
+    var blocksProfileResponse = false
+    func response(for request: URLRequest) async throws -> LocalCLIHTTPResponse {
+        calls += 1
+        let name = (request.value(forHTTPHeaderField: "Authorization") ?? "").contains("synthetic-b") ? "b" : "a"
+        let body: String
+        if request.url?.path.hasSuffix("profile") == true {
+            profileCalls += 1
+            while blocksProfileResponse { try await Task.sleep(nanoseconds: 5_000_000) }
+            body = "{\"account\":{\"uuid\":\"synthetic-\(name)\",\"email\":\"\(name)@synthetic.invalid\"},\"organization\":{\"uuid\":\"synthetic-org\"}}"
+        } else {
+            body = #"{"five_hour":{"utilization":7,"resets_at":null},"seven_day":{"utilization":72,"resets_at":null},"limits":[{"kind":"weekly_all","group":"weekly","percent":72,"scope":null},{"kind":"weekly_scoped","group":"weekly","percent":41,"scope":{"model":{"id":null,"display_name":"Fable"}},"resets_at":"2030-01-02T00:00:00Z","is_active":true}]}"#
+        }
+        return .init(statusCode: 200, headers: [:], data: Data(body.utf8))
+    }
+}
+@MainActor private func testClaudeSubscriptionStoreIdentityAndReaderIsolation() async throws {
+    let paths = try makeRoot("claude-subscription-integration")
+    defer { try? FileManager.default.removeItem(at: paths.root) }
+    let claude = paths.home.appendingPathComponent(".claude")
+    try FileManager.default.createDirectory(at: claude, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+    let executable = paths.home.appendingPathComponent(".local/bin/claude")
+    try Data("synthetic CLI".utf8).write(to: executable); _ = chmod(executable.path, 0o700)
+    let keychain = ClaudeStoreKeychain(), transport = ClaudeStoreTransport()
+    let now = Date(timeIntervalSince1970: 1_800_000_000)
+    var service = ClaudeSubscriptionService(home: paths.home, support: paths.support)
+    service.dependencies = .init(readKeychain: keychain.read, writeKeychain: keychain.write, idle: { true }, transport: transport, now: { now })
+    func credential(_ name: String) -> Data { Data("{\"claudeAiOauth\":{\"accessToken\":\"synthetic-\(name)\",\"expiresAt\":2000000000000}}".utf8) }
+    let config = paths.home.appendingPathComponent(".claude.json")
+    func setCurrent(_ name: String) throws {
+        keychain.items[keychain.key("Claude Code-credentials", ClaudeSubscriptionService.keychainAccount)] = credential(name)
+        try Data("{\"oauthAccount\":{\"accountUuid\":\"synthetic-\(name)\",\"organizationUuid\":\"synthetic-org\",\"emailAddress\":\"\(name)@synthetic.invalid\"}}".utf8).write(to: config, options: .atomic)
+    }
+    try setCurrent("a")
+    var launches = 0
+    var blocksOpen = false
+    defer { blocksOpen = false }
+    let store = LocalCLIAccountStore(home: paths.home, support: paths.support,
+        applicationsDirectory: paths.home.appendingPathComponent("empty-system-applications"),
+        claudeSubscriptionService: service,
+        terminalOpener: { profile, _, _ in
+            try expect(profile.isDefault && profile.kind == .claudeCode, "subscription launches verified official default")
+            launches += 1
+            while blocksOpen { try await Task.sleep(nanoseconds: 5_000_000) }
+        }, clock: { now })
+    store.discover()
+    guard let a = await store.captureClaudeSubscription(name: "Synthetic A") else { throw ClaudeStoreTestFailure.failed("capture A") }
+    try setCurrent("b")
+    guard let b = await store.captureClaudeSubscription(name: "Synthetic B") else { throw ClaudeStoreTestFailure.failed("capture B") }
+    func waitForActive(_ id: String) async throws {
+        for _ in 0..<200 {
+            store.discoverClaudeSubscriptions()
+            if store.claudeActiveProfileID == id && !store.claudeIdentityUnavailable { return }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        throw ClaudeStoreTestFailure.failed("active identity not reconciled")
+    }
+    try await waitForActive(b.id)
+    try expect(store.canSwitchClaudeSubscription(a), "captured current identity permits switching")
+    try setCurrent("a")
+    store.refreshIfNeeded(kind: .claudeCode)
+    try await waitForActive(a.id)
+    try expect(store.canOpen(a) && !store.canOpen(b), "external sign-in refresh updates active subscription")
+    let beforeReader = transport.calls
+    let isolated = await LocalCLIQuotaReader(transport: transport).load(profile: a, now: now)
+    try expect(isolated.state != .available && transport.calls == beforeReader, "injected reader never constructs real subscription service")
+    try expect(LocalCLIAuthenticationReader().read(a) == .unknown, "uninjected auth reader never consults real subscription Keychain")
+    let routed = await LocalCLIQuotaReader(transport: transport, claudeSubscriptionService: service).load(profile: a, now: now)
+    try expect(routed.state == .available && routed.windows.count == 3 && routed.windows.last?.label == "Fable", "injected service reads separate 5h 7d and Fable without duplicated aggregate")
+    try expect(LocalCLIAuthenticationReader(claudeSubscriptionService: service).read(a) == .oauth, "authentication uses injected native storage")
+    store.refresh(a)
+    for _ in 0..<200 {
+        if !store.refreshing.contains(a.id) { break }
+        try await Task.sleep(nanoseconds: 10_000_000)
+    }
+    try expect(store.quotas[a.id]?.windows.last?.label == "Fable", "store default reader retains explicit service dependency")
+    let cswap = paths.home.appendingPathComponent(".claude-swap-backup")
+    try FileManager.default.createDirectory(at: cswap, withIntermediateDirectories: true)
+    try Data("broken synthetic sequence".utf8).write(to: cswap.appendingPathComponent("sequence.json"))
+    store.discoverClaudeSubscriptions()
+    try expect(store.claudeActiveProfileID == a.id && store.claudeSubscriptionCandidates.isEmpty, "damaged import list does not erase valid native identity")
+    store.openCLI(a, workingDirectory: paths.home)
+    try await Task.sleep(nanoseconds: 30_000_000)
+    try expect(launches == 1, "verified active subscription can open once; " + (store.message ?? "no store error"))
+    let globalSettings = claude.appendingPathComponent("settings.json")
+    try Data(#"{"env":{"ANTHROPIC_AUTH_TOKEN":"synthetic-route"}}"#.utf8).write(to: globalSettings)
+    store.openCLI(a, workingDirectory: paths.home)
+    try await Task.sleep(nanoseconds: 30_000_000)
+    try expect(launches == 1, "API route introduced after discovery blocks subscription launcher")
+    try FileManager.default.removeItem(at: globalSettings)
+    try await waitForActive(a.id)
+    let project = paths.home.appendingPathComponent("project")
+    try FileManager.default.createDirectory(at: project.appendingPathComponent(".claude"), withIntermediateDirectories: true)
+    let projectSettings = project.appendingPathComponent(".claude/settings.local.json")
+    try Data(#"{"env":{"ANTHROPIC_BASE_URL":"https://synthetic.invalid"}}"#.utf8).write(to: projectSettings)
+    store.openCLI(a, workingDirectory: project)
+    try await Task.sleep(nanoseconds: 30_000_000)
+    try expect(launches == 1, "project API route blocks subscription launcher")
+    try FileManager.default.removeItem(at: projectSettings)
+    try await waitForActive(a.id)
+    keychain.breaksRollback = true
+    let switched = await store.switchClaudeSubscription(b)
+    try expect(!switched && store.claudeIdentityUnavailable && store.claudeActiveProfileID == nil && store.quotas[a.id] == nil, "rollback failure quarantines active identity and quota")
+    store.openCLI(a, workingDirectory: paths.home)
+    store.discoverClaudeSubscriptions()
+    try await Task.sleep(nanoseconds: 30_000_000)
+    try expect(launches == 1 && store.claudeIdentityUnavailable && !store.canSwitchClaudeSubscription(b), "config A live B cannot recover via ordinary discovery or open")
+    keychain.breaksRollback = false
+    try setCurrent("a")
+    try await waitForActive(a.id)
+    try expect(store.canOpen(a) && store.canSwitchClaudeSubscription(b), "fresh official identity validation recovers reconciled state")
+
+    guard let localDefault = store.profiles(for: .claudeCode).first(where: \.isDefault) else {
+        throw FixtureFailure.failed("Claude default profile for opening lock")
+    }
+    blocksOpen = true
+    store.openCLI(localDefault, workingDirectory: paths.home)
+    store.openCLI(localDefault, workingDirectory: paths.home)
+    for _ in 0..<200 where launches == 1 { try await Task.sleep(nanoseconds: 5_000_000) }
+    try expect(launches == 2 && !store.canOpen(localDefault) && !store.canBeginClaudeSubscriptionSignIn,
+        "two concurrent default Claude opens launch once and hold the sign-in lock")
+    let countWhileOpening = store.profiles.count
+    let captureWhileOpening = await store.captureClaudeSubscription(name: "Blocked while opening")
+    let switchWhileOpening = await store.switchClaudeSubscription(b)
+    try expect(captureWhileOpening == nil && !switchWhileOpening
+        && !store.canSwitchClaudeSubscription(b) && store.profiles.count == countWhileOpening,
+        "pending default Claude open blocks capture and subscription switching")
+    blocksOpen = false
+    for _ in 0..<200 where !store.canOpen(localDefault) { try await Task.sleep(nanoseconds: 5_000_000) }
+    try expect(launches == 2 && store.canOpen(localDefault) && store.canBeginClaudeSubscriptionSignIn
+        && store.canSwitchClaudeSubscription(b), "finishing the single default open restores account actions")
+    let captureAfterOpening = await store.captureClaudeSubscription(name: "Synthetic A Again")
+    try expect(captureAfterOpening?.id == a.id && store.profiles.count == countWhileOpening,
+        "capture resumes after the default open finishes without duplicating the current subscription")
+}
+
+@MainActor private func testClaudeSubscriptionSignInRequiresExitVerificationAndExplicitCapture() async throws {
+    let paths = try makeRoot("claude-subscription-sign-in")
+    defer { try? FileManager.default.removeItem(at: paths.root) }
+    try FileManager.default.createDirectory(at: paths.home.appendingPathComponent(".claude"),
+        withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+    let executable = paths.home.appendingPathComponent(".local/bin/claude")
+    try Data("synthetic CLI".utf8).write(to: executable)
+    guard chmod(executable.path, 0o700) == 0 else { throw FixtureFailure.failed("chmod synthetic Claude") }
+    let keychain = ClaudeStoreKeychain(), transport = ClaudeStoreTransport()
+    let now = Date(timeIntervalSince1970: 1_800_000_000)
+    var idle = true
+    var service = ClaudeSubscriptionService(home: paths.home, support: paths.support)
+    service.dependencies = .init(readKeychain: keychain.read, writeKeychain: keychain.write,
+        idle: { idle }, transport: transport, now: { now })
+    func setCurrent(_ name: String) throws {
+        keychain.items[keychain.key("Claude Code-credentials", ClaudeSubscriptionService.keychainAccount)] =
+            Data("{\"claudeAiOauth\":{\"accessToken\":\"synthetic-\(name)\",\"expiresAt\":2000000000000}}".utf8)
+        try Data("{\"oauthAccount\":{\"accountUuid\":\"synthetic-\(name)\",\"organizationUuid\":\"synthetic-org\"}}".utf8)
+            .write(to: paths.home.appendingPathComponent(".claude.json"), options: .atomic)
+    }
+    @MainActor func waitUntil(_ message: String, _ condition: () -> Bool) async throws {
+        for _ in 0..<200 {
+            if condition() { return }
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        throw FixtureFailure.failed(message)
+    }
+    try setCurrent("a")
+    var opens = 0
+    let store = LocalCLIAccountStore(home: paths.home, support: paths.support,
+        applicationsDirectory: paths.home.appendingPathComponent("empty-system-applications"),
+        claudeSubscriptionService: service, terminalOpener: { _, _, _ in opens += 1 }, clock: { now })
+    store.discover()
+    guard let profile = store.profiles(for: .claudeCode).first(where: \.isDefault),
+        let a = await store.captureClaudeSubscription(name: "Synthetic A")
+    else { throw FixtureFailure.failed("seed synthetic Claude subscription") }
+    try await waitUntil("seeded Claude identity not reconciled") { store.claudeActiveProfileID == a.id }
+    let countBeforeLogin = store.profiles.count
+    let savedBeforeLogin = try Data(contentsOf: storage(paths.support))
+    let keychainBeforeLogin = keychain.items
+    LocalCLITerminalLauncher.permitsSyntheticSession = true
+    LocalCLITerminalLauncher.launchCount = 0
+    LocalCLITerminalLauncher.syntheticExitCode = nil
+    defer {
+        transport.blocksProfileResponse = false
+        LocalCLITerminalLauncher.syntheticExitCode = nil
+        LocalCLITerminalLauncher.permitsSyntheticSession = false
+    }
+
+    idle = false
+    store.startClaudeSubscriptionSignIn()
+    store.signIn(profile)
+    for _ in 0..<8 { await Task.yield() }
+    try expect(LocalCLITerminalLauncher.launchCount == 0 && store.signingIn.isEmpty,
+        "busy Claude sessions cannot launch authentication")
+    idle = true
+    let preview = LocalCLIAccountStore.preview(profiles: [profile, a], quotas: [:], root: paths.root,
+        activeClaudeProfileID: a.id)
+    try expect(preview.isPreview && !preview.canSignIn(profile) && !preview.canBeginClaudeSubscriptionSignIn,
+        "preview disables Claude login even with an installed descriptor")
+    preview.startClaudeSubscriptionSignIn()
+    preview.signIn(profile)
+    for _ in 0..<8 { await Task.yield() }
+    try expect(LocalCLITerminalLauncher.launchCount == 0 && preview.signingIn.isEmpty,
+        "preview never launches Claude authentication")
+
+    store.startClaudeSubscriptionSignIn()
+    try await waitUntil("Claude synthetic login did not launch") { LocalCLITerminalLauncher.launchCount == 1 }
+    store.checkLocalSignIns()
+    store.checkInteractiveSignIn(profile)
+    try expect(store.signingIn.contains(profile.id) && !store.canBeginClaudeSubscriptionSignIn,
+        "old Claude credentials cannot finish login through either public credential check")
+    store.startClaudeSubscriptionSignIn()
+    store.openCLI(profile, workingDirectory: paths.home)
+    store.openCLI(a, workingDirectory: paths.home)
+    let switchedDuringLogin = await store.switchClaudeSubscription(a)
+    let capturedDuringLogin = await store.captureClaudeSubscription(name: "Premature")
+    for _ in 0..<8 { await Task.yield() }
+    try expect(!store.canOpen(profile) && !store.canOpen(a) && !store.canSwitchClaudeSubscription(a)
+        && !switchedDuringLogin && capturedDuringLogin == nil && opens == 0
+        && LocalCLITerminalLauncher.launchCount == 1,
+        "pending Claude login blocks duplicate login, opening, switching and capture")
+    let savedWhileWaiting = try Data(contentsOf: storage(paths.support))
+    try expect(store.profiles.count == countBeforeLogin && savedWhileWaiting == savedBeforeLogin
+        && keychain.items == keychainBeforeLogin,
+        "pending login never saves a subscription or rewrites synthetic credentials")
+
+    try setCurrent("b")
+    transport.blocksProfileResponse = true
+    let profileCallsBeforeExit = transport.profileCalls
+    LocalCLITerminalLauncher.syntheticExitCode = 0
+    try await waitUntil("successful Claude exit did not request fresh identity") {
+        transport.profileCalls > profileCallsBeforeExit
+    }
+    store.checkLocalSignIns()
+    store.checkInteractiveSignIn(profile)
+    try expect(store.signingIn.contains(profile.id) && store.claudeActiveProfileID == nil
+        && store.profiles.count == countBeforeLogin,
+        "exit zero and changed credentials still wait for the fresh official identity response")
+    transport.blocksProfileResponse = false
+    try await waitUntil("verified Claude login remained waiting") { !store.signingIn.contains(profile.id) }
+    try expect(store.claudeSubscriptionSignInMessage?.contains("订阅身份已核验") == true
+        && !store.claudeIdentityUnavailable && store.claudeActiveProfileID == nil,
+        "fresh B identity is verified without claiming the saved A card is current")
+    let savedAfterVerification = try Data(contentsOf: storage(paths.support))
+    try expect(store.profiles.count == countBeforeLogin && savedAfterVerification == savedBeforeLogin,
+        "verified new login creates no card before explicit capture")
+    guard let b = await store.captureClaudeSubscription(name: "Synthetic B") else {
+        throw FixtureFailure.failed("explicit capture after verified login")
+    }
+    try await waitUntil("captured B identity not active") { store.claudeActiveProfileID == b.id }
+    try expect(b.id != a.id && store.profiles.count == countBeforeLogin + 1,
+        "explicit capture creates exactly one new subscription card")
+    let capturedAgain = await store.captureClaudeSubscription(name: "Synthetic B Again")
+    try expect(capturedAgain?.id == b.id && store.profiles.count == countBeforeLogin + 1,
+        "saving the same current subscription updates its credentials without duplicating a card")
+
+    LocalCLITerminalLauncher.syntheticExitCode = nil
+    store.startClaudeSubscriptionSignIn()
+    try await waitUntil("second Claude synthetic login did not launch") { LocalCLITerminalLauncher.launchCount == 2 }
+    store.checkLocalSignIns()
+    store.checkInteractiveSignIn(profile)
+    try expect(store.signingIn.contains(profile.id), "existing B credentials also cannot finish a new login")
+    LocalCLITerminalLauncher.syntheticExitCode = 1
+    try await waitUntil("failed Claude exit remained waiting") { !store.signingIn.contains(profile.id) }
+    try expect(store.claudeSubscriptionSignInMessage?.contains("登录未完成") == true
+        && store.claudeActiveProfileID == nil && store.profiles.count == countBeforeLogin + 1,
+        "nonzero Claude exit never reports verified success or saves existing credentials")
+
+    LocalCLITerminalLauncher.syntheticExitCode = nil
+    store.startClaudeSubscriptionSignIn()
+    try await waitUntil("Claude login cannot retry after nonzero exit") { LocalCLITerminalLauncher.launchCount == 3 }
+    transport.blocksProfileResponse = true
+    let profileCallsBeforeRetry = transport.profileCalls
+    LocalCLITerminalLauncher.syntheticExitCode = 0
+    try await waitUntil("retried Claude login did not verify identity") {
+        transport.profileCalls > profileCallsBeforeRetry
+    }
+    try expect(store.rename(profile, name: "Renamed during verification"),
+        "Claude default profile can be renamed while identity verification is pending")
+    guard let renamedProfile = store.profiles.first(where: { $0.id == profile.id }) else {
+        throw FixtureFailure.failed("renamed Claude profile missing")
+    }
+    try expect(renamedProfile.displayName == "Renamed during verification"
+        && store.signingIn.contains(profile.id), "rename preserves the pending Claude login attempt")
+    transport.blocksProfileResponse = false
+    try await waitUntil("renamed Claude login remained waiting") { !store.signingIn.contains(profile.id) }
+    try expect(store.claudeSubscriptionSignInMessage?.contains("订阅身份已核验") == true
+        && store.claudeActiveProfileID == b.id && store.profiles.count == countBeforeLogin + 1,
+        "retry verifies successfully after a profile rename without adding a subscription")
+
+    LocalCLITerminalLauncher.syntheticExitCode = nil
+    store.startClaudeSubscriptionSignIn()
+    try await waitUntil("Claude drift attempt did not launch") { LocalCLITerminalLauncher.launchCount == 4 }
+    transport.blocksProfileResponse = true
+    let profileCallsBeforeDrift = transport.profileCalls
+    LocalCLITerminalLauncher.syntheticExitCode = 0
+    try await waitUntil("Claude drift attempt did not verify identity") {
+        transport.profileCalls > profileCallsBeforeDrift
+    }
+    try setCurrent("a")
+    transport.blocksProfileResponse = false
+    try await waitUntil("credential drift stranded the Claude login attempt") { !store.signingIn.contains(profile.id) }
+    try expect(store.claudeSubscriptionSignInMessage?.contains("当前订阅身份尚未核验") == true
+        && store.claudeActiveProfileID == nil && store.canBeginClaudeSubscriptionSignIn
+        && store.profiles.count == countBeforeLogin + 1,
+        "credential drift during fresh verification clears waiting and permits a new attempt without claiming success")
+}
+
 @main enum Main {
     @MainActor static func main() async throws {
         try await testDiscoveryLinkRenameUnlinkAndPermissions()
@@ -1122,6 +1446,8 @@ private func testConfiguredClaudeWithoutExecutable() async throws {
         try await testFailedNewAccountReadNeverKeepsOldQuota()
         try await testZCodeCredentialFilesInvalidateFreshQuota()
         try await testConfiguredClaudeWithoutExecutable()
+        try await testClaudeSubscriptionStoreIdentityAndReaderIsolation()
+        try await testClaudeSubscriptionSignInRequiresExitVerificationAndExplicitCapture()
         print("local-cli-account-fixture: ok")
     }
 }

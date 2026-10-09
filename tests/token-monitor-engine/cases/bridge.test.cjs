@@ -39,6 +39,8 @@ function parseStdout(result) {
 // carry anything but a level, a code and optional enum fields.
 function assertSanitizedDiagnostics(stderr, forbidden = []) {
   for (const line of stderr.split('\n').filter(Boolean)) {
+    // Electron emits this native sandbox diagnostic before JS starts; engine diagnostics stay strict.
+    if (process.versions.electron && /^\[\d+\/\d+\.\d+:ERROR:electron\/shell\/common\/mac\/codesign_util\.cc:\d+\] task_name_for_pid: \(os\/kern\) failure \(5\)$/.test(line)) continue;
     const record = JSON.parse(line);
     assert.deepStrictEqual(
       Object.keys(record).sort().filter((key) => !['level', 'code', 'phase', 'retryable'].includes(key)),
@@ -64,8 +66,8 @@ test('bridge returns one JSON result on stdout for a fixture request', () => {
     assert.equal(response.requestId, 'fixture-request');
     assert.equal(response.status, 'ok');
     assert.equal(response.engine.repository, 'Javis603/token-monitor');
-    assert.equal(response.engine.commit, 'dcccfb01557e2786888fd5479552f392ac6c0d32');
-    assert.equal(response.engine.version, '0.62.0');
+    assert.equal(response.engine.commit, '5d2db368d8313415763860d594de00e46a663418');
+    assert.equal(response.engine.version, '0.68.0');
     assert.equal(response.payload.usage.today.totalTokens, 100);
     assert.equal(response.payload.history.daily.length, 1);
     assert.ok(Array.isArray(response.coverage.entries));

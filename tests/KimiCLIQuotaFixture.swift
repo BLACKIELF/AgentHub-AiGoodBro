@@ -61,8 +61,8 @@ struct KimiCLIQuotaFixture {
             let data = try JSONSerialization.data(withJSONObject: credentials)
             try data.write(to: directory.appendingPathComponent("credentials/kimi-code.json"))
         }
-        func expect(_ condition: @autoclosure () -> Bool, _ message: String) throws {
-            guard condition() else { throw KimiFixtureFailure.assertion(message) }
+        func expect(_ condition: @autoclosure () throws -> Bool, _ message: String) throws {
+            guard try condition() else { throw KimiFixtureFailure.assertion(message) }
         }
 
         // A token with 30 seconds left is still usable for a read-only quota GET.
@@ -88,6 +88,42 @@ struct KimiCLIQuotaFixture {
         let stringRatio = try LocalCLIQuotaReader.parseKimi(Data(
             #"{"usages":{"limit_month_code":{"used_ratio":"0.125"}}}"#.utf8))
         try expect(stringRatio.windows[0].usedPercent == 12.5, "official numeric-string ratio is accepted")
+        let contradictory = await LocalCLIQuotaReader(transport: KimiMockTransport(body:
+            #"{"limits":[{"window":{"duration":300,"timeUnit":"TIME_UNIT_MINUTE"},"detail":{"limit":"100","used":"100","resetTime":"2026-10-06T13:23:46.915474Z"}}],"usages":{"limit_5h":{"used_ratio":0,"reset_time":"2026-10-06T13:23:46Z"},"limit_month_total":{"used_ratio":0.5531,"reset_time":"2026-10-22T14:26:29Z"},"limit_month_code":{"used_ratio":0,"reset_time":"2026-10-22T14:26:29Z"}}}"#
+        )).load(profile: profile, now: now)
+        try expect(contradictory.state == .available, "contradictory matching Kimi windows remain readable")
+        try expect(contradictory.windows.map(\.id) == ["session", "monthly", "monthly-code"], "actual returned monthly pools remain independent and no weekly pool is invented")
+        try expect(contradictory.windows[0].usedPercent == 100, "matching exhausted legacy session wins over zero ratio")
+        try expect(abs(contradictory.windows[1].usedPercent - 55.31) < 0.000001, "actual monthly total retained")
+        let counterResetFormatter = ISO8601DateFormatter()
+        counterResetFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        try expect(contradictory.windows[0].resetsAt == counterResetFormatter.date(from: "2026-10-06T13:23:46.915474Z"), "selected counter keeps its actual reset")
+
+        func sessionPercent(ratio: Double, used: String = "90", reset: String?, duration: Int = 300) throws -> Double {
+            var detail: [String: Any] = ["limit": "100", "used": used]
+            if let reset { detail["resetTime"] = reset }
+            let payload: [String: Any] = [
+                "usages": ["limit_5h": ["used_ratio": ratio, "reset_time": "2026-10-06T13:23:46Z"]],
+                "limits": [["window": ["duration": duration, "timeUnit": "TIME_UNIT_MINUTE"], "detail": detail]],
+            ]
+            return try LocalCLIQuotaReader.parseKimi(JSONSerialization.data(withJSONObject: payload)).windows.first { $0.id == "session" }!.usedPercent
+        }
+        try expect(try sessionPercent(ratio: 0.1, reset: "2026-10-06T13:23:48Z") == 90, "two-second reset drift is the same period")
+        try expect(try sessionPercent(ratio: 0.1, reset: "2026-10-06T13:23:48.001Z") == 10, "greater reset drift keeps the ratio period")
+        try expect(try sessionPercent(ratio: 0.1, reset: nil) == 10, "unknown counter period cannot replace ratio evidence")
+        try expect(try sessionPercent(ratio: 0.95, reset: "2026-10-06T13:23:46Z") == 95, "higher ratio reading wins")
+        try expect(try sessionPercent(ratio: 0.1, used: "invalid", reset: "2026-10-06T13:23:46Z") == 10, "invalid counter cannot erase a valid ratio")
+        try expect(try sessionPercent(ratio: 0, used: "130", reset: "2026-10-06T13:23:46Z") == 100, "authoritative overage remains exhausted when the ratio says zero")
+        try expect(try sessionPercent(ratio: 0.1, reset: "2026-10-06T13:23:46Z", duration: 60) == 10, "different window duration cannot replace session")
+        let weeklyConflict = try LocalCLIQuotaReader.parseKimi(Data(
+            #"{"usages":{"limit_7d":{"used_ratio":0.1,"reset_time":"2026-10-08T00:00:00Z"}},"usage":{"limit":"100","remaining":"25","resetTime":"2026-10-08T00:00:01Z"}}"#.utf8))
+        try expect(weeklyConflict.windows.count == 1 && weeklyConflict.windows[0].usedPercent == 75, "weekly remaining counters reconcile the same reset period")
+        let remainingFallback = try LocalCLIQuotaReader.parseKimi(Data(
+            #"{"usages":{"limit_7d":{"used_ratio":0.1,"reset_time":"2026-10-08T00:00:00Z"}},"usage":{"limit":100,"used":"invalid","remaining":30,"resetTime":"2026-10-08T00:00:01Z"}}"#.utf8))
+        try expect(remainingFallback.windows[0].usedPercent == 70, "a valid remaining counter survives an unusable used counter")
+        let multipleCounters = try LocalCLIQuotaReader.parseKimi(Data(
+            #"{"usages":{"limit_7d":{"used_ratio":0.1,"reset_time":"2026-10-08T00:00:00Z"}},"usage":{"limit":100,"used":75,"resetTime":"2026-10-08T00:00:02Z"},"limits":[{"window":{"duration":10080,"timeUnit":"TIME_UNIT_MINUTE"},"detail":{"limit":100,"used":95,"resetTime":"2026-10-07T23:59:58Z"}}]}"#.utf8))
+        try expect(multipleCounters.windows.count == 1 && multipleCounters.windows[0].usedPercent == 95, "all comparisons use the original ratio period after one counter wins")
         for body in [
             #"{"usage":null}"#, #"{"limits":null}"#, #"{"limits":[]}"#,
             #"{"usages":{},"limits":[]}"#,

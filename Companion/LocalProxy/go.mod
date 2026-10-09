@@ -2,7 +2,7 @@ module github.com/router-for-me/CLIProxyAPI/v8/aigoodbro-local-proxy
 
 go 1.26.0
 
-require github.com/router-for-me/CLIProxyAPI/v8 v8.0.2
+require github.com/router-for-me/CLIProxyAPI/v8 v8.0.20
 
 require (
 	github.com/gin-gonic/gin v1.10.1

@@ -1,5 +1,9 @@
 import Foundation
 
+enum TokenMonitorUpstream {
+    static let commit = "5d2db368d8313415763860d594de00e46a663418"
+}
+
 /// Lossless JSON numbers (including Int64 counters), arbitrary model keys and dimensions.
 indirect enum TokenMonitorJSON: Codable, Equatable, Sendable {
     case null
@@ -279,7 +283,7 @@ struct TokenMonitorResponse: Codable, Sendable {
     var payload: TokenMonitorJSON
     var coverage: Coverage
     var errors: [Diagnostic]
-    static let commit = "dcccfb01557e2786888fd5479552f392ac6c0d32"
+    static let commit = TokenMonitorUpstream.commit
 
     struct CoverageIndex {
         private struct Key: Hashable {

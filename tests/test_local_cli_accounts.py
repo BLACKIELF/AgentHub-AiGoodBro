@@ -11,6 +11,14 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 class LocalCLIAccountTests(unittest.TestCase):
     def test_actual_store_and_atomic_persistence_with_synthetic_home(self):
         sources = [
+            ROOT / "Sources/CodexUsageWidget/Domain/TokenMonitorEngineModels.swift",
+            ROOT / "Sources/CodexUsageWidget/Services/TokenMonitorEngine.swift",
+            ROOT / "Sources/CodexUsageWidget/Services/TokenMonitorLocalCLIQuotaReader.swift",
+            ROOT / "Sources/CodexUsageWidget/Services/LocalCLIQuotaReader.swift",
+            ROOT / "Sources/CodexUsageWidget/Services/LocalCLIQuotaRefresh.swift",
+            ROOT / "Sources/CodexUsageWidget/Services/CCSwitchClaudeRelay.swift",
+            ROOT / "Sources/CodexUsageWidget/Services/BoundedLocalProcess.swift",
+            ROOT / "Sources/CodexUsageWidget/Services/ClaudeSubscriptionService.swift",
             ROOT / "Sources/CodexUsageWidget/Domain/LocalCLIAccount.swift",
             ROOT / "Sources/CodexUsageWidget/Services/LocalCLIAuthenticationReader.swift",
             ROOT / "Sources/CodexUsageWidget/Services/DispatchParticipationSync.swift",

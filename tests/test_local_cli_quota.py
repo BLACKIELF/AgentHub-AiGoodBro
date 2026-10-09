@@ -54,6 +54,7 @@ class LocalCLIQuotaTests(unittest.TestCase):
                         str(UPSTREAM_READER),
                         str(BOUNDED_READER),
                         str(READER),
+                        str(ROOT / "Sources/CodexUsageWidget/Services/ClaudeSubscriptionService.swift"),
                         str(ROOT / "Sources/CodexUsageWidget/Services/LocalCLIQuotaRefresh.swift"),
                         str(ROOT / "Sources/CodexUsageWidget/Services/CCSwitchClaudeRelay.swift"),
                         str(ROOT / "Sources/CodexUsageWidget/Services/BoundedLocalProcess.swift"),
@@ -81,6 +82,7 @@ class LocalCLIQuotaTests(unittest.TestCase):
 
     def test_fixed_protocol_and_privacy_contracts(self):
         source = READER.read_text(encoding="utf-8")
+        relay = (ROOT / "Sources/CodexUsageWidget/Services/CCSwitchClaudeRelay.swift").read_text(encoding="utf-8")
         self.assertIn("https://cli-chat-proxy.grok.com/v1/billing?format=credits", source)
         self.assertIn("https://api.kimi.com/coding/v1/usages", source)
         self.assertIn("https://api.anthropic.com/api/oauth/usage", source)
@@ -97,6 +99,9 @@ class LocalCLIQuotaTests(unittest.TestCase):
         self.assertIn("SecItemCopyMatching", source)
         self.assertIn("kSecUseAuthenticationUIFail", source)
         self.assertIn('kSecAttrService: "Claude Code-credentials"', source)
+        self.assertNotIn("Process(", source)
+        self.assertNotIn("BoundedLocalProcess.run", source)
+        self.assertIn('"-init", "/dev/null", "-readonly", "-json"', relay)
 
     def test_fixture_contains_only_synthetic_credentials(self):
         for fixture in (FIXTURE, KIMI_FIXTURE, GROK_FIXTURE, KIMI_RENEWAL_FIXTURE):

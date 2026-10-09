@@ -22,10 +22,16 @@ with tempfile.TemporaryDirectory(prefix='lp-pressure-', dir='/private/tmp') as t
     folder = Path(temporary)
     os.chmod(folder, 0o700)
     source = (args.bridge_source or ROOT/'Sources/CodexUsageWidget/Services/LocalProxyBridge.swift').read_text()
-    (folder/'Bridge.swift').write_text(source[:source.index('/// Reads under the same')])
+    (folder/'Bridge.swift').write_text(source[:source.index('\nenum LocalProxyCredentialReader')])
     domain = (ROOT/'Sources/CodexUsageWidget/Domain/LocalProxyQueue.swift').read_text()
-    (folder/'Domain.swift').write_text('import Foundation\n'+domain[domain.index('enum LocalProxyFailure:'):domain.index('enum LocalProxyAdmission {')])
+    (folder/'Domain.swift').write_text('import Foundation\n'+domain[domain.index('enum LocalProxyFailure:'):domain.index('enum LocalProxyRouting {')])
     subprocess.run(['xcrun','swiftc','-swift-version','5','-parse-as-library',str(folder/'Bridge.swift'),str(folder/'Domain.swift'),str(Path(__file__).with_name('BridgeFixture.swift')),'-o',str(folder/'fixture')],check=True)
+    if not args.expect_legacy_disconnect:
+        # Build before any client starts its bounded wait. Cold compilation
+        # must not consume the held admission clients' eight-second budget.
+        control_test = folder/'control-tests'
+        subprocess.run(['go','test','-mod=readonly','-c','-o',str(control_test),'.'],
+                       cwd=ROOT/'Companion/LocalProxy',check=True,timeout=90)
     path = folder/'b.sock'
     child = subprocess.Popen([str(folder/'fixture')], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                              env={**os.environ,'FIXTURE_SOCKET':str(path),'FIXTURE_MODE':'pressure'})
@@ -64,7 +70,7 @@ with tempfile.TemporaryDirectory(prefix='lp-pressure-', dir='/private/tmp') as t
                     assert call('release','maintenance')['ok']
                     assert time.monotonic()-start < 2
                     print('PASS: 32 overflow replies explicitly busy; heartbeat/release complete while all 8 admission handlers wait',flush=True)
-                    subprocess.run(['go','test','-mod=readonly','-run','^TestRealSwiftControlPressure$','-count=1','-timeout=20s','.'],
+                    subprocess.run([str(control_test),'-test.run=^TestRealSwiftControlPressure$','-test.count=1','-test.timeout=20s'],
                                    cwd=ROOT/'Companion/LocalProxy',check=True,timeout=45,
                                    env={**os.environ,'AIGOODBRO_CONTROL_PRESSURE_SOCKET':str(path),'AIGOODBRO_CONTROL_PRESSURE_GATE':str(folder/'release-gate')})
                     print('PASS: 32 real Go callers retry the Swift busy reply, acquire and release exactly once',flush=True)

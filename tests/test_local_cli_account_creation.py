@@ -11,6 +11,14 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 class LocalCLIAccountCreationTests(unittest.TestCase):
     def test_isolated_creation_persistence_and_failure_rollback(self):
         sources = [
+            ROOT / "Sources/CodexUsageWidget/Domain/TokenMonitorEngineModels.swift",
+            ROOT / "Sources/CodexUsageWidget/Services/TokenMonitorEngine.swift",
+            ROOT / "Sources/CodexUsageWidget/Services/TokenMonitorLocalCLIQuotaReader.swift",
+            ROOT / "Sources/CodexUsageWidget/Services/LocalCLIQuotaReader.swift",
+            ROOT / "Sources/CodexUsageWidget/Services/LocalCLIQuotaRefresh.swift",
+            ROOT / "Sources/CodexUsageWidget/Services/CCSwitchClaudeRelay.swift",
+            ROOT / "Sources/CodexUsageWidget/Services/BoundedLocalProcess.swift",
+            ROOT / "Sources/CodexUsageWidget/Services/ClaudeSubscriptionService.swift",
             ROOT / "Sources/CodexUsageWidget/Domain/LocalCLIAccount.swift",
             ROOT / "Sources/CodexUsageWidget/Services/LocalCLIAuthenticationReader.swift",
             ROOT / "Sources/CodexUsageWidget/Services/DispatchParticipationSync.swift",

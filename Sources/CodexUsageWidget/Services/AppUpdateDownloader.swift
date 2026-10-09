@@ -57,6 +57,7 @@ enum AppUpdateDownloadPolicy {
     static func plan(release: GitHubReleaseInfo, asset: GitHubReleaseAsset, currentVersion: String, architecture: AppArchitecture = .current) throws -> Plan {
         guard !release.draft, release.publishedAt != nil, let latest = release.version,
             let current = AppVersion(currentVersion), latest > current,
+            !AppUpdateReleasePolicy.blocksLegacyRelease(latest, currentVersion: currentVersion),
             trustedReleaseURL(release.htmlURL, tag: release.tagName)
         else { throw Failure(message: "版本尚未发布或来源不匹配，无法下载。 / Release is unpublished or its source does not match.") }
         guard asset.isDMG, architecture != .unknown, asset.architecture == architecture,

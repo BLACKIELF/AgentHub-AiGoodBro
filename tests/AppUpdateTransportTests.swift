@@ -29,13 +29,13 @@ func settle(_ condition: () -> Bool, timeout: TimeInterval = 5) {
     while !condition(), Date() < end { RunLoop.main.run(until: Date().addingTimeInterval(0.01)) }
     require(condition(), "fixture timed out")
 }
-func release(digest: String? = nil, withSidecar: Bool = false) -> (GitHubReleaseInfo, GitHubReleaseAsset) {
-    let name = "AiGoodBro-9.6.80-mac-arm64.dmg"
-    let prefix = "https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v9.6.80/"
+func release(version: String = "9.6.80", digest: String? = nil, withSidecar: Bool = false) -> (GitHubReleaseInfo, GitHubReleaseAsset) {
+    let name = "AiGoodBro-\(version)-mac-arm64.dmg"
+    let prefix = "https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v\(version)/"
     let asset = GitHubReleaseAsset(name: name, browserDownloadURL: URL(string: prefix + name)!, size: Int64(FixtureProtocol.package.count), contentType: "application/octet-stream", digest: digest)
     let sidecarBody = Data("\(digestHex(FixtureProtocol.package))  dist/\(name)\n".utf8)
     let sidecar = GitHubReleaseAsset(name: name + ".sha256", browserDownloadURL: URL(string: prefix + name + ".sha256")!, size: Int64(sidecarBody.count), contentType: "text/plain")
-    return (GitHubReleaseInfo(tagName: "v9.6.80", name: "Update", htmlURL: URL(string: "https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/tag/v9.6.80")!, publishedAt: Date(), prerelease: false, draft: false, body: "Fixture release", assets: withSidecar ? [asset, sidecar] : [asset]), asset)
+    return (GitHubReleaseInfo(tagName: "v\(version)", name: "Update", htmlURL: URL(string: "https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/tag/v\(version)")!, publishedAt: Date(), prerelease: false, draft: false, body: "Fixture release", assets: withSidecar ? [asset, sidecar] : [asset]), asset)
 }
 func runTransportTests() {
     let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("aigoodbro-update-fixture-\(UUID().uuidString)")
@@ -44,6 +44,40 @@ func runTransportTests() {
     config.protocolClasses = [FixtureProtocol.self]
     let downloader = AppUpdateDownloader(configuration: config, downloadsDirectory: root)
     var metadata = release(digest: "sha256:" + digestHex(FixtureProtocol.package))
+    let currentV23 = "2.3.0"
+    let legacyOnly = GitHubReleaseUpdateChecker.evaluate(
+        releases: [metadata.0], currentVersion: currentV23, includePrereleases: true,
+        checkedAt: Date(), architecture: .arm64)
+    require(legacyOnly.status == .upToDate && legacyOnly.latestRelease == nil, "2.3 must ignore the retired 9.6.x release line")
+    let oldClient = GitHubReleaseUpdateChecker.evaluate(
+        releases: [metadata.0], currentVersion: "9.6.79", includePrereleases: true,
+        checkedAt: Date(), architecture: .arm64)
+    require(oldClient.status == .updateAvailable, "legacy clients must retain their existing SemVer update behavior")
+    let currentLineRelease = release(version: "2.3.1", digest: "sha256:" + digestHex(FixtureProtocol.package))
+    let mixed = GitHubReleaseUpdateChecker.evaluate(
+        releases: [metadata.0, currentLineRelease.0], currentVersion: currentV23, includePrereleases: true,
+        checkedAt: Date(), architecture: .arm64)
+    require(mixed.status == .updateAvailable && mixed.latestVersionLabel == "2.3.1", "2.3+ must keep normal SemVer update selection")
+    let v24 = release(version: "2.4.0", digest: "sha256:" + digestHex(FixtureProtocol.package))
+    let upgradeTo24 = GitHubReleaseUpdateChecker.evaluate(
+        releases: [metadata.0, v24.0], currentVersion: currentV23, includePrereleases: false,
+        checkedAt: Date(), architecture: .arm64)
+    require(upgradeTo24.status == .updateAvailable && upgradeTo24.latestVersionLabel == "2.4.0",
+            "2.3 must select 2.4 rather than the retired 9.6 release")
+    let current24 = GitHubReleaseUpdateChecker.evaluate(
+        releases: [metadata.0, v24.0], currentVersion: "2.4.0", includePrereleases: false,
+        checkedAt: Date(), architecture: .arm64)
+    require(current24.status == .upToDate, "2.4 must not offer the retired 9.6 release")
+    let oldTo24 = GitHubReleaseUpdateChecker.evaluate(
+        releases: [v24.0], currentVersion: "9.6.80", includePrereleases: false,
+        checkedAt: Date(), architecture: .arm64)
+    require(oldTo24.status == .upToDate, "9.6 clients require the documented manual version-line migration")
+    require((try? AppUpdateDownloadPolicy.plan(release: v24.0, asset: v24.1, currentVersion: currentV23, architecture: .arm64)) != nil,
+            "2.4 ARM64 release assets must satisfy the existing download policy")
+    require((try? AppUpdateDownloadPolicy.plan(release: metadata.0, asset: metadata.1, currentVersion: currentV23, architecture: .arm64)) == nil,
+            "downloader must reject legacy 9.6.x packages from 2.3")
+    require((try? AppUpdateDownloadPolicy.plan(release: currentLineRelease.0, asset: currentLineRelease.1, currentVersion: currentV23, architecture: .arm64)) != nil,
+            "downloader must accept a newer 2.3-line package after the existing trust checks")
     downloader.start(release: metadata.0, asset: metadata.1, currentVersion: "9.6.79")
     settle { !downloader.state.isBusy }
     guard case .downloaded(let firstFile) = downloader.state else { fatalError("successful fixture not downloaded: \(downloader.state)") }

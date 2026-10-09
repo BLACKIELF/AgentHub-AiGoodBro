@@ -191,26 +191,63 @@ private struct EdgeDockGlass<Content: View, Outline: Shape>: View {
     }
 }
 
+/// The collapsed handle owns the mouse-down that reveals the rail. Consuming
+/// it here prevents the same press from activating a newly revealed cell.
+private struct EdgeDockRevealMouseView: NSViewRepresentable {
+    let onReveal: () -> Void
+
+    final class MouseView: NSView {
+        var onReveal: () -> Void = {}
+        override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+        override func mouseDown(with event: NSEvent) { onReveal() }
+    }
+
+    func makeNSView(context: Context) -> MouseView {
+        let view = MouseView()
+        view.onReveal = onReveal
+        return view
+    }
+
+    func updateNSView(_ view: MouseView, context: Context) { view.onReveal = onReveal }
+}
+
+private struct EdgeDockRunningArc: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1 / 30, paused: reduceMotion)) { context in
+            Circle().trim(from: 0, to: 0.25)
+                .stroke(Color.primary.opacity(0.8), style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
+                .frame(width: 28, height: 28)
+                .rotationEffect(.degrees(reduceMotion ? 0 : context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1.4) / 1.4 * 360))
+        }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+}
+
 struct TokenMonitorEdgeDockPeekView: View {
     let side: TokenMonitorEdgeDockPreferences.Side
     let language: WidgetLanguage
     var glass = WorkspaceGlassPreferences()
+    var scale: CGFloat = 1
+    var isNearby = false
     let onReveal: () -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         Button(action: onReveal) {
-            EdgeDockGlass(
-                outline: EdgeDockPeekShape(side: side),
-                glass: glass,
-                content:
-                    Capsule()
-                    .fill(Color(red: 0.40, green: 0.75, blue: 0.90))
-                    .frame(width: 2, height: 16)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            )
+            Capsule()
+                .fill(Color.primary.opacity(isNearby ? 0.48 : 0.26))
+                .frame(width: max(5, ((isNearby ? 8 : 6) * scale).rounded()),
+                       height: ((isNearby ? 80 : 72) * scale).rounded())
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: side == .right ? .trailing : .leading)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .help(language.text("展开右侧边栏", "Reveal Edge Dock"))
+        .overlay { EdgeDockRevealMouseView(onReveal: onReveal).accessibilityHidden(true) }
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: isNearby)
+        .help(language.text("展开侧边栏", "Reveal Edge Dock"))
         .accessibilityLabel(language.text("展开侧边栏", "Reveal Edge Dock"))
         .accessibilityIdentifier("edge-dock-peek")
     }
@@ -228,6 +265,12 @@ struct TokenMonitorEdgeDockRailView: View {
     var pageCount = 1
     var quotaStyle: TokenMonitorEdgeDockPreferences.QuotaStyle = .ring
     var isPinned = false
+    var scale: CGFloat = 1
+    var viewportHeight: CGFloat? = nil
+    var refreshEnabled = false
+    var isRefreshing = false
+    var runningIndicatorEnabled = true
+    var onRefreshAll: (() -> Void)? = nil
     var onPin: () -> Void = {}
     var onPage: (Int) -> Void = { _ in }
     let onSelect: (Int) -> Void
@@ -237,6 +280,13 @@ struct TokenMonitorEdgeDockRailView: View {
     private var cellHeight: CGFloat { compact ? 54 : 70 }
 
     var body: some View {
+        railContent
+            .frame(width: 64, height: viewportHeight, alignment: .topLeading)
+            .scaleEffect(scale, anchor: .topLeading)
+            .frame(width: 64 * scale, height: viewportHeight.map { $0 * scale }, alignment: .topLeading)
+    }
+
+    private var railContent: some View {
         EdgeDockGlass(
             outline: EdgeDockRailShape(side: side),
             glass: glass,
@@ -259,7 +309,7 @@ struct TokenMonitorEdgeDockRailView: View {
                     }
                 }
                 .padding(.top, 32)
-                .padding(.bottom, 32)
+                .padding(.bottom, refreshEnabled ? 64 : 32)
                 .frame(width: 64)
                 .frame(maxHeight: .infinity, alignment: .top)
         )
@@ -269,8 +319,8 @@ struct TokenMonitorEdgeDockRailView: View {
                 .contentShape(Rectangle())
                 .gesture(
                     DragGesture(minimumDistance: 3)
-                        .onChanged { onDrag($0.translation) }
-                        .onEnded { onDrop($0.translation) }
+                        .onChanged { onDrag(CGSize(width: $0.translation.width * scale, height: $0.translation.height * scale)) }
+                        .onEnded { onDrop(CGSize(width: $0.translation.width * scale, height: $0.translation.height * scale)) }
                 )
                 .accessibilityLabel(language.text("拖动侧边栏", "Drag Edge Dock"))
         }
@@ -289,7 +339,8 @@ struct TokenMonitorEdgeDockRailView: View {
             .padding(.trailing, 3)
         }
         .overlay(alignment: .bottom) {
-            if pageCount > 1 {
+            VStack(spacing: 4) {
+                if pageCount > 1 {
                 HStack(spacing: 3) {
                     Button {
                         onPage(-1)
@@ -308,8 +359,27 @@ struct TokenMonitorEdgeDockRailView: View {
                     .accessibilityLabel(language.text("下一页账号", "Next accounts"))
                 }
                 .font(.system(size: 10)).buttonStyle(.plain)
-                .padding(.bottom, 4)
+                }
+                if refreshEnabled {
+                    Button { onRefreshAll?() } label: {
+                        Group {
+                            if isRefreshing {
+                                ProgressView().controlSize(.small).scaleEffect(0.65)
+                            } else {
+                                Image(systemName: "arrow.clockwise").font(.system(size: 12, weight: .medium))
+                            }
+                        }
+                        .frame(width: 32, height: 28)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(isRefreshing || onRefreshAll == nil)
+                    .help(language.text("刷新用量和额度", "Refresh usage and quotas"))
+                    .accessibilityLabel(language.text("刷新用量和额度", "Refresh usage and quotas"))
+                    .accessibilityIdentifier("edge-dock-refresh-all")
+                }
             }
+            .padding(.bottom, 4)
         }
         .accessibilityIdentifier("edge-dock-rail")
     }
@@ -327,11 +397,14 @@ struct TokenMonitorEdgeDockRailView: View {
                         .overlay { Circle().stroke(Color(nsColor: .windowBackgroundColor), lineWidth: 1.5) }
                         .offset(x: -1, y: -1)
                 }
+                .overlay {
+                    if runningIndicatorEnabled && cell.activeWorkCount > 0 { EdgeDockRunningArc() }
+                }
         } else if cell.kind == .provider {
             VStack(spacing: 2) {
                 ZStack {
                     if cell.providerID == "codex", cell.headlineMetricID == "five-hour", cell.headlineValueLabel == "∞" {
-                        QuotaPercentageRing(percent: nil, diameter: 42, lineWidth: 3.5, isWeeklyOnlyPro: true)
+                        QuotaPercentageRing(percent: nil, diameter: 42, lineWidth: focused ? 4.5 : 3.5, isWeeklyOnlyPro: true)
                             .help(QuotaAvailabilityPresentation.weeklyOnlyProHelp(language))
                     } else if cell.headlineValueLabel == nil, quotaStyle == .fish {
                         QuotaFishView(
@@ -341,7 +414,7 @@ struct TokenMonitorEdgeDockRailView: View {
                             language: language, compact: true)
                     } else if cell.headlineValueLabel == nil {
                         QuotaPercentageRing(
-                            percent: cell.percentRemaining, diameter: 42, lineWidth: 3.5,
+                            percent: cell.percentRemaining, diameter: 42, lineWidth: focused ? 4.5 : 3.5,
                             tint: warnColors && (cell.severityRemainingPercent ?? 100) < 20
                                 ? Color(red: 0.88, green: 0.48, blue: 0.31) : providerColor(cell.providerID))
                     } else if let providerID = cell.providerID {
@@ -349,6 +422,9 @@ struct TokenMonitorEdgeDockRailView: View {
                     }
                 }
                 .frame(width: 42, height: 42)
+                .overlay {
+                    if runningIndicatorEnabled && cell.activeWorkCount > 0 { EdgeDockRunningArc() }
+                }
                 .overlay(alignment: .topTrailing) {
                     if let label = cell.accountBadge {
                         Text(label)
@@ -376,7 +452,7 @@ struct TokenMonitorEdgeDockRailView: View {
             .background(focused ? Color.white.opacity(0.06) : .clear, in: RoundedRectangle(cornerRadius: 12))
         } else {
             VStack(spacing: 2) {
-                Text(cell.metric == .liveRate ? "tok/s" : cell.title.uppercased())
+                Text(cell.metric == .liveRate ? (cell.liveRate?.unit ?? "TPM") : cell.title.uppercased())
                     .font(.system(size: 8, weight: .semibold))
                     .foregroundStyle(.secondary)
                 Text(statisticValue(cell, compact: true))
@@ -432,14 +508,14 @@ struct TokenMonitorEdgeDockRailView: View {
     }
 
     private func liveRateStateLabel(_ cell: TokenMonitorEdgeDockCell) -> String {
-        guard cell.liveRate != nil else { return language.text("等待", "WAIT") }
-        return language.text("上次", "LAST")
+        guard let rate = cell.liveRate else { return language.text("等待", "WAIT") }
+        return rate.isIdle ? language.text("上次", "LAST") : language.text("采样", "SAMPLE")
     }
 
     private func statisticValue(_ cell: TokenMonitorEdgeDockCell, compact: Bool) -> String {
         if cell.metric == .liveRate {
-            guard let rate = cell.liveRate, rate.speed.isFinite else { return "—" }
-            return TokenMonitorFormatting.count(rate.speed, compact: compact, language: language)
+            guard let rate = cell.liveRate, rate.value.isFinite else { return "—" }
+            return rate.formattedValue(language: language)
         }
         if cell.metric == .sessions {
             return cell.sessionCount.map(String.init) ?? "—"
@@ -469,6 +545,8 @@ struct TokenMonitorEdgeDockCardView: View {
     var snapshotDescription: String? = nil
     var isRefreshing = false
     var quotaStyle: TokenMonitorEdgeDockPreferences.QuotaStyle = .ring
+    var scale: CGFloat = 1
+    var viewportHeight: CGFloat? = nil
     var onRefresh: (() -> Void)? = nil
     var onContentHeightChange: (CGFloat) -> Void = { _ in }
     @State private var byModel = false
@@ -484,6 +562,13 @@ struct TokenMonitorEdgeDockCardView: View {
     }
 
     var body: some View {
+        cardContent
+            .frame(width: 292, height: viewportHeight, alignment: .topLeading)
+            .scaleEffect(scale, anchor: .topLeading)
+            .frame(width: 292 * scale, height: viewportHeight.map { $0 * scale }, alignment: .topLeading)
+    }
+
+    private var cardContent: some View {
         EdgeDockGlass(
             outline: EdgeDockCardShape(side: side, tailY: tailY),
             glass: glass,
@@ -747,9 +832,11 @@ struct TokenMonitorEdgeDockCardView: View {
 
     private var liveRateContent: some View {
         VStack(alignment: .leading, spacing: 9) {
-            Text(cell.liveRate.map { TokenMonitorFormatting.count($0.speed, language: language) } ?? "—")
+            Text(cell.liveRate.map { $0.formattedValue(language: language) } ?? "—")
                 .font(.system(size: 30, weight: .medium)).monospacedDigit()
-            Text(language.text("输出 Token / 秒", "Output tokens / second"))
+            Text(cell.liveRate?.mode == .speed
+                ? language.text("输出 Token / 秒", "Output tokens / second")
+                : language.text("Token 消耗量 / 分钟 · TPM", "Token consumption / minute · TPM"))
                 .font(.system(size: 10)).foregroundStyle(.secondary)
             if let rate = cell.liveRate {
                 Text(language.text("采样时间：", "Sampled: ") + language.dateTime(rate.sampledAt))

@@ -10,6 +10,7 @@ const motionPreferenceApi = window.TokenMonitorMotionPreference;
 const fontSettingsApi = window.TokenMonitorFontSettings;
 const statsRenderSchedulerApi = window.TokenMonitorStatsRenderScheduler;
 const reducedMotionMedia = window.matchMedia?.('(prefers-reduced-motion: reduce)');
+const glassRenderingApi = window.TokenMonitorGlassRendering;
 
 // Canonical brand colours, captured before any override (clientColors is shared
 // by reference and mutated in place to apply vendor overrides).
@@ -43,6 +44,8 @@ const state = {
   chartKind: 'bars', motion: 'none', reduceMotion: 'system',
   heatmapMetric: 'cost'
 };
+let nativeMaterialState = glassRenderingApi?.normalizeNativeMaterialState?.() || { type: 'transparent', reducedTransparency: false, highContrast: false };
+let nativeMaterialRevision = 0;
 
 const DATA_MOTION_MS = 800;
 const KLINE_MOTION_MS = 560;
@@ -213,8 +216,9 @@ function applyTranslations() {
 }
 
 function applyAppearance(settings) {
+  glassRenderingApi?.applyNativeMaterialClasses?.(nativeMaterialState);
   const opacity = Math.min(100, Math.max(0, settings?.glassOpacity ?? 68)) / 100;
-  const depth = Math.min(100, Math.max(0, settings?.glassBlur ?? 32)) / 100;
+  const depth = (glassRenderingApi?.usesNativeMaterial?.(nativeMaterialState) ? 32 : Math.min(100, Math.max(0, settings?.glassBlur ?? 32))) / 100;
   const root = document.documentElement.style;
   root.setProperty('--glass-alpha', opacity.toFixed(2));
   root.setProperty('--line-alpha', (0.1 + depth * 0.09).toFixed(3));
@@ -258,8 +262,12 @@ function formatDurationCompact(ms) {
   if (minutes > 0) return `${minutes}m`;
   return '0m';
 }
-function formatCost(usd) { return currencyApi.formatCurrencyFromUsd(usd, currencyApi.normalizeCurrency(state.currency)); }
-function formatCostCompact(usd) {
+function formatCost(usd, unpricedTokens) {
+  if (unpricedTokens > 0 && !(usd > 0)) return '—';
+  return currencyApi.formatCurrencyFromUsd(usd, currencyApi.normalizeCurrency(state.currency));
+}
+function formatCostCompact(usd, unpricedTokens) {
+  if (unpricedTokens > 0 && !(usd > 0)) return '—';
   return compactMoneyApi.formatCompactCurrencyFromUsd(
     usd,
     state.currency,
@@ -503,7 +511,7 @@ function renderActivity() {
     ? charts.heatmapSvg(heat, { monthLabel: (m) => monthLabel(m.label), initialHidden: hideHeatmapForEntry })
     : '';
   animateHeatmapEntry();
-  state.dayMap = new Map((state.history?.daily || []).map((d) => [String(d.date).slice(0, 10), { tokens: Number(d.tokens || 0), cost: Number(d.cost || 0) }]));
+  state.dayMap = new Map((state.history?.daily || []).map((d) => [String(d.date).slice(0, 10), { tokens: Number(d.tokens || 0), cost: Number(d.cost || 0), unpricedTokens: Number(d.unpricedTokens || 0) }]));
   const cards = charts.statsCards(state.history?.summary || {});
   const LABELS = {
     totalTokens: 'dashboard.stat.totalTokens', totalCost: 'dashboard.stat.totalCost',
@@ -513,10 +521,20 @@ function renderActivity() {
   };
   els.cards.innerHTML = charts.statsCardsHtml(cards, {
     label: (k) => t(LABELS[k] || k),
-    format: (c) => (c.kind === 'cost' ? formatCostCompact(c.value)
+    format: (c) => (c.kind === 'cost' ? formatCostCompact(c.value, state.history?.summary?.unpricedTokens)
       : c.kind === 'duration' ? formatDurationCompact(c.value)
         : c.kind === 'model' ? (c.value || '—') : formatCompact(c.value))
   });
+  const missing = Number(state.history?.summary?.unpricedTokens || 0);
+  const costValue = els.cards.querySelector('[data-stat="totalCost"] .dash-card-v');
+  if (costValue && missing > 0) {
+    const info = document.createElement('span');
+    info.className = 'usage-cost-info';
+    info.title = t('usage.excludedFromCost', { tokens: Math.round(missing).toLocaleString('en-US') });
+    info.setAttribute('aria-label', info.title);
+    info.tabIndex = 0;
+    costValue.append(info);
+  }
   balanceStatCards();
   renderBreakdown();
 }
@@ -612,7 +630,9 @@ function showHeatTooltip(date, day, ev) {
   const costLabel = state.locale.startsWith('zh') ? '花費' : 'Cost';
   let html = `<div class="tt-head">${longDate(date)}</div>`;
   html += `<div class="tt-row"><span class="tt-name">${tokLabel}</span><span class="tt-val">${formatCompact(tokens)}</span></div>`;
-  if (cost > 0) html += `<div class="tt-row"><span class="tt-name">${costLabel}</span><span class="tt-val">${formatCost(cost)}</span></div>`;
+  const missing = Number(day?.unpricedTokens || 0);
+  if (cost > 0 || missing > 0) html += `<div class="tt-row"><span class="tt-name">${costLabel}</span><span class="tt-val">${formatCost(cost, missing)}</span></div>`;
+  if (missing > 0) html += `<div class="tt-row">${t('usage.excludedFromCost', { tokens: Math.round(missing).toLocaleString('en-US') })}</div>`;
   els.tooltip.innerHTML = html;
   positionTooltip(ev);
 }
@@ -643,9 +663,27 @@ async function refresh() {
 }
 
 async function boot() {
+  const materialPush = window.tokenMonitor.onNativeMaterialState;
+  if (typeof materialPush === 'function') {
+    materialPush((next) => {
+      nativeMaterialRevision += 1;
+      nativeMaterialState = glassRenderingApi.normalizeNativeMaterialState(next);
+      glassRenderingApi.applyNativeMaterialClasses(nativeMaterialState);
+      applyAppearance(state.settings || {});
+    });
+  }
+  const materialQueryRevision = nativeMaterialRevision;
+  try {
+    const initialMaterial = await window.tokenMonitor.getNativeMaterialState?.();
+    if (materialQueryRevision === nativeMaterialRevision && initialMaterial) {
+      nativeMaterialState = glassRenderingApi.normalizeNativeMaterialState(initialMaterial);
+      glassRenderingApi.applyNativeMaterialClasses(nativeMaterialState);
+    }
+  } catch (_) {}
   let settings = {};
   try { settings = await window.tokenMonitor.getSettings(); } catch (_) {}
   state.locale = i18n.resolveLocale(settings.locale || settings.language, navigator.languages);
+  state.settings = settings;
   state.currency = settings.currency || 'USD';
   state.compactTokenUnits = compactTokenApi.normalizeCompactTokenUnits(settings.compactTokenUnits);
   if (settings.currencyRatesEffective && window.TokenMonitorCurrency?.configureRates) {
@@ -666,6 +704,15 @@ async function boot() {
 // dashboard shares the main window's preload, so it receives the same push.
 window.tokenMonitor.onSettingsPush?.((next) => {
   if (!next) return;
+  state.settings = { ...(state.settings || {}), ...next };
+  if ('dashboardFlat' in next) {
+    state.flat = next.dashboardFlat === true;
+    els.body.classList.toggle('flat', state.flat);
+  }
+  // applyAppearance applies the motion preference itself; remember the old one
+  // so a changed preference still repaints below.
+  const previousReduceMotion = state.reduceMotion;
+  applyAppearance(state.settings);
   applyFontSettings(next);
   let needsRender = false;
   const nextLocale = i18n.resolveLocale(next.locale || next.language, navigator.languages);
@@ -691,11 +738,7 @@ window.tokenMonitor.onSettingsPush?.((next) => {
     state.currency = next.currency;
     needsRender = true;
   }
-  const reduceMotion = motionPreferenceApi.normalize(next.reduceMotion);
-  if (state.reduceMotion !== reduceMotion) {
-    applyReduceMotionPreference(reduceMotion);
-    needsRender = true;
-  }
+  if (state.reduceMotion !== previousReduceMotion) needsRender = true;
   const nextMetric = next.heatmapMetric || 'cost';
   if (state.heatmapMetric !== nextMetric) {
     state.heatmapMetric = nextMetric;

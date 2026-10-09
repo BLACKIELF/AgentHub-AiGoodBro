@@ -6,8 +6,8 @@ The notices distinguish second-developed bundled integrations from protocol rese
 
 ## Embedded second-developed integrations
 
-- **Token Monitor v0.62.0** — [Javis603/token-monitor](https://github.com/Javis603/token-monitor/tree/dcccfb01557e2786888fd5479552f392ac6c0d32). The fixed upstream tree and MIT notice remain bundled; AiGoodBro adds the native bridge, hooks and host integration. See [`Companion/TokenMonitorEngine/SOURCE.json`](../Companion/TokenMonitorEngine/SOURCE.json) and [`token-monitor-integration-0913v1.md`](token-monitor-integration-0913v1.md).
-- **Tokscale fork** — [Javis603/tokscale](https://github.com/Javis603/tokscale), bundled revision `06a9f1625d5a505f01b39eff29f7be44a2c52188`. The fixed source and MIT notice remain bundled; the host integration is maintained by AiGoodBro.
+- **Token Monitor v0.68.0** — [Javis603/token-monitor](https://github.com/Javis603/token-monitor/tree/5d2db368d8313415763860d594de00e46a663418). The fixed upstream tree and MIT notice remain bundled; AiGoodBro adds the native bridge, hooks and host integration. See [`Companion/TokenMonitorEngine/SOURCE.json`](../Companion/TokenMonitorEngine/SOURCE.json) and [`token-monitor-integration-0913v1.md`](token-monitor-integration-0913v1.md).
+- **Tokscale fork** — [Javis603/tokscale](https://github.com/Javis603/tokscale), bundled revision `d5e8ad9b25bfafb43b5b6804940929b728a6f48a` (4.18.0). The fixed source and MIT notice remain bundled; the host integration is maintained by AiGoodBro.
 
 ## Protocol and static research references
 

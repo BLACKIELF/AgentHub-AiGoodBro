@@ -5894,6 +5894,7 @@ final class UsageStore: ObservableObject {
             }
             return
         }
+        recoverInterruptedWarmUps()
         let profiles = profileIDs.map { ids in self.profiles.filter { ids.contains($0.id) } } ?? self.profiles
         guard !profiles.isEmpty else { return }
         let refreshingIDs = Set(profiles.map(\.id))
@@ -6170,9 +6171,36 @@ final class UsageStore: ObservableObject {
         }
     }
 
+    private func recoverInterruptedWarmUps() {
+        guard !isPreview, !accountActions.isWarmUpRunning, warmingProfileID == nil else { return }
+        let now = Date()
+        for profile in profileStore.profiles {
+            guard let request = profile.warmUpRequest,
+                profile.lastWarmUpSucceeded == false,
+                ["pending", "interrupted"].contains(profile.lastWarmUpFailureReason ?? ""),
+                let alias = hubAccountAlias(for: profile)
+            else { continue }
+            do {
+                try DispatchActivityStore.live.finishInterruptedWarmUp(
+                    id: request.id, account: profile.recordedAccountKey, alias: alias,
+                    requestStartedAt: request.startedAt, now: now
+                ) {
+                    try self.profileStore.recordInterruptedWarmUp(
+                        request: request, for: profile.id, expectedAccountKey: profile.recordedAccountKey, at: now)
+                }
+            } catch {
+                recordOperationsIssue(
+                    id: "warmup-recovery-pending",
+                    summary: "Interrupted warm-up recovery could not be persisted. The reservation remains occupied; the request outcome is unknown.")
+            }
+        }
+        syncProfiles()
+    }
+
     @MainActor
     private func startAfterPendingSwitchRecovery() {
         guard hasStarted else { return }
+        recoverInterruptedWarmUps()
         configureResetCreditAuto(resetCreditAutoPreferences)
         refreshTokenMonitorConnections()
         publisherMessages.start { [weak self] message, admission in
@@ -6591,7 +6619,7 @@ final class UsageStore: ObservableObject {
         PerformanceMonitor.shared.flush()
     }
 
-    func refresh(queueIfBusy: Bool = false, scheduleWarmUpAfterRefresh: Bool = true) {
+    func refresh(queueIfBusy: Bool = false, scheduleWarmUpAfterRefresh: Bool = true, allowsAccountAutomation: Bool = true) {
         guard !isRefreshing,
             !isLaunchingCodex,
             !isAccountSwitchTransactionActive
@@ -6692,13 +6720,15 @@ final class UsageStore: ObservableObject {
                 self.lastFullRefreshCompletedAt = Date()
                 self.scheduleFullRefreshTimer()
                 self.onAccountSnapshotRefresh?(self.accountSnapshotRefreshInterval)
-                if scheduleWarmUpAfterRefresh {
+                if scheduleWarmUpAfterRefresh && allowsAccountAutomation {
                     self.scheduleWarmUpTimer()
                 }
                 if self.hasPendingRefresh {
                     self.hasPendingRefresh = false
-                    self.refresh()
-                } else {
+                    self.refresh(
+                        scheduleWarmUpAfterRefresh: allowsAccountAutomation,
+                        allowsAccountAutomation: allowsAccountAutomation)
+                } else if allowsAccountAutomation {
                     self.taskClient.start(reason: .startup)
                     self.taskClient.refreshThreads()
                     self.evaluateAutomaticAccountSwitch()
@@ -6735,7 +6765,7 @@ final class UsageStore: ObservableObject {
 
     func refreshEdgeDockSnapshotsNow() {
         guard hasStarted, !isPreview, !isLoggingIn, !isLaunchingCodex, !isAccountSwitchTransactionActive else { return }
-        refresh(scheduleWarmUpAfterRefresh: false)
+        refresh(scheduleWarmUpAfterRefresh: false, allowsAccountAutomation: false)
         onAccountSnapshotRefresh?(0)
     }
 

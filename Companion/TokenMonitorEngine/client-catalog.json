@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "upstreamCommit": "dcccfb01557e2786888fd5479552f392ac6c0d32",
-  "source": "https://github.com/Javis603/token-monitor/blob/dcccfb01557e2786888fd5479552f392ac6c0d32/src/shared/clientCatalog.js",
+  "upstreamCommit": "5d2db368d8313415763860d594de00e46a663418",
+  "source": "https://github.com/Javis603/token-monitor/blob/5d2db368d8313415763860d594de00e46a663418/src/shared/clientCatalog.js",
   "clients": [
     {
       "id": "claude",
@@ -104,6 +104,11 @@
       "defaultTracked": true
     },
     {
+      "id": "muse",
+      "label": "Muse Code",
+      "defaultTracked": true
+    },
+    {
       "id": "zcode",
       "label": "ZCode",
       "defaultTracked": true
@@ -161,6 +166,16 @@
     {
       "id": "devin",
       "label": "Devin",
+      "defaultTracked": true
+    },
+    {
+      "id": "fx",
+      "label": "fx",
+      "defaultTracked": true
+    },
+    {
+      "id": "mcode",
+      "label": "MiniMax Code",
       "defaultTracked": true
     }
   ]

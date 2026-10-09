@@ -2076,7 +2076,7 @@ final class CodexProfileStore {
         guard let value else { return nil }
         let allowed: Set<String> = [
             "pending", "credentials-unavailable", "identity-mismatch", "invalid-request", "redirected", "timeout", "network", "http-5xx", "stream-failed", "stream-incomplete",
-            "stream-oversized", "unknown",
+            "stream-oversized", "interrupted", "unknown",
         ]
         if allowed.contains(value) || value.range(of: #"^http-[1-5][0-9]{2}$"#, options: .regularExpression) != nil { return value }
         return "unknown"
@@ -2131,6 +2131,41 @@ final class CodexProfileStore {
                 self.state.profiles[target].lastWarmUpFailureReason = reason
             }
             return true
+        }
+    }
+
+    /// Called while the matching dead-owner activity lease is locked. Preserve
+    /// the request's quota-window baseline: interruption cannot prove non-use.
+    func recordInterruptedWarmUp(
+        request: CodexWarmUpRequest, for profileID: String, expectedAccountKey: String, at date: Date
+    ) throws {
+        try mutateState {
+            guard let profile = self.state.profiles.first(where: { $0.id == profileID }),
+                profile.recordedAccountKey == expectedAccountKey, profile.warmUpRequest == request,
+                !request.accountID.isEmpty, profile.lastSnapshot?.accountID == request.accountID,
+                profile.matchesRecordedCredential(CodexOfficialProfileReader.credentialIdentity(codexHomeURL: profile.codexHomeURL)),
+                date >= request.startedAt
+            else { throw WarmUpStateError.unverifiedIdentityOrState }
+            let indices = self.state.profiles.indices.filter {
+                self.state.profiles[$0].recordedAccountKey == expectedAccountKey
+                    && self.state.profiles[$0].lastSnapshot?.accountID == request.accountID
+            }
+            guard indices.allSatisfy({
+                let current = self.state.profiles[$0]
+                return current.warmUpRequest == request && current.lastWarmUpSucceeded == false
+                    && ["pending", "interrupted"].contains(current.lastWarmUpFailureReason ?? "")
+            }) else { throw WarmUpStateError.unverifiedIdentityOrState }
+            var changed = false
+            for index in indices where self.state.profiles[index].lastWarmUpFailureReason == "pending" {
+                var history = self.state.profiles[index].warmUpHistory ?? []
+                history.removeAll { $0.attemptID == request.id }
+                history.append(.init(at: date, succeeded: false, failureReason: "interrupted", attemptID: request.id, source: request.source))
+                self.state.profiles[index].warmUpHistory = Array(history.suffix(20))
+                self.state.profiles[index].lastWarmUpAt = date
+                self.state.profiles[index].lastWarmUpFailureReason = "interrupted"
+                changed = true
+            }
+            return changed
         }
     }
 
@@ -5842,6 +5877,46 @@ enum CodexWarmUpPolicySelfTest {
                 expect(
                     !CodexWarmUpPolicy.isDue(pending, selection: .all, unexpected: [.sevenDay], now: now.addingTimeInterval(3)),
                     "restart and reset ticket cannot replay pending inference")
+            else { return false }
+            guard let pendingRequest = pending.warmUpRequest else { return false }
+            let requestWithChangedStart = CodexWarmUpRequest(
+                id: pendingRequest.id, accountID: pendingRequest.accountID,
+                startedAt: pendingRequest.startedAt.addingTimeInterval(1), limitID: pendingRequest.limitID,
+                fiveHourResetAt: pendingRequest.fiveHourResetAt, sevenDayResetAt: pendingRequest.sevenDayResetAt,
+                source: pendingRequest.source)
+            do {
+                try restarted.recordInterruptedWarmUp(
+                    request: requestWithChangedStart, for: profileID, expectedAccountKey: pending.recordedAccountKey,
+                    at: now.addingTimeInterval(3))
+                return expect(false, "changed request generation rejects interrupted recovery")
+            } catch CodexProfileStore.WarmUpStateError.unverifiedIdentityOrState {}
+            let interruptionStateURL = support.appendingPathComponent("CodexAccountManagerNext/account-manager-next-v1.json")
+            let beforeInterruption = try Data(contentsOf: interruptionStateURL)
+            try DispatchParticipationSync.withSnapshotLock(at: interruptionStateURL) {
+                do {
+                    try restarted.recordInterruptedWarmUp(
+                        request: pendingRequest, for: profileID, expectedAccountKey: pending.recordedAccountKey,
+                        at: now.addingTimeInterval(3))
+                    throw CodexProfileStore.WarmUpStateError.unverifiedIdentityOrState
+                } catch DispatchParticipationError.busy {}
+            }
+            guard expect(try Data(contentsOf: interruptionStateURL) == beforeInterruption, "busy profile lock preserves pending request")
+            else { return false }
+            try restarted.recordInterruptedWarmUp(
+                request: pendingRequest, for: profileID, expectedAccountKey: pending.recordedAccountKey,
+                at: now.addingTimeInterval(3))
+            let interrupted = CodexProfileStore(homeDirectory: home, applicationSupportDirectory: support)
+            guard let interruptedProfile = interrupted.profiles.first,
+                expect(interruptedProfile.lastWarmUpFailureReason == "interrupted", "interruption survives actual persistence and restart"),
+                expect(interruptedProfile.warmUpRequest == pendingRequest, "interruption retains quota-window baseline"),
+                expect(!CodexWarmUpPolicy.isDue(interruptedProfile, selection: .all, unexpected: [.fiveHour, .sevenDay],
+                    now: now.addingTimeInterval(4)), "interruption cannot replay inference in its selected windows")
+            else { return false }
+            let savedInterruption = try Data(contentsOf: interruptionStateURL)
+            try interrupted.recordInterruptedWarmUp(
+                request: pendingRequest, for: profileID, expectedAccountKey: pending.recordedAccountKey,
+                at: now.addingTimeInterval(4))
+            guard expect(try Data(contentsOf: interruptionStateURL) == savedInterruption, "interrupted recovery is byte-idempotent")
             else { return false }
             try restarted.recordWarmUp(
                 at: now.addingTimeInterval(3), succeeded: true, for: profileID,

@@ -113,6 +113,33 @@ function parseRequest(line) {
   return request;
 }
 
+function tokenRateForStatus(value) {
+  if (!value || !['burn', 'speed'].includes(value.mode) || !['all', 'local'].includes(value.scope)
+    || typeof value.formattedValue !== 'string' || value.formattedValue.length > 32
+    || !/^(?:<0\.1|[0-9]+(?:[.,][0-9]+)?(?:K|M|B|万|萬|亿|億|만|억)?)$/.test(value.formattedValue)
+    || !Number.isSafeInteger(value.revision) || value.revision < 0
+    || typeof value.contextKey !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(value.contextKey)
+    || typeof value.idle !== 'boolean') return null;
+  for (const field of ['burnPerMinute', 'speedPerSecond']) {
+    if (typeof value[field] !== 'number' || !Number.isFinite(value[field])
+      || value[field] < 0 || value[field] > 1e12) return null;
+  }
+  const { sampledAt, expiresAt, idle } = value;
+  const now = Date.now();
+  if (!Number.isSafeInteger(sampledAt) || sampledAt <= 0
+    || !Number.isSafeInteger(expiresAt) || expiresAt <= sampledAt
+    || sampledAt > now + 1000 || expiresAt <= now
+    || (idle ? expiresAt !== sampledAt + 180000 : expiresAt > sampledAt + 8000)) return null;
+  // Only presentation fields cross the socket; device/model/account metadata
+  // from the upstream group tracker stays inside the Electron process.
+  return {
+    mode: value.mode, scope: value.scope,
+    formattedValue: value.formattedValue,
+    burnPerMinute: value.burnPerMinute, speedPerSecond: value.speedPerSecond,
+    sampledAt, expiresAt, idle, revision: value.revision, contextKey: value.contextKey
+  };
+}
+
 function createHostBridge({ socketPath, hostSocketPath = null, app, logger = () => {} }) {
   if (!app || typeof app.quit !== 'function' || typeof app.getVersion !== 'function') {
     throw new Error('Electron app is required');
@@ -126,6 +153,7 @@ function createHostBridge({ socketPath, hostSocketPath = null, app, logger = () 
   function status() {
     let allTimeTokens = null;
     let allTimeCostUsd = null;
+    let tokenRate = null;
     try {
       // Read both metrics from one presentation snapshot, including its source
       // selection. Independent getters can mix revisions or source scopes.
@@ -134,13 +162,15 @@ function createHostBridge({ socketPath, hostSocketPath = null, app, logger = () 
       const cost = usage?.costUsd;
       if (typeof cost === 'number' && Number.isFinite(cost) && cost >= 0) allTimeCostUsd = cost;
     } catch (_) {}
+    try { tokenRate = tokenRateForStatus(routes?.getTokenRate?.()); } catch (_) {}
     return {
       ready: routes !== null,
       trayVisible: routes !== null && typeof routes.isTrayVisible === 'function' && routes.isTrayVisible() === true,
       pid: process.pid,
       version: app.getVersion(),
       allTimeTokens,
-      allTimeCostUsd
+      allTimeCostUsd,
+      tokenRate
     };
   }
 

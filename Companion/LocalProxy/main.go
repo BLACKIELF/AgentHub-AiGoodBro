@@ -50,13 +50,14 @@ type startup struct {
 	Models []string `json:"models"`
 }
 type event struct {
-	Event         string `json:"event"`
-	Port          int    `json:"port,omitempty"`
-	ProfileID     string `json:"profileID,omitempty"`
-	State         string `json:"state,omitempty"`
-	CooldownUntil int64  `json:"cooldownUntil,omitempty"`
-	ErrorCode     string `json:"errorCode,omitempty"`
-	ErrorDetail   string `json:"errorDetail,omitempty"`
+	Event            string `json:"event"`
+	Port             int    `json:"port,omitempty"`
+	ProfileID        string `json:"profileID,omitempty"`
+	State            string `json:"state,omitempty"`
+	CooldownUntil    int64  `json:"cooldownUntil,omitempty"`
+	ErrorCode        string `json:"errorCode,omitempty"`
+	ErrorDetail      string `json:"errorDetail,omitempty"`
+	ResolutionDetail string `json:"resolutionDetail,omitempty"`
 }
 type events struct {
 	mu  sync.Mutex
@@ -103,6 +104,8 @@ type requestScope struct {
 	orderOnce          sync.Once
 	orderQueried       bool // Protected by mu; causes a bounded, idempotent snapshot cleanup.
 	order              []string
+	lastResortIDs      []string
+	deferredIDs        []string
 	creditFallback     bool
 	orderErr           error
 	pickMu             sync.Mutex
@@ -116,6 +119,7 @@ type requestScope struct {
 	mu                 sync.Mutex
 	leases             []lease
 	usedProfiles       map[string]struct{}
+	abandonedProfiles  map[string]struct{}
 	admissionUncertain bool
 	done               chan struct{}
 	exited             chan struct{}
@@ -162,6 +166,25 @@ func (s *requestScope) profileUsed(profileID string) bool {
 	_, ok := s.usedProfiles[profileID]
 	return ok
 }
+func (s *requestScope) abandonProfile(profileID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.abandonedProfiles == nil {
+		s.abandonedProfiles = map[string]struct{}{}
+	}
+	s.abandonedProfiles[profileID] = struct{}{}
+}
+func (s *requestScope) profileAbandoned(profileID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, ok := s.abandonedProfiles[profileID]
+	return ok
+}
+func (s *requestScope) hasAbandonedProfiles() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.abandonedProfiles) > 0
+}
 func (s *requestScope) snapshot() []lease {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -193,7 +216,7 @@ func (s *requestScope) heartbeats() {
 					return // Cancelled before any heartbeat mutation; release follows.
 				}
 				if err != nil || !r.OK {
-					s.events.emit(event{Event: "error", ErrorCode: "lease_heartbeat_failed"})
+					s.events.emit(event{Event: "error", ErrorCode: "lease_heartbeat_failed", ErrorDetail: controlFailureDetail(r, err)})
 					s.cancel()
 					return
 				}
@@ -217,7 +240,7 @@ func (s *requestScope) close() {
 			defer cancel()
 			r, err := s.bridge.call(ctx, "release", s.id, l.ProfileID, l.ID)
 			if err != nil || !r.OK {
-				s.events.emit(event{Event: "error", ErrorCode: "lease_release_unknown"})
+				s.events.emit(event{Event: "error", ErrorCode: "lease_release_unknown", ErrorDetail: controlFailureDetail(r, err)})
 			}
 		}(l)
 	}
@@ -275,11 +298,13 @@ func (s *selector) Pick(ctx context.Context, _, _ string, _ executor.Options, ca
 		scope.orderQueried = true
 		scope.mu.Unlock()
 		reply, err := s.bridge.call(scope.ctx, "order", scope.id, s.order[0], "")
-		if err != nil || !reply.OK || !validAccountSubset(s.order, reply.Order) {
+		if err != nil || !reply.OK || !validAccountSubset(s.order, reply.Order) || !validOrderingGroups(reply.Order, reply.DeferredIDs, reply.LastResortIDs) {
 			scope.orderErr = &auth.Error{Code: "unavailable", Message: "account order unavailable", HTTPStatus: 503}
 			return
 		}
-		scope.order = reply.Order
+		scope.order = append([]string(nil), reply.Order...)
+		scope.lastResortIDs = append([]string(nil), reply.LastResortIDs...)
+		scope.deferredIDs = append([]string(nil), reply.DeferredIDs...)
 		scope.creditFallback = reply.CreditFallback
 	})
 	if err := pickContextError(ctx, scope); err != nil {
@@ -295,7 +320,7 @@ func (s *selector) Pick(ctx context.Context, _, _ string, _ executor.Options, ca
 	for _, a := range candidates {
 		byID[a.ID] = a
 	}
-	commands := admissionCommands(scope.creditFallback, s.desktopFallback)
+	passes := admissionPasses(scope.order, scope.deferredIDs, scope.lastResortIDs, scope.creditFallback, s.desktopFallback)
 	waitFor, pollEvery := s.admissionWait()
 	waitDeadline := time.Now().Add(waitFor)
 	rejections := map[string]bool{}
@@ -303,13 +328,14 @@ func (s *selector) Pick(ctx context.Context, _, _ string, _ executor.Options, ca
 		sawBusy := false
 		sawQuota := false
 		sawUncertain := false
-		for _, command := range commands {
-			for _, id := range scope.order {
+		for _, pass := range passes {
+			command := pass.command
+			for _, id := range pass.ids {
 				if err := pickContextError(ctx, scope); err != nil {
 					return nil, err
 				}
 				a := byID[id]
-				if a == nil || scope.profileUsed(id) {
+				if a == nil || scope.profileUsed(id) || scope.profileAbandoned(id) {
 					continue
 				}
 				// Check before each acquire. Once sent, the RPC gets its own 25s
@@ -331,11 +357,21 @@ func (s *selector) Pick(ctx context.Context, _, _ string, _ executor.Options, ca
 					if err := pickContextError(ctx, scope); err != nil {
 						return nil, err
 					}
-					if reply.Error == "stage_not_applicable" {
+					if reply.Error == "stage_not_applicable" || reply.Error == "not_participating" {
+						// The host can revoke future admission after this request's
+						// order was captured; a denied lease has no uncertain state.
 						continue
 					}
 					if reply.Error == "control_busy" {
 						return nil, admissionError("account_busy", "proxy control channel is busy")
+					}
+					if reply.Resolution == "abandoned" {
+						// The host durably cancelled this tuple. Its deny marker
+						// must survive late acquires; try other accounts only.
+						scope.abandonProfile(id)
+						rejections[admissionRejectionDetail(reply.Error)] = true
+						s.events.emit(event{Event: "account", ProfileID: id, State: safeState(reply.Error), CooldownUntil: reply.RetryAt})
+						continue
 					}
 					if reply.Error == "admission_deadline" {
 						scope.retryAfter()
@@ -384,10 +420,17 @@ func (s *selector) Pick(ctx context.Context, _, _ string, _ executor.Options, ca
 			return nil, err
 		}
 		if !sawBusy {
-			if sawQuota && !sawUncertain && !scope.hasAdmissionUncertainty() {
+			abandoned := scope.hasAbandonedProfiles()
+			if !abandoned && sawQuota && !sawUncertain && !scope.hasAdmissionUncertainty() {
 				return nil, admissionError("quota", "all eligible account quotas are exhausted")
 			}
+			code := "unavailable"
 			message := "account admission unavailable"
+			if abandoned {
+				scope.retryAfter()
+				code = "account_busy"
+				message = "account admission rolled back; retry request"
+			}
 			// Fixed messages explain known refusals without exposing identities,
 			// credentials or arbitrary host error text. Admission policy is unchanged.
 			for _, detail := range admissionRejectionDetails {
@@ -395,7 +438,7 @@ func (s *selector) Pick(ctx context.Context, _, _ string, _ executor.Options, ca
 					message += "; " + detail
 				}
 			}
-			return nil, admissionError("unavailable", message)
+			return nil, admissionError(code, message)
 		}
 		remaining := time.Until(waitDeadline)
 		if remaining <= 0 {
@@ -431,18 +474,32 @@ func acquireFailureDetail(err error) string {
 	}
 }
 
+func controlFailureDetail(reply bridgeReply, err error) string {
+	if err != nil {
+		return acquireFailureDetail(err)
+	}
+	// Only protocol codes may reach diagnostics; host text and reply payloads
+	// can contain private data and must never be copied into the event stream.
+	switch reply.Error {
+	case "control_busy", "identity", "unavailable", "admission_unknown":
+		return reply.Error
+	default:
+		return "rejected"
+	}
+}
+
 func (s *selector) reconcileAcquire(scope *requestScope, profileID, detail string) error {
 	// A separate maintenance exchange either cancels the exact reservation or
 	// installs a durable deny marker before a delayed reservation can run.
 	reply, err := s.bridge.call(context.Background(), "acquire_resolve", scope.id, profileID, "")
 	if err == nil && reply.OK && (reply.Resolution == "abandoned" || reply.Resolution == "not_reserved") &&
-		reply.Error == "" && reply.LeaseID == "" && reply.AccessToken == "" && reply.AccountID == "" && reply.ExpiresAt == 0 && len(reply.Order) == 0 {
+		reply.Error == "" && reply.LeaseID == "" && reply.AccessToken == "" && reply.AccountID == "" && reply.ExpiresAt == 0 && len(reply.Order) == 0 && len(reply.LastResortIDs) == 0 && len(reply.DeferredIDs) == 0 {
 		scope.markAdmissionUncertain(profileID)
 		scope.retryAfter()
 		s.events.emit(event{Event: "error", ErrorCode: "lease_acquire_reconciled", ErrorDetail: detail})
 		return admissionError("account_busy", "account admission timed out; retry request")
 	}
-	s.events.emit(event{Event: "error", ErrorCode: "lease_acquire_unknown", ErrorDetail: detail})
+	s.events.emit(event{Event: "error", ErrorCode: "lease_acquire_unknown", ErrorDetail: detail, ResolutionDetail: controlFailureDetail(reply, err)})
 	scope.cancel()
 	return admissionError("unavailable", "account admission unavailable")
 }
@@ -533,6 +590,22 @@ func validAccountSubset(registered, order []string) bool {
 	return true
 }
 
+func validOrderingGroups(order, deferredIDs, lastResortIDs []string) bool {
+	if !validAccountSubset(order, deferredIDs) || !validAccountSubset(order, lastResortIDs) {
+		return false
+	}
+	deferred := make(map[string]bool, len(deferredIDs))
+	for _, id := range deferredIDs {
+		deferred[id] = true
+	}
+	for _, id := range lastResortIDs {
+		if deferred[id] {
+			return false
+		}
+	}
+	return true
+}
+
 func admissionCommands(credits, desktop bool) []string {
 	commands := []string{"acquire"}
 	// Exhaust every enrolled subscription before any paid-credit pass.
@@ -542,12 +615,59 @@ func admissionCommands(credits, desktop bool) []string {
 	if credits {
 		commands = append(commands, "acquire_credit_primary", "acquire_credit_secondary")
 	}
-	// Desktop remains last within both the subscription and credit phases.
+	// Desktop remains last within each subscription or credit account group.
 	if desktop && credits {
 		commands = append(commands, "acquire_desktop_credit_primary", "acquire_desktop_credit_secondary")
 	}
 	return commands
 }
+
+type admissionPass struct {
+	command string
+	ids     []string
+}
+
+func admissionPasses(order, deferredIDs, lastResortIDs []string, credits, desktop bool) []admissionPass {
+	deferred := make(map[string]bool, len(deferredIDs))
+	for _, id := range deferredIDs {
+		deferred[id] = true
+	}
+	last := make(map[string]bool, len(lastResortIDs))
+	for _, id := range lastResortIDs {
+		last[id] = true
+	}
+	var ordinary, manualLast, fallback []string
+	for _, id := range order {
+		if last[id] {
+			fallback = append(fallback, id)
+		} else if deferred[id] {
+			manualLast = append(manualLast, id)
+		} else {
+			ordinary = append(ordinary, id)
+		}
+	}
+	commands := admissionCommands(credits, desktop)
+	subscriptions := 1
+	if desktop {
+		subscriptions++
+	}
+	var passes []admissionPass
+	// Every subscription still precedes paid credits. Within each phase,
+	// ordinary, manually deferred and forced fallback groups each retain the
+	// original command and profile order.
+	for _, phase := range [][]string{commands[:subscriptions], commands[subscriptions:]} {
+		for _, ids := range [][]string{ordinary, manualLast, fallback} {
+			if len(ids) == 0 {
+				continue
+			}
+			for _, command := range phase {
+				passes = append(passes, admissionPass{command: command, ids: ids})
+			}
+		}
+	}
+	return passes
+}
+
 func safeState(code string) string {
 	switch code {
 	case "policy_changed":
@@ -808,7 +928,7 @@ func main() {
 		os.Exit(runDesktopAdapter(connectionPath, os.Args[1:]))
 	}
 	if len(os.Args) == 2 && os.Args[1] == "--version" {
-		_, _ = io.WriteString(os.Stdout, "AiGoodBro Local Proxy 1003v1; CLIProxyAPI v8.0.2\n")
+		_, _ = io.WriteString(os.Stdout, "AiGoodBro Local Proxy 1008v1; CLIProxyAPI v8.0.20\n")
 		return
 	}
 	logrus.SetOutput(io.Discard)

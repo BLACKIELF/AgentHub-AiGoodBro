@@ -63,16 +63,37 @@ enum TokenMonitorEdgeDockScreenCatalog {
 enum TokenMonitorEdgeDockNativeGeometry {
     static func railFrame(
         workArea: NSRect, side: TokenMonitorEdgeDockPreferences.Side,
-        offset: Double, height: CGFloat
+        offset: Double, height: CGFloat, scale: CGFloat = 1
     ) -> NSRect {
         let boundedHeight = min(height, max(1, workArea.height - 16))
         let travel = max(0, workArea.height - boundedHeight - 16)
         let safeOffset = offset.isFinite ? max(0, min(1, offset)) : 0.3
         return NSRect(
-            x: side == .right ? workArea.maxX - 64 : workArea.minX,
+            x: side == .right ? workArea.maxX - 64 * scale : workArea.minX,
             y: workArea.maxY - 8 - boundedHeight - travel * CGFloat(safeOffset),
-            width: 64, height: boundedHeight
+            width: 64 * scale, height: boundedHeight
         )
+    }
+
+    static func fittingScale(requested: CGFloat, naturalHeight: CGFloat, availableHeight: CGFloat) -> CGFloat {
+        guard requested > 1, naturalHeight > 0, naturalHeight * requested > availableHeight else { return requested }
+        guard naturalHeight <= availableHeight else { return 1 }
+        return max(1, floor(availableHeight / naturalHeight * 100) / 100)
+    }
+
+    static func peekFrame(rail: NSRect, workArea: NSRect, side: TokenMonitorEdgeDockPreferences.Side, scale: CGFloat) -> NSRect {
+        let width = max(10, (10 * scale).rounded())
+        let height = (88 * scale).rounded()
+        return NSRect(x: side == .right ? workArea.maxX - width : workArea.minX,
+                      y: rail.midY - height / 2, width: width, height: height)
+    }
+
+    /// Pointer approach depths and slack stay in screen points at every size.
+    static func handleZone(peek: NSRect, side: TokenMonitorEdgeDockPreferences.Side, approaching: Bool) -> NSRect {
+        let depth: CGFloat = approaching ? 48 : 24
+        let slack: CGFloat = approaching ? 24 : 0
+        return NSRect(x: side == .right ? peek.maxX - depth : peek.minX,
+                      y: peek.minY - slack, width: depth, height: peek.height + 2 * slack)
     }
 
     static func placementAfterDrag(
@@ -90,18 +111,18 @@ enum TokenMonitorEdgeDockNativeGeometry {
 
     static func cardFrame(
         rail: NSRect, centerY: CGFloat, height: CGFloat,
-        workArea: NSRect, side: TokenMonitorEdgeDockPreferences.Side
+        workArea: NSRect, side: TokenMonitorEdgeDockPreferences.Side, scale: CGFloat = 1
     ) -> NSRect {
         let boundedHeight = min(height, max(120, workArea.height - 16))
         let y = max(
             workArea.minY + 8,
             min(workArea.maxY - boundedHeight - 8, centerY - boundedHeight / 2))
-        let x = side == .right ? rail.minX - 4 - 292 : rail.maxX + 4
-        return NSRect(x: x, y: y, width: 292, height: boundedHeight)
+        let x = side == .right ? rail.minX - (4 + 292) * scale : rail.maxX + 4 * scale
+        return NSRect(x: x, y: y, width: 292 * scale, height: boundedHeight)
     }
 }
 
-/// Three nonactivating native surfaces: a seven-point screen-edge affordance,
+/// Three nonactivating native surfaces: a screen-edge handle,
 /// a shaped quota/stat rail and one detail card. Only already projected,
 /// display-safe data reaches the windows. Cursor reads are used for the narrow
 /// rail-to-card corridor; no Accessibility or input-monitoring permission is
@@ -115,6 +136,8 @@ final class TokenMonitorEdgeDockController: NSObject {
         let glass: WorkspaceGlassPreferences
         let paletteID: String
         let preferredColorScheme: ColorScheme?
+        let isRefreshingAll: Bool
+        let canRefreshAll: Bool
     }
 
     private struct PeekContent: Equatable {
@@ -123,6 +146,8 @@ final class TokenMonitorEdgeDockController: NSObject {
         let glass: WorkspaceGlassPreferences
         let paletteID: String
         let preferredColorScheme: ColorScheme?
+        let scale: CGFloat
+        let isNearby: Bool
     }
 
     private struct RailContent: Equatable {
@@ -140,6 +165,11 @@ final class TokenMonitorEdgeDockController: NSObject {
         let pageIndex: Int
         let pageCount: Int
         let isPinned: Bool
+        let scale: CGFloat
+        let viewportHeight: CGFloat
+        let refreshEnabled: Bool
+        let isRefreshing: Bool
+        let runningIndicatorEnabled: Bool
     }
 
     private struct CardContent: Equatable {
@@ -155,6 +185,8 @@ final class TokenMonitorEdgeDockController: NSObject {
         let isRefreshing: Bool
         let snapshotDescription: String
         let quotaStyle: TokenMonitorEdgeDockPreferences.QuotaStyle
+        let scale: CGFloat
+        let viewportHeight: CGFloat
     }
 
     private struct Layout {
@@ -166,6 +198,7 @@ final class TokenMonitorEdgeDockController: NSObject {
         let cellHeights: [CGFloat]
         let compact: Bool
         let page: TokenMonitorEdgeDockPage
+        let scale: CGFloat
     }
 
     private var preferences = TokenMonitorEdgeDockPreferences()
@@ -181,6 +214,10 @@ final class TokenMonitorEdgeDockController: NSObject {
     private var onOpenProxy: (() -> Void)?
     private var onRefresh: ((TokenMonitorEdgeDockCell) async -> Void)?
     private var refreshingCells: Set<String> = []
+    private var onRefreshAll: (() async -> Void)?
+    private var isRefreshingAll = false
+    private var refreshAllTask: Task<Void, Never>?
+    private var refreshAllGeneration = UUID()
 
     private var peekPanel: NSPanel?
     private var railPanel: NSPanel?
@@ -192,6 +229,7 @@ final class TokenMonitorEdgeDockController: NSObject {
     private var screenObserver: NSObjectProtocol?
     private var layout: Layout?
     private var railVisible = false
+    private var handleNearby = false
     private var railPinned = false
     private var cardPinned = false
     private var cardIndex: Int?
@@ -243,7 +281,9 @@ final class TokenMonitorEdgeDockController: NSObject {
         onOpenDashboard: @escaping () -> Void,
         onOpenUsageOverview: @escaping () -> Void,
         onOpenProxy: @escaping () -> Void,
-        onRefresh: ((TokenMonitorEdgeDockCell) async -> Void)? = nil
+        onRefresh: ((TokenMonitorEdgeDockCell) async -> Void)? = nil,
+        onRefreshAll: (() async -> Void)? = nil,
+        isRefreshingAll: Bool = false
     ) {
         var normalized = preferences.normalized()
         let screens = TokenMonitorEdgeDockScreenCatalog.connected()
@@ -254,13 +294,16 @@ final class TokenMonitorEdgeDockController: NSObject {
         normalized.displayID = migrated
         let configuration = Configuration(
             preferences: normalized, cells: cells, language: language, glass: glass,
-            paletteID: paletteID, preferredColorScheme: preferredColorScheme
+            paletteID: paletteID, preferredColorScheme: preferredColorScheme,
+            isRefreshingAll: isRefreshingAll, canRefreshAll: onRefreshAll != nil
         )
         self.onPreferencesChange = onPreferencesChange
         self.onOpenDashboard = onOpenDashboard
         self.onOpenUsageOverview = onOpenUsageOverview
         self.onOpenProxy = onOpenProxy
         self.onRefresh = onRefresh
+        self.onRefreshAll = onRefreshAll
+        self.isRefreshingAll = isRefreshingAll
         guard configurationGate.accept(configuration) else { return }
         let previous = self.preferences
         let selectedID = cardIndex.flatMap { self.cells.indices.contains($0) ? self.cells[$0].id : nil }
@@ -314,6 +357,11 @@ final class TokenMonitorEdgeDockController: NSObject {
         onOpenUsageOverview = nil
         onOpenProxy = nil
         onRefresh = nil
+        onRefreshAll = nil
+        isRefreshingAll = false
+        refreshAllGeneration = UUID()
+        refreshAllTask?.cancel()
+        refreshAllTask = nil
         refreshingCells.removeAll()
         configurationGate.reset()
         lastPeekContent = nil
@@ -329,6 +377,7 @@ final class TokenMonitorEdgeDockController: NSObject {
         railPanel?.orderOut(nil)
         cardPanel?.orderOut(nil)
         railVisible = false
+        handleNearby = false
         cardIndex = nil
         hoveredIndex = nil
         edgeStartedAt = nil
@@ -450,11 +499,13 @@ final class TokenMonitorEdgeDockController: NSObject {
             if let peek {
                 let content = PeekContent(
                     side: preferences.side, language: language, glass: glass,
-                    paletteID: paletteID, preferredColorScheme: preferredColorScheme
+                    paletteID: paletteID, preferredColorScheme: preferredColorScheme,
+                    scale: layout.scale, isNearby: handleNearby
                 )
                 if peekHost == nil || lastPeekContent != content {
                     let view = themed(
-                        TokenMonitorEdgeDockPeekView(side: preferences.side, language: language, glass: glass) { [weak self] in self?.revealRail() }
+                        TokenMonitorEdgeDockPeekView(side: content.side, language: content.language, glass: content.glass,
+                                                     scale: content.scale, isNearby: content.isNearby) { [weak self] in self?.revealRail() }
                     )
                     if let peekHost {
                         peekHost.rootView = view
@@ -480,7 +531,11 @@ final class TokenMonitorEdgeDockController: NSObject {
                 quotaStyle: preferences.quotaStyle,
                 focusedIndex: cardIndex.map { $0 - layout.page.indices.lowerBound },
                 startIndex: layout.page.indices.lowerBound,
-                pageIndex: layout.page.index, pageCount: layout.page.count, isPinned: railPinned
+                pageIndex: layout.page.index, pageCount: layout.page.count, isPinned: railPinned,
+                scale: layout.scale, viewportHeight: layout.rail.height / layout.scale,
+                refreshEnabled: preferences.refreshEnabled,
+                isRefreshing: isRefreshingAll || refreshAllTask != nil || !refreshingCells.isEmpty,
+                runningIndicatorEnabled: preferences.runningIndicatorEnabled
             )
             if railHost == nil || lastRailContent != content {
                 let view = themed(
@@ -489,7 +544,12 @@ final class TokenMonitorEdgeDockController: NSObject {
                         compact: content.compact, warnColors: content.warnColors,
                         focusedIndex: content.focusedIndex, pageIndex: content.pageIndex, pageCount: content.pageCount,
                         quotaStyle: content.quotaStyle,
-                        isPinned: content.isPinned, onPin: { [weak self] in self?.toggleRailPinOrHide() },
+                        isPinned: content.isPinned,
+                        scale: content.scale, viewportHeight: content.viewportHeight,
+                        refreshEnabled: content.refreshEnabled, isRefreshing: content.isRefreshing,
+                        runningIndicatorEnabled: content.runningIndicatorEnabled,
+                        onRefreshAll: onRefreshAll == nil ? nil : { [weak self] in self?.refreshAll() },
+                        onPin: { [weak self] in self?.toggleRailPinOrHide() },
                         onPage: { [weak self] direction in self?.changePage(direction) },
                         onSelect: { [weak self] index in self?.activateCell(at: index + content.startIndex) },
                         onDrag: { [weak self] translation in self?.dragRail(translation) },
@@ -517,8 +577,9 @@ final class TokenMonitorEdgeDockController: NSObject {
                 cell: cells[index], side: preferences.side, language: language, glass: glass,
                 paletteID: paletteID, preferredColorScheme: preferredColorScheme,
                 tailY: placement.tailY, isPinned: cardPinned,
-                canPin: true, isRefreshing: refreshingCells.contains(cells[index].id),
-                snapshotDescription: cells[index].snapshotDescription(language), quotaStyle: preferences.quotaStyle
+                canPin: true, isRefreshing: refreshingCells.contains(cells[index].id) || isRefreshingAll || refreshAllTask != nil,
+                snapshotDescription: cells[index].snapshotDescription(language), quotaStyle: preferences.quotaStyle,
+                scale: layout.scale, viewportHeight: placement.frame.height / layout.scale
             )
             if cardHost == nil || lastCardContent != content {
                 let view = themed(
@@ -531,6 +592,7 @@ final class TokenMonitorEdgeDockController: NSObject {
                         snapshotDescription: content.snapshotDescription,
                         isRefreshing: content.isRefreshing,
                         quotaStyle: content.quotaStyle,
+                        scale: content.scale, viewportHeight: content.viewportHeight,
                         onRefresh: onRefresh == nil ? nil : { [weak self] in self?.refresh(content.cell) },
                         onContentHeightChange: { [weak self] height in
                             self?.resizeCardForContent(height, cellID: content.cell.id)
@@ -552,7 +614,7 @@ final class TokenMonitorEdgeDockController: NSObject {
     }
 
     private func refresh(_ cell: TokenMonitorEdgeDockCell) {
-        guard let onRefresh, !refreshingCells.contains(cell.id) else { return }
+        guard let onRefresh, !isRefreshingAll, refreshAllTask == nil, !refreshingCells.contains(cell.id) else { return }
         refreshingCells.insert(cell.id)
         updateSurfaces()
         Task { @MainActor [weak self] in
@@ -561,6 +623,20 @@ final class TokenMonitorEdgeDockController: NSObject {
             self.refreshingCells.remove(cell.id)
             self.updateSurfaces()
         }
+    }
+
+    private func refreshAll() {
+        guard preferences.enabled, preferences.refreshEnabled, !isRefreshingAll,
+              refreshAllTask == nil, refreshingCells.isEmpty, let onRefreshAll else { return }
+        let generation = UUID()
+        refreshAllGeneration = generation
+        refreshAllTask = Task { @MainActor [weak self] in
+            await onRefreshAll()
+            guard let self, self.refreshAllGeneration == generation else { return }
+            self.refreshAllTask = nil
+            self.updateSurfaces()
+        }
+        updateSurfaces()
     }
 
     private func resizeCardForContent(_ height: CGFloat, cellID: String) {
@@ -615,7 +691,12 @@ final class TokenMonitorEdgeDockController: NSObject {
         let now = Date()
 
         if !railVisible {
-            let edge = layout.peek.insetBy(dx: -2, dy: 0).contains(point) || edgeTrigger(layout).contains(point)
+            let nearby = TokenMonitorEdgeDockNativeGeometry.handleZone(peek: layout.peek, side: preferences.side, approaching: true).contains(point)
+            if nearby != handleNearby {
+                handleNearby = nearby
+                updateSurfaces()
+            }
+            let edge = TokenMonitorEdgeDockNativeGeometry.handleZone(peek: layout.peek, side: preferences.side, approaching: false).contains(point)
             if edge {
                 if edgeStartedAt == nil { edgeStartedAt = now }
                 if now.timeIntervalSince(edgeStartedAt!) >= 0.14 { revealRail() }
@@ -901,31 +982,32 @@ final class TokenMonitorEdgeDockController: NSObject {
         let work = screen.visibleFrame
         let normal = cells.map { $0.kind == .stat ? CGFloat(56) : CGFloat(70) }
         let compressed = cells.map { $0.kind == .stat ? CGFloat(48) : CGFloat(54) }
-        let chrome: CGFloat = 28 * 2 + 4 * 2
+        let chrome: CGFloat = 28 * 2 + 4 * 2 + (preferences.refreshEnabled ? 32 : 0)
         let gaps = CGFloat(max(0, cells.count - 1)) * 2
-        let compact = chrome + normal.reduce(0, +) + gaps > work.height - 16
+        let naturalHeight = chrome + normal.reduce(0, +) + gaps
+        let scale = TokenMonitorEdgeDockNativeGeometry.fittingScale(
+            requested: CGFloat(preferences.scale), naturalHeight: naturalHeight, availableHeight: work.height - 16)
+        let compact = naturalHeight * scale > work.height - 16
         let page =
             compact
-            ? TokenMonitorEdgeDockPage.make(cellCount: cells.count, availableHeight: Double(work.height - 16), index: pageIndex)
+            ? TokenMonitorEdgeDockPage.make(cellCount: cells.count, availableHeight: Double((work.height - 16) / scale), index: pageIndex, chromeHeight: Double(chrome))
             : TokenMonitorEdgeDockPage(indices: cells.indices, index: 0, count: 1)
-        let heights = Array((compact ? compressed : normal)[page.indices])
-        let fullHeight = chrome + heights.reduce(0, +) + CGFloat(max(0, heights.count - 1)) * 2
+        let heights = Array((compact ? compressed : normal)[page.indices]).map { $0 * scale }
+        let fullHeight = chrome * scale + heights.reduce(0, +) + CGFloat(max(0, heights.count - 1)) * 2 * scale
         let length = min(fullHeight, max(1, work.height - 16))
         let rail = TokenMonitorEdgeDockNativeGeometry.railFrame(
-            workArea: work, side: preferences.side, offset: preferences.offset, height: length
+            workArea: work, side: preferences.side, offset: preferences.offset, height: length, scale: scale
         )
-        let peek = NSRect(
-            x: preferences.side == .right ? work.maxX - 7 : work.minX,
-            y: rail.midY - 29, width: 7, height: 58)
+        let peek = TokenMonitorEdgeDockNativeGeometry.peekFrame(rail: rail, workArea: work, side: preferences.side, scale: scale)
         var tops: [CGFloat] = []
-        var top: CGFloat = 28 + 4
+        var top: CGFloat = (28 + 4) * scale
         for height in heights {
             tops.append(top)
-            top += height + 2
+            top += height + 2 * scale
         }
         return Layout(
             screen: screen, workArea: work, peek: peek, rail: rail,
-            cellTops: tops, cellHeights: heights, compact: compact, page: page)
+            cellTops: tops, cellHeights: heights, compact: compact, page: page, scale: scale)
     }
 
     private func cardPlacement(index: Int, layout: Layout) -> (frame: NSRect, tailY: CGFloat)? {
@@ -949,17 +1031,17 @@ final class TokenMonitorEdgeDockController: NSObject {
             preferredHeight = cell.kind == .stat ? max(190, min(520, 132 + CGFloat(rows) * 44)) : max(150, min(480, 102 + CGFloat(rows) * 37))
         }
         let frame = TokenMonitorEdgeDockNativeGeometry.cardFrame(
-            rail: layout.rail, centerY: cellCenter, height: preferredHeight,
-            workArea: layout.workArea, side: preferences.side
+            rail: layout.rail, centerY: cellCenter, height: preferredHeight * layout.scale,
+            workArea: layout.workArea, side: preferences.side, scale: layout.scale
         )
-        return (frame, frame.maxY - cellCenter)
+        return (frame, (frame.maxY - cellCenter) / layout.scale)
     }
 
     private func cellAt(_ point: NSPoint, layout: Layout) -> Int? {
-        guard layout.rail.contains(point), abs(point.x - layout.rail.midX) <= 28 else { return nil }
+        guard layout.rail.contains(point), abs(point.x - layout.rail.midX) <= 28 * layout.scale else { return nil }
         let localTop = layout.rail.maxY - point.y
         for index in layout.cellTops.indices {
-            if localTop >= layout.cellTops[index] && localTop < layout.cellTops[index] + layout.cellHeights[index] + 2 {
+            if localTop >= layout.cellTops[index] && localTop < layout.cellTops[index] + layout.cellHeights[index] + 2 * layout.scale {
                 return index + layout.page.indices.lowerBound
             }
         }

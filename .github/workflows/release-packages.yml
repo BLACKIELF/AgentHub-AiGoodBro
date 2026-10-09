@@ -49,6 +49,9 @@ jobs:
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
       - name: Prepare companion build toolchain
         uses: actions/setup-go@v5
         with:
@@ -65,21 +68,33 @@ jobs:
               x86_64) asset_arch=x64; env_arch=X86_64 ;;
             esac
             pin="$(python3 - "$arch" <<'PY'
-          import json, sys
+          import json, re, sys
           manifest = json.load(open('Companion/TokenMonitorDesktop/SOURCE.json'))
-          runtime = manifest['runtime'] if sys.argv[1] == 'arm64' else manifest['architectures'][sys.argv[1]]['runtime']
-          print(runtime['officialDMGSHA256'], runtime['officialDMGURL'])
+          version = manifest['upstream']['version']
+          arch = sys.argv[1]
+          runtime = manifest['runtime'] if arch == 'arm64' else manifest['architectures'][arch]['runtime']
+          asset_arch = {'arm64': 'arm64', 'x86_64': 'x64'}[arch]
+          if manifest['upstream']['repository'] != 'Javis603/token-monitor' or not isinstance(version, str) or not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', version):
+              raise SystemExit('Invalid pinned Token Monitor upstream')
+          if manifest['runtime']['version'] != version or manifest['runtime']['architecture'] != 'arm64' or runtime['architecture'] != arch:
+              raise SystemExit('Pinned Token Monitor runtime does not match its upstream')
+          url = runtime['officialDMGURL']
+          if url != f'https://github.com/Javis603/token-monitor/releases/download/v{version}/Token-Monitor-{version}-{asset_arch}.dmg':
+              raise SystemExit('Unexpected official Token Monitor DMG URL')
+          expected = runtime['officialDMGSHA256']
+          if not isinstance(expected, str) or not re.fullmatch(r'[a-f0-9]{64}', expected):
+              raise SystemExit('Invalid pinned Token Monitor DMG SHA256')
+          print(version, expected, url)
           PY
           )"
-            read -r expected url <<< "$pin"
-            test "$url" = "https://github.com/Javis603/token-monitor/releases/download/v0.62.0/Token-Monitor-0.62.0-${asset_arch}.dmg"
-            dmg="$RUNNER_TEMP/Token-Monitor-0.62.0-${asset_arch}.dmg"
-            mountpoint="$RUNNER_TEMP/token-monitor-0.62.0-${asset_arch}"
+            read -r version expected url <<< "$pin"
+            dmg="$RUNNER_TEMP/Token-Monitor-${version}-${asset_arch}.dmg"
+            mountpoint="$RUNNER_TEMP/token-monitor-${asset_arch}"
             curl --fail --location --retry 3 --silent --show-error --output "$dmg" "$url"
             printf '%s  %s\n' "$expected" "$dmg" | shasum -a 256 --check -
             mkdir -p "$mountpoint"
             hdiutil attach -readonly -nobrowse -mountpoint "$mountpoint" "$dmg"
-            printf '%s\n' "$mountpoint" > "$RUNNER_TEMP/token-monitor-0.62.0-${asset_arch}.mount-receipt"
+            printf '%s\n' "$mountpoint" > "$RUNNER_TEMP/token-monitor-${asset_arch}.mount-receipt"
             test -d "$mountpoint/Token Monitor.app"
             printf 'TOKEN_MONITOR_DESKTOP_RUNTIME_%s=%s/Token Monitor.app\n' "$env_arch" "$mountpoint" >> "$GITHUB_ENV"
             printf 'TOKEN_MONITOR_DESKTOP_DMG_%s=%s\n' "$env_arch" "$dmg" >> "$GITHUB_ENV"
@@ -107,8 +122,8 @@ jobs:
           set -euo pipefail
           failed=0
           for asset_arch in arm64 x64; do
-            receipt="$RUNNER_TEMP/token-monitor-0.62.0-${asset_arch}.mount-receipt"
-            mountpoint="$RUNNER_TEMP/token-monitor-0.62.0-${asset_arch}"
+            receipt="$RUNNER_TEMP/token-monitor-${asset_arch}.mount-receipt"
+            mountpoint="$RUNNER_TEMP/token-monitor-${asset_arch}"
             if [[ -f "$receipt" ]] && [[ "$(cat "$receipt")" == "$mountpoint" ]]; then
               if mount | grep -F " on $mountpoint (" >/dev/null; then
                 if hdiutil detach "$mountpoint"; then
@@ -160,11 +175,12 @@ jobs:
           name: account-manager-next-windows-${{ needs.resolve-version.outputs.version }}
           path: dist/windows
       - name: Verify macOS checksums
+        working-directory: dist
         env:
           VERSION: ${{ needs.resolve-version.outputs.version }}
         run: |
           for arch in arm64 x86_64; do
-            shasum -a 256 -c "dist/AiGoodBro-${VERSION}-mac-${arch}.dmg.sha256"
+            shasum -a 256 -c "AiGoodBro-${VERSION}-mac-${arch}.dmg.sha256"
           done
       - name: Verify optional cross-platform bundle
         if: needs.windows.result == 'success'

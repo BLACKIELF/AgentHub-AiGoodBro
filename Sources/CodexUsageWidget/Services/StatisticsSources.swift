@@ -20,7 +20,7 @@ struct StatisticsClientCatalog: Decodable {
     static func load(url: URL) throws -> Self {
         let catalog = try JSONDecoder().decode(Self.self, from: Data(contentsOf: url))
         guard catalog.schemaVersion == 1,
-            catalog.upstreamCommit == "dcccfb01557e2786888fd5479552f392ac6c0d32",
+            catalog.upstreamCommit == TokenMonitorUpstream.commit,
             !catalog.clients.isEmpty,
             Set(catalog.clients.map(\.id)).count == catalog.clients.count,
             catalog.clients.allSatisfy({ TokenMonitorSource.safeID($0.id) })

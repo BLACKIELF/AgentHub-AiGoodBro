@@ -69,10 +69,17 @@ async function main() {
     assert.equal(missing.found, false);
 
     let closes = 0;
-    const errored = detail.readSessionDetail({ client: 'codex', sessionId, home, env: { CODEX_HOME: path.join(home, '.codex') }, deps: { fsModule: { ...fs,
-      readSync() { throw Object.assign(new Error('synthetic EIO'), { code: 'EIO' }); },
-      closeSync(fd) { closes++; return fs.closeSync(fd); }
-    } } });
+    const originalRead = fs.readSync;
+    const originalClose = fs.closeSync;
+    let errored;
+    try {
+      fs.readSync = () => { throw Object.assign(new Error('synthetic EIO'), { code: 'EIO' }); };
+      fs.closeSync = (fd) => { closes++; return originalClose(fd); };
+      errored = detail.readSessionDetail({ client: 'codex', sessionId, home, env: { CODEX_HOME: path.join(home, '.codex') } });
+    } finally {
+      fs.readSync = originalRead;
+      fs.closeSync = originalClose;
+    }
     assert.equal(errored.error, 'read-failed'); assert.equal(errored.found, false); assert.equal(errored.exchanges.length, 0); assert.equal(closes, 1);
     fs.writeFileSync(sessionPath, Buffer.alloc(17 * 1024 * 1024, 120));
     const oversized = detail.readSessionDetail({ client: 'codex', sessionId, home, env: { CODEX_HOME: path.join(home, '.codex') } });

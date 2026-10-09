@@ -138,6 +138,20 @@ struct AppVersion: Codable, Equatable, Comparable, CustomStringConvertible {
     }
 }
 
+enum AppUpdateReleasePolicy {
+    private static let currentReleaseLine = AppVersion("2.3.0")!
+    private static let retiredReleaseMajor = 9
+    private static let retiredReleaseMinor = 6
+
+    static func blocksLegacyRelease(_ release: AppVersion, currentVersion: String) -> Bool {
+        guard let current = AppVersion(currentVersion), current >= currentReleaseLine,
+            !(current.major == retiredReleaseMajor && current.minor == retiredReleaseMinor),
+            release.major == retiredReleaseMajor, release.minor == retiredReleaseMinor
+        else { return false }
+        return true
+    }
+}
+
 struct GitHubReleaseAsset: Codable, Equatable, Identifiable {
     let name: String
     let browserDownloadURL: URL

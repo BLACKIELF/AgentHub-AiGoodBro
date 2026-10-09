@@ -171,6 +171,7 @@ struct LocalCLIQuotaReader {
     private let fileReader: FileReader
     private let claudeKeychainReader: ClaudeKeychainReader
     private let claudeRelayReader: (() throws -> CCSwitchClaudeRelay.Credential?)?
+    private let claudeSubscriptionService: ClaudeSubscriptionService?
     private let credentialRefresher: ((LocalCLIProfile) async -> Bool)?
 
     init(
@@ -179,13 +180,18 @@ struct LocalCLIQuotaReader {
         claudeKeychainReader: ClaudeKeychainReader? = nil,
         upstreamReader: UpstreamReader? = nil,
         claudeRelayReader: (() throws -> CCSwitchClaudeRelay.Credential?)? = nil,
-        credentialRefresher: ((LocalCLIProfile) async -> Bool)? = nil
+        credentialRefresher: ((LocalCLIProfile) async -> Bool)? = nil,
+        claudeSubscriptionService: ClaudeSubscriptionService? = nil
     ) {
         self.upstreamReader =
             upstreamReader
             ?? (transport == nil && fileReader == nil && claudeKeychainReader == nil
                 ? { profile, now in try await TokenMonitorLocalCLIQuotaReader().load(profile: profile, now: now) } : nil)
         self.transport = transport ?? LocalCLIURLSessionTransport()
+        self.claudeSubscriptionService = claudeSubscriptionService
+            ?? (transport == nil && fileReader == nil && claudeKeychainReader == nil
+                ? ClaudeSubscriptionService(home: FileManager.default.homeDirectoryForCurrentUser,
+                    support: DispatchParticipationPaths.supportDirectory()) : nil)
         self.fileReader =
             fileReader ?? { url, maximumBytes, allowMissing in
                 try DispatchParticipationSync.readBoundedRegularFile(
@@ -405,6 +411,10 @@ struct LocalCLIQuotaReader {
     }
 
     private func loadClaude(profile: LocalCLIProfile, now: Date) async throws -> LocalCLIQuotaResult {
+        if let reference = profile.claudeSubscription {
+            guard let service = claudeSubscriptionService else { throw LocalCLIReaderFailure.unavailable }
+            return await service.loadQuota(reference, now: now)
+        }
         if isDefaultClaudeDirectory(profile), let relay = try claudeRelayReader?() {
             var request = fixedRequest("https://claude.moylor.com/v1/usage")
             request.setValue("Bearer " + relay.token, forHTTPHeaderField: "Authorization")
@@ -763,14 +773,29 @@ extension LocalCLIQuotaReader {
                         id: id, label: label, usedPercent: min(1, ratio) * 100, resetsAt: parseDate(pool["reset_time"])))
             }
         }
-        // A migration response may provide only one new pool. Fill the other
-        // kinds from legacy windows; a new pool wins only for its own kind.
-        if !windows.contains(where: { $0.id == "weekly" }) {
-            if let usage = root["usage"] as? [String: Any] {
-                windows.append(try quotaWindow(id: "weekly", label: "7-day", detail: usage))
-            } else if root["usage"] != nil && !(root["usage"] is NSNull) {
-                throw LocalCLIReaderFailure.invalidResponse
+        let ratioPools = windows
+        func appendLegacyWindow(id: String, label: String, detail: [String: Any]) throws {
+            guard let index = windows.firstIndex(where: { $0.id == id }) else {
+                windows.append(try quotaWindow(id: id, label: label, detail: detail))
+                return
             }
+            // Only matching periods can contradict a ratio pool. The endpoint's
+            // two reset clocks may differ by up to two seconds; unrelated or
+            // malformed counters cannot replace valid ratio evidence.
+            guard let ratioReset = ratioPools.first(where: { $0.id == id })?.resetsAt,
+                let counter = try? quotaWindow(id: id, label: label, detail: detail),
+                let counterReset = counter.resetsAt,
+                abs(counterReset.timeIntervalSince(ratioReset)) <= 2,
+                counter.usedPercent > windows[index].usedPercent
+            else { return }
+            windows[index] = counter
+        }
+        // A migration response may provide only one new pool. Fill other kinds
+        // from legacy windows and keep the more-exhausted matching reading.
+        if let usage = root["usage"] as? [String: Any] {
+            try appendLegacyWindow(id: "weekly", label: "7-day", detail: usage)
+        } else if !ratioPools.contains(where: { $0.id == "weekly" }), root["usage"] != nil && !(root["usage"] is NSNull) {
+            throw LocalCLIReaderFailure.invalidResponse
         }
         if let rawLimits = root["limits"], !(rawLimits is NSNull) {
             guard let limits = rawLimits as? [[String: Any]] else {
@@ -782,8 +807,7 @@ extension LocalCLIQuotaReader {
                 let label: String
                 if minutes == 300 { label = "5-hour" } else if minutes == 10_080 { label = "7-day" } else { label = "Usage" }
                 let id = minutes == 300 ? "session" : minutes == 10_080 ? "weekly" : "limit-\(index)-\(minutes ?? 0)"
-                guard !windows.contains(where: { $0.id == id }) else { continue }
-                windows.append(try quotaWindow(id: id, label: label, detail: detail))
+                try appendLegacyWindow(id: id, label: label, detail: detail)
             }
         }
         // Empty legacy/null payloads are not fresh quota evidence. Let the
@@ -826,8 +850,13 @@ extension LocalCLIQuotaReader {
                     }
                     if !active { continue }
                 }
-                let model = ((limit["scope"] as? [String: Any])?["model"] as? [String: Any])
-                let label = nonempty(model?["display_name"]) ?? nonempty(limit["kind"]) ?? "Scoped usage"
+                // The account/session aggregates already have their own circles.
+                // Only independently scoped model windows become model circles.
+                guard let model = ((limit["scope"] as? [String: Any])?["model"] as? [String: Any]),
+                    let label = LocalCLIQuotaPresentation.boundedLabel(model["display_name"] as? String)
+                else { continue }
+                if let kind = nonempty(limit["kind"]), kind != "weekly_scoped" { continue }
+                if let group = nonempty(limit["group"]), group != "weekly" { continue }
                 guard let percent = limit["percent"], !(percent is NSNull) else { continue }
                 windows.append(
                     LocalCLIQuotaWindow(
@@ -875,10 +904,7 @@ extension LocalCLIQuotaReader {
             throw LocalCLIReaderFailure.invalidResponse
         }
         let used: Double
-        if let value = detail["used"] {
-            guard let parsed = strictDouble(value, allowString: true), parsed >= 0 else {
-                throw LocalCLIReaderFailure.invalidResponse
-            }
+        if let parsed = strictDouble(detail["used"], allowString: true), parsed >= 0 {
             used = parsed
         } else {
             guard let remaining = strictDouble(detail["remaining"], allowString: true),
@@ -889,7 +915,8 @@ extension LocalCLIQuotaReader {
         return LocalCLIQuotaWindow(
             id: id,
             label: label,
-            usedPercent: try validatedPercent(used / limit * 100),
+            // Kimi's authoritative used counter can exceed its limit during overage.
+            usedPercent: try validatedPercent(min(100, used / limit * 100)),
             resetsAt: parseDate(detail["resetTime"]) ?? parseDate(detail["resetAt"])
                 ?? parseDate(detail["reset_time"]) ?? parseDate(detail["reset_at"]))
     }

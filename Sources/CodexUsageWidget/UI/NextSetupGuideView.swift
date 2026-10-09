@@ -8,8 +8,10 @@ struct NextSetupGuideView: View {
     @ObservedObject private var messageChannels: MessageChannelsController
     let scope: NextSetupGuideScope
     let installationEventID: String?
+    private let manualInitialStep: NextSetupStep?
     var onOutcome: (NextSetupGuideOutcome) -> Void
     var openAutomation: () -> Void
+    var onOpenClaude: () -> Void
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var webhookDraft = ""
@@ -17,13 +19,15 @@ struct NextSetupGuideView: View {
     @State private var personalLoginOperationID: UUID?
     @State private var showingMessageSettings = false
     @State private var connectionManualStep: NextSetupStep = .notifications
+    @State private var fullManualStep: NextSetupStep = .accounts
     @State private var confirmsCompanionInstall = false
     @StateObject private var runtime: NextRuntimeSetupModel
 
     init(
         store: UsageStore, settings: AppSettings, localAccounts: LocalCLIAccountStore? = nil,
-        scope: NextSetupGuideScope = .full, installationEventID: String? = nil, previewStep: NextSetupStep? = nil, onOutcome: @escaping (NextSetupGuideOutcome) -> Void = { _ in },
+        scope: NextSetupGuideScope = .full, installationEventID: String? = nil, manualInitialStep: NextSetupStep? = nil, previewStep: NextSetupStep? = nil, onOutcome: @escaping (NextSetupGuideOutcome) -> Void = { _ in },
         openAutomation: @escaping () -> Void,
+        onOpenClaude: @escaping () -> Void = {},
         runtime: NextRuntimeSetupModel? = nil
     ) {
         self.store = store
@@ -31,17 +35,25 @@ struct NextSetupGuideView: View {
         self.settings = settings
         self.localAccounts = localAccounts ?? LocalCLIAccountStore()
         self.openAutomation = openAutomation
+        self.onOpenClaude = onOpenClaude
         self.scope = scope
         self.installationEventID = installationEventID
+        self.manualInitialStep = manualInitialStep
         _connectionManualStep = State(initialValue: store.isPreview && scope == .connections ? (previewStep ?? .notifications) : .notifications)
+        let initialManualStep = manualInitialStep ?? .accounts
+        _fullManualStep = State(initialValue: scope.steps.contains(initialManualStep) ? initialManualStep : .accounts)
         self.onOutcome = onOutcome
         _runtime = StateObject(wrappedValue: runtime ?? NextRuntimeSetupModel(preview: store.isPreview))
     }
 
     private var language: WidgetLanguage { settings.language }
+    private var usesManualProgress: Bool {
+        scope == .full && installationEventID == nil && manualInitialStep != nil
+    }
     private var step: NextSetupStep {
         if scope == .connections { return connectionManualStep }
         if scope == .returning { return settings.installationOnboarding.connectionStep }
+        if usesManualProgress { return fullManualStep }
         return settings.setupProgress.step
     }
 
@@ -163,7 +175,7 @@ struct NextSetupGuideView: View {
     private var pageContent: some View {
         switch step {
         case .runtime: runtimePage
-        case .accounts: SetupAccountsView(store: store, localAccounts: localAccounts, language: language)
+        case .accounts: SetupAccountsView(store: store, localAccounts: localAccounts, language: language, onOpenClaude: onOpenClaude)
         case .features: featuresPage
         case .notifications: notificationsPage
         case .updates: updatesPage
@@ -333,9 +345,14 @@ struct NextSetupGuideView: View {
     private var featuresPage: some View {
         VStack(alignment: .leading, spacing: 18) {
             heading(
-                language.text("按需设置自动维护", "Set up automatic maintenance"),
-                language.text("已保存的选择会保留。暖号会发送最小请求，消耗少量额度。", "Saved choices are kept. Warm-up sends a minimal request and uses a small amount of quota.")
+                language.text("功能与设置", "Features & settings"),
+                language.text("先了解账号与额度功能，再按需调整设置；已有选择会保留。", "Explore accounts and limits, then adjust settings as needed. Saved choices are kept.")
             )
+            NewFeatureSetupControls(store: store, settings: settings, onOpenClaude: onOpenClaude)
+            Divider()
+            Text(language.text("自动维护", "Automatic maintenance")).font(.headline)
+            Text(language.text("暖号会发送最小请求，消耗少量额度。", "Warm-up sends a minimal request and uses a small amount of quota."))
+                .font(.caption).foregroundStyle(.secondary)
             HStack {
                 Text(language.text("\(store.enabledSetupFeatureCount) / 7 项已开启", "\(store.enabledSetupFeatureCount) of 7 enabled"))
                     .font(.caption.weight(.medium)).foregroundStyle(.secondary)
@@ -372,12 +389,10 @@ struct NextSetupGuideView: View {
             }
             Text(
                 language.text(
-                    "通知授权、微信和飞书连接在下一步完成。重置卡自动使用默认关闭，可从下方入口逐个授权账号。",
-                    "Set up notification permission, WeChat and Feishu next. Automatic reset-card use is off by default; authorize accounts using the entry below.")
+                    "通知授权、微信和飞书连接在下一步完成。重置卡自动使用默认关闭，可从上方入口逐个授权账号。",
+                    "Set up notification permission, WeChat and Feishu next. Automatic reset-card use is off by default; authorize accounts using the entry above.")
             )
             .font(.caption).foregroundStyle(.secondary)
-            Divider()
-            NewFeatureSetupControls(store: store, settings: settings)
             if !store.pausedAutomationFeatures.isEmpty {
                 Label(language.text("维护期间部分功能暂停，原设置已保留。", "Some features are paused for maintenance. Saved choices are preserved."), systemImage: "pause.circle")
                     .font(.caption).foregroundStyle(.orange)
@@ -390,7 +405,7 @@ struct NextSetupGuideView: View {
             heading(
                 language.text("新功能，按需设置", "Choose your new features"),
                 language.text("保留已有配置，只调整你选择的项目。返回或完成引导不会开启功能。", "Your saved configuration stays in place. Going back or finishing this guide does not enable features."))
-            NewFeatureSetupControls(store: store, settings: settings)
+            NewFeatureSetupControls(store: store, settings: settings, onOpenClaude: onOpenClaude)
             Text(language.text("原有工具、账号和日常功能保持现状，可随时从设置中调整。", "Your tools, accounts and daily features keep their current settings. Adjust them anytime in Settings."))
                 .font(.caption).foregroundStyle(.secondary)
         }
@@ -605,11 +620,11 @@ struct NextSetupGuideView: View {
                     store.migrateDeviceLoginHostIfNeeded(from: .setupGuide)
                 }
                 if !store.isPreview {
-                    if scope == .full {
+                    if scope == .full && !usesManualProgress {
                         settings.setupProgress.dismissed = true
                         if settings.onboarding.shouldPresent { settings.onboarding.skip() }
                     }
-                    onOutcome(.deferred)
+                    if !usesManualProgress { onOutcome(.deferred) }
                 }
                 dismiss()
             }
@@ -622,11 +637,11 @@ struct NextSetupGuideView: View {
                 guard installationEventIsCurrent else { return }
                 if step == .ready {
                     if !store.isPreview {
-                        if scope == .full {
+                        if scope == .full && !usesManualProgress {
                             settings.setupProgress.completed = true
                             settings.onboarding.finish(.completed)
                         }
-                        onOutcome(.completed)
+                        if !usesManualProgress { onOutcome(.completed) }
                     }
                     dismiss()
                 } else {
@@ -647,6 +662,8 @@ struct NextSetupGuideView: View {
                 _ = settings.installationOnboarding.setConnectionStep(step, eventID: installationEventID)
             } else if scope == .connections {
                 connectionManualStep = step
+            } else if usesManualProgress {
+                fullManualStep = step
             } else {
                 settings.setupProgress.step = step
             }

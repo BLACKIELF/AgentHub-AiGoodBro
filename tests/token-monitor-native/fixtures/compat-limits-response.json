@@ -3,8 +3,8 @@
   "requestId": "fixture-request",
   "engine": {
     "repository": "Javis603/token-monitor",
-    "commit": "dcccfb01557e2786888fd5479552f392ac6c0d32",
-    "version": "0.62.0"
+    "commit": "5d2db368d8313415763860d594de00e46a663418",
+    "version": "0.68.0"
   },
   "collectedAt": "2026-09-13T02:00:00.000Z",
   "timezone": "Asia/Shanghai",

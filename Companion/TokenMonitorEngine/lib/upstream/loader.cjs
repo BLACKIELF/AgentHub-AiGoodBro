@@ -21,7 +21,7 @@ const OVERLAYS = Object.freeze([
   { id: 'limits-provider-helpers', overlay: 'limits-provider-helpers.cjs', upstreamFile: 'shared/limits/providerHelpers.js' }
 ]);
 
-const EXPECTED_COMMIT = 'dcccfb01557e2786888fd5479552f392ac6c0d32';
+const EXPECTED_COMMIT = '5d2db368d8313415763860d594de00e46a663418';
 const EXPECTED_REPOSITORY = 'Javis603/token-monitor';
 
 let prepared = false;
@@ -135,17 +135,11 @@ function loadCollector() {
   const filename = resolveUpstreamModule('shared/collector.js');
   if (require.cache[filename]?.exports.bridgeRunGraph) return require.cache[filename].exports;
   const binding = JSON.parse(fs.readFileSync(path.join(HOOKS_DIR, 'manifest.json'), 'utf8')).collectorBindings;
-  for (const pin of [binding, binding.scopedProma]) {
+  for (const pin of [binding]) {
     const file = path.join(upstreamRoot(), pin.upstreamFile);
     if (createHash('sha256').update(fs.readFileSync(file)).digest('hex') !== pin.upstreamSha256) {
       throw new Error('collector-binding-pin-mismatch');
     }
-  }
-  const proma = require(resolveUpstreamModule('shared/providers/proma/usage.js'));
-  if (!proma.bridgeScoped) {
-    const read = proma.collectPromaRows;
-    proma.collectPromaRows = options => read({ ...options, roots: [path.join(process.env.HOME, '.proma', 'agent-sessions')] });
-    proma.bridgeScoped = true;
   }
   const mod = new Module(filename, module);
   mod.filename = filename;
@@ -164,8 +158,7 @@ function loadUsage() {
     collector: loadCollector(),
     usage: require(resolveUpstreamModule('shared/usage.js')),
     history: require(resolveUpstreamModule('shared/history.js')),
-    clientCatalog: require(resolveUpstreamModule('shared/clientCatalog.js')),
-    proma: require(resolveUpstreamModule('shared/providers/proma/usage.js'))
+    clientCatalog: require(resolveUpstreamModule('shared/clientCatalog.js'))
   };
   return usageModules;
 }
@@ -177,7 +170,7 @@ function loadLimits() {
     limitsCollector: require(resolveUpstreamModule('shared/limits/collector.js')),
     limitsRuntime: require(resolveUpstreamModule('shared/limits/runtime.js')),
     limitsCore: require(resolveUpstreamModule('shared/limits/core.js')),
-    limitProviders: require(resolveUpstreamModule('shared/limitProviders.js'))
+    limitProviders: require(resolveUpstreamModule('shared/limits/providers.js'))
   };
   return limitsModules;
 }

@@ -17,7 +17,65 @@ function missing(args) {
   return { found: false, client: args.client, sessionId: args.sessionId, exchanges: [] };
 }
 
-test('reads a Claude transcript from a discovered WSL home', (t) => {
+for (const client of ['codex', 'claude', 'codebuddy', 'workbuddy']) {
+  test(`${client} continues WSL fallback when a resolved native or WSL file disappears`, async (t) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tm-detail-race-'));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const homes = ['native', 'wsl-first', 'wsl-next'].map(name => path.join(root, name));
+    const sessionId = 'disappearing-session';
+    const files = homes.map(home => {
+      const dir = client === 'codex'
+        ? path.join(home, '.codex', 'sessions')
+        : path.join(home, `.${client}`, 'projects', 'test');
+      fs.mkdirSync(dir, { recursive: true });
+      return path.join(dir, `${sessionId}.jsonl`);
+    });
+    const turn = JSON.stringify(client === 'codex'
+      ? { type: 'event_msg', payload: { type: 'token_count', info: { last_token_usage: { input_tokens: 10, output_tokens: 5 } } } }
+      : client === 'claude'
+        ? { type: 'assistant', message: { usage: { input_tokens: 10, output_tokens: 5 } } }
+        : { type: 'message', role: 'assistant', providerData: { messageId: 'response', usage: { input_tokens: 10, output_tokens: 5 } } });
+    const openSync = fs.openSync;
+    for (const disappearingIndex of [0, 1]) {
+      fs.writeFileSync(files[disappearingIndex], turn);
+      fs.writeFileSync(files[2], turn);
+      const opened = [];
+      t.mock.method(fs, 'openSync', (filePath, ...options) => {
+        opened.push(filePath);
+        if (filePath === files[disappearingIndex]) fs.unlinkSync(filePath);
+        return openSync(filePath, ...options);
+      });
+      const detail = await resolveSessionDetailForPlatform(
+        { client, sessionId, period: 'total', sessionCost: 0.25 },
+        { platform: 'win32', homedir: () => homes[0], env: {}, wslUsageHomes: () => homes.slice(1) }
+      );
+      t.mock.restoreAll();
+      assert.deepEqual(opened, [files[disappearingIndex], files[2]]);
+      assert.equal(detail.found, true);
+      assert.equal(detail.totals.totalTokens, 15);
+      assert.equal(detail.totals.costUsd, 0.25);
+      assert.equal(Object.hasOwn(detail, 'error'), false);
+    }
+  });
+}
+
+test('keeps native and WSL read failures instead of reporting a missing transcript', async () => {
+  for (const failingHome of ['/native', '/wsl']) {
+    const attempts = [];
+    const detail = await resolveSessionDetailForPlatform({ client: 'codex', sessionId: 'large' }, {
+      platform: 'win32', homedir: () => '/native',
+      wslUsageHomes: () => ['/wsl', '/other'],
+      readSessionDetail: args => {
+        attempts.push(args.home);
+        return args.home === failingHome ? { found: false, error: 'line-too-large' } : missing(args);
+      }
+    });
+    assert.equal(detail.error, 'line-too-large');
+    assert.deepEqual(attempts, failingHome === '/native' ? ['/native'] : ['/native', '/wsl']);
+  }
+});
+
+test('reads a Claude transcript from a discovered WSL home', async (t) => {
   const nativeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'tm-native-detail-'));
   const wslHome = fs.mkdtempSync(path.join(os.tmpdir(), 'tm-wsl-detail-'));
   t.after(() => fs.rmSync(nativeHome, { recursive: true, force: true }));
@@ -37,7 +95,7 @@ test('reads a Claude transcript from a discovered WSL home', (t) => {
     })
   ].join('\n'));
 
-  const detail = resolveSessionDetailForPlatform(
+  const detail = await resolveSessionDetailForPlatform(
     { client: 'claude', sessionId, period: 'total', sessionCost: 0.25 },
     {
       platform: 'win32',
@@ -52,7 +110,7 @@ test('reads a Claude transcript from a discovered WSL home', (t) => {
   assert.equal(detail.totals.costUsd, 0.25);
 });
 
-test('WSL Claude detail ignores the host CLAUDE_CONFIG_DIR override', (t) => {
+test('WSL Claude detail ignores the host CLAUDE_CONFIG_DIR override', async (t) => {
   const nativeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'tm-native-detail-'));
   const wslHome = fs.mkdtempSync(path.join(os.tmpdir(), 'tm-wsl-detail-'));
   const hostConfigDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tm-host-claude-'));
@@ -67,7 +125,7 @@ test('WSL Claude detail ignores the host CLAUDE_CONFIG_DIR override', (t) => {
     JSON.stringify({ type: 'assistant', timestamp: '2026-07-31T00:00:01.000Z', message: { usage: { input_tokens: 2, output_tokens: 1 }, content: [] } })
   ].join('\n'));
 
-  const detail = resolveSessionDetailForPlatform(
+  const detail = await resolveSessionDetailForPlatform(
     { client: 'claude', sessionId, period: 'total' },
     {
       platform: 'win32',
@@ -82,7 +140,7 @@ test('WSL Claude detail ignores the host CLAUDE_CONFIG_DIR override', (t) => {
   assert.equal(detail.totals.totalTokens, 3);
 });
 
-test('reads a Claude transcript from the alternate root in a discovered WSL home', (t) => {
+test('reads a Claude transcript from the alternate root in a discovered WSL home', async (t) => {
   const nativeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'tm-native-detail-'));
   const wslHome = fs.mkdtempSync(path.join(os.tmpdir(), 'tm-wsl-detail-'));
   t.after(() => fs.rmSync(nativeHome, { recursive: true, force: true }));
@@ -95,7 +153,7 @@ test('reads a Claude transcript from the alternate root in a discovered WSL home
     JSON.stringify({ type: 'assistant', timestamp: '2026-07-31T00:00:01.000Z', message: { usage: { input_tokens: 4, output_tokens: 2 }, content: [] } })
   ].join('\n'));
 
-  const detail = resolveSessionDetailForPlatform(
+  const detail = await resolveSessionDetailForPlatform(
     { client: 'claude', sessionId, period: 'total' },
     { platform: 'win32', homedir: () => nativeHome, wslUsageHomes: () => [wslHome] }
   );
@@ -105,7 +163,7 @@ test('reads a Claude transcript from the alternate root in a discovered WSL home
   assert.equal(detail.totals.totalTokens, 6);
 });
 
-test('reads a Codex transcript from its dated path in a discovered WSL home', (t) => {
+test('reads a Codex transcript from its dated path in a discovered WSL home', async (t) => {
   const nativeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'tm-native-detail-'));
   const wslHome = fs.mkdtempSync(path.join(os.tmpdir(), 'tm-wsl-detail-'));
   t.after(() => fs.rmSync(nativeHome, { recursive: true, force: true }));
@@ -118,7 +176,7 @@ test('reads a Codex transcript from its dated path in a discovered WSL home', (t
     JSON.stringify({ type: 'event_msg', timestamp: '2026-07-31T00:00:01.000Z', payload: { type: 'token_count', info: { last_token_usage: { input_tokens: 10, cached_input_tokens: 3, output_tokens: 5, reasoning_output_tokens: 2, total_tokens: 15 } } } })
   ].join('\n'));
 
-  const detail = resolveSessionDetailForPlatform(
+  const detail = await resolveSessionDetailForPlatform(
     { client: 'codex', sessionId, period: 'total', sessionCost: 0.1 },
     { platform: 'win32', homedir: () => nativeHome, wslUsageHomes: () => [wslHome] }
   );
@@ -129,9 +187,9 @@ test('reads a Codex transcript from its dated path in a discovered WSL home', (t
   assert.equal(detail.totals.costUsd, 0.1);
 });
 
-test('returns a native Claude detail without enumerating WSL homes', () => {
+test('returns a native Claude detail without enumerating WSL homes', async () => {
   let enumerated = false;
-  const detail = resolveSessionDetailForPlatform(
+  const detail = await resolveSessionDetailForPlatform(
     { client: 'claude', sessionId: 'native' },
     {
       platform: 'win32',
@@ -146,7 +204,7 @@ test('returns a native Claude detail without enumerating WSL homes', () => {
   assert.equal(enumerated, false);
 });
 
-test('resolves a Reasonix native detail through the same platform resolver', () => {
+test('resolves a Reasonix native detail through the same platform resolver', async () => {
   const nativeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'tm-native-reasonix-detail-'));
   const stateHome = path.join(nativeHome, 'state');
   const sessions = path.join(stateHome, 'projects', 'opaque', 'sessions');
@@ -157,7 +215,7 @@ test('resolves a Reasonix native detail through the same platform resolver', () 
     JSON.stringify({ type: 'model.final', ts: '2026-08-08T00:00:01.000Z', usage: { prompt_tokens: 3, completion_tokens: 2 } })
   ].join('\n'));
   try {
-    const detail = resolveSessionDetailForPlatform(
+    const detail = await resolveSessionDetailForPlatform(
       { client: 'reasonix', sessionId: 'reasonix:resolver-id', period: 'total' },
       {
         platform: process.platform,
@@ -176,10 +234,10 @@ test('resolves a Reasonix native detail through the same platform resolver', () 
   }
 });
 
-for (const client of ['claude', 'codex']) {
-  test(`falls back to running WSL homes for ${client} JSONL details on Windows`, () => {
+for (const client of ['claude', 'codebuddy', 'codex', 'workbuddy']) {
+  test(`falls back to running WSL homes for ${client} JSONL details on Windows`, async () => {
     const homes = [];
-    const detail = resolveSessionDetailForPlatform(
+    const detail = await resolveSessionDetailForPlatform(
       { client, sessionId: 'wsl-session' },
       {
         platform: 'win32',
@@ -202,10 +260,10 @@ for (const client of ['claude', 'codex']) {
   });
 }
 
-test('does not inspect WSL homes for non-Windows or SQLite-backed clients', () => {
+test('does not inspect WSL homes for non-Windows or SQLite-backed clients', async () => {
   for (const [platform, client] of [['linux', 'claude'], ['win32', 'opencode'], ['linux', 'dsh']]) {
     let enumerated = false;
-    const detail = resolveSessionDetailForPlatform(
+    const detail = await resolveSessionDetailForPlatform(
       { client, sessionId: 'missing' },
       {
         platform,
@@ -220,9 +278,9 @@ test('does not inspect WSL homes for non-Windows or SQLite-backed clients', () =
   }
 });
 
-test('returns the native not-found result when WSL discovery fails', () => {
+test('returns the native not-found result when WSL discovery fails', async () => {
   const nativeDetail = { found: false, client: 'claude', sessionId: 'missing', exchanges: [], marker: 'native' };
-  const detail = resolveSessionDetailForPlatform(
+  const detail = await resolveSessionDetailForPlatform(
     { client: 'claude', sessionId: 'missing' },
     {
       platform: 'win32',
@@ -302,19 +360,89 @@ test('the public session detail resolver uses the worker boundary', async () => 
   }
 
   const args = { client: 'claude', sessionId: 'missing' };
-  const result = readSessionDetailForPlatform(args, { Worker: FakeWorker });
+  const result = readSessionDetailForPlatform(args, {
+    Worker: FakeWorker, getPricingRevision: () => { throw new Error('native details must not probe Dots pricing'); }
+  });
   assert.ok(result instanceof Promise);
   assert.deepEqual(await result, { found: false });
   assert.equal(workerArgs, args);
+});
+
+test('Dots details retain shared same-revision prices on command failure and invalidate them on revision changes', async () => {
+  const { resolveLocalUsagePricing } = require('../../src/shared/providers/codex/localUsage');
+  const models = ['resolver-dots-priced', 'resolver-dots-free'];
+  const rates = [{ inputCostPerToken: 0.01 }, { inputCostPerToken: 0 }];
+  const makeDetail = () => ({
+    found: true, usageSource: 'codex-dots-local', totals: {}, exchanges: [{ turns:
+      [...models, 'unknown'].map((model) => ({ model, tokens: { input: 100, total: 100 } }))
+    }]
+  });
+  const workerArgs = [];
+  class DotsWorker {
+    constructor(_path, options) {
+      workerArgs.push(options.workerData);
+      this.listeners = new Map();
+      queueMicrotask(() => this.listeners.get('message')?.({ ok: true, detail: makeDetail() }));
+    }
+    once(event, listener) { this.listeners.set(event, listener); return this; }
+  }
+  let behavior = 'success';
+  const lookups = [];
+  const lookupModelPricing = async (model, timeout) => {
+    lookups.push({ model, timeout });
+    if (behavior === 'throw') throw new Error('temporary pricing timeout');
+    return { pricing: behavior === 'missing' ? null : rates[models.indexOf(model)] };
+  };
+  const revision = 'resolver-dots-shared-v1';
+  await resolveLocalUsagePricing(models.map((model) => ({ model })), { pricingRevision: revision, lookupModelPricing });
+  const args = { client: 'codex', sessionId: 'dots-test', period: 'total' };
+  const deps = { Worker: DotsWorker, lookupModelPricing, getPricingRevision: () => {
+    assert.ok(workerArgs.length > 0, 'pricing revision is read after the worker result');
+    return revision;
+  } };
+  behavior = 'throw';
+  const aggregateFallback = await readSessionDetailForPlatform(args, deps);
+  assert.equal(aggregateFallback.totals.costUsd, 1);
+  assert.equal(aggregateFallback.totals.unpricedTokens, 100, 'only the unknown-model request is unpriced');
+  assert.equal(aggregateFallback.exchanges[0].turns[0].costEstimate, 1);
+  assert.equal(aggregateFallback.exchanges[0].turns[1].costEstimate, 0);
+  assert.equal(aggregateFallback.exchanges[0].turns[1].unpricedTokens, undefined, 'explicit zero pricing survives failures');
+
+  behavior = 'success';
+  await readSessionDetailForPlatform(args, deps);
+  behavior = 'throw';
+  const detailFallback = await readSessionDetailForPlatform(args, deps);
+  assert.equal(detailFallback.totals.costUsd, 1);
+  assert.equal(detailFallback.totals.unpricedTokens, 100);
+  const changedRevision = await readSessionDetailForPlatform(args, { ...deps, pricingRevision: 'resolver-dots-shared-v2' });
+  assert.equal(changedRevision.totals.costUsd, 0);
+  assert.equal(changedRevision.totals.unpricedTokens, 300, 'old-revision cache is never reused');
+
+  behavior = 'missing';
+  const confirmedMissing = await readSessionDetailForPlatform(args, deps);
+  assert.equal(confirmedMissing.totals.costUsd, 0);
+  assert.equal(confirmedMissing.totals.unpricedTokens, 300);
+  behavior = 'throw';
+  const failureAfterMiss = await readSessionDetailForPlatform(args, deps);
+  assert.equal(failureAfterMiss.totals.costUsd, 0, 'a confirmed miss does not resurrect an earlier success');
+  assert.equal(failureAfterMiss.totals.unpricedTokens, 300);
+  behavior = 'success';
+  await readSessionDetailForPlatform(args, deps);
+  const cached = await resolveLocalUsagePricing(models.map((model) => ({ model })), {
+    pricingRevision: revision, lookupModelPricing: () => { throw new Error('warm aggregate must not look up prices'); }
+  });
+  assert.deepEqual(models.map((model) => cached[model]), rates, 'detail successes update the aggregate cache too');
+  assert.ok(lookups.every(({ model, timeout }) => models.includes(model) && timeout === 1500));
+  assert.ok(workerArgs.every((value) => value === args), 'pricing stays in main, outside worker data');
 });
 
 // dsh reads its own transcript format directly, so it always dispatches to
 // readDshSessionDetail rather than the tokscale-JSONL reader, and forwards
 // home/platform/env/cwdDir the same way the generic `deps.readSessionDetail`
 // seam already does.
-test('dsh dispatches to readDshSessionDetail with home/platform/env/cwdDir, never the generic JSONL reader', () => {
+test('dsh dispatches to readDshSessionDetail with home/platform/env/cwdDir, never the generic JSONL reader', async () => {
   let received;
-  const detail = resolveSessionDetailForPlatform(
+  const detail = await resolveSessionDetailForPlatform(
     { client: 'dsh', sessionId: 's1' },
     {
       readDshSessionDetail: (args) => { received = args; return { found: true, client: 'dsh', sessionId: 's1' }; },
@@ -336,9 +464,9 @@ test('dsh dispatches to readDshSessionDetail with home/platform/env/cwdDir, neve
 // legitimately surface in the list from a WSL distro on Windows. Detail must
 // follow the same native-miss -> WSL-hit fallback claude/codex already get,
 // through readDshSessionDetail rather than the tokscale-JSONL reader.
-test('falls back to a WSL home for a dsh session not found in the native home', () => {
+test('falls back to a WSL home for a dsh session not found in the native home', async () => {
   const attempts = [];
-  const detail = resolveSessionDetailForPlatform(
+  const detail = await resolveSessionDetailForPlatform(
     { client: 'dsh', sessionId: 's1' },
     {
       readDshSessionDetail: (args) => {
@@ -364,9 +492,9 @@ test('falls back to a WSL home for a dsh session not found in the native home', 
 // the host path, making the fallback a no-op — tokscale's own scanner
 // deliberately disables env-based root lookup for an explicit --home
 // (use_env_roots: false, lib.rs) for exactly this reason.
-test('does not let a host DSH_HOME override leak into the WSL fallback attempt', () => {
+test('does not let a host DSH_HOME override leak into the WSL fallback attempt', async () => {
   const envSeen = [];
-  const detail = resolveSessionDetailForPlatform(
+  const detail = await resolveSessionDetailForPlatform(
     { client: 'dsh', sessionId: 's1' },
     {
       readDshSessionDetail: (args) => {

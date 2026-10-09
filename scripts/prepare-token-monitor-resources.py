@@ -9,6 +9,7 @@ import argparse
 import base64
 import hashlib
 import io
+import importlib.util
 import json
 import os
 import platform
@@ -28,9 +29,12 @@ SOURCE = ROOT / 'Companion/TokenMonitorEngine'
 MAX_ARCHIVE = 256 * 1024 * 1024
 MAX_EXPANDED = 1024 * 1024 * 1024
 MANIFEST = 'PACKAGING.json'
+SHARED_EXECUTABLE = 'Contents/Helpers/AiGoodBro Token Core.app/Contents/MacOS/AiGoodBro Token Core'
+SHARED_FRAMEWORK = 'Contents/Frameworks/Electron Framework.framework/Versions/A/Electron Framework'
+FUSE_SENTINEL = b'dL7pKGdnNz796PbbjQWNKmHXBZaB9tsX'
 DEFAULT_CACHE = Path.home() / 'Library/Caches/AiGoodBro/Next/token-monitor-downloads'
-UPSTREAM = 'dcccfb01557e2786888fd5479552f392ac6c0d32'
-FORK = '06a9f1625d5a505f01b39eff29f7be44a2c52188'
+UPSTREAM = '5d2db368d8313415763860d594de00e46a663418'
+FORK = 'd5e8ad9b25bfafb43b5b6804940929b728a6f48a'
 BAD_PARTS = {'.git', '.env', '.DS_Store', '__pycache__', '.pytest_cache',
              'auth.json', 'credentials.json', '.npmrc', '.ssh', '.aws',
              'runtime-paths.json', 'runtime-python.txt'}
@@ -201,7 +205,7 @@ def fetch(url, cache, expected, algorithm, offline):
             need(re.fullmatch(r'https://nodejs.org/dist/v22\.23\.2/node-v22\.23\.2-darwin-(arm64|x64)\.tar\.gz', url),
                  'unapproved_download_url')
         else:
-            need(re.fullmatch(r'https://github\.com/Javis603/tokscale/releases/download/token-monitor-06a9f162/tokscale-darwin-(arm64|x64)', url),
+            need(re.fullmatch(r'https://github\.com/Javis603/tokscale/releases/download/token-monitor-d5e8ad9b/tokscale-darwin-(arm64|x64)', url),
                  'unapproved_download_url')
         for hop in range(2):
             result = subprocess.run(['/usr/bin/curl', '--disable', '--proto', '=https', '--tlsv1.2',
@@ -326,8 +330,15 @@ def inventory(tree):
 
 def validate_layout(tree, packages):
     need(not (tree / 'engine').exists(), 'nested_engine_layout')
-    for rel in ('bridge.cjs', 'client-catalog.json', 'upstream/package-lock.json', 'upstream/LICENSE', 'runtime/node'):
+    for rel in ('bridge.cjs', 'client-catalog.json', 'upstream/package-lock.json', 'upstream/LICENSE'):
         need((tree / rel).is_file(), 'missing_engine_resource')
+    if (tree / 'RUNTIME.json').exists():
+        runtime = read_json(tree / 'RUNTIME.json')
+        need(runtime.get('mode') == 'shared-electron-node' and runtime.get('executable') == SHARED_EXECUTABLE,
+             'invalid_shared_runtime_descriptor')
+        need(not (tree / 'runtime/node').exists(), 'redundant_shared_node')
+    else:
+        need((tree / 'runtime/node').is_file(), 'missing_engine_resource')
     for rel in ('lib', 'hooks', 'upstream', 'vendor/node_modules'):
         need((tree / rel).is_dir(), 'missing_engine_directory')
     allowed_modules = {'vendor/node_modules'}
@@ -349,6 +360,11 @@ def validate_layout(tree, packages):
                      'extraneous_dependency')
         if p.is_file() and p.suffix in ('.js', '.cjs', '.mjs', '.json', '.py', '.sh'):
             data = p.read_bytes()
+            if rel == 'upstream/src/shared/diagnosticReport.js':
+                # Fixed upstream documents the path its diagnostic scrubber removes.
+                # Permit only this complete public comment, retaining every other
+                # private-path check in this file and the rest of the closure.
+                data = data.replace(b'  // (including a username-bearing /Users/... path) is replaced before the\n', b'')
             need(not any(x in data for x in (b'/Users/', b'/home/', b'file:///Users/',
                 b'.codex-account-manager', b'runtime-paths.json')), 'private_runtime_path')
 
@@ -412,13 +428,13 @@ def load_production(source, arch):
          'unapproved_node_url')
     tpin = pin['tokscale']['platforms']['darwin-' + arch]
     sha_pin(tpin['sha256'])
-    need(tpin['url'] == f'https://github.com/Javis603/tokscale/releases/download/token-monitor-06a9f162/tokscale-darwin-{arch}',
+    need(tpin['url'] == f'https://github.com/Javis603/tokscale/releases/download/token-monitor-d5e8ad9b/tokscale-darwin-{arch}',
          'unapproved_tokscale_url')
     need(tpin['package'] == '@tokscale/cli-darwin-' + arch, 'wrong_tokscale_package')
     return pin
 
 
-def assemble(source, tree, pin, arch, cache, offline):
+def assemble(source, tree, pin, arch, cache, offline, shared_runtime=None):
     """Parameterized for synthetic Python tests; never reachable as a fixture CLI."""
     need(not tree.exists(), 'output_already_exists')
     tree.mkdir()
@@ -427,7 +443,7 @@ def assemble(source, tree, pin, arch, cache, offline):
         # Ship runtime source and original license; build scripts/tests stay out.
         if p.parts[0] not in ('bridge.cjs', 'client-catalog.json', 'provenance.json', 'lib', 'hooks', 'upstream'):
             continue
-        if p.parts[0] == 'upstream' and len(p.parts) > 1 and p.parts[1] in ('scripts', 'tests', '.github'):
+        if p.parts[0] == 'upstream' and len(p.parts) > 1 and p.parts[1] in ('scripts', 'tests', '.github') and str(p) != 'upstream/scripts/vendor/tokscale.json':
             continue
         need('node_modules' not in p.parts and not set(p.parts) & BAD_PARTS, 'unsafe_source_payload')
         dst = tree / rel
@@ -448,14 +464,19 @@ def assemble(source, tree, pin, arch, cache, offline):
         extract_package(blob, destination)
         meta = read_json(destination / 'package.json')
         need(meta['version'] == package['version'] and supports(meta, arch), 'package_metadata_mismatch')
-    npin = pin['node']['platforms']['darwin-' + arch]
-    payload = node_payload(fetch(npin['url'], cache, sha_pin(npin['archiveSHA256']), 'sha256', offline), arch)
-    if npin.get('binaryPreSignSHA256'):
-        need(digest(payload['node']) == npin['binaryPreSignSHA256'], 'node_binary_hash_mismatch')
-    (tree / 'runtime').mkdir()
-    (tree / 'runtime/node').write_bytes(payload['node'])
-    (tree / 'runtime/node').chmod(0o755)
-    (tree / 'runtime/LICENSE.txt').write_bytes(payload['LICENSE'])
+    if shared_runtime is None:
+        npin = pin['node']['platforms']['darwin-' + arch]
+        payload = node_payload(fetch(npin['url'], cache, sha_pin(npin['archiveSHA256']), 'sha256', offline), arch)
+        if npin.get('binaryPreSignSHA256'):
+            need(digest(payload['node']) == npin['binaryPreSignSHA256'], 'node_binary_hash_mismatch')
+        (tree / 'runtime').mkdir()
+        (tree / 'runtime/node').write_bytes(payload['node'])
+        (tree / 'runtime/node').chmod(0o755)
+        (tree / 'runtime/LICENSE.txt').write_bytes(payload['LICENSE'])
+    else:
+        need(shared_runtime['mode'] == 'shared-electron-node'
+             and shared_runtime['executable'] == SHARED_EXECUTABLE, 'invalid_shared_runtime_descriptor')
+        (tree / 'RUNTIME.json').write_bytes(canonical(shared_runtime))
     target = tree / 'vendor/node_modules' / tpin['package'] / 'bin/tokscale'
     need(target.is_file(), 'missing_tokscale_binary_slot')
     blob = fetch(tpin['url'], cache, sha_pin(tpin['sha256']), 'sha256', offline)
@@ -498,7 +519,7 @@ def codesign(path, identity=None):
     need(r.returncode == 0, 'codesign_failed' if identity is not None else 'signature_verification_failed')
 
 
-def runtime_smoke(tree, arch):
+def runtime_smoke(tree, arch, shared_app=None):
     """No collectors: isolated V8 optimization and packaged Koffi/libSystem call."""
     host = platform.machine().lower()
     if sys.platform != 'darwin' or host not in ('arm64', 'aarch64', 'x86_64', 'x64') or arch_name(host) != arch:
@@ -514,14 +535,46 @@ const koffi = require(path.join(process.argv[1], 'vendor/node_modules/koffi'));
 const libc = koffi.load('/usr/lib/libSystem.B.dylib');
 assert.equal(libc.func('int abs(int)')(-17),17);
 process.stdout.write('TOKEN_MONITOR_RUNTIME_OK');"""
+    if shared_app:
+        script += """
+const fs = require('node:fs');
+const sqlite = require('node:sqlite');
+const db = new sqlite.DatabaseSync(':memory:');
+assert.equal(db.prepare('select 42 as n').get().n, 42); db.close();
+for (const name of ['semver', 'dotenv', 'chokidar', 'undici']) {
+  require(path.join(process.argv[1], 'vendor/node_modules', name));
+}
+require(path.join(process.argv[1], 'lib/upstream/loader.cjs')).load();
+const cp = require('node:child_process');
+const child = cp.spawnSync(process.execPath, ['-e', 'process.stdout.write("child-ok")'], {
+  env: { HOME:process.env.HOME, TMPDIR:process.env.TMPDIR, PATH:'', ELECTRON_RUN_AS_NODE:'1' },
+  timeout:5000, encoding:'utf8'
+});
+assert.equal(child.status, 0); assert.equal(child.stdout, 'child-ok');
+const binary = path.join(process.argv[1], 'vendor/node_modules/@tokscale/cli-darwin-' +
+  (process.arch === 'arm64' ? 'arm64' : 'x64'), 'bin/tokscale');
+const scanner = cp.spawnSync(binary, ['--help'], {
+  env: { HOME:process.env.HOME, TMPDIR:process.env.TMPDIR, PATH:'', TOKSCALE_PRICING_CACHE_ONLY:'1',
+         TOKSCALE_AUTOSUBMIT_SKIP_SCHEDULER:'1' }, timeout:10000, encoding:'utf8'
+});
+assert.equal(scanner.status, 0); assert.ok(scanner.stdout.includes('tokscale'));
+const { Worker } = require('node:worker_threads');
+const worker = new Worker('require("node:worker_threads").parentPort.postMessage(42)', {eval:true});
+worker.on('message', value => assert.equal(value,42));
+worker.on('error', error => {throw error;});
+"""
     with tempfile.TemporaryDirectory(prefix='token-monitor-runtime-smoke-') as temporary:
-        result = subprocess.run([str((tree / 'runtime/node').resolve()),
+        executable = (shared_app / 'Contents/MacOS/AiGoodBro Token Core') if shared_app else (tree / 'runtime/node')
+        environment = {'HOME': temporary, 'TMPDIR': temporary, 'PATH': '/usr/bin:/bin'}
+        if shared_app:
+            environment['ELECTRON_RUN_AS_NODE'] = '1'
+        result = subprocess.run([str(executable.resolve()),
                                  '--allow-natives-syntax', '-e', script, str(tree.resolve())],
-                                cwd=temporary, env={'HOME': temporary, 'TMPDIR': temporary,
-                                                    'PATH': '/usr/bin:/bin'},
+                                cwd=temporary, env=environment,
                                 capture_output=True, timeout=30)
     need(result.returncode == 0 and result.stdout == b'TOKEN_MONITOR_RUNTIME_OK', 'runtime_smoke_failed')
-    return {'status': 'passed', 'architecture': arch, 'checks': ['v8-optimization', 'packaged-koffi-libsystem-ffi']}
+    return {'status': 'passed', 'architecture': arch, 'checks': ['v8-optimization', 'packaged-koffi-libsystem-ffi'] +
+            (['node-sqlite', 'engine-sdk-dependency-roots', 'engine-loader', 'electron-child-node', 'tokscale-help', 'node-worker'] if shared_app else [])}
 
 
 def check_manifest(tree, expected, signature_verifier):
@@ -573,11 +626,49 @@ def check_receipt(tree, expected, path, identity):
          'trusted_receipt_mismatch')
 
 
-def final_runtime_smoke(tree, arch):
-    smoke = runtime_smoke(tree, arch)
+def final_runtime_smoke(tree, arch, shared_app=None):
+    smoke = runtime_smoke(tree, arch, shared_app)
     need(smoke.get('status') == 'passed' and smoke.get('architecture') == arch,
          'runtime_smoke_incomplete_target_host_required')
     return smoke
+
+
+def verify_electron_node_fuse(blob):
+    """Read the shipped V1 fuse wire; an unknown/disabled wire fails closed."""
+    offset = blob.find(FUSE_SENTINEL)
+    need(offset >= 0 and blob.find(FUSE_SENTINEL, offset + 1) < 0, 'electron_fuse_wire_missing')
+    wire = blob[offset + len(FUSE_SENTINEL):]
+    need(len(wire) >= 3 and wire[0] == 1 and wire[1] >= 1 and wire[2] == ord('1'),
+         'electron_run_as_node_disabled')
+    return True
+
+
+def shared_runtime_descriptor(app, arch):
+    """Verify the signed pinned helper before using its Node mode; never flip fuses."""
+    spec = importlib.util.spec_from_file_location('token_core_package', ROOT / 'scripts/prepare-token-monitor-desktop.py')
+    desktop = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(desktop)
+    manifest = desktop.select_manifest(read_json(desktop.MANIFEST), 'arm64' if arch == 'arm64' else 'x86_64')
+    desktop.verify_bundle(app, manifest, check_signature=True)
+    executable = app / 'Contents/MacOS/AiGoodBro Token Core'
+    framework = app / SHARED_FRAMEWORK
+    blob = framework.read_bytes()
+    verify_electron_node_fuse(blob)
+    script = "process.stdout.write(JSON.stringify({node:process.versions.node,modules:process.versions.modules,napi:process.versions.napi,electron:process.versions.electron}))"
+    with tempfile.TemporaryDirectory(prefix='token-core-node-probe-') as temporary:
+        result = subprocess.run([str(executable.resolve()), '-e', script], cwd=temporary,
+            env={'HOME': temporary, 'TMPDIR': temporary, 'PATH': '', 'ELECTRON_RUN_AS_NODE': '1'},
+            capture_output=True, timeout=30)
+    need(result.returncode == 0, 'electron_node_probe_failed')
+    versions = json.loads(result.stdout)
+    need(versions.get('electron') and versions.get('node') and versions.get('napi'), 'electron_node_probe_invalid')
+    return {'schemaVersion': 1, 'mode': 'shared-electron-node', 'executable': SHARED_EXECUTABLE,
+            'binarySHA256': digest(executable.read_bytes()), 'frameworkSHA256': digest(blob),
+            'versions': versions, 'runAsNodeFuse': True}
+
+
+def shared_app_for(resources):
+    return resources.parent / 'Helpers/AiGoodBro Token Core.app'
 
 
 def verify_resources(resources, arch, cache, source=SOURCE, bundle=None, receipt=None, identity='-'):
@@ -587,11 +678,13 @@ def verify_resources(resources, arch, cache, source=SOURCE, bundle=None, receipt
     need(receipt.is_file(), 'trusted_receipt_missing')
     codesign(bundle)
     pin = load_production(source, arch)
+    shared_app = shared_app_for(resources) if (resources / 'TokenMonitorEngine/RUNTIME.json').exists() else None
+    shared = shared_runtime_descriptor(shared_app, arch) if shared_app else None
     with tempfile.TemporaryDirectory(prefix='token-monitor-verify-') as temporary:
-        expected = assemble(source, Path(temporary) / 'TokenMonitorEngine', pin, arch, cache, True)
+        expected = assemble(source, Path(temporary) / 'TokenMonitorEngine', pin, arch, cache, True, shared)
         check_receipt(resources / 'TokenMonitorEngine', expected, receipt, identity)
         check_manifest(resources / 'TokenMonitorEngine', expected, codesign)
-        smoke = final_runtime_smoke(resources / 'TokenMonitorEngine', arch)
+        smoke = final_runtime_smoke(resources / 'TokenMonitorEngine', arch, shared_app)
         print('TokenMonitorEngine runtime smoke: ' + smoke['status'])
     # Preserve the global prohibition except the exact independently rebuilt closure.
     for p in resources.rglob('node_modules'):
@@ -607,6 +700,8 @@ def main():
     parser.add_argument('--cache', type=Path, default=DEFAULT_CACHE)
     parser.add_argument('--node-archive', type=Path, help='Read-only seed; bytes must match the Node pin')
     parser.add_argument('--offline', action='store_true')
+    parser.add_argument('--shared-desktop-runtime', action='store_true',
+                        help='Use the already signed fixed bundle-local Token Core runtime; no standalone Node')
     parser.add_argument('--sign-identity', default='-')
     parser.add_argument('--trusted-receipt', type=Path, required=True,
                         help='Independent trusted build receipt outside the app and public dist')
@@ -633,17 +728,19 @@ def main():
         else:
             with target.open('xb') as stream:
                 stream.write(blob)
+    shared_app = shared_app_for(args.resources) if args.shared_desktop_runtime else None
+    shared = shared_runtime_descriptor(shared_app, arch) if shared_app else None
     args.resources.mkdir(parents=True, exist_ok=True)
     output = args.resources / 'TokenMonitorEngine'
     need(not output.exists() and not output.is_symlink(), 'output_already_exists')
     with tempfile.TemporaryDirectory(prefix='.token-monitor-', dir=args.resources) as temporary:
         tree = Path(temporary) / 'TokenMonitorEngine'
-        manifest = assemble(SOURCE, tree, pin, arch, args.cache, args.offline)
+        manifest = assemble(SOURCE, tree, pin, arch, args.cache, args.offline, shared)
         for rel in manifest['nativeFiles']:
             codesign(tree / rel, args.sign_identity)
             codesign(tree / rel)
         expected = dict(manifest)
-        manifest['runtimeSmoke'] = runtime_smoke(tree, arch)
+        manifest['runtimeSmoke'] = runtime_smoke(tree, arch, shared_app)
         manifest['postSignFiles'] = inventory(tree)
         (tree / MANIFEST).write_bytes(canonical(manifest))
         check_manifest(tree, {k: v for k, v in manifest.items() if k not in ('postSignFiles', 'runtimeSmoke')}, codesign)

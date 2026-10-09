@@ -9,11 +9,13 @@ final class LocalProxyBridge: @unchecked Sendable {
     private let lock = NSLock()
     private let slots = DispatchSemaphore(value: 8)
     private let controlSlots = DispatchSemaphore(value: 4)
+    private let resolutionSlots = DispatchSemaphore(value: 2)
     private let readers = DispatchSemaphore(value: 8)
 
     init(
         path: String,
         resolve: @escaping @Sendable (LocalProxyRequest) -> LocalProxyReply = { _ in .failure(.unavailable) },
+        maintenance: (@Sendable (LocalProxyRequest) -> LocalProxyReply)? = nil,
         rollback: @escaping @Sendable (LocalProxyRequest) throws -> Void = { _ in },
         onRollbackFailure: @escaping @Sendable (LocalProxyRequest) -> Void = { _ in },
         handler: @escaping @MainActor @Sendable (LocalProxyRequest) async -> LocalProxyReply
@@ -49,6 +51,7 @@ final class LocalProxyBridge: @unchecked Sendable {
         let readSource = DispatchSource.makeReadSource(fileDescriptor: descriptor, queue: queue)
         let slots = self.slots
         let controlSlots = self.controlSlots
+        let resolutionSlots = self.resolutionSlots
         let readers = self.readers
         readSource.setEventHandler {
             for _ in 0..<8 {
@@ -86,7 +89,11 @@ final class LocalProxyBridge: @unchecked Sendable {
                     do {
                         var request = try JSONDecoder().decode(LocalProxyRequest.self, from: Self.readLine(client))
                         request.receivedAt = ProcessInfo.processInfo.systemUptime
-                        let capacity = ["heartbeat", "release", "acquire_resolve", "order_end"].contains(request.command) ? controlSlots : slots
+                        // Reconciliation must remain available even when other
+                        // control requests are waiting on host work.
+                        let capacity = request.command == "acquire_resolve"
+                            ? resolutionSlots
+                            : ["heartbeat", "release", "order_end"].contains(request.command) ? controlSlots : slots
                         guard Self.takeSlot(capacity) else {
                             // The complete bounded request was consumed, but no
                             // handler or side effect ran. Only this explicit
@@ -99,7 +106,14 @@ final class LocalProxyBridge: @unchecked Sendable {
                         admission = capacity
                         reading = false
                         readers.signal()
-                        let reply = request.command == "acquire_resolve" ? resolve(request) : await handler(request)
+                        let reply: LocalProxyReply
+                        if request.command == "acquire_resolve" {
+                            reply = resolve(request)
+                        } else if ["heartbeat", "release"].contains(request.command), let maintenance {
+                            reply = maintenance(request)
+                        } else {
+                            reply = await handler(request)
+                        }
                         do {
                             var data = try JSONEncoder().encode(reply)
                             data.append(10)

@@ -1317,37 +1317,23 @@ struct ResetMessageHeaderSummary: View {
             let cards = ResetCreditLocalSummary(profiles: profiles, now: now)
             let credits = ResetCreditPointSummary(profiles: profiles, now: now)
             let current = PublicResetAnnouncementPresentation.recentVerifiableAnnouncement(announcements, now: now)
-            HStack(spacing: 8) {
-                Label(
-                    cards.availableCards.map {
-                        (cards.isStale ? "Last known: " : cards.hasUnknownAccounts ? "Known: " : "") + "\($0) cards"
-                    }
-                        ?? "Cards unverified", systemImage: "ticket"
-                )
-                .fixedSize()
-                .help(
-                    "Remaining reset cards across all Codex accounts. " + (cards.isStale ? "Last recorded balance. " : "")
-                        + (cards.hasUnknownAccounts ? "Some accounts are unverified." : "Verified balance."))
-                Label((credits.isStale ? "Last credits " : credits.hasUnknownAccounts ? "Known credits " : "Credits ") + credits.dollarText, systemImage: "banknote")
-                    .fixedSize()
-                    .monospacedDigit()
-                    .help(
-                        "Remaining credits across all Codex accounts, converted at your rate: $1 = 25 points. " + (credits.isStale ? "Last recorded balance. " : "")
-                            + (credits.hasUnknownAccounts ? "Some accounts are unverified." : "Verified balance."))
-                if !balancesOnly {
-                    Text(
-                        current.map { ($0.resetType == .banked ? "Reset cards" : "Quota reset") + " · " + PublicResetAnnouncementPresentation.readableText($0.text) }
-                            ?? "No notices"
-                    )
-                    .lineLimit(1)
-                    .frame(minWidth: 80, maxWidth: .infinity, alignment: .leading)
-                    .layoutPriority(-1)
-                    .help(current.map { $0.title(language) + " · " + PublicResetAnnouncementPresentation.compactEventTime($0.announcedAt, language: language) } ?? "")
-                    if let forecastDeadline {
-                        ResetCountdownText(deadline: forecastDeadline, kind: .publicForecast, language: .en, compact: true)
-                            .fixedSize()
-                    } else {
-                        Text("No reset forecast").fixedSize()
+            Group {
+                if balancesOnly {
+                    balanceBlock(cards: cards, credits: credits)
+                } else {
+                    ViewThatFits(in: .horizontal) {
+                        HStack(spacing: 8) {
+                            balanceBlock(cards: cards, credits: credits)
+                            noticeDetails(current: current, forecastDeadline: forecastDeadline)
+                        }
+                        .fixedSize(horizontal: true, vertical: false)
+                        VStack(alignment: .leading, spacing: 3) {
+                            balanceBlock(cards: cards, credits: credits)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            noticeDetails(current: current, forecastDeadline: forecastDeadline)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
             }
@@ -1357,6 +1343,79 @@ struct ResetMessageHeaderSummary: View {
             .accessibilityIdentifier(balancesOnly ? "home.reset.account-totals" : "home.reset.collapsed-summary")
         }
     }
+
+    @ViewBuilder
+    private func balanceBlock(cards: ResetCreditLocalSummary, credits: ResetCreditPointSummary) -> some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 8) { balanceLabels(cards: cards, credits: credits) }
+            VStack(alignment: .leading, spacing: 3) { balanceLabels(cards: cards, credits: credits) }
+        }
+    }
+
+    @ViewBuilder
+    private func noticeDetails(current: PublicResetAnnouncement?, forecastDeadline: Date?) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(
+                current.map { language.text($0.resetType == .banked ? "重置卡" : "额度重置", $0.resetType == .banked ? "Reset cards" : "Quota reset") + " · " + PublicResetAnnouncementPresentation.readableText($0.text) }
+                    ?? language.text("暂无公告", "No notices")
+            )
+            .lineLimit(2)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(minWidth: 80, alignment: .leading)
+            .layoutPriority(-1)
+            .help(current.map { $0.title(language) + " · " + PublicResetAnnouncementPresentation.compactEventTime($0.announcedAt, language: language) } ?? "")
+            if let forecastDeadline {
+                ResetCountdownText(deadline: forecastDeadline, kind: .publicForecast, language: language, compact: true)
+                    .fixedSize()
+            } else {
+                Text(language.text("暂无重置预告", "No reset forecast")).fixedSize()
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func balanceLabels(cards: ResetCreditLocalSummary, credits: ResetCreditPointSummary) -> some View {
+        let hasKnownCredits = credits.points != nil || credits.hasUnlimitedBalance
+        Label(
+            cards.availableCards.map {
+                language.text("重置卡 \($0) 张", "Reset cards \($0)")
+                    + recordedStatus(isStale: cards.isStale, hasUnknownAccounts: cards.hasUnknownAccounts)
+            } ?? language.text("重置卡 尚未核实", "Reset cards unverified"),
+            systemImage: "ticket"
+        )
+        .fixedSize()
+        .help(language.text("全部 Codex 账号的剩余重置卡；同一账号的镜像只统计一次。", "Remaining reset cards across Codex accounts; account mirrors are counted once.")
+            + recordedStatus(isStale: cards.isStale, hasUnknownAccounts: cards.hasUnknownAccounts))
+        Label(
+            hasKnownCredits
+                ? language.text("可用点数 ", "Available points ") + credits.pointText + language.text(" 点", "")
+                    + recordedStatus(isStale: credits.isStale, hasUnknownAccounts: credits.hasUnknownAccounts)
+                : language.text("可用点数 尚未核实", "Available points unverified"),
+            systemImage: "number.circle"
+        )
+        .fixedSize().monospacedDigit()
+        .help(credits.pointSummaryText(language))
+        Label(
+            hasKnownCredits
+                ? language.text("可用金额 ", "Available amount ") + credits.dollarText
+                    + recordedStatus(isStale: credits.isStale, hasUnknownAccounts: credits.hasUnknownAccounts)
+                : language.text("可用金额 尚未核实", "Available amount unverified"),
+            systemImage: "banknote"
+        )
+        .fixedSize().monospacedDigit()
+        .help(language.text("按现有换算比例显示：1 美元 = 25 点；金额为点数的换算值。", "Converted at the existing rate: $1 = 25 points; this amount is derived from points.")
+            + recordedStatus(isStale: credits.isStale, hasUnknownAccounts: credits.hasUnknownAccounts))
+    }
+
+    private func recordedStatus(isStale: Bool, hasUnknownAccounts: Bool) -> String {
+        if isStale && hasUnknownAccounts {
+            return language.text("（上次记录，部分未核实）", " (Last recorded, partial)")
+        }
+        if isStale { return language.text("（上次记录）", " (Last recorded)") }
+        if hasUnknownAccounts { return language.text("（部分未核实）", " (Partial)") }
+        return ""
+    }
+
 }
 
 /// The proposal sets column widths and both blocks share their current requested height.

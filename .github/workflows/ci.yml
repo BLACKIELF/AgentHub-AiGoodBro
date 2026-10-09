@@ -40,6 +40,9 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
       - name: Prepare companion build toolchain
         uses: actions/setup-go@v5
         with:
@@ -54,15 +57,34 @@ jobs:
         run: |
           set -euo pipefail
           test "$(uname -m)" = arm64
-          dmg="$RUNNER_TEMP/Token-Monitor-0.62.0-arm64.dmg"
-          mountpoint="$RUNNER_TEMP/token-monitor-0.62.0"
+          pin="$(python3 - <<'PY'
+          import json, re
+          manifest = json.load(open('Companion/TokenMonitorDesktop/SOURCE.json'))
+          version = manifest['upstream']['version']
+          runtime = manifest['runtime']
+          if manifest['upstream']['repository'] != 'Javis603/token-monitor' or not isinstance(version, str) or not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', version):
+              raise SystemExit('Invalid pinned Token Monitor upstream')
+          if runtime['version'] != version or runtime['architecture'] != 'arm64':
+              raise SystemExit('Pinned Token Monitor runtime does not match its upstream')
+          url = runtime['officialDMGURL']
+          if url != f'https://github.com/Javis603/token-monitor/releases/download/v{version}/Token-Monitor-{version}-arm64.dmg':
+              raise SystemExit('Unexpected official Token Monitor DMG URL')
+          expected = runtime['officialDMGSHA256']
+          if not isinstance(expected, str) or not re.fullmatch(r'[a-f0-9]{64}', expected):
+              raise SystemExit('Invalid pinned Token Monitor DMG SHA256')
+          print(version, expected, url)
+          PY
+          )"
+          read -r version expected url <<< "$pin"
+          dmg="$RUNNER_TEMP/Token-Monitor-${version}-arm64.dmg"
+          mountpoint="$RUNNER_TEMP/token-monitor-arm64"
+          receipt="$RUNNER_TEMP/token-monitor-arm64.mount-receipt"
           curl --fail --location --retry 3 --silent --show-error \
-            --output "$dmg" \
-            https://github.com/Javis603/token-monitor/releases/download/v0.62.0/Token-Monitor-0.62.0-arm64.dmg
-          expected="$(python3 -c 'import json; print(json.load(open("Companion/TokenMonitorDesktop/SOURCE.json"))["runtime"]["officialDMGSHA256"])')"
+            --output "$dmg" "$url"
           printf '%s  %s\n' "$expected" "$dmg" | shasum -a 256 --check -
           mkdir -p "$mountpoint"
           hdiutil attach -readonly -nobrowse -mountpoint "$mountpoint" "$dmg"
+          printf '%s\n' "$mountpoint" > "$receipt"
           test -d "$mountpoint/Token Monitor.app"
           printf 'TOKEN_MONITOR_DESKTOP_RUNTIME=%s/Token Monitor.app\n' "$mountpoint" >> "$GITHUB_ENV"
           printf 'TOKEN_MONITOR_DESKTOP_DMG=%s\n' "$dmg" >> "$GITHUB_ENV"
@@ -70,20 +92,22 @@ jobs:
         run: make test
       - name: Verify Token Monitor and credential integration
         run: |
+          token_node="build/AiGoodBro.app/Contents/Helpers/AiGoodBro Token Core.app/Contents/MacOS/AiGoodBro Token Core"
+          test -x "$token_node"
           python3 -m unittest tests.test_token_monitor_packaging
           AIGOODBRO_TOKEN_CORE_APP="build/AiGoodBro.app/Contents/Helpers/AiGoodBro Token Core.app" python3 scripts/test-token-monitor-desktop-package.py
           python3 scripts/test-token-monitor-desktop-lifecycle.py
           python3 scripts/test-statistics-integration.py
           python3 scripts/test-statistics-cache-identity.py
           python3 tests/token-monitor-native/run.py
-          build/AiGoodBro.app/Contents/Resources/TokenMonitorEngine/runtime/node tests/token-monitor-native/protocol-boundaries.cjs
+          ELECTRON_RUN_AS_NODE=1 "$token_node" tests/token-monitor-native/protocol-boundaries.cjs
           python3 tests/token-monitor-home/run.py
           python3 -m unittest tests.test_aihot_topics tests.test_local_cli_terminal_launcher tests.test_local_cli_accounts tests.test_runtime_setup
           python3 tests/token-monitor-engine/run.py --resource-root build/AiGoodBro.app/Contents/Resources/TokenMonitorEngine --trusted-receipt ".build-receipts/AiGoodBro/Next/token-monitor-$(uname -m).json"
-          build/AiGoodBro.app/Contents/Resources/TokenMonitorEngine/runtime/node scripts/test-upstream-dashboard-0913v1.js
+          ELECTRON_RUN_AS_NODE=1 "$token_node" scripts/test-upstream-dashboard-0913v1.js
           python3 scripts/test-upstream-dashboard-cache-0913v1.py
-          build/AiGoodBro.app/Contents/Resources/TokenMonitorEngine/runtime/node scripts/test-opencode-quota-0913v1.cjs --resource-root build/AiGoodBro.app/Contents/Resources/TokenMonitorEngine
-          build/AiGoodBro.app/Contents/Resources/TokenMonitorEngine/runtime/node scripts/test-disabled-antigravity-oauth-0913v1.cjs --resource-root build/AiGoodBro.app/Contents/Resources/TokenMonitorEngine
+          ELECTRON_RUN_AS_NODE=1 "$token_node" scripts/test-opencode-quota-0913v1.cjs --resource-root build/AiGoodBro.app/Contents/Resources/TokenMonitorEngine
+          ELECTRON_RUN_AS_NODE=1 "$token_node" scripts/test-disabled-antigravity-oauth-0913v1.cjs --resource-root build/AiGoodBro.app/Contents/Resources/TokenMonitorEngine
           bash scripts/test-opencode-native-0913v1.sh
           python3 scripts/test-credential-copy-outcomes.py
           python3 scripts/test-auth-stability.py
@@ -114,9 +138,6 @@ jobs:
           cd Companion/LocalProxy
           go test -mod=readonly -race -timeout=3m ./...
           go vet -mod=readonly ./...
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
       - name: Run dashboard DOM acceptance (real Chromium)
         run: |
           npm install --no-save --no-package-lock --no-audit --no-fund playwright@1.62.1
@@ -129,9 +150,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mountpoint="$RUNNER_TEMP/token-monitor-0.62.0"
-          if mount | grep -F " on $mountpoint (" >/dev/null; then
-            hdiutil detach "$mountpoint"
+          mountpoint="$RUNNER_TEMP/token-monitor-arm64"
+          receipt="$RUNNER_TEMP/token-monitor-arm64.mount-receipt"
+          if [[ -f "$receipt" ]] && [[ "$(cat "$receipt")" == "$mountpoint" ]]; then
+            if mount | grep -F " on $mountpoint (" >/dev/null; then
+              hdiutil detach "$mountpoint"
+            fi
+            rm -f "$receipt"
           fi
 
   windows-rust-format:

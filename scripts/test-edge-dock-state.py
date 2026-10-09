@@ -95,6 +95,8 @@ final class TokenMonitorEdgeDockController {
     private var onOpenUsageOverview: (() -> Void)?
     private var onOpenProxy: (() -> Void)?
     private var onRefresh: ((TokenMonitorEdgeDockCell) async -> Void)?
+    private var onRefreshAll: (() async -> Void)?
+    private var isRefreshingAll = false
     private var configurationGate = TokenMonitorEdgeDockChangeGate<Configuration>()
     private var cardIndex: Int?
     private var cardPinned = false

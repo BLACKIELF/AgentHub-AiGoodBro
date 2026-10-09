@@ -326,7 +326,7 @@ private func testAdditionalProviderLaunches() throws {
         switch kind {
         case .claudeCode:
             try expect(result.hasPrefix("argc=2\narg=auth\narg=login\n"), "Claude opens subscription login")
-            try expect(result.contains("claude_dir=\(directory.path)\n"), "Claude uses selected default config")
+            try expect(result.contains("claude_dir=unset\n"), "Claude default uses HOME config without redirected global config")
             try expect(result.contains("anthropic_key=unset\n"), "Claude removes inherited API key")
         case .kimi:
             try expect(result.hasPrefix("argc=1\narg=login\n"), "Kimi opens login")

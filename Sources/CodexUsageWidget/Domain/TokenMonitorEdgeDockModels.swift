@@ -76,6 +76,18 @@ struct TokenMonitorEdgeDockPreferences: Codable, Equatable {
     enum Mode: String, Codable, CaseIterable { case autoHide, always }
     enum Side: String, Codable, CaseIterable { case right, left }
     enum QuotaStyle: String, Codable, CaseIterable { case ring, fish }
+    enum Size: String, Codable, CaseIterable {
+        case small, medium, large, custom
+
+        func title(_ language: WidgetLanguage) -> String {
+            switch self {
+            case .small: return language.text("小", "Small")
+            case .medium: return language.text("标准", "Medium")
+            case .large: return language.text("大", "Large")
+            case .custom: return language.text("自定义", "Custom")
+            }
+        }
+    }
 
     static let storageKey = "AiGoodBro.edgeDock.v1"
 
@@ -88,6 +100,24 @@ struct TokenMonitorEdgeDockPreferences: Codable, Equatable {
     var hapticEnabled = true
     var warnColors = false
     var quotaStyle: QuotaStyle = .ring
+    var refreshEnabled = false
+    var runningIndicatorEnabled = true
+    var size: Size = .medium
+    var customScale = 1.0
+
+    var scale: Double {
+        switch size {
+        case .small: return 0.85
+        case .medium: return 1
+        case .large: return 1.25
+        case .custom: return Self.normalizedCustomScale(customScale)
+        }
+    }
+
+    static func normalizedCustomScale(_ value: Double) -> Double {
+        guard value.isFinite else { return 1 }
+        return (min(1.5, max(0.75, value)) * 20).rounded() / 20
+    }
 
     init(
         enabled: Bool = false,
@@ -98,7 +128,11 @@ struct TokenMonitorEdgeDockPreferences: Codable, Equatable {
         items: [TokenMonitorEdgeDockItem]? = nil,
         hapticEnabled: Bool = true,
         warnColors: Bool = false,
-        quotaStyle: QuotaStyle = .ring
+        quotaStyle: QuotaStyle = .ring,
+        refreshEnabled: Bool = false,
+        runningIndicatorEnabled: Bool = true,
+        size: Size = .medium,
+        customScale: Double = 1
     ) {
         self.enabled = enabled
         self.mode = mode
@@ -109,10 +143,15 @@ struct TokenMonitorEdgeDockPreferences: Codable, Equatable {
         self.hapticEnabled = hapticEnabled
         self.warnColors = warnColors
         self.quotaStyle = quotaStyle
+        self.refreshEnabled = refreshEnabled
+        self.runningIndicatorEnabled = runningIndicatorEnabled
+        self.size = size
+        self.customScale = customScale
     }
 
     private enum CodingKeys: String, CodingKey {
         case enabled, mode, side, offset, displayID, items, hapticEnabled, warnColors, quotaStyle
+        case refreshEnabled, runningIndicatorEnabled, size, customScale
     }
 
     init(from decoder: Decoder) throws {
@@ -126,6 +165,10 @@ struct TokenMonitorEdgeDockPreferences: Codable, Equatable {
         hapticEnabled = (try? values.decode(Bool.self, forKey: .hapticEnabled)) ?? true
         warnColors = (try? values.decode(Bool.self, forKey: .warnColors)) ?? false
         quotaStyle = (try? values.decode(QuotaStyle.self, forKey: .quotaStyle)) ?? .ring
+        refreshEnabled = (try? values.decode(Bool.self, forKey: .refreshEnabled)) ?? false
+        runningIndicatorEnabled = (try? values.decode(Bool.self, forKey: .runningIndicatorEnabled)) ?? true
+        size = (try? values.decode(Size.self, forKey: .size)) ?? .medium
+        customScale = (try? values.decode(Double.self, forKey: .customScale)) ?? 1
         self = normalized()
     }
 
@@ -134,6 +177,7 @@ struct TokenMonitorEdgeDockPreferences: Codable, Equatable {
         result.offset = offset.isFinite ? min(1, max(0, offset)) : 0.3
         result.displayID = TokenMonitorEdgeDockScreenTarget.normalizedID(displayID)
         result.items = items.map(TokenMonitorEdgeDockItem.normalizedList)
+        result.customScale = Self.normalizedCustomScale(customScale)
         return result
     }
 
@@ -154,12 +198,19 @@ struct TokenMonitorEdgeDockPreferences: Codable, Equatable {
             var edgeDockItems: [TokenMonitorEdgeDockItem]?
             var edgeDockHaptic: Bool?
             var edgeDockWarnColors: Bool?
+            var edgeDockRefreshEnabled: Bool?
+            var edgeDockRunningIndicatorEnabled: Bool?
+            var edgeDockSize: Size?
+            var edgeDockCustomScale: Double?
         }
         guard let old = try? JSONDecoder().decode(Embedded.self, from: data), let enabled = old.edgeDockEnabled else { return nil }
         return Self(
             enabled: enabled, mode: old.edgeDockMode ?? .autoHide, side: old.edgeDockSide ?? .right,
             offset: old.edgeDockOffset ?? 0.3, displayID: old.edgeDockDisplayId, items: old.edgeDockItems,
-            hapticEnabled: old.edgeDockHaptic ?? true, warnColors: old.edgeDockWarnColors ?? false
+            hapticEnabled: old.edgeDockHaptic ?? true, warnColors: old.edgeDockWarnColors ?? false,
+            refreshEnabled: old.edgeDockRefreshEnabled ?? false,
+            runningIndicatorEnabled: old.edgeDockRunningIndicatorEnabled ?? true,
+            size: old.edgeDockSize ?? .medium, customScale: old.edgeDockCustomScale ?? 1
         ).normalized()
     }
 }
@@ -382,11 +433,41 @@ struct TokenMonitorEdgeDockRank: Equatable, Identifiable {
 }
 
 struct TokenMonitorEdgeDockRateSample: Equatable {
+    enum Mode: String { case burn, speed }
     let speed: Double
     let burn: Double
     let sampledAt: Date
     let expiresAt: Date
     let isIdle: Bool
+    var mode: Mode = .speed
+    var displayValue: String? = nil
+    var value: Double { mode == .burn ? burn : speed }
+    var unit: String { mode == .burn ? "TPM" : "tok/s" }
+
+    /// Bundled rates keep the upstream rounding and localized compact units.
+    /// The fallback serves only legacy samples from the nonbundled tracker.
+    func formattedValue(language: WidgetLanguage) -> String {
+        guard value.isFinite, value >= 0 else { return "—" }
+        if let displayValue { return displayValue }
+        if value > 0, value < 0.1 { return "<0.1" }
+        if value > 0, value < 1 {
+            let formatter = NumberFormatter()
+            formatter.locale = language.locale
+            formatter.numberStyle = .decimal
+            formatter.maximumFractionDigits = 1
+            return formatter.string(from: NSNumber(value: value)) ?? "—"
+        }
+        let rounded = value.rounded()
+        let units: [(Double, String)] = [(1_000, "K"), (1_000_000, "M"), (1_000_000_000, "B")]
+        guard var index = units.lastIndex(where: { rounded >= $0.0 }) else { return String(format: "%.0f", rounded) }
+        var display = String(format: "%.1f", rounded / units[index].0)
+        if (Double(display) ?? 0) >= 1_000, index < units.count - 1 {
+            index += 1
+            display = String(format: "%.1f", rounded / units[index].0)
+        }
+        if display.hasSuffix(".0") { display.removeLast(2) }
+        return display + units[index].1
+    }
 }
 
 /// A sanitized history row from the last collection, not a live activity feed.
@@ -440,6 +521,13 @@ struct TokenMonitorEdgeDockCell: Equatable, Identifiable {
     /// Label and reset information from the same row as the headline percentage.
     var headlineMetricName: String? = nil
     var headlineResetLabel: String? = nil
+    /// A live work count supplied by the host. Transcript history and quota
+    /// refreshes are not evidence of running work; absence keeps the arc hidden.
+    var runningWorkCount = 0
+
+    var activeWorkCount: Int {
+        kind == .proxy ? proxyRequestCount : max(0, runningWorkCount)
+    }
 
     func snapshotDescription(_ language: WidgetLanguage, now: Date = Date()) -> String {
         guard isAvailable else {
@@ -521,8 +609,8 @@ struct TokenMonitorEdgeDockPage {
     let index: Int
     let count: Int
 
-    static func make(cellCount: Int, availableHeight: Double, index: Int) -> Self {
-        let capacity = max(1, Int(max(0, availableHeight - 64) / 56))
+    static func make(cellCount: Int, availableHeight: Double, index: Int, chromeHeight: Double = 64) -> Self {
+        let capacity = max(1, Int(max(0, availableHeight - chromeHeight) / 56))
         let count = max(1, (cellCount + capacity - 1) / capacity)
         let page = max(0, min(count - 1, index))
         let start = min(cellCount, page * capacity)

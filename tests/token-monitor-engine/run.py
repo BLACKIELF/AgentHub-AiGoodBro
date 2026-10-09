@@ -28,7 +28,14 @@ if actual != entry['sha256']:
     if record.get('architecture') != arch or binding.get('pre', {}).get('sha256') != entry['sha256'] or binding.get('post', {}).get('sha256') != actual:
         parser.error('staged native scanner does not match the pinned pre/post signing receipt')
     subprocess.run(['/usr/bin/codesign', '--verify', '--strict', str(binary)], check=True, timeout=20)
-node = resource/'runtime/node'
+shared = (resource/'RUNTIME.json').is_file()
+node = resource.parents[1]/'Helpers/AiGoodBro Token Core.app/Contents/MacOS/AiGoodBro Token Core' if shared else resource/'runtime/node'
+if shared:
+    descriptor=json.loads((resource/'RUNTIME.json').read_text())
+    if descriptor.get('mode') != 'shared-electron-node' or descriptor.get('executable') != 'Contents/Helpers/AiGoodBro Token Core.app/Contents/MacOS/AiGoodBro Token Core':
+        parser.error('invalid fixed shared runtime descriptor')
+    if hashlib.sha256(node.read_bytes()).hexdigest() != descriptor.get('binarySHA256'):
+        parser.error('shared helper executable changed after staging')
 if not node.is_file() or not os.access(node, os.X_OK):
     parser.error('staged executable runtime/node is missing')
 with tempfile.TemporaryDirectory(prefix='token-monitor-engine-tests-') as temp:
@@ -45,4 +52,6 @@ with tempfile.TemporaryDirectory(prefix='token-monitor-engine-tests-') as temp:
     (temp/'qa').mkdir()
     # The preload belongs only to the test package. Production bridge ignores fixture env flags.
     tests = sorted((engine/'tests').glob('*.test.cjs'))
-    subprocess.run([str(node), '--require', str(engine/'tests/helpers/bootstrap.cjs'), '--test']+[str(t) for t in tests], cwd=temp, check=True, timeout=180)
+    env={'HOME':str(temp), 'TMPDIR':str(temp), 'PATH':'/usr/bin:/bin', 'LANG':'en_US.UTF-8'}
+    if shared: env['ELECTRON_RUN_AS_NODE']='1'
+    subprocess.run([str(node), '--require', str(engine/'tests/helpers/bootstrap.cjs'), '--test']+[str(t) for t in tests], cwd=temp, env=env, check=True, timeout=180)

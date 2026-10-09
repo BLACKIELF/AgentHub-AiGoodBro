@@ -23,11 +23,11 @@ class AsarPackageTests(unittest.TestCase):
         intel = PACKAGE.select_manifest(manifest, "x86_64")
         self.assertEqual(arm["runtime"]["architecture"], "arm64")
         self.assertEqual(intel["runtime"]["architecture"], "x86_64")
-        self.assertEqual(arm["runtime"]["officialNodeModulesMembers"], 1857)
-        self.assertEqual(intel["runtime"]["officialNodeModulesMembers"], 1856)
+        self.assertEqual(arm["runtime"]["officialNodeModulesMembers"], 1613)
+        self.assertEqual(intel["runtime"]["officialNodeModulesMembers"], 1612)
         for selected, asset in ((arm, "arm64"), (intel, "x64")):
             runtime = selected["runtime"]
-            self.assertEqual(runtime["officialDMGURL"], f"https://github.com/Javis603/token-monitor/releases/download/v0.62.0/Token-Monitor-0.62.0-{asset}.dmg")
+            self.assertEqual(runtime["officialDMGURL"], f"https://github.com/Javis603/token-monitor/releases/download/v0.68.0/Token-Monitor-0.68.0-{asset}.dmg")
             self.assertEqual(len(runtime["officialDMGSHA256"]), 64)
         for key in ("officialDMGSHA256", "officialAsarHeaderSHA256", "officialUnpackedTreeSHA256"):
             self.assertNotEqual(arm["runtime"][key], intel["runtime"][key])
@@ -72,7 +72,7 @@ class AsarPackageTests(unittest.TestCase):
         self.assertEqual(header, manifest["runtime"]["officialAsarHeaderSHA256"])
         self.assertEqual(PACKAGE.official_unpacked_tree_digest(runtime, tree), manifest["runtime"]["officialUnpackedTreeSHA256"])
         self.assertEqual(sum(path.startswith("node_modules/") for path, _ in PACKAGE.entries(tree)), manifest["runtime"]["officialNodeModulesMembers"])
-        self.assertEqual(json.loads(PACKAGE.asar_content(runtime, tree, start, "package.json"))["version"], "0.62.0")
+        self.assertEqual(json.loads(PACKAGE.asar_content(runtime, tree, start, "package.json"))["version"], "0.68.0")
 
     def test_official_intel_runtime_pin_when_supplied(self):
         app = Path(os.environ.get("TOKEN_MONITOR_DESKTOP_RUNTIME_X86_64", "/nonexistent"))
@@ -96,8 +96,18 @@ class AsarPackageTests(unittest.TestCase):
             stage = Path(temporary) / "stage"
             result = PACKAGE.prepare_stage(stage, manifest)
             self.assertIn("src/electron/main.js", result["transformChanged"])
-            for backport in ("exporter", "usage", "sessionDetail", "sessionDetailResolver", "watcherHost", "watcherWorker"):
-                self.assertIn(f"src/shared/{backport}.js", result["transformChanged"])
+            for backport in ("exporter", "usage", "sessionDetailResolver", "watcherHost", "watcherWorker"):
+                relative = f"src/shared/{backport}.js"
+                self.assertNotIn(relative, result["transformChanged"])
+                self.assertEqual((stage / relative).read_bytes(), (PACKAGE.VENDOR / "upstream" / relative).read_bytes())
+            relative = "src/shared/sessionDetail.js"
+            original = (PACKAGE.VENDOR / "upstream" / relative).read_text()
+            expected = original.replace("    try { obj = JSON.parse(trimmed); } catch (_) { continue; }",
+                                        "    try { obj = JSON.parse(trimmed); } catch (_) { continue; }\n    if (!obj || typeof obj !== 'object') continue;")
+            self.assertIn(relative, result["transformChanged"])
+            self.assertEqual((stage / relative).read_text(), expected)
+            relative = "scripts/vendor/tokscale.json"
+            self.assertEqual((stage / relative).read_bytes(), (PACKAGE.VENDOR / "upstream" / relative).read_bytes())
             self.assertEqual(json.loads((stage / "package.json").read_text())["main"], "aigoodbro/bootstrap.cjs")
             self.assertEqual((stage / "assets/icon.png").read_bytes(), (PACKAGE.ROOT / "Resources/AiGoodBro-icon.png").read_bytes())
             self.assertEqual((stage / "assets/tray-curve.png").read_bytes(), (PACKAGE.ROOT / manifest["helper"]["trayIcon"]).read_bytes())
@@ -120,7 +130,7 @@ class AsarPackageTests(unittest.TestCase):
             self.assertIn("['openWorkbench', 'openAccounts', 'openSettings', 'openEdgeDockSettings', 'checkForUpdates'].includes(action)", main_js)
             self.assertNotIn("Javis603/token-monitor", main_js)
             self.assertNotIn("javis-ai.com", main_js)
-            self.assertIn("parsed.hostname === 'claude.ai'", main_js)
+            self.assertIn("limitProviderUrlAllowed(parsed.hostname, parsed.pathname)", main_js)
             discord_rpc = (stage / "src/electron/discordRpc.js").read_text()
             self.assertIn("https://github.com/BLACKIELF/AgentHub-AiGoodBro", discord_rpc)
             self.assertNotIn("Javis603/token-monitor", discord_rpc)
@@ -140,6 +150,8 @@ class AsarPackageTests(unittest.TestCase):
         vendor = PACKAGE.VENDOR / "upstream"
         source_paths = [file.relative_to(vendor).as_posix() for folder in ("src", "assets") for file in (vendor / folder).rglob("*") if file.is_file()]
         source_paths += ["package.json", "LICENSE"]
+        self.assertEqual(PACKAGE.asar_content(packaged, tree, start, "scripts/vendor/tokscale.json"),
+                         (vendor / "scripts/vendor/tokscale.json").read_bytes())
         changed_from_vendor = {
             relative for relative in source_paths
             if PACKAGE.asar_content(packaged, tree, start, relative) != (vendor / relative).read_bytes()
@@ -150,19 +162,18 @@ class AsarPackageTests(unittest.TestCase):
             "src/electron/renderer/styles.css", "src/electron/renderer/app.js",
             "src/electron/renderer/trayComposer.js", "src/electron/tray.js",
             "src/electron/edgeDock/controller.js",
-            "src/shared/deviceRuntime.js", "src/shared/collector.js",
-            "src/shared/exporter.js", "src/shared/usage.js",
-            "src/shared/sessionDetail.js", "src/shared/sessionDetailResolver.js",
-            "src/shared/watcherHost.js", "src/shared/watcherWorker.js",
+            "src/shared/usage/deviceRuntime.js", "src/shared/collector.js",
+            "src/shared/sessionDetail.js",
+            "src/shared/providers/cursor/selfSync.js", "src/shared/providers/antigravity/selfSync.js",
         }
-        self.assertEqual(len(source_paths), 364)
+        self.assertEqual(len(source_paths), 457)
         self.assertEqual(changed_from_vendor, transformed | {"assets/icon.png", "package.json"})
         official_paths = [relative for relative, _ in PACKAGE.entries(original) if relative.startswith(("src/", "assets/"))]
         changed_from_official = {
             relative for relative in official_paths
             if PACKAGE.asar_content(packaged, tree, start, relative) != PACKAGE.asar_content(official, original, original_start, relative)
         }
-        self.assertEqual(len(official_paths), 358)
+        self.assertEqual(len(official_paths), 450)
         self.assertEqual(changed_from_official, transformed | {
             "assets/icon.png",
             "src/electron/providers/antigravity/oauthLogin.js",
@@ -201,7 +212,7 @@ class AsarPackageTests(unittest.TestCase):
         self.assertIn("parsed.hostname === 'aigoodbro.com'", main_js)
         self.assertNotIn("Javis603/token-monitor", main_js)
         self.assertNotIn("javis-ai.com", main_js)
-        self.assertIn("parsed.hostname === 'claude.ai'", main_js)
+        self.assertIn("limitProviderUrlAllowed(parsed.hostname, parsed.pathname)", main_js)
         self.assertIn("https://github.com/BLACKIELF/AgentHub-AiGoodBro", discord_rpc)
         self.assertNotIn("Javis603/token-monitor", discord_rpc)
         self.assertIn("window.tokenMonitor.openAiGoodBroHost(button.dataset.aigoodbroHostAction)", app_js)

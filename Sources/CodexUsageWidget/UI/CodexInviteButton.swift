@@ -236,6 +236,7 @@ final class CodexInviteController: ObservableObject {
 struct CodexInviteButton: View {
     let accountLabel: String
     var resolveAccount: (() throws -> CodexReferralAccount)?
+    var iconOnly = false
     @Environment(\.widgetLanguage) private var language
     @State private var account: CodexReferralAccount?
     @State private var reviewedAccountLabel = ""
@@ -243,16 +244,31 @@ struct CodexInviteButton: View {
     @StateObject private var controller = CodexInviteController()
 
     var body: some View {
+        Group {
+            if iconOnly {
+                inviteControl.buttonStyle(WorkspaceQuietButtonStyle())
+            } else {
+                inviteControl.buttonStyle(WorkspaceActionButtonStyle(compact: true))
+            }
+        }
+    }
+
+    private var inviteControl: some View {
         Button {
             do {
                 reviewedAccountLabel = accountLabel
                 account = try resolveAccount?()
             } catch { beginError = (error as? CodexReferralFailure ?? .unavailable).message(language) }
         } label: {
-            Label(language.text("邀请", "Invite"), systemImage: "person.badge.plus")
-                .lineLimit(1)
+            if iconOnly {
+                Image(systemName: "person.badge.plus")
+                    .font(.system(size: 11))
+                    .frame(width: 24, height: 26)
+            } else {
+                Label(language.text("邀请", "Invite"), systemImage: "person.badge.plus")
+                    .lineLimit(1)
+            }
         }
-        .buttonStyle(WorkspaceActionButtonStyle(compact: true))
         .disabled(resolveAccount == nil)
         .help(language.text("查看此账号的邀请点数并邀请好友", "View this account's referral credits and invite a friend"))
         .accessibilityLabel(language.text("邀请好友：\(accountLabel)", "Invite a friend: \(accountLabel)"))

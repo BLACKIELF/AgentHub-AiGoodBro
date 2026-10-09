@@ -75,6 +75,8 @@ function detailRenderer(source, i18n, locale) {
   const els = { breakdown: element(), sessionDetail: element(), sessionDetailHead: element() };
   const context = vm.createContext({
     els, document: { createElement: element }, sessionDetailBack() {},
+    sessionDetailBackButton: element,
+    sessionRowsApi: require(path.join(vendor, 'src/electron/renderer/sessionRows.js')),
     detailNote: text => ({ text }), t: key => i18n.translate(locale, key),
     state: { detailSort: 'newest' }, Date,
     sessionDetailApi: { exchangeRows: () => [] }
@@ -91,7 +93,7 @@ test('staged production renderer separates read failure, oversized records and m
   transformStage(root);
   const app = fs.readFileSync(path.join(root, 'src/electron/renderer/app.js'), 'utf8');
   const i18n = require(path.join(root, 'src/electron/renderer/i18n.js'));
-  for (const locale of ['en', 'zh-TW', 'zh-CN', 'ko', 'ja']) {
+  for (const locale of ['en', 'zh-TW', 'zh-CN', 'ko', 'ja', 'pt-BR']) {
     const render = detailRenderer(app, i18n, locale);
     for (const [code, key] of [['line-too-large', 'detailRecordTooLarge'], ['read-failed', 'detailReadFailed']]) {
       const message = i18n.translate(locale, key);

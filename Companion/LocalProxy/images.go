@@ -44,9 +44,9 @@ type imageExecutor struct {
 
 const codexIncompleteBootstrapMessage = "stream error: stream disconnected before completion: stream closed before response.completed"
 
-// CLIProxyAPI v8.0.2 labels a clean EOF before the first SSE frame as a
-// request-scoped 408, which prevents the manager from trying another account.
-// Match only that synchronous, pre-bootstrap sentinel; HTTP 408 responses and
+// Retain the compatibility guard for the SDK's synchronous pre-bootstrap
+// request-scoped 408 EOF sentinel, which prevents account failover.
+// Match only that exact sentinel; HTTP 408 responses and
 // errors after the stream starts retain their upstream behavior.
 // Keep this error without IsRequestScoped: Manager treats that interface as a
 // client request fault and stops account rotation, while this is an upstream

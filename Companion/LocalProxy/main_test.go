@@ -51,12 +51,15 @@ type fakeBridge struct {
 	acquired, released []string
 	commands           []string
 	order              []string
+	lastResortIDs      []string
+	deferredIDs        []string
 	denyRelease        bool
 	admission          func(command, profileID string) bool
 	invalidCredential  map[string]bool
 	beforeReply        func(bridgeRequest, bridgeReply) bridgeReply
 	failures           map[string]string
 	busyCode           map[string]string
+	rolledBack         map[string]string
 	corruptCommand     string
 	dropCommand        string
 	resolveFail        bool
@@ -99,6 +102,8 @@ func (b *fakeBridge) serve(c net.Conn) {
 	switch q.Command {
 	case "order":
 		reply.CreditFallback = b.creditFallback
+		reply.LastResortIDs = append([]string(nil), b.lastResortIDs...)
+		reply.DeferredIDs = append([]string(nil), b.deferredIDs...)
 		if prior, ok := b.snapshots[q.RequestID]; ok {
 			reply.Order = append([]string(nil), prior...)
 		} else {
@@ -113,7 +118,10 @@ func (b *fakeBridge) serve(c net.Conn) {
 		}
 	case "acquire", "acquire_credit_primary", "acquire_credit_secondary", "acquire_desktop", "acquire_desktop_credit_primary", "acquire_desktop_credit_secondary":
 		if b.deniedKeys[q.RequestID+"\x00"+q.ProfileID] {
-			reply = bridgeReply{Error: "busy"}
+			reply = bridgeReply{Error: "acquire_abandoned", Resolution: "abandoned"}
+		} else if code := b.rolledBack[q.ProfileID]; code != "" {
+			b.deniedKeys[q.RequestID+"\x00"+q.ProfileID] = true
+			reply = bridgeReply{Error: code, Resolution: "abandoned"}
 		} else if code := b.failures[q.Command+"\x00"+q.ProfileID]; code != "" {
 			reply = bridgeReply{Error: code}
 		} else if b.admission != nil && !b.admission(q.Command, q.ProfileID) {
@@ -352,7 +360,7 @@ func TestSelectorWaitsForBusyRelease(t *testing.T) {
 	waitEmpty(t, b)
 }
 
-func TestSelectorPolicyChangeRetriesBeforeModelRequest(t *testing.T) {
+func TestSelectorPreReservationPolicyChangeRetriesBeforeModelRequest(t *testing.T) {
 	b := newFakeBridge(t)
 	b.busy["A"], b.busy["B"] = true, true
 	b.busyCode = map[string]string{"A": "policy_changed", "B": "policy_changed"}
@@ -372,6 +380,124 @@ func TestSelectorPolicyChangeRetriesBeforeModelRequest(t *testing.T) {
 	defer b.mu.Unlock()
 	if strings.Join(b.acquired, ",") != "A" {
 		t.Fatalf("unexpected admissions: %v", b.acquired)
+	}
+}
+
+func TestSelectorConfirmedRollbackEndsOnlyCurrentProfileAttempt(t *testing.T) {
+	for _, code := range []string{"policy_changed", "busy", "credentials_busy", "acquire_abandoned"} {
+		t.Run(code, func(t *testing.T) {
+			b := newFakeBridge(t)
+			b.order = []string{"A"}
+			b.creditFallback = true
+			b.rolledBack = map[string]string{"A": code}
+			sel, scope, ctx, closeScope := selectorFixture(t, b, time.Second, 5*time.Millisecond)
+			started := time.Now()
+			_, err := sel.Pick(ctx, "", "", executor.Options{}, selectorCandidates())
+			ae, ok := err.(*auth.Error)
+			if !ok || ae.Code != "account_busy" || ae.HTTPStatus != 503 || !strings.Contains(ae.Message, "rolled back; retry request") {
+				t.Fatalf("confirmed rollback error = %T %v", err, err)
+			}
+			if scope.responseHeader.Get("Retry-After") != "1" || time.Since(started) >= 500*time.Millisecond {
+				t.Fatalf("rollback did not promptly advertise HTTP retry: %v, %v", scope.responseHeader, time.Since(started))
+			}
+			if bridgeCommandCount(b, "acquire") != 1 || bridgeCommandCount(b, "acquire_credit_primary") != 0 || b.count() != 0 || scope.hasAdmissionUncertainty() {
+				t.Fatal("rolled-back profile was retried, admitted, or incorrectly made uncertain")
+			}
+			b.mu.Lock()
+			denied := b.deniedKeys[scope.id+"\x00A"]
+			delete(b.rolledBack, "A")
+			b.mu.Unlock()
+			if !denied {
+				t.Fatal("rollback deny marker lost")
+			}
+			closeScope()
+			next, nextScope, nextCtx, nextClose := selectorFixture(t, b, time.Second, 5*time.Millisecond)
+			nextScope.id = "request-selector-next"
+			got, err := next.Pick(nextCtx, "", "", executor.Options{}, selectorCandidates())
+			if err != nil || got == nil || got.ID != "A" {
+				t.Fatalf("fresh HTTP request cannot recover: %v, %v", got, err)
+			}
+			nextClose()
+		})
+	}
+}
+
+func TestSelectorRollbackContinuesToAnotherAvailableAccount(t *testing.T) {
+	for _, transient := range []bool{false, true} {
+		t.Run(fmt.Sprintf("other-pre-reservation-busy=%t", transient), func(t *testing.T) {
+			b := newFakeBridge(t)
+			b.rolledBack = map[string]string{"A": "policy_changed"}
+			b.busy["B"] = transient
+			attempts := map[string]int{}
+			b.beforeReply = func(q bridgeRequest, reply bridgeReply) bridgeReply {
+				if q.Command == "acquire" {
+					b.mu.Lock()
+					attempts[q.ProfileID]++
+					if q.ProfileID == "B" && attempts["B"] == 1 {
+						delete(b.busy, "B")
+					}
+					b.mu.Unlock()
+				}
+				return reply
+			}
+			sel, scope, ctx, closeScope := selectorFixture(t, b, time.Second, 5*time.Millisecond)
+			got, err := sel.Pick(ctx, "", "", executor.Options{}, selectorCandidates())
+			if err != nil || got == nil || got.ID != "B" {
+				t.Fatalf("other account cannot continue after rollback: %v, %v", got, err)
+			}
+			b.mu.Lock()
+			attemptA, attemptB := attempts["A"], attempts["B"]
+			b.mu.Unlock()
+			wantB := 1
+			if transient {
+				wantB = 2
+			}
+			if attemptA != 1 || attemptB != wantB || scope.hasAdmissionUncertainty() {
+				t.Fatalf("wrong attempts/uncertainty after rollback: A=%d B=%d", attemptA, attemptB)
+			}
+			closeScope()
+		})
+	}
+}
+
+func TestHTTPConfirmedRollbackReturns503RetryThenFreshRequestRecovers(t *testing.T) {
+	b := newFakeBridge(t)
+	b.order = []string{"A"}
+	b.rolledBack = map[string]string{"A": "policy_changed"}
+	s := newStartup(t, b)
+	upstreamCalls := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b.mu.Lock()
+		upstreamCalls++
+		b.mu.Unlock()
+		complete(w, "A")
+	}))
+	defer upstream.Close()
+	rt, server, _ := startTestRuntime(t, s, upstream.URL)
+	rt.selector.waitFor = time.Second
+	started := time.Now()
+	response := request(t, s, server.URL, false)
+	body := consume(t, response)
+	if response.StatusCode != 503 || response.Header.Get("Retry-After") != "1" || !strings.Contains(body, "rolled back; retry request") || time.Since(started) >= 500*time.Millisecond {
+		t.Fatalf("HTTP rollback response = %d %v %s", response.StatusCode, response.Header, body)
+	}
+	b.mu.Lock()
+	if upstreamCalls != 0 || len(b.deniedKeys) != 1 {
+		b.mu.Unlock()
+		t.Fatal("rolled back request reached upstream or lost tombstone")
+	}
+	delete(b.rolledBack, "A")
+	b.mu.Unlock()
+	response = request(t, s, server.URL, false)
+	body = consume(t, response)
+	if response.StatusCode != 200 || !strings.Contains(body, "done-A") || response.Header.Get("Retry-After") != "" {
+		t.Fatalf("fresh HTTP retry = %d %v %s", response.StatusCode, response.Header, body)
+	}
+	waitEmpty(t, b)
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if upstreamCalls != 1 || len(b.deniedKeys) != 1 {
+		t.Fatal("fresh retry failed to preserve previous tombstone")
 	}
 }
 
@@ -706,17 +832,72 @@ func TestSelectorAcquireReconciliationStopsOnlyTheRequest(t *testing.T) {
 	}
 }
 
+func TestControlFailureDetailAllowsOnlyProtocolCodes(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		reply bridgeReply
+		err   error
+		want  string
+	}{
+		{"timeout", bridgeReply{}, errors.New("bridge_timeout"), "timeout"},
+		{"eof", bridgeReply{}, errors.New("bridge_eof"), "eof"},
+		{"decode", bridgeReply{}, errors.New("bridge_decode"), "decode"},
+		{"invalid", bridgeReply{}, errors.New("bridge_invalid"), "decode"},
+		{"unavailable", bridgeReply{}, errors.New("bridge_unavailable"), "unavailable"},
+		{"private error", bridgeReply{}, errors.New("fixture-private-transport-text"), "unavailable"},
+		{"private error with known prefix", bridgeReply{}, errors.New("bridge_timeout: fixture-private-text"), "unavailable"},
+		{"control busy", bridgeReply{Error: "control_busy"}, nil, "control_busy"},
+		{"identity", bridgeReply{Error: "identity"}, nil, "identity"},
+		{"host unavailable", bridgeReply{Error: "unavailable"}, nil, "unavailable"},
+		{"admission unknown", bridgeReply{Error: "admission_unknown"}, nil, "admission_unknown"},
+		{"empty rejection", bridgeReply{}, nil, "rejected"},
+		{"private reply", bridgeReply{Error: "fixture-private-host-text"}, nil, "rejected"},
+		{"private reply with known prefix", bridgeReply{Error: "identity: fixture-private-text"}, nil, "rejected"},
+		{"private payload", bridgeReply{OK: true, Resolution: "fixture-private-resolution", LeaseID: "fixture-private-lease", AccessToken: "fixture-private-token", AccountID: "fixture-private-account"}, nil, "rejected"},
+		{"transport wins", bridgeReply{Error: "identity"}, errors.New("bridge_eof"), "eof"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := controlFailureDetail(tc.reply, tc.err); got != tc.want {
+				t.Fatalf("control failure detail = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestSelectorResolveFailureRemainsUnknown(t *testing.T) {
-	for _, mode := range []string{"reply_failure", "timeout"} {
-		t.Run(mode, func(t *testing.T) {
+	for _, tc := range []struct{ mode, detail string }{
+		{"reply_failure", "admission_unknown"}, {"timeout", "timeout"},
+		{"eof", "eof"}, {"decode", "decode"}, {"control_busy", "control_busy"},
+		{"identity", "identity"}, {"unavailable", "unavailable"}, {"private_reply", "rejected"},
+	} {
+		t.Run(tc.mode, func(t *testing.T) {
 			b := newFakeBridge(t)
 			b.dropCommand = "acquire"
-			if mode == "reply_failure" {
+			acquireDetail := "eof"
+			switch tc.mode {
+			case "reply_failure":
 				b.resolveFail = true
-			} else {
+			case "eof":
+				b.corruptCommand = "acquire"
+				b.dropCommand = "acquire_resolve"
+				acquireDetail = "decode"
+			case "decode":
+				b.corruptCommand = "acquire_resolve"
+			case "timeout":
 				b.beforeReply = func(q bridgeRequest, reply bridgeReply) bridgeReply {
 					if q.Command == "acquire_resolve" {
 						time.Sleep(120 * time.Millisecond)
+					}
+					return reply
+				}
+			default:
+				b.beforeReply = func(q bridgeRequest, reply bridgeReply) bridgeReply {
+					if q.Command == "acquire_resolve" {
+						code := tc.mode
+						if code == "private_reply" {
+							code = "fixture-private-host-text"
+						}
+						return bridgeReply{Error: code}
 					}
 					return reply
 				}
@@ -727,8 +908,12 @@ func TestSelectorResolveFailureRemainsUnknown(t *testing.T) {
 			if ae, ok := err.(*auth.Error); !ok || ae.Code != "unavailable" {
 				t.Fatalf("failed resolution must fail closed: %T %v", err, err)
 			}
-			if !strings.Contains(scope.events.out.(*synchronizedBuffer).String(), "lease_acquire_unknown") {
-				t.Fatal("failed resolution suppressed unknown")
+			output := scope.events.out.(*synchronizedBuffer).String()
+			if !strings.Contains(output, `"errorCode":"lease_acquire_unknown"`) ||
+				!strings.Contains(output, `"errorDetail":"`+acquireDetail+`"`) ||
+				!strings.Contains(output, `"resolutionDetail":"`+tc.detail+`"`) ||
+				strings.Contains(output, "fixture-private-") {
+				t.Fatal("failed resolution did not preserve separate, safe reasons")
 			}
 			b.mu.Lock()
 			delete(b.owned, "A") // Deliberately unresolved fixture ownership.
@@ -1257,6 +1442,9 @@ func TestReleaseUnknownEmitsSafeError(t *testing.T) {
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
 		if strings.Contains(out.String(), "lease_release_unknown") {
+			if !strings.Contains(out.String(), `"errorDetail":"rejected"`) {
+				t.Fatal("release ambiguity omitted safe failure detail")
+			}
 			return
 		}
 		time.Sleep(time.Millisecond)
@@ -1300,5 +1488,8 @@ func TestFailedHeartbeatCancelsAndCleansUp(t *testing.T) {
 	waitEmpty(t, b)
 	if !strings.Contains(out.String(), "lease_heartbeat_failed") {
 		t.Fatal("heartbeat failure hidden")
+	}
+	if !strings.Contains(out.String(), `"errorDetail":"rejected"`) {
+		t.Fatal("heartbeat failure omitted safe failure detail")
 	}
 }
