@@ -12,6 +12,7 @@ AiGoodBro 是面向个人自用的 macOS AI 工作台。它集中查看 Codex �
 
 [主界面](#main) · [重置消息](#reset-messages) · [反代](#proxy) · [账号](#accounts) · [Claude](#claude) · [Token Monitor](#usage) · [其他 CLI](#other-cli) · [重置卡自动使用](#reset-cards) · [邀请](#referrals) · [微信](#wechat) · [飞书](#feishu) · [侧栏](#dock) · [任务占用](#tasks) · [引导与更新](#setup) · [主题](#themes) · [下载与构建](#downloads) · [源码与文档](#sources)
 
+
 <a id="main"></a>
 
 ## 01 · 主界面：一页看清工作状态
@@ -33,6 +34,7 @@ AiGoodBro 是面向个人自用的 macOS AI 工作台。它集中查看 Codex �
 - **Token 总量、成本和趋势**来自本机用量记录；成本是估算值，不是供应商账单。
 - **账号卡片**显示账号身份、5 小时／7 天窗口、重置时间、重置卡和任务占用；缺少可信返回时显示“—”或旧快照标记。
 
+
 <a id="reset-messages"></a>
 
 ## 02 · 重置消息：先看公开公告，再核对账号
@@ -41,13 +43,10 @@ AiGoodBro 是面向个人自用的 macOS AI 工作台。它集中查看 Codex �
 
 **怎么使用：** 在主页的“重置消息”分区打开消息列表；“最近 3 条”用于快速浏览，展开后可查看公告来源、时间和状态。首次建立历史基线，之后只提示新消息；历史读取失败会保留已核验内容并标出缺口。
 
-<p align="center">
-  <a href="docs/images/1009v1/home-live.png"><img src="docs/images/1009v1/home-live.png" width="1000" alt="主界面实机截图中的重置消息区：公开公告、重置卡消息、最近消息入口与账号额度区分显示。"></a>
-</p>
-
-*同一张真实首页图用于说明重置消息在主界面中的位置；它不是单独的公告详情截图，公告和额度仍按各自来源显示。*
+*主界面配图已在本页开头展示；这里保留重置消息的用途、入口和数据边界说明。*
 
 **消息和账号数据的边界：** 公开消息不会改写账号官方重置记录，不会改变参与调度、优先级或点数底线，也不会自动发送任务。若要执行重置卡，请使用下方的“重置卡自动使用”入口，并逐账号明确开启。
+
 
 <a id="proxy"></a>
 
@@ -71,6 +70,7 @@ AiGoodBro 是面向个人自用的 macOS AI 工作台。它集中查看 Codex �
 
 运行中取消参与后，尚未准入的等待和重试会跳过该账号，已经接入的流式响应继续完成。网关拒绝、超时、取消和普通转发失败分别提示；HTTP 503 保留，不自动重连。已确认退出的子进程清理租约时，忙碌锁最多短暂重试 3 次，并保护新的运行和仍活跃的子进程。历史“必须重启才恢复”的故障根因仍未完全确认，不能把本次修复写成永久稳定保证。
 
+
 <a id="accounts"></a>
 
 ## 04 · Codex 账号：额度、重置卡和任务占用
@@ -84,6 +84,7 @@ AiGoodBro 是面向个人自用的 macOS AI 工作台。它集中查看 Codex �
 </p>
 
 *这是经授权从公开 2.3.0（137）首页原图裁出的完整账号区，区域内像素和数据未修改；不是 141 新布局的实拍。窄窗口的 Codex 专用列表控件挤压问题按用户决定留到下一版，当前可用卡片模式或加宽窗口。*
+
 
 <a id="claude"></a>
 
@@ -99,6 +100,7 @@ AiGoodBro 是面向个人自用的 macOS AI 工作台。它集中查看 Codex �
 
 *登录入口的出现不等于登录或额度读取已成功；必须完成官方登录、身份核验和保存。活跃或身份未知的订阅不能解除关联，过期目标只有用户明确切换时才按 Claude-swap 流程续期。*
 
+
 <a id="usage"></a>
 
 ## 06 · Token Monitor：用量、热图、趋势和 TPM
@@ -113,7 +115,9 @@ AiGoodBro 是面向个人自用的 macOS AI 工作台。它集中查看 Codex �
 
 *裁剪图保留原始像素和拍摄时的本机数据；35+／28+ 是固定上游支持范围。顶部、浮窗底部和侧栏共用缓存的 TPM（每分钟 Token 消耗量），不为显示速率额外频繁刷新。*
 
+
 <a id="reset-cards"></a>
+
 
 <a id="other-cli"></a>
 
@@ -141,6 +145,7 @@ AiGoodBro 是面向个人自用的 macOS AI 工作台。它集中查看 Codex �
 
 *图中 25 分钟是拍摄时的自定义值，产品默认仍为 30 分钟。使用前必须逐账号授权，并保持应用运行；设置页本身不会兑换卡片。详细边界见[重置卡说明](docs/reset-credit-control.md)。*
 
+
 <a id="referrals"></a>
 
 ## 09 · 邀请好友：邀请和点数集中查看
@@ -149,11 +154,8 @@ AiGoodBro 是面向个人自用的 macOS AI 工作台。它集中查看 Codex �
 
 **怎么使用：** 点击目标账号的邀请按钮或小图标，按官方页面完成收件人填写和确认，再刷新查看状态。每次最多 5 个地址；账号或登录状态变化时应关闭并重新打开邀请窗口。奖励到账以官方条件和返回结果为准，接受邀请不等于点数已经到账。
 
-<p align="center">
-  <a href="docs/images/1009v1/home-live.png"><img src="docs/images/1009v1/home-live.png" width="1000" alt="主界面实机图中的账号操作区，展示账号卡和邀请入口所在位置。"></a>
-</p>
+*主界面配图已在本页开头展示；邀请入口和官方返回状态仍按本节说明核对。*
 
-*当前没有把邀请结果伪装成成功；主界面图只用于标注入口位置，具体状态必须以邀请窗口的官方返回为准。*
 
 <a id="wechat"></a>
 
@@ -169,6 +171,7 @@ AiGoodBro 是面向个人自用的 macOS AI 工作台。它集中查看 Codex �
 
 *这张图同时包含微信和飞书设置；它用于说明入口和状态分层，不证明手机端真实送达。*
 
+
 <a id="feishu"></a>
 
 ## 11 · 飞书：可选的消息投递
@@ -177,9 +180,7 @@ AiGoodBro 是面向个人自用的 macOS AI 工作台。它集中查看 Codex �
 
 **怎么使用：** 在通知引导中粘贴机器人地址并点击“保存并连接”；已有连接需要钥匙串授权时点击“授权连接”。Webhook 保存在 macOS Keychain，不回填到界面或日志；真实测试发送必须由用户明确点击。当前引导图显示本机授权就绪，但投递仍待真实验证，不能把授权状态当成送达成功。
 
-<p align="center">
-  <a href="docs/images/1009v2/notifications-guide.jpg"><img src="docs/images/1009v2/notifications-guide.jpg" width="1000" alt="已安装 139 的飞书通知设置实拍，展示连接状态和待验证投递状态。"></a>
-</p>
+*微信与飞书共用的通知设置实拍已在“微信”一节展示；这里保留飞书的连接和投递边界说明。*
 
 <a id="dock"></a>
 
@@ -193,6 +194,7 @@ AiGoodBro 是面向个人自用的 macOS AI 工作台。它集中查看 Codex �
   <a href="docs/images/1009v2/edge-dock-settings.jpg"><img src="docs/images/1009v2/edge-dock-settings.jpg" width="820" alt="已安装 139 的侧栏设置实拍，展示显示方式、缩放、刷新和运行指示。"></a>
 </p>
 
+
 <a id="tasks"></a>
 
 ## 13 · 任务占用、调度和暖号：避免互相抢账号
@@ -201,9 +203,7 @@ AiGoodBro 是面向个人自用的 macOS AI 工作台。它集中查看 Codex �
 
 **怎么使用：** 在账号自动化或设置中开启“剩余 1% 自动暂停并换号”或“换号成功后自动继续原任务”；软件会先保存任务与轮次，核验备用账号和任务状态后再切换。暖号会在额度窗口到期后先刷新，再按条件请求，忙碌、低额度或结果不明时等待或暂停。没有可信任务状态时保持关闭，不制造成功通知。
 
-<p align="center">
-  <a href="docs/images/1009v1/home-live.png"><img src="docs/images/1009v1/home-live.png" width="1000" alt="主界面实机图中的账号、额度和任务状态区域；任务占用以账号和调度状态单独记录。"></a>
-</p>
+*主界面配图已在本页开头展示；任务占用和调度状态按本节说明单独核对。*
 
 <a id="setup"></a>
 
@@ -213,11 +213,8 @@ AiGoodBro 是面向个人自用的 macOS AI 工作台。它集中查看 Codex �
 
 **怎么使用：** 打开“使用引导”按步骤连接官方工具；Claude、Kimi、Grok、OpenCode、WorkBuddy、ZCode 和 TRAE SOLO 均按各自官方入口登录。更新弹窗展示版本和更新点，用户点击后下载，校验大小与 SHA256 后再自行覆盖安装；下载不会自动退出或替换当前 App，也不会自动开启可选功能。
 
-<p align="center">
-  <a href="docs/images/1009v2/guide.jpg"><img src="docs/images/1009v2/guide.jpg" width="1000" alt="已安装 139 的工具连接引导实拍，展示官方工具连接入口和状态。"></a>
-</p>
+*工具连接引导实拍已在“其他 CLI”一节展示；这里保留安装引导、更新提醒和覆盖安装说明。*
 
-*图中 Kimi Code 显示“已发现认证配置”，不代表额度读取成功；登录、刷新和真实调用仍按工具状态单独核验。*
 
 <a id="themes"></a>
 
@@ -230,6 +227,7 @@ AiGoodBro 是面向个人自用的 macOS AI 工作台。它集中查看 Codex �
 <p align="center">
   <a href="docs/images/1009v2/appearance-settings.jpg"><img src="docs/images/1009v2/appearance-settings.jpg" width="820" alt="已安装 139 的显示与图标设置实拍，展示明暗模式、主题、语言和玻璃浓度。"></a>
 </p>
+
 
 <a id="downloads"></a>
 
@@ -246,6 +244,7 @@ make build
 ```
 
 构建需要 macOS、Go 1.26+ 和经 SHA256 校验的 Token Monitor 0.68.0 macOS 运行时；不提供 Intel 或 Windows 安装包。
+
 
 <a id="sources"></a>
 

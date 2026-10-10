@@ -12,6 +12,7 @@ This page describes **2.4.0 (141) · 1009v2**. Compared with public 9.6.80 (130)
 
 [Main UI](#main) · [Reset messages](#reset-messages) · [Proxy](#proxy) · [Accounts](#accounts) · [Claude](#claude) · [Token Monitor](#usage) · [Other CLIs](#other-cli) · [Automatic reset-card use](#reset-cards) · [Invitations](#referrals) · [WeChat](#wechat) · [Feishu](#feishu) · [Sidebar](#dock) · [Task occupancy](#tasks) · [Setup and updates](#setup) · [Themes](#themes) · [Downloads](#downloads) · [Sources and docs](#sources)
 
+
 <a id="main"></a>
 
 ## 01 · Main UI: see the whole workspace
@@ -33,6 +34,7 @@ This page describes **2.4.0 (141) · 1009v2**. Compared with public 9.6.80 (130)
 - **Token totals, cost and trends** come from local usage records. Cost is an estimate, not a provider bill.
 - **Account cards** show identity, 5-hour / 7-day windows, reset times, reset cards and task occupancy. Unavailable data remains “—” or an explicitly marked older snapshot.
 
+
 <a id="reset-messages"></a>
 
 ## 02 · Reset messages: read the announcement, then verify the account
@@ -41,13 +43,10 @@ This page describes **2.4.0 (141) · 1009v2**. Compared with public 9.6.80 (130)
 
 **How to use it:** Open Reset messages on the home page. “Recent 3” is a quick view; expand a message to see its source, time and state. The first read establishes a history baseline; later reads notify only new messages. A failed history read keeps verified content and marks the missing range.
 
-<p align="center">
-  <a href="docs/images/1009v1/home-live.png"><img src="docs/images/1009v1/home-live.png" width="1000" alt="Live home UI showing the Reset messages section, reset-card notices, recent-message entry and separate account data."></a>
-</p>
-
-*The same real home capture is used to point out where Reset messages live. It is not a standalone announcement-detail capture; announcements and quotas still retain their separate sources.*
+*The home capture appears once at the top of this page; this section keeps the reset-message purpose, entry point and data-boundary explanation.*
 
 Public messages do not rewrite official account records, change participation or priority, change credit floors or send a task. To use an expiring card, use the Automatic reset-card use section below and opt in per account.
+
 
 <a id="proxy"></a>
 
@@ -71,6 +70,7 @@ Participation, Priority, Use last and order affect new requests and stay synchro
 
 Disabling participation skips that account for admissions still waiting or retrying, while an admitted stream finishes. Gateway refusal, timeout, cancellation and ordinary forwarding failures have distinct messages; HTTP 503 remains and there is no automatic reconnect. Cleanup for a confirmed exited child briefly retries a busy lease lock up to three times while protecting a new run and active children. The historical fault that recovered only after a restart is not fully attributed, so this is not a permanent-stability guarantee.
 
+
 <a id="accounts"></a>
 
 ## 04 · Codex accounts: quotas, reset cards and task occupancy
@@ -84,6 +84,7 @@ Disabling participation skips that account for admissions still waiting or retry
 </p>
 
 *This is an authorized crop of the complete public 2.3.0 (137) home capture. Pixels and values in the region were not changed; it is not a build 141 capture. Narrow dedicated Codex list controls remain a next-version fix; use Cards or widen the window for now.*
+
 
 <a id="claude"></a>
 
@@ -99,6 +100,7 @@ Disabling participation skips that account for admissions still waiting or retry
 
 *Seeing the entry does not prove sign-in or quota success; official sign-in, identity verification and saving must complete. Active or unknown-identity subscriptions cannot be unlinked. An expired target is refreshed through the Claude-swap flow only after the user explicitly chooses it.*
 
+
 <a id="usage"></a>
 
 ## 06 · Token Monitor: usage, heatmaps, trends and TPM
@@ -113,7 +115,9 @@ Disabling participation skips that account for admissions still waiting or retry
 
 *The crop preserves the original pixels and capture-time local data. Home, the floating bubble footer and sidebar share cached TPM (Tokens per minute), with no extra high-frequency polling.*
 
+
 <a id="reset-cards"></a>
+
 
 <a id="other-cli"></a>
 
@@ -141,6 +145,7 @@ Disabling participation skips that account for admissions still waiting or retry
 
 *The pictured 25 minutes is a capture-time custom value; the product default remains 30 minutes. Opt in per account and keep the app running. See the [reset-card boundary](docs/reset-credit-control.md).*
 
+
 <a id="referrals"></a>
 
 ## 09 · Invitations: send and inspect referral credits
@@ -149,11 +154,8 @@ Disabling participation skips that account for admissions still waiting or retry
 
 **How to use it:** Choose the target account's invitation button or compact icon, complete the recipient and confirmation steps in the official window, then refresh the status. Send up to five addresses at a time. If the account or session changes, close and reopen the invitation window. Rewards depend on official conditions; accepting an invitation does not prove the credit has arrived.
 
-<p align="center">
-  <a href="docs/images/1009v1/home-live.png"><img src="docs/images/1009v1/home-live.png" width="1000" alt="Live home capture showing the account-card area and invitation entry location."></a>
-</p>
+*The home capture appears once at the top of this page; use this section to check the invitation entry and the official returned status.*
 
-*The home capture only marks the entry location; it does not turn an invitation into a claimed success. The invitation window's official response is authoritative.*
 
 <a id="wechat"></a>
 
@@ -169,6 +171,7 @@ Disabling participation skips that account for admissions still waiting or retry
 
 *This real capture contains both notification flows and explains their entry and state separation; it does not prove delivery to a phone.*
 
+
 <a id="feishu"></a>
 
 ## 11 · Feishu: optional message delivery
@@ -177,9 +180,7 @@ Disabling participation skips that account for admissions still waiting or retry
 
 **How to use it:** Paste the bot address in the notification guide and choose **Save and connect**. If an existing connection needs Keychain permission, choose **Authorize connection**. The webhook is kept in macOS Keychain and is not written back to the UI or logs. A real test send requires an explicit user click; local authorization ready is not delivery proof.
 
-<p align="center">
-  <a href="docs/images/1009v2/notifications-guide.jpg"><img src="docs/images/1009v2/notifications-guide.jpg" width="1000" alt="Live build 139 Feishu notification setup showing connection and delivery-pending states."></a>
-</p>
+*The shared WeChat and Feishu notification capture appears in the WeChat section; this section keeps the Feishu connection and delivery boundaries.*
 
 <a id="dock"></a>
 
@@ -193,6 +194,7 @@ Disabling participation skips that account for admissions still waiting or retry
   <a href="docs/images/1009v2/edge-dock-settings.jpg"><img src="docs/images/1009v2/edge-dock-settings.jpg" width="820" alt="Live build 139 sidebar settings showing display mode, scaling, refresh and running indicators."></a>
 </p>
 
+
 <a id="tasks"></a>
 
 ## 13 · Task occupancy, scheduling and warm-up
@@ -201,9 +203,7 @@ Disabling participation skips that account for admissions still waiting or retry
 
 **How to use it:** In account automation or settings, enable “pause and switch at 1% remaining” or “automatically continue the original task after a successful switch” when desired. AiGoodBro saves the task and round, checks the backup account and task state, then switches. Warm-up refreshes after the quota window expires, then requests only when its evidence is valid; busy, low-quota or uncertain states wait or pause. Without trusted task evidence, it stays off and does not manufacture success notices.
 
-<p align="center">
-  <a href="docs/images/1009v1/home-live.png"><img src="docs/images/1009v1/home-live.png" width="1000" alt="Live home capture showing account, quota and task-state areas; occupancy is recorded separately from quota."></a>
-</p>
+*The home capture appears once at the top of this page; task occupancy and scheduling state are checked separately as described here.*
 
 <a id="setup"></a>
 
@@ -213,11 +213,8 @@ Disabling participation skips that account for admissions still waiting or retry
 
 **How to use it:** Open the usage guide and connect official tools as needed. Claude, Kimi, Grok, OpenCode, WorkBuddy, ZCode and TRAE SOLO use their own official entry points. The update dialog shows version and changes; after the user starts a download, size and SHA256 are checked before the installer is opened. Downloading does not quit or replace the current app or enable optional features.
 
-<p align="center">
-  <a href="docs/images/1009v2/guide.jpg"><img src="docs/images/1009v2/guide.jpg" width="1000" alt="Live build 139 tool connection guide with official tool entries and connection state."></a>
-</p>
+*The tool-connection capture appears in the Other CLI section; this section keeps the install-onboarding, update-notice and replacement-install guidance.*
 
-*The capture shows Kimi Code with authentication configuration detected; that is not proof of a successful quota read. Login, refresh and real calls are verified independently per tool.*
 
 <a id="themes"></a>
 
@@ -230,6 +227,7 @@ Disabling participation skips that account for admissions still waiting or retry
 <p align="center">
   <a href="docs/images/1009v2/appearance-settings.jpg"><img src="docs/images/1009v2/appearance-settings.jpg" width="820" alt="Live build 139 Display and icons settings with mode, palette, language and glass controls."></a>
 </p>
+
 
 <a id="downloads"></a>
 
@@ -246,6 +244,7 @@ make build
 ```
 
 Builds require macOS, Go 1.26+ and the SHA256-verified Token Monitor 0.68.0 macOS runtime. Intel and Windows installers are not provided.
+
 
 <a id="sources"></a>
 
