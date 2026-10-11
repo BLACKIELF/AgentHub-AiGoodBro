@@ -91,6 +91,14 @@ private struct PolicyEditorFixtureRoot: View {
     }
 }
 
+@MainActor
+private final class PolicyEditorFixtureHostingView: NSHostingView<PolicyEditorFixtureRoot> {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        print("TRACE hosting firstMouse superclass=\(super.acceptsFirstMouse(for: event)), accepted=true")
+        return true
+    }
+}
+
 @main
 @MainActor
 private enum LocalProxyPolicyEditorFixture {
@@ -119,10 +127,13 @@ private enum LocalProxyPolicyEditorFixture {
         app.setActivationPolicy(.prohibited)
         print("POLICY_EDITOR_STAGE finishLaunching begin")
         app.finishLaunching()
-        print("POLICY_EDITOR_STAGE finishLaunching ready")
+        print("POLICY_EDITOR_STAGE finishLaunching ready; appActive=\(app.isActive), appRunning=\(app.isRunning)")
+        // Launch without activation, then allow the fixture's offscreen window.
+        require(app.setActivationPolicy(.accessory), "Native fixture accessory policy was unavailable")
+        print("POLICY_EDITOR_STAGE accessory host ready; appActive=\(app.isActive), appRunning=\(app.isRunning)")
         let model = PolicyEditorFixtureModel()
         print("POLICY_EDITOR_STAGE NSHostingView begin")
-        let host = NSHostingView(rootView: PolicyEditorFixtureRoot(model: model))
+        let host = PolicyEditorFixtureHostingView(rootView: PolicyEditorFixtureRoot(model: model))
         host.sizingOptions = []
         print("POLICY_EDITOR_STAGE NSHostingView ready; NSWindow begin")
         let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 980, height: 330),
@@ -137,7 +148,7 @@ private enum LocalProxyPolicyEditorFixture {
         defer { window.orderOut(nil); window.contentView = nil }
         print("POLICY_EDITOR_STAGE initial run-loop pump begin")
         pump(0.4)
-        print("POLICY_EDITOR_STAGE initial run-loop pump ready")
+        print("POLICY_EDITOR_STAGE initial run-loop pump ready; appActive=\(app.isActive), appRunning=\(app.isRunning), windowKey=\(window.isKeyWindow), windowMain=\(window.isMainWindow)")
 
         func fields() -> [NSTextField] {
             nativeViews(host).compactMap { $0 as? NSTextField }.filter(\.isEditable)
@@ -162,7 +173,7 @@ private enum LocalProxyPolicyEditorFixture {
                 let hitPoint = host.superview?.convert(point, from: nil) ?? point
                 let hit = host.hitTest(hitPoint)
                 let hitName = hit.map { String(describing: type(of: $0)) } ?? "none"
-                print("TRACE checkbox \(name) geometry=\(bounds), root=\(root), native=\(point), hostFlipped=\(host.isFlipped), hit=\(hitName), inputsBefore=\(fields().count)")
+                print("TRACE checkbox \(name) geometry=\(bounds), root=\(root), native=\(point), hostFlipped=\(host.isFlipped), hit=\(hitName), inputsBefore=\(fields().count), appActive=\(app.isActive), appRunning=\(app.isRunning), windowKey=\(window.isKeyWindow), windowMain=\(window.isMainWindow)")
             }
             // AppKit may track synchronously inside mouseDown. Queue the full
             // click first so that tracking can consume mouseUp before returning.
@@ -170,6 +181,9 @@ private enum LocalProxyPolicyEditorFixture {
                 let event = NSEvent.mouseEvent(with: type, location: point, modifierFlags: [],
                     timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
                     context: nil, eventNumber: 1, clickCount: 1, pressure: 1)!
+                if checkbox && type == .leftMouseDown {
+                    print("TRACE checkbox \(name) acceptsFirstMouse=\(host.acceptsFirstMouse(for: event))")
+                }
                 app.postEvent(event, atStart: false)
             }
             while let event = app.nextEvent(matching: [.leftMouseDown, .leftMouseUp], until: Date(),
