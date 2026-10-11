@@ -154,13 +154,19 @@ private enum LocalProxyPolicyEditorFixture {
             if CommandLine.arguments.contains("--diagnose") {
                 print("TRACE click \(name) geometry=\(bounds), native=\(point), host=\(host.bounds), field=\(fields().first.map { $0.convert($0.bounds, to: nil) } as Any)")
             }
+            // AppKit may track synchronously inside mouseDown. Queue the full
+            // click first so that tracking can consume mouseUp before returning.
             for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
-                let eventName = type == .leftMouseDown ? "mouseDown" : "mouseUp"
                 let event = NSEvent.mouseEvent(with: type, location: point, modifierFlags: [],
                     timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
                     context: nil, eventNumber: 1, clickCount: 1, pressure: 1)!
+                app.postEvent(event, atStart: false)
+            }
+            while let event = app.nextEvent(matching: [.leftMouseDown, .leftMouseUp], until: Date(),
+                                            inMode: .default, dequeue: true) {
+                let eventName = event.type == .leftMouseDown ? "mouseDown" : "mouseUp"
                 print("POLICY_EDITOR_STAGE press \(name) sendEvent \(eventName) begin")
-                window.sendEvent(event)
+                app.sendEvent(event)
                 print("POLICY_EDITOR_STAGE press \(name) sendEvent \(eventName) ready")
             }
             pump()
