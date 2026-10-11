@@ -10,6 +10,10 @@ struct LocalProxyQueueView: View {
     @State private var secondaryFloorText = ""
     @State private var creditFloorDraftsInitialized = false
     @State private var confirmingStop = false
+    @State private var confirmingLegacyCooldown = false
+    @State private var legacyCooldownAccountID: String?
+    @State private var legacyCooldownAccountTitle = ""
+    @State private var preparingLegacyCooldownID: String?
     @FocusState private var focusedCreditFloor: CreditFloor?
 
     private enum CreditFloor: Hashable { case primary, secondary }
@@ -160,6 +164,28 @@ struct LocalProxyQueueView: View {
             primaryFloorText = String(model.creditPrimaryFloor)
             secondaryFloorText = String(model.creditSecondaryFloor)
             creditFloorDraftsInitialized = true
+        }
+        .alert(language.text("清理旧版冷却？", "Clear legacy cooldown?"), isPresented: $confirmingLegacyCooldown) {
+            Button(language.text("取消", "Cancel"), role: .cancel) {
+                model.cancelLegacyCooldownRecovery()
+                legacyCooldownAccountID = nil
+            }
+            Button(language.text("备份并清理", "Back up and clear")) {
+                if let id = legacyCooldownAccountID {
+                    _ = model.recoverLegacyCooldown(for: id)
+                }
+                legacyCooldownAccountID = nil
+            }
+        } message: {
+            Text(
+                language.text(
+                    "将先备份，再清理 \(legacyCooldownAccountTitle) 来源不明的旧版冷却记录。其他账号、已知限制和账号规则保持不变。完成后需重新开启反代重试，新收到的限制仍正常生效。",
+                    "Back up and clear legacy cooldown records with unknown causes for \(legacyCooldownAccountTitle). Other accounts, known restrictions and account rules stay unchanged. Restart the proxy to retry afterward; new restrictions still apply."
+                ))
+        }
+        .onDisappear {
+            model.cancelLegacyCooldownRecovery()
+            preparingLegacyCooldownID = nil
         }
     }
 
@@ -436,6 +462,40 @@ struct LocalProxyQueueView: View {
                     Text(deadline, style: .time)
                 }.font(.caption).foregroundStyle(.secondary)
             }
+            if model.legacyCooldownRecoveryIDs.contains(row.id) {
+                HStack(spacing: 8) {
+                    Button {
+                        preparingLegacyCooldownID = row.id
+                        model.prepareLegacyCooldownRecovery(for: row.id) { prepared in
+                            preparingLegacyCooldownID = nil
+                            guard prepared else { return }
+                            legacyCooldownAccountID = row.id
+                            legacyCooldownAccountTitle = accountTitle(row)
+                            confirmingLegacyCooldown = true
+                        }
+                    } label: {
+                        Label(language.text("清理旧版冷却…", "Clear legacy cooldown…"), systemImage: "arrow.counterclockwise")
+                    }
+                    .controlSize(.small)
+                    .disabled(!model.canRecoverLegacyCooldown(for: row.id))
+                    .help(language.text("停止反代后，核验此账号的最新订阅额度，确认后先备份再清理。", "Stop the proxy, verify this account’s latest subscription quota, then confirm to back up and clear."))
+                    .accessibilityIdentifier("next.local-proxy.legacy-cooldown-\(row.id)")
+                    if preparingLegacyCooldownID == row.id {
+                        ProgressView().controlSize(.small)
+                        Text(language.text("正在核验额度…", "Verifying quota…"))
+                            .font(.caption).foregroundStyle(.secondary)
+                        Button(language.text("取消", "Cancel")) {
+                            model.cancelLegacyCooldownRecovery()
+                            preparingLegacyCooldownID = nil
+                        }.controlSize(.small)
+                    }
+                    if !model.canEdit {
+                        Text(language.text("请先停止反代", "Stop the proxy first"))
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 0)
+                }
+            }
             if model.hasStaleRunningBinding(for: row.id) {
                 Text(
                     language.text(
@@ -532,10 +592,24 @@ private struct LocalProxyAccountPolicyEditor<QuotaContent: View, ResetAction: Vi
     @State private var primary = ""
     @State private var secondary = ""
     @State private var initialized = false
-    @State private var dirty = false
+    @State private var savedPolicy: LocalProxyAccountPolicy?
     @State private var expanded = false
     @State private var saveFailed = false
 
+    private struct SavedState: Equatable {
+        var policy: LocalProxyAccountPolicy
+        let defaultPrimary: Int
+        let defaultSecondary: Int
+    }
+    private var savedState: SavedState {
+        var policy = row.policy
+        if row.usesDefaultCreditFloors {
+            policy.creditPrimaryFloor = nil
+            policy.creditSecondaryFloor = nil
+        }
+        return SavedState(policy: policy, defaultPrimary: defaultPrimary, defaultSecondary: defaultSecondary)
+    }
+    private var dirty: Bool { initialized && policy != savedPolicy }
     private var policy: LocalProxyAccountPolicy? {
         guard let value = Double(limit.trimmingCharacters(in: .whitespacesAndNewlines)) else { return nil }
         let candidate = LocalProxyAccountPolicy(
@@ -557,32 +631,14 @@ private struct LocalProxyAccountPolicyEditor<QuotaContent: View, ResetAction: Vi
             }
             if expanded {
                 Divider()
-                ViewThatFits(in: .horizontal) {
-                    HStack(spacing: 10) {
-                        limitFields
-                        allowCreditsToggle
-                        Spacer(minLength: 0)
-                        saveButton
-                    }
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            limitFields
-                            Spacer(minLength: 0)
-                            saveButton
-                        }
-                        allowCreditsToggle
-                    }
+                LocalProxyPolicyFieldsLayout(trailingAction: true) {
+                    limitFields
+                    allowCreditsToggle
+                    saveButton
                 }
-                ViewThatFits(in: .horizontal) {
-                    HStack(spacing: 10) {
-                        defaultsToggle
-                        creditFloors
-                        Spacer(minLength: 0)
-                    }
-                    VStack(alignment: .leading, spacing: 6) {
-                        defaultsToggle
-                        creditFloors
-                    }
+                LocalProxyPolicyFieldsLayout {
+                    defaultsToggle
+                    creditFloors
                 }
                 if dirty && policy == nil {
                     Text(language.text("上限为 0–100%；底线须为整数，第一档高于第二档，第二档不小于 0。", "Use a limit of 0–100%. Floors must be whole points: first above second, second at least 0."))
@@ -597,18 +653,17 @@ private struct LocalProxyAccountPolicyEditor<QuotaContent: View, ResetAction: Vi
         .font(.caption).controlSize(.small)
         .onAppear {
             if !initialized {
-                resetDrafts()
+                resetDrafts(to: savedState)
                 expanded = initiallyExpanded
                 initialized = true
             }
         }
-        .onChange(of: row.policy) { _ in if !dirty { resetDrafts() } }
-        .onChange(of: row.usesDefaultCreditFloors) { _ in if !dirty { resetDrafts() } }
-        .onChange(of: limit) { _ in markDirty() }
-        .onChange(of: allowsCredits) { _ in markDirty() }
-        .onChange(of: usesDefaults) { _ in markDirty() }
-        .onChange(of: primary) { _ in markDirty() }
-        .onChange(of: secondary) { _ in markDirty() }
+        .onChange(of: savedState) { value in
+            // SwiftUI may retain a callback with the previous row. Use the delivered snapshot.
+            let preserveDraft = dirty
+            savedPolicy = value.policy
+            if !preserveDraft { resetDrafts(to: value) }
+        }
         .accessibilityElement(children: .contain)
         .accessibilityLabel(language.text("\(row.label) 的反代规则", "Proxy rules for \(row.label)"))
     }
@@ -683,7 +738,7 @@ private struct LocalProxyAccountPolicyEditor<QuotaContent: View, ResetAction: Vi
         Button(language.text("保存规则", "Save rules")) {
             guard let policy else { return }
             if save(policy) {
-                dirty = false
+                savedPolicy = policy
                 saveFailed = false
             } else {
                 saveFailed = true
@@ -718,23 +773,64 @@ private struct LocalProxyAccountPolicyEditor<QuotaContent: View, ResetAction: Vi
             .overlay { RoundedRectangle(cornerRadius: 6).strokeBorder(Color.primary.opacity(0.25), lineWidth: 1) }
             .accessibilityLabel(label)
     }
-    private func resetDrafts() {
-        let savedLimit = row.policy.fiveHourUsedLimit
+    private func resetDrafts(to value: SavedState) {
+        let savedLimit = value.policy.fiveHourUsedLimit
         limit = savedLimit.rounded() == savedLimit ? String(Int(savedLimit)) : String(savedLimit)
-        allowsCredits = row.policy.allowsCredits
-        usesDefaults = row.usesDefaultCreditFloors
-        primary = String(row.policy.creditPrimaryFloor ?? defaultPrimary)
-        secondary = String(row.policy.creditSecondaryFloor ?? defaultSecondary)
-        dirty = false
+        allowsCredits = value.policy.allowsCredits
+        usesDefaults = value.policy.creditPrimaryFloor == nil
+        primary = String(value.policy.creditPrimaryFloor ?? value.defaultPrimary)
+        secondary = String(value.policy.creditSecondaryFloor ?? value.defaultSecondary)
+        savedPolicy = value.policy
     }
-    private func markDirty() {
-        guard initialized else { return }
-        var saved = row.policy
-        if row.usesDefaultCreditFloors {
-            saved.creditPrimaryFloor = nil
-            saved.creditSecondaryFloor = nil
+}
+
+/// Keep one native control per binding while changing their positions on resize.
+private struct LocalProxyPolicyFieldsLayout: Layout {
+    var trailingAction = false
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let idealWidth =
+            subviews.map { $0.sizeThatFits(.unspecified).width }.reduce(0, +)
+            + CGFloat(max(0, subviews.count - 1)) * 10
+        let width = proposal.width.flatMap { $0.isFinite ? max(0, $0) : nil } ?? idealWidth
+        return CGSize(width: width, height: frames(width: width, subviews: subviews).map(\.maxY).max() ?? 0)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        for (view, frame) in zip(subviews, frames(width: bounds.width, subviews: subviews)) {
+            view.place(
+                at: CGPoint(x: bounds.minX + frame.minX, y: bounds.minY + frame.minY),
+                anchor: .topLeading, proposal: .init(width: frame.width, height: frame.height))
         }
-        dirty = policy != saved
+    }
+
+    private func frames(width: CGFloat, subviews: Subviews) -> [CGRect] {
+        let sizes = subviews.map { $0.sizeThatFits(.unspecified) }
+        let inlineWidth = sizes.map(\.width).reduce(0, +) + CGFloat(max(0, sizes.count - 1)) * 10
+        if inlineWidth <= width {
+            let height = sizes.map(\.height).max() ?? 0
+            var offset: CGFloat = 0
+            return sizes.enumerated().map { index, size in
+                let x = trailingAction && index == sizes.count - 1 ? width - size.width : offset
+                offset += size.width + 10
+                return CGRect(x: x, y: (height - size.height) / 2, width: size.width, height: size.height)
+            }
+        }
+        if trailingAction, sizes.count == 3, sizes[0].width + 10 + sizes[2].width <= width {
+            let height = max(sizes[0].height, sizes[2].height)
+            return [
+                CGRect(x: 0, y: (height - sizes[0].height) / 2, width: sizes[0].width, height: sizes[0].height),
+                CGRect(x: 0, y: height + 8, width: sizes[1].width, height: sizes[1].height),
+                CGRect(x: width - sizes[2].width, y: (height - sizes[2].height) / 2, width: sizes[2].width, height: sizes[2].height),
+            ]
+        }
+        var offset: CGFloat = 0
+        return sizes.enumerated().map { index, size in
+            let x = trailingAction && index == sizes.count - 1 ? max(0, width - size.width) : 0
+            let frame = CGRect(x: x, y: offset, width: size.width, height: size.height)
+            offset += size.height + 6
+            return frame
+        }
     }
 }
 

@@ -960,14 +960,19 @@ final class MessageChannelsController: ObservableObject {
                     let previouslyHadContext = self.personalWeChatHasContext
                     self.personalWeChatHasContext = context.hasFreshContext()
                     if !previouslyHadContext && self.personalWeChatHasContext {
+                        self.setPhase(.pendingVerification, for: .personalWeChat)
                         self.setPersonalStatus(WidgetLanguage.storedOrAutomatic().text("微信会话已就绪，可以发送测试消息。", "WeChat conversation is ready. You can send a test message."))
                     }
                     if update.contextChanged {
-                        self.invalidate(.personalWeChat)
+                        // Polling only refreshes context for this authenticated
+                        // binding. Rebinding/disable still invalidate delivery;
+                        // a context refresh must retain in-flight acknowledgements.
                         self.persistPersonalPollingCredential(current, epoch: epoch)
                         self.onConfigurationChanged?()
-                    } else if !self.personalWeChatHasContext {
+                    }
+                    if !self.personalWeChatHasContext {
                         self.setPhase(.needsSetup, for: .personalWeChat)
+                        if previouslyHadContext { self.setPersonalStatus(MessageChannelError.weChatContextRequired.localizedDescription) }
                     }
                     let chatEpoch = self.personalChatEpoch
                     let complete = await self.handlePersonalMessages(update.messages)

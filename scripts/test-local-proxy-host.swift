@@ -1626,6 +1626,10 @@ import Foundation
             _ = try LocalProxyCredentialReader.read(profile: profile, system: systemProfile, now: now)
             preconditionFailure("symlink credentials")
         } catch { checks += 1 }
+        try await quotaRecoveryFixtures()
+        try await controlProgressFixtures()
+        try await cooldownRefreshFixtures()
+        try await legacyCooldownRecoveryFixtures()
         print("PASS: \(checks) local proxy host synthetic checks; no live profiles, network or app launch")
     }
 }

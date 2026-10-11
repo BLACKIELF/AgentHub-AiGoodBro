@@ -1,4 +1,4 @@
-# AiGoodBro · AgentHub（2.4）
+# AiGoodBro · AgentHub（2.5）
 
 **把额度、用量、重置消息和本机任务放在一页看清；需要时，让任务使用自己的 Codex 账号池。**
 
@@ -6,9 +6,9 @@ AiGoodBro 是面向个人自用的 macOS AI 工作台。它集中查看 Codex �
 
 [中文] | [English](README.en.md)
 
-本页介绍 **2.4.0（141）· 1009v2** 的功能。相较 GitHub 公开的 9.6.80（130），本版固定 Token Monitor 0.68.0、TokScale 4.18.0 与 CLIProxyAPI 8.0.20，并保留现有 AiGoodBro 定制。下载链接是否可用，以 [GitHub Releases](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases) 的实际状态为准。
+本页介绍 **2.5.0（143）· 1011v2**。本版集中修复反代控制通道、账号冷却恢复、规则保存与微信通知，保留现有定制。Token Monitor 0.68.0、TokScale 4.18.0 与 CLIProxyAPI 8.0.20 沿用 2.4 基线。安装包和演示视频见 [GitHub Releases](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases)。
 
-[DMG（Apple Silicon）](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.4.0/AiGoodBro-2.4.0-mac-arm64.dmg) · [ZIP 备用包](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.4.0/AiGoodBro-2.4.0-mac-arm64.zip) · [发布说明](docs/release-notes-v2.4.0.md)
+[DMG（Apple Silicon）](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.5.0/AiGoodBro-2.5.0-mac-arm64.dmg) · [ZIP 备用包](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.5.0/AiGoodBro-2.5.0-mac-arm64.zip) · [发布说明](docs/release-notes-v2.5.0.md) · [观看 48 秒演示（MP4）](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.5.0/AiGoodBro-demo-1011v4.mp4)
 
 [主界面](#main) · [重置消息](#reset-messages) · [反代](#proxy) · [账号](#accounts) · [Claude](#claude) · [Token Monitor](#usage) · [其他 CLI](#other-cli) · [重置卡自动使用](#reset-cards) · [邀请](#referrals) · [微信](#wechat) · [飞书](#feishu) · [侧栏](#dock) · [任务占用](#tasks) · [引导与更新](#setup) · [主题](#themes) · [下载与构建](#downloads) · [源码与文档](#sources)
 
@@ -25,7 +25,7 @@ AiGoodBro 是面向个人自用的 macOS AI 工作台。它集中查看 Codex �
   <a href="docs/images/1009v1/home-live.png"><img src="docs/images/1009v1/home-live.png" width="1000" alt="AiGoodBro 137 主界面实机截图：顶部重置消息、中部推荐工具、Token 用量热图与趋势、底部多账号额度。"></a>
 </p>
 
-*真实界面长图，采集于已安装的 2.3.0（137）。图中数据是拍摄时的本机快照，不代表 141 已安装或真实调用验收；新增设置图采集于 2.3.0（139），141 沿用相同呈现。完整来源、尺寸和校验值见[截图记录](docs/public-ui-1009v2.md)。*
+*真实界面长图，采集于已安装的 2.3.0（137）。图中数据是拍摄时的本机快照，不代表 143 已安装或真实调用验收；新增设置图采集于 2.3.0（139），143 沿用相同呈现。完整来源、尺寸和校验值见[截图记录](docs/public-ui-1009v2.md)。*
 
 **主界面上几个数字各自代表什么：**
 
@@ -58,7 +58,7 @@ AiGoodBro 是面向个人自用的 macOS AI 工作台。它集中查看 Codex �
   <a href="docs/images/1009v1/proxy-status-edge-dock.png"><img src="docs/images/1009v1/proxy-status-edge-dock.png" width="360" alt="用户提供的反代状态与侧栏实机局部图：显示运行状态、额度圆环、重置倒计时和点数。"></a>
 </p>
 
-*这张是已公开的真实状态局部图，未显示版本号，也不是反代设置页；只用于说明状态入口和信息层级，不作为 141 安装或真实请求验收证据。*
+*这张是已公开的真实状态局部图，未显示版本号，也不是反代设置页；只用于说明状态入口和信息层级，不作为 143 安装或真实请求验收证据。*
 
 **怎么开启：**
 
@@ -66,9 +66,9 @@ AiGoodBro 是面向个人自用的 macOS AI 工作台。它集中查看 Codex �
 2. 等待连接信息就绪，退出 Codex 后使用“接入桌面”重新启动并接入本机路由。已经运行的 Codex 进程不会自动改走反代。
 3. 完成任务后在面板点击“停止反代”。关闭主窗口只会隐藏窗口；退出应用时会询问是否停止服务。
 
-**队列怎么工作：** 参与、优先、最后使用和排序只影响新请求，并与账号页同步；Pro20x 默认最后使用，可调整。订阅额度先于点数，点数接续默认关闭，用户主动开启后才会在额度耗尽时进入点数档。忙碌或未知账号不会被当成额度耗尽。
+**队列怎么工作：** 参与、优先、最后使用和排序只影响新请求，并与账号页同步；Pro20x 默认最后使用，可调整。普通组暂时忙碌时先在原有时限内等待，不立即转用最后使用账号。额度不足或未参与的账号继续跳过；身份、冷却和额度检查保持。订阅额度先于点数，点数接续默认关闭，用户主动开启后才会在额度耗尽时进入点数档。忙碌或未知账号不会被当成额度耗尽。
 
-运行中取消参与后，尚未准入的等待和重试会跳过该账号，已经接入的流式响应继续完成。网关拒绝、超时、取消和普通转发失败分别提示；HTTP 503 保留，不自动重连。已确认退出的子进程清理租约时，忙碌锁最多短暂重试 3 次，并保护新的运行和仍活跃的子进程。历史“必须重启才恢复”的故障根因仍未完全确认，不能把本次修复写成永久稳定保证。
+运行中取消参与后，尚未准入的等待和重试会跳过该账号，已经接入的流式响应继续完成。网关拒绝、超时、取消和普通转发失败分别提示；HTTP 503 保留，不自动重连。2.5 把阻塞读取移出协作线程池，并保护断线回包；有明确来源的额度冷却，仅在核验更新的订阅额度后解除。来源不明的旧冷却，可停止反代后在对应账号下选择“清理旧版冷却…”，通过最新额度和身份核验、备份确认后清理，再手动重新开启反代。自定义 5 小时已用上限按保存值执行，规则摘要与编辑框保持一致。已确认退出的子进程清理租约时，忙碌锁最多短暂重试 3 次，并保护新的运行和仍活跃的子进程。历史“必须重启才恢复”的故障根因仍未完全确认，不能把本次修复写成永久稳定保证。
 
 
 <a id="accounts"></a>
@@ -83,7 +83,7 @@ AiGoodBro 是面向个人自用的 macOS AI 工作台。它集中查看 Codex �
   <a href="docs/images/1009v2/accounts-home-137-crop.png"><img src="docs/images/1009v2/accounts-home-137-crop.png" width="1000" alt="从公开 137 首页实拍裁出的 Codex 账号区：账号卡、5 小时与 7 天额度、重置时间、点数和操作入口。"></a>
 </p>
 
-*这是经授权从公开 2.3.0（137）首页原图裁出的完整账号区，区域内像素和数据未修改；不是 141 新布局的实拍。窄窗口的 Codex 专用列表控件挤压问题按用户决定留到下一版，当前可用卡片模式或加宽窗口。*
+*这是经授权从公开 2.3.0（137）首页原图裁出的完整账号区，区域内像素和数据未修改；不是 143 新布局的实拍。窄窗口的 Codex 专用列表控件挤压问题按用户决定留到下一版，当前可用卡片模式或加宽窗口。*
 
 
 <a id="claude"></a>
@@ -233,13 +233,13 @@ AiGoodBro 是面向个人自用的 macOS AI 工作台。它集中查看 Codex �
 
 ## 16 · 下载、升级与构建
 
-本版只提供 **macOS 13+、Apple Silicon ARM64**。安装包为本地 ad-hoc 签名，未做 Apple 公证。9.6.x 旧客户端按 SemVer 会把 2.4.0 视为更低版本，需手动下载 DMG／ZIP 覆盖；2.3.0 可正常发现 2.4.0。覆盖前结束自己的任务、正常退出旧版并备份旧 App 和本机数据；重新打开后核对 2.4.0（141）／1009v2，并按引导检查微信、飞书和新设置。
+本版只提供 **macOS 13+、Apple Silicon ARM64**。安装包为本地 ad-hoc 签名，未做 Apple 公证。9.6.x 旧客户端需手动下载覆盖；2.3／2.4 可发现 2.5。已安装本地 2.5.0（142）的用户也需手动覆盖 143，因为产品版本号相同。覆盖前结束自己的任务、正常退出旧版并备份旧 App 和本机数据；重新打开后核对 2.5.0（143）／1011v2，并按引导检查微信、飞书和新设置。
 
-本地最终候选的 35 组原生自测、资源校验、完整递归签名、DMG／ZIP 文件树和 SHA256 校验记录见[2.4 发布记录](docs/release-notes-v2.4.0.md)。这些检查不等于真实账号登录、真实提供方调用、重置卡兑换、微信／飞书送达或全局快捷键实机验收；141 安装和真实反代稳定性仍应以用户现场为准。
+本地最终候选的 35 组原生自测、资源校验、完整递归签名、DMG／ZIP 文件树和 SHA256 校验记录见[2.5 发布记录](docs/release-notes-v2.5.0.md)。这些检查不等于真实账号登录、真实提供方调用、重置卡兑换、微信／飞书送达或全局快捷键实机验收；实际安装和真实反代稳定性仍应以用户现场为准。
 
 ```sh
-git clone --branch v2.4.0 https://github.com/BLACKIELF/AgentHub-AiGoodBro.git AiGoodBro-2.4
-cd AiGoodBro-2.4
+git clone --branch v2.5.0 https://github.com/BLACKIELF/AgentHub-AiGoodBro.git AiGoodBro-2.5
+cd AiGoodBro-2.5
 make build
 ```
 
@@ -265,4 +265,4 @@ make build
 
 AiGoodBro 使用 [MIT 许可证](LICENSE)。第三方许可见 [`Resources/THIRD_PARTY_NOTICES.txt`](Resources/THIRD_PARTY_NOTICES.txt)、[`Companion/LocalProxy/LICENSE.CLIProxyAPI`](Companion/LocalProxy/LICENSE.CLIProxyAPI)、[`Companion/LocalProxy/LICENSE.Hazmat`](Companion/LocalProxy/LICENSE.Hazmat) 和 [`Companion/LocalProxy/THIRD-PARTY-NOTICES.txt`](Companion/LocalProxy/THIRD-PARTY-NOTICES.txt)。
 
-文档入口：[详细使用说明](docs/usage-guide.md) · [本机 CLI 额度范围](docs/local-cli-accounts.md) · [反代实现与验证](docs/local-proxy-0928v1.md) · [2.4 发布记录](docs/release-notes-v2.4.0.md) · [截图来源与校验](docs/public-ui-1009v2.md) · [问题反馈](https://github.com/BLACKIELF/AgentHub-AiGoodBro/issues) · [安全说明](SECURITY.md)
+文档入口：[详细使用说明](docs/usage-guide.md) · [本机 CLI 额度范围](docs/local-cli-accounts.md) · [反代实现与验证](docs/local-proxy-0928v1.md) · [2.5 发布记录](docs/release-notes-v2.5.0.md) · [截图来源与校验](docs/public-ui-1009v2.md) · [问题反馈](https://github.com/BLACKIELF/AgentHub-AiGoodBro/issues) · [安全说明](SECURITY.md)

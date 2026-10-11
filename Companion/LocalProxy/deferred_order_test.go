@@ -23,6 +23,7 @@ func TestDeferredOrderHTTPGroupsAndPhases(t *testing.T) {
 		order, deferred, forced        []string
 		credits, desktop, busyOrdinary bool
 		admission                      func(string, string) bool
+		ordinaryRefusal                string
 		want                           string
 	}{
 		{name: "priority_source_order_cannot_cross_groups", order: []string{"Forced", "Manual", "Ordinary"}, deferred: []string{"Manual"}, forced: []string{"Forced"}, admission: func(command, id string) bool { return command == "acquire" }, want: "Ordinary"},
@@ -32,7 +33,10 @@ func TestDeferredOrderHTTPGroupsAndPhases(t *testing.T) {
 			return command == "acquire" && id == "Forced" || command == "acquire_desktop" && id == "Desktop"
 		}, want: "Desktop"},
 		{name: "ordinary_quota_then_manual", order: []string{"Manual", "Ordinary"}, deferred: []string{"Manual"}, admission: func(command, id string) bool { return command == "acquire" && id == "Manual" }, want: "Manual"},
-		{name: "ordinary_busy_then_manual", order: []string{"Manual", "Ordinary"}, deferred: []string{"Manual"}, busyOrdinary: true, admission: func(command, id string) bool { return command == "acquire" }, want: "Manual"},
+		{name: "ordinary_usage_limit_then_manual", order: []string{"Manual", "Ordinary"}, deferred: []string{"Manual"}, ordinaryRefusal: "usage_limit", want: "Manual"},
+		{name: "ordinary_revoked_then_manual", order: []string{"Manual", "Ordinary"}, deferred: []string{"Manual"}, ordinaryRefusal: "not_participating", want: "Manual"},
+		{name: "only_manual_participates", order: []string{"Manual"}, deferred: []string{"Manual"}, want: "Manual"},
+		{name: "ordinary_busy_waits_before_manual", order: []string{"Manual", "Ordinary"}, deferred: []string{"Manual"}, busyOrdinary: true, admission: func(command, id string) bool { return command == "acquire" }, want: "Ordinary"},
 		{name: "ordinary_secondary_credits_before_manual_primary", order: []string{"Manual", "Ordinary"}, deferred: []string{"Manual"}, credits: true, admission: func(command, id string) bool {
 			return command == "acquire_credit_secondary" && id == "Ordinary" || command == "acquire_credit_primary" && id == "Manual"
 		}, want: "Ordinary"},
@@ -53,12 +57,28 @@ func TestDeferredOrderHTTPGroupsAndPhases(t *testing.T) {
 			b.lastResortIDs = tc.forced
 			b.creditFallback = tc.credits
 			b.admission = tc.admission
+			if tc.ordinaryRefusal != "" {
+				b.failures = map[string]string{"acquire\x00Ordinary": tc.ordinaryRefusal}
+			}
 			b.busy["Ordinary"] = tc.busyOrdinary
 			var firstAdmission atomic.Value
 			var firstAdmissionOnce sync.Once
+			var recoveryOnce sync.Once
+			ordinaryRecovered := make(chan struct{})
 			b.beforeReply = func(q bridgeRequest, reply bridgeReply) bridgeReply {
 				if strings.HasPrefix(q.Command, "acquire") {
 					firstAdmissionOnce.Do(func() { firstAdmission.Store(q.ProfileID) })
+				}
+				if tc.busyOrdinary && q.ProfileID == "Ordinary" && reply.Error == "busy" {
+					recoveryOnce.Do(func() {
+						go func() {
+							time.Sleep(25 * time.Millisecond)
+							b.mu.Lock()
+							delete(b.busy, "Ordinary")
+							b.mu.Unlock()
+							close(ordinaryRecovered)
+						}()
+					})
 				}
 				return reply
 			}
@@ -79,14 +99,28 @@ func TestDeferredOrderHTTPGroupsAndPhases(t *testing.T) {
 				complete(w, id)
 			}))
 			defer upstream.Close()
-			_, server, _ := startTestRuntime(t, s, upstream.URL)
+			rt, server, _ := startTestRuntime(t, s, upstream.URL)
+			rt.selector.waitFor, rt.selector.pollEvery = time.Second, 5*time.Millisecond
 			response := request(t, s, server.URL, false)
 			body := consume(t, response)
+			if tc.busyOrdinary {
+				select {
+				case <-ordinaryRecovered:
+				case <-time.After(time.Second):
+					t.Fatal("ordinary recovery fixture did not run within its bound")
+				}
+				b.mu.Lock()
+				acquired := append([]string(nil), b.acquired...)
+				b.mu.Unlock()
+				if !reflect.DeepEqual(acquired, []string{"Ordinary"}) {
+					t.Fatalf("busy ordinary account overflowed to manual-last: %v", acquired)
+				}
+			}
 			if response.StatusCode != 200 || calls.Load() != 1 || !strings.Contains(body, "done-"+tc.want) {
 				t.Fatalf("want=%s status=%d calls=%d body=%s", tc.want, response.StatusCode, calls.Load(), body)
 			}
 			waitEmpty(t, b)
-			if (tc.name == "ordinary_quota_then_manual" || tc.name == "ordinary_busy_then_manual") && firstAdmission.Load() != "Ordinary" {
+			if (tc.name == "ordinary_quota_then_manual" || tc.name == "ordinary_busy_waits_before_manual") && firstAdmission.Load() != "Ordinary" {
 				t.Fatal("manual-last selected before ordinary admission attempt")
 			}
 		})

@@ -58,4 +58,7 @@ with tempfile.TemporaryDirectory(prefix="wechat-recovery-fixture-") as temporary
     print(output.replace(str(root), "<workspace>").replace(temporary, "<fixture>"), end="")
     if result.returncode:
         raise SystemExit(result.returncode)
-    subprocess.run([str(binary)], check=True)
+    result = subprocess.run([str(binary)], capture_output=True, text=True)
+    output = result.stdout + result.stderr
+    print(output.replace(str(root), "<workspace>").replace(temporary, "<fixture>").replace(str(pathlib.Path.home()), "<home>"), end="")
+    raise SystemExit(result.returncode)

@@ -125,6 +125,7 @@ struct LocalProxyReply: Encodable, Sendable {
     var error: String? = nil
     var retryAt: Int64? = nil
     var resolution: String? = nil
+    var quotaObservedAt: Double? = nil
     static func failure(_ reason: LocalProxyFailure) -> Self { Self(ok: false, error: reason.rawValue) }
 }
 

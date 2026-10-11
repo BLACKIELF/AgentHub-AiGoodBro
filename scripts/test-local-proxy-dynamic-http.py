@@ -23,6 +23,7 @@ NATIVE_INPUTS = [
     *["Sources/CodexUsageWidget/Services/" + name for name in [
         "DispatchParticipationSync.swift", "CodexProfileStore.swift", "CodexCredentialTransaction.swift",
         "DispatchActivityStore.swift", "LocalProxyBridge.swift", "LocalProxyNetworkSettings.swift", "LocalProxyQueueStore.swift",
+        "LocalProxyLegacyCooldownRecovery.swift",
     ]],
     "scripts/test-local-proxy-host.py", "scripts/LocalProxyDynamicHTTPFixture.swift",
     "scripts/check-build-target-idle.py", "scripts/test-local-proxy-dynamic-http.py",

@@ -74,6 +74,14 @@ struct NewFeatureSetupControls: View {
                 featureHeading(language.text("本次更新", "What's new"), symbol: "arrow.triangle.2.circlepath")
                 Text(
                     language.text(
+                        "2.5 反代与微信修复：避免控制通道阻塞，核实额度恢复后同步解除对应冷却。来源不明的旧版冷却，可停止反代后按账号备份清理。微信会话更新不再中断发送中的通知；自定义 5 小时上限保存后不再回退。普通账号暂时忙碌时先等待，不立即使用“最后使用”账号；已有规则保留。",
+                        "2.5 proxy and WeChat fixes: Prevent blocked control communication and reconcile verified quota recovery with engine cooldowns. After stopping the proxy, you can back up and clear one account’s legacy cooldowns with unknown causes. WeChat context updates no longer interrupt notifications in flight. Custom 5-hour limits retain their saved values. Temporarily busy ordinary accounts are awaited before Use last accounts. Existing rules are preserved."
+                    )
+                )
+                .font(.system(size: 12)).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                Text(
+                    language.text(
                         "Token Monitor 0.68.0 · Tokscale 4.18.0：更新用量解析和定价，修正 Claude 重复与缓存 Token 统计。",
                         "Token Monitor 0.68.0 · Tokscale 4.18.0: Updated usage parsing and pricing, with fixes for duplicate and cached Claude tokens.")
                 )

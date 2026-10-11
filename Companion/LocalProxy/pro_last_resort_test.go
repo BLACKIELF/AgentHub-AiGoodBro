@@ -23,6 +23,7 @@ func TestProLastResortHTTPAdmissionPhases(t *testing.T) {
 		order, lastResort              []string
 		credits, desktop, busyOrdinary bool
 		admission                      func(string, string) bool
+		ordinaryRefusal                string
 		want                           string
 	}{
 		{name: "priority_order_first", order: []string{"Pro", "Ordinary"}, lastResort: []string{"Pro"}, admission: func(command, id string) bool { return command == "acquire" }, want: "Ordinary"},
@@ -30,7 +31,10 @@ func TestProLastResortHTTPAdmissionPhases(t *testing.T) {
 			return command == "acquire" && id == "Pro" || command == "acquire_desktop" && id == "Desktop"
 		}, want: "Desktop"},
 		{name: "ordinary_quota_falls_back", order: []string{"Pro", "Ordinary"}, lastResort: []string{"Pro"}, admission: func(command, id string) bool { return command == "acquire" && id == "Pro" }, want: "Pro"},
-		{name: "ordinary_busy_falls_back", order: []string{"Pro", "Ordinary"}, lastResort: []string{"Pro"}, busyOrdinary: true, admission: func(command, id string) bool { return command == "acquire" }, want: "Pro"},
+		{name: "ordinary_usage_limit_falls_back", order: []string{"Pro", "Ordinary"}, lastResort: []string{"Pro"}, ordinaryRefusal: "usage_limit", want: "Pro"},
+		{name: "ordinary_revoked_falls_back", order: []string{"Pro", "Ordinary"}, lastResort: []string{"Pro"}, ordinaryRefusal: "not_participating", want: "Pro"},
+		{name: "only_pro_participates", order: []string{"Pro"}, lastResort: []string{"Pro"}, want: "Pro"},
+		{name: "ordinary_busy_waits_before_pro", order: []string{"Pro", "Ordinary"}, lastResort: []string{"Pro"}, busyOrdinary: true, admission: func(command, id string) bool { return command == "acquire" }, want: "Ordinary"},
 		{name: "pro_subscription_before_ordinary_credits", order: []string{"Pro", "Ordinary"}, lastResort: []string{"Pro"}, credits: true, admission: func(command, id string) bool {
 			return command == "acquire" && id == "Pro" || command == "acquire_credit_primary" && id == "Ordinary"
 		}, want: "Pro"},
@@ -49,12 +53,28 @@ func TestProLastResortHTTPAdmissionPhases(t *testing.T) {
 			b.lastResortIDs = tc.lastResort
 			b.creditFallback = tc.credits
 			b.admission = tc.admission
+			if tc.ordinaryRefusal != "" {
+				b.failures = map[string]string{"acquire\x00Ordinary": tc.ordinaryRefusal}
+			}
 			b.busy["Ordinary"] = tc.busyOrdinary
 			var firstAdmission atomic.Value
 			var firstAdmissionOnce sync.Once
+			var recoveryOnce sync.Once
+			ordinaryRecovered := make(chan struct{})
 			b.beforeReply = func(q bridgeRequest, reply bridgeReply) bridgeReply {
 				if strings.HasPrefix(q.Command, "acquire") {
 					firstAdmissionOnce.Do(func() { firstAdmission.Store(q.ProfileID) })
+				}
+				if tc.busyOrdinary && q.ProfileID == "Ordinary" && reply.Error == "busy" {
+					recoveryOnce.Do(func() {
+						go func() {
+							time.Sleep(25 * time.Millisecond)
+							b.mu.Lock()
+							delete(b.busy, "Ordinary")
+							b.mu.Unlock()
+							close(ordinaryRecovered)
+						}()
+					})
 				}
 				return reply
 			}
@@ -75,14 +95,28 @@ func TestProLastResortHTTPAdmissionPhases(t *testing.T) {
 				complete(w, id)
 			}))
 			defer upstream.Close()
-			_, server, _ := startTestRuntime(t, s, upstream.URL)
+			rt, server, _ := startTestRuntime(t, s, upstream.URL)
+			rt.selector.waitFor, rt.selector.pollEvery = time.Second, 5*time.Millisecond
 			response := request(t, s, server.URL, false)
 			body := consume(t, response)
+			if tc.busyOrdinary {
+				select {
+				case <-ordinaryRecovered:
+				case <-time.After(time.Second):
+					t.Fatal("ordinary recovery fixture did not run within its bound")
+				}
+				b.mu.Lock()
+				acquired := append([]string(nil), b.acquired...)
+				b.mu.Unlock()
+				if !reflect.DeepEqual(acquired, []string{"Ordinary"}) {
+					t.Fatalf("busy ordinary account overflowed to Pro: %v", acquired)
+				}
+			}
 			if response.StatusCode != 200 || !strings.Contains(body, "done-"+tc.want) || calls.Load() != 1 {
 				t.Fatalf("want=%s status=%d calls=%d body=%s", tc.want, response.StatusCode, calls.Load(), body)
 			}
 			waitEmpty(t, b)
-			if (tc.name == "ordinary_quota_falls_back" || tc.name == "ordinary_busy_falls_back") && firstAdmission.Load() != "Ordinary" {
+			if (tc.name == "ordinary_quota_falls_back" || tc.name == "ordinary_busy_waits_before_pro") && firstAdmission.Load() != "Ordinary" {
 				t.Fatal("fallback was selected before ordinary admission was attempted")
 			}
 		})

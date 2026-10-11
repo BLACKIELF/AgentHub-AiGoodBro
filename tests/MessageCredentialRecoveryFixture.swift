@@ -154,6 +154,7 @@ struct MessageCredentialRecoveryFixture {
         try await MessageTestAdmissionFixture.run()
         try await detachedPersonalWeChatAdmission()
         try await composedPublicResetAdmission()
+        if try await !contextRefreshDelivery() { exit(1) }
     }
     @MainActor static func manualChatAuthorization() async throws {
         let suite = "wechat-manual-authorization-fixture-\(UUID())"
@@ -370,6 +371,171 @@ struct MessageCredentialRecoveryFixture {
         guard case .success(.accepted) = result else { preconditionFailure("composed personal-WeChat delivery was not accepted") }
         precondition(checks == 4, "each synchronous composed admission must be checked on MainActor")
         print("PASS composed public reset: controller revision and synchronous admission checks remained on MainActor through PersonalWeChatMessageChannel.send")
+    }
+
+    /// Holds both polling and delivery responses so a context refresh lands
+    /// between an admitted send and its API acknowledgement.
+    @MainActor static func contextRefreshDelivery() async throws -> Bool {
+        final class PollingStorage: MessageChannelCredentialStoring {
+            var value: MessageChannelCredential
+            var saved: [MessageChannelCredential] = []
+            init(_ value: MessageChannelCredential) { self.value = value }
+            func load(_ kind: MessageChannelKind, completion: @escaping (Result<MessageChannelCredential?, FeishuWebhookError>) -> Void) {
+                completion(.success(value))
+            }
+            func save(_ value: MessageChannelCredential, for kind: MessageChannelKind, completion: @escaping (Result<Void, FeishuWebhookError>) -> Void) {
+                preconditionFailure("Polling must never request an interactive credential write")
+            }
+            func saveBackground(_ value: MessageChannelCredential, for kind: MessageChannelKind, completion: @escaping (Result<Void, FeishuWebhookError>) -> Void) {
+                saved.append(value)
+                completion(.success(()))
+            }
+        }
+        final class HeldTransport: MessageChannelTransport {
+            private let lock = NSLock()
+            private var pending: [(URLRequest, CheckedContinuation<(Data, HTTPURLResponse), Error>)] = []
+            func hasPending(_ path: String) -> Bool {
+                lock.lock()
+                defer { lock.unlock() }
+                return pending.contains { $0.0.url?.path == path }
+            }
+            func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+                try await withCheckedThrowingContinuation { continuation in
+                    lock.lock()
+                    pending.append((request, continuation))
+                    lock.unlock()
+                }
+            }
+            func finish(_ path: String? = nil, body: String = "{}") {
+                lock.lock()
+                let callbacks = pending.filter { path == nil || $0.0.url?.path == path }
+                pending.removeAll { path == nil || $0.0.url?.path == path }
+                lock.unlock()
+                for (request, callback) in callbacks {
+                    callback.resume(returning: (Data(body.utf8), HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!))
+                }
+            }
+        }
+        var failures: [String] = []
+        func expect(_ condition: @autoclosure () -> Bool, _ name: String) {
+            if !condition() { failures.append(name) }
+        }
+        func waitUntil(_ condition: () -> Bool) async {
+            let deadline = Date().addingTimeInterval(3)
+            while !condition(), Date() < deadline { try? await Task.sleep(nanoseconds: 1_000_000) }
+            precondition(condition(), "Synthetic polling/delivery did not reach the held response")
+        }
+        let suite = "wechat-context-refresh-fixture-\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(suite)
+        defer {
+            defaults.removePersistentDomain(forName: suite)
+            try? FileManager.default.removeItem(at: directory)
+        }
+        let initial = try credential(fresh: true)
+        let storage = PollingStorage(initial)
+        let transport = HeldTransport()
+        let controller = MessageChannelsController(
+            defaults: defaults, storage: storage, transport: { transport }, personalTransport: { transport },
+            botLedger: WeChatBotEventLedger(directory: directory))
+        defer {
+            controller.stop()
+            transport.finish()
+        }
+        func currentTask() -> Task<Void, Never> {
+            let tasks = Mirror(reflecting: controller).children.first { $0.label == "tasks" }!.value as! [MessageChannelKind: [UUID: Task<Void, Never>]]
+            return tasks[.personalWeChat]!.values.first!
+        }
+        func refresh(_ token: String, at date: Date, cursor: String) throws -> String {
+            let body: [String: Any] = [
+                "get_updates_buf": cursor,
+                "msgs": [[
+                    "message_type": 1, "from_user_id": initial.target!, "to_user_id": initial.personalBinding!.botID,
+                    "context_token": token, "create_time_ms": Int(date.timeIntervalSince1970 * 1000),
+                ]],
+            ]
+            return String(data: try JSONSerialization.data(withJSONObject: body), encoding: .utf8)!
+        }
+        controller.start()
+        controller.setEnabled(true, for: .personalWeChat)
+        controller.sendTest(.personalWeChat)
+        let verified = currentTask()
+        await waitUntil { transport.hasPending("/ilink/bot/sendmessage") && transport.hasPending("/ilink/bot/getupdates") }
+        transport.finish("/ilink/bot/sendmessage")
+        await verified.value
+        precondition(controller.personalWeChatPhase == .ready)
+
+        let revision = controller.publicResetRevision(.personalWeChat)!
+        controller.sendTest(.personalWeChat)
+        let held = currentTask()
+        await waitUntil { transport.hasPending("/ilink/bot/sendmessage") }
+        let refreshedAt = Date().addingTimeInterval(0.01)
+        transport.finish("/ilink/bot/getupdates", body: try refresh("synthetic-refreshed-context", at: refreshedAt, cursor: "refresh-held-send"))
+        await waitUntil { storage.saved.contains { $0.personalBinding?.updatesCursor == "refresh-held-send" } }
+        expect(controller.publicResetRevision(.personalWeChat) == revision, "same binding context token refresh replaced the delivery revision")
+        expect(!held.isCancelled && controller.actionInFlight, "same binding context token refresh cancelled an admitted notification")
+        expect(controller.personalWeChatPhase == .ready, "fresh context token refresh discarded prior API verification")
+        transport.finish("/ilink/bot/sendmessage")
+        await held.value
+        expect(!controller.actionInFlight && controller.personalWeChatPhase == .ready, "held notification lost its API acknowledgement after context refresh")
+
+        await waitUntil { transport.hasPending("/ilink/bot/getupdates") }
+        let event = PublicResetAnnouncement(
+            id: "123", resetType: .regular, announcedAt: Date(), text: "fixture",
+            source: .init(type: "x_post", author: "thsottiaux", url: URL(string: "https://x.com/thsottiaux/status/123")))
+        let resetRevision = controller.publicResetRevision(.personalWeChat)!
+        let reset = Task { @MainActor in
+            await controller.sendPublicReset(event, to: .personalWeChat, revision: resetRevision, shouldSend: { true })
+        }
+        await waitUntil { transport.hasPending("/ilink/bot/sendmessage") }
+        transport.finish("/ilink/bot/getupdates", body: try refresh("synthetic-refreshed-context", at: refreshedAt.addingTimeInterval(1), cursor: "refresh-held-reset"))
+        await waitUntil { storage.saved.contains { $0.personalBinding?.updatesCursor == "refresh-held-reset" } }
+        expect(controller.publicResetRevision(.personalWeChat) == resetRevision, "same binding context timestamp refresh replaced the public-reset revision")
+        transport.finish("/ilink/bot/sendmessage")
+        if case .success(.accepted) = await reset.value {} else {
+            failures.append("public reset lost its API acknowledgement after context refresh")
+        }
+
+        let cancelledRevision = controller.publicResetRevision(.personalWeChat)!
+        let cancelled = Task { @MainActor in
+            await controller.sendPublicReset(event, to: .personalWeChat, revision: cancelledRevision, shouldSend: { true })
+        }
+        await waitUntil { transport.hasPending("/ilink/bot/sendmessage") }
+        controller.setEnabled(false, for: .personalWeChat)
+        transport.finish("/ilink/bot/sendmessage")
+        expect(controller.publicResetRevision(.personalWeChat) == nil, "disabled personal channel retained public-reset admission")
+        if case .failure(.cancelled) = await cancelled.value {} else {
+            failures.append("disabled personal channel accepted a stale public-reset acknowledgement")
+        }
+        transport.finish()
+        let nearlyExpired = PersonalWeChatBinding(
+            baseURL: initial.personalBinding!.baseURL, botID: initial.personalBinding!.botID,
+            contextToken: "synthetic-nearly-expired-context", contextCheckedAt: Date().addingTimeInterval(-24 * 3600 + 0.5))
+        storage.value = try MessageChannelCredential(secret: initial.secret, target: initial.target, personalBinding: nearlyExpired).validated(for: .personalWeChat)
+        controller.setEnabled(true, for: .personalWeChat)
+        controller.sendTest(.personalWeChat)
+        let beforeExpiry = currentTask()
+        await waitUntil { transport.hasPending("/ilink/bot/sendmessage") && transport.hasPending("/ilink/bot/getupdates") }
+        transport.finish("/ilink/bot/sendmessage")
+        await beforeExpiry.value
+        precondition(controller.personalWeChatPhase == .ready)
+        let expiredRevision = controller.publicResetRevision(.personalWeChat)!
+        await waitUntil { !nearlyExpired.hasFreshContext() }
+        expect(controller.publicResetRevision(.personalWeChat) == nil, "24-hour context guard admitted a public reset")
+        transport.finish("/ilink/bot/getupdates", body: #"{"msgs":[],"get_updates_buf":"expired-cursor-only"}"#)
+        await waitUntil { !controller.personalWeChatHasContext }
+        expect(controller.personalWeChatPhase == .needsSetup, "expired context remained API-ready")
+        expect(controller.personalWeChatStatusText == MessageChannelError.weChatContextRequired.localizedDescription, "expired context did not replace the prior success status with the recovery instruction")
+        controller.sendTest(.personalWeChat)
+        expect(!transport.hasPending("/ilink/bot/sendmessage"), "expired context still sent a notification")
+        if case .failure(.cancelled) = await controller.sendPublicReset(event, to: .personalWeChat, revision: expiredRevision, shouldSend: { true }) {} else {
+            failures.append("expired context still sent a public reset")
+        }
+        failures.forEach { print("FAIL context refresh: \($0)") }
+        if failures.isEmpty {
+            print("PASS context refresh: held notification/public reset keep revision and acceptance through token/time refresh; disable/24h expiry still block delivery; expiry shows recovery instruction; only synthetic background storage used")
+        }
+        return failures.isEmpty
     }
 
     @MainActor static func keychainPolicy() async throws {

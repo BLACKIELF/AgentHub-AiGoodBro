@@ -124,6 +124,7 @@ func (rt *runtime) withResponseModel(next gin.HandlerFunc) gin.HandlerFunc {
 		c.Request.Body = io.NopCloser(bytes.NewReader(body))
 		c.Request.ContentLength = int64(len(body))
 		c.Request.Header.Del("Content-Encoding")
+		rt.reconcileQuota(c.Request.Context())
 		next(c)
 	}
 }
