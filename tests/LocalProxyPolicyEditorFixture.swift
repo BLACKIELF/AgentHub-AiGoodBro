@@ -108,20 +108,36 @@ private enum LocalProxyPolicyEditorFixture {
 
     static func main() {
         setbuf(stdout, nil)
+        print("POLICY_EDITOR_STAGE main macOS=\(ProcessInfo.processInfo.operatingSystemVersionString), mainThread=\(Thread.isMainThread)")
+        let session = CGSessionCopyCurrentDictionary() as? [String: Any]
+        let onConsole = (session?["kCGSSessionOnConsoleKey"] as? Bool).map(String.init) ?? "unknown"
+        let loginDone = (session?["kCGSessionLoginDoneKey"] as? Bool).map(String.init) ?? "unknown"
+        print("POLICY_EDITOR_STAGE session available=\(session != nil), onConsole=\(onConsole), loginDone=\(loginDone)")
+        print("POLICY_EDITOR_STAGE NSApplication.shared begin")
         let app = NSApplication.shared
+        print("POLICY_EDITOR_STAGE NSApplication.shared ready")
         app.setActivationPolicy(.prohibited)
+        print("POLICY_EDITOR_STAGE finishLaunching begin")
         app.finishLaunching()
+        print("POLICY_EDITOR_STAGE finishLaunching ready")
         let model = PolicyEditorFixtureModel()
+        print("POLICY_EDITOR_STAGE NSHostingView begin")
         let host = NSHostingView(rootView: PolicyEditorFixtureRoot(model: model))
         host.sizingOptions = []
+        print("POLICY_EDITOR_STAGE NSHostingView ready; NSWindow begin")
         let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 980, height: 330),
                               styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
+        print("POLICY_EDITOR_STAGE NSWindow ready; content attach begin")
         window.contentView = host
+        print("POLICY_EDITOR_STAGE content attached; orderBack begin")
         window.orderBack(nil)
+        print("POLICY_EDITOR_STAGE orderBack ready")
         window.setContentSize(NSSize(width: 980, height: 330))
         defer { window.orderOut(nil); window.contentView = nil }
+        print("POLICY_EDITOR_STAGE initial run-loop pump begin")
         pump(0.4)
+        print("POLICY_EDITOR_STAGE initial run-loop pump ready")
 
         func fields() -> [NSTextField] {
             nativeViews(host).compactMap { $0 as? NSTextField }.filter(\.isEditable)
@@ -130,6 +146,7 @@ private enum LocalProxyPolicyEditorFixture {
             print("TRACE \(name): inputs=\(fields().map { $0.stringValue }), saved=\(model.row.policy.fiveHourUsedLimit), dirty=\(PolicyEditorFixtureProbe.dirty), summary=\(PolicyEditorFixtureProbe.summary)")
         }
         func press(_ name: String) {
+            print("POLICY_EDITOR_STAGE press \(name)")
             guard let bounds = PolicyEditorFixtureProbe.bounds[name], let root = PolicyEditorFixtureProbe.bounds["root"] else {
                 print("FAIL Native control geometry missing: \(name)"); exit(1)
             }
@@ -138,14 +155,18 @@ private enum LocalProxyPolicyEditorFixture {
                 print("TRACE click \(name) geometry=\(bounds), native=\(point), host=\(host.bounds), field=\(fields().first.map { $0.convert($0.bounds, to: nil) } as Any)")
             }
             for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+                let eventName = type == .leftMouseDown ? "mouseDown" : "mouseUp"
                 let event = NSEvent.mouseEvent(with: type, location: point, modifierFlags: [],
                     timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
                     context: nil, eventNumber: 1, clickCount: 1, pressure: 1)!
+                print("POLICY_EDITOR_STAGE press \(name) sendEvent \(eventName) begin")
                 window.sendEvent(event)
+                print("POLICY_EDITOR_STAGE press \(name) sendEvent \(eventName) ready")
             }
             pump()
         }
         func edit(_ value: String, at index: Int = 0) {
+            print("POLICY_EDITOR_STAGE edit input \(index) to \(value)")
             require(fields().indices.contains(index), "Native TextField is missing at \(index)")
             let field = fields()[index]
             field.selectText(nil)
@@ -157,6 +178,7 @@ private enum LocalProxyPolicyEditorFixture {
             pump()
         }
         func resize(_ width: CGFloat) {
+            print("POLICY_EDITOR_STAGE resize \(width)")
             window.setContentSize(NSSize(width: width, height: 330))
             pump()
             require(abs(host.bounds.width - width) < 1, "Native viewport did not resize to \(width)")

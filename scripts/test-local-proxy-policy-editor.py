@@ -98,14 +98,26 @@ with tempfile.TemporaryDirectory(prefix="aigoodbro-policy-editor-fixture-") as t
     source = folder / "Fixture.swift"
     source.write_text(frozen)
     sdk = subprocess.check_output(["xcrun", "--sdk", "macosx", "--show-sdk-path"], text=True).strip()
+    print("POLICY_EDITOR_STAGE compiling native fixture (90s limit)", flush=True)
     subprocess.run([
         "xcrun", "swiftc", "-g", "-target", f"{platform.machine()}-apple-macos13.0", "-sdk", sdk,
         "-swift-version", "5", "-parse-as-library", "-module-cache-path", str(folder / "modules"),
         str(source), "-o", str(folder / "fixture"), "-framework", "AppKit", "-framework", "SwiftUI",
     ], check=True, timeout=90)
     env = {**os.environ, "POLICY_EDITOR_FIXTURE_ROOT": str(folder / "support")}
-    result = subprocess.run([str(folder / "fixture"), *(["--diagnose"] if args.diagnose else [])],
-                            env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=45)
+    print("POLICY_EDITOR_STAGE running native fixture (45s limit)", flush=True)
+    try:
+        result = subprocess.run([str(folder / "fixture"), *(["--diagnose"] if args.diagnose else [])],
+                                env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=45)
+    except subprocess.TimeoutExpired as failure:
+        # communicate() retains bytes on timeout even when text=True. Expose
+        # the last native stage instead of discarding it with the traceback.
+        partial = failure.stdout or b""
+        if isinstance(partial, bytes):
+            partial = partial.decode("utf-8", errors="replace")
+        print(partial, end="", flush=True)
+        print("FAIL native policy editor fixture exceeded 45s; captured output shown above", flush=True)
+        raise
     print(result.stdout, end="", flush=True)
     if args.stale_row_negative:
         assert result.returncode == 1 and "FAIL A live input reverted after saving 30.0" in result.stdout, result.stdout
