@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AiGoodBro — English promotional showcase</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#08080a;color:#f2f2f5;font-family:system-ui,sans-serif}
+main{max-width:1200px;margin:auto;padding:24px}h1{font-size:24px;margin:0 0 8px}p{color:#b8bbc4;line-height:1.5}
+a{color:#a7c6ff}nav{display:flex;flex-wrap:wrap;gap:16px;margin:16px 0}video{display:block;width:100%;aspect-ratio:4/3;background:#000;object-fit:contain;max-height:75vh}
+.chapters{display:flex;flex-wrap:wrap;gap:8px;margin-top:16px}button{background:#20232c;color:#f2f2f5;border:1px solid #393d49;border-radius:8px;padding:8px 12px;cursor:pointer}
+button:hover{background:#303647}footer{margin-top:12px;font-size:14px;color:#b8bbc4}
+</style>
+<main>
+<h1>AiGoodBro · English promotional showcase</h1>
+<p>48 seconds · 1920 × 1440 · 4:3 · 30 fps. The original video is unchanged.</p>
+<nav><a href="https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.5.0/AiGoodBro-English-1011v1.mp4">Download original MP4</a><a href="https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.5.0/AiGoodBro-Showcase-1012v1.zip">Complete ZIP</a><a href="scene-en-1011v1.html">Editable scene</a><a href="docs/INTERFACE-FORMS.md">Interface forms</a><a href="docs/REPRODUCE.md">Reproduce</a><a href="README.md">Package guide</a></nav>
+<p id="missing" hidden>The local MP4 is unavailable. Download the original video from the link above and save it as <code>exports/AiGoodBro-English-1011v1.mp4</code> beside this player, or use the complete release ZIP.</p>
+<video id="video" controls playsinline preload="metadata" poster="frames/english-0060.png" src="exports/AiGoodBro-English-1011v1.mp4"></video>
+<div class="chapters" aria-label="Video chapters">
+<button data-time="0">0:00 Opening</button><button data-time="6.4">0:06.4 Reset alerts</button><button data-time="10.4">0:10.4 Notifications</button>
+<button data-time="19.2">0:19.2 Usage stats</button><button data-time="22.4">0:22.4 Edge sidebar</button><button data-time="26.4">0:26.4 Proxy</button>
+<button data-time="31.2">0:31.2 Accounts</button><button data-time="36.8">0:36.8 Closing</button>
+</div>
+<footer>This is a scripted promotional UI demonstration. Displayed account aliases, values, messages, reset notices, and “Running” states are part of the scene. This package does not connect to a live app or messaging service.</footer>
+</main>
+<script>
+const video = document.querySelector('#video');
+video.addEventListener('error',()=>{document.querySelector('#missing').hidden=false;});
+function seek(time){video.currentTime=Math.min(48,Math.max(0,time));}
+document.querySelectorAll('[data-time]').forEach(button=>button.addEventListener('click',()=>seek(Number(button.dataset.time))));
+video.addEventListener('loadedmetadata',()=>{const match=/^#t=([\d.]+)$/.exec(location.hash);if(match&&Number.isFinite(Number(match[1])))seek(Number(match[1]));},{once:true});
+</script>
+</html>

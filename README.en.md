@@ -10,6 +10,10 @@ This page describes **2.5.0 (143) · 1011v2**. It focuses on proxy control, quot
 
 [DMG (Apple Silicon)](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.5.0/AiGoodBro-2.5.0-mac-arm64.dmg) · [ZIP](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.5.0/AiGoodBro-2.5.0-mac-arm64.zip) · [Release notes](docs/release-notes-v2.5.0.md) · [Watch the 48-second demo (MP4)](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.5.0/AiGoodBro-demo-1011v4.mp4)
 
+**English promo and interface showcase · 1012v1:** [Watch the original 48-second English video (MP4)](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.5.0/AiGoodBro-English-1011v1.mp4) · [Interface forms and editable source](docs/showcase/1012v1/README.md) · [Complete showcase package (ZIP, with the original video)](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.5.0/AiGoodBro-Showcase-1012v1.zip)
+
+The showcase covers the original video's dashboard camera tour, reset countdown, Feishu and WeChat notifications, edge quota sidebar, proxy popover and multiple-account cards, with reproducible source. Account aliases, quotas and running states in the video are scripted demonstration content.
+
 [Main UI](#main) · [Reset messages](#reset-messages) · [Proxy](#proxy) · [Accounts](#accounts) · [Claude](#claude) · [Token Monitor](#usage) · [Other CLIs](#other-cli) · [Automatic reset-card use](#reset-cards) · [Invitations](#referrals) · [WeChat](#wechat) · [Feishu](#feishu) · [Sidebar](#dock) · [Task occupancy](#tasks) · [Setup and updates](#setup) · [Themes](#themes) · [Downloads](#downloads) · [Sources and docs](#sources)
 
 

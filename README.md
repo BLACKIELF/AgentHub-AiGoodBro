@@ -10,6 +10,10 @@ AiGoodBro 是面向个人自用的 macOS AI 工作台。它集中查看 Codex �
 
 [DMG（Apple Silicon）](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.5.0/AiGoodBro-2.5.0-mac-arm64.dmg) · [ZIP 备用包](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.5.0/AiGoodBro-2.5.0-mac-arm64.zip) · [发布说明](docs/release-notes-v2.5.0.md) · [观看 48 秒演示（MP4）](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.5.0/AiGoodBro-demo-1011v4.mp4)
 
+**英文宣传片与界面展示 · 1012v1：** [观看 48 秒英文原片（MP4）](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.5.0/AiGoodBro-English-1011v1.mp4) · [界面展示形式与可编辑源码](docs/showcase/1012v1/README.md) · [完整展示资料包（ZIP，含原视频）](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.5.0/AiGoodBro-Showcase-1012v1.zip)
+
+展示页整理原片中的主界面巡游、重置倒计时、飞书／微信消息、屏幕边缘侧栏、反代浮窗和多账号卡片，并附可复现源码。片中的账号别名、额度和运行状态均为编排的演示内容。
+
 [主界面](#main) · [重置消息](#reset-messages) · [反代](#proxy) · [账号](#accounts) · [Claude](#claude) · [Token Monitor](#usage) · [其他 CLI](#other-cli) · [重置卡自动使用](#reset-cards) · [邀请](#referrals) · [微信](#wechat) · [飞书](#feishu) · [侧栏](#dock) · [任务占用](#tasks) · [引导与更新](#setup) · [主题](#themes) · [下载与构建](#downloads) · [源码与文档](#sources)
 
 
