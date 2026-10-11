@@ -8,14 +8,13 @@ AiGoodBro 是面向个人自用的 macOS AI 工作台。它集中查看 Codex �
 
 本页介绍 **2.5.0（143）· 1011v2**。本版集中修复反代控制通道、账号冷却恢复、规则保存与微信通知，保留现有定制。Token Monitor 0.68.0、TokScale 4.18.0 与 CLIProxyAPI 8.0.20 沿用 2.4 基线。安装包和演示视频见 [GitHub Releases](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases)。
 
-[DMG（Apple Silicon）](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.5.0/AiGoodBro-2.5.0-mac-arm64.dmg) · [ZIP 备用包](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.5.0/AiGoodBro-2.5.0-mac-arm64.zip) · [发布说明](docs/release-notes-v2.5.0.md) · [观看 48 秒演示（MP4）](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.5.0/AiGoodBro-demo-1011v4.mp4)
+[DMG（Apple Silicon）](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.5.0/AiGoodBro-2.5.0-mac-arm64.dmg) · [ZIP 备用包](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.5.0/AiGoodBro-2.5.0-mac-arm64.zip) · [发布说明](docs/release-notes-v2.5.0.md)
 
-**英文宣传片与界面展示 · 1012v1：** [观看 48 秒英文原片（MP4）](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.5.0/AiGoodBro-English-1011v1.mp4) · [界面展示形式与可编辑源码](docs/showcase/1012v1/README.md) · [完整展示资料包（ZIP，含原视频）](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.5.0/AiGoodBro-Showcase-1012v1.zip)
+**宣传片与界面展示 · 1012v1：** [中文原片（48 秒 MP4）](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.5.0/AiGoodBro-demo-1011v4.mp4) · [English（48 秒 MP4）](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.5.0/AiGoodBro-English-1011v1.mp4) · [英文展示源码](docs/showcase/1012v1/README.md) · [英文完整资料包（ZIP，含英文原视频）](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.5.0/AiGoodBro-Showcase-1012v1.zip)
 
-展示页整理原片中的主界面巡游、重置倒计时、飞书／微信消息、屏幕边缘侧栏、反代浮窗和多账号卡片，并附可复现源码。片中的账号别名、额度和运行状态均为编排的演示内容。
+英文展示页整理主界面巡游、重置倒计时、飞书／微信消息、屏幕边缘侧栏、反代浮窗和多账号卡片，并附可复现源码。
 
-[主界面](#main) · [重置消息](#reset-messages) · [反代](#proxy) · [账号](#accounts) · [Claude](#claude) · [Token Monitor](#usage) · [其他 CLI](#other-cli) · [重置卡自动使用](#reset-cards) · [邀请](#referrals) · [微信](#wechat) · [飞书](#feishu) · [侧栏](#dock) · [任务占用](#tasks) · [引导与更新](#setup) · [主题](#themes) · [下载与构建](#downloads) · [源码与文档](#sources)
-
+[主界面](#main) · [重置消息](#reset-messages) · [反代](#proxy) · [账号](#accounts) · [Claude](#claude) · [Token Monitor](#usage) · [其他 CLI](#other-cli) · [重置卡自动使用](#reset-cards) · [邀请](#referrals) · [微信](#wechat) · [飞书](#feishu) · [侧栏](#dock) · [任务占用](#tasks) · [引导与更新](#setup) · [主题](#themes) · [下载与构建](#downloads) · [源码与文档](#sources) · [实际软件截图](#actual-screenshots)
 
 <a id="main"></a>
 
@@ -25,11 +24,11 @@ AiGoodBro 是面向个人自用的 macOS AI 工作台。它集中查看 Codex �
 
 **怎么进入：** 启动 AiGoodBro 后进入 AgentHub 主页；点击分区标题可展开或收起，账号区可在“卡片／列表”间切换，分区宽度和部分缩放设置会保存在本机。
 
-<p align="center">
-  <a href="docs/images/1009v1/home-live.png"><img src="docs/images/1009v1/home-live.png" width="1000" alt="AiGoodBro 137 主界面实机截图：顶部重置消息、中部推荐工具、Token 用量热图与趋势、底部多账号额度。"></a>
-</p>
+**图片说明：** 前部配图取自宣传片演示界面，账号别名、额度与状态为脚本内容；[实际软件截图](#actual-screenshots)集中展示在文末。
 
-*真实界面长图，采集于已安装的 2.3.0（137）。图中数据是拍摄时的本机快照，不代表 143 已安装或真实调用验收；新增设置图采集于 2.3.0（139），143 沿用相同呈现。完整来源、尺寸和校验值见[截图记录](docs/public-ui-1009v2.md)。*
+<p align="center">
+  <a href="docs/images/1012v1-promo/zh/dashboard.png"><img src="docs/images/1012v1-promo/zh/dashboard.png" width="1000" alt="主界面总览：公告、用量热图、趋势与 Codex 账号卡片。"></a>
+</p>
 
 **主界面上几个数字各自代表什么：**
 
@@ -37,7 +36,6 @@ AiGoodBro 是面向个人自用的 macOS AI 工作台。它集中查看 Codex �
 - **可用点数（点）**是已读取账号的点数快照；**可用金额（美元）**由同一份点数按现有比例换算（1 美元 = 25 点），不是另一笔余额；未知值不写成 0。
 - **Token 总量、成本和趋势**来自本机用量记录；成本是估算值，不是供应商账单。
 - **账号卡片**显示账号身份、5 小时／7 天窗口、重置时间、重置卡和任务占用；缺少可信返回时显示“—”或旧快照标记。
-
 
 <a id="reset-messages"></a>
 
@@ -47,10 +45,11 @@ AiGoodBro 是面向个人自用的 macOS AI 工作台。它集中查看 Codex �
 
 **怎么使用：** 在主页的“重置消息”分区打开消息列表；“最近 3 条”用于快速浏览，展开后可查看公告来源、时间和状态。首次建立历史基线，之后只提示新消息；历史读取失败会保留已核验内容并标出缺口。
 
-*主界面配图已在本页开头展示；这里保留重置消息的用途、入口和数据边界说明。*
+<p align="center">
+  <a href="docs/images/1012v1-promo/zh/reset.png"><img src="docs/images/1012v1-promo/zh/reset.png" width="1000" alt="重置公告、重置卡数量与确认状态。"></a>
+</p>
 
 **消息和账号数据的边界：** 公开消息不会改写账号官方重置记录，不会改变参与调度、优先级或点数底线，也不会自动发送任务。若要执行重置卡，请使用下方的“重置卡自动使用”入口，并逐账号明确开启。
-
 
 <a id="proxy"></a>
 
@@ -59,10 +58,8 @@ AiGoodBro 是面向个人自用的 macOS AI 工作台。它集中查看 Codex �
 **它是做什么的：** 本地反代是一个可选的本机服务。兼容客户端把模型请求发到本机端点，AiGoodBro 再按照账号的参与状态、优先级、最后使用和保存顺序选择本人已经连接的账号。它适合个人账号池和本机任务，不是公共代理，也不提供账号或额度转售。
 
 <p align="center">
-  <a href="docs/images/1009v1/proxy-status-edge-dock.png"><img src="docs/images/1009v1/proxy-status-edge-dock.png" width="360" alt="用户提供的反代状态与侧栏实机局部图：显示运行状态、额度圆环、重置倒计时和点数。"></a>
+  <a href="docs/images/1012v1-promo/zh/proxy.png"><img src="docs/images/1012v1-promo/zh/proxy.png" width="1000" alt="反代状态浮窗：账号列表、额度、点数与侧栏。"></a>
 </p>
-
-*这张是已公开的真实状态局部图，未显示版本号，也不是反代设置页；只用于说明状态入口和信息层级，不作为 143 安装或真实请求验收证据。*
 
 **怎么开启：**
 
@@ -74,7 +71,6 @@ AiGoodBro 是面向个人自用的 macOS AI 工作台。它集中查看 Codex �
 
 运行中取消参与后，尚未准入的等待和重试会跳过该账号，已经接入的流式响应继续完成。网关拒绝、超时、取消和普通转发失败分别提示；HTTP 503 保留，不自动重连。2.5 把阻塞读取移出协作线程池，并保护断线回包；有明确来源的额度冷却，仅在核验更新的订阅额度后解除。来源不明的旧冷却，可停止反代后在对应账号下选择“清理旧版冷却…”，通过最新额度和身份核验、备份确认后清理，再手动重新开启反代。自定义 5 小时已用上限按保存值执行，规则摘要与编辑框保持一致。已确认退出的子进程清理租约时，忙碌锁最多短暂重试 3 次，并保护新的运行和仍活跃的子进程。历史“必须重启才恢复”的故障根因仍未完全确认，不能把本次修复写成永久稳定保证。
 
-
 <a id="accounts"></a>
 
 ## 04 · Codex 账号：额度、重置卡和任务占用
@@ -84,11 +80,10 @@ AiGoodBro 是面向个人自用的 macOS AI 工作台。它集中查看 Codex �
 **怎么使用：** 点击账号区的“卡片／列表”切换；点击刷新读取最新快照；点击账号卡中的信息、设置或更多按钮查看动作。参与、调度、优先和最后使用等入口按现有功能各自保存，反代参与和优先会与反代面板同步，并用于后续新请求。
 
 <p align="center">
-  <a href="docs/images/1009v2/accounts-home-137-crop.png"><img src="docs/images/1009v2/accounts-home-137-crop.png" width="1000" alt="从公开 137 首页实拍裁出的 Codex 账号区：账号卡、5 小时与 7 天额度、重置时间、点数和操作入口。"></a>
+  <a href="docs/images/1012v1-promo/zh/accounts.png"><img src="docs/images/1012v1-promo/zh/accounts.png" width="1000" alt="Codex 账号卡片：5 小时与 7 天额度、重置时间、点数和操作入口。"></a>
 </p>
 
-*这是经授权从公开 2.3.0（137）首页原图裁出的完整账号区，区域内像素和数据未修改；不是 143 新布局的实拍。窄窗口的 Codex 专用列表控件挤压问题按用户决定留到下一版，当前可用卡片模式或加宽窗口。*
-
+窄窗口的 Codex 专用列表控件挤压问题按用户决定留到下一版，当前可用卡片模式或加宽窗口。
 
 <a id="claude"></a>
 
@@ -98,12 +93,7 @@ AiGoodBro 是面向个人自用的 macOS AI 工作台。它集中查看 Codex �
 
 **怎么使用：** 先在官方 Claude Code CLI 完成登录，再在 AiGoodBro 里核验身份并点击“添加当前登录账号／保存订阅”。已有 Claude-swap 订阅可以关联；要添加另一个账号，先保存当前订阅，再回到官方 CLI 登录另一个账号后添加。不要先 `/logout`，否则可能使已保存凭据失效。保存后可手动切换和刷新额度。
 
-<p align="center">
-  <a href="docs/images/1009v2/claude-login.jpg"><img src="docs/images/1009v2/claude-login.jpg" width="1000" alt="已安装 139 的 Claude 官方登录入口与账号保存界面实拍。"></a>
-</p>
-
-*登录入口的出现不等于登录或额度读取已成功；必须完成官方登录、身份核验和保存。活跃或身份未知的订阅不能解除关联，过期目标只有用户明确切换时才按 Claude-swap 流程续期。*
-
+活跃或身份未知的订阅不能解除关联，过期目标只有用户明确切换时才按 Claude-swap 流程续期。
 
 <a id="usage"></a>
 
@@ -114,14 +104,10 @@ AiGoodBro 是面向个人自用的 macOS AI 工作台。它集中查看 Codex �
 **怎么使用：** 主页展开“用量统计”查看总量、成本、热图和趋势；从侧栏或菜单栏打开统计入口查看更细的工具、模型、项目、会话和额度视图，再选择时间范围或数据来源。Token Monitor 0.68.0 和 TokScale 4.18.0 更新解析与定价，修正 Claude 重复及缓存 Token 统计。
 
 <p align="center">
-  <a href="docs/images/1009v2/usage-home-137-crop.png"><img src="docs/images/1009v2/usage-home-137-crop.png" width="1000" alt="从公开 137 首页实拍裁出的用量区：累计 Token、估算成本、活动热图和趋势。"></a>
+  <a href="docs/images/1012v1-promo/zh/usage.png"><img src="docs/images/1012v1-promo/zh/usage.png" width="1000" alt="用量统计：活动热图、估算成本与趋势柱状图。"></a>
 </p>
 
-*裁剪图保留原始像素和拍摄时的本机数据；35+／28+ 是固定上游支持范围。顶部、浮窗底部和侧栏共用缓存的 TPM（每分钟 Token 消耗量），不为显示速率额外频繁刷新。*
-
-
-<a id="reset-cards"></a>
-
+顶部、浮窗底部和侧栏共用缓存的 TPM（每分钟 Token 消耗量），不为显示速率额外频繁刷新。
 
 <a id="other-cli"></a>
 
@@ -131,11 +117,9 @@ AiGoodBro 是面向个人自用的 macOS AI 工作台。它集中查看 Codex �
 
 **怎么使用：** 在“使用引导”或工具入口选择对应产品，按该产品的官方登录方式完成登录，再回到 AiGoodBro 点击刷新额度。Kimi CLI 的旧快照使用前要刷新；Grok 使用官方 `grok login --oauth`；OpenCode 使用 `opencode auth login`；WorkBuddy、ZCode 和 TRAE SOLO 只使用各自官方桌面或 CLI 入口。未知、过期或没有可信返回时，界面保留“—”或旧快照，不把退出码当成额度成功。
 
-<p align="center">
-  <a href="docs/images/1009v2/guide.jpg"><img src="docs/images/1009v2/guide.jpg" width="1000" alt="已安装 139 的工具连接引导实拍，展示 Kimi Code 认证配置入口。"></a>
-</p>
+本机认证配置发现、额度读取与后续模型调用分别核对。详细覆盖边界见[本机 CLI 额度范围](docs/local-cli-accounts.md)。
 
-*图中 Kimi Code 显示已发现认证配置，只证明本地配置被发现；它不证明额度读取成功或后续模型调用一定可用。详细覆盖边界见[本机 CLI 额度范围](docs/local-cli-accounts.md)。*
+<a id="reset-cards"></a>
 
 ## 08 · 重置卡自动使用：减少临期忘记操作
 
@@ -143,12 +127,7 @@ AiGoodBro 是面向个人自用的 macOS AI 工作台。它集中查看 Codex �
 
 **怎么使用：** 在主页或 Codex 账号区点击“重置卡 N”、到期时间或信息按钮，进入“到期自动使用”；逐账号选择是否开启，并设置提前时间。默认关闭、默认提前 30 分钟，可调整为 1–1440 分钟。桌面账号或同身份镜像只在独立入口、可信身份和空闲状态都核验通过时尝试；结果不明会暂停并提示人工核对，不反复重发。
 
-<p align="center">
-  <a href="docs/images/1009v2/reset-auto.jpg"><img src="docs/images/1009v2/reset-auto.jpg" width="820" alt="已安装 139 的重置卡临期自动使用设置实拍。"></a>
-</p>
-
-*图中 25 分钟是拍摄时的自定义值，产品默认仍为 30 分钟。使用前必须逐账号授权，并保持应用运行；设置页本身不会兑换卡片。详细边界见[重置卡说明](docs/reset-credit-control.md)。*
-
+使用前必须逐账号授权，并保持应用运行；设置页本身不会兑换卡片。详细边界见[重置卡说明](docs/reset-credit-control.md)。
 
 <a id="referrals"></a>
 
@@ -157,9 +136,6 @@ AiGoodBro 是面向个人自用的 macOS AI 工作台。它集中查看 Codex �
 **它是做什么的：** 账号卡保留邀请入口，用于批量邀请、查看官方邀请状态和邀请点数，省去切换到其他页面核对。
 
 **怎么使用：** 点击目标账号的邀请按钮或小图标，按官方页面完成收件人填写和确认，再刷新查看状态。每次最多 5 个地址；账号或登录状态变化时应关闭并重新打开邀请窗口。奖励到账以官方条件和返回结果为准，接受邀请不等于点数已经到账。
-
-*主界面配图已在本页开头展示；邀请入口和官方返回状态仍按本节说明核对。*
-
 
 <a id="wechat"></a>
 
@@ -170,11 +146,8 @@ AiGoodBro 是面向个人自用的 macOS AI 工作台。它集中查看 Codex �
 **怎么使用：** 在“设置 → 通知／微信”进入连接引导，使用腾讯官方 iLink 扫码绑定；确认会话后选择要接收的消息类型。首次建立历史基线，之后只发送新消息；查询缓存状态不会消耗账号额度。微信未完成会话时，界面显示等待状态，不把“已配置”写成“已送达”。
 
 <p align="center">
-  <a href="docs/images/1009v2/notifications-guide.jpg"><img src="docs/images/1009v2/notifications-guide.jpg" width="1000" alt="已安装 139 的微信和飞书通知引导实拍，其中微信显示等待会话状态。"></a>
+  <a href="docs/images/1012v1-promo/zh/notifications.png"><img src="docs/images/1012v1-promo/zh/notifications.png" width="1000" alt="飞书卡片与微信消息：重置卡、额度更新与公告通知。"></a>
 </p>
-
-*这张图同时包含微信和飞书设置；它用于说明入口和状态分层，不证明手机端真实送达。*
-
 
 <a id="feishu"></a>
 
@@ -182,9 +155,9 @@ AiGoodBro 是面向个人自用的 macOS AI 工作台。它集中查看 Codex �
 
 **它是做什么的：** 飞书用于接收 Agent、账号备注、额度、重置日期、重置卡到期明细和官方余额等消息；默认保持简洁，不把长任务编号塞进卡片正文。
 
-**怎么使用：** 在通知引导中粘贴机器人地址并点击“保存并连接”；已有连接需要钥匙串授权时点击“授权连接”。Webhook 保存在 macOS Keychain，不回填到界面或日志；真实测试发送必须由用户明确点击。当前引导图显示本机授权就绪，但投递仍待真实验证，不能把授权状态当成送达成功。
+**怎么使用：** 在通知引导中粘贴机器人地址并点击“保存并连接”；已有连接需要钥匙串授权时点击“授权连接”。Webhook 保存在 macOS Keychain，不回填到界面或日志；真实测试发送必须由用户明确点击。本机授权状态与消息实际送达分别核对。
 
-*微信与飞书共用的通知设置实拍已在“微信”一节展示；这里保留飞书的连接和投递边界说明。*
+飞书卡片与微信消息的配图见[微信一节](#wechat)。
 
 <a id="dock"></a>
 
@@ -195,9 +168,8 @@ AiGoodBro 是面向个人自用的 macOS AI 工作台。它集中查看 Codex �
 **怎么使用：** 默认用 **⌘I** 唤出或隐藏；侧栏顶部图钉可以固定，再次点击隐藏；悬停展开详情，拖动顶部调整位置。设置中可选圆环或小鱼样式、75–150% 缩放、刷新按钮、运行指示和触控板轻触反馈。缺少额度时显示“—”，不推算成 0。
 
 <p align="center">
-  <a href="docs/images/1009v2/edge-dock-settings.jpg"><img src="docs/images/1009v2/edge-dock-settings.jpg" width="820" alt="已安装 139 的侧栏设置实拍，展示显示方式、缩放、刷新和运行指示。"></a>
+  <a href="docs/images/1012v1-promo/zh/sidebar.png"><img src="docs/images/1012v1-promo/zh/sidebar.png" width="1000" alt="屏幕边缘侧栏：今日用量、5 小时与 7 天额度圆环。"></a>
 </p>
-
 
 <a id="tasks"></a>
 
@@ -207,8 +179,6 @@ AiGoodBro 是面向个人自用的 macOS AI 工作台。它集中查看 Codex �
 
 **怎么使用：** 在账号自动化或设置中开启“剩余 1% 自动暂停并换号”或“换号成功后自动继续原任务”；软件会先保存任务与轮次，核验备用账号和任务状态后再切换。暖号会在额度窗口到期后先刷新，再按条件请求，忙碌、低额度或结果不明时等待或暂停。没有可信任务状态时保持关闭，不制造成功通知。
 
-*主界面配图已在本页开头展示；任务占用和调度状态按本节说明单独核对。*
-
 <a id="setup"></a>
 
 ## 14 · 工具连接、安装引导和更新提醒
@@ -217,9 +187,6 @@ AiGoodBro 是面向个人自用的 macOS AI 工作台。它集中查看 Codex �
 
 **怎么使用：** 打开“使用引导”按步骤连接官方工具；Claude、Kimi、Grok、OpenCode、WorkBuddy、ZCode 和 TRAE SOLO 均按各自官方入口登录。更新弹窗展示版本和更新点，用户点击后下载，校验大小与 SHA256 后再自行覆盖安装；下载不会自动退出或替换当前 App，也不会自动开启可选功能。
 
-*工具连接引导实拍已在“其他 CLI”一节展示；这里保留安装引导、更新提醒和覆盖安装说明。*
-
-
 <a id="themes"></a>
 
 ## 15 · 主题和原生玻璃
@@ -227,11 +194,6 @@ AiGoodBro 是面向个人自用的 macOS AI 工作台。它集中查看 Codex �
 **它是做什么的：** 外观设置统一管理明暗模式、主题颜色、玻璃透明度和层次，解决不同主题下文字不明显的问题；系统“减少透明度”和“增强对比度”优先。
 
 **怎么使用：** 打开“设置 → 显示与图标”，选择主题、语言和玻璃浓度。当前保留九套主题：默认灰、液态键帽、青花瓷、蒙特雷曙霞、千里江山、敦煌飞天、故宫红墙、紫蓝流光、WAICY 流彩。WAICY 主题只使用色值，不复制品牌图形、字体或吉祥物。
-
-<p align="center">
-  <a href="docs/images/1009v2/appearance-settings.jpg"><img src="docs/images/1009v2/appearance-settings.jpg" width="820" alt="已安装 139 的显示与图标设置实拍，展示明暗模式、主题、语言和玻璃浓度。"></a>
-</p>
-
 
 <a id="downloads"></a>
 
@@ -248,7 +210,6 @@ make build
 ```
 
 构建需要 macOS、Go 1.26+ 和经 SHA256 校验的 Token Monitor 0.68.0 macOS 运行时；不提供 Intel 或 Windows 安装包。
-
 
 <a id="sources"></a>
 
@@ -269,4 +230,70 @@ make build
 
 AiGoodBro 使用 [MIT 许可证](LICENSE)。第三方许可见 [`Resources/THIRD_PARTY_NOTICES.txt`](Resources/THIRD_PARTY_NOTICES.txt)、[`Companion/LocalProxy/LICENSE.CLIProxyAPI`](Companion/LocalProxy/LICENSE.CLIProxyAPI)、[`Companion/LocalProxy/LICENSE.Hazmat`](Companion/LocalProxy/LICENSE.Hazmat) 和 [`Companion/LocalProxy/THIRD-PARTY-NOTICES.txt`](Companion/LocalProxy/THIRD-PARTY-NOTICES.txt)。
 
-文档入口：[详细使用说明](docs/usage-guide.md) · [本机 CLI 额度范围](docs/local-cli-accounts.md) · [反代实现与验证](docs/local-proxy-0928v1.md) · [2.5 发布记录](docs/release-notes-v2.5.0.md) · [截图来源与校验](docs/public-ui-1009v2.md) · [问题反馈](https://github.com/BLACKIELF/AgentHub-AiGoodBro/issues) · [安全说明](SECURITY.md)
+文档入口：[详细使用说明](docs/usage-guide.md) · [本机 CLI 额度范围](docs/local-cli-accounts.md) · [反代实现与验证](docs/local-proxy-0928v1.md) · [2.5 发布记录](docs/release-notes-v2.5.0.md) · [图片来源与校验](docs/public-ui-1012v1-promo.md) · [问题反馈](https://github.com/BLACKIELF/AgentHub-AiGoodBro/issues) · [安全说明](SECURITY.md)
+
+<a id="actual-screenshots"></a>
+
+## 18 · 实际软件截图
+
+主界面及账号、用量裁图来自已安装的 **2.3.0（137）**；六张登录、引导和设置图来自 **2.3.0（139）**，其设置呈现沿用至 143。反代状态局部图未显示版本号。图中数值和连接状态是拍摄时快照，不作为 143 安装、真实调用或消息送达的验收；来源、原始尺寸和校验值见[历史截图记录](docs/public-ui-1009v2.md)。点击图片可查看原图。
+
+### 01 · 主界面
+
+<p align="center">
+  <a href="docs/images/1009v1/home-live.png"><img src="docs/images/1009v1/home-live.png" width="1000" alt="实际主界面：公告、推荐工具、用量统计与账号区域。"></a>
+</p>
+
+### 02 · 反代状态与侧栏
+
+<p align="center">
+  <a href="docs/images/1009v1/proxy-status-edge-dock.png"><img src="docs/images/1009v1/proxy-status-edge-dock.png" width="360" alt="实际反代状态与侧栏：额度圆环、重置倒计时与点数。"></a>
+</p>
+
+### 03 · Codex 账号
+
+<p align="center">
+  <a href="docs/images/1009v2/accounts-home-137-crop.png"><img src="docs/images/1009v2/accounts-home-137-crop.png" width="1000" alt="实际 Codex 账号区域：额度、重置时间、点数与操作入口。"></a>
+</p>
+
+### 04 · Claude 登录与保存
+
+<p align="center">
+  <a href="docs/images/1009v2/claude-login.jpg"><img src="docs/images/1009v2/claude-login.jpg" width="820" alt="实际 Claude 官方登录与订阅保存入口。"></a>
+</p>
+
+### 05 · 用量统计
+
+<p align="center">
+  <a href="docs/images/1009v2/usage-home-137-crop.png"><img src="docs/images/1009v2/usage-home-137-crop.png" width="1000" alt="实际用量统计：累计 Token、估算成本、热图与趋势。"></a>
+</p>
+
+### 06 · 工具连接引导
+
+<p align="center">
+  <a href="docs/images/1009v2/guide.jpg"><img src="docs/images/1009v2/guide.jpg" width="820" alt="实际工具连接引导与 Kimi Code 认证配置入口。"></a>
+</p>
+
+### 07 · 重置卡自动使用设置
+
+<p align="center">
+  <a href="docs/images/1009v2/reset-auto.jpg"><img src="docs/images/1009v2/reset-auto.jpg" width="820" alt="实际重置卡临期自动使用开关与提前时间设置。"></a>
+</p>
+
+### 08 · 微信与飞书通知设置
+
+<p align="center">
+  <a href="docs/images/1009v2/notifications-guide.jpg"><img src="docs/images/1009v2/notifications-guide.jpg" width="820" alt="实际微信与飞书通知连接引导。"></a>
+</p>
+
+### 09 · 侧栏设置
+
+<p align="center">
+  <a href="docs/images/1009v2/edge-dock-settings.jpg"><img src="docs/images/1009v2/edge-dock-settings.jpg" width="820" alt="实际侧栏显示方式、缩放、刷新与运行指示设置。"></a>
+</p>
+
+### 10 · 主题与玻璃设置
+
+<p align="center">
+  <a href="docs/images/1009v2/appearance-settings.jpg"><img src="docs/images/1009v2/appearance-settings.jpg" width="820" alt="实际明暗模式、主题、语言与玻璃浓度设置。"></a>
+</p>
