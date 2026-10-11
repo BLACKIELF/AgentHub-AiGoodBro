@@ -105,6 +105,8 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
     @Published private(set) var creditFallbackEnabled = false
     @Published private(set) var creditPrimaryFloor = 2000
     @Published private(set) var creditSecondaryFloor = 1500
+    @Published private(set) var legacyCooldownRecoveryIDs = Set<String>()
+    @Published private(set) var isPreparingLegacyCooldownRecovery = false
     var canEdit: Bool { process == nil && (phase == .stopped || phase == .failed) && leases.isEmpty && exitCleanupID == nil }
     var canReorder: Bool {
         !usageStore.isPreview && !preferencesBlocked && !finishing
@@ -121,7 +123,10 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
         phase == .running && process?.isRunning == true && rows.contains(where: { $0.id == id })
             && registeredPool[id] != nil && !isRegisteredBindingCurrent(id)
     }
-    var canStart: Bool { canEdit && rows.count <= 100 && rows.contains(where: \.isEnabled) && !usageStore.isPreview && !preferencesBlocked }
+    var canStart: Bool {
+        canEdit && !isPreparingLegacyCooldownRecovery && legacyRecoveryPreparedConfirmation == nil && rows.count <= 100 && rows.contains(where: \.isEnabled)
+            && !usageStore.isPreview && !preferencesBlocked
+    }
     func canToggleAccount(id: String) -> Bool {
         guard !usageStore.isPreview, !preferencesBlocked, !finishing, rows.contains(where: { $0.id == id }) else { return false }
         if canEdit { return true }
@@ -191,6 +196,34 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
     private var exitCleanupID: UUID?
     private var finishing = false
     private var requestedExitReason: ExitReason?
+    private struct LegacyRecoveryIdentity: Equatable {
+        let id: String
+        let home: URL
+        let account: String
+        let accountID: String
+        init?(_ profile: CodexProfile) {
+            guard let accountID = profile.lastSnapshot?.accountID, !accountID.isEmpty else { return nil }
+            id = profile.id
+            home = profile.codexHomeURL
+            account = profile.recordedAccountKey
+            self.accountID = accountID
+        }
+    }
+    private struct LegacyRecoveryTicket {
+        let id: UUID
+        let target: LegacyRecoveryIdentity
+        let system: LegacyRecoveryIdentity
+        let refreshStartedAt: Date
+    }
+    private struct LegacyRecoveryPreparation {
+        let ticket: LegacyRecoveryTicket
+        let prepared: LocalProxyLegacyCooldownRecovery.Prepared
+        let continuation: CheckedContinuation<LocalProxyLegacyCooldownRecovery.Confirmation?, Never>
+    }
+    private var legacyRecoveryPreparation: LegacyRecoveryPreparation?
+    private var legacyRecoveryTicket: LegacyRecoveryTicket?
+    private var legacyRecoveryPreparedConfirmation: LocalProxyLegacyCooldownRecovery.Confirmation?
+    private var legacyRecoveryGeneration = UUID()
 
     init(usageStore: UsageStore, previewPreferences: LocalProxyPreferences? = nil) {
         self.usageStore = usageStore
@@ -285,9 +318,18 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
     }
     private func policyChanged() {
         policyRevision &+= 1
-        accountStates = accountStates.filter { !["quota", "usage_limit", "subscription_pending", "quota_unknown"].contains($0.value) }
+        clearRefreshableAccountStates()
         rebuildRows()
         flushDisplayRows()
+    }
+    private func clearRefreshableAccountStates() {
+        let now = Date()
+        accountStates = accountStates.filter { id, state in
+            // A fresh host snapshot does not clear the helper's durable cooldown.
+            // Keep its quota state until expiry or an explicit helper state update.
+            if state == "quota", let until = cooldowns[id], until > now { return true }
+            return !["quota", "usage_limit", "subscription_pending", "quota_unknown"].contains(state)
+        }
     }
     func setAccountEnabled(id: String, enabled: Bool) {
         guard canToggleAccount(id: id) else { return }
@@ -378,9 +420,8 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
             rebuildRows()
             return
         }
-        // A quota refresh is the authoritative chance to replace helper-reported
-        // quota failures. Do not let an older pipe event mask recovered limits.
-        accountStates = accountStates.filter { !["quota", "usage_limit", "subscription_pending", "quota_unknown"].contains($0.value) }
+        // Refresh stale host admission failures while preserving live helper cooldowns.
+        clearRefreshableAccountStates()
         let ids = Set(rows.filter(\.isEnabled).map(\.id))
         if displayFreshResultsImmediately {
             manualRefreshTargets = [:]
@@ -423,6 +464,177 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
         usageStore.refreshLocalProxyQuotas(profileIDs: [current.profile.id])
         rebuildRows()
         flushDisplayRows()
+    }
+
+    func canRecoverLegacyCooldown(for id: String) -> Bool {
+        canEdit && !isPreparingLegacyCooldownRecovery && legacyRecoveryPreparedConfirmation == nil && !usageStore.isPreview && !preferencesBlocked && !finishing
+            && legacyCooldownRecoveryIDs.contains(id) && preferences.enabledIDs.contains(id)
+            && rows.filter { $0.id == id }.count == 1
+    }
+
+    func prepareLegacyCooldownRecovery(for id: String, completion: @escaping (Bool) -> Void) {
+        guard canRecoverLegacyCooldown(for: id) else {
+            completion(false)
+            return
+        }
+        let generation = UUID()
+        legacyRecoveryGeneration = generation
+        Task { @MainActor in
+            guard legacyRecoveryGeneration == generation else {
+                completion(false)
+                return
+            }
+            let confirmation = await prepareLegacyCooldownRecovery(for: id)
+            guard legacyRecoveryGeneration == generation else {
+                completion(false)
+                return
+            }
+            legacyRecoveryPreparedConfirmation = confirmation
+            completion(legacyRecoveryPreparedConfirmation != nil)
+        }
+    }
+
+    @discardableResult
+    func recoverLegacyCooldown(for id: String) -> Bool {
+        guard let confirmation = legacyRecoveryPreparedConfirmation, confirmation.profileID == id else { return false }
+        legacyRecoveryPreparedConfirmation = nil
+        return commitLegacyCooldownRecovery(confirmation)
+    }
+
+    func cancelLegacyCooldownRecovery() {
+        legacyRecoveryGeneration = UUID()
+        cancelLegacyCooldownRecoveryPreparation()
+        legacyRecoveryPreparedConfirmation = nil
+        legacyRecoveryTicket = nil
+    }
+
+    /// Refresh this identity explicitly, then let the existing profiles publisher
+    /// resume preparation only after the observation was successfully saved.
+    func prepareLegacyCooldownRecovery(for id: String) async -> LocalProxyLegacyCooldownRecovery.Confirmation? {
+        guard canRecoverLegacyCooldown(for: id), !Task.isCancelled else { return nil }
+        do {
+            let (profile, system) = try legacyRecoveryProfiles(for: id)
+            guard let target = LegacyRecoveryIdentity(profile), let central = LegacyRecoveryIdentity(system) else { throw LocalProxyFailure.identity }
+            let prepared = try LocalProxyLegacyCooldownRecovery.prepare(at: directory.appendingPathComponent("LocalProxy", isDirectory: true), profileID: id)
+            let ticket = LegacyRecoveryTicket(id: UUID(), target: target, system: central, refreshStartedAt: Date())
+            legacyRecoveryTicket = nil
+            return await withTaskCancellationHandler {
+                await withCheckedContinuation { continuation in
+                    guard !Task.isCancelled else {
+                        continuation.resume(returning: nil)
+                        return
+                    }
+                    legacyRecoveryPreparation = LegacyRecoveryPreparation(ticket: ticket, prepared: prepared, continuation: continuation)
+                    isPreparingLegacyCooldownRecovery = true
+                    issue = nil
+                    usageStore.refreshLocalProxyQuotas(profileIDs: [id])
+                    completeLegacyCooldownRecoveryPreparation()
+                }
+            } onCancel: {
+                Task { @MainActor [weak self] in
+                    guard self?.legacyRecoveryPreparation?.ticket.id == ticket.id else { return }
+                    self?.cancelLegacyCooldownRecoveryPreparation()
+                }
+            }
+        } catch {
+            legacyCooldownRecoveryIssue(error)
+            return nil
+        }
+    }
+
+    func cancelLegacyCooldownRecoveryPreparation() {
+        guard let pending = legacyRecoveryPreparation else { return }
+        legacyRecoveryPreparation = nil
+        isPreparingLegacyCooldownRecovery = false
+        pending.continuation.resume(returning: nil)
+    }
+
+    private func completeLegacyCooldownRecoveryPreparation() {
+        guard let pending = legacyRecoveryPreparation else { return }
+        do {
+            let (profile, _) = try legacyRecoveryProfiles(for: pending.ticket.target.id, matching: pending.ticket)
+            if let failed = profile.lastQuotaReadFailureAt, failed >= pending.ticket.refreshStartedAt { throw LocalProxyFailure.quotaUnknown }
+            guard let observed = profile.lastSnapshot?.fetchedAt, observed > pending.ticket.refreshStartedAt else { return }
+            try validateLegacyCooldownRecoveryEvidence(pending.ticket, after: pending.prepared.candidate.latestRecordAt)
+            let confirmation = try LocalProxyLegacyCooldownRecovery.confirm(pending.prepared)
+            legacyRecoveryTicket = LegacyRecoveryTicket(
+                id: confirmation.id, target: pending.ticket.target,
+                system: pending.ticket.system, refreshStartedAt: pending.ticket.refreshStartedAt)
+            legacyRecoveryPreparation = nil
+            isPreparingLegacyCooldownRecovery = false
+            pending.continuation.resume(returning: confirmation)
+        } catch {
+            legacyCooldownRecoveryIssue(error)
+            cancelLegacyCooldownRecoveryPreparation()
+        }
+    }
+
+    /// The UI calls this only after confirming the exact prepared account.
+    @discardableResult
+    func commitLegacyCooldownRecovery(_ confirmation: LocalProxyLegacyCooldownRecovery.Confirmation) -> Bool {
+        guard let ticket = legacyRecoveryTicket, ticket.id == confirmation.id, ticket.target.id == confirmation.profileID else {
+            legacyCooldownRecoveryIssue(LocalProxyLegacyCooldownRecovery.Failure.changed)
+            return false
+        }
+        legacyRecoveryTicket = nil
+        do {
+            _ = try LocalProxyLegacyCooldownRecovery.commit(confirmation) {
+                try self.validateLegacyCooldownRecoveryEvidence(ticket, after: confirmation.preparedLatestRecordAt)
+            }
+            accountStates[confirmation.profileID] = nil
+            cooldowns[confirmation.profileID] = nil
+            rebuildRows()
+            flushDisplayRows()
+            issue = WidgetLanguage.storedOrAutomatic().text(
+                "该账号旧冷却已备份并恢复；启动后仍按身份、额度与参与条件校验。",
+                "This account's legacy cooldown was backed up and recovered. Starting the proxy still checks identity, quota and participation.")
+            return true
+        } catch {
+            legacyCooldownRecoveryIssue(error)
+            rebuildRows()
+            flushDisplayRows()
+            return false
+        }
+    }
+
+    private func legacyRecoveryProfiles(for id: String, matching ticket: LegacyRecoveryTicket? = nil) throws -> (CodexProfile, CodexProfile) {
+        guard canEdit, !usageStore.isPreview, !preferencesBlocked, !finishing, preferences.enabledIDs.contains(id) else { throw LocalProxyFailure.notParticipating }
+        let targets = usageStore.profiles.filter { $0.id == id }
+        let systems = usageStore.profiles.filter(\.isSystemProfile)
+        guard targets.count == 1, let profile = targets.first, !profile.isSystemProfile,
+            systems.count == 1, let system = systems.first,
+            let target = LegacyRecoveryIdentity(profile), let central = LegacyRecoveryIdentity(system),
+            target.home != central.home, (target.account == central.account) == (target.accountID == central.accountID),
+            ticket == nil || (ticket?.target == target && ticket?.system == central)
+        else { throw LocalProxyFailure.identity }
+        let registry = try DispatchActivityStore.live.read()
+        let accountKey = DispatchActivityStore.hash(profile.recordedAccountKey)
+        let aliasKey = alias(for: profile).map(DispatchActivityStore.hash)
+        guard !registry.leases.contains(where: { $0.occupied && ($0.accountKey == accountKey || $0.aliasKey == aliasKey || $0.proxyProfileKey == DispatchActivityStore.hash(id)) })
+        else { throw LocalProxyFailure.busy }
+        return (profile, system)
+    }
+
+    private func validateLegacyCooldownRecoveryEvidence(_ ticket: LegacyRecoveryTicket, after cutoff: Date) throws {
+        let (profile, system) = try legacyRecoveryProfiles(for: ticket.target.id, matching: ticket)
+        guard let observed = profile.lastSnapshot?.fetchedAt, observed > ticket.refreshStartedAt, observed > cutoff else { throw LocalProxyFailure.quotaUnknown }
+        if let failure = LocalProxyAdmission.quota(profile, policy: preferences.resolvedPolicy(for: profile.id)) { throw failure }
+        // The reader double-checks both auth files and identities. Discard its token.
+        _ = try LocalProxyCredentialReader.read(
+            profile: profile, system: system,
+            allowDesktopAccount: profile.recordedAccountKey == system.recordedAccountKey,
+            policy: preferences.resolvedPolicy(for: profile.id))
+    }
+
+    private func legacyCooldownRecoveryIssue(_ error: Error) {
+        let language = WidgetLanguage.storedOrAutomatic()
+        if let failure = error as? LocalProxyFailure {
+            issue = message(failure)
+        } else if error as? LocalProxyLegacyCooldownRecovery.Failure == .backup {
+            issue = language.text("旧冷却备份失败，原记录未清除。", "Legacy cooldown backup failed; the original records were retained.")
+        } else {
+            issue = language.text("旧冷却恢复未确认；记录或身份可能已变化，请重新准备。", "Legacy cooldown recovery was not confirmed. Records or identity may have changed; prepare again.")
+        }
     }
 
     /// Publish the current in-memory queue state on an explicit UI action.
@@ -644,15 +856,9 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
             let output = stdout.fileHandleForReading
             outputTask = Task.detached { [weak self] in
                 var pending = Data()
-                var buffer = [UInt8](repeating: 0, count: 4096)
                 while !Task.isCancelled {
-                    // FileHandle.read(upToCount:) fills a pipe read until its
-                    // requested count or EOF. Read available bytes so readiness
-                    // and account JSONL events reach the UI immediately.
-                    let count = Darwin.read(output.fileDescriptor, &buffer, buffer.count)
-                    if count < 0, errno == EINTR { continue }
-                    guard count > 0 else { break }
-                    pending.append(contentsOf: buffer.prefix(count))
+                    guard let bytes = await Self.readHelperOutput(output) else { break }
+                    pending.append(bytes)
                     guard pending.count <= 16384 else { break }
                     while let newline = pending.firstIndex(of: 10) {
                         let line = Data(pending.prefix(upTo: newline))
@@ -681,6 +887,19 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
                 cleanupConfirmedExit()
             }
             phase = .failed
+        }
+    }
+
+    nonisolated private static func readHelperOutput(_ output: FileHandle) async -> Data? {
+        await withCheckedContinuation { continuation in
+            // An idle helper pipe can wait indefinitely. Suspend the Task and
+            // keep that blocking read outside the cooperative control executor.
+            DispatchQueue.global(qos: .utility).async {
+                var buffer = [UInt8](repeating: 0, count: 4096)
+                var count: Int
+                repeat { count = Darwin.read(output.fileDescriptor, &buffer, buffer.count) } while count < 0 && errno == EINTR
+                continuation.resume(returning: count > 0 ? Data(buffer.prefix(count)) : nil)
+            }
         }
     }
 
@@ -920,6 +1139,24 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
             return LocalProxyReply(ok: true)
         }
         guard registeredPool[request.profileID] != nil else { return .failure(.identity) }
+        if request.command == "quota_recovery" {
+            guard request.leaseID == nil else { return .failure(.identity) }
+            guard !preferencesBlocked, !finishing, phase == .running, process?.isRunning == true
+            else { return .failure(.stopping) }
+            guard activeIDs.contains(request.profileID), preferences.enabledIDs.contains(request.profileID)
+            else { return .failure(.notParticipating) }
+            guard let profile = usageStore.profiles.first(where: { $0.id == request.profileID }),
+                let system = usageStore.profiles.first(where: \.isSystemProfile),
+                let current = currentBinding(profile, system: system)
+            else { return .failure(.identity) }
+            // Read-only evidence for a recovered subscription, before the helper
+            // filters persisted cooldowns. This neither admits a request nor
+            // returns credentials, creates order state or starts a quota refresh.
+            if let failure = LocalProxyAdmission.quota(current, policy: preferences.resolvedPolicy(for: current.id)) {
+                return .failure(failure)
+            }
+            return LocalProxyReply(ok: true, quotaObservedAt: current.lastSnapshot!.fetchedAt.timeIntervalSince1970)
+        }
         if request.command == "order" {
             guard request.leaseID == nil, !preferencesBlocked, !finishing,
                 phase == .running, process?.isRunning == true
@@ -1282,6 +1519,10 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
         }
     }
     private func rebuildRows() {
+        legacyCooldownRecoveryIDs = LocalProxyLegacyCooldownRecovery.candidates(
+            at: directory.appendingPathComponent("LocalProxy", isDirectory: true),
+            profileIDs: Set(usageStore.profiles.filter { !$0.isSystemProfile }.map(\.id)))
+        completeLegacyCooldownRecoveryPreparation()
         let central = usageStore.profiles.first(where: \.isSystemProfile)
         var seen = Set<String>()
         let profiles = usageStore.profiles.filter {

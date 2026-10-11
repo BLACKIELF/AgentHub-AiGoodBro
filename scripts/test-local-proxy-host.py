@@ -6,6 +6,22 @@ root=Path(__file__).resolve().parent.parent
 service=root/'Sources/CodexUsageWidget/Services'
 dynamic_http='--dynamic-http-only' in sys.argv
 cleanup_retry='--cleanup-retry-only' in sys.argv
+control_negative='--control-progress-negative' in sys.argv
+cooldown_negative='--cooldown-refresh-negative' in sys.argv
+legacy_negative='--legacy-cooldown-recovery-negative' in sys.argv
+legacy_recovery='--legacy-cooldown-recovery-only' in sys.argv or legacy_negative
+focused_fixture=next((entry for flag,entry in [
+    ('--release-fence-only','releaseFenceFixtures'),
+    ('--control-progress-only','controlProgressFixtures'),
+    ('--quota-recovery-only','quotaRecoveryFixtures'),
+    ('--policy-save-admission-only','policySaveAdmissionFixtures'),
+    ('--control-recovery-only','controlRecoveryFixtures'),
+    ('--control-progress-negative','controlProgressFixtures'),
+    ('--cooldown-refresh-only','cooldownRefreshFixtures'),
+    ('--cooldown-refresh-negative','cooldownRefreshFixtures'),
+    ('--legacy-cooldown-recovery-only','legacyCooldownRecoveryFixtures'),
+    ('--legacy-cooldown-recovery-negative','legacyCooldownRecoveryFixtures'),
+] if flag in sys.argv), None)
 
 def declaration(source, needle):
     start=source.index(needle); opening=source.index('{',start); depth=0
@@ -40,7 +56,7 @@ enum AccountDisplay { static func profileName(_ p:CodexProfile,allProfiles:[Code
 struct CodexExecutionPreference { enum Model:String,CaseIterable { case fixture="fixture-model" } }
 @MainActor final class UsageStore:ObservableObject { @Published var profiles:[CodexProfile]; var isPreview=true; var refreshCount=0; var onRefresh:((Set<String>)->Void)?; init(_ profiles:[CodexProfile]) { self.profiles=profiles }; func refreshLocalProxyQuotas(profileIDs:Set<String>){refreshCount += 1; onRefresh?(profileIDs)}; func creditBalancePresentation(for:CodexProfile)->CreditBalancePresentation { .init() }; func availableResetCredits(for:CodexProfile)->Int? { nil } }
 enum CodexExecutable { static func path()->String? { "/usr/bin/true" }; static func bundledPath()->String? { nil } }
-enum LocalProxyFixtureRuntime { static var allowStopSignals = true; static var failPreferenceRename=false; static var failFirstTerminalCleanup=false; static var failActivityCommit=false; static var cleanupAttemptCount=0; static var afterReserve:(()->Void)?; static var afterRunning:(()->Void)?; static var helper:URL { DispatchParticipationPaths.supportDirectory().appendingPathComponent("fixture-helper") } }
+enum LocalProxyFixtureRuntime { static var allowStopSignals = true; static var failPreferenceRename=false; static var failFirstTerminalCleanup=false; static var failActivityCommit=false; static var failLegacyBackup=false; static var cleanupAttemptCount=0; static var afterReserve:(()->Void)?; static var afterRunning:(()->Void)?; static var helper:URL { DispatchParticipationPaths.supportDirectory().appendingPathComponent("fixture-helper") } }
 struct DispatchParticipationPaths { static func supportDirectory()->URL { URL(fileURLWithPath:ProcessInfo.processInfo.environment["PROXY_FIXTURE_ROOT"]!) }; static let snapshotFileName="fixture.json"; var hubConfig:URL; static func live(snapshot:URL)throws->Self { throw LocalProxyFailure.unavailable } }
 '''
 if dynamic_http:
@@ -51,10 +67,8 @@ if dynamic_http:
                         'URL(fileURLWithPath:ProcessInfo.processInfo.environment["PROXY_FIXTURE_HELPER"]!)')
 with tempfile.TemporaryDirectory(prefix='aigoodbro-proxy-host-fixture-', dir=os.environ['PROXY_DYNAMIC_HTTP_EVIDENCE'] if dynamic_http else None) as temporary:
     folder=Path(temporary)
-    if dynamic_http:
-        # Foundation presents /private paths through /var and /tmp aliases. The
-        # workspace evidence root lets the real Go checks use a link-free path.
-        folder=folder.resolve()
+    # Production file checks require a canonical directory without /var or /tmp aliases.
+    folder=folder.resolve()
     text=(service/'DispatchParticipationSync.swift').read_text()
     a=text.index('    static func readBoundedRegularFile('); b=text.index('\n    private static func read(',a)
     bounded='enum DispatchParticipationError:Error { case fileAccess }\nstruct DispatchParticipationSync {\n'+next(x for x in text.splitlines() if 'static let maximumConfigurationBytes =' in x)+'\n'+text[a:b]+'\n}\n'
@@ -65,8 +79,11 @@ with tempfile.TemporaryDirectory(prefix='aigoodbro-proxy-host-fixture-', dir=os.
     writer=text[writer_start:writer_end]
     expectation=text[text.index('    private enum ReplacementExpectation'):text.index('    let paths:',text.index('    private enum ReplacementExpectation'))]
     writer=writer.replace('Darwin.rename(source, destination)', '(LocalProxyFixtureRuntime.failPreferenceRename ? String(cString: destination) + \".blocked\" : String(cString: destination)).withCString { Darwin.rename(source, $0) }')
-    bounded=bounded.replace('case fileAccess', 'case fileAccess, writeFailed, concurrentChange, rollbackFailed')
+    bounded=bounded.replace('case fileAccess', 'case fileAccess, writeFailed, concurrentChange, rollbackFailed, busy')
     bounded=bounded[:-2]+expectation+'    enum Checkpoint { case beforeAtomicSwap(Int), beforeMismatchRestore(Int), afterMismatchRestore(Int) }\n'+writer+'}\n'
+    snapshot_writer=text[text.index('    static func withSnapshotLock<T>'):text.index('    /// Proxy preferences commit')]
+    bounded=bounded[:-2]+'    private static let processLock = NSLock()\n'+declaration(text, '    private static func read(_ url: URL, allowMissing: Bool = false) throws -> Data?')+'\n'+snapshot_writer+'}\n'
+    bounded=bounded.replace('DispatchParticipationPaths.lockFileName', '".fixture-snapshot.lock"')
     identity='enum CodexOfficialProfileReader {\n'+profiles[a:b]+'\n}\n'
     # Use the actual production plan and multiplier projection in routing checks.
     identity+='extension CodexProfile {\n'+declaration(profiles,'    var displayedProTierMultiplier: Int?')+'\n'+declaration(profiles,'    var resolvedPlanType: String?')+'\n}\n'
@@ -77,10 +94,14 @@ with tempfile.TemporaryDirectory(prefix='aigoodbro-proxy-host-fixture-', dir=os.
         'RateWindow','AccountInfo','ResetCreditDetail','CreditsInfo','UsageSnapshot'])+'\n'
     (folder/'Stubs.swift').write_text(stubs+bounded+identity+quota_models+presentation)
     files=[folder/'Stubs.swift',root/'Sources/CodexUsageWidget/Domain/LocalProxyQueue.swift',service/'CodexCredentialTransaction.swift',service/'DispatchActivityStore.swift',service/'LocalProxyBridge.swift',service/'LocalProxyNetworkSettings.swift',service/'LocalProxyQueueStore.swift',root/'scripts/test-local-proxy-host.swift']
+    files.insert(-1, service/'LocalProxyLegacyCooldownRecovery.swift')
     if dynamic_http:
         files[-1]=root/'scripts/LocalProxyDynamicHTTPFixture.swift'
     elif cleanup_retry:
         files[-1]=root/'scripts/LocalProxyCleanupRetryFixture.swift'
+    else:
+        files.insert(-1, root/'scripts/test-local-proxy-host-control.swift')
+        files.insert(-1, root/'scripts/LocalProxyLegacyCooldownRecoveryFixture.swift')
     # Credential transaction fixture only uses its actual read and gate routines.
     raw=(service/'CodexCredentialTransaction.swift').read_text();raw=raw[:raw.index('    private static func tokens(')]+'}\n'
     (folder/'Credential.swift').write_text(raw);files[2]=folder/'Credential.swift'
@@ -90,14 +111,38 @@ with tempfile.TemporaryDirectory(prefix='aigoodbro-proxy-host-fixture-', dir=os.
         target=folder/source.name
         if target != source:
             content=source.read_text()
-            if source.name == 'test-local-proxy-host.swift' and '--release-fence-only' in sys.argv:
+            if source.name == 'LocalProxyBridge.swift' and control_negative:
+                # Restore the original scheduling defect only in this frozen
+                # disposable copy; the production worktree is never rewritten.
+                needle='                ioQueue.async {\n                    var reading = true'
+                assert content.count(needle) == 1
+                content=content.replace(needle, '                Task.detached(priority: .userInitiated) {\n                    var reading = true')
+            if source.name == 'test-local-proxy-host.swift' and focused_fixture:
                 original_main=declaration(content, '    @MainActor static func main() async throws')
-                content=content.replace(original_main, '    @MainActor static func main() async throws { setbuf(stdout, nil); try await releaseFenceFixtures() }')
+                content=content.replace(original_main, '    @MainActor static func main() async throws { setbuf(stdout, nil); try await '+focused_fixture+'() }')
             if source.name == 'DispatchActivityStore.swift':
                 commit='guard written == data.count, fsync(fd) == 0,'
                 assert content.count(commit) == 1
                 content=content.replace(commit, 'guard written == data.count, !LocalProxyFixtureRuntime.failActivityCommit, fsync(fd) == 0,')
+            if source.name == 'LocalProxyLegacyCooldownRecovery.swift':
+                content=content.replace('let descriptor = Darwin.open(backup.path,',
+                    'let descriptor = LocalProxyFixtureRuntime.failLegacyBackup ? -1 : Darwin.open(backup.path,')
             if source.name == 'LocalProxyQueueStore.swift':
+                if legacy_negative:
+                    # Reproduce the late completion race only in a disposable copy.
+                    generation_guard='''            guard legacyRecoveryGeneration == generation else {
+                completion(false)
+                return
+            }'''
+                    assert content.count(generation_guard) == 2
+                    content=content.replace(generation_guard, '// Negative control: omit the cancellation generation guard.')
+                if cooldown_negative:
+                    # Restore the original unconditional quota-state clearing
+                    # only in the disposable fixture source.
+                    clearing=declaration(content, '    private func clearRefreshableAccountStates()')
+                    content=content.replace(clearing, '''    private func clearRefreshableAccountStates() {
+        accountStates = accountStates.filter { !["quota", "usage_limit", "subscription_pending", "quota_unknown"].contains($0.value) }
+    }''')
                 # Test-only visibility, without changing production APIs or behavior.
                 content=content.replace('private(set)', '').replace('private ', '')
                 content=content.replace('LocalProxyNetworkSettings.load()', 'LocalProxyNetworkSettings.resolve([:])')
@@ -190,6 +235,28 @@ with tempfile.TemporaryDirectory(prefix='aigoodbro-proxy-host-fixture-', dir=os.
         shutil.copy2(folder/'fixture', evidence/'native-fixture')
         (evidence/'native-fixture-sha256.txt').write_text(hashlib.sha256((folder/'fixture').read_bytes()).hexdigest()+'\n')
     fixture_env={**os.environ,'PROXY_FIXTURE_TRACE':'1','PROXY_FIXTURE_ROOT':str(folder/'support'),'PROXY_FIXTURE_PYTHON':sys.executable,'PROXY_FIXTURE_INTEROP':str(root/'scripts/test-local-proxy-host-interop.py')}
+    if legacy_negative:
+        negative=subprocess.run([str(folder/'fixture')],env=fixture_env,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,timeout=60)
+        print(negative.stdout)
+        assert negative.returncode != 0 and 'closing after resume cannot recreate a confirmation or keep start locked' in negative.stdout
+        print('PASS: legacy recovery late completion negative control rejected the copied unsafe implementation')
+        sys.exit(0)
+    if '--control-progress-only' in sys.argv or '--control-recovery-only' in sys.argv or control_negative:
+        fixture_env['LIBDISPATCH_COOPERATIVE_POOL_STRICT']='1'
+    if control_negative:
+        fixture_env['PROXY_CONTROL_EXPECT_STALL']='1'
+        negative=subprocess.run([str(folder/'fixture')],env=fixture_env,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,timeout=20)
+        print(negative.stdout, end='')
+        assert negative.returncode == 42 and 'CONTROL_NEGATIVE_REPRODUCED: acquire_resolve stalled' in negative.stdout, 'scheduling mutation must reproduce the exact resolver timeout'
+        print('PASS_NEGATIVE: original cooperative socket scheduling reproduces acquire_resolve timeout')
+        sys.exit(0)
+    if cooldown_negative:
+        fixture_env['PROXY_COOLDOWN_EXPECT_FALSE_READY']='1'
+        negative=subprocess.run([str(folder/'fixture')],env=fixture_env,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,timeout=20)
+        print(negative.stdout, end='')
+        assert negative.returncode == 43 and 'COOLDOWN_NEGATIVE_REPRODUCED: refresh falsely reports ready' in negative.stdout, 'original clearing must reproduce false ready during a live helper cooldown'
+        print('PASS_NEGATIVE: original quota-state clearing reproduces false ready during helper cooldown')
+        sys.exit(0)
     if '--release-fence-only' in sys.argv:
         fixture_env['PROXY_RELEASE_FENCE_ONLY']='1'
     try:

@@ -1,4 +1,4 @@
-# AiGoodBro · AgentHub (2.4)
+# AiGoodBro · AgentHub (2.5)
 
 **See quotas, usage, reset messages and local work in one place; when needed, route work through your own Codex account pool.**
 
@@ -6,9 +6,9 @@ AiGoodBro is a macOS AI workspace for personal use. It brings together Codex acc
 
 [中文](README.md) | **English**
 
-This page describes **2.4.0 (141) · 1009v2**. Compared with public 9.6.80 (130), it pins Token Monitor 0.68.0, TokScale 4.18.0 and CLIProxyAPI 8.0.20 while preserving AiGoodBro's existing custom behavior. Check [GitHub Releases](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases) for the actual download state.
+This page describes **2.5.0 (143) · 1011v2**. It focuses on proxy control, quota cooldown recovery, rule saving and WeChat notifications while preserving existing custom behavior. Token Monitor 0.68.0, TokScale 4.18.0 and CLIProxyAPI 8.0.20 remain pinned to the 2.4 baseline. Find installers and the demo in [GitHub Releases](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases).
 
-[DMG (Apple Silicon)](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.4.0/AiGoodBro-2.4.0-mac-arm64.dmg) · [ZIP](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.4.0/AiGoodBro-2.4.0-mac-arm64.zip) · [Release notes](docs/release-notes-v2.4.0.md)
+[DMG (Apple Silicon)](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.5.0/AiGoodBro-2.5.0-mac-arm64.dmg) · [ZIP](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.5.0/AiGoodBro-2.5.0-mac-arm64.zip) · [Release notes](docs/release-notes-v2.5.0.md) · [Watch the 48-second demo (MP4)](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.5.0/AiGoodBro-demo-1011v4.mp4)
 
 [Main UI](#main) · [Reset messages](#reset-messages) · [Proxy](#proxy) · [Accounts](#accounts) · [Claude](#claude) · [Token Monitor](#usage) · [Other CLIs](#other-cli) · [Automatic reset-card use](#reset-cards) · [Invitations](#referrals) · [WeChat](#wechat) · [Feishu](#feishu) · [Sidebar](#dock) · [Task occupancy](#tasks) · [Setup and updates](#setup) · [Themes](#themes) · [Downloads](#downloads) · [Sources and docs](#sources)
 
@@ -25,7 +25,7 @@ This page describes **2.4.0 (141) · 1009v2**. Compared with public 9.6.80 (130)
   <a href="docs/images/1009v1/home-live.png"><img src="docs/images/1009v1/home-live.png" width="1000" alt="Live AiGoodBro build 137 home screenshot with reset messages, connected tools, Token usage heatmap and trends, and multi-account quotas."></a>
 </p>
 
-*Real UI long capture from installed 2.3.0 (137). Values are capture-time local snapshots, not build 141 installation or real-call acceptance. The settings images were captured from 2.3.0 (139), whose presentation is retained in 141. See the [image record](docs/public-ui-1009v2.md) for sources, dimensions and checksums.*
+*Real UI long capture from installed 2.3.0 (137). Values are capture-time local snapshots, not build 143 installation or real-call acceptance. The settings images were captured from 2.3.0 (139), whose presentation is retained in 143. See the [image record](docs/public-ui-1009v2.md) for sources, dimensions and checksums.*
 
 **What the main numbers mean:**
 
@@ -58,7 +58,7 @@ Public messages do not rewrite official account records, change participation or
   <a href="docs/images/1009v1/proxy-status-edge-dock.png"><img src="docs/images/1009v1/proxy-status-edge-dock.png" width="360" alt="User-provided live proxy-status and sidebar crop showing running state, quota rings, reset countdowns and credits."></a>
 </p>
 
-*This published real status crop has no visible build number and is not the proxy settings page. It explains the status entry and information hierarchy; it does not establish build 141 installation or real-request acceptance.*
+*This published real status crop has no visible build number and is not the proxy settings page. It explains the status entry and information hierarchy; it does not establish build 143 installation or real-request acceptance.*
 
 **How to start and stop it:**
 
@@ -66,9 +66,9 @@ Public messages do not rewrite official account records, change participation or
 2. Wait for the connection details, quit Codex, then use **Connect Desktop** to relaunch it with the local route. An already-running Codex process does not switch routes automatically.
 3. Choose **Stop proxy** when finished. Closing the main window only hides it; quitting the app asks whether to stop the service.
 
-Participation, Priority, Use last and order affect new requests and stay synchronized with the account page. Pro20x defaults to Use last and can be changed. Subscription quota is used before credits; credit continuation is off unless the user enables it. Busy or unknown accounts are not treated as exhausted.
+Participation, Priority, Use last and order affect new requests and stay synchronized with the account page. Pro20x defaults to Use last and can be changed. Temporary occupancy in the ordinary group is awaited within the existing admission deadline before Use last accounts. Exhausted or non-participating accounts are still skipped; identity, cooldown and quota checks remain. Subscription quota is used before credits; credit continuation is off unless the user enables it. Busy or unknown accounts are not treated as exhausted.
 
-Disabling participation skips that account for admissions still waiting or retrying, while an admitted stream finishes. Gateway refusal, timeout, cancellation and ordinary forwarding failures have distinct messages; HTTP 503 remains and there is no automatic reconnect. Cleanup for a confirmed exited child briefly retries a busy lease lock up to three times while protecting a new run and active children. The historical fault that recovered only after a restart is not fully attributed, so this is not a permanent-stability guarantee.
+Disabling participation skips that account for admissions still waiting or retrying, while an admitted stream finishes. Gateway refusal, timeout, cancellation and ordinary forwarding failures have distinct messages; HTTP 503 remains and there is no automatic reconnect. Version 2.5 moves blocking reads off the cooperative executor and protects disconnected reply writes. Proven quota cooldowns are cleared only after newer subscription evidence is verified. For unknown legacy cooldowns, stop the proxy, choose Clear legacy cooldown on that account, verify fresh quota and identity, then confirm a backup and clear before restarting manually. Custom 5-hour used limits retain their saved values in both the editor and summary. Cleanup for a confirmed exited child briefly retries a busy lease lock up to three times while protecting a new run and active children. The historical fault that recovered only after a restart is not fully attributed, so this is not a permanent-stability guarantee.
 
 
 <a id="accounts"></a>
@@ -83,7 +83,7 @@ Disabling participation skips that account for admissions still waiting or retry
   <a href="docs/images/1009v2/accounts-home-137-crop.png"><img src="docs/images/1009v2/accounts-home-137-crop.png" width="1000" alt="Authorized crop from the published build 137 home capture showing Codex cards, 5-hour and 7-day quotas, reset times, credits and controls."></a>
 </p>
 
-*This is an authorized crop of the complete public 2.3.0 (137) home capture. Pixels and values in the region were not changed; it is not a build 141 capture. Narrow dedicated Codex list controls remain a next-version fix; use Cards or widen the window for now.*
+*This is an authorized crop of the complete public 2.3.0 (137) home capture. Pixels and values in the region were not changed; it is not a build 143 capture. Narrow dedicated Codex list controls remain a next-version fix; use Cards or widen the window for now.*
 
 
 <a id="claude"></a>
@@ -233,13 +233,13 @@ Disabling participation skips that account for admissions still waiting or retry
 
 ## 16 · Downloads, upgrades and builds
 
-This version supports **macOS 13+ on Apple Silicon ARM64**. The package is locally ad-hoc signed and not Apple-notarized. Clients on 9.6.x compare SemVer and treat 2.4.0 as lower, so download the DMG or ZIP manually; 2.3.0 clients can discover 2.4.0. Finish work, quit the old app normally, back up the old app and local data, replace it, then confirm 2.4.0 (141) / 1009v2 and review WeChat, Feishu and new settings.
+This version supports **macOS 13+ on Apple Silicon ARM64**. The package is locally ad-hoc signed and not Apple-notarized. Clients on 9.6.x need a manual download; 2.3 / 2.4 clients can discover 2.5. Users of local 2.5.0 (142) also need to replace it manually with build 143 because the product version is unchanged. Finish work, quit the old app normally, back up the old app and local data, replace it, then confirm 2.5.0 (143) / 1011v2 and review WeChat, Feishu and new settings.
 
-The final candidate's native self-tests, resource checks, recursive signature checks, DMG / ZIP tree checks and SHA256 records are in the [2.4 release record](docs/release-notes-v2.4.0.md). They do not establish real account sign-in, provider calls, reset-card redemption, WeChat / Feishu delivery or global-hotkey acceptance; the installed build and real proxy path still require field verification.
+The final candidate's native self-tests, resource checks, recursive signature checks, DMG / ZIP tree checks and SHA256 records are in the [2.5 release record](docs/release-notes-v2.5.0.md). They do not establish real account sign-in, provider calls, reset-card redemption, WeChat / Feishu delivery or global-hotkey acceptance; the installed build and real proxy path still require field verification.
 
 ```sh
-git clone --branch v2.4.0 https://github.com/BLACKIELF/AgentHub-AiGoodBro.git AiGoodBro-2.4
-cd AiGoodBro-2.4
+git clone --branch v2.5.0 https://github.com/BLACKIELF/AgentHub-AiGoodBro.git AiGoodBro-2.5
+cd AiGoodBro-2.5
 make build
 ```
 
@@ -265,4 +265,4 @@ The table lists code and resources actually reused, adapted or consulted as stat
 
 AiGoodBro is released under the [MIT License](LICENSE). Third-party notices are in [`Resources/THIRD_PARTY_NOTICES.txt`](Resources/THIRD_PARTY_NOTICES.txt), [`Companion/LocalProxy/LICENSE.CLIProxyAPI`](Companion/LocalProxy/LICENSE.CLIProxyAPI), [`Companion/LocalProxy/LICENSE.Hazmat`](Companion/LocalProxy/LICENSE.Hazmat) and [`Companion/LocalProxy/THIRD-PARTY-NOTICES.txt`](Companion/LocalProxy/THIRD-PARTY-NOTICES.txt).
 
-Documentation: [detailed guide](docs/usage-guide.md) · [native CLI quota coverage](docs/local-cli-accounts.md) · [proxy implementation and validation](docs/local-proxy-0928v1.md) · [2.4 release record](docs/release-notes-v2.4.0.md) · [image sources and checksums](docs/public-ui-1009v2.md) · [issues](https://github.com/BLACKIELF/AgentHub-AiGoodBro/issues) · [security](SECURITY.md)
+Documentation: [detailed guide](docs/usage-guide.md) · [native CLI quota coverage](docs/local-cli-accounts.md) · [proxy implementation and validation](docs/local-proxy-0928v1.md) · [2.5 release record](docs/release-notes-v2.5.0.md) · [image sources and checksums](docs/public-ui-1009v2.md) · [issues](https://github.com/BLACKIELF/AgentHub-AiGoodBro/issues) · [security](SECURITY.md)

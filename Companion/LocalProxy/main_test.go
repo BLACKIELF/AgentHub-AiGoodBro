@@ -383,6 +383,186 @@ func TestSelectorPreReservationPolicyChangeRetriesBeforeModelRequest(t *testing.
 	}
 }
 
+func TestSelectorBusyOrdinaryWaitsBeforeLastOrCredits(t *testing.T) {
+	for _, group := range []string{"manual_last", "forced_fallback", "paid"} {
+		for _, code := range []string{"busy", "credentials_busy", "policy_changed"} {
+			t.Run(group+"/"+code, func(t *testing.T) {
+				b := newFakeBridge(t)
+				b.creditFallback = true
+				if group == "manual_last" {
+					b.deferredIDs = []string{"B"}
+				} else if group == "forced_fallback" {
+					b.lastResortIDs = []string{"B"}
+				} else {
+					b.failures = map[string]string{"acquire\x00B": "quota"}
+				}
+				b.busy["A"] = true
+				b.busyCode = map[string]string{"A": code}
+				var recoveryOnce sync.Once
+				recovered := make(chan struct{})
+				b.beforeReply = func(q bridgeRequest, reply bridgeReply) bridgeReply {
+					if q.Command == "acquire" && q.ProfileID == "A" && reply.Error == code {
+						recoveryOnce.Do(func() {
+							go func() {
+								time.Sleep(25 * time.Millisecond)
+								b.mu.Lock()
+								delete(b.busy, "A")
+								b.mu.Unlock()
+								close(recovered)
+							}()
+						})
+					}
+					return reply
+				}
+				sel, _, ctx, closeScope := selectorFixture(t, b, time.Second, 5*time.Millisecond)
+				got, err := sel.Pick(ctx, "", "", executor.Options{}, selectorCandidates())
+				select {
+				case <-recovered:
+				case <-time.After(time.Second):
+					t.Fatal("ordinary recovery fixture did not run within its bound")
+				}
+				if err != nil || got == nil || got.ID != "A" {
+					t.Fatalf("busy ordinary account overflowed to %s: %v, %v", group, got, err)
+				}
+				b.mu.Lock()
+				acquired := strings.Join(b.acquired, ",")
+				b.mu.Unlock()
+				if acquired != "A" || bridgeCommandCount(b, "acquire_credit_primary") != 0 || bridgeCommandCount(b, "acquire_credit_secondary") != 0 {
+					t.Fatal("temporary subscription occupancy reached a later or paid group")
+				}
+				closeScope()
+			})
+		}
+	}
+}
+
+func TestSelectorBusyOrdinaryCanUseAnotherOrdinarySubscription(t *testing.T) {
+	for _, desktop := range []bool{false, true} {
+		t.Run(fmt.Sprintf("desktop=%t", desktop), func(t *testing.T) {
+			b := newFakeBridge(t)
+			b.order = []string{"B", "A", "C"}
+			b.deferredIDs = []string{"B"}
+			b.busy["A"] = true
+			if desktop {
+				b.failures = map[string]string{"acquire\x00C": "stage_not_applicable", "acquire_desktop\x00A": "stage_not_applicable"}
+			}
+			sel, _, ctx, closeScope := selectorFixture(t, b, time.Second, 5*time.Millisecond)
+			sel.order = b.order
+			sel.desktopFallback = desktop
+			candidates := append(selectorCandidates(), &auth.Auth{ID: "C", Attributes: map[string]string{}, Metadata: map[string]any{}})
+			got, err := sel.Pick(ctx, "", "", executor.Options{}, candidates)
+			if err != nil || got == nil || got.ID != "C" || bridgeCommandCount(b, "acquire") != 2 {
+				t.Fatalf("ready ordinary subscription was blocked: %v, %v", got, err)
+			}
+			b.mu.Lock()
+			acquired := strings.Join(b.acquired, ",")
+			b.mu.Unlock()
+			if acquired != "C" {
+				t.Fatalf("later account used ahead of ready ordinary: %s", acquired)
+			}
+			closeScope()
+		})
+	}
+}
+
+func TestHTTPBusyOrdinaryUsesReadyOrdinaryInsteadOfLast(t *testing.T) {
+	for _, group := range []string{"manual_last", "forced_fallback"} {
+		for _, desktop := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/desktop=%t", group, desktop), func(t *testing.T) {
+				b := newFakeBridge(t)
+				b.order = []string{"B", "A", "C"}
+				if group == "manual_last" {
+					b.deferredIDs = []string{"B"}
+				} else {
+					b.lastResortIDs = []string{"B"}
+				}
+				b.busy["A"] = true
+				if desktop {
+					b.failures = map[string]string{"acquire\x00C": "stage_not_applicable", "acquire_desktop\x00A": "stage_not_applicable"}
+				}
+				s := newStartup(t, b)
+				s.Accounts = append(s.Accounts, struct {
+					ID string `json:"id"`
+				}{"C"})
+				s.DesktopFallback = desktop
+				upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					id := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer fixture-")
+					if id != "C" || !b.hasLease(id) {
+						t.Error("request did not use the ready ordinary subscription lease")
+					}
+					complete(w, id)
+				}))
+				defer upstream.Close()
+				_, server, _ := startTestRuntime(t, s, upstream.URL)
+				response := request(t, s, server.URL, false)
+				body := consume(t, response)
+				if response.StatusCode != 200 || !strings.Contains(body, "done-C") {
+					t.Fatalf("ready ordinary subscription failed: %d %s", response.StatusCode, body)
+				}
+				waitEmpty(t, b)
+				b.mu.Lock()
+				acquired := strings.Join(b.acquired, ",")
+				b.mu.Unlock()
+				if acquired != "C" {
+					t.Fatalf("busy ordinary account reached last group: %s", acquired)
+				}
+			})
+		}
+	}
+}
+
+func TestSelectorBusyOrdinaryBarrierHonorsBudgetAndCancellation(t *testing.T) {
+	for _, ending := range []string{"budget", "scope_cancel", "caller_deadline"} {
+		t.Run(ending, func(t *testing.T) {
+			b := newFakeBridge(t)
+			b.deferredIDs = []string{"B"}
+			b.creditFallback = true
+			b.busy["A"] = true
+			sel, scope, ctx, closeScope := selectorFixture(t, b, 45*time.Millisecond, 5*time.Millisecond)
+			if ending == "caller_deadline" {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithTimeout(ctx, 25*time.Millisecond)
+				defer cancel()
+			}
+			started := time.Now()
+			result := make(chan error, 1)
+			go func() {
+				_, err := sel.Pick(ctx, "", "", executor.Options{}, selectorCandidates())
+				result <- err
+			}()
+			if ending == "scope_cancel" {
+				waitForBridgeCommandCount(t, b, "acquire", 1)
+				scope.cancel()
+			}
+			var err error
+			select {
+			case err = <-result:
+			case <-time.After(500 * time.Millisecond):
+				t.Fatal("ordinary busy barrier exceeded its bound")
+			}
+			if ending == "budget" {
+				if ae, ok := err.(*auth.Error); !ok || ae.Code != "account_busy" || time.Since(started) < 40*time.Millisecond {
+					t.Fatalf("busy budget was not honored: %v after %v", err, time.Since(started))
+				}
+			} else {
+				want := context.Canceled
+				if ending == "caller_deadline" {
+					want = context.DeadlineExceeded
+				}
+				if !errors.Is(err, want) {
+					t.Fatalf("busy barrier ended with %v, want %v", err, want)
+				}
+			}
+			before := bridgeCommandCount(b, "acquire")
+			time.Sleep(10 * time.Millisecond)
+			if b.count() != 0 || bridgeCommandCount(b, "acquire_credit_primary") != 0 || bridgeCommandCount(b, "acquire") != before {
+				t.Fatal("busy barrier admitted a later account or kept polling after exit")
+			}
+			closeScope()
+		})
+	}
+}
+
 func TestSelectorConfirmedRollbackEndsOnlyCurrentProfileAttempt(t *testing.T) {
 	for _, code := range []string{"policy_changed", "busy", "credentials_busy", "acquire_abandoned"} {
 		t.Run(code, func(t *testing.T) {
@@ -442,17 +622,17 @@ func TestSelectorRollbackContinuesToAnotherAvailableAccount(t *testing.T) {
 			}
 			sel, scope, ctx, closeScope := selectorFixture(t, b, time.Second, 5*time.Millisecond)
 			got, err := sel.Pick(ctx, "", "", executor.Options{}, selectorCandidates())
-			if err != nil || got == nil || got.ID != "B" {
-				t.Fatalf("other account cannot continue after rollback: %v, %v", got, err)
+			if transient {
+				if ae, ok := err.(*auth.Error); !ok || ae.Code != "account_busy" || scope.responseHeader.Get("Retry-After") != "1" || got != nil {
+					t.Fatalf("rollback with no ready ordinary account did not end the request: %v, %v", got, err)
+				}
+			} else if err != nil || got == nil || got.ID != "B" {
+				t.Fatalf("ready ordinary account cannot continue after rollback: %v, %v", got, err)
 			}
 			b.mu.Lock()
 			attemptA, attemptB := attempts["A"], attempts["B"]
 			b.mu.Unlock()
-			wantB := 1
-			if transient {
-				wantB = 2
-			}
-			if attemptA != 1 || attemptB != wantB || scope.hasAdmissionUncertainty() {
+			if attemptA != 1 || attemptB != 1 || scope.hasAdmissionUncertainty() {
 				t.Fatalf("wrong attempts/uncertainty after rollback: A=%d B=%d", attemptA, attemptB)
 			}
 			closeScope()
@@ -460,44 +640,83 @@ func TestSelectorRollbackContinuesToAnotherAvailableAccount(t *testing.T) {
 	}
 }
 
-func TestHTTPConfirmedRollbackReturns503RetryThenFreshRequestRecovers(t *testing.T) {
+func TestSelectorRollbackAfterWaitBudgetStillAdvertisesFreshRetry(t *testing.T) {
 	b := newFakeBridge(t)
-	b.order = []string{"A"}
+	b.order = []string{"A", "C", "B"}
+	b.deferredIDs = []string{"B"}
 	b.rolledBack = map[string]string{"A": "policy_changed"}
-	s := newStartup(t, b)
-	upstreamCalls := 0
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		b.mu.Lock()
-		upstreamCalls++
-		b.mu.Unlock()
-		complete(w, "A")
-	}))
-	defer upstream.Close()
-	rt, server, _ := startTestRuntime(t, s, upstream.URL)
-	rt.selector.waitFor = time.Second
-	started := time.Now()
-	response := request(t, s, server.URL, false)
-	body := consume(t, response)
-	if response.StatusCode != 503 || response.Header.Get("Retry-After") != "1" || !strings.Contains(body, "rolled back; retry request") || time.Since(started) >= 500*time.Millisecond {
-		t.Fatalf("HTTP rollback response = %d %v %s", response.StatusCode, response.Header, body)
+	b.beforeReply = func(q bridgeRequest, reply bridgeReply) bridgeReply {
+		if q.Command == "acquire" && q.ProfileID == "A" {
+			time.Sleep(25 * time.Millisecond)
+		}
+		return reply
 	}
-	b.mu.Lock()
-	if upstreamCalls != 0 || len(b.deniedKeys) != 1 {
-		b.mu.Unlock()
-		t.Fatal("rolled back request reached upstream or lost tombstone")
+	sel, scope, ctx, closeScope := selectorFixture(t, b, 10*time.Millisecond, time.Millisecond)
+	sel.order = b.order
+	candidates := append(selectorCandidates(), &auth.Auth{ID: "C", Attributes: map[string]string{}, Metadata: map[string]any{}})
+	_, err := sel.Pick(ctx, "", "", executor.Options{}, candidates)
+	if ae, ok := err.(*auth.Error); !ok || ae.Code != "account_busy" || !strings.Contains(ae.Message, "rolled back; retry request") || scope.responseHeader.Get("Retry-After") != "1" {
+		t.Fatalf("late rollback lost fresh retry response: %v, %v", err, scope.responseHeader)
 	}
-	delete(b.rolledBack, "A")
-	b.mu.Unlock()
-	response = request(t, s, server.URL, false)
-	body = consume(t, response)
-	if response.StatusCode != 200 || !strings.Contains(body, "done-A") || response.Header.Get("Retry-After") != "" {
-		t.Fatalf("fresh HTTP retry = %d %v %s", response.StatusCode, response.Header, body)
+	if bridgeCommandCount(b, "acquire") != 1 || b.count() != 0 {
+		t.Fatal("expired ordinary rollback reached another admission")
 	}
-	waitEmpty(t, b)
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if upstreamCalls != 1 || len(b.deniedKeys) != 1 {
-		t.Fatal("fresh retry failed to preserve previous tombstone")
+	closeScope()
+}
+
+func TestHTTPConfirmedRollbackReturns503RetryThenFreshRequestRecovers(t *testing.T) {
+	for _, group := range []string{"manual_last", "forced_fallback"} {
+		for _, code := range []string{"busy", "credentials_busy", "policy_changed"} {
+			t.Run(group+"/"+code, func(t *testing.T) {
+				b := newFakeBridge(t)
+				if group == "manual_last" {
+					b.deferredIDs = []string{"B"}
+				} else {
+					b.lastResortIDs = []string{"B"}
+				}
+				b.rolledBack = map[string]string{"A": code}
+				b.creditFallback = true
+				s := newStartup(t, b)
+				s.DesktopFallback = true
+				upstreamCalls := 0
+				upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					b.mu.Lock()
+					upstreamCalls++
+					b.mu.Unlock()
+					complete(w, "A")
+				}))
+				defer upstream.Close()
+				rt, server, _ := startTestRuntime(t, s, upstream.URL)
+				rt.selector.waitFor = time.Second
+				started := time.Now()
+				response := request(t, s, server.URL, false)
+				body := consume(t, response)
+				if response.StatusCode != 503 || response.Header.Get("Retry-After") != "1" || !strings.Contains(body, "rolled back; retry request") || time.Since(started) >= 500*time.Millisecond {
+					t.Fatalf("HTTP rollback response = %d %v %s", response.StatusCode, response.Header, body)
+				}
+				b.mu.Lock()
+				if upstreamCalls != 0 || len(b.deniedKeys) != 1 || len(b.acquired) != 0 {
+					b.mu.Unlock()
+					t.Fatal("rolled back request reached upstream or lost tombstone")
+				}
+				delete(b.rolledBack, "A")
+				b.mu.Unlock()
+				if bridgeCommandCount(b, "acquire") != 1 || bridgeCommandCount(b, "acquire_desktop") != 0 || bridgeCommandCount(b, "acquire_credit_primary") != 0 {
+					t.Fatal("rolled back ordinary request replayed a tuple or reached later groups")
+				}
+				response = request(t, s, server.URL, false)
+				body = consume(t, response)
+				if response.StatusCode != 200 || !strings.Contains(body, "done-A") || response.Header.Get("Retry-After") != "" {
+					t.Fatalf("fresh HTTP retry = %d %v %s", response.StatusCode, response.Header, body)
+				}
+				waitEmpty(t, b)
+				b.mu.Lock()
+				defer b.mu.Unlock()
+				if upstreamCalls != 1 || len(b.deniedKeys) != 1 || strings.Join(b.acquired, ",") != "A" {
+					t.Fatal("fresh retry failed to preserve previous tombstone or selected a later account")
+				}
+			})
+		}
 	}
 }
 

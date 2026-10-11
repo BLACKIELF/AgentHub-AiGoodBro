@@ -17,13 +17,21 @@ import (
 
 // Tokens and upstream error text are intentionally unrepresentable here.
 type safeCooldown struct {
-	ID       string    `json:"id"`
-	Model    string    `json:"model,omitempty"`
-	Until    time.Time `json:"until"`
-	Reason   string    `json:"reason,omitempty"`
-	Exceeded bool      `json:"exceeded,omitempty"`
-	Recover  time.Time `json:"recover,omitempty"`
-	Backoff  int       `json:"backoff,omitempty"`
+	ID        string             `json:"id"`
+	Model     string             `json:"model,omitempty"`
+	Until     time.Time          `json:"until"`
+	Reason    string             `json:"reason,omitempty"`
+	Exceeded  bool               `json:"exceeded,omitempty"`
+	Recover   time.Time          `json:"recover,omitempty"`
+	Backoff   int                `json:"backoff,omitempty"`
+	UpdatedAt time.Time          `json:"updatedAt,omitempty"`
+	Error     *safeCooldownError `json:"error,omitempty"`
+}
+
+type safeCooldownError struct {
+	HTTPStatus      int  `json:"httpStatus"`
+	CredentialQuota bool `json:"credentialQuota,omitempty"`
+	Absent          bool `json:"absent,omitempty"`
 }
 type cooldownStore struct {
 	mu   sync.Mutex
@@ -100,13 +108,35 @@ func (s *cooldownStore) Load(ctx context.Context) ([]auth.CooldownStateRecord, e
 			continue
 		}
 		reason := safeReason(r.Reason)
-		out = append(out, auth.CooldownStateRecord{Provider: "codex", AuthID: r.ID, Model: r.Model, Status: "error", NextRetryAfter: r.Until, Reason: reason, Quota: auth.QuotaState{Exceeded: r.Exceeded, Reason: reason, NextRecoverAt: r.Recover, BackoffLevel: r.Backoff}})
+		updatedAt := r.UpdatedAt
+		if updatedAt.IsZero() {
+			// Legacy records predate this file write. Leaving this zero makes
+			// the SDK invent a newer error at every helper restart.
+			updatedAt = info.ModTime()
+		}
+		// An omitted legacy error means unknown, not proof that no model
+		// error existed. New records explicitly encode known absence.
+		lastError := &auth.Error{}
+		if r.Error != nil {
+			if r.Error.Absent {
+				if r.Error.HTTPStatus != 0 || r.Error.CredentialQuota {
+					return nil, errors.New("invalid_cooldown")
+				}
+				lastError = nil
+			} else {
+				lastError.HTTPStatus = r.Error.HTTPStatus
+				if r.Error.CredentialQuota && r.Error.HTTPStatus == 429 {
+					lastError.Code = credentialQuotaErrorCode
+				}
+			}
+		}
+		out = append(out, auth.CooldownStateRecord{Provider: "codex", AuthID: r.ID, Model: r.Model, Status: "error", NextRetryAfter: r.Until, Reason: reason, UpdatedAt: updatedAt, LastError: lastError, Quota: auth.QuotaState{Exceeded: r.Exceeded, Reason: reason, NextRecoverAt: r.Recover, BackoffLevel: r.Backoff}})
 	}
 	return out, nil
 }
 func safeReason(s string) string {
 	switch s {
-	case "rate_limit", "quota_exceeded", "credential_quota", "usage_limit_reached", "unauthorized", "forbidden", "temporary_error":
+	case "rate_limit", "quota", "quota_exceeded", "credential_quota", "usage_limit_reached", "unauthorized", "forbidden", "temporary_error":
 		return s
 	default:
 		return "temporary_error"
@@ -127,7 +157,12 @@ func (s *cooldownStore) Save(ctx context.Context, records []auth.CooldownStateRe
 		if r.Quota.Reason != "" {
 			reason = r.Quota.Reason
 		}
-		rows = append(rows, safeCooldown{r.AuthID, r.Model, r.NextRetryAfter, safeReason(reason), r.Quota.Exceeded, r.Quota.NextRecoverAt, r.Quota.BackoffLevel})
+		lastError := &safeCooldownError{Absent: r.LastError == nil}
+		if r.LastError != nil {
+			lastError.HTTPStatus = r.LastError.HTTPStatus
+			lastError.CredentialQuota = r.LastError.Code == credentialQuotaErrorCode
+		}
+		rows = append(rows, safeCooldown{ID: r.AuthID, Model: r.Model, Until: r.NextRetryAfter, Reason: safeReason(reason), Exceeded: r.Quota.Exceeded, Recover: r.Quota.NextRecoverAt, Backoff: r.Quota.BackoffLevel, UpdatedAt: r.UpdatedAt, Error: lastError})
 	}
 	name := ".cooldown-" + uuid.NewString()
 	f, err := s.root.OpenFile(name, os.O_CREATE|os.O_EXCL|os.O_WRONLY|syscall.O_NOFOLLOW, 0600)

@@ -109,6 +109,7 @@ type requestScope struct {
 	creditFallback     bool
 	orderErr           error
 	pickMu             sync.Mutex
+	ordinaryRolledBack bool          // Protected by pickMu; later groups require a fresh request after rollback.
 	heartbeatPeriod    time.Duration // Zero selects the fixed production interval; shortened only by unit tests.
 	id                 string
 	cancel             context.CancelFunc
@@ -123,6 +124,8 @@ type requestScope struct {
 	admissionUncertain bool
 	done               chan struct{}
 	exited             chan struct{}
+	recovery           *quotaRecovery
+	recoveryReserved   map[string]bool
 }
 
 func (s *requestScope) add(l lease) {
@@ -228,6 +231,7 @@ func (s *requestScope) heartbeats() {
 	}
 }
 func (s *requestScope) close() {
+	defer s.releaseQuotaAccounts()
 	close(s.done)
 	s.cancel()
 	<-s.exited
@@ -328,7 +332,13 @@ func (s *selector) Pick(ctx context.Context, _, _ string, _ executor.Options, ca
 		sawBusy := false
 		sawQuota := false
 		sawUncertain := false
+		sawOrdinaryBusy := false
 		for _, pass := range passes {
+			// Finish every ordinary subscription and desktop attempt, then wait
+			// for temporary occupancy instead of overflowing to last or paid groups.
+			if !pass.ordinarySubscription && (sawOrdinaryBusy || scope.ordinaryRolledBack) {
+				break
+			}
 			command := pass.command
 			for _, id := range pass.ids {
 				if err := pickContextError(ctx, scope); err != nil {
@@ -341,11 +351,16 @@ func (s *selector) Pick(ctx context.Context, _, _ string, _ executor.Options, ca
 				// Check before each acquire. Once sent, the RPC gets its own 25s
 				// bridge bound so HTTP cancellation cannot abandon an ambiguous lease.
 				if !waitDeadline.IsZero() && !time.Now().Before(waitDeadline) {
+					if scope.ordinaryRolledBack {
+						scope.retryAfter()
+						return nil, admissionError("account_busy", "account admission rolled back; retry request")
+					}
 					return nil, admissionError("account_busy", "eligible accounts remain busy")
 				}
 				if err := pickContextError(ctx, scope); err != nil {
 					return nil, err
 				}
+				scope.reserveQuotaAccount(id)
 				reply, err := s.bridge.call(scope.ctx, command, scope.id, id, "")
 				if err != nil {
 					return nil, s.reconcileAcquire(scope, id, acquireFailureDetail(err))
@@ -365,22 +380,29 @@ func (s *selector) Pick(ctx context.Context, _, _ string, _ executor.Options, ca
 					if reply.Error == "control_busy" {
 						return nil, admissionError("account_busy", "proxy control channel is busy")
 					}
+					state := safeState(reply.Error)
 					if reply.Resolution == "abandoned" {
 						// The host durably cancelled this tuple. Its deny marker
-						// must survive late acquires; try other accounts only.
+						// must survive late acquires; try other ordinary accounts,
+						// then end a transient rollback before reaching later groups.
 						scope.abandonProfile(id)
+						if pass.ordinarySubscription && (state == "busy" || state == "credentials_busy") {
+							scope.ordinaryRolledBack = true
+						}
 						rejections[admissionRejectionDetail(reply.Error)] = true
-						s.events.emit(event{Event: "account", ProfileID: id, State: safeState(reply.Error), CooldownUntil: reply.RetryAt})
+						s.events.emit(event{Event: "account", ProfileID: id, State: state, CooldownUntil: reply.RetryAt})
 						continue
 					}
 					if reply.Error == "admission_deadline" {
 						scope.retryAfter()
 						return nil, admissionError("account_busy", "account admission timed out")
 					}
-					state := safeState(reply.Error)
 					rejections[admissionRejectionDetail(reply.Error)] = true
 					if state == "busy" || state == "credentials_busy" || reply.Error == "policy_changed" {
 						sawBusy = true
+						if pass.ordinarySubscription {
+							sawOrdinaryBusy = true
+						}
 					} else if state == "quota" || state == "usage_limit" {
 						sawQuota = true
 					} else {
@@ -419,7 +441,7 @@ func (s *selector) Pick(ctx context.Context, _, _ string, _ executor.Options, ca
 		if err := pickContextError(ctx, scope); err != nil {
 			return nil, err
 		}
-		if !sawBusy {
+		if !sawBusy || scope.ordinaryRolledBack {
 			abandoned := scope.hasAbandonedProfiles()
 			if !abandoned && sawQuota && !sawUncertain && !scope.hasAdmissionUncertainty() {
 				return nil, admissionError("quota", "all eligible account quotas are exhausted")
@@ -623,8 +645,9 @@ func admissionCommands(credits, desktop bool) []string {
 }
 
 type admissionPass struct {
-	command string
-	ids     []string
+	command              string
+	ids                  []string
+	ordinarySubscription bool
 }
 
 func admissionPasses(order, deferredIDs, lastResortIDs []string, credits, desktop bool) []admissionPass {
@@ -655,13 +678,13 @@ func admissionPasses(order, deferredIDs, lastResortIDs []string, credits, deskto
 	// Every subscription still precedes paid credits. Within each phase,
 	// ordinary, manually deferred and forced fallback groups each retain the
 	// original command and profile order.
-	for _, phase := range [][]string{commands[:subscriptions], commands[subscriptions:]} {
-		for _, ids := range [][]string{ordinary, manualLast, fallback} {
+	for phaseIndex, phase := range [][]string{commands[:subscriptions], commands[subscriptions:]} {
+		for groupIndex, ids := range [][]string{ordinary, manualLast, fallback} {
 			if len(ids) == 0 {
 				continue
 			}
 			for _, command := range phase {
-				passes = append(passes, admissionPass{command: command, ids: ids})
+				passes = append(passes, admissionPass{command: command, ids: ids, ordinarySubscription: phaseIndex == 0 && groupIndex == 0})
 			}
 		}
 	}
@@ -686,6 +709,7 @@ type hook struct {
 }
 
 func (h *hook) OnResult(_ context.Context, r auth.Result) {
+	defer finishQuotaResult(r)
 	state := "ready"
 	code := ""
 	var until int64
@@ -766,6 +790,7 @@ type runtime struct {
 	requests  sync.WaitGroup
 	gate      sync.Mutex
 	stopping  bool
+	recovery  *quotaRecovery
 }
 
 func newRuntime(s startup, e *events, testBaseURL string) (*runtime, error) {
@@ -818,6 +843,8 @@ func newRuntime(s startup, e *events, testBaseURL string) (*runtime, error) {
 	}
 	m.RegisterExecutor(&imageExecutor{CodexExecutor: provider.NewCodexExecutor(cfg), transports: transports, baseURL: imageBaseURL})
 	rt := &runtime{selector: sel, manager: m, ids: sel.order, cancel: cancel, store: store, transport: transport, models: make(map[string]*registry.ModelInfo)}
+	rt.recovery = newQuotaRecovery(sel.order)
+	m.SetResultPolicy(rt.recovery)
 	// This is a discovery seed, not the set of models Desktop may request.
 	for _, model := range append(append([]string(nil), s.Models...), nativeImageModel) {
 		rt.models[model] = proxyModelInfo(model)
@@ -839,6 +866,7 @@ func newRuntime(s startup, e *events, testBaseURL string) (*runtime, error) {
 		rt.close()
 		return nil, errors.New("cooldown_restore_failed")
 	}
+	rt.emitRestoredCooldowns()
 	base := handlers.NewBaseAPIHandlers(&cfg.SDKConfig, m)
 	base.SetModelRouterHost(codexModelRoute{})
 	responses := openai.NewOpenAIResponsesAPIHandler(base)
@@ -876,7 +904,7 @@ func newRuntime(s startup, e *events, testBaseURL string) (*runtime, error) {
 			c.AbortWithStatus(http.StatusServiceUnavailable)
 			return
 		}
-		scope := &requestScope{id: requestID.String(), cancel: requestCancel, ctx: requestCtx, bridge: b, events: e, responseHeader: c.Writer.Header(), done: make(chan struct{}), exited: make(chan struct{})}
+		scope := &requestScope{id: requestID.String(), cancel: requestCancel, ctx: requestCtx, bridge: b, events: e, responseHeader: c.Writer.Header(), done: make(chan struct{}), exited: make(chan struct{}), recovery: rt.recovery}
 		c.Request = c.Request.WithContext(context.WithValue(requestCtx, scopeKey{}, scope))
 		// Desktop can replay large image histories. Do not impose a second,
 		// local body-size cap on Responses or compaction requests.
@@ -889,7 +917,7 @@ func newRuntime(s startup, e *events, testBaseURL string) (*runtime, error) {
 	router.POST("/v1/responses/compact", rt.withResponseModel(responses.Compact))
 	router.POST("/responses/compact", rt.withResponseModel(responses.Compact))
 	for _, path := range []string{"/v1/images/generations", "/v1/images/edits", "/images/generations", "/images/edits"} {
-		router.POST(path, imageHandler(m))
+		router.POST(path, rt.withQuotaRecovery(imageHandler(m)))
 	}
 	router.GET("/v1/models", func(c *gin.Context) {
 		models := make([]map[string]string, 0, len(s.Models))

@@ -26,18 +26,19 @@ type bridgeRequest struct {
 	LeaseID       string `json:"leaseID,omitempty"`
 }
 type bridgeReply struct {
-	OK             bool     `json:"ok"`
-	Order          []string `json:"order,omitempty"`
-	LastResortIDs  []string `json:"lastResortIDs,omitempty"`
-	DeferredIDs    []string `json:"deferredIDs,omitempty"`
-	CreditFallback bool     `json:"creditFallback,omitempty"`
-	LeaseID        string   `json:"leaseID"`
-	AccessToken    string   `json:"accessToken"`
-	AccountID      string   `json:"accountID"`
-	ExpiresAt      int64    `json:"expiresAt"`
-	Error          string   `json:"error"`
-	Resolution     string   `json:"resolution"`
-	RetryAt        int64    `json:"retryAt"`
+	OK              bool     `json:"ok"`
+	Order           []string `json:"order,omitempty"`
+	LastResortIDs   []string `json:"lastResortIDs,omitempty"`
+	DeferredIDs     []string `json:"deferredIDs,omitempty"`
+	CreditFallback  bool     `json:"creditFallback,omitempty"`
+	LeaseID         string   `json:"leaseID"`
+	AccessToken     string   `json:"accessToken"`
+	AccountID       string   `json:"accountID"`
+	ExpiresAt       int64    `json:"expiresAt"`
+	Error           string   `json:"error"`
+	Resolution      string   `json:"resolution"`
+	RetryAt         int64    `json:"retryAt"`
+	QuotaObservedAt float64  `json:"quotaObservedAt,omitempty"`
 }
 
 func (b *bridge) call(ctx context.Context, command, requestID, profileID, leaseID string) (bridgeReply, error) {
@@ -79,7 +80,7 @@ func (b *bridge) call(ctx context.Context, command, requestID, profileID, leaseI
 	// Once issued, a lease operation must finish or be reconciled even if its
 	// HTTP client disconnects. The host gets the full exchange bound here.
 	wireContext := ctx
-	if command != "order" && command != "order_end" {
+	if command != "order" && command != "order_end" && command != "quota_recovery" {
 		wireContext = context.WithoutCancel(ctx)
 	}
 	exchangeLimit := b.exchangeTimeout

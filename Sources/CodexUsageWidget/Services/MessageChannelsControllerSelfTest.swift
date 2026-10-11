@@ -353,6 +353,21 @@ enum MessageChannelsControllerSelfTest {
         personalHTTP.completePath("/ilink/bot/sendmessage", responseBody: "{}")
         spin { !personal.actionInFlight && personal.personalWeChatPhase == .ready }
         expect(personal.personalWeChatPhase == .ready, "held notification lost acceptance after cursor-only poll")
+        // Same-owner context token/time refresh also retains an admitted send.
+        personal.sendTest(.personalWeChat)
+        spin { personalHTTP.hasPending("/ilink/bot/sendmessage") && personalHTTP.hasPending("/ilink/bot/getupdates") }
+        var refreshedIncoming = incoming
+        refreshedIncoming["get_updates_buf"] = "context-refresh-held-send"
+        var refreshedMessage = (incoming["msgs"] as! [[String: Any]])[0]
+        refreshedMessage["context_token"] = "synthetic-refreshed-context"
+        refreshedMessage["create_time_ms"] = Int((Date().timeIntervalSince1970 * 1000).rounded(.up))
+        refreshedIncoming["msgs"] = [refreshedMessage]
+        personalHTTP.completePath("/ilink/bot/getupdates", responseBody: String(data: try! JSONSerialization.data(withJSONObject: refreshedIncoming), encoding: .utf8)!)
+        settle()
+        expect(personal.actionInFlight && personal.personalWeChatPhase == .ready, "context refresh cancelled held notification or discarded API verification")
+        personalHTTP.completePath("/ilink/bot/sendmessage", responseBody: "{}")
+        spin { !personal.actionInFlight && personal.personalWeChatPhase == .ready }
+        expect(personal.personalWeChatPhase == .ready, "held notification lost acceptance after context refresh")
         spin { personalHTTP.hasPending("/ilink/bot/getupdates") }
         let command: [String: Any] = [
             "ret": 0, "get_updates_buf": "synthetic-command-cursor",

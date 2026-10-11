@@ -48,6 +48,7 @@ final class LocalProxyBridge: @unchecked Sendable {
             throw LocalProxySocketError.unavailable
         }
         let queue = DispatchQueue(label: "AiGoodBro.LocalProxyIPC")
+        let ioQueue = DispatchQueue(label: "AiGoodBro.LocalProxyIPC.IO", qos: .userInitiated, attributes: .concurrent)
         let readSource = DispatchSource.makeReadSource(fileDescriptor: descriptor, queue: queue)
         let slots = self.slots
         let controlSlots = self.controlSlots
@@ -76,13 +77,19 @@ final class LocalProxyBridge: @unchecked Sendable {
                 }
                 // Read only one bounded line per connection. Slow/malformed
                 // clients cannot hold the UI thread or an unlimited worker pool.
-                Task.detached(priority: .userInitiated) {
+                // Socket reads, durable registry maintenance and reply writes
+                // can block. They must not occupy Swift's cooperative workers,
+                // or reconciliation could stall behind the work it must cancel.
+                ioQueue.async {
                     var reading = true
                     var admission: DispatchSemaphore?
+                    var ownsClient = true
                     defer {
-                        Darwin.close(client)
-                        if reading { readers.signal() }
-                        admission?.signal()
+                        if ownsClient {
+                            Darwin.close(client)
+                            if reading { readers.signal() }
+                            admission?.signal()
+                        }
                     }
                     _ = fcntl(client, F_SETFD, FD_CLOEXEC)
                     Self.configure(client)
@@ -113,18 +120,28 @@ final class LocalProxyBridge: @unchecked Sendable {
                         } else if ["heartbeat", "release"].contains(request.command), let maintenance {
                             reply = maintenance(request)
                         } else {
-                            reply = await handler(request)
-                        }
-                        do {
-                            var data = try JSONEncoder().encode(reply)
-                            data.append(10)
-                            try Self.write(data, to: client)
-                        } catch {
-                            if request.command.hasPrefix("acquire"), reply.ok, reply.leaseID != nil {
-                                do { try rollback(request) } catch { onRollbackFailure(request) }
+                            let acceptedRequest = request
+                            // Only the asynchronous UI/admission work needs a
+                            // Task. Transfer descriptor and slot ownership until
+                            // its reply (including rollback) finishes on GCD.
+                            ownsClient = false
+                            Task {
+                                let reply = await handler(acceptedRequest)
+                                ioQueue.async {
+                                    defer {
+                                        Darwin.close(client)
+                                        capacity.signal()
+                                    }
+                                    Self.sendReply(
+                                        reply, request: acceptedRequest, to: client,
+                                        rollback: rollback, onRollbackFailure: onRollbackFailure)
+                                }
                             }
-                            throw error
+                            return
                         }
+                        Self.sendReply(
+                            reply, request: request, to: client,
+                            rollback: rollback, onRollbackFailure: onRollbackFailure)
                     } catch {
                         // Never expose account metadata in IPC diagnostics.
                     }
@@ -151,6 +168,23 @@ final class LocalProxyBridge: @unchecked Sendable {
 
     private static func takeSlot(_ capacity: DispatchSemaphore) -> Bool {
         capacity.wait(timeout: .now()) == .success
+    }
+
+    private static func sendReply(
+        _ reply: LocalProxyReply, request: LocalProxyRequest, to client: Int32,
+        rollback: @Sendable (LocalProxyRequest) throws -> Void,
+        onRollbackFailure: @Sendable (LocalProxyRequest) -> Void
+    ) {
+        do {
+            var data = try JSONEncoder().encode(reply)
+            data.append(10)
+            try write(data, to: client)
+        } catch {
+            if request.command.hasPrefix("acquire"), reply.ok, reply.leaseID != nil {
+                do { try rollback(request) } catch { onRollbackFailure(request) }
+            }
+            // Never expose account metadata in IPC diagnostics.
+        }
     }
 
     private static func configure(_ descriptor: Int32) {
@@ -185,7 +219,9 @@ final class LocalProxyBridge: @unchecked Sendable {
         try data.withUnsafeBytes { bytes in
             var offset = 0
             while offset < bytes.count {
-                let count = Darwin.send(descriptor, bytes.baseAddress!.advanced(by: offset), bytes.count - offset, 0)
+                // A peer may close after admission. Keep EPIPE on this write's
+                // error path so the exact lease is rolled back, not signalled.
+                let count = Darwin.send(descriptor, bytes.baseAddress!.advanced(by: offset), bytes.count - offset, MSG_NOSIGNAL)
                 if count < 0, errno == EINTR { continue }
                 guard count > 0 else { throw LocalProxySocketError.unavailable }
                 offset += count
