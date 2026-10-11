@@ -150,9 +150,19 @@ private enum LocalProxyPolicyEditorFixture {
             guard let bounds = PolicyEditorFixtureProbe.bounds[name], let root = PolicyEditorFixtureProbe.bounds["root"] else {
                 print("FAIL Native control geometry missing: \(name)"); exit(1)
             }
-            let point = host.convert(NSPoint(x: bounds.midX - root.minX, y: bounds.midY - root.minY), to: nil)
+            let checkbox = name == "defaults" || name == "credits"
+            // WorkspaceCheckboxStyle draws an 18pt checkbox before its label.
+            // Click that square rather than relying on plain-button label hit testing.
+            let x = checkbox ? bounds.minX + min(9, bounds.width / 2) : bounds.midX
+            let point = host.convert(NSPoint(x: x - root.minX, y: bounds.midY - root.minY), to: nil)
             if CommandLine.arguments.contains("--diagnose") {
                 print("TRACE click \(name) geometry=\(bounds), native=\(point), host=\(host.bounds), field=\(fields().first.map { $0.convert($0.bounds, to: nil) } as Any)")
+            }
+            if checkbox {
+                let hitPoint = host.superview?.convert(point, from: nil) ?? point
+                let hit = host.hitTest(hitPoint)
+                let hitName = hit.map { String(describing: type(of: $0)) } ?? "none"
+                print("TRACE checkbox \(name) geometry=\(bounds), root=\(root), native=\(point), hostFlipped=\(host.isFlipped), hit=\(hitName), inputsBefore=\(fields().count)")
             }
             // AppKit may track synchronously inside mouseDown. Queue the full
             // click first so that tracking can consume mouseUp before returning.
@@ -170,6 +180,9 @@ private enum LocalProxyPolicyEditorFixture {
                 print("POLICY_EDITOR_STAGE press \(name) sendEvent \(eventName) ready")
             }
             pump()
+            if checkbox {
+                print("TRACE checkbox \(name) inputsAfter=\(fields().count), dirty=\(PolicyEditorFixtureProbe.dirty), summary=\(PolicyEditorFixtureProbe.summary)")
+            }
         }
         func edit(_ value: String, at index: Int = 0) {
             print("POLICY_EDITOR_STAGE edit input \(index) to \(value)")
