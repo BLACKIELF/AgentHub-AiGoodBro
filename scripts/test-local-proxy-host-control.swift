@@ -196,8 +196,15 @@ extension LocalProxyHostFixtures {
                 continuation.resume()
             }
         }
-        try await Task.sleep(nanoseconds: 100_000_000)
-        try expect(rolledBack.wait(timeout: .now() + 1) == .success, "failed acquired-lease reply still runs rollback after descriptor transfer")
+        // The transferred reply still awaits its MainActor handler. Suspend
+        // this actor while GCD observes rollback; blocking it after an assumed
+        // scheduling delay would prevent the very reply being tested.
+        let didRollBack = await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                continuation.resume(returning: rolledBack.wait(timeout: .now() + 1) == .success)
+            }
+        }
+        try expect(didRollBack, "failed acquired-lease reply still runs rollback after descriptor transfer")
         print("PASS: \(checks) control progress checks; synthetic socket, registry and worker only")
     }
 
