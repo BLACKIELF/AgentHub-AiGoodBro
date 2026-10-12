@@ -1,0 +1,419 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AiGoodBro · English 1011v1</title>
+<style>
+:root{--f:"SF Pro Display","SF Pro Text","PingFang SC",system-ui,sans-serif;--mono:"SF Mono",ui-monospace,Menlo,monospace;
+ --fg:#f2f2f5;--fg2:rgba(242,242,245,.62);--fg3:rgba(242,242,245,.40);--line:rgba(255,255,255,.075);--card:rgba(255,255,255,.035);
+ --blue:#2866F7;--blueL:#7BA0FF;--info:#0A84FF;--ok:#34AA62;--warn:#FF9F0A;--bad:#FF453A;--vio:#8B6DFF}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{width:100%;height:100%;background:#000;overflow:hidden}
+#wrap{position:absolute;left:50%;top:50%;width:1920px;height:1440px;transform-origin:center}
+#stage{position:absolute;inset:0;overflow:hidden;background:#000;font-family:var(--f);color:var(--fg);-webkit-font-smoothing:antialiased}
+.abs{position:absolute}.t{position:absolute;white-space:nowrap}
+.glow{position:absolute;border-radius:50%;filter:blur(170px)}
+/* ===== the app window (UI scale: 1pt = 2px, window 1100×760pt) ===== */
+#cam{position:absolute;left:0;top:0;width:1920px;height:1440px;perspective:2400px;perspective-origin:50% 40%}
+#win{position:absolute;left:0;top:0;width:2200px;height:1520px;transform-origin:0 0;border-radius:24px;overflow:hidden;background:rgb(19,20,26);
+ box-shadow:0 0 0 1.5px rgba(255,255,255,.12),0 80px 200px rgba(0,0,0,.8)}
+#win *{transform-style:flat}
+.nav{position:absolute;left:0;top:0;width:128px;height:100%;background:rgba(255,255,255,.025);border-right:1.5px solid var(--line)}
+.ni{position:absolute;left:20px;width:88px;height:80px;border-radius:20px;display:grid;place-items:center}
+.ni.on{background:rgba(40,102,247,.12);box-shadow:inset 0 0 0 2px rgba(40,102,247,.34)}
+.ni.on:before{content:"";position:absolute;left:-10px;top:24px;width:6px;height:32px;border-radius:3px;background:var(--blue)}
+.ni svg{width:34px;height:34px}
+.top{position:absolute;left:128px;right:0;top:0;height:96px;display:flex;align-items:center;gap:20px;padding-left:36px;border-bottom:1.5px solid var(--line)}
+.top img{width:52px;height:52px;border-radius:14px}.top b{font-size:34px;font-weight:700}.top span{font-size:24px;color:var(--fg3)}
+.main{position:absolute;left:128px;right:0;top:96px;bottom:0;padding:20px 28px}
+.sec{position:absolute;left:28px;right:28px;border-radius:20px;background:rgba(255,255,255,.02);border:1.5px solid rgba(255,255,255,.085)}
+.sh{position:absolute;left:24px;top:18px;display:flex;align-items:center;gap:12px;font-size:26px;font-weight:600;white-space:nowrap}
+.sh small{font-size:22px;color:var(--fg3);font-weight:400;margin-left:8px}
+.chev{width:14px;height:14px;border-right:3px solid var(--fg2);border-bottom:3px solid var(--fg2);transform:rotate(45deg);margin:-6px 6px 0 0}
+.pill{display:inline-block;padding:4px 14px;border-radius:999px;font-size:20px;font-weight:600}
+.btn{position:absolute;padding:8px 20px;border-radius:12px;background:rgba(255,255,255,.07);border:1.5px solid rgba(255,255,255,.1);font-size:22px;white-space:nowrap}
+/* stats strip */
+.kpi{position:absolute;top:70px;height:118px;border-radius:16px;background:var(--card);border:1.5px solid var(--line);padding:16px 22px}
+.kpi b{display:block;font:600 30px var(--f);letter-spacing:-.01em;font-variant-numeric:tabular-nums;white-space:nowrap}.kpi span{display:block;font-size:20px;color:var(--fg3);margin-top:6px;white-space:nowrap}
+/* account card */
+.ac{position:absolute;width:476px;height:226px;border-radius:20px;background:var(--card);border:1.5px solid rgba(255,255,255,.075);overflow:hidden}
+.ac.cur{border-color:rgba(40,102,247,.55);box-shadow:0 0 0 1px rgba(40,102,247,.2) inset}
+.ac .no{position:absolute;left:20px;top:20px;font:600 22px var(--mono);color:var(--fg3)}
+.ac .av{position:absolute;left:62px;top:16px;width:34px;height:34px;border-radius:50%}
+.ac .nm{position:absolute;left:106px;top:16px;font-size:26px;font-weight:600;white-space:nowrap}
+.ac .tg{position:absolute;top:14px;padding:4px 12px;border-radius:10px;font-size:18px;font-weight:600;background:rgba(255,255,255,.07);border:1.5px solid rgba(255,255,255,.1);white-space:nowrap}
+.ac .meta{position:absolute;left:20px;top:64px;font-size:19px;color:var(--fg2);white-space:nowrap}
+.ac .ic{position:absolute;left:20px;top:96px;display:flex;gap:22px;opacity:.55}
+.ac .ic i{width:22px;height:20px;border:2px solid var(--fg2);border-radius:5px}
+.ac .q{position:absolute;top:128px}.ac .ql{position:absolute;top:136px;font-size:20px;white-space:nowrap}.ac .ql small{display:block;font-size:17px;color:var(--fg3);margin-top:4px}
+.ac .ft{position:absolute;left:20px;bottom:12px;font-size:17px;color:var(--fg3);white-space:nowrap}
+/* reset banner */
+.rb{position:absolute;border-radius:24px;background:rgba(255,255,255,.045);overflow:hidden}
+.rb:before{content:"";position:absolute;left:10px;top:10px;bottom:10px;width:6px;border-radius:3px;background:var(--info)}
+.blk{position:absolute;border-radius:18px;background:rgba(255,255,255,.035);border:1.5px solid rgba(255,255,255,.07)}
+.today{background:rgba(10,132,255,.10);border-color:rgba(10,132,255,.55)}
+/* chart */
+.bar{position:absolute;bottom:0;width:10px;border-radius:2px 2px 0 0;transform-origin:50% 100%}
+/* dock */
+#dock{position:absolute;width:128px;border-radius:40px;background:linear-gradient(180deg,rgba(40,42,52,.92),rgba(24,25,32,.92));box-shadow:0 0 0 1.5px rgba(255,255,255,.12),0 30px 80px rgba(0,0,0,.6)}
+.dc{position:absolute;left:8px;width:112px;border-radius:24px}
+/* proxy popover */
+.pop{position:absolute;border-radius:32px;background:rgba(32,33,40,.96);box-shadow:0 0 0 1.5px rgba(255,255,255,.12),0 40px 120px rgba(0,0,0,.7)}
+/* chat apps */
+.app{position:absolute;border-radius:40px;overflow:hidden;box-shadow:0 0 0 1.5px rgba(255,255,255,.12),0 60px 160px rgba(0,0,0,.75)}
+.fcard{position:absolute;left:28px;right:28px;border-radius:20px;overflow:hidden;background:#fff;color:#1f2329;box-shadow:0 6px 24px rgba(0,0,0,.25)}
+.fcard .hd{padding:18px 24px;font-size:30px;font-weight:700;color:#fff}
+.fcard .bd{padding:16px 24px 20px;font-size:24px;line-height:1.5;color:#1f2329}
+.wx{right:28px;align-items:flex-start}
+.bub{position:relative;flex:1;min-width:0;padding:22px 28px;border-radius:20px;font-size:28px;line-height:1.45;background:#fff;color:#111}
+/* typography */
+.H{position:absolute;left:0;right:0;text-align:center;font-weight:800;letter-spacing:-.04em;white-space:nowrap;line-height:1.02;transform-origin:50% 50%;z-index:60}
+.gW{background:linear-gradient(100deg,#dfe4ff,#fff 40%,#fff 56%,#cfd7ff);-webkit-background-clip:text;background-clip:text;color:transparent}
+.gR{background:linear-gradient(95deg,#ffc06b,#ff6a3d 38%,#ff3d8b 72%,#c94dff);-webkit-background-clip:text;background-clip:text;color:transparent}
+.gB{background:linear-gradient(95deg,#9cc4ff,#2f7bff 45%,#3fe0d0);-webkit-background-clip:text;background-clip:text;color:transparent}
+.gV{background:linear-gradient(95deg,#d9b8ff,#8a5bff 50%,#ff7ac8);-webkit-background-clip:text;background-clip:text;color:transparent}
+.gG{background:linear-gradient(95deg,#9dffd8,#07c160 45%,#3fe0d0);-webkit-background-clip:text;background-clip:text;color:transparent}
+.shade{position:absolute;inset:0;background:radial-gradient(ellipse at 50% 50%,rgba(0,0,0,.55),rgba(0,0,0,.82));z-index:55;pointer-events:none}
+#flash{position:absolute;inset:0;background:#fff;z-index:80;opacity:0}
+#vig{position:absolute;inset:0;z-index:70;pointer-events:none;background:radial-gradient(ellipse 75% 70% at 50% 50%,transparent 60%,rgba(0,0,0,.55))}
+#streaks{position:absolute;inset:0;z-index:58;pointer-events:none;opacity:0}
+#ui{position:fixed;left:0;right:0;bottom:0;display:flex;gap:12px;align-items:center;padding:12px 18px;background:rgba(20,20,24,.85);color:#fff;font:14px system-ui;z-index:100}
+#ui button{background:#2f6bff;color:#fff;border:0;border-radius:8px;padding:8px 16px;font-weight:700;cursor:pointer}#ui input{flex:1}
+body.rec #ui{display:none}
+
+/* Localized badge fitting: keep the first account's Invite text inside its card. */
+.ac:first-child .tg:nth-child(5){left:auto!important;right:12px;font-size:16px;padding:4px 6px}
+</style></head>
+<body>
+<div id="wrap"><main id="stage">
+<div id="glows"><div class="glow" id="g1" style="width:1100px;height:1100px"></div><div class="glow" id="g2" style="width:1000px;height:1000px"></div><div class="glow" id="g3" style="width:900px;height:900px"></div></div>
+
+<div id="cam"><div id="win">
+  <div class="nav" id="nav"></div>
+  <div class="top"><img src="./assets/bro-halfbody.png"><b>AiGoodBro</b><span>›&nbsp;&nbsp;Home</span></div>
+  <div class="main" id="main">
+    <!-- News & announcements · Reset updates -->
+    <div class="sec" id="secReset" style="top:20px;height:404px">
+      <div class="sh"><div class="chev"></div>🔔 News & announcements<small>Public previews · AiGoodBro news · Skills</small></div>
+      <div class="rb" id="rb" style="left:22px;right:22px;top:70px;height:312px">
+        <div class="sh" style="left:36px;top:18px"><svg width="30" height="30" viewBox="0 0 24 24"><circle cx="12" cy="12" r="11" fill="#0A84FF"/><path d="M8 8.5A5 5 0 1 1 7 13" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round"/><path d="M5.3 6.4 8 8.9l2.4-2.7" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>Reset updates</div>
+        <div class="t" style="right:30px;top:22px;font-size:22px;color:var(--fg3)">⇆&nbsp;&nbsp;Latest 3&nbsp;&nbsp;↻</div>
+        <div class="blk" id="blkCard" style="left:36px;top:72px;width:760px;height:220px">
+          <div class="t" style="left:22px;top:16px;font-size:22px;color:var(--fg2)">🎫&nbsp; Reset card updates</div>
+          <div class="t" id="cardLine" style="left:22px;top:56px;font-size:28px;font-weight:700;color:var(--ok)">✓ Verified: 27 reset cards available</div>
+          <div class="t" style="left:22px;top:100px;font-size:21px;color:var(--fg2)">Reset cards: Pro 20x ×2, Pro 5x ×1, Plus ×24</div>
+          <div class="t" style="left:22px;top:136px;font-size:21px;color:var(--fg2)">Recently added <b id="cardInc" style="color:var(--ok)">+1</b> cards · UTC+8</div>
+          <div class="t" style="left:22px;top:172px;font-size:21px;color:var(--fg3)">5h 2026-10-08 07:33 · 7d 2026-10-09 08:42</div>
+        </div>
+        <div class="blk today" id="blkAnn" style="left:816px;right:30px;top:72px;height:220px">
+          <div class="t" style="left:22px;top:16px;font-size:22px;color:var(--fg2)">📣&nbsp; Quota reset notices</div>
+          <div class="pill" id="todayPill" style="position:absolute;right:20px;top:12px;background:rgba(10,132,255,.14);color:#5cb0ff">New today</div>
+          <div class="t" style="left:22px;top:56px;font-size:26px;font-weight:700">Regular quota reset notice</div>
+          <div class="t" style="left:22px;top:100px;font-size:21px;color:var(--fg2)">Tibo · Confirmed landed across all accounts.</div>
+          <div class="t" style="left:22px;top:136px;font-size:21px;color:var(--fg3)">2026-10-08 11:44 · UTC+8 ↗</div>
+          <div class="t" id="annCd" style="left:22px;top:172px;font:600 22px var(--mono);color:var(--warn)">Reset expected in 00:00:03</div>
+        </div>
+      </div>
+    </div>
+    <!-- Usage stats -->
+    <div class="sec" id="secStats" style="top:444px;height:520px">
+      <div class="sh"><div class="chev"></div>📊 Usage stats</div>
+      <div id="kpis"></div>
+      <div class="blk" style="left:22px;top:208px;width:560px;height:290px"><div class="t" style="left:20px;top:14px;font-size:22px;font-weight:600">Token activity</div><div id="heat" class="abs" style="left:20px;top:64px"></div></div>
+      <div class="blk" style="left:600px;right:22px;top:208px;height:290px"><div class="t" style="left:20px;top:14px;font-size:22px;font-weight:600">Trends <span class="pill" style="margin-left:10px;background:rgba(255,255,255,.08);font-size:18px">Bar chart</span></div>
+        <div class="t" style="right:20px;top:16px;font-size:18px;color:var(--fg3)">7d　30d　90d　1y　<span class="pill" style="background:rgba(255,255,255,.1);color:var(--fg);font-size:18px">All</span></div>
+        <div id="chart" class="abs" style="left:24px;right:24px;top:70px;bottom:24px"></div></div>
+    </div>
+    <!-- Codex accounts -->
+    <div class="sec" id="secAcc" style="top:984px;height:520px">
+      <div class="sh"><div class="chev"></div>👥 Codex accounts <span style="color:var(--fg3);font-weight:400">8</span></div>
+      <div class="btn" style="right:300px;top:12px">⇅ Sort</div><div class="btn" style="right:170px;top:12px;background:rgba(255,255,255,.14)">Cards</div><div class="btn" style="right:22px;top:12px">＋ Add</div>
+      <div id="cards"></div>
+    </div>
+  </div>
+</div></div>
+
+<!-- right-edge dock (TokenMonitorEdgeDockView) + proxy popover -->
+<div id="dockWrap" style="position:absolute;left:0;top:0;width:1920px;height:1440px;z-index:30;pointer-events:none">
+  <div id="dock"></div>
+  <div class="pop" id="pop"></div>
+  <svg id="cursor" width="56" height="56" viewBox="0 0 24 24" style="position:absolute;left:0;top:0;z-index:5;filter:drop-shadow(0 4px 8px rgba(0,0,0,.5))"><path fill="#fff" stroke="#000" stroke-width="1.1" d="M4 2.5 19 13l-6.3 1.1 3.7 7.2-2.9 1.4-3.6-7.2L4 20Z"/></svg>
+  <div id="rip"></div>
+</div>
+
+<!-- Feishu / WeChat -->
+<div class="app" id="fsApp" style="left:0;top:0;width:900px;height:1180px;z-index:40;background:#f5f6f7;visibility:hidden">
+  <div style="height:120px;background:#fff;display:flex;align-items:center;gap:22px;padding:0 32px;border-bottom:1px solid #e5e6eb"><img src="./ui/feishu.png" style="width:72px;height:72px"><div><div style="font-size:34px;font-weight:700;color:#1f2329">Feishu</div><div style="font-size:22px;color:#8f959e">AiGoodBro group bot</div></div></div>
+  <div id="fsList" style="position:absolute;left:0;right:0;top:140px;bottom:0"></div>
+</div>
+<div class="app" id="wxApp" style="left:0;top:0;width:900px;height:1180px;z-index:41;background:#ededed;visibility:hidden">
+  <div style="height:120px;background:#f7f7f7;display:flex;align-items:center;gap:22px;padding:0 32px;border-bottom:1px solid #ddd"><img src="./ui/wechat.png" style="width:72px;height:72px"><div><div style="font-size:34px;font-weight:700;color:#111">WeChat</div><div style="font-size:22px;color:#888">AiGoodBro notifications</div></div></div>
+  <div id="wxList" style="position:absolute;left:0;right:0;top:140px;bottom:0"></div>
+</div>
+<svg id="plane" width="170" height="170" viewBox="0 0 24 24" style="position:absolute;left:0;top:0;z-index:45;visibility:hidden"><path fill="#fff" d="M2 11.5 21.5 3l-6.6 18-3.4-7.3L2 11.5Zm9.6 1.9 2 4.3 3.6-9.8-5.6 5.5Z"/></svg>
+
+<div class="shade" id="shade" style="opacity:0"></div>
+<canvas id="streaks" width="1920" height="1440"></canvas>
+<div id="titles"></div>
+<div id="vig"></div>
+<div id="flash"></div>
+</main></div>
+<div id="ui"><button id="play">Play</button><span id="tc">0:00.0</span><input id="seek" type="range" min="0" max="60" step="0.033" value="0"><span>AiGoodBro English 1011v1</span></div>
+<audio id="aud" src="audio/reference-score-1011v1.wav" preload="auto"></audio>
+<script>
+(()=>{
+const BPM=150,BT=60/BPM,b=n=>n*BT,TOTAL=120,DUR=b(TOTAL);
+const $=s=>document.querySelector(s),$$=s=>[...document.querySelectorAll(s)];
+const cl=(x,a=0,c=1)=>Math.min(c,Math.max(a,x)),seg=(t,a,c)=>cl((t-a)/(c-a)),lerp=(a,c,u)=>a+(c-a)*u;
+const io=u=>u<.5?4*u*u*u:1-Math.pow(-2*u+2,3)/2,oc=u=>1-Math.pow(1-u,3),os=u=>1-Math.pow(1-u,5),ex=u=>u>=1?1:1-Math.pow(2,-10*u);
+const spr=u=>{u=cl(u);return 1-Math.exp(-6.5*u)*Math.cos(9.5*u)};
+const REC=new URLSearchParams(location.search).has('rec');if(REC)document.body.classList.add('rec');
+function fit(){const s=REC?1:Math.min(innerWidth/1920,(innerHeight-60)/1440);$('#wrap').style.transform=`translate(-50%,calc(-50% - ${REC?0:24}px)) scale(${s})`}addEventListener('resize',fit);fit();
+const CUES=[];const cue=(bt,k,o={})=>CUES.push({t:+b(bt).toFixed(4),k,...o});
+
+/* ================= source-accurate building blocks ================= */
+// QuotaRingSegment: remaining %, track primary@.10, 12 o'clock clockwise, round cap, health gradient
+const HEALTH=v=>v>=55?['#5CC2FF','#1A6EF0']:v>=25?['#FFD138','#F2940D']:['#FF6B59','#D11A1F'];
+let RID=0;
+function ring(d,lw,v,{tint=null,label=true,fs=null}={}){const id='g'+(RID++),r=(d-lw)/2,c=d/2,[s,e]=HEALTH(v);
+ return `<svg class="qr" data-v="${v}" width="${d}" height="${d}" viewBox="0 0 ${d} ${d}"><defs><linearGradient id="${id}" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="${s}"/><stop offset="1" stop-color="${e}"/></linearGradient></defs>
+ <circle cx="${c}" cy="${c}" r="${r}" fill="none" stroke="rgba(255,255,255,.10)" stroke-width="${lw}"/>
+ <circle class="arc" cx="${c}" cy="${c}" r="${r}" fill="none" stroke="${tint||`url(#${id})`}" stroke-width="${lw}" stroke-linecap="round" pathLength="100" stroke-dasharray="0 100" transform="rotate(-90 ${c} ${c})"/>
+ ${label?`<text class="pc" x="${c}" y="${c}" text-anchor="middle" dominant-baseline="central" fill="#f2f2f5" font-family="SF Pro Display,system-ui" font-weight="600" font-size="${fs||Math.max(9,d*.25)}">0%</text>`:''}</svg>`}
+function setRing(el,u){const v=+el.dataset.v*cl(u);el.querySelector('.arc').setAttribute('stroke-dasharray',`${v.toFixed(2)} 100`);const p=el.querySelector('.pc');if(p)p.textContent=v<=0?'0%':v<1?'<1%':Math.round(v)+'%'}
+
+// nav (AgentNavigationBar): house, provider icons, network, camera, help, gear
+const NP={house:'M3 11 12 3l9 8v10h-6v-6H9v6H3z',oai:'M12 3a4.5 4.5 0 0 1 4.4 3.5 4.5 4.5 0 0 1 3 7.2 4.5 4.5 0 0 1-4.9 6.5A4.5 4.5 0 0 1 7.6 18a4.5 4.5 0 0 1-3-7.2A4.5 4.5 0 0 1 9.5 4.3 4.5 4.5 0 0 1 12 3Z',k:'M7 4v16M7 12l9-8M10 10l7 10',a:'M12 4 5 20M12 4l7 16M8 14h8',z:'M6 5h12L6 19h12',net:'M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Zm0 0c3 3 3 17 0 20m0-20c-3 3-3 17 0 20M2 12h20',cam:'M4 8V5h3M17 5h3v3M20 16v3h-3M7 19H4v-3M9 12a3 3 0 1 0 6 0 3 3 0 0 0-6 0',help:'M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20Zm-2.5-13a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .9-1 1.6V14M12 17h.01',gear:'M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8Zm8.5 4-2-.7-.5-1.3 1-1.9-1.6-1.6-1.9 1-1.3-.5L13.5 3h-3l-.7 2-1.3.5-1.9-1-1.6 1.6 1 1.9-.5 1.3-2 .7v3l2 .7.5 1.3-1 1.9 1.6 1.6 1.9-1 1.3.5.7 2h3l.7-2 1.3-.5 1.9 1 1.6-1.6-1-1.9.5-1.3 2-.7z'};
+[['house',0,1],['oai',1],['k',2],['a',3],['z',4],['net',6],['cam',7],['help',12],['gear',13]].forEach(([k,i,on])=>
+ $('#nav').insertAdjacentHTML('beforeend',`<div class="ni ${on?'on':''}" style="top:${24+i*96}px"><svg viewBox="0 0 24 24"><path d="${NP[k]}" fill="none" stroke="${on?'#7BA0FF':'rgba(242,242,245,.62)'}" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round"/></svg></div>`));
+// KPIs (labels from home stats strip)
+[['30,014,532,433','Total tokens'],['$22,725.70','Estimated cost'],['92','Active days'],['46','Day streak'],['1071h 57m','Active time'],['1,345,911,251','Peak daily tokens'],['gpt-6.1-sol','Top model']].forEach(([v,l],i)=>
+ $('#kpis').insertAdjacentHTML('beforeend',`<div class="kpi" style="left:${22+i*278}px;width:262px"><b class="kv" data-v="${v}">${v}</b><span>${l}</span></div>`));
+// heatmap
+for(let c=0;c<22;c++)for(let r=0;r<7;r++){const k=(c*7+r);const on=c>9;const a=on?(.12+((k*37)%70)/100):.06;$('#heat').insertAdjacentHTML('beforeend',`<div class="hm" style="position:absolute;left:${c*23}px;top:${r*29}px;width:19px;height:25px;border-radius:4px;background:rgba(${c>17&&r%3==0?'120,170,255':'70,120,220'},${a.toFixed(2)})" data-k="${k}"></div>`)}
+// stacked bars (按工具 colors from screenshot: blue, purple, magenta, green, yellow)
+(()=>{const ch=$('#chart');const W=1040,n=100;const bw=W/n;
+ for(let i=0;i<n;i++){const ramp=i<55?.12+.18*Math.abs(Math.sin(i*1.7))*(i%5?1:.2):.25+.75*Math.pow((i-55)/45,1.6)*(.55+.45*Math.abs(Math.sin(i*2.3)));const H=Math.max(4,ramp*170);
+  const cols=i<55?['#d63fae','#4cd964']:['#2f9bff','#8a5bff','#d63fae','#e8c33a'];
+  let acc=0;const parts=i<55?[1]:[.62+.3*Math.sin(i),.2,.1,.08];const tot=parts.reduce((a,c)=>a+c,0);
+  parts.forEach((p,k)=>{const h=H*p/tot;ch.insertAdjacentHTML('beforeend',`<div class="bar" data-i="${i}" style="left:${i*bw}px;width:${bw*.68}px;height:${h}px;bottom:${acc}px;background:${cols[(i<55?(i%7==0?1:0):k)]}"></div>`);acc+=h})}})();
+// account cards (HomeCodexAccountSummary)
+const ACC=[['pro20x','PRO 20x',92,61,1],['pro5x','PRO 5x',100,71,0],['Work','PLUS',89,28,0],['X','PLUS',84,31,0],['Daily','PLUS',100,57,0],['US','PLUS',96,45,0],['Personal','PLUS',38,16,0],['MGR','PLUS',100,35,0]];
+ACC.forEach(([n,p,v5,v7,cur],i)=>{const x=22+(i%4)*490,y=72+Math.floor(i/4)*240;
+ $('#cards').insertAdjacentHTML('beforeend',`<div class="ac ${cur?'cur':''}" style="left:${x}px;top:${y}px">
+ <div class="no">0${i+1}</div><div class="av" style="background:hsl(${210+i*29} 70% 60%)"></div><div class="nm">${n}</div>
+ <div class="tg" style="left:${130+[6,5,3,1,3,3,3,3][i]*24}px">🎫 Reset</div><div class="tg" style="left:${270+[6,5,3,1,3,3,3,3][i]*24}px">👥 Invite</div>
+ <div class="meta">${p} · Credits ${(66159-i*7813).toLocaleString()} · Cards ${[2,1,3,2,0,3,1,2][i]}</div>
+ <div class="ic"><i></i><i></i><i></i><i></i></div>
+ <div class="q" style="left:18px">${ring(72,7,v5)}</div><div class="ql" style="left:100px">5-hour quota<small>Resets 04:10:59</small></div>
+ <div class="q" style="left:250px">${ring(72,7,v7)}</div><div class="ql" style="left:332px">7-day quota<small>Resets 5d 07:51</small></div>
+ </div>`)});
+// dock (64pt rail ×2 = 128px): network tile, Today stat, provider rings
+const D=$('#dock');let dy=16;
+const dockCells=[['proxy',100],['stat',112],['ring','#4AA3B0',82,'5 hours',120],['ring','#70B3EB',100,'7 days',120],['ring','#CC7D5E',57,'5 hours',120],['rate',100]];
+dockCells.forEach((c,i)=>{const h=c[c.length-1];let inner='';
+ if(c[0]==='proxy')inner=`<div style="position:absolute;left:14px;top:8px;width:84px;height:84px;border-radius:24px;background:rgba(52,170,98,.12);display:grid;place-items:center"><svg width="48" height="48" viewBox="0 0 24 24"><path d="${NP.net}" fill="none" stroke="#34AA62" stroke-width="1.7"/></svg></div><div style="position:absolute;left:84px;top:72px;width:14px;height:14px;border-radius:50%;background:#34AA62;box-shadow:0 0 0 3px rgb(30,31,38)"></div>`;
+ else if(c[0]==='stat')inner=`<div class="t" style="left:0;right:0;text-align:center;top:10px;font-size:17px;font-weight:600;color:var(--fg2)">Today</div><div class="t dv" style="left:0;right:0;text-align:center;top:36px;font-size:26px;font-weight:700">368.4M</div><div class="t" style="left:0;right:0;text-align:center;top:72px;font-size:16px;color:var(--fg3)">US$8.90</div>`;
+ else if(c[0]==='ring')inner=`<div style="position:absolute;left:14px;top:6px">${ring(84,7,c[2],{tint:c[1],label:false})}</div><div class="t" style="left:0;right:0;text-align:center;top:94px;font-size:17px;font-weight:500;color:var(--fg2)">${c[3]}</div>`;
+ else inner=`<div class="t" style="left:0;right:0;text-align:center;top:14px;font-size:17px;color:var(--fg2)">tok/s</div><div class="t" style="left:0;right:0;text-align:center;top:42px;font-size:24px;font-weight:700">—</div>`;
+ D.insertAdjacentHTML('beforeend',`<div class="dc" style="top:${dy}px;height:${h}px" data-i="${i}">${inner}</div>`);dy+=h+4});
+D.style.height=(dy+12)+'px';
+// proxy popover (Proxy status)
+$('#pop').innerHTML=`<div class="t" style="left:32px;top:26px;font-size:30px;font-weight:700">🌐 Proxy status</div><div class="t" style="right:32px;top:30px;font-size:22px;color:var(--fg3)">2 accounts</div>
+ <div class="t" style="left:32px;top:76px;font-size:22px;color:var(--ok)">● Running</div><div class="t" style="right:32px;top:76px;font-size:22px;color:var(--fg2)">2 requests</div>
+ ${[['04','X',96,10,'723.5'],['10','MGR',100,6,'2,201.6']].map(([no,n,a,c,pt],k)=>`<div class="abs" style="left:24px;right:24px;top:${124+k*200}px;height:186px;border-radius:20px;background:rgba(255,255,255,.04)">
+  <div class="t" style="left:20px;top:16px;font-size:26px;font-weight:700"><span style="color:var(--fg3);font-family:var(--mono)">${no}</span>&nbsp; ${n}</div><div class="t" style="right:20px;top:18px;font-size:20px;color:var(--ok)">Running</div>
+  <div class="t" style="left:20px;top:64px;font-size:20px;color:var(--fg2)">5h</div><div class="t" style="left:310px;top:64px;font-size:20px;font-weight:700">${a}%</div>
+  <div class="abs pb" style="left:20px;width:340px;top:96px;height:10px;border-radius:5px;background:rgba(255,255,255,.1)"><div style="height:100%;width:${a}%;border-radius:5px;background:linear-gradient(90deg,#5CC2FF,#1A6EF0)"></div></div>
+  <div class="t" style="left:390px;top:64px;font-size:20px;color:var(--fg2)">7d</div><div class="t" style="left:640px;top:64px;font-size:20px;font-weight:700">${c}%</div>
+  <div class="abs" style="left:390px;width:300px;top:96px;height:10px;border-radius:5px;background:rgba(255,255,255,.1)"><div style="height:100%;width:${Math.max(4,c)}%;border-radius:5px;background:linear-gradient(90deg,#DAA3FA,#8B6DFF)"></div></div>
+  <div class="t" style="left:20px;top:134px;font-size:20px;color:var(--fg3)">Credits ${pt}</div></div>`).join('')}
+ <div class="t" style="left:32px;top:534px;font-size:20px;color:var(--fg3)">Requests update every minute · Quotas: latest reading</div><div class="t" style="left:32px;top:572px;font-size:22px;color:#5cb0ff">☰ Proxy settings</div>`;
+$('#pop').style.width='740px';$('#pop').style.height='630px';
+for(let i=0;i<6;i++)$('#rip').insertAdjacentHTML('beforeend',`<div class="rp" style="position:absolute;border-radius:50%;border:4px solid rgba(197,163,255,.95);opacity:0"></div>`);
+// Feishu cards — FeishuWebhookService titles + header templates
+const FS=[['🎫 Reset card received · +1','#7f3bf5','<b>Verified · Reset card</b><br>+1 reset · 27 now available<br>Balance: 26 → 27 resets'],
+ ['🔄 Codex official quota window update','#14a9a2','<b>Verified · Official quota window update</b><br>Updated windows: 5 hours + 7 days<br>5h remaining: 100% · 7d remaining: 100%'],
+ ['Reset preview · Pending confirmation','#ff8800','Expected by 10-12 00:00 · UTC+8<br>Source: public preview']];
+FS.forEach(([h,c,bd],i)=>$('#fsList').insertAdjacentHTML('beforeend',`<div class="fcard fc" style="top:${i*330}px"><div class="hd" style="background:${c}">${h}</div><div class="bd">${bd}<div style="margin-top:10px;font-size:20px;color:#8f959e">AiGoodBro · Just now</div></div></div>`));
+const WX=['[Public reset notice: quota refreshed]\n5h remaining: 100%\n7d remaining: 100%','[More resets available]\n+1 reset · 27 now available','[Quota reset]\nAccount: pro20x\nAnnounced: 10-11 11:44'];
+WX.forEach((m,i)=>$('#wxList').insertAdjacentHTML('beforeend',`<div class="wx" style="position:absolute;left:28px;top:${i*290}px;display:flex;gap:18px"><img src="./assets/bro-halfbody.png" style="width:84px;height:84px;border-radius:12px"><div class="bub">${m.replace(/\n/g,'<br>')}</div></div>`));
+
+/* ================= titles (big, centered, slam) ================= */
+const TT=[];
+function T(txt,cls,b0,b1,{size=260,top=560,from=1.5,dur=.16,out=.1,left=null,right=null,shade=1}={}){
+ const el=document.createElement('div');el.className='H '+cls;el.textContent=txt;el.style.fontSize=size+'px';el.style.top=top+'px';
+ if(left!=null){el.style.left=left+'px';el.style.right='auto';el.style.textAlign='left'}if(right!=null){el.style.right=right+'px';el.style.left='auto';el.style.textAlign='right'}
+ $('#titles').appendChild(el);TT.push({el,b0,b1,from,dur,out,shade});cue(b0,'hit',{n:TT.length%5})}
+function drawTitles(t,B){let sh=0;TT.forEach(o=>{const v=B>=o.b0&&B<o.b1;o.el.style.visibility=v?'visible':'hidden';if(!v)return;
+ const a=os(seg(t,b(o.b0),b(o.b0)+o.dur)),z=io(seg(t,b(o.b1)-o.out,b(o.b1)));
+ o.el.style.opacity=cl(a*1.6)*(1-z);o.el.style.filter=`blur(${(1-a)*24+z*20}px)`;o.el.style.transform=`scale(${lerp(o.from,1,a)*lerp(1,1.2,z)})`;
+ o.el.style.backgroundSize='240% 100%';o.el.style.backgroundPosition=`${lerp(100,0,io(seg(B,o.b0,o.b0+2)))}% 0`;
+ sh=Math.max(sh,o.shade*cl(a*1.4)*(1-z))});$('#shade').style.opacity=sh*.92}
+
+/* ================= camera (FPV over the window) =================
+   key = [beat, x, y, scale, rotX, rotY, rotZ]  — x/y = window point at screen centre */
+/* subject centres in window px (measured from layout): banner (1164,342) · ann block (1557,368) · card block (594,368)
+   kpi (1100,669) · heat (458,893) · chart (1453,893) · cards grid (1164,1385) · card i: x 416/906/1396/1886, y 1265/1505 */
+const K=[];const key=(bt,x,y,s,rx=0,ry=0,rz=0)=>K.push([bt,x,y,s,rx,ry,rz]);
+const hold=(b0,b1,x,y,s,rx=0,ry=0,rz=0)=>{key(b0,x,y,s,rx,ry,rz);key(b1,x,y,s,rx,ry,rz)};
+key(0,1100,760,.3,40);key(1.2,1100,760,.3,40);key(3,1100,700,.74,14,-6,-2);hold(4,7.6,1100,760,.84);
+// home skim — one subject per beat, fly in fast (0.45 beat) then hold it dead centre
+[[8,1164,342,1.15,14,-8,-1],[9,416,1265,1.7,16,8,1],[10,1453,893,1.35,14,-8,-1],[11,1164,1385,1.0,12,6,0],[12,1100,669,1.45,14,-6,-1],[13,458,893,1.7,16,8,1]]
+ .forEach(([bt,x,y,sc,rx,ry,rz])=>{key(bt,x,y,sc,rx,ry,rz);key(bt+.6,x,y,sc*1.04,rx*.6,ry*.6,rz)});
+hold(14.6,16,1100,760,.84);
+// Reset alerts — whole banner → announcement block → push on countdown → snap back to whole banner on "已核实"
+key(17.2,1164,342,.98,16,-6,-1);key(18.4,1557,368,1.5,8,-4,0);key(19,1557,380,1.55,6,-2,0);key(21.9,1557,400,1.85,4,2,0);
+key(22.35,1164,342,.98,0,0,0);key(24,1164,342,1.04,0,0,0);key(26,1164,342,1.1,6,0,0);
+hold(27,48,1100,700,.6,30);
+// Usage stats FPV — kpi → heat → chart → cards
+key(49,1100,669,1.7,28,-14,-2);key(49.7,1100,669,1.75,22,-10,-1);key(51,458,893,1.9,26,12,2);key(51.7,458,893,1.95,20,8,1);
+key(53,1453,893,1.5,26,-12,-2);key(53.7,1453,893,1.55,20,-8,-1);key(55,1164,1385,1.15,24,10,1);key(55.6,1164,1385,1.2,18,6,1);
+hold(56,66,1500,760,.78,0,10);hold(67,78,1700,760,.7,8,16);
+// Multiple accounts card dive
+key(79,416,1265,1.9,26,-12,-2);key(79.8,416,1265,1.95,18,-8,-1);key(81,1396,1265,1.9,26,12,2);key(81.8,1396,1265,1.95,18,8,1);
+key(83,906,1505,1.9,26,-10,-2);key(83.8,906,1505,1.95,18,-6,-1);
+hold(85,92,1100,760,.84);key(94,1100,760,.3,40);key(TOTAL,1100,760,.3,40);
+function camAt(B){let i=0;while(i<K.length-2&&B>=K[i+1][0])i++;const a=K[i],c=K[i+1];const u=io(seg(B,a[0],c[0]));return a.map((v,k)=>k?lerp(v,c[k],u):v)}
+const camE=[];function camVel(B){const p=camAt(B),q=camAt(B+.05);return Math.hypot(q[1]-p[1],q[2]-p[2])*q[3]/.05+Math.abs(q[3]-p[3])*900}
+function applyCam(B){const [_,x,y,s,rx,ry,rz]=camAt(B);const W=$('#win');
+ W.style.transform=`translate(${960}px,${720}px) rotateX(${rx}deg) rotateY(${ry}deg) rotateZ(${rz}deg) scale(${s}) translate(${-x}px,${-y}px)`;
+ // motion streaks while fast
+ const v=camVel(B);const cv=$('#streaks');const st=cl((v-2600)/9000);cv.style.opacity=st;
+ if(st>0){const c=cv.getContext('2d');c.clearRect(0,0,1920,1440);c.strokeStyle='rgba(180,200,255,.35)';c.lineCap='round';
+  for(let i=0;i<46;i++){const a=i*2.399+B*.4,r=420+((i*131)%520),x0=960+Math.cos(a)*r,y0=720+Math.sin(a)*r*.75,len=40+st*220;c.lineWidth=1+((i*7)%3);c.beginPath();c.moveTo(x0,y0);c.lineTo(x0+Math.cos(a)*len,y0+Math.sin(a)*len*.75);c.stroke()}}
+ W.style.filter=st>.2?`blur(${(st-.2)*3}px)`:'';
+}
+
+/* ================= timeline ================= */
+// 0 · open: drop → window
+cue(0,'drop');cue(1.2,'whoosh_big');cue(3,'impact_big');
+T('AiGoodBro','gW',4,7.5,{size:300,top:540,from:1.7,shade:.8});
+// 7.6–14.6 · home FPV skim, one feature per beat
+[['Reset alerts','gR'],['Quota tracking','gB'],['Usage stats','gV'],['Multiple accounts','gW'],['Edge sidebar','gV'],['Local proxy','gB']].forEach(([w,c],i)=>T(w,c,8+i,9+i,{size:170,top:70,from:1.35,dur:.1,out:.06,shade:0}));
+cue(7.6,'whoosh');cue(14.6,'whoosh_big');
+// 16–26 · Reset alerts
+T('Reset alerts.','gR',16,17.4,{size:330,top:520,from:1.8});
+T('Tibo posts a reset update','gW',17.4,19,{size:160,top:70,from:1.3,shade:.0});
+// countdown 3 → 0 inside the banner, then "第一时间通知你"
+for(let i=0;i<3;i++)cue(19+i,'tick',{n:i});cue(22,'impact_big');
+T('Instant alerts.','gW',24,26,{size:230,top:560,from:1.7});
+// 26–48 · Feishu + WeChat
+cue(26,'plane');T('Feishu.','gB',27,30,{size:250,top:560,left:100,from:1.4,shade:.0});
+for(let i=0;i<3;i++)cue(29+i*1.5,'ping',{n:i});
+cue(34,'whoosh');T('WeChat.','gG',35,38,{size:150,top:24,from:1.4,shade:.0});
+for(let i=0;i<3;i++)cue(36.5+i*1.5,'ping2',{n:i});
+T('Use reset cards wisely.','gW',42,48,{size:170,top:430,from:1.35});T('Plan your quota ahead.','gR',44,48,{size:170,top:670,from:1.35,shade:.0});
+cue(45,'card');cue(45.5,'card');cue(46,'card');
+// 48–56 · stats FPV
+T('Usage stats.','gV',48,49,{size:280,top:560,from:1.6});cue(49,'whoosh_big');cue(51,'whoosh');cue(53,'whoosh');cue(55,'whoosh');
+T('Tokens · Cost · Trends','gW',50,55.8,{size:150,top:110,from:1.25,shade:.0});
+// 56–66 · edge dock + haptics
+T('Edge sidebar.','gV',56,58,{size:260,top:560,from:1.6});
+T('Hover. Feel the trackpad feedback.','gV',58,66,{size:140,top:96,from:1.25,shade:.0});
+for(let i=0;i<5;i++)cue(60+i,'haptic',{n:i});
+// 66–78 · Local proxy
+T('Local proxy.','gB',66,68,{size:300,top:540,from:1.7});
+T('Use authorized accounts via official API','gW',68,72.5,{size:120,top:96,from:1.25,shade:.0});
+T('No constant desktop account switching.','gW',72.5,76,{size:130,top:96,from:1.25,shade:.0});
+T('Secure.','gB',76,77,{size:300,top:540,left:200,from:1.5});T('Simple.','gG',77,78,{size:300,top:540,right:200,from:1.5});
+cue(69,'data',{d:b(3)});
+// 78–86 · cards FPV
+T('All accounts. One view.','gW',78,79,{size:220,top:560,from:1.6});cue(79,'whoosh_big');cue(81,'whoosh');cue(83,'whoosh');
+// 86–92 · montage
+[['5h / 7d windows','gB'],['Reset countdown','gR'],['Feishu · WeChat','gG'],['Local proxy','gB'],['Haptic feedback','gV'],['AiGoodBro','gW']].forEach(([w,c],i)=>T(w,c,86+i,87+i,{size:210,top:600,from:1.3,dur:.08,out:.05}));
+// 92–120 · end card (four locked lines) → loop
+const END=[['Follow AiGoodBro','gW',150,330],['AI news, skills & open-source picks','',82,610],['Quota reset alerts, shared right away','gR',82,750],['Your AI bro, turning ideas into creations','',70,890]];
+END.forEach(([s,c,sz,top],i)=>{T(s,c,94+i*1.5,116,{size:sz,top,from:1.2,dur:.25,out:.3,shade:i?0:1});const el=TT[TT.length-1].el;if(!c){el.style.color='#f2f2f5';el.style.fontWeight='600'}});
+cue(103,'chime');cue(116,'whoosh_big');cue(119.2,'drop');
+
+const SEC=[0,7.6,16,26,48,56,66,78,86,92];
+function scene(t,B){
+ // glows by section
+ const P=[['#2f5bff','#7b4dff','#13b9c9'],['#2f5bff','#7b4dff','#13b9c9'],['#ff5a2b','#ff2d7a','#7b4dff'],['#3370ff','#07c160','#13b9c9'],['#7b4dff','#ff2d7a','#2f5bff'],['#7b4dff','#c94dff','#2f5bff'],['#2f5bff','#13b9c9','#34AA62'],['#2f5bff','#7b4dff','#13b9c9'],['#ff5a2b','#7b4dff','#2f5bff'],['#2f5bff','#7b4dff','#ff2d7a']];
+ let si=0;SEC.forEach((s,i)=>{if(B>=s)si=i});
+ [['#g1',-260,-260,.2],['#g2',1100,800,.17],['#g3',1100,-300,.19]].forEach(([s,x,y,f],i)=>{const e=$(s);e.style.background=P[si][i];e.style.opacity=.42*(B<1?seg(B,0,1):1)*(B>118?1-seg(B,118,120):1);e.style.transform=`translate(${x+220*Math.sin(t*f+i*2)}px,${y+170*Math.cos(t*f*1.2+i)}px)`});
+ applyCam(B);
+ const W=$('#win');W.style.opacity=B<1.2?0:B<1.6?seg(B,1.2,1.6):B>=93.5?1-seg(B,93.5,94.4):1;
+ // UI fills on the window
+ $$('#cards .qr').forEach((r,i)=>setRing(r,io(seg(B,3+i*.06,5+i*.06))*(B>=78&&B<80?io(seg(B,78.4+i*.05,79.6+i*.05)):1)));
+ $$('#chart .bar').forEach(br=>{const i=+br.dataset.i;br.style.transform=`scaleY(${io(seg(B,3.4+i*.012,4.4+i*.012))*(B>=48&&B<51?io(seg(B,48.6+i*.012,49.8+i*.012)):1)})`});
+ $$('#heat .hm').forEach(h=>{const k=+h.dataset.k;h.style.opacity=seg(B,3.2+k*.004,3.6+k*.004)});
+ // reset banner: countdown 3 → 0 · then card count +1 and today highlight
+ const cdB=B-19;const cd=$('#annCd');
+ if(B<19)cd.textContent='Reset expected in 00:00:03';else if(B<22)cd.textContent='Reset expected in 00:00:0'+(3-Math.floor(cdB));else cd.textContent='Scheduled time reached · Verified';
+ cd.style.color=B>=22?'#34AA62':'#FF9F0A';cd.style.transform=`scale(${B>=19&&B<22.3?1+.12*Math.exp(-((cdB%1)*BT)*10):1})`;cd.style.transformOrigin='0 50%';
+ const hit=B>=22;$('#cardLine').textContent=hit?'✓ Verified: 28 reset cards available':'✓ Verified: 27 reset cards available';$('#cardInc').textContent=hit?'+2':'+1';
+ const pulse=B>=22&&B<24?Math.exp(-(B-22)*2.5):0;$('#blkCard').style.boxShadow=`0 0 0 ${3*pulse}px rgba(52,170,98,${.8*pulse}),0 0 ${120*pulse}px rgba(52,170,98,${.5*pulse})`;
+ $('#blkAnn').style.boxShadow=`0 0 0 ${3*pulse}px rgba(10,132,255,${.8*pulse}),0 0 ${120*pulse}px rgba(10,132,255,${.5*pulse})`;
+ // big countdown digits over banner
+ drawBigCd(t,B);
+ // dock
+ dock(t,B);
+ // chat apps
+ chats(t,B);
+ drawTitles(t,B);
+ let f=0;[3,16,22,48,66,94].forEach(c=>{const d=B-c;if(d>=0&&d<.9)f=Math.max(f,.5*Math.pow(1-d/.9,2.4))});$('#flash').style.opacity=f;
+}
+let cdEl=null;function drawBigCd(t,B){if(!cdEl){cdEl=document.createElement('div');cdEl.className='H gR';cdEl.style.cssText+='font-size:760px;top:240px;font-family:"SF Pro Display",system-ui';$('#titles').appendChild(cdEl)}
+ if(B>=19&&B<22){const n=Math.floor(B-19);cdEl.textContent=3-n;cdEl.style.visibility='visible';const a=os(seg(B,19+n,19.18+n)),z=io(seg(B,19.85+n,20+n));cdEl.style.opacity=(1-z)*cl(a*1.5);cdEl.style.transform=`scale(${lerp(1.6,1,a)*lerp(1,.8,z)})`;cdEl.style.filter=`blur(${(1-a)*20}px)`;$('#shade').style.opacity=.75}
+ else cdEl.style.visibility='hidden'}
+function dock(t,B){const dk=$('#dock'),pop=$('#pop'),cur=$('#cursor');
+ const on=B>=56&&B<78;dk.style.visibility=on?'visible':'hidden';pop.style.visibility='hidden';cur.style.visibility='hidden';$$('#rip .rp').forEach(r=>r.style.opacity=0);if(!on)return;
+ const H=parseFloat(dk.style.height);const sc=2.1;const x0=1920-128*sc-60,y0=720-H*sc/2;
+ const slide=os(seg(B,56.6,57.6));dk.style.left=x0+'px';dk.style.top=y0+'px';dk.style.transformOrigin='0 0';
+ const zoomOut=B>=66?io(seg(B,66,67.2)):0;
+ dk.style.transform=`translateX(${(1-slide)*500+zoomOut*-40}px) scale(${sc*lerp(1,.86,zoomOut)})`;
+ $$('#dock .qr').forEach((r,i)=>setRing(r,io(seg(B,57.2+i*.15,58.4+i*.15))));
+ // cursor + haptic hits on each cell (58–66)
+ const cells=$$('#dock .dc');const tops=cells.map(c=>parseFloat(c.style.top)+parseFloat(c.style.height)/2);
+ const hits=[60,61,62,63,64];
+ if(B>=58.4&&B<66){cur.style.visibility='visible';let k=Math.min(4,Math.max(0,Math.floor(B-60)));const u=B<60?io(seg(B,58.4,60)):(k<4?io(seg(B,60+k+.55,61+k)):0);
+  const ty=B<60?lerp(720,y0+tops[1]*sc,u):y0+lerp(tops[1+k],tops[Math.min(5,2+k)],u)*sc;const tx=B<60?lerp(1000,x0+64*sc,u):x0+64*sc;cur.style.transform=`translate(${tx}px,${ty}px)`;
+  cells.forEach((c,i)=>{const dt=B-hits[i-1];const act=i>=1&&dt>=0&&dt<1;const sh=act&&dt<.5?Math.sin(dt*BT*130)*5*Math.exp(-dt*BT*16):0;c.style.background=act?'rgba(255,255,255,.07)':'transparent';c.style.boxShadow=act?'inset 0 0 0 2px rgba(197,163,255,.7)':'none';c.style.transform=`translateX(${sh}px) scale(${act?1+.06*Math.exp(-dt*3):1})`});
+  dk.style.transform+=` translateX(${hits.reduce((a,h)=>{const d=t-b(h);return a+(d>=0&&d<.2?Math.sin(d*100)*2*(1-d/.2):0)},0)}px)`;
+  $$('#rip .rp').forEach((r,i)=>{if(i>4)return;const d=t-b(hits[i]);if(d>=0&&d<.6){const u=oc(d/.6);const s=lerp(40,320,u);r.style.opacity=1-u;r.style.width=r.style.height=s+'px';r.style.left=(x0+64*sc-s/2)+'px';r.style.top=(y0+tops[i+1]*sc-s/2)+'px'}})}
+ // proxy popover (66–78)
+ if(B>=67){pop.style.visibility='visible';const a=spr(seg(B,67.2,68.4));pop.style.left=(x0-760)+'px';pop.style.top=(y0+20)+'px';pop.style.transformOrigin='100% 10%';pop.style.transform=`scale(${lerp(.6,1,a)*1.35})`;pop.style.opacity=cl(seg(B,67.2,67.6))*(B>=77.4?1-seg(B,77.4,78):1);
+  cells[0].style.boxShadow='inset 0 0 0 2px rgba(52,170,98,.8)';cells[0].style.background='rgba(255,255,255,.07)'}
+}
+function chats(t,B){const fa=$('#fsApp'),wa=$('#wxApp'),pl=$('#plane');
+ const fOn=B>=26&&B<42,wOn=B>=34&&B<42;fa.style.visibility=fOn?'visible':'hidden';wa.style.visibility=wOn?'visible':'hidden';pl.style.visibility=B>=26&&B<27.6?'visible':'hidden';
+ if(B>=26&&B<27.6){const u=io(seg(B,26,27.4));const x=lerp(900,1300,u),y=lerp(500,380,u)-Math.sin(u*Math.PI)*260;pl.style.transform=`translate(${x}px,${y}px) rotate(${lerp(-20,-50,u)}deg) scale(${lerp(1.2,.4,u)})`;pl.style.opacity=1-seg(B,27.3,27.6)}
+ if(fOn){const a=os(seg(B,26.6,27.6));const toL=B>=34?io(seg(B,34,35)):0;
+  fa.style.left=lerp(960,920,toL)+'px';fa.style.top=lerp(130,190,toL)+'px';fa.style.transformOrigin='50% 50%';
+  fa.style.transform=`perspective(2400px) translateX(${(1-a)*900-toL*840}px) rotateY(${(1-a)*-28+toL*14}deg) scale(${lerp(1,.86,toL)})`;fa.style.opacity=cl(a*1.4)*(B>=41.5?1-seg(B,41.5,42):1);
+  $$('#fsList .fc').forEach((c,i)=>{const p=spr(seg(B,29+i*1.5,30+i*1.5));c.style.opacity=cl(seg(B,29+i*1.5,29.25+i*1.5));c.style.transform=`translateY(${(1-p)*120}px) scale(${lerp(.86,1,p)})`})}
+ if(wOn){const a=os(seg(B,34.4,35.4));wa.style.left='960px';wa.style.top='190px';wa.style.transform=`perspective(2400px) translateX(${(1-a)*900}px) rotateY(${(1-a)*-28-14*a}deg) scale(.86)`;wa.style.opacity=cl(a*1.4)*(B>=41.5?1-seg(B,41.5,42):1);
+  $$('#wxList .wx').forEach((c,i)=>{const p=spr(seg(B,36.5+i*1.5,37.5+i*1.5));c.style.opacity=cl(seg(B,36.5+i*1.5,36.75+i*1.5));c.style.transform=`translateY(${(1-p)*100}px) scale(${lerp(.86,1,p)})`})}
+}
+
+
+// English fitting uses measured widths from this scene's reference typography.
+// Timing, easing, camera, shades, cues, and all animation scales stay unchanged.
+window.__localizationFits=[];
+window.fitEnglishTitles = widths => {
+ TT.forEach((o,i)=>{
+  const e=o.el,originalSize=parseFloat(e.style.fontSize),previousTransform=e.style.transform;
+  e.style.transform='none';
+  const range=document.createRange();range.selectNodeContents(e);
+  const width=range.getBoundingClientRect().width;range.detach();
+  e.style.transform=previousTransform;
+  const target=Math.min(widths[i],1720);
+  const fittedSize=Math.min(originalSize,originalSize*target/width);
+  if(fittedSize<originalSize){e.style.fontSize=fittedSize+'px';e.style.lineHeight=(originalSize*1.02)+'px'}
+  window.__localizationFits.push({index:i,text:e.textContent,originalSize,fittedSize,referenceWidth:widths[i],englishWidth:width,fittedWidth:width*fittedSize/originalSize,target});
+ });
+};
+window.renderAt=async t=>{t=cl(t,0,DUR-1e-4);scene(t,t/BT);return t};
+window.__cues=CUES;window.__dur=+DUR.toFixed(4);window.__bpm=BPM;window.__beats=TOTAL;
+window.sceneReady=(async()=>{await document.fonts.ready;window.fitEnglishTitles([1439.46875, 652.8125, 652.8125, 652.8125, 489.609375, 652.8125, 652.8125, 1584, 1097.328125, 1766.40625, 720, 432, 1305.609375, 1468.8125, 1344, 1125.90625, 1248, 1478.40625, 1440, 1487.3125, 1372.8125, 864, 864, 1900.8125, 1238.25, 1008, 916.046875, 806.40625, 806.40625, 1007.625, 1030.8125, 977.421875, 944.640625, 1065.359375]);await Promise.all([...document.images].map(i=>i.complete?1:new Promise(r=>{i.onload=i.onerror=r})));await window.renderAt(0);return true})();
+const aud=$('#aud'),sk=$('#seek'),tc=$('#tc'),btn=$('#play');let playing=false;sk.max=DUR;
+const fmt=t=>Math.floor(t/60)+':'+(t%60).toFixed(1).padStart(4,'0');
+function loop(){if(!playing)return;let t=aud.currentTime;window.renderAt(t);sk.value=t;tc.textContent=fmt(t);if(aud.ended){aud.currentTime=0;aud.play()}requestAnimationFrame(loop)}
+btn.onclick=()=>{if(playing){aud.pause();playing=false;btn.textContent='Play'}else{aud.play();playing=true;btn.textContent='Pause';loop()}};
+sk.oninput=()=>{aud.currentTime=+sk.value;tc.textContent=fmt(+sk.value);if(!playing)window.renderAt(+sk.value)};
+document.addEventListener('keydown',e=>{if(e.code==='Space'){e.preventDefault();btn.click()}});
+const h0=parseFloat(location.hash.slice(1));window.sceneReady.then(()=>{if(!REC&&!isNaN(h0)){aud.currentTime=h0;sk.value=h0;window.renderAt(h0)}});
+})();
+</script>
+</body></html>

@@ -1,0 +1,4 @@
+interface:
+  display_name: "苹果视频 Design"
+  short_description: "产品视频原创、参考复刻与多语言适配，完整检查节奏、音画和交付"
+  default_prompt: "使用 $apple-video-design 根据任务选择原创、参考复刻或多语言适配，完成成片、相应验证及可复现交付。"

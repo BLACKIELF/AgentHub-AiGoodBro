@@ -1,0 +1,267 @@
+{
+  "version": "1012v2",
+  "scene_version": "1011v1",
+  "description": "Original English promotional scene, video, audio, avatar and retained frames stay unchanged; two service icons are required local inputs and are not distributed standalone.",
+  "presentation_status": "Promotional UI demonstration; displayed values, messages, and statuses are scripted.",
+  "video": {
+    "path": "exports/AiGoodBro-English-1011v1.mp4",
+    "sha256": "e236788e272f5b722284b5505df2263dd70ef53bb3b962211a6258cd031e30b3",
+    "duration_seconds": 48,
+    "width": 1920,
+    "height": 1440,
+    "fps": 30,
+    "frames": 1440
+  },
+  "files": [
+    {
+      "path": "scene-en-1011v1.html",
+      "source_basename": "scene-en-1011v1.html",
+      "role": "Editable English promotional scene",
+      "bytes": 43742,
+      "sha256": "da682fcfccedcf5e481f7e43a03affa29e82311e7a2c28f4b5f5193318d58a76",
+      "copied_without_modification": true
+    },
+    {
+      "path": "score-en-1011v1.py",
+      "source_basename": "score-en-1011v1.py",
+      "role": "Original procedural music and SFX source",
+      "bytes": 14128,
+      "sha256": "777f250a82b6beab373d861b346ace0436d965f8bd4edc35cdabe429f7a9e0b6",
+      "copied_without_modification": true
+    },
+    {
+      "path": "cues-en-1011v1.json",
+      "source_basename": "cues-en-1011v1.json",
+      "role": "Original 70 sound events and timeline settings",
+      "bytes": 4133,
+      "sha256": "c1c1001b3fee7a809249aef3b070cf1897e046bfe0e26203eac18fedef600b68",
+      "copied_without_modification": true
+    },
+    {
+      "path": "audio/reference-score-1011v1.wav",
+      "source_basename": "reference-score-1011v1.wav",
+      "role": "Unchanged soundtrack used by the English video",
+      "bytes": 13824102,
+      "sha256": "9693c63ea7d49a540875c90d01a33d9d85ace379321278509925ef89d86a60fb",
+      "copied_without_modification": true
+    },
+    {
+      "path": "assets/bro-halfbody.png",
+      "source_basename": "bro-halfbody.png",
+      "role": "AiGoodBro half-body avatar",
+      "bytes": 314159,
+      "sha256": "45b63bbc4e2e2e1320f0b28f1ecc1757fcd9690f8b2b2534e1a9ea4d1e43cdf5",
+      "copied_without_modification": true
+    },
+    {
+      "path": "exports/AiGoodBro-English-1011v1.mp4",
+      "source_basename": "AiGoodBro-English-1011v1.mp4",
+      "role": "Original final English video",
+      "bytes": 38190410,
+      "sha256": "e236788e272f5b722284b5505df2263dd70ef53bb3b962211a6258cd031e30b3",
+      "copied_without_modification": true
+    },
+    {
+      "path": "frames/english-0060.png",
+      "source_basename": "english-0060.png",
+      "role": "Unmodified production render keyframe: opening",
+      "bytes": 462880,
+      "sha256": "31200fb7ff79ac0ee7e17b7374b19fb5367ad25a8bc6416e3a82dbf780c47b1b",
+      "copied_without_modification": true
+    },
+    {
+      "path": "frames/english-0213.png",
+      "source_basename": "english-0213.png",
+      "role": "Unmodified production render keyframe: reset-banner",
+      "bytes": 452292,
+      "sha256": "4b871c7d2274c6f07f639e0fbd0842bfa6320e8dcf183aa5c34edb42b99454d9",
+      "copied_without_modification": true
+    },
+    {
+      "path": "frames/english-0462.png",
+      "source_basename": "english-0462.png",
+      "role": "Unmodified production render keyframe: notifications",
+      "bytes": 487589,
+      "sha256": "5f44ef73ace33cdc74efcb9bf1412e60015ccad643a547746d3ecf9e1f553c44",
+      "copied_without_modification": true
+    },
+    {
+      "path": "frames/english-0621.png",
+      "source_basename": "english-0621.png",
+      "role": "Unmodified production render keyframe: usage-stats",
+      "bytes": 552224,
+      "sha256": "05017212239d3be7a422e1bebc5f120ecb7a885d8d85cdf201d0f3b21f34f37e",
+      "copied_without_modification": true
+    },
+    {
+      "path": "frames/english-0744.png",
+      "source_basename": "english-0744.png",
+      "role": "Unmodified production render keyframe: edge-sidebar",
+      "bytes": 702427,
+      "sha256": "99434507180b1cf0ccc63252cf15ef5123fdd3fbd8cb76ed86b2ae9c5d9bc51d",
+      "copied_without_modification": true
+    },
+    {
+      "path": "frames/english-0846.png",
+      "source_basename": "english-0846.png",
+      "role": "Unmodified production render keyframe: proxy-popover",
+      "bytes": 722399,
+      "sha256": "681f2e0d8a18cfbda0e85e95b65bd5883b844a6dfef4383e53203859dfd72d76",
+      "copied_without_modification": true
+    },
+    {
+      "path": "frames/english-0948.png",
+      "source_basename": "english-0948.png",
+      "role": "Unmodified production render keyframe: account-dive",
+      "bytes": 583623,
+      "sha256": "4cec6bba58061f7e65427f6f3685fdbf0b31945ac7999962a38d975beef4e87f",
+      "copied_without_modification": true
+    },
+    {
+      "path": "frames/english-1320.png",
+      "source_basename": "english-1320.png",
+      "role": "Unmodified production render keyframe: closing",
+      "bytes": 389685,
+      "sha256": "272a4bd6d797d25c8066da2c0ed0954557d86758893af172161158937ad7024b",
+      "copied_without_modification": true
+    }
+  ],
+  "frames": [
+    {
+      "path": "frames/english-0060.png",
+      "frame": 60,
+      "seconds": 2.0,
+      "width": 1920,
+      "height": 1440,
+      "subject": "opening",
+      "origin": "Existing English production scene render, not a capture of a running application"
+    },
+    {
+      "path": "frames/english-0213.png",
+      "frame": 213,
+      "seconds": 7.1,
+      "width": 1920,
+      "height": 1440,
+      "subject": "reset-banner",
+      "origin": "Existing English production scene render, not a capture of a running application"
+    },
+    {
+      "path": "frames/english-0462.png",
+      "frame": 462,
+      "seconds": 15.4,
+      "width": 1920,
+      "height": 1440,
+      "subject": "notifications",
+      "origin": "Existing English production scene render, not a capture of a running application"
+    },
+    {
+      "path": "frames/english-0621.png",
+      "frame": 621,
+      "seconds": 20.7,
+      "width": 1920,
+      "height": 1440,
+      "subject": "usage-stats",
+      "origin": "Existing English production scene render, not a capture of a running application"
+    },
+    {
+      "path": "frames/english-0744.png",
+      "frame": 744,
+      "seconds": 24.8,
+      "width": 1920,
+      "height": 1440,
+      "subject": "edge-sidebar",
+      "origin": "Existing English production scene render, not a capture of a running application"
+    },
+    {
+      "path": "frames/english-0846.png",
+      "frame": 846,
+      "seconds": 28.2,
+      "width": 1920,
+      "height": 1440,
+      "subject": "proxy-popover",
+      "origin": "Existing English production scene render, not a capture of a running application"
+    },
+    {
+      "path": "frames/english-0948.png",
+      "frame": 948,
+      "seconds": 31.6,
+      "width": 1920,
+      "height": 1440,
+      "subject": "account-dive",
+      "origin": "Existing English production scene render, not a capture of a running application"
+    },
+    {
+      "path": "frames/english-1320.png",
+      "frame": 1320,
+      "seconds": 44.0,
+      "width": 1920,
+      "height": 1440,
+      "subject": "closing",
+      "origin": "Existing English production scene render, not a capture of a running application"
+    }
+  ],
+  "fonts": {
+    "declarations": [
+      "SF Pro Display",
+      "SF Pro Text",
+      "SF Mono",
+      "PingFang SC",
+      "system-ui",
+      "Menlo"
+    ],
+    "distributed": false,
+    "note": "Scene uses system fonts. Availability, font substitution, and rasterization can change text appearance on another machine."
+  },
+  "distribution": {
+    "manifest_scope": "1012v2 ZIP payload: 14 retained original files; two service-icon inputs are required locally and not distributed standalone",
+    "git_directory": "docs/showcase/1012v1/",
+    "git_omitted_originals": [
+      "exports/AiGoodBro-English-1011v1.mp4"
+    ],
+    "video_release_url": "https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.5.0/AiGoodBro-English-1011v1.mp4",
+    "complete_zip_release_url": "https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.5.0/AiGoodBro-Showcase-1012v2.zip",
+    "archive_integrity_record_url": "https://github.com/BLACKIELF/AgentHub-AiGoodBro/blob/main/docs/showcase-release-1012v2.md"
+  },
+  "external_required_assets": [
+    {
+      "path": "ui/feishu.png",
+      "source_basename": "feishu.png",
+      "role": "Feishu icon",
+      "bytes": 130162,
+      "sha256": "41a1b460e85aa460e4d75f29d3c36fee2fe0f61389694ce97edef3955bd3d4ca",
+      "required_for": "Unmodified HTML preview and video/image rendering; not needed for original MP4 playback",
+      "distributed": false,
+      "permission_note": "Official application resource identified by hash; no standalone redistribution permission established. Supply locally only with the right to use it.",
+      "source_note": "See docs/ASSET-NOTICES.md for official origins and applicable terms.",
+      "source_correspondence": {
+        "application": "Lark",
+        "bundle_identifier": "com.bytedance.macos.feishu",
+        "version": "8.0.6",
+        "resource": "app.icns",
+        "rgba_sha256": "9e9257ac7d44ded04e28bb9bf0164e77162acd059d14bd44cb9dc0efce20eb99"
+      },
+      "permission_status": "not-established",
+      "distribution": "required-not-distributed"
+    },
+    {
+      "path": "ui/wechat.png",
+      "source_basename": "wechat.png",
+      "role": "WeChat icon",
+      "bytes": 171699,
+      "sha256": "d2950dc500dd6b3309d3242aa2edc8b70e05eba889feb1ea8dd279fd587429c5",
+      "required_for": "Unmodified HTML preview and video/image rendering; not needed for original MP4 playback",
+      "distributed": false,
+      "permission_note": "Official application resource identified by hash; no standalone redistribution permission established. Supply locally only with the right to use it.",
+      "source_note": "See docs/ASSET-NOTICES.md for official origins and applicable terms.",
+      "source_correspondence": {
+        "application": "WeChat",
+        "bundle_identifier": "com.tencent.xinWeChat",
+        "version": "4.1.13",
+        "resource": "AppIcon.icns",
+        "rgba_sha256": "0c859ab5464af2d7ffef78ac064df82697c6012b1c14c197528184ece97a448e"
+      },
+      "permission_status": "not-established",
+      "distribution": "required-not-distributed"
+    }
+  ]
+}

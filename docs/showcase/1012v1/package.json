@@ -1,0 +1,12 @@
+{
+  "name": "aigoodbro-promotional-showcase",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The original English AiGoodBro promotional video, editable scene, and presentation notes.",
+  "scripts": {
+    "preview": "node serve.mjs",
+    "stills": "node render.mjs stills",
+    "sample": "node render.mjs short"
+  }
+}
