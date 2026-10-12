@@ -1,12 +1,14 @@
 # AiGoodBro · English promotional showcase
 
-The original 48-second English AiGoodBro promotional video, its editable HTML scene, and the interface presentation patterns used in that scene. Package version: **1012v1** · Scene and video version: **1011v1**.
+The original 48-second English AiGoodBro promotional video, its editable HTML scene, and the interface presentation patterns used in that scene. Package version: **1012v2** · Scene and video version: **1011v1**. The Git directory retains its `1012v1` path.
 
 **This is a scripted promotional UI demonstration.** Account aliases, quota values, usage totals, messages, reset notices, and “Running” states are authored scene content. The package does not run the AiGoodBro application or connect to a live service.
 
-[Download the original video](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.5.0/AiGoodBro-English-1011v1.mp4) · [Download the complete ZIP](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.5.0/AiGoodBro-Showcase-1012v1.zip) · [Local player](index.html) · [Editable scene](scene-en-1011v1.html) · [中文说明](使用说明-1012v1.md)
+[Download the original video](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.5.0/AiGoodBro-English-1011v1.mp4) · [Download the complete ZIP](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.5.0/AiGoodBro-Showcase-1012v2.zip) · [Local player](index.html) · [Editable scene](scene-en-1011v1.html) · [中文说明](使用说明-1012v1.md)
 
 The complete release ZIP includes the original MP4. The Git directory `docs/showcase/1012v1/` carries source, documentation, soundtrack, images, and frames; download the MP4 into `exports/AiGoodBro-English-1011v1.mp4` in that directory before using its local video player.
+
+The archive's approved byte size and SHA-256 are recorded outside the ZIP in the [release integrity record](https://github.com/BLACKIELF/AgentHub-AiGoodBro/blob/main/docs/showcase-release-1012v2.md). Version 1012v2 contains the comparison-report fixes and does not distribute the two standalone service-icon PNGs. [Local image requirements](ui/README.md) explain how to supply authorized resources for an HTML preview or rerender; original MP4 playback is complete without them.
 
 ![AiGoodBro opening at 2.00 seconds; existing production render, not a live app capture](frames/english-0060.png)
 
@@ -43,10 +45,10 @@ Open `http://127.0.0.1:8787/`. The native player offers chapter buttons, an unch
 | [scene-en-1011v1.html](scene-en-1011v1.html) | Unmodified English scene: interface markup, CSS, camera, titles, scripted states, and animation. |
 | [audio/reference-score-1011v1.wav](audio/reference-score-1011v1.wav) | Unmodified 48 kHz stereo soundtrack used in the scene. |
 | [score-en-1011v1.py](score-en-1011v1.py) / [cues-en-1011v1.json](cues-en-1011v1.json) | Original procedural audio source and 70 event cues. |
-| [assets/](assets/) / [ui/](ui/) | The three original referenced images. |
+| [assets/](assets/) / [local image requirements](ui/README.md) | The unchanged AiGoodBro avatar is included. Feishu and WeChat icons are required local rendering inputs, not standalone files in this distribution. |
 | [frames/](frames/) | Eight original 1920 × 1440 production render frames, copied unchanged. These are scene render stills, not captures of a running app. |
 | [render.mjs](render.mjs) / [serve.mjs](serve.mjs) | Portable local rendering and playback tools; use already installed runtimes. |
-| [ORIGINALS.json](ORIGINALS.json) | Complete release package’s original-file SHA-256, sizes, roles, frame timestamps, and system-font declarations. The MP4 is a separate release asset in a Git checkout. |
+| [ORIGINALS.json](ORIGINALS.json) | Fourteen retained original files plus two required external image inputs, with SHA-256, sizes, roles, frame timestamps and system-font declarations. The MP4 is a separate release asset in a Git checkout. |
 | [FILES-SHA256.txt](FILES-SHA256.txt) | SHA-256 for every other file in the complete release ZIP. A Git checkout intentionally omits the listed MP4 binary. |
 | [docs/REPRODUCE.md](docs/REPRODUCE.md) | Preview, representative-frame, short-clip, full-render, and optional audio-generation instructions. |
 | [design-rules/apple-video-design/SKILL.md](design-rules/apple-video-design/SKILL.md) | Complete general workflow rules, separate from this scene’s measured parameters. |

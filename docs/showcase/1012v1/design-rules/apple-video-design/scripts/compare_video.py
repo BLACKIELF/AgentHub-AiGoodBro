@@ -5,6 +5,7 @@ import argparse
 import csv
 import json
 import math
+import os
 import shutil
 import subprocess
 import sys
@@ -13,6 +14,62 @@ from fractions import Fraction
 from pathlib import Path
 
 import numpy as np
+
+
+def resolve_path(path):
+    try:
+        return path.resolve()
+    except (OSError, RuntimeError) as error:
+        raise ValueError(f"cannot resolve file {path.name}: {type(error).__name__}") from None
+
+
+def same_file(left, right):
+    if resolve_path(left) == resolve_path(right):
+        return True
+    try:
+        return left.samefile(right)
+    except FileNotFoundError:
+        return False
+
+
+def check_output_paths(outputs, inputs):
+    for label, output in outputs:
+        for role, source in inputs:
+            if same_file(output, source):
+                raise ValueError(f"{label} output must not overwrite {role} input")
+    if same_file(outputs[0][1], outputs[1][1]):
+        raise ValueError("JSON and CSV outputs must use different files")
+
+
+def open_output(path, protected, **kwargs):
+    # Open without O_TRUNC; check the actual inode before changing any bytes.
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT, 0o666)
+    try:
+        actual = os.fstat(descriptor)
+        for role, source in protected:
+            try:
+                original = source.stat()
+            except FileNotFoundError:
+                continue
+            if os.path.samestat(actual, original):
+                raise ValueError(f"output must not overwrite {role}")
+        os.ftruncate(descriptor, 0)
+        target = os.fdopen(descriptor, "w", encoding="utf-8", **kwargs)
+        descriptor = None
+        return target
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
+def public_error(error, paths):
+    if isinstance(error, OSError) and error.strerror:
+        labels = [Path(name).name for name in (error.filename, error.filename2) if name]
+        return error.strerror + (": " + " -> ".join(labels) if labels else "")
+    message = str(error)
+    for path in sorted(set(paths), key=lambda item: len(str(item)), reverse=True):
+        message = message.replace(str(path), path.name)
+    return message
 
 
 def probe(path):
@@ -25,24 +82,25 @@ def probe(path):
     ]
     result = subprocess.run(command, capture_output=True, text=True, check=False)
     if result.returncode:
-        raise ValueError(result.stderr.strip() or f"ffprobe failed: {path}")
+        detail = result.stderr.strip().replace(str(path), path.name)
+        raise ValueError(f"ffprobe failed for {path.name}: {detail or 'no diagnostic returned'}")
     data = json.loads(result.stdout)
     if not data.get("streams"):
-        raise ValueError(f"no video stream: {path}")
+        raise ValueError(f"no video stream: {path.name}")
     stream = data["streams"][0]
     timestamps = [float(frame["best_effort_timestamp_time"]) for frame in data.get("frames", [])]
     if not timestamps or any(not math.isfinite(t) for t in timestamps):
-        raise ValueError(f"missing or invalid frame timestamps: {path}")
+        raise ValueError(f"missing or invalid frame timestamps: {path.name}")
     if any(b <= a for a, b in zip(timestamps, timestamps[1:])):
-        raise ValueError(f"non-increasing frame timestamps: {path}")
+        raise ValueError(f"non-increasing frame timestamps: {path.name}")
     duration = float(stream.get("duration", data.get("format", {}).get("duration", "nan")))
     if not math.isfinite(duration):
-        raise ValueError(f"missing video duration: {path}")
+        raise ValueError(f"missing video duration: {path.name}")
     fps = Fraction(stream.get("avg_frame_rate", "0/1"))
     if fps <= 0:
-        raise ValueError(f"invalid frame rate: {path}")
+        raise ValueError(f"invalid frame rate: {path.name}")
     return {
-        "path": str(path), "width": int(stream["width"]), "height": int(stream["height"]),
+        "path": path.name, "width": int(stream["width"]), "height": int(stream["height"]),
         "fps": str(fps), "duration": duration, "frame_count": len(timestamps),
         "first_pts": timestamps[0], "last_pts": timestamps[-1], "timestamps": timestamps,
     }
@@ -96,20 +154,28 @@ def main():
     args = parser.parse_args()
     report = {
         "comparison_completed": False, "pixel_criterion_passed": False,
-        "parameters": {key: str(value) if isinstance(value, Path) else value for key, value in vars(args).items()},
+        "parameters": {key: value.name if isinstance(value, Path) else value for key, value in vars(args).items()},
         "scope": "Native RGB frames and original PTS; audio and viewing quality are not evaluated.",
     }
-    output = args.report.resolve()
+    private_paths = [value for value in vars(args).values() if isinstance(value, Path)]
+    private_paths += [path.absolute() for path in private_paths]
+    output, csv_path, outputs, protected = args.report, None, [], []
+    outputs_checked = False
     processes, logs = [], []
     code = 2
     try:
-        inputs = [args.reference.resolve(), args.candidate.resolve()]
-        if output.suffix.lower() != ".json":
+        if args.report.suffix.lower() != ".json":
             raise ValueError("report path must have a .json suffix")
-        if output in inputs or output.with_suffix(".csv") in inputs:
-            raise ValueError("report paths must not overwrite either input")
-        if args.masks and args.masks.resolve() in (output, output.with_suffix(".csv")):
-            raise ValueError("report must not overwrite the mask input")
+        inputs = [resolve_path(args.reference), resolve_path(args.candidate)]
+        protected = list(zip(("reference", "candidate"), inputs))
+        if args.masks:
+            protected.append(("mask", resolve_path(args.masks)))
+        output = resolve_path(args.report)
+        csv_path = resolve_path(args.report.with_suffix(".csv"))
+        outputs = [("JSON", output), ("CSV", csv_path)]
+        private_paths += [path for _, path in protected + outputs]
+        check_output_paths(outputs, protected)
+        outputs_checked = True
         for name in ("ffmpeg", "ffprobe"):
             if shutil.which(name) is None:
                 raise ValueError(f"required existing tool not found: {name}")
@@ -162,8 +228,9 @@ def main():
                 freezes.append({"start_seconds": start, "end_seconds": end, "seconds": round(end - start, 6)})
             freeze_start = None
 
-        csv_path = output.with_suffix(".csv")
-        with csv_path.open("w", newline="") as target:
+        csv_path.parent.mkdir(parents=True, exist_ok=True)
+        check_output_paths(outputs, protected)
+        with open_output(csv_path, protected + [("JSON output", output)], newline="") as target:
             writer = csv.writer(target)
             writer.writerow(["frame", "pts", "full_mae", "compared_mae", "changed_pixel_fraction", "masked_fraction", "reference_motion", "candidate_motion"])
             for index, timestamp in enumerate(reference["timestamps"]):
@@ -210,7 +277,7 @@ def main():
                 log.seek(0)
                 raise ValueError(log.read().decode(errors="replace")[-2000:] or "ffmpeg decode failed")
         report.update({
-            "comparison_completed": True, "compared_frames": count, "metrics_csv": str(csv_path),
+            "comparison_completed": True, "compared_frames": count, "metrics_csv": args.report.with_suffix(".csv").name,
             "pixel_criterion_passed": pixel_failures == 0, "pixel_failing_frames": pixel_failures,
             "nonidentical_compared_frames": differing,
             "mean_full_mae": sum_full_mae / count, "max_full_frame_mae": max_full_mae,
@@ -220,7 +287,7 @@ def main():
         })
         code = 0 if pixel_failures == 0 and not freezes else 1
     except (ValueError, KeyError, OSError, subprocess.SubprocessError) as error:
-        report["error"] = str(error)
+        report["error"] = public_error(error, private_paths)
     finally:
         for proc in processes:
             if proc.poll() is None:
@@ -236,13 +303,18 @@ def main():
             log.close()
     report["exit_code"] = code
     # Never replace media or mask input with diagnostics, including on an error path.
-    protected = {args.reference.resolve(), args.candidate.resolve()}
-    if args.masks:
-        protected.add(args.masks.resolve())
-    if output not in protected:
-        output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n")
-    print(json.dumps({"exit_code": code, "report": str(output), "compared_frames": report.get("compared_frames", 0), "added_freeze_candidates": report.get("added_freeze_candidates", []), "error": report.get("error")}, ensure_ascii=False))
+    report_written = False
+    if outputs_checked:
+        try:
+            check_output_paths(outputs, protected)
+            output.parent.mkdir(parents=True, exist_ok=True)
+            with open_output(output, protected + [("CSV output", csv_path)]) as target:
+                target.write(json.dumps(report, ensure_ascii=False, indent=2) + "\n")
+            report_written = True
+        except (ValueError, OSError) as error:
+            code = 2
+            report["error"] = public_error(error, private_paths)
+    print(json.dumps({"exit_code": code, "report": args.report.name, "report_written": report_written, "compared_frames": report.get("compared_frames", 0), "added_freeze_candidates": report.get("added_freeze_candidates", []), "error": report.get("error")}, ensure_ascii=False))
     return code
 
 

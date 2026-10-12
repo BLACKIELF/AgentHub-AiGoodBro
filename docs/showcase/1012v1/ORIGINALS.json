@@ -1,7 +1,7 @@
 {
-  "version": "1012v1",
+  "version": "1012v2",
   "scene_version": "1011v1",
-  "description": "Original English promotional demo files copied without modification; package documentation and portable tools are separate additions.",
+  "description": "Original English promotional scene, video, audio, avatar and retained frames stay unchanged; two service icons are required local inputs and are not distributed standalone.",
   "presentation_status": "Promotional UI demonstration; displayed values, messages, and statuses are scripted.",
   "video": {
     "path": "exports/AiGoodBro-English-1011v1.mp4",
@@ -51,22 +51,6 @@
       "role": "AiGoodBro half-body avatar",
       "bytes": 314159,
       "sha256": "45b63bbc4e2e2e1320f0b28f1ecc1757fcd9690f8b2b2534e1a9ea4d1e43cdf5",
-      "copied_without_modification": true
-    },
-    {
-      "path": "ui/feishu.png",
-      "source_basename": "feishu.png",
-      "role": "Feishu icon",
-      "bytes": 130162,
-      "sha256": "41a1b460e85aa460e4d75f29d3c36fee2fe0f61389694ce97edef3955bd3d4ca",
-      "copied_without_modification": true
-    },
-    {
-      "path": "ui/wechat.png",
-      "source_basename": "wechat.png",
-      "role": "WeChat icon",
-      "bytes": 171699,
-      "sha256": "d2950dc500dd6b3309d3242aa2edc8b70e05eba889feb1ea8dd279fd587429c5",
       "copied_without_modification": true
     },
     {
@@ -229,12 +213,55 @@
     "note": "Scene uses system fonts. Availability, font substitution, and rasterization can change text appearance on another machine."
   },
   "distribution": {
-    "manifest_scope": "Complete release ZIP, with all 16 original files",
+    "manifest_scope": "1012v2 ZIP payload: 14 retained original files; two service-icon inputs are required locally and not distributed standalone",
     "git_directory": "docs/showcase/1012v1/",
     "git_omitted_originals": [
       "exports/AiGoodBro-English-1011v1.mp4"
     ],
     "video_release_url": "https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.5.0/AiGoodBro-English-1011v1.mp4",
-    "complete_zip_release_url": "https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.5.0/AiGoodBro-Showcase-1012v1.zip"
-  }
+    "complete_zip_release_url": "https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.5.0/AiGoodBro-Showcase-1012v2.zip",
+    "archive_integrity_record_url": "https://github.com/BLACKIELF/AgentHub-AiGoodBro/blob/main/docs/showcase-release-1012v2.md"
+  },
+  "external_required_assets": [
+    {
+      "path": "ui/feishu.png",
+      "source_basename": "feishu.png",
+      "role": "Feishu icon",
+      "bytes": 130162,
+      "sha256": "41a1b460e85aa460e4d75f29d3c36fee2fe0f61389694ce97edef3955bd3d4ca",
+      "required_for": "Unmodified HTML preview and video/image rendering; not needed for original MP4 playback",
+      "distributed": false,
+      "permission_note": "Official application resource identified by hash; no standalone redistribution permission established. Supply locally only with the right to use it.",
+      "source_note": "See docs/ASSET-NOTICES.md for official origins and applicable terms.",
+      "source_correspondence": {
+        "application": "Lark",
+        "bundle_identifier": "com.bytedance.macos.feishu",
+        "version": "8.0.6",
+        "resource": "app.icns",
+        "rgba_sha256": "9e9257ac7d44ded04e28bb9bf0164e77162acd059d14bd44cb9dc0efce20eb99"
+      },
+      "permission_status": "not-established",
+      "distribution": "required-not-distributed"
+    },
+    {
+      "path": "ui/wechat.png",
+      "source_basename": "wechat.png",
+      "role": "WeChat icon",
+      "bytes": 171699,
+      "sha256": "d2950dc500dd6b3309d3242aa2edc8b70e05eba889feb1ea8dd279fd587429c5",
+      "required_for": "Unmodified HTML preview and video/image rendering; not needed for original MP4 playback",
+      "distributed": false,
+      "permission_note": "Official application resource identified by hash; no standalone redistribution permission established. Supply locally only with the right to use it.",
+      "source_note": "See docs/ASSET-NOTICES.md for official origins and applicable terms.",
+      "source_correspondence": {
+        "application": "WeChat",
+        "bundle_identifier": "com.tencent.xinWeChat",
+        "version": "4.1.13",
+        "resource": "AppIcon.icns",
+        "rgba_sha256": "0c859ab5464af2d7ffef78ac064df82697c6012b1c14c197528184ece97a448e"
+      },
+      "permission_status": "not-established",
+      "distribution": "required-not-distributed"
+    }
+  ]
 }

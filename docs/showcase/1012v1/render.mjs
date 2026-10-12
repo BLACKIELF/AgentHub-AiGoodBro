@@ -49,6 +49,18 @@ if (mode === 'score') {
   await run(process.env.AGB_PYTHON || 'python3',['score-en-1011v1.py',relative(input),relative(output)]).done;
   console.log(JSON.stringify({mode,output:relative(output)}));
 } else {
+  const originalInputs = JSON.parse(await fs.readFile(path.join(here,'ORIGINALS.json'),'utf8'));
+  for (const asset of originalInputs.external_required_assets || []) {
+    const file = path.join(here,asset.path);
+    if (!await exists(file)) {
+      console.error(`Required user-supplied image is missing: ${asset.path}. See ui/README.md; no replacement is downloaded or substituted.`);
+      process.exit(2);
+    }
+    if (digest(await fs.readFile(file)) !== asset.sha256) {
+      console.error(`User-supplied image does not match the documented source: ${asset.path}. See ui/README.md.`);
+      process.exit(2);
+    }
+  }
   let runtime;
   try { runtime = require(process.env.AGB_PLAYWRIGHT || 'playwright'); }
   catch {

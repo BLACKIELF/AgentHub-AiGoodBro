@@ -38,7 +38,7 @@ Frame indexes are zero-based; time is `frame_index / 30`. Chinese renders use th
 | 10 · WeChat and Feishu / 微信与飞书 | 489 / 16.30 s | [notifications.png](images/1012v1-promo/zh/notifications.png) | [notifications.png](images/1012v1-promo/en/notifications.png) |
 | 12 · Sidebar / 侧栏 | 791 / 26.3667 s | [sidebar.png](images/1012v1-promo/zh/sidebar.png) | [sidebar.png](images/1012v1-promo/en/sidebar.png) |
 
-The [machine-readable manifest](images/1012v1-promo/manifest.json) records the derivation, source hashes, frame indexes, image dimensions, byte sizes and SHA256 of each delivered PNG. There is no new Chinese ZIP in this update. The [complete English package](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.5.0/AiGoodBro-Showcase-1012v1.zip) and [English showcase](showcase/1012v1/README.md) retain their English scope.
+The [machine-readable manifest](images/1012v1-promo/manifest.json) records the derivation, source hashes, frame indexes, image dimensions, byte sizes and SHA256 of each delivered PNG. There is no new Chinese ZIP in this update. The [complete English package](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.5.0/AiGoodBro-Showcase-1012v2.zip) and [English showcase](showcase/1012v1/README.md) retain their English scope.
 
 ## Existing application screenshots
 

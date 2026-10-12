@@ -13,9 +13,10 @@ const types = {'.html':'text/html; charset=utf-8','.mjs':'text/javascript; chars
 export async function serve(root = here, port = 0) {
   root = await fsp.realpath(root);
   const server = createServer(async (req, res) => {
+    let name;
     try {
       if (!['GET','HEAD'].includes(req.method)) return res.writeHead(405).end();
-      const name = decodeURIComponent(new URL(req.url, 'http://localhost').pathname);
+      name = decodeURIComponent(new URL(req.url, 'http://localhost').pathname);
       const candidate = path.resolve(root, '.' + (name === '/' ? '/index.html' : name));
       if (!candidate.startsWith(root + path.sep)) return res.writeHead(403).end();
       const file = await fsp.realpath(candidate);
@@ -40,7 +41,15 @@ export async function serve(root = here, port = 0) {
       stream.on('error', () => res.destroy());
       res.on('close', () => stream.destroy());
       stream.pipe(res);
-    } catch { if (!res.headersSent) res.writeHead(404).end(); else res.destroy(); }
+    } catch {
+      if (res.headersSent) return res.destroy();
+      if (['/ui/feishu.png','/ui/wechat.png'].includes(name)) {
+        const message = 'Required user-supplied service icon is not available. See ui/README.md; no replacement is downloaded or substituted.\n';
+        res.writeHead(404,{'Content-Type':'text/plain; charset=utf-8'});
+        return res.end(req.method === 'HEAD' ? undefined : message);
+      }
+      res.writeHead(404).end();
+    }
   });
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(port, '127.0.0.1', resolve); });
   return {server, origin:`http://127.0.0.1:${server.address().port}`};

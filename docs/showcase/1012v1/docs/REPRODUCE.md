@@ -2,6 +2,8 @@
 
 The complete release ZIP’s MP4 is the original encoded result. In a Git checkout, [download it separately](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.5.0/AiGoodBro-English-1011v1.mp4) into `exports/AiGoodBro-English-1011v1.mp4` for the video player. [The exports guide](../exports/README.md) gives its hash. Rendering creates a separate candidate under `generated/`; it does not update the original video, scene, images, frames, or soundtrack.
 
+The current source distribution and **1012v2** ZIP do not include the standalone Feishu and WeChat PNGs. Original-video playback is complete. To preview or render the unmodified HTML, first supply the two original resources locally only when you have the right to use them; [ui/README.md](../ui/README.md) gives names and hashes. The renderer stops before opening a browser or creating output when either file is missing or mismatched. The scene source is not rewritten and no substitute icon is downloaded.
+
 ## Preview
 
 Opening [index.html](../index.html) directly is sufficient for the original MP4. For local preview with byte-range media delivery, run from the package directory:

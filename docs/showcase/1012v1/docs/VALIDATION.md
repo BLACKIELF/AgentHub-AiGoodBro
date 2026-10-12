@@ -1,10 +1,10 @@
-# Validation scope · 1012v1
+# Validation scope · 1012v2
 
-These are local package checks performed on **2026-10-12**. They establish file integrity, playback, scene loading, and representative rendering. They do not test an application backend, live quotas, notification delivery, proxy operation, or physical haptics.
+These are local package checks performed on **2026-10-12**. The original 1012v1 playback and scene-render evidence below used all original local inputs. Version 1012v2 retains the same video, scene and frames, fixes the comparison tool, and omits two standalone service icons; a new HTML render requires those authorized local inputs. These checks do not test an application backend, live quotas, notification delivery, proxy operation, or physical haptics.
 
 ## Original material
 
-- All **16 retained original files** match their packaging input SHA-256 and byte sizes, including the MP4, scene, cues, score source, WAV, three image assets, and eight render frames.
+- All **14 retained original files** match their packaging input SHA-256 and byte sizes, including the MP4, scene, cues, score source, WAV, AiGoodBro avatar, and eight render frames. The two service-icon inputs are listed separately as required but not distributed in [ORIGINALS.json](../ORIGINALS.json).
 - All eight retained frames are the existing **1920 × 1440** files, copied without modification. Their timestamps are listed in [ORIGINALS.json](../ORIGINALS.json).
 - The original MP4 reports **48.000 s**, **1920 × 1440**, **30/1 fps**, **1440 video frames**, **H.264 video**, and **48 kHz stereo AAC**. Full FFmpeg decode completed with **exit code 0 and no error output**.
 
@@ -18,7 +18,7 @@ The complete ZIP contains the MP4. A Git checkout needs the separately downloade
 
 ## Portable render entry
 
-The new renderer loaded the unmodified scene and all three image assets. The scene’s duration, BPM, beats, and all **70 cues** matched the original cues JSON. It made no external page-resource requests and reported no scene script or missing-resource errors.
+The original 1012v1 renderer checks loaded the unmodified scene and all three local image inputs. The scene’s duration, BPM, beats, and all **70 cues** matched the original cues JSON. It made no external page-resource requests and reported no scene script or missing-resource errors. These historical checks do not imply that the current distribution includes the two standalone service icons.
 
 - **Eight representative frames** were rendered using the original `renderAt(frame / 30)` entry and a 1920 × 1440, DPR 1 viewport.
 - The notification handoff at **13.60–16.40 s** was rendered as a separate **2.800 s / 84-frame** H.264/AAC sample with the same source-time interval of the original WAV. Its full decode completed with exit code 0 and no errors.
@@ -32,7 +32,9 @@ The original procedural score source ran with the wrapper’s `duration` → `du
 
 ## Public package checks
 
-The package includes local sources and deliberate release-download links. Retained images were visually inspected; no image was changed. Text scans found no original machine paths, email addresses, credential assignments, or private-key headers in the distributed text files. The scene’s four distinct local media references and all relative documentation links resolved inside the package. Generated samples and local QA outputs are excluded from the distributed package.
+The package includes local sources and deliberate release-download links. Retained images were visually inspected; no image was changed. Text scans found no original machine paths, email addresses, credential assignments, or private-key headers in the distributed text files. Relative documentation links resolve inside the package; the scene's two external service-icon inputs are explicitly documented exceptions. Generated samples and local QA outputs are excluded from the distributed package.
+
+The repaired comparison tool passed **7 synthetic test methods covering 32 scenarios**, including direct, symlink and hard-link output aliases, late alias creation, path-redacted success/failure reports, and unchanged media inputs. The 1012v2 renderer rejects missing or mismatched required service-icon inputs before browser launch and output creation. Original MP4 playback does not depend on those separate PNGs.
 
 The download URLs identify the intended release assets. Package checks do not by themselves confirm that the release was uploaded or published.
 
