@@ -61,6 +61,22 @@ enum MessageChannelsControllerSelfTest {
             }
         }
     }
+    private final class DeliveryResultBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var result: Result<MessageDeliveryOutcome, MessageChannelError>?
+        var value: Result<MessageDeliveryOutcome, MessageChannelError>? {
+            get {
+                lock.lock()
+                defer { lock.unlock() }
+                return result
+            }
+            set {
+                lock.lock()
+                defer { lock.unlock() }
+                result = newValue
+            }
+        }
+    }
     static func run() -> Bool {
         var failures: [String] = []
         func expect(_ condition: @autoclosure () -> Bool, _ name: String) { if !condition() { failures.append(name) } }
@@ -648,29 +664,29 @@ enum MessageChannelsControllerSelfTest {
         func trackedRevision() -> UUID? { MainActor.assumeIsolated { tracked.publicResetRevision(.personalWeChat) } }
         if let revision = trackedRevision() {
             let status = try! MessageTaskStatus(eventKind: .test, occurredAt: Date())
-            var trackedResult: Result<MessageDeliveryOutcome, MessageChannelError>?
+            let trackedResult = DeliveryResultBox()
             Task { @MainActor in
-                trackedResult = await tracked.sendTracked(status, to: .personalWeChat, revision: revision, shouldSend: { true })
+                trackedResult.value = await tracked.sendTracked(status, to: .personalWeChat, revision: revision, shouldSend: { true })
             }
             spin { trackedHTTP.hasPending("/ilink/bot/sendmessage") }
             trackedHTTP.completePath("/ilink/bot/sendmessage", responseBody: #"{"ret":-14}"#)
-            spin { trackedResult != nil }
-            expect(trackedResult == .failure(.weChatSessionExpired), "tracked session expiry did not return the adapter failure")
+            spin { trackedResult.value != nil }
+            expect(trackedResult.value == .failure(.weChatSessionExpired), "tracked session expiry did not return the adapter failure")
             expect(
                 tracked.personalWeChatPhase == .needsSetup && !tracked.personalWeChatConnected
                     && !tracked.personalWeChatHasContext && trackedRevision() == nil,
                 "tracked session expiry retained connection, credential admission or verified phase")
             let countAfterExpiry = trackedHTTP.count
             tracked.send(try! MessageTaskStatus(eventKind: .test, occurredAt: Date()))
-            var retry: Result<MessageDeliveryOutcome, MessageChannelError>?
+            let retry = DeliveryResultBox()
             Task { @MainActor in
-                retry = await tracked.sendTracked(status, to: .personalWeChat, revision: revision, shouldSend: { true })
+                retry.value = await tracked.sendTracked(status, to: .personalWeChat, revision: revision, shouldSend: { true })
             }
-            spin { retry != nil }
+            spin { retry.value != nil }
             trackedHTTP.completeAll(responseBody: "{}")
             settle()
             expect(
-                retry == .failure(.cancelled) && trackedHTTP.count == countAfterExpiry
+                retry.value == .failure(.cancelled) && trackedHTTP.count == countAfterExpiry
                     && trackedRevision() == nil && !tracked.personalWeChatConnected,
                 "expired tracked session continued automatic sending or a late poll restored admission")
         } else {
