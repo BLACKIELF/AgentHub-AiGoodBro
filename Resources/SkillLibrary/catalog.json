@@ -1,0 +1,266 @@
+{
+  "schemaVersion": 1,
+  "revision": "1014v1",
+  "updatedAt": "2026-10-14",
+  "items": [
+    {
+      "id": "oracle",
+      "kind": "skill",
+      "title": {
+        "zh": "Oracle",
+        "en": "Oracle"
+      },
+      "purpose": {
+        "zh": "方案复核",
+        "en": "Review a plan"
+      },
+      "summary": {
+        "zh": "调用浏览器，请网页版 GPT 最好的模型复核或出方案。",
+        "en": "Use the browser to ask the best available GPT model on the web for a review or plan."
+      },
+      "symbol": "checkmark.bubble",
+      "icon": "🔍",
+      "skillDirectory": "oracle",
+      "skillNames": [
+        "oracle"
+      ],
+      "appBundleIDs": [],
+      "category": "编程",
+      "tags": [
+        "Skill",
+        "方案复核"
+      ],
+      "updatedAt": "2026-10-13",
+      "verification": "已对照 AiGoodBro 桌面推荐说明；本条不代表已在你的环境安装或调用。",
+      "prerequisites": [
+        "需要复核的方案或问题",
+        "与问题有关且可提供的文件",
+        "电脑端 AiGoodBro 的推荐 Skills 与应用"
+      ],
+      "steps": [
+        "在电脑端 AiGoodBro 的“推荐 Skills 与应用”中查看 Oracle 说明。",
+        "说明复核目标，只选择必要文件，先看材料范围与本地预览。",
+        "确认浏览器、模型与使用额度后再调用；复核意见仍需对照实际证据。"
+      ],
+      "copyText": "请查看 AiGoodBro 推荐的 Oracle Skill，先读 SKILL.md 和安装说明，并检查是否已有兼容安装。相同则复用，有差异先说明；Oracle CLI 若未安装，只说明缺失与安装命令，等我确认。\n\n针对我提供的问题，整理最小复核材料并先做本地预览，明确文件范围、浏览器、模型和额度。安装 Skill 不等于授权模型调用；确认后再调用，不读取密钥、不修改认证或全局配置，不擅自改用付费 API。将复核意见与实际源码、证据核对后再给结论。",
+      "sourceURL": "https://github.com/BLACKIELF/AgentHub-AiGoodBro",
+      "sourceLabel": "AiGoodBro 桌面推荐说明"
+    },
+    {
+      "id": "handoff",
+      "kind": "skill",
+      "title": {
+        "zh": "Handoff · 任务交接",
+        "en": "Handoff · Task handoff"
+      },
+      "purpose": {
+        "zh": "接续任务",
+        "en": "Continue work"
+      },
+      "summary": {
+        "zh": "保存进度、证据与下一步，换任务也能接着做。",
+        "en": "Preserve progress, evidence and next steps so work can continue in another chat."
+      },
+      "symbol": "arrow.triangle.branch",
+      "icon": "🧭",
+      "skillDirectory": "handoff",
+      "skillNames": [
+        "handoffskill",
+        "handoff"
+      ],
+      "appBundleIDs": [],
+      "category": "编程",
+      "tags": [
+        "Skill",
+        "接续任务"
+      ],
+      "updatedAt": "2026-10-13",
+      "verification": "已对照 AiGoodBro 内置 Handoff 交接规范；未为你执行保存或接手。",
+      "prerequisites": [
+        "当前任务目标和已授权范围",
+        "现有项目与交接入口",
+        "已经核实的成果及尚未完成事项"
+      ],
+      "steps": [
+        "在电脑端 AiGoodBro 的推荐区查看 Handoff 与交接规范。",
+        "沿用项目现有交接入口，记录有效成果、证据、边界和最小下一步。",
+        "回读交接路径与引用，再用一条简短指令续接；原任务未完成的事项继续保留。"
+      ],
+      "copyText": "请使用 Handoff 接续当前任务。先读取项目现有交接入口与协作规范，核对目标、有效授权、当前成果和证据；不要从头重做。\n\n如果我要求保存交接，只写完成交接所必需的文件，保留未完成事项、阻塞和最小下一步，并回读路径与引用。已验证与待验证分开，不写密钥、认证材料或未脱敏私人信息；不关闭应用、不切换账号，不擅自安装、发布或调用付费服务。交付一个可打开的交接入口与一条简短续接指令。",
+      "sourceURL": "https://github.com/BLACKIELF/AgentHub-AiGoodBro",
+      "sourceLabel": "AiGoodBro 内置交接说明"
+    },
+    {
+      "id": "jev-use",
+      "kind": "skill",
+      "title": {
+        "zh": "Jev · 电脑操作",
+        "en": "Jev · Computer use"
+      },
+      "purpose": {
+        "zh": "电脑操作",
+        "en": "Computer use"
+      },
+      "summary": {
+        "zh": "Jev 根据界面文字选下一步，Codex 执行并核验。",
+        "en": "Jev selects the next step from UI text; Codex executes it and verifies the result."
+      },
+      "symbol": "cursorarrow.click",
+      "icon": "💻",
+      "skillDirectory": "jev-cu",
+      "skillNames": [
+        "jev-use",
+        "jev-cu"
+      ],
+      "appBundleIDs": [],
+      "category": "工作台",
+      "tags": [
+        "Skill",
+        "电脑操作"
+      ],
+      "updatedAt": "2026-10-13",
+      "verification": "已对照 Jev 官方文档、Jev-cu 公开运行器与本机 jev-use；Jev 只接收文字并返回类型化判断，界面读取与执行由 Computer Use 完成。",
+      "prerequisites": [
+        "有文字控件的电脑端 App 与具体目标",
+        "可用的 Codex Computer Use 与 Jev 运行器",
+        "已确认的调用费用、数据范围和操作授权"
+      ],
+      "steps": [
+        "阅读 Jev-cu 使用说明，检查并复用已有兼容的 jev-use 或 jev-cu 安装。",
+        "限定一个小目标与必要文字候选，先预览下一步；不向 Jev 发送截图。",
+        "经授权后由 Computer Use 执行、Codex 核验；低置信度或连续无进展时停止并接管。"
+      ],
+      "copyText": "请使用 Jev 帮我规划一个有明确文字控件的电脑操作任务。先阅读已有 jev-use 或 jev-cu Skill，检查并复用兼容运行器。由 Codex 拆分目标、Computer Use 读取界面，Jev 仅根据必要的文字候选返回类型化判断与概率；操作由 Computer Use 执行，Codex 读取结果核验。\n\n本次先说明最小目标、输入范围、预览步骤与成功判据，不调用付费 API、不执行界面动作、不安装或覆盖。真实调用与操作按具体任务授权；不发送无关私人信息或截图，不把 Jev 自报完成当作验证结果。",
+      "sourceURL": "https://github.com/Sac-Y/Jev-cu",
+      "sourceLabel": "Jev-cu 公开运行器与使用说明"
+    },
+    {
+      "id": "quicktoggle",
+      "kind": "app",
+      "title": {
+        "zh": "轻唤 · App",
+        "en": "QuickToggle · App"
+      },
+      "purpose": {
+        "zh": "快捷呼出",
+        "en": "App hotkeys"
+      },
+      "summary": {
+        "zh": "给常用 App 设置快捷键，一键呼出与收起。",
+        "en": "Set hotkeys to bring up and hide your favorite apps."
+      },
+      "symbol": "keyboard",
+      "icon": "⌨️",
+      "skillDirectory": null,
+      "skillNames": [],
+      "appBundleIDs": [
+        "com.quicktoggle.app"
+      ],
+      "category": "工作台",
+      "tags": [
+        "应用",
+        "快捷呼出"
+      ],
+      "updatedAt": "2026-10-13",
+      "verification": "已对照 AiGoodBro 桌面推荐与轻唤正式发布入口；设备兼容性以所选正式版本为准。",
+      "prerequisites": [
+        "需要快捷呼出的常用 App",
+        "电脑系统与现有快捷键",
+        "轻唤当前正式版的兼容说明"
+      ],
+      "steps": [
+        "在电脑端查看轻唤正式说明，确认系统兼容与已有安装。",
+        "按需选择一个常用 App 设置快捷键，避免覆盖已有快捷键。",
+        "验证呼出与收起；需要系统权限时由你确认。"
+      ],
+      "copyText": "请帮我了解 AiGoodBro 推荐的轻唤 App，并从官方说明核对我当前电脑的兼容性与已有安装。给出一个常用 App 的快捷呼出与收起用法，不修改现有快捷键、不绕过系统安全检查；若需要安装、覆盖或系统权限，先说明并由我确认。",
+      "sourceURL": "https://github.com/BLACKIELF/QuickToggle/releases",
+      "sourceLabel": "轻唤正式发布说明"
+    },
+    {
+      "id": "rea",
+      "kind": "skill",
+      "title": {
+        "zh": "REA · 逆向一切",
+        "en": "REA · Reverse engineering"
+      },
+      "purpose": {
+        "zh": "逆向分析",
+        "en": "Artifact analysis"
+      },
+      "summary": {
+        "zh": "分析应用与网页产物，梳理结构、行为和证据。",
+        "en": "Inspect application and web artifacts, then explain structure, behavior and evidence."
+      },
+      "symbol": "viewfinder",
+      "icon": "🧩",
+      "skillDirectory": "reverse-engineer-anything",
+      "skillNames": [
+        "reverse-engineer-anything"
+      ],
+      "appBundleIDs": [],
+      "category": "编程",
+      "tags": [
+        "Skill",
+        "逆向分析"
+      ],
+      "updatedAt": "2026-10-13",
+      "verification": "已核对官方 REA 6.4.0 与 MIT 许可；可分析的产物和引擎以实际环境为准，本条未运行任何目标。",
+      "prerequisites": [
+        "拥有或获授权分析的明确目标",
+        "需要回答的结构或行为问题",
+        "REA CLI、MCP 与目标所需的分析引擎"
+      ],
+      "steps": [
+        "阅读 morluto/rea 官方说明，检查已有版本并优先复用；Skill、MCP 与分析引擎分别核验。",
+        "明确目标和授权范围；完整开源项目先读源码，产物分析选择对应工具。",
+        "先说明最小分析方案与证据边界，再按授权执行；观察、推断和未知分开记录。"
+      ],
+      "copyText": "请查看 REA（morluto/rea）的官方说明与 reverse-engineer-anything Skill。先检查并复用已有兼容的 CLI、MCP 和分析引擎，不重复安装。围绕我明确提供且获授权分析的目标，说明适用工具、可获得的证据和最小分析方案；有完整源码时优先直接读源码。\n\n本次只给说明与方案，不运行目标、不提取真实用户数据、不绕过登录或付费限制。后续实际分析按目标授权，观察、推断与未知分开，不把缺少引擎或未验证能力描述为已支持。",
+      "sourceURL": "https://github.com/morluto/rea",
+      "sourceLabel": "REA 官方项目 · 6.4.0 · MIT"
+    },
+    {
+      "id": "aihot",
+      "kind": "app",
+      "title": {
+        "zh": "AIHOT · 热点日报",
+        "en": "AIHOT · News digests"
+      },
+      "purpose": {
+        "zh": "行业资讯",
+        "en": "Industry news"
+      },
+      "summary": {
+        "zh": "汇集资讯、合并重复事件，生成热点与日报；也可用开源框架搭建自己的行业热点站。",
+        "en": "Gather news, merge duplicate events and produce trending stories and daily digests; use the open-source framework to build an industry news site."
+      },
+      "symbol": "newspaper",
+      "icon": "📰",
+      "skillDirectory": null,
+      "skillNames": [],
+      "appBundleIDs": [],
+      "category": "资讯",
+      "tags": [
+        "开源应用",
+        "热点",
+        "日报"
+      ],
+      "updatedAt": "2026-10-14",
+      "verification": "已对照 KKKKhazix/AIHOT 官方 README：这是开源行业热点网站框架，支持信源聚合、摘要、事件合并、热点及日报/周报/月报。仓库不含 AIHOT 的私有信源和运营数据，也不提供 Codex 重置监控或模型榜；本条仅作推荐，未安装、部署或接入模型 API。",
+      "prerequisites": [
+        "先阅读官方项目说明，也可浏览 aihot.news 演示。",
+        "如考虑自建，需另备 Docker、Node.js 24、数据库与模型 API。",
+        "MIT 许可适用于代码；AIHOT 品牌名和 Logo 另有使用限制。"
+      ],
+      "steps": [
+        "查看官方 README，了解资讯筛选、摘要、事件合并和热点日报功能。",
+        "结合 aihot.news 演示判断是否适合自己的行业；公开仓库不含其私有信源和运营数据。",
+        "本次只了解项目；自建部署、数据库或模型 API 接入需按后续明确授权另行处理。"
+      ],
+      "copyText": "请只读介绍 AIHOT（https://github.com/KKKKhazix/AIHOT）及其官方演示 aihot.news，说明开源行业热点网站框架如何聚合资讯、合并重复事件并生成热点与日报/周报/月报。区分公开代码与不随仓库提供的私有信源、运营数据；不要声称支持 Codex 重置监控或模型榜。\n\n只给了解建议，不安装、不部署、不接入模型 API，也不读取密钥或发送内容。说明自建需要 Docker、Node.js 24、数据库与模型 API，以及 MIT 代码许可和 AIHOT 品牌名、Logo 的使用边界。",
+      "sourceURL": "https://github.com/KKKKhazix/AIHOT",
+      "sourceLabel": "AIHOT 官方项目 · MIT 代码许可"
+    }
+  ]
+}

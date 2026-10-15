@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { resolveSqlite, openDb } = require('../../sqliteReadOnly');
-const { findSessionFiles, codexSessionFile } = require('../../sessionFiles');
+const { findCodexSessionFiles, codexSessionFile } = require('../../sessionFiles');
 const t3SessionMetadata = require('../../t3SessionMetadata');
 const { expandHomePath, t3HomeDir, discoverT3DbPaths } = t3SessionMetadata;
 const { shouldReadSessionContext } = require('../../sessionContext');
@@ -252,7 +252,7 @@ function resolveSessionMetadata(sessionIds, context) {
       missingIds.add(sessionId);
     }
   }
-  const files = findSessionFiles(path.join(codexHome, 'sessions'), missingIds);
+  const files = findCodexSessionFiles(codexHome, missingIds);
   for (const [sessionId, filePath] of files) {
     result.set(sessionId, decorate(sessionId, filePath));
   }

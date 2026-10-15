@@ -220,16 +220,38 @@ enum TokenMonitorUISelfTest {
         func countdown(_ seconds: TimeInterval, now: Date? = nil, kind: ResetCountdownPresentation.Kind = .publicForecast, language: WidgetLanguage = .zh) -> String {
             ResetCountdownPresentation.label(deadline: start.addingTimeInterval(seconds), now: now ?? start, kind: kind, language: language)
         }
-        expect(countdown(90_061) == "预计重置还有 1 天 01:01:01", "countdown includes days, hours, minutes and seconds")
-        expect(countdown(90_061, language: .en) == "Expected reset in 1d 01:01:01", "English countdown retains day precision")
-        expect(countdown(60.1) == "预计重置还有 00:01:01", "fractional seconds do not report zero early")
-        expect(countdown(0.1) == "预计重置还有 00:00:01", "last fraction of a second is still pending")
+        expect(countdown(90_061) == "预计重置还有 25h1m", "countdown uses short floored hours and minutes")
+        expect(countdown(90_061, language: .en) == "Expected reset in 25h1m", "English countdown uses the same duration")
+        expect(countdown(60.1) == "预计重置还有 1m", "fractional minutes are floored")
+        expect(countdown(0.1) == "预计重置还有 <1m", "last fraction remains pending without promising extra time")
         expect(countdown(0).contains("等待来源确认"), "deadline never claims public delivery")
         expect(countdown(-10, kind: .accountWindow).contains("等待额度更新"), "expired account window never implies restored quota")
-        expect(countdown(3_661, now: start.addingTimeInterval(3_600)) == "预计重置还有 00:01:01", "sleep or missed ticks cannot accumulate drift")
-        expect(countdown(60, now: start.addingTimeInterval(-60)) == "预计重置还有 00:02:00", "clock corrections rederive the remaining duration")
+        expect(countdown(3_661, now: start.addingTimeInterval(3_600)) == "预计重置还有 1m", "sleep or missed ticks cannot accumulate drift")
+        expect(countdown(60, now: start.addingTimeInterval(-60)) == "预计重置还有 2m", "clock corrections rederive the remaining duration")
         expect(countdown(.infinity).contains("待公开来源公布"), "invalid timestamps do not trap or create a fake timer")
         expect(ResetCountdownPresentation.label(deadline: nil, now: start, kind: .accountWindow, language: .zh) == "重置时间未知", "missing reset time stays unknown")
+        let deadline = start.addingTimeInterval(61)
+        let schedule = ResetCountdownSchedule(deadline: deadline)
+        let ticks = Array(schedule.entries(from: start, mode: .normal).prefix(5))
+        expect(
+            ticks == [start, start.addingTimeInterval(60), deadline, deadline.addingTimeInterval(60), deadline.addingTimeInterval(120)],
+            "minute cadence adds the exact deadline instead of waiting for the next minute")
+        expect(
+            ResetCountdownPresentation.label(deadline: deadline, now: ticks[2], kind: .accountWindow, language: .zh, compact: true) == "待更新",
+            "scheduled deadline immediately shows awaiting update")
+        let imminent = start.addingTimeInterval(0.25)
+        expect(
+            Array(ResetCountdownSchedule(deadline: imminent).entries(from: start, mode: .normal).prefix(2)) == [start, imminent],
+            "subsecond deadlines do not wait for a periodic tick")
+        expect(Array(schedule.entries(from: start, mode: .lowFrequency).prefix(3)) == Array(ticks.prefix(3)), "reduced-frequency scheduling still includes the deadline")
+        let boundary = ResetCountdownSchedule(deadline: start.addingTimeInterval(60))
+        expect(
+            Array(boundary.entries(from: start, mode: .normal).prefix(3)) == [start, start.addingTimeInterval(60), start.addingTimeInterval(120)],
+            "deadline on a minute boundary is not duplicated")
+        let resumed = deadline.addingTimeInterval(120)
+        expect(
+            Array(schedule.entries(from: resumed, mode: .normal).prefix(2)) == [resumed, resumed.addingTimeInterval(60)],
+            "resuming after expiry uses current time without replaying missed ticks")
     }
 
     private static func reproduceResetDashboardLayout(expect: (Bool, String) -> Void) {
@@ -332,6 +354,22 @@ enum TokenMonitorUISelfTest {
         expect(
             ResetCreditLocalSummary(profiles: [received], now: now).latestIncrease?.added == 2,
             "verified receipt history appears independently of forecasts")
+        expect(
+            ResetCreditLocalSummary(profiles: [received], now: now).latestChange?.delta == 2,
+            "legacy positive receipts remain visible as net changes")
+        let decline = CodexResetCreditReceipt(
+            id: UUID(), previousObservedAt: now.addingTimeInterval(-30), observedAt: now,
+            previousAvailable: 3, available: 1)
+        received.resetCreditHistory = [decline]
+        let declined = ResetCreditLocalSummary(profiles: [received], now: now)
+        expect(declined.latestChange?.delta == -2 && declined.latestIncrease == nil, "negative history never claims an increase")
+        expect(ResetCreditChangePresentation.title(decline, language: .zh) == "重置卡净变化 -2", "negative title retains signed quantity")
+        expect(ResetCreditChangePresentation.countLine(decline, language: .zh) == "可用 3→1 次", "net changes display both counts")
+        expect(ResetCreditChangePresentation.reasonLine(decline, language: .zh) == "原因待核实", "a decline cannot assert redemption or expiry")
+        expect(
+            ResetCreditChangePresentation.intervalLine(decline, now: now, language: .zh)
+                == "快照 " + MessageNoticeFormat.range(from: decline.previousObservedAt, to: decline.observedAt, now: now),
+            "reset-card evidence intervals share the short-time formatter")
         let creditTotal = ResetCreditPointSummary(
             profiles: [
                 profile("old", account: "a", count: nil, age: 30, credit: "9,999"),
@@ -424,7 +462,7 @@ enum TokenMonitorUISelfTest {
                 == [.regular, .banked],
             "a missing compact announcement type follows a recent announcement")
         expect(
-            PublicResetAnnouncementPresentation.compactEventTime(date, language: .zh).contains("2026-09-04 07:12"),
+            PublicResetAnnouncementPresentation.compactEventTime(date, language: .zh, now: orderNow) == "09/04 07:12",
             "history timestamps preserve Beijing time across UTC date boundaries")
         expect(PublicResetAnnouncementPresentation.normalized([]).isEmpty, "missing history is not invented")
     }
@@ -941,8 +979,11 @@ enum TokenMonitorUISelfTest {
             "announcement event time keeps an exact clock value"
         )
         let event = ISO8601DateFormatter().date(from: "2026-09-12T08:09:17Z")!
-        let compactTime = PublicResetAnnouncementPresentation.compactEventTime(event, language: .zh)
-        expect(compactTime.contains("2026-09-12 16:09"), "home announcement keeps the full Beijing year and clock")
+        let compactTime = PublicResetAnnouncementPresentation.compactEventTime(event, language: .zh, now: event)
+        expect(compactTime == "16:09", "today announcement uses a short Beijing clock")
+        expect(
+            PublicResetAnnouncementPresentation.eventTime(event, language: .zh, now: event.addingTimeInterval(86_400)) == "09/12 16:09",
+            "an older announcement retains its date without seconds")
         expect(
             PublicResetAnnouncementPresentation.relativeEventTime(event, now: event.addingTimeInterval(7 * 3600), language: .zh).contains("7"),
             "home announcement age uses its event time")

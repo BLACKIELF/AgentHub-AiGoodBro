@@ -43,6 +43,8 @@ struct LocalProxyPreferences: Codable {
     var creditPrimaryFloor: Int? = nil
     var creditSecondaryFloor: Int? = nil
     var accountPolicies: [String: LocalProxyAccountPolicy]? = nil
+    // Persist the visible home for a known identity without storing its email.
+    var accountRepresentatives: [String: String]? = nil
 
     var creditFloors: (primary: Int, secondary: Int) {
         (creditPrimaryFloor ?? 2000, creditSecondaryFloor ?? 1500)
@@ -60,6 +62,14 @@ struct LocalProxyPreferences: Codable {
     var validAccountPolicies: Bool {
         guard let accountPolicies else { return true }
         return accountPolicies.count <= 1000 && accountPolicies.allSatisfy { !$0.key.isEmpty && $0.key.utf8.count <= 256 && $0.value.isValid }
+    }
+    var validAccountRepresentatives: Bool {
+        guard let accountRepresentatives else { return true }
+        return accountRepresentatives.count <= 1000
+            && accountRepresentatives.allSatisfy {
+                $0.key.utf8.count == 64 && $0.key.allSatisfy { "0123456789abcdef".contains($0) }
+                    && !$0.value.isEmpty && $0.value.utf8.count <= 256
+            }
     }
     var validLastIDs: Bool {
         guard let lastIDs else { return true }
@@ -148,6 +158,7 @@ enum LocalProxyRouting {
 /// finite balance above the requested floor. Unknown values never grant access.
 enum LocalProxyAdmission {
     static let quotaMaximumAge: TimeInterval = 120
+    static let quotaRefreshWait: TimeInterval = 6
     /// A busy, cooling-down or unverified account is not proof that its
     /// subscription is exhausted. Check every enrolled account before credits.
     static func creditPool(

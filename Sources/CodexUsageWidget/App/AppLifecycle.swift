@@ -172,6 +172,9 @@ final class MainAppWindow: NSWindow {
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPopoverDelegate, TokenMonitorFloatingBubbleSessionOwner {
     private let startupPerformanceSpan = PerformanceMonitor.shared.begin(.appStartup)
+    // Persist first-run recovery before stores create their initial cache and account files.
+    private let hadExistingUserAtStartup = PortableFirstRunPreferences.prepareForStartup(
+        defaults: .standard, supportDirectory: DispatchParticipationPaths.supportDirectory())
     private let store = UsageStore()
     private let localCLIAccounts = LocalCLIAccountStore()
     private lazy var localProxy = LocalProxyQueueStore(usageStore: store)
@@ -179,7 +182,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     private let paletteCatalog = PaletteCatalog.loadFromMainBundle()
     private lazy var settings = AppSettings(
         paletteCatalog: paletteCatalog,
-        installationContext: .observe(receiptURL: DispatchParticipationPaths.supportDirectory().appendingPathComponent("install-receipt-v1.json")))
+        installationContext: .observe(receiptURL: DispatchParticipationPaths.supportDirectory().appendingPathComponent("install-receipt-v1.json")),
+        hasExistingUser: hadExistingUserAtStartup)
     private lazy var updateStore = AppUpdateStore(settings: settings)
     private var window: MainAppWindow?
     private var paletteLibraryWindow: NSWindow?
@@ -308,6 +312,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         debugLog("app launched")
 
         createMainWindow()
+        let recommendationEventID = settings.installationOnboarding.presentationEventID
+        Task { @MainActor in
+            await RecommendationVisibilityStore.shared.inspectIfNeeded(
+                eventID: recommendationEventID, probes: BundledSkill.installationProbes)
+        }
         // 自动重置：启动时立刻拉取最新重置公告，latest 是 @Published，变化会触发主页重渲染
         // （CoA 传 store.publicResetAnnouncements.latest 到 ResetUpdatesBanner 即可）
         store.refreshResetAnnouncements()

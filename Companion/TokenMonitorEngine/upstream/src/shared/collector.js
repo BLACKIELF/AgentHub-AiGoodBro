@@ -66,6 +66,7 @@ const {
   createSelfSyncThrottle,
   createSourceSyncQueue,
   mergeSelfSyncSelection,
+  selfSyncSelected,
   SELF_SYNC_KINDS
 } = require('./selfSyncThrottle');
 const {
@@ -907,6 +908,7 @@ async function collectUsageOnce(options) {
     const syncClients = targetRequested ? targetClientsCsv : normalizedClients;
     await maybeSyncCursor(syncClients, options.logger, {
       minIntervalMs: selfSyncThrottle.minIntervalForTick(options, 'cursor'),
+      explicit: selfSyncSelected(options.forceSelfSync, 'cursor'),
       signal: options.signal,
       timeoutMs: options.selfSyncTimeoutMs,
       terminationOptions: options.subprocessTerminationOptions,

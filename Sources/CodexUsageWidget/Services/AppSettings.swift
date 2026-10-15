@@ -213,7 +213,7 @@ final class AppSettings: ObservableObject {
         edgeDock = migrated
     }
 
-    @Published var statisticsEngine: StatisticsEngineChoice = .stored() {
+    @Published var statisticsEngine: StatisticsEngineChoice = .upstream {
         didSet { defaults.set(statisticsEngine.rawValue, forKey: StatisticsEngineChoice.storageKey) }
     }
 
@@ -429,8 +429,15 @@ final class AppSettings: ObservableObject {
         defaults: UserDefaults = .standard,
         paletteCatalog: PaletteCatalog = .loadFromMainBundle(),
         previewAvatarRoot: URL? = nil,
-        installationContext: AppInstallationContext? = nil
+        installationContext: AppInstallationContext? = nil,
+        hasExistingUser: Bool? = nil
     ) {
+        let existingUser =
+            hasExistingUser
+            ?? PortableFirstRunPreferences.hasExistingUser(
+                defaults: defaults,
+                supportDirectory: defaults === UserDefaults.standard ? DispatchParticipationPaths.supportDirectory() : nil)
+        PortableFirstRunPreferences.seedIfNeeded(defaults: defaults, existingUser: existingUser)
         self.defaults = defaults
         statisticsEngine = .stored(defaults: defaults)
         self.paletteCatalog = paletteCatalog
@@ -490,12 +497,6 @@ final class AppSettings: ObservableObject {
         let storedPinnedAccountKey = defaults.string(forKey: "CodexManagerNext.pinnedAccountKey")
         pinnedAccountKey = storedPinnedAccountKey
         localCLIHomeOrder = defaults.stringArray(forKey: Self.localCLIHomeOrderKey) ?? []
-        let existingUser =
-            defaults.object(forKey: WorkspaceDisplayMode.storageKey) != nil
-            || defaults.bool(forKey: "CodexManagerNext.setup.dismissed")
-            || defaults.bool(forKey: "CodexManagerNext.setup.completed")
-            || storedPinnedAccountKey != nil
-            || loadedOnboarding.existingUserMigrated || loadedOnboarding.status != .notStarted
         workspaceDisplayMode =
             defaults.string(forKey: WorkspaceDisplayMode.storageKey).flatMap(WorkspaceDisplayMode.init(rawValue:))
             ?? (existingUser ? .professional : .simple)
@@ -533,10 +534,14 @@ final class AppSettings: ObservableObject {
             globalShortcut = storedShortcut
         }
         globalShortcutError = nil
-        onboarding.bootstrapIfNeeded(existingUser: existingUser)
+        let continuingFirstRun =
+            defaults.bool(forKey: PortableFirstRunPreferences.appliedKey)
+            && !loadedOnboarding.existingUserMigrated && loadedOnboarding.shouldPresent
+        let existingOnboardingUser = existingUser && !continuingFirstRun
+        onboarding.bootstrapIfNeeded(existingUser: existingOnboardingUser)
         defaults.set(onboarding.encoded(), forKey: WorkspaceOnboardingState.storageKey)
         if let installationContext {
-            installationOnboarding.observe(installationContext, existingUser: existingUser)
+            installationOnboarding.observe(installationContext, existingUser: existingOnboardingUser)
             installationOnboarding.save(to: defaults)
         }
         _ = appIconStyle.applyToRunningApp()

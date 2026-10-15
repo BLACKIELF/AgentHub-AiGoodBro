@@ -95,7 +95,18 @@ enum WorkspaceScreenshotSelfTest {
             "a warm-up time different from official reset must remain visible")
         let unknown = "下次暖号 7 天 未知；请点刷新检查"
         expect(WarmUpStatusText.summary(unknown, fiveHourReset: nil, sevenDayReset: nil) == unknown, "unknown and actionable schedules must remain visible")
-        expect(AccountWorkspaceLayout.storedOrDefault(defaults: defaults) == .rows, "the original vertical layout must remain the default")
+        expect(AccountWorkspaceLayout.storedOrDefault(defaults: defaults) == .cards, "fresh installs use the account-card layout")
+        let existingSuite = "\(suite).existing-rows"
+        if let existingDefaults = UserDefaults(suiteName: existingSuite) {
+            defer { existingDefaults.removePersistentDomain(forName: existingSuite) }
+            existingDefaults.set(AccountWorkspaceLayout.rows.rawValue, forKey: AccountWorkspaceLayout.storageKey)
+            let existingSettings = AppSettings(defaults: existingDefaults)
+            expect(existingSettings.accountWorkspaceLayout == .rows, "existing users keep their saved row layout")
+            expect(AppSettings(defaults: existingDefaults).accountWorkspaceLayout == .rows, "a saved row layout survives repeated initialization")
+            expect(existingDefaults.object(forKey: PortableFirstRunPreferences.appliedKey) == nil, "existing row users never receive the first-run preset")
+        } else {
+            failures.append("could not create existing row-layout defaults")
+        }
         let layoutSettings = AppSettings(defaults: defaults)
         layoutSettings.accountWorkspaceLayout = .cards
         expect(AppSettings(defaults: defaults).accountWorkspaceLayout == .cards, "a card choice must survive settings reload")

@@ -605,6 +605,15 @@ final class UsageStore: ObservableObject {
 
     private var warmUpTimer: Timer?
     private var quotaEventTracker = CodexQuotaEventTracker()
+    private lazy var resetNoticeDeliveryStore = CodexResetNoticeDeliveryStore(
+        directory: DispatchParticipationPaths.supportDirectory().appendingPathComponent("ResetNoticeDelivery", isDirectory: true))
+    private var resetNoticeObservations: [String: CodexResetNoticeObservation] = [:]
+    private var resetNoticeSnapshots: [String: (profileID: String, snapshot: UsageSnapshot)] = [:]
+    private var resetNoticeUnsavedChanges: [String: (receipt: CodexResetCreditReceipt, channels: [CodexResetNoticeChannel])] = [:]
+    private var resetNoticeTimer: Timer?
+    private var resetNoticeTasks: [String: (id: UUID, task: Task<Void, Never>)] = [:]
+    private var resetNoticeRunRevision = UUID()
+    private var resetNoticeLocalRevision = UUID()
     private var warmUpMaintenanceTimer: Timer?
     private var quotaResetRefreshTimer: Timer?
     private var quotaResetRefreshAttempts: [String: Date] = [:]
@@ -1251,7 +1260,7 @@ final class UsageStore: ObservableObject {
                     break
                 }
                 do {
-                    try self.profileStore.record(verifiedSnapshot, for: profile.id, allowAccountOnly: true)
+                    try self.recordOfficialSnapshot(verifiedSnapshot, for: profile.id, allowAccountOnly: true)
                     if let officialProfile {
                         try self.profileStore.recordOfficialProfile(officialProfile, for: profile.id)
                     }
@@ -2225,7 +2234,7 @@ final class UsageStore: ObservableObject {
                     return
                 }
                 do {
-                    try self.profileStore.record(verifiedSnapshot, for: profile.id, allowAccountOnly: true)
+                    try self.recordOfficialSnapshot(verifiedSnapshot, for: profile.id, allowAccountOnly: true)
                     if let officialProfile { try self.profileStore.recordOfficialProfile(officialProfile, for: profile.id) }
                     try self.profileStore.selectMonitor(profile.id)
                     self.syncProfiles()
@@ -2373,10 +2382,10 @@ final class UsageStore: ObservableObject {
                 }
             }
             do {
-                try self.profileStore.record(
+                try self.recordOfficialSnapshot(
                     pair.source, for: system.id, allowAccountOnly: true,
                     allowSystemAccountChange: true)
-                try self.profileStore.record(pair.target, for: target.id)
+                try self.recordOfficialSnapshot(pair.target, for: target.id)
                 self.syncProfiles()
             } catch {
                 self.accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
@@ -3171,7 +3180,7 @@ final class UsageStore: ObservableObject {
                     if currentSystemCredentialIdentity != nil,
                         isAutomaticSwitch || !systemProfile.matchesRecordedCredential(currentSystemCredentialIdentity)
                     {
-                        try self.profileStore.record(
+                        try self.recordOfficialSnapshot(
                             currentSystemSnapshot, for: systemProfile.id,
                             allowAccountOnly: true, allowSystemAccountChange: true)
                     }
@@ -3185,7 +3194,7 @@ final class UsageStore: ObservableObject {
                         )
                     }
                     if isAutomaticSwitch {
-                        try self.profileStore.record(
+                        try self.recordOfficialSnapshot(
                             verifiedSnapshot, for: profile.id,
                             allowSystemAccountChange: profile.isSystemProfile)
                     }
@@ -3373,7 +3382,7 @@ final class UsageStore: ObservableObject {
                     }
 
                     do {
-                        try self.profileStore.record(
+                        try self.recordOfficialSnapshot(
                             verifiedSnapshot,
                             for: systemProfile.id,
                             allowAccountOnly: true,
@@ -3771,7 +3780,7 @@ final class UsageStore: ObservableObject {
 
             var stateSaveError: Error?
             do {
-                try self.profileStore.record(
+                try self.recordOfficialSnapshot(
                     originalSnapshot,
                     for: systemProfile.id,
                     allowAccountOnly: true,
@@ -3990,7 +3999,7 @@ final class UsageStore: ObservableObject {
                     return
                 }
                 do {
-                    try self.profileStore.record(quota, for: system.id, allowAccountOnly: true)
+                    try self.recordOfficialSnapshot(quota, for: system.id, allowAccountOnly: true)
                     self.syncProfiles()
                 } catch {
                     self.accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
@@ -4220,6 +4229,7 @@ final class UsageStore: ObservableObject {
         localNotificationPermissionRequestID = nil
         isRequestingLocalNotificationPermission = false
         localNotificationsEnabled = enabled
+        resetNoticeLocalRevision = UUID()
         quotaEventTracker.reset()
         if hasStarted { scheduleWarmUpMaintenanceTimer() }
         if !isPreview { UserDefaults.standard.set(enabled, forKey: Self.localNotificationsEnabledKey) }
@@ -4324,7 +4334,7 @@ final class UsageStore: ObservableObject {
             enabled
             ? (feishuWebhookConfigured
                 ? WidgetLanguage.storedOrAutomatic().text(
-                    "已开启飞书通知；可分别选择额度重置和 Reset 卡提醒", "Feishu notifications enabled. Limit reset and new reset credit alerts can be selected separately.")
+                    "已开启飞书通知；可分别选择额度重置和重置卡提醒", "Feishu notifications enabled. Limit reset and reset-card alerts can be selected separately.")
                 : WidgetLanguage.storedOrAutomatic().text("功能已开启；保存飞书机器人地址后开始接收通知。", "Enabled. Save a Feishu bot webhook to receive notifications."))
             : WidgetLanguage.storedOrAutomatic().text("飞书推送已关闭", "Feishu notifications disabled.")
         if enabled, !feishuWebhookConfigured { refreshFeishuWebhookConfiguration() }
@@ -4885,8 +4895,8 @@ final class UsageStore: ObservableObject {
                         case .success:
                             self.feishuNotificationMessage =
                                 isTest
-                                ? WidgetLanguage.storedOrAutomatic().text("飞书测试通知已送达", "Feishu test notification delivered.")
-                                : WidgetLanguage.storedOrAutomatic().text("通知已推送到飞书", "Notification delivered to Feishu.")
+                                ? WidgetLanguage.storedOrAutomatic().text("飞书 API 已接收测试通知", "Feishu API accepted the test notification.")
+                                : WidgetLanguage.storedOrAutomatic().text("飞书 API 已接收通知", "Feishu API accepted the notification.")
                         case .failure(.cancelled):
                             break
                         case .failure(let error):
@@ -4915,6 +4925,8 @@ final class UsageStore: ObservableObject {
         case .lowQuotaDetected: kind = .lowQuotaDetected
         case .quotaChange(.quotaReset): kind = .quotaReset
         case .quotaChange(.resetCreditsAdded): kind = .resetCreditsAdded
+        case .quotaChange(.resetCreditsChanged): kind = .resetCreditsChanged
+        case .quotaChange(.resetCreditsExpiring): kind = .resetCreditsExpiring
         case .switchSucceeded: kind = .switchSucceeded
         case .switchFailed(let reason):
             kind = .switchFailed
@@ -5028,17 +5040,96 @@ final class UsageStore: ObservableObject {
         return try? FeishuMaskedAccount("\(safeFirst)***-\(suffix.isEmpty ? "acct" : suffix)")
     }
 
-    private func observeOfficialQuotaChanges(_ current: UsageSnapshot, profileID: String) {
-        guard !isPreview, observesOfficialQuotaEvents, current.quotaReadSucceeded,
+    @discardableResult
+    private func recordOfficialSnapshot(
+        _ snapshot: UsageSnapshot, for profileID: String,
+        allowAccountOnly: Bool = false, allowSystemAccountChange: Bool = false
+    ) throws -> CodexResetCreditReceipt? {
+        do {
+            let receipt = try profileStore.record(
+                snapshot, for: profileID, allowAccountOnly: allowAccountOnly,
+                allowSystemAccountChange: allowSystemAccountChange,
+                noticeChannels: resetNoticeChannels(expiry: false).map(\.rawValue))
+            observeOfficialQuotaChanges(snapshot, profileID: profileID, newReceipt: receipt)
+            return receipt
+        } catch {
+            if let accountID = profileStore.profiles.first(where: { $0.id == profileID })?.lastSnapshot?.accountID {
+                let hash = CodexResetNoticeKey.hash(accountID)
+                if let previous = resetNoticeObservations[hash], snapshot.refreshedAt >= previous.observedAt {
+                    resetNoticeObservations[hash] = CodexResetNoticeObservation(
+                        accountHash: hash, observedAt: snapshot.refreshedAt,
+                        availableCount: nil, cards: nil, verificationSucceeded: false)
+                    resetNoticeSnapshots.removeValue(forKey: hash)
+                }
+            }
+            throw error
+        }
+    }
+
+    private func observeOfficialQuotaChanges(
+        _ current: UsageSnapshot, profileID: String, newReceipt: CodexResetCreditReceipt? = nil
+    ) {
+        guard !isPreview, hasStarted, observesOfficialQuotaEvents,
             let profile = profileStore.profiles.first(where: { $0.id == profileID }),
-            let saved = profile.lastSnapshot, saved.fetchedAt == current.refreshedAt,
-            let accountID = saved.accountID, !accountID.isEmpty,
-            let identity = CodexOfficialProfileReader.credentialIdentity(codexHomeURL: profile.codexHomeURL),
-            identity.accountID == accountID,
-            profile.matchesRecordedCredential(identity),
-            profile.matchesRecordedAccount(email: current.account?.email),
-            let source = maskedAccount(for: profile)
+            let saved = profile.lastSnapshot, let accountID = saved.accountID, !accountID.isEmpty
         else { return }
+        let identity = CodexOfficialProfileReader.credentialIdentity(codexHomeURL: profile.codexHomeURL)
+        let verified =
+            current.quotaReadSucceeded && saved.fetchedAt == current.refreshedAt
+            && identity?.accountID == accountID
+            && identity.map(profile.matchesRecordedCredential) == true
+            && profile.matchesRecordedAccount(email: current.account?.email)
+        // A failed or conflicting newer read invalidates pending reminders too.
+        guard
+            let rawNoticeObservation = CodexResetNoticeObservation.official(
+                accountID: accountID, snapshot: current, identityVerified: verified)
+        else { return }
+        let noticeObservation = rawNoticeObservation.canonical
+        if verified, let newReceipt {
+            resetNoticeUnsavedChanges[noticeObservation.accountHash] = (newReceipt, resetNoticeChannels(expiry: false))
+        }
+        do {
+            let previous = resetNoticeObservations[noticeObservation.accountHash]
+            if previous == nil || noticeObservation.observedAt >= previous!.observedAt {
+                resetNoticeObservations[noticeObservation.accountHash] =
+                    previous?.observedAt == noticeObservation.observedAt && previous != noticeObservation
+                    ? noticeObservation.invalidated : noticeObservation
+                if verified {
+                    resetNoticeSnapshots[noticeObservation.accountHash] = (profileID, current)
+                } else {
+                    resetNoticeSnapshots.removeValue(forKey: noticeObservation.accountHash)
+                }
+            }
+            let expiryChannels = resetNoticeChannels(expiry: true)
+            let expiryDeliveries = try resetNoticeDeliveryStore.observe(
+                noticeObservation, channels: expiryChannels)
+            if verified, let source = maskedAccount(for: profile) {
+                queueResetNotices(expiryDeliveries, source: source, snapshot: current)
+                // Persisted channel intent recovers a new receipt after an
+                // interrupted admission. Legacy receipts only retry saved pending.
+                let unsaved = resetNoticeUnsavedChanges[noticeObservation.accountHash]
+                let receipt = unsaved?.receipt ?? profile.resetCreditHistory?.filter { $0.isValid(at: Date()) }.max { $0.observedAt < $1.observedAt }
+                if let receipt {
+                    let intended = unsaved?.channels ?? receipt.noticeChannels?.compactMap(CodexResetNoticeChannel.init(rawValue:))
+                    let channels = resetNoticeChannels(expiry: false).filter {
+                        intended == nil || intended!.contains($0)
+                    }
+                    let deliveries = try resetNoticeDeliveryStore.enqueueChange(
+                        accountHash: noticeObservation.accountHash, previous: receipt.previousAvailable,
+                        available: receipt.available, previousObservedAt: receipt.previousObservedAt,
+                        observedAt: receipt.observedAt, channels: channels,
+                        createIfMissing: intended != nil)
+                    resetNoticeUnsavedChanges.removeValue(forKey: noticeObservation.accountHash)
+                    queueResetNotices(deliveries, source: source, snapshot: current)
+                }
+            }
+        } catch {
+            localNotificationMessage = WidgetLanguage.storedOrAutomatic().text(
+                "重置卡提醒记录暂不可用，已保留原记录并暂停本次推送。",
+                "Reset-card notice records are unavailable. Existing records are retained; this send is paused.")
+        }
+        scheduleResetNoticeTimer()
+        guard verified, let source = maskedAccount(for: profile) else { return }
         let observation = CodexQuotaEventTracker.Observation(
             capturedAt: current.refreshedAt,
             limitID: current.limitId,
@@ -5048,17 +5139,15 @@ final class UsageStore: ObservableObject {
         )
         let changes = quotaEventTracker.observe(observation, verifiedAccountID: accountID)
         for change in changes {
+            // Card changes use the durable receipt above, never both paths.
+            guard case .quotaReset = change else { continue }
             if localNotificationsEnabled && !pausedAutomationFeatures.contains(.localNotification) {
                 NextLocalNotificationService.shared.submitOfficialReset(change) { [weak self] result in
                     guard let self else { return }
                     if case .failure(let error) = result { self.localNotificationMessage = self.localNotificationErrorMessage(error) }
                 }
             }
-            let enabled: Bool
-            switch change {
-            case .quotaReset: enabled = feishuQuotaResetEnabled && feishuMessageOptions.selectedQuotaEvent(change) != nil
-            case .resetCreditsAdded: enabled = feishuResetCreditEnabled
-            }
+            let enabled = feishuQuotaResetEnabled && feishuMessageOptions.selectedQuotaEvent(change) != nil
             guard
                 enabled || messageChannels.telegramEnabled || messageChannels.weChatEnabled
                     || messageChannels.personalWeChatEnabled
@@ -5067,6 +5156,288 @@ final class UsageStore: ObservableObject {
                 event: .quotaChange(change), source: source, target: nil,
                 quota: AutomaticSwitchQuotaState(snapshot: current), factsSnapshot: current, eventID: UUID()
             )
+        }
+    }
+
+    private func resetNoticeChannels(expiry: Bool) -> [CodexResetNoticeChannel] {
+        guard hasStarted, !isPreview else { return [] }
+        // Persist user intent before asynchronous connection/Keychain readiness.
+        // A channel enabled later must not acquire historical count changes.
+        return CodexResetNoticeChannel.allCases.filter { channel in
+            switch channel {
+            case .local: return localNotificationsEnabled && !pausedAutomationFeatures.contains(.localNotification)
+            case .feishu:
+                return feishuNotificationsEnabled && feishuResetCreditEnabled && !pausedAutomationFeatures.contains(.feishu)
+                    && (!expiry || (feishuMessageOptions.includesResetCredits && feishuMessageOptions.resetExpiryDetail != .none))
+            case .telegram: return messageChannels.telegramEnabled
+            case .weChat, .personalWeChat:
+                return (channel == .weChat ? messageChannels.weChatEnabled : messageChannels.personalWeChatEnabled)
+                    && (!expiry
+                        || (messageChannels.weChatMessageOptions.includesResetCredits
+                            && messageChannels.weChatMessageOptions.resetExpiryDetail != .none))
+            }
+        }
+    }
+
+    @MainActor
+    private func resetNoticeRevision(
+        _ channel: CodexResetNoticeChannel, expiry: Bool, requiringReadiness: Bool = true
+    ) -> UUID? {
+        guard hasStarted, !isPreview else { return nil }
+        switch channel {
+        case .local:
+            guard localNotificationsEnabled, !pausedAutomationFeatures.contains(.localNotification) else { return nil }
+            return resetNoticeLocalRevision
+        case .feishu:
+            guard feishuNotificationsEnabled, feishuResetCreditEnabled,
+                !requiringReadiness || (feishuWebhookConfigured && !isUpdatingFeishuConnection),
+                !pausedAutomationFeatures.contains(.feishu),
+                !expiry || (feishuMessageOptions.includesResetCredits && feishuMessageOptions.resetExpiryDetail != .none)
+            else { return nil }
+            return Self.resetNoticeUUID(resetNoticeRunRevision.uuidString + ":feishu:" + String(feishuConfigurationRevision))
+        case .telegram: return messageChannels.publicResetRevision(.telegram)
+        case .weChat, .personalWeChat:
+            guard
+                !expiry
+                    || (messageChannels.weChatMessageOptions.includesResetCredits
+                        && messageChannels.weChatMessageOptions.resetExpiryDetail != .none)
+            else { return nil }
+            return messageChannels.publicResetRevision(channel == .weChat ? .weChat : .personalWeChat)
+        }
+    }
+
+    private static func resetNoticeUUID(_ value: String) -> UUID {
+        let hex = Array(CodexResetNoticeKey.hash(value).prefix(32))
+        let formatted =
+            String(hex[0..<8]) + "-" + String(hex[8..<12]) + "-" + String(hex[12..<16])
+            + "-" + String(hex[16..<20]) + "-" + String(hex[20..<32])
+        return UUID(uuidString: formatted)!
+    }
+
+    private func resetNoticeIsCurrent(_ candidate: CodexResetNoticeCandidate, now: Date = Date()) -> Bool {
+        guard let observation = resetNoticeObservations[candidate.accountHash] else { return false }
+        let evaluation = CodexResetNoticeEvaluator.evaluate(observation, now: now)
+        guard evaluation.verificationSucceeded else { return false }
+        let mirrors = profileStore.profiles.filter {
+            $0.lastSnapshot?.accountID.map(CodexResetNoticeKey.hash) == candidate.accountHash
+        }
+        guard !mirrors.isEmpty,
+            !mirrors.contains(where: { $0.lastQuotaReadFailureAt.map { $0 >= observation.observedAt } == true }),
+            let latestAt = mirrors.compactMap({ $0.lastSnapshot?.fetchedAt }).max(),
+            latestAt <= observation.observedAt,
+            mirrors.filter({ $0.lastSnapshot?.fetchedAt == latestAt }).allSatisfy({
+                $0.lastSnapshot?.quotaReadSucceeded == true
+                    && $0.lastSnapshot?.availableResetCredits == observation.availableCount
+            })
+        else { return false }
+        switch candidate.content {
+        case .expiry(let cards):
+            return observation.observedAt == candidate.observedAt
+                && Set(cards).isSubset(of: Set(evaluation.eligibleCards))
+        case .change(let change):
+            return observation.observedAt >= change.observedAt && evaluation.availableCount == change.available
+        }
+    }
+
+    private func queueResetNotices(
+        _ deliveries: [CodexResetNoticeDelivery], source: FeishuMaskedAccount, snapshot: UsageSnapshot
+    ) {
+        Task { @MainActor [weak self] in
+            self?.enqueueResetNotices(deliveries, source: source, snapshot: snapshot)
+        }
+    }
+
+    @MainActor
+    private func enqueueResetNotices(
+        _ deliveries: [CodexResetNoticeDelivery], source: FeishuMaskedAccount, snapshot: UsageSnapshot
+    ) {
+        for delivery in deliveries {
+            let expiry: Bool
+            let event: CodexQuotaEvent
+            switch delivery.candidate.content {
+            case .expiry:
+                expiry = true
+                event = .resetCreditsExpiring(batches: delivery.candidate.expiryBatches, observedAt: delivery.candidate.observedAt)
+            case .change(let change):
+                expiry = false
+                event = .resetCreditsChanged(
+                    previous: change.previous, available: change.available,
+                    previousObservedAt: change.previousObservedAt, observedAt: change.observedAt)
+            }
+            guard resetNoticeTasks.keys.filter({ $0.hasPrefix(delivery.channel.rawValue + ":") }).count < 4,
+                let revision = resetNoticeRevision(delivery.channel, expiry: expiry),
+                resetNoticeIsCurrent(delivery.candidate)
+            else { continue }
+            let key = delivery.channel.rawValue + ":" + delivery.batchKey
+            guard resetNoticeTasks[key] == nil else { continue }
+            let reservation: CodexResetNoticeReservation
+            do {
+                guard let value = try resetNoticeDeliveryStore.reserve(delivery, revision: revision) else { continue }
+                reservation = value
+            } catch {
+                localNotificationMessage = WidgetLanguage.storedOrAutomatic().text(
+                    "重置卡提醒未能保存发送记录，本次未发送。", "The reset-card send record could not be saved. Nothing was sent.")
+                continue
+            }
+            let runRevision = resetNoticeRunRevision
+            let taskID = UUID()
+            let eventID = Self.resetNoticeUUID(delivery.batchKey)
+            let task = Task { @MainActor [weak self] in
+                guard let self else { return }
+                defer {
+                    if self.resetNoticeTasks[key]?.id == taskID { self.resetNoticeTasks.removeValue(forKey: key) }
+                }
+                let valid: @MainActor () -> Bool = {
+                    self.resetNoticeRunRevision == runRevision && !Task.isCancelled
+                        && self.resetNoticeRevision(delivery.channel, expiry: expiry) == revision
+                        && self.resetNoticeIsCurrent(delivery.candidate)
+                        && (try? self.resetNoticeDeliveryStore.isCurrent(reservation)) == true
+                }
+                guard valid() else {
+                    _ = try? self.resetNoticeDeliveryStore.releaseUnsent(reservation)
+                    return
+                }
+                let receipt = await self.submitResetNotice(
+                    event, delivery: delivery, source: source, snapshot: snapshot,
+                    eventID: eventID, shouldSend: valid)
+                do {
+                    if self.resetNoticeRunRevision == runRevision,
+                        self.resetNoticeRevision(delivery.channel, expiry: expiry, requiringReadiness: false) == revision
+                    {
+                        _ = try self.resetNoticeDeliveryStore.record(
+                            reservation, receipt: receipt, currentRevision: revision)
+                    } else {
+                        if receipt == .notSent {
+                            _ = try self.resetNoticeDeliveryStore.releaseUnsent(reservation)
+                        } else {
+                            try self.resetNoticeDeliveryStore.markUncertain(reservation)
+                        }
+                    }
+                } catch {
+                    self.localNotificationMessage = WidgetLanguage.storedOrAutomatic().text(
+                        "重置卡提醒结果待核实，已暂停自动重发。",
+                        "The reset-card notice result needs verification; automatic resend is paused.")
+                }
+            }
+            resetNoticeTasks[key] = (taskID, task)
+        }
+    }
+
+    /// Reuses already verified observations; this timer performs no RPC, account
+    /// switch or redemption. Stale observations wait for the normal refresh.
+    private func scheduleResetNoticeTimer() {
+        resetNoticeTimer?.invalidate()
+        resetNoticeTimer = nil
+        guard hasStarted, !isPreview, observesOfficialQuotaEvents else { return }
+        let now = Date()
+        resetNoticeSnapshots = resetNoticeSnapshots.filter {
+            let age = now.timeIntervalSince($0.value.snapshot.refreshedAt)
+            return age >= 0 && age < CodexResetNoticeEvaluator.maximumObservationAge
+        }
+        guard !resetNoticeSnapshots.isEmpty else { return }
+        let timer = Timer(timeInterval: 60, repeats: false) { [weak self] _ in
+            guard let self, self.hasStarted else { return }
+            let values = Array(self.resetNoticeSnapshots.values)
+            for value in values {
+                self.observeOfficialQuotaChanges(value.snapshot, profileID: value.profileID)
+            }
+        }
+        timer.tolerance = 3
+        RunLoop.main.add(timer, forMode: .common)
+        resetNoticeTimer = timer
+    }
+
+    @MainActor
+    private func submitResetNotice(
+        _ event: CodexQuotaEvent, delivery: CodexResetNoticeDelivery, source: FeishuMaskedAccount,
+        snapshot: UsageSnapshot, eventID: UUID, shouldSend: @escaping @MainActor () -> Bool
+    ) async -> CodexResetNoticeDeliveryReceipt {
+        guard shouldSend() else { return .notSent }
+        let runRevision = resetNoticeRunRevision
+        switch delivery.channel {
+        case .local:
+            let localRevision = resetNoticeLocalRevision
+            return await withCheckedContinuation { continuation in
+                NextLocalNotificationService.shared.submitOfficialReset(
+                    event, eventID: eventID, shouldSend: shouldSend
+                ) { [weak self] result in
+                    let current =
+                        self?.resetNoticeRunRevision == runRevision
+                        && self?.resetNoticeLocalRevision == localRevision
+                        && self?.resetNoticeRevision(.local, expiry: false) != nil
+                    switch result {
+                    case .success:
+                        if current {
+                            self?.localNotificationMessage = WidgetLanguage.storedOrAutomatic().text(
+                                "重置卡提醒已提交给 macOS。", "Reset-card notice submitted to macOS.")
+                        }
+                        continuation.resume(returning: .accepted)
+                    case .failure(let error):
+                        if current { self?.localNotificationMessage = self?.localNotificationErrorMessage(error) }
+                        continuation.resume(returning: error == .notificationSubmissionFailed ? .uncertain : .notSent)
+                    }
+                }
+            }
+        case .feishu:
+            let configurationRevision = feishuConfigurationRevision
+            guard
+                let notification = try? FeishuSwitchNotification(
+                    event: .quotaChange(event), sourceAccount: source, targetAccount: nil,
+                    triggerThresholdPercent: lowQuotaAlertThresholds.sevenDay,
+                    fiveHourTriggerThresholdPercent: lowQuotaAlertThresholds.fiveHour,
+                    fiveHourRemainingPercent: snapshot.fiveHourQuota?.remainingPercent,
+                    sevenDayRemainingPercent: snapshot.sevenDayQuota?.remainingPercent,
+                    accountFacts: FeishuAccountFacts.snapshot(snapshot), messageOptions: feishuMessageOptions, eventID: eventID)
+            else { return .notSent }
+            return await withCheckedContinuation { continuation in
+                feishuWebhookService.send(notification, shouldSend: shouldSend) { [weak self] result in
+                    DispatchQueue.main.async {
+                        let current =
+                            self?.resetNoticeRunRevision == runRevision
+                            && self?.feishuConfigurationRevision == configurationRevision
+                            && self?.resetNoticeRevision(.feishu, expiry: false, requiringReadiness: false) != nil
+                        let receipt: CodexResetNoticeDeliveryReceipt
+                        switch result {
+                        case .success:
+                            receipt = .accepted
+                            if current {
+                                self?.feishuNotificationMessage = WidgetLanguage.storedOrAutomatic().text(
+                                    "飞书 API 已接收重置卡提醒。", "Feishu API accepted the reset-card notice.")
+                            }
+                        case .failure(let error):
+                            if current { self?.handleFeishuCredentialFailure(error) }
+                            switch error {
+                            case .transportFailed, .invalidResponse: receipt = .uncertain
+                            case .cancelled: receipt = .notSent
+                            case .httpStatus(let code): receipt = code == 429 ? .rejected : .uncertain
+                            case .rejected: receipt = .rejected
+                            default: receipt = .notSent
+                            }
+                        }
+                        continuation.resume(returning: receipt)
+                    }
+                }
+            }
+        case .telegram, .weChat, .personalWeChat:
+            let kind: MessageChannelKind =
+                delivery.channel == .telegram
+                ? .telegram
+                : (delivery.channel == .weChat ? .weChat : .personalWeChat)
+            let eventKind: MessageTaskStatus.EventKind
+            if case .resetCreditsExpiring = event { eventKind = .resetCreditsExpiring } else { eventKind = .resetCreditsChanged }
+            guard let revision = messageChannels.publicResetRevision(kind),
+                let facts = try? MessageChannelAccountFacts(
+                    fiveHourResetsAt: snapshot.fiveHourQuota?.resetsAt, sevenDayResetsAt: snapshot.sevenDayQuota?.resetsAt,
+                    availableResetCredits: snapshot.credits?.resetCredits,
+                    resetCreditExpiries: snapshot.credits?.resetCreditDetails?.compactMap(\.expiresAt) ?? []),
+                let status = try? MessageTaskStatus(
+                    eventKind: eventKind, accountLabel: MessageChannelAccountLabel(source.value),
+                    fiveHourRemainingPercent: snapshot.fiveHourQuota?.remainingPercent,
+                    sevenDayRemainingPercent: snapshot.sevenDayQuota?.remainingPercent,
+                    occurredAt: Date(), eventID: eventID, quotaChange: event, accountFacts: facts)
+            else { return .notSent }
+            let result = await messageChannels.sendTracked(status, to: kind, revision: revision, shouldSend: shouldSend)
+            return .messageChannel(result)
         }
     }
 
@@ -5807,8 +6178,7 @@ final class UsageStore: ObservableObject {
             DispatchQueue.main.async {
                 guard self.refreshGeneration == generation, !self.isLaunchingCodex, !self.isAccountSwitchTransactionActive else { return }
                 do {
-                    try self.profileStore.record(snapshot, for: profile.id)
-                    self.observeOfficialQuotaChanges(snapshot, profileID: profile.id)
+                    try self.recordOfficialSnapshot(snapshot, for: profile.id)
                 } catch {
                     // Preserve the existing refresh failure path; no event is sent.
                 }
@@ -5985,8 +6355,7 @@ final class UsageStore: ObservableObject {
                         self.noteUnexpectedWarmUpResets(previous: previous, current: snapshot)
                     }
                     do {
-                        try self.profileStore.record(snapshot, for: profileID)
-                        self.observeOfficialQuotaChanges(snapshot, profileID: profileID)
+                        try self.recordOfficialSnapshot(snapshot, for: profileID)
                         savedSuccessfulQuota = savedSuccessfulQuota || snapshot.quotaReadSucceeded
                     } catch {
                         saveFailed = true
@@ -6091,6 +6460,15 @@ final class UsageStore: ObservableObject {
     func start() {
         guard !hasStarted else { return }
         hasStarted = true
+        resetNoticeRunRevision = UUID()
+        resetNoticeLocalRevision = UUID()
+        if !isPreview {
+            do { try resetNoticeDeliveryStore.recoverInterruptedSends() } catch {
+                localNotificationMessage = WidgetLanguage.storedOrAutomatic().text(
+                    "重置卡提醒记录恢复失败，本次提醒会等待核验。",
+                    "Reset-card notice recovery failed. Notices wait for verification.")
+            }
+        }
         taskWorkbench.bind(runtimes: $runtimeSnapshots, live: $codexLiveTasks)
         messageChannels.onConfigurationChanged = { [weak self] in
             guard let self, self.hasStarted else { return }
@@ -6497,7 +6875,7 @@ final class UsageStore: ObservableObject {
                 let succeeded = result.0 && result.1 != nil
                 try? self.profileStore.recordMembershipRefresh(at: attemptedAt, succeeded: succeeded, for: profile.id)
                 if let official = result.1 { try? self.profileStore.recordOfficialProfile(official, for: profile.id) }
-                if result.2.quotaReadSucceeded { try? self.profileStore.record(result.2, for: profile.id) }
+                _ = try? self.recordOfficialSnapshot(result.2, for: profile.id)
                 self.syncProfiles()
                 self.accountManagerMessage =
                     succeeded
@@ -6524,6 +6902,15 @@ final class UsageStore: ObservableObject {
 
     @MainActor
     func stop() {
+        resetNoticeRunRevision = UUID()
+        resetNoticeLocalRevision = UUID()
+        resetNoticeTimer?.invalidate()
+        resetNoticeTimer = nil
+        resetNoticeTasks.values.forEach { $0.task.cancel() }
+        resetNoticeTasks.removeAll()
+        resetNoticeObservations.removeAll()
+        resetNoticeSnapshots.removeAll()
+        resetNoticeUnsavedChanges.removeAll()
         resetCreditAutoDesktopVerified = false
         resetCreditAutoAdmission?.cancel()
         resetCreditAutoTimer?.invalidate()
@@ -6874,9 +7261,8 @@ final class UsageStore: ObservableObject {
                         return
                     }
                     do {
-                        try self.profileStore.record(snapshot, for: id)
+                        try self.recordOfficialSnapshot(snapshot, for: id)
                         if let envelope = quota.engineLimits { self.engineLimitsByProfileID[id] = envelope }
-                        self.observeOfficialQuotaChanges(snapshot, profileID: id)
                         self.syncProfiles()
                     } catch {
                         self.accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
@@ -7264,8 +7650,7 @@ final class UsageStore: ObservableObject {
             if let profile = selectedMonitorProfile {
                 noteUnexpectedWarmUpResets(previous: profile, current: snapshot)
             }
-            try profileStore.record(snapshot, for: selectedMonitorProfileID)
-            observeOfficialQuotaChanges(snapshot, profileID: selectedMonitorProfileID)
+            try recordOfficialSnapshot(snapshot, for: selectedMonitorProfileID)
             if let effectiveHome,
                 let systemHome = profiles.first(where: \.isSystemProfile)?.codexHomeURL,
                 effectiveHome.standardizedFileURL == systemHome.standardizedFileURL
@@ -7459,7 +7844,7 @@ final class UsageStore: ObservableObject {
                 let previousMonitorID = self.profileStore.selectedMonitorProfileID
                 do {
                     if systemSnapshot.account?.email?.isEmpty == false {
-                        try self.profileStore.record(
+                        try self.recordOfficialSnapshot(
                             systemSnapshot,
                             for: systemProfile.id,
                             allowAccountOnly: true,

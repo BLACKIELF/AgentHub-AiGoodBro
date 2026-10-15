@@ -11,7 +11,7 @@
       "id": "cursor-self-sync",
       "capability": "allowSelfSync",
       "upstreamFile": "src/shared/providers/cursor/selfSync.js",
-      "upstreamSha256": "d85903c15f9b7881e6afb1e54b4100aea6297f96c6f91273e2e49c0d42c8b734",
+      "upstreamSha256": "be67e2dc92f5fed2204a2f44da3bb09a81486e399eb9165049ffae6246aa98a3",
       "overlay": "hooks/cursor-self-sync.cjs",
       "wrappedExport": "createCursorSelfSync",
       "rationale": "The collector calls maybeSyncCursor() on every tick whose client set contains cursor; no option suppresses it and the 5 minute throttle only delays it.",
@@ -121,7 +121,7 @@
   ],
   "collectorBindings": {
     "upstreamFile": "src/shared/collector.js",
-    "upstreamSha256": "7c76f724e9b8ccd32d76b6640456ec87cfe3a25cc51386fab14de816b80c383b",
+    "upstreamSha256": "641818f116a8ecd5f62863dba5f5dadd3bb71af88660c3bc538350d48a191689",
     "appendFile": "hooks/collector-bindings.cjs",
     "purpose": "Expose original scan/graph runners; select only bundled native scanner, never downloaded pointer or JS shim.",
     "forkClientScope": "Proma and Qoder CN are native fork clients in 0.68; original runner HOME/customScanPaths scope applies to both."

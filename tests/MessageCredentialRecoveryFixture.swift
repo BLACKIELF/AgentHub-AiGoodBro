@@ -155,6 +155,187 @@ struct MessageCredentialRecoveryFixture {
         try await detachedPersonalWeChatAdmission()
         try await composedPublicResetAdmission()
         if try await !contextRefreshDelivery() { exit(1) }
+        if try await !backgroundCredentialLifecycle() { exit(1) }
+    }
+
+    /// Keep binding-load races inside the existing offline production-source fixture.
+    @MainActor static func backgroundCredentialLifecycle() async throws -> Bool {
+        final class DeferredStorage: MessageChannelCredentialStoring {
+            var loads: [(MessageChannelKind, (Result<MessageChannelCredential?, FeishuWebhookError>) -> Void)] = []
+            var reads = 0
+            var authorizations = 0
+            var authorization: MessageCredentialReadRequest?
+            func load(_ kind: MessageChannelKind, completion: @escaping (Result<MessageChannelCredential?, FeishuWebhookError>) -> Void) {
+                reads += 1
+                loads.append((kind, completion))
+            }
+            func authorizeStored(_ kind: MessageChannelKind, request: MessageCredentialReadRequest) {
+                precondition(kind == .personalWeChat && authorization == nil && request.begin())
+                authorizations += 1
+                authorization = request
+            }
+            func save(_ value: MessageChannelCredential, for kind: MessageChannelKind, completion: @escaping (Result<Void, FeishuWebhookError>) -> Void) {
+                preconditionFailure("Lifecycle recovery must not request an interactive credential write")
+            }
+            func saveBackground(_ value: MessageChannelCredential, for kind: MessageChannelKind, completion: @escaping (Result<Void, FeishuWebhookError>) -> Void) {
+                completion(.success(()))
+            }
+            func resolve(_ result: Result<MessageChannelCredential?, FeishuWebhookError>) { loads.removeFirst().1(result) }
+            func finishAuthorization(_ result: Result<MessageChannelCredential?, FeishuWebhookError>) async {
+                let request = authorization!
+                authorization = nil
+                request.finish(result)
+                await withCheckedContinuation { continuation in DispatchQueue.main.async { continuation.resume() } }
+            }
+        }
+        final class PollTransport: MessageChannelTransport {
+            private let lock = NSLock()
+            private var pending: [(URLRequest, CheckedContinuation<(Data, HTTPURLResponse), Error>)] = []
+            func hasPending(_ path: String) -> Bool {
+                lock.lock(); defer { lock.unlock() }
+                return pending.contains { $0.0.url?.path == path }
+            }
+            func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+                try await withCheckedThrowingContinuation { continuation in
+                    lock.lock(); pending.append((request, continuation)); lock.unlock()
+                }
+            }
+            func finish(_ path: String? = nil, status: Int = 200, body: String = "{}", error: Error? = nil) {
+                lock.lock()
+                let callbacks = pending.filter { path == nil || $0.0.url?.path == path }
+                pending.removeAll { path == nil || $0.0.url?.path == path }
+                lock.unlock()
+                for (request, callback) in callbacks {
+                    if let error { callback.resume(throwing: error) } else {
+                        callback.resume(returning: (Data(body.utf8), HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil)!))
+                    }
+                }
+            }
+        }
+        var failures: [String] = []
+        func expect(_ condition: @autoclosure () -> Bool, _ name: String) {
+            if !condition() { failures.append(name) }
+        }
+        func waitUntil(_ seconds: TimeInterval = 3, _ condition: () -> Bool) async -> Bool {
+            let deadline = Date().addingTimeInterval(seconds)
+            while !condition(), Date() < deadline { try? await Task.sleep(nanoseconds: 1_000_000) }
+            return condition()
+        }
+        let poll = "/ilink/bot/getupdates"
+        let initial = try credential(fresh: true)
+        func fixture(_ kind: MessageChannelKind = .personalWeChat, _ scenario: String) async throws {
+            let suite = "wechat-background-load-fixture-\(UUID())"
+            let defaults = UserDefaults(suiteName: suite)!
+            defaults.set(true, forKey: "CodexManagerNext.messageChannel.\(kind.rawValue).enabled")
+            let directory = FileManager.default.temporaryDirectory.appendingPathComponent(suite)
+            let storage = DeferredStorage(), transport = PollTransport()
+            let controller = MessageChannelsController(
+                defaults: defaults, storage: storage, transport: { transport }, personalTransport: { transport },
+                botLedger: WeChatBotEventLedger(directory: directory))
+            defer {
+                controller.stop(); transport.finish(error: CancellationError())
+                defaults.removePersistentDomain(forName: suite)
+                try? FileManager.default.removeItem(at: directory)
+            }
+            controller.start()
+            precondition(storage.reads == 1 && !controller.actionInFlight)
+            let value = try kind == .personalWeChat ? initial : MessageChannelCredential(secret: "00000000-0000-0000-0000-000000000000", target: nil).validated(for: .weChat)
+            func editOptions() {
+                var options = controller.weChatMessageOptions
+                options.includesAccountLabel.toggle()
+                controller.setWeChatMessageOptions(options)
+            }
+            switch scenario {
+            case "control", "options", "authorization-required":
+                if scenario != "control" { editOptions(); editOptions(); editOptions() }
+                storage.resolve(scenario == "authorization-required" ? .failure(.keychainAuthorizationRequired) : .success(value))
+                if scenario == "authorization-required" {
+                    expect(controller.personalWeChatNeedsAuthorization && !controller.personalWeChatConnected, "option edit lost the background authorization-required result")
+                    expect(!transport.hasPending(poll), "background read error started polling")
+                } else if kind == .personalWeChat {
+                    let started = await waitUntil { transport.hasPending(poll) }
+                    expect(controller.personalWeChatConnected && controller.personalWeChatHasContext && started, "\(scenario): personal binding load did not connect and poll")
+                } else {
+                    expect(controller.weChatPhase == .pendingVerification, "\(scenario): WeCom binding load was discarded")
+                }
+                expect(storage.reads == 1 && storage.loads.isEmpty && storage.authorizations == 0, "content edit retried or authorized a credential read")
+                if let revision = controller.publicResetRevision(kind) {
+                    editOptions()
+                    expect(controller.publicResetRevision(kind) != revision, "content edit retained outbound delivery revision")
+                    expect(storage.reads == 1, "connected content edit reread credentials")
+                }
+            case "disable", "stop", "restart", "disable-enable":
+                if scenario == "disable" || scenario == "disable-enable" {
+                    controller.setEnabled(false, for: kind)
+                    if scenario == "disable-enable" { controller.setEnabled(true, for: kind) }
+                } else {
+                    controller.stop()
+                    if scenario == "restart" { controller.start() }
+                }
+                editOptions()
+                storage.resolve(.success(value))
+                expect(!controller.personalWeChatConnected && !transport.hasPending(poll) && controller.publicResetRevision(kind) == nil, "\(scenario): stale background load restored credentials")
+                if scenario == "restart" || scenario == "disable-enable" {
+                    precondition(storage.loads.count == 1 && storage.reads == 2)
+                    storage.resolve(.success(value))
+                    let started = await waitUntil { transport.hasPending(poll) }
+                    expect(controller.personalWeChatConnected && started, "\(scenario): latest background load was not applied")
+                }
+            case "rebind":
+                precondition(controller.connectPersonalWeChat() != nil)
+                storage.resolve(.success(value))
+                expect(!controller.personalWeChatConnected && !transport.hasPending(poll), "QR rebind accepted an older background binding")
+                controller.setEnabled(false, for: kind)
+            case "restore", "cancel-restore":
+                let action = controller.restorePersonalWeChatConnection()!
+                let options = controller.weChatMessageOptions
+                editOptions()
+                expect(controller.weChatMessageOptions == options, "content edit bypassed explicit authorization admission")
+                storage.resolve(.success(value))
+                expect(!controller.personalWeChatConnected && !transport.hasPending(poll), "explicit authorization accepted an older background binding")
+                if scenario == "cancel-restore" { controller.cancelPersonalWeChatLogin(operationID: action) }
+                await storage.finishAuthorization(.success(value))
+                if scenario == "cancel-restore" {
+                    expect(!controller.personalWeChatConnected && !controller.personalWeChatHasContext && !controller.actionInFlight, "cancelled explicit authorization reconnected")
+                } else {
+                    let started = await waitUntil { transport.hasPending(poll) }
+                    expect(controller.personalWeChatConnected && started && !controller.actionInFlight, "valid explicit authorization did not connect")
+                }
+                expect(storage.reads == 1 && storage.authorizations == 1, "explicit recovery changed background read admission")
+            case "poll-retry":
+                storage.resolve(.success(value))
+                let initialPoll = await waitUntil { transport.hasPending(poll) }
+                precondition(initialPoll)
+                transport.finish(poll, error: URLError(.notConnectedToInternet))
+                let retried = await waitUntil(7) { transport.hasPending(poll) }
+                expect(retried && controller.personalWeChatConnected, "transport failure did not retry the existing binding")
+                transport.finish(poll, body: #"{"msgs":[],"get_updates_buf":"synthetic-next"}"#)
+                let resumedPoll = await waitUntil { transport.hasPending(poll) }
+                precondition(resumedPoll)
+                for attempt in 1...3 {
+                    transport.finish(poll, status: 401)
+                    if attempt < 3 {
+                        let retry = await waitUntil(TimeInterval(attempt * 5 + 2)) { transport.hasPending(poll) }
+                        expect(retry && controller.personalWeChatConnected, "401 attempt \(attempt) did not retain bounded retry")
+                    }
+                }
+                let disconnected = await waitUntil { !controller.personalWeChatConnected }
+                expect(disconnected && !controller.personalWeChatHasContext && controller.publicResetRevision(kind) == nil, "third 401 retained connection or delivery admission")
+                expect(storage.reads == 1 && storage.authorizations == 0, "poll retry automatically reread or authorized credentials")
+            default: preconditionFailure("Unknown lifecycle fixture")
+            }
+        }
+        for kind in [MessageChannelKind.weChat, .personalWeChat] {
+            for scenario in ["control", "options", "disable", "stop"] { try await fixture(kind, scenario) }
+        }
+        for scenario in ["authorization-required", "restart", "disable-enable", "rebind", "restore", "cancel-restore", "poll-retry"] {
+            try await fixture(.personalWeChat, scenario)
+        }
+        failures.forEach { print("FAIL background credential lifecycle: \($0)") }
+        if failures.isEmpty {
+            print("PASS background credential lifecycle: WeCom/personal options keep one pending load; disable/stop/restart/rebind/authorization reject stale loads; content changes still invalidate delivery; transport retry and three-401 recovery gates preserved")
+        }
+        return failures.isEmpty
     }
     @MainActor static func manualChatAuthorization() async throws {
         let suite = "wechat-manual-authorization-fixture-\(UUID())"
@@ -287,7 +468,7 @@ struct MessageCredentialRecoveryFixture {
         let message = body["msg"] as! [String: Any]
         precondition(message["to_user_id"] as? String == "synthetic-owner")
         let item = (message["item_list"] as! [[String: Any]])[0]["text_item"] as! [String: Any]
-        precondition(item["text"] as? String == text)
+        precondition(item["text"] as? String == MessageNoticeFormat.preservingOriginalBody(text))
         transport.finish()
         await admitted.value
         precondition(results == [false, true] && !controller.actionInFlight && controller.personalWeChatPhase == .ready)
@@ -369,7 +550,7 @@ struct MessageCredentialRecoveryFixture {
                 return true
             })
         guard case .success(.accepted) = result else { preconditionFailure("composed personal-WeChat delivery was not accepted") }
-        precondition(checks == 4, "each synchronous composed admission must be checked on MainActor")
+        precondition(checks >= 4, "each synchronous composed admission must be checked on MainActor")
         print("PASS composed public reset: controller revision and synchronous admission checks remained on MainActor through PersonalWeChatMessageChannel.send")
     }
 

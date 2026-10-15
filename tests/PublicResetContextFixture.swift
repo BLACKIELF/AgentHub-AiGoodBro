@@ -16,13 +16,14 @@ enum PublicResetContextFixture {
             precondition(status.occurredAt == now && status.publicResetContext?.announcedAt == old)
             for language in [WidgetLanguage.en, .zh] {
                 let body = status.summary(language)
-                precondition(body.contains(ISO8601DateFormatter().string(from: old)))
+                precondition(body.contains(MessageNoticeFormat.shortTime(old)))
+                precondition(body.hasSuffix(MessageNoticeFormat.footerSuffix))
                 precondition(body.contains("Public wording") && !body.contains("evil") && !body.contains("a@b"))
                 precondition(body.components(separatedBy: "https://").count == 2)
                 precondition(!context.publicText.unicodeScalars.contains { CharacterSet.controlCharacters.contains($0) || $0.value == 0x202E })
             }
             precondition(status.summary(.en).contains("Third-party"))
-            precondition(status.summary(.en).contains(kind == .regular ? "quota refreshed" : "reset credits announced"))
+            precondition(status.summary(.en).contains(kind == .regular ? "· quota" : "· reset credits"))
             do {
                 _ = try MessageTaskStatus(eventKind: .test, occurredAt: now, publicResetContext: context)
                 preconditionFailure("public text admitted to private event")
@@ -93,7 +94,7 @@ enum PublicResetContextFixture {
         let transport = ContextTransport()
         let controller = MessageChannelsController(defaults: defaults, storage: RoutingStorage(), transport: { transport })
         controller.start()
-        for channel in MessageChannelKind.allCases {
+        for channel in [MessageChannelKind.telegram, .weChat] {
             controller.setEnabled(true, for: channel)
             let result = await controller.sendPublicReset(event(text: "Public wording"), to: channel,
                 revision: controller.publicResetRevision(channel)!, shouldSend: { true })
@@ -104,7 +105,7 @@ enum PublicResetContextFixture {
             // Decode JSON to inspect actual outbound string, independent of slash escaping.
             let object = try JSONSerialization.jsonObject(with: body)
             let rendered = String(describing: object)
-            precondition(rendered.contains("Public wording") && rendered.contains(ISO8601DateFormatter().string(from: old)))
+            precondition(rendered.contains("Public wording") && rendered.contains(MessageNoticeFormat.shortTime(old)))
         }
         controller.stop()
         try await ledgerResults()

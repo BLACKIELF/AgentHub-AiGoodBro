@@ -41,23 +41,28 @@ ui = (subprocess.check_output(["git", "show", f"{args.source_revision}:Sources/C
                               cwd=ROOT, text=True) if args.source_revision else ui_path.read_text())
 domain = (ROOT / "Sources/CodexUsageWidget/Domain/LocalProxyQueue.swift").read_text()
 interaction = (ROOT / "Sources/CodexUsageWidget/UI/WorkspaceInteraction.swift").read_text()
+status_style = (ROOT / "Sources/CodexUsageWidget/DesignSystem/PaletteEnvironment.swift").read_text()
 parts = [
     "import AppKit\nimport SwiftUI\n",
     declaration(domain, "struct LocalProxyQueueRow:"),
     declaration(domain, "struct LocalProxyQuotaWindow:"),
     declaration(domain, "struct LocalProxyPreferences:"),
     declaration(domain, "struct LocalProxyAccountPolicy:"),
+    declaration(status_style, "enum WorkspaceStatusForeground:"),
     declaration(interaction, "struct WorkspaceCheckboxStyle:"),
 ]
 # Editor-specific helpers stay in the actual source, directly next to the editor.
-start = ui.index("private struct LocalProxyAccountPolicyEditor<")
+start = ui.index("private struct LocalProxyPlusLimitEditor:")
 parts.append(ui[start:])
 parts.append((ROOT / "tests/LocalProxyPolicyEditorFixture.swift").read_text())
 frozen = "\n\n".join(parts)
+uniform_button = '.accessibilityIdentifier("next.local-proxy.uniform-used-apply")'
+assert frozen.count(uniform_button) == 1
+frozen = frozen.replace(uniform_button, uniform_button + '.background(PolicyEditorFixtureBounds(name: "uniform-apply"))')
 if args.stale_row_negative:
-    needle = "if !preserveDraft { resetDrafts(to: value) }"
+    needle = "if !preserveDraft {\n                resetDrafts(to: value)\n            }"
     assert frozen.count(needle) == 1
-    frozen = frozen.replace(needle, "if !preserveDraft { resetDrafts(to: savedState) }")
+    frozen = frozen.replace(needle, "if !preserveDraft {\n                resetDrafts(to: savedState)\n            }")
 # Observe actual rendered state and control geometry without replacing any event handlers.
 summary_needle = "Text(summary).foregroundStyle(.secondary)"
 assert frozen.count(summary_needle) == 1

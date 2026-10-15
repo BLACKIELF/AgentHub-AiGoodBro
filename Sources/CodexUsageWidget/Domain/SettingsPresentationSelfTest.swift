@@ -40,17 +40,19 @@ enum SettingsPresentationSelfTest {
         }
 
         let catalog = PaletteCatalog.loadFromMainBundle()
+        expect(PortableFirstRunPreferencesSelfTest.run(), "portable first-run defaults and returning-user preservation")
         let settings = AppSettings(defaults: defaults, paletteCatalog: catalog)
         let migrationURL = FileManager.default.temporaryDirectory.appendingPathComponent("edge-dock-migration-\(UUID().uuidString).json")
         defer { try? FileManager.default.removeItem(at: migrationURL) }
         try? Data(#"{"edgeDockEnabled":true,"edgeDockMode":"always","edgeDockItems":[]}"#.utf8).write(to: migrationURL)
+        defaults.removeObject(forKey: TokenMonitorEdgeDockPreferences.storageKey)
         settings.migrateEmbeddedEdgeDockIfNeeded(from: migrationURL)
         expect(settings.edgeDock.enabled && settings.edgeDock.mode == .always && settings.edgeDock.items == [], "first native launch preserves embedded dock choice")
         settings.edgeDock.enabled = false
         settings.migrateEmbeddedEdgeDockIfNeeded(from: migrationURL)
         expect(!settings.edgeDock.enabled, "native dock edits win over old embedded preferences on later launches")
         settings.edgeDock = .init()
-        expect(settings.workspaceGlass == WorkspaceGlassPreferences(), "glass defaults match Token Monitor")
+        expect(settings.workspaceGlass == WorkspaceGlassPreferences(opacity: 74, depth: 84), "fresh display preset uses the reviewed glass values")
         let glassWindow = GlassHostingContainer(rootView: Text("Synthetic glass check"), cornerRadius: 12, settings: settings)
         let material = glassWindow.subviews.compactMap { $0 as? NSVisualEffectView }.first
         let host = glassWindow.subviews.last
@@ -70,15 +72,19 @@ enum SettingsPresentationSelfTest {
         expect(WorkspaceGlassPreferences.load(invalidGlass) == .init(opacity: 100, depth: 0), "invalid glass values cannot overflow opacity or contrast")
         expect(WorkspaceGlassPreferences.load(Data("invalid".utf8)) == .init(), "corrupt glass preferences use safe defaults")
         settings.workspaceGlass = .init()
-        expect(settings.language == .zh && settings.themeMode == .dark, "fresh installs use Chinese and dark appearance")
+        expect(settings.language == .zh && settings.themeMode == .system, "fresh installs use Chinese and system appearance")
         expect(
-            settings.accountWorkspaceLayout == .rows && settings.paletteID == PaletteCatalog.initialPaletteID,
-            "fresh installs use the list and liquid-keycap palette")
+            settings.accountWorkspaceLayout == .cards && settings.paletteID == PaletteCatalog.initialPaletteID,
+            "fresh installs use account cards and the current initial palette")
         expect(
             settings.paletteFallbackNotice == nil
                 && defaults.string(forKey: "CodexManagerNext.paletteID") == PaletteCatalog.initialPaletteID,
             "an absent palette ID becomes the new initial palette without a warning")
-        expect(settings.statusItemPreferences == .accountRing && settings.globalShortcut == .default, "fresh installs show weekly remaining quota and enable Command-U")
+        expect(
+            settings.statusItemPreferences.displayMode == .classic && settings.statusItemPreferences.quotaMode == .remaining
+                && settings.statusItemPreferences.visibleMetrics == [.sevenDayQuota] && settings.statusItemPreferences.showsResetCountdown
+                && settings.globalShortcut == .default,
+            "fresh installs show weekly remaining quota with countdown and enable Command-U")
         expect(settings.setupProgress.shouldPresentAutomatically, "general defaults must not copy another user's completed setup")
         expect(
             CodexExecutionPreference.defaultValue == .init(model: .astra, reasoningEffort: .low, serviceTier: .standard),

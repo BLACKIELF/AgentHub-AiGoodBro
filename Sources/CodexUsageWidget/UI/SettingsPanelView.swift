@@ -672,16 +672,8 @@ struct SettingsPanelView: View {
                 .font(.system(size: 10))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            HStack(spacing: 16) {
-                Link(destination: AHBrandIdentity.siteURL) {
-                    Label("aigoodbro.com", systemImage: "globe")
-                }
-                Link(destination: AHBrandIdentity.repositoryURL) {
-                    Label("GitHub · AiGoodBro", systemImage: "chevron.left.forwardslash.chevron.right")
-                }
-            }
-            .font(.callout.weight(.medium))
-            .padding(.vertical, 8)
+            AHBrandProductLinks(language: language)
+                .padding(.vertical, 8)
             HStack(spacing: 16) {
                 Link(destination: AHBrandIdentity.helpURL) {
                     Label(language.text("使用说明", "User guide"), systemImage: "book")
@@ -691,6 +683,8 @@ struct SettingsPanelView: View {
                 }
             }
             .font(.callout)
+            MiniProgramTeaserView(language: language, compact: compact)
+                .padding(.vertical, 8)
             AssistantContactCard(language: language, compact: compact)
                 .padding(.bottom, 14)
             SettingsValueRow(

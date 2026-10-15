@@ -119,7 +119,7 @@ final class NextLocalNotificationService: NSObject, UNUserNotificationCenterDele
 
             let content = UNMutableNotificationContent()
             content.title = payload.title
-            content.body = payload.body
+            content.body = MessageNoticeFormat.withFooter(payload.body)
             content.sound = nil
 
             let identifier = Self.notificationIdentifier(for: UUID())
@@ -139,34 +139,67 @@ final class NextLocalNotificationService: NSObject, UNUserNotificationCenterDele
         language: WidgetLanguage = .storedOrAutomatic(),
         completion: @escaping (Result<SubmissionReceipt, ServiceError>) -> Void
     ) {
-        guard announcement.isValid(now: Date()) else {
+        guard let context = try? PublicResetContext(announcement: announcement) else {
             Self.completeOnMain(.failure(.invalidQuotaData), completion: completion)
             return
         }
         submitReset(
             identifier: Self.resetIdentifierPrefix + announcement.id,
             title: announcement.title(language),
-            body: announcement.summary(language),
+            body: [
+                context.publicText, language.text("公告 ", "Announced ") + MessageNoticeFormat.shortTime(context.announcedAt),
+                language.text("公共消息 · 账号额度待核实", "Public notice · account quota unverified"),
+            ].filter { !$0.isEmpty }.joined(separator: "\n"),
             completion: completion)
     }
 
     func submitOfficialReset(
         _ event: CodexQuotaEvent,
+        eventID: UUID = UUID(),
         language: WidgetLanguage = .storedOrAutomatic(),
+        shouldSend: @escaping @MainActor () -> Bool = { true },
         completion: @escaping (Result<SubmissionReceipt, ServiceError>) -> Void
     ) {
+        guard let payload = Self.officialPayload(event, language: language) else {
+            Self.completeOnMain(.failure(.invalidQuotaData), completion: completion)
+            return
+        }
+        submitReset(
+            identifier: Self.resetIdentifierPrefix + eventID.uuidString,
+            title: payload.title, body: payload.body, shouldSend: shouldSend, completion: completion)
+    }
+
+    private static func officialPayload(_ event: CodexQuotaEvent, language: WidgetLanguage, now: Date = Date()) -> Payload? {
         let title: String
         let body: String
         switch event {
         case .quotaReset(let fiveHour, let sevenDay):
-            title = language.text("账号额度已恢复", "Account limits restored")
-            let windows = [fiveHour ? language.text("5 小时", "5-hour") : nil, sevenDay ? language.text("7 天", "7-day") : nil].compactMap { $0 }.joined(separator: "、")
-            body = language.text("\(windows)额度已通过官方刷新确认，可以继续工作。", "Your \(windows) limit refresh is confirmed. You can keep working.")
+            guard fiveHour || sevenDay else { return nil }
+            title = language.text("额度窗口变化", "Quota window changed")
+            let windows = [fiveHour ? "5h" : nil, sevenDay ? "7d" : nil].compactMap { $0 }.joined(separator: "、")
+            body = language.text("已核实 \(windows) 窗口变化\n打开 AiGoodBro 查看最新额度", "Verified \(windows) window change\nOpen AiGoodBro for current quota")
         case .resetCreditsAdded(let added, let available):
-            title = language.text("收到新的重置卡", "New reset credits received")
-            body = language.text("新增 \(added) 次，当前可用 \(available) 次。需要时可在 Codex 中使用。", "\(added) added; \(available) available. Use them in Codex when needed.")
+            guard added > 0, available >= added else { return nil }
+            title = language.text("重置卡 +\(added)", "Reset credits +\(added)")
+            body = language.text("可用 \(available - added)→\(available) 次\n打开 AiGoodBro 按需使用", "Available \(available - added)→\(available)\nOpen AiGoodBro to use when needed")
+        case .resetCreditsChanged(let previous, let available, let previousObservedAt, let observedAt):
+            guard MessageNoticeFormat.validChange(previous: previous, available: available, previousObservedAt: previousObservedAt, observedAt: observedAt) else { return nil }
+            title = MessageNoticeFormat.changeTitle(previous: previous, available: available, language: language)
+            body = MessageNoticeFormat.changeLines(previous: previous, available: available, previousObservedAt: previousObservedAt, observedAt: observedAt, language: language)
+                .joined(separator: "\n")
+        case .resetCreditsExpiring(let batches, let observedAt):
+            guard MessageNoticeFormat.validExpiry(batches, observedAt: observedAt, enforcingThreshold: false),
+                MessageNoticeFormat.validExpiry(batches, observedAt: now)
+            else { return nil }
+            title = language.text("重置卡将到期", "Reset credits expire soon")
+            body =
+                (MessageNoticeFormat.expiryLines(batches, language: language, now: now)
+                + [
+                    language.text("核实 ", "Checked ") + MessageNoticeFormat.shortTime(observedAt, now: now),
+                    language.text("打开 AiGoodBro 按需使用", "Open AiGoodBro to use when needed"),
+                ]).joined(separator: "\n")
         }
-        submitReset(identifier: Self.resetIdentifierPrefix + UUID().uuidString, title: title, body: body, completion: completion)
+        return Payload(title: title, body: MessageNoticeFormat.withFooter(body))
     }
 
     func submitPublisherMessage(
@@ -176,8 +209,8 @@ final class NextLocalNotificationService: NSObject, UNUserNotificationCenterDele
     ) {
         submitReset(
             identifier: Self.resetIdentifierPrefix + "publisher." + message.id,
-            title: "AiGoodBro · " + message.title,
-            body: String(message.body.prefix(500)),
+            title: message.title,
+            body: MessageNoticeFormat.boundedSummary(message.body, characterLimit: 500),
             shouldSend: shouldSend,
             completion: completion)
     }
@@ -224,7 +257,7 @@ final class NextLocalNotificationService: NSObject, UNUserNotificationCenterDele
                         }
                         let content = UNMutableNotificationContent()
                         content.title = title
-                        content.body = body
+                        content.body = MessageNoticeFormat.withFooter(body)
                         content.sound = nil
                         center.add(UNNotificationRequest(identifier: identifier, content: content, trigger: nil)) { error in
                             Self.completeOnMain(error == nil ? .success(.init(identifier: identifier)) : .failure(.notificationSubmissionFailed), completion: completion)
@@ -254,12 +287,12 @@ final class NextLocalNotificationService: NSObject, UNUserNotificationCenterDele
         }
 
         let chinese = payload(fiveHourRemainingPercent: 4.6, sevenDayRemainingPercent: 12.4, language: .zh)
-        expect(chinese?.title == "Codex Next 额度较低", "Chinese title is not fixed")
-        expect(chinese?.body == "剩余额度：5 小时 5%，7 天 12%。", "percentages are not rounded or formatted correctly")
+        expect(chinese?.title == "额度较低", "Chinese title is not fixed")
+        expect(chinese?.body == "剩余 5h 5% · 7d 12%\n\naigoodbro.com", "percentages or footer are not formatted correctly")
 
         let english = payload(fiveHourRemainingPercent: nil, sevenDayRemainingPercent: 0, language: .en)
-        expect(english?.title == "Codex Next quota is low", "English title is not fixed")
-        expect(english?.body == "Remaining quota: 7d 0%.", "single-window payload is incorrect")
+        expect(english?.title == "Quota is low", "English title is not fixed")
+        expect(english?.body == "Remaining 7d 0%\n\naigoodbro.com", "single-window payload is incorrect")
 
         expect(payload(fiveHourRemainingPercent: nil, sevenDayRemainingPercent: nil, language: .en) == nil, "missing quota accepted")
         expect(payload(fiveHourRemainingPercent: .nan, sevenDayRemainingPercent: 10, language: .en) == nil, "NaN quota accepted")
@@ -268,9 +301,13 @@ final class NextLocalNotificationService: NSObject, UNUserNotificationCenterDele
         expect(payload(fiveHourRemainingPercent: 10, sevenDayRemainingPercent: 100.1, language: .en) == nil, "quota above 100 accepted")
 
         let safeText = [chinese?.title, chinese?.body, english?.title, english?.body].compactMap { $0 }.joined(separator: " ")
-        let allowedCharacters = CharacterSet.letters.union(.decimalDigits).union(.whitespaces).union(CharacterSet(charactersIn: "%％，。：:,."))
+        let allowedCharacters = CharacterSet.letters.union(.decimalDigits).union(.whitespacesAndNewlines).union(CharacterSet(charactersIn: "%％，。：:,.·"))
         expect(safeText.unicodeScalars.allSatisfy { allowedCharacters.contains($0) }, "payload contains material outside the fixed copy and percentages")
-        expect(!safeText.contains("\n") && !safeText.contains("@") && !safeText.contains("/"), "payload contains an unexpected extra field")
+        expect(!safeText.contains("@") && !safeText.contains("/"), "payload contains an unexpected extra field")
+        for body in [chinese?.body, english?.body].compactMap({ $0 }) {
+            expect(body.components(separatedBy: "\n").filter { $0 == MessageNoticeFormat.footer }.count == 1, "footer missing or repeated")
+            expect(MessageNoticeFormat.withFooter(body) == body, "submission duplicates footer")
+        }
 
         let authorized = AuthorizationState(status: .authorized, alertsEnabled: true)
         let disabled = AuthorizationState(status: .authorized, alertsEnabled: false)
@@ -372,19 +409,19 @@ final class NextLocalNotificationService: NSObject, UNUserNotificationCenterDele
         switch (fiveHour, sevenDay) {
         case (.some(let fiveHour), .some(let sevenDay)):
             body = language.text(
-                "剩余额度：5 小时 \(fiveHour)%，7 天 \(sevenDay)%。",
-                "Remaining quota: 5h \(fiveHour)%, 7d \(sevenDay)%."
+                "剩余 5h \(fiveHour)% · 7d \(sevenDay)%",
+                "Remaining 5h \(fiveHour)% · 7d \(sevenDay)%"
             )
         case (.some(let fiveHour), .none):
-            body = language.text("剩余额度：5 小时 \(fiveHour)%。", "Remaining quota: 5h \(fiveHour)%.")
+            body = language.text("剩余 5h \(fiveHour)%", "Remaining 5h \(fiveHour)%")
         case (.none, .some(let sevenDay)):
-            body = language.text("剩余额度：7 天 \(sevenDay)%。", "Remaining quota: 7d \(sevenDay)%.")
+            body = language.text("剩余 7d \(sevenDay)%", "Remaining 7d \(sevenDay)%")
         case (.none, .none):
             return nil
         }
         return Payload(
-            title: language.text("Codex Next 额度较低", "Codex Next quota is low"),
-            body: body
+            title: language.text("额度较低", "Quota is low"),
+            body: MessageNoticeFormat.withFooter(body)
         )
     }
 

@@ -96,10 +96,6 @@ enum StatusItemPreferencesStore {
 
     static func load(defaults: UserDefaults = .standard) -> StatusItemPreferences {
         let fallback = StatusItemPreferences.accountRing
-        if defaults.integer(forKey: metricsSchemaVersionKey) < currentMetricsSchemaVersion {
-            save(fallback, defaults: defaults)
-            return fallback
-        }
         let displayMode =
             defaults.string(forKey: displayModeKey)
             .flatMap(StatusItemDisplayMode.init(rawValue:)) ?? fallback.displayMode
@@ -122,12 +118,31 @@ enum StatusItemPreferencesStore {
             showsResetCountdown = defaults.bool(forKey: showsResetCountdownKey)
         }
 
-        return StatusItemPreferences(
+        let preferences = StatusItemPreferences(
             displayMode: displayMode,
             quotaMode: quotaMode,
             visibleMetrics: visibleMetrics,
             showsResetCountdown: showsResetCountdown
         ).normalized()
+        if defaults.integer(forKey: metricsSchemaVersionKey) < currentMetricsSchemaVersion {
+            // Older schemas used the same option keys. Keep valid choices;
+            // fill missing/invalid options without resetting the entire menu.
+            if defaults.string(forKey: displayModeKey).flatMap(StatusItemDisplayMode.init(rawValue:)) == nil {
+                defaults.set(preferences.displayMode.rawValue, forKey: displayModeKey)
+            }
+            if defaults.string(forKey: quotaModeKey).flatMap(QuotaDisplayMode.init(rawValue:)) == nil {
+                defaults.set(preferences.quotaMode.rawValue, forKey: quotaModeKey)
+            }
+            let rawMetrics = defaults.array(forKey: visibleMetricsKey) as? [String]
+            if rawMetrics == nil || Set(rawMetrics ?? []) != Set(preferences.orderedVisibleMetrics.map(\.rawValue)) {
+                defaults.set(preferences.orderedVisibleMetrics.map(\.rawValue), forKey: visibleMetricsKey)
+            }
+            if defaults.object(forKey: showsResetCountdownKey) == nil {
+                defaults.set(preferences.showsResetCountdown, forKey: showsResetCountdownKey)
+            }
+            defaults.set(currentMetricsSchemaVersion, forKey: metricsSchemaVersionKey)
+        }
+        return preferences
     }
 
     static func save(_ preferences: StatusItemPreferences, defaults: UserDefaults = .standard) {

@@ -92,7 +92,7 @@ struct DispatchActivityStore {
         }
     }
 
-    enum Failure: Error { case invalidState, busy, unavailable, deadline, acquireAbandoned }
+    enum Failure: Error { case invalidState, busy, accountBusy, unavailable, deadline, acquireAbandoned }
 
     /// A stopped run cannot admit a detached reservation even if an earlier
     /// task resumes after the next bridge has been created in this process.
@@ -266,12 +266,12 @@ struct DispatchActivityStore {
                     $0["route"] as? String == "proxy" && $0["proxyRunID"] as? String == runID
                         && $0["proxyRequestID"] as? String == requestID && $0["proxyProfileKey"] as? String == profileKey
                 })
-            else { throw Failure.busy }
+            else { throw Failure.accountBusy }
             guard
                 !records.contains(where: {
                     Self.activeStates.contains($0["state"] as? String ?? "") && ($0["accountKey"] as? String == accountKey || $0["aliasKey"] as? String == aliasKey)
                 })
-            else { throw Failure.busy }
+            else { throw Failure.accountBusy }
             records.append([
                 "leaseId": id, "ownerThreadId": "next-\(getpid())", "taskId": "proxy-\(runID)-\(requestID)",
                 "accountKey": accountKey, "aliasKey": aliasKey, "projectKey": Self.hash("proxy:" + profileID),

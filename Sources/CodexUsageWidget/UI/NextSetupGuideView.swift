@@ -385,7 +385,7 @@ struct NextSetupGuideView: View {
                     action: store.setFeishuQuotaResetEnabled)
                 Divider()
                 feature(
-                    language.text("获得 Reset 卡提醒", "New reset credit alerts"), symbol: "ticket", value: store.feishuResetCreditEnabled, paused: .feishu,
+                    language.text("重置卡增减与到期提醒", "Reset-card changes & expiry alerts"), symbol: "ticket", value: store.feishuResetCreditEnabled, paused: .feishu,
                     action: store.setFeishuResetCreditEnabled)
             }
             Text(
@@ -499,8 +499,8 @@ struct NextSetupGuideView: View {
                     ready: store.feishuNotificationsEnabled && store.feishuWebhookConfigured)
                 Text(
                     language.text(
-                        "接收低额度、额度重置和 Reset 卡提醒。先在飞书群添加自定义机器人，再保存机器人地址。",
-                        "Receive low-limit, reset and new-credit alerts. Add a custom bot to a Feishu group, then save its webhook.")
+                        "接收低额度、额度窗口变化、重置卡增减与 24 小时内到期提醒。先在飞书群添加自定义机器人，再保存机器人地址。",
+                        "Receive low-limit, quota-window, reset-card change and 24-hour expiry alerts. Add a custom bot to a Feishu group, then save its webhook.")
                 )
                 .font(.subheadline).foregroundStyle(.secondary)
                 if store.feishuNeedsAuthorization {

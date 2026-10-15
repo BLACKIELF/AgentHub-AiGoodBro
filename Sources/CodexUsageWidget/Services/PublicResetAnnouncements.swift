@@ -1642,7 +1642,7 @@ enum PublicResetAnnouncementSelfTest {
             guard let body = String(data: payload, encoding: .utf8),
                 body.contains("额度重置公告"), body.contains("公告类型本身不证明已完成或已到账"), body.contains("请到账号页核对官方额度与可用重置卡"),
                 !body.contains("发重置卡了"), body.contains("\"template\":\"purple\""),
-                !body.contains("Public fixture"), !body.contains("官方公告"), !body.contains("Official announcement")
+                body.contains("Public fixture"), !body.contains("官方公告"), !body.contains("Official announcement")
             else { return false }
             let regular = PublicResetAnnouncement(
                 id: "103", resetType: .regular, announcedAt: now.addingTimeInterval(-30), text: "fixture",

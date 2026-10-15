@@ -164,29 +164,31 @@ final class PersonalWeChatMessageChannel {
         now: Date = Date()
     ) throws -> URLRequest {
         let age = now.timeIntervalSince(status.occurredAt)
-        guard age.isFinite, age >= 0, age <= 120 else { throw MessageChannelError.staleStatus }
+        guard age.isFinite, age >= 0, age <= 120, status.hasCurrentExpiry(now: now) else { throw MessageChannelError.staleStatus }
         // The shared formatter receives only the existing masked status DTO.
         let text = WeChatMessageChannel.messageContent(status: status, options: options, language: language, markdown: false)
-        return try textRequest(text, eventID: status.eventID, credential: credential, now: now)
+        return try textRequest(text, eventID: status.eventID, credential: credential, now: now, footerAlreadyApplied: true)
     }
 
     static func textRequest(
         _ text: String, eventID: UUID, credential: MessageChannelCredential,
-        now: Date = Date()
+        now: Date = Date(), footerAlreadyApplied: Bool = false
     ) throws -> URLRequest {
         let credential = try credential.validated(for: .personalWeChat)
         let binding = credential.personalBinding!
         guard binding.hasFreshContext(now: now) else { throw MessageChannelError.weChatContextRequired }
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-            text.unicodeScalars.allSatisfy({ $0.value >= 32 || $0 == "\n" || $0 == "\t" })
+            text.unicodeScalars.allSatisfy({ $0.value >= 32 || $0 == "\n" || $0 == "\r" || $0 == "\t" }),
+            !footerAlreadyApplied || text.hasSuffix(MessageNoticeFormat.footerSuffix) || text == MessageNoticeFormat.footer
         else { throw MessageChannelError.invalidStatus }
-        guard text.utf8.count <= WeChatMessageChannel.contentByteLimit else {
+        let content = footerAlreadyApplied ? text : MessageNoticeFormat.preservingOriginalBody(text)
+        guard content.utf8.count <= WeChatMessageChannel.contentByteLimit else {
             throw MessageChannelError.messageTooLong(limit: WeChatMessageChannel.contentByteLimit)
         }
         let msg: [String: Any] = [
             "from_user_id": "", "to_user_id": credential.target!,
             "client_id": "aigoodbro-" + eventID.uuidString.lowercased(), "message_type": 2, "message_state": 2,
-            "context_token": binding.contextToken!, "item_list": [["type": 1, "text_item": ["text": text]]],
+            "context_token": binding.contextToken!, "item_list": [["type": 1, "text_item": ["text": content]]],
         ]
         return try request(base: binding.baseURL, path: "sendmessage", token: credential.secret, body: ["msg": msg])
     }
@@ -353,7 +355,7 @@ final class PersonalWeChatMessageChannel {
     /// send in this process; the bot controller also journals the attempt.
     func sendText(
         _ text: String, eventID: UUID, credential: MessageChannelCredential,
-        shouldSend: @escaping @MainActor () -> Bool = { true }
+        shouldSend: @escaping @MainActor () -> Bool = { true }, footerAlreadyApplied: Bool = false
     ) async -> Result<MessageDeliveryOutcome, MessageChannelError> {
         guard await shouldSend(), !Task.isCancelled else { return .failure(.cancelled) }
         switch deduplicator.begin(eventID) {
@@ -363,7 +365,7 @@ final class PersonalWeChatMessageChannel {
         }
         defer { deduplicator.release(eventID) }
         do {
-            let request = try Self.textRequest(text, eventID: eventID, credential: credential)
+            let request = try Self.textRequest(text, eventID: eventID, credential: credential, footerAlreadyApplied: footerAlreadyApplied)
             guard await shouldSend(), !Task.isCancelled else { return .failure(.cancelled) }
             deduplicator.claim(eventID)
             _ = try await fetch(request, requiresAcceptance: true)

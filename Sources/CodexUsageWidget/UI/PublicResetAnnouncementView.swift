@@ -59,6 +59,7 @@ struct PublicResetAnnouncementView: View {
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                     PublicResetAnnouncementLinks(source: announcement.source, language: language)
+                    Text(MessageNoticeFormat.footer).font(.caption2).foregroundStyle(.secondary)
                 } else {
                     Link(language.text("查看公开记录", "Browse public history"), destination: PublicResetClient.siteURL)
                         .font(.caption)

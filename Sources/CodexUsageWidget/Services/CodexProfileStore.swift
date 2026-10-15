@@ -68,43 +68,118 @@ struct CodexAccountSnapshot: Codable, Equatable {
     }
 }
 
-/// A confirmed balance increase between two official observations. The interval
-/// is evidence of when we observed the change, not the server's grant timestamp.
+/// A confirmed net change between two official observations. The interval
+/// describes our observations, not when a card was granted, used or expired.
 struct CodexResetCreditReceipt: Codable, Equatable, Identifiable {
     let id: UUID
     let previousObservedAt: Date
     let observedAt: Date
     let previousAvailable: Int
     let available: Int
+    let noticeChannels: [String]?
 
-    var added: Int {
-        guard previousAvailable >= 0, available > previousAvailable else { return 0 }
+    init(
+        id: UUID, previousObservedAt: Date, observedAt: Date,
+        previousAvailable: Int, available: Int, noticeChannels: [String]? = nil
+    ) {
+        self.id = id
+        self.previousObservedAt = previousObservedAt
+        self.observedAt = observedAt
+        self.previousAvailable = previousAvailable
+        self.available = available
+        self.noticeChannels = noticeChannels.map { Array(Set($0)).sorted() }
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, previousObservedAt, observedAt, previousAvailable, available, noticeChannels
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        let channels = try values.decodeIfPresent([String].self, forKey: .noticeChannels)
+        guard Self.validNoticeChannels(channels) else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .noticeChannels, in: values, debugDescription: "Invalid reset-notice channels")
+        }
+        self.init(
+            id: try values.decode(UUID.self, forKey: .id),
+            previousObservedAt: try values.decode(Date.self, forKey: .previousObservedAt),
+            observedAt: try values.decode(Date.self, forKey: .observedAt),
+            previousAvailable: try values.decode(Int.self, forKey: .previousAvailable),
+            available: try values.decode(Int.self, forKey: .available), noticeChannels: channels)
+    }
+
+    static func validNoticeChannels(_ channels: [String]?) -> Bool {
+        guard let channels else { return true }
+        let allowed = Set(["local", "feishu", "telegram", "wechat", "personal-wechat"])
+        return channels.count <= 5 && channels.allSatisfy(allowed.contains)
+    }
+
+    var delta: Int {
+        guard previousAvailable >= 0, available >= 0 else { return 0 }
         return available - previousAvailable
     }
 
+    // Preserve the positive-only projection used by existing history consumers.
+    var added: Int { max(0, delta) }
+
     func isValid(at now: Date) -> Bool {
-        added > 0 && previousObservedAt.timeIntervalSince1970.isFinite
+        delta != 0 && Self.validNoticeChannels(noticeChannels) && previousObservedAt.timeIntervalSince1970.isFinite
             && observedAt.timeIntervalSince1970.isFinite
             && previousObservedAt < observedAt && observedAt <= now
+    }
+
+    static func change(
+        previous: CodexAccountSnapshot?, current: CodexAccountSnapshot, noticeChannels: [String]? = nil
+    ) -> CodexResetCreditReceipt? {
+        guard Self.validNoticeChannels(noticeChannels), let previous,
+            previous.quotaReadSucceeded == true, current.quotaReadSucceeded == true,
+            let accountID = current.accountID, !accountID.isEmpty, previous.accountID == accountID,
+            let limitID = current.limitId?.trimmingCharacters(in: .whitespacesAndNewlines),
+            !limitID.isEmpty,
+            previous.limitId?.trimmingCharacters(in: .whitespacesAndNewlines) == limitID,
+            previous.fetchedAt.timeIntervalSince1970.isFinite,
+            current.fetchedAt.timeIntervalSince1970.isFinite,
+            current.fetchedAt > previous.fetchedAt,
+            let before = previous.availableResetCredits, before >= 0,
+            let after = current.availableResetCredits, after >= 0, after != before
+        else { return nil }
+        return .init(
+            id: UUID(), previousObservedAt: previous.fetchedAt, observedAt: current.fetchedAt,
+            previousAvailable: before, available: after, noticeChannels: noticeChannels
+        )
+    }
+
+    /// A later unknown observation or failed read on any account mirror breaks
+    /// the interval. Recovery establishes a baseline instead of borrowing an
+    /// older successful count from a different profile.
+    static func change(
+        previousProfiles: [CodexProfile], current: CodexAccountSnapshot, noticeChannels: [String]? = nil
+    ) -> CodexResetCreditReceipt? {
+        guard let accountID = current.accountID, !accountID.isEmpty else { return nil }
+        let mirrors = previousProfiles.filter { $0.lastSnapshot?.accountID == accountID }
+        let snapshots = mirrors.compactMap(\.lastSnapshot)
+        guard snapshots.allSatisfy({ $0.fetchedAt.timeIntervalSince1970.isFinite }),
+            let previous = snapshots.max(by: { $0.fetchedAt < $1.fetchedAt }),
+            !mirrors.contains(where: {
+                guard let failure = $0.lastQuotaReadFailureAt else { return false }
+                return !failure.timeIntervalSince1970.isFinite || failure >= previous.fetchedAt
+            }),
+            !snapshots.contains(where: {
+                $0.fetchedAt == previous.fetchedAt
+                    && ($0.quotaReadSucceeded != true
+                        || $0.availableResetCredits != previous.availableResetCredits
+                        || $0.limitId != previous.limitId)
+            })
+        else { return nil }
+        return change(previous: previous, current: current, noticeChannels: noticeChannels)
     }
 
     static func increase(
         previous: CodexAccountSnapshot?, current: CodexAccountSnapshot
     ) -> CodexResetCreditReceipt? {
-        guard let previous,
-            previous.quotaReadSucceeded == true, current.quotaReadSucceeded == true,
-            let accountID = current.accountID, !accountID.isEmpty, previous.accountID == accountID,
-            previous.limitId == current.limitId,
-            previous.fetchedAt.timeIntervalSince1970.isFinite,
-            current.fetchedAt.timeIntervalSince1970.isFinite,
-            current.fetchedAt > previous.fetchedAt,
-            let before = previous.availableResetCredits, before >= 0,
-            let after = current.availableResetCredits, after > before
-        else { return nil }
-        return .init(
-            id: UUID(), previousObservedAt: previous.fetchedAt, observedAt: current.fetchedAt,
-            previousAvailable: before, available: after
-        )
+        guard let receipt = change(previous: previous, current: current), receipt.delta > 0 else { return nil }
+        return receipt
     }
 }
 
@@ -1814,16 +1889,24 @@ final class CodexProfileStore {
         }
     }
 
+    @discardableResult
     func record(
         _ snapshot: UsageSnapshot,
         for profileID: String,
         allowAccountOnly: Bool = false,
-        allowSystemAccountChange: Bool = false
-    ) throws {
+        allowSystemAccountChange: Bool = false,
+        noticeChannels: [String]? = nil
+    ) throws -> CodexResetCreditReceipt? {
+        guard CodexResetCreditReceipt.validNoticeChannels(noticeChannels) else {
+            throw NSError(
+                domain: "CodexAccountManagerNext.ProfileStore", code: 6,
+                userInfo: [NSLocalizedDescriptionKey: "Invalid reset-notice channels"])
+        }
         let hasVerifiedAccount = snapshot.account?.email?.isEmpty == false
         let appServerVersion =
             snapshot.quotaReadSucceeded || (allowAccountOnly && hasVerifiedAccount)
             ? CodexExecutable.version() : nil
+        var newReceipt: CodexResetCreditReceipt?
         try mutateState {
             guard let index = self.state.profiles.firstIndex(where: { $0.id == profileID })
             else { return false }
@@ -1952,17 +2035,14 @@ final class CodexProfileStore {
                     || (mergesEqualObservation && (previousSnapshot?.quotaReadSucceeded ?? true))
             )
             let previousSevenDay = self.state.profiles[index].lastSnapshot?.sevenDay
-            if acceptsQuotaRead, let accountID = record.accountID {
-                // Desktop and managed profiles can mirror one account. Compare
-                // against the newest verified observation across those mirrors
-                // so a delayed response cannot report the same increase twice.
-                let previousCreditSnapshot = self.state.profiles.compactMap(\.lastSnapshot)
-                    .filter { $0.accountID == accountID && $0.quotaReadSucceeded == true }
-                    .max { $0.fetchedAt < $1.fetchedAt }
-                if let receipt = CodexResetCreditReceipt.increase(previous: previousCreditSnapshot, current: record) {
+            if acceptsQuotaRead {
+                if let receipt = CodexResetCreditReceipt.change(
+                    previousProfiles: self.state.profiles, current: record, noticeChannels: noticeChannels)
+                {
                     var history = self.state.profiles[index].resetCreditHistory ?? []
                     history.append(receipt)
                     self.state.profiles[index].resetCreditHistory = Array(history.suffix(32))
+                    newReceipt = receipt
                 }
             }
             self.state.profiles[index].lastSnapshot = record
@@ -1998,6 +2078,8 @@ final class CodexProfileStore {
             }
             return true
         }
+        // mutateState throws and restores its previous state if persistence fails.
+        return newReceipt
     }
 
     func recordOfficialProfile(_ snapshot: CodexOfficialProfileSnapshot, for profileID: String) throws {
@@ -5122,20 +5204,23 @@ enum CodexProfileStoreSelfTest {
         let profile = try store.addManagedProfile()
         try testWriteAuth(for: profile, email: "credit-fixture@example.com")
         try testWriteAuth(for: store.profiles.first(where: \.isSystemProfile)!, email: "credit-fixture@example.com")
-        func record(_ time: Int, _ count: Int?, system: Bool = false) throws {
+        @discardableResult
+        func record(
+            _ time: Int, _ count: Int?, system: Bool = false, noticeChannels: [String]? = nil
+        ) throws -> CodexResetCreditReceipt? {
             try store.record(
                 testSnapshot(
                     email: "credit-fixture@example.com", usedPercent: 20,
                     at: Date(timeIntervalSince1970: Double(time)), resetCredits: count),
-                for: system ? "system" : profile.id, allowSystemAccountChange: system)
+                for: system ? "system" : profile.id, allowSystemAccountChange: system, noticeChannels: noticeChannels)
         }
         func history() -> [CodexResetCreditReceipt] { store.profiles.flatMap { $0.resetCreditHistory ?? [] } }
-        try record(100, 1)
-        guard history().isEmpty else { return false }
-        try record(101, 3)
-        guard history().count == 1, history()[0].added == 2,
+        guard try record(100, 1) == nil, history().isEmpty else { return false }
+        let newReceipt = try record(101, 3, noticeChannels: ["telegram", "local", "telegram"])
+        guard newReceipt == history().first, history().count == 1, history()[0].added == 2,
             history()[0].previousAvailable == 1, history()[0].available == 3,
-            history()[0].previousObservedAt == Date(timeIntervalSince1970: 100)
+            history()[0].previousObservedAt == Date(timeIntervalSince1970: 100),
+            history()[0].noticeChannels == ["local", "telegram"]
         else { return false }
         try record(101, 3)
         try record(102, 3, system: true)
@@ -5146,15 +5231,87 @@ enum CodexProfileStoreSelfTest {
         guard history().count == 1 else { return false }
         try record(105, 6)
         guard history().count == 2, history().last?.added == 1 else { return false }
+        guard try record(106, 1, noticeChannels: [])?.delta == -5,
+            history().last?.previousAvailable == 6, history().last?.available == 1,
+            history().last?.noticeChannels == [],
+            try record(107, 0)?.delta == -1,
+            try record(108, 0) == nil,
+            try record(109, 3)?.delta == 3
+        else { return false }
         let restored = CodexProfileStore(fileManager: fileManager, homeDirectory: home, applicationSupportDirectory: support)
         guard restored.profiles.flatMap({ $0.resetCreditHistory ?? [] }) == history() else { return false }
-        for time in 106...146 { try record(time, time - 99) }
-        guard history().count == 32, history().last?.available == 47 else { return false }
+        for time in 110...150 { try record(time, time - 99) }
+        guard history().count == 32, history().last?.available == 51 else { return false }
+        do {
+            _ = try record(151, 52, noticeChannels: ["unknown"])
+            print("Reset-credit receipt self-test failed: unknown notice channel was accepted")
+            return false
+        } catch {}
+        guard history().count == 32, history().last?.available == 51 else { return false }
         let malformed = CodexResetCreditReceipt(
             id: UUID(), previousObservedAt: .distantPast,
             observedAt: .distantFuture, previousAvailable: Int.max, available: Int.min)
         guard malformed.added == 0, !malformed.isValid(at: Date()) else { return false }
-        print("Reset-credit receipts passed: baseline, increases, mirrors, ordering, unknown gaps, persistence and retention")
+        let gapHome = root.appendingPathComponent("credit-gap-home")
+        let gapSupport = root.appendingPathComponent("credit-gap-support")
+        let gapStore = CodexProfileStore(fileManager: fileManager, homeDirectory: gapHome, applicationSupportDirectory: gapSupport)
+        let gapProfile = try gapStore.addManagedProfile()
+        try testWriteAuth(for: gapProfile, email: "gap-fixture@example.invalid")
+        try testWriteAuth(for: gapStore.profiles.first(where: \.isSystemProfile)!, email: "gap-fixture@example.invalid")
+        @discardableResult
+        func gapRecord(
+            _ time: Int, _ count: Int?, system: Bool = false,
+            successful: Bool = true, limit: String? = "codex"
+        ) throws -> CodexResetCreditReceipt? {
+            try gapStore.record(
+                testSnapshot(
+                    email: "gap-fixture@example.invalid", usedPercent: 20,
+                    at: Date(timeIntervalSince1970: Double(time)), resetCredits: count,
+                    limitID: limit, quotaReadSucceeded: successful),
+                for: system ? "system" : gapProfile.id, allowSystemAccountChange: system, noticeChannels: ["local"])
+        }
+        try gapRecord(200, 3, system: true)
+        try gapRecord(201, 3)
+        try gapRecord(202, nil, system: true, successful: false)
+        guard try gapRecord(203, 1) == nil,
+            try gapRecord(204, 0)?.delta == -1
+        else { return false }
+        try gapRecord(205, nil, system: true)
+        guard try gapRecord(206, 2) == nil,
+            try gapRecord(207, 3)?.delta == 1,
+            try gapRecord(208, 4, limit: nil) == nil,
+            try gapRecord(209, 5, limit: nil) == nil,
+            try gapRecord(210, 6) == nil,
+            try gapRecord(211, 5)?.delta == -1
+        else { return false }
+        let savedProfile = gapStore.profiles.first { $0.id == gapProfile.id }
+        let gapStateURL = gapSupport.appendingPathComponent(DispatchParticipationPaths.supportDirectoryName)
+            .appendingPathComponent(DispatchParticipationPaths.snapshotFileName)
+        let savedBytes = try Data(contentsOf: gapStateURL)
+        let gapDirectory = gapStateURL.deletingLastPathComponent()
+        let savedPermissions = try fileManager.attributesOfItem(atPath: gapDirectory.path)[.posixPermissions] as? NSNumber
+        try fileManager.setAttributes([.posixPermissions: 0o500], ofItemAtPath: gapDirectory.path)
+        defer {
+            try? fileManager.setAttributes([.posixPermissions: savedPermissions?.intValue ?? 0o700], ofItemAtPath: gapDirectory.path)
+        }
+        do {
+            let uncommitted = try gapRecord(212, 6)
+            print("Reset-credit receipt self-test failed: failed write returned \(uncommitted != nil)")
+            return false
+        } catch {}
+        try fileManager.setAttributes([.posixPermissions: savedPermissions?.intValue ?? 0o700], ofItemAtPath: gapDirectory.path)
+        guard gapStore.profiles.first(where: { $0.id == gapProfile.id }) == savedProfile,
+            try Data(contentsOf: gapStateURL) == savedBytes
+        else { return false }
+        try Data("invalid synthetic state".utf8).write(to: gapStateURL)
+        do {
+            let uncommitted = try gapRecord(212, 6)
+            print("Reset-credit receipt self-test failed: invalid persistence returned \(uncommitted != nil)")
+            return false
+        } catch {}
+        guard gapStore.profiles.first(where: { $0.id == gapProfile.id }) == savedProfile else { return false }
+        try savedBytes.write(to: gapStateURL)
+        print("Reset-credit receipts passed: signed changes, mirrors, ordering, unknown/failure gaps, channel intent, persistence and retention")
         return true
     }
 
@@ -5164,14 +5321,16 @@ enum CodexProfileStoreSelfTest {
         at date: Date,
         resetCredits: Int? = nil,
         balance: String? = nil,
-        unlimited: Bool? = nil
+        unlimited: Bool? = nil,
+        limitID: String? = "codex",
+        quotaReadSucceeded: Bool = true
     ) -> UsageSnapshot {
         UsageSnapshot(
             refreshedAt: date,
             account: AccountInfo(type: "chatgpt", planType: "plus", emailPresent: true, email: email),
-            limitId: "codex",
+            limitId: limitID,
             limitName: nil,
-            quotaReadSucceeded: true,
+            quotaReadSucceeded: quotaReadSucceeded,
             fiveHourQuota: nil,
             sevenDayQuota: RateWindow(usedPercent: usedPercent, windowDurationMins: 10_080, resetsAt: nil),
             monthlyQuota: nil,

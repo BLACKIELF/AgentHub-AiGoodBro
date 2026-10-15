@@ -1,10 +1,17 @@
 // Synthetic peripheral presentation only. The editor, policy and preference types are production code.
 struct CreditBalancePresentation: Equatable {}
+struct WorkspaceGlassSurface: View {
+    let cornerRadius: CGFloat
+    var body: some View { Color.clear }
+}
 enum WidgetLanguage {
     case en
     func text(_ zh: String, _ en: String) -> String { en }
 }
-enum WorkspaceStatusForeground { static let warning = Color.orange }
+enum FixedVisualPalette {
+    static func statusWarningForeground(_ scheme: ColorScheme) -> Color { .orange }
+    static func statusDangerForeground(_ scheme: ColorScheme) -> Color { .red }
+}
 struct CreditBalanceView: View {
     let presentation: CreditBalancePresentation
     let compact: Bool
@@ -89,6 +96,29 @@ private struct PolicyEditorFixtureRoot: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .background(PolicyEditorFixtureBounds(name: "root"))
     }
+}
+
+@MainActor private final class UniformPolicyFixtureModel: ObservableObject {
+    @Published var savedLimit: Double?
+    @Published var message: String?
+    var failSave = false
+    var saved: [Double] = []
+    func save(_ limit: Double) -> Bool {
+        guard !failSave else { message = "No rules were saved"; return false }
+        saved.append(limit); savedLimit = limit; message = "Saved current Plus accounts"; return true
+    }
+}
+private struct UniformPolicyFixtureRoot: View {
+    @ObservedObject var model: UniformPolicyFixtureModel
+    var body: some View {
+        LocalProxyPlusLimitEditor(language: .en, accountCount: 2, savedLimit: model.savedLimit,
+            enabled: true, canApply: true, message: model.message, save: { model.save($0) })
+            .padding(12).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .background(PolicyEditorFixtureBounds(name: "uniform-root"))
+    }
+}
+@MainActor private final class UniformPolicyFixtureHostingView: NSHostingView<UniformPolicyFixtureRoot> {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }
 
 @MainActor
@@ -220,7 +250,7 @@ private enum LocalProxyPolicyEditorFixture {
             require(model.row.policy.fiveHourUsedLimit == value, "Published policy differs from \(value)")
             require(model.persisted()?.fiveHourUsedLimit == value, "Persisted rule differs from \(value)")
             require(fields().first?.stringValue == text, "A live input reverted after saving \(value)")
-            require(PolicyEditorFixtureProbe.summary.contains("5h limit \(text)%"), "Rendered summary differs from \(value)")
+            require(PolicyEditorFixtureProbe.summary.contains("5h used limit \(text)%"), "Rendered summary differs from \(value)")
             require(!PolicyEditorFixtureProbe.dirty && !PolicyEditorFixtureProbe.saveFailed, "Successful save remained unsaved")
         }
 
@@ -312,6 +342,86 @@ private enum LocalProxyPolicyEditorFixture {
         press("save")
         checkSaved(30, text: "30")
         print("PASS invalid limits remain editable and cannot save; recovery to a valid rule succeeds")
+        // Editing only credits must not revive a clean old limit after a batch.
+        press("credits")
+        model.preferences.accountPolicies?[model.row.id]?.fiveHourUsedLimit = 25
+        model.publishRow(); pump()
+        require(fields()[0].stringValue == "25", "Credits-only draft retained the old cap after a batch")
+        press("save")
+        require(model.persisted()?.fiveHourUsedLimit == 25 && model.persisted()?.allowsCredits == true,
+                "Saving credits-only draft widened the committed 5h cap")
+        // A custom-floor draft also follows a newly saved clean limit.
+        press("defaults")
+        edit("3000", at: 1)
+        model.preferences.accountPolicies?[model.row.id]?.fiveHourUsedLimit = 30
+        model.publishRow(); pump()
+        require(fields()[0].stringValue == "30" && fields()[1].stringValue == "3000", "Floor-only draft did not merge a batch cap by field")
+        press("save")
+        require(model.persisted()?.fiveHourUsedLimit == 30 && model.persisted()?.creditPrimaryFloor == 3000,
+                "Saving floor-only draft widened the committed cap")
+        press("defaults"); press("save")
+        print("PASS credits/floor-only drafts merge a newly committed batch cap without widening it")
+        // A different committed batch value must preserve an explicit limit draft.
+        model.preferences.accountPolicies?[model.row.id]?.fiveHourUsedLimit = 40
+        model.publishRow(); pump()
+        edit("55.5")
+        model.preferences.accountPolicies?[model.row.id]?.fiveHourUsedLimit = 30
+        model.publishRow(); pump()
+        require(fields().count == 1 && fields()[0].stringValue == "55.5", "Batch update discarded individual draft")
+        press("save")
+        require(model.persisted()?.fiveHourUsedLimit == 55.5,
+                "Individual draft did not save its explicit 5h limit after a batch update")
+        require(PolicyEditorFixtureProbe.summary.contains("5h used limit 55.5%"), "Individual override did not show the unchanged 5h window")
+        print("PASS batch update preserves individual draft and saves its explicit 5h value")
+
+        let uniform = UniformPolicyFixtureModel()
+        let uniformHost = UniformPolicyFixtureHostingView(rootView: UniformPolicyFixtureRoot(model: uniform))
+        uniformHost.sizingOptions = []
+        window.contentView = uniformHost; window.setContentSize(NSSize(width: 980, height: 330)); pump(0.3)
+        func uniformFields() -> [NSTextField] { nativeViews(uniformHost).compactMap { $0 as? NSTextField }.filter(\.isEditable) }
+        func editUniform(_ value: String) {
+            require(uniformFields().count == 1, "Uniform editor duplicated or omitted its native input")
+            let field = uniformFields()[0]; field.selectText(nil)
+            guard let editor = field.currentEditor() as? NSTextView else { require(false, "Uniform field editor unavailable"); return }
+            editor.selectAll(nil); editor.insertText(value, replacementRange: editor.selectedRange()); pump()
+        }
+        func applyUniform() {
+            guard let button = PolicyEditorFixtureProbe.bounds["uniform-apply"], let root = PolicyEditorFixtureProbe.bounds["uniform-root"] else {
+                require(false, "Uniform button geometry unavailable"); return
+            }
+            let point = uniformHost.convert(NSPoint(x: button.midX - root.minX, y: button.midY - root.minY), to: nil)
+            for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+                app.postEvent(NSEvent.mouseEvent(with: type, location: point, modifierFlags: [],
+                    timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                    context: nil, eventNumber: 1, clickCount: 1, pressure: 1)!, atStart: false)
+            }
+            while let event = app.nextEvent(matching: [.leftMouseDown, .leftMouseUp], until: Date(), inMode: .default, dequeue: true) { app.sendEvent(event) }
+            pump()
+        }
+        require(uniformFields().count == 1 && uniformFields()[0].stringValue.isEmpty, "Unset/mixed limit fabricated a default 100")
+        editUniform("37.25"); applyUniform()
+        require(uniform.saved == [37.25] && uniformFields()[0].stringValue == "37.25", "Native uniform click failed to retain saved decimal")
+        editUniform("55.5")
+        let uniformInputID = ObjectIdentifier(uniformFields()[0])
+        uniform.savedLimit = 70; pump()
+        for width: CGFloat in [320, 440, 980, 320] {
+            window.setContentSize(NSSize(width: width, height: 330)); pump()
+            require(uniformFields().count == 1 && ObjectIdentifier(uniformFields()[0]) == uniformInputID
+                && uniformFields()[0].stringValue == "55.5", "Uniform resize/refresh replaced the input or unsaved draft")
+        }
+        uniform.failSave = true; applyUniform()
+        require(uniform.saved == [37.25] && uniformFields()[0].stringValue == "55.5", "Rejected uniform save changed rules or lost the draft")
+        uniform.failSave = false; applyUniform()
+        require(uniform.saved == [37.25, 55.5] && uniformFields()[0].stringValue == "55.5", "Uniform draft retry did not save current input")
+        for invalid in ["", "nan", "-1", "101"] {
+            editUniform(invalid); applyUniform()
+            require(uniform.saved.count == 2 && uniformFields()[0].stringValue == invalid, "Invalid uniform draft was saved or replaced")
+        }
+        editUniform("100"); applyUniform()
+        require(uniform.saved.last == 100 && uniformFields()[0].stringValue == "100", "Uniform editor cannot deliberately save 100")
+        uniform.savedLimit = nil; pump()
+        require(uniformFields()[0].stringValue.isEmpty, "Mixed policy refresh did not clear a clean uniform input")
+        print("PASS one native uniform input: blank mixed state, editing/click/save, resize identity, draft retention, failed save and invalid limits")
         print("PASS native production policy editor fixture (synthetic data, no live accounts or proxy)")
     }
 }

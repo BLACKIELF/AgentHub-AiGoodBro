@@ -73,7 +73,9 @@ final class RoutingTransport: MessageChannelTransport {
         precondition(transport.calls == 1)
         precondition(monitor.channelResults[.telegram]?.state == .accepted)
         precondition(controller.statusText == results.last?.statusText)
-        storage.configured = true; controller.setEnabled(true, for: .weChat)
+        storage.configured = true
+        controller.setEnabled(false, for: .weChat)
+        controller.setEnabled(true, for: .weChat)
         await monitor.deliverChannel(page(2), kind: .weChat)
         precondition(transport.calls == 1)
         transport.failTelegram = true
@@ -100,6 +102,7 @@ final class RoutingTransport: MessageChannelTransport {
         transport.beforeResponse = nil
         controller.setEnabled(true, for: .telegram)
         let rev = controller.publicResetRevision(.telegram)!
+        controller.setEnabled(false, for: .telegram)
         controller.setEnabled(true, for: .telegram)
         let stale = await controller.sendPublicReset(page(5).data[0], to: .telegram, revision: rev, shouldSend: { true })
         precondition(stale == .failure(.cancelled) && transport.calls == 5)

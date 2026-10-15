@@ -17,16 +17,31 @@
       "upstream/package-lock.json": "a852bf87ba2d8f31d0045b0e027a897d8b4d04ef6b8ad850cb87301f00b857d8",
       "upstream/LICENSE": "250136de456c31d659e54c1804c43a27dadad175336b67226e9509d6310f923c"
     },
-    "edits": "Official v0.68.0 fixed source; retained reviewed Antigravity OAuth denial. Capability overlays and source-scoped bundled scanner are preserved; native Proma/Qoder CN now use the mandatory fork.",
-    "sourceTag": "v0.68.0"
+    "edits": "Official v0.68.0 fixed source; selected official v0.70.0 backports #957, #971, #1006 title relation, #1019 compressed archive/DSH/Codex/Cursor fixes and #1031 streamed SQLite archive reads; retained reviewed Antigravity OAuth denial and all existing capability overlays.",
+    "sourceTag": "v0.68.0",
+    "backports": [
+      {
+        "release": "v0.70.0",
+        "commit": "ac4eeb2c4aea239dd94b67f074c73f69aafc46f8",
+        "issues": [
+          "#957",
+          "#971",
+          "#1006",
+          "#1019",
+          "#1031"
+        ],
+        "scope": "Token Monitor statistics, archive reads and bounded session metadata only",
+        "tagObject": "0d104c0b59c5739e4020eeb86bbc029b0b095345"
+      }
+    ]
   },
   "tokscale": {
     "mode": "override",
     "upstream": "junhoyeo/tokscale",
     "fork": "Javis603/tokscale",
-    "commit": "d5e8ad9b25bfafb43b5b6804940929b728a6f48a",
-    "commitTitle": "feat(report): join sessions to workspaces and expose session activity",
-    "releaseTag": "token-monitor-d5e8ad9b",
+    "commit": "fa5f0c13324838d1a988fda317597f9b90da7ad0",
+    "commitTitle": "feat(report): link Codex subagent and guardian sessions to their parent",
+    "releaseTag": "token-monitor-fa5f0c13",
     "baseVersion": "4.18.0",
     "manifest": "upstream/scripts/vendor/tokscale.json",
     "note": "The staged native binary must match the Javis603/tokscale fork hash in upstream/scripts/vendor/tokscale.json; the npm binary is not accepted as an equivalent pin."

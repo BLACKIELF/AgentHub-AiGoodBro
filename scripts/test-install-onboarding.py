@@ -17,6 +17,7 @@ INPUTS = [
     'Sources/CodexUsageWidget/Services/AppInstallationState.swift',
     'Sources/CodexUsageWidget/Domain/NextSetup.swift',
     'Sources/CodexUsageWidget/Domain/WorkspaceOnboardingState.swift',
+    'Sources/CodexUsageWidget/Domain/PortableFirstRunPreferences.swift',
 ]
 
 SWIFT = r'''
@@ -42,11 +43,8 @@ func isolatedDefaults(_ body: (UserDefaults) throws -> Void) throws {
     defer { defaults.removePersistentDomain(forName: suite) }
     try body(defaults)
 }
-func existingUser(defaults: UserDefaults, onboarding: WorkspaceOnboardingState) -> Bool {
-    let loadedOnboarding = onboarding
-    let storedPinnedAccountKey = defaults.string(forKey: "CodexManagerNext.pinnedAccountKey")
-    EXISTING_USER_PRODUCTION
-    return existingUser
+func existingUser(defaults: UserDefaults) -> Bool {
+    PortableFirstRunPreferences.hasExistingUser(defaults: defaults)
 }
 
 let manager = FileManager.default
@@ -113,8 +111,8 @@ do {
         for key in ["CodexManagerNext.setup.completed", "CodexManagerNext.setup.dismissed"] {
             defaults.set(true, forKey: key)
             var state = InstallationOnboardingState()
-            check(existingUser(defaults: defaults, onboarding: .init()), "legacy completed or dismissed predicate remains compatible")
-            state.observe(first, existingUser: existingUser(defaults: defaults, onboarding: .init()))
+            check(existingUser(defaults: defaults), "legacy completed or dismissed predicate remains compatible")
+            state.observe(first, existingUser: existingUser(defaults: defaults))
             check(state.scope == .audience && state.shouldPresent, "legacy terminal setup starts explicit baseline chooser \(key.hasSuffix("completed") ? "completed" : "dismissed")")
             defaults.removeObject(forKey: key)
         }
@@ -122,8 +120,9 @@ do {
         migrated.bootstrapIfNeeded(existingUser: true)
         check(migrated.status == .completed && migrated.existingUserMigrated && migrated.selectedMode == .professional, "existing workspace migration remains terminal")
         var state = InstallationOnboardingState()
-        check(existingUser(defaults: defaults, onboarding: migrated), "migrated existing-user predicate remains compatible")
-        state.observe(first, existingUser: existingUser(defaults: defaults, onboarding: migrated))
+        defaults.set(migrated.encoded(), forKey: WorkspaceOnboardingState.storageKey)
+        check(existingUser(defaults: defaults), "migrated existing-user predicate remains compatible")
+        state.observe(first, existingUser: existingUser(defaults: defaults))
         check(state.scope == .audience, "migrated workspace still receives explicit audience choice")
     }
 
@@ -411,12 +410,10 @@ def run(args, temp, env, timeout):
         sys.exit(result.returncode)
 
 
-# Run the actual existing-user predicate without constructing AppSettings.
+# Exercise the complete production existing-user helper without constructing AppSettings.
 settings = (ROOT / 'Sources/CodexUsageWidget/Services/AppSettings.swift').read_text()
-start = settings.index('        let existingUser =\n')
-end = settings.index('        workspaceDisplayMode =', start)
-predicate = settings[start:end]
-assert 'loadedOnboarding.status != .notStarted' in predicate
+assert re.search(r'let existingUser =\s+hasExistingUser\s+\?\? PortableFirstRunPreferences.hasExistingUser\(', settings)
+assert settings.index('let existingUser =') < settings.index('PortableFirstRunPreferences.seedIfNeeded(')
 # Verify the real view calls the tested production decision, instead of duplicating it.
 view = (ROOT / 'Sources/CodexUsageWidget/UI/CodexAccountManagerView.swift').read_text()
 wire = 'if let scope = settings.installationOnboarding.automaticScope(legacyShouldPresent: settings.onboarding.shouldPresent) {'
@@ -438,11 +435,10 @@ assert re.search(r'Button\s*\{\s*onSelect\s*\(\s*audience\s*\)\s*\}', chooser) a
 assert 'UserDefaults' not in chooser and 'installationOnboarding' not in chooser
 print('PASS production chooser routing binds captured event and scope; pure choice view has no persistence or automatic activation')
 
-swift = SWIFT.replace('EXISTING_USER_PRODUCTION', predicate)
+swift = SWIFT
 snapshots = {relative: (ROOT / relative).read_bytes() for relative in INPUTS}
 for relative, data in snapshots.items():
     print('SOURCE ' + Path(relative).name + ' SHA256 ' + hashlib.sha256(data).hexdigest())
-print('SOURCE AppSettings.existingUser SHA256 ' + hashlib.sha256(predicate.encode()).hexdigest())
 print('SOURCE CodexAccountManagerView.automaticScope-call SHA256 ' + hashlib.sha256(view[wire_start:wire_start + 320].encode()).hexdigest())
 with tempfile.TemporaryDirectory(prefix='install-onboarding-fixture-') as folder:
     temp = Path(folder).resolve()
@@ -457,4 +453,4 @@ with tempfile.TemporaryDirectory(prefix='install-onboarding-fixture-') as folder
     binary = temp / 'fixture'
     run(['xcrun', 'swiftc', '-swift-version', '5', '-module-cache-path', str(temp / 'modules'), *sources, str(fixture), '-o', str(binary)], temp, env, 120)
     run([str(binary), str(temp / 'files')], temp, env, 30)
-print('BOUNDARY: complete production state files and legacy-migration existing-user predicate; chooser/full/returning routing checks are source structure only; synthetic Bundle/files/random defaults; presentation-close check covers state persistence, not native window callback; no app, credentials, network, or installation')
+print('BOUNDARY: complete production state files and existing-user detection helper; chooser/full/returning routing checks are source structure only; synthetic Bundle/files/random defaults; presentation-close check covers state persistence, not native window callback; no app, credentials, network, or installation')

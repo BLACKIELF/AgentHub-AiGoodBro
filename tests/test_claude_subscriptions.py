@@ -24,4 +24,5 @@ class ClaudeSubscriptionTests(unittest.TestCase):
                 env={'PATH':os.environ.get('PATH','/usr/bin:/bin')})
             self.assertEqual(result.returncode,0,result.stderr)
             self.assertIn('PASS claude-subscription fixture',result.stdout)
+            self.assertIn('PASS claude-global-config selection',result.stdout)
 if __name__ == '__main__': unittest.main()

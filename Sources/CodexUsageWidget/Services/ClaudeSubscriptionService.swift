@@ -42,7 +42,17 @@ struct ClaudeSubscriptionService {
     private var defaultDirectory: URL { home.appendingPathComponent(".claude") }
     private var configURL: URL {
         let legacy = defaultDirectory.appendingPathComponent(".config.json")
-        return FileManager.default.fileExists(atPath: legacy.path) ? legacy : home.appendingPathComponent(".claude.json")
+        return Self.globalConfigURL(legacy: legacy, global: home.appendingPathComponent(".claude.json"))
+    }
+    static func globalConfigURL(legacy: URL, global: URL) -> URL {
+        // Claude Code 2.1.299 / claude-swap 0.27.1: stat follows symlinks;
+        // writability uses mode bits, including under root. Reads stay guarded.
+        var metadata = stat()
+        guard stat(legacy.path, &metadata) == 0,
+            metadata.st_mode & S_IFMT == S_IFREG,
+            metadata.st_size > 0 || (metadata.st_mode & 0o222 != 0 && !FileManager.default.fileExists(atPath: global.path))
+        else { return global }
+        return legacy
     }
     static var keychainAccount: String { ProcessInfo.processInfo.environment["USER"].flatMap { $0.isEmpty ? nil : $0 } ?? NSUserName() }
     static func directoryKeychainService(_ exportedDirectory: String) -> String {
@@ -362,19 +372,22 @@ struct ClaudeSubscriptionService {
         let recoveryAccount = expectedReference.map(renewalAccount)
         let previousRecovery = try recoveryAccount.flatMap { try dependencies.readKeychain(Self.nativeService, $0) }
         let before = try liveCredential()
-        guard let config = try read(configURL), let account = try Self.object(config)["oauthAccount"] as? [String: Any] else { throw Failure.invalid }
+        let selectedConfig = configURL.standardizedFileURL
+        guard let config = try read(selectedConfig), let account = try Self.object(config)["oauthAccount"] as? [String: Any] else { throw Failure.invalid }
         let declared = try storedIdentity(account)
         let official = try await officialIdentity(before)
         guard declared.fingerprint == official.fingerprint, expectedReference.map({ $0.identityFingerprint == official.fingerprint }) ?? true else { throw Failure.identityChanged }
         try requireIdle()
         try rejectAPIRoute()
-        guard try liveCredential() == before, try read(configURL) == config,
+        guard configURL.standardizedFileURL == selectedConfig,
+            try liveCredential() == before, try read(selectedConfig) == config,
             try dependencies.readKeychain(Self.nativeService, slot) == previousSlot
         else { throw Failure.identityChanged }
-        let locks = try MutationLocks(directory: defaultDirectory, config: configURL, support: support)
+        let locks = try MutationLocks(directory: defaultDirectory, config: selectedConfig, support: support)
         defer { locks.release() }
         try locks.verify()
-        guard try liveCredential() == before, try read(configURL) == config,
+        guard configURL.standardizedFileURL == selectedConfig,
+            try liveCredential() == before, try read(selectedConfig) == config,
             try dependencies.readKeychain(Self.nativeService, slot) == previousSlot
         else { throw Failure.identityChanged }
         if let recoveryAccount {
@@ -403,23 +416,66 @@ struct ClaudeSubscriptionService {
             guard exactSuccessor || independentGrant else { throw Failure.reauthenticationRequired }
         }
         let payload = try Self.bytes(["credential": Self.object(before), "oauthAccount": account])
+        func validateCaptured() throws {
+            try locks.verify()
+            try requireIdle()
+            try rejectAPIRoute()
+            guard configURL.standardizedFileURL == selectedConfig,
+                try read(selectedConfig) == config,
+                try liveCredential() == before,
+                try dependencies.readKeychain(Self.nativeService, slot) == payload
+            else { throw Failure.identityChanged }
+        }
+        var recoveryClearAttempted = false
         do {
             try dependencies.writeKeychain(Self.nativeService, slot, payload)
             guard try dependencies.readKeychain(Self.nativeService, slot) == payload else { throw Failure.unavailable }
+            try validateCaptured()
+            if let recoveryAccount {
+                guard try dependencies.readKeychain(Self.nativeService, recoveryAccount) == previousRecovery else { throw Failure.identityChanged }
+                try validateCaptured()
+                if previousRecovery != nil {
+                    recoveryClearAttempted = true
+                    try dependencies.writeKeychain(Self.nativeService, recoveryAccount, nil)
+                    guard try dependencies.readKeychain(Self.nativeService, recoveryAccount) == nil else { throw Failure.identityChanged }
+                    try validateCaptured()
+                }
+            }
         } catch {
-            let current = try dependencies.readKeychain(Self.nativeService, slot)
-            if current == payload { try dependencies.writeKeychain(Self.nativeService, slot, previousSlot) } else if current != previousSlot { throw Failure.rollbackFailed }
+            let failure = error as? Failure
+            var rollbackFailed = false
+            // Clearing recovery is part of capture. Restore only this write's
+            // nil value; a different marker belongs to a concurrent writer.
+            if recoveryClearAttempted, let recoveryAccount {
+                do {
+                    let current = try dependencies.readKeychain(Self.nativeService, recoveryAccount)
+                    if current == nil {
+                        do { try dependencies.writeKeychain(Self.nativeService, recoveryAccount, previousRecovery) } catch {
+                            guard try dependencies.readKeychain(Self.nativeService, recoveryAccount) == previousRecovery else { throw Failure.rollbackFailed }
+                        }
+                        guard try dependencies.readKeychain(Self.nativeService, recoveryAccount) == previousRecovery else { throw Failure.rollbackFailed }
+                    } else if current != previousRecovery {
+                        throw Failure.rollbackFailed
+                    }
+                } catch { rollbackFailed = true }
+            }
+            // Always attempt the owned slot rollback even if recovery conflicts.
+            do {
+                let current = try dependencies.readKeychain(Self.nativeService, slot)
+                if current == payload {
+                    do { try dependencies.writeKeychain(Self.nativeService, slot, previousSlot) } catch {
+                        guard try dependencies.readKeychain(Self.nativeService, slot) == previousSlot else { throw Failure.rollbackFailed }
+                    }
+                    guard try dependencies.readKeychain(Self.nativeService, slot) == previousSlot else { throw Failure.rollbackFailed }
+                } else if current != previousSlot {
+                    throw Failure.rollbackFailed
+                }
+            } catch { rollbackFailed = true }
+            if rollbackFailed { throw Failure.rollbackFailed }
+            if failure == .identityChanged { throw Failure.identityChanged }
             throw Failure.rolledBack
         }
-        let reference = ClaudeSubscriptionReference(source: .native, slot: slot, identityFingerprint: official.fingerprint)
-        if let recoveryAccount {
-            guard try dependencies.readKeychain(Self.nativeService, recoveryAccount) == previousRecovery else { throw Failure.identityChanged }
-            if previousRecovery != nil {
-                try dependencies.writeKeychain(Self.nativeService, recoveryAccount, nil)
-                guard try dependencies.readKeychain(Self.nativeService, recoveryAccount) == nil else { throw Failure.unavailable }
-            }
-        }
-        return reference
+        return ClaudeSubscriptionReference(source: .native, slot: slot, identityFingerprint: official.fingerprint)
     }
     func removeCaptured(_ reference: ClaudeSubscriptionReference) throws {
         guard reference.source == .native else { return }
@@ -588,14 +644,15 @@ struct ClaudeSubscriptionService {
         let profileRevision = try read(profileRegistry, missing: true)
         let targetStored = try storedSlot(target)
         let liveBefore = try liveCredential()
-        guard let beforeConfig = try read(configURL) else { throw Failure.invalid }
+        let selectedConfig = configURL.standardizedFileURL
+        guard let beforeConfig = try read(selectedConfig) else { throw Failure.invalid }
         var config = try Self.object(beforeConfig)
         guard let currentAccount = config["oauthAccount"] as? [String: Any] else { throw Failure.invalid }
         let declared = try storedIdentity(currentAccount)
         guard let source = allReferences.first(where: { $0.identityFingerprint == declared.fingerprint }) else { throw Failure.readOnly }
         let cswapLocks = try CSWAPLocks(home: home, references: [source, target], includeGlobalLock: allReferences.contains { $0.source == .cswap })
         defer { cswapLocks.release() }
-        let locks = try MutationLocks(directory: defaultDirectory, config: configURL, support: support)
+        let locks = try MutationLocks(directory: defaultDirectory, config: selectedConfig, support: support)
         defer { locks.release() }
         func validate() throws {
             try Task.checkCancellation()
@@ -603,8 +660,9 @@ struct ClaudeSubscriptionService {
             try cswapLocks.verify()
             try requireIdle()
             try rejectAPIRoute()
-            guard try cswapRevisions(allReferences) == sourceRevisions, try read(profileRegistry, missing: true) == profileRevision,
-                try liveCredential() == liveBefore, try read(configURL) == beforeConfig
+            guard configURL.standardizedFileURL == selectedConfig,
+                try cswapRevisions(allReferences) == sourceRevisions, try read(profileRegistry, missing: true) == profileRevision,
+                try liveCredential() == liveBefore, try read(selectedConfig) == beforeConfig
             else { throw Failure.identityChanged }
         }
         try validate()
@@ -675,7 +733,10 @@ struct ClaudeSubscriptionService {
             try locks.verify()
             try cswapLocks.verify()
             try requireIdle()
-            guard try read(profileRegistry, missing: true) == profileRevision else { throw Failure.identityChanged }
+            guard configURL.standardizedFileURL == selectedConfig,
+                try read(selectedConfig) == beforeConfig,
+                try read(profileRegistry, missing: true) == profileRevision
+            else { throw Failure.identityChanged }
             try locks.verify()
             keychainWritten = true
             try dependencies.writeKeychain(service, account, updatedCredential)
@@ -685,8 +746,9 @@ struct ClaudeSubscriptionService {
                 try DispatchParticipationSync.writeSnapshot(updatedFile!, at: credentialFile, replacing: beforeFile)
             }
             try locks.verify()
+            guard configURL.standardizedFileURL == selectedConfig else { throw Failure.identityChanged }
             configWritten = true
-            try DispatchParticipationSync.writeSnapshot(updatedConfig, at: configURL, replacing: beforeConfig)
+            try DispatchParticipationSync.writeSnapshot(updatedConfig, at: selectedConfig, replacing: beforeConfig)
             if let updatedSequence, let beforeSequence {
                 try locks.verify()
                 try cswapLocks.verify()
@@ -695,7 +757,8 @@ struct ClaudeSubscriptionService {
             }
             try locks.verify()
             try cswapLocks.verify()
-            guard try liveCredential() == updatedCredential, try read(configURL) == updatedConfig,
+            guard configURL.standardizedFileURL == selectedConfig,
+                try liveCredential() == updatedCredential, try read(selectedConfig) == updatedConfig,
                 try activeFingerprint() == target.identityFingerprint
             else { throw Failure.identityChanged }
         } catch {
@@ -713,9 +776,9 @@ struct ClaudeSubscriptionService {
                     }
                 }
                 if configWritten {
-                    let current = try read(configURL)
+                    let current = try read(selectedConfig)
                     if current == updatedConfig {
-                        try DispatchParticipationSync.writeSnapshot(beforeConfig, at: configURL, replacing: updatedConfig)
+                        try DispatchParticipationSync.writeSnapshot(beforeConfig, at: selectedConfig, replacing: updatedConfig)
                     } else if current != beforeConfig {
                         throw Failure.identityChanged
                     }
@@ -744,7 +807,9 @@ struct ClaudeSubscriptionService {
                         throw Failure.identityChanged
                     }
                 }
-                guard try liveCredential() == liveBefore, try read(configURL) == beforeConfig else { throw Failure.identityChanged }
+                guard configURL.standardizedFileURL == selectedConfig,
+                    try liveCredential() == liveBefore, try read(selectedConfig) == beforeConfig
+                else { throw Failure.identityChanged }
                 throw Failure.rolledBack
             } catch Failure.rolledBack { throw Failure.rolledBack } catch { throw Failure.rollbackFailed }
         }

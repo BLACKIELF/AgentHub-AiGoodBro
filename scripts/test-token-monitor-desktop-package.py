@@ -61,6 +61,86 @@ class AsarPackageTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "hash mismatch"):
                 PACKAGE.verify_asar(path, header)
 
+    def test_scanner_replacement_and_manifest_fail_closed(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            stage = root / "stage"
+            (stage / "scripts/vendor").mkdir(parents=True)
+            manifest = {"mode": "override", "fork": "Javis603/tokscale", "commit": "fixed", "baseVersion": "4.18.0", "releaseTag": "fixed", "platforms": {"darwin-arm64": {"package": "@tokscale/cli-darwin-arm64", "sha256": PACKAGE.sha256(b"new")}}}
+            (stage / "scripts/vendor/tokscale.json").write_text(json.dumps(manifest))
+            relative = "node_modules/@tokscale/cli-darwin-arm64/bin/tokscale"
+            members = {relative: (b"old", True, True), "node_modules/@tokscale/cli-darwin-arm64/package.json": (b'{"version":"4.18.0"}', False, False)}
+            self.assertEqual(PACKAGE.replace_scanner_member(members, stage, "arm64", b"new"), relative)
+            self.assertEqual(members[relative], (b"new", True, True))
+            with self.assertRaisesRegex(ValueError, "fixed pin"):
+                PACKAGE.replace_scanner_member(members, stage, "arm64", b"stale")
+            members["node_modules/@tokscale/cli-darwin-arm64/package.json"] = (b'{"version":"4.17.0"}', False, False)
+            with self.assertRaisesRegex(ValueError, "base version"):
+                PACKAGE.replace_scanner_member(members, stage, "arm64", b"new")
+
+    def test_signed_scanner_receipt_and_native_closure_are_external_and_complete(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            app = root / "helper"
+            app.mkdir()
+            asar = app / "app.asar"
+            source = root / "source"
+            (source / "upstream/scripts/vendor").mkdir(parents=True)
+            relative = "node_modules/@tokscale/cli-darwin-arm64/bin/tokscale"
+            other = "node_modules/native/koffi.node"
+            before = bytes.fromhex("cffaedfe") + b"pre"
+            after = bytes.fromhex("cffaedfe") + b"signed"
+            native = bytes.fromhex("cffaedfe") + b"native"
+            manifest = {"mode": "override", "commit": "fixed", "baseVersion": "4.18.0", "releaseTag": "fixed", "platforms": {"darwin-arm64": {"package": "@tokscale/cli-darwin-arm64", "sha256": PACKAGE.sha256(before)}}}
+            (source / "upstream/scripts/vendor/tokscale.json").write_text(json.dumps(manifest))
+            members = {"scripts/vendor/tokscale.json": (json.dumps(manifest).encode(), False, False), relative: (after, True, True), other: (native, True, True)}
+            for name, (content, unpacked, _) in members.items():
+                if unpacked:
+                    file = asar.with_name("app.asar.unpacked").joinpath(*name.split("/"))
+                    file.parent.mkdir(parents=True, exist_ok=True)
+                    file.write_bytes(content)
+            header, _ = PACKAGE.build_asar(asar, members)
+            PACKAGE.verify_asar(asar, header)
+            receipt = root / "receipt.json"
+            record = {"architecture": "arm64", "tokscaleCommit": "fixed", "runtimeUnpackedTreeSHA256": "r" * 64,
+                      "nativeFiles": {relative: {"pre": {"sha256": PACKAGE.sha256(before)}, "post": {"sha256": PACKAGE.sha256(after)}}, other: {"pre": {"sha256": PACKAGE.sha256(native)}, "post": {"sha256": PACKAGE.sha256(native)}}}}
+            receipt.write_text(json.dumps(record))
+            with patch.object(PACKAGE, "VENDOR", source), patch.object(PACKAGE, "run", return_value="") as verify_signature:
+                self.assertEqual(PACKAGE.verify_scanner(asar, "arm64", app, receipt)["tokscaleCommit"], "fixed")
+                PACKAGE.verify_native_receipt(asar, "arm64", app, "r" * 64, receipt)
+                self.assertEqual(verify_signature.call_count, 3)
+                with self.assertRaisesRegex(ValueError, "external trusted"):
+                    PACKAGE.verify_scanner(asar, "arm64", app)
+                inside = app / "receipt.json"
+                inside.write_text(json.dumps(record))
+                with self.assertRaisesRegex(ValueError, "external trusted"):
+                    PACKAGE.verify_scanner(asar, "arm64", app, inside)
+                wrong = json.loads(json.dumps(record))
+                wrong["nativeFiles"][relative]["post"]["sha256"] = "0" * 64
+                receipt.write_text(json.dumps(wrong))
+                with self.assertRaisesRegex(ValueError, "pre/post receipt"):
+                    PACKAGE.verify_scanner(asar, "arm64", app, receipt)
+                receipt.write_text(json.dumps(record))
+                wrong_pin = json.loads(json.dumps(manifest))
+                wrong_pin["platforms"]["darwin-arm64"]["package"] = "@tokscale/wrong"
+                members["scripts/vendor/tokscale.json"] = (json.dumps(wrong_pin).encode(), False, False)
+                PACKAGE.build_asar(asar, members)
+                with self.assertRaisesRegex(ValueError, "manifest differs"):
+                    PACKAGE.verify_scanner(asar, "arm64", app, receipt)
+                members["scripts/vendor/tokscale.json"] = (json.dumps(manifest).encode(), False, False)
+                PACKAGE.build_asar(asar, members)
+                wrong = json.loads(json.dumps(record))
+                del wrong["nativeFiles"][other]
+                receipt.write_text(json.dumps(wrong))
+                with self.assertRaisesRegex(ValueError, "member set"):
+                    PACKAGE.verify_native_receipt(asar, "arm64", app, "r" * 64, receipt)
+                wrong = json.loads(json.dumps(record))
+                wrong["nativeFiles"][other]["post"]["sha256"] = "0" * 64
+                receipt.write_text(json.dumps(wrong))
+                with self.assertRaisesRegex(ValueError, "pre/post receipt"):
+                    PACKAGE.verify_native_receipt(asar, "arm64", app, "r" * 64, receipt)
+
     def test_official_runtime_pin_and_package_entry(self):
         runtime = OFFICIAL_RUNTIME_APP / "Contents/Resources/app.asar"
         if not runtime.is_file():
@@ -166,7 +246,8 @@ class AsarPackageTests(unittest.TestCase):
             "src/shared/sessionDetail.js",
             "src/shared/providers/cursor/selfSync.js", "src/shared/providers/antigravity/selfSync.js",
         }
-        self.assertEqual(len(source_paths), 457)
+        # Approved #1019 adds src/shared/providers/codex/transcript.js.
+        self.assertEqual(len(source_paths), 458)
         self.assertEqual(changed_from_vendor, transformed | {"assets/icon.png", "package.json"})
         official_paths = [relative for relative, _ in PACKAGE.entries(original) if relative.startswith(("src/", "assets/"))]
         changed_from_official = {
@@ -179,6 +260,17 @@ class AsarPackageTests(unittest.TestCase):
             "src/electron/providers/antigravity/oauthLogin.js",
             "src/shared/providers/antigravity/oauth.js",
             "src/shared/providers/grok/sessionMetadata.js",
+            # Approved selective v0.70 statistics/archive backports.
+            "src/shared/history.js", "src/shared/hubBuildRegistry.json",
+            "src/shared/providers/codex/sessionContext.js",
+            "src/shared/providers/codex/sessionMetadata.js",
+            "src/shared/providers/cursor/auth.js",
+            "src/shared/providers/dsh/sessionFiles.js",
+            "src/shared/sessionFiles.js", "src/shared/sessionMetadata.js",
+            "src/shared/t3SessionMetadata.js",
+            "src/shared/usage/sessionUsageArchiveStore.js",
+            # Approved v0.71 #1052 archive handoff/failure guard and #1037 popover fix.
+            "src/shared/usage/usageTransform.js", "src/electron/trayModeSettings.js",
         })
         # Approved Grok fix: writer prompts must not become session titles.
         grok_metadata = PACKAGE.asar_content(packaged, tree, start, "src/shared/providers/grok/sessionMetadata.js").decode()

@@ -327,6 +327,13 @@ func (s *selector) Pick(ctx context.Context, _, _ string, _ executor.Options, ca
 	passes := admissionPasses(scope.order, scope.deferredIDs, scope.lastResortIDs, scope.creditFallback, s.desktopFallback)
 	waitFor, pollEvery := s.admissionWait()
 	waitDeadline := time.Now().Add(waitFor)
+	// The budget and either cancellation bound only pre-send queueing and
+	// confirmed control-busy retries. Issued lease RPCs keep the bridge's full
+	// exchange bound so late success can be tracked or ambiguity reconciled.
+	admissionCtx, cancelAdmission := context.WithDeadline(scope.ctx, waitDeadline)
+	stopCallerCancellation := context.AfterFunc(ctx, cancelAdmission)
+	defer stopCallerCancellation()
+	defer cancelAdmission()
 	rejections := map[string]bool{}
 	for {
 		sawBusy := false
@@ -355,13 +362,14 @@ func (s *selector) Pick(ctx context.Context, _, _ string, _ executor.Options, ca
 						scope.retryAfter()
 						return nil, admissionError("account_busy", "account admission rolled back; retry request")
 					}
+					scope.retryAfter()
 					return nil, admissionError("account_busy", "eligible accounts remain busy")
 				}
 				if err := pickContextError(ctx, scope); err != nil {
 					return nil, err
 				}
 				scope.reserveQuotaAccount(id)
-				reply, err := s.bridge.call(scope.ctx, command, scope.id, id, "")
+				reply, err := s.bridge.call(admissionCtx, command, scope.id, id, "")
 				if err != nil {
 					return nil, s.reconcileAcquire(scope, id, acquireFailureDetail(err))
 				}
@@ -378,6 +386,7 @@ func (s *selector) Pick(ctx context.Context, _, _ string, _ executor.Options, ca
 						continue
 					}
 					if reply.Error == "control_busy" {
+						scope.retryAfter()
 						return nil, admissionError("account_busy", "proxy control channel is busy")
 					}
 					state := safeState(reply.Error)
@@ -464,6 +473,7 @@ func (s *selector) Pick(ctx context.Context, _, _ string, _ executor.Options, ca
 		}
 		remaining := time.Until(waitDeadline)
 		if remaining <= 0 {
+			scope.retryAfter()
 			return nil, admissionError("account_busy", "eligible accounts remain busy")
 		}
 		delay := pollEvery
@@ -956,7 +966,7 @@ func main() {
 		os.Exit(runDesktopAdapter(connectionPath, os.Args[1:]))
 	}
 	if len(os.Args) == 2 && os.Args[1] == "--version" {
-		_, _ = io.WriteString(os.Stdout, "AiGoodBro Local Proxy 1008v1; CLIProxyAPI v8.0.20\n")
+		_, _ = io.WriteString(os.Stdout, "AiGoodBro Local Proxy 1014v1; CLIProxyAPI v8.0.28\n")
 		return
 	}
 	logrus.SetOutput(io.Discard)

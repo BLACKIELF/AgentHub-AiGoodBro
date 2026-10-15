@@ -4,6 +4,7 @@ struct LocalProxyQueueView: View {
     @ObservedObject var model: LocalProxyQueueStore
     let language: WidgetLanguage
     var onClose: (() -> Void)? = nil
+    var isCurrentPresentation: () -> Bool = { true }
     var previewExpandedRules = false
     @Environment(\.dismiss) private var dismiss
     @State private var primaryFloorText = ""
@@ -26,6 +27,7 @@ struct LocalProxyQueueView: View {
                 Spacer()
                 Text(phaseTitle).font(.callout.weight(.medium)).foregroundStyle(.secondary)
                 Button(language.text("关闭面板", "Close panel")) {
+                    cancelLegacyCooldownRecovery()
                     if let onClose { onClose() } else { dismiss() }
                 }
                 .keyboardShortcut(.cancelAction)
@@ -56,6 +58,12 @@ struct LocalProxyQueueView: View {
             }
 
             creditSettings
+            LocalProxyPlusLimitEditor(
+                language: language, accountCount: model.plusPolicyTargetCount,
+                savedLimit: model.uniformPlusFiveHourUsedLimit,
+                enabled: model.canEditPolicy, canApply: model.canApplyPlusFiveHourUsedLimit,
+                message: model.plusPolicyMessage,
+                save: { model.setPlusFiveHourUsedLimit($0) })
 
             HStack {
                 Text(language.text("代理账号队列", "Proxy account queue")).font(.headline)
@@ -184,9 +192,16 @@ struct LocalProxyQueueView: View {
                 ))
         }
         .onDisappear {
-            model.cancelLegacyCooldownRecovery()
-            preparingLegacyCooldownID = nil
+            cancelLegacyCooldownRecovery()
         }
+    }
+
+    private func cancelLegacyCooldownRecovery() {
+        if isCurrentPresentation() { model.cancelLegacyCooldownRecovery() }
+        confirmingLegacyCooldown = false
+        legacyCooldownAccountID = nil
+        legacyCooldownAccountTitle = ""
+        preparingLegacyCooldownID = nil
     }
 
     private func endpointLabel(_ endpoint: String) -> some View {
@@ -568,10 +583,120 @@ struct LocalProxyQueueView: View {
         case "subscription_pending": return language.text("订阅额度优先", "Subscription first")
         case "login_expired": return language.text("登录已失效", "Sign-in expired")
         case "temporary_error": return language.text("暂时异常", "Temporary error")
-        case "busy": return language.text("账号忙碌", "Account busy")
-        case "credentials_busy": return language.text("凭据读取中", "Credentials busy")
+        case "busy": return language.text("上次请求忙碌", "Last request busy")
+        case "credentials_busy": return language.text("上次凭据读取忙碌", "Last credential read busy")
         default: return language.text("额度未知", "Limits unknown")
         }
+    }
+}
+
+private struct LocalProxyPlusLimitEditor: View {
+    let language: WidgetLanguage
+    let accountCount: Int
+    let savedLimit: Double?
+    let enabled: Bool
+    let canApply: Bool
+    let message: String?
+    let save: (Double) -> Bool
+    @State private var limit = ""
+    @State private var savedValue: Double?
+    @State private var initialized = false
+    @State private var saveFailed = false
+
+    private var value: Double? {
+        guard let number = Double(limit.trimmingCharacters(in: .whitespacesAndNewlines)), number.isFinite,
+            (0...100).contains(number)
+        else { return nil }
+        return number
+    }
+    private func text(_ number: Double?) -> String {
+        guard let number else { return "" }
+        return number.rounded() == number ? String(Int(number)) : String(number)
+    }
+    private var dirty: Bool { initialized && limit != text(savedValue) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            LocalProxyPolicyFieldsLayout(trailingAction: true) {
+                limitField
+                applyButton
+            }
+            Text(
+                language.text(
+                    "当前 \(accountCount) 个 Plus（含未参与）；Pro 等其他及未知套餐规则不变。",
+                    "\(accountCount) current Plus accounts, including non-participants; Pro, other and unknown plans remain unchanged.")
+            )
+            .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            Text(
+                language.text(
+                    "仅设 5 小时已用上限，仍可单独调整；低于 100% 达限停新请求，100% 保留原点数接续规则。",
+                    "Set only the 5h used limit; individual overrides remain. Below 100%, stop new requests at the limit; at 100%, existing credit fallback remains.")
+            )
+            .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            if savedLimit == nil && !dirty {
+                Text(language.text("没有已核实的 Plus 账号，或 Plus 上限不同。", "No verified Plus accounts, or Plus limits differ.")).foregroundStyle(.secondary)
+            }
+            if dirty && value == nil {
+                Text(language.text("请输入 0–100 的已用百分比，可用小数。", "Enter a used percentage from 0 to 100; decimals are allowed."))
+                    .foregroundStyle(WorkspaceStatusForeground.warning)
+            }
+            if enabled && accountCount > 0 && !canApply {
+                Text(language.text("有 Plus 账号身份或运行绑定待核实，全部规则暂不能修改。", "A Plus account identity or running binding needs verification; no rules can be changed."))
+                    .foregroundStyle(WorkspaceStatusForeground.warning)
+            }
+            if let message {
+                if saveFailed { Text(message).foregroundStyle(WorkspaceStatusForeground.warning) } else { Text(message).foregroundStyle(.secondary) }
+            }
+        }
+        .font(.caption).controlSize(.small).padding(8)
+        .background(WorkspaceGlassSurface(cornerRadius: 10))
+        .help(
+            language.text(
+                "填写已用百分比，不是剩余额度。仅修改上限，不改变参与、顺序或点数授权。低于 100% 达到上限时点数不能绕过；100% 保留原点数接续规则。已接入响应继续完成。",
+                "Enter used percent, not remaining quota. Only limits change; participation, order and credit permission remain. Credits cannot bypass a reached limit below 100%; at 100%, existing credit fallback rules remain. Admitted responses finish."
+            )
+        )
+        .onAppear {
+            guard !initialized else { return }
+            savedValue = savedLimit
+            limit = text(savedLimit)
+            initialized = true
+        }
+        .onChange(of: savedLimit) { updated in
+            let preserveDraft = dirty
+            savedValue = updated
+            if !preserveDraft { limit = text(updated) }
+        }
+    }
+
+    private var limitField: some View {
+        HStack(spacing: 6) {
+            Text(language.text("Plus 5h 已用上限", "Plus 5h used limit"))
+            TextField("0–100", text: $limit).textFieldStyle(.plain)
+                .font(.system(size: 12, weight: .medium).monospacedDigit())
+                .padding(.horizontal, 8).frame(width: 76, height: 30)
+                .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
+                .overlay { RoundedRectangle(cornerRadius: 6).strokeBorder(Color.primary.opacity(0.25), lineWidth: 1) }
+                .accessibilityLabel(language.text("Plus 账号 5 小时已用百分比上限", "Maximum 5h used percentage for Plus accounts"))
+                .accessibilityIdentifier("next.local-proxy.uniform-used-limit")
+                .disabled(!enabled)
+            Text("%")
+            if dirty { Text(language.text("未保存", "Unsaved")).foregroundStyle(WorkspaceStatusForeground.warning) }
+        }
+    }
+    private var applyButton: some View {
+        Button(language.text("应用到 Plus 账号", "Apply to Plus accounts")) {
+            guard let value else { return }
+            if save(value) {
+                savedValue = value
+                limit = text(value)
+                saveFailed = false
+            } else {
+                saveFailed = true
+            }
+        }
+        .disabled(!canApply || value == nil || !dirty)
+        .accessibilityIdentifier("next.local-proxy.uniform-used-apply")
     }
 }
 
@@ -593,6 +718,8 @@ private struct LocalProxyAccountPolicyEditor<QuotaContent: View, ResetAction: Vi
     @State private var secondary = ""
     @State private var initialized = false
     @State private var savedPolicy: LocalProxyAccountPolicy?
+    @State private var savedDefaultPrimary: Int?
+    @State private var savedDefaultSecondary: Int?
     @State private var expanded = false
     @State private var saveFailed = false
 
@@ -612,10 +739,11 @@ private struct LocalProxyAccountPolicyEditor<QuotaContent: View, ResetAction: Vi
     private var dirty: Bool { initialized && policy != savedPolicy }
     private var policy: LocalProxyAccountPolicy? {
         guard let value = Double(limit.trimmingCharacters(in: .whitespacesAndNewlines)) else { return nil }
-        let candidate = LocalProxyAccountPolicy(
-            fiveHourUsedLimit: value, allowsCredits: allowsCredits,
-            creditPrimaryFloor: usesDefaults ? nil : Int(primary), creditSecondaryFloor: usesDefaults ? nil : Int(secondary)
-        )
+        var candidate = savedPolicy ?? savedState.policy
+        candidate.fiveHourUsedLimit = value
+        candidate.allowsCredits = allowsCredits
+        candidate.creditPrimaryFloor = usesDefaults ? nil : Int(primary)
+        candidate.creditSecondaryFloor = usesDefaults ? nil : Int(secondary)
         guard candidate.isValid, usesDefaults || (candidate.creditPrimaryFloor != nil && candidate.creditSecondaryFloor != nil) else { return nil }
         return candidate
     }
@@ -661,8 +789,24 @@ private struct LocalProxyAccountPolicyEditor<QuotaContent: View, ResetAction: Vi
         .onChange(of: savedState) { value in
             // SwiftUI may retain a callback with the previous row. Use the delivered snapshot.
             let preserveDraft = dirty
+            let previous = savedPolicy ?? value.policy
+            let limitEdited = Double(limit.trimmingCharacters(in: .whitespacesAndNewlines)) != previous.fiveHourUsedLimit
+            let creditsEdited = allowsCredits != previous.allowsCredits
+            let defaultsEdited = usesDefaults != (previous.creditPrimaryFloor == nil)
+            let primaryEdited = !usesDefaults && (defaultsEdited || Int(primary) != (previous.creditPrimaryFloor ?? savedDefaultPrimary))
+            let secondaryEdited = !usesDefaults && (defaultsEdited || Int(secondary) != (previous.creditSecondaryFloor ?? savedDefaultSecondary))
             savedPolicy = value.policy
-            if !preserveDraft { resetDrafts(to: value) }
+            if !preserveDraft {
+                resetDrafts(to: value)
+            } else {
+                if !limitEdited { limit = limitText(value.policy.fiveHourUsedLimit) }
+                if !creditsEdited { allowsCredits = value.policy.allowsCredits }
+                if !defaultsEdited { usesDefaults = value.policy.creditPrimaryFloor == nil }
+                if !primaryEdited { primary = String(value.policy.creditPrimaryFloor ?? value.defaultPrimary) }
+                if !secondaryEdited { secondary = String(value.policy.creditSecondaryFloor ?? value.defaultSecondary) }
+                savedDefaultPrimary = value.defaultPrimary
+                savedDefaultSecondary = value.defaultSecondary
+            }
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel(language.text("\(row.label) 的反代规则", "Proxy rules for \(row.label)"))
@@ -710,16 +854,17 @@ private struct LocalProxyAccountPolicyEditor<QuotaContent: View, ResetAction: Vi
 
     private var summary: String {
         let saved = row.policy
-        let limit = saved.fiveHourUsedLimit.rounded() == saved.fiveHourUsedLimit ? String(Int(saved.fiveHourUsedLimit)) : String(saved.fiveHourUsedLimit)
+        let savedLimit = saved.fiveHourUsedLimit
+        let limit = savedLimit.rounded() == savedLimit ? String(Int(savedLimit)) : String(savedLimit)
         let credits = saved.allowsCredits ? language.text("允许点数", "Credits allowed") : language.text("仅订阅", "Subscription only")
         let floors = "\(saved.creditPrimaryFloor ?? defaultPrimary) / \(saved.creditSecondaryFloor ?? defaultSecondary)"
-        return language.text("5h 上限 \(limit)% · \(credits) · 保留 \(floors) 点", "5h limit \(limit)% · \(credits) · Keep \(floors) points")
+        return language.text("5h 已用上限 \(limit)% · \(credits) · 保留 \(floors) 点", "5h used limit \(limit)% · \(credits) · Keep \(floors) points")
     }
 
     private var limitFields: some View {
         HStack(spacing: 6) {
-            Text(language.text("5 小时已用上限", "5h used limit"))
-            field("100", text: $limit, label: language.text("5 小时已用百分比上限", "Maximum 5h used percent"))
+            Text(language.text("5h 已用上限", "5h used limit"))
+            field("0–100", text: $limit, label: language.text("5h 已用百分比上限", "Maximum 5h used percent"))
                 .help(
                     language.text(
                         "低于 100% 时，到达上限便停止此账号，点数不会绕过上限。100% 时可按授权接续点数。",
@@ -775,13 +920,16 @@ private struct LocalProxyAccountPolicyEditor<QuotaContent: View, ResetAction: Vi
     }
     private func resetDrafts(to value: SavedState) {
         let savedLimit = value.policy.fiveHourUsedLimit
-        limit = savedLimit.rounded() == savedLimit ? String(Int(savedLimit)) : String(savedLimit)
+        limit = limitText(savedLimit)
         allowsCredits = value.policy.allowsCredits
         usesDefaults = value.policy.creditPrimaryFloor == nil
         primary = String(value.policy.creditPrimaryFloor ?? value.defaultPrimary)
         secondary = String(value.policy.creditSecondaryFloor ?? value.defaultSecondary)
         savedPolicy = value.policy
+        savedDefaultPrimary = value.defaultPrimary
+        savedDefaultSecondary = value.defaultSecondary
     }
+    private func limitText(_ value: Double) -> String { value.rounded() == value ? String(Int(value)) : String(value) }
 }
 
 /// Keep one native control per binding while changing their positions on resize.

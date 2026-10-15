@@ -180,9 +180,9 @@ final class ReaderSendFixture {
   for private,label in [(str(ROOT),'<repo>'),(tmp,'<fixture>'),(str(Path.home()),'<home>')]:output=output.replace(private,label)
   print(output,end='')
   q=ROOT/'.local-artifacts/theme-upstream-1004v1';q.mkdir(parents=True,exist_ok=True)
-  (q/(prefix+'.log')).write_text(output)
+  with (q/(prefix+'.log')).open('x') as stream:stream.write(output)
   assertion_match=re.search(r'reset-credit auto host: (\d+) assertions, 0 failures',run.stdout if run else '')
   receipt={'inputsSHA256':inputs,'scriptSHA256':hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),'frozenSHA256':{p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in [stubs,*frozen,test,wiringTest,fallbackTest]},'fullSourceAdjustment':'Only DispatchParticipationSync.supportDirectory resolves to fixture root','extractedRunnerSHA256':hashlib.sha256(runner.encode()).hexdigest(),'extractedIdentityInvalidationSHA256':hashlib.sha256(sync.encode()).hexdigest(),'extractedReaderSendSHA256':hashlib.sha256(reader[start:end].encode()).hexdigest(),'readerSendTestSeam':'beforeWrite callback immediately after real pre-cancel check; no gate/body changes','readerAdmissionNegative':negative,'swiftAssertions':int(assertion_match[1]) if assertion_match else 0,'crossProcessClaimChecks':1,'raceResults':race_results,'logSHA256':hashlib.sha256(output.encode()).hexdigest(),'compileExitCode':compiled.returncode,'testExitCode':run.returncode if run else None,'inputsUnchanged':all(hashlib.sha256((ROOT/p).read_bytes()).hexdigest()==h for p,h in inputs.items()),'scope':'Real complete auto controller/journal/pending/activity/atomic writers plus actual extracted UsageStore runner, identity invalidation block, desktop idle policy, UI eligibility and Reader consume write admission block; profile/reader/Hub and running-app inventory doubles; no real app/network/auth/hotkeys'}
-  (q/(prefix+'.json')).write_text(json.dumps(receipt,indent=2)+'\n')
+  with (q/(prefix+'.json')).open('x') as stream:stream.write(json.dumps(receipt,indent=2)+'\n')
   assert compiled.returncode==0 and run and run.returncode==0 and assertion_match and receipt['swiftAssertions']>=57 and receipt['inputsUnchanged'],receipt
 if __name__=='__main__':main()

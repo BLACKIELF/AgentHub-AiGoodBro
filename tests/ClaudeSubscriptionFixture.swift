@@ -12,9 +12,13 @@ private final class FakeKeychain {
     var failWrite: String?
     var failAfterWrite: String?
     var rejectWrite: ((String, String, Data?) -> Bool)?
+    var beforeRead: ((String, String) -> Void)?
     var writeCount = 0
     func key(_ service: String, _ account: String) -> String { service + "|" + account }
-    func read(_ service: String, _ account: String) throws -> Data? { items[key(service,account)] }
+    func read(_ service: String, _ account: String) throws -> Data? {
+        beforeRead?(service, account)
+        return items[key(service,account)]
+    }
     func write(_ service: String, _ account: String, _ data: Data?) throws {
         writeCount += 1
         if rejectWrite?(service, account, data) == true { throw TestFailure.synthetic }
@@ -54,6 +58,101 @@ private final class MockTransport: LocalCLIQuotaTransport, @unchecked Sendable {
     }
 }
 @main struct ClaudeSubscriptionFixture {
+    private enum ConfigFile {
+        case absent, regular(Data, mode_t), directory, fifo
+        case symlinkRegular(Data, mode_t), symlinkDirectory, danglingSymlink
+    }
+    private static func testGlobalConfigSelection(root: URL) throws {
+        let empty = Data(), nonempty = Data("{}".utf8)
+        let cases: [(String, ConfigFile, ConfigFile, Bool)] = [
+            ("both absent", .absent, .absent, false),
+            ("only global", .absent, .regular(nonempty, 0o600), false),
+            ("empty legacy and global", .regular(empty, 0o600), .regular(nonempty, 0o600), false),
+            ("empty writable legacy only", .regular(empty, 0o600), .absent, true),
+            ("empty readonly legacy only", .regular(empty, 0o444), .absent, false),
+            ("empty readonly legacy and global", .regular(empty, 0o444), .regular(nonempty, 0o600), false),
+            ("empty no permission bits", .regular(empty, 0), .absent, false),
+            ("empty owner write bit", .regular(empty, 0o200), .absent, true),
+            ("empty group write bit", .regular(empty, 0o020), .absent, true),
+            ("empty other write bit", .regular(empty, 0o002), .absent, true),
+            ("empty group writable and global", .regular(empty, 0o020), .regular(nonempty, 0o600), false),
+            ("nonempty legacy only", .regular(nonempty, 0o600), .absent, true),
+            ("both nonempty", .regular(nonempty, 0o600), .regular(nonempty, 0o600), true),
+            ("nonempty readonly legacy", .regular(nonempty, 0o444), .regular(nonempty, 0o600), true),
+            ("nonempty unreadable legacy", .regular(nonempty, 0), .regular(nonempty, 0o600), true),
+            ("legacy directory only", .directory, .absent, false),
+            ("legacy directory and global", .directory, .regular(nonempty, 0o600), false),
+            ("legacy fifo only", .fifo, .absent, false),
+            ("legacy fifo and global", .fifo, .regular(nonempty, 0o600), false),
+            ("nonempty legacy symlink", .symlinkRegular(nonempty, 0o600), .regular(nonempty, 0o600), true),
+            ("empty writable legacy symlink only", .symlinkRegular(empty, 0o600), .absent, true),
+            ("empty legacy symlink and global", .symlinkRegular(empty, 0o600), .regular(nonempty, 0o600), false),
+            ("empty readonly legacy symlink only", .symlinkRegular(empty, 0o444), .absent, false),
+            ("legacy symlink to directory", .symlinkDirectory, .regular(nonempty, 0o600), false),
+            ("dangling legacy symlink only", .danglingSymlink, .absent, false),
+            ("dangling legacy symlink and global", .danglingSymlink, .regular(nonempty, 0o600), false),
+            ("empty legacy and global directory", .regular(empty, 0o600), .directory, false),
+            ("empty legacy and global symlink", .regular(empty, 0o600), .symlinkRegular(nonempty, 0o600), false),
+            ("empty legacy and dangling global symlink", .regular(empty, 0o600), .danglingSymlink, true),
+            ("nonempty legacy and global directory", .regular(nonempty, 0o600), .directory, true),
+        ]
+        func create(_ kind: ConfigFile, at url: URL) throws {
+            switch kind {
+            case .absent: break
+            case let .regular(data, mode):
+                try data.write(to: url)
+                try expect(chmod(url.path, mode) == 0, "fixture sets file mode")
+            case .directory:
+                try FileManager.default.createDirectory(at: url, withIntermediateDirectories: false)
+            case .fifo:
+                try expect(mkfifo(url.path, 0o600) == 0, "fixture creates fifo")
+            case let .symlinkRegular(data, mode):
+                let target = url.appendingPathExtension("target")
+                try create(.regular(data, mode), at: target)
+                try FileManager.default.createSymbolicLink(at: url, withDestinationURL: target)
+            case .symlinkDirectory:
+                let target = url.appendingPathExtension("target")
+                try create(.directory, at: target)
+                try FileManager.default.createSymbolicLink(at: url, withDestinationURL: target)
+            case .danglingSymlink:
+                try FileManager.default.createSymbolicLink(at: url, withDestinationURL: url.appendingPathExtension("absent"))
+            }
+        }
+        for (index, item) in cases.enumerated() {
+            let (label, legacyKind, globalKind, expectLegacy) = item
+            let home = root.appendingPathComponent("config-path-\(index)")
+            try FileManager.default.createDirectory(at: home.appendingPathComponent(".claude"), withIntermediateDirectories: true)
+            let legacy = home.appendingPathComponent(".claude/.config.json"), global = home.appendingPathComponent(".claude.json")
+            try create(legacyKind, at: legacy); try create(globalKind, at: global)
+            let selected = ClaudeSubscriptionService.globalConfigURL(legacy: legacy, global: global)
+            try expect(selected == (expectLegacy ? legacy : global), label)
+            if expectLegacy {
+                let service = ClaudeSubscriptionService(home: home, support: home.appendingPathComponent("support"))
+                switch legacyKind {
+                case .symlinkRegular:
+                    do { _ = try service.activeFingerprint(); throw TestFailure.failed("selected symlink was read") }
+                    catch ClaudeSubscriptionService.Failure.invalid {}
+                case .regular(_, 0) where geteuid() != 0:
+                    do { _ = try service.activeFingerprint(); throw TestFailure.failed("unreadable legacy was read") }
+                    catch DispatchParticipationError.fileAccess {}
+                default: break
+                }
+            }
+        }
+        if geteuid() != 0 {
+            let home = root.appendingPathComponent("config-stat-denied")
+            let directory = home.appendingPathComponent(".claude")
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let legacy = directory.appendingPathComponent(".config.json"), global = home.appendingPathComponent(".claude.json")
+            try nonempty.write(to: legacy)
+            try expect(chmod(directory.path, 0) == 0, "fixture denies stat traversal")
+            defer { _ = chmod(directory.path, 0o700) }
+            var metadata = stat()
+            try expect(stat(legacy.path, &metadata) != 0 && errno == EACCES, "fixture reaches stat error")
+            try expect(ClaudeSubscriptionService.globalConfigURL(legacy: legacy, global: global) == global, "legacy stat error chooses global")
+        }
+        print("PASS claude-global-config selection (\(cases.count) cases; guarded symlink/unreadable reads; stat error \(geteuid() == 0 ? "skipped under root" : "passed"))")
+    }
     static func main() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("claude-synthetic-" + UUID().uuidString)
         let home = root.appendingPathComponent("home"), support = root.appendingPathComponent("support")
@@ -70,6 +169,8 @@ private final class MockTransport: LocalCLIQuotaTransport, @unchecked Sendable {
         func config(_ name: String) -> Data {
             Data("{\"oauthAccount\":{\"accountUuid\":\"synthetic-\(name)\",\"emailAddress\":\"\(name)@synthetic.invalid\",\"organizationUuid\":\"synthetic-org\"},\"syntheticKeep\":42}".utf8)
         }
+        let legacyConfigURL = home.appendingPathComponent(".claude/.config.json")
+        try Data().write(to: legacyConfigURL)
         func expectFailure(_ expected: ClaudeSubscriptionService.Failure, _ label: String, operation: () async throws -> Void) async throws {
             do { try await operation(); throw TestFailure.failed(label + " accepted") }
             catch let failure as ClaudeSubscriptionService.Failure { guard failure == expected else { throw TestFailure.failed(label + " wrong failure: \(failure)") } }
@@ -79,6 +180,104 @@ private final class MockTransport: LocalCLIQuotaTransport, @unchecked Sendable {
         let a = try await service.capture(slot: UUID().uuidString)
         keychain.items[liveKey] = credential("b"); try config("b").write(to: configURL)
         let b = try await service.capture(slot: UUID().uuidString)
+        let captureBaseline = keychain.items, captureGlobal = try Data(contentsOf: configURL)
+        let pathRaceSlot = UUID().uuidString
+        var pathRaceInjected = false
+        keychain.rejectWrite = { serviceName, account, data in
+            if serviceName == ClaudeSubscriptionService.nativeService, account == pathRaceSlot, data != nil, !pathRaceInjected {
+                pathRaceInjected = true
+                try? config("b").write(to: legacyConfigURL)
+            }
+            return false
+        }
+        try await expectFailure(.identityChanged, "capture rechecks the resolved config path after slot write") {
+            _ = try await service.capture(slot: pathRaceSlot)
+        }
+        try expect(pathRaceInjected && keychain.items[keychain.key(ClaudeSubscriptionService.nativeService, pathRaceSlot)] == nil,
+            "path race restores the owned native slot")
+        try expect(keychain.items == captureBaseline && (try Data(contentsOf: configURL)) == captureGlobal &&
+            (try Data(contentsOf: legacyConfigURL)) == config("b"),
+            "path race preserves the external legacy config and global bytes")
+        keychain.rejectWrite = nil
+        try Data().write(to: legacyConfigURL)
+
+        let liveRaceSlot = UUID().uuidString
+        var liveRaceInjected = false
+        keychain.rejectWrite = { serviceName, account, data in
+            if serviceName == ClaudeSubscriptionService.nativeService, account == liveRaceSlot, data != nil, !liveRaceInjected {
+                liveRaceInjected = true
+                keychain.items[liveKey] = credential("a")
+            }
+            return false
+        }
+        try await expectFailure(.identityChanged, "capture rechecks the live credential after slot write") {
+            _ = try await service.capture(slot: liveRaceSlot)
+        }
+        try expect(liveRaceInjected && keychain.items[keychain.key(ClaudeSubscriptionService.nativeService, liveRaceSlot)] == nil,
+            "live credential race restores the owned native slot")
+        try expect(keychain.items[liveKey] == credential("a") && (try Data(contentsOf: configURL)) == captureGlobal,
+            "live credential race preserves the external credential and config")
+        keychain.items[liveKey] = credential("b")
+        keychain.rejectWrite = nil
+
+        let lockRaceSlot = UUID().uuidString
+        var lockRaceInjected = false
+        keychain.rejectWrite = { serviceName, account, data in
+            if serviceName == ClaudeSubscriptionService.nativeService, account == lockRaceSlot, data != nil, !lockRaceInjected {
+                lockRaceInjected = true
+                try? FileManager.default.removeItem(at: home.appendingPathComponent(".claude/.oauth_refresh.lock"))
+            }
+            return false
+        }
+        try await expectFailure(.identityChanged, "capture rechecks the mutation lock after slot write") {
+            _ = try await service.capture(slot: lockRaceSlot)
+        }
+        try expect(lockRaceInjected && keychain.items[keychain.key(ClaudeSubscriptionService.nativeService, lockRaceSlot)] == nil,
+            "lock race restores the owned native slot")
+        try expect(keychain.items == captureBaseline && (try Data(contentsOf: configURL)) == captureGlobal,
+            "lock race preserves all external storage")
+        keychain.rejectWrite = nil
+
+        let conflictSlot = UUID().uuidString, externalSlot = Data(#"{"syntheticExternalSlot":true}"#.utf8)
+        let conflictKey = keychain.key(ClaudeSubscriptionService.nativeService, conflictSlot)
+        var matchingSlotReads = 0
+        keychain.rejectWrite = { serviceName, account, data in
+            if serviceName == ClaudeSubscriptionService.nativeService, account == conflictSlot, data != nil {
+                try? config("b").write(to: legacyConfigURL)
+            }
+            return false
+        }
+        keychain.beforeRead = { serviceName, account in
+            if serviceName == ClaudeSubscriptionService.nativeService, account == conflictSlot, keychain.items[conflictKey] != nil {
+                matchingSlotReads += 1
+                if matchingSlotReads == 2 { keychain.items[conflictKey] = externalSlot }
+            }
+        }
+        try await expectFailure(.rollbackFailed, "capture rollback refuses a concurrent slot revision") {
+            _ = try await service.capture(slot: conflictSlot)
+        }
+        try expect(matchingSlotReads == 2 && keychain.items[conflictKey] == externalSlot && (try Data(contentsOf: legacyConfigURL)) == config("b"),
+            "capture rollback preserves both external slot bytes and config")
+        keychain.beforeRead = nil
+        keychain.rejectWrite = nil
+        keychain.items[conflictKey] = nil
+        try Data().write(to: legacyConfigURL)
+
+        let beforePathRace = keychain.items, beforePathRaceConfig = try Data(contentsOf: configURL)
+        transport.afterProfile = { try? beforePathRaceConfig.write(to: legacyConfigURL) }
+        try await expectFailure(.identityChanged, "capture refuses identical config at a newly selected path") {
+            _ = try await service.capture(slot: UUID().uuidString)
+        }
+        try expect(keychain.items == beforePathRace && (try Data(contentsOf: configURL)) == beforePathRaceConfig,
+            "capture path change preserves all storage")
+        try Data().write(to: legacyConfigURL)
+        try await expectFailure(.identityChanged, "switch refuses identical config at a newly selected path") {
+            try await service.switchTo(a, allReferences: [a,b])
+        }
+        try expect(keychain.items == beforePathRace && (try Data(contentsOf: configURL)) == beforePathRaceConfig,
+            "switch path change rejects before mutation")
+        transport.afterProfile = nil
+        try Data().write(to: legacyConfigURL)
         let cswapRoot = home.appendingPathComponent(".claude-swap-backup")
         try FileManager.default.createDirectory(at: cswapRoot.appendingPathComponent("credentials"), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         try FileManager.default.createDirectory(at: cswapRoot.appendingPathComponent("configs"), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
@@ -104,6 +303,17 @@ private final class MockTransport: LocalCLIQuotaTransport, @unchecked Sendable {
         do { try await service.switchTo(b, allReferences: [a,b]); throw TestFailure.failed("post-write failure accepted") }
         catch ClaudeSubscriptionService.Failure.rolledBack {}
         try expect(keychain.items == beforeKeychain && (try Data(contentsOf: configURL)) == beforeConfig, "post-write keychain failure fully rolls back")
+        keychain.rejectWrite = { service, _, _ in
+            if service == "Claude Code-credentials" { try? beforeConfig.write(to: legacyConfigURL) }
+            return false
+        }
+        try await expectFailure(.rollbackFailed, "config path changes after live Keychain write") {
+            try await service.switchTo(b, allReferences: [a,b])
+        }
+        keychain.rejectWrite = nil
+        try expect(keychain.items == beforeKeychain && (try Data(contentsOf: configURL)) == beforeConfig && (try Data(contentsOf: legacyConfigURL)) == beforeConfig,
+            "path conflict restores owned storage and never overwrites the newly selected legacy config")
+        try Data().write(to: legacyConfigURL)
 
         let verified = try await service.verifyCurrent(expectedFingerprint: a.identityFingerprint)
         try expect(verified.fingerprint == a.identityFingerprint && verified.credentialRevision.count == 64 && verified.configDigest.count == 64 && verified.configPath == configURL.standardizedFileURL.path, "verified current binds identity credential and config snapshot")
@@ -371,6 +581,70 @@ private final class MockTransport: LocalCLIQuotaTransport, @unchecked Sendable {
         _ = try await service.capture(slot: b.slot, replacing: b)
         try expect((try recoveryRecords()).isEmpty, "independent fresh grant permits explicit recovery save")
 
+        for mode in ["read-path", "delete-path", "delete-live", "record-conflict", "delete-before-failure", "delete-after-failure", "restore-marker-conflict"] {
+            try resetExpiredTarget()
+            transport.tokenStatus = 400
+            try await expectFailure(.reauthenticationRequired, "seed marker for capture finalization \(mode)") {
+                try await service.switchTo(b, allReferences: [a,b])
+            }
+            transport.tokenStatus = 200
+            keychain.items[liveKey] = freshGrant
+            try config("b").write(to: configURL)
+            let oldSlot = keychain.items[bKey]
+            let recoveryKey = keychain.items.keys.first { $0.hasPrefix(ClaudeSubscriptionService.nativeService + "|renewal-") }!
+            let oldMarker = keychain.items[recoveryKey]!
+            var externalRoot = try ClaudeSubscriptionService.object(oldMarker)
+            externalRoot["syntheticConcurrentRecovery"] = true
+            let externalMarker = try ClaudeSubscriptionService.bytes(externalRoot)
+            var injected = false
+            keychain.beforeRead = { serviceName, account in
+                guard serviceName == ClaudeSubscriptionService.nativeService, keychain.key(serviceName, account) == recoveryKey,
+                    !injected, keychain.items[bKey] != oldSlot
+                else { return }
+                if mode == "read-path" {
+                    injected = true; try? config("a").write(to: legacyConfigURL)
+                } else if mode == "record-conflict" {
+                    injected = true; keychain.items[recoveryKey] = externalMarker
+                }
+            }
+            keychain.rejectWrite = { serviceName, account, data in
+                guard serviceName == ClaudeSubscriptionService.nativeService, keychain.key(serviceName, account) == recoveryKey else { return false }
+                if data == nil, !injected {
+                    switch mode {
+                    case "delete-path", "restore-marker-conflict":
+                        injected = true; try? config("a").write(to: legacyConfigURL)
+                    case "delete-live":
+                        injected = true; keychain.items[liveKey] = credential("a")
+                    case "delete-before-failure":
+                        injected = true; return true
+                    case "delete-after-failure":
+                        injected = true; keychain.failAfterWrite = ClaudeSubscriptionService.nativeService
+                    default: break
+                    }
+                } else if mode == "restore-marker-conflict", data != nil, injected {
+                    keychain.items[recoveryKey] = externalMarker
+                    return true
+                }
+                return false
+            }
+            let expected: ClaudeSubscriptionService.Failure = mode == "restore-marker-conflict" ? .rollbackFailed :
+                (mode.hasSuffix("failure") ? .rolledBack : .identityChanged)
+            try await expectFailure(expected, "capture finalization \(mode)") {
+                _ = try await service.capture(slot: b.slot, replacing: b)
+            }
+            keychain.beforeRead = nil
+            keychain.rejectWrite = nil
+            try expect(injected && keychain.items[bKey] == oldSlot, "capture finalization restores owned slot \(mode)")
+            try expect(keychain.items[recoveryKey] == (mode == "record-conflict" || mode == "restore-marker-conflict" ? externalMarker : oldMarker),
+                "capture finalization preserves the correct marker \(mode)")
+            try expect((try Data(contentsOf: configURL)) == config("b"), "capture finalization leaves global config \(mode)")
+            if mode == "read-path" || mode == "delete-path" || mode == "restore-marker-conflict" {
+                try expect((try Data(contentsOf: legacyConfigURL)) == config("a"), "capture finalization preserves external legacy \(mode)")
+            }
+            if mode == "delete-live" { try expect(keychain.items[liveKey] == credential("a"), "capture finalization preserves external live credential") }
+            try Data().write(to: legacyConfigURL)
+        }
+
         try resetExpiredTarget()
         transport.tokenStatus = 400
         try await expectFailure(.reauthenticationRequired, "seed pending marker for capture race") { try await service.switchTo(b, allReferences: [a,b]) }
@@ -416,6 +690,24 @@ private final class MockTransport: LocalCLIQuotaTransport, @unchecked Sendable {
         try await service.switchTo(imported, allReferences: [a,imported])
         try expect(transport.tokenRequests.count == 1 && (try recoveryRecords()).isEmpty,
             "verified external official re-login supersedes an imported uncertain grant without another POST")
+
+        let globalObservation = try await service.verifyCurrent()
+        try expect(globalObservation.configPath == configURL.standardizedFileURL.path && (try Data(contentsOf: legacyConfigURL)).isEmpty,
+            "empty legacy remains empty through native capture switch quota and rollback")
+        try Data(contentsOf: configURL).write(to: legacyConfigURL)
+        let legacyObservation = try await service.verifyCurrent()
+        try expect(legacyObservation.configPath == legacyConfigURL.standardizedFileURL.path, "nonempty legacy wins when both files exist")
+        try expect(try !service.isCurrent(globalObservation), "existing observation rejects changed config path")
+        try Data().write(to: legacyConfigURL)
+        try expect(try !service.isCurrent(legacyObservation) && service.isCurrent(globalObservation), "observations track the resolved path")
+        let beforeLegacySwitchGlobal = try Data(contentsOf: configURL)
+        try beforeLegacySwitchGlobal.write(to: legacyConfigURL)
+        try await service.switchTo(a, allReferences: [a,imported])
+        try expect(try service.activeFingerprint() == a.identityFingerprint && (try Data(contentsOf: configURL)) == beforeLegacySwitchGlobal,
+            "nonempty legacy switch updates only the selected config")
+        try expect(try ClaudeSubscriptionService.object(Data(contentsOf: legacyConfigURL))["syntheticKeep"] as? Int == 42,
+            "legacy switch preserves shared config fields")
+        try testGlobalConfigSelection(root: root)
 
         print("PASS claude-subscription fixture (baseline, explicit renewal recovery, identity and concurrency guards)")
     }

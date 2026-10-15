@@ -479,6 +479,7 @@ struct CodexAccountManagerView: View {
 
     @StateObject private var localCLIAccounts: LocalCLIAccountStore
     @StateObject private var localProxy: LocalProxyQueueStore
+    @StateObject private var previewRecommendationVisibility = RecommendationVisibilityStore.preview()
     @State private var selectedLocalCLI: LocalCLIKind?
     @AppStorage("AiGoodBro.accountCardDensity") private var savedCardDensity = AccountCardDensity.compact.rawValue
     private var cardDensity: AccountCardDensity { AccountCardDensity(rawValue: savedCardDensity) ?? .compact }
@@ -914,7 +915,8 @@ struct CodexAccountManagerView: View {
                 PublisherMessagesView(monitor: store.publisherMessages, language: language)
                     .padding(.horizontal, 7).padding(.vertical, homeMessagesExpanded ? 5 : 3)
                     .homeResizable(.messages, title: language.text("AiGoodBro 官方消息", "AiGoodBro official updates"), language: language, expanded: homeMessagesExpanded)
-                HomeSkillShelf(language: language).padding(.horizontal, 7).padding(.vertical, homeSkillsExpanded ? 5 : 3)
+                HomeSkillShelf(language: language, visibility: store.isPreview ? previewRecommendationVisibility : .shared)
+                    .padding(.horizontal, 7).padding(.vertical, homeSkillsExpanded ? 5 : 3)
                     .homeResizable(.skills, title: language.text("推荐 Skills 与应用", "Recommended skills and apps"), language: language, expanded: homeSkillsExpanded)
             }
         }
@@ -3831,7 +3833,7 @@ struct AccountAutomationCenterView: View {
                 .disabled(store.pausedAutomationFeatures.contains(.feishu))
 
                 Toggle(
-                    language.text("获得 Reset 卡提醒", "New reset credit alerts"),
+                    language.text("重置卡增减与到期提醒", "Reset-card changes & expiry alerts"),
                     isOn: Binding(
                         get: { store.feishuResetCreditEnabled }, set: { store.setFeishuResetCreditEnabled($0) }
                     )
@@ -3849,8 +3851,8 @@ struct AccountAutomationCenterView: View {
 
                 Text(
                     language.text(
-                        "三个选项默认开启。额度重置与 Reset 卡提醒约每分钟读取官方状态，确认额度恢复或可用 Reset 次数增加时提醒。Codex 对话完成后发送任务提醒。首次同步不补发历史消息，Reset 卡由你手动使用。",
-                        "All three are on by default. Limit reset and reset credit alerts check the official state about once a minute and notify on restored limits or new reset credits. Task alerts notify you when a Codex conversation completes. Initial sync sends no past events. Reset credits are used manually."
+                        "三个选项默认开启，沿用现有刷新频率。核实额度窗口变化、重置卡可用次数增减时提醒；已知到期时间进入 24 小时内也会提醒。首次同步不补发历史增减，未知到期时间不推算；提醒不会自动使用卡片。Codex 对话运行结束后发送任务提醒。",
+                        "All three are on by default and use the existing refresh rate. Alerts cover verified quota-window changes, reset-card count changes and known expiries within 24 hours. Initial sync does not replay old count changes; unknown expiries are not inferred. Alerts do not use cards. Task alerts report when a Codex run ends."
                     )
                 )
                 .font(.caption)
@@ -6303,6 +6305,22 @@ private struct ProfileRow: View {
     }
 
     private var compactDispatchControls: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 7) {
+                compactParticipationControls
+                compactProxyOrderControls
+                Spacer(minLength: 0)
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                compactParticipationControls
+                compactProxyOrderControls
+            }
+        }
+        .toggleStyle(.checkbox).controlSize(.small).buttonStyle(.plain)
+        .font(.system(size: 10)).foregroundStyle(.secondary)
+    }
+
+    private var compactParticipationControls: some View {
         HStack(spacing: 7) {
             if let proxyParticipation, let onSetProxyParticipation {
                 Toggle(
@@ -6324,6 +6342,12 @@ private struct ProfileRow: View {
             )
             .help(language.text("参与调度；不影响额度刷新和暖号", "Join dispatch; quota refresh and warm-up are independent"))
             .accessibilityLabel(language.text("参与调度", "Dispatch participation"))
+        }
+        .fixedSize(horizontal: true, vertical: false)
+    }
+
+    private var compactProxyOrderControls: some View {
+        HStack(spacing: 7) {
             if let proxyPriority {
                 Toggle(language.text("优先", "Priority"), isOn: Binding(get: { proxyPriority }, set: onSetProxyPriority))
                     .foregroundStyle(proxyPriority ? FixedVisualPalette.statusDangerForeground(colorScheme) : Color.secondary)
@@ -6346,12 +6370,8 @@ private struct ProfileRow: View {
                     )
                     .accessibilityLabel(language.text("反代最后使用", "Use last for proxy requests"))
             }
-            Spacer(minLength: 0)
-
         }
-        .toggleStyle(.checkbox).controlSize(.small).buttonStyle(.plain)
-        .font(.system(size: 10)).foregroundStyle(.secondary)
-
+        .fixedSize(horizontal: true, vertical: false)
     }
 
     private var accountDetails: some View {

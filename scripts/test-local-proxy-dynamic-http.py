@@ -63,8 +63,8 @@ def freeze(run):
         destination.write_bytes(data)
         manifest.append({"path": relative, "sha256": digest(data), "bytes": len(data)})
     module = (target / "Companion/LocalProxy/go.mod").read_text()
-    if "github.com/router-for-me/CLIProxyAPI/v8 v8.0.20" not in module:
-        raise RuntimeError("actual current Go runtime v8.0.20 is required")
+    if "github.com/router-for-me/CLIProxyAPI/v8 v8.0.28" not in module:
+        raise RuntimeError("actual current Go runtime v8.0.28 is required")
     save_json(run / "frozen-source-manifest.json", {"schemaVersion": 1, "files": manifest})
     return target, manifest
 
@@ -89,7 +89,7 @@ class MockState:
         self.failures = []
         self.root = None
         self.released = set()
-        self.barriers = {name: threading.Event() for name in ["overlap", "revoked-retry"]}
+        self.barriers = {name: threading.Event() for name in ["overlap", "revoked-retry", "revoked-pro-retry"]}
 
     def snapshot(self):
         with self.lock:
@@ -176,10 +176,11 @@ class MockHandler(BaseHTTPRequestHandler):
             with state.lock:
                 state.calls.append({"case": scenario, "account": account,
                                     "requestID": leases[0]["proxyRequestID"], "nativeLeaseVerified": True})
-            if scenario in state.barriers and account == "A":
+            held_account = "B" if scenario == "revoked-pro-retry" else "A"
+            if scenario in state.barriers and account == held_account:
                 if not state.barriers[scenario].wait(15):
                     raise ValueError("bounded hold barrier expired")
-                if scenario == "revoked-retry":
+                if scenario in {"revoked-retry", "revoked-pro-retry"}:
                     self.reply(429, {"error": {"type": "usage_limit_reached", "message": "synthetic exhausted account",
                                                "resets_at": int(time.time()) + 60}})
                     return
@@ -263,7 +264,7 @@ def main():
     matching = all(digest((ROOT / row["path"]).read_bytes()) == row["sha256"] for row in manifest)
     receipt = {"schemaVersion": 1, "ok": all(row["expectedOutcomeObserved"] for row in summaries),
                "cases": summaries, "sourceManifest": "frozen-source-manifest.json",
-               "sourceStillMatchesFrozenInputs": matching, "runtimeSDK": "CLIProxyAPI v8.0.20",
+               "sourceStillMatchesFrozenInputs": matching, "runtimeSDK": "CLIProxyAPI v8.0.28",
                "goBinarySHA256": digest(go_binary.read_bytes()), "realAccountsOrProviders": False,
                "networkBoundary": "127.0.0.1 only; Go dependencies offline",
                "productionFilesModifiedByFixture": False}

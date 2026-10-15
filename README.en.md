@@ -1,4 +1,4 @@
-# AiGoodBro · AgentHub (2.5)
+# AiGoodBro · AgentHub (2.5.1)
 
 **See quotas, usage, reset messages and local work in one place; when needed, route work through your own Codex account pool.**
 
@@ -6,9 +6,9 @@ AiGoodBro is a macOS AI workspace for personal use. It brings together Codex acc
 
 [中文](README.md) | **English**
 
-This page describes **2.5.0 (143) · 1011v2**. It focuses on proxy control, quota cooldown recovery, rule saving and WeChat notifications while preserving existing custom behavior. Token Monitor 0.68.0, TokScale 4.18.0 and CLIProxyAPI 8.0.20 remain pinned to the 2.4 baseline. Find installers and the demo in [GitHub Releases](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases).
+This page describes **2.5.1 (146) · 1015v3**. It includes proxy concurrency and wait fixes, reset-card change and expiry alerts, selective usage fixes, Claude configuration protection, installation checks and general first-install preferences. The full local build and 35 native self-test groups passed; build 146 has not been installed. DMG and ZIP contents, versions, strict signatures and checksums have been verified; see [GitHub Actions](https://github.com/BLACKIELF/AgentHub-AiGoodBro/actions) for remote checks. See the [2.5.1 release notes](docs/release-notes-v2.5.1.md) for features, validation and boundaries.
 
-[DMG (Apple Silicon)](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.5.0/AiGoodBro-2.5.0-mac-arm64.dmg) · [ZIP](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.5.0/AiGoodBro-2.5.0-mac-arm64.zip) · [Release notes](docs/release-notes-v2.5.0.md)
+[DMG (Apple Silicon)](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.5.1/AiGoodBro-2.5.1-mac-arm64.dmg) · [ZIP](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.5.1/AiGoodBro-2.5.1-mac-arm64.zip) · [Release notes](docs/release-notes-v2.5.1.md)
 
 **Promotional videos and interface showcase · 1012v1:** [Chinese original, 48 seconds (MP4)](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.5.0/AiGoodBro-demo-1011v4.mp4) · [English original, 48 seconds (MP4)](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.5.0/AiGoodBro-English-1011v1.mp4) · [English showcase and editable source](docs/showcase/1012v1/README.md) · [Complete English package (ZIP, with the English video)](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.5.0/AiGoodBro-Showcase-1012v2.zip)
 
@@ -69,7 +69,9 @@ Public messages do not rewrite official account records, change participation or
 
 Participation, Priority, Use last and order affect new requests and stay synchronized with the account page. Pro20x defaults to Use last and can be changed. Temporary occupancy in the ordinary group is awaited within the existing admission deadline before Use last accounts. Exhausted or non-participating accounts are still skipped; identity, cooldown and quota checks remain. Subscription quota is used before credits; credit continuation is off unless the user enables it. Busy or unknown accounts are not treated as exhausted.
 
-Disabling participation skips that account for admissions still waiting or retrying, while an admitted stream finishes. Gateway refusal, timeout, cancellation and ordinary forwarding failures have distinct messages; HTTP 503 remains and there is no automatic reconnect. Version 2.5 moves blocking reads off the cooperative executor and protects disconnected reply writes. Proven quota cooldowns are cleared only after newer subscription evidence is verified. For unknown legacy cooldowns, stop the proxy, choose Clear legacy cooldown on that account, verify fresh quota and identity, then confirm a backup and clear before restarting manually. Custom 5-hour used limits retain their saved values in both the editor and summary. Cleanup for a confirmed exited child briefly retries a busy lease lock up to three times while protecting a new run and active children. The historical fault that recovered only after a restart is not fully attributed, so this is not a permanent-stability guarantee.
+Disabling participation skips that account for admissions still waiting or retrying, while an admitted stream finishes. Gateway refusal, timeout, cancellation and ordinary forwarding failures have distinct messages; HTTP 503 remains and there is no automatic reconnect. Version 2.5 moves blocking reads off the cooperative executor and protects disconnected reply writes. Proven quota cooldowns are cleared only after newer subscription evidence is verified. For unknown legacy cooldowns, stop the proxy, choose Clear legacy cooldown on that account, verify fresh quota and identity, then confirm a backup and clear before restarting manually. Custom 5-hour used limits retain their saved values in both the editor and summary. Cleanup for a confirmed exited child briefly retries a busy lease lock up to three times while protecting a new run and active children. This release further distinguishes shared-state lock contention from real occupancy, respects the original deadline and cancellation during waits and retries, and provides retry guidance on timeout. Issued responses are not replayed automatically. CLIProxyAPI 8.0.28 improves multiline stream parsing and closed-connection classification. The historical fault that recovered only after a restart is not fully attributed, so this is not a permanent-stability guarantee.
+
+This release also offers a uniform 5-hour used-percentage limit for Plus accounts, with individual overrides after a bulk update. Below 100%, reaching the limit stops new admissions while existing responses finish. At 100%, existing credit-continuation rules remain; Pro rules are preserved.
 
 <a id="accounts"></a>
 
@@ -83,7 +85,7 @@ Disabling participation skips that account for admissions still waiting or retry
   <a href="docs/images/1012v1-promo/en/accounts.png"><img src="docs/images/1012v1-promo/en/accounts.png" width="1000" alt="Codex account card with 5-hour and 7-day quotas, reset times and credits."></a>
 </p>
 
-Narrow dedicated Codex list controls remain a next-version fix; use Cards or widen the window for now.
+This release groups Proxy / Scheduling and Priority / Use last controls, wrapping whole groups in narrow Codex lists while preserving Cards, existing switches and saved values.
 
 <a id="claude"></a>
 
@@ -93,7 +95,7 @@ Narrow dedicated Codex list controls remain a next-version fix; use Cards or wid
 
 **How to use it:** Sign in through the official Claude Code CLI, then return to AiGoodBro, verify the identity and choose **Add signed-in account / Save subscription**. Existing Claude-swap subscriptions can be linked. To add another account, save the current one, sign in to the other account in the official CLI and add it; do not run `/logout` first because saved credentials may become invalid. Saved subscriptions support manual switching and refresh.
 
-Active or unknown-identity subscriptions cannot be unlinked. An expired target is refreshed through the Claude-swap flow only after the user explicitly chooses it.
+Active or unknown-identity subscriptions cannot be unlinked. An expired target is refreshed through the Claude-swap flow only after the user explicitly chooses it. This release aligns configuration-path handling with Claude-swap 0.27.1: an empty legacy file no longer shadows the current configuration; saving and switching check the same file and identity, and failure recovery only reverts writes owned by that attempt.
 
 <a id="usage"></a>
 
@@ -101,7 +103,7 @@ Active or unknown-identity subscriptions cannot be unlinked. An expired target i
 
 **What it does:** The embedded Token Monitor shows Token usage, estimated cost, activity heatmaps, trends, models, projects and sessions. Its upstream coverage is **35+ tools for Token tracking and 28+ providers for quota detection**. That describes upstream coverage, not a guarantee that every local tool is signed in or readable.
 
-**How to use it:** Expand Usage statistics on the home page for totals, cost, heatmap and trend. Open the statistics entry from the sidebar or menu bar for detailed tool, model, project, session and quota views, then choose a time range or source. Token Monitor 0.68.0 and TokScale 4.18.0 update parsing and pricing and fix duplicate and cached Claude tokens.
+**How to use it:** Expand Usage statistics on the home page for totals, cost, heatmap and trend. Open the statistics entry from the sidebar or menu bar for detailed tool, model, project, session and quota views, then choose a time range or source. This release retains the Token Monitor 0.68.0 interface and settings, selectively backporting 0.70 log-reading and pricing fixes plus 0.71 archive handoff, complete-total retention on read failure and tray-popover close fixes. This is not a full 0.71 upgrade. TokScale keeps the 4.18.0 baseline with a pinned scanner revision.
 
 <p align="center">
   <a href="docs/images/1012v1-promo/en/usage.png"><img src="docs/images/1012v1-promo/en/usage.png" width="1000" alt="Token usage totals, activity heatmap and trend chart."></a>
@@ -127,7 +129,7 @@ Local authentication discovery, quota reads and subsequent model calls are check
 
 **How to use it:** On the home page or Codex account area, click the reset-card count, expiry time or info icon to open Automatic use before expiry. Opt in per account and set the lead time. It is off by default and defaults to **30 minutes** before expiry; the value can be changed from 1 to 1,440 minutes. Desktop or same-identity mirror accounts are attempted only after an independent entry, trusted identity and idle state are verified. An uncertain result pauses for manual review rather than retrying repeatedly.
 
-Opt in per account and keep the app running; opening the settings does not redeem a card. See the [reset-card boundary](docs/reset-credit-control.md).
+Opt in per account and keep the app running; opening the settings does not redeem a card. This release also records verified count increases and decreases, and alerts through channels you have already enabled when a known expiry enters the next 24 hours. Initial sync does not replay historical changes. Alerts do not redeem cards; uncertain sends pause retries. See the [reset-card boundary](docs/reset-credit-control.md).
 
 <a id="referrals"></a>
 
@@ -143,7 +145,7 @@ Opt in per account and keep the app running; opening the settings does not redee
 
 **What it does:** Personal WeChat can receive quota, reset and reset-card messages and, when explicitly enabled, continue a selected original Codex chat. Connection state and actual delivery remain separate.
 
-**How to use it:** Open **Settings → Notifications / WeChat**, pair through Tencent's official iLink QR flow and confirm the conversation, then choose message types. The first read establishes a history baseline; later messages are new events only. Cached status queries do not consume account quota. An unfinished conversation stays labeled as waiting, not delivered.
+**How to use it:** Open **Settings → Notifications / WeChat**, pair through Tencent's official iLink QR flow and confirm the conversation, then choose message types. The first read establishes a history baseline; later messages are new events only. Cached status queries do not consume account quota. An unfinished conversation stays labeled as waiting, not delivered. This release fixes notification-content changes interrupting the saved connection load at startup and splits full task replies into byte-safe segments. WeChat and Feishu may still need macOS Keychain permission after an upgrade; granting access does not send a test message.
 
 <p align="center">
   <a href="docs/images/1012v1-promo/en/notifications.png"><img src="docs/images/1012v1-promo/en/notifications.png" width="1000" alt="Feishu account-status card and WeChat reset reminders."></a>
@@ -187,6 +189,10 @@ The Feishu card and WeChat message image appears in the [WeChat section](#wechat
 
 **How to use it:** Open the usage guide and connect official tools as needed. Claude, Kimi, Grok, OpenCode, WorkBuddy, ZCode and TRAE SOLO use their own official entry points. The update dialog shows version and changes; after the user starts a download, size and SHA256 are checked before the installer is opened. Downloading does not quit or replace the current app or enable optional features.
 
+**First-install defaults:** system appearance, account cards, an auto-hiding sidebar, remaining quota and countdowns in the menu bar, all-time candlestick usage trends, glass transparency 74% / depth 84%, ⌘U for the main window and ⌘I for the sidebar. New users still enter onboarding; returning users keep all existing configuration. Only general interface preferences are included, with no accounts, credentials, private paths, endpoints or permissions. Notification sending and automatic reset-card use still require user choices and authorization. See [first-install preferences](docs/first-install-preferences.md).
+
+Recommendations retain optional REA and JEV installation entries. A detectable new or replacement installation performs one read-only local installation check; hide items individually or recheck manually. Detection does not establish a connection or install or invoke tools. About adds a subscription-offer link and reads the installed version for its title.
+
 <a id="themes"></a>
 
 ## 15 · Themes and native glass
@@ -199,17 +205,19 @@ The Feishu card and WeChat message image appears in the [WeChat section](#wechat
 
 ## 16 · Downloads, upgrades and builds
 
-This version supports **macOS 13+ on Apple Silicon ARM64**. The package is locally ad-hoc signed and not Apple-notarized. Clients on 9.6.x need a manual download; 2.3 / 2.4 clients can discover 2.5. Users of local 2.5.0 (142) also need to replace it manually with build 143 because the product version is unchanged. Finish work, quit the old app normally, back up the old app and local data, replace it, then confirm 2.5.0 (143) / 1011v2 and review WeChat, Feishu and new settings.
+This release supports **macOS 13+ on Apple Silicon ARM64**, with local ad-hoc signing and no Apple notarization. Its separate version lets 2.5.0 clients discover it after publication; the 2.5.0 Release and assets are retained. Clients on 9.6.x still need a manual download. Before upgrading, finish work, stop the proxy, quit normally and back up the old app and local data. After replacement, confirm **2.5.1 (146) / 1015v3**, then review WeChat, Feishu and new settings.
 
-The final candidate's native self-tests, resource checks, recursive signature checks, DMG / ZIP tree checks and SHA256 records are in the [2.5 release record](docs/release-notes-v2.5.0.md). They do not establish real account sign-in, provider calls, reset-card redemption, WeChat / Feishu delivery or global-hotkey acceptance; the installed build and real proxy path still require field verification.
+Build 146 passed the full local build and 35 native self-test groups, including 117 isolated assertions for first-install preferences and returning-user configuration. Carbon system-hotkey integration was explicitly skipped. Build 146 has not replaced the installed app; the running version and proxy remain in place, with installation and GUI acceptance deferred. See the [2.5.1 release record](docs/release-notes-v2.5.1.md) for package checks, final SHA256 and boundaries. Real sign-in, sustained provider calls, reset-card redemption, phone delivery and global hotkeys each require their own device evidence.
+
+Build from this release tag:
 
 ```sh
-git clone --branch v2.5.0 https://github.com/BLACKIELF/AgentHub-AiGoodBro.git AiGoodBro-2.5
-cd AiGoodBro-2.5
+git clone --branch v2.5.1 https://github.com/BLACKIELF/AgentHub-AiGoodBro.git AiGoodBro-2.5.1
+cd AiGoodBro-2.5.1
 make build
 ```
 
-Builds require macOS, Go 1.26+ and the SHA256-verified Token Monitor 0.68.0 macOS runtime. Intel and Windows installers are not provided.
+Builds require macOS, Go 1.26+ and the SHA256-verified Token Monitor 0.68.0 macOS runtime. This release selectively backports fixes onto that interface baseline. Intel and Windows installers are not provided.
 
 <a id="sources"></a>
 
@@ -221,22 +229,22 @@ The table lists code and resources actually reused, adapted or consulted as stat
 |---|---|
 | [Tencent/openclaw-weixin 2.4.9](https://github.com/Tencent/openclaw-weixin/tree/24de5c9eb0dd5e595d7e2d090ed8a3f82870d42c) | Native iLink protocol and QR-pairing adaptation; MIT notice retained, without installing OpenClaw. |
 | [codexU](https://github.com/shanggqm/codexU) | Host adaptation and second development from the historical fixed source; AiGoodBro maintains the SwiftUI, quota, palette and Windows foundations. |
-| [Token Monitor v0.68.0](https://github.com/Javis603/token-monitor/tree/5d2db368d8313415763860d594de00e46a663418) | Host adaptation of the pinned source and official macOS runtime; the statistics engine, dashboard, charts and resources remain bundled. |
-| [TokScale 4.18.0 fork](https://github.com/Javis603/tokscale/tree/d5e8ad9b25bfafb43b5b6804940929b728a6f48a) · [original](https://github.com/junhoyeo/tokscale) | Pinned revision used for usage collection and pricing; its license remains bundled. |
-| [CLIProxyAPI v8.0.20](https://github.com/router-for-me/CLIProxyAPI/tree/v8.0.20) | Host adaptation of the pinned Go scheduler, Codex executor and Responses handler, preserving identity, quota, credit-floor and no-replay checks. |
+| [Token Monitor v0.68.0](https://github.com/Javis603/token-monitor/tree/5d2db368d8313415763860d594de00e46a663418) | Host adaptation of the pinned 0.68.0 interface and official macOS runtime; this release selectively backports 0.70 / 0.71 fixes, retaining the engine, dashboard, charts and settings. |
+| [TokScale 4.18.0 fork](https://github.com/Javis603/tokscale/tree/fa5f0c13324838d1a988fda317597f9b90da7ad0) · [original](https://github.com/junhoyeo/tokscale) | 4.18.0 baseline with a pinned scanner revision for collection and pricing; its license remains bundled. |
+| [CLIProxyAPI v8.0.28](https://github.com/router-for-me/CLIProxyAPI/tree/v8.0.28) | Host adaptation of the pinned Go scheduler, Codex executor and Responses handler, preserving identity, quota, credit-floor and no-replay checks. |
 | [Codex-Manager](https://github.com/qxcnm/Codex-Manager) | Protocol adaptation and static research reference; warm-up and SSE completion rules are independently implemented. |
 | [Hazmat wrapper script](https://github.com/dredozubov/hazmat/blob/c112d222bb53e888dd17a8927927286792f7c20e/scripts/check-codex-desktop-attach-smoke.sh) | Static reference for the `CODEX_CLI_PATH` stdio wrapper entry point; no Hazmat sandbox or service is integrated. |
 | [BlackHole1/aswap v1.1.0](https://github.com/BlackHole1/aswap/releases/tag/v1.1.0) | Static protocol and design reference for a Claude multi-account CLI / Chrome profile tool; not copied or bundled. |
 
 AiGoodBro is released under the [MIT License](LICENSE). Third-party notices are in [`Resources/THIRD_PARTY_NOTICES.txt`](Resources/THIRD_PARTY_NOTICES.txt), [`Companion/LocalProxy/LICENSE.CLIProxyAPI`](Companion/LocalProxy/LICENSE.CLIProxyAPI), [`Companion/LocalProxy/LICENSE.Hazmat`](Companion/LocalProxy/LICENSE.Hazmat) and [`Companion/LocalProxy/THIRD-PARTY-NOTICES.txt`](Companion/LocalProxy/THIRD-PARTY-NOTICES.txt).
 
-Documentation: [detailed guide](docs/usage-guide.md) · [native CLI quota coverage](docs/local-cli-accounts.md) · [proxy implementation and validation](docs/local-proxy-0928v1.md) · [2.5 release record](docs/release-notes-v2.5.0.md) · [image sources and checksums](docs/public-ui-1012v1-promo.md) · [issues](https://github.com/BLACKIELF/AgentHub-AiGoodBro/issues) · [security](SECURITY.md)
+Documentation: [detailed guide](docs/usage-guide.md) · [native CLI quota coverage](docs/local-cli-accounts.md) · [proxy implementation and validation](docs/local-proxy-0928v1.md) · [2.5.1 release record](docs/release-notes-v2.5.1.md) · [2.5.0 release record](docs/release-notes-v2.5.0.md) · [image sources and checksums](docs/public-ui-1012v1-promo.md) · [issues](https://github.com/BLACKIELF/AgentHub-AiGoodBro/issues) · [security](SECURITY.md)
 
 <a id="actual-screenshots"></a>
 
 ## 18 · Actual app screenshots
 
-The home capture and its account and usage crops come from installed **2.3.0 (137)**. The six sign-in, guide and settings images come from **2.3.0 (139)**, whose settings presentation is retained in 143. The proxy-status crop has no visible build number. Values and connection states are capture-time snapshots, not acceptance of a build 143 installation, real model calls or message delivery. See the [historical image record](docs/public-ui-1009v2.md) for sources, original dimensions and checksums. Click an image to open the original.
+The home capture and its account and usage crops come from installed **2.3.0 (137)**. The six sign-in, guide and settings images come from **2.3.0 (139)**, and are historical interface records. The proxy-status crop has no visible build number. Values and connection states are capture-time snapshots, not acceptance of a 2.5.1 (146) installation, real model calls or message delivery. See the [historical image record](docs/public-ui-1009v2.md) for sources, original dimensions and checksums. Click an image to open the original.
 
 ### 01 · Main UI
 
