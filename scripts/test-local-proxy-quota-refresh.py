@@ -66,6 +66,10 @@ struct CodexUsageReader {
         allCompletion = completion
     }
     let profileStore = ProfileStore()
+    func recordOfficialSnapshot(_ snapshot: Snapshot, for profileID: String) throws {
+        try profileStore.record(snapshot, for: profileID)
+        observeOfficialQuotaChanges(snapshot, profileID: profileID)
+    }
     func observeOfficialQuotaChanges(_ snapshot: Snapshot, profileID: String) {}
     func syncProfiles() {}
 '''
