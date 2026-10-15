@@ -107,8 +107,9 @@ enum StatusItemPresentationSelfTest {
         defaults.removeObject(forKey: StatusItemPreferencesStore.metricsSchemaVersionKey)
         let migratedPreferences = StatusItemPreferencesStore.load(defaults: defaults)
         expect(
-            migratedPreferences == .accountRing,
-            "legacy menu items should migrate to the single account ring"
+            migratedPreferences.visibleMetrics == [.fiveHourQuota, .sevenDayQuota]
+                && defaults.integer(forKey: StatusItemPreferencesStore.metricsSchemaVersionKey) == StatusItemPreferencesStore.currentMetricsSchemaVersion,
+            "legacy menu migration preserves explicit metrics and upgrades the schema"
         )
 
         defaults.set(

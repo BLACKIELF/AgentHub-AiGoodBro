@@ -60,6 +60,43 @@ for value in sys.argv[2:]:
         raise SystemExit(f'Release output overlaps source directory: {value}')
 PY
 
+# Each release run keeps separate test receipts; explicit caller names stay exact.
+RELEASE_TEST_RUN_ID="$(python3 -c 'import uuid; print(uuid.uuid4().hex)')"
+HOST_PIPE_EVIDENCE_PREFIX="${HOST_PIPE_EVIDENCE_PREFIX-release-${RELEASE_TEST_RUN_ID}-host-pipe}"
+APP_UPDATE_EVIDENCE_PREFIX="${APP_UPDATE_EVIDENCE_PREFIX-release-${RELEASE_TEST_RUN_ID}-app-updates}"
+RESET_AUTO_EVIDENCE_PREFIX="${RESET_AUTO_EVIDENCE_PREFIX-release-${RELEASE_TEST_RUN_ID}-reset-auto}"
+export HOST_PIPE_EVIDENCE_PREFIX APP_UPDATE_EVIDENCE_PREFIX RESET_AUTO_EVIDENCE_PREFIX
+python3 - "$ROOT_DIR" <<'PY'
+import os, pathlib, re, sys
+evidence = pathlib.Path(sys.argv[1]) / '.local-artifacts/theme-upstream-1004v1'
+def reject(message):
+    print(f'Release test evidence blocked: {message}', file=sys.stderr)
+    raise SystemExit(2)
+for folder in (evidence.parent, evidence):
+    if os.path.lexists(folder) and (folder.is_symlink() or not folder.is_dir()):
+        reject(f'Evidence directory is not a real directory: {folder.name}')
+targets = set()
+for variable, suffixes in (('HOST_PIPE_EVIDENCE_PREFIX', ('json',)),
+                           ('APP_UPDATE_EVIDENCE_PREFIX', ('log', 'json')),
+                           ('RESET_AUTO_EVIDENCE_PREFIX', ('log', 'json'))):
+    prefix = os.environ[variable]
+    if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,127}', prefix):
+        reject(f'{variable} must be a safe basename')
+    if variable == 'RESET_AUTO_EVIDENCE_PREFIX' and prefix == 'reset-auto-124-host':
+        reject('RESET_AUTO_EVIDENCE_PREFIX must not replace accepted 124 evidence')
+    for suffix in suffixes:
+        target = evidence / f'{prefix}.{suffix}'
+        # ASCII case variants also collide on common macOS volumes.
+        target_key = target.name.casefold()
+        if target_key in targets:
+            reject(f'Test interfaces share an evidence target: {target.name}')
+        if os.path.lexists(target):
+            reject(f'Evidence target already exists: {target.name}')
+        targets.add(target_key)
+print('Release test evidence: ' + ', '.join(os.environ[key] for key in
+      ('HOST_PIPE_EVIDENCE_PREFIX', 'APP_UPDATE_EVIDENCE_PREFIX', 'RESET_AUTO_EVIDENCE_PREFIX')))
+PY
+
 verify_bundle_version() {
   python3 - "$1/Contents/Info.plist" "$VERSION" "$PLIST_BUILD" "$PLIST_RELEASE" <<'PY'
 import pathlib, plistlib, sys
@@ -81,6 +118,9 @@ git diff --check
 
 make test-macos-compatibility
 make test BUILD_DIR="$BUILD_DIR" DIST_DIR="$DIST_DIR" VERSION="$VERSION" \
+  HOST_PIPE_EVIDENCE_PREFIX="$HOST_PIPE_EVIDENCE_PREFIX" \
+  APP_UPDATE_EVIDENCE_PREFIX="$APP_UPDATE_EVIDENCE_PREFIX" \
+  RESET_AUTO_EVIDENCE_PREFIX="$RESET_AUTO_EVIDENCE_PREFIX" \
   TARGET_TRIPLE="arm64-apple-macos${DEPLOYMENT_TARGET:-13.0}" SWIFT_OPTIMIZATION=-O \
   BUNDLE_COMPANION=1 BUNDLE_TOKEN_MONITOR_DESKTOP=1 \
   TOKEN_MONITOR_DESKTOP_RUNTIME="$ARM_RUNTIME" TOKEN_MONITOR_DESKTOP_DMG="$ARM_DMG"
@@ -131,11 +171,13 @@ PY
   [[ "$(lipo -archs "$mount_dir/AiGoodBro.app/Contents/MacOS/AiGoodBro")" == "$expected_arch" ]] || { echo "Native app architecture mismatch: $arch" >&2; exit 1; }
   codesign --verify --deep --strict "$mount_dir/AiGoodBro.app"
   python3 scripts/prepare-token-monitor-desktop.py --arch "$arch" \
-    --output "$mount_dir/AiGoodBro.app/Contents/Helpers/AiGoodBro Token Core.app" --verify-only
+    --output "$mount_dir/AiGoodBro.app/Contents/Helpers/AiGoodBro Token Core.app" \
+    --trusted-receipt "$TOKEN_MONITOR_RECEIPT_DIR/token-monitor-desktop-${arch}.json" --verify-only
   local resources="$mount_dir/AiGoodBro.app/Contents/Resources"
   python3 scripts/prepare-token-monitor-resources.py --verify --resources "$resources" \
     --bundle "$mount_dir/AiGoodBro.app" --arch "$arch" --cache "$TOKEN_MONITOR_CACHE" \
-    --trusted-receipt "$TOKEN_MONITOR_RECEIPT_DIR/token-monitor-${arch}.json" --sign-identity "$SIGN_IDENTITY"
+    --trusted-receipt "$TOKEN_MONITOR_RECEIPT_DIR/token-monitor-${arch}.json" \
+    --desktop-trusted-receipt "$TOKEN_MONITOR_RECEIPT_DIR/token-monitor-desktop-${arch}.json" --sign-identity "$SIGN_IDENTITY"
   local hub="$resources/CompanionHub/agent-remote-control"
   [[ -x "$hub" ]] || { echo "Missing bundled Companion Hub" >&2; exit 1; }
   [[ "$(lipo -archs "$hub")" == "$expected_arch" ]] || { echo "Companion Hub architecture mismatch: $arch" >&2; exit 1; }

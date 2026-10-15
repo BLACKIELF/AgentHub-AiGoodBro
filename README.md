@@ -1,4 +1,4 @@
-# AiGoodBro · AgentHub（2.5）
+# AiGoodBro · AgentHub（2.5.1）
 
 **把额度、用量、重置消息和本机任务放在一页看清；需要时，让任务使用自己的 Codex 账号池。**
 
@@ -6,9 +6,9 @@ AiGoodBro 是面向个人自用的 macOS AI 工作台。它集中查看 Codex �
 
 [中文] | [English](README.en.md)
 
-本页介绍 **2.5.0（143）· 1011v2**。本版集中修复反代控制通道、账号冷却恢复、规则保存与微信通知，保留现有定制。Token Monitor 0.68.0、TokScale 4.18.0 与 CLIProxyAPI 8.0.20 沿用 2.4 基线。安装包和演示视频见 [GitHub Releases](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases)。
+本页介绍 **2.5.1（146）· 1015v3**。本版包含反代并发与等待修复、重置卡增减及到期提醒、用量统计回移、Claude 配置保护、安装自检和首次安装通用偏好。完整本地构建与 35 组原生自测已通过；146 尚未覆盖安装。DMG／ZIP 的内容、版本、签名及校验值已核对；远端检查见 [GitHub Actions](https://github.com/BLACKIELF/AgentHub-AiGoodBro/actions)。功能、验证与已知边界见 [2.5.1 发布说明](docs/release-notes-v2.5.1.md)。
 
-[DMG（Apple Silicon）](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.5.0/AiGoodBro-2.5.0-mac-arm64.dmg) · [ZIP 备用包](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.5.0/AiGoodBro-2.5.0-mac-arm64.zip) · [发布说明](docs/release-notes-v2.5.0.md)
+[DMG（Apple Silicon）](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.5.1/AiGoodBro-2.5.1-mac-arm64.dmg) · [ZIP 备用包](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.5.1/AiGoodBro-2.5.1-mac-arm64.zip) · [发布说明](docs/release-notes-v2.5.1.md)
 
 **宣传片与界面展示 · 1012v1：** [中文原片（48 秒 MP4）](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.5.0/AiGoodBro-demo-1011v4.mp4) · [English（48 秒 MP4）](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.5.0/AiGoodBro-English-1011v1.mp4) · [英文展示源码](docs/showcase/1012v1/README.md) · [英文完整资料包（ZIP，含英文原视频）](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.5.0/AiGoodBro-Showcase-1012v2.zip)
 
@@ -69,7 +69,9 @@ AiGoodBro 是面向个人自用的 macOS AI 工作台。它集中查看 Codex �
 
 **队列怎么工作：** 参与、优先、最后使用和排序只影响新请求，并与账号页同步；Pro20x 默认最后使用，可调整。普通组暂时忙碌时先在原有时限内等待，不立即转用最后使用账号。额度不足或未参与的账号继续跳过；身份、冷却和额度检查保持。订阅额度先于点数，点数接续默认关闭，用户主动开启后才会在额度耗尽时进入点数档。忙碌或未知账号不会被当成额度耗尽。
 
-运行中取消参与后，尚未准入的等待和重试会跳过该账号，已经接入的流式响应继续完成。网关拒绝、超时、取消和普通转发失败分别提示；HTTP 503 保留，不自动重连。2.5 把阻塞读取移出协作线程池，并保护断线回包；有明确来源的额度冷却，仅在核验更新的订阅额度后解除。来源不明的旧冷却，可停止反代后在对应账号下选择“清理旧版冷却…”，通过最新额度和身份核验、备份确认后清理，再手动重新开启反代。自定义 5 小时已用上限按保存值执行，规则摘要与编辑框保持一致。已确认退出的子进程清理租约时，忙碌锁最多短暂重试 3 次，并保护新的运行和仍活跃的子进程。历史“必须重启才恢复”的故障根因仍未完全确认，不能把本次修复写成永久稳定保证。
+运行中取消参与后，尚未准入的等待和重试会跳过该账号，已经接入的流式响应继续完成。网关拒绝、超时、取消和普通转发失败分别提示；HTTP 503 保留，不自动重连。2.5 把阻塞读取移出协作线程池，并保护断线回包；有明确来源的额度冷却，仅在核验更新的订阅额度后解除。来源不明的旧冷却，可停止反代后在对应账号下选择“清理旧版冷却…”，通过最新额度和身份核验、备份确认后清理，再手动重新开启反代。自定义 5 小时已用上限按保存值执行，规则摘要与编辑框保持一致。已确认退出的子进程清理租约时，忙碌锁最多短暂重试 3 次，并保护新的运行和仍活跃的子进程。本版进一步区分共享状态锁竞争与真实占用，等待和重试遵守原期限及取消信号，超时提供稍后重试提示；已发送响应不自动重放。CLIProxyAPI 更新至 8.0.28，改善多行流式响应解析和连接关闭分类。历史“必须重启才恢复”的故障根因仍未完全确认，不能把本次修复写成永久稳定保证。
+
+本版还提供统一的 Plus 账号 5 小时已用上限，支持批量应用后逐账号调整；低于 100% 时达到上限停止新请求，已有响应继续完成。100% 沿用原有点数接续规则，Pro 规则保留。
 
 <a id="accounts"></a>
 
@@ -83,7 +85,7 @@ AiGoodBro 是面向个人自用的 macOS AI 工作台。它集中查看 Codex �
   <a href="docs/images/1012v1-promo/zh/accounts.png"><img src="docs/images/1012v1-promo/zh/accounts.png" width="1000" alt="Codex 账号卡片：5 小时与 7 天额度、重置时间、点数和操作入口。"></a>
 </p>
 
-窄窗口的 Codex 专用列表控件挤压问题按用户决定留到下一版，当前可用卡片模式或加宽窗口。
+本版将 Codex 专用列表的“反代／调度”和“优先／最后使用”分组排列，窄窗口下整组换行；保留卡片模式、原有开关与保存行为。
 
 <a id="claude"></a>
 
@@ -93,7 +95,7 @@ AiGoodBro 是面向个人自用的 macOS AI 工作台。它集中查看 Codex �
 
 **怎么使用：** 先在官方 Claude Code CLI 完成登录，再在 AiGoodBro 里核验身份并点击“添加当前登录账号／保存订阅”。已有 Claude-swap 订阅可以关联；要添加另一个账号，先保存当前订阅，再回到官方 CLI 登录另一个账号后添加。不要先 `/logout`，否则可能使已保存凭据失效。保存后可手动切换和刷新额度。
 
-活跃或身份未知的订阅不能解除关联，过期目标只有用户明确切换时才按 Claude-swap 流程续期。
+活跃或身份未知的订阅不能解除关联，过期目标只有用户明确切换时才按 Claude-swap 流程续期。本版对齐 Claude-swap 0.27.1 的配置路径规则：空旧配置不再遮住当前配置，保存与切换核对同一文件及身份，失败恢复只处理本次持有的写入。
 
 <a id="usage"></a>
 
@@ -101,7 +103,7 @@ AiGoodBro 是面向个人自用的 macOS AI 工作台。它集中查看 Codex �
 
 **它是做什么的：** 内置 Token Monitor 用来集中查看 Token 用量、估算成本、活动热图、趋势、模型、项目和会话；上游覆盖 **35+ 种工具的 Token 用量追踪、28+ 家提供方的额度检测**。这是上游支持范围，不代表本机每个工具都已经登录或能读取额度。
 
-**怎么使用：** 主页展开“用量统计”查看总量、成本、热图和趋势；从侧栏或菜单栏打开统计入口查看更细的工具、模型、项目、会话和额度视图，再选择时间范围或数据来源。Token Monitor 0.68.0 和 TokScale 4.18.0 更新解析与定价，修正 Claude 重复及缓存 Token 统计。
+**怎么使用：** 主页展开“用量统计”查看总量、成本、热图和趋势；从侧栏或菜单栏打开统计入口查看更细的工具、模型、项目、会话和额度视图，再选择时间范围或数据来源。本版保留 Token Monitor 0.68.0 界面及现有设置，选择性回移 0.70 的日志读取与计价修复，以及 0.71 的归档后台交接、读取失败保留完整统计和菜单栏浮窗关闭修复；不是完整升级到 0.71。TokScale 保留 4.18.0 基线，采用固定修订的扫描器。
 
 <p align="center">
   <a href="docs/images/1012v1-promo/zh/usage.png"><img src="docs/images/1012v1-promo/zh/usage.png" width="1000" alt="用量统计：活动热图、估算成本与趋势柱状图。"></a>
@@ -127,7 +129,7 @@ AiGoodBro 是面向个人自用的 macOS AI 工作台。它集中查看 Codex �
 
 **怎么使用：** 在主页或 Codex 账号区点击“重置卡 N”、到期时间或信息按钮，进入“到期自动使用”；逐账号选择是否开启，并设置提前时间。默认关闭、默认提前 30 分钟，可调整为 1–1440 分钟。桌面账号或同身份镜像只在独立入口、可信身份和空闲状态都核验通过时尝试；结果不明会暂停并提示人工核对，不反复重发。
 
-使用前必须逐账号授权，并保持应用运行；设置页本身不会兑换卡片。详细边界见[重置卡说明](docs/reset-credit-control.md)。
+使用前必须逐账号授权，并保持应用运行；设置页本身不会兑换卡片。本版还会记录已核实可用次数的增加与减少，并对已知到期时间进入 24 小时内的卡，沿用用户已开启的消息通道提醒。首次同步不补发历史变化；提醒不兑换卡片，发送结果不确定时暂停重发。详细边界见[重置卡说明](docs/reset-credit-control.md)。
 
 <a id="referrals"></a>
 
@@ -143,7 +145,7 @@ AiGoodBro 是面向个人自用的 macOS AI 工作台。它集中查看 Codex �
 
 **它是做什么的：** 个人微信用于接收额度、重置和重置卡消息，也可以在用户明确开启后继续指定的 Codex 原聊天。连接状态和消息是否真正送达分开显示。
 
-**怎么使用：** 在“设置 → 通知／微信”进入连接引导，使用腾讯官方 iLink 扫码绑定；确认会话后选择要接收的消息类型。首次建立历史基线，之后只发送新消息；查询缓存状态不会消耗账号额度。微信未完成会话时，界面显示等待状态，不把“已配置”写成“已送达”。
+**怎么使用：** 在“设置 → 通知／微信”进入连接引导，使用腾讯官方 iLink 扫码绑定；确认会话后选择要接收的消息类型。首次建立历史基线，之后只发送新消息；查询缓存状态不会消耗账号额度。微信未完成会话时，界面显示等待状态，不把“已配置”写成“已送达”。本版修复启动时调整通知内容中断已保存连接读取的问题，完整任务回复按字节安全分段；升级后微信、飞书可能仍需 macOS 钥匙串授权，授权本身不会发送测试消息。
 
 <p align="center">
   <a href="docs/images/1012v1-promo/zh/notifications.png"><img src="docs/images/1012v1-promo/zh/notifications.png" width="1000" alt="飞书卡片与微信消息：重置卡、额度更新与公告通知。"></a>
@@ -187,6 +189,10 @@ AiGoodBro 是面向个人自用的 macOS AI 工作台。它集中查看 Codex �
 
 **怎么使用：** 打开“使用引导”按步骤连接官方工具；Claude、Kimi、Grok、OpenCode、WorkBuddy、ZCode 和 TRAE SOLO 均按各自官方入口登录。更新弹窗展示版本和更新点，用户点击后下载，校验大小与 SHA256 后再自行覆盖安装；下载不会自动退出或替换当前 App，也不会自动开启可选功能。
 
+**首次安装默认值：** 跟随系统主题、账号卡片、自动隐藏侧栏、菜单栏显示剩余额度与倒计时、K 线展示全部历史、玻璃透明度 74%／深度 84%，主窗口 ⌘U、侧栏 ⌘I。新用户仍进入引导；老用户的全部已有配置保留。仅整理通用界面偏好，不携带账号、凭据、私人路径、端点或授权；通知发送和重置卡自动使用仍需用户选择与授权。详见[首次安装偏好](docs/first-install-preferences.md)。
+
+精选区保留 REA、JEV 等按需安装入口，并在可识别的新装或覆盖后只读检查一次本机安装情况；可逐项隐藏或手动重新检查。检测不代表工具已连接，也不会代替用户安装或调用。关于页增加订阅优惠入口，版本标题读取实际安装信息。
+
 <a id="themes"></a>
 
 ## 15 · 主题和原生玻璃
@@ -199,17 +205,19 @@ AiGoodBro 是面向个人自用的 macOS AI 工作台。它集中查看 Codex �
 
 ## 16 · 下载、升级与构建
 
-本版只提供 **macOS 13+、Apple Silicon ARM64**。安装包为本地 ad-hoc 签名，未做 Apple 公证。9.6.x 旧客户端需手动下载覆盖；2.3／2.4 可发现 2.5。已安装本地 2.5.0（142）的用户也需手动覆盖 143，因为产品版本号相同。覆盖前结束自己的任务、正常退出旧版并备份旧 App 和本机数据；重新打开后核对 2.5.0（143）／1011v2，并按引导检查微信、飞书和新设置。
+本版面向 **macOS 13+、Apple Silicon ARM64**，采用本地 ad-hoc 签名，未做 Apple 公证。2.5.1 使用独立版本号，发布后 2.5.0 客户端可发现更新；原有 2.5.0 Release 和安装包保留。9.6.x 旧客户端仍需手动下载覆盖。准备升级时，先结束自己的任务、停止反代、正常退出并备份旧 App 和本机数据；覆盖后核对 **2.5.1（146）／1015v3**，再按引导检查微信、飞书和新设置。
 
-本地最终候选的 35 组原生自测、资源校验、完整递归签名、DMG／ZIP 文件树和 SHA256 校验记录见[2.5 发布记录](docs/release-notes-v2.5.0.md)。这些检查不等于真实账号登录、真实提供方调用、重置卡兑换、微信／飞书送达或全局快捷键实机验收；实际安装和真实反代稳定性仍应以用户现场为准。
+146 已通过完整本地构建与 35 组原生自测，首次安装偏好与老用户配置保留通过 117 条隔离断言；Carbon 系统热键集成明确跳过。本轮未覆盖安装，当前运行版与反代保持原状，安装和真实界面验收暂缓。实包核查、最终 SHA256 与验证边界见[2.5.1 发布记录](docs/release-notes-v2.5.1.md)。真实账号登录、提供方持续调用、重置卡兑换、手机收件和全局快捷键分别需要相应实机证据。
+
+以下按本次版本标签构建：
 
 ```sh
-git clone --branch v2.5.0 https://github.com/BLACKIELF/AgentHub-AiGoodBro.git AiGoodBro-2.5
-cd AiGoodBro-2.5
+git clone --branch v2.5.1 https://github.com/BLACKIELF/AgentHub-AiGoodBro.git AiGoodBro-2.5.1
+cd AiGoodBro-2.5.1
 make build
 ```
 
-构建需要 macOS、Go 1.26+ 和经 SHA256 校验的 Token Monitor 0.68.0 macOS 运行时；不提供 Intel 或 Windows 安装包。
+构建需要 macOS、Go 1.26+ 和经 SHA256 校验的 Token Monitor 0.68.0 macOS 运行时；本版在该界面基线上回移指定修复，不提供 Intel 或 Windows 安装包。
 
 <a id="sources"></a>
 
@@ -221,22 +229,22 @@ make build
 |---|---|
 | [Tencent/openclaw-weixin 2.4.9](https://github.com/Tencent/openclaw-weixin/tree/24de5c9eb0dd5e595d7e2d090ed8a3f82870d42c) | iLink 协议与扫码流程的原生适配；保留 MIT 声明，不安装 OpenClaw。 |
 | [codexU](https://github.com/shanggqm/codexU) | 历史固定源码的二次开发与宿主适配；SwiftUI、额度、配色和 Windows 基础由 AiGoodBro 继续维护。 |
-| [Token Monitor v0.68.0](https://github.com/Javis603/token-monitor/tree/5d2db368d8313415763860d594de00e46a663418) | 固定源码与官方 macOS 运行时的宿主适配；统计引擎、桌面看板、图表和资源随包保留。 |
-| [TokScale 4.18.0 fork](https://github.com/Javis603/tokscale/tree/d5e8ad9b25bfafb43b5b6804940929b728a6f48a) · [原项目](https://github.com/junhoyeo/tokscale) | 固定修订用于统计采集和定价；许可证随包保留。 |
-| [CLIProxyAPI v8.0.20](https://github.com/router-for-me/CLIProxyAPI/tree/v8.0.20) | 固定 Go SDK 的调度、Codex 执行器和 Responses 处理器宿主适配；保留身份、额度、点数底线和流式响应不重放检查。 |
+| [Token Monitor v0.68.0](https://github.com/Javis603/token-monitor/tree/5d2db368d8313415763860d594de00e46a663418) | 固定 0.68.0 界面与官方 macOS 运行时的宿主适配；本版选择性回移 0.70／0.71 修复，保留统计引擎、桌面看板、图表及既有设置。 |
+| [TokScale 4.18.0 fork](https://github.com/Javis603/tokscale/tree/fa5f0c13324838d1a988fda317597f9b90da7ad0) · [原项目](https://github.com/junhoyeo/tokscale) | 4.18.0 基线与固定扫描器修订，用于统计采集和定价；许可证随包保留。 |
+| [CLIProxyAPI v8.0.28](https://github.com/router-for-me/CLIProxyAPI/tree/v8.0.28) | 固定 Go SDK 的调度、Codex 执行器和 Responses 处理器宿主适配；保留身份、额度、点数底线和流式响应不重放检查。 |
 | [Codex-Manager](https://github.com/qxcnm/Codex-Manager) | 协议适配与静态研究参考；暖号请求和 SSE 完成规则独立实现。 |
 | [Hazmat wrapper 脚本](https://github.com/dredozubov/hazmat/blob/c112d222bb53e888dd17a8927927286792f7c20e/scripts/check-codex-desktop-attach-smoke.sh) | 仅参考 `CODEX_CLI_PATH` 的 stdio wrapper 入口，未集成 Hazmat 沙箱或服务。 |
 | [BlackHole1/aswap v1.1.0](https://github.com/BlackHole1/aswap/releases/tag/v1.1.0) | Claude 多账号 CLI／Chrome 资料隔离工具的协议适配与静态参考；未复制、未打包。 |
 
 AiGoodBro 使用 [MIT 许可证](LICENSE)。第三方许可见 [`Resources/THIRD_PARTY_NOTICES.txt`](Resources/THIRD_PARTY_NOTICES.txt)、[`Companion/LocalProxy/LICENSE.CLIProxyAPI`](Companion/LocalProxy/LICENSE.CLIProxyAPI)、[`Companion/LocalProxy/LICENSE.Hazmat`](Companion/LocalProxy/LICENSE.Hazmat) 和 [`Companion/LocalProxy/THIRD-PARTY-NOTICES.txt`](Companion/LocalProxy/THIRD-PARTY-NOTICES.txt)。
 
-文档入口：[详细使用说明](docs/usage-guide.md) · [本机 CLI 额度范围](docs/local-cli-accounts.md) · [反代实现与验证](docs/local-proxy-0928v1.md) · [2.5 发布记录](docs/release-notes-v2.5.0.md) · [图片来源与校验](docs/public-ui-1012v1-promo.md) · [问题反馈](https://github.com/BLACKIELF/AgentHub-AiGoodBro/issues) · [安全说明](SECURITY.md)
+文档入口：[详细使用说明](docs/usage-guide.md) · [本机 CLI 额度范围](docs/local-cli-accounts.md) · [反代实现与验证](docs/local-proxy-0928v1.md) · [2.5.1 发布记录](docs/release-notes-v2.5.1.md) · [2.5.0 发布记录](docs/release-notes-v2.5.0.md) · [图片来源与校验](docs/public-ui-1012v1-promo.md) · [问题反馈](https://github.com/BLACKIELF/AgentHub-AiGoodBro/issues) · [安全说明](SECURITY.md)
 
 <a id="actual-screenshots"></a>
 
 ## 18 · 实际软件截图
 
-主界面及账号、用量裁图来自已安装的 **2.3.0（137）**；六张登录、引导和设置图来自 **2.3.0（139）**，其设置呈现沿用至 143。反代状态局部图未显示版本号。图中数值和连接状态是拍摄时快照，不作为 143 安装、真实调用或消息送达的验收；来源、原始尺寸和校验值见[历史截图记录](docs/public-ui-1009v2.md)。点击图片可查看原图。
+主界面及账号、用量裁图来自已安装的 **2.3.0（137）**；六张登录、引导和设置图来自 **2.3.0（139）**，均为历史界面记录。反代状态局部图未显示版本号。图中数值和连接状态是拍摄时快照，不作为 2.5.1（146）安装、真实调用或消息送达的验收；来源、原始尺寸和校验值见[历史截图记录](docs/public-ui-1009v2.md)。点击图片可查看原图。
 
 ### 01 · 主界面
 

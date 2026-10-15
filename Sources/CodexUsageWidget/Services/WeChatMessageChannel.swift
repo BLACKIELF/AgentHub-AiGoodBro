@@ -270,7 +270,8 @@ final class WeChatMessageChannel {
         status: MessageTaskStatus, messageOptions: FeishuMessageOptions = .standard,
         language: WidgetLanguage = .storedOrAutomatic()
     ) throws -> Data {
-        try payload(content: messageContent(status: status, options: messageOptions, language: language))
+        guard status.hasCurrentExpiry() else { throw MessageChannelError.staleStatus }
+        return try payload(content: messageContent(status: status, options: messageOptions, language: language))
     }
 
     static func messageContent(
@@ -283,19 +284,31 @@ final class WeChatMessageChannel {
         var result: [String] = []
         switch status.quotaChange {
         case .quotaReset(let five, let seven):
-            title = language.text("🔄 额度窗口重置", "🔄 Quota window reset")
-            let windows = [(five, language.text("5 小时", "5h")), (seven, language.text("7 天", "7d"))]
+            title = language.text("额度窗口变化", "Quota window changed")
+            let windows = [(five, "5h"), (seven, "7d")]
                 .filter { $0.0 }.map { $0.1 }.joined(separator: " + ")
             result = [
                 language.text("已核实 · 官方额度窗口变化", "Verified · official quota-window change"),
                 language.text("**变化窗口**：\(windows)", "**Changed windows**: \(windows)"),
             ]
         case .resetCreditsAdded(let added, let available):
-            title = language.text("🎫 Reset 卡增加", "🎫 Reset credits increased")
-            result = [language.text("已核实 · 官方可用 Reset 次数增加", "Verified · official available reset count increased")]
+            title = language.text("重置卡变化", "Reset credits changed")
             if options.includesResetCredits {
-                result.append(language.text("**新增 \(added) 次 · 现可用 \(available) 次**", "**+\(added) · \(available) available**"))
-                result.append(language.text("余额变化：\(available - added) → \(available) 次", "Balance: \(available - added) → \(available)"))
+                title = language.text("重置卡 +\(added)", "Reset credits +\(added)")
+                result.append(language.text("可用 \(available - added)→\(available) 次", "Available \(available - added)→\(available)"))
+            }
+        case .resetCreditsChanged(let previous, let available, let previousObservedAt, let observedAt):
+            title = language.text("重置卡变化", "Reset credits changed")
+            if options.includesResetCredits {
+                title = MessageNoticeFormat.changeTitle(previous: previous, available: available, language: language)
+                result = MessageNoticeFormat.changeLines(
+                    previous: previous, available: available, previousObservedAt: previousObservedAt, observedAt: observedAt, language: language)
+            }
+        case .resetCreditsExpiring(let batches, _):
+            title = language.text("重置卡将到期", "Reset credits expire soon")
+            if options.includesResetCredits, options.resetExpiryDetail != .none {
+                result = MessageNoticeFormat.expiryLines(batches, language: language)
+                result.append(language.text("打开 AiGoodBro 按需使用", "Open AiGoodBro to use when needed"))
             }
         case nil: break
         }
@@ -305,14 +318,14 @@ final class WeChatMessageChannel {
             lines.append(language.text("**账号**：", "**Account**: ") + escapedLabel(account.value))
         }
         if let task = status.taskLabel { lines.append(language.text("任务：", "Task: ") + escapedLabel(task.value)) }
-        if let state = status.taskState { lines.append(language.text("状态：", "State: ") + state.rawValue) }
-        if let reason = status.failureReason { lines.append(language.text("原因：", "Reason: ") + reason.rawValue) }
+        if let state = status.taskState { lines.append(language.text("状态：", "State: ") + MessageNoticeFormat.state(state, language: language)) }
+        if let reason = status.failureReason { lines.append(language.text("原因：", "Reason: ") + MessageNoticeFormat.reason(reason, language: language)) }
 
         let hasFacts = status.accountFacts != nil || status.fiveHourRemainingPercent != nil || status.sevenDayRemainingPercent != nil
         if hasFacts {
             let windows = [
-                (language.text("5 小时", "5h"), status.fiveHourRemainingPercent, status.accountFacts?.fiveHourResetsAt),
-                (language.text("7 天", "7d"), status.sevenDayRemainingPercent, status.accountFacts?.sevenDayResetsAt),
+                ("5h", status.fiveHourRemainingPercent, status.accountFacts?.fiveHourResetsAt),
+                ("7d", status.sevenDayRemainingPercent, status.accountFacts?.sevenDayResetsAt),
             ]
             for (label, remaining, resetsAt) in windows {
                 if options.includesQuotas {
@@ -330,27 +343,19 @@ final class WeChatMessageChannel {
                 }
             }
         }
-        var footer =
-            language.text("**发现时间**：", "**Detected**: ")
-            + compactDate(status.occurredAt, language: language, includesYear: true)
-            + language.text(" · 北京时间", " · Beijing time")
-        if case .resetCreditsAdded = status.quotaChange {
-            footer +=
-                "\n"
-                + language.text(
-                    "两次官方快照确认余额增加；发现时间不等于实际到账时间。",
-                    "Two official snapshots confirm the increase; detection time is not the exact grant time.")
-        }
+        let checked = language.text("核实 ", "Checked ") + compactDate(MessageNoticeFormat.checkedAt(for: status.quotaChange, fallback: status.occurredAt), language: language)
         if options.includesResetCredits, hasFacts || status.quotaChange != nil {
-            let budget = contentByteLimit - (lines + [footer]).joined(separator: "\n").utf8.count - 2
+            let budget = MessageNoticeFormat.bodyUTF8Budget(limit: contentByteLimit) - (lines + [checked]).joined(separator: "\n").utf8.count - 2
             lines.append(resetCreditLine(status: status, options: options, language: language, byteBudget: budget))
         }
-        lines.append(footer)
+        lines.append(checked)
         let rendered = lines.joined(separator: "\n")
-        return markdown
+        let content =
+            markdown
             ? rendered
             : rendered.replacingOccurrences(of: "**", with: "")
                 .replacingOccurrences(of: "\\*", with: "*").replacingOccurrences(of: "\\_", with: "_")
+        return MessageNoticeFormat.withFooter(content)
     }
 
     private static func resetCreditLine(
@@ -359,8 +364,9 @@ final class WeChatMessageChannel {
     ) -> String {
         var count = status.accountFacts?.availableResetCredits
         if case .resetCreditsAdded(_, let available) = status.quotaChange { count = available }
+        if case .resetCreditsChanged(_, let available, _, _) = status.quotaChange { count = available }
         let value = count.map(String.init) ?? language.text("未知", "Unknown")
-        let prefix = language.text("**可用 Reset 卡**：\(value) 次", "**Available resets**: \(value)")
+        let prefix = language.text("**重置卡可用**：\(value) 次", "**Available resets**: \(value)")
         guard options.resetExpiryDetail != .none, count != 0 else { return prefix }
         let upcoming = (status.accountFacts?.resetCreditExpiries ?? []).filter { $0 >= status.occurredAt }
         let available = count.map { Array(upcoming.prefix($0)) } ?? upcoming
@@ -369,7 +375,7 @@ final class WeChatMessageChannel {
         let omitted = language.text(" · 其余到期时间请在 AiGoodBro 查看", " · See AiGoodBro for remaining expiries")
         var rendered: [String] = []
         for (index, date) in dates.enumerated() {
-            let next = rendered + [compactDate(date, language: language)]
+            let next = rendered + [compactDate(date, language: language, isExpiry: true)]
             let candidate = prefix + language.text(" · 到期 ", " · expires ") + next.joined(separator: language.text("、", ", "))
             let reserve = index + 1 < dates.count ? omitted.utf8.count : 0
             guard candidate.utf8.count + reserve <= byteBudget else { break }
@@ -386,13 +392,9 @@ final class WeChatMessageChannel {
             .replacingOccurrences(of: "*", with: "\\*").replacingOccurrences(of: "_", with: "\\_")
     }
 
-    private static func compactDate(_ date: Date?, language: WidgetLanguage, includesYear: Bool = false) -> String {
+    private static func compactDate(_ date: Date?, language: WidgetLanguage, isExpiry: Bool = false) -> String {
         guard let date else { return language.text("未知", "Unknown") }
-        let formatter = DateFormatter()
-        formatter.locale = language.locale
-        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")!
-        formatter.dateFormat = includesYear ? "yyyy-MM-dd HH:mm:ss" : "MM/dd HH:mm"
-        return formatter.string(from: date)
+        return isExpiry ? MessageNoticeFormat.shortDate(date) : MessageNoticeFormat.shortTime(date)
     }
 
     static func payload(content: String) throws -> Data {

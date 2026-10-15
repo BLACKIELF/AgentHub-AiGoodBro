@@ -1,6 +1,281 @@
 import Darwin
 import Foundation
 
+extension LocalProxyHostFixtures {
+    @MainActor static func plusPolicyFixtures() async throws {
+        var checks = 0
+        func expect(_ value: @autoclosure () throws -> Bool, _ label: String) throws {
+            guard try value() else { throw LocalProxyControlFixtureFailure.check(label) }
+            checks += 1
+            print("PLUS_POLICY_CHECK \(checks): \(label)")
+        }
+        let root = DispatchParticipationPaths.supportDirectory()
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let file = root.appendingPathComponent("local-proxy-queue-v1.json")
+        let now = Date()
+        let five = CodexQuotaWindowSnapshot(usedPercent: 30, resetsAt: now.addingTimeInterval(3600))
+        let weekly = CodexQuotaWindowSnapshot(usedPercent: 37.25, resetsAt: now.addingTimeInterval(86400))
+        func profile(_ id: String, plan: String?, fiveHour: CodexQuotaWindowSnapshot?) -> CodexProfile {
+            CodexProfile(id: id, lastSnapshot: .init(planType: plan, creditBalance: "5000", creditBalanceUnlimited: false,
+                accountID: id + "-account", email: id + "@example.invalid", fetchedAt: now, fiveHour: fiveHour, sevenDay: weekly))
+        }
+        let plus = profile("batch-plus", plan: "plus", fiveHour: five)
+        let otherPlus = profile("batch-other-plus", plan: "plus", fiveHour: five)
+        let pro = profile("batch-pro-80", plan: "pro", fiveHour: nil)
+        let fullPro = profile("batch-pro-100", plan: "pro", fiveHour: nil)
+        let proLite = profile("batch-prolite", plan: "prolite", fiveHour: five)
+        var pro20 = profile("batch-pro-20x", plan: "pro", fiveHour: five)
+        pro20.proTierMultiplier = 20
+        let unknown = profile("unknown-named-plus", plan: nil, fiveHour: five)
+        var system = profile("batch-system", plan: "plus", fiveHour: five)
+        system.isSystemProfile = true
+        let profiles = [plus, otherPlus, pro, fullPro, proLite, pro20, unknown, system]
+        let skipped = [pro, fullPro, proLite, pro20, unknown]
+        let usage = UsageStore(profiles)
+        usage.isPreview = false
+        let store = LocalProxyQueueStore(usageStore: usage)
+        store.setAccountEnabled(id: otherPlus.id, enabled: false)
+        store.setAccountEnabled(id: pro.id, enabled: false)
+        store.setAccountPriority(id: plus.id, priority: true)
+        store.setAccountLast(id: pro.id, last: true)
+        store.setCreditFallback(true)
+        try expect(store.setCreditFloors(primary: 2600, secondary: 1600), "synthetic credit floors persist")
+        let oldPro = LocalProxyAccountPolicy(fiveHourUsedLimit: 80, allowsCredits: false, creditPrimaryFloor: 1200, creditSecondaryFloor: 400)
+        try expect(store.setAccountPolicy(id: pro.id, policy: oldPro), "Pro legacy 80 rule persists before batch")
+        let oldPlus = LocalProxyAccountPolicy(fiveHourUsedLimit: 70, allowsCredits: false, creditPrimaryFloor: 1300, creditSecondaryFloor: 300)
+        try expect(store.setAccountPolicy(id: otherPlus.id, policy: oldPlus), "second Plus retains independent credit policy")
+        for (index, candidate) in [fullPro, proLite, pro20, unknown].enumerated() {
+            let old = LocalProxyAccountPolicy(fiveHourUsedLimit: index == 0 ? 100 : 80, allowsCredits: index.isMultiple(of: 2),
+                creditPrimaryFloor: 1800 + index, creditSecondaryFloor: 500 + index)
+            try expect(store.setAccountPolicy(id: candidate.id, policy: old), "non-Plus policy fixture persists")
+        }
+        let previous = store.preferences
+        let order = store.rows.map(\.id), revision = store.policyRevision
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let skippedBytes = try Dictionary(uniqueKeysWithValues: skipped.map { ($0.id, try encoder.encode(previous.policy(for: $0.id))) })
+        try expect(store.plusPolicyTargetCount == 2 && store.uniformPlusFiveHourUsedLimit == nil,
+            "mixed Plus limits stay blank and count excludes Pro/prolite/20x/unknown/system")
+        try expect(store.setPlusFiveHourUsedLimit(30), "one batch saves only both current Plus accounts including non-participants")
+        let bytes = try Data(contentsOf: file)
+        let disk = try JSONDecoder().decode(LocalProxyPreferences.self, from: bytes)
+        try expect(store.policyRevision == revision + 1 && store.uniformPlusFiveHourUsedLimit == 30
+            && [plus, otherPlus].allSatisfy { disk.policy(for: $0.id).fiveHourUsedLimit == 30 },
+            "one revision publishes the persisted Plus 5h value")
+        try expect(disk.enabledIDs == previous.enabledIDs && disk.order == previous.order && disk.priorityIDs == previous.priorityIDs
+            && disk.lastIDs == previous.lastIDs && disk.lastOverrides == previous.lastOverrides
+            && disk.creditFallback == previous.creditFallback && disk.creditPrimaryFloor == previous.creditPrimaryFloor
+            && disk.creditSecondaryFloor == previous.creditSecondaryFloor && store.rows.map(\.id) == order,
+            "batch preserves participation, order, priority, last flags, credit switch and floors")
+        try expect(try skipped.allSatisfy { try encoder.encode(disk.policy(for: $0.id)) == skippedBytes[$0.id] }
+            && disk.accountPolicies?[system.id] == nil, "every non-Plus policy byte representation and system policy remain unchanged")
+        try expect(disk.policy(for: otherPlus.id).allowsCredits == oldPlus.allowsCredits
+            && disk.policy(for: otherPlus.id).creditPrimaryFloor == oldPlus.creditPrimaryFloor
+            && disk.policy(for: otherPlus.id).creditSecondaryFloor == oldPlus.creditSecondaryFloor,
+            "Plus batch changes only its existing 5h percentage")
+        try expect(store.plusPolicyMessage?.contains("2 Plus accounts") == true && store.plusPolicyMessage?.contains("other plans remain unchanged") == true,
+            "saved message exposes Plus-only scope and skipped plans")
+        try expect(!String(decoding: bytes, as: UTF8.self).contains("subscriptionUsedLimit"), "persisted schema reuses fiveHourUsedLimit with no general subscription field")
+        let reload = LocalProxyQueueStore(usageStore: usage)
+        let cap = reload.preferences.policy(for: plus.id)
+        try expect(reload.plusPolicyTargetCount == 2 && reload.uniformPlusFiveHourUsedLimit == 30,
+            "production Store reloads only the saved Plus 5h limit")
+        try expect(LocalProxyAdmission.quota(plus, now: now, policy: cap) == .usageLimit, "Plus equality stops at 5h used percentage")
+        try expect(LocalProxyAdmission.quota(pro, now: now, policy: reload.preferences.policy(for: pro.id)) == .quotaUnknown
+            && LocalProxyAdmission.quota(fullPro, now: now, policy: reload.preferences.policy(for: fullPro.id)) == nil,
+            "weekly-only Pro old 80 and 100 admission semantics stay unchanged")
+        var belowPlus = plus
+        belowPlus.lastSnapshot?.fiveHour?.usedPercent = 29.99
+        try expect(LocalProxyAdmission.quota(belowPlus, now: now, policy: cap) == nil, "decimal below-boundary allows Plus even when weekly use is higher")
+        var spent = plus
+        spent.lastSnapshot?.fiveHour?.usedPercent = 100
+        try expect(LocalProxyAdmission.quota(spent, now: now, creditFloor: 0, allowPaidCredits: true, policy: cap) == .usageLimit,
+            "credits cannot bypass a Plus 5h cap below 100")
+        var full = cap
+        full.fiveHourUsedLimit = 100
+        try expect(LocalProxyAdmission.quota(spent, now: now, creditFloor: 0, allowPaidCredits: true, policy: full) == nil,
+            "100 retains explicitly authorized credit fallback")
+        for value in [Double.nan, .infinity, -0.1, 100.1] {
+            try expect(!LocalProxyAccountPolicy(fiveHourUsedLimit: value).isValid && !reload.setPlusFiveHourUsedLimit(value),
+                "invalid 5h cap is rejected without mutation")
+        }
+        try expect(try Data(contentsOf: file) == bytes && reload.uniformPlusFiveHourUsedLimit == 30, "invalid attempts preserve disk and both Plus caps")
+        try expect(reload.setPlusFiveHourUsedLimit(37.25) && LocalProxyQueueStore(usageStore: usage).uniformPlusFiveHourUsedLimit == 37.25,
+            "decimal Plus batch survives production reload")
+        var override = reload.preferences.policy(for: plus.id)
+        override.fiveHourUsedLimit = 70
+        try expect(reload.setAccountPolicy(id: plus.id, policy: override) && reload.uniformPlusFiveHourUsedLimit == nil
+            && reload.preferences.policy(for: otherPlus.id).fiveHourUsedLimit == 37.25,
+            "individual Plus override makes uniform field mixed without touching peers")
+        try expect(reload.setPlusFiveHourUsedLimit(30), "batch deliberately unifies an overridden Plus")
+        let noPlusUsage = UsageStore(skipped)
+        noPlusUsage.isPreview = false
+        let noPlus = LocalProxyQueueStore(usageStore: noPlusUsage)
+        try expect(noPlus.plusPolicyTargetCount == 0 && noPlus.uniformPlusFiveHourUsedLimit == nil && !noPlus.setPlusFiveHourUsedLimit(20)
+            && noPlus.plusPolicyMessage?.contains("No verified Plus accounts") == true,
+            "no known Plus disables batch and explicitly skips unknown/other plans")
+
+        let child = Process()
+        child.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        child.arguments = ["45"]
+        try child.run()
+        defer { if child.isRunning { child.terminate() } }
+        reload.process = child
+        reload.phase = .running
+        reload.runID = UUID().uuidString
+        reload.controlKey = "batch-fixture-key"
+        reload.registeredPool = Dictionary(uniqueKeysWithValues: [plus, otherPlus, pro].map { ($0.id, LocalProxyQueueStore.PoolBinding(
+            home: $0.codexHomeURL, account: $0.recordedAccountKey, accountID: $0.lastSnapshot!.accountID!)) })
+        reload.activeIDs = [plus.id, otherPlus.id, pro.id]
+        reload.preferences.enabledIDs = [plus.id, otherPlus.id, pro.id]
+        let registry = root.appendingPathComponent(DispatchActivityStore.stateName)
+        for profile in [plus, otherPlus] {
+            func request(_ command: String, id: String) -> LocalProxyRequest {
+                .init(schemaVersion: 1, runID: reload.runID!, key: reload.controlKey!, command: command, requestID: id,
+                      profileID: command == "order_end" ? "" : profile.id, leaseID: nil)
+            }
+            let evidence = await reload.handle(request("quota_recovery", id: UUID().uuidString))
+            try expect(evidence.error == "usage_limit" && evidence.quotaObservedAt == nil, "reloaded \(profile.id) recovery observes saved 5h cap")
+            let before = try? Data(contentsOf: registry), id = UUID().uuidString
+            let ordered = await reload.handle(request("order", id: id))
+            try expect(ordered.ok, "saved 5h cap does not change order membership")
+            let result = await reload.handle(request("acquire", id: id))
+            try expect(result.error == "usage_limit" && result.accessToken == nil && result.leaseID == nil
+                && reload.leases.isEmpty && (try? Data(contentsOf: registry)) == before,
+                "reloaded \(profile.id) acquire stops before credentials or reservation")
+            _ = await reload.handle(request("order_end", id: id))
+        }
+        usage.profiles[2].lastSnapshot?.accountID = "changed-skipped-pro"
+        try expect(reload.setPlusFiveHourUsedLimit(30) && reload.preferences.policy(for: pro.id) == oldPro,
+            "a skipped Pro running binding cannot block or change the Plus-only batch")
+        usage.profiles[2] = pro
+        let committed = try Data(contentsOf: file), committedPolicies = reload.preferences.accountPolicies
+        usage.profiles[1].lastSnapshot?.accountID = "changed-target-plus"
+        try expect(!reload.setPlusFiveHourUsedLimit(80) && reload.preferences.accountPolicies == committedPolicies
+            && Data(contentsOf: file) == committed && reload.plusPolicyMessage?.contains("No rules changed") == true,
+            "any stale target Plus running identity rejects the entire batch with no partial success")
+        usage.profiles[1] = otherPlus
+        let failed = LocalProxyQueueStore(usageStore: usage), failedRevision = failed.policyRevision
+        let blocked = URL(fileURLWithPath: file.path + ".blocked")
+        try FileManager.default.createDirectory(at: blocked, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: blocked) }
+        LocalProxyFixtureRuntime.failPreferenceRename = true
+        let saved = failed.setPlusFiveHourUsedLimit(80)
+        LocalProxyFixtureRuntime.failPreferenceRename = false
+        try expect(!saved && failed.policyRevision == failedRevision && failed.preferencesFailure == .save
+            && failed.preferences.accountPolicies == committedPolicies && Data(contentsOf: file) == committed,
+            "atomic write refusal rolls back both Plus caps and preserves every committed non-Plus policy")
+        try expect(LocalProxyQueueStore(usageStore: usage).uniformPlusFiveHourUsedLimit == 30, "fresh Store sees no partial success after refusal")
+        print("PASS: \(checks) Plus-only 5h policy checks; production save/reload/recovery/acquire with isolated data")
+    }
+
+    @MainActor static func quotaAdmissionBudgetFixtures() async throws {
+        var checks = 0
+        func expect(_ value: @autoclosure () throws -> Bool, _ label: String) throws {
+            guard try value() else { throw LocalProxyControlFixtureFailure.check(label) }
+            checks += 1
+            print("QUOTA_BUDGET_CHECK \(checks): \(label)")
+        }
+        let root = DispatchParticipationPaths.supportDirectory()
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let now = Date(), window = CodexQuotaWindowSnapshot(usedPercent: 20, resetsAt: now.addingTimeInterval(86400))
+        let profile = CodexProfile(id: "budget-profile", lastSnapshot: .init(planType: "plus",
+            accountID: "budget-account", email: "budget@example.invalid", fetchedAt: now.addingTimeInterval(-121), fiveHour: window, sevenDay: window))
+        let system = CodexProfile(id: "budget-system", isSystemProfile: true, lastSnapshot: .init(planType: "plus",
+            accountID: "budget-system-account", email: "budget-system@example.invalid", fetchedAt: now, fiveHour: window, sevenDay: window))
+        let healthyProfile = CodexProfile(id: "budget-healthy", lastSnapshot: .init(planType: "plus",
+            accountID: "budget-healthy-account", email: "budget-healthy@example.invalid", fetchedAt: now, fiveHour: window, sevenDay: window))
+        func auth(account: String, email: String) throws -> Data {
+            func jwt(_ claims: [String: Any]) throws -> String {
+                "fixture." + (try JSONSerialization.data(withJSONObject: claims)).base64EncodedString()
+                    .replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "") + ".fixture"
+            }
+            return try JSONSerialization.data(withJSONObject: ["tokens": [
+                "access_token": try jwt(["exp": now.timeIntervalSince1970 + 3600, "iat": now.timeIntervalSince1970 - 60, "account_id": account]),
+                "id_token": try jwt(["email": email, "account_id": account]), "account_id": account]])
+        }
+        for (candidate, data) in [(profile, try auth(account: "budget-account", email: "budget@example.invalid")),
+                                  (healthyProfile, try auth(account: "budget-healthy-account", email: "budget-healthy@example.invalid")),
+                                  (system, try auth(account: "budget-system-account", email: "budget-system@example.invalid"))] {
+            try FileManager.default.createDirectory(at: candidate.codexHomeURL, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            let file = candidate.codexHomeURL.appendingPathComponent("auth.json")
+            try data.write(to: file); try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+        }
+        let usage = UsageStore([profile, healthyProfile, system]); usage.isPreview = false
+        let store = LocalProxyQueueStore(usageStore: usage), child = Process()
+        child.executableURL = URL(fileURLWithPath: "/bin/sleep"); child.arguments = ["45"]; try child.run()
+        defer { if child.isRunning { child.terminate() } }
+        let run = UUID().uuidString, key = "budget-fixture-key"
+        store.process = child; store.phase = .running; store.runID = run; store.controlKey = key
+        store.registeredPool = Dictionary(uniqueKeysWithValues: [profile, healthyProfile].map { ($0.id,
+            LocalProxyQueueStore.PoolBinding(home: $0.codexHomeURL, account: $0.recordedAccountKey, accountID: $0.lastSnapshot!.accountID!)) })
+        store.activeIDs = [profile.id, healthyProfile.id]; store.preferences.enabledIDs = [profile.id, healthyProfile.id]
+        HubConsoleModel.fixtureAvailability = .idle
+        func request(id: String, age: TimeInterval = 0, target: String? = nil) -> LocalProxyRequest {
+            .init(schemaVersion: 1, runID: run, key: key, command: "acquire", requestID: id, profileID: target ?? profile.id, leaseID: nil,
+                  receivedAt: ProcessInfo.processInfo.systemUptime - age)
+        }
+        usage.onRefresh = { _ in Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 3_400_000_000)
+            usage.profiles[0].lastSnapshot?.fetchedAt = Date()
+        } }
+        let successfulID = controlFixtureRequestID(), start = ProcessInfo.processInfo.systemUptime
+        let success = await fixtureHandle(store, request(id: successfulID))
+        try expect(success.ok && success.leaseID != nil && ProcessInfo.processInfo.systemUptime - start >= 3.3,
+            "same request waits beyond the old 3s cutoff for a valid fresh snapshot")
+        _ = await store.handle(.init(schemaVersion: 1, runID: run, key: key, command: "release",
+            requestID: successfulID, profileID: profile.id, leaseID: success.leaseID))
+        usage.onRefresh = nil
+        usage.profiles[0].lastSnapshot?.fetchedAt = Date().addingTimeInterval(-121)
+        let registry = root.appendingPathComponent(DispatchActivityStore.stateName), before = try Data(contentsOf: registry)
+        let deadline = await fixtureHandle(store, request(id: controlFixtureRequestID(), age: 18.1))
+        try expect(deadline.error == "admission_deadline" && deadline.leaseID == nil && store.leases.isEmpty
+            && Data(contentsOf: registry) == before, "expired remaining budget denies before reservation")
+        let cancelledTask = Task { @MainActor in await fixtureHandle(store, request(id: controlFixtureRequestID())) }
+        try await Task.sleep(nanoseconds: 150_000_000); cancelledTask.cancel()
+        let cancelled = await cancelledTask.value
+        try expect(cancelled.error == "stopping" && cancelled.accessToken == nil && store.leases.isEmpty
+            && Data(contentsOf: registry) == before, "cancellation while refreshing denies without credentials or a lease")
+        var refreshTask: Task<Void, Never>?
+        usage.onRefresh = { _ in refreshTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 200_000_000)
+            usage.profiles[0].lastSnapshot?.fetchedAt = Date()
+        } }
+        let revokedTask = Task { @MainActor in await fixtureHandle(store, request(id: controlFixtureRequestID())) }
+        try await Task.sleep(nanoseconds: 50_000_000)
+        store.setAccountPolicy(id: profile.id, policy: .init(fiveHourUsedLimit: 100))
+        let revoked = await revokedTask.value
+        await refreshTask?.value
+        try expect(revoked.error == "policy_changed" && revoked.accessToken == nil && store.leases.isEmpty
+            && Data(contentsOf: registry) == before, "policy revision change during refresh still revokes the old request")
+        usage.onRefresh = nil
+        try expect(LocalProxyAdmission.quota(profile, now: now) == .quotaUnknown, "120s freshness remains enforced")
+        usage.profiles[0] = profile
+        usage.onRefresh = { _ in Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 100_000_000)
+            usage.profiles[0].lastQuotaReadFailureAt = Date()
+        } }
+        let failedStart = ProcessInfo.processInfo.systemUptime
+        let failed = await fixtureHandle(store, request(id: controlFixtureRequestID()))
+        try expect(failed.error == "quota_unknown" && ProcessInfo.processInfo.systemUptime - failedStart < 1,
+            "known refresh failure returns quota_unknown early for the next account")
+        usage.profiles[0] = profile
+        usage.onRefresh = nil
+        let slowStart = ProcessInfo.processInfo.systemUptime
+        let slowID = controlFixtureRequestID()
+        let slow = await fixtureHandle(store, request(id: slowID))
+        try expect(slow.error == "quota_unknown" && ProcessInfo.processInfo.systemUptime - slowStart < 7,
+            "slow first account keeps a bounded refresh budget and returns retryable selection refusal")
+        let healthyID = slowID
+        let healthy = await fixtureHandle(store, request(id: healthyID, target: healthyProfile.id))
+        try expect(healthy.ok && healthy.leaseID != nil, "next healthy candidate has an admission opportunity after slow refusal")
+        _ = await store.handle(.init(schemaVersion: 1, runID: run, key: key, command: "release",
+            requestID: healthyID, profileID: healthyProfile.id, leaseID: healthy.leaseID))
+        print("PASS: \(checks) quota admission budget checks; synthetic refresh and credentials only")
+    }
+}
+
+
 private enum LocalProxyControlFixtureFailure: Error { case check(String), socket }
 
 private final class LocalProxyControlFixtureResult: @unchecked Sendable {
@@ -18,6 +293,275 @@ private final class LocalProxyControlFixtureResult: @unchecked Sendable {
 }
 
 extension LocalProxyHostFixtures {
+    @MainActor static func postReserveContentionFixtures() async throws {
+        var checks = 0
+        func expect(_ value: @autoclosure () throws -> Bool, _ label: String) throws {
+            guard try value() else { throw LocalProxyControlFixtureFailure.check(label) }
+            checks += 1
+            print("POST_RESERVE_CONTENTION_CHECK \(checks): \(label)")
+        }
+        let root = DispatchParticipationPaths.supportDirectory()
+        try expect(root.path.contains("aigoodbro-proxy-host-fixture-"), "post-reserve fixture uses an isolated support root")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let now = Date(), window = CodexQuotaWindowSnapshot(usedPercent: 10, resetsAt: now.addingTimeInterval(3600))
+        let profile = CodexProfile(id: "post-reserve-profile", lastSnapshot: CodexAccountSnapshot(planType: "plus",
+            accountID: "post-reserve-account", email: "post-reserve@example.invalid", fetchedAt: now, fiveHour: window, sevenDay: window))
+        let system = CodexProfile(id: "post-reserve-system", isSystemProfile: true, lastSnapshot: CodexAccountSnapshot(planType: "plus",
+            accountID: "post-reserve-central", email: "post-reserve-central@example.invalid", fetchedAt: now, fiveHour: window, sevenDay: window))
+        func jwt(_ claims: [String: Any]) throws -> String {
+            let bytes = try JSONSerialization.data(withJSONObject: claims).base64EncodedString()
+                .replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")
+            return "fixture.\(bytes).fixture"
+        }
+        for candidate in [profile, system] {
+            try FileManager.default.createDirectory(at: candidate.codexHomeURL, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            let account = candidate.lastSnapshot!.accountID!, email = candidate.lastSnapshot!.email!
+            let access = try jwt(["exp": now.timeIntervalSince1970 + 3600, "iat": now.timeIntervalSince1970 - 300, "account_id": account])
+            let identity = try jwt(["email": email, "account_id": account])
+            let bytes = try JSONSerialization.data(withJSONObject: ["tokens": ["access_token": access, "id_token": identity, "account_id": account]])
+            let path = candidate.codexHomeURL.appendingPathComponent("auth.json")
+            try bytes.write(to: path)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path.path)
+        }
+        let usage = UsageStore([profile, system]); usage.isPreview = false
+        let store = LocalProxyQueueStore(usageStore: usage), activity = DispatchActivityStore.live
+        let child = Process(); child.executableURL = URL(fileURLWithPath: "/bin/sleep"); child.arguments = ["60"]
+        try await Task.detached { try child.run() }.value
+        defer {
+            LocalProxyFixtureRuntime.afterRunning = nil; LocalProxyFixtureRuntime.failActivityCommit = false
+            HubConsoleModel.fixtureOnWarmUp = nil; HubConsoleModel.fixtureAvailability = .unavailable
+            if child.isRunning { child.terminate() }
+            store.process = nil
+        }
+        let run = UUID().uuidString, key = "post-reserve-fixture-key"
+        store.process = child; store.phase = .running; store.runID = run; store.controlKey = key
+        store.registeredPool = [profile.id: .init(home: profile.codexHomeURL, account: profile.recordedAccountKey,
+            accountID: profile.lastSnapshot!.accountID!)]
+        store.activeIDs = [profile.id]; store.preferences.enabledIDs = [profile.id]
+        HubConsoleModel.fixtureAvailability = .idle
+        let descriptor = Darwin.open(root.appendingPathComponent(DispatchActivityStore.lockName).path, O_RDWR | O_CREAT, 0o600)
+        guard descriptor >= 0 else { throw LocalProxyControlFixtureFailure.socket }
+        defer { _ = flock(descriptor, LOCK_UN); Darwin.close(descriptor) }
+        let selected = ProcessInfo.processInfo.environment["PROXY_POST_RESERVE_SCENARIO"]
+        let scenarios = ["write-recovers", "write-expires", "read-recovers", "read-expires", "read-revoked", "rollback-unknown"]
+        guard selected == nil || scenarios.contains(selected!) else { throw LocalProxyControlFixtureFailure.check("unknown post-reserve scenario") }
+        for scenario in scenarios where selected == nil || selected == scenario {
+            let requestID = controlFixtureRequestID(), expires = scenario.hasSuffix("expires") || scenario == "rollback-unknown"
+            var request = LocalProxyRequest(schemaVersion: 1, runID: run, key: key, command: "acquire", requestID: requestID, profileID: profile.id, leaseID: nil)
+            request.receivedAt = ProcessInfo.processInfo.systemUptime - (expires ? 17.2 : 16)
+            _ = await store.handle(.init(schemaVersion: 1, runID: run, key: key, command: "order", requestID: requestID, profileID: profile.id, leaseID: nil))
+            var held = false
+            let unlocked = DispatchSemaphore(value: 0)
+            func hold() {
+                held = flock(descriptor, LOCK_EX | LOCK_NB) == 0
+                guard held else { unlocked.signal(); return }
+                DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + (expires ? 1.3 : 0.2)) {
+                    if scenario == "rollback-unknown" { LocalProxyFixtureRuntime.failActivityCommit = true }
+                    _ = flock(descriptor, LOCK_UN)
+                    unlocked.signal()
+                }
+                if scenario == "read-revoked" {
+                    Task { @MainActor in
+                        try? await Task.sleep(nanoseconds: 50_000_000)
+                        store.setAccountEnabled(id: profile.id, enabled: false)
+                    }
+                }
+            }
+            if scenario.hasPrefix("read-") { LocalProxyFixtureRuntime.afterRunning = hold }
+            else { HubConsoleModel.fixtureOnWarmUp = hold }
+            let reply = await store.handle(request)
+            LocalProxyFixtureRuntime.afterRunning = nil; HubConsoleModel.fixtureOnWarmUp = nil
+            let didUnlock = await withCheckedContinuation { continuation in
+                DispatchQueue.global(qos: .userInitiated).async {
+                    continuation.resume(returning: unlocked.wait(timeout: .now() + 2) == .success)
+                }
+            }
+            LocalProxyFixtureRuntime.failActivityCommit = false
+            print("POST_RESERVE_OBSERVED \(scenario): ok=\(reply.ok), error=\(reply.error ?? "none"), resolution=\(reply.resolution ?? "none"), owned=\(store.leases.count)")
+            try expect(held && didUnlock, "\(scenario) actually contends and releases the registry lock")
+            if scenario.hasSuffix("recovers") {
+                try expect(reply.ok && reply.leaseID != nil && store.leases[reply.leaseID!]?.isAdmitted == true,
+                    "\(scenario) resumes the exact reserved tuple after lock release")
+                let released = LocalProxyQueueStore.maintainLease(.init(schemaVersion: 1, runID: run, key: key, command: "release",
+                    requestID: requestID, profileID: profile.id, leaseID: reply.leaseID), run: run, key: key, permittedProfiles: [profile.id])
+                try expect(released.ok, "\(scenario) releases the committed lease")
+                store.completeLeaseRelease(.init(schemaVersion: 1, runID: run, key: key, command: "release", requestID: requestID, profileID: profile.id, leaseID: reply.leaseID))
+            } else if scenario == "rollback-unknown" {
+                try expect(!reply.ok && reply.error == "admission_unknown" && reply.resolution == nil && reply.accessToken == nil && !store.leases.isEmpty,
+                    "failed rollback retains ownership and never claims transient recovery")
+                _ = try activity.abandonProxy(runID: run, requestID: requestID, profileID: profile.id, enforceFreshness: true)
+                store.forgetAbandoned(request)
+            } else {
+                let expected = scenario == "read-revoked" ? "not_participating" : "busy"
+                try expect(!reply.ok && reply.error == expected && reply.accessToken == nil && store.leases.isEmpty
+                    && (scenario == "read-revoked" || reply.resolution == "abandoned"),
+                    "\(scenario) denies credentials only after durable rollback")
+                try expect(try activity.isProxyAcquireAbandoned(runID: run, requestID: requestID, profileID: profile.id),
+                    "\(scenario) keeps its exact tuple denied")
+            }
+            try expect(try activity.read().leases.filter(\.occupied).isEmpty && store.leases.isEmpty,
+                "\(scenario) leaves no synthetic active reservation")
+            _ = await store.handle(.init(schemaVersion: 1, runID: run, key: key, command: "order_end", requestID: requestID, profileID: "", leaseID: nil))
+            if scenario == "read-revoked" { store.setAccountEnabled(id: profile.id, enabled: true) }
+        }
+        print("PASS: \(checks) post-reserve contention checks; synthetic credentials and sleeping child only")
+    }
+
+    @MainActor static func transientRefreshFixtures() async throws {
+        var checks = 0
+        func expect(_ value: @autoclosure () throws -> Bool, _ label: String) throws {
+            guard try value() else { throw LocalProxyControlFixtureFailure.check(label) }
+            checks += 1
+            print("TRANSIENT_REFRESH_CHECK \(checks): \(label)")
+        }
+        let root = DispatchParticipationPaths.supportDirectory()
+        try expect(root.path.contains("aigoodbro-proxy-host-fixture-"), "transient refresh uses an isolated support root")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let now = Date(), until = Date(timeIntervalSince1970: floor(Date().timeIntervalSince1970) + 3600)
+        let window = CodexQuotaWindowSnapshot(usedPercent: 20, resetsAt: now.addingTimeInterval(7200))
+        let profile = CodexProfile(id: "transient-refresh-profile", lastSnapshot: CodexAccountSnapshot(planType: "plus",
+            accountID: "transient-refresh-account", email: "transient-refresh@example.invalid", fetchedAt: now, fiveHour: window, sevenDay: window))
+        let usage = UsageStore([profile]); usage.isPreview = false
+        let store = LocalProxyQueueStore(usageStore: usage), run = UUID().uuidString
+        store.runID = run; store.activeIDs = [profile.id]; store.preferences.enabledIDs = [profile.id]
+        let stateDirectory = root.appendingPathComponent("LocalProxy", isDirectory: true)
+        try LocalProxyQueueStore.prepareStateDirectory(stateDirectory)
+        let persistentCooldown = stateDirectory.appendingPathComponent("cooldown.json")
+        let persistentBytes = Data("synthetic cooldown preservation sentinel".utf8)
+        try persistentBytes.write(to: persistentCooldown)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: persistentCooldown.path)
+        func event(_ state: String, deadline: Date? = nil) throws {
+            var value: [String: Any] = ["event": "account", "profileID": profile.id, "state": state]
+            if let deadline { value["cooldownUntil"] = deadline.timeIntervalSince1970 }
+            store.consume(try JSONSerialization.data(withJSONObject: value), run: run)
+            store.flushDisplayRows()
+        }
+        for state in ["busy", "credentials_busy", "temporary_error"] {
+            let expectedState = state == "temporary_error" ? "ready" : state
+            let expectedAccountState: String? = state == "temporary_error" ? nil : state
+            try event(state)
+            store.refreshStatus(displayFreshResultsImmediately: true); store.flushDisplayRows()
+            print("TRANSIENT_REFRESH_OBSERVED \(state): \(store.displayRows.first?.state ?? "missing")")
+            try expect(store.accountStates[profile.id] == expectedAccountState && store.displayRows.first?.state == expectedState,
+                "manual refresh projects \(state) as \(expectedState)")
+            try event(state)
+            store.refreshStatus(); store.flushDisplayRows()
+            try expect(store.accountStates[profile.id] == expectedAccountState && store.displayRows.first?.state == expectedState,
+                "periodic refresh projects \(state) as \(expectedState)")
+            try event(state)
+            store.policyChanged()
+            try expect(store.accountStates[profile.id] == expectedAccountState && store.displayRows.first?.state == expectedState,
+                "policy save projects \(state) as \(expectedState)")
+            try event(state, deadline: until)
+            store.refreshStatus(); store.policyChanged(); store.flushDisplayRows()
+            try expect(store.accountStates[profile.id] == state && store.displayRows.first?.state == state && store.cooldowns[profile.id] == until,
+                "live helper cooldown keeps \(state) and its exact deadline")
+            store.cooldowns[profile.id] = now.addingTimeInterval(-1)
+            store.refreshStatus(); store.flushDisplayRows()
+            try expect(store.accountStates[profile.id] == expectedAccountState && store.displayRows.first?.state == expectedState,
+                "expired helper cooldown projects \(state) as \(expectedState)")
+        }
+        try event("temporary_error")
+        usage.profiles[0].lastQuotaReadFailureAt = Date()
+        store.refreshStatus(); store.flushDisplayRows()
+        try expect(store.displayRows.first?.state == "quota_unknown", "cleared transient state still honors failed official quota evidence")
+        usage.profiles[0] = profile
+        usage.profiles[0].lastSnapshot?.fetchedAt = now.addingTimeInterval(-121)
+        try event("temporary_error")
+        store.refreshStatus(); store.flushDisplayRows()
+        try expect(store.displayRows.first?.state == "quota_unknown", "cleared transient state still honors stale official quota evidence")
+        usage.profiles[0] = profile
+        usage.profiles[0].lastSnapshot?.fiveHour?.usedPercent = 100
+        try event("temporary_error")
+        store.refreshStatus(); store.flushDisplayRows()
+        try expect(store.displayRows.first?.state == "quota", "cleared transient state cannot hide exhausted subscription")
+        usage.profiles[0] = profile
+        try event("login_expired")
+        store.refreshStatus(); store.policyChanged()
+        try expect(store.displayRows.first?.state == "login_expired", "quota refresh retains actual sign-in failure")
+        try expect(try Data(contentsOf: persistentCooldown) == persistentBytes,
+            "transient display recovery preserves helper cooldown bytes")
+        print("PASS: \(checks) transient refresh checks; synthetic events and quota snapshots only")
+    }
+
+    @MainActor static func registryContentionFixtures() async throws {
+        var checks = 0
+        func expect(_ value: @autoclosure () throws -> Bool, _ label: String) throws {
+            guard try value() else { throw LocalProxyControlFixtureFailure.check(label) }
+            checks += 1
+            print("REGISTRY_CONTENTION_CHECK \(checks): \(label)")
+        }
+        let root = DispatchParticipationPaths.supportDirectory()
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let snapshot = CodexAccountSnapshot(fetchedAt: Date(),
+            fiveHour: .init(usedPercent: 10, resetsAt: Date().addingTimeInterval(3600)),
+            sevenDay: .init(usedPercent: 10, resetsAt: Date().addingTimeInterval(86400)))
+        let profile = CodexProfile(id: "contention-profile", lastSnapshot: snapshot)
+        var system = CodexProfile(id: "contention-system", lastSnapshot: snapshot)
+        system.isSystemProfile = true
+        system.lastSnapshot?.email = "system@example.invalid"
+        system.lastSnapshot?.accountID = "system-fixture-account"
+        let usage = UsageStore([profile, system]); usage.isPreview = false
+        let store = LocalProxyQueueStore(usageStore: usage), activity = DispatchActivityStore.live
+        let child = Process(); child.executableURL = URL(fileURLWithPath: "/bin/sleep"); child.arguments = ["30"]
+        try await Task.detached { try child.run() }.value
+        defer { if child.isRunning { child.terminate() }; store.process = nil }
+        let run = UUID().uuidString, key = "contention-fixture-key"
+        store.process = child; store.phase = .running; store.runID = run; store.controlKey = key
+        store.registeredPool = [profile.id: .init(home: profile.codexHomeURL, account: profile.recordedAccountKey,
+            accountID: profile.lastSnapshot!.accountID!)]
+        store.activeIDs = [profile.id]
+        func request(_ id: String, key: String = "contention-fixture-key") -> LocalProxyRequest {
+            .init(schemaVersion: 1, runID: run, key: key, command: "acquire", requestID: id, profileID: profile.id, leaseID: nil)
+        }
+        func handle(_ input: LocalProxyRequest) async -> LocalProxyReply {
+            if store.membershipSnapshots[input.requestID] == nil {
+                _ = await store.handle(.init(schemaVersion: 1, runID: run, key: key, command: "order",
+                    requestID: input.requestID, profileID: profile.id, leaseID: nil))
+            }
+            return await store.handle(input)
+        }
+        let state = root.appendingPathComponent(DispatchActivityStore.stateName)
+        let lock = Darwin.open(root.appendingPathComponent(DispatchActivityStore.lockName).path, O_RDWR | O_CREAT, 0o600)
+        guard lock >= 0 else { throw LocalProxyControlFixtureFailure.socket }
+        defer { _ = flock(lock, LOCK_UN); Darwin.close(lock) }
+        try expect(flock(lock, LOCK_EX | LOCK_NB) == 0, "unrelated registry writer owns the lock")
+        let id = controlFixtureRequestID(), before = try? Data(contentsOf: state)
+        let ordered = await store.handle(.init(schemaVersion: 1, runID: run, key: key, command: "order",
+            requestID: id, profileID: profile.id, leaseID: nil))
+        try expect(ordered.ok, "read-only order snapshot works while registry writer holds the lock")
+        let refused = await store.handle(request(id))
+        try expect(refused.error == "control_busy" && !refused.ok && refused.leaseID == nil && refused.accessToken == nil,
+            "registry lock contention is not account occupancy")
+        try expect((try? Data(contentsOf: state)) == before && store.leases.isEmpty,
+            "pre-reservation lock refusal changes no registry bytes or lease")
+        let unauthorized = await store.handle(request(controlFixtureRequestID(), key: "wrong-fixture-key"))
+        try expect(unauthorized.error == "identity", "contention does not relax bridge authentication")
+        _ = flock(lock, LOCK_UN)
+        HubConsoleModel.fixtureAvailability = .busy
+        let retried = await store.handle(request(id))
+        try expect(retried.error == "busy" && retried.resolution == "abandoned",
+            "same safely refused tuple can reserve after unlock and preserves real warm-up occupancy")
+        try expect(try activity.isProxyAcquireAbandoned(runID: run, requestID: id, profileID: profile.id),
+            "post-reservation rollback retains its durable deny marker")
+        let repeatDenied = await store.handle(request(id))
+        try expect(repeatDenied.error == "acquire_abandoned" && repeatDenied.resolution == "abandoned",
+            "rolled-back tuple cannot be replayed as safe lock contention")
+        let holder = controlFixtureRequestID()
+        let lease = try activity.reserveProxy(account: profile.recordedAccountKey, alias: "fixture-alias", runID: run,
+            requestID: holder, profileID: profile.id, childPID: child.processIdentifier, enforceFreshness: true)
+        let whileOccupied = await handle(request(controlFixtureRequestID()))
+        try expect(whileOccupied.error == "busy" && whileOccupied.resolution == nil && whileOccupied.leaseID == nil,
+            "real active account still returns account busy before reservation")
+        try activity.updateProxy(lease, runID: run, requestID: holder, profileID: profile.id, state: "accepted")
+        let duplicate = await handle(request(holder))
+        try expect(duplicate.error == "busy" && duplicate.resolution == nil,
+            "duplicate reserved tuple is not safely retryable even after completion")
+        try expect(try activity.read().leases.filter(\.occupied).isEmpty && store.leases.isEmpty,
+            "contention and rollback leave no orphan active lease")
+        print("PASS: registry contention production host fixture (\(checks) checks)")
+    }
+
     private static func occupyControlFixtureWorker(_ release: DispatchSemaphore) {
         _ = release.wait(timeout: .now() + 10)
     }

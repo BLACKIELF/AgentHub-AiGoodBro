@@ -201,6 +201,30 @@ test('parseGraphResult folds Kilo extension and CLI rows into one history identi
   assert.equal(Object.hasOwn(contributions[0].perClient, 'kilocode'), false);
 });
 
+test('normalized Hermes history snapshots keep corrected total and cost single-counted', () => {
+  // Persisted history is already normalized: never interpret its public output
+  // bucket as a raw disjoint scanner row after the pin changes.
+  const legacy = normalizeHistory({ contributions: [{
+    date: '2026-10-10', tokens: 270, cost: 1.25, messages: 1, outputTokens: 140,
+    cacheReadTokens: 20, cacheWriteTokens: 10,
+    perClient: { hermes: { tokens: 270, cost: 1.25, messages: 1, outputTokens: 140 } },
+    perModel: { 'claude-sonnet-4-5': { tokens: 270, cost: 1.25, outputTokens: 140 } }
+  }] }, { todayKey: '2026-10-11' }).daily[0];
+  const corrected = parseGraphResult({ contributions: [{ date: '2026-10-11', clients: [{
+    client: 'hermes', modelId: 'claude-sonnet-4-5',
+    tokens: { input: 100, output: 100, reasoning: 40, cacheRead: 20, cacheWrite: 10 },
+    cost: 1.25, messages: 1
+  }] }] }).contributions[0];
+  assert.equal(legacy.tokens, 270);
+  assert.equal(corrected.tokens, 270);
+  assert.equal(legacy.cost, 1.25);
+  assert.equal(corrected.cost, 1.25);
+  assert.equal(legacy.outputTokens, 140);
+  assert.equal(corrected.outputTokens, 140);
+  assert.equal(legacy.perClient.hermes.cost, 1.25);
+  assert.equal(corrected.perClient.hermes.cost, 1.25);
+});
+
 test('parseGraphResult folds Antigravity CLI and extension graph rows into the tracked identity', () => {
   const { contributions } = parseGraphResult({
     contributions: [{

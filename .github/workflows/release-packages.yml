@@ -47,6 +47,8 @@ jobs:
   macos:
     needs: resolve-version
     runs-on: macos-14
+    env:
+      RELEASE_ARCHITECTURES: ${{ github.event_name == 'workflow_dispatch' && inputs.windows == true && 'arm64 x86_64' || 'arm64' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -55,14 +57,14 @@ jobs:
       - name: Prepare companion build toolchain
         uses: actions/setup-go@v5
         with:
-          go-version-file: Companion/Hub/go.mod
+          go-version-file: Companion/LocalProxy/go.mod
           cache: false
       - name: Mount pinned official desktop runtimes
         shell: bash
         run: |
           set -euo pipefail
           test "$(uname -m)" = arm64
-          for arch in arm64 x86_64; do
+          for arch in $RELEASE_ARCHITECTURES; do
             case "$arch" in
               arm64) asset_arch=arm64; env_arch=ARM64 ;;
               x86_64) asset_arch=x64; env_arch=X86_64 ;;
@@ -104,7 +106,7 @@ jobs:
             fi
           done
       - name: Build and verify macOS DMGs
-        run: make release-package VERSION="${{ needs.resolve-version.outputs.version }}"
+        run: make release-package VERSION="${{ needs.resolve-version.outputs.version }}" RELEASE_ARCHITECTURES="$RELEASE_ARCHITECTURES"
       - name: Upload macOS artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -178,8 +180,9 @@ jobs:
         working-directory: dist
         env:
           VERSION: ${{ needs.resolve-version.outputs.version }}
+          RELEASE_ARCHITECTURES: ${{ github.event_name == 'workflow_dispatch' && inputs.windows == true && 'arm64 x86_64' || 'arm64' }}
         run: |
-          for arch in arm64 x86_64; do
+          for arch in $RELEASE_ARCHITECTURES; do
             shasum -a 256 -c "AiGoodBro-${VERSION}-mac-${arch}.dmg.sha256"
           done
       - name: Verify optional cross-platform bundle

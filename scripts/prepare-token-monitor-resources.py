@@ -34,7 +34,7 @@ SHARED_FRAMEWORK = 'Contents/Frameworks/Electron Framework.framework/Versions/A/
 FUSE_SENTINEL = b'dL7pKGdnNz796PbbjQWNKmHXBZaB9tsX'
 DEFAULT_CACHE = Path.home() / 'Library/Caches/AiGoodBro/Next/token-monitor-downloads'
 UPSTREAM = '5d2db368d8313415763860d594de00e46a663418'
-FORK = 'd5e8ad9b25bfafb43b5b6804940929b728a6f48a'
+FORK = 'fa5f0c13324838d1a988fda317597f9b90da7ad0'
 BAD_PARTS = {'.git', '.env', '.DS_Store', '__pycache__', '.pytest_cache',
              'auth.json', 'credentials.json', '.npmrc', '.ssh', '.aws',
              'runtime-paths.json', 'runtime-python.txt'}
@@ -205,7 +205,7 @@ def fetch(url, cache, expected, algorithm, offline):
             need(re.fullmatch(r'https://nodejs.org/dist/v22\.23\.2/node-v22\.23\.2-darwin-(arm64|x64)\.tar\.gz', url),
                  'unapproved_download_url')
         else:
-            need(re.fullmatch(r'https://github\.com/Javis603/tokscale/releases/download/token-monitor-d5e8ad9b/tokscale-darwin-(arm64|x64)', url),
+            need(re.fullmatch(r'https://github\.com/Javis603/tokscale/releases/download/token-monitor-fa5f0c13/tokscale-darwin-(arm64|x64)', url),
                  'unapproved_download_url')
         for hop in range(2):
             result = subprocess.run(['/usr/bin/curl', '--disable', '--proto', '=https', '--tlsv1.2',
@@ -428,7 +428,7 @@ def load_production(source, arch):
          'unapproved_node_url')
     tpin = pin['tokscale']['platforms']['darwin-' + arch]
     sha_pin(tpin['sha256'])
-    need(tpin['url'] == f'https://github.com/Javis603/tokscale/releases/download/token-monitor-d5e8ad9b/tokscale-darwin-{arch}',
+    need(tpin['url'] == f'https://github.com/Javis603/tokscale/releases/download/token-monitor-fa5f0c13/tokscale-darwin-{arch}',
          'unapproved_tokscale_url')
     need(tpin['package'] == '@tokscale/cli-darwin-' + arch, 'wrong_tokscale_package')
     return pin
@@ -483,6 +483,25 @@ def assemble(source, tree, pin, arch, cache, offline, shared_runtime=None):
     check_arch(blob, arch)
     target.write_bytes(blob)
     target.chmod(0o755)
+    # Record the real extracted package metadata and selected scanner pin. Source
+    # vendor/manifest.json is historical until this deterministic stage succeeds.
+    vendor_pin = read_json(tree / 'upstream/scripts/vendor/tokscale.json')
+    need(vendor_pin['commit'] == pin['tokscale']['commit'], 'vendor_pin_mismatch')
+    staged_packages = []
+    for key, package in sorted(packages.items()):
+        meta = read_json(tree / 'vendor' / key / 'package.json')
+        staged_packages.append({'path': key, 'name': meta['name'], 'version': meta['version'],
+                                'resolved': package['resolved'], 'integrity': package['integrity']})
+    vendor_manifest = {
+        'manifestVersion': 1, 'generatedBy': 'scripts/prepare-token-monitor-resources.py',
+        'sourceLock': 'upstream/package-lock.json', 'platform': 'darwin-' + arch, 'roots': roots,
+        'tokscalePin': {key: vendor_pin[key] for key in ('mode', 'fork', 'commit', 'baseVersion', 'releaseTag')},
+        'packages': staged_packages,
+        'totals': {'packages': len(packages), 'staged': len(staged_packages),
+                   'missing': 0, 'versionMismatches': 0}
+    }
+    vendor_manifest['tokscalePin']['platformSha256'] = vendor_pin['platforms']
+    (tree / 'vendor/manifest.json').write_bytes(canonical(vendor_manifest))
     validate_layout(tree, packages)
     validate_import_boundaries(tree)
     native = native_paths(tree, arch)
@@ -643,13 +662,13 @@ def verify_electron_node_fuse(blob):
     return True
 
 
-def shared_runtime_descriptor(app, arch):
+def shared_runtime_descriptor(app, arch, desktop_receipt=None):
     """Verify the signed pinned helper before using its Node mode; never flip fuses."""
     spec = importlib.util.spec_from_file_location('token_core_package', ROOT / 'scripts/prepare-token-monitor-desktop.py')
     desktop = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(desktop)
     manifest = desktop.select_manifest(read_json(desktop.MANIFEST), 'arm64' if arch == 'arm64' else 'x86_64')
-    desktop.verify_bundle(app, manifest, check_signature=True)
+    desktop.verify_bundle(app, manifest, check_signature=True, trusted_receipt=desktop_receipt)
     executable = app / 'Contents/MacOS/AiGoodBro Token Core'
     framework = app / SHARED_FRAMEWORK
     blob = framework.read_bytes()
@@ -671,7 +690,7 @@ def shared_app_for(resources):
     return resources.parent / 'Helpers/AiGoodBro Token Core.app'
 
 
-def verify_resources(resources, arch, cache, source=SOURCE, bundle=None, receipt=None, identity='-'):
+def verify_resources(resources, arch, cache, source=SOURCE, bundle=None, receipt=None, identity='-', desktop_receipt=None):
     need(bundle is not None and resources.resolve() == (bundle / 'Contents/Resources').resolve(),
          'final_bundle_required')
     receipt = receipt_path(receipt, resources, bundle)
@@ -679,7 +698,7 @@ def verify_resources(resources, arch, cache, source=SOURCE, bundle=None, receipt
     codesign(bundle)
     pin = load_production(source, arch)
     shared_app = shared_app_for(resources) if (resources / 'TokenMonitorEngine/RUNTIME.json').exists() else None
-    shared = shared_runtime_descriptor(shared_app, arch) if shared_app else None
+    shared = shared_runtime_descriptor(shared_app, arch, desktop_receipt) if shared_app else None
     with tempfile.TemporaryDirectory(prefix='token-monitor-verify-') as temporary:
         expected = assemble(source, Path(temporary) / 'TokenMonitorEngine', pin, arch, cache, True, shared)
         check_receipt(resources / 'TokenMonitorEngine', expected, receipt, identity)
@@ -705,12 +724,13 @@ def main():
     parser.add_argument('--sign-identity', default='-')
     parser.add_argument('--trusted-receipt', type=Path, required=True,
                         help='Independent trusted build receipt outside the app and public dist')
+    parser.add_argument('--desktop-trusted-receipt', type=Path, help='Independent Desktop build receipt for the shared signed scanner')
     parser.add_argument('--verify', action='store_true')
     parser.add_argument('--bundle', type=Path)
     args = parser.parse_args()
     arch = arch_name(args.arch)
     if args.verify:
-        verify_resources(args.resources, arch, args.cache, bundle=args.bundle, receipt=args.trusted_receipt, identity=args.sign_identity)
+        verify_resources(args.resources, arch, args.cache, bundle=args.bundle, receipt=args.trusted_receipt, identity=args.sign_identity, desktop_receipt=args.desktop_trusted_receipt)
         print('TokenMonitorEngine: frozen payload and final signatures verified')
         return
     receipt = receipt_path(args.trusted_receipt, args.resources, args.bundle)
@@ -729,7 +749,7 @@ def main():
             with target.open('xb') as stream:
                 stream.write(blob)
     shared_app = shared_app_for(args.resources) if args.shared_desktop_runtime else None
-    shared = shared_runtime_descriptor(shared_app, arch) if shared_app else None
+    shared = shared_runtime_descriptor(shared_app, arch, args.desktop_trusted_receipt) if shared_app else None
     args.resources.mkdir(parents=True, exist_ok=True)
     output = args.resources / 'TokenMonitorEngine'
     need(not output.exists() and not output.is_symlink(), 'output_already_exists')

@@ -68,7 +68,7 @@ import SwiftUI
                     let home = VStack(alignment: .leading, spacing: 14) {
                         Text(language.text("合成预览 · 现有功能优化", "Synthetic preview · existing feature improvements"))
                             .font(.caption2).foregroundStyle(.secondary)
-                        HomeSkillShelf(language: language)
+                        HomeSkillShelf(language: language, visibility: .preview())
                         Text(language.text("额度数据新鲜度", "Quota freshness")).font(.headline)
                         ForEach(0..<3, id: \.self) { index in
                             quotaExample(index: index, now: now, language: language)

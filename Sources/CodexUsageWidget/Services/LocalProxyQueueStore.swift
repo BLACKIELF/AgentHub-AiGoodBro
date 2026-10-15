@@ -107,6 +107,7 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
     @Published private(set) var creditSecondaryFloor = 1500
     @Published private(set) var legacyCooldownRecoveryIDs = Set<String>()
     @Published private(set) var isPreparingLegacyCooldownRecovery = false
+    @Published private(set) var plusPolicyMessage: String?
     var canEdit: Bool { process == nil && (phase == .stopped || phase == .failed) && leases.isEmpty && exitCleanupID == nil }
     var canReorder: Bool {
         !usageStore.isPreview && !preferencesBlocked && !finishing
@@ -130,13 +131,13 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
     func canToggleAccount(id: String) -> Bool {
         guard !usageStore.isPreview, !preferencesBlocked, !finishing, rows.contains(where: { $0.id == id }) else { return false }
         if canEdit { return true }
-        guard phase == .running, process?.isRunning == true, registeredPool[id] != nil else { return false }
+        guard phase == .running, process?.isRunning == true else { return false }
         // Existing requests retain their order and admitted leases. Removal
         // also blocks later admissions from an older waiting/retrying request;
         // unrelated traffic must not lock every account's participation switch.
         // Removal remains available even when the profile's current identity
         // differs; re-enabling requires the binding verified at startup.
-        return preferences.enabledIDs.contains(id) || isRegisteredBindingCurrent(id)
+        return preferences.enabledIDs.contains(id) || (registeredPool[id] != nil && isRegisteredBindingCurrent(id))
     }
     var canStop: Bool { (process != nil || exitCleanupID != nil) && phase != .stopping }
     var canFinishTermination: Bool { process == nil && leases.isEmpty && exitCleanupID == nil }
@@ -170,10 +171,12 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
         let lastResortIDs: [String]
         let deferredIDs: [String]
         let creditFallback: Bool
+        let revocations: [String: UUID]
         let capturedAt: TimeInterval
     }
     private var registeredPool: [String: PoolBinding] = [:]
     private var membershipSnapshots: [String: MembershipSnapshot] = [:]
+    private var memberRevocations: [String: UUID] = [:]
     // HTTP requests have a 15-minute bound. Completed requests send an
     // idempotent order_end; this timeout bounds leaked snapshots after failure.
     private let membershipSnapshotLifetime: TimeInterval = 16 * 60
@@ -228,7 +231,7 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
     init(usageStore: UsageStore, previewPreferences: LocalProxyPreferences? = nil) {
         self.usageStore = usageStore
         directory = DispatchParticipationPaths.supportDirectory()
-        if usageStore.isPreview, let previewPreferences, previewPreferences.validAccountPolicies,
+        if usageStore.isPreview, let previewPreferences, previewPreferences.validAccountPolicies, previewPreferences.validAccountRepresentatives,
             previewPreferences.validLastIDs, previewPreferences.validLastOverrides
         {
             preferences = previewPreferences
@@ -240,7 +243,7 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
                 {
                     let saved = try JSONDecoder().decode(LocalProxyPreferences.self, from: data)
                     guard saved.schemaVersion == 1, saved.order.count <= 1000, Set(saved.order).count == saved.order.count,
-                        saved.enabledIDs.count <= 1000, saved.validAccountPolicies, saved.validLastIDs, saved.validLastOverrides,
+                        saved.enabledIDs.count <= 1000, saved.validAccountPolicies, saved.validAccountRepresentatives, saved.validLastIDs, saved.validLastOverrides,
                         LocalProxyPreferences.validCreditFloors(primary: saved.creditFloors.primary, secondary: saved.creditFloors.secondary)
                     else { throw LocalProxyFailure.unavailable }
                     preferences = saved
@@ -316,6 +319,65 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
         policyChanged()
         return true
     }
+    private var plusPolicyRows: [LocalProxyQueueRow] {
+        rows.filter { row in
+            usageStore.profiles.contains { $0.id == row.id && !$0.isSystemProfile && $0.resolvedPlanType == "plus" }
+        }
+    }
+    var plusPolicyTargetCount: Int { plusPolicyRows.count }
+    var uniformPlusFiveHourUsedLimit: Double? {
+        let targets = plusPolicyRows
+        guard let first = targets.first?.policy.fiveHourUsedLimit,
+            targets.allSatisfy({ $0.policy.fiveHourUsedLimit == first })
+        else { return nil }
+        return first
+    }
+    var canApplyPlusFiveHourUsedLimit: Bool {
+        let targets = plusPolicyRows
+        return canEditPolicy && !targets.isEmpty && Set(targets.map(\.id)).count == targets.count
+            && targets.allSatisfy { row in
+                let matches = usageStore.profiles.filter { $0.id == row.id }
+                return matches.count == 1 && matches.first?.isSystemProfile == false
+                    && matches.first?.lastSnapshot?.accountID?.isEmpty == false && canEditPolicy(for: row.id)
+            }
+    }
+    @discardableResult
+    func setPlusFiveHourUsedLimit(_ limit: Double) -> Bool {
+        let language = WidgetLanguage.storedOrAutomatic()
+        guard limit.isFinite, (0...100).contains(limit) else {
+            plusPolicyMessage = language.text("请输入 0–100 的已用百分比。", "Enter a used percentage from 0 to 100.")
+            return false
+        }
+        guard plusPolicyTargetCount > 0 else {
+            plusPolicyMessage = language.text("当前没有已核实的 Plus 账号；其他及未知套餐规则未修改。", "No verified Plus accounts; other and unknown plan rules remain unchanged.")
+            return false
+        }
+        guard canApplyPlusFiveHourUsedLimit else {
+            plusPolicyMessage = language.text(
+                "全部规则未修改：有 Plus 账号身份或运行绑定无法核实，请核对后再试。",
+                "No rules changed: a Plus account identity or running binding could not be verified. Check it and retry.")
+            return false
+        }
+        let targets = plusPolicyRows
+        let previous = preferences
+        var policies = preferences.accountPolicies ?? [:]
+        for row in targets {
+            var policy = preferences.policy(for: row.id)
+            policy.fiveHourUsedLimit = limit
+            policies[row.id] = policy
+        }
+        preferences.accountPolicies = policies
+        guard preferences.validAccountPolicies, savePreferences() else {
+            preferences = previous
+            plusPolicyMessage = language.text("全部规则未保存，仍使用原规则。", "No rules were saved; previous rules remain.")
+            return false
+        }
+        policyChanged()
+        plusPolicyMessage = language.text(
+            "已为 \(targets.count) 个 Plus 账号保存 5 小时已用上限 \(limit.formatted())%；其他套餐不变。",
+            "Saved a \(limit.formatted())% 5h used limit for \(targets.count) Plus accounts; other plans remain unchanged.")
+        return true
+    }
     private func policyChanged() {
         policyRevision &+= 1
         clearRefreshableAccountStates()
@@ -324,21 +386,32 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
     }
     private func clearRefreshableAccountStates() {
         let now = Date()
+        let refreshable: Set<String> = ["quota", "usage_limit", "subscription_pending", "quota_unknown", "temporary_error"]
         accountStates = accountStates.filter { id, state in
-            // A fresh host snapshot does not clear the helper's durable cooldown.
-            // Keep its quota state until expiry or an explicit helper state update.
-            if state == "quota", let until = cooldowns[id], until > now { return true }
-            return !["quota", "usage_limit", "subscription_pending", "quota_unknown"].contains(state)
+            // Quota refresh cannot prove an account or credential gate became idle.
+            // Keep the helper's real quota/error cooldown effective until expiry.
+            if let until = cooldowns[id], until > now { return true }
+            return !refreshable.contains(state)
         }
     }
     func setAccountEnabled(id: String, enabled: Bool) {
-        guard canToggleAccount(id: id) else { return }
+        guard canToggleAccount(id: id), !enabled || canEdit || isRegisteredBindingCurrent(id),
+            let profile = usageStore.profiles.first(where: { $0.id == id })
+        else { return }
+        let identityKey = representativeIdentityKey(for: profile)
+        let mirrorIDs = Set(usageStore.profiles.filter { !$0.isSystemProfile && representativeIdentityKey(for: $0) == identityKey }.map(\.id))
+            .union(registeredPool.filter { DispatchActivityStore.hash($0.value.account) == identityKey }.map(\.key))
         let previous = preferences
-        if enabled { preferences.enabledIDs.insert(id) } else { preferences.enabledIDs.remove(id) }
+        preferences.knownIDs.formUnion(mirrorIDs)
+        if enabled { preferences.enabledIDs.formUnion(mirrorIDs) } else { preferences.enabledIDs.subtract(mirrorIDs) }
         guard savePreferences() else {
             preferences = previous
             rebuildRows()
             return
+        }
+        if !enabled {
+            let revocation = UUID()
+            for member in mirrorIDs { memberRevocations[member] = revocation }
         }
         if phase == .running {
             activeIDs = preferences.enabledIDs.intersection(Set(registeredPool.keys))
@@ -743,9 +816,11 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
             var pool: [String: PoolBinding] = [:]
             for row in rows {
                 guard let profile = usageStore.profiles.first(where: { $0.id == row.id }),
-                    !profile.isSystemProfile, let accountID = profile.lastSnapshot?.accountID,
-                    !accountID.isEmpty, pool[row.id] == nil
+                    !profile.isSystemProfile, pool[row.id] == nil
                 else { throw LocalProxyFailure.identity }
+                // A known visible representative can temporarily lack identity.
+                // It remains editable but cannot join this verified run.
+                guard let accountID = profile.lastSnapshot?.accountID, !accountID.isEmpty else { continue }
                 pool[row.id] = PoolBinding(
                     home: profile.codexHomeURL,
                     account: profile.recordedAccountKey, accountID: accountID)
@@ -753,7 +828,8 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
             guard !pool.isEmpty, pool.count <= 100 else { throw LocalProxyFailure.unavailable }
             registeredPool = pool
             membershipSnapshots = [:]
-            activeIDs = Set(rows.filter(\.isEnabled).map(\.id))
+            memberRevocations = [:]
+            activeIDs = Set(rows.filter(\.isEnabled).map(\.id)).intersection(Set(pool.keys))
             accountStates = [:]
             cooldowns = [:]
             startupStep = "bridge"
@@ -1068,6 +1144,7 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
         activeIDs = []
         registeredPool = [:]
         membershipSnapshots = [:]
+        memberRevocations = [:]
         refreshMembershipWaitState()
         let complete = leases.isEmpty && !registryCleanupFailed
         if complete { exitCleanupID = nil }
@@ -1111,7 +1188,7 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
     private func isMembershipSnapshotCurrent(_ snapshot: MembershipSnapshot, requestID: String) -> Bool {
         guard let current = membershipSnapshots[requestID], current.capturedAt == snapshot.capturedAt,
             current.order == snapshot.order, current.lastResortIDs == snapshot.lastResortIDs, current.deferredIDs == snapshot.deferredIDs,
-            current.creditFallback == snapshot.creditFallback
+            current.creditFallback == snapshot.creditFallback, current.revocations == snapshot.revocations
         else { return false }
         let elapsed = ProcessInfo.processInfo.systemUptime - current.capturedAt
         return elapsed >= 0 && elapsed < membershipSnapshotLifetime
@@ -1175,7 +1252,8 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
             let lastResortIDs: [String] = []
             let deferredIDs = order.filter { orderingGroup(for: $0) == 1 }
             membershipSnapshots[request.requestID] = MembershipSnapshot(
-                order: order, lastResortIDs: lastResortIDs, deferredIDs: deferredIDs, creditFallback: creditFallbackEnabled, capturedAt: now)
+                order: order, lastResortIDs: lastResortIDs, deferredIDs: deferredIDs, creditFallback: creditFallbackEnabled,
+                revocations: memberRevocations.filter { order.contains($0.key) }, capturedAt: now)
             refreshMembershipWaitState()
             return LocalProxyReply(ok: true, order: order, lastResortIDs: lastResortIDs, deferredIDs: deferredIDs, creditFallback: creditFallbackEnabled)
         }
@@ -1201,7 +1279,14 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
         else { return .failure(.identity) }
         guard activeIDs.contains(request.profileID), preferences.enabledIDs.contains(request.profileID)
         else { return .failure(.notParticipating) }
-        let requestMembers = Set(membership.order)
+        guard membership.revocations[request.profileID] == memberRevocations[request.profileID]
+        else { return .failure(.notParticipating) }
+        func requestMembers() -> Set<String> {
+            Set(
+                membership.order.filter {
+                    activeIDs.contains($0) && preferences.enabledIDs.contains($0) && membership.revocations[$0] == memberRevocations[$0]
+                })
+        }
         guard ProcessInfo.processInfo.systemUptime < admissionDeadline else { return .failure(.admissionDeadline) }
         let desktopPass = request.command.contains("desktop")
         let policy = preferences.resolvedPolicy(for: request.profileID)
@@ -1209,7 +1294,7 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
         let floor: Int? = request.command.hasSuffix("primary") ? policy.creditPrimaryFloor : request.command.hasSuffix("secondary") ? policy.creditSecondaryFloor : nil
         guard floor == nil || (creditFallbackEnabled && policy.allowsCredits) else { return .failure(.quota) }
         if floor != nil
-            && requestMembers.intersection(activeIDs).intersection(preferences.enabledIDs).contains(where: { localProxyReleaseFence.contains(runID: request.runID, profileID: $0) })
+            && requestMembers().contains(where: { localProxyReleaseFence.contains(runID: request.runID, profileID: $0) })
         {
             // A prior paid lease has committed its terminal registry state, but
             // its quota refresh has not yet crossed back to the UI projection.
@@ -1229,12 +1314,14 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
             // already admitted response remain independent of this check.
             guard activeIDs.contains(request.profileID), preferences.enabledIDs.contains(request.profileID)
             else { return .notParticipating }
+            guard membership.revocations[request.profileID] == memberRevocations[request.profileID]
+            else { return .notParticipating }
             // A policy edit may occur across any await below. Releasing a token
             // under superseded spending limits is never allowed. A rolled-back
             // tuple stays denied; a fresh request can use the current policy.
             guard revision == policyRevision else { return .policyChanged }
             if floor != nil
-                && requestMembers.intersection(activeIDs).intersection(preferences.enabledIDs).contains(where: {
+                && requestMembers().contains(where: {
                     localProxyReleaseFence.contains(runID: request.runID, profileID: $0)
                 })
             {
@@ -1242,7 +1329,7 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
             }
             if floor != nil,
                 let failure = LocalProxyAdmission.creditPool(
-                    usageStore.profiles, activeIDs: requestMembers.intersection(activeIDs).intersection(preferences.enabledIDs), refreshAfter: creditRefreshAfter,
+                    usageStore.profiles, activeIDs: requestMembers(), refreshAfter: creditRefreshAfter,
                     policies: preferences.accountPolicies ?? [:])
             {
                 return failure
@@ -1254,8 +1341,15 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
         // whole frozen pool, including releases that may have consumed quota.
         // The existing admission deadline and all identity/credit checks remain.
         if admission(initial) == .quotaUnknown {
-            usageStore.refreshLocalProxyQuotas(profileIDs: floor == nil ? [profile.id] : requestMembers)
-            for _ in 0..<30 {
+            // A bad account must not consume the whole selector opportunity.
+            // Keep time for final admission and let later healthy accounts run.
+            let refreshDeadline = min(admissionDeadline - 1, ProcessInfo.processInfo.systemUptime + LocalProxyAdmission.quotaRefreshWait)
+            let failuresBefore = Dictionary(
+                usageStore.profiles
+                    .filter { (floor == nil ? Set([profile.id]) : requestMembers()).contains($0.id) }
+                    .map { ($0.id, $0.lastQuotaReadFailureAt ?? .distantPast) }, uniquingKeysWith: { max($0, $1) })
+            usageStore.refreshLocalProxyQuotas(profileIDs: floor == nil ? [profile.id] : requestMembers())
+            while true {
                 guard !Task.isCancelled, !finishing, phase == .running, process === child,
                     child.isRunning, request.runID == runID,
                     isMembershipSnapshotCurrent(membership, requestID: request.requestID)
@@ -1263,7 +1357,14 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
                 guard ProcessInfo.processInfo.systemUptime < admissionDeadline else { return .failure(.admissionDeadline) }
                 guard let updated = currentBinding(profile, system: system) else { return .failure(.identity) }
                 if admission(updated) != .quotaUnknown { break }
-                let left = admissionDeadline - ProcessInfo.processInfo.systemUptime
+                if usageStore.profiles.contains(where: { candidate in
+                    guard let before = failuresBefore[candidate.id], let failedAt = candidate.lastQuotaReadFailureAt else { return false }
+                    return failedAt > before && failedAt >= (candidate.lastSnapshot?.fetchedAt ?? .distantPast)
+                }) {
+                    return .failure(.quotaUnknown)
+                }
+                guard ProcessInfo.processInfo.systemUptime < refreshDeadline else { return .failure(.quotaUnknown) }
+                let left = refreshDeadline - ProcessInfo.processInfo.systemUptime
                 try? await Task.sleep(nanoseconds: UInt64(min(0.1, max(0, left)) * 1_000_000_000))
             }
         }
@@ -1312,7 +1413,12 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
             refreshMembershipWaitState()
         } catch DispatchActivityStore.Failure.acquireAbandoned {
             return LocalProxyReply(ok: false, error: LocalProxyFailure.acquireAbandoned.rawValue, resolution: "abandoned")
-        } catch DispatchActivityStore.Failure.busy { return .failure(.busy) } catch DispatchActivityStore.Failure.deadline { return .failure(.admissionDeadline) } catch {
+        } catch DispatchActivityStore.Failure.accountBusy { return .failure(.busy) } catch DispatchActivityStore.Failure.busy {
+            // The registry lock refused the write before a reservation existed.
+            // Keep this distinct from an occupied account or duplicate tuple;
+            // only this confirmed no-mutation refusal is safe for bridge retry.
+            return .failure(.controlBusy)
+        } catch DispatchActivityStore.Failure.deadline { return .failure(.admissionDeadline) } catch {
             return .failure(.unavailable)
         }
         func reject(_ reason: LocalProxyFailure) async -> LocalProxyReply {
@@ -1352,26 +1458,36 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
                 let current = currentBinding(latest, system: system)
             else { return await reject(.stopping) }
             if let failure = admission(current) { return await reject(failure) }
-            try await Task.detached {
-                try DispatchActivityStore.live.updateProxy(lease.id, runID: lease.runID, requestID: lease.requestID, profileID: lease.profileID, state: "running")
-            }.value
+            do {
+                try await updateAfterContention(lease, state: "running", deadline: admissionDeadline)
+            } catch DispatchActivityStore.Failure.busy {
+                return await reject(.busy)
+            }
             guard ProcessInfo.processInfo.systemUptime < admissionDeadline else { return await reject(.admissionDeadline) }
             guard !finishing, phase == .running, process === child, child.isRunning, request.runID == runID,
                 leases[lease.id] != nil, isMembershipSnapshotCurrent(membership, requestID: request.requestID),
                 let final = currentBinding(latest, system: system)
             else { return await reject(.stopping) }
             if let failure = admission(final) { return await reject(failure) }
+            func verifyFinalAdmission() throws {
+                guard !Task.isCancelled, !finishing, phase == .running, process === child,
+                    child.isRunning, request.runID == runID, leases[lease.id] != nil,
+                    isMembershipSnapshotCurrent(membership, requestID: request.requestID),
+                    let checked = currentBinding(final, system: system)
+                else { throw LocalProxyFailure.stopping }
+                if let failure = admission(checked) { throw failure }
+            }
             let persistedActive: Bool
             do {
-                persistedActive = try DispatchActivityStore.live.isProxyLeaseActive(
-                    lease.id, runID: lease.runID, requestID: lease.requestID,
-                    profileID: lease.profileID, childPID: child.processIdentifier
-                ) {
-                    if let failure = admission(final) { throw failure }
-                }
+                persistedActive = try await isProxyLeaseActiveAfterContention(
+                    lease, childPID: child.processIdentifier, deadline: admissionDeadline, verifyAdmission: verifyFinalAdmission)
+                try verifyFinalAdmission()
+            } catch DispatchActivityStore.Failure.busy {
+                return await reject(.busy)
             } catch let failure as LocalProxyFailure {
                 return await reject(failure)
             } catch { return await reject(.admissionUnknown) }
+            guard ProcessInfo.processInfo.systemUptime < admissionDeadline else { return await reject(.admissionDeadline) }
             guard persistedActive else { return await reject(.stopping) }
             leases[lease.id]?.isAdmitted = true
             rebuildRows()
@@ -1447,12 +1563,38 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
     private func updateAfterContention(_ lease: Lease, state: String, deadline: TimeInterval) async throws {
         while true {
             do {
-                try update(lease, state: state)
+                try await Task.detached {
+                    try DispatchActivityStore.live.updateProxy(
+                        lease.id, runID: lease.runID, requestID: lease.requestID,
+                        profileID: lease.profileID, state: state)
+                }.value
                 return
             } catch DispatchActivityStore.Failure.busy {
+                let left = deadline - ProcessInfo.processInfo.systemUptime
+                guard left > 0 else { throw DispatchActivityStore.Failure.busy }
+                // Only a lock refusal before mutation can retry within this budget.
+                try await Task.sleep(nanoseconds: UInt64(min(0.05, left) * 1_000_000_000))
                 guard ProcessInfo.processInfo.systemUptime < deadline else { throw DispatchActivityStore.Failure.busy }
-                // Yield the main actor; only a lock refusal before mutation can retry.
-                try await Task.sleep(nanoseconds: 50_000_000)
+            }
+        }
+    }
+
+    private func isProxyLeaseActiveAfterContention(
+        _ lease: Lease, childPID: pid_t, deadline: TimeInterval, verifyAdmission: @escaping () throws -> Void
+    ) async throws -> Bool {
+        while true {
+            // Retry may resume after policy, binding, membership or lifecycle changed.
+            try verifyAdmission()
+            do {
+                return try DispatchActivityStore.live.isProxyLeaseActive(
+                    lease.id, runID: lease.runID, requestID: lease.requestID,
+                    profileID: lease.profileID, childPID: childPID, verifyAdmission: verifyAdmission)
+            } catch DispatchActivityStore.Failure.busy {
+                let left = deadline - ProcessInfo.processInfo.systemUptime
+                guard left > 0 else { throw DispatchActivityStore.Failure.busy }
+                try await Task.sleep(nanoseconds: UInt64(min(0.05, left) * 1_000_000_000))
+                try verifyAdmission()
+                guard ProcessInfo.processInfo.systemUptime < deadline else { throw DispatchActivityStore.Failure.busy }
             }
         }
     }
@@ -1524,9 +1666,41 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
             profileIDs: Set(usageStore.profiles.filter { !$0.isSystemProfile }.map(\.id)))
         completeLegacyCooldownRecoveryPreparation()
         let central = usageStore.profiles.first(where: \.isSystemProfile)
+        var representatives = preferences.accountRepresentatives ?? [:]
+        let rememberedIDs = Set(representatives.values)
+        let candidates = usageStore.profiles.filter {
+            !$0.isSystemProfile
+                && ($0.lastSnapshot?.accountID?.isEmpty == false || preferences.knownIDs.contains($0.id)
+                    || rememberedIDs.contains($0.id) || registeredPool[$0.id] != nil)
+        }
+        let groups = Dictionary(grouping: candidates, by: representativeIdentityKey)
+        var selected: [String: String] = [:]
+        for (key, group) in groups {
+            let oldRepresentative = representatives[key]
+            let registered = group.first { profile in registeredPool[profile.id].map { DispatchActivityStore.hash($0.account) == key } == true }
+            let persisted = group.first { $0.id == representatives[key] }
+            let known = group.filter { preferences.knownIDs.contains($0.id) }
+            let configured = known.first {
+                preferences.lastOverrides?[$0.id] != nil || preferences.priorityIDs.contains($0.id)
+                    || preferences.lastIDs?.contains($0.id) == true || preferences.accountPolicies?[$0.id] != nil
+            }
+            let ordered = preferences.order.compactMap { id in known.first { $0.id == id } }.first
+            guard let representative = registered ?? persisted ?? configured ?? ordered ?? known.first ?? group.first else { continue }
+            selected[key] = representative.id
+            if persisted == nil, let oldRepresentative, oldRepresentative != representative.id {
+                inheritRepresentativeChoices(from: oldRepresentative, to: representative.id, identityKey: key, mirrorIDs: Set(group.map(\.id)))
+            }
+            // A disappeared run member cannot be replaced with a new home.
+            // Keep its durable representative until this run has retired.
+            if oldRepresentative.flatMap({ registeredPool[$0] }) == nil || persisted != nil || registered != nil {
+                representatives[key] = representative.id
+            }
+        }
+        preferences.accountRepresentatives = representatives.isEmpty ? nil : representatives
         var seen = Set<String>()
-        let profiles = usageStore.profiles.filter {
-            !$0.isSystemProfile && $0.lastSnapshot?.accountID != nil && seen.insert($0.recordedAccountKey).inserted
+        let profiles = candidates.filter {
+            let key = representativeIdentityKey(for: $0)
+            return selected[key] == $0.id && seen.insert(key).inserted
         }
         // First observation seeds only this queue; dispatch settings are never written.
         for profile in profiles where !preferences.knownIDs.contains(profile.id) {
@@ -1642,6 +1816,38 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
         publishDisplayRows(immediately: immediately)
     }
 
+    private func representativeIdentityKey(for profile: CodexProfile) -> String {
+        if profile.lastSnapshot?.email?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false {
+            if let bound = registeredPool[profile.id] { return DispatchActivityStore.hash(bound.account) }
+            let saved = preferences.accountRepresentatives?.filter { $0.value == profile.id }.map(\.key) ?? []
+            if saved.count == 1, let key = saved.first { return key }
+        }
+        return DispatchActivityStore.hash(profile.recordedAccountKey)
+    }
+
+    private func inheritRepresentativeChoices(from oldID: String, to newID: String, identityKey: String, mirrorIDs: Set<String>) {
+        guard preferences.knownIDs.contains(oldID) else { return }
+        preferences.knownIDs.formUnion(mirrorIDs)
+        if let current = usageStore.profiles.first(where: { $0.id == oldID }), representativeIdentityKey(for: current) != identityKey {
+            // A historical pointer cannot transfer another identity's current
+            // spending and routing rules. Require a deliberate new choice.
+            preferences.enabledIDs.subtract(mirrorIDs)
+            return
+        }
+        if !preferences.enabledIDs.contains(oldID) {
+            preferences.enabledIDs.subtract(mirrorIDs)
+        } else if process == nil {
+            preferences.enabledIDs.formUnion(mirrorIDs)
+        }
+        if preferences.order.contains(oldID) {
+            preferences.order = preferences.order.filter { $0 != newID }.map { $0 == oldID ? newID : $0 }
+        }
+        if let override = preferences.lastOverrides?[oldID] { preferences.lastOverrides?[newID] = override } else { preferences.lastOverrides?.removeValue(forKey: newID) }
+        if preferences.lastIDs?.contains(oldID) == true { preferences.lastIDs?.insert(newID) } else { preferences.lastIDs?.remove(newID) }
+        if preferences.priorityIDs.contains(oldID) { preferences.priorityIDs.insert(newID) } else { preferences.priorityIDs.remove(newID) }
+        if let policy = preferences.accountPolicies?[oldID] { preferences.accountPolicies?[newID] = policy } else { preferences.accountPolicies?.removeValue(forKey: newID) }
+    }
+
     private func publishDisplayRows(immediately: Bool = false) {
         let uptime = ProcessInfo.processInfo.systemUptime
         switch displayGate.offer(rows, at: uptime, immediate: immediately) {
@@ -1667,7 +1873,7 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
     @discardableResult
     private func savePreferences() -> Bool {
         do {
-            guard preferences.validLastIDs, preferences.validLastOverrides else { throw LocalProxyFailure.unavailable }
+            guard preferences.validLastIDs, preferences.validLastOverrides, preferences.validAccountRepresentatives else { throw LocalProxyFailure.unavailable }
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
             var info = stat()
             guard lstat(directory.path, &info) == 0, info.st_mode & S_IFMT == S_IFDIR, info.st_uid == geteuid(), info.st_mode & 0o077 == 0 else {
@@ -1732,7 +1938,7 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
         case .acquireAbandoned: return language.text("本次账号接入已回滚，请重新请求", "Account admission rolled back; retry request")
         case .identity: return language.text("账号身份未确认", "Account identity is unverified")
         case .quota: return language.text("订阅额度已用尽", "Subscription quota exhausted")
-        case .usageLimit: return language.text("已达自定 5 小时使用上限", "Custom 5h usage limit reached")
+        case .usageLimit: return language.text("已达自定已用上限", "Custom used limit reached")
         case .quotaUnknown: return language.text("额度未知或已过期，请刷新", "Quota missing or stale; refresh limits")
         case .loginExpired: return language.text("登录已过期，请手动重新登录", "Login expired; sign in manually")
         case .stageNotApplicable: return message(.unavailable)

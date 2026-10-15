@@ -1,190 +1,147 @@
 {
-  "manifestVersion": 1,
   "generatedBy": "scripts/prepare-token-monitor-resources.py",
-  "sourceLock": "upstream/package-lock.json",
-  "platform": "darwin-arm64",
-  "roots": [
-    "semver",
-    "dotenv",
-    "chokidar",
-    "undici",
-    "tar",
-    "koffi",
-    "tokscale",
-    "@tokscale/cli-darwin-arm64"
-  ],
-  "tokscalePin": {
-    "mode": "override",
-    "fork": "Javis603/tokscale",
-    "commit": "06a9f1625d5a505f01b39eff29f7be44a2c52188",
-    "baseVersion": "4.17.0",
-    "releaseTag": "token-monitor-06a9f162",
-    "platformSha256": {
-      "android-arm64": {
-        "package": "@tokscale/cli-android-arm64",
-        "asset": "tokscale-android-arm64",
-        "sha256": "e103a0f25c0ad4b27ee341596ac63f5e74aa066247c949aa8057fe97dc34b4b7"
-      },
-      "darwin-arm64": {
-        "package": "@tokscale/cli-darwin-arm64",
-        "asset": "tokscale-darwin-arm64",
-        "sha256": "6c4765cf48790f5799da7c0685fab9a7b1d01f15d877121fff5ef0a14cc4a5f0"
-      },
-      "darwin-x64": {
-        "package": "@tokscale/cli-darwin-x64",
-        "asset": "tokscale-darwin-x64",
-        "sha256": "7bbbadeb16b67190dada4901b1d51be6f337730afd4f5c6ae9a8ccda80c9d00b"
-      },
-      "linux-arm64": {
-        "package": "@tokscale/cli-linux-arm64-gnu",
-        "asset": "tokscale-linux-arm64",
-        "sha256": "753f951be157db86b6e116dfebb737820aa0af1f6ee9b420fb7b95d42f589e3b"
-      },
-      "linux-arm64-musl": {
-        "package": "@tokscale/cli-linux-arm64-musl",
-        "asset": "tokscale-linux-arm64-musl",
-        "sha256": "de33f986a140999acc6a9936ebe23c1ed92e803017864d8be24ead9e609ff4c4"
-      },
-      "linux-x64": {
-        "package": "@tokscale/cli-linux-x64-gnu",
-        "asset": "tokscale-linux-x64",
-        "sha256": "65efa3df41fc63c4513ad713206b8240931a88abdf3e310dddeba73935ecd53f"
-      },
-      "linux-x64-musl": {
-        "package": "@tokscale/cli-linux-x64-musl",
-        "asset": "tokscale-linux-x64-musl",
-        "sha256": "5dfc261b15469b50c99cca175e36d481f5fc7c7ff3254c4325f68cbaa9abdb61"
-      },
-      "win32-arm64": {
-        "package": "@tokscale/cli-win32-arm64-msvc",
-        "asset": "tokscale-win32-arm64.exe",
-        "sha256": "1ea26aa1d2176ef9ee6b8fb517ae19e2352985816af76c98b8e4486cc3fb13ad"
-      },
-      "win32-x64": {
-        "package": "@tokscale/cli-win32-x64-msvc",
-        "asset": "tokscale-win32-x64.exe",
-        "sha256": "d9fa18103c277e35d2cabb61c852adc795439a5c8010c7ea9a468a592a0fc1da"
-      }
-    }
-  },
+  "manifestVersion": 1,
   "packages": [
     {
-      "path": "node_modules/@isaacs/fs-minipass",
-      "name": "@isaacs/fs-minipass",
-      "version": "4.0.1",
-      "resolved": "https://registry.npmjs.org/@isaacs/fs-minipass/-/fs-minipass-4.0.1.tgz",
-      "integrity": "sha512-wgm9Ehl2jpeqP3zw/7mo3kRHFp5MEDhqAdwy1fTGkHAwnkGOVsgpvQhL8B5n1qlb01jV3n/bI0ZfZp5lWA1k4w=="
-    },
-    {
-      "path": "node_modules/@koromix/koffi-darwin-arm64",
+      "integrity": "sha512-IpqITl2fJi3QN9bTtNnygWPdK7ScSjw3xtGu8e6feYGvimCysu+spgI5KyeslY2jTnqxGS9xr8pLAbLhGJ8edA==",
       "name": "@koromix/koffi-darwin-arm64",
-      "version": "3.1.5",
+      "path": "node_modules/@koromix/koffi-darwin-arm64",
       "resolved": "https://registry.npmjs.org/@koromix/koffi-darwin-arm64/-/koffi-darwin-arm64-3.1.5.tgz",
-      "integrity": "sha512-IpqITl2fJi3QN9bTtNnygWPdK7ScSjw3xtGu8e6feYGvimCysu+spgI5KyeslY2jTnqxGS9xr8pLAbLhGJ8edA=="
+      "version": "3.1.5"
     },
     {
-      "path": "node_modules/@tokscale/cli",
+      "integrity": "sha512-HAeT1PWCfO/e5gDa6VYe9el8wsAodXTO8dwiNeV2o4OnPqPh4otbgppgn4qQ3W34DnL3Sl+LXytzpe9hKbKD4A==",
       "name": "@tokscale/cli",
-      "version": "4.17.0",
-      "resolved": "https://registry.npmjs.org/@tokscale/cli/-/cli-4.17.0.tgz",
-      "integrity": "sha512-B3OFknGuiv4vKnfm7sX8uVrLj7pq6kk61TZ+GEO/5yLtGEzxc37GxsBUaOvA7jhH+VcWF7YY5SasiVxXgmZ9uA=="
+      "path": "node_modules/@tokscale/cli",
+      "resolved": "https://registry.npmjs.org/@tokscale/cli/-/cli-4.18.0.tgz",
+      "version": "4.18.0"
     },
     {
-      "path": "node_modules/@tokscale/cli-darwin-arm64",
+      "integrity": "sha512-1ILrvDJjLmTs+CZ8EYrzqh74QRAGiKDQmqU8HOo+juZ3wTmL/1B7uFsqBL8/+nv5rJCRq4/V7pvT39ZvauJ37g==",
       "name": "@tokscale/cli-darwin-arm64",
-      "version": "4.17.0",
-      "resolved": "https://registry.npmjs.org/@tokscale/cli-darwin-arm64/-/cli-darwin-arm64-4.17.0.tgz",
-      "integrity": "sha512-/Hmgh1VxxLdCo6ou+I7r12E0G4T4c0zzZwZ5iwdynlZKm1IEhoqPB0SagTmVEiLZSMV8zLxptO1GFuOKxMqwiQ=="
+      "path": "node_modules/@tokscale/cli-darwin-arm64",
+      "resolved": "https://registry.npmjs.org/@tokscale/cli-darwin-arm64/-/cli-darwin-arm64-4.18.0.tgz",
+      "version": "4.18.0"
     },
     {
-      "path": "node_modules/chokidar",
+      "integrity": "sha512-Qgzu8kfBvo+cA4962jnP1KkS6Dop5NS6g7R5LFYJr4b8Ub94PPQXUksCw9PvXoeXPRRddRNC5C1JQUR2SMGtnA==",
       "name": "chokidar",
-      "version": "4.0.3",
+      "path": "node_modules/chokidar",
       "resolved": "https://registry.npmjs.org/chokidar/-/chokidar-4.0.3.tgz",
-      "integrity": "sha512-Qgzu8kfBvo+cA4962jnP1KkS6Dop5NS6g7R5LFYJr4b8Ub94PPQXUksCw9PvXoeXPRRddRNC5C1JQUR2SMGtnA=="
+      "version": "4.0.3"
     },
     {
-      "path": "node_modules/chownr",
-      "name": "chownr",
-      "version": "3.0.0",
-      "resolved": "https://registry.npmjs.org/chownr/-/chownr-3.0.0.tgz",
-      "integrity": "sha512-+IxzY9BZOQd/XuYPRmrvEVjF/nqj5kgT4kEq7VofrDoM1MxoRjEWkrCC3EtLi59TVawxTAn+orJwFQcrqEN1+g=="
-    },
-    {
-      "path": "node_modules/dotenv",
+      "integrity": "sha512-nI4U3TottKAcAD9LLud4Cb7b2QztQMUEfHbvhTH09bqXTxnSie8WnjPALV/WMCrJZ6UV/qHJ6L03OqO3LcdYZw==",
       "name": "dotenv",
-      "version": "17.4.2",
+      "path": "node_modules/dotenv",
       "resolved": "https://registry.npmjs.org/dotenv/-/dotenv-17.4.2.tgz",
-      "integrity": "sha512-nI4U3TottKAcAD9LLud4Cb7b2QztQMUEfHbvhTH09bqXTxnSie8WnjPALV/WMCrJZ6UV/qHJ6L03OqO3LcdYZw=="
+      "version": "17.4.2"
     },
     {
-      "path": "node_modules/koffi",
+      "integrity": "sha512-XVwwrxg0Ca6IEUQF4YtGIU4XN0LSselFYpYvgfhh8wafCunhEEx5hPr7LZhp5QyeFA/LcRsKHTqncCdjWjWAlg==",
       "name": "koffi",
-      "version": "3.1.5",
+      "path": "node_modules/koffi",
       "resolved": "https://registry.npmjs.org/koffi/-/koffi-3.1.5.tgz",
-      "integrity": "sha512-XVwwrxg0Ca6IEUQF4YtGIU4XN0LSselFYpYvgfhh8wafCunhEEx5hPr7LZhp5QyeFA/LcRsKHTqncCdjWjWAlg=="
+      "version": "3.1.5"
     },
     {
-      "path": "node_modules/minipass",
-      "name": "minipass",
-      "version": "7.1.3",
-      "resolved": "https://registry.npmjs.org/minipass/-/minipass-7.1.3.tgz",
-      "integrity": "sha512-tEBHqDnIoM/1rXME1zgka9g6Q2lcoCkxHLuc7ODJ5BxbP5d4c2Z5cGgtXAku59200Cx7diuHTOYfSBD8n6mm8A=="
-    },
-    {
-      "path": "node_modules/minizlib",
-      "name": "minizlib",
-      "version": "3.1.0",
-      "resolved": "https://registry.npmjs.org/minizlib/-/minizlib-3.1.0.tgz",
-      "integrity": "sha512-KZxYo1BUkWD2TVFLr0MQoM8vUUigWD3LlD83a/75BqC+4qE0Hb1Vo5v1FgcfaNXvfXzr+5EhQ6ing/CaBijTlw=="
-    },
-    {
-      "path": "node_modules/readdirp",
+      "integrity": "sha512-GDhwkLfywWL2s6vEjyhri+eXmfH6j1L7JE27WhqLeYzoh/A3DBaYGEj2H/HFZCn/kMfim73FXxEJTw06WtxQwg==",
       "name": "readdirp",
-      "version": "4.1.2",
+      "path": "node_modules/readdirp",
       "resolved": "https://registry.npmjs.org/readdirp/-/readdirp-4.1.2.tgz",
-      "integrity": "sha512-GDhwkLfywWL2s6vEjyhri+eXmfH6j1L7JE27WhqLeYzoh/A3DBaYGEj2H/HFZCn/kMfim73FXxEJTw06WtxQwg=="
+      "version": "4.1.2"
     },
     {
-      "path": "node_modules/semver",
+      "integrity": "sha512-Y7/KDsb8LjooZpwaqGyulO6DQlksgCncchHGk+sZIY4SBvUocMBEFH5Ur1fI4dV+Jvl0w6cjvucaIi40puRioA==",
       "name": "semver",
-      "version": "7.8.5",
+      "path": "node_modules/semver",
       "resolved": "https://registry.npmjs.org/semver/-/semver-7.8.5.tgz",
-      "integrity": "sha512-Y7/KDsb8LjooZpwaqGyulO6DQlksgCncchHGk+sZIY4SBvUocMBEFH5Ur1fI4dV+Jvl0w6cjvucaIi40puRioA=="
+      "version": "7.8.5"
     },
     {
-      "path": "node_modules/tar",
-      "name": "tar",
-      "version": "7.5.22",
-      "resolved": "https://registry.npmjs.org/tar/-/tar-7.5.22.tgz",
-      "integrity": "sha512-MFO/QzvtAOmJbkhOaCTvbGcFN9L9b+JunIsDwaKljSOdcLMea3NJ1k9Usz/rjdfSXTq4dfzfeS7W4p4YOAAHeA=="
-    },
-    {
-      "path": "node_modules/tar/node_modules/yallist",
-      "name": "",
-      "version": "5.0.0",
-      "resolved": "https://registry.npmjs.org/yallist/-/yallist-5.0.0.tgz",
-      "integrity": "sha512-YgvUTfwqyc7UXVMrB+SImsVYSmTS8X/tSrtdNZMImM+n7+QTriRXyXim0mBrTXNeqzVF0KWGgHPeiyViFFrNDw=="
-    },
-    {
-      "path": "node_modules/tokscale",
+      "integrity": "sha512-vhHOowIRgvgYtrLMBynVwXHlQ9eR7VhUKsoEpqPUysQOJyQhsd++s0aELp1BWMb0l1xGBNDWER8fHF1ofWjELQ==",
       "name": "tokscale",
-      "version": "4.17.0",
-      "resolved": "https://registry.npmjs.org/tokscale/-/tokscale-4.17.0.tgz",
-      "integrity": "sha512-v3JDNByUgjjT7uf7Wl+HG3jigJkMh3FHohaHzSTwjAxpzWsCXyJi8cwiwaCaddmUF4bdf+cBSJ4GzsRQYiZTOQ=="
+      "path": "node_modules/tokscale",
+      "resolved": "https://registry.npmjs.org/tokscale/-/tokscale-4.18.0.tgz",
+      "version": "4.18.0"
     },
     {
-      "path": "node_modules/undici",
+      "integrity": "sha512-dkrQXeHSaoamnItlYbmzG0wFYrM0ZwDxCIg0A7aKjTyyhh9svRzCNFEzV+Vm05/yehjCzjDZ31KXfGEjYSztDQ==",
       "name": "undici",
-      "version": "7.29.0",
-      "resolved": "https://registry.npmjs.org/undici/-/undici-7.29.0.tgz",
-      "integrity": "sha512-IDxfleLmmbSskfWSUATiN1nfn2rDuvnMOqb5CWR92iIfojA0Ud+ulOAAEQ57LPr9rWmsreUyf5lwyao+7GNNVw=="
+      "path": "node_modules/undici",
+      "resolved": "https://registry.npmjs.org/undici/-/undici-7.30.0.tgz",
+      "version": "7.30.0"
     }
   ],
+  "platform": "darwin-arm64",
+  "roots": [
+    "@tokscale/cli-darwin-arm64",
+    "chokidar",
+    "dotenv",
+    "koffi",
+    "semver",
+    "tokscale",
+    "undici"
+  ],
+  "sourceLock": "upstream/package-lock.json",
+  "tokscalePin": {
+    "baseVersion": "4.18.0",
+    "commit": "fa5f0c13324838d1a988fda317597f9b90da7ad0",
+    "fork": "Javis603/tokscale",
+    "mode": "override",
+    "platformSha256": {
+      "android-arm64": {
+        "asset": "tokscale-android-arm64",
+        "package": "@tokscale/cli-android-arm64",
+        "sha256": "40ee233d0be2fe67b7d985e1f816d7413a8d6eae17b0d99c229dd8d7ff8ad78d"
+      },
+      "darwin-arm64": {
+        "asset": "tokscale-darwin-arm64",
+        "package": "@tokscale/cli-darwin-arm64",
+        "sha256": "61d6422139fe13c68ed8905e8c718d434460ee4f3efd90f68c7619f271245757"
+      },
+      "darwin-x64": {
+        "asset": "tokscale-darwin-x64",
+        "package": "@tokscale/cli-darwin-x64",
+        "sha256": "1c3674291fc9c8967764e13c004aaf8546ef9a714bd808f79180733359dfd782"
+      },
+      "linux-arm64": {
+        "asset": "tokscale-linux-arm64",
+        "package": "@tokscale/cli-linux-arm64-gnu",
+        "sha256": "f345d149052489f55b3379b30dde43c44b077cde39ee57d81fe1c33889f21367"
+      },
+      "linux-arm64-musl": {
+        "asset": "tokscale-linux-arm64-musl",
+        "package": "@tokscale/cli-linux-arm64-musl",
+        "sha256": "e10fd248553587d92a46d7bb16f60d3a19b215d8b72dd016971ee81a7a3b90a0"
+      },
+      "linux-x64": {
+        "asset": "tokscale-linux-x64",
+        "package": "@tokscale/cli-linux-x64-gnu",
+        "sha256": "ac432d4e1f369cda10961c003ac04b84ebfa3a2f9669d8802997e47b86a31f04"
+      },
+      "linux-x64-musl": {
+        "asset": "tokscale-linux-x64-musl",
+        "package": "@tokscale/cli-linux-x64-musl",
+        "sha256": "21f1bf46e6fdcd6ac49b7062795aadcc523d477c75165b795d03e93a0989ae2a"
+      },
+      "win32-arm64": {
+        "asset": "tokscale-win32-arm64.exe",
+        "package": "@tokscale/cli-win32-arm64-msvc",
+        "sha256": "52cb5582d0a191c1ce6f11e856b01fa93b34f47f2ccda064f2aa9774eaf9ccfb"
+      },
+      "win32-x64": {
+        "asset": "tokscale-win32-x64.exe",
+        "package": "@tokscale/cli-win32-x64-msvc",
+        "sha256": "5887f4fae41d5ae4ca684c4a50af96dff9b633fbf9942cd827eca9736765d97a"
+      }
+    },
+    "releaseTag": "token-monitor-fa5f0c13"
+  },
   "totals": {
-    "packages": 16,
-    "staged": 16,
     "missing": 0,
+    "packages": 10,
+    "staged": 10,
     "versionMismatches": 0
   }
 }

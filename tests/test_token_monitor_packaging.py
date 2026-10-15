@@ -61,10 +61,11 @@ class PackagingTests(unittest.TestCase):
         self.pin = {'schemaVersion': 1, 'dependencyRoots': ['demo'],
                     'finalSource': {'files': {}},
                     'node': {'platforms': {'darwin-arm64': {'url': 'https://nodejs.org/dist/v22.23.2/node-v22.23.2-darwin-arm64.tar.gz', 'archiveSHA256': m.digest(node), 'binaryPreSignSHA256': m.digest(macho())}}},
-                    'tokscale': {'platforms': {'darwin-arm64': {'url': 'https://github.com/Javis603/tokscale/releases/download/token-monitor-d5e8ad9b/tokscale-darwin-arm64', 'sha256': m.digest(binary), 'package': '@tokscale/cli-darwin-arm64'}}}}
+                    'tokscale': {'commit': m.FORK, 'platforms': {'darwin-arm64': {'url': 'https://github.com/Javis603/tokscale/releases/download/token-monitor-fa5f0c13/tokscale-darwin-arm64', 'sha256': m.digest(binary), 'package': '@tokscale/cli-darwin-arm64'}}}}
         files = {'bridge.cjs': b'"use strict";', 'client-catalog.json': b'{"clients":[]}', 'provenance.json': b'{"license":"MIT"}', 'lib/index.cjs': b'module.exports = {};',
                  'hooks/index.cjs': b'module.exports = {};', 'upstream/LICENSE': b'Original MIT license',
-                 'upstream/package-lock.json': m.canonical(self.lock)}
+                 'upstream/package-lock.json': m.canonical(self.lock),
+                 'upstream/scripts/vendor/tokscale.json': m.canonical({'mode': 'override', 'fork': 'Javis603/tokscale', 'commit': m.FORK, 'baseVersion': '1.0.0', 'releaseTag': 'token-monitor-fa5f0c13', 'platforms': {'darwin-arm64': {'package': '@tokscale/cli-darwin-arm64', 'sha256': m.digest(binary)}}})}
         for rel, data in files.items():
             p = self.source / rel
             p.parent.mkdir(parents=True, exist_ok=True)
@@ -111,6 +112,21 @@ class PackagingTests(unittest.TestCase):
         self.assertIn('node_modules/native-arm', first['packages'])
         self.assertNotIn('node_modules/native-x64', first['packages'])
         self.assertEqual(len(first['nativeFiles']), 3)
+
+    def test_generated_vendor_manifest_matches_the_real_stage(self):
+        tree, manifest = self.stage()
+        vendor = m.read_json(tree / 'vendor/manifest.json')
+        self.assertEqual(vendor['tokscalePin']['commit'], m.FORK)
+        self.assertEqual(vendor['roots'], manifest['roots'])
+        self.assertEqual(vendor['totals']['packages'], len(manifest['packages']))
+        for entry in vendor['packages']:
+            staged = m.read_json(tree / 'vendor' / entry['path'] / 'package.json')
+            self.assertEqual((entry['name'], entry['version']), (staged['name'], staged['version']))
+        tree_manifest = tree / 'upstream/scripts/vendor/tokscale.json'
+        pin = m.read_json(tree_manifest)
+        pin['commit'] = 'wrong'
+        tree_manifest.write_bytes(m.canonical(pin))
+        self.assertEqual(m.read_json(tree / 'vendor/manifest.json')['tokscalePin']['commit'], m.FORK)
 
     def test_catalog_required_and_copied(self):
         tree, _ = self.stage()
@@ -342,7 +358,7 @@ class PackagingTests(unittest.TestCase):
             self.assertEqual(run.call_count, 1)
 
     def test_redirect_to_unapproved_host_rejected(self):
-        url = 'https://github.com/Javis603/tokscale/releases/download/token-monitor-d5e8ad9b/tokscale-darwin-arm64'
+        url = 'https://github.com/Javis603/tokscale/releases/download/token-monitor-fa5f0c13/tokscale-darwin-arm64'
         result = subprocess.CompletedProcess([], 0, b'302\nhttps://evil.example/binary', b'')
         with patch.object(m.subprocess, 'run', return_value=result), self.assertRaisesRegex(m.PackagingError, 'download_redirect_forbidden'):
             m.fetch(url, self.cache, '0' * 64, 'sha256', False)

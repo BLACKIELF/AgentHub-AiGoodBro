@@ -1,7 +1,7 @@
 import Darwin
 import Foundation
 
-@MainActor private func fixtureHandle(_ store: LocalProxyQueueStore, _ request: LocalProxyRequest) async -> LocalProxyReply {
+@MainActor func fixtureHandle(_ store: LocalProxyQueueStore, _ request: LocalProxyRequest) async -> LocalProxyReply {
     if request.command.hasPrefix("acquire") && store.membershipSnapshots[request.requestID] == nil {
         let ordered = await store.handle(LocalProxyRequest(
             schemaVersion: request.schemaVersion, runID: request.runID, key: request.key,
@@ -19,6 +19,10 @@ import Foundation
 
     @MainActor static func main() async throws {
         setbuf(stdout, nil)
+        if ProcessInfo.processInfo.environment["PROXY_REGISTRY_CONTENTION_ONLY"] == "1" {
+            try await registryContentionFixtures()
+            return
+        }
         if ProcessInfo.processInfo.environment["PROXY_RELEASE_FENCE_ONLY"] == "1" {
             try await releaseFenceFixtures()
             return
@@ -559,7 +563,7 @@ import Foundation
         do {
             _ = try activity.reserveProxy(account: "python-held", alias: "independent-alias", runID: run, requestID: UUID().uuidString, profileID: profile.id, childPID: getpid())
             preconditionFailure("native proxy ignored Python reservation")
-        } catch DispatchActivityStore.Failure.busy { checks += 1 }
+        } catch DispatchActivityStore.Failure.accountBusy { checks += 1 }
         do {
             try activity.updateProxy(pythonHeld, runID: run, requestID: request, profileID: profile.id, state: "accepted")
             preconditionFailure("native proxy released Python lease")
@@ -652,7 +656,7 @@ import Foundation
         do {
             _ = try activity.reserveProxy(account: "fixture-account", alias: "fixture-alias", runID: run, requestID: reservedRequest, profileID: profile.id, childPID: getpid())
             preconditionFailure("duplicate acquire reserved again")
-        } catch DispatchActivityStore.Failure.busy { checks += 1 }
+        } catch DispatchActivityStore.Failure.accountBusy { checks += 1 }
         try expect(try activity.abandonProxy(runID: run, requestID: reservedRequest, profileID: profile.id) == .abandoned,
             "resolve cancels existing reservation")
         try expect(try activity.abandonProxy(runID: run, requestID: reservedRequest, profileID: profile.id) == .abandoned,
@@ -1629,6 +1633,8 @@ import Foundation
         try await quotaRecoveryFixtures()
         try await controlProgressFixtures()
         try await cooldownRefreshFixtures()
+        try await postReserveContentionFixtures()
+        try await transientRefreshFixtures()
         try await legacyCooldownRecoveryFixtures()
         print("PASS: \(checks) local proxy host synthetic checks; no live profiles, network or app launch")
     }

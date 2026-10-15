@@ -33,6 +33,7 @@ def main():
         announcement = announcement[announcement.index("struct PublicResetAnnouncement:"):announcement.index("struct PublicResetPage:")]
         translation = (repo / "Sources/CodexUsageWidget/Services/PublicResetTranslation.swift").read_text()
         quota_event = (repo / "Sources/CodexUsageWidget/Domain/CodexQuotaEventTracker.swift").read_text().split("/// Compares", 1)[0]
+        expiry_batch = (repo / "Sources/CodexUsageWidget/Domain/CodexResetNotice.swift").read_text().split("\nenum CodexResetNoticeChannel", 1)[0]
         message_options = (repo / "Sources/CodexUsageWidget/Domain/FeishuMessageOptions.swift").read_text().split("\nenum FeishuQuotaValue", 1)[0]
         if "--typecheck-only" in os.sys.argv:
             # WidgetLanguage plus its EnvironmentKey and EnvironmentValues
@@ -49,10 +50,11 @@ def main():
             announcement_file = work / "public-reset-announcement-extract.swift"
             announcement_file.write_text(translation + "\n" + announcement)
             options_file = work / "message-options-extract.swift"
-            options_file.write_text(quota_event + "\n" + message_options)
+            options_file.write_text(expiry_batch + "\n" + quota_event + "\n" + message_options)
             source_paths = [announcement_file,
                 language_file,
                 options_file,
+                repo / "Sources/CodexUsageWidget/Domain/MessageNoticeFormat.swift",
                 repo / "Sources/CodexUsageWidget/Domain/MessageChannel.swift",
                 repo / "Sources/CodexUsageWidget/Services/TelegramMessageChannel.swift",
                 repo / "Sources/CodexUsageWidget/Services/WeChatMessageChannel.swift",
@@ -80,8 +82,10 @@ def main():
             language,
             translation,
             announcement,
+            expiry_batch,
             quota_event,
             message_options,
+            (repo / "Sources/CodexUsageWidget/Domain/MessageNoticeFormat.swift").read_text(),
             (repo / "Sources/CodexUsageWidget/Domain/MessageChannel.swift").read_text(),
             (repo / "Sources/CodexUsageWidget/Services/TelegramMessageChannel.swift").read_text(),
             (repo / "Sources/CodexUsageWidget/Services/WeChatMessageChannel.swift").read_text(),

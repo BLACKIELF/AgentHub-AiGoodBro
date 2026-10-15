@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 import plistlib
@@ -313,6 +314,38 @@ def prepare_stage(stage: Path, manifest: dict) -> dict:
     return {"stageFiles": sum(1 for file in stage.rglob("*") if file.is_file()), "transformChanged": transformed["changed"]}
 
 
+def selected_scanner(stage: Path, architecture: str, cache: Path, offline: bool) -> tuple[str, bytes]:
+    # Reuse the engine's reviewed URL/hash gate. Electron and its other native
+    # modules keep the v0.68 runtime pin; only the selected scanner is replaced.
+    spec = importlib.util.spec_from_file_location("token_engine_stage", ROOT / "scripts/prepare-token-monitor-resources.py")
+    engine = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(engine)
+    arch = "arm64" if architecture == "arm64" else "x64"
+    source = engine.load_production(VENDOR, arch)
+    pin = source["tokscale"]["platforms"]["darwin-" + arch]
+    manifest = json.loads((stage / "scripts/vendor/tokscale.json").read_text())
+    require(manifest == json.loads((VENDOR / "upstream/scripts/vendor/tokscale.json").read_text()), "Desktop scanner manifest differs from reviewed source")
+    require(manifest["commit"] == source["tokscale"]["commit"], "Desktop scanner provenance differs from engine")
+    require(manifest["platforms"]["darwin-" + arch]["sha256"] == pin["sha256"], "Desktop scanner SHA differs from engine")
+    binary = engine.fetch(pin["url"], cache, pin["sha256"], "sha256", offline)
+    engine.check_arch(binary, arch)
+    return f"node_modules/{pin['package']}/bin/tokscale", binary
+
+
+def replace_scanner_member(members: dict, stage: Path, architecture: str, binary: bytes) -> str:
+    arch = "arm64" if architecture == "arm64" else "x64"
+    manifest = json.loads((stage / "scripts/vendor/tokscale.json").read_text())
+    pin = manifest["platforms"]["darwin-" + arch]
+    relative = f"node_modules/{pin['package']}/bin/tokscale"
+    require(relative in members and members[relative][1], "Official unpacked scanner slot is missing")
+    require(sha256(binary) == pin["sha256"], "Replacement scanner differs from fixed pin")
+    # Preserve the npm metadata version while replacing its overridden bytes.
+    metadata = json.loads(members[f"node_modules/{pin['package']}/package.json"][0])
+    require(metadata["version"] == manifest["baseVersion"], "Desktop scanner npm base version changed")
+    members[relative] = (binary, True, True)
+    return relative
+
+
 def collect_members(original_asar: Path, stage: Path, expected_node_modules: int) -> dict[str, tuple[bytes, bool, bool]]:
     original_tree, start, _ = asar_header(original_asar)
     members: dict[str, tuple[bytes, bool, bool]] = {}
@@ -399,7 +432,7 @@ def copied_info(app: Path, manifest: dict, header_hash: str) -> None:
     active_config.rename(app / manifest["widget"]["configArchive"])
 
 
-def sign_app(app: Path) -> None:
+def sign_app(app: Path, *, deep: bool = True) -> None:
     # Re-sign the copied runtime; the original Widget is an inert resource,
     # outside PlugIns, and cannot reuse the author's App Group entitlement.
     entitlements = app.parent / "token-core-entitlements.plist"
@@ -409,12 +442,63 @@ def sign_app(app: Path) -> None:
             "com.apple.security.cs.allow-unsigned-executable-memory": True,
             "com.apple.security.cs.disable-library-validation": True,
         }, stream)
-    run("codesign", "--force", "--deep", "--sign", "-", "--options", "runtime", "--entitlements", str(entitlements), str(app))
+    run("codesign", "--force", *( ["--deep"] if deep else [] ), "--sign", "-", "--options", "runtime", "--entitlements", str(entitlements), str(app))
     run("codesign", "--verify", "--deep", "--strict", "--verbose=2", str(app))
     entitlements.unlink()
 
 
-def verify_bundle(app: Path, manifest: dict, *, check_signature: bool) -> dict:
+def verify_scanner(asar: Path, architecture: str, app: Path, trusted_receipt: Path | None = None) -> dict:
+    tree, start, _ = asar_header(asar)
+    scanner_pin = json.loads(asar_content(asar, tree, start, "scripts/vendor/tokscale.json"))
+    expected_pin = json.loads((VENDOR / "upstream/scripts/vendor/tokscale.json").read_text())
+    require(scanner_pin == expected_pin, "Packaged desktop scanner manifest differs from reviewed source")
+    require(architecture in ("arm64", "x86_64"), "Unsupported scanner architecture")
+    scanner_arch = "arm64" if architecture == "arm64" else "x64"
+    scanner = expected_pin["platforms"]["darwin-" + scanner_arch]
+    scanner_relative = f"node_modules/{scanner['package']}/bin/tokscale"
+    scanner_content = asar_content(asar, tree, start, scanner_relative)
+    scanner_pre = expected_pin["platforms"]["darwin-" + scanner_arch]["sha256"]
+    scanner_post = sha256(scanner_content)
+    if scanner_post != scanner_pre:
+        require(trusted_receipt is not None and trusted_receipt.is_file() and not trusted_receipt.is_symlink()
+                and not trusted_receipt.resolve().is_relative_to(app.resolve()), "Signed desktop scanner requires an external trusted build receipt")
+        record = json.loads(trusted_receipt.read_text())
+        binding = record.get("nativeFiles", {}).get(scanner_relative, {})
+        require(record.get("architecture") == architecture
+                and record.get("tokscaleCommit") == expected_pin["commit"]
+                and binding.get("pre", {}).get("sha256") == scanner_pre
+                and binding.get("post", {}).get("sha256") == scanner_post, "Desktop scanner differs from trusted pre/post receipt")
+        scanner_file = asar.with_name(asar.name + ".unpacked").joinpath(*scanner_relative.split("/"))
+        run("codesign", "--verify", "--strict", str(scanner_file))
+    return {"tokscaleCommit": scanner_pin["commit"], "tokscaleSHA256": sha256(scanner_content)}
+
+
+def verify_native_receipt(asar: Path, architecture: str, app: Path, runtime_tree_sha256: str, trusted_receipt: Path) -> None:
+    require(trusted_receipt.is_file() and not trusted_receipt.is_symlink()
+            and not trusted_receipt.resolve().is_relative_to(app.resolve()), "Native closure requires an external trusted build receipt")
+    record = json.loads(trusted_receipt.read_text())
+    require(record.get("architecture") == architecture and record.get("runtimeUnpackedTreeSHA256") == runtime_tree_sha256,
+            "Native closure receipt is not bound to the official runtime")
+    tree, start, _ = asar_header(asar)
+    native_members = {}
+    for relative, entry in entries(tree):
+        if not entry.get("unpacked"):
+            continue
+        content = asar_content(asar, tree, start, relative)
+        if content[:4] in MACHO_MAGICS:
+            native_members[relative] = sha256(content)
+    bindings = record.get("nativeFiles", {})
+    require(set(bindings) == set(native_members), "Native closure receipt member set changed")
+    for relative, actual in native_members.items():
+        binding = bindings[relative]
+        before = binding.get("pre", {}).get("sha256", "")
+        require(len(before) == 64 and all(c in "0123456789abcdef" for c in before)
+                and binding.get("post", {}).get("sha256") == actual, "Native closure differs from trusted pre/post receipt")
+        native = asar.with_name(asar.name + ".unpacked").joinpath(*relative.split("/"))
+        run("codesign", "--verify", "--strict", str(native))
+
+
+def verify_bundle(app: Path, manifest: dict, *, check_signature: bool, trusted_receipt: Path | None = None) -> dict:
     info_path = app / "Contents/Info.plist"
     with info_path.open("rb") as stream:
         info = plistlib.load(stream)
@@ -438,6 +522,10 @@ def verify_bundle(app: Path, manifest: dict, *, check_signature: bool) -> dict:
     require(integrity["algorithm"] == "SHA256", "ASAR integrity algorithm changed")
     asar = app / "Contents/Resources/app.asar"
     result = verify_asar(asar, integrity["hash"])
+    result.update(verify_scanner(asar, manifest["runtime"]["architecture"], app, trusted_receipt))
+    if trusted_receipt is not None:
+        verify_native_receipt(asar, manifest["runtime"]["architecture"], app,
+            manifest["runtime"]["officialUnpackedTreeSHA256"], trusted_receipt)
     tree, start, _ = asar_header(asar)
     package = json.loads(asar_content(asar, tree, start, "package.json"))
     require(package["main"] == manifest["helper"]["asarMain"], "Helper main path mismatch")
@@ -464,7 +552,7 @@ def verify_bundle(app: Path, manifest: dict, *, check_signature: bool) -> dict:
     return result
 
 
-def build(runtime: Path, output: Path, *, architecture: str, replace: bool, skip_sign: bool, source_dmg: Path | None, receipt: Path) -> dict:
+def build(runtime: Path, output: Path, *, architecture: str, replace: bool, skip_sign: bool, source_dmg: Path | None, receipt: Path, cache: Path | None = None, offline: bool = False) -> dict:
     manifest = select_manifest(json.loads(MANIFEST.read_text()), architecture)
     if source_dmg:
         require(digest_file(source_dmg) == manifest["runtime"]["officialDMGSHA256"], "Official source DMG SHA256 mismatch")
@@ -495,11 +583,57 @@ def build(runtime: Path, output: Path, *, architecture: str, replace: bool, skip
         candidate = temporary / output.name
         shutil.copytree(runtime, candidate, symlinks=True)
         new_asar = candidate / "Contents/Resources/app.asar"
-        header_hash, member_count = build_asar(new_asar, collect_members(original_asar, stage, manifest["runtime"]["officialNodeModulesMembers"]))
+        scanner_relative, scanner_bytes = selected_scanner(stage, architecture,
+            cache or Path.home() / "Library/Caches/AiGoodBro/Next/token-monitor-downloads", offline)
+        members = collect_members(original_asar, stage, manifest["runtime"]["officialNodeModulesMembers"])
+        require(replace_scanner_member(members, stage, architecture, scanner_bytes) == scanner_relative, "Scanner member changed")
+        scanner_file = new_asar.with_name(new_asar.name + ".unpacked").joinpath(*scanner_relative.split("/"))
+        scanner_file.write_bytes(scanner_bytes)
+        scanner_file.chmod(0o755)
+        header_hash, member_count = build_asar(new_asar, members)
         copied_info(candidate, manifest, header_hash)
         if not skip_sign:
             sign_app(candidate)
-        result = verify_bundle(candidate, manifest, check_signature=not skip_sign)
+        scanner_post_bytes = scanner_file.read_bytes()
+        # Deep signing may update every unpacked native member. Preserve the
+        # already verified official closure, refresh each changed member's ASAR
+        # integrity from its signed bytes, then seal only the outer app.
+        native_bindings = {}
+        changed_native = []
+        for relative, (before, unpacked, executable) in list(members.items()):
+            if not unpacked:
+                continue
+            native = new_asar.with_name(new_asar.name + ".unpacked").joinpath(*relative.split("/"))
+            after = native.read_bytes()
+            if after != before:
+                require(before[:4] in MACHO_MAGICS and after[:4] in MACHO_MAGICS, "Signing changed a non-native member")
+                run("codesign", "--verify", "--strict", str(native))
+                members[relative] = (after, True, executable)
+                changed_native.append(relative)
+            if before[:4] in MACHO_MAGICS:
+                native_bindings[relative] = {"pre": {"sha256": sha256(before)}, "post": {"sha256": sha256(after)}}
+        if changed_native:
+            header_hash, member_count = build_asar(new_asar, members)
+            info_path = candidate / "Contents/Info.plist"
+            info = plistlib.loads(info_path.read_bytes())
+            info["ElectronAsarIntegrity"]["Resources/app.asar"]["hash"] = header_hash
+            info_path.write_bytes(plistlib.dumps(info))
+            sign_app(candidate, deep=False)
+            for relative in changed_native:
+                native = new_asar.with_name(new_asar.name + ".unpacked").joinpath(*relative.split("/"))
+                require(sha256(native.read_bytes()) == native_bindings[relative]["post"]["sha256"], "Outer signing changed native member bytes")
+        require(not receipt.is_symlink() and not receipt.resolve().is_relative_to(output.resolve())
+                and not receipt.resolve().is_relative_to(candidate.resolve()), "Desktop build receipt must remain outside the helper")
+        binding = native_bindings
+        require(binding[scanner_relative]["pre"]["sha256"] == sha256(scanner_bytes), "Scanner pre-sign receipt changed")
+        receipt.parent.mkdir(parents=True, exist_ok=True)
+        receipt.write_text(json.dumps({"architecture": architecture,
+            "tokscaleCommit": json.loads((stage / "scripts/vendor/tokscale.json").read_text())["commit"],
+            "nativeFiles": binding, "runtimeUnpackedTreeSHA256": manifest["runtime"]["officialUnpackedTreeSHA256"]}, indent=2) + "\n")
+        result = verify_bundle(candidate, manifest, check_signature=not skip_sign, trusted_receipt=receipt)
+        result["architecture"] = architecture
+        result["nativeFiles"] = binding
+        result["runtimeUnpackedTreeSHA256"] = manifest["runtime"]["officialUnpackedTreeSHA256"]
         require(result["members"] == member_count, "ASAR member count changed")
         result.update(stage_result)
         result["transformerSHA256"] = transformer_hash
@@ -520,12 +654,15 @@ def main() -> None:
     parser.add_argument("--source-dmg", type=Path, help="Optional SHA256 check of the downloaded official release image")
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--receipt", type=Path, default=DEFAULT_RECEIPT)
+    parser.add_argument("--cache", type=Path, help="Reviewed content-addressed scanner cache")
+    parser.add_argument("--offline", action="store_true", help="Use a verified cached scanner only")
     parser.add_argument("--replace", action="store_true")
     parser.add_argument("--skip-sign", action="store_true", help="For ASAR tests only; never install this output")
+    parser.add_argument("--trusted-receipt", type=Path, help="External desktop build receipt for signed scanner verification")
     parser.add_argument("--verify-only", action="store_true")
     args = parser.parse_args()
     manifest = select_manifest(json.loads(MANIFEST.read_text()), args.arch)
-    result = verify_bundle(args.output, manifest, check_signature=not args.skip_sign) if args.verify_only else build(args.runtime_app, args.output, architecture=args.arch, replace=args.replace, skip_sign=args.skip_sign, source_dmg=args.source_dmg, receipt=args.receipt)
+    result = verify_bundle(args.output, manifest, check_signature=not args.skip_sign, trusted_receipt=args.trusted_receipt) if args.verify_only else build(args.runtime_app, args.output, architecture=args.arch, replace=args.replace, skip_sign=args.skip_sign, source_dmg=args.source_dmg, receipt=args.receipt, cache=args.cache, offline=args.offline)
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
 

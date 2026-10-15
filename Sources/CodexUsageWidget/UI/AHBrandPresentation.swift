@@ -2,7 +2,19 @@ import SwiftUI
 
 enum AHBrandIdentity {
     static let displayName = "AiGoodBro"
-    static let publicVersion = "2.4"
+    static var publicVersion: String {
+        let currentVersion = AppVersion.current()
+        let versionParts = currentVersion.split(separator: "+", maxSplits: 1, omittingEmptySubsequences: false)
+        guard let version = AppVersion(String(versionParts[0])), currentVersion != "0.0.0" else { return "—" }
+        // Build metadata is display-only; leave update comparison semantics in AppVersion unchanged.
+        if versionParts.count > 1 {
+            guard versionParts[1].range(of: "^[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*$", options: .regularExpression) != nil else { return "—" }
+            return currentVersion
+        }
+        // Keep the short public label, while retaining patch and prerelease details when present.
+        return version.patch == 0 && !version.isPrerelease
+            ? "\(version.major).\(version.minor)" : currentVersion
+    }
     static let shortName = "AH"
     static let workspaceName = "AgentHub"
 
@@ -16,6 +28,7 @@ enum AHBrandIdentity {
     /// Product links shared by the workspace and its settings.
     static let siteURL = URL(string: "https://aigoodbro.com/")!
     static let repositoryURL = URL(string: "https://github.com/BLACKIELF/AgentHub-AiGoodBro")!
+    static let subscriptionURL = URL(string: "https://gptibo.com/r/94F4BD")!
     static let helpURL = URL(string: "https://github.com/BLACKIELF/AgentHub-AiGoodBro/blob/main/docs/usage-guide.md")!
     static let feedbackURL = repositoryURL.appendingPathComponent("issues")
     /// 兼容旧命名，值同 siteURL，勿再新增第三个。
@@ -48,6 +61,56 @@ enum AHBrandIdentity {
 
     static func syntheticCaption(_ title: String) -> String {
         "合成数据 · \(title)"
+    }
+}
+
+struct AHBrandProductLinks: View {
+    let language: WidgetLanguage
+
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 16) {
+                siteLink
+                repositoryLink
+                subscriptionLink
+            }
+            .fixedSize(horizontal: true, vertical: false)
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 16) {
+                    siteLink
+                    repositoryLink
+                }
+                subscriptionLink
+            }
+            .fixedSize(horizontal: false, vertical: true)
+        }
+        .font(.callout.weight(.medium))
+    }
+
+    private var siteLink: some View {
+        Link(destination: AHBrandIdentity.siteURL) {
+            Label(language.text("官网", "Website"), systemImage: "globe")
+        }
+        .help(language.text("打开 AiGoodBro 官网", "Open the AiGoodBro website"))
+    }
+
+    private var repositoryLink: some View {
+        Link(destination: AHBrandIdentity.repositoryURL) {
+            Label("GitHub · AiGoodBro", systemImage: "chevron.left.forwardslash.chevron.right")
+        }
+        .help(language.text("打开 AiGoodBro 开源仓库", "Open the AiGoodBro repository"))
+    }
+
+    private var subscriptionLink: some View {
+        Link(destination: AHBrandIdentity.subscriptionURL) {
+            Label(
+                language.text("超值低价GPT订阅点击有惊喜", "Great-value GPT subscriptions · Click for a surprise"),
+                systemImage: "sparkles"
+            )
+            .fixedSize(horizontal: false, vertical: true)
+        }
+        .help(language.text("在浏览器打开 GPT 订阅页面", "Open the GPT subscription page in your browser"))
+        .accessibilityIdentifier("next.settings.gpt-subscription")
     }
 }
 

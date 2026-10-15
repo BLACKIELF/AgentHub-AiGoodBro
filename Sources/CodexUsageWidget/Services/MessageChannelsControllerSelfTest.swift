@@ -602,8 +602,18 @@ enum MessageChannelsControllerSelfTest {
             manual.personalChatNeedsConfirmation && manual.personalChatThreadID == dedicatedThread && manualCreates == 0
                 && conversationStarts == beforeManualStart + 1, "changed token reused manual approval or silently created a replacement")
         manualHTTP.completeAll(responseBody: "{}")
-        let longReply = MessageChannelsController.boundedPersonalReply(String(repeating: "测", count: 3000))
-        expect(longReply.utf8.count <= 4096 && longReply.contains("全文请在 Codex"), "long bot reply silently truncated or exceeded byte limit")
+        let originalReply = String(repeating: "测", count: 3000) + "\n```swift\nlet site = \"aigoodbro.com\"\n```\n"
+        let longReply = MessageChannelsController.boundedPersonalReply(originalReply)
+        expect(Array(longReply.utf8) == Array(originalReply.utf8), "long bot reply changed original bytes")
+        if let chunks = MessageNoticeFormat.originalChunks(longReply, utf8Limit: 4096) {
+            expect(
+                chunks.count > 1 && chunks.allSatisfy { $0.utf8.count <= 4096 && $0.hasSuffix(MessageNoticeFormat.footerSuffix) },
+                "bot reply chunks exceed the byte limit or omit the footer")
+            let reconstructed = chunks.map { String($0.dropLast(MessageNoticeFormat.footerSuffix.count)) }.joined()
+            expect(Array(reconstructed.utf8) == Array(originalReply.utf8), "bot reply chunks lost original bytes")
+        } else {
+            expect(false, "long bot reply could not be split")
+        }
         personal.sendTest(.personalWeChat)
         spin { personal.actionInFlight }
         personal.setEnabled(false, for: .personalWeChat)
@@ -612,6 +622,60 @@ enum MessageChannelsControllerSelfTest {
         expect(
             personal.personalWeChatPhase == .disabled && !personal.personalWeChatHasContext && !personal.personalWeChatConnected,
             "disabling personal WeChat retained connection state or accepted an obsolete send")
+        // Tracked notices share ordinary delivery's session-expiry cleanup.
+        let trackedDefaults = UserDefaults(suiteName: suite + ".tracked-expiry")!
+        defer { trackedDefaults.removePersistentDomain(forName: suite + ".tracked-expiry") }
+        let trackedStorage = Storage()
+        let trackedHTTP = Transport()
+        let tracked = MessageChannelsController(
+            defaults: trackedDefaults, storage: trackedStorage,
+            transport: { trackedHTTP }, personalTransport: { trackedHTTP },
+            botLedger: WeChatBotEventLedger(directory: ledgerDirectory.appendingPathComponent("tracked-expiry")))
+        defer {
+            tracked.stop()
+            trackedHTTP.completeAll(responseBody: "{}")
+            settle()
+        }
+        tracked.start()
+        tracked.setEnabled(true, for: .personalWeChat)
+        trackedStorage.resolve(
+            MessageChannelCredential(
+                secret: "synthetic-tracked-session-token", target: "scanner@im.wechat",
+                personalBinding: PersonalWeChatBinding(
+                    baseURL: PersonalWeChatMessageChannel.defaultBaseURL, botID: "synthetic-tracked-bot",
+                    contextToken: "synthetic-tracked-context", contextCheckedAt: Date())))
+        spin { trackedHTTP.hasPending("/ilink/bot/getupdates") }
+        func trackedRevision() -> UUID? { MainActor.assumeIsolated { tracked.publicResetRevision(.personalWeChat) } }
+        if let revision = trackedRevision() {
+            let status = try! MessageTaskStatus(eventKind: .test, occurredAt: Date())
+            var trackedResult: Result<MessageDeliveryOutcome, MessageChannelError>?
+            Task { @MainActor in
+                trackedResult = await tracked.sendTracked(status, to: .personalWeChat, revision: revision, shouldSend: { true })
+            }
+            spin { trackedHTTP.hasPending("/ilink/bot/sendmessage") }
+            trackedHTTP.completePath("/ilink/bot/sendmessage", responseBody: #"{"ret":-14}"#)
+            spin { trackedResult != nil }
+            expect(trackedResult == .failure(.weChatSessionExpired), "tracked session expiry did not return the adapter failure")
+            expect(
+                tracked.personalWeChatPhase == .needsSetup && !tracked.personalWeChatConnected
+                    && !tracked.personalWeChatHasContext && trackedRevision() == nil,
+                "tracked session expiry retained connection, credential admission or verified phase")
+            let countAfterExpiry = trackedHTTP.count
+            tracked.send(try! MessageTaskStatus(eventKind: .test, occurredAt: Date()))
+            var retry: Result<MessageDeliveryOutcome, MessageChannelError>?
+            Task { @MainActor in
+                retry = await tracked.sendTracked(status, to: .personalWeChat, revision: revision, shouldSend: { true })
+            }
+            spin { retry != nil }
+            trackedHTTP.completeAll(responseBody: "{}")
+            settle()
+            expect(
+                retry == .failure(.cancelled) && trackedHTTP.count == countAfterExpiry
+                    && trackedRevision() == nil && !tracked.personalWeChatConnected,
+                "expired tracked session continued automatic sending or a late poll restored admission")
+        } else {
+            failures.append("synthetic tracked session did not establish initial admission")
+        }
         if failures.isEmpty {
             print("Message channel controller self-test passed: opt-in, persistence, callback revisions, independent completion, bounded sends and personal QR/context/delivery")
         } else {

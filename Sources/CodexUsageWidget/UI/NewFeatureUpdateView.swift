@@ -24,7 +24,7 @@ struct NewFeatureUpdateView: View {
                 VStack(alignment: .leading, spacing: 5) {
                     Text(language.text("新功能与设置", "New features & settings"))
                         .font(.system(size: 20, weight: .semibold))
-                    Text(language.text("了解用量、反代和侧栏更新，已有设置继续保留。", "Explore usage, proxy and sidebar updates. Your existing settings are preserved."))
+                    Text(language.text("了解用量、反代、侧栏与精选更新，已有设置继续保留。", "Explore usage, proxy, sidebar and recommendation updates. Your existing settings are preserved."))
                         .font(.system(size: 12)).foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 0)
@@ -74,32 +74,107 @@ struct NewFeatureSetupControls: View {
                 featureHeading(language.text("本次更新", "What's new"), symbol: "arrow.triangle.2.circlepath")
                 Text(
                     language.text(
-                        "2.5 反代与微信修复：避免控制通道阻塞，核实额度恢复后同步解除对应冷却。来源不明的旧版冷却，可停止反代后按账号备份清理。微信会话更新不再中断发送中的通知；自定义 5 小时上限保存后不再回退。普通账号暂时忙碌时先等待，不立即使用“最后使用”账号；已有规则保留。",
-                        "2.5 proxy and WeChat fixes: Prevent blocked control communication and reconcile verified quota recovery with engine cooldowns. After stopping the proxy, you can back up and clear one account’s legacy cooldowns with unknown causes. WeChat context updates no longer interrupt notifications in flight. Custom 5-hour limits retain their saved values. Temporarily busy ordinary accounts are awaited before Use last accounts. Existing rules are preserved."
+                        "首次安装采用统一的外观与布局：跟随系统主题、卡片列表、自动隐藏侧栏、菜单栏倒计时和全部用量趋势。覆盖安装保留你的已有配置；账号、通知连接和自动使用授权仍由你设置。",
+                        "New installations share a consistent appearance and layout: system theme, account cards, an auto-hiding sidebar, menu-bar countdowns and all-time usage trends. Replacement installations retain your settings; accounts, notification connections and automatic-use permissions remain yours to configure."
                     )
                 )
                 .font(.system(size: 12)).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
                 Text(
                     language.text(
-                        "Token Monitor 0.68.0 · Tokscale 4.18.0：更新用量解析和定价，修正 Claude 重复与缓存 Token 统计。",
-                        "Token Monitor 0.68.0 · Tokscale 4.18.0: Updated usage parsing and pricing, with fixes for duplicate and cached Claude tokens.")
+                        "关于页新增订阅优惠入口；版本标题跟随实际安装版本显示。已有账号、主题与设置继续保留。",
+                        "About adds a subscription-offer link and displays the installed app version. Your accounts, themes and settings are preserved.")
                 )
                 .font(.system(size: 12)).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
                 Text(
                     language.text(
-                        "反代引擎更新至 8.0.20：取消参与后，等待与重试也会跳过该账号；已接入的响应继续完成。保留优先、最后使用及点数底线，并修正连接错误提示与退出后的租约清理。",
-                        "Proxy engine 8.0.20: Disabling participation also skips waiting admissions and retries; admitted responses finish. Priority, Use last and credit floors are preserved, with clearer connection errors and improved lease cleanup after exit."
+                        "2.5 反代与微信修复：修复并行请求下的误报忙碌，等待超时提供重试提示。排队遵守等待期限和取消信号；已预留账号的短暂文件锁竞争会在原期限内重试，已发送请求继续安全收尾。临时错误过期后按最新额度证据显示，忙碌标签明确为上次请求报告。避免控制通道阻塞，核实额度恢复后同步解除对应冷却。来源不明的旧版冷却，可停止反代后按账号备份清理；关闭面板会取消待核验清理，避免下次开启被阻止。微信会话更新不再中断发送中的通知；启动时调整通知内容，也能完成已保存连接的读取。自定义 5 小时上限保存后不再回退。普通账号暂时忙碌时先等待，不立即使用“最后使用”账号；已有规则保留。Codex 列表开关紧凑排列，窄窗口下分组换行。",
+                        "2.5 proxy and WeChat fixes: Fix false busy refusals during parallel requests and provide retry guidance when waits expire. Queued admissions honor deadlines and cancellation; brief file-lock contention after reservation retries within the original budget, while issued requests complete safely. Expired temporary errors return to the latest quota evidence, and busy labels describe the last request. Prevent blocked control communication and reconcile verified quota recovery with engine cooldowns. After stopping the proxy, you can back up and clear one account’s legacy cooldowns with unknown causes; closing the panel cancels pending checks so they cannot block the next start. WeChat context updates no longer interrupt notifications in flight; changing notification content during startup also preserves the saved connection load. Custom 5-hour limits retain their saved values. Temporarily busy ordinary accounts are awaited before Use last accounts. Existing rules are preserved. Codex list switches use a compact layout, wrapping as groups in narrow windows."
+                    )
+                )
+                .font(.system(size: 12)).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                Text(
+                    language.text(
+                        "用量统计保留 Token Monitor 0.70 的日志读取与计价修复，并采纳 0.71 的两项修复：历史统计交接给后台后释放重复占用，读取失败时保留上一份完整统计；修复可选菜单栏浮窗点击关闭后立即又弹出的问题。侧栏、浮窗与统一 TPM 沿用已有设置。",
+                        "Usage tracking keeps the log-reading and pricing fixes from Token Monitor 0.70 and adopts two fixes from 0.71: release duplicate archive memory after background handoff and retain the last complete totals when reads fail; fix the optional tray popover immediately reopening when you click to close it. Your sidebar, popover and unified TPM settings stay in place."
+                    )
+                )
+                .font(.system(size: 12)).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                Text(
+                    language.text(
+                        "反代引擎更新至 8.0.28：改进流式响应解析，修正部分连接断开被误记为账号冷却。取消参与后，等待与重试也会跳过该账号；已接入的响应继续完成。保留优先、最后使用及点数底线。",
+                        "Proxy engine 8.0.28 improves streamed-response parsing and prevents certain closed connections from incorrectly cooling an account. Disabling participation also skips waiting admissions and retries; admitted responses finish. Priority, Use last and credit floors are preserved."
+                    )
+                )
+                .font(.system(size: 12)).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                Text(
+                    language.text(
+                        "Claude 登录配置跟随官方规则：空的旧配置文件不再遮住当前配置，保存和切换时核对同一文件，保留账号与共享设置。",
+                        "Claude configuration follows the official rules: an empty legacy file no longer shadows the current configuration. Saving and switching validate the same file while preserving account and shared settings."
                     )
                 )
                 .font(.system(size: 12)).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             }
             .padding(18)
+            Text(
+                language.text(
+                    "反代新增统一 5 小时已用上限：填写百分比，一键应用到 Plus 账号，仍可单独调整。Pro 保持原规则。低于 100% 时达到上限即停止新请求，已有响应继续完成；设为 100% 时保留原有点数接续规则。",
+                    "Set a uniform 5-hour used-percentage limit for Plus accounts, with individual overrides. Pro rules remain unchanged. A limit below 100% stops new admissions when reached; admitted responses finish. At 100%, existing credit-fallback rules remain."
+                )
+            )
+            .font(.system(size: 12)).foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.horizontal, 18).padding(.bottom, 18)
+            Divider().padding(.horizontal, 18)
+            VStack(alignment: .leading, spacing: 10) {
+                featureHeading(language.text("精选工具与安装自检", "Recommendations & installation checks"), symbol: "square.stack.3d.up")
+                Text(
+                    language.text(
+                        "精选新增 REA，用于分析软件包、程序行为与版本差异；JEV 根据界面文字协助选择下一步，由 Codex 执行并核验。点击卡片查看用途和安装指令，按需安装。",
+                        "REA joins the recommendations for analyzing software packages, runtime behavior and version changes. JEV helps choose the next step from interface text; Codex executes and verifies it. Open a card for its purpose and installation instructions."
+                    )
+                )
+                .font(.system(size: 12)).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                Text(
+                    language.text(
+                        "首次安装或覆盖安装后，只读检查一次本机安装情况；已检测到安装的项目不再推荐。每项可选择“不再显示”，也可在精选区手动“重新检查”。安装检测不代表服务已连接，也不会替你安装或调用工具。",
+                        "After a new or replacement installation, one read-only check hides recommendations already installed locally. Choose Don't show again for any item, or Recheck in the recommendations area. Detection does not establish a service connection or install or invoke a tool."
+                    )
+                )
+                .font(.system(size: 11)).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(18)
             Divider().padding(.horizontal, 18)
             ClaudeFeatureIntroductionPanel(
                 language: language, isPreview: store.isPreview, onOpenClaude: onOpenClaude)
+            Divider().padding(.horizontal, 18)
+            VStack(alignment: .leading, spacing: 10) {
+                featureHeading(language.text("重置卡增减与到期提醒", "Reset-card changes & expiry alerts"), symbol: "bell.badge")
+                Text(
+                    language.text(
+                        "核实可用次数的增加或减少，显示前后数量与观察时段。已知到期时间的卡进入 24 小时内时提醒，减少忘记使用造成的浪费；提醒本身不会使用卡片。",
+                        "Verified increases and decreases show both counts and the observation interval. Cards with a known expiry are flagged within 24 hours to help avoid forgotten credits. Alerts do not use cards."
+                    )
+                )
+                .font(.system(size: 12)).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                Text(
+                    language.text(
+                        "沿用已开启的系统、飞书和微信等消息通道及内容选项。同一张卡按通道去重；首次同步不补发历史增减，发送结果不确定时暂停重发。打开自动化中心检查连接与重置卡提醒设置。",
+                        "Uses your enabled desktop, Feishu, WeChat and other channels and content choices. Each card is deduplicated per channel. Initial sync does not replay old changes; uncertain sends pause. Review connections and reset-card alerts in Automation."
+                    )
+                )
+                .font(.system(size: 11)).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(18)
             Divider().padding(.horizontal, 18)
             VStack(alignment: .leading, spacing: 12) {
                 featureHeading(

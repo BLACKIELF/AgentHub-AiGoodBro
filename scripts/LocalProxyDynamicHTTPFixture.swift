@@ -118,7 +118,8 @@ private struct DynamicHTTPFailure: Error {
         let displayed = Set(store.displayRows.filter(\.isEnabled).map(\.id))
         try check(saved.enabledIDs == enabled, "persisted-" + label)
         try check(displayed == enabled, "displayed-" + label)
-        try check(store.activeIDs == enabled, "runtime-membership-" + label,
+        try check(
+            store.activeIDs == enabled, "runtime-membership-" + label,
             detail: "expected " + enabled.sorted().joined(separator: ",") + "; got " + store.activeIDs.sorted().joined(separator: ","))
     }
 
@@ -159,11 +160,20 @@ private struct DynamicHTTPFailure: Error {
         let five = CodexQuotaWindowSnapshot(usedPercent: 10, resetsAt: now.addingTimeInterval(18000))
         let seven = CodexQuotaWindowSnapshot(usedPercent: 20, resetsAt: now.addingTimeInterval(604800))
         func profile(_ id: String) -> CodexProfile {
-            CodexProfile(id: id, lastSnapshot: CodexAccountSnapshot(planType: "plus", creditBalance: "3000", creditBalanceUnlimited: false,
-                accountID: "account-" + id, email: id.lowercased() + "@example.invalid", fetchedAt: now, fiveHour: five, sevenDay: seven))
+            CodexProfile(
+                id: id,
+                lastSnapshot: CodexAccountSnapshot(
+                    planType: "plus", creditBalance: "3000", creditBalanceUnlimited: false,
+                    accountID: "account-" + id, email: id.lowercased() + "@example.invalid", fetchedAt: now, fiveHour: five, sevenDay: seven))
         }
-        var system = profile("central"); system.isSystemProfile = true
-        let profiles = members.map(profile) + [system]
+        var system = profile("central")
+        system.isSystemProfile = true
+        var pro20x = profile("C")
+        pro20x.lastSnapshot?.planType = "pro"
+        pro20x.lastSnapshot?.fiveHour = nil
+        pro20x.officialProfile = CodexOfficialProfileSnapshot(planType: "pro")
+        pro20x.proTierMultiplier = 20
+        let profiles = [profile("A"), profile("B"), pro20x, system]
         func jwt(_ claims: [String: Any]) throws -> String {
             let encoded = try JSONSerialization.data(withJSONObject: claims).base64EncodedString()
                 .replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")
@@ -178,7 +188,8 @@ private struct DynamicHTTPFailure: Error {
             try data.write(to: auth)
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: auth.path)
         }
-        let usage = UsageStore(profiles); usage.isPreview = false
+        let usage = UsageStore(profiles)
+        usage.isPreview = false
         self.usage = usage
         HubConsoleModel.fixtureAvailability = .idle
         let store = LocalProxyQueueStore(usageStore: usage)
@@ -193,8 +204,10 @@ private struct DynamicHTTPFailure: Error {
             let issues = root.appendingPathComponent("operations-issues-v1.jsonl")
             if let text = try? String(contentsOf: issues) { print("DYNAMIC_HTTP_START_DIAGNOSTIC: " + text) }
         }
-        try check(store.phase == .running && originalPID != nil, "actual-native-host-start",
+        try check(
+            store.phase == .running && originalPID != nil, "actual-native-host-start",
             detail: "phase=\(store.phase.rawValue); opt-in=\(store.isEnabled); preference-failure=\(store.preferencesFailure != nil); issue=\(store.issue ?? "none")")
+        try check(store.rows.last?.id == "C" && store.rows.last?.isLast == true, "pro20x-defaults-to-last")
         try membership(Set(members), "baseline")
         _ = try await post("baseline", expecting: "A")
         try await waitForCleanup()
@@ -204,19 +217,22 @@ private struct DynamicHTTPFailure: Error {
         _ = try await post("disable-A", expecting: "B")
         try await waitForCleanup()
 
-        store.setAccountPriority(id: "C", priority: true); store.flushDisplayRows()
+        store.setAccountPriority(id: "C", priority: true)
+        store.flushDisplayRows()
         try check(try savedPreferences().priorityIDs.contains("C") && store.displayRows.first?.id == "C", "persisted-displayed-priority-C")
         _ = try await post("priority-C", expecting: "C")
         try await waitForCleanup()
 
-        store.setAccountLast(id: "C", last: true); store.flushDisplayRows()
+        store.setAccountLast(id: "C", last: true)
+        store.flushDisplayRows()
         let last = try savedPreferences()
         try check(last.lastOverrides?["C"] == true && !last.priorityIDs.contains("C") && store.displayRows.last?.id == "C", "persisted-displayed-last-C")
         _ = try await post("last-C", expecting: "B")
         try await waitForCleanup()
 
         try check(store.canMoveAccount(id: "C", by: -1), "cross-group-move-C-available")
-        store.moveAccount(id: "C", by: -1); store.flushDisplayRows()
+        store.moveAccount(id: "C", by: -1)
+        store.flushDisplayRows()
         let moved = try savedPreferences()
         try check(moved.order == ["A", "C", "B"] && moved.lastOverrides?["C"] == false, "persisted-cross-group-move-C")
         _ = try await post("move-C", expecting: "C")
@@ -262,11 +278,37 @@ private struct DynamicHTTPFailure: Error {
         let reopened = LocalProxyQueueStore(usageStore: usage)
         try check(reopened.rows.first(where: { $0.id == "B" })?.isEnabled == false, "disabled-B-persists-on-reopen")
         try check(usage.profiles.allSatisfy { !$0.isDispatchPriorityEnabled }, "controls-preserve-independent-dispatch-flags")
+
+        // A saved off/on must not revive Pro20x inside an older HTTP retry.
+        // The later fresh request can use it without restarting the helper.
+        try restoreOrder()
+        try setEnabled("A", false)
+        // Retry exhaustion preserves the first upstream quota response.
+        let proRetry = Task { try await self.post("revoked-pro-retry", expecting: nil, status: 429) }
+        try await waitForUpstream("revoked-pro-retry", account: "B")
+        try check(store.membershipSnapshots.values.contains { $0.order == ["B", "C"] }, "pro-retry-captured-old-B-C-order")
+        try setEnabled("C", false)
+        try membership(["B"], "pro20x-disabled")
+        try setEnabled("C", true)
+        try membership(["B", "C"], "pro20x-reenabled")
+        try await control("release", scenario: "revoked-pro-retry")
+        _ = try await proRetry.value
+        try await waitForCleanup()
+        let proStatus = try await status()
+        let proRetryCalls = (proStatus["calls"] as? [[String: Any]] ?? [])
+            .filter { $0["case"] as? String == "revoked-pro-retry" }.compactMap { $0["account"] as? String }
+        try check(proRetryCalls == ["B"], "old-retry-does-not-revive-pro20x", detail: "expected B; got " + proRetryCalls.joined(separator: ","))
+        _ = try await post("reenabled-pro-next", expecting: "C")
+        try await waitForCleanup()
+        let proReopened = LocalProxyQueueStore(usageStore: usage)
+        try check(proReopened.rows.first(where: { $0.id == "C" })?.isEnabled == true, "pro20x-reenabled-persists-on-reopen")
+        try check((try await status()["failures"] as? [String] ?? []).isEmpty, "pro20x-upstream-verifies-native-lease")
     }
 
     func finish() async {
         try? await control("release", scenario: "overlap")
         try? await control("release", scenario: "revoked-retry")
+        try? await control("release", scenario: "revoked-pro-retry")
         session.invalidateAndCancel()
         if let store { await store.stop() }
     }

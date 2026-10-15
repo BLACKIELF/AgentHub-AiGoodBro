@@ -127,14 +127,7 @@ struct FeishuSwitchNotification {
         }
 
         func displayName(_ language: WidgetLanguage) -> String {
-            switch self {
-            case .noEligibleAccount: return language.text("没有符合条件的候选账号", "No eligible account")
-            case .appBusy: return language.text("Codex 正在处理任务", "Codex is working on a task")
-            case .validationFailed: return language.text("切换前校验失败", "Pre-switch verification failed")
-            case .restartFailed: return language.text("Codex 安全重启失败", "Codex could not restart safely")
-            case .networkUnavailable: return language.text("网络不可用", "Network unavailable")
-            case .unknown: return language.text("未知错误", "Unknown error")
-            }
+            MessageNoticeFormat.reason(MessageTaskStatus.FailureReason(rawValue: rawValue) ?? .unknown, language: language)
         }
     }
 
@@ -190,6 +183,12 @@ struct FeishuSwitchNotification {
                 if let statedBalance = accountFacts?.availableResetCredits, statedBalance != available {
                     throw FeishuWebhookError.invalidNotification
                 }
+            case .resetCreditsChanged(let previous, let available, let previousObservedAt, let observedAt):
+                guard MessageNoticeFormat.validChange(previous: previous, available: available, previousObservedAt: previousObservedAt, observedAt: observedAt),
+                    accountFacts?.availableResetCredits.map({ $0 == available }) ?? true
+                else { throw FeishuWebhookError.invalidNotification }
+            case .resetCreditsExpiring(let batches, let observedAt):
+                guard MessageNoticeFormat.validExpiry(batches, observedAt: observedAt, enforcingThreshold: false) else { throw FeishuWebhookError.invalidNotification }
             }
         }
         self.event = event
@@ -522,14 +521,16 @@ final class FeishuWebhookService {
         _ announcement: PublicResetAnnouncement,
         language: WidgetLanguage = .storedOrAutomatic()
     ) throws -> Data {
-        guard announcement.isValid(now: Date()) else { throw FeishuWebhookError.invalidNotification }
+        guard let context = try? PublicResetContext(announcement: announcement) else { throw FeishuWebhookError.invalidNotification }
         let link = announcement.source.url ?? PublicResetClient.siteURL
         let template = announcement.resetType == .banked ? "purple" : "turquoise"
         return try resetCardData(
             title: announcement.title(language), template: template,
             sections: [
                 language.text("**公开消息 · 个人到账待核实**", "**Public notice · account receipt unverified**")
-                    + "\n" + announcement.summary(language),
+                    + (context.publicText.isEmpty ? "" : "\n" + context.publicText)
+                    + "\n" + MessageNoticeFormat.shortTime(announcement.announcedAt)
+                    + "\n" + announcement.meaning(language),
                 language.text(
                     "**接下来**\n打开 AiGoodBro → 账号，核对当前额度与可用 Reset 卡。",
                     "**Next step**\nOpen AiGoodBro → Accounts to check current quotas and available reset credits."),
@@ -547,7 +548,7 @@ final class FeishuWebhookService {
         if let latestBy = forecast.latestBy {
             lines.append(
                 language.text("**预计最晚时间**：", "**Expected by**: ")
-                    + PublicResetAnnouncementPresentation.compactEventTime(latestBy, language: language))
+                    + MessageNoticeFormat.shortDate(latestBy))
         } else {
             lines.append(language.text("**预计重置时间**：待确认", "**Expected reset time**: To be confirmed"))
         }
@@ -560,7 +561,7 @@ final class FeishuWebhookService {
                     "**How to confirm receipt**\nCheck the account’s official quotas and reset-credit balance. Reaching the forecast time still requires verification; this notice does not confirm completion or credited quota."
                 ),
                 language.text("**发布时间**：", "**Published**: ")
-                    + PublicResetAnnouncementPresentation.compactEventTime(forecast.announcedAt, language: language)
+                    + MessageNoticeFormat.shortTime(forecast.announcedAt)
                     + "\n" + language.text("来源：Codex Resets（公开预告）", "Source: Codex Resets (public forecast)")
                     + "\n[" + language.text("查看来源帖文", "View source post") + "](\(forecast.sourceURL.absoluteString))",
             ])
@@ -572,6 +573,7 @@ final class FeishuWebhookService {
             if !elements.isEmpty { elements.append(["tag": "hr"]) }
             elements.append(["tag": "markdown", "content": section])
         }
+        elements.append(["tag": "markdown", "content": MessageNoticeFormat.footer])
         return try JSONSerialization.data(
             withJSONObject: [
                 "msg_type": "interactive",
@@ -587,6 +589,11 @@ final class FeishuWebhookService {
     private static func quotaChangePayload(
         _ notification: FeishuSwitchNotification, change: CodexQuotaEvent, language: WidgetLanguage
     ) throws -> Data {
+        if case .resetCreditsExpiring(let batches, _) = change,
+            !MessageNoticeFormat.validExpiry(batches, observedAt: Date())
+        {
+            throw FeishuWebhookError.invalidNotification
+        }
         let options = notification.messageOptions
         let beijing = TimeZone(identifier: "Asia/Shanghai")!
         let presentation = presentation(for: notification.event, origin: notification.switchOrigin, language: language)
@@ -596,12 +603,23 @@ final class FeishuWebhookService {
         case .resetCreditsAdded(let added, let available):
             result = [language.text("**已核实 · 官方可用 Reset 次数增加**", "**Verified · official available reset count increased**")]
             if options.includesResetCredits {
-                title = language.text("🎫 Reset 卡到账 · +\(added)", "🎫 Reset credits received · +\(added)")
-                result.append(language.text("**新增 \(added) 次 · 现可用 \(available) 次**", "**+\(added) received · \(available) available**"))
-                result.append(language.text("余额变化：\(available - added) → \(available) 次", "Balance: \(available - added) → \(available)"))
+                title = language.text("重置卡 +\(added)", "Reset credits +\(added)")
+                result.append(language.text("可用 \(available - added)→\(available) 次", "Available \(available - added)→\(available)"))
+            }
+        case .resetCreditsChanged(let previous, let available, let previousObservedAt, let observedAt):
+            result = []
+            if options.includesResetCredits {
+                title = MessageNoticeFormat.changeTitle(previous: previous, available: available, language: language)
+                result = MessageNoticeFormat.changeLines(
+                    previous: previous, available: available, previousObservedAt: previousObservedAt, observedAt: observedAt, language: language)
+            }
+        case .resetCreditsExpiring(let batches, _):
+            result = []
+            if options.includesResetCredits, options.resetExpiryDetail != .none {
+                result = MessageNoticeFormat.expiryLines(batches, language: language)
             }
         case .quotaReset(let fiveHour, let sevenDay):
-            let windows = [(fiveHour, language.text("5 小时", "5h")), (sevenDay, language.text("7 天", "7d"))]
+            let windows = [(fiveHour, "5h"), (sevenDay, "7d")]
                 .filter { $0.0 }.map { $0.1 }.joined(separator: " + ")
             result = [
                 language.text("**已核实 · 官方额度窗口变化**", "**Verified · official quota-window change**"),
@@ -615,11 +633,11 @@ final class FeishuWebhookService {
             details.append(language.text("**当前额度 · 剩余**", "**Current quota · remaining**"))
             details.append(
                 quotaLine(
-                    label: language.text("5 小时", "5h"), value: notification.accountFacts.fiveHour,
+                    label: "5h", value: notification.accountFacts.fiveHour,
                     includesResetTime: options.includesResetTimes, language: language, timeZone: beijing))
             details.append(
                 quotaLine(
-                    label: language.text("7 天", "7d"), value: notification.accountFacts.sevenDay,
+                    label: "7d", value: notification.accountFacts.sevenDay,
                     includesResetTime: options.includesResetTimes, language: language, timeZone: beijing))
         } else if options.includesResetTimes {
             details += resetTimeLines(for: notification.accountFacts, language: language, timeZone: beijing)
@@ -633,6 +651,10 @@ final class FeishuWebhookService {
             interpretation = language.text(
                 "根据两次官方快照确认余额增加；发现时间不等于实际发放时间。打开 AiGoodBro → 账号查看卡片与到期信息。",
                 "Two official snapshots confirm a balance increase. Detection time is not the exact grant time. Open AiGoodBro → Accounts for credits and expiry details.")
+        case .resetCreditsChanged:
+            interpretation = language.text("打开 AiGoodBro 查看记录", "Open AiGoodBro for the record")
+        case .resetCreditsExpiring:
+            interpretation = language.text("打开 AiGoodBro 按需使用", "Open AiGoodBro to use when needed")
         case .quotaReset:
             interpretation = language.text(
                 "仅报告官方额度窗口变化；Reset 卡增减及使用状态另行核对。打开 AiGoodBro → 账号查看最新额度。",
@@ -643,8 +665,7 @@ final class FeishuWebhookService {
             sections: [
                 result.joined(separator: "\n"), details.joined(separator: "\n"),
                 language.text("**发现时间**：", "**Detected**: ")
-                    + PublicResetAnnouncementPresentation.compactEventTime(notification.occurredAt, language: language)
-                    + "\n" + language.text("卡片内时间均为北京时间。", "All times in this card use Beijing time.")
+                    + MessageNoticeFormat.shortTime(MessageNoticeFormat.checkedAt(for: change, fallback: notification.occurredAt))
                     + "\n" + interpretation,
             ])
     }
@@ -681,13 +702,13 @@ final class FeishuWebhookService {
     static func taskCompletionPayload(
         _ completion: FeishuTaskCompletionNotification,
         language: WidgetLanguage = .storedOrAutomatic(),
-        timeZone: TimeZone = .autoupdatingCurrent
+        timeZone: TimeZone = MessageNoticeFormat.beijingTimeZone
     ) throws -> Data {
         guard completion.proof == .confirmedByTaskObserver else {
             throw FeishuWebhookError.invalidNotification
         }
         var lines = [
-            language.text("**结果**：任务已完成", "**Result**: Task completed")
+            language.text("**结果**：运行结束", "**Result**: Run ended")
         ]
         switch completion.category {
         case .dispatchedAgent:
@@ -717,14 +738,14 @@ final class FeishuWebhookService {
                 "schema": "2.0",
                 "config": ["wide_screen_mode": true],
                 "header": [
-                    "title": ["tag": "plain_text", "content": language.text("✅ Codex 任务完成", "✅ Codex task completed")],
+                    "title": ["tag": "plain_text", "content": language.text("Codex 运行结束", "Codex run ended")],
                     "template": "green",
                 ],
                 "body": [
                     "elements": [
                         [
                             "tag": "markdown",
-                            "content": lines.joined(separator: "\n"),
+                            "content": MessageNoticeFormat.withFooter(lines.joined(separator: "\n")),
                         ]
                     ]
                 ],
@@ -840,7 +861,7 @@ final class FeishuWebhookService {
     static func payloadData(
         for notification: FeishuSwitchNotification,
         language: WidgetLanguage = .storedOrAutomatic(),
-        timeZone: TimeZone = .autoupdatingCurrent
+        timeZone: TimeZone = MessageNoticeFormat.beijingTimeZone
     ) throws -> Data {
         if case .quotaChange(let change) = notification.event {
             return try quotaChangePayload(notification, change: change, language: language)
@@ -861,9 +882,11 @@ final class FeishuWebhookService {
             case .resetCreditsAdded(let added, let available):
                 lines.append(
                     language.text(
-                        "**变化类型**：获得 Reset 卡 / 重置机会",
-                        "**Change type**: Reset credit / reset opportunity granted"))
+                        "**变化类型**：可用重置卡增加",
+                        "**Change type**: Available reset credits increased"))
                 lines.append(language.text("**变化**：新增 \(added) 次，可用 \(available) 次", "**Change**: +\(added), \(available) available"))
+            case .resetCreditsChanged, .resetCreditsExpiring:
+                break  // These events return through quotaChangePayload above.
             }
         case .lowQuotaDetected:
             lines.append(lowQuotaTrigger(for: notification, language: language))
@@ -897,13 +920,13 @@ final class FeishuWebhookService {
         if options.includesQuotas {
             lines.append(
                 quotaLine(
-                    label: language.text("5 小时", "5h"), value: notification.accountFacts.fiveHour,
+                    label: "5h", value: notification.accountFacts.fiveHour,
                     includesResetTime: options.includesResetTimes, language: language, timeZone: timeZone
                 )
             )
             lines.append(
                 quotaLine(
-                    label: language.text("7 天", "7d"), value: notification.accountFacts.sevenDay,
+                    label: "7d", value: notification.accountFacts.sevenDay,
                     includesResetTime: options.includesResetTimes, language: language, timeZone: timeZone
                 )
             )
@@ -913,6 +936,7 @@ final class FeishuWebhookService {
         if options.includesResetCredits {
             lines.append(resetCreditLine(for: notification, language: language, timeZone: timeZone))
         }
+        lines.append(language.text("核实 ", "Checked ") + MessageNoticeFormat.shortTime(notification.occurredAt))
 
         let payload: [String: Any] = [
             "msg_type": "interactive",
@@ -927,7 +951,7 @@ final class FeishuWebhookService {
                     "elements": [
                         [
                             "tag": "markdown",
-                            "content": lines.joined(separator: "\n"),
+                            "content": MessageNoticeFormat.withFooter(lines.joined(separator: "\n")),
                         ]
                     ]
                 ],
@@ -1024,7 +1048,7 @@ final class FeishuWebhookService {
         language: WidgetLanguage,
         timeZone: TimeZone
     ) -> [String] {
-        [(language.text("5 小时重置", "5h reset"), facts.fiveHour), (language.text("7 天重置", "7d reset"), facts.sevenDay)]
+        [(language.text("5h 重置", "5h reset"), facts.fiveHour), (language.text("7d 重置", "7d reset"), facts.sevenDay)]
             .map { label, value in
                 guard case .finite(_, let resetsAt) = value else {
                     return language.text("**\(label)**：未知", "**\(label)**: Unknown")
@@ -1047,6 +1071,8 @@ final class FeishuWebhookService {
         let availableCount: Int?
         if case .quotaChange(.resetCreditsAdded(_, let available)) = notification.event {
             availableCount = available
+        } else if case .quotaChange(.resetCreditsChanged(_, let available, _, _)) = notification.event {
+            availableCount = available
         } else {
             availableCount = notification.accountFacts.availableResetCredits
         }
@@ -1062,18 +1088,14 @@ final class FeishuWebhookService {
             .map { Array(upcoming.prefix($0)) } ?? upcoming
         guard !available.isEmpty else { return line + language.text(" · 到期时间未知", " · expiry unknown") }
         let dates = notification.messageOptions.resetExpiryDetail == .nearest ? Array(available.prefix(1)) : available
-        let formatted = dates.map { compactDate($0, language: language, timeZone: timeZone) }.joined(separator: language.text("、", ", "))
+        let formatted = dates.map { MessageNoticeFormat.shortDate($0) }.joined(separator: language.text("、", ", "))
         line += language.text(" · 到期 \(formatted)", " · expires \(formatted)")
         return line
     }
 
     private static func compactDate(_ date: Date?, language: WidgetLanguage, timeZone: TimeZone) -> String {
         guard let date else { return language.text("未知", "Unknown") }
-        let formatter = DateFormatter()
-        formatter.locale = language.locale
-        formatter.timeZone = timeZone
-        formatter.dateFormat = language == .zh ? "M月d日 HH:mm" : "M/d HH:mm"
-        return formatter.string(from: date)
+        return MessageNoticeFormat.shortTime(date)
     }
 
     private static func lowQuotaTrigger(for notification: FeishuSwitchNotification, language: WidgetLanguage) -> String {
@@ -1081,13 +1103,13 @@ final class FeishuWebhookService {
         if let value = notification.fiveHourRemainingPercent, value <= Double(notification.fiveHourTriggerThresholdPercent) {
             reasons.append(
                 language.text(
-                    "5 小时剩余 \(percentText(value))% ≤ \(notification.fiveHourTriggerThresholdPercent)%",
-                    "5-hour remaining \(percentText(value))% ≤ \(notification.fiveHourTriggerThresholdPercent)%"))
+                    "5h 剩余 \(percentText(value))% ≤ \(notification.fiveHourTriggerThresholdPercent)%",
+                    "5h remaining \(percentText(value))% ≤ \(notification.fiveHourTriggerThresholdPercent)%"))
         }
         if let value = notification.sevenDayRemainingPercent, value < Double(notification.triggerThresholdPercent) {
             reasons.append(
                 language.text(
-                    "7 天剩余 \(percentText(value))% < \(notification.triggerThresholdPercent)%", "7-day remaining \(percentText(value))% < \(notification.triggerThresholdPercent)%"))
+                    "7d 剩余 \(percentText(value))% < \(notification.triggerThresholdPercent)%", "7d remaining \(percentText(value))% < \(notification.triggerThresholdPercent)%"))
         }
         return language.text("**触发原因**：", "**Trigger**: ")
             + (reasons.isEmpty ? language.text("未确认低额度条件", "Low-quota condition unverified") : reasons.joined(separator: "; "))
@@ -1117,9 +1139,13 @@ final class FeishuWebhookService {
             )
         case .quotaChange(.resetCreditsAdded):
             return (
-                language.text("🎫 Codex 获得 Reset 卡", "🎫 Codex reset credit granted"),
+                language.text("重置卡变化", "Reset credits changed"),
                 language.text("官方可用 Reset 次数增加", "Official available reset count increased"), "purple"
             )
+        case .quotaChange(.resetCreditsChanged):
+            return (language.text("重置卡变化", "Reset credits changed"), language.text("可用次数净变化", "Net change in available credits"), "purple")
+        case .quotaChange(.resetCreditsExpiring):
+            return (language.text("重置卡将到期", "Reset credits expire soon"), language.text("24h 内到期", "Expires within 24h"), "orange")
         case .switchSucceeded:
             let title =
                 origin == .restartTest
@@ -1249,7 +1275,7 @@ enum FeishuWebhookServiceSelfTest {
             let customPayload = try FeishuWebhookService.payloadData(for: customThresholds, language: .en)
             let customText = String(data: customPayload, encoding: .utf8) ?? ""
             let lowHeader = cardHeader(customPayload)
-            expect(customText.contains("5-hour remaining 18% ≤ 20%") && !customText.contains("7-day remaining 70% < 15%"), "notification must show only the threshold actually met")
+            expect(customText.contains("5h remaining 18% ≤ 20%") && !customText.contains("7d remaining 70% < 15%"), "notification must show only the threshold actually met")
             expect(
                 lowHeader.title == "⚠️ Codex low-quota alert" && lowHeader.template == "orange",
                 "low-quota card is not visually distinct")
@@ -1306,8 +1332,10 @@ enum FeishuWebhookServiceSelfTest {
             )
             let compactText = markdown(try FeishuWebhookService.payloadData(for: compact, language: .zh, timeZone: shanghai))
             expect(compactText.contains("**账号**：pro20x"), "default account label missing")
-            expect(compactText.contains("**5 小时**：∞"), "confirmed unlimited 5-hour value missing")
-            expect(compactText.contains("1月3日 08:00") && !compactText.contains("1月4日 08:00"), "default expiry must show nearest upcoming value only")
+            expect(compactText.contains("**5h**：∞"), "confirmed unlimited 5-hour value missing")
+            expect(
+                compactText.contains(MessageNoticeFormat.shortDate(firstExpiry)) && !compactText.contains(MessageNoticeFormat.shortDate(secondExpiry)),
+                "default expiry must show nearest upcoming value only")
             expect(!compactText.contains("事件 ID") && !compactText.contains("00000000-0000"), "compact card exposed audit UUID")
             expect(!compactText.contains("**Agent**"), "agent name must be optional and off by default")
 
@@ -1331,7 +1359,8 @@ enum FeishuWebhookServiceSelfTest {
                 try FeishuWebhookService.payloadData(for: expiryNotification, language: .en, timeZone: shanghai)
             )
             expect(
-                expiryText.contains("1/3 16:33") && !expiryText.contains("1/3 17:33"),
+                expiryText.contains(MessageNoticeFormat.shortDate(expiryNow.addingTimeInterval(3_600)))
+                    && !expiryText.contains(MessageNoticeFormat.shortDate(expiryNow.addingTimeInterval(7_200))),
                 "expired detail hid the nearest available expiry"
             )
             let zeroFacts = try FeishuAccountFacts(
@@ -1372,7 +1401,9 @@ enum FeishuWebhookServiceSelfTest {
             let filteredText = markdown(try FeishuWebhookService.payloadData(for: filtered, language: .en, timeZone: shanghai))
             expect(filteredText.contains("**Agent**: Codex"), "enabled agent field missing")
             expect(!filteredText.contains("pro20x") && !filteredText.contains("**5h**") && !filteredText.contains("**7d**"), "disabled fields rendered")
-            expect(filteredText.contains("1/3 08:00") && filteredText.contains("1/4 08:00"), "all expiry details were not rendered")
+            expect(
+                filteredText.contains(MessageNoticeFormat.shortDate(firstExpiry)) && filteredText.contains(MessageNoticeFormat.shortDate(secondExpiry)),
+                "all expiry details were not rendered")
 
             let finitePro = FeishuQuotaValue.generalFiveHour(
                 window: RateWindow(usedPercent: 37, windowDurationMins: 300, resetsAt: nil), confirmedPlan: "pro"
@@ -1436,10 +1467,11 @@ enum FeishuWebhookServiceSelfTest {
                 let english = markdown(try FeishuWebhookService.payloadData(for: event, language: .en))
                 expect(english.range(of: "[\\x{3400}-\\x{9FFF}\\x{F900}-\\x{FAFF}]", options: .regularExpression) == nil, "English notification must not contain Chinese app copy")
                 expect(english.contains("p***-source") && !english.contains("person@example.com"), "English notification must preserve masking")
-                expect(body.contains("北京时间") && body.contains("发现时间"), "observation time must name its time zone")
+                expect(body.contains("发现时间") && !body.contains("北京时间"), "observation time must be concise")
+                expect(body.components(separatedBy: "\n").filter { $0 == MessageNoticeFormat.footer }.count == 1, "Feishu footer missing or repeated")
                 switch change {
                 case .quotaReset:
-                    expect(body.contains("5 小时") && body.contains("7 天"), "reset quotas missing")
+                    expect(body.contains("5h") && body.contains("7d"), "reset quotas missing")
                     expect(
                         eventHeader.title == "🔄 Codex 官方额度窗口变化" && eventHeader.template == "turquoise",
                         "official quota-window card is not visually distinct")
@@ -1448,12 +1480,14 @@ enum FeishuWebhookServiceSelfTest {
                         "official window observation must not claim reset-credit facts")
                     expect(!body.contains("未获得或使用 Reset 卡"), "stale over-claiming window copy survived")
                 case .resetCreditsAdded:
-                    expect(body.contains("新增 2 次") && body.contains("可用 3 次"), "official credit count missing")
+                    expect(body.contains("可用 1→3 次"), "official credit count missing")
                     expect(
-                        eventHeader.title == "🎫 Reset 卡到账 · +2" && eventHeader.template == "purple",
+                        eventHeader.title == "重置卡 +2" && eventHeader.template == "purple",
                         "reset-credit card is not visually distinct")
-                    expect(body.contains("1 → 3") && body.contains("发现时间不等于实际发放时间"), "reset-credit change and observation boundary missing")
+                    expect(body.contains("1→3") && body.contains("发现时间不等于实际发放时间"), "reset-credit change and observation boundary missing")
                     expect(!body.contains("可用 Reset 卡**：未知"), "validated event balance was replaced with unknown")
+                case .resetCreditsChanged, .resetCreditsExpiring:
+                    failures.append("unexpected new event in legacy compatibility fixture")
                 }
             }
             var hiddenOptions = FeishuMessageOptions.standard
@@ -1468,7 +1502,7 @@ enum FeishuWebhookServiceSelfTest {
             let hiddenPayload = try FeishuWebhookService.payloadData(for: hiddenEvent, language: .zh)
             let hiddenText = markdown(hiddenPayload)
             expect(
-                !hiddenText.contains(source.value) && !hiddenText.contains("1 → 3") && !hiddenText.contains("5 小时")
+                !hiddenText.contains(source.value) && !hiddenText.contains("1→3") && !hiddenText.contains("5h")
                     && !cardHeader(hiddenPayload).title.contains("+2"), "reset cards must honor hidden fields in both title and body")
             let conflictingFacts = try FeishuAccountFacts(
                 fiveHour: .unknown, sevenDay: .unknown,
@@ -1797,8 +1831,9 @@ enum FeishuTaskCompletionSelfTest {
                 attemptCount: 2, accountLabel: account, occurredAt: now.addingTimeInterval(-30), now: now)
             let payload = try FeishuWebhookService.taskCompletionPayload(confirmed, language: .zh, timeZone: TimeZone(identifier: "Asia/Shanghai")!)
             let text = String(data: payload, encoding: .utf8) ?? ""
-            expect(cardHeader(payload).title == "✅ Codex 任务完成" && cardHeader(payload).template == "green", "task-completion card is not green or mislabeled")
-            expect(text.contains("任务已完成") && text.contains("CLI 派发任务"), "completion result and category missing")
+            expect(cardHeader(payload).title == "Codex 运行结束" && cardHeader(payload).template == "green", "task-completion card is not green or mislabeled")
+            expect(text.contains("运行结束") && !text.contains("任务已完成") && text.contains("CLI 派发任务"), "run end and category missing")
+            expect(markdown(payload).hasSuffix(MessageNoticeFormat.footerSuffix), "task-completion footer missing")
             expect(text.contains("CLI 派发任务") && text.contains("**尝试次数**：2") && text.contains("pro20x"), "bounded fields missing")
             expect(text.contains("请打开原任务查看结果") && !text.contains("已验收"), "completion must direct users to the result without claiming acceptance")
             expect(!text.contains(id.uuidString) && !text.contains("事件 ID"), "internal event ID rendered")

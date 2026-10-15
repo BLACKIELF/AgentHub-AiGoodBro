@@ -249,7 +249,11 @@ final class MessageChannelsController: ObservableObject {
     private let personalTransport: () -> MessageChannelTransport
     private var credentials: [MessageChannelKind: MessageChannelCredential] = [:]
     private var revisions: [MessageChannelKind: UUID] = [:]
+    // A credential read is a separate lifecycle from outbound delivery. Content
+    // option edits invalidate sends, but must not strand the one pending read.
+    private var credentialLoadGenerations: [MessageChannelKind: UUID] = [:]
     private var tasks: [MessageChannelKind: [UUID: Task<Void, Never>]] = [:]
+    private var trackedSends: [MessageChannelKind: Set<UUID>] = [:]
     private var completionObservers: [MessageChannelKind: FeishuTaskCompletionObserver] = [:]
     private let telegramEvents = MessageEventDeduplicator()
     private let weChatEvents = MessageEventDeduplicator()
@@ -375,8 +379,8 @@ final class MessageChannelsController: ObservableObject {
         else { return }
         defaults.set(data, forKey: Self.weChatOptionsKey)
         weChatMessageOptions = options
-        invalidate(.weChat)
-        invalidate(.personalWeChat)
+        invalidate(.weChat, preservingCredentialLoad: true)
+        invalidate(.personalWeChat, preservingCredentialLoad: true)
         onConfigurationChanged?()
     }
     private func isEnabled(_ kind: MessageChannelKind) -> Bool {
@@ -409,8 +413,9 @@ final class MessageChannelsController: ObservableObject {
         for kind in MessageChannelKind.allCases { invalidate(kind) }
     }
 
-    private func invalidate(_ kind: MessageChannelKind) {
+    private func invalidate(_ kind: MessageChannelKind, preservingCredentialLoad: Bool = false) {
         if explicitTest?.kind == kind { explicitTest = nil }
+        if !preservingCredentialLoad { credentialLoadGenerations.removeValue(forKey: kind) }
         revisions[kind] = UUID()
         if kind == .personalWeChat { personalAuthorizationRequest?.cancelBeforeStart() }
         completionObservers.removeValue(forKey: kind)
@@ -449,9 +454,13 @@ final class MessageChannelsController: ObservableObject {
             stopPersonalConnection()
         }
         invalidate(kind)
-        let revision = revisions[kind]
+        let loadGeneration = UUID()
+        credentialLoadGenerations[kind] = loadGeneration
         storage.load(kind) { [weak self] result in
-            guard let self, self.running, self.isEnabled(kind), self.revisions[kind] == revision else { return }
+            guard let self, self.running, self.isEnabled(kind),
+                self.credentialLoadGenerations[kind] == loadGeneration
+            else { return }
+            self.credentialLoadGenerations.removeValue(forKey: kind)
             self.applyStoredCredential(result, for: kind)
         }
     }
@@ -608,32 +617,51 @@ final class MessageChannelsController: ObservableObject {
         revision: UUID, shouldSend: @escaping () -> Bool
     ) async -> Result<MessageDeliveryOutcome, MessageChannelError> {
         guard publicResetRevision(kind) == revision, shouldSend(),
-            let value = credentials[kind],
             let context = try? PublicResetContext(announcement: announcement),
             let status = try? MessageTaskStatus(
                 eventKind: announcement.resetType == .regular ? .publicRegularReset : .publicBankedReset,
                 occurredAt: Date(), publicResetContext: context)
         else { return .failure(.cancelled) }
+        return await sendTracked(status, to: kind, revision: revision, shouldSend: shouldSend)
+    }
+
+    /// Returns the existing adapter's receipt for callers that persist delivery
+    /// state. Uses the same connection gates and bounds as ordinary messages.
+    @MainActor
+    func sendTracked(
+        _ status: MessageTaskStatus, to kind: MessageChannelKind,
+        revision: UUID, shouldSend: @escaping () -> Bool
+    ) async -> Result<MessageDeliveryOutcome, MessageChannelError> {
+        guard publicResetRevision(kind) == revision, shouldSend(),
+            let value = credentials[kind],
+            let selected = kind != .telegram ? status.selectingQuotaWindows(weChatMessageOptions) : status
+        else { return .failure(.cancelled) }
+        guard trackedSends[kind]?.contains(status.eventID) != true,
+            (trackedSends[kind]?.count ?? 0) + (tasks[kind]?.count ?? 0) < 4
+        else { return .failure(.rateLimited(retryAfterSeconds: 60)) }
+        trackedSends[kind, default: []].insert(status.eventID)
+        defer { trackedSends[kind]?.remove(status.eventID) }
         let frozen = FrozenMessageChannelCredential(kind: kind, value: value)
         let valid = { self.publicResetRevision(kind) == revision && shouldSend() }
         let result: Result<MessageDeliveryOutcome, MessageChannelError>
         switch kind {
         case .telegram:
-            result = await TelegramMessageChannel(credentials: frozen, transport: transport()).send(status, shouldSend: valid)
+            result = await TelegramMessageChannel(credentials: frozen, transport: transport()).send(selected, shouldSend: valid)
         case .weChat:
             result = await WeChatMessageChannel(
                 credentials: frozen, transport: transport(),
                 messageOptions: weChatMessageOptions
-            ).send(status, shouldSend: valid)
+            ).send(selected, shouldSend: valid)
         case .personalWeChat:
             let personalWeChatValid: @MainActor () -> Bool = {
                 self.publicResetRevision(kind) == revision && shouldSend()
             }
             result = await PersonalWeChatMessageChannel(transport: transport()).send(
-                status,
+                selected,
                 credential: value, options: weChatMessageOptions, shouldSend: personalWeChatValid)
         }
         guard valid(), !Task.isCancelled else { return .failure(.cancelled) }
+        handleDeliveryResult(result, for: kind)
         return result
     }
 
@@ -742,7 +770,7 @@ final class MessageChannelsController: ObservableObject {
             return
         }
         guard tasks[kind]?[status.eventID] == nil else { return }
-        let automaticCount = (tasks[kind]?.count ?? 0) - (explicitTest?.kind == kind ? 1 : 0)
+        let automaticCount = (tasks[kind]?.count ?? 0) - (explicitTest?.kind == kind ? 1 : 0) + (trackedSends[kind]?.count ?? 0)
         guard explicit || automaticCount < 4 else {
             statusText = WidgetLanguage.storedOrAutomatic().text("当前发送请求过多，本条未发送。", "Too many sends are in progress; this event was not sent.")
             return
@@ -777,23 +805,29 @@ final class MessageChannelsController: ObservableObject {
                     shouldSend: { @MainActor in self.running && self.personalWeChatEnabled && self.revisions[kind] == revision })
             }
             guard self.running, !Task.isCancelled, self.isEnabled(kind), self.revisions[kind] == revision else { return }
-            switch result {
-            case .success(.accepted):
-                self.setPhase(.ready, for: kind)
-                self.setStatus(WidgetLanguage.storedOrAutomatic().text("\(kind.displayName(.zh)) API 已接收消息。", "\(kind.displayName(.en)) API accepted the message."), for: kind)
-            case .success(.duplicateSkipped): break
-            case .failure(let error):
-                if kind == .personalWeChat, error == .weChatSessionExpired {
-                    self.stopPersonalConnection()
-                    self.credentials.removeValue(forKey: kind)
-                    self.personalWeChatConnected = false
-                    self.personalWeChatHasContext = false
-                    self.invalidate(kind)
-                } else {
-                    self.setPhase(.pendingVerification, for: kind)
-                }
-                self.setStatus(error.localizedDescription, for: kind)
+            self.handleDeliveryResult(result, for: kind)
+        }
+    }
+
+    private func handleDeliveryResult(_ result: Result<MessageDeliveryOutcome, MessageChannelError>, for kind: MessageChannelKind) {
+        switch result {
+        case .success(.accepted):
+            setPhase(.ready, for: kind)
+            setStatus(
+                WidgetLanguage.storedOrAutomatic().text(
+                    "\(kind.displayName(.zh)) API 已接收消息。", "\(kind.displayName(.en)) API accepted the message."), for: kind)
+        case .success(.duplicateSkipped): break
+        case .failure(let error):
+            if kind == .personalWeChat, error == .weChatSessionExpired {
+                stopPersonalConnection()
+                credentials.removeValue(forKey: kind)
+                personalWeChatConnected = false
+                personalWeChatHasContext = false
+                invalidate(kind)
+            } else {
+                setPhase(.pendingVerification, for: kind)
             }
+            setStatus(error.localizedDescription, for: kind)
         }
     }
 
@@ -1250,17 +1284,36 @@ final class MessageChannelsController: ObservableObject {
                     self.setPersonalStatus("微信回复记录未能保存，已暂停发送。")
                     return
                 }
-                let result = await PersonalWeChatMessageChannel(transport: self.transport()).sendText(
-                    Self.boundedPersonalReply(reply), eventID: id, credential: credential, shouldSend: valid)
-                switch result {
-                case .success(.accepted): try? self.botLedger.mark(id, phase: .accepted)
-                case .success(.duplicateSkipped): break
-                case .failure(let error):
+                guard let parts = MessageNoticeFormat.originalChunks(reply, utf8Limit: 4096) else {
                     try? self.botLedger.mark(id, phase: .uncertain)
-                    if valid(), !Task.isCancelled {
+                    self.setPersonalStatus("回复无法安全分段，请在 Codex 原聊天查看全文。")
+                    return
+                }
+                for (index, part) in parts.enumerated() {
+                    guard valid(), !Task.isCancelled else {
+                        try? self.botLedger.mark(id, phase: .uncertain)
+                        return
+                    }
+                    let partID = index == 0 ? id : Self.personalReplyPartID(id, index: index)
+                    let result = await PersonalWeChatMessageChannel(transport: self.transport()).sendText(
+                        part, eventID: partID, credential: credential,
+                        shouldSend: valid, footerAlreadyApplied: true)
+                    guard valid(), !Task.isCancelled else {
+                        try? self.botLedger.mark(id, phase: .uncertain)
+                        return
+                    }
+                    switch result {
+                    case .success(.accepted): break
+                    case .success(.duplicateSkipped):
+                        try? self.botLedger.mark(id, phase: .uncertain)
+                        return
+                    case .failure(let error):
+                        try? self.botLedger.mark(id, phase: .uncertain)
                         self.setPersonalStatus(error.localizedDescription)
+                        return
                     }
                 }
+                try? self.botLedger.mark(id, phase: .accepted)
             }
         }
         return true
@@ -1268,15 +1321,15 @@ final class MessageChannelsController: ObservableObject {
 
     private static let personalBotHelp = "微信机器人：开启对话后，首次发文字自动建立专用 Codex 对话，以后固定续聊；也可在电脑上选择已有对话。\n/状态 查看连接和任务数量\n/任务 查看需要关注的任务\n/重置卡 查看最新重置卡\n/帮助 查看说明\n审批和登录请在电脑上完成。"
 
-    static func boundedPersonalReply(_ text: String) -> String {
-        guard text.utf8.count > 4096 else { return text }
-        let footer = "\n\n（内容较长，全文请在 Codex 原聊天查看。）"
-        var prefix = ""
-        let budget = 4096 - footer.utf8.count
-        for character in text {
-            guard prefix.utf8.count + String(character).utf8.count <= budget else { break }
-            prefix.append(character)
-        }
-        return prefix + footer
+    static func boundedPersonalReply(_ text: String) -> String { text }
+
+    private static func personalReplyPartID(_ eventID: UUID, index: Int) -> UUID {
+        let digest = SHA256.hash(data: Data((eventID.uuidString + ":" + String(index)).utf8))
+        let bytes = Array(digest.prefix(16))
+        return UUID(
+            uuid: (
+                bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+                bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]
+            ))
     }
 }

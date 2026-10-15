@@ -7,12 +7,12 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const INPUT_SHA256 = Object.freeze({
-  'src/shared/collector.js': '7c76f724e9b8ccd32d76b6640456ec87cfe3a25cc51386fab14de816b80c383b',
+  'src/shared/collector.js': '641818f116a8ecd5f62863dba5f5dadd3bb71af88660c3bc538350d48a191689',
   'src/shared/usage/deviceRuntime.js': 'f91fbde1b03220f171bd460c657cb41148f738d35ee4f89c0258b3c5e8babce0',
-  'src/shared/sessionDetail.js': '5445afa37b277d992c2c46f63dc29bcec4804a2ef86d398f4c52577211398546',
-  'src/shared/providers/cursor/selfSync.js': 'd85903c15f9b7881e6afb1e54b4100aea6297f96c6f91273e2e49c0d42c8b734',
+  'src/shared/sessionDetail.js': '7d1535b70659c7af5076a735ae8821db92b9561153dbe1ff23986e2821a8c7a6',
+  'src/shared/providers/cursor/selfSync.js': 'be67e2dc92f5fed2204a2f44da3bb09a81486e399eb9165049ffae6246aa98a3',
   'src/shared/providers/antigravity/selfSync.js': '0fd43baf9d818557644ef730edec1eb8968d4811d74d344c98eb0f79efca99b6',
-  'src/electron/main.js': 'd9ac675becf19d11f1ea95e0c8766c3d2081d2e743910b2339312807538af1c1',
+  'src/electron/main.js': '50764d8004cb36233fc43b9a4fecd0dafc3f3ac431207b18831e3e3f076a56d0',
   'src/electron/edgeDock/controller.js': '9be6e6cf46757edf367644b7e6b788afeef5de2ca5bf49e35d613c45b27c383a',
   'src/electron/discordRpc.js': 'bcd2a36e03a54c04ceadf23a433d7f961684bd1a4265bfd9f5546a7d556c402d',
   'src/electron/preload.js': '05b8ffc8c1eff34aa2249829c9394bdc8dc92357afb686615127b669948a3687',
@@ -23,7 +23,7 @@ const INPUT_SHA256 = Object.freeze({
   'src/electron/renderer/styles.css': 'd6788eae0b0ff6c660fb3a8568f8d47e21926771aee8f197a998c2b0ed04c95a',
   'src/electron/renderer/app.js': '8b2620f5c5439237160ce38655eda198e0a6b6a67df0e71b5ebdd0e4a0511025',
   'src/electron/renderer/trayComposer.js': '3c2a3c4ad01c10fd0a6eda7f0893de568a2169d307a8a16f99d74e4790af5ef4',
-  'src/electron/tray.js': 'bd8559cefbac6e9caea401f6514856d882f4d67ba23d30a5f93e4e6284eb3bd3'
+  'src/electron/tray.js': 'c78bf60a9ab5a042800de3761a05b7c77596d8686c7abf554d05358f61fcf417'
 });
 
 function replaceOne(content, needle, replacement, label) {

@@ -329,6 +329,8 @@ struct MessageTaskStatus: Equatable {
         case lowQuotaDetected
         case quotaReset
         case resetCreditsAdded
+        case resetCreditsChanged
+        case resetCreditsExpiring
         case switchSucceeded
         case switchFailed
         case taskStateChange
@@ -402,6 +404,14 @@ struct MessageTaskStatus: Equatable {
                 guard eventKind == .resetCreditsAdded, added > 0, available >= added,
                     accountFacts?.availableResetCredits.map({ $0 == available }) ?? true
                 else { throw MessageChannelError.invalidStatus }
+            case .resetCreditsChanged(let previous, let available, let previousObservedAt, let observedAt):
+                guard eventKind == .resetCreditsChanged,
+                    MessageNoticeFormat.validChange(previous: previous, available: available, previousObservedAt: previousObservedAt, observedAt: observedAt),
+                    accountFacts?.availableResetCredits.map({ $0 == available }) ?? true
+                else { throw MessageChannelError.invalidStatus }
+            case .resetCreditsExpiring(let batches, let observedAt):
+                guard eventKind == .resetCreditsExpiring, MessageNoticeFormat.validExpiry(batches, observedAt: observedAt, enforcingThreshold: false)
+                else { throw MessageChannelError.invalidStatus }
             }
         }
         self.publicResetContext = publicResetContext
@@ -432,25 +442,42 @@ struct MessageTaskStatus: Equatable {
             quotaChange: selected, accountFacts: accountFacts)
     }
 
+    func hasCurrentExpiry(now: Date = Date()) -> Bool {
+        guard case .resetCreditsExpiring(let batches, _) = quotaChange else { return true }
+        return MessageNoticeFormat.validExpiry(batches, observedAt: now)
+    }
+
     /// One canonical line rendering shared by every channel so Telegram and
     /// WeCom cannot drift apart in what they disclose.
     func summary(_ language: WidgetLanguage) -> String {
         var lines: [String] = []
         switch eventKind {
         case .publicRegularReset:
-            lines.append(language.text("公共重置公告：额度刷新", "Public reset announcement: quota refreshed"))
-            lines.append(language.text("第三方汇总；请刷新账号核实，不代表重置卡到账。", "Third-party feed; refresh the account to verify. This is not a reset credit."))
+            lines.append(language.text("公开重置公告 · 常规额度", "Public reset announcement · quota"))
+            lines.append(language.text("第三方汇总 · 账号额度待核实", "Third-party feed · account quota unverified"))
         case .publicBankedReset:
-            lines.append(language.text("公共重置公告：发放重置卡", "Public reset announcement: reset credits announced"))
-            lines.append(language.text("第三方汇总；请刷新账号核实，不代表已经到账。", "Third-party feed; refresh the account to verify. Receipt is not guaranteed."))
+            lines.append(language.text("公开重置公告 · 重置卡", "Public reset announcement · reset credits"))
+            lines.append(language.text("第三方汇总 · 个人可用次数待核实", "Third-party feed · account credits unverified"))
         case .test:
             lines.append(language.text("连接测试", "Connection test"))
         case .lowQuotaDetected:
             lines.append(language.text("额度低于阈值", "Quota is low"))
         case .quotaReset:
-            lines.append(language.text("额度已重置", "Quota reset"))
+            lines.append(language.text("额度窗口变化", "Quota window changed"))
         case .resetCreditsAdded:
-            lines.append(language.text("Reset 次数增加", "Reset credits added"))
+            if case .resetCreditsAdded(let added, _) = quotaChange {
+                lines.append(language.text("重置卡 +\(added)", "Reset credits +\(added)"))
+            } else {
+                lines.append(language.text("重置卡次数增加", "Reset credits increased"))
+            }
+        case .resetCreditsChanged:
+            if case .resetCreditsChanged(let previous, let available, _, _) = quotaChange {
+                lines.append(MessageNoticeFormat.changeTitle(previous: previous, available: available, language: language))
+            } else {
+                lines.append(language.text("重置卡变化", "Reset credits changed"))
+            }
+        case .resetCreditsExpiring:
+            lines.append(language.text("重置卡将到期", "Reset credits expire soon"))
         case .switchSucceeded:
             lines.append(language.text("账号已切换", "Account switched"))
         case .switchFailed:
@@ -459,7 +486,7 @@ struct MessageTaskStatus: Equatable {
             lines.append(language.text("任务状态更新", "Task status update"))
         }
         if let context = publicResetContext {
-            let timestamp = ISO8601DateFormatter().string(from: context.announcedAt)
+            let timestamp = MessageNoticeFormat.shortTime(context.announcedAt)
             lines.append(language.text("公告时间：", "Announced at: ") + timestamp)
             if !context.publicText.isEmpty { lines.append(context.publicText) }
             lines.append(language.text("来源：", "Source: ") + context.sourceURL.absoluteString)
@@ -471,18 +498,31 @@ struct MessageTaskStatus: Equatable {
             lines.append(language.text("任务：\(taskLabel.value)", "Task: \(taskLabel.value)"))
         }
         if let taskState {
-            lines.append(language.text("状态：\(taskState.rawValue)", "State: \(taskState.rawValue)"))
+            lines.append(language.text("状态：", "State: ") + MessageNoticeFormat.state(taskState, language: language))
         }
         if let fiveHourRemainingPercent {
-            lines.append(language.text("5 小时剩余 \(percentText(fiveHourRemainingPercent))%", "5h remaining \(percentText(fiveHourRemainingPercent))%"))
+            lines.append(language.text("5h 剩余 \(percentText(fiveHourRemainingPercent))%", "5h remaining \(percentText(fiveHourRemainingPercent))%"))
         }
         if let sevenDayRemainingPercent {
-            lines.append(language.text("7 天剩余 \(percentText(sevenDayRemainingPercent))%", "7d remaining \(percentText(sevenDayRemainingPercent))%"))
+            lines.append(language.text("7d 剩余 \(percentText(sevenDayRemainingPercent))%", "7d remaining \(percentText(sevenDayRemainingPercent))%"))
         }
         if let failureReason {
-            lines.append(language.text("原因：\(failureReason.rawValue)", "Reason: \(failureReason.rawValue)"))
+            lines.append(language.text("原因：", "Reason: ") + MessageNoticeFormat.reason(failureReason, language: language))
         }
-        return lines.joined(separator: "\n")
+        if case .resetCreditsAdded(let added, let available) = quotaChange {
+            lines.append(language.text("可用 \(available - added)→\(available) 次", "Available \(available - added)→\(available)"))
+        }
+        if case .resetCreditsChanged(let previous, let available, let previousObservedAt, let observedAt) = quotaChange {
+            lines += MessageNoticeFormat.changeLines(previous: previous, available: available, previousObservedAt: previousObservedAt, observedAt: observedAt, language: language)
+        }
+        if case .resetCreditsExpiring(let batches, _) = quotaChange {
+            lines += MessageNoticeFormat.expiryLines(batches, language: language)
+            lines.append(language.text("打开 AiGoodBro 按需使用", "Open AiGoodBro to use when needed"))
+        }
+        if publicResetContext == nil {
+            lines.append(language.text("核实 ", "Checked ") + MessageNoticeFormat.shortTime(MessageNoticeFormat.checkedAt(for: quotaChange, fallback: occurredAt)))
+        }
+        return MessageNoticeFormat.withFooter(lines.joined(separator: "\n"))
     }
 
     private func percentText(_ percent: Double) -> String {

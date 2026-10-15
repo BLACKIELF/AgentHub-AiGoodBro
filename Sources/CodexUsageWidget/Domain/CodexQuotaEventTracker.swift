@@ -3,6 +3,8 @@ import Foundation
 enum CodexQuotaEvent: Equatable {
     case quotaReset(fiveHour: Bool, sevenDay: Bool)
     case resetCreditsAdded(added: Int, available: Int)
+    case resetCreditsChanged(previous: Int, available: Int, previousObservedAt: Date, observedAt: Date)
+    case resetCreditsExpiring(batches: [CodexResetCreditExpiryBatch], observedAt: Date)
 }
 
 /// Compares fresh official observations only. Startup and missing fields establish

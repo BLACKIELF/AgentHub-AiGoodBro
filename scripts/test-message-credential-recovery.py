@@ -16,6 +16,7 @@ announcement = read("Services/PublicResetAnnouncements.swift")
 announcement = announcement[announcement.index("struct PublicResetAnnouncement:"):announcement.index("struct PublicResetPage:")]
 options = read("Domain/FeishuMessageOptions.swift").split("\nenum FeishuQuotaValue", 1)[0]
 quota = read("Domain/CodexQuotaEventTracker.swift").split("/// Compares", 1)[0]
+expiry_batch = read("Domain/CodexResetNotice.swift").split("\nenum CodexResetNoticeChannel", 1)[0]
 stubs = '''import Foundation
 import Combine
 import Security
@@ -36,8 +37,8 @@ struct FeishuTaskCompletionObserver {
  mutating func observe(_ snapshot: CodexTaskLiveSnapshot, now: Date) -> [Completion] { [] }
 }
 '''
-parts = [stubs, error, keychain, quota, options, read("Services/PublicResetTranslation.swift"), announcement]
-parts += [read(path) for path in ["Domain/MessageChannel.swift", "Services/TelegramMessageChannel.swift", "Services/WeChatMessageChannel.swift", "Services/PersonalWeChatMessageChannel.swift", "Services/CodexDesktopIPC.swift", "Services/WeChatCodexConversation.swift", "Services/WeChatBotEventLedger.swift", "Services/MessageChannelsController.swift"]]
+parts = [stubs, error, keychain, expiry_batch, quota, options, read("Services/PublicResetTranslation.swift"), announcement]
+parts += [read(path) for path in ["Domain/MessageNoticeFormat.swift", "Domain/MessageChannel.swift", "Services/TelegramMessageChannel.swift", "Services/WeChatMessageChannel.swift", "Services/PersonalWeChatMessageChannel.swift", "Services/CodexDesktopIPC.swift", "Services/WeChatCodexConversation.swift", "Services/WeChatBotEventLedger.swift", "Services/MessageChannelsController.swift"]]
 if "--controller" in __import__("sys").argv:
     runtime = read("Domain/TaskRuntime.swift")
     runtime = runtime[runtime.index("enum TaskRuntimeState:"):runtime.index("struct TaskRuntimeReducer")]

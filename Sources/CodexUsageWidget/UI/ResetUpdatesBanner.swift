@@ -52,22 +52,12 @@ enum PublicResetAnnouncementPresentation {
         }
     }
 
-    static func eventTime(_ date: Date, language: WidgetLanguage) -> String {
-        let formatter = DateFormatter()
-        formatter.locale = language.locale
-        formatter.calendar = Calendar(identifier: .gregorian)
-        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")!
-        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
-        return formatter.string(from: date) + language.text(" 北京时间 (UTC+08:00)", " Beijing time (UTC+08:00)")
+    static func eventTime(_ date: Date, language: WidgetLanguage, now: Date = Date()) -> String {
+        MessageNoticeFormat.shortTime(date, now: now)
     }
 
-    static func compactEventTime(_ date: Date, language: WidgetLanguage) -> String {
-        let formatter = DateFormatter()
-        formatter.locale = language.locale
-        formatter.calendar = Calendar(identifier: .gregorian)
-        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")!
-        formatter.dateFormat = "yyyy-MM-dd HH:mm"
-        return formatter.string(from: date) + language.text(" · 北京时间", " · Beijing time")
+    static func compactEventTime(_ date: Date, language: WidgetLanguage, now: Date = Date()) -> String {
+        MessageNoticeFormat.shortTime(date, now: now)
     }
 
     static func forecastTime(_ date: Date, language: WidgetLanguage) -> String {
@@ -239,6 +229,30 @@ enum ResetCardAccountSummary: Equatable {
     case accounts(Int)
 }
 
+enum ResetCreditChangePresentation {
+    static func title(_ receipt: CodexResetCreditReceipt, language: WidgetLanguage) -> String {
+        let signed = receipt.delta > 0 ? "+\(receipt.delta)" : String(receipt.delta)
+        return language.text("重置卡净变化 \(signed)", "Reset cards: net change \(signed)")
+    }
+
+    static func countLine(_ receipt: CodexResetCreditReceipt, language: WidgetLanguage) -> String {
+        language.text(
+            "可用 \(receipt.previousAvailable)→\(receipt.available) 次",
+            "Available \(receipt.previousAvailable)→\(receipt.available) resets")
+    }
+
+    static func intervalLine(_ receipt: CodexResetCreditReceipt, now: Date, language: WidgetLanguage) -> String {
+        language.text("快照 ", "Snapshots ")
+            + MessageNoticeFormat.range(
+                from: receipt.previousObservedAt, to: receipt.observedAt, now: now,
+                alwaysDates: receipt.observedAt.timeIntervalSince(receipt.previousObservedAt) > 45 * 60)
+    }
+
+    static func reasonLine(_ receipt: CodexResetCreditReceipt, language: WidgetLanguage) -> String? {
+        receipt.delta < 0 ? language.text("原因待核实", "Reason unverified") : nil
+    }
+}
+
 struct ResetCreditLocalSummary {
     let availableCards: Int?
     let availableCardsByPlan: [String: Int]
@@ -246,6 +260,7 @@ struct ResetCreditLocalSummary {
     let checkedAt: Date?
     let isStale: Bool
     let hasUnknownAccounts: Bool
+    let latestChange: CodexResetCreditReceipt?
     let latestIncrease: CodexResetCreditReceipt?
 
     init(profiles: [CodexProfile], now: Date) {
@@ -288,7 +303,10 @@ struct ResetCreditLocalSummary {
                 || group.contains { ($0.lastQuotaReadFailureAt ?? .distantPast) >= snapshot.fetchedAt }
             receipts += group.filter { $0.lastSnapshot?.accountID == accountID }
                 .flatMap { $0.resetCreditHistory ?? [] }
-                .filter { $0.isValid(at: now) && $0.observedAt >= now.addingTimeInterval(-30 * 24 * 60 * 60) }
+                .filter {
+                    $0.isValid(at: now) && $0.observedAt <= snapshot.fetchedAt
+                        && $0.observedAt >= now.addingTimeInterval(-30 * 24 * 60 * 60)
+                }
         }
         availableCards = observedDates.isEmpty || overflowed ? nil : total
         availableCardsByPlan = overflowed ? [:] : planCounts
@@ -297,7 +315,8 @@ struct ResetCreditLocalSummary {
         checkedAt = observedDates.min()
         isStale = stale
         hasUnknownAccounts = unknown || overflowed
-        latestIncrease = receipts.max { $0.observedAt < $1.observedAt }
+        latestChange = receipts.max { $0.observedAt < $1.observedAt }
+        latestIncrease = receipts.filter { $0.delta > 0 }.max { $0.observedAt < $1.observedAt }
     }
 
     func planBreakdown(_ language: WidgetLanguage) -> String? {
@@ -485,7 +504,7 @@ struct ResetUpdatesBanner: View {
                 PublicResetAnnouncementPresentation.wasAnnouncedToday($0.announcedAt, now: now)
             } ?? false
         let todayReceipt =
-            ResetCreditLocalSummary(profiles: accountProfiles, now: now).latestIncrease.map {
+            ResetCreditLocalSummary(profiles: accountProfiles, now: now).latestChange.map {
                 PublicResetAnnouncementPresentation.wasAnnouncedToday($0.observedAt, now: now)
             } ?? false
         return todayAnnouncement || todayForecast || todayReceipt
@@ -802,25 +821,22 @@ struct ResetUpdatesBanner: View {
                         .foregroundStyle(credits.isStale || (credits.points == nil && !credits.hasUnlimitedBalance) ? Color.secondary : Color.primary)
                         .monospacedDigit()
                         .fixedSize(horizontal: false, vertical: true)
-                    if let receipt = summary.latestIncrease {
+                    if let receipt = summary.latestChange {
                         HStack(spacing: 6) {
-                            Text(
-                                language.text(
-                                    "最近核实增加 +\(receipt.added) 张（\(receipt.previousAvailable) → \(receipt.available)）",
-                                    "Latest verified increase: +\(receipt.added) cards (\(receipt.previousAvailable) → \(receipt.available))"
-                                )
-                            )
-                            .font(.caption.weight(.medium))
+                            Text(ResetCreditChangePresentation.title(receipt, language: language))
+                                .font(.caption.weight(.medium))
                             if PublicResetAnnouncementPresentation.wasAnnouncedToday(receipt.observedAt, now: context.date) { todayBadge }
                         }
-                        Text(
-                            language.text("核对区间：", "Observed between: ")
-                                + PublicResetAnnouncementPresentation.compactEventTime(receipt.previousObservedAt, language: language)
-                                + " → " + PublicResetAnnouncementPresentation.compactEventTime(receipt.observedAt, language: language)
-                        )
-                        .font(.caption2).foregroundStyle(.secondary)
+                        Text(ResetCreditChangePresentation.countLine(receipt, language: language))
+                            .font(.caption.weight(.medium))
+                        Text(ResetCreditChangePresentation.intervalLine(receipt, now: context.date, language: language))
+                            .font(.caption2).foregroundStyle(.secondary)
+                        if let reason = ResetCreditChangePresentation.reasonLine(receipt, language: language) {
+                            Text(reason).font(.caption2).foregroundStyle(.secondary)
+                        }
+                        Text("aigoodbro.com").font(.caption2).foregroundStyle(.secondary)
                     } else if summary.availableCards != nil {
-                        Text(language.text("余额已核实，到账时间未记录。", "Balance verified; the grant time was not recorded."))
+                        Text(language.text("可用次数已核实，尚无可比变化记录。", "Available count verified; no comparable change recorded."))
                             .font(.caption2).foregroundStyle(.secondary)
                     }
                     if let checkedAt = summary.checkedAt {

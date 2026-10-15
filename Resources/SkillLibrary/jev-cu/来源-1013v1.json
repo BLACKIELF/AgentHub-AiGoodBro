@@ -1,0 +1,63 @@
+{
+  "artifact_version": "1013v1",
+  "verified_on": "2026-10-13",
+  "repository": "https://github.com/Sac-Y/Jev-cu",
+  "commit": "52d32ac24e2cea29c63d9d7c4bd6d4c401111f56",
+  "package_version": "0.1.0",
+  "skill_name": "jev-cu",
+  "skill_version": null,
+  "license": "MIT",
+  "files": [
+    {
+      "file": "SKILL.md",
+      "upstream_path": "skill/jev-cu/SKILL.md",
+      "url": "https://github.com/Sac-Y/Jev-cu/blob/52d32ac24e2cea29c63d9d7c4bd6d4c401111f56/skill/jev-cu/SKILL.md",
+      "git_blob_sha1": "334b26bdf9c76280212482bdf8765bf058b9e5c0",
+      "content_change": "none",
+      "sha256": "226ed556a5d322605540778b8c46ed45975252ac37966983645cace2311e94a1"
+    },
+    {
+      "file": "references/runtime.md",
+      "upstream_path": "skill/jev-cu/references/runtime.md",
+      "url": "https://github.com/Sac-Y/Jev-cu/blob/52d32ac24e2cea29c63d9d7c4bd6d4c401111f56/skill/jev-cu/references/runtime.md",
+      "git_blob_sha1": "a4e2fdd83eda28f57c745982c1ac2c91a6809ff1",
+      "content_change": "none",
+      "sha256": "259a5e7b96a4bf0d053bc100fa8c5a38b2bb76815be5be3ef7d66a643b9b139d"
+    },
+    {
+      "file": "references/calendar-demo.md",
+      "upstream_path": "skill/jev-cu/references/calendar-demo.md",
+      "url": "https://github.com/Sac-Y/Jev-cu/blob/52d32ac24e2cea29c63d9d7c4bd6d4c401111f56/skill/jev-cu/references/calendar-demo.md",
+      "git_blob_sha1": "59fbf3cb18934e2c36cc619db08ab439ddd97a73",
+      "content_change": "none",
+      "sha256": "d5d663d82d0d894fe9254853d88b24649792eb487d176471175b295a6887b9fe"
+    },
+    {
+      "file": "LICENSE",
+      "upstream_path": "LICENSE",
+      "url": "https://github.com/Sac-Y/Jev-cu/blob/52d32ac24e2cea29c63d9d7c4bd6d4c401111f56/LICENSE",
+      "git_blob_sha1": "e16ca05d4849eff3ac4a6410fa9d99ff16861abc",
+      "content_change": "none",
+      "sha256": "7b94c1360d4a4d2925f09ee801a8913c20770564d1bd263b1bdb07075d6b6bf5"
+    }
+  ],
+  "local_additions": [
+    "安装说明.md",
+    "来源-1013v1.json"
+  ],
+  "compatibility": "Requires a separately retained public Jev-cu runner and a compatible Codex Computer Use runtime; the template repo path must be resolved only in a new installed copy.",
+  "validation": "Git blob identity, relative references and private-data scan; no install, model call or GUI run.",
+  "rollback": "Remove only a newly created Skill copy or restore the prior authorized replacement; retain the runner and user settings.",
+  "validation_result": {
+    "checked_on": "2026-10-13",
+    "upstream_git_blob_identity": "passed",
+    "relative_reference_existence": "passed",
+    "skill_frontmatter_name": "passed",
+    "mit_copyright_and_license": "retained",
+    "private_absolute_paths": "none_found",
+    "credential_patterns": "none_found",
+    "user_skill_or_runtime_modified": false,
+    "model_api_called": false,
+    "gui_or_analysis_exercised": false
+  }
+}

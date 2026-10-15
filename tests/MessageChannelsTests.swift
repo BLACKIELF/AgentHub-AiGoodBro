@@ -90,6 +90,7 @@ enum MessageChannelsTests {
     }
 
     static func run() {
+        expect(MessageNoticeFormatSelfTest.run(), "shared notice formatting failed")
         testTargetAndCredentialValidation()
         testSanitizedStatusDTO()
         testPhaseLifecycle()
@@ -98,6 +99,7 @@ enum MessageChannelsTests {
         testCancellation()
         testWeComAdapter()
         testWeComMessageOptions()
+        testResetNoticePayloads()
         testPersonalWeChat()
         testDeduplicatorCapacity()
         testAcceptanceRegressions()
@@ -459,19 +461,20 @@ enum MessageChannelsTests {
                 occurredAt: now, quotaChange: .resetCreditsAdded(added: 2, available: 3), accountFacts: facts)
             var options = FeishuMessageOptions.standard
             let detailed = WeChatMessageChannel.messageContent(status: status, options: options, language: .zh)
-            expect(detailed.contains("新增 2 次") && detailed.contains("1 → 3"), "verified reset increase lost its before/after balance")
-            expect(detailed.contains("7 天**：剩余 未知") && !detailed.contains("7 天**：剩余 100%"), "unknown quota was fabricated")
-            expect(detailed.contains("发现时间不等于实际到账时间") && detailed.contains("北京时间"), "WeCom detected time was confused with grant time")
+            expect(detailed.contains("重置卡 +2") && detailed.contains("1→3"), "verified reset increase lost its before/after balance")
+            expect(detailed.contains("7d**：剩余 未知") && !detailed.contains("7d**：剩余 100%"), "unknown quota was fabricated")
+            expect(detailed.contains("核实 ") && !detailed.contains("到账"), "WeCom detection was confused with grant time")
+            expect(detailed.hasSuffix(MessageNoticeFormat.footerSuffix) && detailed.components(separatedBy: "\n").filter { $0 == MessageNoticeFormat.footer }.count == 1, "WeCom footer missing or repeated")
             expect(detailed.contains("演示账号") && !detailed.contains("**Agent**"), "default WeCom fields drifted from the selected options")
             options.notifiesFiveHourReset = false
             options.applyContentPreset(.compact)
             let compact = WeChatMessageChannel.messageContent(status: status, options: options, language: .zh)
-            expect(!compact.contains("**5 小时**") && !compact.contains(" · 到期 "), "compact content retained detailed quota/expiry fields")
-            expect(compact.contains("新增 2 次") && !options.notifiesFiveHourReset, "density change altered window-alert choices")
+            expect(!compact.contains("**5h**") && !compact.contains(" · 到期 "), "compact content retained detailed quota/expiry fields")
+            expect(compact.contains("重置卡 +2") && !options.notifiesFiveHourReset, "density change altered window-alert choices")
             options.includesAccountLabel = false
             options.includesResetCredits = false
             let custom = WeChatMessageChannel.messageContent(status: status, options: options, language: .zh)
-            expect(!custom.contains("演示账号") && !custom.contains("新增 2 次") && !custom.contains("1 → 3"), "custom hidden fields still disclosed account/reset quantities")
+            expect(!custom.contains("演示账号") && !custom.contains("重置卡 +2") && !custom.contains("1→3"), "custom hidden fields still disclosed account/reset quantities")
 
             let reset = try MessageTaskStatus(eventKind: .quotaReset, accountLabel: status.accountLabel,
                 occurredAt: now, quotaChange: .quotaReset(fiveHour: true, sevenDay: true))
@@ -490,12 +493,59 @@ enum MessageChannelsTests {
             options.resetExpiryDetail = .all
             let bounded = WeChatMessageChannel.messageContent(status: longStatus, options: options, language: .zh)
             expect(bounded.utf8.count <= WeChatMessageChannel.contentByteLimit && bounded.contains("其余到期时间"), "all expiries exceeded the WeCom byte limit or silently disappeared")
-            expect(bounded.contains("发现时间不等于实际到账时间"), "expiry truncation removed the interpretation footer")
+            expect(bounded.contains("核实 ") && bounded.hasSuffix(MessageNoticeFormat.footerSuffix), "expiry truncation removed checked time or footer")
             _ = try WeChatMessageChannel.requestPayload(status: longStatus, messageOptions: options, language: .zh)
             expect((try? MessageTaskStatus(eventKind: .resetCreditsAdded, accountLabel: status.accountLabel,
                 occurredAt: now, quotaChange: .resetCreditsAdded(added: 2, available: 1))) == nil, "invalid reset balance accepted")
             expect((try? MessageChannelAccountFacts(fiveHourResetsAt: Date(timeIntervalSince1970: .nan))) == nil, "nonfinite snapshot time accepted")
         } catch { failures.append("WeCom message options failed: \(error)") }
+    }
+
+    private static func testResetNoticePayloads() {
+        do {
+            let now = Date()
+            let label = try MessageChannelAccountLabel(displayName: "演示账号")
+            let before = now.addingTimeInterval(-600)
+            for (previous, available, title) in [(1, 3, "重置卡 +2"), (3, 1, "重置卡 -2"), (1, 0, "重置卡 -1")] {
+                let event = CodexQuotaEvent.resetCreditsChanged(previous: previous, available: available, previousObservedAt: before, observedAt: now)
+                let status = try MessageTaskStatus(eventKind: .resetCreditsChanged, accountLabel: label, occurredAt: now, quotaChange: event)
+                let summary = status.summary(.zh)
+                expect(summary.contains(title) && summary.contains("可用 \(previous)→\(available) 次") && summary.contains("净变化 · 快照"), "change payload lost signed delta or snapshots")
+                expect(summary.contains("原因待核实") == (available < previous) && !summary.contains("已使用") && !summary.contains("到账"), "change invented a cause")
+                for content in [summary, WeChatMessageChannel.messageContent(status: status, options: .standard, language: .zh)] {
+                    expect(content.components(separatedBy: "\n").filter { $0 == MessageNoticeFormat.footer }.count == 1, "change footer missing or repeated")
+                }
+                let telegram = try JSONSerialization.jsonObject(with: TelegramMessageChannel.requestPayload(status: status, chatID: syntheticChatID, language: .zh)) as! [String: Any]
+                expect((telegram["text"] as? String)?.contains(title) == true, "Telegram dropped change facts")
+            }
+            let batches = [CodexResetCreditExpiryBatch(expiresAt: now.addingTimeInterval(3600), count: 1), CodexResetCreditExpiryBatch(expiresAt: now.addingTimeInterval(7200), count: 2)]
+            let expiry = try MessageTaskStatus(eventKind: .resetCreditsExpiring, accountLabel: label, occurredAt: now,
+                quotaChange: .resetCreditsExpiring(batches: batches, observedAt: now))
+            let content = WeChatMessageChannel.messageContent(status: expiry, options: .standard, language: .zh)
+            for batch in batches {
+                expect(content.contains("\(batch.count)次 · " + MessageNoticeFormat.shortDate(batch.expiresAt)), "expiry payload lost a batch quantity/date")
+            }
+            expect(content.hasSuffix(MessageNoticeFormat.footerSuffix) && !content.contains("已使用") && !content.contains("到账"), "expiry footer or fact boundary failed")
+            let expired = try MessageTaskStatus(eventKind: .resetCreditsExpiring, accountLabel: label, occurredAt: now,
+                quotaChange: .resetCreditsExpiring(batches: [.init(expiresAt: now.addingTimeInterval(-1), count: 1)], observedAt: now.addingTimeInterval(-60)))
+            expect((try? TelegramMessageChannel.requestPayload(status: expired, chatID: syntheticChatID)) == nil, "Telegram sent an expired reminder")
+            expect((try? WeChatMessageChannel.requestPayload(status: expired)) == nil, "WeCom sent an expired reminder")
+            let observedEarlier = now.addingTimeInterval(-60)
+            let crossing = try MessageTaskStatus(eventKind: .resetCreditsExpiring, accountLabel: label, occurredAt: now,
+                quotaChange: .resetCreditsExpiring(batches: [.init(expiresAt: observedEarlier.addingTimeInterval(24 * 3600 + 30), count: 1)], observedAt: observedEarlier))
+            expect((try? TelegramMessageChannel.requestPayload(status: crossing, chatID: syntheticChatID)) != nil, "Telegram rejected a cached expiry entering the 24h window")
+            expect((try? WeChatMessageChannel.requestPayload(status: crossing)) != nil, "WeCom rejected a cached expiry entering the 24h window")
+            let originalCheck = "核实 " + MessageNoticeFormat.shortTime(observedEarlier)
+            expect(crossing.summary(.zh).contains(originalCheck) && WeChatMessageChannel.messageContent(status: crossing, options: .standard, language: .zh).contains(originalCheck), "cached expiry used dispatch time as a new check time")
+            let outside = try MessageTaskStatus(eventKind: .resetCreditsExpiring, accountLabel: label, occurredAt: now,
+                quotaChange: .resetCreditsExpiring(batches: [.init(expiresAt: now.addingTimeInterval(24 * 3600 + 30), count: 1)], observedAt: now))
+            expect((try? TelegramMessageChannel.requestPayload(status: outside, chatID: syntheticChatID)) == nil, "Telegram sent a reminder currently beyond 24h")
+            expect((try? WeChatMessageChannel.requestPayload(status: outside)) == nil, "WeCom sent a reminder currently beyond 24h")
+            expect((try? MessageTaskStatus(eventKind: .resetCreditsChanged, accountLabel: label, occurredAt: now,
+                quotaChange: .resetCreditsChanged(previous: 1, available: 1, previousObservedAt: before, observedAt: now))) == nil, "zero change accepted")
+            expect((try? MessageTaskStatus(eventKind: .resetCreditsExpiring, accountLabel: label, occurredAt: now,
+                quotaChange: .resetCreditsExpiring(batches: [.init(expiresAt: now.addingTimeInterval(3600), count: 0)], observedAt: now))) == nil, "zero expiry accepted")
+        } catch { failures.append("reset notice payloads failed: \(error)") }
     }
 
     private static func testPersonalWeChat() {
@@ -587,6 +637,14 @@ enum MessageChannelsTests {
             expect(msg["message_type"] as? Int == 2 && msg["message_state"] as? Int == 2 && request.value(forHTTPHeaderField: "Authorization") == "Bearer " + unbound.secret, "personal notification wire format mismatch")
             let encoded = String(data: request.httpBody!, encoding: .utf8)!
             expect(!encoded.contains(unbound.secret) && !encoded.contains("private inbound body") && !encoded.contains("**"), "personal text included credentials, incoming text or Markdown formatting")
+            let item = ((msg["item_list"] as! [[String: Any]])[0]["text_item"] as! [String: Any])["text"] as! String
+            expect(item.components(separatedBy: "\n").filter { $0 == MessageNoticeFormat.footer }.count == 1, "personal status footer missing or repeated")
+            let source = "```swift\r\n\tlet website = \"aigoodbro.com\"\r\n```\r\n\r\naigoodbro.com\r\n"
+            let rawRequest = try PersonalWeChatMessageChannel.textRequest(source, eventID: UUID(), credential: credential, now: now)
+            let rawBody = try JSONSerialization.jsonObject(with: rawRequest.httpBody!) as! [String: Any]
+            let rawMsg = rawBody["msg"] as! [String: Any]
+            let rawItem = ((rawMsg["item_list"] as! [[String: Any]])[0]["text_item"] as! [String: Any])["text"] as! String
+            expect(Array(rawItem.utf8) == Array((source + MessageNoticeFormat.footerSuffix).utf8), "personal send mutated raw code, CRLF or source footer")
             let http = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
             for response in [#"{"unexpected":true}"#, #"{"ret":false}"#, #"{"ret":0.5}"#, #"{"ret":0,"errcode":-1}"#] {
                 expect((try? PersonalWeChatMessageChannel.responseObject(Data(response.utf8), http: http, request: request, requiresAcceptance: true)) == nil, "personal notification falsely accepted an ambiguous response")

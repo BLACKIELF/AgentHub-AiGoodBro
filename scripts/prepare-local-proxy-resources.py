@@ -13,8 +13,8 @@ ROOT = Path(__file__).resolve().parent.parent
 SOURCE = ROOT / "Companion/LocalProxy"
 EXECUTABLE = "aigoodbro-local-proxy"
 UPSTREAM_MODULE = "github.com/router-for-me/CLIProxyAPI/v8"
-UPSTREAM_VERSION = "v8.0.20"
-UPSTREAM_COMMIT = "0f96f568e4dbf6f84ad7399a74b78344c5eac7e6"
+UPSTREAM_VERSION = "v8.0.28"
+UPSTREAM_COMMIT = "0d18d3b365be000eeaee7de4615f9da596b2059d"
 
 
 def digest(path):

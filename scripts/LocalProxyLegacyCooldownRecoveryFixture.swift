@@ -100,6 +100,11 @@ extension LocalProxyHostFixtures {
         expect(lstat(backups[0].path, &backupInfo) == 0 && backupInfo.st_mode & 0o777 == 0o600, "backup mode is exactly 0600")
         expect(store.legacyCooldownRecoveryIDs.isEmpty && store.preferences.enabledIDs == [targetID], "recovery preserves participation and removes candidate")
         expect(!store.commitLegacyCooldownRecovery(confirmation!), "confirmation is one shot")
+        let committedBytes = try Data(contentsOf: file)
+        store.cancelLegacyCooldownRecovery()
+        store.cancelLegacyCooldownRecovery()
+        try expect(Data(contentsOf: file) == committedBytes, "repeated close after commit cannot restore or delete cooldown records")
+        try expect(Data(contentsOf: backups[0]) == original, "repeated close after commit preserves the exact saved backup")
 
         for error: [String: Any] in [["httpStatus": 401], ["httpStatus": 403], ["httpStatus": 429], ["httpStatus": 500],
             ["httpStatus": 0, "absent": true], ["httpStatus": 0, "credentialQuota": true], ["httpStatus": 0, "unknown": true]] {
@@ -173,6 +178,25 @@ extension LocalProxyHostFixtures {
         let cancelled = await pending.value
         expect(cancelled == nil, "cancel resumes pending preparation")
         expect(!store.isPreparingLegacyCooldownRecovery && store.canStart, "cancel unlocks start")
+        let cancelledBytes = try Data(contentsOf: file)
+        usage.profiles[0].lastSnapshot?.fetchedAt = Date()
+        store.rebuildRows()
+        expect(!store.recoverLegacyCooldown(for: targetID) && store.canStart,
+            "late quota after close cannot recreate a cancelled confirmation")
+        try expect(Data(contentsOf: file) == cancelledBytes, "late quota after close retains legacy cooldown bytes")
+        try reset()
+        let dismissedConfirmation = await prepareFromUI()
+        precondition(dismissedConfirmation != nil)
+        let dismissedBytes = try Data(contentsOf: file)
+        let liveDeadline = now.addingTimeInterval(3600)
+        store.accountStates[targetID] = "quota"
+        store.cooldowns[targetID] = liveDeadline
+        store.cancelLegacyCooldownRecovery()
+        expect(store.canStart && !store.recoverLegacyCooldown(for: targetID),
+            "closing a prepared confirmation releases start without committing")
+        try expect(Data(contentsOf: file) == dismissedBytes, "closing confirmation never deletes cooldown records")
+        expect(store.accountStates[targetID] == "quota" && store.cooldowns[targetID] == liveDeadline
+            && store.preferences.enabledIDs == [targetID], "closing confirmation preserves live cooldown and participation")
         try reset()
         usage.onRefresh = { _ in
             usage.profiles[0].lastSnapshot?.fetchedAt = Date()

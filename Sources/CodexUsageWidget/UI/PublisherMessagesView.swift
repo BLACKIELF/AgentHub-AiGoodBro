@@ -55,6 +55,7 @@ struct PublisherMessagesView: View {
                                 Image(systemName: "chevron.right").font(.caption2).foregroundStyle(.secondary)
                             }
                             Text(verbatim: message.body).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                            Text(MessageNoticeFormat.footer).font(.caption2).foregroundStyle(.tertiary)
                             Text(PublicResetAnnouncementPresentation.compactEventTime(message.publishedAt, language: language))
                                 .font(.caption2).foregroundStyle(.tertiary)
                         }
@@ -88,6 +89,7 @@ struct PublisherMessagesView: View {
                         Label(language.text("打开详情链接", "Open details link"), systemImage: "arrow.up.right")
                     }
                 }
+                Text(MessageNoticeFormat.footer).font(.caption).foregroundStyle(.secondary)
             }
             .padding(20).frame(width: 540, height: 360)
             .background(WorkspaceGlassBackdrop())

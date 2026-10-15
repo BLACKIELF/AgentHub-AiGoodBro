@@ -240,7 +240,8 @@ final class TelegramMessageChannel {
     }
 
     static func requestPayload(status: MessageTaskStatus, chatID: String, language: WidgetLanguage = .storedOrAutomatic()) throws -> Data {
-        try payload(chatID: chatID, text: status.summary(language))
+        guard status.hasCurrentExpiry() else { throw MessageChannelError.staleStatus }
+        return try payload(chatID: chatID, text: MessageNoticeFormat.withFooter(status.summary(language)))
     }
 
     static func payload(chatID: String, text: String) throws -> Data {

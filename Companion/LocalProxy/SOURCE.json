@@ -1,17 +1,17 @@
 {
   "component": "AiGoodBro Local Proxy",
-  "version": "1008v2",
+  "version": "1014v1",
   "upstream": "https://github.com/router-for-me/CLIProxyAPI",
-  "upstreamVersion": "v8.0.20",
-  "upstreamCommit": "0f96f568e4dbf6f84ad7399a74b78344c5eac7e6",
-  "moduleSum": "h1:pLlcuPjwxuMsS80s47k2Ek+Qdn5XortDf924PYQO61E=",
+  "upstreamVersion": "v8.0.28",
+  "upstreamCommit": "0d18d3b365be000eeaee7de4615f9da596b2059d",
+  "moduleSum": "h1:02Rxbbf/cjW4Mxoik6I63ZDOx57JvbGxv6be2EiOjWU=",
   "moduleGoModSum": "h1:j1Mtcj0TrC66O1JwbSBB03lY3uYPx4J7yHNvU6nDBCo=",
   "license": "MIT",
   "licenseFile": "LICENSE.CLIProxyAPI",
   "dependencyNotices": "THIRD-PARTY-NOTICES.txt",
   "goVersionMinimum": "1.26.0",
   "runtimeDependencies": [],
-  "sourceModifications": "No upstream module edits; the host adapter embeds the fixed v8.0.20 module. The existing images.go guard for the exact synchronous pre-bootstrap 408 Codex EOF sentinel is retained; native empty-first-payload failover and terminal SSE completion come from the pinned SDK. Ordinary HTTP 408 responses and already-started streams remain unchanged.",
+  "sourceModifications": "No upstream module edits; the host adapter embeds the fixed v8.0.28 module. Existing custom selector, host IPC/admission, quota recovery, no-refresh identities and synchronous pre-bootstrap Codex 408 EOF guard are retained. RequestRetry remains zero. The SDK provides HTTP/2 closed-connection lifecycle classification, multiline SSE event assembly, confirmed upstream cooldown retention on canceled streams and out-of-range int64 tool-schema normalization.",
   "hostAdaptations": [
     {
       "upstreamReference": "https://github.com/router-for-me/CLIProxyAPI/commit/9e71c20d016960cd47bb8532a16fcf1f16f5fff3",
@@ -32,5 +32,23 @@
     "licenseFile": "LICENSE.Hazmat"
   },
   "compatibility": "Pinned internal executor/registry imports. The local module uses the upstream module's child namespace solely to satisfy Go internal import rules; it is an AiGoodBro adapter, not an upstream-maintained package.",
-  "rollback": "Stop the optional proxy and leave it disabled; remove only this module's helper resource and isolated state when explicitly requested. Legacy dispatch, OAuth and account switching remain independent."
+  "rollback": "Stop the optional proxy and leave it disabled; remove only this module's helper resource and isolated state when explicitly requested. Legacy dispatch, OAuth and account switching remain independent.",
+  "upstreamFixes": [
+    {
+      "commit": "56eee6a4c2f18c7b6615cbe334f1290a655fbb6b",
+      "behavior": "HTTP/2 closed-client connections do not cool credentials; this adapter keeps automatic request replay disabled."
+    },
+    {
+      "commit": "7795de19ca80940adeafe45ebe7c5dbfc4931cc5",
+      "behavior": "Join multiline SSE data into complete JSON events in nonstream and streaming Codex execution, including bootstrap buffering."
+    },
+    {
+      "commit": "5dbd92a0e0dfcf1d98adf58e793f3ce6c95ff082",
+      "behavior": "Retain upstream-confirmed quota and RetryAfter on canceled execution or ready bootstrap error chunks; plain cancellation does not create cooldown."
+    },
+    {
+      "commit": "57d005fe6c2053ef47611c41e40a50e42cac6e23",
+      "behavior": "Remove only out-of-range integer numeric schema bounds, preserving valid int64 limits, fractional values and user data."
+    }
+  ]
 }

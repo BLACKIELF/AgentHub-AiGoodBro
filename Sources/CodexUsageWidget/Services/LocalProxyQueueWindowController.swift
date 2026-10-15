@@ -2,12 +2,14 @@ import Cocoa
 import SwiftUI
 
 @MainActor
-final class LocalProxyQueueWindowController: NSObject, NSWindowDelegate {
+final class LocalProxyQueueWindowController: NSObject, NSWindowDelegate, ObservableObject {
     static let shared = LocalProxyQueueWindowController()
     static let initialContentSize = NSSize(width: 830, height: 660)
     static let minimumContentSize = NSSize(width: 680, height: 500)
 
     private var window: NSWindow?
+    private weak var model: LocalProxyQueueStore?
+    @Published private(set) var contentID = UUID()
 
     func show(
         model: LocalProxyQueueStore,
@@ -42,11 +44,13 @@ final class LocalProxyQueueWindowController: NSObject, NSWindowDelegate {
         window.acceptsMouseMovedEvents = true
         window.contentMinSize = Self.minimumContentSize
         window.delegate = self
+        self.model = model
         window.contentView = GlassHostingContainer(
             rootView: LocalProxyQueueWindowContent(
                 model: model,
                 settings: settings,
                 paletteCatalog: paletteCatalog,
+                controller: self,
                 onClose: { [weak self] in self?.hide() }
             ), cornerRadius: 14, allowsWindowDragging: false, settings: settings
         )
@@ -62,6 +66,9 @@ final class LocalProxyQueueWindowController: NSObject, NSWindowDelegate {
     }
 
     private func hide() {
+        // orderOut keeps the hosting view alive; it does not run onDisappear.
+        model?.cancelLegacyCooldownRecovery()
+        contentID = UUID()
         window?.orderOut(nil)
     }
 
@@ -76,6 +83,7 @@ struct LocalProxyQueueWindowContent: View {
     @ObservedObject var model: LocalProxyQueueStore
     @ObservedObject var settings: AppSettings
     let paletteCatalog: PaletteCatalog
+    @ObservedObject var controller: LocalProxyQueueWindowController
     let onClose: () -> Void
     @Environment(\.colorScheme) private var colorScheme
 
@@ -91,12 +99,17 @@ struct LocalProxyQueueWindowContent: View {
     }
 
     var body: some View {
-        LocalProxyQueueView(model: model, language: settings.language, onClose: onClose)
-            .environment(\.visualTokens, visualTokens)
-            .environment(\.workspaceGlass, settings.workspaceGlass)
-            .environment(\.widgetLanguage, settings.language)
-            .environment(\.locale, settings.language.locale)
-            .tint(visualTokens.accent.primary.color)
-            .preferredColorScheme(settings.themeMode.preferredColorScheme)
+        let contentID = controller.contentID
+        LocalProxyQueueView(
+            model: model, language: settings.language, onClose: onClose,
+            isCurrentPresentation: { controller.contentID == contentID }
+        )
+        .id(contentID)
+        .environment(\.visualTokens, visualTokens)
+        .environment(\.workspaceGlass, settings.workspaceGlass)
+        .environment(\.widgetLanguage, settings.language)
+        .environment(\.locale, settings.language.locale)
+        .tint(visualTokens.accent.primary.color)
+        .preferredColorScheme(settings.themeMode.preferredColorScheme)
     }
 }

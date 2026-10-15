@@ -18,10 +18,7 @@ enum ResetCountdownPresentation {
                     ? language.text("待更新", "Awaiting update")
                     : language.text("时间已到，等待额度更新", "Time reached; awaiting quota update")
         }
-        let seconds = Int(ceil(interval))
-        let days = seconds / 86_400
-        let clock = String(format: "%02d:%02d:%02d", (seconds % 86_400) / 3_600, (seconds % 3_600) / 60, seconds % 60)
-        let duration = days > 0 ? language.text("\(days) 天 ", "\(days)d ") + clock : clock
+        let duration = MessageNoticeFormat.remaining(until: deadline, now: now)
         return
             (kind == .publicForecast
             ? language.text("预计重置还有 ", "Expected reset in ")
@@ -49,7 +46,7 @@ struct ResetCountdownText: View {
             if let previewDate {
                 label(now: previewDate)
             } else {
-                TimelineView(.periodic(from: .now, by: 1)) { context in
+                TimelineView(.periodic(from: .now, by: 60)) { context in
                     label(now: context.date)
                 }
             }
