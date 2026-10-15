@@ -30,7 +30,7 @@
 
 ## 验证状态与边界
 
-146 的本地发布构建流程成功结束，用时 850.791 秒，2,358 项构建输入无漂移；已安装主程序保持不变。35 组原生自测通过，其中首次安装偏好与老用户配置保留通过 117 条隔离断言。Carbon 系统热键集成明确跳过，未注册系统热键；需要 root 的非属主 LaunchAgent 夹具也按权限条件跳过。DMG／ZIP 的 2,167 个条目（1,583 个文件）与构建 App 一致，版本与严格签名核验通过，校验值见下表。另通过 436 项宿主隔离检查与 11 项锁竞争检查；消息账本 158 条断言和独立 18 条对抗断言、回调 19 项行为及 7 项连接检查、倒计时 16 项断言均通过。远端检查记录见 GitHub Actions。
+146 的本地发布构建流程成功结束，用时 1411.256 秒，2,358 项构建输入无漂移；已安装主程序保持不变。35 组原生自测通过，其中首次安装偏好与老用户配置保留通过 117 条隔离断言。Carbon 系统热键集成明确跳过，未注册系统热键；需要 root 的非属主 LaunchAgent 夹具也按权限条件跳过。DMG／ZIP 的 2,167 个条目（1,583 个文件）与构建 App 一致，版本与严格签名核验通过，校验值见下表。另通过 436 项宿主隔离检查与 11 项锁竞争检查；消息账本 158 条断言和独立 18 条对抗断言、回调 19 项行为及 7 项连接检查、倒计时 16 项断言均通过。修正 Xcode 15.4 下消息自测的并发结果存取，保留原断言；兼容性通过远端编译及原生测试验证，完整远端状态见 GitHub Actions。
 
 **146 未覆盖安装。**用户正在使用反代，本轮保留运行中的 145，覆盖安装和真实界面验收暂缓。发布脚本为每次构建生成独立测试记录名称，并提前拒绝冲突和非法目标，保留旧记录及真实失败阻断。
 
@@ -42,8 +42,8 @@
 
 | 文件 | 字节数 | SHA256 |
 | --- | ---: | --- |
-| `AiGoodBro-2.5.1-mac-arm64.dmg` | 211,244,366 | `7be0e1fb4e8d75d7a77f7f79c3fb42b3b545a6cf162edfbd73074c12c9eed5b2` |
-| `AiGoodBro-2.5.1-mac-arm64.zip` | 181,241,734 | `705d908cf30d3e0c732757b196cc92781f0e04b65896067fd401b68eb79d13fb` |
+| `AiGoodBro-2.5.1-mac-arm64.dmg` | 213,787,310 | `edbc670d84f20418aa977e2e71360d5f1f8f6ead84c718bb9630a921eb9b7952` |
+| `AiGoodBro-2.5.1-mac-arm64.zip` | 181,241,986 | `36719123a42bc6ec507edfab154852d0aa6a303008c8a8b19dc67813cf7a731a` |
 
 每个包提供同名 `.sha256`；汇总校验文件见 [SHA256SUMS](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.5.1/SHA256SUMS)。
 
@@ -57,4 +57,4 @@ First-install defaults are system appearance, account cards, an auto-hiding side
 
 The separate 2.5.1 version allows 2.5.0 clients to discover it after publication without replacing the old release. Stop work and the proxy, quit normally and back up before replacement. WeChat and Feishu may require Keychain permission again. The target is macOS 13+ on Apple Silicon ARM64, ad-hoc signed and not Apple-notarized.
 
-The local release build completed successfully in 850.791 seconds with no drift among 2,358 inputs, leaving the installed executable unchanged. The 35 native self-test groups passed, including 117 isolated first-install and returning-user assertions. Carbon system-hotkey integration and the root-only unowned LaunchAgent fixture were skipped. All 2,167 bundle entries (1,583 files) match the built app in both packages; byte sizes and checksums are recorded above. Build 146 has not been installed; installation and GUI acceptance are deferred while build 145 and its proxy remain in use. Sustained provider routing, real sign-in, card redemption, phone delivery and global hotkeys each require separate device evidence.
+The local release build completed successfully in 1411.256 seconds with no drift among 2,358 inputs, leaving the installed executable unchanged. The 35 native self-test groups passed, including 117 isolated first-install and returning-user assertions. Carbon system-hotkey integration and the root-only unowned LaunchAgent fixture were skipped. The controller self-test now synchronizes its result storage for Swift 5.10 without removing assertions; remote compilation and native tests passed. All 2,167 bundle entries (1,583 files) match the built app in both packages; byte sizes and checksums are recorded above. Build 146 has not been installed; installation and GUI acceptance are deferred while build 145 and its proxy remain in use. Sustained provider routing, real sign-in, card redemption, phone delivery and global hotkeys each require separate device evidence.
