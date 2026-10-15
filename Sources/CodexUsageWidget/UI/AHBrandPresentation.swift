@@ -28,7 +28,7 @@ enum AHBrandIdentity {
     /// Product links shared by the workspace and its settings.
     static let siteURL = URL(string: "https://aigoodbro.com/")!
     static let repositoryURL = URL(string: "https://github.com/BLACKIELF/AgentHub-AiGoodBro")!
-    static let subscriptionURL = URL(string: "https://gptibo.com/r/94F4BD")!
+    static let subscriptionURL = siteURL
     static let helpURL = URL(string: "https://github.com/BLACKIELF/AgentHub-AiGoodBro/blob/main/docs/usage-guide.md")!
     static let feedbackURL = repositoryURL.appendingPathComponent("issues")
     /// 兼容旧命名，值同 siteURL，勿再新增第三个。

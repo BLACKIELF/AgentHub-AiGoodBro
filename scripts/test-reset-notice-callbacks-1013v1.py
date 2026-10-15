@@ -67,8 +67,9 @@ enum WidgetLanguage { case fixture; static func storedOrAutomatic() -> Self { .f
 final class Continuation { var value: CodexResetNoticeDeliveryReceipt?; func resume(returning value: CodexResetNoticeDeliveryReceipt) { self.value = value } }
 struct Delivery { let channel: CodexResetNoticeChannel }
 struct Reservation {}
-final class Ledger { var recorded: CodexResetNoticeDeliveryReceipt?; var uncertain = false
+final class Ledger { var recorded: CodexResetNoticeDeliveryReceipt?; var uncertain = false, releasedUnsent = false
  func record(_ reservation: Reservation, receipt: CodexResetNoticeDeliveryReceipt, currentRevision: UUID) throws -> Bool { recorded = receipt; return true }
+ func releaseUnsent(_ reservation: Reservation) throws -> Bool { releasedUnsent = true; return true }
  func markUncertain(_ reservation: Reservation) throws { uncertain = true }
 }
 final class Harness {
@@ -133,6 +134,18 @@ h.resetNoticeDeliveryStore = Ledger(); h.feishuConfigurationRevision = 2
 try h.complete(.accepted, runRevision: run, revision: revision)
 check(h.resetNoticeDeliveryStore.recorded == nil && h.resetNoticeDeliveryStore.uncertain, "old configuration completion cannot accept new state")
 h.feishuConfigurationRevision = 1; h.feishuWebhookConfigured = true
+let cancelled = h.feishuResult(.failure(.cancelled), runRevision: run, configurationRevision: 1)
+check(cancelled == .notSent && cancelled.phase == .pending, "Feishu pre-transport cancellation stays retryable")
+h.resetNoticeDeliveryStore = Ledger()
+try h.complete(cancelled, runRevision: run, revision: revision)
+check(h.resetNoticeDeliveryStore.recorded == .notSent && !h.resetNoticeDeliveryStore.uncertain, "same-revision cancellation records a proven no-send result")
+h.resetNoticeDeliveryStore = Ledger()
+try h.complete(cancelled, runRevision: UUID(), revision: revision)
+check(h.resetNoticeDeliveryStore.releasedUnsent && !h.resetNoticeDeliveryStore.uncertain, "old run can release only its proven unsent reservation")
+h.resetNoticeDeliveryStore = Ledger(); h.feishuConfigurationRevision = 2
+try h.complete(cancelled, runRevision: run, revision: revision)
+check(h.resetNoticeDeliveryStore.releasedUnsent && !h.resetNoticeDeliveryStore.uncertain, "rebind cancellation releases the unsent attempt without accepting the old config")
+h.feishuConfigurationRevision = 1
 let failed = h.feishuResult(.failure(.transportFailed), runRevision: run, configurationRevision: 1)
 check(failed == .uncertain && h.feishuWebhookConfigured, "ambiguous transport preserves readiness and requires verification")
 h.hasStarted = false
@@ -150,7 +163,7 @@ print("PASS production revision/callback/completion: \(checks) behavior checks; 
         result = subprocess.run(["/usr/bin/xcrun", "swift", "-module-cache-path", temporary + "/modules", str(fixture)], capture_output=True, text=True, timeout=60)
         print((result.stdout + result.stderr).replace(temporary, "<fixture>"), end="")
         unchanged = SOURCE.read_text() == source and LEDGER.read_text() == ledger
-        print(json.dumps({"version": "1013v1", "behaviorChecks": 15, "wiringGuards": 7, "exitCode": result.returncode,
+        print(json.dumps({"version": "1013v1", "behaviorChecks": 19, "wiringGuards": 7, "exitCode": result.returncode,
             "inputs": {str(path.relative_to(ROOT)): hashlib.sha256(value.encode()).hexdigest() for path, value in [(SOURCE, source), (LEDGER, ledger)]},
             "inputsUnchangedDuringRun": unchanged,
             "scope": "Actual extracted revision, credential handler, callback bodies, completion branch and receipt phase; synthetic dependencies; actor scheduling, full sender and disk ledger are not executed; membership is source wiring only",

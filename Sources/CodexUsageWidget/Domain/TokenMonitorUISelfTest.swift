@@ -230,6 +230,28 @@ enum TokenMonitorUISelfTest {
         expect(countdown(60, now: start.addingTimeInterval(-60)) == "预计重置还有 2m", "clock corrections rederive the remaining duration")
         expect(countdown(.infinity).contains("待公开来源公布"), "invalid timestamps do not trap or create a fake timer")
         expect(ResetCountdownPresentation.label(deadline: nil, now: start, kind: .accountWindow, language: .zh) == "重置时间未知", "missing reset time stays unknown")
+        let deadline = start.addingTimeInterval(61)
+        let schedule = ResetCountdownSchedule(deadline: deadline)
+        let ticks = Array(schedule.entries(from: start, mode: .normal).prefix(5))
+        expect(
+            ticks == [start, start.addingTimeInterval(60), deadline, deadline.addingTimeInterval(60), deadline.addingTimeInterval(120)],
+            "minute cadence adds the exact deadline instead of waiting for the next minute")
+        expect(
+            ResetCountdownPresentation.label(deadline: deadline, now: ticks[2], kind: .accountWindow, language: .zh, compact: true) == "待更新",
+            "scheduled deadline immediately shows awaiting update")
+        let imminent = start.addingTimeInterval(0.25)
+        expect(
+            Array(ResetCountdownSchedule(deadline: imminent).entries(from: start, mode: .normal).prefix(2)) == [start, imminent],
+            "subsecond deadlines do not wait for a periodic tick")
+        expect(Array(schedule.entries(from: start, mode: .lowFrequency).prefix(3)) == Array(ticks.prefix(3)), "reduced-frequency scheduling still includes the deadline")
+        let boundary = ResetCountdownSchedule(deadline: start.addingTimeInterval(60))
+        expect(
+            Array(boundary.entries(from: start, mode: .normal).prefix(3)) == [start, start.addingTimeInterval(60), start.addingTimeInterval(120)],
+            "deadline on a minute boundary is not duplicated")
+        let resumed = deadline.addingTimeInterval(120)
+        expect(
+            Array(schedule.entries(from: resumed, mode: .normal).prefix(2)) == [resumed, resumed.addingTimeInterval(60)],
+            "resuming after expiry uses current time without replaying missed ticks")
     }
 
     private static func reproduceResetDashboardLayout(expect: (Bool, String) -> Void) {

@@ -5307,7 +5307,11 @@ final class UsageStore: ObservableObject {
                         _ = try self.resetNoticeDeliveryStore.record(
                             reservation, receipt: receipt, currentRevision: revision)
                     } else {
-                        try self.resetNoticeDeliveryStore.markUncertain(reservation)
+                        if receipt == .notSent {
+                            _ = try self.resetNoticeDeliveryStore.releaseUnsent(reservation)
+                        } else {
+                            try self.resetNoticeDeliveryStore.markUncertain(reservation)
+                        }
                     }
                 } catch {
                     self.localNotificationMessage = WidgetLanguage.storedOrAutomatic().text(
@@ -5403,7 +5407,8 @@ final class UsageStore: ObservableObject {
                         case .failure(let error):
                             if current { self?.handleFeishuCredentialFailure(error) }
                             switch error {
-                            case .transportFailed, .invalidResponse, .cancelled: receipt = .uncertain
+                            case .transportFailed, .invalidResponse: receipt = .uncertain
+                            case .cancelled: receipt = .notSent
                             case .httpStatus(let code): receipt = code == 429 ? .rejected : .uncertain
                             case .rejected: receipt = .rejected
                             default: receipt = .notSent

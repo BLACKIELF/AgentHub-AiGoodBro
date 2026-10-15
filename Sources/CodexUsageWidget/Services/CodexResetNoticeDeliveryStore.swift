@@ -194,10 +194,14 @@ struct CodexResetNoticeDeliveryStore {
         guard candidate.isValid else { throw Failure.invalidState }
         return try mutate { ledger in
             guard current(candidate, ledger: ledger, now: now) else { return [] }
+            let sentWatermarks = sentChangeWatermarks(in: ledger)
             var deliveries: [CodexResetNoticeDelivery] = []
             for channel in Set(channels).sorted(by: { $0.rawValue < $1.rawValue }) {
                 let key = CodexResetNoticeKey.item(candidate.content, accountHash: accountHash, channel: channel)
                 if ledger.records[key] == nil && createIfMissing {
+                    // The newest accepted change remains as durable replay
+                    // evidence after older accepted records are compacted.
+                    if let watermark = sentWatermarks[historyKey(accountHash, channel)], observedAt <= watermark { continue }
                     ledger.records[key] = .init(
                         accountHash: accountHash, channel: channel,
                         item: candidate.content, phase: .pending, observedAt: observedAt, updatedAt: now)
@@ -361,10 +365,43 @@ struct CodexResetNoticeDeliveryStore {
             var ledger = try readUnlocked()
             let before = ledger
             let result = try body(&ledger)
+            pruneCompletedRecords(in: &ledger)
             guard ledger.accounts.count <= Self.maximumAccounts, ledger.records.count <= Self.maximumRecords else { throw Failure.capacity }
             guard ledger.isValid else { throw Failure.invalidState }
             if ledger != before { try writeUnlocked(ledger) }
             return result
+        }
+    }
+
+    private func historyKey(_ accountHash: String, _ channel: CodexResetNoticeChannel) -> String {
+        accountHash + ":" + channel.rawValue
+    }
+
+    private func sentChangeWatermarks(in ledger: CodexResetNoticeDeliveryLedger) -> [String: Date] {
+        var watermarks: [String: Date] = [:]
+        for record in ledger.records.values where record.phase == .sent {
+            guard case .change = record.item else { continue }
+            let key = historyKey(record.accountHash, record.channel)
+            watermarks[key] = max(watermarks[key] ?? record.observedAt, record.observedAt)
+        }
+        return watermarks
+    }
+
+    private func pruneCompletedRecords(in ledger: inout CodexResetNoticeDeliveryLedger) {
+        let watermarks = sentChangeWatermarks(in: ledger)
+        ledger.records = ledger.records.filter { _, record in
+            // Unsent, in-flight and uncertain outcomes keep their full evidence.
+            guard record.phase == .baseline || record.phase == .sent else { return true }
+            switch record.item {
+            case .expiry(let cards):
+                // A durable observation past expiry prevents a rolled-back clock
+                // or stale response from recreating a previously accepted notice.
+                guard let observedAt = ledger.accounts[record.accountHash]?.observedAt else { return true }
+                return !cards.allSatisfy { $0.expiresAt.map { $0 <= observedAt } == true }
+            case .change:
+                guard record.phase == .sent, let watermark = watermarks[historyKey(record.accountHash, record.channel)] else { return true }
+                return record.observedAt >= watermark
+            }
         }
     }
 

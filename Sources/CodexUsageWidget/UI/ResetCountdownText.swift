@@ -32,6 +32,18 @@ enum ResetCountdownPresentation {
     }
 }
 
+/// Minute updates plus one exact deadline entry, without per-second polling.
+struct ResetCountdownSchedule: TimelineSchedule {
+    let deadline: Date
+
+    func entries(from startDate: Date, mode: Mode) -> some Sequence<Date> {
+        sequence(first: startDate) { current in
+            let next = current.addingTimeInterval(60)
+            return current < deadline && deadline < next ? deadline : next
+        }
+    }
+}
+
 /// Only this small label ticks. It does not refresh the account or its parent page.
 struct ResetCountdownText: View {
     let deadline: Date
@@ -46,7 +58,7 @@ struct ResetCountdownText: View {
             if let previewDate {
                 label(now: previewDate)
             } else {
-                TimelineView(.periodic(from: .now, by: 60)) { context in
+                TimelineView(ResetCountdownSchedule(deadline: deadline)) { context in
                     label(now: context.date)
                 }
             }

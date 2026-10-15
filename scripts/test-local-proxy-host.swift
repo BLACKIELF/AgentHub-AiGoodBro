@@ -1067,6 +1067,8 @@ import Foundation
         // existing order snapshots and leases remain independently valid.
         let memberA = CodexProfile(id: "member-a", lastSnapshot: snapshot)
         var memberB = CodexProfile(id: "member-b", lastSnapshot: secondSnapshot)
+        memberB.lastSnapshot?.accountID = "member-b-account"
+        memberB.lastSnapshot?.email = "member-b@example.invalid"
         memberB.lastSnapshot?.planType = "pro"
         memberB.proTierMultiplier = 20
         let memberUsage = UsageStore([memberA, memberB, central])

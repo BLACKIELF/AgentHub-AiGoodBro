@@ -84,6 +84,8 @@ enum ResetNoticeFixture {
         try thresholdAndInvalidationTests(root: root)
         try deliveryTests(root: root)
         try changeTests(root: root)
+        try retentionTests(root: root)
+        try capacityTests(root: root)
         try integrityTests(root: root)
         print("reset-notice fixture: \(checks) assertions, \(failures) failures")
         exit(failures == 0 ? 0 : 1)
@@ -305,6 +307,143 @@ enum ResetNoticeFixture {
         expect(throwsError { _ = try decrease.enqueueChange(accountHash: account, previous: 0, available: 0,
             previousObservedAt: before, observedAt: now, channels: [.local], now: later) }, "zero delta cannot stage change")
         print("PASS changes: durable delta receipt, fresh retry, upgrade no-flood, zero/decrease and outdated suppression")
+    }
+
+    static func write(_ ledger: CodexResetNoticeDeliveryLedger, to store: CodexResetNoticeDeliveryStore) throws {
+        try FileManager.default.createDirectory(at: store.directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let bytes = try JSONEncoder().encode(ledger)
+        try bytes.write(to: store.url)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: store.url.path)
+    }
+
+    static func retentionTests(root: URL) throws {
+        let ledger = store("retention", root: root)
+        var initial = CodexResetNoticeDeliveryLedger()
+        initial.accounts[account] = observation([], count: 0, at: now.addingTimeInterval(-20))
+        let otherAccount = CodexResetNoticeKey.hash("other-retention-account")
+        initial.accounts[otherAccount] = observation([], count: 0, at: now.addingTimeInterval(-20), accountHash: otherAccount)
+        var keys: [String: String] = [:]
+        for phase in [CodexResetNoticeDeliveryPhase.baseline, .pending, .sending, .sent, .uncertain] {
+            let item = CodexResetNoticeCandidate.Content.expiry(cards: [card("old-" + phase.rawValue, -10)])
+            let key = CodexResetNoticeKey.item(item, accountHash: account, channel: .local)
+            keys[phase.rawValue] = key
+            let attempted = phase == .sending || phase == .sent || phase == .uncertain
+            initial.records[key] = .init(accountHash: account, channel: .local, item: item, phase: phase,
+                observedAt: now.addingTimeInterval(-90_000), updatedAt: now.addingTimeInterval(-20),
+                attemptID: attempted ? UUID() : nil, revision: attempted ? revision : nil)
+        }
+        let future = card("future-sent", 60)
+        let futureItem = CodexResetNoticeCandidate.Content.expiry(cards: [future])
+        let futureKey = CodexResetNoticeKey.item(futureItem, accountHash: account, channel: .local)
+        initial.records[futureKey] = .init(accountHash: account, channel: .local, item: futureItem, phase: .sent,
+            observedAt: now.addingTimeInterval(-20), updatedAt: now.addingTimeInterval(-20), attemptID: UUID(), revision: revision)
+        let otherItem = CodexResetNoticeCandidate.Content.expiry(cards: [card("other-old-sent", -10)])
+        let otherKey = CodexResetNoticeKey.item(otherItem, accountHash: otherAccount, channel: .local)
+        initial.records[otherKey] = .init(accountHash: otherAccount, channel: .local, item: otherItem, phase: .sent,
+            observedAt: now.addingTimeInterval(-90_000), updatedAt: now.addingTimeInterval(-20), attemptID: UUID(), revision: revision)
+        for (index, phase) in [CodexResetNoticeDeliveryPhase.pending, .sending, .uncertain, .sent, .sent].enumerated() {
+            let date = now.addingTimeInterval(-Double(index + 1))
+            let item = CodexResetNoticeCandidate.Content.change(.init(
+                previous: 0, available: 1, previousObservedAt: date.addingTimeInterval(-1), observedAt: date))
+            let key = CodexResetNoticeKey.item(item, accountHash: account, channel: .local)
+            keys["change-\(index)"] = key
+            initial.records[key] = .init(accountHash: account, channel: .local, item: item, phase: phase,
+                observedAt: date, updatedAt: date, attemptID: phase == .pending ? nil : UUID(), revision: phase == .pending ? nil : revision)
+        }
+        try write(initial, to: ledger)
+        _ = try ledger.observe(observation([future]), channels: [.local], now: now)
+        let retained = try ledger.read()
+        expect(retained.records[keys["baseline"]!] == nil && retained.records[keys["sent"]!] == nil,
+            "expiry baseline and sent history are removed after the account's durable observation crosses expiry")
+        for phase in ["pending", "sending", "uncertain"] {
+            expect(retained.records[keys[phase]!] == initial.records[keys[phase]!], "retention preserves full " + phase + " evidence")
+        }
+        expect(retained.records[futureKey] == initial.records[futureKey], "live sent expiry retains deduplication")
+        expect(retained.records[otherKey] == initial.records[otherKey], "wall-clock passage alone cannot prune another account's expiry")
+        for index in 0..<4 {
+            expect(retained.records[keys["change-\(index)"]!] == initial.records[keys["change-\(index)"]!],
+                "change compaction preserves pending, sending, uncertain and the latest accepted watermark")
+        }
+        expect(retained.records[keys["change-4"]!] == nil, "only superseded accepted change history is removed")
+        let reboot = CodexResetNoticeDeliveryStore(url: ledger.url)
+        let rollback = now.addingTimeInterval(-30)
+        expect(try reboot.observe(observation([card("old-sent", -10)], at: rollback), channels: [.local], now: rollback).isEmpty,
+            "clock rollback cannot revive expiry behind the durable account watermark")
+        expect(try reboot.read().records[keys["sent"]!] == nil, "stale rollback response cannot recreate compacted sent history")
+        expect(try reboot.observe(observation([future], at: now.addingTimeInterval(1)), channels: [.local], now: now.addingTimeInterval(1)).isEmpty,
+            "retained live sent expiry is not sent again after restart")
+        expect(try reboot.reserve(.init(channel: .local,
+            candidate: .init(accountHash: account, observedAt: now.addingTimeInterval(-90_000), content: initial.records[keys["sent"]!]!.item)),
+            revision: revision, now: now) == nil, "stale reservation cannot recreate compacted history")
+        print("PASS retention: durable expiry boundary, clock rollback, active/uncertain preservation and restart deduplication")
+    }
+
+    static func capacityTests(root: URL) throws {
+        for content in ["expiry", "change", "protected"] {
+            let ledger = store("capacity-" + content, root: root)
+            var initial = CodexResetNoticeDeliveryLedger()
+            initial.accounts[account] = observation(nil, count: 2, at: now.addingTimeInterval(-1))
+            for index in 0..<CodexResetNoticeDeliveryStore.maximumRecords {
+                let observed = now.addingTimeInterval(-Double(index + 2))
+                let item: CodexResetNoticeCandidate.Content = content != "change"
+                    ? .expiry(cards: [card("capacity-\(index)", -1)])
+                    : .change(.init(previous: 1, available: 2, previousObservedAt: observed.addingTimeInterval(-1), observedAt: observed))
+                let key = CodexResetNoticeKey.item(item, accountHash: account, channel: .local)
+                let phase: CodexResetNoticeDeliveryPhase = content == "protected"
+                    ? [.pending, .sending, .uncertain][index % 3] : (content == "expiry" ? .baseline : .sent)
+                let attempted = phase == .sending || phase == .sent || phase == .uncertain
+                initial.records[key] = .init(accountHash: account, channel: .local, item: item,
+                    phase: phase, observedAt: observed, updatedAt: observed,
+                    attemptID: attempted ? revision : nil, revision: attempted ? revision : nil)
+            }
+            expect(initial.isValid, "full " + content + " fixture remains a valid bounded ledger")
+            try write(initial, to: ledger)
+            if content == "protected" {
+                let before = try Data(contentsOf: ledger.url)
+                do {
+                    _ = try ledger.observe(observation([card("protected-new-card", 60)], count: 3), channels: [.local], now: now)
+                    expect(false, "active and unconfirmed capacity must fail closed")
+                } catch CodexResetNoticeDeliveryStore.Failure.capacity {
+                    expect(true, "active and unconfirmed capacity fails closed")
+                }
+                expect(try Data(contentsOf: ledger.url) == before && ledger.read() == initial,
+                    "capacity never removes pending/sending/uncertain evidence or partially writes the ledger")
+                continue
+            }
+            _ = try ledger.observe(observation([card("next-capacity-card", 60)], count: 3), channels: [.local], now: now)
+            let compacted = try ledger.read()
+            expect(compacted.records.count == (content == "expiry" ? 1 : 2), "full " + content + " ledger compacts obsolete completed history before capacity rejection")
+            let reboot = CodexResetNoticeDeliveryStore(url: ledger.url)
+            let later = now.addingTimeInterval(1)
+            _ = try reboot.observe(observation(nil, count: 2, at: later), channels: [], now: later)
+            if content == "change" {
+                let old = now.addingTimeInterval(-100)
+                expect(try reboot.enqueueChange(accountHash: account, previous: 1, available: 2,
+                    previousObservedAt: old.addingTimeInterval(-1), observedAt: old, channels: [.local], now: later).isEmpty,
+                    "compacted sent change cannot be replayed when the account returns to its old count")
+                let recent = now.addingTimeInterval(-2)
+                expect(try reboot.enqueueChange(accountHash: account, previous: 1, available: 2,
+                    previousObservedAt: recent.addingTimeInterval(-1), observedAt: recent, channels: [.local], now: later).isEmpty,
+                    "latest retained sent change remains deduplicated")
+                expect(try reboot.enqueueChange(accountHash: account, previous: 1, available: 2,
+                    previousObservedAt: old.addingTimeInterval(-1), observedAt: old, channels: [.feishu], now: later).count == 1,
+                    "sent change watermark is scoped to its own channel")
+                let other = CodexResetNoticeKey.hash("other-capacity-account")
+                _ = try reboot.observe(observation(nil, count: 2, at: later, accountHash: other), channels: [], now: later)
+                expect(try reboot.enqueueChange(accountHash: other, previous: 1, available: 2,
+                    previousObservedAt: old.addingTimeInterval(-1), observedAt: old, channels: [.local], now: later).count == 1,
+                    "sent change watermark is scoped to its own account")
+            }
+            let next = try reboot.enqueueChange(accountHash: account, previous: 3, available: 2,
+                previousObservedAt: now, observedAt: later, channels: [.local], now: later)
+            expect(next.count == 1, "compaction leaves new count-change admission available")
+            let reserved = try reboot.reserve(next[0], revision: revision, now: later)!
+            _ = try reboot.record(reserved, receipt: .accepted, currentRevision: revision, now: later)
+            expect(try reboot.enqueueChange(accountHash: account, previous: 3, available: 2,
+                previousObservedAt: now, observedAt: later, channels: [.local], now: later).isEmpty,
+                "newest sent change stays as the durable watermark")
+        }
+        print("PASS capacity: full expiry/change ledgers, persistent change watermarks and isolated account/channel history")
     }
 
     static func integrityTests(root: URL) throws {
