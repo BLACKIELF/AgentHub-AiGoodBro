@@ -1535,7 +1535,13 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
                             profileID: request.profileID, leaseID: id)
                     } : nil)
             return LocalProxyReply(ok: true)
-        } catch DispatchActivityStore.Failure.busy { return .failure(.controlBusy) } catch { return .failure(.unavailable) }
+        } catch DispatchActivityStore.Failure.busy {
+            return .failure(.controlBusy)
+        } catch DispatchActivityStore.Failure.invalidState {
+            return .failure(.registryStateInvalid)
+        } catch {
+            return .failure(.registryUnavailable)
+        }
     }
 
     private func completeLeaseRelease(_ request: LocalProxyRequest) {
@@ -1636,7 +1642,10 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
             rebuildRows()
         case "error":
             let code = object["errorCode"] as? String ?? ""
-            let details: Set<String> = ["timeout", "eof", "decode", "unavailable", "admission_unknown", "missing_lease", "control_busy", "identity", "rejected"]
+            let details: Set<String> = [
+                "timeout", "eof", "decode", "unavailable", "transport_unavailable", "registry_state_invalid", "registry_unavailable",
+                "admission_unknown", "missing_lease", "control_busy", "identity", "rejected",
+            ]
             let detail = (object["errorDetail"] as? String).flatMap { details.contains($0) ? $0 : nil }
             let resolutionDetail = (object["resolutionDetail"] as? String).flatMap { details.contains($0) ? $0 : nil }
             if code == "lease_acquire_reconciled" {
@@ -1732,8 +1741,17 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
             // busy result. Only an admitted, still-owned lease proves activity.
             let activeRequestCount = leases.values.filter { $0.profileID == id && $0.isAdmitted }.count
             let isCurrent = activeRequestCount > 0
+            // Project the latest persisted failure without changing admission or
+            // helper state. A newer successful observation supersedes it.
+            let hasCurrentOAuthInvalidation =
+                profile.lastQuotaReadFailureReason == "oauth-invalidated"
+                && profile.lastQuotaReadFailureAt.map { failedAt in
+                    guard let snapshot = profile.lastSnapshot, snapshot.quotaReadSucceeded == true else { return true }
+                    return failedAt >= snapshot.fetchedAt
+                } == true
             let reportedState = accountStates[id].flatMap { $0 == "current" ? nil : $0 }
-            let state = isCurrent ? "current" : failure == .usageLimit ? "usage_limit" : reportedState ?? (failure?.rawValue ?? "ready")
+            let state =
+                isCurrent ? "current" : hasCurrentOAuthInvalidation ? "login_expired" : failure == .usageLimit ? "usage_limit" : reportedState ?? (failure?.rawValue ?? "ready")
             func officialRemaining(_ window: CodexQuotaWindowSnapshot?) -> Double? {
                 window.flatMap { $0.usedPercent.isFinite && (0...100).contains($0.usedPercent) ? 100 - $0.usedPercent : nil }
             }
@@ -1751,7 +1769,9 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
                         isWeeklyOnlyPro: label == "5h" && QuotaAvailabilityPresentation.weeklyOnlyPro(profile))
                 }
             let quota: String
-            if failure == nil || failure == .quota, profile.lastSnapshot != nil {
+            if hasCurrentOAuthInvalidation {
+                quota = message(.loginExpired)
+            } else if failure == nil || failure == .quota, profile.lastSnapshot != nil {
                 let language = WidgetLanguage.storedOrAutomatic()
                 let remaining = displayWindows.compactMap { window -> String? in
                     guard let remaining = window.remaining else { return nil }
@@ -1943,7 +1963,7 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
         case .loginExpired: return language.text("登录已过期，请手动重新登录", "Login expired; sign in manually")
         case .stageNotApplicable: return message(.unavailable)
         case .notParticipating: return language.text("已取消参与，跳过此账号", "Participation disabled; skipping this account")
-        case .admissionUnknown: return message(.unavailable)
+        case .admissionUnknown, .registryStateInvalid, .registryUnavailable: return message(.unavailable)
         case .stopping: return language.text("尚未确认代理完全停止，账号占用已保留", "Proxy stop is unconfirmed; reservations retained")
         case .unavailable: return language.text("代理暂不可用，请检查额度与本地运行状态", "Proxy unavailable; check limits and local runtime")
         }

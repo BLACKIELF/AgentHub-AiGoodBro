@@ -11,6 +11,8 @@ cooldown_negative='--cooldown-refresh-negative' in sys.argv
 legacy_negative='--legacy-cooldown-recovery-negative' in sys.argv
 legacy_recovery='--legacy-cooldown-recovery-only' in sys.argv or legacy_negative
 focused_fixture=next((entry for flag,entry in [
+    ('--maintenance-diagnostics-only','maintenanceDiagnosticsFixtures'),
+    ('--oauth-failure-projection-only','oauthFailureProjectionFixtures'),
     ('--registry-contention-only','registryContentionFixtures'),
     ('--post-reserve-contention-only','postReserveContentionFixtures'),
     ('--transient-refresh-only','transientRefreshFixtures'),
@@ -49,7 +51,7 @@ struct CodexQuotaWindowSnapshot: Equatable { var usedPercent: Double; var resets
 struct CodexAccountSnapshot: Equatable { var quotaReadSucceeded: Bool? = true; var planType:String? = nil; var creditBalance:String? = nil; var creditBalanceUnlimited:Bool? = nil; var accountID: String? = "account-fixture"; var email: String? = "fixture@example.invalid"; var fetchedAt: Date; var fiveHour: CodexQuotaWindowSnapshot?; var sevenDay: CodexQuotaWindowSnapshot?; var monthly: CodexQuotaWindowSnapshot? = nil }
 struct CodexCredentialIdentity: Equatable { let email: String; let accountID: String }
 struct CodexOfficialProfileSnapshot: Equatable { var planType: String? }
-struct CodexProfile: Equatable { let id: String; var isSystemProfile=false; var lastSnapshot: CodexAccountSnapshot?; var lastQuotaReadFailureAt: Date?=nil; var isDispatchPriorityEnabled=false; var officialProfile:CodexOfficialProfileSnapshot?=nil; var proTierMultiplier:Int?=nil; var fixtureHomeURL:URL?=nil; var codexHomeURL: URL { fixtureHomeURL ?? DispatchParticipationPaths.supportDirectory().appendingPathComponent("credentials/"+id).resolvingSymlinksInPath() }; var recordedAccountKey:String { lastSnapshot?.email ?? id }; func matchesRecordedCredential(_ identity:CodexCredentialIdentity?) -> Bool { identity?.email == lastSnapshot?.email && identity?.accountID == lastSnapshot?.accountID } }
+struct CodexProfile: Equatable { let id: String; var isSystemProfile=false; var lastSnapshot: CodexAccountSnapshot?; var lastQuotaReadFailureAt: Date?=nil; var lastQuotaReadFailureReason:String?=nil; var isDispatchPriorityEnabled=false; var officialProfile:CodexOfficialProfileSnapshot?=nil; var proTierMultiplier:Int?=nil; var fixtureHomeURL:URL?=nil; var codexHomeURL: URL { fixtureHomeURL ?? DispatchParticipationPaths.supportDirectory().appendingPathComponent("credentials/"+id).resolvingSymlinksInPath() }; var recordedAccountKey:String { lastSnapshot?.email ?? id }; func matchesRecordedCredential(_ identity:CodexCredentialIdentity?) -> Bool { identity?.email == lastSnapshot?.email && identity?.accountID == lastSnapshot?.accountID } }
 enum CodexCredentialAccessGate { static let lock=NSRecursiveLock(); static func homeLock(forHomePath:String)->NSRecursiveLock { lock } }
 enum WidgetLanguage { case fixture; static func storedOrAutomatic()->Self { .fixture }; func text(_ zh:String,_ en:String)->String { en } }
 enum HubAccountTaskPhase { case maintenance,starting,running,cancelRequested,uncertain,awaitingAcceptance,succeeded,failed,cancelled,unavailable }
