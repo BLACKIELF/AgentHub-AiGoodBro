@@ -9,6 +9,7 @@ struct ResetCreditButton: View {
     let onConfirmedResult: () -> Void
     var displayNumber: Int? = nil
     var compact = false
+    var prominent = false
 
     @StateObject private var controller = CodexResetCreditController()
 
@@ -26,7 +27,7 @@ struct ResetCreditButton: View {
                     .lineLimit(1)
             }
         }
-        .buttonStyle(WorkspaceActionButtonStyle(compact: compact))
+        .buttonStyle(WorkspaceActionButtonStyle(prominent: prominent, compact: compact))
         .disabled(!canBegin)
         .help(buttonHelp)
         .accessibilityLabel(buttonTitle)

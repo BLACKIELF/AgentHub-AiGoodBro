@@ -155,7 +155,7 @@ struct LocalProxyQueueView: View {
             // the backdrop under it so the outer edge reads as one surface.
             WorkspaceGlassBackdrop().ignoresSafeArea()
         }
-        .buttonStyle(WorkspaceActionButtonStyle())
+        .buttonStyle(WorkspaceActionButtonStyle(prominent: true))
         .accessibilityIdentifier("next.local-proxy.panel")
         .alert(language.text("停止反代？", "Stop the proxy?"), isPresented: $confirmingStop) {
             Button(language.text("取消", "Cancel"), role: .cancel) {}
@@ -381,8 +381,10 @@ struct LocalProxyQueueView: View {
                         .help(language.text("桌面账号 · 所在分组最后使用", "Desktop account · Last within its group"))
                 }
                 Text(stateTitle(row)).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    .help(row.quotaText ?? "")
                 if row.snapshotStale {
-                    Image(systemName: "clock.arrow.circlepath").foregroundStyle(.secondary)
+                    Label(language.text("上次快照", "Last snapshot"), systemImage: "clock.arrow.circlepath")
+                        .font(.caption).foregroundStyle(.secondary).lineLimit(1)
                         .help(language.text("上次快照 · 待刷新", "Last snapshot · refresh needed"))
                 }
                 Spacer(minLength: 0)
@@ -459,7 +461,7 @@ struct LocalProxyQueueView: View {
                             "Move down one position, updating this account's Priority or Use last setting when crossing groups. Desktop accounts stay fallback within their group.")
                     )
                     .accessibilityLabel(language.text("下移 \(accountTitle(row))", "Move \(accountTitle(row)) down"))
-                }.buttonStyle(WorkspaceActionButtonStyle(compact: true))
+                }.buttonStyle(WorkspaceActionButtonStyle(prominent: true, compact: true))
             }
             .font(.caption).toggleStyle(WorkspaceCheckboxStyle()).controlSize(.small)
             LocalProxyAccountPolicyEditor(
@@ -548,7 +550,8 @@ struct LocalProxyQueueView: View {
             ResetCreditButton(
                 profile: target.profile, selectedProfileID: target.selectedProfileID,
                 hubAccountAlias: target.hubAccountAlias,
-                onConfirmedResult: { model.refreshAfterResetCredit(target) }, displayNumber: row.accountNumber
+                onConfirmedResult: { model.refreshAfterResetCredit(target) }, displayNumber: row.accountNumber,
+                prominent: true
             ).accessibilityIdentifier("next.local-proxy.reset-card-\(row.id)")
         } else {
             Text(row.resetCardCount.map { language.text("重置卡 \($0)", "\($0) reset cards") } ?? language.text("重置卡 —", "Reset cards —"))

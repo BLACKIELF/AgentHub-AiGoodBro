@@ -19,6 +19,8 @@ import Foundation
 
     @MainActor static func main() async throws {
         setbuf(stdout, nil)
+        try await oauthFailureProjectionFixtures()
+        try await maintenanceDiagnosticsFixtures()
         if ProcessInfo.processInfo.environment["PROXY_REGISTRY_CONTENTION_ONLY"] == "1" {
             try await registryContentionFixtures()
             return
@@ -1644,6 +1646,201 @@ import Foundation
 
 extension LocalProxyHostFixtures {
     /// Short, deterministic release races. Uses only synthetic files/children.
+    @MainActor static func oauthFailureProjectionFixtures() async throws {
+        var checks = 0
+        func expect(_ value: @autoclosure () -> Bool, _ label: String) {
+            precondition(value(), label)
+            checks += 1
+        }
+        let now = Date()
+        let failedAt = now.addingTimeInterval(-60)
+        let monthly = CodexQuotaWindowSnapshot(usedPercent: 0, resetsAt: now.addingTimeInterval(28 * 86400))
+        let oldSnapshot = CodexAccountSnapshot(
+            fetchedAt: now.addingTimeInterval(-86400), fiveHour: nil, sevenDay: nil, monthly: monthly)
+        var profile = CodexProfile(id: "oauth-projection", lastSnapshot: oldSnapshot)
+        profile.officialProfile = CodexOfficialProfileSnapshot(planType: "free")
+        profile.lastQuotaReadFailureAt = failedAt
+        profile.lastQuotaReadFailureReason = "oauth-invalidated"
+        var preferences = LocalProxyPreferences()
+        preferences.enabledIDs = [profile.id]
+        preferences.knownIDs = [profile.id]
+        preferences.accountPolicies = [profile.id: LocalProxyAccountPolicy(fiveHourUsedLimit: 80)]
+        let usage = UsageStore([profile])
+        let store = LocalProxyQueueStore(usageStore: usage, previewPreferences: preferences)
+        let expiredText = "Login expired; sign in manually"
+        let originalWindows = store.rows[0].windows
+        expect(store.rows[0].state == "login_expired" && store.rows[0].quotaText == expiredText,
+            "current persisted OAuth invalidation has matching row state and tooltip")
+        expect(store.rows[0].snapshotStale && store.rows[0].isEnabled && store.rows[0].policy.fiveHourUsedLimit == 80,
+            "OAuth projection preserves stale evidence, participation and saved policy")
+        expect(originalWindows.map(\.id) == ["5h", "7d", "30d"]
+            && originalWindows.map(\.remaining) == [nil, nil, 100]
+            && originalWindows.last?.resetsAt == monthly.resetsAt,
+            "OAuth projection preserves the reported monthly window without inventing short or weekly quota")
+        expect(originalWindows.allSatisfy { !$0.isWeeklyOnlyPro }
+            && usage.profiles[0].lastSnapshot == oldSnapshot && usage.profiles[0].resolvedPlanType == "free",
+            "OAuth projection never infers Pro, infinity or a new quota topology")
+        expect(LocalProxyAdmission.quota(profile, now: now, policy: preferences.policy(for: profile.id)) == .quotaUnknown,
+            "displayed login expiry leaves the existing quota admission rejection unchanged")
+        expect(store.accountStates.isEmpty && store.leases.isEmpty && usage.refreshCount == 0,
+            "row projection produces no helper state, request or refresh")
+        store.accountStates[profile.id] = "ready"
+        store.rebuildRows()
+        expect(store.rows[0].state == "login_expired" && store.rows[0].quotaText == expiredText,
+            "current persisted login failure takes precedence over an older helper ready state")
+        let leaseID = "oauth-admitted-lease"
+        store.leases[leaseID] = LocalProxyQueueStore.Lease(
+            id: leaseID, profileID: profile.id, requestID: "oauth-request", runID: "oauth-run")
+        store.leases[leaseID]?.isAdmitted = true
+        store.rebuildRows()
+        expect(store.rows[0].state == "current" && store.rows[0].isCurrent && store.rows[0].activeRequestCount == 1,
+            "persisted login failure preserves the active admitted request presentation")
+        expect(store.leases[leaseID]?.isAdmitted == true && store.rows[0].quotaText == expiredText
+            && store.rows[0].windows == originalWindows,
+            "login failure tooltip does not retire an admitted lease or rewrite its displayed windows")
+        store.leases.removeValue(forKey: leaseID)
+        store.accountStates.removeAll()
+        profile.lastQuotaReadFailureReason = nil
+        usage.profiles = [profile]
+        store.rebuildRows()
+        expect(store.rows[0].state == "quota_unknown" && store.rows[0].quotaText != expiredText,
+            "an unclassified refresh failure remains quota unknown")
+        profile.lastQuotaReadFailureReason = "oauth-invalidated"
+        profile.lastQuotaReadFailureAt = nil
+        usage.profiles = [profile]
+        store.rebuildRows()
+        expect(store.rows[0].state == "quota_unknown" && store.rows[0].quotaText != expiredText,
+            "a reason without a failure observation does not declare the current login expired")
+        let five = CodexQuotaWindowSnapshot(usedPercent: 1, resetsAt: now.addingTimeInterval(3600))
+        let seven = CodexQuotaWindowSnapshot(usedPercent: 15, resetsAt: now.addingTimeInterval(86400))
+        profile.lastSnapshot = CodexAccountSnapshot(fetchedAt: now.addingTimeInterval(-120), fiveHour: five, sevenDay: seven)
+        profile.lastQuotaReadFailureAt = failedAt
+        usage.profiles = [profile]
+        store.rebuildRows()
+        expect(store.rows[0].state == "login_expired" && store.rows[0].quotaText == expiredText,
+            "a success older than the OAuth failure cannot clear the failure presentation")
+        profile.lastSnapshot?.fetchedAt = now
+        usage.profiles = [profile]
+        store.rebuildRows()
+        expect(store.rows[0].state == "ready" && store.rows[0].quotaText == "Remaining: 5h 99.0% · Weekly 85.0%",
+            "a newer successful snapshot supersedes an older retained OAuth failure")
+        profile.lastSnapshot?.quotaReadSucceeded = false
+        usage.profiles = [profile]
+        store.rebuildRows()
+        expect(store.rows[0].state == "login_expired" && store.rows[0].quotaText == expiredText,
+            "a newer unsuccessful snapshot is not recovery evidence")
+        profile.lastSnapshot?.quotaReadSucceeded = true
+        profile.lastQuotaReadFailureAt = nil
+        profile.lastQuotaReadFailureReason = nil
+        usage.profiles = [profile]
+        store.rebuildRows()
+        expect(store.rows[0].state == "ready" && store.rows[0].quotaText == "Remaining: 5h 99.0% · Weekly 85.0%",
+            "normal successful persistence clearing the failure restores the original quota projection")
+        expect(store.accountStates.isEmpty && store.leases.isEmpty && usage.refreshCount == 0,
+            "recovery projection creates no helper login state or account operation")
+        await store.finishForTermination()
+        print("PASS: \(checks) OAuth failure projection checks; synthetic snapshots only, no account or provider")
+    }
+
+    @MainActor static func maintenanceDiagnosticsFixtures() async throws {
+        var checks = 0
+        func expect(_ value: @autoclosure () throws -> Bool, _ label: String) rethrows {
+            let result = try value()
+            precondition(result, label)
+            checks += 1
+            print("MAINTENANCE_DIAGNOSTIC_CHECK \(checks): \(label)")
+        }
+        let support = DispatchParticipationPaths.supportDirectory()
+        let root = support.appendingPathComponent("maintenance-diagnostics")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let activity = DispatchActivityStore(directory: root)
+        let run = UUID().uuidString, requestID = UUID().uuidString, profileID = "maintenance-fixture"
+        let lease = try activity.reserveProxy(account: "maintenance-account", alias: "maintenance-alias", runID: run,
+            requestID: requestID, profileID: profileID, childPID: getpid())
+        try activity.updateProxy(lease, runID: run, requestID: requestID, profileID: profileID, state: "running")
+        defer { LocalProxyFixtureRuntime.failActivityCommit = false; localProxyReleaseFence.clear(runID: run) }
+        let stateURL = root.appendingPathComponent(DispatchActivityStore.stateName)
+        let before = try Data(contentsOf: stateURL)
+        func request(_ command: String, requestID overrideRequest: String? = nil, profileID overrideProfile: String? = nil,
+            leaseID overrideLease: String? = nil, key: String = "maintenance-key") -> LocalProxyRequest
+        {
+            LocalProxyRequest(schemaVersion: 1, runID: run, key: key, command: command,
+                requestID: overrideRequest ?? requestID, profileID: overrideProfile ?? profileID, leaseID: overrideLease ?? lease)
+        }
+        func maintain(_ request: LocalProxyRequest) -> LocalProxyReply {
+            LocalProxyQueueStore.maintainLease(request, run: run, key: "maintenance-key",
+                permittedProfiles: [profileID, "other-profile"], activity: activity)
+        }
+        func unchanged(_ label: String) throws {
+            try expect(Data(contentsOf: stateURL) == before && !localProxyReleaseFence.contains(runID: run, profileID: profileID),
+                "\(label) retains the exact live lease and publishes no completion fence")
+        }
+        for command in ["heartbeat", "release"] {
+            expect(maintain(request(command, key: "wrong-key")).error == "identity", "\(command) retains control identity rejection")
+            for invalid in [request(command, requestID: UUID().uuidString), request(command, profileID: "other-profile"),
+                request(command, leaseID: UUID().uuidString)]
+            {
+                expect(maintain(invalid).error == "registry_state_invalid", "\(command) distinguishes an invalid exact lease tuple")
+                try unchanged("invalid \(command)")
+            }
+            LocalProxyFixtureRuntime.failActivityCommit = true
+            let failedCommit = maintain(request(command))
+            LocalProxyFixtureRuntime.failActivityCommit = false
+            expect(failedCommit.error == "registry_unavailable", "\(command) distinguishes a failed durable write")
+            try unchanged("failed \(command) commit")
+            var invalidRegistry = try JSONSerialization.jsonObject(with: before) as! [String: Any]
+            invalidRegistry["schemaVersion"] = 2
+            let invalidData = try JSONSerialization.data(withJSONObject: invalidRegistry, options: [.sortedKeys])
+            try invalidData.write(to: stateURL)
+            expect(maintain(request(command)).error == "registry_state_invalid", "\(command) classifies invalid registry structure without blaming its lease")
+            try expect(Data(contentsOf: stateURL) == invalidData, "\(command) leaves invalid registry bytes available for recovery")
+            try before.write(to: stateURL)
+            try unchanged("invalid registry \(command)")
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: root.path)
+            let permissionFailure = maintain(request(command))
+            try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: root.path)
+            expect(permissionFailure.error == "registry_unavailable", "\(command) distinguishes unsafe registry permissions")
+            try unchanged("permission failure \(command)")
+        }
+        let lock = Darwin.open(root.appendingPathComponent(DispatchActivityStore.lockName).path, O_RDWR)
+        precondition(lock >= 0 && flock(lock, LOCK_EX | LOCK_NB) == 0)
+        for command in ["heartbeat", "release"] {
+            expect(maintain(request(command)).error == "control_busy", "\(command) keeps lock contention distinct from registry failures")
+            try unchanged("contended \(command)")
+        }
+        flock(lock, LOCK_UN); Darwin.close(lock)
+        expect(maintain(request("heartbeat")).ok, "live lease heartbeats after recoverable maintenance failures")
+        try expect(activity.read().leases.first { $0.leaseId == lease }?.state == "running", "diagnostic failures never terminalize the live lease")
+        expect(maintain(request("release")).ok, "exact release commits after persistence and lock recovery")
+        try expect(activity.read().leases.first { $0.leaseId == lease }?.state == "accepted", "successful release keeps its terminal result")
+        localProxyReleaseFence.clear(runID: run, requestID: requestID, profileID: profileID, leaseID: lease)
+        for command in ["heartbeat", "release"] {
+            expect(maintain(request(command)).error == "registry_state_invalid", "terminal \(command) remains rejected")
+        }
+        for (index, detail) in ["transport_unavailable", "registry_state_invalid", "registry_unavailable", "control_busy", "unavailable", "synthetic-private-detail"].enumerated() {
+            let store = LocalProxyQueueStore(usageStore: UsageStore([]))
+            let diagnosticRun = UUID().uuidString
+            store.runID = diagnosticRun; store.phase = .running
+            let code = ["lease_acquire_unknown", "lease_release_unknown", "lease_heartbeat_failed"][index % 3]
+            let event = try JSONSerialization.data(withJSONObject: ["event": "error", "errorCode": code,
+                "errorDetail": detail, "resolutionDetail": detail])
+            store.consume(event, run: diagnosticRun)
+            let lines = try String(contentsOf: support.appendingPathComponent(DispatchActivityStore.issueName), encoding: .utf8).split(separator: "\n")
+            let records = try lines.map { try JSONSerialization.jsonObject(with: Data($0.utf8)) as! [String: Any] }
+            let summary = records.last { $0["issueId"] as? String == "proxy-control-\(diagnosticRun)" }?["summary"] as? String
+            let allowed = detail != "synthetic-private-detail"
+            expect(summary == "Local proxy control failure: \(code)\(allowed ? ": \(detail); resolution: \(detail)" : "").",
+                "journal \(allowed ? "preserves fixed " + detail : "drops unrecognized private detail")")
+            for _ in 0..<100 {
+                if store.runID == nil { break }
+                try await Task.sleep(nanoseconds: 1_000_000)
+            }
+            expect(store.runID == nil && store.phase == .stopped && store.canFinishTermination,
+                "\(code) remains fail-closed after diagnostic classification")
+        }
+        print("PASS: \(checks) maintenance diagnostic checks; synthetic registry only, no app/helper/account/provider")
+    }
+
     @MainActor static func releaseFenceFixtures() async throws {
         var checks = 0
         func expect(_ value: @autoclosure () throws -> Bool, _ label: String) rethrows {

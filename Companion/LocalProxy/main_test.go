@@ -1062,7 +1062,7 @@ func TestControlFailureDetailAllowsOnlyProtocolCodes(t *testing.T) {
 		{"eof", bridgeReply{}, errors.New("bridge_eof"), "eof"},
 		{"decode", bridgeReply{}, errors.New("bridge_decode"), "decode"},
 		{"invalid", bridgeReply{}, errors.New("bridge_invalid"), "decode"},
-		{"unavailable", bridgeReply{}, errors.New("bridge_unavailable"), "unavailable"},
+		{"unavailable", bridgeReply{}, errors.New("bridge_unavailable"), "transport_unavailable"},
 		{"private error", bridgeReply{}, errors.New("fixture-private-transport-text"), "unavailable"},
 		{"private error with known prefix", bridgeReply{}, errors.New("bridge_timeout: fixture-private-text"), "unavailable"},
 		{"control busy", bridgeReply{Error: "control_busy"}, nil, "control_busy"},

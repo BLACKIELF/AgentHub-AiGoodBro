@@ -501,6 +501,8 @@ func acquireFailureDetail(err error) string {
 		return "eof"
 	case "bridge_decode", "bridge_invalid":
 		return "decode"
+	case "bridge_unavailable":
+		return "transport_unavailable"
 	default:
 		return "unavailable"
 	}
@@ -513,7 +515,7 @@ func controlFailureDetail(reply bridgeReply, err error) string {
 	// Only protocol codes may reach diagnostics; host text and reply payloads
 	// can contain private data and must never be copied into the event stream.
 	switch reply.Error {
-	case "control_busy", "identity", "unavailable", "admission_unknown":
+	case "control_busy", "identity", "unavailable", "registry_unavailable", "registry_state_invalid", "admission_unknown":
 		return reply.Error
 	default:
 		return "rejected"

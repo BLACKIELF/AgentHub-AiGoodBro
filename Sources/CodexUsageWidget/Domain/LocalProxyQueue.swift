@@ -97,6 +97,8 @@ enum LocalProxyFailure: String, Error {
     case busy, identity, quota, stopping, unavailable
     case credentialsBusy = "credentials_busy"
     case controlBusy = "control_busy"
+    case registryStateInvalid = "registry_state_invalid"
+    case registryUnavailable = "registry_unavailable"
     case quotaUnknown = "quota_unknown"
     case subscriptionPending = "subscription_pending"
     case loginExpired = "login_expired"

@@ -94,17 +94,31 @@ func (b *bridge) call(ctx context.Context, command, requestID, profileID, leaseI
 	}
 	bounded, cancel := context.WithTimeout(wireContext, exchangeLimit)
 	defer cancel()
+	preSendFailures := 0
 	for attempt := 0; ; attempt++ {
 		if ctx.Err() != nil || bounded.Err() != nil {
 			return busy, nil
 		}
 		reply, err := b.exchange(bounded, command, requestID, profileID, leaseID)
-		if err != nil || reply.Error != "control_busy" {
-			return reply, err
-		}
-		// A busy response is authoritative only with no success or lease data.
-		if reply.OK || reply.LeaseID != "" || reply.AccessToken != "" || reply.AccountID != "" || len(reply.Order) != 0 || len(reply.LastResortIDs) != 0 || len(reply.DeferredIDs) != 0 || reply.ExpiresAt != 0 {
-			return bridgeReply{}, errors.New("bridge_invalid")
+		if err != nil {
+			// Dial failure proves no command was sent. Retry at most three
+			// connection attempts within the existing exchange budget; once
+			// connected, EOF/timeout remains ambiguous and must not replay.
+			if err.Error() != "bridge_unavailable" {
+				return reply, err
+			}
+			preSendFailures++
+			if preSendFailures >= 3 {
+				return reply, err
+			}
+		} else {
+			if reply.Error != "control_busy" {
+				return reply, nil
+			}
+			// A busy response is authoritative only with no success or lease data.
+			if reply.OK || reply.LeaseID != "" || reply.AccessToken != "" || reply.AccountID != "" || len(reply.Order) != 0 || len(reply.LastResortIDs) != 0 || len(reply.DeferredIDs) != 0 || reply.ExpiresAt != 0 {
+				return bridgeReply{}, errors.New("bridge_invalid")
+			}
 		}
 		delay := time.Duration(50*(1<<min(attempt, 2))) * time.Millisecond
 		timer := time.NewTimer(delay)
