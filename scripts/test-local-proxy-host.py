@@ -11,6 +11,7 @@ cooldown_negative='--cooldown-refresh-negative' in sys.argv
 legacy_negative='--legacy-cooldown-recovery-negative' in sys.argv
 legacy_recovery='--legacy-cooldown-recovery-only' in sys.argv or legacy_negative
 focused_fixture=next((entry for flag,entry in [
+    ('--account-event-pressure-only','accountEventPressureFixtures'),
     ('--maintenance-diagnostics-only','maintenanceDiagnosticsFixtures'),
     ('--oauth-failure-projection-only','oauthFailureProjectionFixtures'),
     ('--registry-contention-only','registryContentionFixtures'),
@@ -21,6 +22,7 @@ focused_fixture=next((entry for flag,entry in [
     ('--quota-recovery-only','quotaRecoveryFixtures'),
     ('--policy-save-admission-only','policySaveAdmissionFixtures'),
     ('--plus-policy-only','plusPolicyFixtures'),
+    ('--reset-stop-only','resetStopFixtures'),
     ('--participation-only','participationFixtures'),
     ('--quota-admission-budget-only','quotaAdmissionBudgetFixtures'),
     ('--control-recovery-only','controlRecoveryFixtures'),
@@ -57,12 +59,12 @@ enum WidgetLanguage { case fixture; static func storedOrAutomatic()->Self { .fix
 enum HubAccountTaskPhase { case maintenance,starting,running,cancelRequested,uncertain,awaitingAcceptance,succeeded,failed,cancelled,unavailable }
 struct HubAccountTaskStatus { let phase:HubAccountTaskPhase; let updatedAt:Date? }
 enum HubWarmUpAvailability { case idle,busy,unavailable }
-enum HubConsoleModel { static var fixtureAvailability: HubWarmUpAvailability = .unavailable; static var fixtureOnWarmUp:(()->Void)?; static func warmUpAvailability(for:String,excludingLocalLease:String?,deadline:TimeInterval? = nil) async ->HubWarmUpAvailability { fixtureOnWarmUp?(); return fixtureAvailability } }
+enum HubConsoleModel { static var fixtureAvailability: HubWarmUpAvailability = .unavailable; static var fixtureOnWarmUp:(()->Void)?; static func warmUpAvailability(for:String,excludingLocalLease:String?,deadline:TimeInterval? = nil,maxConcurrent:Int = 1) async ->HubWarmUpAvailability { fixtureOnWarmUp?(); return fixtureAvailability } }
 enum HubAccountTaskStatusResolver { static func canonicalAlias(_ value:String)->String { value.lowercased() } }
 enum DispatchCodeCatalog { static func alias(for:String)->String? { "fixture-alias" } }
 enum AccountDisplay { static func profileName(_ p:CodexProfile,allProfiles:[CodexProfile])->String { p.id }; static func number(for p:CodexProfile,in profiles:[CodexProfile])->Int? { profiles.firstIndex(where:{$0.id == p.id}).map{$0+1} } }
 struct CodexExecutionPreference { enum Model:String,CaseIterable { case fixture="fixture-model" } }
-@MainActor final class UsageStore:ObservableObject { @Published var profiles:[CodexProfile]; var isPreview=true; var refreshCount=0; var onRefresh:((Set<String>)->Void)?; init(_ profiles:[CodexProfile]) { self.profiles=profiles }; func refreshLocalProxyQuotas(profileIDs:Set<String>){refreshCount += 1; onRefresh?(profileIDs)}; func creditBalancePresentation(for:CodexProfile)->CreditBalancePresentation { .init() }; func availableResetCredits(for:CodexProfile)->Int? { nil } }
+@MainActor final class UsageStore:ObservableObject { var proxyQuotaResetObservationEnabled=false; var onProxyOfficialQuotaReset:((String,String,Date)->Void)?; @Published var profiles:[CodexProfile]; var isPreview=true; var refreshCount=0; var onRefresh:((Set<String>)->Void)?; init(_ profiles:[CodexProfile]) { self.profiles=profiles }; func refreshLocalProxyQuotas(profileIDs:Set<String>){refreshCount += 1; onRefresh?(profileIDs)}; func creditBalancePresentation(for:CodexProfile)->CreditBalancePresentation { .init() }; func availableResetCredits(for:CodexProfile)->Int? { nil } }
 enum CodexExecutable { static func path()->String? { "/usr/bin/true" }; static func bundledPath()->String? { nil } }
 enum LocalProxyFixtureRuntime { static var allowStopSignals = true; static var failPreferenceRename=false; static var failFirstTerminalCleanup=false; static var failActivityCommit=false; static var failLegacyBackup=false; static var cleanupAttemptCount=0; static var afterReserve:(()->Void)?; static var afterRunning:(()->Void)?; static var helper:URL { DispatchParticipationPaths.supportDirectory().appendingPathComponent("fixture-helper") } }
 struct DispatchParticipationPaths { static func supportDirectory()->URL { URL(fileURLWithPath:ProcessInfo.processInfo.environment["PROXY_FIXTURE_ROOT"]!) }; static let snapshotFileName="fixture.json"; var hubConfig:URL; static func live(snapshot:URL)throws->Self { throw LocalProxyFailure.unavailable } }
@@ -109,7 +111,9 @@ with tempfile.TemporaryDirectory(prefix='aigoodbro-proxy-host-fixture-', dir=os.
         files[-1]=root/'scripts/LocalProxyCleanupRetryFixture.swift'
     else:
         files.insert(-1, root/'scripts/test-local-proxy-host-control.swift')
+        files.insert(-1, root/'scripts/LocalProxyAccountEventFixture.swift')
         files.insert(-1, root/'scripts/LocalProxyParticipationFixture.swift')
+        files.insert(-1, root/'scripts/LocalProxyResetStopFixture.swift')
         files.insert(-1, root/'scripts/LocalProxyLegacyCooldownRecoveryFixture.swift')
     # Credential transaction fixture only uses its actual read and gate routines.
     raw=(service/'CodexCredentialTransaction.swift').read_text();raw=raw[:raw.index('    private static func tokens(')]+'}\n'
@@ -130,9 +134,9 @@ with tempfile.TemporaryDirectory(prefix='aigoodbro-proxy-host-fixture-', dir=os.
                 original_main=declaration(content, '    @MainActor static func main() async throws')
                 content=content.replace(original_main, '    @MainActor static func main() async throws { setbuf(stdout, nil); do { try await '+focused_fixture+'() } catch { print("FAIL_FOCUSED: \\(error)"); exit(1) } }')
             if source.name == 'DispatchActivityStore.swift':
-                commit='guard written == data.count, fsync(fd) == 0,'
+                commit='guard synced == 0,'
                 assert content.count(commit) == 1
-                content=content.replace(commit, 'guard written == data.count, !LocalProxyFixtureRuntime.failActivityCommit, fsync(fd) == 0,')
+                content=content.replace(commit, 'guard synced == 0, !LocalProxyFixtureRuntime.failActivityCommit,')
             if source.name == 'LocalProxyLegacyCooldownRecovery.swift':
                 content=content.replace('let descriptor = Darwin.open(backup.path,',
                     'let descriptor = LocalProxyFixtureRuntime.failLegacyBackup ? -1 : Darwin.open(backup.path,')

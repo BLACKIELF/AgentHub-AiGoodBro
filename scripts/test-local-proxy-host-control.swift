@@ -550,10 +550,22 @@ extension LocalProxyHostFixtures {
         let holder = controlFixtureRequestID()
         let lease = try activity.reserveProxy(account: profile.recordedAccountKey, alias: "fixture-alias", runID: run,
             requestID: holder, profileID: profile.id, childPID: child.processIdentifier, enforceFreshness: true)
+        // The account cap admits 10 concurrent conversations; fill the remaining
+        // slots so the next acquire hits the real per-account limit.
+        var slotHolders: [(lease: String, request: String)] = []
+        for _ in 1..<DispatchActivityStore.proxyMaxConcurrentPerAccount {
+            let slotRequest = controlFixtureRequestID()
+            let slotLease = try activity.reserveProxy(account: profile.recordedAccountKey, alias: "fixture-alias", runID: run,
+                requestID: slotRequest, profileID: profile.id, childPID: child.processIdentifier)
+            slotHolders.append((slotLease, slotRequest))
+        }
         let whileOccupied = await handle(request(controlFixtureRequestID()))
         try expect(whileOccupied.error == "busy" && whileOccupied.resolution == nil && whileOccupied.leaseID == nil,
-            "real active account still returns account busy before reservation")
+            "account at the concurrency cap still returns account busy before reservation")
         try activity.updateProxy(lease, runID: run, requestID: holder, profileID: profile.id, state: "accepted")
+        for slot in slotHolders {
+            try activity.updateProxy(slot.lease, runID: run, requestID: slot.request, profileID: profile.id, state: "accepted")
+        }
         let duplicate = await handle(request(holder))
         try expect(duplicate.error == "busy" && duplicate.resolution == nil,
             "duplicate reserved tuple is not safely retryable even after completion")

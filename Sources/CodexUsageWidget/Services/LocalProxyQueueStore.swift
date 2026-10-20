@@ -232,7 +232,7 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
         self.usageStore = usageStore
         directory = DispatchParticipationPaths.supportDirectory()
         if usageStore.isPreview, let previewPreferences, previewPreferences.validAccountPolicies, previewPreferences.validAccountRepresentatives,
-            previewPreferences.validLastIDs, previewPreferences.validLastOverrides
+            previewPreferences.validLastIDs, previewPreferences.validLastOverrides, previewPreferences.validResetStopRules
         {
             preferences = previewPreferences
         }
@@ -244,6 +244,7 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
                     let saved = try JSONDecoder().decode(LocalProxyPreferences.self, from: data)
                     guard saved.schemaVersion == 1, saved.order.count <= 1000, Set(saved.order).count == saved.order.count,
                         saved.enabledIDs.count <= 1000, saved.validAccountPolicies, saved.validAccountRepresentatives, saved.validLastIDs, saved.validLastOverrides,
+                        saved.validResetStopRules,
                         LocalProxyPreferences.validCreditFloors(primary: saved.creditFloors.primary, secondary: saved.creditFloors.secondary)
                     else { throw LocalProxyFailure.unavailable }
                     preferences = saved
@@ -258,6 +259,10 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
         creditFallbackEnabled = preferences.creditFallback == true
         creditPrimaryFloor = preferences.creditFloors.primary
         creditSecondaryFloor = preferences.creditFloors.secondary
+        usageStore.proxyQuotaResetObservationEnabled = preferences.resetStopRules?.isEmpty == false
+        usageStore.onProxyOfficialQuotaReset = { [weak self] profileID, accountID, observedAt in
+            self?.pauseAfterOfficialQuotaReset(profileID: profileID, accountID: accountID, observedAt: observedAt)
+        }
         rebuildRows()
         observation = usageStore.$profiles.dropFirst().sink { [weak self] _ in
             Task { @MainActor [weak self] in self?.rebuildRows() }
@@ -394,6 +399,65 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
             return !refreshable.contains(state)
         }
     }
+    func canSetResetStop(id: String) -> Bool {
+        canReorder && rows.contains { $0.id == id }
+            && usageStore.profiles.first { $0.id == id }?.lastSnapshot?.accountID?.isEmpty == false
+    }
+
+    func setResetStop(id: String, enabled: Bool) {
+        guard canSetResetStop(id: id),
+            let accountID = usageStore.profiles.first(where: { $0.id == id })?.lastSnapshot?.accountID
+        else { return }
+        let previous = preferences
+        var rules = preferences.resetStopRules ?? [:]
+        if enabled {
+            rules[id] = LocalProxyResetStopRule(accountHash: DispatchActivityStore.hash(accountID), armedAt: Date())
+        } else {
+            rules.removeValue(forKey: id)
+        }
+        preferences.resetStopRules = rules.isEmpty ? nil : rules
+        if !savePreferences() { preferences = previous }
+        usageStore.proxyQuotaResetObservationEnabled = preferences.resetStopRules?.isEmpty == false
+        rebuildRows()
+    }
+
+    /// Called only after UsageStore verifies a fresh account-bound official
+    /// quota observation. Notices, forecasts and clocks cannot enter this path.
+    private func pauseAfterOfficialQuotaReset(profileID: String, accountID: String, observedAt: Date) {
+        let now = Date()
+        guard !usageStore.isPreview, !preferencesBlocked, !finishing,
+            !accountID.isEmpty, (0...60).contains(now.timeIntervalSince(observedAt)),
+            usageStore.profiles.contains(where: { $0.id == profileID && $0.lastSnapshot?.accountID == accountID })
+        else { return }
+        let hash = DispatchActivityStore.hash(accountID)
+        let matching = (preferences.resetStopRules ?? [:]).filter {
+            $0.value.accountHash == hash && observedAt > $0.value.armedAt
+                && observedAt > ($0.value.pausedAt ?? .distantPast)
+        }
+        guard !matching.isEmpty else { return }
+        let mirrors = Set(usageStore.profiles.filter { !$0.isSystemProfile && $0.lastSnapshot?.accountID == accountID }.map(\.id))
+            .union(registeredPool.filter { $0.value.accountID == accountID }.map(\.key))
+        guard !preferences.enabledIDs.isDisjoint(with: mirrors) else { return }
+        let previous = preferences
+        preferences.enabledIDs.subtract(mirrors)
+        for (id, var rule) in matching {
+            rule.pausedAt = observedAt
+            preferences.resetStopRules?[id] = rule
+        }
+        guard savePreferences() else {
+            preferences = previous
+            rebuildRows()
+            return
+        }
+        let revocation = UUID()
+        for id in mirrors { memberRevocations[id] = revocation }
+        if phase == .running { activeIDs = preferences.enabledIDs.intersection(Set(registeredPool.keys)) }
+        // Do not release or cancel admitted leases. Existing responses finish;
+        // new orders and older waiting/retrying admissions see the revocation.
+        rebuildRows()
+        flushDisplayRows()
+    }
+
     func setAccountEnabled(id: String, enabled: Bool) {
         guard canToggleAccount(id: id), !enabled || canEdit || isRegisteredBindingCurrent(id),
             let profile = usageStore.profiles.first(where: { $0.id == id })
@@ -403,7 +467,19 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
             .union(registeredPool.filter { DispatchActivityStore.hash($0.value.account) == identityKey }.map(\.key))
         let previous = preferences
         preferences.knownIDs.formUnion(mirrorIDs)
-        if enabled { preferences.enabledIDs.formUnion(mirrorIDs) } else { preferences.enabledIDs.subtract(mirrorIDs) }
+        if enabled {
+            preferences.enabledIDs.formUnion(mirrorIDs)
+            for member in mirrorIDs {
+                if var rule = preferences.resetStopRules?[member],
+                    let accountID = profile.lastSnapshot?.accountID, rule.accountHash == DispatchActivityStore.hash(accountID)
+                {
+                    rule = LocalProxyResetStopRule(accountHash: rule.accountHash, armedAt: Date())
+                    preferences.resetStopRules?[member] = rule
+                }
+            }
+        } else {
+            preferences.enabledIDs.subtract(mirrorIDs)
+        }
         guard savePreferences() else {
             preferences = previous
             rebuildRows()
@@ -1439,7 +1515,8 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
         }
         guard ProcessInfo.processInfo.systemUptime < admissionDeadline else { return await reject(.admissionDeadline) }
         if let candidate = currentBinding(profile, system: system), let failure = admission(candidate) { return await reject(failure) }
-        let availability = await HubConsoleModel.warmUpAvailability(for: alias, excludingLocalLease: lease.id, deadline: admissionDeadline)
+        let availability = await HubConsoleModel.warmUpAvailability(
+            for: alias, excludingLocalLease: lease.id, deadline: admissionDeadline, maxConcurrent: DispatchActivityStore.proxyMaxConcurrentPerAccount)
         guard ProcessInfo.processInfo.systemUptime < admissionDeadline else { return await reject(.admissionDeadline) }
         guard availability == .idle else { return await reject(availability == .busy ? .busy : .unavailable) }
         guard phase == .running, process === child, child.isRunning, request.runID == runID, leases[lease.id] != nil,
@@ -1633,12 +1710,18 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
                 ["current", "ready", "quota", "usage_limit", "login_expired", "temporary_error", "busy", "credentials_busy", "quota_unknown", "subscription_pending"].contains(
                     state)
             else { return }
-            accountStates[id] = state
+            let cooldown: Date?
             if let until = object["cooldownUntil"] as? Double, until.isFinite, until > Date().timeIntervalSince1970, until < Date().timeIntervalSince1970 + 8 * 86400 {
-                cooldowns[id] = Date(timeIntervalSince1970: until)
+                cooldown = Date(timeIntervalSince1970: until)
             } else {
-                cooldowns[id] = nil
+                cooldown = nil
             }
+            // Busy waiters report the same account every polling cycle. Only
+            // changed control state needs projection; duplicate events must not
+            // flood MainActor with rebuilds and delay admission replies.
+            guard accountStates[id] != state || cooldowns[id] != cooldown else { return }
+            accountStates[id] = state
+            cooldowns[id] = cooldown
             rebuildRows()
         case "error":
             let code = object["errorCode"] as? String ?? ""
@@ -1670,9 +1753,12 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
         }
     }
     private func rebuildRows() {
-        legacyCooldownRecoveryIDs = LocalProxyLegacyCooldownRecovery.candidates(
+        let recoveryIDs = LocalProxyLegacyCooldownRecovery.candidates(
             at: directory.appendingPathComponent("LocalProxy", isDirectory: true),
             profileIDs: Set(usageStore.profiles.filter { !$0.isSystemProfile }.map(\.id)))
+        // @Published emits even for equal sets. Preserve the display throttle
+        // when quota, leases or other real control state changes rebuild rows.
+        if legacyCooldownRecoveryIDs != recoveryIDs { legacyCooldownRecoveryIDs = recoveryIDs }
         completeLegacyCooldownRecoveryPreparation()
         let central = usageStore.profiles.first(where: \.isSystemProfile)
         var representatives = preferences.accountRepresentatives ?? [:]
@@ -1798,7 +1884,13 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
                 cooldownUntil: cooldowns[id],
                 activeRequestCount: activeRequestCount, policy: policy,
                 usesDefaultCreditFloors: preferences.policy(for: id).creditPrimaryFloor == nil,
-                isLast: orderingGroup(for: id) == 1)
+                isLast: orderingGroup(for: id) == 1,
+                pausesAfterReset: preferences.resetStopRules?[id].map { rule in
+                    profile.lastSnapshot?.accountID.map { rule.accountHash == DispatchActivityStore.hash($0) } == true
+                } == true,
+                resetPausedAt: preferences.resetStopRules?[id].flatMap { rule in
+                    profile.lastSnapshot?.accountID.map { rule.accountHash == DispatchActivityStore.hash($0) } == true ? rule.pausedAt : nil
+                })
         }
         var immediately = false
         if let target = resetCreditRefreshTarget {
@@ -1866,18 +1958,30 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
         if preferences.lastIDs?.contains(oldID) == true { preferences.lastIDs?.insert(newID) } else { preferences.lastIDs?.remove(newID) }
         if preferences.priorityIDs.contains(oldID) { preferences.priorityIDs.insert(newID) } else { preferences.priorityIDs.remove(newID) }
         if let policy = preferences.accountPolicies?[oldID] { preferences.accountPolicies?[newID] = policy } else { preferences.accountPolicies?.removeValue(forKey: newID) }
+        if let rule = preferences.resetStopRules?[oldID] { preferences.resetStopRules?[newID] = rule } else { preferences.resetStopRules?.removeValue(forKey: newID) }
+    }
+
+    /// Display order follows the saved account panel order (账号页顺序, the
+    /// order profiles are stored in UsageStore), so checking 参与 / 优先 /
+    /// 最后使用 never reshuffles the list. Routing order in `rows` is
+    /// untouched and still drives admission for new requests.
+    private var panelOrderedDisplayRows: [LocalProxyQueueRow] {
+        let panelIndex = Dictionary(
+            usageStore.profiles.enumerated().map { ($1.id, $0) },
+            uniquingKeysWith: { min($0, $1) })
+        return rows.sorted { (panelIndex[$0.id] ?? .max) < (panelIndex[$1.id] ?? .max) }
     }
 
     private func publishDisplayRows(immediately: Bool = false) {
         let uptime = ProcessInfo.processInfo.systemUptime
-        switch displayGate.offer(rows, at: uptime, immediate: immediately) {
+        switch displayGate.offer(panelOrderedDisplayRows, at: uptime, immediate: immediately) {
         case .unchanged:
             displayPublishTask?.cancel()
             displayPublishTask = nil
         case .publish:
             displayPublishTask?.cancel()
             displayPublishTask = nil
-            displayRows = rows
+            displayRows = panelOrderedDisplayRows
         case .deferUntil(let deadline):
             guard displayPublishTask == nil else { return }
             displayPublishTask = Task { [weak self] in
@@ -1893,7 +1997,9 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
     @discardableResult
     private func savePreferences() -> Bool {
         do {
-            guard preferences.validLastIDs, preferences.validLastOverrides, preferences.validAccountRepresentatives else { throw LocalProxyFailure.unavailable }
+            guard preferences.validLastIDs, preferences.validLastOverrides, preferences.validAccountRepresentatives, preferences.validResetStopRules else {
+                throw LocalProxyFailure.unavailable
+            }
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
             var info = stat()
             guard lstat(directory.path, &info) == 0, info.st_mode & S_IFMT == S_IFDIR, info.st_uid == geteuid(), info.st_mode & 0o077 == 0 else {

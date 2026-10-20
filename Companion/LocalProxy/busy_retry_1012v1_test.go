@@ -146,8 +146,10 @@ func TestHTTPControlBusyBudgetAdvertisesRetryWithoutLease1012(t *testing.T) {
 	if result.response.StatusCode != http.StatusServiceUnavailable || result.response.Header.Get("Retry-After") != "1" || !strings.Contains(result.body, "proxy control channel is busy") {
 		t.Fatalf("known control refusal lost retry guidance: status=%d retry=%q body=%s", result.response.StatusCode, result.response.Header.Get("Retry-After"), result.body)
 	}
-	if time.Since(started) < exchangeBudget || bridgeCommandCount(b, "acquire") < 2 {
-		t.Fatal("control busy did not exhaust its bounded safe-retry exchange")
+	// A confirmed refusal can finish before the deadline when another safe
+	// exchange no longer fits; retain a scheduling allowance for the HTTP hop.
+	if elapsed := time.Since(started); elapsed > exchangeBudget+250*time.Millisecond || bridgeCommandCount(b, "acquire") < 2 {
+		t.Fatalf("control busy did not retry within its bounded exchange: elapsed=%s acquires=%d", elapsed, bridgeCommandCount(b, "acquire"))
 	}
 	if upstreamCalls.Load() != 0 || b.count() != 0 || bridgeCommandCount(b, "release") != 0 || bridgeCommandCount(b, "acquire_resolve") != 0 || strings.Contains(out.String(), "lease_acquire_unknown") {
 		t.Fatal("explicit control refusal consumed upstream quota or invented lease ownership")

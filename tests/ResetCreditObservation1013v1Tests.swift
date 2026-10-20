@@ -31,6 +31,13 @@ expect(zero.delta == -1 && zero.available == 0, "confirmed zero count produces a
 expect(change(1, 1) == nil && change(nil, 3) == nil && change(3, nil) == nil, "unchanged and unknown counts")
 expect(change(-1, 3) == nil && change(3, -1) == nil, "negative counts fail closed")
 expect(change(Int.max, 0)?.delta == -Int.max && change(0, Int.max)?.delta == Int.max, "nonnegative extreme subtraction is safe")
+for (before, after) in [(3, 2), (2, 2), (0, 0), (0, 2), (2, 0)] {
+    let comparison = CodexResetCreditReceipt.comparison(
+        previous: snapshot(before, at: now.addingTimeInterval(-60)), current: snapshot(after, at: now))
+    expect(comparison?.previousAvailable == before && comparison?.available == after && comparison?.delta == after - before,
+        "window comparison preserves signed and zero counts")
+    expect(comparison?.isValid(at: now) == true, "valid comparison keeps evidence interval")
+}
 let previous = snapshot(1, at: now.addingTimeInterval(-60))
 expect(CodexResetCreditReceipt.change(previous: nil, current: snapshot(3, at: now)) == nil, "first snapshot establishes baseline")
 for limit in [nil, "", "   "] as [String?] {
@@ -79,6 +86,12 @@ expect(CodexResetCreditReceipt.change(previousProfiles: [first, latest, tiedConf
 expect(CodexResetCreditReceipt.change(previousProfiles: [latest, first, tiedConflict], current: current) == nil, "mirror order does not change conflict handling")
 let restoredBaseline = CodexProfile(id: "recovery", lastSnapshot: current)
 expect(CodexResetCreditReceipt.change(previousProfiles: [unknown, failureMirror, restoredBaseline], current: snapshot(2, at: now.addingTimeInterval(1)))?.delta == 1, "recovery establishes the next baseline")
+expect(CodexResetCreditReceipt.comparison(previousProfiles: [first, latest], current: snapshot(3, at: now))?.delta == 0, "latest mirrored zero change stays known")
+expect(CodexResetCreditReceipt.comparison(previousProfiles: [first, latest, unknown], current: snapshot(3, at: now)) == nil, "unknown interval cannot become a zero comparison")
+expect(CodexResetCreditReceipt.comparison(previousProfiles: [first, latest, tiedConflict], current: snapshot(3, at: now)) == nil, "conflicting mirrored zero change is unknown")
+expect(CodexResetCreditReceipt.comparison(previousProfiles: [first, latest], current: snapshot(3, at: now, limit: "other")) == nil, "zero comparison preserves quota identity boundary")
+expect(CodexResetCreditReceipt.comparison(previousProfiles: [first, latest], current: snapshot(3, at: now, successful: false)) == nil, "failed official observation cannot claim unchanged cards")
+expect(CodexResetCreditReceipt.comparison(previousProfiles: [first, latest], current: snapshot(3, at: now, account: "other-account")) == nil, "zero comparison preserves account boundary")
 
 let encoded = try JSONEncoder().encode(increase)
 let legacy = try JSONDecoder().decode(CodexResetCreditReceipt.self, from: encoded)

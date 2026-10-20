@@ -94,16 +94,29 @@ func (b *bridge) call(ctx context.Context, command, requestID, profileID, leaseI
 	}
 	bounded, cancel := context.WithTimeout(wireContext, exchangeLimit)
 	defer cancel()
+	exchangeDeadline, _ := bounded.Deadline()
 	preSendFailures := 0
+	// Repeating this exact owned heartbeat cannot create a lease or revive a
+	// terminal one. At most two early-EOF replays share the original full
+	// exchange deadline; acquire/release and other failures do not replay.
+	retryHeartbeat := command == "heartbeat" && b.runID != "" && b.key != "" && requestID != "" && profileID != "" && leaseID != ""
+	heartbeatRetries := 0
 	for attempt := 0; ; attempt++ {
 		if ctx.Err() != nil || bounded.Err() != nil {
 			return busy, nil
 		}
+		exchangeStarted := time.Now()
 		reply, err := b.exchange(bounded, command, requestID, profileID, leaseID)
+		exchangeElapsed := time.Since(exchangeStarted)
+		busyRetryReserve := time.Duration(0)
 		if err != nil {
+			if retryHeartbeat && err.Error() == "bridge_eof" && heartbeatRetries < 2 && ctx.Err() == nil && bounded.Err() == nil {
+				heartbeatRetries++
+				continue
+			}
 			// Dial failure proves no command was sent. Retry at most three
-			// connection attempts within the existing exchange budget; once
-			// connected, EOF/timeout remains ambiguous and must not replay.
+			// connection attempts within the existing exchange budget. Other
+			// lease operations retain their ambiguous post-connect outcome.
 			if err.Error() != "bridge_unavailable" {
 				return reply, err
 			}
@@ -115,12 +128,18 @@ func (b *bridge) call(ctx context.Context, command, requestID, profileID, leaseI
 			if reply.Error != "control_busy" {
 				return reply, nil
 			}
-			// A busy response is authoritative only with no success or lease data.
-			if reply.OK || reply.LeaseID != "" || reply.AccessToken != "" || reply.AccountID != "" || len(reply.Order) != 0 || len(reply.LastResortIDs) != 0 || len(reply.DeferredIDs) != 0 || reply.ExpiresAt != 0 {
+			// A busy response is authoritative only without success or payload data.
+			if reply.OK || reply.LeaseID != "" || reply.AccessToken != "" || reply.AccountID != "" || len(reply.Order) != 0 || len(reply.LastResortIDs) != 0 || len(reply.DeferredIDs) != 0 || reply.ExpiresAt != 0 || reply.CreditFallback || reply.Resolution != "" || reply.RetryAt != 0 || reply.QuotaObservedAt != 0 {
 				return bridgeReply{}, errors.New("bridge_invalid")
 			}
+			busyRetryReserve = max(exchangeElapsed, 50*time.Millisecond)
 		}
 		delay := time.Duration(50*(1<<min(attempt, 2))) * time.Millisecond
+		// Do not turn a confirmed no-mutation reply into an unknown outcome
+		// by issuing a retry that cannot fit its last observed round trip.
+		if busyRetryReserve > 0 && time.Until(exchangeDeadline) <= delay+busyRetryReserve {
+			return busy, nil
+		}
 		timer := time.NewTimer(delay)
 		select {
 		case <-timer.C:
@@ -131,7 +150,21 @@ func (b *bridge) call(ctx context.Context, command, requestID, profileID, leaseI
 			timer.Stop()
 			return busy, nil
 		}
+		if busyRetryReserve > 0 && time.Until(exchangeDeadline) <= busyRetryReserve {
+			return busy, nil
+		}
 	}
+}
+
+func heartbeatTransportFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	switch err.Error() {
+	case "bridge_timeout", "bridge_eof", "bridge_unavailable":
+		return true
+	}
+	return false
 }
 
 func (b *bridge) resolveLimit() time.Duration {

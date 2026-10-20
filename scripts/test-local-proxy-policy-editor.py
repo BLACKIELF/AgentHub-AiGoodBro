@@ -48,6 +48,7 @@ parts = [
     declaration(domain, "struct LocalProxyQuotaWindow:"),
     declaration(domain, "struct LocalProxyPreferences:"),
     declaration(domain, "struct LocalProxyAccountPolicy:"),
+    declaration(domain, "struct LocalProxyResetStopRule:"),
     declaration(status_style, "enum WorkspaceStatusForeground:"),
     declaration(interaction, "struct WorkspaceCheckboxStyle:"),
 ]

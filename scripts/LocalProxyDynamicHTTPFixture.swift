@@ -219,14 +219,21 @@ private struct DynamicHTTPFailure: Error {
 
         store.setAccountPriority(id: "C", priority: true)
         store.flushDisplayRows()
-        try check(try savedPreferences().priorityIDs.contains("C") && store.displayRows.first?.id == "C", "persisted-displayed-priority-C")
+        // Display order follows the account panel and never reshuffles on
+        // flag toggles; routing rows still put the priority account first.
+        try check(
+            try savedPreferences().priorityIDs.contains("C") && store.rows.first?.id == "C"
+                && store.displayRows.map(\.id) == ["A", "B", "C"], "persisted-displayed-priority-C")
         _ = try await post("priority-C", expecting: "C")
         try await waitForCleanup()
 
         store.setAccountLast(id: "C", last: true)
         store.flushDisplayRows()
         let last = try savedPreferences()
-        try check(last.lastOverrides?["C"] == true && !last.priorityIDs.contains("C") && store.displayRows.last?.id == "C", "persisted-displayed-last-C")
+        // Routing still honors Use last; the visible list keeps panel order.
+        try check(
+            last.lastOverrides?["C"] == true && !last.priorityIDs.contains("C")
+                && store.rows.last?.id == "C" && store.displayRows.map(\.id) == ["A", "B", "C"], "persisted-displayed-last-C")
         _ = try await post("last-C", expecting: "B")
         try await waitForCleanup()
 

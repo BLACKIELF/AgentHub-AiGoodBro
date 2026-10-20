@@ -17,8 +17,18 @@ import Foundation
         semaphore.wait(timeout: .now() + 10) == .success
     }
 
+    @MainActor private static func awaitFixtureExit(_ child: Process) async throws {
+        // A background Foundation wait can miss an already-delivered exit.
+        let deadline = ProcessInfo.processInfo.systemUptime + 3
+        while child.isRunning && ProcessInfo.processInfo.systemUptime < deadline {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        precondition(!child.isRunning, "synthetic fixture child exit exceeded its deadline")
+    }
+
     @MainActor static func main() async throws {
         setbuf(stdout, nil)
+        try await accountEventPressureFixtures()
         try await oauthFailureProjectionFixtures()
         try await maintenanceDiagnosticsFixtures()
         if ProcessInfo.processInfo.environment["PROXY_REGISTRY_CONTENTION_ONLY"] == "1" {
@@ -503,7 +513,9 @@ import Foundation
         lastResortOrdering.setAccountPriority(id: profile.id, priority: true)
         lastResortOrdering.setAccountPriority(id: "second", priority: true)
         let failedArrow = LocalProxyQueueStore(usageStore: lastResortUsage)
+        failedArrow.flushDisplayRows()
         let beforeFailedArrowRows = failedArrow.rows
+        let beforeFailedArrowDisplay = failedArrow.displayRows
         let beforeFailedArrowPreferences = failedArrow.preferences
         let beforeFailedArrowBytes = try Data(contentsOf: preferenceURL)
         LocalProxyFixtureRuntime.failPreferenceRename = true
@@ -517,7 +529,7 @@ import Foundation
             && failedArrow.preferences.lastOverrides == beforeFailedArrowPreferences.lastOverrides
             && Data(contentsOf: preferenceURL) == beforeFailedArrowBytes,
             "failed cross-group arrow rolls order, priority, override and disk back together")
-        expect(failedArrow.preferencesFailure == .save && failedArrow.displayRows == beforeFailedArrowRows,
+        expect(failedArrow.preferencesFailure == .save && failedArrow.displayRows == beforeFailedArrowDisplay,
             "a failed move retains the prior published rows and reports the save failure")
         lastResortOrdering.setAccountEnabled(id: "third", enabled: false)
         lastResortOrdering.setAccountPriority(id: "third", priority: true)
@@ -562,10 +574,25 @@ import Foundation
         try expect(try activity.read().proxyAcquireKeys?.contains {
             $0.runID == run && $0.requestID == request && $0.wasReserved && !$0.abandoned
         } == true, "other lease writer preserves persisted proxy request fence")
+        // The account cap is 10 concurrent conversations: the Python-held lease
+        // occupies one slot, so nine more native reservations are admitted.
+        var extraReservations: [(lease: String, request: String)] = []
+        for _ in 1..<DispatchActivityStore.proxyMaxConcurrentPerAccount {
+            let extraRequest = UUID().uuidString
+            let extraLease = try activity.reserveProxy(account: "python-held", alias: "independent-alias", runID: run, requestID: extraRequest, profileID: profile.id, childPID: getpid())
+            extraReservations.append((extraLease, extraRequest))
+        }
+        expect(extraReservations.count == DispatchActivityStore.proxyMaxConcurrentPerAccount - 1, "proxy admits concurrent reservations up to the account cap")
+        checks += 1
         do {
             _ = try activity.reserveProxy(account: "python-held", alias: "independent-alias", runID: run, requestID: UUID().uuidString, profileID: profile.id, childPID: getpid())
-            preconditionFailure("native proxy ignored Python reservation")
+            preconditionFailure("native proxy exceeded the per-account concurrency cap")
         } catch DispatchActivityStore.Failure.accountBusy { checks += 1 }
+        for extra in extraReservations {
+            try expect(try activity.abandonProxy(runID: run, requestID: extra.request, profileID: profile.id) == .abandoned,
+                "concurrency probe reservations resolve cleanly")
+        }
+        checks += 1
         do {
             try activity.updateProxy(pythonHeld, runID: run, requestID: request, profileID: profile.id, state: "accepted")
             preconditionFailure("native proxy released Python lease")
@@ -1045,7 +1072,7 @@ import Foundation
         lifecycle.balanceRefreshLeases.insert(held)
         let refreshesBeforeExit = isolatedUsage.refreshCount
         child.terminate()
-        await Task.detached { child.waitUntilExit() }.value
+        try await awaitFixtureExit(child)
         LocalProxyFixtureRuntime.failFirstTerminalCleanup = true
         lifecycle.childExited(child)
         expect(lifecycle.leases.isEmpty && lifecycle.canFinishTermination, "confirmed child exit releases only owned leases")
@@ -1238,7 +1265,7 @@ import Foundation
         expect(membershipStore.membershipSnapshots.isEmpty && membershipStore.canToggleAccount(id: memberA.id),
             "completed long-run requests never exhaust the snapshot limit")
         membershipChild.terminate()
-        await Task.detached { membershipChild.waitUntilExit() }.value
+        try await awaitFixtureExit(membershipChild)
         membershipStore.process = nil
         membershipStore.phase = .stopped
 
@@ -1261,7 +1288,7 @@ import Foundation
         expect(uncertainStore.requiresStopConfirmation, "uncertain lease still requires interruption consent")
         LocalProxyFixtureRuntime.allowStopSignals = true
         uncertainChild.terminate()
-        await Task.detached { uncertainChild.waitUntilExit() }.value
+        try await awaitFixtureExit(uncertainChild)
         uncertainStore.childExited(uncertainChild)
         expect(uncertainStore.canFinishTermination, "later confirmed exit resolves uncertainty")
 
@@ -1608,7 +1635,7 @@ import Foundation
         expect(wrongPass.error == "stage_not_applicable", "other identity stage is silently inapplicable")
         expect(creditStore.setCreditFloors(primary: 100, secondary: 0), "running policy can change for subsequent requests")
         creditChild.terminate()
-        await Task.detached { creditChild.waitUntilExit() }.value
+        try await awaitFixtureExit(creditChild)
         creditStore.childExited(creditChild)
         HubConsoleModel.fixtureAvailability = .unavailable
         let refreshStarted = DispatchSemaphore(value: 0)

@@ -9,12 +9,23 @@ base = root / "Sources/CodexUsageWidget"
 def read(path):
     return (base / path).read_text()
 
+def between(source, start, end):
+    return source[source.index(start):source.index(end, source.index(start))]
+
 service = read("Services/FeishuWebhookService.swift")
-error = service[service.index("enum FeishuWebhookError:"):service.index("/// A display-only")]
+feishu_types = service.split("private final class FeishuRedirectGuard", 1)[0]
+feishu_builders = (
+    between(service, "    static func publicResetPayload(", "    /// Sends an observer-confirmed")
+    + between(service, "    static func taskCompletionPayload(", "    private func send(")
+    + between(service, "    static func payloadData(", "    static func parseResponse(")
+    + between(service, "    private struct NoticeInput {", "\n}\n\nprivate final class FeishuWebhookTestProtocol")
+)
+pure_feishu = "enum FeishuWebhookService {\n" + feishu_builders + "\n}\n"
 keychain = service[service.index("final class FeishuKeychainRead<"):service.index("final class FeishuWebhookService")]
 announcement = read("Services/PublicResetAnnouncements.swift")
 announcement = announcement[announcement.index("struct PublicResetAnnouncement:"):announcement.index("struct PublicResetPage:")]
-options = read("Domain/FeishuMessageOptions.swift").split("\nenum FeishuQuotaValue", 1)[0]
+options = read("Domain/FeishuMessageOptions.swift").split("\nstruct CreditBalancePresentation", 1)[0]
+forecast = read("Services/PublicResetForecast.swift").split("/// An unsourced", 1)[0]
 quota = read("Domain/CodexQuotaEventTracker.swift").split("/// Compares", 1)[0]
 expiry_batch = read("Domain/CodexResetNotice.swift").split("\nenum CodexResetNoticeChannel", 1)[0]
 stubs = '''import Foundation
@@ -25,6 +36,13 @@ static func storedOrAutomatic() -> Self { .en }
 var locale: Locale { Locale(identifier: "en_US") }
 func dateTime(_ date: Date) -> String { "fixture-date" }
 func text(_ zh: String, _ en: String) -> String { self == .zh ? zh : en }
+}
+struct RateWindow { let remainingPercent: Double; let resetsAt: Date? }
+struct UsageSnapshot {
+ struct Account { let planType: String? }
+ struct Credits { struct Detail { let expiresAt: Date? }; let resetCredits: Int?; let resetCreditDetails: [Detail]? }
+ let fiveHourQuota: RateWindow?; let sevenDayQuota: RateWindow?
+ let account: Account?; let credits: Credits?
 }
 struct CodexTaskLiveSnapshot {
  enum Mode { case disconnected, connected }
@@ -37,13 +55,15 @@ struct FeishuTaskCompletionObserver {
  mutating func observe(_ snapshot: CodexTaskLiveSnapshot, now: Date) -> [Completion] { [] }
 }
 '''
-parts = [stubs, error, keychain, expiry_batch, quota, options, read("Services/PublicResetTranslation.swift"), announcement]
+parts = [stubs, feishu_types, keychain, expiry_batch, quota, options,
+         read("Services/PublicResetTranslation.swift"), announcement, forecast,
+         read("Domain/PublicResetForecastNotification.swift"), read("Domain/FeishuTaskCompletionNotification.swift"), pure_feishu]
 parts += [read(path) for path in ["Domain/MessageNoticeFormat.swift", "Domain/MessageChannel.swift", "Services/TelegramMessageChannel.swift", "Services/WeChatMessageChannel.swift", "Services/PersonalWeChatMessageChannel.swift", "Services/CodexDesktopIPC.swift", "Services/WeChatCodexConversation.swift", "Services/WeChatBotEventLedger.swift", "Services/MessageChannelsController.swift"]]
 if "--controller" in __import__("sys").argv:
     runtime = read("Domain/TaskRuntime.swift")
     runtime = runtime[runtime.index("enum TaskRuntimeState:"):runtime.index("struct TaskRuntimeReducer")]
     parts[0] = (stubs.split("struct CodexTaskLiveSnapshot")[0]
-        + "\nenum TaskColumnKind { case active, done, pending }\nenum FeishuTaskCompletionNotification { static let futureToleranceSeconds: TimeInterval = 60 }\n"
+        + "\nenum TaskColumnKind { case active, done, pending }\n"
         + runtime + "\n" + read("Domain/FeishuTaskCompletionObserver.swift"))
     parts += [read("Services/MessageChannelsControllerSelfTest.swift"),
         "@main struct Runner { static func main() { exit(MessageChannelsControllerSelfTest.run() ? 0 : 1) } }"]

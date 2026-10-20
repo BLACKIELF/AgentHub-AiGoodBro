@@ -23,6 +23,7 @@ ARCH_NAME := $(shell echo "$(TARGET_TRIPLE)" | sed -E 's/-apple-macos.*//')
 DMG_NAME := $(APP_NAME)-$(VERSION)-mac-$(ARCH_NAME).dmg
 DMG_PATH := $(DIST_DIR)/$(DMG_NAME)
 SIGN_IDENTITY ?= -
+APP_SIGN_IDENTITY ?= $(SIGN_IDENTITY)
 BUNDLE_COMPANION ?= 1
 BUNDLE_LOCAL_PROXY ?= 1
 INSTALL_LAUNCH ?= 1
@@ -56,10 +57,10 @@ ifeq ($(shell test "$(MACOS_SDK_MAJOR)" -ge 26 2>/dev/null && echo yes),yes)
 SWIFTC_FEATURE_FLAGS += -D CAMNEXT_HAS_LIQUID_GLASS
 endif
 
-ifeq ($(SIGN_IDENTITY),-)
+ifeq ($(APP_SIGN_IDENTITY),-)
 CODESIGN_FLAGS := --force --deep --sign -
 else
-CODESIGN_FLAGS := --force --deep --options runtime --timestamp --sign "$(SIGN_IDENTITY)" $(CODESIGN_EXTRA_FLAGS)
+CODESIGN_FLAGS := --force --deep --options runtime --timestamp --sign "$(APP_SIGN_IDENTITY)" $(CODESIGN_EXTRA_FLAGS)
 endif
 
 POWERSHELL ?= powershell.exe
@@ -130,6 +131,7 @@ test: build
 	python3 scripts/test-edge-dock-registration.py
 	python3 scripts/test-edge-dock-state.py
 	python3 scripts/test-host-broken-pipe.py
+	python3 tests/test_dispatch_registry_io.py
 	python3 scripts/test-app-updates.py
 	python3 scripts/test-reset-credit-auto.py
 	python3 scripts/test-wechat-bot.py
@@ -378,7 +380,7 @@ release-all: clean-dist
 
 release-package: memory-risk-check
 	BUILD_DIR="$(BUILD_DIR)" DIST_DIR="$(DIST_DIR)" RELEASE_ARCHITECTURES="$(RELEASE_ARCHITECTURES)" \
-	SIGN_IDENTITY="$(SIGN_IDENTITY)" DMG_SIGN_IDENTITY="$(DMG_SIGN_IDENTITY)" \
+	SIGN_IDENTITY="$(SIGN_IDENTITY)" APP_SIGN_IDENTITY="$(APP_SIGN_IDENTITY)" DMG_SIGN_IDENTITY="$(DMG_SIGN_IDENTITY)" \
 	TOKEN_MONITOR_CACHE="$(TOKEN_MONITOR_CACHE)" TOKEN_MONITOR_RECEIPT_DIR="$(TOKEN_MONITOR_RECEIPT_DIR)" \
 	TOKEN_MONITOR_OFFLINE="$(TOKEN_MONITOR_OFFLINE)" TOKEN_MONITOR_NODE_ARCHIVE="$(TOKEN_MONITOR_NODE_ARCHIVE)" \
 	TOKEN_MONITOR_DESKTOP_RUNTIME="$(TOKEN_MONITOR_DESKTOP_RUNTIME)" TOKEN_MONITOR_DESKTOP_DMG="$(TOKEN_MONITOR_DESKTOP_DMG)" \

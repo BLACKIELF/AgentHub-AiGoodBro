@@ -1,5 +1,23 @@
 import Foundation
 
+/// Counts from two comparable official snapshots, including a verified zero change.
+/// This does not identify why a count changed or when a card was used or granted.
+struct CodexResetCreditComparison: Equatable {
+    let previousAvailable: Int
+    let available: Int
+    let previousObservedAt: Date
+    let observedAt: Date
+
+    var delta: Int { available - previousAvailable }
+
+    func isValid(at now: Date) -> Bool {
+        previousAvailable >= 0 && available >= 0
+            && previousObservedAt.timeIntervalSince1970.isFinite
+            && observedAt.timeIntervalSince1970.isFinite
+            && previousObservedAt < observedAt && observedAt <= now
+    }
+}
+
 enum CodexQuotaEvent: Equatable {
     case quotaReset(fiveHour: Bool, sevenDay: Bool)
     case resetCreditsAdded(added: Int, available: Int)

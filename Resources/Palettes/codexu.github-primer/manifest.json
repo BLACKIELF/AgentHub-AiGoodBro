@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "id": "codexu.github-primer",
+  "version": "1.0.0",
+  "minimumAppVersion": "1.0.5",
+  "lifecycle": "stable",
+  "defaultLocale": "zh-Hans",
+  "localizations": {
+    "zh-Hans": "localizations/zh-Hans.json",
+    "en": "localizations/en.json"
+  },
+  "variants": {
+    "light": "tokens/light.json",
+    "dark": "tokens/dark.json"
+  },
+  "assetManifest": "assets/manifest.json",
+  "author": { "name": "AiGoodBro contributors", "url": "https://github.com/BLACKIELF/AgentHub-AiGoodBro" },
+  "license": "MIT",
+  "source": { "type": "original", "note": "Color values adapted from the GitHub Primer design system." },
+  "capabilities": ["color-tokens"]
+}

@@ -47,6 +47,8 @@ Cache warmth is an optional `promptCache: { observedAt, ttlSeconds }` estimate f
 
 The live account normally reads the ChatGPT/Codex backend with the current `auth.json`. The configured `chatgpt_base_url` selects the matching backend path family. The app-server RPC path is a fallback, not an interchangeable authority.
 
+Successful quota rows preserve the machine `planType` from the selected quota snapshot or its same-response account metadata. Display labels and stored account remarks are never plan evidence. The shared normalizer retains only known plan identifiers (canonicalizing Pro Lite/Max aliases); missing or unknown types stay absent, so a weekly-only quota does not imply a Pro plan.
+
 For a managed account, RPC output is usable only when the isolated auth snapshot is scoped to that account's selected workspace. Otherwise the explicitly scoped OAuth request must succeed. A transient OAuth failure may use a correctly scoped RPC reading; an unscoped live RPC must never be published under a managed workspace.
 
 The live system account stays visible alongside enabled managed accounts. Composite identity keeps same-email workspaces distinct while collapsing the live and managed observation of the exact same login. Managed-account hydration must preserve local collisions rather than silently coalescing them.

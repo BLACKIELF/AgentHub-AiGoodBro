@@ -68,6 +68,10 @@ struct MessageCredentialRecoveryFixture {
         return try MessageChannelCredential(secret: "synthetic-binding", target: "synthetic-owner", personalBinding: binding).validated(for: .personalWeChat)
     }
     @MainActor static func main() async throws {
+        if ProcessInfo.processInfo.environment["MESSAGE_CHANNEL_CAPACITY_ONLY"] == "1" {
+            if try await !backgroundReadCapacity() { exit(1) }
+            return
+        }
         let suite = "wechat-recovery-fixture-\(UUID())"
         let defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
@@ -156,6 +160,72 @@ struct MessageCredentialRecoveryFixture {
         try await composedPublicResetAdmission()
         if try await !contextRefreshDelivery() { exit(1) }
         if try await !backgroundCredentialLifecycle() { exit(1) }
+        if try await !backgroundReadCapacity() { exit(1) }
+    }
+
+    @MainActor static func backgroundReadCapacity() async throws -> Bool {
+        let firstEntered = DispatchSemaphore(value: 0)
+        let releaseFirst = DispatchSemaphore(value: 0)
+        var allowed = true
+        var reads = 0
+        var interactiveReads = 0
+        var gateReleased = true
+        let values: [MessageChannelKind: MessageChannelCredential] = [
+            .telegram: MessageChannelCredential(secret: "1234567890:AAExampleSyntheticToken0000000000000", target: "-100200300"),
+            .weChat: MessageChannelCredential(secret: "01234567-89ab-cdef-0123-456789abcdef", target: nil),
+            .personalWeChat: try credential(fresh: true),
+        ]
+        let encoded = try Dictionary(uniqueKeysWithValues: values.map { kind, value in
+            ("com.blackielf.codex-account-manager-next.message-channel." + kind.rawValue, try JSONEncoder().encode(value))
+        })
+        let interaction = FeishuKeychainInteraction(getAllowed: { allowed }, setAllowed: { allowed = $0 })
+        let store = MessageChannelKeychainStore(interaction: interaction) { query, pointer in
+            reads += 1
+            if allowed { interactiveReads += 1 }
+            if reads == 1 {
+                firstEntered.signal()
+                gateReleased = releaseFirst.wait(timeout: .now() + 3) == .success
+            }
+            guard let service = (query as NSDictionary)[kSecAttrService as String] as? String,
+                let data = encoded[service]
+            else { return errSecItemNotFound }
+            pointer.pointee = data as CFData
+            return errSecSuccess
+        }
+        var results: [MessageChannelKind: Result<MessageChannelCredential?, FeishuWebhookError>] = [:]
+        store.load(.telegram) { results[.telegram] = $0 }
+        let firstBlocked = await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                continuation.resume(returning: firstEntered.wait(timeout: .now() + 3) == .success)
+            }
+        }
+        guard firstBlocked else { releaseFirst.signal(); print("FAIL background read capacity: first synthetic reader did not enter"); return false }
+        store.load(.weChat) { results[.weChat] = $0 }
+        store.load(.personalWeChat) { results[.personalWeChat] = $0 }
+        var overflow: Result<MessageChannelCredential?, FeishuWebhookError>?
+        store.load(.telegram) { overflow = $0 }
+        let overflowDeadline = Date().addingTimeInterval(1)
+        while overflow == nil, Date() < overflowDeadline { try? await Task.sleep(nanoseconds: 1_000_000) }
+        releaseFirst.signal()
+        let deadline = Date().addingTimeInterval(2)
+        while results.count < MessageChannelKind.allCases.count, Date() < deadline { try? await Task.sleep(nanoseconds: 1_000_000) }
+        var failures: [String] = []
+        for kind in MessageChannelKind.allCases {
+            if case .success(let value)? = results[kind], value?.secret == values[kind]?.secret {} else {
+                let detail: String
+                if case .failure(.keychainBusy)? = results[kind] { detail = "keychainBusy" } else { detail = "missing or failed result" }
+                failures.append("\(kind.rawValue) startup read was rejected: \(detail)")
+            }
+        }
+        if case .failure(.keychainBusy)? = overflow {} else { failures.append("fourth read escaped the bounded capacity") }
+        if reads != 3 || interactiveReads != 0 || !allowed || !gateReleased {
+            failures.append("unexpected reader/policy count: reads=\(reads) interactive=\(interactiveReads)")
+        }
+        failures.forEach { print("FAIL background read capacity: \($0)") }
+        if failures.isEmpty {
+            print("PASS background read capacity: all 3 channel credentials restored with first reader gated; fourth refused; 3 synthetic Security reads, 0 interactive reads, no authorization or writes")
+        }
+        return failures.isEmpty
     }
 
     /// Keep binding-load races inside the existing offline production-source fixture.
@@ -689,32 +759,45 @@ struct MessageCredentialRecoveryFixture {
             failures.append("disabled personal channel accepted a stale public-reset acknowledgement")
         }
         transport.finish()
-        let nearlyExpired = PersonalWeChatBinding(
+        let retainedBinding = PersonalWeChatBinding(
             baseURL: initial.personalBinding!.baseURL, botID: initial.personalBinding!.botID,
-            contextToken: "synthetic-nearly-expired-context", contextCheckedAt: Date().addingTimeInterval(-24 * 3600 + 0.5))
-        storage.value = try MessageChannelCredential(secret: initial.secret, target: initial.target, personalBinding: nearlyExpired).validated(for: .personalWeChat)
+            contextToken: "synthetic-retained-context", contextCheckedAt: Date().addingTimeInterval(-3 * 24 * 3600))
+        let retainedCredential = MessageChannelCredential(secret: initial.secret, target: initial.target, personalBinding: retainedBinding)
+        storage.value = try JSONDecoder().decode(MessageChannelCredential.self, from: JSONEncoder().encode(retainedCredential)).validated(for: .personalWeChat)
         controller.setEnabled(true, for: .personalWeChat)
         controller.sendTest(.personalWeChat)
-        let beforeExpiry = currentTask()
+        let restoredSend = currentTask()
         await waitUntil { transport.hasPending("/ilink/bot/sendmessage") && transport.hasPending("/ilink/bot/getupdates") }
         transport.finish("/ilink/bot/sendmessage")
-        await beforeExpiry.value
+        await restoredSend.value
         precondition(controller.personalWeChatPhase == .ready)
-        let expiredRevision = controller.publicResetRevision(.personalWeChat)!
-        await waitUntil { !nearlyExpired.hasFreshContext() }
-        expect(controller.publicResetRevision(.personalWeChat) == nil, "24-hour context guard admitted a public reset")
-        transport.finish("/ilink/bot/getupdates", body: #"{"msgs":[],"get_updates_buf":"expired-cursor-only"}"#)
-        await waitUntil { !controller.personalWeChatHasContext }
-        expect(controller.personalWeChatPhase == .needsSetup, "expired context remained API-ready")
-        expect(controller.personalWeChatStatusText == MessageChannelError.weChatContextRequired.localizedDescription, "expired context did not replace the prior success status with the recovery instruction")
+        let retainedRevision = controller.publicResetRevision(.personalWeChat)!
+        transport.finish("/ilink/bot/getupdates", body: #"{"msgs":[],"get_updates_buf":"retained-cursor-only"}"#)
+        await waitUntil { storage.saved.contains { $0.personalBinding?.updatesCursor == "retained-cursor-only" } }
+        expect(controller.personalWeChatHasContext && controller.personalWeChatPhase == .ready,
+            "a cursor-only poll locally expired the restored context")
+        expect(controller.publicResetRevision(.personalWeChat) == retainedRevision, "restored context lost admission without a server rejection")
+        let retainedReset = Task { @MainActor in
+            await controller.sendPublicReset(event, to: .personalWeChat, revision: retainedRevision, shouldSend: { true })
+        }
+        await waitUntil { transport.hasPending("/ilink/bot/sendmessage") }
+        transport.finish("/ilink/bot/sendmessage")
+        if case .success(.accepted) = await retainedReset.value {} else {
+            failures.append("restored context older than 24 hours blocked a tracked notification")
+        }
+        await waitUntil { transport.hasPending("/ilink/bot/getupdates") }
+        transport.finish("/ilink/bot/getupdates", body: #"{"ret":-14}"#)
+        await waitUntil { !controller.personalWeChatConnected }
+        expect(!controller.personalWeChatHasContext && controller.personalWeChatPhase == .needsSetup
+            && controller.publicResetRevision(.personalWeChat) == nil, "explicit server session expiry retained admission")
         controller.sendTest(.personalWeChat)
-        expect(!transport.hasPending("/ilink/bot/sendmessage"), "expired context still sent a notification")
-        if case .failure(.cancelled) = await controller.sendPublicReset(event, to: .personalWeChat, revision: expiredRevision, shouldSend: { true }) {} else {
-            failures.append("expired context still sent a public reset")
+        expect(!transport.hasPending("/ilink/bot/sendmessage"), "server-expired context still sent a notification")
+        if case .failure(.cancelled) = await controller.sendPublicReset(event, to: .personalWeChat, revision: retainedRevision, shouldSend: { true }) {} else {
+            failures.append("server-expired context still sent a public reset")
         }
         failures.forEach { print("FAIL context refresh: \($0)") }
         if failures.isEmpty {
-            print("PASS context refresh: held notification/public reset keep revision and acceptance through token/time refresh; disable/24h expiry still block delivery; expiry shows recovery instruction; only synthetic background storage used")
+            print("PASS context refresh: held notification/public reset keep revision and acceptance; restored context survives 24h and cursor-only polls; disable/server expiry still block delivery; synthetic background storage only")
         }
         return failures.isEmpty
     }

@@ -361,19 +361,29 @@ final class HubAccountTaskStatusModel: ObservableObject {
 enum HubConsoleModel {
     private static let overviewURL = URL(string: "http://127.0.0.1:8787/api/overview")!
 
-    static func warmUpAvailability(for accountAlias: String, excludingLocalLease: String? = nil, deadline: TimeInterval? = nil) async -> HubWarmUpAvailability {
+    /// `maxConcurrent` is the per-account conversation cap upstream allows. Local
+    /// proxy admission passes 10; every other caller keeps the legacy default of
+    /// 1 (any active usage of the account blocks warm-up).
+    static func warmUpAvailability(for accountAlias: String, excludingLocalLease: String? = nil, deadline: TimeInterval? = nil, maxConcurrent: Int = 1) async
+        -> HubWarmUpAvailability
+    {
         let alias = HubAccountTaskStatusResolver.canonicalAlias(accountAlias)
         guard !alias.isEmpty else { return .unavailable }
         do {
             if let deadline, ProcessInfo.processInfo.systemUptime >= deadline { return .unavailable }
             let local = try DispatchActivityStore.live.read()
             let aliasKey = DispatchActivityStore.hash(alias)
-            if local.leases.contains(where: { $0.aliasKey == aliasKey && $0.occupied && $0.leaseId != excludingLocalLease }) {
-                return .busy
-            }
+            let occupied = local.leases.filter { $0.aliasKey == aliasKey && $0.occupied && $0.leaseId != excludingLocalLease }.count
+            if occupied >= maxConcurrent { return .busy }
             let overview = try await fetchInspectionOverview(timeout: deadline.map { min(6, max(0.001, $0 - ProcessInfo.processInfo.systemUptime)) } ?? 6)
             if let deadline, ProcessInfo.processInfo.systemUptime >= deadline { return .unavailable }
-            return HubWarmUpAvailability.resolve(for: alias, overview: overview)
+            let resolved = HubWarmUpAvailability.resolve(for: alias, overview: overview)
+            // A hub-busy account still has spare conversation slots; count it as
+            // one occupant instead of locking out the whole account.
+            if resolved == .busy {
+                return occupied + 1 >= maxConcurrent ? .busy : .idle
+            }
+            return resolved
         } catch {
             return .unavailable
         }

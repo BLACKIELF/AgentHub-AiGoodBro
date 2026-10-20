@@ -7,6 +7,25 @@ const test = require('node:test');
 const { codexCommandCandidates, codexCommandSourceDetail, createLimitsCollector, fetchCodexLimits, mapCodexRateLimitsToProvider } = require('../../src/shared/limits/collector');
 const { codexAccountKey, hashAccountKey } = require('../../src/shared/providers/codex/auth');
 
+test('Codex machine plan type survives quota normalization without inferring it from labels', () => {
+  const { normalizeLimitProvider, publicLimits } = require('../../src/shared/limits/core');
+  const quota = { secondary: { usedPercent: 0, windowDurationMins: 10080 } };
+  const provider = mapCodexRateLimitsToProvider({ rateLimits: { ...quota, planType: 'prolite' } });
+  assert.equal(provider.planType, 'prolite');
+  assert.equal(provider.accountLabel, 'Pro');
+  assert.equal(provider.windows.length, 1);
+  assert.equal(provider.windows[0].kind, 'weekly');
+  assert.equal(provider.windows[0].usedPercent, 0);
+  assert.equal(normalizeLimitProvider(provider).planType, 'prolite');
+  assert.equal(mapCodexRateLimitsToProvider({ rateLimits: { ...quota, plan_type: 'pro_lite' } }).planType, 'prolite');
+  assert.equal(mapCodexRateLimitsToProvider({ rateLimits: quota }, { accountLabel: 'Pro' }).planType, undefined);
+  for (const invalid of ['prolite@example.invalid', 'unknown-plan', { plan: 'prolite' }]) {
+    assert.equal(normalizeLimitProvider({ ...provider, planType: invalid }).planType, undefined);
+  }
+  assert.equal(normalizeLimitProvider({ ...provider, provider: 'claude' }).planType, undefined);
+  assert.equal(publicLimits({ providers: [provider] }).providers[0].planType, undefined);
+});
+
 function dirent(name, directory = true) {
   return {
     name,

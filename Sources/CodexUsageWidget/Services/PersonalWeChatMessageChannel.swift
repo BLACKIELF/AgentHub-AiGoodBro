@@ -36,11 +36,12 @@ struct PersonalWeChatBinding: Codable, Equatable {
             contextCheckedAt: contextCheckedAt, updatesCursor: updatesCursor)
     }
 
-    /// A local conservative guard, not a claim about the server's token TTL.
-    func hasFreshContext(now: Date = Date()) -> Bool {
+    /// Receipt time does not establish a server expiry; API acceptance still does.
+    /// Keep the clock-skew guard independent of incoming command freshness.
+    func hasUsableContext(now: Date = Date()) -> Bool {
         guard contextToken != nil, let contextCheckedAt else { return false }
         let age = now.timeIntervalSince(contextCheckedAt)
-        return age.isFinite && age >= -60 && age <= 24 * 3600
+        return age.isFinite && age >= -60
     }
 }
 
@@ -176,10 +177,11 @@ final class PersonalWeChatMessageChannel {
     ) throws -> URLRequest {
         let credential = try credential.validated(for: .personalWeChat)
         let binding = credential.personalBinding!
-        guard binding.hasFreshContext(now: now) else { throw MessageChannelError.weChatContextRequired }
+        guard binding.hasUsableContext(now: now) else { throw MessageChannelError.weChatContextRequired }
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
             text.unicodeScalars.allSatisfy({ $0.value >= 32 || $0 == "\n" || $0 == "\r" || $0 == "\t" }),
             !footerAlreadyApplied || text.hasSuffix(MessageNoticeFormat.footerSuffix) || text == MessageNoticeFormat.footer
+                || text.hasSuffix(MessageNoticeFormat.weChatFooterSuffix) || text == MessageNoticeFormat.weChatFooter
         else { throw MessageChannelError.invalidStatus }
         let content = footerAlreadyApplied ? text : MessageNoticeFormat.preservingOriginalBody(text)
         guard content.utf8.count <= WeChatMessageChannel.contentByteLimit else {
@@ -316,7 +318,7 @@ final class PersonalWeChatMessageChannel {
             else { continue }
             let receivedAt = Date(timeIntervalSince1970: Double(timestamp) / 1000)
             let age = now.timeIntervalSince(receivedAt)
-            guard age >= -60, age <= 24 * 3600 else { continue }
+            guard age.isFinite, age >= -60 else { continue }
             if receivedAt >= (checkedAt ?? .distantPast) {
                 token = candidate
                 checkedAt = receivedAt

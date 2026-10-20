@@ -5,7 +5,35 @@ import Foundation
 enum MessageNoticeFormat {
     static let footer = "aigoodbro.com"
     static let footerSuffix = "\n\n" + footer
+    static let weChatFooter = "消息来源：aigoodbro.com"
+    static let weChatFooterSuffix = "\n\n" + weChatFooter
     static let beijingTimeZone = TimeZone(identifier: "Asia/Shanghai")!
+
+    /// One generated message, projected as a card or a text message. The title
+    /// belongs to the card header; text channels prepend the very same title.
+    struct Content {
+        let title: String
+        let template: String
+        let lines: [String]
+        let separator: String
+
+        init(title: String, template: String, lines: [String], separator: String = "\n") {
+            self.title = title
+            self.template = template
+            self.lines = lines
+            self.separator = separator
+        }
+
+        func rendered(markdown: Bool = true) -> String {
+            let text = (["**\(title)**"] + lines).filter { !$0.isEmpty }.joined(separator: separator)
+            let body =
+                markdown
+                ? text
+                : text.replacingOccurrences(of: "**", with: "")
+                    .replacingOccurrences(of: "\\*", with: "*").replacingOccurrences(of: "\\_", with: "_")
+            return MessageNoticeFormat.withWeChatFooter(body)
+        }
+    }
 
     private static var calendar: Calendar {
         var value = Calendar(identifier: .gregorian)
@@ -31,6 +59,28 @@ enum MessageNoticeFormat {
     static func shortDate(_ date: Date, now: Date = Date()) -> String {
         let sameYear = calendar.component(.year, from: date) == calendar.component(.year, from: now)
         return formatted(date, pattern: sameYear ? "MM/dd HH:mm" : "yy/MM/dd HH:mm")
+    }
+
+    /// Generated Feishu/WeChat dates omit the year, including across years.
+    static func fullDate(_ date: Date) -> String {
+        formatted(date, pattern: "MM/dd HH:mm")
+    }
+
+    static func comparisonLines(_ comparison: CodexResetCreditComparison, language: WidgetLanguage) -> [String] {
+        let delta = comparison.delta
+        let change =
+            delta == 0
+            ? language.text("无变化", "unchanged")
+            : language.text(delta > 0 ? "增加 \(delta) 张" : "减少 \(-delta) 张", delta > 0 ? "+\(delta)" : "\(delta)")
+        var lines = [
+            language.text(
+                "**重置卡**：\(comparison.previousAvailable)→\(comparison.available) 张（\(change)）",
+                "**Reset credits**: \(comparison.previousAvailable)→\(comparison.available) (\(change))"),
+            language.text("**核对时间（北京时间）**：", "**Compared (Beijing time, UTC+8)**: ")
+                + fullDate(comparison.previousObservedAt) + " → " + fullDate(comparison.observedAt),
+        ]
+        if delta < 0 { lines.append(language.text("减少原因未确认。", "The reason for the decrease is unconfirmed.")) }
+        return lines
     }
 
     static func range(from start: Date, to end: Date, now: Date = Date(), alwaysDates: Bool = false) -> String {
@@ -74,6 +124,21 @@ enum MessageNoticeFormat {
         let body = generatedBody(generated)
         return body.isEmpty ? footer : body + footerSuffix
     }
+
+    /// Only generated WeChat notices use this source line; raw replies retain
+    /// their original body and the existing footer/chunking contract.
+    static func withWeChatFooter(_ generated: String) -> String {
+        var lines = generated.components(separatedBy: "\n")
+        while let last = lines.last?.trimmingCharacters(in: .whitespacesAndNewlines),
+            last.isEmpty || last == footer || last == weChatFooter
+        {
+            lines.removeLast()
+        }
+        let body = lines.joined(separator: "\n")
+        return body.isEmpty ? weChatFooter : body + weChatFooterSuffix
+    }
+
+    static func weChatBodyUTF8Budget(limit: Int) -> Int { max(0, limit - weChatFooterSuffix.utf8.count) }
 
     /// A literal source line that happens to contain the brand is preserved.
     static func preservingOriginalBody(_ raw: String) -> String { raw + footerSuffix }
@@ -197,6 +262,9 @@ enum MessageNoticeFormatSelfTest {
         expect(MessageNoticeFormat.shortTime(early, now: now) == "09:30", "today clock")
         expect(MessageNoticeFormat.shortTime(yesterday, now: now) == "10/11 09:30", "other day clock")
         expect(MessageNoticeFormat.shortDate(early, now: now) == "10/12 09:30", "expiry day retained")
+        expect(MessageNoticeFormat.fullDate(early) == "10/12 09:30", "generated notice date omits year")
+        expect(MessageNoticeFormat.fullDate(date("2025-10-12T01:30:00Z")) == "10/12 09:30", "older generated notice date omits year")
+        expect(MessageNoticeFormat.fullDate(date("2026-12-31T16:10:00Z")) == "01/01 00:10", "cross-year generated notice date omits year")
         expect(MessageNoticeFormat.range(from: early, to: now, now: now) == "09:30→10:00", "today range")
         expect(MessageNoticeFormat.range(from: yesterday, to: yesterday.addingTimeInterval(1800), now: now) == "10/11 09:30→10:00", "other day range")
         expect(MessageNoticeFormat.range(from: date("2026-10-12T15:50:00Z"), to: date("2026-10-12T16:10:00Z"), now: now) == "10/12 23:50→10/13 00:10", "Beijing cross day")
@@ -209,7 +277,7 @@ enum MessageNoticeFormatSelfTest {
         let wrapped = MessageNoticeFormat.withFooter(generated)
         expect(wrapped == "连接测试" + MessageNoticeFormat.footerSuffix, "generated footer dedupe")
         expect(MessageNoticeFormat.withFooter(wrapped) == wrapped, "generated footer idempotence")
-        let source = "```swift\nlet site = \"aigoodbro.com\"\n```\n\naigoodbro.com\n"
+        let source = "```swift\nlet site = \"aigoodbro.com\"\n// checked 2026/10/20 16:00\n```\n\naigoodbro.com\n"
         expect(MessageNoticeFormat.preservingOriginalBody(source) == source + MessageNoticeFormat.footerSuffix, "raw source preservation")
         let long = String(repeating: "中文🙂\n", count: 900) + "e\u{0301}" + source
         if let parts = MessageNoticeFormat.originalChunks(long, utf8Limit: 4096) {

@@ -11,6 +11,9 @@ struct DispatchActivityStore {
     static let lockName = ".dispatch-activity.lock"
     static let issueName = "operations-issues-v1.jsonl"
     static let activeStates: Set<String> = ["preparing", "starting", "running", "cancel_requested", "uncertain"]
+    /// Upstream allows 10 concurrent conversations per account; a single active
+    /// lease must not lock the whole account out of the local proxy.
+    static let proxyMaxConcurrentPerAccount = 10
     static let terminalStates: Set<String> = ["awaiting_acceptance", "accepted", "rejected", "failed", "cancelled"]
     static let live = DispatchActivityStore(directory: DispatchParticipationPaths.supportDirectory())
     let directory: URL
@@ -224,8 +227,30 @@ struct DispatchActivityStore {
                 Darwin.close(fd)
                 try? FileManager.default.removeItem(at: temporary)
             }
-            let written = data.withUnsafeBytes { Darwin.write(fd, $0.baseAddress, $0.count) }
-            guard written == data.count, fsync(fd) == 0,
+            // Only the private temporary file is retried. Publish neither the
+            // registry nor its admission fence until all bytes are durable.
+            var interruptRetries = 8
+            try data.withUnsafeBytes { bytes in
+                var offset = 0
+                while offset < bytes.count {
+                    let written = Darwin.write(fd, bytes.baseAddress!.advanced(by: offset), bytes.count - offset)
+                    if written > 0 {
+                        offset += written
+                    } else if written < 0, errno == EINTR, interruptRetries > 0 {
+                        interruptRetries -= 1
+                    } else {
+                        throw Failure.unavailable
+                    }
+                }
+            }
+            var synced: Int32
+            repeat {
+                synced = fsync(fd)
+                if synced == 0 { break }
+                guard errno == EINTR, interruptRetries > 0 else { throw Failure.unavailable }
+                interruptRetries -= 1
+            } while true
+            guard synced == 0,
                 rename(temporary.path, directory.appendingPathComponent(Self.stateName).path) == 0
             else { throw Failure.unavailable }
             // Publish local admission fences only after the durable swap, while
@@ -267,10 +292,10 @@ struct DispatchActivityStore {
                         && $0["proxyRequestID"] as? String == requestID && $0["proxyProfileKey"] as? String == profileKey
                 })
             else { throw Failure.accountBusy }
-            guard
-                !records.contains(where: {
-                    Self.activeStates.contains($0["state"] as? String ?? "") && ($0["accountKey"] as? String == accountKey || $0["aliasKey"] as? String == aliasKey)
-                })
+            let activeForAccount = records.filter {
+                Self.activeStates.contains($0["state"] as? String ?? "") && ($0["accountKey"] as? String == accountKey || $0["aliasKey"] as? String == aliasKey)
+            }.count
+            guard activeForAccount < Self.proxyMaxConcurrentPerAccount
             else { throw Failure.accountBusy }
             records.append([
                 "leaseId": id, "ownerThreadId": "next-\(getpid())", "taskId": "proxy-\(runID)-\(requestID)",

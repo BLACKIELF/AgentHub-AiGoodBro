@@ -419,6 +419,9 @@ final class UsageStore: ObservableObject {
     private var localNotificationPermissionRequestID: UUID?
     @Published private(set) var automationEvents: [AccountAutomationEvent]
     let publicResetAnnouncements: PublicResetAnnouncementMonitor
+    // The proxy queue consumes only verified official quota recovery events.
+    var proxyQuotaResetObservationEnabled = false
+    var onProxyOfficialQuotaReset: ((String, String, Date) -> Void)?
     let publisherMessages: PublisherMessageMonitor
 
     var automaticWarmUpEnabled: Bool { warmUpSelection.isEnabled }
@@ -4403,7 +4406,7 @@ final class UsageStore: ObservableObject {
     }
 
     private var observesOfficialQuotaEvents: Bool {
-        localNotificationsEnabled
+        proxyQuotaResetObservationEnabled || localNotificationsEnabled
             || messageChannels.telegramEnabled || messageChannels.weChatEnabled
             || messageChannels.personalWeChatEnabled
             || (feishuNotificationsEnabled && feishuWebhookConfigured
@@ -4828,14 +4831,18 @@ final class UsageStore: ObservableObject {
         target: FeishuMaskedAccount?,
         quota: AutomaticSwitchQuotaState,
         factsSnapshot: UsageSnapshot? = nil,
+        resetCreditComparison: CodexResetCreditComparison? = nil,
         eventID: UUID,
         switchOrigin: FeishuSwitchNotification.SwitchOrigin = .manual,
         isTest: Bool = false
     ) {
+        let dispatchedAt = Date()
+        let observedAt = factsSnapshot?.refreshedAt ?? dispatchedAt
         if !isTest, hasStarted {
             sendAdditionalChannelEvent(
                 event, source: source, target: target, quota: quota,
-                factsSnapshot: factsSnapshot, eventID: eventID)
+                factsSnapshot: factsSnapshot, resetCreditComparison: resetCreditComparison, eventID: eventID,
+                switchOrigin: switchOrigin, dispatchedAt: dispatchedAt, observedAt: observedAt)
         }
         guard isTest || feishuNotificationsEnabled, feishuWebhookConfigured, !isUpdatingFeishuConnection else { return }
         switch event {
@@ -4865,7 +4872,9 @@ final class UsageStore: ObservableObject {
                         fiveHourRemaining: quota.fiveHourRemaining,
                         sevenDayRemaining: quota.sevenDayRemaining
                     ),
+                resetCreditComparison: resetCreditComparison,
                 messageOptions: feishuMessageOptions,
+                occurredAt: observedAt,
                 eventID: eventID
             )
             feishuNotificationMessage =
@@ -4916,7 +4925,9 @@ final class UsageStore: ObservableObject {
 
     private func sendAdditionalChannelEvent(
         _ event: FeishuSwitchNotification.Event, source: FeishuMaskedAccount, target: FeishuMaskedAccount?,
-        quota: AutomaticSwitchQuotaState, factsSnapshot: UsageSnapshot?, eventID: UUID
+        quota: AutomaticSwitchQuotaState, factsSnapshot: UsageSnapshot?,
+        resetCreditComparison: CodexResetCreditComparison?, eventID: UUID,
+        switchOrigin: FeishuSwitchNotification.SwitchOrigin, dispatchedAt: Date, observedAt: Date
     ) {
         let kind: MessageTaskStatus.EventKind
         var failure: MessageTaskStatus.FailureReason?
@@ -4940,12 +4951,27 @@ final class UsageStore: ObservableObject {
             sevenDayResetsAt: factsSnapshot?.sevenDayQuota?.resetsAt,
             availableResetCredits: factsSnapshot?.credits?.resetCredits,
             resetCreditExpiries: factsSnapshot?.credits?.resetCreditDetails?.compactMap(\.expiresAt) ?? [])
+        let noticeOrigin: MessageNoticeContext.SwitchOrigin
+        switch switchOrigin {
+        case .manual: noticeOrigin = .manual
+        case .lowQuota: noticeOrigin = .lowQuota
+        case .restartTest: noticeOrigin = .restartTest
+        }
         guard
+            let noticeFacts = try? factsSnapshot.map(FeishuAccountFacts.snapshot)
+                ?? FeishuAccountFacts.quotasOnly(fiveHourRemaining: quota.fiveHourRemaining, sevenDayRemaining: quota.sevenDayRemaining),
+            let context = try? MessageNoticeContext(
+                sourceAccount: MessageChannelAccountLabel(source.value),
+                targetAccount: target.map { try MessageChannelAccountLabel($0.value) }, switchOrigin: noticeOrigin,
+                fiveHourTriggerThresholdPercent: lowQuotaAlertThresholds.fiveHour,
+                sevenDayTriggerThresholdPercent: lowQuotaAlertThresholds.sevenDay,
+                observedAt: observedAt, accountFacts: noticeFacts),
             let status = try? MessageTaskStatus(
                 eventKind: kind, accountLabel: MessageChannelAccountLabel(account.value),
                 fiveHourRemainingPercent: quota.fiveHourRemaining, sevenDayRemainingPercent: quota.sevenDayRemaining,
-                failureReason: failure, occurredAt: Date(), eventID: eventID,
-                quotaChange: quotaChange, accountFacts: facts
+                failureReason: failure, occurredAt: dispatchedAt, eventID: eventID,
+                quotaChange: quotaChange, accountFacts: facts, resetCreditComparison: resetCreditComparison,
+                noticeContext: context
             )
         else { return }
         messageChannels.send(status)
@@ -5046,11 +5072,18 @@ final class UsageStore: ObservableObject {
         allowAccountOnly: Bool = false, allowSystemAccountChange: Bool = false
     ) throws -> CodexResetCreditReceipt? {
         do {
+            let previousProfiles = profileStore.profiles
             let receipt = try profileStore.record(
                 snapshot, for: profileID, allowAccountOnly: allowAccountOnly,
                 allowSystemAccountChange: allowSystemAccountChange,
                 noticeChannels: resetNoticeChannels(expiry: false).map(\.rawValue))
-            observeOfficialQuotaChanges(snapshot, profileID: profileID, newReceipt: receipt)
+            let saved = profileStore.profiles.first(where: { $0.id == profileID })?.lastSnapshot
+            let comparison = saved.flatMap {
+                $0.fetchedAt == snapshot.refreshedAt
+                    ? CodexResetCreditReceipt.comparison(previousProfiles: previousProfiles, current: $0) : nil
+            }
+            observeOfficialQuotaChanges(
+                snapshot, profileID: profileID, newReceipt: receipt, resetCreditComparison: comparison)
             return receipt
         } catch {
             if let accountID = profileStore.profiles.first(where: { $0.id == profileID })?.lastSnapshot?.accountID {
@@ -5067,7 +5100,8 @@ final class UsageStore: ObservableObject {
     }
 
     private func observeOfficialQuotaChanges(
-        _ current: UsageSnapshot, profileID: String, newReceipt: CodexResetCreditReceipt? = nil
+        _ current: UsageSnapshot, profileID: String, newReceipt: CodexResetCreditReceipt? = nil,
+        resetCreditComparison: CodexResetCreditComparison? = nil
     ) {
         guard !isPreview, hasStarted, observesOfficialQuotaEvents,
             let profile = profileStore.profiles.first(where: { $0.id == profileID }),
@@ -5141,6 +5175,9 @@ final class UsageStore: ObservableObject {
         for change in changes {
             // Card changes use the durable receipt above, never both paths.
             guard case .quotaReset = change else { continue }
+            if proxyQuotaResetObservationEnabled {
+                onProxyOfficialQuotaReset?(profileID, accountID, current.refreshedAt)
+            }
             if localNotificationsEnabled && !pausedAutomationFeatures.contains(.localNotification) {
                 NextLocalNotificationService.shared.submitOfficialReset(change) { [weak self] result in
                     guard let self else { return }
@@ -5154,7 +5191,8 @@ final class UsageStore: ObservableObject {
             else { continue }
             sendFeishuNotification(
                 event: .quotaChange(change), source: source, target: nil,
-                quota: AutomaticSwitchQuotaState(snapshot: current), factsSnapshot: current, eventID: UUID()
+                quota: AutomaticSwitchQuotaState(snapshot: current), factsSnapshot: current,
+                resetCreditComparison: resetCreditComparison, eventID: UUID()
             )
         }
     }
@@ -5387,7 +5425,8 @@ final class UsageStore: ObservableObject {
                     fiveHourTriggerThresholdPercent: lowQuotaAlertThresholds.fiveHour,
                     fiveHourRemainingPercent: snapshot.fiveHourQuota?.remainingPercent,
                     sevenDayRemainingPercent: snapshot.sevenDayQuota?.remainingPercent,
-                    accountFacts: FeishuAccountFacts.snapshot(snapshot), messageOptions: feishuMessageOptions, eventID: eventID)
+                    accountFacts: FeishuAccountFacts.snapshot(snapshot), messageOptions: feishuMessageOptions,
+                    occurredAt: MessageNoticeFormat.checkedAt(for: event, fallback: snapshot.refreshedAt), eventID: eventID)
             else { return .notSent }
             return await withCheckedContinuation { continuation in
                 feishuWebhookService.send(notification, shouldSend: shouldSend) { [weak self] result in
@@ -5430,11 +5469,15 @@ final class UsageStore: ObservableObject {
                     fiveHourResetsAt: snapshot.fiveHourQuota?.resetsAt, sevenDayResetsAt: snapshot.sevenDayQuota?.resetsAt,
                     availableResetCredits: snapshot.credits?.resetCredits,
                     resetCreditExpiries: snapshot.credits?.resetCreditDetails?.compactMap(\.expiresAt) ?? []),
+                let context = try? MessageNoticeContext(
+                    sourceAccount: MessageChannelAccountLabel(source.value),
+                    observedAt: MessageNoticeFormat.checkedAt(for: event, fallback: snapshot.refreshedAt),
+                    accountFacts: FeishuAccountFacts.snapshot(snapshot)),
                 let status = try? MessageTaskStatus(
                     eventKind: eventKind, accountLabel: MessageChannelAccountLabel(source.value),
                     fiveHourRemainingPercent: snapshot.fiveHourQuota?.remainingPercent,
                     sevenDayRemainingPercent: snapshot.sevenDayQuota?.remainingPercent,
-                    occurredAt: Date(), eventID: eventID, quotaChange: event, accountFacts: facts)
+                    occurredAt: Date(), eventID: eventID, quotaChange: event, accountFacts: facts, noticeContext: context)
             else { return .notSent }
             let result = await messageChannels.sendTracked(status, to: kind, revision: revision, shouldSend: shouldSend)
             return .messageChannel(result)

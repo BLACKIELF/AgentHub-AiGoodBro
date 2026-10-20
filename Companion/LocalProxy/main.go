@@ -60,14 +60,36 @@ type event struct {
 	ResolutionDetail string `json:"resolutionDetail,omitempty"`
 }
 type events struct {
-	mu  sync.Mutex
-	out io.Writer
+	mu          sync.Mutex
+	out         io.Writer
+	lastAccount map[string]accountEventDelivery
+}
+
+type accountEventDelivery struct {
+	value event
+	at    time.Time
 }
 
 func (e *events) emit(v event) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	_ = json.NewEncoder(e.out).Encode(v)
+	now := time.Now()
+	account := v.Event == "account" && v.ProfileID != ""
+	if account {
+		// Busy admission polls can otherwise fill stdout while the native host
+		// is rendering. Keep real transitions immediate and repeat unchanged
+		// display state at most once a second; control events are never skipped.
+		if previous, ok := e.lastAccount[v.ProfileID]; ok && previous.value == v && now.Sub(previous.at) < time.Second {
+			return
+		}
+	}
+	if err := json.NewEncoder(e.out).Encode(v); err != nil || !account {
+		return
+	}
+	if e.lastAccount == nil {
+		e.lastAccount = make(map[string]accountEventDelivery)
+	}
+	e.lastAccount[v.ProfileID] = accountEventDelivery{value: v, at: now}
 }
 
 var identifier = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
@@ -217,6 +239,13 @@ func (s *requestScope) heartbeats() {
 				r, err := s.bridge.call(s.ctx, "heartbeat", s.id, l.ProfileID, l.ID)
 				if err == nil && r.Error == "control_busy" && s.ctx.Err() != nil {
 					return // Cancelled before any heartbeat mutation; release follows.
+				}
+				if heartbeatTransportFailure(err) || (err == nil && r.Error == "control_busy") {
+					// Stop only this request. After its handler unwinds, close
+					// releases every exact lease and still escalates any unknown
+					// release through lease_release_unknown.
+					s.cancel()
+					return
 				}
 				if err != nil || !r.OK {
 					s.events.emit(event{Event: "error", ErrorCode: "lease_heartbeat_failed", ErrorDetail: controlFailureDetail(r, err)})

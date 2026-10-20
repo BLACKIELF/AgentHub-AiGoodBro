@@ -17,6 +17,11 @@ struct PublicResetAnnouncement: Codable, Equatable, Identifiable {
     let text: String
     let source: Source
 
+    var hasSourceText: Bool {
+        let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !value.isEmpty && value != "public-announcement"
+    }
+
     enum CodingKeys: String, CodingKey {
         case id, text, source
         case resetType = "reset_type"
@@ -228,11 +233,11 @@ enum PublicResetHistoryRecovery {
     ) async -> Result {
         let firstIDs = Set(first.data.map(\.id))
         let needingRecovery = ledgers.filter {
-            !$0.missingPayloadIDs.isSubset(of: firstIDs)
+            !$0.sourceRecoveryIDs.isSubset(of: firstIDs)
                 || ($0.initialized && !$0.records.isEmpty && first.pagination.hasMore && Set($0.records.keys).isDisjoint(with: firstIDs))
         }
         let known = needingRecovery.filter { $0.initialized && !$0.records.isEmpty }.map { Set($0.records.keys) }
-        let missing = needingRecovery.reduce(into: Set<String>()) { $0.formUnion($1.missingPayloadIDs) }
+        let missing = needingRecovery.reduce(into: Set<String>()) { $0.formUnion($1.sourceRecoveryIDs) }
         // A newly participating ledger starts at the head; otherwise continue
         // the shallowest saved cursor so neither channel skips its old records.
         let saved =
@@ -374,6 +379,26 @@ struct PublicResetDeliveryLedger: Codable {
         Set(records.keys.filter { [.pending, .sending, .uncertain].contains(records[$0]) && payloads?[$0] == nil })
     }
 
+    // Stored payloads contain no original text. Every pending send must be
+    // rebound to a validated row from the current fetch/recovery, even when
+    // the durable marker already exists.
+    var sourceRecoveryIDs: Set<String> {
+        Set(records.keys.filter { records[$0] == .pending }).union(missingPayloadIDs)
+    }
+
+    func pendingAnnouncements(
+        from verifiedRows: [PublicResetAnnouncement], now: Date = Date()
+    ) -> [PublicResetAnnouncement] {
+        (payloads ?? [:]).values.compactMap { stored -> PublicResetAnnouncement? in
+            guard records[stored.id] == .pending else { return nil }
+            return verifiedRows.first {
+                $0.id == stored.id && $0.resetType == stored.resetType
+                    && $0.announcedAt == stored.announcedAt && $0.source == stored.source
+                    && $0.isValid(now: now) && $0.hasSourceText
+            }
+        }.sorted { $0.announcedAt < $1.announcedAt }
+    }
+
     mutating func hydrate(_ events: [PublicResetAnnouncement]) {
         for event in events where [.pending, .sending, .uncertain].contains(records[event.id]) {
             if observedDates == nil { observedDates = [:] }
@@ -447,6 +472,7 @@ final class PublicResetAnnouncementMonitor: ObservableObject {
     private var stopped = false
     private let fixtureScheduling: Bool
     private let fetchPage: () async throws -> PublicResetPage
+    private let fetchHistoryPage: (String, TimeInterval) async throws -> PublicResetPage
     private var notBefore = Date.distantPast
     private var rebaseRequested = false
     private var localRebaseRequested = false
@@ -465,10 +491,14 @@ final class PublicResetAnnouncementMonitor: ObservableObject {
     init(
         preview: Bool = false, supportDirectory: URL? = nil,
         fixtureScheduling: Bool = false,
-        fetchPage: @escaping () async throws -> PublicResetPage = { try await PublicResetClient().fetch() }
+        fetchPage: @escaping () async throws -> PublicResetPage = { try await PublicResetClient().fetch() },
+        fetchHistoryPage: @escaping (String, TimeInterval) async throws -> PublicResetPage = { cursor, timeout in
+            try await PublicResetClient().fetch(cursor: cursor, timeout: timeout)
+        }
     ) {
         self.fixtureScheduling = fixtureScheduling
         self.fetchPage = fetchPage
+        self.fetchHistoryPage = fetchHistoryPage
         self.preview = preview
         enabled = preview || NextFeatureDefaults.isEnabled(Self.enabledKey)
         let directory = supportDirectory ?? DispatchParticipationPaths.supportDirectory()
@@ -812,8 +842,8 @@ final class PublicResetAnnouncementMonitor: ObservableObject {
         }
     }
 
-    /// Separate durable ledger and lock per optional channel. No historical fetch
-    /// here: a feed gap fails closed without affecting the other delivery paths.
+    /// Separate durable ledger and lock per optional channel. Only legacy
+    /// pending markers need bounded source recovery; retained safe text is reusable.
     @MainActor
     func deliverChannel(_ page: PublicResetPage, kind: MessageChannelKind) async {
         await deliverChannel(page, kind: kind, epoch: generation)
@@ -830,11 +860,40 @@ final class PublicResetAnnouncementMonitor: ObservableObject {
             // releasing it cannot clear another generation's task or lock.
             defer { lock.release() }
             var ledger = try load(at: url)
-            try ledger.observe(page)
+            var admissionPage = page
+            var sourceRows = page.data
+            let legacyPendingIDs = Set(
+                ledger.records.keys.filter {
+                    ledger.records[$0] == .pending && ledger.payloads?[$0]?.hasSourceText != true
+                })
+            let currentSourceIDs = Set(page.data.filter { $0.hasSourceText && $0.isValid(now: Date()) }.map(\.id))
+            let missingSourceIDs = legacyPendingIDs.subtracting(currentSourceIDs)
+            if !missingSourceIDs.isEmpty {
+                // Recover only unresolved legacy records. Existing sanitized
+                // payloads must not cause new history reads or be overwritten
+                // with a marker while another old record is being recovered.
+                var recoveryLedger = ledger
+                recoveryLedger.records = ledger.records.filter { missingSourceIDs.contains($0.key) }
+                recoveryLedger.payloads = ledger.payloads?.filter { missingSourceIDs.contains($0.key) }
+                let recovered = await PublicResetHistoryRecovery.recover(
+                    first: page, ledgers: [recoveryLedger], fetch: fetchHistoryPage)
+                guard enabled, isCurrent(epoch), channelRevision(kind) == revision else { return }
+                ledger.historyCheckpoint = recovered.checkpoint
+                ledger.hydrate(recovered.recoveredRows.filter { legacyPendingIDs.contains($0.id) })
+                admissionPage = recovered.page
+                sourceRows = recovered.recoveredRows
+            }
+            do {
+                try ledger.observe(admissionPage)
+            } catch PublicResetFailure.historyGap where !missingSourceIDs.isEmpty {
+                // A resumed recovery may still have a gap from today's head.
+                // Keep new history unadmitted while independently draining
+                // only already durable records with recovered source text.
+            }
             // Only these channel queues retain the restricted public projection,
             // so a later short page cannot lose queued wording. Native/Feishu
             // ledger payloads and baseline/dedupe semantics remain unchanged.
-            for event in page.data where ledger.records[event.id] == .pending {
+            for event in sourceRows where ledger.records[event.id] == .pending && event.hasSourceText {
                 let context = try PublicResetContext(announcement: event)
                 ledger.payloads?[event.id] = PublicResetAnnouncement(
                     id: event.id, resetType: event.resetType, announcedAt: event.announcedAt,
@@ -845,15 +904,17 @@ final class PublicResetAnnouncementMonitor: ObservableObject {
             if ledger.records.values.contains(.uncertain) {
                 publishChannelResult(.init(channel: kind, state: .uncertain, checkedAt: Date(), errorCategory: .interrupted), epoch: epoch, revision: revision)
             }
-            let queue = (ledger.payloads ?? [:]).values.filter { ledger.records[$0.id] == .pending }
-                .sorted { $0.announcedAt < $1.announcedAt }
+            let queue = (ledger.payloads ?? [:]).values.filter {
+                ledger.records[$0.id] == .pending && $0.hasSourceText && $0.isValid(now: Date())
+            }
+            .sorted { $0.announcedAt < $1.announcedAt }
             for event in queue.prefix(20) {
                 guard enabled, isCurrent(epoch), channelRevision(kind) == revision else { return }
                 ledger.records[event.id] = .sending
                 try save(ledger, at: url)
-                // Prefer validated current wording. Queued rows retain the
-                // restricted projection; pre-context ledgers retain their placeholder.
-                let announcement = page.data.first { $0.id == event.id && $0.isValid(now: Date()) } ?? event
+                // Prefer the validated original. Otherwise reuse only the safe
+                // saved projection, never a legacy placeholder.
+                let announcement = sourceRows.first { $0.id == event.id && $0.hasSourceText && $0.isValid(now: Date()) } ?? event
                 let result = await sendChannel(announcement, kind, revision)
                 // Every non-acceptance is conservatively terminal for automatic
                 // delivery, including duplicateSkipped and post-send cancellation.
@@ -936,7 +997,7 @@ final class PublicResetAnnouncementMonitor: ObservableObject {
             }
             guard isCurrent(epoch) else { return }
             if let localLedger {
-                do { try await deliverLocally(recovered.page, ledger: localLedger, epoch: epoch) } catch {
+                do { try await deliverLocally(recovered.page, ledger: localLedger, verifiedRows: recovered.recoveredRows, epoch: epoch) } catch {
                     if isCurrent(epoch) { localStatus = PublicResetFailure.localState.localizedDescription }
                 }
             }
@@ -973,8 +1034,7 @@ final class PublicResetAnnouncementMonitor: ObservableObject {
             if ledger.records.values.contains(.uncertain) {
                 status = language.text("有公告推送结果待核实，未自动重发；请检查飞书消息", "Some announcement deliveries are unverified and were not resent. Check Feishu.")
             }
-            let queue = (ledger.payloads ?? [:]).values.filter { ledger.records[$0.id] == .pending }
-                .sorted { $0.announcedAt < $1.announcedAt }
+            let queue = ledger.pendingAnnouncements(from: recovered.recoveredRows)
             for announcement in queue.prefix(20) {
                 guard enabled, canSend(), isCurrent(epoch) else { return }
                 ledger.records[announcement.id] = .sending
@@ -1160,7 +1220,10 @@ final class PublicResetAnnouncementMonitor: ObservableObject {
     }
 
     @MainActor
-    private func deliverLocally(_ page: PublicResetPage, ledger initialLedger: PublicResetDeliveryLedger, epoch requestedEpoch: UInt64? = nil) async throws {
+    private func deliverLocally(
+        _ page: PublicResetPage, ledger initialLedger: PublicResetDeliveryLedger,
+        verifiedRows: [PublicResetAnnouncement]? = nil, epoch requestedEpoch: UInt64? = nil
+    ) async throws {
         let epoch = requestedEpoch ?? generation
         guard isCurrent(epoch), let notifyLocally else { return }
         var ledger = initialLedger
@@ -1181,8 +1244,7 @@ final class PublicResetAnnouncementMonitor: ObservableObject {
         }
         localStatus = observationFailure?.localizedDescription
         try save(ledger, at: localStateURL)
-        let queue = (ledger.payloads ?? [:]).values.filter { ledger.records[$0.id] == .pending }
-            .sorted { $0.announcedAt < $1.announcedAt }
+        let queue = ledger.pendingAnnouncements(from: verifiedRows ?? page.data)
         for announcement in queue.prefix(20) {
             guard enabled, isCurrent(epoch) else { return }
             ledger.records[announcement.id] = .sending
@@ -1262,7 +1324,7 @@ extension PublicResetAnnouncementMonitor {
                 native.hydrate(result.recoveredRows)
                 native.historyCheckpoint = result.checkpoint
                 try monitor.save(native, at: monitor.localStateURL)
-                try await monitor.deliverLocally(result.page, ledger: native)
+                try await monitor.deliverLocally(result.page, ledger: native, verifiedRows: result.recoveredRows)
             }
             guard requested == ["2", "3", "4", "5", "6", "7"], submitted == ["1"],
                 try monitor.load(at: monitor.localStateURL).records["1"] == .sent,
@@ -1640,7 +1702,8 @@ enum PublicResetAnnouncementSelfTest {
             } catch PublicResetFailure.localState {}
             let payload = try FeishuWebhookService.publicResetPayload(initial.data[0], language: .zh)
             guard let body = String(data: payload, encoding: .utf8),
-                body.contains("额度重置公告"), body.contains("公告类型本身不证明已完成或已到账"), body.contains("请到账号页核对官方额度与可用重置卡"),
+                body.contains("额度重置公告"), body.contains("个人额度与重置卡以账号页官方读取为准"),
+                body.contains("公告时间（北京时间）"), !body.contains("接下来"), !body.contains("public-announcement"),
                 !body.contains("发重置卡了"), body.contains("\"template\":\"purple\""),
                 body.contains("Public fixture"), !body.contains("官方公告"), !body.contains("Official announcement")
             else { return false }
@@ -1650,10 +1713,11 @@ enum PublicResetAnnouncementSelfTest {
             let regularPayload = try FeishuWebhookService.publicResetPayload(regular, language: .en)
             guard let regularBody = String(data: regularPayload, encoding: .utf8),
                 regularBody.contains("Quota reset announcement"),
-                regularBody.contains("does not confirm completion or receipt"), regularBody.contains("\"template\":\"turquoise\""),
+                regularBody.contains("Check the official account read"), regularBody.contains("\"template\":\"turquoise\""),
                 // \p{Han} also matches U+00B7 (its Script_Extensions include Han),
                 // so assert on the ideograph blocks the copy could actually use.
-                regularBody.range(of: "[\\x{3400}-\\x{9FFF}\\x{F900}-\\x{FAFF}]", options: .regularExpression) == nil
+                regularBody.replacingOccurrences(of: "消息来源：aigoodbro.com", with: "")
+                    .range(of: "[\\x{3400}-\\x{9FFF}\\x{F900}-\\x{FAFF}]", options: .regularExpression) == nil
             else { return false }
             let result = HistoryTestResult()
             let completed = DispatchSemaphore(value: 0)

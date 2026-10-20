@@ -80,6 +80,17 @@ function normalizeAccountLabel(value) {
   return clean && [...clean].length <= 32 ? clean : '';
 }
 
+// Keep machine plan identity separate from translated account/plan labels.
+function normalizeCodexPlanType(value) {
+  if (typeof value !== 'string') return '';
+  const raw = value.trim().toLowerCase();
+  const aliases = { 'pro_lite': 'prolite', 'pro-lite': 'prolite', 'pro lite': 'prolite',
+    'pro_max': 'promax', 'pro-max': 'promax', 'pro max': 'promax' };
+  const plan = aliases[raw] || raw;
+  return ['free', 'plus', 'pro', 'prolite', 'promax', 'max', 'team', 'teams', 'enterprise',
+    'business', 'enterprise_cbp_usage_based', 'self_serve_business_usage_based'].includes(plan) ? plan : '';
+}
+
 function normalizeAccountName(value) {
   const raw = String(value || '').trim();
   if (
@@ -483,6 +494,7 @@ function normalizeLimitProvider(input) {
     ? normalizeOpenCodeAccountKeyAliases(input.accountKeyAliases, accountKey)
     : [];
   const accountLabel = normalizeAccountLabel(input.accountLabel);
+  const planType = provider === 'codex' ? normalizeCodexPlanType(input.planType ?? input.plan_type) : '';
   const windows = Array.isArray(input.windows)
     ? input.windows.map(normalizeLimitWindow).filter(Boolean)
     : [];
@@ -536,6 +548,7 @@ function normalizeLimitProvider(input) {
     ...(accountKeyAliases.length > 0 ? { accountKeyAliases } : {}),
     accountLabel,
     planLabel: normalizeAccountLabel(input.planLabel),
+    ...(planType ? { planType } : {}),
     accountName: normalizeAccountName(input.accountName ?? input.accountLogin ?? input.login),
     accountEmail: normalizeAccountEmail(input.accountEmail ?? input.email),
     workspaceKind: normalizeWorkspaceKind(input.workspaceKind),
@@ -1035,6 +1048,7 @@ function publicLimits(limits) {
       accountName,
       accountLabel,
       planLabel,
+      planType,
       workspaceKind,
       usageSummary,
       ...provider
