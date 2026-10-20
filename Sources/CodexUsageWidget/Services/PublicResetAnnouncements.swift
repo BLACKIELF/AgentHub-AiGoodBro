@@ -1702,7 +1702,7 @@ enum PublicResetAnnouncementSelfTest {
             } catch PublicResetFailure.localState {}
             let payload = try FeishuWebhookService.publicResetPayload(initial.data[0], language: .zh)
             guard let body = String(data: payload, encoding: .utf8),
-                body.contains("额度重置公告"), body.contains("个人额度与重置卡以账号页官方读取为准"),
+                body.contains("公开重置公告 · 重置卡"), body.contains("个人额度与重置卡以账号页官方读取为准"),
                 body.contains("公告时间（北京时间）"), !body.contains("接下来"), !body.contains("public-announcement"),
                 !body.contains("发重置卡了"), body.contains("\"template\":\"purple\""),
                 body.contains("Public fixture"), !body.contains("官方公告"), !body.contains("Official announcement")
@@ -1712,7 +1712,7 @@ enum PublicResetAnnouncementSelfTest {
                 source: .init(type: "x_post", author: "thsottiaux", url: URL(string: "https://x.com/thsottiaux/status/103")))
             let regularPayload = try FeishuWebhookService.publicResetPayload(regular, language: .en)
             guard let regularBody = String(data: regularPayload, encoding: .utf8),
-                regularBody.contains("Quota reset announcement"),
+                regularBody.contains("Public reset announcement · quota"),
                 regularBody.contains("Check the official account read"), regularBody.contains("\"template\":\"turquoise\""),
                 // \p{Han} also matches U+00B7 (its Script_Extensions include Han),
                 // so assert on the ideograph blocks the copy could actually use.
