@@ -464,6 +464,72 @@ extension LocalProxyHostFixtures {
                 "deleting a run representative cannot substitute or default-enable a new unregistered home")
             vanished.process = nil
         }
+        if selected == nil || selected == "display-order" {
+            let first = profile("display-first")
+            let second = profile("display-second")
+            let third = profile("display-third")
+            let displayUsage = UsageStore([first, second, third])
+            displayUsage.isPreview = false
+            var choices = LocalProxyPreferences()
+            choices.knownIDs = [first.id, second.id, third.id]
+            choices.enabledIDs = choices.knownIDs
+            choices.order = [third.id, first.id, second.id]
+            choices.priorityIDs = [second.id]
+            try JSONEncoder().encode(choices).write(to: file, options: .atomic)
+            let displayed = LocalProxyQueueStore(usageStore: displayUsage)
+            displayed.flushDisplayRows()
+            expect(
+                displayed.rows.map(\.id) == [second.id, third.id, first.id]
+                    && displayed.displayRows.map(\.id) == [third.id, first.id, second.id],
+                "saved manual display order is separate from priority routing and initial account order")
+            expect(
+                !displayed.canMoveAccount(id: third.id, by: -1) && !displayed.canMoveAccount(id: second.id, by: 1)
+                    && displayed.canMoveAccount(id: first.id, by: -1),
+                "arrow availability follows the visible first, middle and last rows")
+            displayed.moveAccount(id: first.id, by: -1)
+            expect(
+                displayed.displayRows.map(\.id) == [first.id, third.id, second.id]
+                    && displayed.preferences.order == [first.id, third.id, second.id],
+                "arrow swaps its visible neighbor and publishes immediately")
+            displayed.rebuildRows()
+            displayed.flushDisplayRows()
+            let afterMove = LocalProxyQueueStore(usageStore: displayUsage)
+            expect(
+                displayed.displayRows.map(\.id) == [first.id, third.id, second.id]
+                    && afterMove.displayRows.map(\.id) == [first.id, third.id, second.id],
+                "manual display move survives rebuild and preference reload")
+            displayed.setAccountPriority(id: second.id, priority: false)
+            displayed.setAccountLast(id: first.id, last: true)
+            displayed.setAccountEnabled(id: third.id, enabled: false)
+            displayed.flushDisplayRows()
+            expect(
+                displayed.displayRows.map(\.id) == [first.id, third.id, second.id],
+                "participation, priority and use-last edits keep the saved display order stable")
+            displayed.moveAccount(id: third.id, by: -1)
+            expect(
+                displayed.displayRows.map(\.id) == [third.id, first.id, second.id]
+                    && displayed.rows.first(where: { $0.id == third.id })?.isLast == true,
+                "cross-group arrow adopts the displayed neighbor choice and moves one visible place")
+            displayed.setAccountLast(id: first.id, last: false)
+            displayed.setAccountLast(id: third.id, last: false)
+            displayed.flushDisplayRows()
+            expect(
+                displayed.rows.map(\.id) == displayed.displayRows.map(\.id),
+                "routing uses the same saved manual order within equal groups")
+            let previous = displayed.displayRows
+            let bytes = try Data(contentsOf: file)
+            let blockedMove = URL(fileURLWithPath: file.path + ".blocked")
+            if !FileManager.default.fileExists(atPath: blockedMove.path) {
+                try FileManager.default.createDirectory(at: blockedMove, withIntermediateDirectories: false)
+            }
+            LocalProxyFixtureRuntime.failPreferenceRename = true
+            displayed.moveAccount(id: first.id, by: 1)
+            LocalProxyFixtureRuntime.failPreferenceRename = false
+            try expect(
+                displayed.preferencesFailure == .save && displayed.displayRows == previous
+                    && Data(contentsOf: file) == bytes,
+                "failed manual move rolls back both visible order and saved bytes")
+        }
         print("PARTICIPATION_RESULT checks=\(checks) failures=\(failures.count)")
         guard failures.isEmpty else { throw ParticipationFixtureFailure(checks: failures) }
         print("PASS: \(checks) production participation checks; synthetic Pro20x, mirrors, order and admission only")

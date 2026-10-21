@@ -21,6 +21,8 @@ struct LocalProxyQueueRow: Identifiable, Equatable {
     var usesDefaultCreditFloors = true
     var isLast = false
     var isFixedLast = false
+    var pausesAfterReset = false
+    var resetPausedAt: Date? = nil
 }
 struct LocalProxyQuotaWindow: Identifiable, Equatable {
     let id: String
@@ -43,6 +45,7 @@ struct LocalProxyPreferences: Codable {
     var creditPrimaryFloor: Int? = nil
     var creditSecondaryFloor: Int? = nil
     var accountPolicies: [String: LocalProxyAccountPolicy]? = nil
+    var resetStopRules: [String: LocalProxyResetStopRule]? = nil
     // Persist the visible home for a known identity without storing its email.
     var accountRepresentatives: [String: String]? = nil
 
@@ -58,6 +61,13 @@ struct LocalProxyPreferences: Codable {
         policy.creditPrimaryFloor = policy.creditPrimaryFloor ?? creditFloors.primary
         policy.creditSecondaryFloor = policy.creditSecondaryFloor ?? creditFloors.secondary
         return policy
+    }
+    var validResetStopRules: Bool {
+        guard let resetStopRules else { return true }
+        return resetStopRules.count <= 1000
+            && resetStopRules.allSatisfy {
+                !$0.key.isEmpty && $0.key.utf8.count <= 256 && $0.value.isValid
+            }
     }
     var validAccountPolicies: Bool {
         guard let accountPolicies else { return true }
@@ -78,6 +88,19 @@ struct LocalProxyPreferences: Codable {
     var validLastOverrides: Bool {
         guard let lastOverrides else { return true }
         return lastOverrides.count <= 1000 && lastOverrides.keys.allSatisfy { !$0.isEmpty && $0.utf8.count <= 256 }
+    }
+}
+
+/// Optional, account-bound automation. Only hashes and observation dates persist.
+struct LocalProxyResetStopRule: Codable, Equatable {
+    let accountHash: String
+    let armedAt: Date
+    var pausedAt: Date? = nil
+
+    var isValid: Bool {
+        accountHash.utf8.count == 64 && accountHash.allSatisfy { "0123456789abcdef".contains($0) }
+            && armedAt.timeIntervalSince1970.isFinite
+            && pausedAt.map { $0.timeIntervalSince1970.isFinite && $0 >= armedAt } != false
     }
 }
 

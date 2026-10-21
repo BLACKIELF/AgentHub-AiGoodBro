@@ -441,6 +441,7 @@ struct TokenMonitorCodexLimits: Sendable {
     let sevenDay: Window?
     let monthly: Window?
     let limitID: String
+    let planType: String?
     let original: TokenMonitorJSON
 
     /// Binding belongs to the target, not provider labels. Preserve the original summary unchanged.
@@ -520,6 +521,7 @@ struct TokenMonitorCodexLimits: Sendable {
         sevenDay = seven
         monthly = month
         limitID = "codex"
+        planType = provider["planType"]?.string
         original = provider
         // Credits (including unlimited balance) never manufacture a missing quota window.
     }

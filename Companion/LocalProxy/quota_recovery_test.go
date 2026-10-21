@@ -554,8 +554,17 @@ func TestQuotaRecoveryProofReturningDuringResultPublishDoesNotBlock(t *testing.T
 	b.beforeReply = func(q bridgeRequest, reply bridgeReply) bridgeReply {
 		if q.Command == "quota_recovery" {
 			proof := quotaRecoveryProof(time.Now())
-			go func() { markCredentialQuota(rt, "A"); close(resultFinished) }()
-			<-w.started
+			go func() {
+				// A changed deadline must publish even within the account-event
+				// deduplication window, so the writer holds the SDK result lock.
+				retry := 48 * time.Hour
+				rt.manager.MarkResult(context.Background(), auth.Result{AuthID: "A", Provider: "codex", Model: "fixture-model", CredentialScope: true, RetryAfter: &retry, Error: &auth.Error{HTTPStatus: http.StatusTooManyRequests}})
+				close(resultFinished)
+			}()
+			select {
+			case <-w.started:
+			case <-w.release:
+			}
 			return proof
 		}
 		return reply

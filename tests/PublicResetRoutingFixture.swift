@@ -17,11 +17,17 @@ final class RoutingTransport: MessageChannelTransport {
         calls += 1
         let body = String(data: request.httpBody!, encoding: .utf8)!
         precondition(body.contains("Public reset announcement"))
-        precondition(body.contains("Public fixture wording") && body.contains("Announced at:") && body.contains("https:"))
+        let telegram = request.url!.host == TelegramMessageChannel.apiHost
+        precondition(body.contains("Public fixture wording"))
+        if telegram {
+            precondition(body.contains("Announced at:") && body.contains("https:"))
+        } else {
+            precondition(body.contains("Announced (Beijing time, UTC+8)") && body.contains(MessageNoticeFormat.weChatFooter))
+            precondition(!body.contains("https:") && !body.contains("x.com"))
+        }
         precondition(!body.contains("completed") && !body.contains("fixture-private-content"))
         if let beforeResponse { await beforeResponse() }
         if uncertain { throw URLError(.timedOut) }
-        let telegram = request.url!.host == TelegramMessageChannel.apiHost
         let response = telegram ? (failTelegram ? #"{"ok":false,"error_code":400}"# : #"{"ok":true,"result":{"message_id":1}}"#) : #"{"errcode":0}"#
         return (Data(response.utf8), HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
     }

@@ -90,7 +90,7 @@ private struct PolicyEditorFixtureRoot: View {
         LocalProxyAccountPolicyEditor(
             row: model.row, language: .en, enabled: true, globalCreditsEnabled: false,
             defaultPrimary: model.defaultPrimary, defaultSecondary: model.defaultSecondary,
-            initiallyExpanded: true, quotaContent: Text("Synthetic quota"), resetAction: EmptyView(),
+            initiallyExpanded: true, quotaContent: Text("Synthetic quota"), resetAction: EmptyView(), accessory: EmptyView(),
             save: { model.save($0) })
             .padding(12)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)

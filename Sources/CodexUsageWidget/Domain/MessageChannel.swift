@@ -219,6 +219,9 @@ struct PublicResetContext: Equatable {
             let probe = token.precomposedStringWithCompatibilityMapping
                 .replacingOccurrences(of: "\u{200C}", with: "")
                 .replacingOccurrences(of: "\u{200D}", with: "")
+            // Post counters such as "Day 15/" are text, not destinations.
+            // Keep this exception narrow; paths, schemes and links still fail.
+            if probe.range(of: #"^[0-9]{1,6}/$"#, options: .regularExpression) != nil { return true }
             let range = NSRange(probe.startIndex..<probe.endIndex, in: probe)
             return !token.isEmpty && detector.firstMatch(in: probe, range: range) == nil
                 && destination.firstMatch(in: probe, range: range) == nil
@@ -318,6 +321,39 @@ struct MessageChannelAccountFacts: Equatable {
     }
 }
 
+/// Safe event facts retained for generated WeChat notices. The transport's
+/// occurredAt stays fresh; observedAt identifies the original official read.
+struct MessageNoticeContext: Equatable {
+    enum SwitchOrigin: String { case manual, lowQuota, restartTest }
+
+    let sourceAccount: MessageChannelAccountLabel?
+    let targetAccount: MessageChannelAccountLabel?
+    let switchOrigin: SwitchOrigin
+    let fiveHourTriggerThresholdPercent: Int
+    let sevenDayTriggerThresholdPercent: Int
+    let observedAt: Date
+    let accountFacts: FeishuAccountFacts?
+
+    init(
+        sourceAccount: MessageChannelAccountLabel? = nil,
+        targetAccount: MessageChannelAccountLabel? = nil,
+        switchOrigin: SwitchOrigin = .manual,
+        fiveHourTriggerThresholdPercent: Int = 5, sevenDayTriggerThresholdPercent: Int = 10,
+        observedAt: Date, accountFacts: FeishuAccountFacts? = nil
+    ) throws {
+        guard (1...100).contains(fiveHourTriggerThresholdPercent),
+            (1...100).contains(sevenDayTriggerThresholdPercent), observedAt.timeIntervalSince1970.isFinite
+        else { throw MessageChannelError.invalidStatus }
+        self.sourceAccount = sourceAccount
+        self.targetAccount = targetAccount
+        self.switchOrigin = switchOrigin
+        self.fiveHourTriggerThresholdPercent = fiveHourTriggerThresholdPercent
+        self.sevenDayTriggerThresholdPercent = sevenDayTriggerThresholdPercent
+        self.observedAt = observedAt
+        self.accountFacts = accountFacts
+    }
+}
+
 /// The only payload a message channel may transmit. Fields are structured and
 /// bounded: prompts, model responses, file paths, raw account identifiers and
 /// private free-form text are unrepresentable. Public wording requires a validated context.
@@ -336,7 +372,7 @@ struct MessageTaskStatus: Equatable {
         case taskStateChange
     }
 
-    /// Mirrors the Feishu failure reasons; rendering stays channel-local.
+    /// Mirrors the failure reasons accepted by the shared notice formatter.
     enum FailureReason: String {
         case noEligibleAccount
         case appBusy
@@ -368,6 +404,8 @@ struct MessageTaskStatus: Equatable {
     let publicResetContext: PublicResetContext?
     let quotaChange: CodexQuotaEvent?
     let accountFacts: MessageChannelAccountFacts?
+    let resetCreditComparison: CodexResetCreditComparison?
+    let noticeContext: MessageNoticeContext?
 
     init(
         eventKind: EventKind,
@@ -381,7 +419,9 @@ struct MessageTaskStatus: Equatable {
         eventID: UUID = UUID(),
         publicResetContext: PublicResetContext? = nil,
         quotaChange: CodexQuotaEvent? = nil,
-        accountFacts: MessageChannelAccountFacts? = nil
+        accountFacts: MessageChannelAccountFacts? = nil,
+        resetCreditComparison: CodexResetCreditComparison? = nil,
+        noticeContext: MessageNoticeContext? = nil
     ) throws {
         let percentages = [fiveHourRemainingPercent, sevenDayRemainingPercent].compactMap { $0 }
         guard percentages.allSatisfy({ $0.isFinite && (0...100).contains($0) }) else {
@@ -393,7 +433,8 @@ struct MessageTaskStatus: Equatable {
         if let context = publicResetContext {
             guard eventKind == (context.kind == .regular ? .publicRegularReset : .publicBankedReset),
                 accountLabel == nil, taskLabel == nil, taskState == nil,
-                percentages.isEmpty, failureReason == nil, quotaChange == nil, accountFacts == nil
+                percentages.isEmpty, failureReason == nil, quotaChange == nil, accountFacts == nil,
+                resetCreditComparison == nil, noticeContext == nil
             else { throw MessageChannelError.invalidStatus }
         }
         if let quotaChange {
@@ -414,6 +455,23 @@ struct MessageTaskStatus: Equatable {
                 else { throw MessageChannelError.invalidStatus }
             }
         }
+        if let resetCreditComparison {
+            guard eventKind == .quotaReset, case .quotaReset = quotaChange,
+                resetCreditComparison.isValid(at: occurredAt),
+                accountFacts?.availableResetCredits == resetCreditComparison.available
+            else { throw MessageChannelError.invalidStatus }
+        }
+        if let noticeContext {
+            if let noticeFacts = noticeContext.accountFacts, let accountFacts {
+                guard noticeFacts.availableResetCredits == accountFacts.availableResetCredits
+                else { throw MessageChannelError.invalidStatus }
+            }
+            if let comparison = resetCreditComparison {
+                guard noticeContext.observedAt >= comparison.observedAt,
+                    noticeContext.accountFacts.map({ $0.availableResetCredits == comparison.available }) ?? true
+                else { throw MessageChannelError.invalidStatus }
+            }
+        }
         self.publicResetContext = publicResetContext
         self.eventKind = eventKind
         self.accountLabel = accountLabel
@@ -426,6 +484,8 @@ struct MessageTaskStatus: Equatable {
         self.eventID = eventID
         self.quotaChange = quotaChange
         self.accountFacts = accountFacts
+        self.resetCreditComparison = resetCreditComparison
+        self.noticeContext = noticeContext
     }
 
     func selectingQuotaWindows(_ options: FeishuMessageOptions) -> MessageTaskStatus? {
@@ -439,7 +499,8 @@ struct MessageTaskStatus: Equatable {
             taskState: taskState, fiveHourRemainingPercent: fiveHourRemainingPercent,
             sevenDayRemainingPercent: sevenDayRemainingPercent, failureReason: failureReason,
             occurredAt: occurredAt, eventID: eventID, publicResetContext: publicResetContext,
-            quotaChange: selected, accountFacts: accountFacts)
+            quotaChange: selected, accountFacts: accountFacts, resetCreditComparison: resetCreditComparison,
+            noticeContext: noticeContext)
     }
 
     func hasCurrentExpiry(now: Date = Date()) -> Bool {
@@ -447,8 +508,8 @@ struct MessageTaskStatus: Equatable {
         return MessageNoticeFormat.validExpiry(batches, observedAt: now)
     }
 
-    /// One canonical line rendering shared by every channel so Telegram and
-    /// WeCom cannot drift apart in what they disclose.
+    /// Legacy plain summary used by Telegram and task-status fallback. WeChat
+    /// and Feishu generated notices share their structured content builder.
     func summary(_ language: WidgetLanguage) -> String {
         var lines: [String] = []
         switch eventKind {

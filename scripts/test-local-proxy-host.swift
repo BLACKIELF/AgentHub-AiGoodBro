@@ -17,8 +17,18 @@ import Foundation
         semaphore.wait(timeout: .now() + 10) == .success
     }
 
+    @MainActor private static func awaitFixtureExit(_ child: Process) async throws {
+        // A background Foundation wait can miss an already-delivered exit.
+        let deadline = ProcessInfo.processInfo.systemUptime + 3
+        while child.isRunning && ProcessInfo.processInfo.systemUptime < deadline {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        precondition(!child.isRunning, "synthetic fixture child exit exceeded its deadline")
+    }
+
     @MainActor static func main() async throws {
         setbuf(stdout, nil)
+        try await accountEventPressureFixtures()
         try await oauthFailureProjectionFixtures()
         try await maintenanceDiagnosticsFixtures()
         if ProcessInfo.processInfo.environment["PROXY_REGISTRY_CONTENTION_ONLY"] == "1" {
@@ -433,16 +443,19 @@ import Foundation
             "Pro20x with no override defaults to a movable last choice")
         expect(lastResortOrdering.canSetAccountLast(id: "third") && lastResortOrdering.canMoveAccount(id: "third", by: -1),
             "default Pro20x can cancel Use last or move across the adjacent sorting group")
-        let beforeLastResortMove = lastResortOrdering.rows.map(\.id)
+        lastResortOrdering.flushDisplayRows()
+        let beforeLastResortMove = lastResortOrdering.displayRows.map(\.id)
         lastResortOrdering.moveAccount(id: "third", by: -1)
         var expectedLastResortMove = beforeLastResortMove
-        expectedLastResortMove.swapAt(expectedLastResortMove.count - 1, expectedLastResortMove.count - 2)
-        expect(lastResortOrdering.rows.map(\.id) == expectedLastResortMove
+        let movingIndex = expectedLastResortMove.firstIndex(of: "third")!
+        expectedLastResortMove.swapAt(movingIndex, movingIndex - 1)
+        expect(lastResortOrdering.displayRows.map(\.id) == expectedLastResortMove
             && lastResortOrdering.preferences.lastOverrides?["third"] == false,
             "moving Pro20x up atomically persists an opt-out and the exact adjacent order")
         let movedProReload = LocalProxyQueueStore(usageStore: lastResortUsage)
-        expect(movedProReload.rows.map(\.id) == expectedLastResortMove
-            && movedProReload.rows.first { $0.id == "third" }?.isLast == false,
+        movedProReload.flushDisplayRows()
+        expect(movedProReload.displayRows.map(\.id) == expectedLastResortMove
+            && movedProReload.displayRows.first { $0.id == "third" }?.isLast == false,
             "a moved Pro20x does not snap back after preference reload")
         lastResortOrdering.setAccountLast(id: "third", last: true)
         lastResortOrdering.setAccountLast(id: "third", last: false)
@@ -453,13 +466,20 @@ import Foundation
         lastResortOrdering.setAccountPriority(id: "third", priority: true)
         expect(lastResortOrdering.rows.first?.id == "third" && lastResortOrdering.rows.first?.isPriority == true
             && lastResortOrdering.rows.first?.isLast == false,
-            "explicit Pro20x priority cancels last and takes effect in the displayed order")
+            "explicit Pro20x priority cancels last and takes effect in the routing order")
         lastResortOrdering.setAccountLast(id: "third", last: true)
         lastResortOrdering.setAccountLast(id: profile.id, last: true)
         lastResortOrdering.setAccountPriority(id: "second", priority: false)
         expect(lastResortOrdering.rows.first?.id == "second"
             && lastResortOrdering.rows.dropFirst().allSatisfy { $0.isLast && !$0.isPriority },
-            "ordinary then effective-last is the displayed queue without contradictory priorities")
+            "ordinary then effective-last is the routing order without contradictory priorities")
+        // This scenario needs an ordinary visible neighbor above the last row.
+        // Routing flags deliberately do not rearrange the manual display order.
+        lastResortOrdering.preferences.order = ["second", "third", profile.id]
+        lastResortOrdering.rebuildRows()
+        lastResortOrdering.flushDisplayRows()
+        expect(lastResortOrdering.displayRows.map(\.id) == ["second", "third", profile.id],
+            "cross-group fixture starts with the intended visible neighbors")
         expect(lastResortOrdering.canMoveAccount(id: "third", by: -1),
             "an effective-last account can move into the adjacent ordinary group")
         lastResortOrdering.moveAccount(id: "third", by: -1)
@@ -503,11 +523,14 @@ import Foundation
         lastResortOrdering.setAccountPriority(id: profile.id, priority: true)
         lastResortOrdering.setAccountPriority(id: "second", priority: true)
         let failedArrow = LocalProxyQueueStore(usageStore: lastResortUsage)
+        failedArrow.flushDisplayRows()
         let beforeFailedArrowRows = failedArrow.rows
+        let beforeFailedArrowDisplay = failedArrow.displayRows
         let beforeFailedArrowPreferences = failedArrow.preferences
         let beforeFailedArrowBytes = try Data(contentsOf: preferenceURL)
         LocalProxyFixtureRuntime.failPreferenceRename = true
-        failedArrow.moveAccount(id: "third", by: -1)
+        expect(failedArrow.canMoveAccount(id: "third", by: 1), "failed-save fixture has an available visible neighbor")
+        failedArrow.moveAccount(id: "third", by: 1)
         failedArrow.flushDisplayRows()
         LocalProxyFixtureRuntime.failPreferenceRename = false
         try expect(failedArrow.rows == beforeFailedArrowRows
@@ -517,7 +540,7 @@ import Foundation
             && failedArrow.preferences.lastOverrides == beforeFailedArrowPreferences.lastOverrides
             && Data(contentsOf: preferenceURL) == beforeFailedArrowBytes,
             "failed cross-group arrow rolls order, priority, override and disk back together")
-        expect(failedArrow.preferencesFailure == .save && failedArrow.displayRows == beforeFailedArrowRows,
+        expect(failedArrow.preferencesFailure == .save && failedArrow.displayRows == beforeFailedArrowDisplay,
             "a failed move retains the prior published rows and reports the save failure")
         lastResortOrdering.setAccountEnabled(id: "third", enabled: false)
         lastResortOrdering.setAccountPriority(id: "third", priority: true)
@@ -562,10 +585,25 @@ import Foundation
         try expect(try activity.read().proxyAcquireKeys?.contains {
             $0.runID == run && $0.requestID == request && $0.wasReserved && !$0.abandoned
         } == true, "other lease writer preserves persisted proxy request fence")
+        // The account cap is 10 concurrent conversations: the Python-held lease
+        // occupies one slot, so nine more native reservations are admitted.
+        var extraReservations: [(lease: String, request: String)] = []
+        for _ in 1..<DispatchActivityStore.proxyMaxConcurrentPerAccount {
+            let extraRequest = UUID().uuidString
+            let extraLease = try activity.reserveProxy(account: "python-held", alias: "independent-alias", runID: run, requestID: extraRequest, profileID: profile.id, childPID: getpid())
+            extraReservations.append((extraLease, extraRequest))
+        }
+        expect(extraReservations.count == DispatchActivityStore.proxyMaxConcurrentPerAccount - 1, "proxy admits concurrent reservations up to the account cap")
+        checks += 1
         do {
             _ = try activity.reserveProxy(account: "python-held", alias: "independent-alias", runID: run, requestID: UUID().uuidString, profileID: profile.id, childPID: getpid())
-            preconditionFailure("native proxy ignored Python reservation")
+            preconditionFailure("native proxy exceeded the per-account concurrency cap")
         } catch DispatchActivityStore.Failure.accountBusy { checks += 1 }
+        for extra in extraReservations {
+            try expect(try activity.abandonProxy(runID: run, requestID: extra.request, profileID: profile.id) == .abandoned,
+                "concurrency probe reservations resolve cleanly")
+        }
+        checks += 1
         do {
             try activity.updateProxy(pythonHeld, runID: run, requestID: request, profileID: profile.id, state: "accepted")
             preconditionFailure("native proxy released Python lease")
@@ -926,6 +964,9 @@ import Foundation
         // Reuse only the fixture child: live queue edits must neither stop it nor touch its lease.
         desktopOrdering.setAccountPriority(id: "second", priority: false)
         desktopOrdering.setAccountPriority(id: "third", priority: false)
+        desktopOrdering.preferences.order = ["third", "second", profile.id]
+        desktopOrdering.rebuildRows()
+        desktopOrdering.flushDisplayRows()
         desktopOrdering.process = child
         desktopOrdering.phase = .running
         desktopOrdering.runID = run
@@ -971,6 +1012,11 @@ import Foundation
         _ = await desktopOrdering.handle(LocalProxyRequest(
             schemaVersion: 1, runID: run, key: "fixture-secret", command: "order_end", requestID: manualLastRequestID,
             profileID: "", leaseID: nil))
+        desktopOrdering.moveAccount(id: "second", by: 1)
+        desktopOrdering.setAccountPriority(id: "second", priority: false)
+        desktopOrdering.flushDisplayRows()
+        expect(desktopOrdering.displayRows.map(\.id) == ["third", "second", profile.id],
+            "live cross-priority fixture restores the intended visible neighbors")
         expect(desktopOrdering.canMoveAccount(id: "second", by: -1), "arrows can explicitly cross adjacent priority tiers")
         desktopOrdering.moveAccount(id: "second", by: -1)
         let arrowPriorityRequestID = UUID().uuidString
@@ -1045,7 +1091,7 @@ import Foundation
         lifecycle.balanceRefreshLeases.insert(held)
         let refreshesBeforeExit = isolatedUsage.refreshCount
         child.terminate()
-        await Task.detached { child.waitUntilExit() }.value
+        try await awaitFixtureExit(child)
         LocalProxyFixtureRuntime.failFirstTerminalCleanup = true
         lifecycle.childExited(child)
         expect(lifecycle.leases.isEmpty && lifecycle.canFinishTermination, "confirmed child exit releases only owned leases")
@@ -1238,7 +1284,7 @@ import Foundation
         expect(membershipStore.membershipSnapshots.isEmpty && membershipStore.canToggleAccount(id: memberA.id),
             "completed long-run requests never exhaust the snapshot limit")
         membershipChild.terminate()
-        await Task.detached { membershipChild.waitUntilExit() }.value
+        try await awaitFixtureExit(membershipChild)
         membershipStore.process = nil
         membershipStore.phase = .stopped
 
@@ -1261,7 +1307,7 @@ import Foundation
         expect(uncertainStore.requiresStopConfirmation, "uncertain lease still requires interruption consent")
         LocalProxyFixtureRuntime.allowStopSignals = true
         uncertainChild.terminate()
-        await Task.detached { uncertainChild.waitUntilExit() }.value
+        try await awaitFixtureExit(uncertainChild)
         uncertainStore.childExited(uncertainChild)
         expect(uncertainStore.canFinishTermination, "later confirmed exit resolves uncertainty")
 
@@ -1608,7 +1654,7 @@ import Foundation
         expect(wrongPass.error == "stage_not_applicable", "other identity stage is silently inapplicable")
         expect(creditStore.setCreditFloors(primary: 100, secondary: 0), "running policy can change for subsequent requests")
         creditChild.terminate()
-        await Task.detached { creditChild.waitUntilExit() }.value
+        try await awaitFixtureExit(creditChild)
         creditStore.childExited(creditChild)
         HubConsoleModel.fixtureAvailability = .unavailable
         let refreshStarted = DispatchSemaphore(value: 0)

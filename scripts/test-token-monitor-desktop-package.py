@@ -260,6 +260,8 @@ class AsarPackageTests(unittest.TestCase):
             "src/electron/providers/antigravity/oauthLogin.js",
             "src/shared/providers/antigravity/oauth.js",
             "src/shared/providers/grok/sessionMetadata.js",
+            # Reviewed local Codex machine plan-type propagation.
+            "src/shared/limits/core.js", "src/shared/providers/codex/limits.js",
             # Approved selective v0.70 statistics/archive backports.
             "src/shared/history.js", "src/shared/hubBuildRegistry.json",
             "src/shared/providers/codex/sessionContext.js",

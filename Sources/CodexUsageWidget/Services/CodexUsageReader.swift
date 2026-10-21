@@ -470,7 +470,7 @@ final class CodexUsageReader {
             var result = AppServerSnapshot().replacingEngineQuota(limits, response: response)
             result.quotaProvenance = "engine"
             result.account = AccountInfo(
-                type: "chatgpt", planType: nil,
+                type: "chatgpt", planType: limits.planType,
                 emailPresent: !before.email.isEmpty, email: before.email)
             if result.auxiliaryReadStatus == .unavailable || !quotaOnly {
                 let remaining = min(budget, 60) - (ProcessInfo.processInfo.systemUptime - started)
@@ -480,8 +480,10 @@ final class CodexUsageReader {
                         requestTimeout: min(3, remaining - 1.5), cancellation: quotaCancellation)
                     guard !quotaCancellation.isCancelled else { throw TokenMonitorFailure.cancelled }
                     guard isStable() else { throw TokenMonitorFailure.invalidSource }
-                    if managedProfile.matchesRecordedAccount(email: auxiliary.account?.email) {
-                        result.account = auxiliary.account
+                    if let account = auxiliary.account, managedProfile.matchesRecordedAccount(email: account.email) {
+                        result.account = AccountInfo(
+                            type: account.type, planType: account.planType ?? limits.planType,
+                            emailPresent: account.emailPresent, email: account.email)
                         result.cloudLifetimeTokens = auxiliary.cloudLifetimeTokens
                         if result.auxiliaryReadStatus == .unavailable, let credits = auxiliary.credits {
                             result.credits = credits

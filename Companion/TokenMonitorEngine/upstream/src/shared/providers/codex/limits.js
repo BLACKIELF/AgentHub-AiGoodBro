@@ -544,6 +544,7 @@ function mapCodexRateLimitsToProvider(payload, meta = {}) {
     provider: 'codex',
     accountKey: meta.accountKey || '',
     accountLabel: meta.accountLabel || codexAccountLabel(payload),
+    planType: codexAlternatePlanType(rateLimits) || codexAlternatePlanType(payload.account),
     accountName: meta.accountName || '',
     accountEmail: meta.accountEmail || payload.account?.email || '',
     workspaceKind: meta.workspaceKind || '',

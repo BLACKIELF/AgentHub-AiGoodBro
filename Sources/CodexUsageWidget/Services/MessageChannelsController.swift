@@ -84,7 +84,7 @@ final class MessageCredentialReadRequest {
 /// dialog, and use the same bounded read and interaction lock as Feishu.
 final class MessageChannelKeychainStore: MessageChannelCredentialStoring {
     private let queue = DispatchQueue(label: "com.blackielf.codex-account-manager-next.message-keychain", qos: .utility)
-    private let capacity = DispatchSemaphore(value: 2)
+    private let capacity = DispatchSemaphore(value: MessageChannelKind.allCases.count)
     private let interaction: FeishuKeychainInteraction
     private let copyMatching: (CFDictionary, UnsafeMutablePointer<CFTypeRef?>) -> OSStatus
 
@@ -422,7 +422,7 @@ final class MessageChannelsController: ObservableObject {
         tasks.removeValue(forKey: kind)?.values.forEach { $0.cancel() }
         setPhase(isEnabled(kind) ? (credentials[kind] == nil ? .needsSetup : .pendingVerification) : .disabled, for: kind)
         if kind == .personalWeChat {
-            personalWeChatHasContext = isEnabled(kind) && (credentials[kind]?.personalBinding?.hasFreshContext() ?? false)
+            personalWeChatHasContext = isEnabled(kind) && (credentials[kind]?.personalBinding?.hasUsableContext() ?? false)
             if isEnabled(kind), !personalWeChatHasContext { setPhase(.needsSetup, for: kind) }
         }
     }
@@ -509,7 +509,7 @@ final class MessageChannelsController: ObservableObject {
                         guard let binding = value.personalBinding else { return nil }
                         return try? botLedger.conversationID(owner: binding.botID + "\u{0}" + (value.target ?? ""))
                     } ?? ""
-                personalWeChatHasContext = credential?.personalBinding?.hasFreshContext() ?? false
+                personalWeChatHasContext = credential?.personalBinding?.hasUsableContext() ?? false
                 if !personalWeChatHasContext { setPhase(.needsSetup, for: kind) }
                 let language = WidgetLanguage.storedOrAutomatic()
                 setPersonalStatus(
@@ -603,7 +603,7 @@ final class MessageChannelsController: ObservableObject {
             let value = credentials[kind], (try? value.validated(for: kind)) != nil
         else { return nil }
         if kind == .personalWeChat,
-            !personalWeChatConnected || !personalWeChatHasContext || value.personalBinding?.hasFreshContext() != true
+            !personalWeChatConnected || !personalWeChatHasContext || value.personalBinding?.hasUsableContext() != true
         {
             return nil
         }
@@ -762,7 +762,7 @@ final class MessageChannelsController: ObservableObject {
         let messageOptions = weChatMessageOptions
         guard let status = kind != .telegram ? status.selectingQuotaWindows(messageOptions) : status else { return }
         if kind == .personalWeChat,
-            !personalWeChatConnected || !personalWeChatHasContext || value.personalBinding?.hasFreshContext() != true
+            !personalWeChatConnected || !personalWeChatHasContext || value.personalBinding?.hasUsableContext() != true
         {
             personalWeChatHasContext = false
             setPhase(.needsSetup, for: kind)
@@ -992,7 +992,7 @@ final class MessageChannelsController: ObservableObject {
                     let current = MessageChannelCredential(secret: credential.secret, target: credential.target, personalBinding: context)
                     self.credentials[.personalWeChat] = current
                     let previouslyHadContext = self.personalWeChatHasContext
-                    self.personalWeChatHasContext = context.hasFreshContext()
+                    self.personalWeChatHasContext = context.hasUsableContext()
                     if !previouslyHadContext && self.personalWeChatHasContext {
                         self.setPhase(.pendingVerification, for: .personalWeChat)
                         self.setPersonalStatus(WidgetLanguage.storedOrAutomatic().text("微信会话已就绪，可以发送测试消息。", "WeChat conversation is ready. You can send a test message."))
@@ -1278,7 +1278,7 @@ final class MessageChannelsController: ObservableObject {
                 }
                 guard valid(), !Task.isCancelled,
                     let credential = self.credentials[.personalWeChat],
-                    credential.personalBinding?.hasFreshContext() == true
+                    credential.personalBinding?.hasUsableContext() == true
                 else { return }
                 do { try self.botLedger.mark(id, phase: .replyAttempted) } catch {
                     self.setPersonalStatus("微信回复记录未能保存，已暂停发送。")

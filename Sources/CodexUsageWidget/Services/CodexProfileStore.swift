@@ -132,7 +132,18 @@ struct CodexResetCreditReceipt: Codable, Equatable, Identifiable {
     static func change(
         previous: CodexAccountSnapshot?, current: CodexAccountSnapshot, noticeChannels: [String]? = nil
     ) -> CodexResetCreditReceipt? {
-        guard Self.validNoticeChannels(noticeChannels), let previous,
+        guard Self.validNoticeChannels(noticeChannels),
+            let comparison = comparison(previous: previous, current: current), comparison.delta != 0
+        else { return nil }
+        return .init(
+            id: UUID(), previousObservedAt: comparison.previousObservedAt, observedAt: comparison.observedAt,
+            previousAvailable: comparison.previousAvailable, available: comparison.available, noticeChannels: noticeChannels)
+    }
+
+    static func comparison(
+        previous: CodexAccountSnapshot?, current: CodexAccountSnapshot
+    ) -> CodexResetCreditComparison? {
+        guard let previous,
             previous.quotaReadSucceeded == true, current.quotaReadSucceeded == true,
             let accountID = current.accountID, !accountID.isEmpty, previous.accountID == accountID,
             let limitID = current.limitId?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -142,11 +153,11 @@ struct CodexResetCreditReceipt: Codable, Equatable, Identifiable {
             current.fetchedAt.timeIntervalSince1970.isFinite,
             current.fetchedAt > previous.fetchedAt,
             let before = previous.availableResetCredits, before >= 0,
-            let after = current.availableResetCredits, after >= 0, after != before
+            let after = current.availableResetCredits, after >= 0
         else { return nil }
         return .init(
-            id: UUID(), previousObservedAt: previous.fetchedAt, observedAt: current.fetchedAt,
-            previousAvailable: before, available: after, noticeChannels: noticeChannels
+            previousAvailable: before, available: after,
+            previousObservedAt: previous.fetchedAt, observedAt: current.fetchedAt
         )
     }
 
@@ -156,6 +167,17 @@ struct CodexResetCreditReceipt: Codable, Equatable, Identifiable {
     static func change(
         previousProfiles: [CodexProfile], current: CodexAccountSnapshot, noticeChannels: [String]? = nil
     ) -> CodexResetCreditReceipt? {
+        guard Self.validNoticeChannels(noticeChannels),
+            let comparison = comparison(previousProfiles: previousProfiles, current: current), comparison.delta != 0
+        else { return nil }
+        return .init(
+            id: UUID(), previousObservedAt: comparison.previousObservedAt, observedAt: comparison.observedAt,
+            previousAvailable: comparison.previousAvailable, available: comparison.available, noticeChannels: noticeChannels)
+    }
+
+    static func comparison(
+        previousProfiles: [CodexProfile], current: CodexAccountSnapshot
+    ) -> CodexResetCreditComparison? {
         guard let accountID = current.accountID, !accountID.isEmpty else { return nil }
         let mirrors = previousProfiles.filter { $0.lastSnapshot?.accountID == accountID }
         let snapshots = mirrors.compactMap(\.lastSnapshot)
@@ -172,7 +194,7 @@ struct CodexResetCreditReceipt: Codable, Equatable, Identifiable {
                         || $0.limitId != previous.limitId)
             })
         else { return nil }
-        return change(previous: previous, current: current, noticeChannels: noticeChannels)
+        return comparison(previous: previous, current: current)
     }
 
     static func increase(

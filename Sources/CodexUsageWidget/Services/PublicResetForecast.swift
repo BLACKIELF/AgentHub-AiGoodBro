@@ -688,12 +688,14 @@ enum PublicResetForecastSelfTest {
             let forecastElements = (forecastCardJSON?["body"] as? [String: Any])?["elements"] as? [[String: Any]]
             let forecastText = forecastElements?.compactMap { $0["content"] as? String }.joined(separator: "\n")
             guard let forecastTitle, let forecastBody = forecastText,
-                forecastTitle == "重置预告 · 待确认", forecastBody.contains("预计重置时间"),
-                forecastBody.contains("待确认"), forecastBody.contains(forecastCard.sourceURL.absoluteString),
+                forecastTitle == "Codex 重置预告", forecastBody.contains("预告时间"),
+                forecastBody.contains("尚未确认重置完成"), !forecastBody.contains(forecastCard.sourceURL.absoluteString),
+                forecastBody.hasSuffix("消息来源：aigoodbro.com"),
+                forecastBody.components(separatedBy: "\n").filter { $0 == "消息来源：aigoodbro.com" }.count == 1,
                 forecastTitleJSON?["template"] as? String == "orange",
                 forecastCardJSON?["schema"] as? String == "2.0",
-                forecastBody.contains(PublicResetAnnouncementPresentation.compactEventTime(laterPost.announcedAt, language: .zh)),
-                !forecastBody.contains(PublicResetAnnouncementPresentation.compactEventTime(laterPost.fetchedAt, language: .zh))
+                forecastBody.contains(MessageNoticeFormat.fullDate(laterPost.announcedAt)),
+                !forecastBody.contains(MessageNoticeFormat.fullDate(laterPost.fetchedAt))
             else { return fail(#line) }
 
             let mismatchedDate = PublicResetForecast(

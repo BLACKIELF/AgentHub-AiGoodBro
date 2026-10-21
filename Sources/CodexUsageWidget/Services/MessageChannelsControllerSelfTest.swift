@@ -654,14 +654,18 @@ enum MessageChannelsControllerSelfTest {
         }
         tracked.start()
         tracked.setEnabled(true, for: .personalWeChat)
-        trackedStorage.resolve(
-            MessageChannelCredential(
-                secret: "synthetic-tracked-session-token", target: "scanner@im.wechat",
-                personalBinding: PersonalWeChatBinding(
-                    baseURL: PersonalWeChatMessageChannel.defaultBaseURL, botID: "synthetic-tracked-bot",
-                    contextToken: "synthetic-tracked-context", contextCheckedAt: Date())))
+        let retainedCredential = MessageChannelCredential(
+            secret: "synthetic-tracked-session-token", target: "scanner@im.wechat",
+            personalBinding: PersonalWeChatBinding(
+                baseURL: PersonalWeChatMessageChannel.defaultBaseURL, botID: "synthetic-tracked-bot",
+                contextToken: "synthetic-tracked-context", contextCheckedAt: Date().addingTimeInterval(-3 * 24 * 3600)))
+        let restoredCredential = try! JSONDecoder().decode(MessageChannelCredential.self, from: JSONEncoder().encode(retainedCredential))
+        trackedStorage.resolve(restoredCredential)
         spin { trackedHTTP.hasPending("/ilink/bot/getupdates") }
         func trackedRevision() -> UUID? { MainActor.assumeIsolated { tracked.publicResetRevision(.personalWeChat) } }
+        expect(
+            tracked.personalWeChatConnected && tracked.personalWeChatHasContext && trackedRevision() != nil,
+            "restoring a verified context older than 24 hours blocked the controller")
         if let revision = trackedRevision() {
             let status = try! MessageTaskStatus(eventKind: .test, occurredAt: Date())
             let trackedResult = DeliveryResultBox()

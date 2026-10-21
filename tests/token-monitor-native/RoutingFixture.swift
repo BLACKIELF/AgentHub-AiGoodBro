@@ -68,8 +68,14 @@ enum Harness {
         if !value { print("FAIL " + name); throw TokenMonitorFailure.invalidResponse }
         print("PASS " + name)
     }
-    static func response(_ request: TokenMonitorRequest, reset: Bool = false) throws -> TokenMonitorResponse {
+    static func response(_ request: TokenMonitorRequest, reset: Bool = false, plan: String? = nil, weeklyOnly: Bool = false) throws -> TokenMonitorResponse {
         var provider: [String: TokenMonitorJSON] = ["provider": .string("codex"), "status": .string("ok"), "windows": .array([.object(["kind": .string("session"), "limitId": .string("codex"), "windowMinutes": .number(300), "usedPercent": .number(0)])])]
+        if let plan { provider["planType"] = .string(plan) }
+        if weeklyOnly {
+            provider["windows"] = .array([.object([
+                "kind": .string("weekly"), "limitId": .string("codex"),
+                "windowMinutes": .number(10080), "usedPercent": .number(0)])])
+        }
         if reset { provider["resetCredits"] = .object(["availableCount": .number(2)]) }
         let value = TokenMonitorResponse(schemaVersion: 1, requestId: request.requestId,
             engine: .init(repository: "Javis603/token-monitor", commit: TokenMonitorResponse.commit, version: "fixture"),
@@ -93,6 +99,21 @@ enum Harness {
         var result = reader.readQuotaSnapshot(context: context, quotaOnly: true, messages: &messages, managedProfile: profile)
         try check(result.quotaReadSucceeded && result.fiveHourQuota?.usedPercent == 0 && Harness.events == ["http", "rpc"]
             && result.auxiliaryReadStatus == .unavailable && messages.contains("auxiliary_unavailable"), "extracted route HTTP success RPC failure preserves quota")
+        Harness.events = []; Harness.http = { try response($0, reset: true, plan: "prolite", weeklyOnly: true) }
+        result = reader.readQuotaSnapshot(context: context, quotaOnly: true, messages: &messages, managedProfile: profile)
+        try check(result.quotaReadSucceeded && result.account?.planType == "prolite"
+            && result.fiveHourQuota == nil && result.sevenDayQuota?.usedPercent == 0
+            && Harness.events == ["http"], "weekly-only Pro 5x keeps fresh machine plan without RPC")
+        Harness.events = []; Harness.http = { try response($0, plan: "prolite", weeklyOnly: true) }
+        Harness.rpc = {
+            var value = CodexUsageReader.AppServerSnapshot()
+            value.account = AccountInfo(type: "chatgpt", planType: nil, emailPresent: true, email: "synthetic-identity")
+            return value
+        }
+        result = reader.readQuotaSnapshot(context: context, quotaOnly: true, messages: &messages, managedProfile: profile)
+        try check(result.account?.planType == "prolite" && Harness.events == ["http", "rpc"],
+            "same-identity auxiliary response missing plan cannot erase fresh engine plan")
+        Harness.rpc = { .init() }
         Harness.events = []; Harness.http = { try response($0, reset: true) }
         result = reader.readQuotaSnapshot(context: context, quotaOnly: true, messages: &messages, managedProfile: profile)
         try check(result.credits?.resetCredits == 2 && Harness.events == ["http"], "HTTP reset evidence avoids unconditional RPC")

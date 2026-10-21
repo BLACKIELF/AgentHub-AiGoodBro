@@ -5,7 +5,7 @@ import SwiftUI
 final class LocalProxyQueueWindowController: NSObject, NSWindowDelegate, ObservableObject {
     static let shared = LocalProxyQueueWindowController()
     static let initialContentSize = NSSize(width: 830, height: 660)
-    static let minimumContentSize = NSSize(width: 680, height: 500)
+    static let minimumContentSize = NSSize(width: 680, height: 440)
 
     private var window: NSWindow?
     private weak var model: LocalProxyQueueStore?
