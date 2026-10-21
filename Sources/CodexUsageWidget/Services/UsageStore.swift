@@ -4233,7 +4233,7 @@ final class UsageStore: ObservableObject {
         isRequestingLocalNotificationPermission = false
         localNotificationsEnabled = enabled
         resetNoticeLocalRevision = UUID()
-        quotaEventTracker.reset()
+        resetQuotaEventTrackerForNotificationConfiguration()
         if hasStarted { scheduleWarmUpMaintenanceTimer() }
         if !isPreview { UserDefaults.standard.set(enabled, forKey: Self.localNotificationsEnabledKey) }
         if !enabled || isPreview || !requestAuthorization {
@@ -4331,7 +4331,7 @@ final class UsageStore: ObservableObject {
         feishuTaskCompletionObserver = FeishuTaskCompletionObserver()
         feishuNotificationsEnabled = enabled
         if !isPreview { UserDefaults.standard.set(enabled, forKey: Self.feishuNotificationsEnabledKey) }
-        quotaEventTracker.reset()
+        resetQuotaEventTrackerForNotificationConfiguration()
         scheduleWarmUpMaintenanceTimer()
         feishuNotificationMessage =
             enabled
@@ -4348,7 +4348,7 @@ final class UsageStore: ObservableObject {
         feishuConfigurationRevision += 1
         feishuQuotaResetEnabled = enabled
         if !isPreview { UserDefaults.standard.set(enabled, forKey: Self.feishuQuotaResetEnabledKey) }
-        quotaEventTracker.reset()
+        resetQuotaEventTrackerForNotificationConfiguration()
         scheduleWarmUpMaintenanceTimer()
     }
 
@@ -4358,7 +4358,7 @@ final class UsageStore: ObservableObject {
         feishuTaskCompletionObserver = FeishuTaskCompletionObserver()
         feishuResetCreditEnabled = enabled
         if !isPreview { UserDefaults.standard.set(enabled, forKey: Self.feishuResetCreditEnabledKey) }
-        quotaEventTracker.reset()
+        resetQuotaEventTrackerForNotificationConfiguration()
         scheduleWarmUpMaintenanceTimer()
     }
 
@@ -4380,7 +4380,7 @@ final class UsageStore: ObservableObject {
         feishuConfigurationRevision += 1
         feishuMessageOptions = options
         if alertsChanged {
-            quotaEventTracker.reset()
+            resetQuotaEventTrackerForNotificationConfiguration()
             scheduleWarmUpMaintenanceTimer()
         }
         guard !isPreview, let data = try? JSONEncoder().encode(options) else { return }
@@ -4403,6 +4403,12 @@ final class UsageStore: ObservableObject {
             source: .profileSnapshot,
             snapshotAt: profile.lastSnapshot?.fetchedAt
         )
+    }
+
+    private func resetQuotaEventTrackerForNotificationConfiguration() {
+        // Reset-stop is independent of notification routing. Preserve its last
+        // official observation while any account-bound rule is armed.
+        if !proxyQuotaResetObservationEnabled { quotaEventTracker.reset() }
     }
 
     private var observesOfficialQuotaEvents: Bool {
@@ -4430,7 +4436,7 @@ final class UsageStore: ObservableObject {
                 self.feishuWebhookConfigured = false
                 self.handleFeishuCredentialFailure(error)
             }
-            self.quotaEventTracker.reset()
+            self.resetQuotaEventTrackerForNotificationConfiguration()
             if self.hasStarted { self.scheduleWarmUpMaintenanceTimer() }
         }
     }
@@ -4481,7 +4487,7 @@ final class UsageStore: ObservableObject {
             feishuNeedsAuthorization = false
             feishuNotificationMessage = WidgetLanguage.storedOrAutomatic().text(
                 "飞书本机授权已就绪，投递待验证。请发送测试并在飞书中核对收到的内容。", "Feishu local authorization is ready; delivery is unverified. Send a test and check receipt in Feishu.")
-            quotaEventTracker.reset()
+            resetQuotaEventTrackerForNotificationConfiguration()
             if hasStarted { scheduleWarmUpMaintenanceTimer() }
             return true
         case .failure(let error):
@@ -4533,7 +4539,7 @@ final class UsageStore: ObservableObject {
                 self.feishuNeedsAuthorization = false
                 self.feishuNotificationsEnabled = false
                 UserDefaults.standard.set(false, forKey: Self.feishuNotificationsEnabledKey)
-                self.quotaEventTracker.reset()
+                self.resetQuotaEventTrackerForNotificationConfiguration()
                 if self.hasStarted { self.scheduleWarmUpMaintenanceTimer() }
                 self.feishuNotificationMessage = WidgetLanguage.storedOrAutomatic().text("飞书 Webhook 已移除", "Feishu webhook removed.")
             case .failure(let error):
@@ -6515,7 +6521,7 @@ final class UsageStore: ObservableObject {
         taskWorkbench.bind(runtimes: $runtimeSnapshots, live: $codexLiveTasks)
         messageChannels.onConfigurationChanged = { [weak self] in
             guard let self, self.hasStarted else { return }
-            self.quotaEventTracker.reset()
+            self.resetQuotaEventTrackerForNotificationConfiguration()
             self.scheduleWarmUpMaintenanceTimer()
         }
         messageChannels.onRefreshPersonalChatTargets = { [weak self] in self?.taskClient.refreshThreads() }

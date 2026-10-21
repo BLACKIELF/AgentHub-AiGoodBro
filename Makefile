@@ -134,6 +134,10 @@ test: build
 	python3 tests/test_dispatch_registry_io.py
 	python3 scripts/test-app-updates.py
 	python3 scripts/test-reset-credit-auto.py
+	python3 scripts/test-hub-warm-up-capacity.py
+	python3 scripts/test-proxy-reset-observation.py
+	python3 scripts/test-local-proxy-host.py --reset-stop-only
+	python3 scripts/test-local-proxy-host.py --participation-only
 	python3 scripts/test-wechat-bot.py
 	python3 scripts/test-dispatch-participation.py --tests-only
 	$(MAKE) --no-print-directory test-token-monitor-backports

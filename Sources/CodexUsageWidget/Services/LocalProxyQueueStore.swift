@@ -401,6 +401,7 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
     }
     func canSetResetStop(id: String) -> Bool {
         canReorder && rows.contains { $0.id == id }
+            && (canEdit || isRegisteredBindingCurrent(id))
             && usageStore.profiles.first { $0.id == id }?.lastSnapshot?.accountID?.isEmpty == false
     }
 
@@ -430,9 +431,12 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
             usageStore.profiles.contains(where: { $0.id == profileID && $0.lastSnapshot?.accountID == accountID })
         else { return }
         let hash = DispatchActivityStore.hash(accountID)
-        let matching = (preferences.resetStopRules ?? [:]).filter {
-            $0.value.accountHash == hash && observedAt > $0.value.armedAt
-                && observedAt > ($0.value.pausedAt ?? .distantPast)
+        let matching = (preferences.resetStopRules ?? [:]).filter { id, rule in
+            rows.contains(where: { $0.id == id })
+                && usageStore.profiles.contains(where: { $0.id == id && $0.lastSnapshot?.accountID == accountID })
+                && (canEdit || isRegisteredBindingCurrent(id))
+                && rule.accountHash == hash && observedAt > rule.armedAt
+                && observedAt > (rule.pausedAt ?? .distantPast)
         }
         guard !matching.isEmpty else { return }
         let mirrors = Set(usageStore.profiles.filter { !$0.isSystemProfile && $0.lastSnapshot?.accountID == accountID }.map(\.id))
@@ -534,14 +538,15 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
         }
     }
     func moveAccount(id: String, by offset: Int) {
+        let displayed = panelOrderedDisplayRows
         guard canMoveAccount(id: id, by: offset),
-            let index = rows.firstIndex(where: { $0.id == id }), rows.indices.contains(index + offset)
+            let index = displayed.firstIndex(where: { $0.id == id }), displayed.indices.contains(index + offset)
         else { return }
-        var ids = rows.map(\.id)
+        var ids = displayed.map(\.id)
         ids.swapAt(index, index + offset)
         let previous = preferences
-        let source = rows[index]
-        let target = rows[index + offset]
+        let source = displayed[index]
+        let target = displayed[index + offset]
         // Moving across a sorting group explicitly adopts the adjacent row's
         // choice, so rebuilding and the helper's routing cannot undo the move.
         // Participation, identity, spending limits and leases are untouched.
@@ -552,13 +557,15 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
         preferences.order = ids
         if !savePreferences() { preferences = previous }
         rebuildRows()
+        flushDisplayRows()
     }
     func canMoveAccount(id: String, by offset: Int) -> Bool {
+        let displayed = panelOrderedDisplayRows
         guard canReorder, !usageStore.isPreview, !preferencesBlocked, offset == -1 || offset == 1,
-            let index = rows.firstIndex(where: { $0.id == id }), rows.indices.contains(index + offset)
+            let index = displayed.firstIndex(where: { $0.id == id }), displayed.indices.contains(index + offset)
         else { return false }
-        let source = rows[index]
-        let target = rows[index + offset]
+        let source = displayed[index]
+        let target = displayed[index + offset]
         // Desktop has a separate verified admission pass. An arrow cannot
         // change that identity or claim an order the helper cannot apply.
         return source.isDesktopAccount == target.isDesktopAccount
@@ -1959,15 +1966,16 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
         if preferences.priorityIDs.contains(oldID) { preferences.priorityIDs.insert(newID) } else { preferences.priorityIDs.remove(newID) }
         if let policy = preferences.accountPolicies?[oldID] { preferences.accountPolicies?[newID] = policy } else { preferences.accountPolicies?.removeValue(forKey: newID) }
         if let rule = preferences.resetStopRules?[oldID] { preferences.resetStopRules?[newID] = rule } else { preferences.resetStopRules?.removeValue(forKey: newID) }
+        preferences.resetStopRules?.removeValue(forKey: oldID)
     }
 
-    /// Display order follows the saved account panel order (账号页顺序, the
-    /// order profiles are stored in UsageStore), so checking 参与 / 优先 /
-    /// 最后使用 never reshuffles the list. Routing order in `rows` is
-    /// untouched and still drives admission for new requests.
+    /// Explicit arrow moves persist the manual display order. Otherwise seed
+    /// from the account panel, so participation and routing choices never
+    /// reshuffle the list. Routing groups still apply to new admissions.
     private var panelOrderedDisplayRows: [LocalProxyQueueRow] {
+        let ids = preferences.order + usageStore.profiles.map(\.id).filter { !preferences.order.contains($0) }
         let panelIndex = Dictionary(
-            usageStore.profiles.enumerated().map { ($1.id, $0) },
+            ids.enumerated().map { ($1, $0) },
             uniquingKeysWith: { min($0, $1) })
         return rows.sorted { (panelIndex[$0.id] ?? .max) < (panelIndex[$1.id] ?? .max) }
     }

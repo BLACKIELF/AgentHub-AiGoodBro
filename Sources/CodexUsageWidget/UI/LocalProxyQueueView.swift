@@ -1,4 +1,3 @@
-import AppKit
 import SwiftUI
 
 struct LocalProxyQueueView: View {
@@ -417,7 +416,7 @@ struct LocalProxyQueueView: View {
                 }
                 Text(stateTitle(row)).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 if let pausedAt = row.resetPausedAt, !row.isEnabled {
-                    Text(language.text("已暂停新任务", "Paused")).font(.caption).foregroundStyle(PrimerStatusColor.quota)
+                    Text(language.text("已暂停新任务", "Paused")).font(.caption).foregroundStyle(WorkspaceStatusForeground.warning)
                         .help(language.dateTime(pausedAt))
                 }
                 if row.snapshotStale {
@@ -551,44 +550,22 @@ struct LocalProxyQueueView: View {
         }
     }
 
-    /// GitHub Primer semantic status colors, adaptive across light/dark appearances.
-    private enum PrimerStatusColor {
-        private static func adaptive(light: UInt32, dark: UInt32) -> Color {
-            Color(
-                nsColor: NSColor(name: nil) { appearance in
-                    let hex = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? dark : light
-                    return NSColor(
-                        red: CGFloat((hex >> 16) & 0xFF) / 255,
-                        green: CGFloat((hex >> 8) & 0xFF) / 255,
-                        blue: CGFloat(hex & 0xFF) / 255,
-                        alpha: 1
-                    )
-                })
-        }
-
-        static let success = adaptive(light: 0x1A7F37, dark: 0x3FB950)
-        static let attention = adaptive(light: 0x9A6700, dark: 0xD29922)
-        static let quota = adaptive(light: 0xE36209, dark: 0xE8762D)
-        static let danger = adaptive(light: 0xCF222E, dark: 0xF85149)
-        static let neutral = adaptive(light: 0x59636E, dark: 0x9198A1)
-    }
-
     private var phaseColor: Color {
         switch model.phase {
-        case .running: return PrimerStatusColor.success
-        case .starting, .stopping: return PrimerStatusColor.attention
-        case .failed: return PrimerStatusColor.danger
-        case .stopped: return PrimerStatusColor.neutral
+        case .running: return FixedVisualPalette.statusSuccess
+        case .starting, .stopping: return FixedVisualPalette.statusWarning
+        case .failed: return FixedVisualPalette.statusDanger
+        case .stopped: return FixedVisualPalette.statusNeutral
         }
     }
 
     private func rowStatusColor(_ row: LocalProxyQueueRow) -> Color {
-        if !row.isEnabled { return PrimerStatusColor.neutral }
-        if row.state == "login_expired" { return PrimerStatusColor.danger }
-        if row.state == "quota" || row.state == "usage_limit" { return PrimerStatusColor.quota }
-        if let deadline = row.cooldownUntil, deadline > Date() { return PrimerStatusColor.quota }
-        if row.state == "temporary_error" { return PrimerStatusColor.attention }
-        if row.isCurrent || row.state == "current" || row.state == "ready" { return PrimerStatusColor.success }
+        if !row.isEnabled { return FixedVisualPalette.statusNeutral }
+        if row.state == "login_expired" { return FixedVisualPalette.statusDanger }
+        if row.state == "quota" || row.state == "usage_limit" { return FixedVisualPalette.statusWarning }
+        if let deadline = row.cooldownUntil, deadline > Date() { return FixedVisualPalette.statusWarning }
+        if row.state == "temporary_error" { return FixedVisualPalette.statusWarning }
+        if row.isCurrent || row.state == "current" || row.state == "ready" { return FixedVisualPalette.statusSuccess }
         return Color.secondary
     }
 

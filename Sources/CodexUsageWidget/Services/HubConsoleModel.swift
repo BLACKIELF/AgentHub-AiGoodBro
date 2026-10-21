@@ -30,12 +30,26 @@ enum HubWarmUpAvailability: Equatable {
     case busy
     case unavailable
 
-    static func resolve(for accountAlias: String, overview: HubOverview, now: Date = Date()) -> Self {
+    static func resolve(
+        for accountAlias: String, overview: HubOverview, occupiedLocalLeases: Int = 0, maxConcurrent: Int = 1, now: Date = Date()
+    ) -> Self {
         let alias = HubAccountTaskStatusResolver.canonicalAlias(accountAlias)
-        guard !alias.isEmpty, let tasks = overview.tasks else { return .unavailable }
-        let status = HubAccountTaskStatusResolver.status(
-            for: HubAccountTaskStatusResolver.latestTasksByAlias(tasks, now: now)[alias], now: now)
-        return status.blocksLocalCLI ? .busy : .idle
+        guard !alias.isEmpty, let tasks = overview.tasks, maxConcurrent > 0, occupiedLocalLeases >= 0 else { return .unavailable }
+        var occupied = occupiedLocalLeases
+        if occupied >= maxConcurrent { return .busy }
+        for task in tasks {
+            guard let taskAlias = task.accountAlias,
+                HubAccountTaskStatusResolver.canonicalAlias(taskAlias) == alias
+            else { continue }
+            let status = HubAccountTaskStatusResolver.status(for: task, now: now)
+            // Unknown evidence cannot be reduced to a single occupied slot.
+            guard status.phase != .uncertain else { return .unavailable }
+            if status.blocksLocalCLI {
+                occupied += 1
+                if occupied >= maxConcurrent { return .busy }
+            }
+        }
+        return .idle
     }
 }
 
@@ -377,13 +391,8 @@ enum HubConsoleModel {
             if occupied >= maxConcurrent { return .busy }
             let overview = try await fetchInspectionOverview(timeout: deadline.map { min(6, max(0.001, $0 - ProcessInfo.processInfo.systemUptime)) } ?? 6)
             if let deadline, ProcessInfo.processInfo.systemUptime >= deadline { return .unavailable }
-            let resolved = HubWarmUpAvailability.resolve(for: alias, overview: overview)
-            // A hub-busy account still has spare conversation slots; count it as
-            // one occupant instead of locking out the whole account.
-            if resolved == .busy {
-                return occupied + 1 >= maxConcurrent ? .busy : .idle
-            }
-            return resolved
+            return HubWarmUpAvailability.resolve(
+                for: alias, overview: overview, occupiedLocalLeases: occupied, maxConcurrent: maxConcurrent)
         } catch {
             return .unavailable
         }
@@ -454,6 +463,40 @@ enum HubWarmUpGateSelfTest {
         expect(
             HubWarmUpAvailability.resolve(for: "account-a", overview: HubOverview(tasks: [task(state: "running")]), now: now) == .busy,
             "active task blocks maintenance")
+        let nineHubTasks = Array(repeating: task(state: "running"), count: 9)
+        expect(
+            HubWarmUpAvailability.resolve(for: "account-a", overview: HubOverview(tasks: nineHubTasks), maxConcurrent: 10, now: now) == .idle,
+            "nine Hub tasks leave one proxy slot")
+        expect(
+            HubWarmUpAvailability.resolve(
+                for: "account-a", overview: HubOverview(tasks: nineHubTasks + [task(alias: " ACCOUNT-A ", state: "queued")]), maxConcurrent: 10, now: now) == .busy,
+            "all ten Hub tasks count toward the proxy cap")
+        expect(
+            HubWarmUpAvailability.resolve(
+                for: "account-a", overview: HubOverview(tasks: nineHubTasks), occupiedLocalLeases: 1, maxConcurrent: 10, now: now) == .busy,
+            "Hub tasks and local leases share the proxy cap")
+        expect(
+            HubWarmUpAvailability.resolve(
+                for: "account-a", overview: HubOverview(tasks: Array(nineHubTasks.prefix(8))), occupiedLocalLeases: 1, maxConcurrent: 10, now: now) == .idle,
+            "combined occupancy below the proxy cap remains available")
+        let nonblockingTasks = [
+            task(alias: "another-account", state: "running"), task(state: "succeeded"),
+            task(alias: "another-account", state: "future_state"),
+            task(state: "awaiting_approval", approvalExpired: true),
+        ]
+        expect(
+            HubWarmUpAvailability.resolve(
+                for: " ACCOUNT-A ", overview: HubOverview(tasks: nineHubTasks + nonblockingTasks), maxConcurrent: 10, now: now) == .idle,
+            "only matching active Hub tasks consume slots")
+        for uncertainTask in [
+            task(state: "uncertain"), task(state: "future_state"),
+            task(state: "succeeded", updatedAt: now.addingTimeInterval(HubAccountTaskStatusResolver.maximumFutureClockSkew + 1)),
+        ] {
+            expect(
+                HubWarmUpAvailability.resolve(
+                    for: "account-a", overview: HubOverview(tasks: [uncertainTask]), maxConcurrent: 10, now: now) == .unavailable,
+                "uncertain Hub evidence blocks despite spare proxy slots")
+        }
 
         let busyStates: [(String, HubAccountTaskPhase)] = [
             ("awaiting_approval", .awaitingApproval),
