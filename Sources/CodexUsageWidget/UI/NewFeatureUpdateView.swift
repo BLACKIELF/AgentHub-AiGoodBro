@@ -26,8 +26,8 @@ struct NewFeatureUpdateView: View {
                         .font(.system(size: 20, weight: .semibold))
                     Text(
                         language.text(
-                            "反代按钮、登录状态与本地控制连接改进，已有设置继续保留。",
-                            "Improvements to proxy buttons, sign-in status and local control connections. Your existing settings are preserved.")
+                            "反代控制与额度暂停改进，飞书、微信通知统一。",
+                            "Proxy control and quota-pause improvements, with consistent Feishu and WeChat notifications.")
                     )
                     .font(.system(size: 12)).foregroundStyle(.secondary)
                 }
@@ -68,6 +68,7 @@ struct NewFeatureSetupControls: View {
     @ObservedObject var settings: AppSettings
     var onOpenClaude: () -> Void = {}
     @State private var showingResetAutoSettings = false
+    @State private var showingNotificationSettings = false
 
     @Environment(\.colorScheme) private var colorScheme
     private var language: WidgetLanguage { settings.language }
@@ -75,39 +76,59 @@ struct NewFeatureSetupControls: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 12) {
-                featureHeading(language.text("本次更新 · 2.5.2", "What's new · 2.5.2"), symbol: "arrow.triangle.2.circlepath")
+                featureHeading(language.text("本次更新 · 2.5.2（149）", "What's new · 2.5.2 (149)"), symbol: "arrow.triangle.2.circlepath")
                 Text(
                     language.text(
-                        "反代面板的操作按钮统一使用蓝色强调样式，包含调序和重置卡入口，操作更易辨认。",
-                        "Proxy action buttons use a consistent blue emphasis, including reorder controls and reset-card actions, making them easier to identify."
+                        "可恢复的短暂本地心跳断连会在原等待期限内重试；若无法确认请求状态，停止反代并保留故障记录。已发送的模型请求不会自动重发。",
+                        "Recoverable brief local-heartbeat disconnects retry within the original deadline. If request state cannot be confirmed, the proxy stops and keeps a failure record. Sent model requests are not automatically resubmitted."
                     )
                 )
                 .font(.system(size: 12)).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
                 Text(
                     language.text(
-                        "最新刷新确认 OAuth 登录失效时，队列优先显示“登录已过期”，旧额度明确标为“上次快照”。重新登录并成功刷新后，会重新评估账号状态。",
-                        "When the latest refresh confirms an invalid OAuth sign-in, the queue prioritizes Login expired and labels older quota as Last snapshot. Status is reassessed after signing in again and refreshing successfully."
+                        "单账号反代最多支持 10 个并发请求，继续核对身份、额度、点数和参与规则。反代面板布局更紧凑，已核实的 Plus 账号可统一设置 5 小时已用上限。",
+                        "Each proxy account supports up to 10 concurrent requests, subject to identity, quota, credit and participation rules. The compact proxy panel also lets verified Plus accounts share a 5-hour used-quota limit."
                     )
                 )
                 .font(.system(size: 12)).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
                 Text(
                     language.text(
-                        "本地控制通道尚未建立连接时，短暂连接失败会在原等待期限内最多尝试三次；连接建立后的超时或断流继续按原安全规则处理。",
-                        "Before a local control connection is established, transient connection failures receive at most three attempts within the existing deadline. Timeouts or disconnects after connection keep the existing safety rules."
+                        "在反代面板按账号开启“额度恢复后暂停”：新的官方快照确认 5 小时或 7 天额度恢复后，停止接新任务，当前回复继续完成。预告与倒计时不触发；重新勾选参与即可继续。",
+                        "Enable Pause after quota reset per account in the proxy panel. A new official snapshot confirming a 5-hour or 7-day quota reset stops new tasks while admitted replies finish. Forecasts and countdowns do not trigger it; re-enable Use to resume."
                     )
                 )
                 .font(.system(size: 12)).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
                 Text(
                     language.text(
-                        "故障记录区分连接未建立、登记状态无效、登记读写失败和控制通道忙碌，只保存固定诊断码。未知结果仍按原安全规则保留占用并停止反代，便于后续核验。",
-                        "Failure records distinguish unavailable connections, invalid registry state, registry access failures and a busy control channel using fixed diagnostic codes. Unknown outcomes retain reservations and stop the proxy under the existing safety rules for later verification."
+                        "飞书和微信的生成通知共用内容，统一北京时间，日期不含年份，并附“消息来源：aigoodbro.com”尾标，不再附原帖链接。重置卡按同一账号、同一额度池的官方前后快照核对增减；减少原因未知时如实说明。",
+                        "Generated Feishu and WeChat notifications share content, Beijing time with the year omitted and the source footer aigoodbro.com, without original-post links. Reset-card changes compare official snapshots for the same account and quota pool; unknown reasons for decreases stay explicit."
                     )
                 )
                 .font(.system(size: 12)).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+                Text(
+                    language.text(
+                        "微信会话不再因本地推定的 24 小时期限失效；服务端拒绝时，仍需在通知设置中恢复连接。账号套餐类型保留官方读取结果，缺失值不覆盖已核实信息。设置中的配色库新增可选 GitHub Primer。",
+                        "WeChat conversations no longer expire under a locally assumed 24-hour limit; server rejection still requires restoring the connection in notification settings. Account plan types retain official readings when a later read omits them. GitHub Primer is available in the palette library under Settings."
+                    )
+                )
+                .font(.system(size: 12)).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 12) {
+                    Button(language.text("通知与连接设置…", "Notification & connection settings…")) { showingNotificationSettings = true }
+                        .controlSize(.regular)
+                        .disabled(store.isPreview)
+                        .accessibilityIdentifier("next.new-feature.notification-settings")
+                    Button(language.text("打开设置…", "Open Settings…")) {
+                        _ = NSApp.sendAction(NSSelectorFromString("openSettingsFromMenu"), to: NSApp.delegate, from: nil)
+                    }
+                    .controlSize(.regular)
+                    .disabled(store.isPreview)
+                    .accessibilityIdentifier("next.new-feature.settings")
+                }
             }
             .padding(18)
             Divider().padding(.horizontal, 18)
@@ -240,6 +261,10 @@ struct NewFeatureSetupControls: View {
                 profiles: store.profiles, preferences: $settings.resetCreditAutoPreferences,
                 status: store.resetCreditAutoStatus, language: language, isPreview: store.isPreview,
                 onDone: { showingResetAutoSettings = false })
+        }
+        .sheet(isPresented: $showingNotificationSettings) {
+            AccountAutomationCenterView(store: store)
+                .environment(\.widgetLanguage, language)
         }
         .accessibilityIdentifier("next.new-feature-setup-controls")
     }
