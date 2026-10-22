@@ -94,6 +94,17 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
     @Published private(set) var phase: LocalProxyPhase = .stopped
     @Published private(set) var membershipChangeWaiting = false
     @Published private(set) var endpoint: String?
+    @Published private(set) var listenPort = 18080
+    @Published private(set) var clientKeyMode = LocalProxyClientKeyMode.persistent
+    @Published private(set) var egressSettings = LocalProxyEgressSettings()
+    @Published private(set) var selfCheck = LocalProxySelfCheckModel()
+    @Published private(set) var egressState = "unconfigured"
+    @Published private(set) var discoveringNodes = false
+    private var selfCheckTask: Task<Void, Never>?
+    private var selfCheckRequestID: String?
+    private var cooldownKinds: [String: String] = [:]
+    private var probeStates: [String: String] = [:]
+    private var activeProbes = Set<String>()
     enum PreferencesFailure { case read, save }
     @Published private(set) var preferencesFailure: PreferencesFailure?
     @Published private(set) var issue: String?
@@ -244,7 +255,7 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
                     let saved = try JSONDecoder().decode(LocalProxyPreferences.self, from: data)
                     guard saved.schemaVersion == 1, saved.order.count <= 1000, Set(saved.order).count == saved.order.count,
                         saved.enabledIDs.count <= 1000, saved.validAccountPolicies, saved.validAccountRepresentatives, saved.validLastIDs, saved.validLastOverrides,
-                        saved.validResetStopRules,
+                        saved.validResetStopRules, saved.validNetworkSettings,
                         LocalProxyPreferences.validCreditFloors(primary: saved.creditFloors.primary, secondary: saved.creditFloors.secondary)
                     else { throw LocalProxyFailure.unavailable }
                     preferences = saved
@@ -255,6 +266,9 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
                 issue = message(.unavailable)
             }
         }
+        listenPort = preferences.effectiveListenPort
+        clientKeyMode = preferences.effectiveClientKeyMode
+        egressSettings = preferences.egress ?? LocalProxyEgressSettings()
         isEnabled = preferences.isEnabled
         creditFallbackEnabled = preferences.creditFallback == true
         creditPrimaryFloor = preferences.creditFloors.primary
@@ -269,6 +283,132 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
         }
         orderObservation = NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification).sink { [weak self] _ in
             Task { @MainActor [weak self] in self?.rebuildRows() }
+        }
+    }
+
+    @discardableResult
+    func setNetworkSettings(port: Int, mode: LocalProxyClientKeyMode, egress: LocalProxyEgressSettings) -> Bool {
+        guard canEdit, !usageStore.isPreview, !preferencesBlocked else { return false }
+        let previous = preferences
+        preferences.listenPort = port
+        preferences.clientKeyMode = mode
+        preferences.egress = egress
+        guard preferences.validNetworkSettings else { preferences = previous; return false }
+        guard savePreferences() else { preferences = previous; return false }
+        listenPort = port
+        clientKeyMode = mode
+        egressSettings = egress
+        return true
+    }
+
+    func discoverEgressNodes(settings: LocalProxyEgressSettings) async -> [String]? {
+        guard canEdit, !usageStore.isPreview, !discoveringNodes else { return nil }
+        discoveringNodes = true
+        defer { discoveringNodes = false }
+        do {
+            let nodes = try await LocalProxyNetworkProbe.japaneseNodes(settings: settings)
+            if nodes.isEmpty { issue = "未找到指定分组中的日本候选节点，请核对控制地址与分组。" }
+            return nodes
+        } catch { issue = "无法读取出口节点，请核对控制地址、密钥与分组。"; return nil }
+    }
+
+    func probeNow(profileID: String) {
+        guard phase == .running, activeIDs.contains(profileID), cooldownKinds[profileID] == "egress", probeStates[profileID] != "probing" else { return }
+        sendNetworkCommand(["command": "probe", "profileID": profileID])
+    }
+
+    private func sendNetworkCommand(_ object: [String: Any]) {
+        guard phase == .running, !finishing, process?.isRunning == true else { return }
+        do {
+            var data = try JSONSerialization.data(withJSONObject: object)
+            data.append(10)
+            try input?.write(contentsOf: data)
+        } catch { issue = message(.unavailable) }
+    }
+
+    private func probeOfficialBackend(profileID: String, expectedRun: String) async -> LocalProxyReply {
+        guard phase == .running, process?.isRunning == true, !finishing, !preferencesBlocked, runID == expectedRun else { return .failure(.stopping) }
+        guard activeIDs.contains(profileID), preferences.enabledIDs.contains(profileID) else { return .failure(.notParticipating) }
+        guard !activeProbes.contains(profileID), activeProbes.count < 2 else { return .failure(.credentialsBusy) }
+        guard let profile = usageStore.profiles.first(where: { $0.id == profileID }),
+            let system = usageStore.profiles.first(where: \.isSystemProfile),
+            let current = currentBinding(profile, system: system), isRegisteredBindingCurrent(profileID)
+        else { return .failure(.identity) }
+        let revocation = memberRevocations[profileID]
+        let desktop = current.lastSnapshot?.accountID == system.lastSnapshot?.accountID
+        activeProbes.insert(profileID)
+        defer { activeProbes.remove(profileID) }
+        do {
+            let credential = try await Task.detached {
+                try LocalProxyCredentialReader.readForProbe(profile: current, system: system, allowDesktopAccount: desktop)
+            }.value
+            guard phase == .running, runID == expectedRun, !finishing, currentBinding(current, system: system) != nil,
+                memberRevocations[profileID] == revocation, activeIDs.contains(profileID), preferences.enabledIDs.contains(profileID)
+            else { return .failure(.notParticipating) }
+            let observedAt = Date().timeIntervalSince1970
+            let status = try await LocalProxyNetworkProbe.official(token: credential.token, accountID: credential.accountID)
+            let after = try await Task.detached {
+                try LocalProxyCredentialReader.readForProbe(profile: current, system: system, allowDesktopAccount: desktop)
+            }.value
+            guard !Task.isCancelled, after.token == credential.token, after.accountID == credential.accountID,
+                phase == .running, runID == expectedRun, !finishing, currentBinding(current, system: system) != nil,
+                memberRevocations[profileID] == revocation, activeIDs.contains(profileID), preferences.enabledIDs.contains(profileID)
+            else { return .failure(.identity) }
+            return LocalProxyReply(ok: true, probeStatus: status, probeObservedAt: observedAt, probeIdentityHash: DispatchActivityStore.hash(credential.accountID))
+        } catch let failure as LocalProxyFailure { return .failure(failure) }
+        catch { return .failure(.unavailable) }
+    }
+
+    func runSelfCheck() {
+        guard phase == .running, !usageStore.isPreview, !selfCheck.isRunning, let run = runID, let endpoint, let key = clientKey else { return }
+        selfCheck.begin()
+        let checkID = UUID().uuidString
+        selfCheckRequestID = checkID
+        sendNetworkCommand(["command": "self_check", "requestID": checkID])
+        selfCheckTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let proxy = try LocalProxyNetworkSettings.load()
+                self.selfCheck.update("system", passed: proxy != nil, detail: proxy != nil ? "已启用手动系统代理" : "未启用系统代理；请检查系统网络设置")
+            } catch { self.selfCheck.update("system", passed: false, detail: "系统代理设置不可用；请检查手动代理与 PAC 设置") }
+            let desktopID = self.rows.first { $0.isDesktopAccount && $0.isEnabled }?.id
+            if let desktopID {
+                let proof = await self.probeOfficialBackend(profileID: desktopID, expectedRun: run)
+                guard self.runID == run, self.selfCheckRequestID == checkID, !Task.isCancelled else { return }
+                self.selfCheck.update("official", passed: proof.ok && proof.probeStatus == "reachable", detail: proof.ok && proof.probeStatus == "reachable" ? "桌面账号本轮 usage 请求成功" : "桌面账号后端探测失败；请检查登录和网络")
+            } else { self.selfCheck.update("official", passed: false, detail: "桌面账号未加入反代；请先核验并启用此账号") }
+            let endpointOK = (try? await LocalProxyNetworkProbe.models(endpoint: endpoint, key: key)) == true
+            guard self.runID == run, self.selfCheckRequestID == checkID, !Task.isCancelled else { return }
+            self.selfCheck.update("endpoint", passed: endpointOK, detail: endpointOK ? "端口、访问密钥和模型列表验证成功" : "端点验证失败；请检查端口、密钥与反代进程")
+            let active = self.rows.filter(\.isEnabled)
+            let cooling = active.filter { ($0.cooldownUntil ?? .distantPast) > Date() }.count
+            let limited = active.filter { ["quota", "usage_limit"].contains($0.state) }.count
+            let available = active.filter { ($0.cooldownUntil ?? .distantPast) <= Date() && ["ready", "current"].contains($0.state) }.count
+            let unknown = active.filter { !["ready", "current", "quota", "usage_limit", "busy"].contains($0.state) && ($0.cooldownUntil ?? .distantPast) <= Date() }.count
+            self.selfCheck.update("pool", passed: available > 0, detail: "可用 \(available) · 冷却 \(cooling) · 限流/额度 \(limited) · 未确认 \(unknown) · 总数 \(active.count)")
+            for _ in 0..<160 {
+                if self.selfCheck.steps.first(where: { $0.id == "egress" })?.passed != nil { break }
+                do { try await Task.sleep(nanoseconds: 100_000_000) } catch { return }
+                guard self.runID == run, self.selfCheckRequestID == checkID else { return }
+            }
+            if self.selfCheck.steps.first(where: { $0.id == "egress" })?.passed == nil {
+                self.selfCheck.update("egress", passed: false, detail: "出口探测超时；请检查控制 API 和分组")
+            }
+            self.selfCheck.isRunning = false
+            self.selfCheckTask = nil
+        }
+    }
+
+    private func consumeEgress(_ object: [String: Any]) {
+        guard let state = object["state"] as? String,
+            ["healthy", "disabled", "unconfigured", "unavailable", "dead", "switched", "all_dead", "changed"].contains(state) else { return }
+        egressState = state
+        if let requestID = object["requestID"] as? String, requestID == selfCheckRequestID {
+            let latency = (object["latencyMS"] as? Int).flatMap { (0...60000).contains($0) ? $0 : nil }
+            selfCheck.update("egress", passed: state == "healthy", detail: state == "healthy" ? "当前分组节点可达" + (latency.map { " · \($0) ms" } ?? "") : "出口未验证（\(state)）；请检查控制地址、分组和节点")
+        }
+        if ["switched", "all_dead"].contains(state), let runID {
+            try? DispatchActivityStore.live.appendIssue(id: "proxy-network-\(runID)", phase: state, summary: state == "switched" ? "Local proxy watchdog switched an unavailable egress node." : "Local proxy watchdog found no reachable allowlisted node.")
         }
     }
 
@@ -884,7 +1024,15 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
             startupStep = "state"
             let run = UUID().uuidString.lowercased()
             let control = try randomKey()
-            let client = try randomKey()
+            let client: String
+            if preferences.effectiveClientKeyMode == .persistent {
+                if let saved = preferences.persistentClientKey { client = saved }
+                else {
+                    client = try randomKey()
+                    preferences.persistentClientKey = client
+                    guard savePreferences() else { throw LocalProxyFailure.unavailable }
+                }
+            } else { client = try randomKey() }
             let folder = URL(fileURLWithPath: "/private/tmp", isDirectory: true).appendingPathComponent("aigoodbro-next-proxy-" + run, isDirectory: true)
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
             runDirectory = folder
@@ -1003,11 +1151,13 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
             try child.run()
             var configuration: [String: Any] = [
                 "schemaVersion": 1, "runID": run, "controlSocket": folder.appendingPathComponent("control.sock").path,
-                "controlKey": control, "clientKey": client, "port": 0, "stateDirectory": stateDirectory.resolvingSymlinksInPath().path,
+                "controlKey": control, "clientKey": client, "port": preferences.effectiveListenPort, "stateDirectory": stateDirectory.resolvingSymlinksInPath().path,
                 "accounts": rows.map { ["id": $0.id] },
                 "models": CodexExecutionPreference.Model.allCases.map(\.rawValue),
                 "desktopFallback": true,
             ]
+            configuration["accountIdentityHashes"] = pool.mapValues { DispatchActivityStore.hash($0.accountID) }
+            configuration["egress"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(egressSettings))
             if let networkProxy { configuration["networkProxy"] = networkProxy }
             var bytes = try JSONSerialization.data(withJSONObject: configuration)
             bytes.append(10)
@@ -1221,6 +1371,13 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
         runID = nil
         controlKey = nil
         clientKey = nil
+        selfCheckTask?.cancel()
+        selfCheckTask = nil
+        selfCheckRequestID = nil
+        selfCheck.isRunning = false
+        cooldownKinds = [:]
+        probeStates = [:]
+        egressState = "unconfigured"
         desktopConnection = nil
         desktopAvailable = false
         endpoint = nil
@@ -1299,6 +1456,10 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
             return LocalProxyReply(ok: true)
         }
         guard registeredPool[request.profileID] != nil else { return .failure(.identity) }
+        if request.command == "egress_probe" {
+            guard request.leaseID == nil else { return .failure(.identity) }
+            return await probeOfficialBackend(profileID: request.profileID, expectedRun: request.runID)
+        }
         if request.command == "quota_recovery" {
             guard request.leaseID == nil else { return .failure(.identity) }
             guard !preferencesBlocked, !finishing, phase == .running, process?.isRunning == true
@@ -1696,6 +1857,11 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
         switch type {
         case "ready":
             guard phase == .starting, let port = object["port"] as? Int, (1024...65535).contains(port) else { return }
+            guard preferences.effectiveListenPort == 0 || preferences.effectiveListenPort == port else {
+                issue = message(.unavailable)
+                Task { [weak self] in await self?.stop(reason: .startupFailure) }
+                return
+            }
             endpoint = "http://127.0.0.1:\(port)/v1"
             do { try prepareDesktopConnection() } catch {
                 issue = message(.unavailable)
@@ -1726,10 +1892,16 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
             // Busy waiters report the same account every polling cycle. Only
             // changed control state needs projection; duplicate events must not
             // flood MainActor with rebuilds and delay admission replies.
-            guard accountStates[id] != state || cooldowns[id] != cooldown else { return }
+            let kind = object["cooldownKind"] as? String == "egress" ? "egress" : nil
+            let probe = (object["probeState"] as? String).flatMap { ["probing", "waiting", "failed"].contains($0) ? $0 : nil }
+            guard accountStates[id] != state || cooldowns[id] != cooldown || cooldownKinds[id] != kind || probeStates[id] != probe else { return }
+            cooldownKinds[id] = kind
+            probeStates[id] = probe
             accountStates[id] = state
             cooldowns[id] = cooldown
             rebuildRows()
+        case "egress":
+            consumeEgress(object)
         case "error":
             let code = object["errorCode"] as? String ?? ""
             let details: Set<String> = [
@@ -1746,7 +1918,9 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
                 }
                 return
             }
-            issue = message(.unavailable)
+            if code == "listen_port_occupied" {
+                issue = WidgetLanguage.storedOrAutomatic().text("端口 \(listenPort) 已被占用。请停止占用服务或修改监听端口；不会自动更换端口。", "Port \(listenPort) is occupied. Stop the listener or change the port; no fallback port is used.")
+            } else { issue = message(.unavailable) }
             if ["lease_acquire_unknown", "lease_release_unknown", "lease_heartbeat_failed"].contains(code) {
                 if let runID, phase == .running || phase == .starting {
                     try? DispatchActivityStore.live.appendIssue(
@@ -1888,7 +2062,7 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
                 isDesktopAccount: isDesktop(id),
                 isEnabled: preferences.enabledIDs.contains(id),
                 isPriority: preferences.priorityIDs.contains(id) && orderingGroup(for: id) != 1, isCurrent: state == "current", quotaText: quota, state: state,
-                cooldownUntil: cooldowns[id],
+                cooldownUntil: cooldowns[id], cooldownKind: cooldownKinds[id], probeState: probeStates[id],
                 activeRequestCount: activeRequestCount, policy: policy,
                 usesDefaultCreditFloors: preferences.policy(for: id).creditPrimaryFloor == nil,
                 isLast: orderingGroup(for: id) == 1,
@@ -2005,7 +2179,7 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
     @discardableResult
     private func savePreferences() -> Bool {
         do {
-            guard preferences.validLastIDs, preferences.validLastOverrides, preferences.validAccountRepresentatives, preferences.validResetStopRules else {
+            guard preferences.validLastIDs, preferences.validLastOverrides, preferences.validAccountRepresentatives, preferences.validResetStopRules, preferences.validNetworkSettings else {
                 throw LocalProxyFailure.unavailable
             }
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])

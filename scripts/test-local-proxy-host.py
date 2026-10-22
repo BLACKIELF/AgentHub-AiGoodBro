@@ -11,6 +11,8 @@ cooldown_negative='--cooldown-refresh-negative' in sys.argv
 legacy_negative='--legacy-cooldown-recovery-negative' in sys.argv
 legacy_recovery='--legacy-cooldown-recovery-only' in sys.argv or legacy_negative
 focused_fixture=next((entry for flag,entry in [
+    ('--network-probe-only','networkProbeFixtures'),
+    ('--network-settings-only','networkSettingsFixtures'),
     ('--account-event-pressure-only','accountEventPressureFixtures'),
     ('--maintenance-diagnostics-only','maintenanceDiagnosticsFixtures'),
     ('--oauth-failure-projection-only','oauthFailureProjectionFixtures'),
@@ -69,6 +71,18 @@ enum CodexExecutable { static func path()->String? { "/usr/bin/true" }; static f
 enum LocalProxyFixtureRuntime { static var allowStopSignals = true; static var failPreferenceRename=false; static var failFirstTerminalCleanup=false; static var failActivityCommit=false; static var failLegacyBackup=false; static var cleanupAttemptCount=0; static var afterReserve:(()->Void)?; static var afterRunning:(()->Void)?; static var helper:URL { DispatchParticipationPaths.supportDirectory().appendingPathComponent("fixture-helper") } }
 struct DispatchParticipationPaths { static func supportDirectory()->URL { URL(fileURLWithPath:ProcessInfo.processInfo.environment["PROXY_FIXTURE_ROOT"]!) }; static let snapshotFileName="fixture.json"; var hubConfig:URL; static func live(snapshot:URL)throws->Self { throw LocalProxyFailure.unavailable } }
 '''
+if focused_fixture == 'networkProbeFixtures':
+    stubs=stubs.replace('enum CodexCredentialAccessGate { static let lock=NSRecursiveLock(); static func homeLock(forHomePath:String)->NSRecursiveLock { lock } }', '''
+enum CodexCredentialAccessGate {
+    static let lock=NSRecursiveLock()
+    private static let registry=NSLock()
+    private static var homes:[String:NSRecursiveLock]=[:]
+    static func homeLock(forHomePath path:String)->NSRecursiveLock {
+        registry.lock(); defer { registry.unlock() }
+        if let gate=homes[path] { return gate }
+        let gate=NSRecursiveLock(); homes[path]=gate; return gate
+    }
+}''')
 if dynamic_http:
     # Peripheral fixture bindings only; the native queue, IPC and registry stay production code.
     stubs=stubs.replace('static func alias(for:String)->String? { "fixture-alias" }',
@@ -105,12 +119,17 @@ with tempfile.TemporaryDirectory(prefix='aigoodbro-proxy-host-fixture-', dir=os.
     (folder/'Stubs.swift').write_text(stubs+bounded+identity+quota_models+presentation)
     files=[folder/'Stubs.swift',root/'Sources/CodexUsageWidget/Domain/LocalProxyQueue.swift',service/'CodexCredentialTransaction.swift',service/'DispatchActivityStore.swift',service/'LocalProxyBridge.swift',service/'LocalProxyNetworkSettings.swift',service/'LocalProxyQueueStore.swift',root/'scripts/test-local-proxy-host.swift']
     files.insert(-1, service/'LocalProxyLegacyCooldownRecovery.swift')
+    files.insert(-1, root/'Sources/CodexUsageWidget/Domain/LocalProxySelfCheckModel.swift')
+    files.insert(-1, service/'LocalProxyNetworkProbe.swift')
+    files.insert(-1, service/'TokenMonitorHTTPTransport.swift')
     if dynamic_http:
         files[-1]=root/'scripts/LocalProxyDynamicHTTPFixture.swift'
     elif cleanup_retry:
         files[-1]=root/'scripts/LocalProxyCleanupRetryFixture.swift'
     else:
         files.insert(-1, root/'scripts/test-local-proxy-host-control.swift')
+        files.insert(-1, root/'scripts/LocalProxyNetworkFixture.swift')
+        files.insert(-1, root/'scripts/LocalProxyProbeFixture.swift')
         files.insert(-1, root/'scripts/LocalProxyAccountEventFixture.swift')
         files.insert(-1, root/'scripts/LocalProxyParticipationFixture.swift')
         files.insert(-1, root/'scripts/LocalProxyResetStopFixture.swift')
@@ -124,6 +143,13 @@ with tempfile.TemporaryDirectory(prefix='aigoodbro-proxy-host-fixture-', dir=os.
         target=folder/source.name
         if target != source:
             content=source.read_text()
+            if source.name == 'TokenMonitorHTTPTransport.swift' and focused_fixture == 'networkProbeFixtures':
+                # Keep request construction, cancellation, redirects and bounded
+                # response handling production-real; intercept every URL before
+                # it reaches a socket. The fixture cannot contact the internet.
+                binding='self.configuration = configuration.copy() as! URLSessionConfiguration'
+                assert content.count(binding) == 1
+                content=content.replace(binding, binding + '\n        self.configuration.protocolClasses = [LocalProxyProbeURLProtocol.self]')
             if source.name == 'LocalProxyBridge.swift' and control_negative:
                 # Restore the original scheduling defect only in this frozen
                 # disposable copy; the production worktree is never rewritten.
@@ -133,6 +159,9 @@ with tempfile.TemporaryDirectory(prefix='aigoodbro-proxy-host-fixture-', dir=os.
             if source.name == 'test-local-proxy-host.swift' and focused_fixture:
                 original_main=declaration(content, '    @MainActor static func main() async throws')
                 content=content.replace(original_main, '    @MainActor static func main() async throws { setbuf(stdout, nil); do { try await '+focused_fixture+'() } catch { print("FAIL_FOCUSED: \\(error)"); exit(1) } }')
+            if source.name == 'test-local-proxy-host.swift':
+                # The legacy synthetic helper must report its fixed startup port.
+                content=content.replace('54876', '18080')
             if source.name == 'DispatchActivityStore.swift':
                 commit='guard synced == 0,'
                 assert content.count(commit) == 1
@@ -247,12 +276,16 @@ with tempfile.TemporaryDirectory(prefix='aigoodbro-proxy-host-fixture-', dir=os.
             shutil.copy2(source, copied/source.name)
         originals=[root/'Sources/CodexUsageWidget/Domain/LocalProxyQueue.swift', service/'LocalProxyQueueStore.swift',
                    root/'scripts/LocalProxyParticipationFixture.swift',root/'scripts/test-local-proxy-host-control.swift',Path(__file__)]
+        if focused_fixture == 'networkProbeFixtures':
+            originals += [service/'LocalProxyBridge.swift',service/'LocalProxyNetworkProbe.swift',service/'TokenMonitorHTTPTransport.swift',root/'scripts/LocalProxyProbeFixture.swift']
         (evidence/(focused_fixture+'-compiled-source.json')).write_text(json.dumps({
             'schemaVersion':1,'fixture':focused_fixture,
             'compiledFiles':[{'name':source.name,'sha256':hashlib.sha256(source.read_bytes()).hexdigest()} for source in files],
             'originalFiles':[{'path':str(source.relative_to(root)),'sha256':hashlib.sha256(source.read_bytes()).hexdigest()} for source in originals],
             'seams':['synthetic peripheral profile and Hub stubs','private test visibility','isolated temporary support root',
-                     'preference rename failure and post-reservation callback injection'],
+                     'preference rename failure and post-reservation callback injection']
+                    + (['URLProtocol intercepts every HTTP request before socket access; no live credentials',
+                        'distinct credential home gates in peripheral stub'] if focused_fixture == 'networkProbeFixtures' else []),
         },indent=2)+'\n')
     if dynamic_http:
         evidence=Path(os.environ['PROXY_DYNAMIC_HTTP_EVIDENCE'])

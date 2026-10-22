@@ -193,7 +193,10 @@ func TestParticipationRemovalWithoutRemainingAdmissionNeverReachesUpstream(t *te
 				complete(w, "unexpected")
 			}))
 			t.Cleanup(upstream.Close)
-			_, server, out := startTestRuntime(t, s, upstream.URL)
+			rt, server, out := startTestRuntime(t, s, upstream.URL)
+			// This verifies all admission stages, not deadline expiry. Eight
+			// local RPCs must fit even under race-detector/parallel-build load.
+			rt.selector.waitFor = time.Second
 			response := request(t, s, server.URL, false)
 			body := consume(t, response)
 			if response.StatusCode != http.StatusServiceUnavailable || !strings.Contains(body, tc.wantMessage) || upstreamCalls.Load() != 0 || len(acquiredSnapshot(b)) != 0 {

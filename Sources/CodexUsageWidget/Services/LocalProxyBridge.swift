@@ -239,9 +239,23 @@ enum LocalProxyCredentialReader {
         let accountID: String
         let expiresAt: Double
     }
+    /// Probe reads never wait behind a writer or hold a gate across HTTP.
+    static func readForProbe(profile: CodexProfile, system: CodexProfile, allowDesktopAccount: Bool) throws -> Value {
+        guard CodexCredentialAccessGate.lock.try() else { throw LocalProxyFailure.credentialsBusy }
+        defer { CodexCredentialAccessGate.lock.unlock() }
+        let homes = Set([profile.codexHomeURL, system.codexHomeURL].map { CodexCredentialTransaction.canonical($0).path }).sorted()
+        var held: [NSRecursiveLock] = []
+        defer { held.reversed().forEach { $0.unlock() } }
+        for home in homes {
+            let gate = CodexCredentialAccessGate.homeLock(forHomePath: home)
+            guard gate.try() else { throw LocalProxyFailure.credentialsBusy }
+            held.append(gate)
+        }
+        return try read(profile: profile, system: system, allowDesktopAccount: allowDesktopAccount, probeOnly: true)
+    }
     static func read(
         profile: CodexProfile, system: CodexProfile, now: Date = Date(), allowDesktopAccount: Bool = false, creditFloor: Int? = nil, allowPaidCredits: Bool = false,
-        policy: LocalProxyAccountPolicy = LocalProxyAccountPolicy(), deadline: TimeInterval? = nil
+        policy: LocalProxyAccountPolicy = LocalProxyAccountPolicy(), deadline: TimeInterval? = nil, probeOnly: Bool = false
     )
         throws -> Value
     {
@@ -262,7 +276,7 @@ enum LocalProxyCredentialReader {
             let result = try validate(
                 data: allowDesktopAccount ? centralData : data, profile: profile, centralIdentity: centralIdentity, now: now, allowDesktopAccount: allowDesktopAccount,
                 creditFloor: creditFloor,
-                allowPaidCredits: allowPaidCredits, policy: policy)
+                allowPaidCredits: allowPaidCredits, policy: policy, probeOnly: probeOnly)
             guard try readSnapshot(home: home) == data,
                 try readSnapshot(home: central) == centralData,
                 CodexCredentialTransaction.canonical(profile.codexHomeURL) == home,
@@ -295,7 +309,7 @@ enum LocalProxyCredentialReader {
 
     static func validate(
         data: Data, profile: CodexProfile, centralIdentity: CodexCredentialIdentity, now: Date, allowDesktopAccount: Bool = false, creditFloor: Int? = nil,
-        allowPaidCredits: Bool = false, policy: LocalProxyAccountPolicy = LocalProxyAccountPolicy()
+        allowPaidCredits: Bool = false, policy: LocalProxyAccountPolicy = LocalProxyAccountPolicy(), probeOnly: Bool = false
     ) throws -> Value {
         guard data.count <= 1024 * 1024, !profile.isSystemProfile,
             let snapshot = profile.lastSnapshot,
@@ -310,7 +324,7 @@ enum LocalProxyCredentialReader {
             let tokens = object["tokens"] as? [String: Any], let token = tokens["access_token"] as? String,
             token.utf8.count <= 32768, !token.contains("\n"), !token.contains("\r")
         else { throw LocalProxyFailure.identity }
-        if let failure = LocalProxyAdmission.quota(profile, now: now, creditFloor: creditFloor, allowPaidCredits: allowPaidCredits, policy: policy) { throw failure }
+        if !probeOnly, let failure = LocalProxyAdmission.quota(profile, now: now, creditFloor: creditFloor, allowPaidCredits: allowPaidCredits, policy: policy) { throw failure }
         let parts = token.split(separator: ".", omittingEmptySubsequences: false)
         guard parts.count == 3 else { throw LocalProxyFailure.loginExpired }
         var encoded = String(parts[1]).replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")

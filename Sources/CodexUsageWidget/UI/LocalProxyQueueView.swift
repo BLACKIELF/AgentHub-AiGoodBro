@@ -7,6 +7,11 @@ struct LocalProxyQueueView: View {
     var isCurrentPresentation: () -> Bool = { true }
     var previewExpandedRules = false
     @Environment(\.dismiss) private var dismiss
+    @State private var portText = "18080"
+    @State private var keyMode = LocalProxyClientKeyMode.persistent
+    @State private var networkDraft = LocalProxyEgressSettings()
+    @State private var whitelistText = ""
+    @State private var networkSaved = false
     @State private var primaryFloorText = ""
     @State private var secondaryFloorText = ""
     @State private var creditFloorDraftsInitialized = false
@@ -26,6 +31,11 @@ struct LocalProxyQueueView: View {
             headerBar
             proxyToolbar
             advancedRules
+            if !model.selfCheck.steps.isEmpty { selfCheckResults }
+            if ["dead", "all_dead", "unavailable"].contains(model.egressState) {
+                Label(language.text("出口连接异常，请检查节点或控制 API；看门狗仅在当前节点不可达时切换。", "Egress is unavailable. Check the node and control API; failover only occurs when the current node is unreachable."), systemImage: "exclamationmark.triangle")
+                    .font(.caption).foregroundStyle(.red)
+            }
             queueHeader
             ScrollView {
                 LazyVStack(spacing: 4) {
@@ -90,6 +100,10 @@ struct LocalProxyQueueView: View {
         }
         .onAppear {
             guard !creditFloorDraftsInitialized else { return }
+            portText = String(model.listenPort)
+            keyMode = model.clientKeyMode
+            networkDraft = model.egressSettings
+            whitelistText = model.egressSettings.whitelist.joined(separator: "\n")
             primaryFloorText = String(model.creditPrimaryFloor)
             secondaryFloorText = String(model.creditSecondaryFloor)
             creditFloorDraftsInitialized = true
@@ -135,6 +149,8 @@ struct LocalProxyQueueView: View {
 
     private var connectionActions: some View {
         HStack(spacing: 8) {
+            Button(language.text("自检", "Self-check")) { model.runSelfCheck() }
+                .disabled(model.selfCheck.isRunning).accessibilityIdentifier("next.local-proxy.self-check")
             Button(language.text("复制连接配置", "Copy connection config")) { model.copyConnectionDetails() }
                 .help(language.text("复制本地地址和访问密钥", "Copy the local endpoint and access key"))
             if model.desktopAvailable {
@@ -142,6 +158,66 @@ struct LocalProxyQueueView: View {
                     .help(language.text("先退出 Codex，再从这里重新打开；任务使用各自选择的模型。", "Quit Codex, then reopen it here. Each task keeps its selected model."))
             }
         }.fixedSize()
+    }
+
+    private var selfCheckResults: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            ForEach(model.selfCheck.steps) { step in
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: step.passed == true ? "checkmark.circle.fill" : step.passed == false ? "xmark.circle.fill" : "circle.dotted")
+                        .foregroundStyle(step.passed == true ? Color.green : step.passed == false ? Color.red : Color.secondary)
+                    Text(step.title).fontWeight(.medium).frame(width: 72, alignment: .leading)
+                    Text(step.detail).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }.font(.caption).padding(8).background(WorkspaceGlassSurface(cornerRadius: 10))
+    }
+
+    private var networkSettings: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text(language.text("监听端口", "Listen port"))
+                TextField("18080", text: $portText).frame(width: 80)
+                Text(language.text("0 为随机端口", "0 uses a random port")).foregroundStyle(.secondary)
+                Picker(language.text("访问密钥", "Access key"), selection: $keyMode) {
+                    Text(language.text("持久保存", "Persistent")).tag(LocalProxyClientKeyMode.persistent)
+                    Text(language.text("每次生成", "Per run")).tag(LocalProxyClientKeyMode.perRun)
+                }.frame(width: 190)
+            }
+            Toggle(language.text("出口看门狗（仅当前节点不可达时切换）", "Egress watchdog (only switch an unreachable node)"), isOn: $networkDraft.enabled)
+            HStack {
+                TextField(language.text("控制 API", "Control API"), text: $networkDraft.mihomoAPI)
+                SecureField(language.text("控制密钥", "Control secret"), text: $networkDraft.mihomoSecret)
+                TextField(language.text("分组", "Group"), text: $networkDraft.group).frame(width: 110)
+            }
+            HStack(alignment: .top) {
+                Text(language.text("候选节点（每行一个）", "Candidate nodes (one per line)"))
+                TextEditor(text: $whitelistText).font(.caption.monospaced()).frame(height: 60)
+                VStack {
+                    Button(language.text("读取日本节点", "Find Japanese nodes")) {
+                        Task {
+                            if let nodes = await model.discoverEgressNodes(settings: networkDraft) { whitelistText = nodes.joined(separator: "\n") }
+                        }
+                    }.disabled(model.discoveringNodes)
+                    Button(language.text("保存连接设置", "Save connection")) {
+                        guard let port = Int(portText) else { return }
+                        var draft = networkDraft
+                        draft.whitelist = whitelistText.split(whereSeparator: \.isNewline).map { String($0).trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+                        networkSaved = model.setNetworkSettings(port: port, mode: keyMode, egress: draft)
+                    }
+                }
+            }
+            if !model.canEdit { Text(language.text("停止反代后可修改连接设置", "Stop the proxy to edit connection settings")).foregroundStyle(.secondary) }
+            if networkSaved { Text(language.text("连接设置已保存", "Connection settings saved")).foregroundStyle(.green) }
+            if Int(portText).map({ $0 == 0 || (1024...65535).contains($0) }) != true {
+                Text(language.text("端口须为 0 或 1024–65535", "Use port 0 or 1024–65535")).foregroundStyle(.red)
+            }
+        }.font(.caption).controlSize(.small).textFieldStyle(.roundedBorder)
+            .disabled(!model.canEdit).padding(8).background(WorkspaceGlassSurface(cornerRadius: 10))
+            .onChange(of: portText) { _ in networkSaved = false }
+            .onChange(of: keyMode) { _ in networkSaved = false }
+            .onChange(of: networkDraft) { _ in networkSaved = false }
+            .onChange(of: whitelistText) { _ in networkSaved = false }
     }
 
     private var parsedCreditFloors: (primary: Int, secondary: Int)? {
@@ -329,6 +405,7 @@ struct LocalProxyQueueView: View {
     private var advancedRules: some View {
         DisclosureGroup(isExpanded: $advancedExpanded) {
             VStack(alignment: .leading, spacing: 8) {
+                networkSettings
                 creditSettings
                 LocalProxyPlusLimitEditor(
                     language: language, accountCount: model.plusPolicyTargetCount,
@@ -339,7 +416,7 @@ struct LocalProxyQueueView: View {
             }.padding(.top, 4)
         } label: {
             HStack(spacing: 6) {
-                Text(language.text("高级规则（点数底线 · Plus 上限）", "Advanced rules (credit floors · Plus limit)")).font(.callout)
+                Text(language.text("高级规则（连接 · 网络 · 额度）", "Advanced rules (connection · network · limits)")).font(.callout)
                 if creditFloorsChanged {
                     Text(language.text("未保存", "Unsaved")).font(.caption).foregroundStyle(WorkspaceStatusForeground.warning)
                 }
@@ -454,6 +531,12 @@ struct LocalProxyQueueView: View {
                 HStack(spacing: 4) {
                     Text(language.text("冷却至", "Cooldown until"))
                     Text(deadline, style: .time)
+                    if row.cooldownKind == "egress" {
+                        Text(row.probeState == "probing" ? language.text("探测恢复中", "Probing recovery") : language.text("出口异常 · 等待探测", "Egress issue · Awaiting probe"))
+                        Button(language.text("立即探测", "Probe now")) { model.probeNow(profileID: row.id) }
+                            .disabled(model.phase != .running || row.probeState == "probing")
+                            .accessibilityIdentifier("next.local-proxy.probe-\(row.id)")
+                    }
                 }.font(.caption).foregroundStyle(.secondary)
             }
             if model.legacyCooldownRecoveryIDs.contains(row.id) {

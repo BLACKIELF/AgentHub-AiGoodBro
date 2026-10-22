@@ -16,6 +16,8 @@ struct LocalProxyQueueRow: Identifiable, Equatable {
     let quotaText: String?
     let state: String
     let cooldownUntil: Date?
+    var cooldownKind: String? = nil
+    var probeState: String? = nil
     var activeRequestCount = 0
     var policy = LocalProxyAccountPolicy()
     var usesDefaultCreditFloors = true
@@ -48,6 +50,18 @@ struct LocalProxyPreferences: Codable {
     var resetStopRules: [String: LocalProxyResetStopRule]? = nil
     // Persist the visible home for a known identity without storing its email.
     var accountRepresentatives: [String: String]? = nil
+
+    var listenPort: Int? = nil
+    var clientKeyMode: LocalProxyClientKeyMode? = nil
+    var persistentClientKey: String? = nil
+    var egress: LocalProxyEgressSettings? = nil
+    var effectiveListenPort: Int { listenPort ?? 18080 }
+    var effectiveClientKeyMode: LocalProxyClientKeyMode { clientKeyMode ?? .persistent }
+    var validNetworkSettings: Bool {
+        (effectiveListenPort == 0 || (1024...65535).contains(effectiveListenPort))
+            && (persistentClientKey.map { Data(base64Encoded: $0)?.count == 32 } ?? true)
+            && (egress ?? LocalProxyEgressSettings()).isValid
+    }
 
     var creditFloors: (primary: Int, secondary: Int) {
         (creditPrimaryFloor ?? 2000, creditSecondaryFloor ?? 1500)
@@ -161,6 +175,9 @@ struct LocalProxyReply: Encodable, Sendable {
     var retryAt: Int64? = nil
     var resolution: String? = nil
     var quotaObservedAt: Double? = nil
+    var probeStatus: String? = nil
+    var probeObservedAt: Double? = nil
+    var probeIdentityHash: String? = nil
     static func failure(_ reason: LocalProxyFailure) -> Self { Self(ok: false, error: reason.rawValue) }
 }
 
@@ -235,5 +252,31 @@ enum LocalProxyAdmission {
             balance > Decimal(creditFloor)
         else { return .quota }
         return nil
+    }
+}
+
+
+enum LocalProxyClientKeyMode: String, Codable, CaseIterable {
+    case persistent, perRun
+}
+
+struct LocalProxyEgressSettings: Codable, Equatable {
+    var enabled = true
+    var mihomoAPI = "http://127.0.0.1:9097"
+    // Stored only in the existing private (0600) proxy preferences, never diagnostics.
+    var mihomoSecret = ""
+    var group = "极简"
+    var whitelist: [String] = []
+    var isValid: Bool {
+        guard let url = URLComponents(string: mihomoAPI), url.scheme == "http",
+            ["127.0.0.1", "[::1]", "::1"].contains(url.host ?? ""),
+            url.user == nil, url.password == nil, url.query == nil, url.fragment == nil,
+            url.path.isEmpty, url.port.map({ (1...65535).contains($0) }) != false,
+            !group.isEmpty, group.utf8.count <= 256, !group.contains(where: \.isNewline), !group.contains("\0"),
+            group == group.trimmingCharacters(in: .whitespacesAndNewlines),
+            mihomoSecret.utf8.count <= 4096, !mihomoSecret.contains(where: \.isNewline), !mihomoSecret.contains("\0"),
+            whitelist.count <= 64, Set(whitelist).count == whitelist.count
+        else { return false }
+        return whitelist.allSatisfy { !$0.isEmpty && $0.utf8.count <= 512 && !$0.contains(where: \.isNewline) && !$0.contains("\0") && $0 == $0.trimmingCharacters(in: .whitespacesAndNewlines) }
     }
 }

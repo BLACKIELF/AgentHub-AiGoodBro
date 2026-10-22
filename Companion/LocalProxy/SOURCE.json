@@ -1,17 +1,17 @@
 {
   "component": "AiGoodBro Local Proxy",
-  "version": "1014v1",
+  "version": "1022v1",
   "upstream": "https://github.com/router-for-me/CLIProxyAPI",
-  "upstreamVersion": "v8.0.28",
-  "upstreamCommit": "0d18d3b365be000eeaee7de4615f9da596b2059d",
-  "moduleSum": "h1:02Rxbbf/cjW4Mxoik6I63ZDOx57JvbGxv6be2EiOjWU=",
+  "upstreamVersion": "v8.0.38",
+  "upstreamCommit": "0db19025571684b198a2ef508f99b41c717337e8",
+  "moduleSum": "h1:m+a2kr/wB1Jp/XZttcNBhCm50edVwGoaphdf7q4u88U=",
   "moduleGoModSum": "h1:j1Mtcj0TrC66O1JwbSBB03lY3uYPx4J7yHNvU6nDBCo=",
   "license": "MIT",
   "licenseFile": "LICENSE.CLIProxyAPI",
   "dependencyNotices": "THIRD-PARTY-NOTICES.txt",
   "goVersionMinimum": "1.26.0",
   "runtimeDependencies": [],
-  "sourceModifications": "No upstream module edits; the host adapter embeds the fixed v8.0.28 module. Existing custom selector, host IPC/admission, quota recovery, no-refresh identities and synchronous pre-bootstrap Codex 408 EOF guard are retained. RequestRetry remains zero. The SDK provides HTTP/2 closed-connection lifecycle classification, multiline SSE event assembly, confirmed upstream cooldown retention on canceled streams and out-of-range int64 tool-schema normalization.",
+  "sourceModifications": "No upstream module edits; the host adapter embeds the fixed v8.0.38 module. Existing custom selector, host IPC/admission, quota recovery, no-refresh identities and synchronous pre-bootstrap Codex 408 EOF guard are retained. RequestRetry remains zero. This upgrade adds execution-order protection for active cooldowns, preserves independent model cooldowns beneath credential quota, reconciles replayed web_search_call declarations and preserves explicit parallel_tool_calls=false. Local identity, admission, quota and stream-commit boundaries remain owned by the adapter.",
   "hostAdaptations": [
     {
       "upstreamReference": "https://github.com/router-for-me/CLIProxyAPI/commit/9e71c20d016960cd47bb8532a16fcf1f16f5fff3",
@@ -49,6 +49,33 @@
     {
       "commit": "57d005fe6c2053ef47611c41e40a50e42cac6e23",
       "behavior": "Remove only out-of-range integer numeric schema bounds, preserving valid int64 limits, fractional values and user data."
+    },
+    {
+      "commit": "35af74f92721b67c2eb704d0809f26b034946f56",
+      "behavior": "Execution sequence watermarks prevent an older in-flight success from clearing a newer active model or credential cooldown."
+    },
+    {
+      "commit": "b946d54e4be6c85ba3973045e94f6730540f6cf6",
+      "behavior": "Preserve independent model failures beneath propagated credential quota, including persisted wrap provenance; automatic Devin refresh behavior is not used by this Codex adapter."
+    },
+    {
+      "commit": "e7d4c7316fca3fe0e852866f4e611cb4f2fa0764",
+      "behavior": "Reconcile replayed web_search_call input items with tool declarations for Codex Responses requests."
+    },
+    {
+      "commit": "99d1698f7c59bd8bd694974486e45eaca7bf1879",
+      "behavior": "Preserve an explicit parallel_tool_calls=false in OpenAI-to-Codex translators."
     }
-  ]
+  ],
+  "upstreamUpgradeReview": {
+    "fromVersion": "v8.0.28",
+    "fromCommit": "0d18d3b365be000eeaee7de4615f9da596b2059d",
+    "toTag": "refs/tags/v8.0.38",
+    "verification": "git ls-remote tag and go mod download Origin independently resolve to the recorded commit; module sums verified. The upstream go.mod and MIT license are byte-identical between these releases.",
+    "requestPolicy": "sdk/cliproxy/auth/conductor_request_scoped_errors.go is byte-identical. The local Codex unsupported-model stop rule and RequestRetry=0 remain in force.",
+    "authCompatibility": "Result adds AccessToken and ExecutionSeq. Results must not be logged or serialized wholesale. RegistrationEpoch fencing remains; matching AccessToken may keep a result valid across a CredentialVersion change. The SDK adds Manager.Modify without removing Update. Local noRefresh identities do not adopt the new 96-hour automatic OAuth refresh lead.",
+    "cooldownCompatibility": "CooldownStateRecord adds IndependentState and CredentialQuotaPropagated for the independent model layer beneath credential quota. Custom persistence and quota recovery must preserve independent failures and must not treat quota restoration as proof of network recovery.",
+    "streamCompatibility": "The existing Codex bootstrap buffering and post-commit non-replay boundaries remain. Responses failures now preserve a sanitized response.failed envelope; replayed web_search_call history is reconciled with the declared tools.",
+    "dependencyValidation": "go mod verify and go list -mod=readonly -deps -json . passed; 457 packages and 38 linked dependency modules. Adapter regression results are recorded separately from source inspection."
+  }
 }
