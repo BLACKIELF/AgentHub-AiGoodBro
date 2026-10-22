@@ -10,13 +10,17 @@ final class MemoryCredentials: AntigravityProxyCredentialStore {
     var reads = 0
     var writes = 0
     var rejectWrites = false
+    var rejectRemovals = false
     func read(_ account: String) throws -> Data? { reads += 1; return data[account] }
     func save(_ value: Data, account: String) throws {
         if rejectWrites { throw AntigravityProxyFailure.keychain }
         writes += 1
         data[account] = value
     }
-    func remove(_ account: String) throws { data[account] = nil }
+    func remove(_ account: String) throws {
+        if rejectRemovals { throw AntigravityProxyFailure.keychain }
+        data[account] = nil
+    }
 }
 
 @main
@@ -27,6 +31,22 @@ struct NativeHostFixture {
         let helper = URL(fileURLWithPath: CommandLine.arguments[1])
         let root = URL(fileURLWithPath: CommandLine.arguments[2])
         try await multiProvider(helper: helper, root: root)
+        let (removal, removalCredentials, removalDirectory) = await start(helper: helper, root: root, scenario: "removal-retry")
+        await add(.claude, to: removal, count: 1)
+        let removalID = removal.accounts[0].id
+        let beforeRemoval = removalCredentials.data
+        removalCredentials.rejectRemovals = true
+        removal.removeAccount(removalID)
+        require(removal.issue != nil && removal.accounts.count == 1 && removalCredentials.data == beforeRemoval,
+                "failed secret deletion lost the retryable account")
+        let persistedRemoval = try JSONDecoder().decode([AntigravityProxyAccount].self,
+            from: Data(contentsOf: removalDirectory.appendingPathComponent("accounts-v1.json")))
+        require(persistedRemoval.map(\.id) == [removalID], "failed deletion lost persisted retry identity")
+        removalCredentials.rejectRemovals = false
+        removal.removeAccount(removalID)
+        require(removal.issue == nil && removal.accounts.isEmpty && removalCredentials.data.count == 1,
+                "retry did not delete the account credential")
+        await stop(removal)
         for scenario in ["provider-credential-add", "provider-prefix-add", "provider-label-add"] {
             let (store, credentials, _) = await start(helper: helper, root: root, scenario: scenario)
             let before = credentials.data, writes = credentials.writes

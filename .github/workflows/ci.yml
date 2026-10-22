@@ -143,6 +143,13 @@ jobs:
           cd Companion/LocalProxy
           go test -mod=readonly -race -timeout=10m ./...
           go vet -mod=readonly ./...
+      - name: Validate provider pools and isolated client launchers
+        run: |
+          python3 scripts/test-provider-client-launcher.py
+          cd Companion/AntigravityProxy
+          bash test-native-host.sh
+          go test -mod=readonly -race -timeout=10m ./...
+          go vet -mod=readonly ./...
       - name: Run dashboard DOM acceptance (real Chromium)
         run: |
           npm install --no-save --no-package-lock --no-audit --no-fund playwright@1.62.1

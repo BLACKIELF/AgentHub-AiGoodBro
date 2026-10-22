@@ -17,7 +17,9 @@ enum LocalProxyNetworkProbe {
     }
 
     static func models(endpoint: String, key: String) async throws -> Bool {
-        guard let url = URL(string: endpoint + "/models"), url.scheme == "http", url.host == "127.0.0.1", url.path == "/v1/models", url.user == nil, url.query == nil else { return false }
+        guard let url = URL(string: endpoint + "/models"), url.scheme == "http", url.host == "127.0.0.1", url.path == "/v1/models", url.user == nil, url.query == nil else {
+            return false
+        }
         var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 5)
         request.setValue("Bearer " + key, forHTTPHeaderField: "Authorization")
         let response = try await localTransport().send(request, maximumResponseBytes: 262144)
@@ -31,7 +33,7 @@ enum LocalProxyNetworkProbe {
         guard settings.isValid, let url = URL(string: settings.mihomoAPI + "/proxies") else { throw LocalProxyFailure.unavailable }
         var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 5)
         if !settings.mihomoSecret.isEmpty { request.setValue("Bearer " + settings.mihomoSecret, forHTTPHeaderField: "Authorization") }
-        let response = try await localTransport().send(request, maximumResponseBytes: 1048576)
+        let response = try await localTransport().send(request, maximumResponseBytes: 1_048_576)
         guard response.statusCode == 200, let object = try? JSONSerialization.jsonObject(with: response.body) as? [String: Any],
             let proxies = object["proxies"] as? [String: Any], let group = proxies[settings.group] as? [String: Any],
             group["type"] as? String == "Selector", let members = group["all"] as? [String]

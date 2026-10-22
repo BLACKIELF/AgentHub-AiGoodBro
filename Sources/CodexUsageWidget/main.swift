@@ -11,12 +11,18 @@ struct CodexAccountManagerNextMain {
             exit(await ProviderProxyClientLauncher.runAgy(workingDirectory: URL(fileURLWithPath: CommandLine.arguments[2], isDirectory: true)))
         }
         if CommandLine.arguments.count == 5, CommandLine.arguments[1] == "--launch-provider-codex",
-            let provider = AntigravityProxyProvider(rawValue: CommandLine.arguments[2]) {
-            exit(await ProviderProxyClientLauncher.runCodex(provider: provider, model: CommandLine.arguments[3], workingDirectory: URL(fileURLWithPath: CommandLine.arguments[4], isDirectory: true)))
+            let provider = AntigravityProxyProvider(rawValue: CommandLine.arguments[2])
+        {
+            exit(
+                await ProviderProxyClientLauncher.runCodex(
+                    provider: provider, model: CommandLine.arguments[3], workingDirectory: URL(fileURLWithPath: CommandLine.arguments[4], isDirectory: true)))
         }
         if CommandLine.arguments.count == 5, CommandLine.arguments[1] == "--launch-provider-native",
-            let provider = AntigravityProxyProvider(rawValue: CommandLine.arguments[2]) {
-            exit(await ProviderProxyClientLauncher.runNative(provider: provider, model: CommandLine.arguments[3], workingDirectory: URL(fileURLWithPath: CommandLine.arguments[4], isDirectory: true)))
+            let provider = AntigravityProxyProvider(rawValue: CommandLine.arguments[2])
+        {
+            exit(
+                await ProviderProxyClientLauncher.runNative(
+                    provider: provider, model: CommandLine.arguments[3], workingDirectory: URL(fileURLWithPath: CommandLine.arguments[4], isDirectory: true)))
         }
         if let index = CommandLine.arguments.firstIndex(of: "--render-theme-audit"),
             CommandLine.arguments.indices.contains(index + 1)

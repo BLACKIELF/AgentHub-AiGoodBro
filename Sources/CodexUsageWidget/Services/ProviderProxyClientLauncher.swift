@@ -29,15 +29,22 @@ enum ProviderProxyClientLauncher {
             let home = FileManager.default.homeDirectoryForCurrentUser
             let child = Process()
             child.executableURL = URL(fileURLWithPath: executable)
-            child.arguments = ["-m", model, "-c", "model_provider=\"aigoodbro_local\"", "-c",
+            child.arguments = [
+                "-m", model, "-c", "model_provider=\"aigoodbro_local\"", "-c",
                 "model_providers.aigoodbro_local={name=\"AiGoodBro\",base_url=\"\(endpoint)/v1\",env_key=\"AIGOODBRO_PROXY_KEY\",wire_api=\"responses\",requires_openai_auth=false,supports_websockets=false}",
-                "-c", "features.enable_request_compression=false"]
-            child.environment = ["HOME": home.path, "CODEX_HOME": profile.path, "AIGOODBRO_PROXY_KEY": key,
+                "-c", "features.enable_request_compression=false",
+            ]
+            child.environment = [
+                "HOME": home.path, "CODEX_HOME": profile.path, "AIGOODBRO_PROXY_KEY": key,
                 "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:" + home.appendingPathComponent(".local/bin").path,
-                "LANG": "en_US.UTF-8", "TERM": ProcessInfo.processInfo.environment["TERM"] ?? "xterm-256color"]
+                "LANG": "en_US.UTF-8", "TERM": ProcessInfo.processInfo.environment["TERM"] ?? "xterm-256color",
+            ]
             child.currentDirectoryURL = workingDirectory
-            child.standardInput = FileHandle.standardInput; child.standardOutput = FileHandle.standardOutput; child.standardError = FileHandle.standardError
-            try child.run(); child.waitUntilExit()
+            child.standardInput = FileHandle.standardInput
+            child.standardOutput = FileHandle.standardOutput
+            child.standardError = FileHandle.standardError
+            try child.run()
+            child.waitUntilExit()
             return child.terminationStatus
         } catch {
             print("AiGoodBro: unable to connect Codex CLI. Verify the selected provider pool and model first.")
@@ -64,7 +71,10 @@ enum ProviderProxyClientLauncher {
             case .antigravity: throw AntigravityProxyFailure.unavailable
             }
             let home = FileManager.default.homeDirectoryForCurrentUser
-            let candidates = [home.appendingPathComponent(".local/bin/" + name), home.appendingPathComponent(".grok/bin/" + name), URL(fileURLWithPath: "/opt/homebrew/bin/" + name), URL(fileURLWithPath: "/usr/local/bin/" + name)]
+            let candidates = [
+                home.appendingPathComponent(".local/bin/" + name), home.appendingPathComponent(".grok/bin/" + name), URL(fileURLWithPath: "/opt/homebrew/bin/" + name),
+                URL(fileURLWithPath: "/usr/local/bin/" + name),
+            ]
             guard let executable = candidates.map({ $0.resolvingSymlinksInPath() }).first(where: { FileManager.default.isExecutableFile(atPath: $0.path) }),
                 (try workingDirectory.resourceValues(forKeys: [.isDirectoryKey])).isDirectory == true,
                 let data = try AntigravityProxyKeychain().read("client-key"), let key = String(data: data, encoding: .utf8), (32...256).contains(key.utf8.count)
@@ -73,32 +83,54 @@ enum ProviderProxyClientLauncher {
             guard try await catalog(endpoint: endpoint, key: key).contains(model) else { throw AntigravityProxyFailure.unavailable }
             let profile = DispatchParticipationPaths.supportDirectory().appendingPathComponent("proxy-clients/native-" + provider.rawValue, isDirectory: true)
             try preparePrivateDirectory(profile)
-            var environment = ["HOME": home.path,
+            var environment = [
+                "HOME": home.path,
                 "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:" + home.appendingPathComponent(".local/bin").path,
-                "LANG": "en_US.UTF-8", "TERM": ProcessInfo.processInfo.environment["TERM"] ?? "xterm-256color"]
+                "LANG": "en_US.UTF-8", "TERM": ProcessInfo.processInfo.environment["TERM"] ?? "xterm-256color",
+            ]
             var arguments: [String] = []
             switch provider {
             case .claude:
-                environment.merge(["CLAUDE_CONFIG_DIR": profile.path, "ANTHROPIC_BASE_URL": endpoint,
-                    "ANTHROPIC_AUTH_TOKEN": key, "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY": "1", "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST": "1"], uniquingKeysWith: { _, new in new })
+                environment.merge(
+                    [
+                        "CLAUDE_CONFIG_DIR": profile.path, "ANTHROPIC_BASE_URL": endpoint,
+                        "ANTHROPIC_AUTH_TOKEN": key, "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY": "1", "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST": "1",
+                    ], uniquingKeysWith: { _, new in new })
                 arguments = ["--model", model]
             case .kimi:
-                environment.merge(["KIMI_CODE_HOME": profile.path, "KIMI_MODEL_NAME": model,
-                    "KIMI_MODEL_API_KEY": key, "KIMI_MODEL_PROVIDER_TYPE": "kimi", "KIMI_MODEL_BASE_URL": endpoint + "/v1"], uniquingKeysWith: { _, new in new })
+                environment.merge(
+                    [
+                        "KIMI_CODE_HOME": profile.path, "KIMI_MODEL_NAME": model,
+                        "KIMI_MODEL_API_KEY": key, "KIMI_MODEL_PROVIDER_TYPE": "kimi", "KIMI_MODEL_BASE_URL": endpoint + "/v1",
+                    ], uniquingKeysWith: { _, new in new })
             case .xai:
-                let config: [String: Any] = ["models": ["default": model], "model": [model: [
-                    "model": model, "base_url": endpoint + "/v1", "env_key": "AIGOODBRO_PROXY_KEY", "api_backend": "responses"]]]
-                environment.merge(["GROK_HOME": profile.path, "GROK_AUTH_PATH": profile.appendingPathComponent("auth.json").path,
-                    "GROK_CONFIG": String(decoding: try JSONSerialization.data(withJSONObject: config), as: UTF8.self),
-                    "AIGOODBRO_PROXY_KEY": key], uniquingKeysWith: { _, new in new })
+                let config: [String: Any] = [
+                    "models": ["default": model],
+                    "model": [
+                        model: [
+                            "model": model, "base_url": endpoint + "/v1", "env_key": "AIGOODBRO_PROXY_KEY", "api_backend": "responses",
+                        ]
+                    ],
+                ]
+                environment.merge(
+                    [
+                        "GROK_HOME": profile.path, "GROK_AUTH_PATH": profile.appendingPathComponent("auth.json").path,
+                        "GROK_CONFIG": String(decoding: try JSONSerialization.data(withJSONObject: config), as: UTF8.self),
+                        "AIGOODBRO_PROXY_KEY": key,
+                    ], uniquingKeysWith: { _, new in new })
                 arguments = ["--model", model]
             case .antigravity: throw AntigravityProxyFailure.unavailable
             }
             let child = Process()
-            child.executableURL = executable; child.arguments = arguments
-            child.environment = environment; child.currentDirectoryURL = workingDirectory
-            child.standardInput = FileHandle.standardInput; child.standardOutput = FileHandle.standardOutput; child.standardError = FileHandle.standardError
-            try child.run(); child.waitUntilExit()
+            child.executableURL = executable
+            child.arguments = arguments
+            child.environment = environment
+            child.currentDirectoryURL = workingDirectory
+            child.standardInput = FileHandle.standardInput
+            child.standardOutput = FileHandle.standardOutput
+            child.standardError = FileHandle.standardError
+            try child.run()
+            child.waitUntilExit()
             return child.terminationStatus
         } catch {
             print("AiGoodBro: unable to connect the official CLI. Verify its installation, authorized pool and selected model.")
@@ -206,7 +238,8 @@ enum ProviderProxyClientLauncher {
         for candidate in [directory.deletingLastPathComponent(), directory] {
             var info = stat()
             guard lstat(candidate.path, &info) == 0, info.st_mode & S_IFMT == S_IFDIR,
-                info.st_uid == geteuid(), info.st_mode & 0o077 == 0 else { throw AntigravityProxyFailure.storage }
+                info.st_uid == geteuid(), info.st_mode & 0o077 == 0
+            else { throw AntigravityProxyFailure.storage }
         }
     }
 }

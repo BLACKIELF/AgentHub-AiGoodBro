@@ -51,6 +51,32 @@ extension LocalProxyHostFixtures {
         expect(afterFailure == saved, "failed save preserves prior bytes")
         var invalid = LocalProxyPreferences(); invalid.persistentClientKey = "malformed"
         expect(!invalid.validNetworkSettings, "malformed persistent key rejected rather than silently regenerated")
+        let preferencesURL = root.appendingPathComponent("local-proxy-queue-v1.json")
+        let persisted = try JSONDecoder().decode(LocalProxyPreferences.self, from: Data(contentsOf: preferencesURL))
+        expect(persisted.persistentClientKey == nil && persisted.egress?.mihomoSecret == "", "disk preferences contain no secrets")
+        expect(persisted.secretsReference != nil, "disk preferences reference Keychain")
+        var old = persisted
+        old.secretsReference = nil
+        old.persistentClientKey = firstKey
+        old.egress?.mihomoSecret = "fixture-controller-secret"
+        try JSONEncoder().encode(old).write(to: preferencesURL)
+        let migrated = LocalProxyQueueStore(usageStore: usage)
+        expect(!migrated.preferencesBlocked && migrated.preferences.persistentClientKey == firstKey, "legacy key migrates without rotation")
+        expect(migrated.egressSettings.mihomoSecret == "fixture-controller-secret", "controller secret migrates")
+        let redactedData = try Data(contentsOf: preferencesURL)
+        let redacted = String(decoding: redactedData, as: UTF8.self)
+        expect(!redacted.contains("fixture-controller-secret") && !redacted.contains(firstKey!), "migration removes plaintext credentials")
+        let migratedReference = migrated.preferences.secretsReference!
+        LocalProxyPreferenceSecrets.items.removeValue(forKey: migratedReference)
+        let missing = LocalProxyQueueStore(usageStore: usage)
+        expect(missing.preferencesBlocked, "missing Keychain reference fails closed")
+        try JSONEncoder().encode(old).write(to: preferencesURL)
+        LocalProxyPreferenceSecrets.failSave = true
+        let failedMigration = LocalProxyQueueStore(usageStore: usage)
+        expect(failedMigration.preferencesBlocked, "failed Keychain migration blocks proxy")
+        let retained = try JSONDecoder().decode(LocalProxyPreferences.self, from: Data(contentsOf: preferencesURL))
+        expect(retained.persistentClientKey == firstKey && retained.secretsReference == nil, "failed migration preserves recoverable old state")
+        LocalProxyPreferenceSecrets.failSave = false
         print("PASS: \(checks) network settings checks; synthetic helper only, no real accounts or network")
     }
 }

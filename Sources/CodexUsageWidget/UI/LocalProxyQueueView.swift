@@ -33,8 +33,12 @@ struct LocalProxyQueueView: View {
             advancedRules
             if !model.selfCheck.steps.isEmpty { selfCheckResults }
             if ["dead", "all_dead", "unavailable"].contains(model.egressState) {
-                Label(language.text("出口连接异常，请检查节点或控制 API；看门狗仅在当前节点不可达时切换。", "Egress is unavailable. Check the node and control API; failover only occurs when the current node is unreachable."), systemImage: "exclamationmark.triangle")
-                    .font(.caption).foregroundStyle(.red)
+                Label(
+                    language.text(
+                        "出口连接异常，请检查节点或控制 API；看门狗仅在当前节点不可达时切换。", "Egress is unavailable. Check the node and control API; failover only occurs when the current node is unreachable."),
+                    systemImage: "exclamationmark.triangle"
+                )
+                .font(.caption).foregroundStyle(.red)
             }
             queueHeader
             ScrollView {

@@ -184,7 +184,10 @@ final class AntigravityProxyStore: ObservableObject {
         stop()
         for _ in 0..<50 {
             guard let child = terminatingProcess else { return }
-            if !child.isRunning { terminatingProcess = nil; return }
+            if !child.isRunning {
+                terminatingProcess = nil
+                return
+            }
             try? await Task.sleep(nanoseconds: 100_000_000)
         }
         // Keep canFinishTermination false if the child has not confirmed exit.
@@ -229,11 +232,14 @@ final class AntigravityProxyStore: ObservableObject {
         revoked.insert(Self.credentialKey(id, row.generation))
         do {
             let remaining = records.filter { $0.id != id }
+            if process != nil { try send(["command": "remove", "accountID": id, "generation": row.generation]) }
+            // Keep the identity available for retry until secret deletion succeeds.
+            // Keychain removal is idempotent if metadata persistence then fails.
+            try credentialStore.remove(Self.credentialKey(id, row.generation))
             try saveRecords(remaining)
             records = remaining
             accounts.removeAll { $0.id == id }
-            if process != nil { try send(["command": "remove", "accountID": id, "generation": row.generation]) }
-            try credentialStore.remove(Self.credentialKey(id, row.generation))
+            issue = nil
         } catch {
             stop()
             issue = Self.message(for: error)
@@ -298,7 +304,10 @@ final class AntigravityProxyStore: ObservableObject {
                 return
             }
             let providers = event.providers ?? [.antigravity]
-            guard Set(providers).count == providers.count else { invalidOutput(run: run); return }
+            guard Set(providers).count == providers.count else {
+                invalidOutput(run: run)
+                return
+            }
             availableProviders = providers
             port = value
             phase = .running
@@ -323,11 +332,13 @@ final class AntigravityProxyStore: ObservableObject {
             let reported = event.providerModels ?? ["antigravity": event.models ?? []]
             for (name, values) in reported {
                 guard let provider = AntigravityProxyProvider(rawValue: name), availableProviders.contains(provider) else {
-                    invalidOutput(run: run); return
+                    invalidOutput(run: run)
+                    return
                 }
                 let allowed = Set(accounts.filter { $0.enabled && $0.provider == provider }.flatMap(\.models))
                 guard values.count <= 512, values.allSatisfy({ allowed.contains($0) }) else {
-                    invalidOutput(run: run); return
+                    invalidOutput(run: run)
+                    return
                 }
                 catalogs[provider] = Array(Set(values)).sorted()
             }
@@ -345,7 +356,10 @@ final class AntigravityProxyStore: ObservableObject {
                 let text = event.url, let url = Self.validatedAuthorizationURL(text, provider: provider, userCode: event.userCode)
             else { return }
             if let code = event.userCode {
-                guard code.range(of: "^[A-Za-z0-9-]{1,32}$", options: .regularExpression) != nil else { invalidOutput(run: run); return }
+                guard code.range(of: "^[A-Za-z0-9-]{1,32}$", options: .regularExpression) != nil else {
+                    invalidOutput(run: run)
+                    return
+                }
                 authorizationUserCode = code
             }
             if !NSWorkspace.shared.open(url) {
@@ -412,7 +426,8 @@ final class AntigravityProxyStore: ObservableObject {
             guard provider == .claude, text.utf8.count < 8_192,
                 let parts = URLComponents(string: text), parts.scheme == "https", parts.host == "claude.ai",
                 parts.path == "/oauth/authorize", parts.port == nil, parts.user == nil, parts.password == nil,
-                parts.fragment == nil, let query = parts.queryItems else { return nil }
+                parts.fragment == nil, let query = parts.queryItems
+            else { return nil }
             func one(_ name: String) -> String? {
                 let values = query.filter { $0.name == name }
                 return values.count == 1 ? values.first?.value : nil

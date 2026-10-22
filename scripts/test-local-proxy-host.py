@@ -170,6 +170,23 @@ with tempfile.TemporaryDirectory(prefix='aigoodbro-proxy-host-fixture-', dir=os.
                 content=content.replace('let descriptor = Darwin.open(backup.path,',
                     'let descriptor = LocalProxyFixtureRuntime.failLegacyBackup ? -1 : Darwin.open(backup.path,')
             if source.name == 'LocalProxyQueueStore.swift':
+                # Keep credential persistence fully offline; exercise store migration and failure ordering.
+                original_secrets=declaration(content, 'private struct LocalProxyPreferenceSecrets: Codable')
+                content=content.replace(original_secrets, r'''private struct LocalProxyPreferenceSecrets: Codable {
+    var clientKey: String?
+    var mihomoSecret: String
+    static var items: [String: Self] = [:]
+    static var failSave = false
+    static func read(_ reference: String) throws -> Self {
+        guard let value = items[reference] else { throw LocalProxyFailure.unavailable }
+        return value
+    }
+    func save(_ reference: String) throws {
+        guard !Self.failSave else { throw LocalProxyFailure.unavailable }
+        Self.items[reference] = self
+    }
+    static func remove(_ reference: String) { items.removeValue(forKey: reference) }
+}''')
                 if legacy_negative:
                     # Reproduce the late completion race only in a disposable copy.
                     generation_guard='''            guard legacyRecoveryGeneration == generation else {

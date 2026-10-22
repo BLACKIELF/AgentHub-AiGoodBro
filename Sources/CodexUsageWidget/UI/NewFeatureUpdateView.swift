@@ -77,12 +77,27 @@ struct NewFeatureSetupControls: View {
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 12) {
                 featureHeading(language.text("本次更新 · 2.5.2（150）", "What's new · 2.5.2 (150)"), symbol: "arrow.triangle.2.circlepath")
-                Text(language.text("Codex 反代默认使用 18080 端口和持久访问密钥。高级规则可设置出口看门狗；仅当前节点不可达时尝试候选节点。自检逐项检查系统代理、出口、官方后端、本地端点和账号池。", "The Codex proxy defaults to port 18080 and a persistent access key. Configure the egress watchdog under Advanced rules; it only tries candidates when the current node is unreachable. Self-check verifies the system proxy, egress, official backend, local endpoint and account pool."))
-                    .font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                Text(language.text("同一模型多个账号连续出现 403 时，显示疑似出口异常并探测恢复。账号限流和额度限制仍独立保留。各平台账号页支持统一的卡片／列表和详情入口。", "Consecutive 403 responses across accounts for the same model trigger an egress check and recovery probe. Account rate limits and quota restrictions remain separate. Provider account pages share cards, lists and detail controls."))
-                    .font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                Text(language.text("在各平台的“授权账号池”中添加账号：打开官方网页、完成授权、独立保存到钥匙串。账号可分别参与反代；从实际模型目录选择 Codex CLI 接入，反重力另提供 agy CLI 接入。桌面版与尚未提供接口的平台会明确显示能力边界。", "Add accounts from each provider's Authorized pool: open its official website, authorize, and save separately in Keychain. Control participation per account and choose a verified catalog model for Codex CLI; Antigravity also provides agy CLI integration. Desktop and unavailable provider interfaces are identified separately."))
-                    .font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Text(
+                    language.text(
+                        "Codex 反代默认使用 18080 端口和持久访问密钥。高级规则可设置出口看门狗；仅当前节点不可达时尝试候选节点。自检逐项检查系统代理、出口、官方后端、本地端点和账号池。",
+                        "The Codex proxy defaults to port 18080 and a persistent access key. Configure the egress watchdog under Advanced rules; it only tries candidates when the current node is unreachable. Self-check verifies the system proxy, egress, official backend, local endpoint and account pool."
+                    )
+                )
+                .font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Text(
+                    language.text(
+                        "同一模型多个账号连续出现 403 时，显示疑似出口异常并探测恢复。账号限流和额度限制仍独立保留。各平台账号页支持统一的卡片／列表和详情入口。",
+                        "Consecutive 403 responses across accounts for the same model trigger an egress check and recovery probe. Account rate limits and quota restrictions remain separate. Provider account pages share cards, lists and detail controls."
+                    )
+                )
+                .font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Text(
+                    language.text(
+                        "在各平台的“授权账号池”中添加账号：打开官方网页、完成授权、独立保存到钥匙串。账号可分别参与反代；从实际模型目录选择 Codex CLI 接入，反重力另提供 agy CLI 接入。桌面版与尚未提供接口的平台会明确显示能力边界。",
+                        "Add accounts from each provider's Authorized pool: open its official website, authorize, and save separately in Keychain. Control participation per account and choose a verified catalog model for Codex CLI; Antigravity also provides agy CLI integration. Desktop and unavailable provider interfaces are identified separately."
+                    )
+                )
+                .font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 Text(
                     language.text(
                         "可恢复的短暂本地心跳断连会在原等待期限内重试；若无法确认请求状态，停止反代并保留故障记录。已发送的模型请求不会自动重发。",

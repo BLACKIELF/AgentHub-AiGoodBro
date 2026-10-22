@@ -53,6 +53,8 @@ struct LocalProxyPreferences: Codable {
 
     var listenPort: Int? = nil
     var clientKeyMode: LocalProxyClientKeyMode? = nil
+    // In-memory credentials; the store writes only a Keychain reference to disk.
+    var secretsReference: String? = nil
     var persistentClientKey: String? = nil
     var egress: LocalProxyEgressSettings? = nil
     var effectiveListenPort: Int { listenPort ?? 18080 }
@@ -255,7 +257,6 @@ enum LocalProxyAdmission {
     }
 }
 
-
 enum LocalProxyClientKeyMode: String, Codable, CaseIterable {
     case persistent, perRun
 }
@@ -263,7 +264,7 @@ enum LocalProxyClientKeyMode: String, Codable, CaseIterable {
 struct LocalProxyEgressSettings: Codable, Equatable {
     var enabled = true
     var mihomoAPI = "http://127.0.0.1:9097"
-    // Stored only in the existing private (0600) proxy preferences, never diagnostics.
+    // Hydrated from the dedicated Keychain item; omitted from persisted preferences.
     var mihomoSecret = ""
     var group = "极简"
     var whitelist: [String] = []
@@ -277,6 +278,8 @@ struct LocalProxyEgressSettings: Codable, Equatable {
             mihomoSecret.utf8.count <= 4096, !mihomoSecret.contains(where: \.isNewline), !mihomoSecret.contains("\0"),
             whitelist.count <= 64, Set(whitelist).count == whitelist.count
         else { return false }
-        return whitelist.allSatisfy { !$0.isEmpty && $0.utf8.count <= 512 && !$0.contains(where: \.isNewline) && !$0.contains("\0") && $0 == $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        return whitelist.allSatisfy {
+            !$0.isEmpty && $0.utf8.count <= 512 && !$0.contains(where: \.isNewline) && !$0.contains("\0") && $0 == $0.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
     }
 }

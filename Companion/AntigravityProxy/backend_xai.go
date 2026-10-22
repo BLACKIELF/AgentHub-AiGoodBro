@@ -39,20 +39,41 @@ type xaiSubscriptionTransport struct{ base http.RoundTripper }
 
 func (t xaiSubscriptionTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	allowed := false
-	if r != nil && r.URL != nil && r.URL.RawQuery == "" {
+	if r != nil && r.URL != nil {
 		switch r.URL.Hostname() {
 		case "auth.x.ai":
-			allowed = (r.Method == http.MethodPost && (r.URL.Path == "/oauth2/device/code" || r.URL.Path == "/oauth2/token")) || (r.Method == http.MethodGet && r.URL.Path == "/oauth2/userinfo")
+			allowed = r.URL.RawQuery == "" && ((r.Method == http.MethodPost && (r.URL.Path == "/oauth2/device/code" || r.URL.Path == "/oauth2/token")) || (r.Method == http.MethodGet && r.URL.Path == "/oauth2/userinfo"))
 		case "api.x.ai":
-			allowed = r.Method == http.MethodGet && r.URL.Path == "/v1/models"
+			allowed = r.Method == http.MethodGet && r.URL.Path == "/v1/models" && validXAIModelsQuery(r.URL.RawQuery)
 		case "cli-chat-proxy.grok.com":
-			allowed = r.Method == http.MethodPost && r.URL.Path == "/v1/responses"
+			allowed = r.URL.RawQuery == "" && r.Method == http.MethodPost && r.URL.Path == "/v1/responses"
 		}
 	}
 	if !allowed {
 		return nil, errors.New("subscription_route_unavailable")
 	}
 	return t.base.RoundTrip(r)
+}
+
+// Only the catalog cursor is allowed; inference and auth stay query-free.
+func validXAIModelsQuery(raw string) bool {
+	if raw == "" {
+		return true
+	}
+	q, err := url.ParseQuery(raw)
+	if err != nil || len(q) != 1 || len(q["after_id"]) != 1 {
+		return false
+	}
+	cursor := q.Get("after_id")
+	if cursor == "" || len(cursor) > 256 {
+		return false
+	}
+	for _, c := range cursor {
+		if c < 0x20 || c == 0x7f {
+			return false
+		}
+	}
+	return true
 }
 
 func (b *xaiBackend) execute(ctx context.Context, c credential, r executor.Request, o executor.Options) (executor.Response, error) {

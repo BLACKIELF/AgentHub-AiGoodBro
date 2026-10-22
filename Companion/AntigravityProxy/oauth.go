@@ -114,27 +114,58 @@ func (b *sdkBackend) signIn(ctx context.Context, open func(authPrompt) error) (c
 	}
 	defer resp.Body.Close()
 	data, err := readBounded(resp.Body, 64<<10)
-	var user struct {
-		Email    string `json:"email"`
-		Verified bool   `json:"verified_email"`
+	if err != nil {
+		return credential{}, errors.New("oauth_identity_failed")
 	}
-	if resp.StatusCode != 200 || err != nil || json.Unmarshal(data, &user) != nil || !user.Verified ||
-		len(user.Email) > 320 || !strings.Contains(user.Email, "@") {
+	identity, err := parseGoogleIdentity(data)
+	if resp.StatusCode != 200 || err != nil {
 		return credential{}, errors.New("oauth_identity_failed")
 	}
 	project, err := ag.NewAntigravityAuth(&config.Config{}, b.client).FetchProjectID(ctx, token.AccessToken)
 	if err != nil || project == "" {
 		return credential{}, errors.New("oauth_project_failed")
 	}
-	email := strings.ToLower(strings.TrimSpace(user.Email))
-	digest := sha256.Sum256([]byte(email))
+	email := strings.ToLower(strings.TrimSpace(identity.Email))
+
 	parts := strings.SplitN(email, "@", 2)
 	if parts[0] == "" || parts[1] == "" {
 		return credential{}, errors.New("oauth_identity_failed")
 	}
 	masked := fmt.Sprintf("%c***@%c***", []rune(parts[0])[0], []rune(parts[1])[0])
-	c := credential{Provider: "antigravity", AccountID: "ag-" + hex.EncodeToString(digest[:16]), Generation: randomID(), MaskedIdentity: masked,
-		AccessToken: token.AccessToken, RefreshToken: token.RefreshToken, ProjectID: project,
+	c := credential{Provider: "antigravity", AccountID: identity.accountID(), Generation: randomID(), MaskedIdentity: masked,
+		AccessToken: token.AccessToken, RefreshToken: token.RefreshToken, ProjectID: project, AccountSubject: identity.Subject,
 		ExpiresAt: time.Now().Add(time.Duration(token.ExpiresIn) * time.Second).Unix()}
 	return c, c.validate()
+}
+
+// Google userinfo v2 names the immutable subject "id"; OIDC uses "sub".
+// Never fall back to the mutable primary email for the credential slot.
+type googleIdentity struct{ Subject, Email string }
+
+func parseGoogleIdentity(data []byte) (googleIdentity, error) {
+	var user struct {
+		ID       string `json:"id"`
+		Subject  string `json:"sub"`
+		Email    string `json:"email"`
+		Verified bool   `json:"verified_email"`
+	}
+	if json.Unmarshal(data, &user) != nil || !user.Verified || len(user.Email) > 320 || !strings.Contains(user.Email, "@") {
+		return googleIdentity{}, errors.New("oauth_identity_failed")
+	}
+	if user.ID != "" && user.Subject != "" && user.ID != user.Subject {
+		return googleIdentity{}, errors.New("oauth_identity_failed")
+	}
+	subject := user.ID
+	if subject == "" {
+		subject = user.Subject
+	}
+	if subject == "" || len(subject) > 1024 || strings.TrimSpace(subject) != subject || strings.ContainsAny(subject, "\r\n\x00") {
+		return googleIdentity{}, errors.New("oauth_identity_failed")
+	}
+	return googleIdentity{Subject: subject, Email: user.Email}, nil
+}
+
+func (i googleIdentity) accountID() string {
+	digest := sha256.Sum256([]byte(i.Subject))
+	return "ag-" + hex.EncodeToString(digest[:16])
 }

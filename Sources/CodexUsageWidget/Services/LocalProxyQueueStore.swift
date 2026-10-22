@@ -252,13 +252,21 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
                 if let data = try DispatchParticipationSync.readBoundedRegularFile(
                     directory.appendingPathComponent("local-proxy-queue-v1.json"), maximumBytes: 65536, allowMissing: true)
                 {
-                    let saved = try JSONDecoder().decode(LocalProxyPreferences.self, from: data)
+                    var saved = try JSONDecoder().decode(LocalProxyPreferences.self, from: data)
+                    if let reference = saved.secretsReference {
+                        let secrets = try LocalProxyPreferenceSecrets.read(reference)
+                        saved.persistentClientKey = secrets.clientKey
+                        if saved.egress != nil { saved.egress?.mihomoSecret = secrets.mihomoSecret }
+                    }
                     guard saved.schemaVersion == 1, saved.order.count <= 1000, Set(saved.order).count == saved.order.count,
                         saved.enabledIDs.count <= 1000, saved.validAccountPolicies, saved.validAccountRepresentatives, saved.validLastIDs, saved.validLastOverrides,
                         saved.validResetStopRules, saved.validNetworkSettings,
                         LocalProxyPreferences.validCreditFloors(primary: saved.creditFloors.primary, secondary: saved.creditFloors.secondary)
                     else { throw LocalProxyFailure.unavailable }
                     preferences = saved
+                    if saved.secretsReference == nil && (saved.persistentClientKey != nil || !(saved.egress?.mihomoSecret.isEmpty ?? true)) {
+                        guard savePreferences() else { throw LocalProxyFailure.unavailable }
+                    }
                 }
             } catch {
                 preferencesBlocked = true
@@ -293,8 +301,14 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
         preferences.listenPort = port
         preferences.clientKeyMode = mode
         preferences.egress = egress
-        guard preferences.validNetworkSettings else { preferences = previous; return false }
-        guard savePreferences() else { preferences = previous; return false }
+        guard preferences.validNetworkSettings else {
+            preferences = previous
+            return false
+        }
+        guard savePreferences() else {
+            preferences = previous
+            return false
+        }
         listenPort = port
         clientKeyMode = mode
         egressSettings = egress
@@ -309,7 +323,10 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
             let nodes = try await LocalProxyNetworkProbe.japaneseNodes(settings: settings)
             if nodes.isEmpty { issue = "未找到指定分组中的日本候选节点，请核对控制地址与分组。" }
             return nodes
-        } catch { issue = "无法读取出口节点，请核对控制地址、密钥与分组。"; return nil }
+        } catch {
+            issue = "无法读取出口节点，请核对控制地址、密钥与分组。"
+            return nil
+        }
     }
 
     func probeNow(profileID: String) {
@@ -355,8 +372,7 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
                 memberRevocations[profileID] == revocation, activeIDs.contains(profileID), preferences.enabledIDs.contains(profileID)
             else { return .failure(.identity) }
             return LocalProxyReply(ok: true, probeStatus: status, probeObservedAt: observedAt, probeIdentityHash: DispatchActivityStore.hash(credential.accountID))
-        } catch let failure as LocalProxyFailure { return .failure(failure) }
-        catch { return .failure(.unavailable) }
+        } catch let failure as LocalProxyFailure { return .failure(failure) } catch { return .failure(.unavailable) }
     }
 
     func runSelfCheck() {
@@ -371,12 +387,17 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
                 let proxy = try LocalProxyNetworkSettings.load()
                 self.selfCheck.update("system", passed: proxy != nil, detail: proxy != nil ? "已启用手动系统代理" : "未启用系统代理；请检查系统网络设置")
             } catch { self.selfCheck.update("system", passed: false, detail: "系统代理设置不可用；请检查手动代理与 PAC 设置") }
-            let desktopID = self.rows.first { $0.isDesktopAccount && $0.isEnabled }?.id
-            if let desktopID {
-                let proof = await self.probeOfficialBackend(profileID: desktopID, expectedRun: run)
+            let candidates = self.rows.filter { $0.isEnabled && self.registeredPool[$0.id] != nil }
+            let probeRow = candidates.first { $0.isDesktopAccount } ?? candidates.first
+            if let probeRow {
+                let proof = await self.probeOfficialBackend(profileID: probeRow.id, expectedRun: run)
                 guard self.runID == run, self.selfCheckRequestID == checkID, !Task.isCancelled else { return }
-                self.selfCheck.update("official", passed: proof.ok && proof.probeStatus == "reachable", detail: proof.ok && proof.probeStatus == "reachable" ? "桌面账号本轮 usage 请求成功" : "桌面账号后端探测失败；请检查登录和网络")
-            } else { self.selfCheck.update("official", passed: false, detail: "桌面账号未加入反代；请先核验并启用此账号") }
+                self.selfCheck.update(
+                    "official", passed: proof.ok && proof.probeStatus == "reachable",
+                    detail: proof.ok && proof.probeStatus == "reachable" ? "已启用账号本轮 usage 请求成功" : "已启用账号后端探测失败；请检查登录和网络")
+            } else {
+                self.selfCheck.update("official", passed: false, detail: "没有已启用并注册的账号；请先核验并启用账号")
+            }
             let endpointOK = (try? await LocalProxyNetworkProbe.models(endpoint: endpoint, key: key)) == true
             guard self.runID == run, self.selfCheckRequestID == checkID, !Task.isCancelled else { return }
             self.selfCheck.update("endpoint", passed: endpointOK, detail: endpointOK ? "端口、访问密钥和模型列表验证成功" : "端点验证失败；请检查端口、密钥与反代进程")
@@ -401,14 +422,18 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
 
     private func consumeEgress(_ object: [String: Any]) {
         guard let state = object["state"] as? String,
-            ["healthy", "disabled", "unconfigured", "unavailable", "dead", "switched", "all_dead", "changed"].contains(state) else { return }
+            ["healthy", "disabled", "unconfigured", "unavailable", "dead", "switched", "all_dead", "changed"].contains(state)
+        else { return }
         egressState = state
         if let requestID = object["requestID"] as? String, requestID == selfCheckRequestID {
             let latency = (object["latencyMS"] as? Int).flatMap { (0...60000).contains($0) ? $0 : nil }
-            selfCheck.update("egress", passed: state == "healthy", detail: state == "healthy" ? "当前分组节点可达" + (latency.map { " · \($0) ms" } ?? "") : "出口未验证（\(state)）；请检查控制地址、分组和节点")
+            selfCheck.update(
+                "egress", passed: state == "healthy", detail: state == "healthy" ? "当前分组节点可达" + (latency.map { " · \($0) ms" } ?? "") : "出口未验证（\(state)）；请检查控制地址、分组和节点")
         }
         if ["switched", "all_dead"].contains(state), let runID {
-            try? DispatchActivityStore.live.appendIssue(id: "proxy-network-\(runID)", phase: state, summary: state == "switched" ? "Local proxy watchdog switched an unavailable egress node." : "Local proxy watchdog found no reachable allowlisted node.")
+            try? DispatchActivityStore.live.appendIssue(
+                id: "proxy-network-\(runID)", phase: state,
+                summary: state == "switched" ? "Local proxy watchdog switched an unavailable egress node." : "Local proxy watchdog found no reachable allowlisted node.")
         }
     }
 
@@ -1026,13 +1051,16 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
             let control = try randomKey()
             let client: String
             if preferences.effectiveClientKeyMode == .persistent {
-                if let saved = preferences.persistentClientKey { client = saved }
-                else {
+                if let saved = preferences.persistentClientKey {
+                    client = saved
+                } else {
                     client = try randomKey()
                     preferences.persistentClientKey = client
                     guard savePreferences() else { throw LocalProxyFailure.unavailable }
                 }
-            } else { client = try randomKey() }
+            } else {
+                client = try randomKey()
+            }
             let folder = URL(fileURLWithPath: "/private/tmp", isDirectory: true).appendingPathComponent("aigoodbro-next-proxy-" + run, isDirectory: true)
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
             runDirectory = folder
@@ -1919,8 +1947,11 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
                 return
             }
             if code == "listen_port_occupied" {
-                issue = WidgetLanguage.storedOrAutomatic().text("端口 \(listenPort) 已被占用。请停止占用服务或修改监听端口；不会自动更换端口。", "Port \(listenPort) is occupied. Stop the listener or change the port; no fallback port is used.")
-            } else { issue = message(.unavailable) }
+                issue = WidgetLanguage.storedOrAutomatic().text(
+                    "端口 \(listenPort) 已被占用。请停止占用服务或修改监听端口；不会自动更换端口。", "Port \(listenPort) is occupied. Stop the listener or change the port; no fallback port is used.")
+            } else {
+                issue = message(.unavailable)
+            }
             if ["lease_acquire_unknown", "lease_release_unknown", "lease_heartbeat_failed"].contains(code) {
                 if let runID, phase == .running || phase == .starting {
                     try? DispatchActivityStore.live.appendIssue(
@@ -2179,7 +2210,9 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
     @discardableResult
     private func savePreferences() -> Bool {
         do {
-            guard preferences.validLastIDs, preferences.validLastOverrides, preferences.validAccountRepresentatives, preferences.validResetStopRules, preferences.validNetworkSettings else {
+            guard preferences.validLastIDs, preferences.validLastOverrides, preferences.validAccountRepresentatives, preferences.validResetStopRules,
+                preferences.validNetworkSettings
+            else {
                 throw LocalProxyFailure.unavailable
             }
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
@@ -2188,9 +2221,23 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
                 throw LocalProxyFailure.unavailable
             }
             let url = directory.appendingPathComponent("local-proxy-queue-v1.json")
-            let data = try JSONEncoder().encode(preferences)
-            guard data.count <= 65536 else { throw LocalProxyFailure.unavailable }
-            try DispatchParticipationSync.writePrivateProxyPreferences(data, at: url)
+            let previousReference = preferences.secretsReference
+            let reference = UUID().uuidString
+            try LocalProxyPreferenceSecrets(clientKey: preferences.persistentClientKey, mihomoSecret: preferences.egress?.mihomoSecret ?? "").save(reference)
+            do {
+                var redacted = preferences
+                redacted.secretsReference = reference
+                redacted.persistentClientKey = nil
+                redacted.egress?.mihomoSecret = ""
+                let data = try JSONEncoder().encode(redacted)
+                guard data.count <= 65536 else { throw LocalProxyFailure.unavailable }
+                try DispatchParticipationSync.writePrivateProxyPreferences(data, at: url)
+                preferences.secretsReference = reference
+            } catch {
+                LocalProxyPreferenceSecrets.remove(reference)
+                throw error
+            }
+            if let previousReference { LocalProxyPreferenceSecrets.remove(previousReference) }
             return true
         } catch {
             preferencesBlocked = true
@@ -2255,5 +2302,42 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
         case .stopping: return language.text("尚未确认代理完全停止，账号占用已保留", "Proxy stop is unconfirmed; reservations retained")
         case .unavailable: return language.text("代理暂不可用，请检查额度与本地运行状态", "Proxy unavailable; check limits and local runtime")
         }
+    }
+}
+
+/// Immutable Keychain revisions keep the old settings and credentials consistent
+/// if a settings write fails. Missing/locked credentials never rotate silently.
+private struct LocalProxyPreferenceSecrets: Codable {
+    var clientKey: String?
+    var mihomoSecret: String
+    private static func query(_ reference: String) throws -> [String: Any] {
+        guard UUID(uuidString: reference) != nil else { throw LocalProxyFailure.unavailable }
+        return [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: "com.aigoodbro.Next.LocalProxyPreferences.v1",
+            kSecAttrAccount as String: reference,
+            kSecUseAuthenticationUI as String: kSecUseAuthenticationUIFail,
+        ]
+    }
+    static func read(_ reference: String) throws -> Self {
+        var query = try query(reference)
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+        var result: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
+            let data = result as? Data, data.count <= 65536
+        else { throw LocalProxyFailure.unavailable }
+        return try JSONDecoder().decode(Self.self, from: data)
+    }
+    func save(_ reference: String) throws {
+        var query = try Self.query(reference)
+        query[kSecValueData as String] = try JSONEncoder().encode(self)
+        query[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+        query[kSecAttrSynchronizable as String] = false
+        guard SecItemAdd(query as CFDictionary, nil) == errSecSuccess else { throw LocalProxyFailure.unavailable }
+    }
+    static func remove(_ reference: String) {
+        guard let query = try? query(reference) else { return }
+        SecItemDelete(query as CFDictionary)
     }
 }
