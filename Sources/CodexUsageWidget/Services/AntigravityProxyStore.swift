@@ -14,6 +14,8 @@ final class AntigravityProxyStore: ObservableObject {
     @Published private(set) var accounts: [AntigravityProxyAccount] = []
     @Published private(set) var phase: AntigravityProxyPhase = .stopped
     @Published private(set) var signInPending = false
+    @Published private(set) var completedSignInAccountID: String?
+    @Published private(set) var completedSignInProvider: AntigravityProxyProvider?
     @Published private(set) var port: Int?
     @Published private(set) var issue: String?
     @Published private(set) var models: [String] = []
@@ -46,6 +48,7 @@ final class AntigravityProxyStore: ObservableObject {
     private var outputTask: Task<Void, Never>?
     private var runID: UUID?
     private var signInSession: String?
+    private var signInCancelling = false
     private var revoked = Set<String>()
     private var metadataValid = true
 
@@ -150,6 +153,9 @@ final class AntigravityProxyStore: ObservableObject {
     func stop() {
         signInSession = nil
         signInProvider = nil
+        signInCancelling = false
+        completedSignInAccountID = nil
+        completedSignInProvider = nil
         authorizationUserCode = nil
         signInPending = false
         runID = nil
@@ -205,6 +211,9 @@ final class AntigravityProxyStore: ObservableObject {
             let session = try Self.randomKey()
             signInSession = session
             signInProvider = provider
+            signInCancelling = false
+            completedSignInAccountID = nil
+            completedSignInProvider = nil
             authorizationUserCode = nil
             signInPending = true
             issue = nil
@@ -212,6 +221,7 @@ final class AntigravityProxyStore: ObservableObject {
         } catch {
             signInSession = nil
             signInProvider = nil
+            signInCancelling = false
             authorizationUserCode = nil
             signInPending = false
             issue = Self.message(for: error)
@@ -219,11 +229,12 @@ final class AntigravityProxyStore: ObservableObject {
     }
 
     func cancelSignIn() {
-        if let session = signInSession { try? send(["command": "cancel_auth", "requestID": session]) }
-        signInSession = nil
-        signInProvider = nil
+        guard signInPending, !signInCancelling, let session = signInSession else { return }
+        signInCancelling = true
         authorizationUserCode = nil
-        signInPending = false
+        try? send(["command": "cancel_auth", "requestID": session])
+        // Keep the session locked until the helper acknowledges its terminal
+        // result; a rapid retry must not receive oauth_busy from the old run.
     }
 
     func removeAccount(_ id: String) {
@@ -351,7 +362,7 @@ final class AntigravityProxyStore: ObservableObject {
                 }
             }
         case "open_browser":
-            guard signInPending, event.sessionID == signInSession,
+            guard signInPending, !signInCancelling, event.sessionID == signInSession,
                 let provider = signInProvider, (event.provider ?? .antigravity) == provider,
                 let text = event.url, let url = Self.validatedAuthorizationURL(text, provider: provider, userCode: event.userCode)
             else { return }
@@ -367,18 +378,36 @@ final class AntigravityProxyStore: ObservableObject {
                 issue = "无法打开网页授权页，请稍后重试。"
             }
         case "auth_result":
-            guard event.sessionID == signInSession else { return }
+            guard event.sessionID == signInSession,
+                let provider = signInProvider, event.provider == provider
+            else { return }
+            let cancelled = signInCancelling
+            let existingIssue = issue
+            var resultIssue: String?
+            var completedAccountID: String?
+            if cancelled || event.code == "oauth_cancelled" {
+                resultIssue = nil
+            } else if event.code == "ok",
+                let id = event.accountID,
+                records.contains(where: { $0.id == id && $0.provider == provider })
+            {
+                completedAccountID = id
+            } else if event.code == "ok" {
+                resultIssue = "授权结果与已保存账号不一致，请停止后重试。"
+            } else if event.code == "credential_store_rejected", existingIssue != nil {
+                resultIssue = existingIssue
+            } else {
+                resultIssue = Self.authorizationIssue(event.code)
+            }
+            // Publish the terminal result before unlocking the next attempt.
+            issue = resultIssue
+            completedSignInProvider = completedAccountID == nil ? nil : provider
+            completedSignInAccountID = completedAccountID
             signInSession = nil
             signInProvider = nil
+            signInCancelling = false
             authorizationUserCode = nil
             signInPending = false
-            switch event.code {
-            case "ok": issue = nil
-            case "oauth_cancelled": issue = nil
-            case "account_exists": issue = "这个账号已在授权账号池中。"
-            case "oauth_timeout": issue = "网页授权已超时，请重新添加账号。"
-            default: issue = "账号授权未完成，请重新登录。"
-            }
         default:
             issue = "多平台代理未能完成操作，请停止后重试。"
         }
@@ -392,11 +421,13 @@ final class AntigravityProxyStore: ObservableObject {
             }
             try credentialStore.save(JSONEncoder().encode(credential), account: key)
         } else if purpose == "add" {
-            guard signInPending, signInSession == session, signInProvider == credential.provider, records.count < 100,
+            guard signInPending, !signInCancelling, signInSession == session, signInProvider == credential.provider, records.count < 100,
                 !records.contains(where: { $0.id == credential.accountID })
             else { throw AntigravityProxyFailure.invalidData }
-            try credentialStore.save(JSONEncoder().encode(credential), account: key)
+            let encoded = try JSONEncoder().encode(credential)
+            try credentialStore.save(encoded, account: key)
             do {
+                guard try credentialStore.read(key) == encoded else { throw AntigravityProxyFailure.keychain }
                 let next = records + [credential.account]
                 try saveRecords(next)
                 records = next
@@ -551,6 +582,29 @@ final class AntigravityProxyStore: ObservableObject {
         stop()
         phase = .failed
         issue = "多平台代理已退出，请重新启动。"
+    }
+
+    private static func authorizationIssue(_ code: String?) -> String {
+        guard let code else { return "账号授权未完成，请重新登录。" }
+        switch code {
+        case "account_exists": return "这个账号已在授权账号池中。"
+        case "oauth_busy": return "上一次授权尚未结束，请稍后重试。"
+        case "oauth_timeout": return "网页授权已超时，请重新添加账号。"
+        case "oauth_denied": return "网页授权被拒绝，请重新选择账号。"
+        case "oauth_browser_unavailable": return "无法打开网页授权页，请稍后重试。"
+        case "oauth_listener_unavailable": return "本机授权回调端口不可用，请稍后重试。"
+        case "oauth_token_exchange_failed": return "授权码交换失败，请重新登录。"
+        case "oauth_identity_failed", "oauth_identity_mismatch": return "授权已返回，但无法确认账号身份。"
+        case "oauth_project_failed": return "账号已授权，但无法确认项目权限。"
+        case "credential_store_rejected", "credential_store_timeout", "credential_store_unavailable":
+            return "授权凭据未能保存，请检查本机钥匙串或存储权限。"
+        case "provider_unavailable": return "此平台的网页授权组件尚不可用。"
+        default:
+            if code.hasPrefix("oauth_token_exchange_failed_http_") { return "授权码交换被服务端拒绝，请重新登录。" }
+            if code.hasPrefix("oauth_identity_failed_http_") { return "无法从服务端确认授权账号身份。" }
+            if code.hasPrefix("oauth_project_failed_http_") { return "无法从服务端确认项目权限。" }
+            return "账号授权未完成，请重新登录。"
+        }
     }
 
     private static func message(for error: Error) -> String {

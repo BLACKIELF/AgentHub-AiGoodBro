@@ -107,10 +107,12 @@ struct HomeCodexAccountSummary: View {
 
     private func quotaWindows(horizontalDetails: Bool) -> some View {
         HStack(alignment: .top, spacing: 10) {
-            quotaWindow(
-                language.text("5h", "5h"), remaining: fiveHourRemaining, reset: fiveHourReset,
-                constrainedByWeekly: QuotaAvailabilityPresentation.isWeeklyExhausted(sevenDayRemaining),
-                horizontalDetails: horizontalDetails)
+            if !profile.isProPlan {
+                quotaWindow(
+                    language.text("5h", "5h"), remaining: fiveHourRemaining, reset: fiveHourReset,
+                    constrainedByWeekly: QuotaAvailabilityPresentation.isWeeklyExhausted(sevenDayRemaining),
+                    horizontalDetails: horizontalDetails)
+            }
             quotaWindow(language.text("7d", "7d"), remaining: sevenDayRemaining, reset: sevenDayReset, paletteRole: .secondary, horizontalDetails: horizontalDetails)
         }
     }

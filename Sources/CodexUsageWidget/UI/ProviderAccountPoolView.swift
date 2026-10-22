@@ -211,7 +211,11 @@ struct ProviderAccountPoolView: View {
             }
         }.padding(24).frame(width: 440)
             .onDisappear { if pool.signInPending { pool.cancelSignIn() } }
-            .onChange(of: pool.signInPending) { pending in if !pending && pool.issue == nil && !accounts.isEmpty { addingAccount = false } }
+            .onChange(of: pool.completedSignInAccountID) { id in
+                if let id, pool.completedSignInProvider == provider, accounts.contains(where: { $0.id == id }) {
+                    addingAccount = false
+                }
+            }
     }
 
     private func start() async {

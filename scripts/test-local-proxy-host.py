@@ -5,6 +5,7 @@ import subprocess, tempfile, os, sys, hashlib, json, shutil
 root=Path(__file__).resolve().parent.parent
 service=root/'Sources/CodexUsageWidget/Services'
 dynamic_http='--dynamic-http-only' in sys.argv
+main_only='--main-only' in sys.argv
 cleanup_retry='--cleanup-retry-only' in sys.argv
 control_negative='--control-progress-negative' in sys.argv
 cooldown_negative='--cooldown-refresh-negative' in sys.argv
@@ -110,7 +111,7 @@ with tempfile.TemporaryDirectory(prefix='aigoodbro-proxy-host-fixture-', dir=os.
     bounded=bounded.replace('DispatchParticipationPaths.lockFileName', '".fixture-snapshot.lock"')
     identity='enum CodexOfficialProfileReader {\n'+profiles[a:b]+'\n}\n'
     # Use the actual production plan and multiplier projection in routing checks.
-    identity+='extension CodexProfile {\n'+declaration(profiles,'    var displayedProTierMultiplier: Int?')+'\n'+declaration(profiles,'    var resolvedPlanType: String?')+'\n}\n'
+    identity+='extension CodexProfile {\n'+declaration(profiles,'    var displayedProTierMultiplier: Int?')+'\n'+declaration(profiles,'    var resolvedPlanType: String?')+'\n'+declaration(profiles,'    var isProPlan: Bool')+'\n}\n'
     presentation=(root/'Sources/CodexUsageWidget/Domain/WorkspacePresentation.swift').read_text()
     presentation=presentation[:presentation.index('/// Presentation only:')]
     usage_models=(root/'Sources/CodexUsageWidget/Domain/UsageModels.swift').read_text()
@@ -352,7 +353,7 @@ with tempfile.TemporaryDirectory(prefix='aigoodbro-proxy-host-fixture-', dir=os.
         fixture_env['PROXY_RELEASE_FENCE_ONLY']='1'
     try:
         subprocess.run([str(folder/'fixture')],env=fixture_env,check=True)
-        if not dynamic_http and not cleanup_retry and not focused_fixture:
+        if not dynamic_http and not cleanup_retry and not focused_fixture and not main_only:
             contention_env={**fixture_env,'PROXY_FIXTURE_ROOT':str(folder/'registry-contention-support'),'PROXY_REGISTRY_CONTENTION_ONLY':'1'}
             subprocess.run([str(folder/'fixture')],env=contention_env,check=True)
     except subprocess.CalledProcessError as failure:

@@ -2062,8 +2062,14 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
             func officialRemaining(_ window: CodexQuotaWindowSnapshot?) -> Double? {
                 window.flatMap { $0.usedPercent.isFinite && (0...100).contains($0.usedPercent) ? 100 - $0.usedPercent : nil }
             }
+            let isProPlan = profile.isProPlan
             let weeklyRemaining = officialRemaining(profile.lastSnapshot?.sevenDay)
-            let displayWindows = [("5h", profile.lastSnapshot?.fiveHour), ("7d", profile.lastSnapshot?.sevenDay), ("30d", profile.lastSnapshot?.monthly)]
+            let sourceWindows: [(String, CodexQuotaWindowSnapshot?)] =
+                isProPlan
+                ? [("7d", profile.lastSnapshot?.sevenDay)]
+                : [("5h", profile.lastSnapshot?.fiveHour), ("7d", profile.lastSnapshot?.sevenDay), ("30d", profile.lastSnapshot?.monthly)]
+            let displayWindows =
+                sourceWindows
                 .filter { $0.0 != "30d" || $0.1 != nil }
                 .map { label, window in
                     LocalProxyQuotaWindow(
@@ -2099,7 +2105,7 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
                 creditBalance: usageStore.creditBalancePresentation(for: profile),
                 resetCardCount: usageStore.availableResetCredits(for: profile),
                 snapshotStale: profile.lastQuotaReadFailureAt != nil || profile.lastSnapshot.map { Date().timeIntervalSince($0.fetchedAt) > 1_800 } != false,
-                isDesktopAccount: isDesktop(id),
+                isDesktopAccount: isDesktop(id), isProPlan: isProPlan,
                 isEnabled: preferences.enabledIDs.contains(id),
                 isPriority: preferences.priorityIDs.contains(id) && orderingGroup(for: id) != 1, isCurrent: state == "current", quotaText: quota, state: state,
                 cooldownUntil: cooldowns[id], cooldownKind: cooldownKinds[id], probeState: probeStates[id],

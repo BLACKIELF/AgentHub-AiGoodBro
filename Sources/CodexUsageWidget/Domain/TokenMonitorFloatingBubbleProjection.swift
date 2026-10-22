@@ -9,7 +9,8 @@ struct TokenMonitorFloatingBubbleAccount: Equatable {
     var accountName: String
     var isLoggedIn = true
     var metrics: [TokenMonitorFloatingBubbleMetric] = []
-    /// Official plan-selected headline for Edge Dock only; other surfaces retain every metric.
+    var proSevenDayOnly = false
+    /// Official plan-selected headline for Edge Dock only.
     var edgeDockPrimaryMetricID: String? = nil
 }
 
@@ -60,7 +61,14 @@ enum TokenMonitorFloatingBubbleProjection {
         // Ambiguous identity is not permission to guess or fall back to another account.
         guard matches.count == 1, let account = matches.first else { return result }
         result.accountName = account.accountName
-        let metrics = account.metrics.filter { $0.id == preferences.selectedMetricID }
+        // Existing Pro selections of the old 5h display resolve to the weekly
+        // metric for this exact account, without changing saved preferences.
+        let selectedMetricID =
+            preferences.selectedMetricID == "five-hour"
+                && account.providerID == "codex" && account.proSevenDayOnly
+            ? "seven-day" : preferences.selectedMetricID
+        result.metricID = selectedMetricID
+        let metrics = account.metrics.filter { $0.id == selectedMetricID }
         guard metrics.count == 1, let metric = metrics.first else { return result }
         result.metricName = metric.name
         result.sourceID = metric.sourceID

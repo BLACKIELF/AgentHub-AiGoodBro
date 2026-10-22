@@ -24,6 +24,7 @@ final class LocalCLIAccountStore: ObservableObject {
     private var tasks: [String: Task<Void, Never>] = [:]
     private var loginTasks: [String: Task<Void, Never>] = [:]
     private var authenticationTasks: [String: Task<Void, Never>] = [:]
+    private var loginAttempts: [String: LoginAttempt] = [:]
     private var loginVerification: Set<String> = []
     private var quotaAttemptedAt: [String: Date] = [:]
     private var quotaAttemptState: [String: LocalCLIQuotaState] = [:]
@@ -513,7 +514,6 @@ final class LocalCLIAccountStore: ObservableObject {
             claudeCurrent = nil
             claudeActiveProfileID = nil
             clearClaudeQuota()
-            loginVerification.remove(profile.id)
         }
         if profile.kind == .openCode, !updateProvider {
             checkLocalSignIn(profile)
@@ -539,9 +539,19 @@ final class LocalCLIAccountStore: ObservableObject {
         refreshing.remove(profile.id)
         quotas.removeValue(forKey: profile.id)
         stale.remove(profile.id)
+        loginVerification.remove(profile.id)
         signingIn.insert(profile.id)
         let claudeAttemptID = profile.kind == .claudeCode ? UUID() : nil
         if profile.kind == .claudeCode { claudeLoginAttemptID = claudeAttemptID }
+        let localAttemptID = profile.kind == .claudeCode ? nil : UUID()
+        if let localAttemptID {
+            let initialAuthentication = authenticationReader.read(profile)
+            authentication[profile.id] = initialAuthentication
+            loginAttempts[profile.id] = LoginAttempt(
+                id: localAttemptID, kind: profile.kind, configDirectory: profile.configDirectory,
+                credentialVersion: credentialVersion(for: profile), initialAuthentication: initialAuthentication,
+                launcherDelivered: false)
+        }
         loginMessages[profile.id] =
             switch profile.kind {
             case .grok:
@@ -577,11 +587,21 @@ final class LocalCLIAccountStore: ObservableObject {
         loginTasks[profile.id] = Task { [weak self] in
             do {
                 let session = try await LocalCLITerminalLauncher.launch(profile: profile, executable: executable, action: .signIn, workingDirectory: directory)
+                if let localAttemptID {
+                    guard let self, !Task.isCancelled,
+                        self.activeLoginProfile(profile, attemptID: localAttemptID) != nil
+                    else { return }
+                    self.loginAttempts[profile.id]?.launcherDelivered = true
+                }
                 let code = try await LocalCLITerminalLauncher.waitForExit(session)
                 guard let self, !Task.isCancelled,
-                    claudeAttemptID == nil || self.claudeLoginAttemptID == claudeAttemptID
+                    claudeAttemptID == nil || self.claudeLoginAttemptID == claudeAttemptID,
+                    localAttemptID.map({ self.activeLoginProfile(profile, attemptID: $0) != nil }) ?? true
                 else { return }
-                guard let current = self.profiles.first(where: { $0.id == profile.id && $0.configDirectory == profile.configDirectory })
+                guard
+                    let current = self.profiles.first(where: {
+                        $0.id == profile.id && $0.kind == profile.kind && $0.configDirectory == profile.configDirectory
+                    })
                 else { throw ClaudeSubscriptionService.Failure.identityChanged }
                 if profile.kind == .claudeCode, code == 0 {
                     self.loginMessages[profile.id] = self.language.text("官方登录流程已结束，正在核验订阅身份。", "Official sign-in ended. Checking the subscription identity.")
@@ -615,21 +635,35 @@ final class LocalCLIAccountStore: ObservableObject {
                 self.signingIn.remove(profile.id)
                 self.loginTasks.removeValue(forKey: profile.id)
                 self.authenticationTasks.removeValue(forKey: profile.id)?.cancel()
+                let previousVersion = self.loginAttempts[profile.id]?.credentialVersion
+                self.loginAttempts.removeValue(forKey: profile.id)
                 if profile.kind == .claudeCode { self.claudeLoginAttemptID = nil }
                 if code == 0 {
-                    self.loginVerification.insert(profile.id)
-                    self.loginMessages[profile.id] = self.language.text("官方登录流程已结束，正在核验账号。", "The official sign-in flow ended. Verifying the account.")
+                    let evidence = self.authenticationReader.read(current)
+                    self.authentication[profile.id] = evidence
+                    if evidence.isConfigured, previousVersion.map({ self.credentialVersion(for: current) != $0 }) == true {
+                        self.loginVerification.insert(profile.id)
+                        self.loginMessages[profile.id] = self.language.text(
+                            "本轮官方登录流程已结束，正在核验当前配置。",
+                            "This official sign-in flow ended. Verifying the current configuration.")
+                    } else {
+                        self.loginMessages[profile.id] = self.language.text(
+                            "本轮官方命令已结束，但未检测到新的可用登录配置；旧凭据不能证明本轮授权。",
+                            "This official command ended without new usable sign-in configuration. Old credentials do not prove this authorization.")
+                    }
                     self.refresh(current)
                 } else {
                     self.loginMessages[profile.id] = self.language.text("登录未完成，请查看终端提示后重试。", "Sign-in did not finish. Check the terminal and try again.")
                 }
             } catch {
                 guard let self, !Task.isCancelled,
-                    claudeAttemptID == nil || self.claudeLoginAttemptID == claudeAttemptID
+                    claudeAttemptID == nil || self.claudeLoginAttemptID == claudeAttemptID,
+                    localAttemptID.map({ self.activeLoginProfile(profile, attemptID: $0) != nil }) ?? true
                 else { return }
                 self.signingIn.remove(profile.id)
                 self.loginTasks.removeValue(forKey: profile.id)
                 self.authenticationTasks.removeValue(forKey: profile.id)?.cancel()
+                self.loginAttempts.removeValue(forKey: profile.id)
                 if profile.kind == .claudeCode { self.claudeLoginAttemptID = nil }
                 self.loginMessages[profile.id] = self.language.text(
                     profile.kind == .claudeCode ? "登录流程结束，但当前订阅身份尚未核验，请重新检查。" : "暂未确认登录结果。若浏览器已授权，点击刷新核验；终端窗口已保留。",
@@ -638,17 +672,20 @@ final class LocalCLIAccountStore: ObservableObject {
                         : "Sign-in has not been confirmed. If browser authorization finished, refresh to verify. The terminal was left open.")
             }
         }
-        // `claude auth login` finishes with its own exit receipt. Watching old
-        // credentials would falsely finish a new authorization attempt.
-        guard profile.kind != .claudeCode else { return }
+        // One-shot official login commands have their own exit receipt. Only
+        // persistent TUIs can complete while their Terminal session stays open.
+        guard profile.kind == .gemini || profile.kind == .workBuddy,
+            let localAttemptID
+        else { return }
         authenticationTasks[profile.id]?.cancel()
         authenticationTasks[profile.id] = Task { [weak self] in
-            // Interactive CLIs remain open after authentication. Watch their
-            // local credential evidence instead of requiring process exit.
+            // A prior credential is never evidence that this attempt finished.
             for _ in 0..<300 {
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
-                guard !Task.isCancelled, let self, self.signingIn.contains(profile.id) else { return }
-                self.checkLocalSignIn(profile)
+                guard !Task.isCancelled, let self,
+                    let current = self.activeLoginProfile(profile, attemptID: localAttemptID)
+                else { return }
+                self.checkLocalSignIn(current)
             }
         }
     }
@@ -757,11 +794,42 @@ final class LocalCLIAccountStore: ObservableObject {
             refresh(profile)
             return
         }
+        if let attempt = loginAttempts[profile.id] {
+            guard attempt.launcherDelivered else {
+                loginMessages[profile.id] = language.text(
+                    "官方终端尚未打开，请先完成该窗口中的登录。",
+                    "The official terminal has not opened yet. Complete sign-in there first.")
+                return
+            }
+            guard attempt.kind == .gemini || attempt.kind == .workBuddy else {
+                authentication[profile.id] = authenticationReader.read(profile)
+                loginMessages[profile.id] = language.text(
+                    "正在等待本轮官方登录命令结束，再核验账号。",
+                    "Waiting for this official sign-in command to finish before verifying the account.")
+                return
+            }
+            completeInteractiveSignIn(profile, attemptID: attempt.id)
+            return
+        }
+        authentication[profile.id] = authenticationReader.read(profile)
+        loginMessages[profile.id] = language.text(
+            "已返回官方终端，正在核验当前配置；已有凭据不能单独证明本轮授权。",
+            "Returned from the official terminal. Checking the current configuration; saved credentials alone do not prove this authorization.")
+        if authentication[profile.id]?.isConfigured == true { loginVerification.insert(profile.id) }
+        refresh(profile)
+    }
+
+    private func completeInteractiveSignIn(_ profile: LocalCLIProfile, attemptID: UUID) {
+        guard activeLoginProfile(profile, attemptID: attemptID) != nil else { return }
+        loginAttempts.removeValue(forKey: profile.id)
         loginTasks.removeValue(forKey: profile.id)?.cancel()
         authenticationTasks.removeValue(forKey: profile.id)?.cancel()
         signingIn.remove(profile.id)
         authentication[profile.id] = authenticationReader.read(profile)
-        loginVerification.insert(profile.id)
+        loginMessages[profile.id] = language.text(
+            "已返回官方终端，正在核验当前配置；已有凭据不能单独证明本轮授权。",
+            "Returned from the official terminal. Checking the current configuration; saved credentials alone do not prove this authorization.")
+        if authentication[profile.id]?.isConfigured == true { loginVerification.insert(profile.id) }
         refresh(profile)
     }
 
@@ -823,12 +891,16 @@ final class LocalCLIAccountStore: ObservableObject {
     private func checkLocalSignIn(_ profile: LocalCLIProfile) {
         let evidence = authenticationReader.read(profile)
         authentication[profile.id] = evidence
-        // Claude's `auth login` has an explicit terminal exit and must not be
-        // completed merely because its old credential file is still present.
-        // Other interactive CLIs retain their existing configuration watcher.
-        if profile.kind != .claudeCode, evidence.isConfigured, signingIn.contains(profile.id) {
-            checkInteractiveSignIn(profile)
-        }
+        guard profile.kind == .gemini || profile.kind == .workBuddy, evidence.isConfigured,
+            let attempt = loginAttempts[profile.id],
+            activeLoginProfile(profile, attemptID: attempt.id) != nil,
+            attempt.launcherDelivered,
+            !attempt.initialAuthentication.isConfigured,
+            credentialVersion(for: profile) != attempt.credentialVersion
+        else { return }
+        // Metadata wakes verification; the profile's own reader and quota
+        // result still determine what can be claimed about the current account.
+        completeInteractiveSignIn(profile, attemptID: attempt.id)
     }
 
     func hasConfiguredAuthentication(_ profile: LocalCLIProfile) -> Bool {
@@ -935,6 +1007,8 @@ final class LocalCLIAccountStore: ObservableObject {
             refreshing.remove(profile.id)
             loginMessages.removeValue(forKey: profile.id)
             loginVerification.remove(profile.id)
+            loginAttempts.removeValue(forKey: profile.id)
+            loginTasks.removeValue(forKey: profile.id)?.cancel()
             authentication.removeValue(forKey: profile.id)
             authenticationTasks.removeValue(forKey: profile.id)?.cancel()
             quotaAttemptedAt.removeValue(forKey: profile.id)
@@ -1071,6 +1145,25 @@ final class LocalCLIAccountStore: ObservableObject {
         let files: [File?]
     }
 
+    private struct LoginAttempt {
+        let id: UUID
+        let kind: LocalCLIKind
+        let configDirectory: String
+        let credentialVersion: CredentialVersion
+        let initialAuthentication: LocalCLIAuthentication
+        var launcherDelivered: Bool
+    }
+
+    private func activeLoginProfile(_ profile: LocalCLIProfile, attemptID: UUID) -> LocalCLIProfile? {
+        guard let attempt = loginAttempts[profile.id], attempt.id == attemptID,
+            attempt.kind == profile.kind, attempt.configDirectory == profile.configDirectory,
+            signingIn.contains(profile.id)
+        else { return nil }
+        return profiles.first {
+            $0.id == profile.id && $0.kind == attempt.kind && $0.configDirectory == attempt.configDirectory
+        }
+    }
+
     private func credentialVersion(for profile: LocalCLIProfile) -> CredentialVersion {
         let names: [String] =
             switch profile.kind {
@@ -1164,6 +1257,7 @@ final class LocalCLIAccountStore: ObservableObject {
         for id in Array(authenticationTasks.keys) where !retainedIDs.contains(id) {
             authenticationTasks.removeValue(forKey: id)?.cancel()
         }
+        loginAttempts = loginAttempts.filter { retainedIDs.contains($0.key) }
         authentication = authentication.filter { retainedIDs.contains($0.key) }
         signingIn.formIntersection(retainedIDs)
         loginVerification.formIntersection(retainedIDs)

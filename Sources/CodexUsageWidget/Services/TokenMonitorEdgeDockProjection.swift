@@ -8,7 +8,7 @@ enum TokenMonitorEdgeDockProjection {
         guard readSucceeded else { return nil }
         let normalized = plan?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let canonical = normalized == "pro-lite" || normalized == "pro_lite" ? "prolite" : normalized
-        if CodexOneShotSwitchIntent.targetMultiplier(for: canonical) != nil { return "seven-day" }
+        if CodexOneShotSwitchIntent.isProPlan(canonical) { return "seven-day" }
         if canonical == "plus" { return "five-hour" }
         return nil
     }

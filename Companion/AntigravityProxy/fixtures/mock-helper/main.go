@@ -59,6 +59,7 @@ func main() {
 	active := map[string]map[string]any{}
 	pending := map[string]pendingWrite{}
 	var session, requestedProvider string
+	antigravityAttempts := 0
 	snapshot := func(crossCatalog bool) {
 		rows := []any{}
 		catalogs := map[string][]string{}
@@ -101,6 +102,18 @@ func main() {
 				continue
 			}
 			credential, label := fixtureCredential(requestedProvider), requestedProvider
+			if scenario == "multi-same-provider" && requestedProvider == "antigravity" {
+				antigravityAttempts++
+				idChar := "a"
+				if antigravityAttempts == 2 {
+					idChar = "c"
+				}
+				credential["accountID"] = "ag-" + strings.Repeat(idChar, 32)
+			}
+			if active[credential["accountID"].(string)] != nil {
+				emit(map[string]any{"event": "auth_result", "provider": requestedProvider, "sessionID": session, "code": "account_exists"})
+				continue
+			}
 			switch scenario {
 			case "provider-credential-add":
 				credential, label = fixtureCredential("claude"), "claude"
@@ -122,13 +135,17 @@ func main() {
 			}
 			delete(pending, request)
 			if write.purpose == "add" {
-				code := "oauth_failed"
+				code := "credential_store_rejected"
 				if command["ok"] == true {
 					active[write.credential["accountID"].(string)] = fixtureAccount(write.credential)
 					code = "ok"
 				}
 				snapshot(false)
-				emit(map[string]any{"event": "auth_result", "provider": write.provider, "sessionID": write.session, "code": code})
+				result := map[string]any{"event": "auth_result", "provider": write.provider, "sessionID": write.session, "code": code}
+				if code == "ok" {
+					result["accountID"] = write.credential["accountID"]
+				}
+				emit(result)
 			}
 			// Fixed, non-secret marker: rejection tests await a real IPC round trip.
 			if write.purpose == "refresh" || scenario == "cancel-late" {

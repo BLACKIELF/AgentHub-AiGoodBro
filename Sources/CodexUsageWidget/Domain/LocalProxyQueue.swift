@@ -10,6 +10,7 @@ struct LocalProxyQueueRow: Identifiable, Equatable {
     var resetCardCount: Int? = nil
     var snapshotStale = false
     var isDesktopAccount = false
+    var isProPlan = false
     let isEnabled: Bool
     let isPriority: Bool
     let isCurrent: Bool
@@ -186,9 +187,9 @@ struct LocalProxyReply: Encodable, Sendable {
 /// This affects selection order only; quota and identity admission stay separate.
 enum LocalProxyRouting {
     static func isLastResort(_ profile: CodexProfile) -> Bool {
-        // Keep an official Pro plan at the end unless its known tier is 5x.
-        // Unknown plans and account names are never treated as tier evidence.
-        profile.resolvedPlanType == "pro" && profile.displayedProTierMultiplier != 5
+        // All verified Pro plans share the same default. A local multiplier or
+        // account name is display metadata, never routing evidence.
+        ["pro", "prolite"].contains(profile.resolvedPlanType ?? "")
     }
     static func group(_ profile: CodexProfile, userLast: Bool, lastOverride: Bool? = nil) -> Int {
         // Default and explicit last choices share one movable group. Only a
@@ -230,21 +231,26 @@ enum LocalProxyAdmission {
             (profile.lastQuotaReadFailureAt ?? .distantPast) < snapshot.fetchedAt,
             let seven = snapshot.sevenDay
         else { return .quotaUnknown }
-        // Official Pro can expose only a weekly subscription window. A positive
-        // credit balance does not invalidate that subscription; paid admission
-        // remains a separate explicit stage after the subscription is exhausted.
-        if snapshot.fiveHour == nil {
-            guard ["pro", "prolite"].contains(snapshot.planType?.lowercased() ?? "") else { return .quotaUnknown }
-            guard policy.fiveHourUsedLimit == 100 else { return .quotaUnknown }
-        }
-        let windows = [seven] + [snapshot.fiveHour, snapshot.monthly].compactMap { $0 }
+        // Pro and Prolite require the official seven-day window. Absent short
+        // windows do not block admission, but a valid reported exhausted limit
+        // still prevents subscription use. The display multiplier is irrelevant.
+        let isPro = profile.isProPlan
+        if !isPro && snapshot.fiveHour == nil { return .quotaUnknown }
+        let windows = isPro ? [seven] : [seven] + [snapshot.fiveHour, snapshot.monthly].compactMap { $0 }
         guard windows.allSatisfy({ $0.usedPercent.isFinite && (0...100).contains($0.usedPercent) && $0.resetsAt.map({ $0 > now }) == true }) else { return .quotaUnknown }
-        if policy.fiveHourUsedLimit < 100,
+        let reportedExtraExhausted =
+            isPro
+            && [snapshot.fiveHour, snapshot.monthly].compactMap { $0 }.contains {
+                $0.usedPercent.isFinite && $0.usedPercent >= 100 && $0.usedPercent <= 100 && $0.resetsAt.map { $0 > now } == true
+            }
+        if !isPro && policy.fiveHourUsedLimit < 100,
             let fiveHour = snapshot.fiveHour, fiveHour.usedPercent >= policy.fiveHourUsedLimit
         {
             return .usageLimit
         }
-        let exhausted = windows.contains { $0.usedPercent >= 100 }
+        let exhausted = windows.contains { $0.usedPercent >= 100 } || reportedExtraExhausted
+        // An explicit official extra hard limit cannot be bypassed with points.
+        if reportedExtraExhausted { return .quota }
         guard let creditFloor else { return exhausted ? .quota : nil }
         guard allowPaidCredits, policy.allowsCredits, creditFloor >= 0, exhausted else { return .quota }
         guard snapshot.creditBalanceUnlimited == false,

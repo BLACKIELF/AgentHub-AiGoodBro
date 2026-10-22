@@ -70,6 +70,25 @@ func callbackHandler(state, host string, result chan<- oauthResult) http.Handler
 	})
 }
 
+// A typed stage preserves only a fixed code and safe HTTP status.
+type oauthStageError struct {
+	code   string
+	status int
+}
+
+func (e oauthStageError) Error() string { return e.code }
+
+func oauthStageFailure(ctx context.Context, stage string, err error) error {
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	var status interface{ StatusCode() int }
+	if errors.As(err, &status) {
+		return oauthStageError{code: stage, status: status.StatusCode()}
+	}
+	return oauthStageError{code: stage}
+}
+
 func (b *sdkBackend) signIn(ctx context.Context, open func(authPrompt) error) (credential, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
@@ -101,7 +120,7 @@ func (b *sdkBackend) signIn(ctx context.Context, open func(authPrompt) error) (c
 		"redirect_uri": {redirect}, "grant_type": {"authorization_code"}, "code_verifier": {verifier}}
 	token, err := exchangeToken(ctx, b.client, form)
 	if err != nil || token.RefreshToken == "" {
-		return credential{}, errors.New("oauth_token_exchange_failed")
+		return credential{}, oauthStageFailure(ctx, "oauth_token_exchange_failed", err)
 	}
 	r, err := http.NewRequestWithContext(ctx, http.MethodGet, ag.UserInfoEndpoint, nil)
 	if err != nil {
@@ -110,7 +129,7 @@ func (b *sdkBackend) signIn(ctx context.Context, open func(authPrompt) error) (c
 	r.Header.Set("Authorization", "Bearer "+token.AccessToken)
 	resp, err := b.client.Do(r)
 	if err != nil {
-		return credential{}, errors.New("oauth_identity_failed")
+		return credential{}, oauthStageFailure(ctx, "oauth_identity_failed", err)
 	}
 	defer resp.Body.Close()
 	data, err := readBounded(resp.Body, 64<<10)
@@ -119,11 +138,11 @@ func (b *sdkBackend) signIn(ctx context.Context, open func(authPrompt) error) (c
 	}
 	identity, err := parseGoogleIdentity(data)
 	if resp.StatusCode != 200 || err != nil {
-		return credential{}, errors.New("oauth_identity_failed")
+		return credential{}, oauthStageError{code: "oauth_identity_failed", status: resp.StatusCode}
 	}
 	project, err := ag.NewAntigravityAuth(&config.Config{}, b.client).FetchProjectID(ctx, token.AccessToken)
 	if err != nil || project == "" {
-		return credential{}, errors.New("oauth_project_failed")
+		return credential{}, oauthStageFailure(ctx, "oauth_project_failed", err)
 	}
 	email := strings.ToLower(strings.TrimSpace(identity.Email))
 

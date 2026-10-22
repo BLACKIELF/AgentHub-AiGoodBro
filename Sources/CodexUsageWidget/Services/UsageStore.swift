@@ -2300,8 +2300,7 @@ final class UsageStore: ObservableObject {
                 !self.isLoggingIn, self.desktopSwitchMaintenanceLeases.isEmpty,
                 let system = self.profiles.first(where: \.isSystemProfile),
                 let target = self.profiles.first(where: { $0.id == intent.profileID && !$0.isSystemProfile }),
-                CodexOneShotSwitchIntent.targetPlanMatches(
-                    target.resolvedPlanType, displayedMultiplier: target.displayedProTierMultiplier)
+                CodexOneShotSwitchIntent.isProPlan(target.resolvedPlanType)
             else {
                 self.accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
                     "一次性切换未启动：账号身份、目标 Pro 套餐或未完成任务记录未通过预检",
@@ -2339,9 +2338,8 @@ final class UsageStore: ObservableObject {
             guard !Task.isCancelled,
                 pair.source.account?.email?.lowercased() == sourceIdentity.email,
                 pair.target.account?.email?.lowercased() == targetIdentity.email,
-                let currentTarget = self.profiles.first(where: { $0.id == target.id }),
-                CodexOneShotSwitchIntent.targetPlanMatches(
-                    pair.target.account?.planType, displayedMultiplier: currentTarget.displayedProTierMultiplier),
+                self.profiles.contains(where: { $0.id == target.id }),
+                CodexOneShotSwitchIntent.isProPlan(pair.target.account?.planType),
                 intent.quotaPolicy.accepts(pair.source, target: false, now: now),
                 intent.quotaPolicy.accepts(pair.target, target: true, now: now),
                 (try? self.accountActions.currentSystemAuthFingerprint(
@@ -2403,8 +2401,7 @@ final class UsageStore: ObservableObject {
                 let freshTarget = self.profiles.first(where: { $0.id == target.id }),
                 let sourceSaved = freshSystem.lastSnapshot,
                 let targetSaved = freshTarget.lastSnapshot,
-                CodexOneShotSwitchIntent.targetPlanMatches(
-                    targetSaved.planType, displayedMultiplier: freshTarget.displayedProTierMultiplier),
+                CodexOneShotSwitchIntent.isProPlan(targetSaved.planType),
                 intent.quotaPolicy.accepts(
                     CodexSwitchSnapshotProjection.snapshot(
                         saved: sourceSaved,
@@ -2689,8 +2686,7 @@ final class UsageStore: ObservableObject {
                 email: context.sourceIdentityKey,
                 accountID: context.sourceAccountID)
             return oneShot.profileID == target.id
-                && CodexOneShotSwitchIntent.targetPlanMatches(
-                    targetSnapshot.planType, displayedMultiplier: target.displayedProTierMultiplier)
+                && CodexOneShotSwitchIntent.isProPlan(targetSnapshot.planType)
                 && oneShot.quotaPolicy.accepts(
                     CodexSwitchSnapshotProjection.snapshot(
                         saved: source,
@@ -3116,8 +3112,7 @@ final class UsageStore: ObservableObject {
                     let quotaEligible =
                         oneShotIntent.map { intent in
                             intent.profileID == profile.id
-                                && CodexOneShotSwitchIntent.targetPlanMatches(
-                                    verifiedSnapshot.account?.planType, displayedMultiplier: profile.displayedProTierMultiplier)
+                                && CodexOneShotSwitchIntent.isProPlan(verifiedSnapshot.account?.planType)
                                 && intent.quotaPolicy.accepts(currentSystemSnapshot, target: false, now: preflightNow)
                                 && intent.quotaPolicy.accepts(verifiedSnapshot, target: true, now: preflightNow)
                         }
@@ -3991,7 +3986,7 @@ final class UsageStore: ObservableObject {
                 }.value
                 guard !Task.isCancelled,
                     quota.account?.email?.lowercased() == identity.email,
-                    CodexOneShotSwitchIntent.targetMultiplier(for: quota.account?.planType) != nil,
+                    CodexOneShotSwitchIntent.isProPlan(quota.account?.planType),
                     policy.accepts(quota, target: true),
                     CodexOfficialProfileReader.credentialIdentity(codexHomeURL: system.codexHomeURL) == identity,
                     self.quotaResume.expectedAccountKey == expected
@@ -4139,7 +4134,7 @@ final class UsageStore: ObservableObject {
     ) -> Bool {
         TokenMonitorHostIdentity.accountKey(email: identity.email, accountID: identity.accountID) == expectedAccountKey
             && TokenMonitorHostIdentity.accountKey(email: quota.email, accountID: quota.accountID) == expectedAccountKey
-            && CodexOneShotSwitchIntent.targetMultiplier(for: quota.planType) != nil
+            && CodexOneShotSwitchIntent.isProPlan(quota.planType)
             && automaticQuotaEvidenceIsFresh(
                 succeeded: quota.quotaReadSucceeded, fetchedAt: quota.fetchedAt,
                 failedAt: failedAt, now: now)

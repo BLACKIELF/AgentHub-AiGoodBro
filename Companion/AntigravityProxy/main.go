@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"os"
@@ -89,6 +90,37 @@ func (a *application) catalogLoop() {
 	}
 }
 
+// Only fixed stage codes and numeric HTTP status may cross the private pipe.
+// Never forward an upstream error string, response body, or credential.
+func authResultCode(err error) string {
+	if err == nil {
+		return "ok"
+	}
+	if errors.Is(err, context.Canceled) {
+		return "oauth_cancelled"
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "oauth_timeout"
+	}
+	var stage oauthStageError
+	if errors.As(err, &stage) {
+		if stage.status >= 400 && stage.status <= 599 {
+			return fmt.Sprintf("%s_http_%d", stage.code, stage.status)
+		}
+		return stage.code
+	}
+	switch err.Error() {
+	case "account_exists", "oauth_listener_unavailable", "oauth_browser_unavailable",
+		"oauth_denied", "oauth_state_mismatch", "oauth_identity_failed",
+		"oauth_identity_mismatch", "oauth_invalid_credential", "oauth_project_failed",
+		"oauth_request_failed", "oauth_token_exchange_failed", "oauth_token_rejected",
+		"oauth_transport_failed", "oauth_verification_url_rejected",
+		"credential_store_unavailable", "credential_store_rejected", "credential_store_timeout":
+		return err.Error()
+	}
+	return "oauth_failed"
+}
+
 func (a *application) beginAuth(session, provider string) {
 	if !opaqueIDPattern.MatchString(session) {
 		return
@@ -101,7 +133,7 @@ func (a *application) beginAuth(session, provider string) {
 	a.mu.Lock()
 	if a.authCancel != nil {
 		a.mu.Unlock()
-		_ = a.events.emit(event{Event: "auth_result", SessionID: session, Code: "oauth_busy"})
+		_ = a.events.emit(event{Event: "auth_result", Provider: provider, SessionID: session, Code: "oauth_busy"})
 		return
 	}
 	ctx, cancel := context.WithCancel(a.ctx)
@@ -139,10 +171,8 @@ func (a *application) beginAuth(session, provider string) {
 			} else {
 				code = "account_exists"
 			}
-		} else if errors.Is(err, context.Canceled) {
-			code = "oauth_cancelled"
-		} else if errors.Is(err, context.DeadlineExceeded) {
-			code = "oauth_timeout"
+		} else {
+			code = authResultCode(err)
 		}
 		a.mu.Lock()
 		if a.authSession == session {
@@ -150,7 +180,11 @@ func (a *application) beginAuth(session, provider string) {
 			a.authCancel = nil
 		}
 		a.mu.Unlock()
-		_ = a.events.emit(event{Event: "auth_result", Provider: provider, SessionID: session, Code: code})
+		result := event{Event: "auth_result", Provider: provider, SessionID: session, Code: code}
+		if code == "ok" {
+			result.AccountID = c.AccountID
+		}
+		_ = a.events.emit(result)
 	}()
 }
 

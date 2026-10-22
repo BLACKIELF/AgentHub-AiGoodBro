@@ -955,9 +955,16 @@ enum WorkspacePreviewRenderer {
                             .environment(\.colorScheme, scheme)
                         let suffix = detail.map { "-" + $0 } ?? ""
                         for width in [CGFloat(680), 830] {
-                            try renderView(
-                                proxyView, size: CGSize(width: width, height: 660), scheme: scheme,
-                                to: directory.appendingPathComponent("compact-proxy-\(locale.rawValue)-\(scheme == .dark ? "dark" : "light")-\(Int(width))\(suffix).png"))
+                            let heights: [CGFloat] =
+                                (width == 680 && (detail == nil || detail == "connection"))
+                                ? [440, 660] : [660]
+                            for height in heights {
+                                let heightSuffix = height == 660 ? "" : "-h\(Int(height))"
+                                try renderView(
+                                    proxyView, size: CGSize(width: width, height: height), scheme: scheme,
+                                    to: directory.appendingPathComponent(
+                                        "compact-proxy-\(locale.rawValue)-\(scheme == .dark ? "dark" : "light")-\(Int(width))\(heightSuffix)\(suffix).png"))
+                            }
                         }
                     }
                 }

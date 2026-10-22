@@ -140,3 +140,61 @@ with (q/'consumer-tests-0913v5.log').open('w') as log:
   if p.returncode:
    log.flush(); print((q/'consumer-tests-0913v5.log').read_text(), end=''); raise SystemExit(p.returncode)
 print((q/'consumer-tests-0913v5.log').read_text(), end='')
+
+# The Home call site and the actual WebKit renderer must keep every metric on
+# one Engine snapshot. A previous Desktop override changed only totals/cost.
+home_slot=s[s.index('    private var homeTokenTotals:'):s.index('    private var compactHomeMetricTiles:')]
+home_view=s[s.index('private struct UpstreamHomeStatistics:'):s.index('private struct ObservedMessageChannelResults:')]
+assert 'state: store.engineState' in home_slot and 'summaryTotals' not in home_slot
+assert 'dashboardJSON: dashboardJSON' in home_view and 'summaryTotals' not in home_view
+assert 'state.phase == .partial' in home_view and '正在刷新 · 显示上次记录' in home_view
+web=(args.repo_root.resolve()/'Resources/UpstreamCharts/home-dashboard.js').read_text()
+start=web.index('window.__renderTrend = (input, options = {}) => {')
+end=web.index("\ndocument.addEventListener('click'", start)
+renderer=web[start:end]
+web_test=r'''
+const assert=require('node:assert/strict');
+const vm=require('node:vm');
+const home={preferences:{}};
+const state={};
+const context={
+  window:{}, home, state, Map,
+  dateKey:v=>/^\d{4}-\d{2}-\d{2}$/.test(v),
+  presentNumber:v=>typeof v==='number'&&Number.isFinite(v)&&v>=0,
+  wholeTokens:v=>typeof v==='string'?v:(Number.isSafeInteger(v)&&v>=0?v:null),
+  charts:{localDayKey:()=> '2026-10-22'},
+  RANGES:['7','30','90','365','all'],
+  safeSplitRatio:()=>0.34, safeSummaryWidths:()=>({}),
+  document:{getElementById:()=>({style:{setProperty:()=>{}}})},
+  els:{chart:{querySelector:()=>null},heatmap:{querySelector:()=>null}},
+  renderNow:()=>{}, applyAppearance:()=>{}, applyTranslations:()=>{}, populateRangeSelect:()=>{}
+};
+vm.createContext(context);
+vm.runInContext(process.argv[1],context,{filename:'home-dashboard.js'});
+const snapshot={schemaVersion:1, collectedAt:'2026-10-22T12:00:00Z', timezone:'UTC',
+  coverage:{cost:'known'}, payload:{aggregate:{
+    history:{summary:{totalTokens:1000,totalCost:5,activeDays:2,favoriteModel:'engine-model'},
+      daily:[{date:'2026-10-22',tokens:100,cost:0.5}]},
+    allTime:{totalTokens:1000,costUsd:5},periodWindows:{today:{key:'2026-10-22'}}
+  }}};
+context.window.__renderTrend(snapshot,{summaryTotals:{tokens:'9999',costUSD:99,costStatus:'known'}});
+assert.equal(home.history.summary.totalTokens,'9999');
+assert.equal(home.history.summary.totalCost,99);
+context.window.__renderTrend(snapshot,{summaryTotals:null});
+assert.equal(home.history.summary.totalTokens,1000);
+assert.equal(home.history.summary.totalCost,5);
+assert.equal(home.history.summary.activeDays,2);
+assert.equal(home.history.summary.favoriteModel,'engine-model');
+assert.equal(home.history.daily[0].tokens,100);
+assert.equal(home.totalCostStatus,'estimated');
+const missingCost={...snapshot,coverage:{cost:'unknown'}};
+context.window.__renderTrend(missingCost,{summaryTotals:null});
+assert.equal(home.history.summary.totalCost,null);
+assert.equal(home.totalCostStatus,'unknown');
+console.log('PASS home all metrics and daily history follow one Engine snapshot');
+'''
+web_result=subprocess.run(['node','-e',web_test,renderer],capture_output=True,text=True)
+if web_result.returncode:
+ print(web_result.stdout+web_result.stderr,end='')
+ raise SystemExit(web_result.returncode)
+print(web_result.stdout,end='')

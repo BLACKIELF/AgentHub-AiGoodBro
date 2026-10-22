@@ -32,7 +32,6 @@ struct LocalProxyQueueView: View {
         VStack(alignment: .leading, spacing: 8) {
             headerBar
             proxyToolbar
-            settingsDetails
             if ["dead", "all_dead", "unavailable"].contains(model.egressState) {
                 Label(
                     language.text(
@@ -41,21 +40,24 @@ struct LocalProxyQueueView: View {
                 )
                 .font(.caption).foregroundStyle(.red)
             }
-            queueHeader
             ScrollView {
-                LazyVStack(spacing: 4) {
-                    if model.displayRows.isEmpty {
-                        Text(language.text("暂无可加入的账号。请先在账号管理中添加账号。", "No accounts are available. Add an account in account management first."))
-                            .font(.callout).foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity, minHeight: 100)
-                    }
-                    ForEach(Array(model.displayRows.enumerated()), id: \.element.id) { index, row in
-                        accountRow(row, index: index)
+                VStack(alignment: .leading, spacing: 8) {
+                    settingsDetails
+                    queueHeader
+                    LazyVStack(spacing: 4) {
+                        if model.displayRows.isEmpty {
+                            Text(language.text("暂无可加入的账号。请先在账号管理中添加账号。", "No accounts are available. Add an account in account management first."))
+                                .font(.callout).foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity, minHeight: 100)
+                        }
+                        ForEach(Array(model.displayRows.enumerated()), id: \.element.id) { index, row in
+                            accountRow(row, index: index)
+                        }
                     }
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-
             if let failure = model.preferencesFailure {
                 Label(
                     failure == .save
@@ -91,7 +93,7 @@ struct LocalProxyQueueView: View {
             // the backdrop under it so the outer edge reads as one surface.
             WorkspaceGlassBackdrop().ignoresSafeArea()
         }
-        .buttonStyle(WorkspaceActionButtonStyle(prominent: true))
+        .buttonStyle(WorkspaceActionButtonStyle())
         .accessibilityIdentifier("next.local-proxy.panel")
         .alert(language.text("停止反代？", "Stop the proxy?"), isPresented: $confirmingStop) {
             Button(language.text("取消", "Cancel"), role: .cancel) {}
@@ -393,8 +395,8 @@ struct LocalProxyQueueView: View {
                     )
                     Text(
                         language.text(
-                            "先用订阅额度，再用点数。Pro20x 默认最后使用，可随时调整；优先、最后使用与排序对新请求生效，开关与账号页同步。",
-                            "Subscriptions precede credits. Pro20x defaults to Use last and can be changed. Priority, Use last and order apply to new requests and sync with the account page."
+                            "先用订阅额度，再用点数。Pro 账号默认最后使用，可随时调整；优先、最后使用与排序对新请求生效，开关与账号页同步。",
+                            "Subscriptions precede credits. Pro accounts default to Use last and can be changed. Priority, Use last and order apply to new requests and sync with the account page."
                         )
                     )
                     Text(
@@ -447,27 +449,27 @@ struct LocalProxyQueueView: View {
     private var settingsDetails: some View {
         VStack(alignment: .leading, spacing: 6) {
             DisclosureGroup(isExpanded: detailExpansion(.connection)) {
-                ScrollView { connectionSettings.padding(8) }.frame(maxHeight: 220)
+                connectionSettings.padding(8).frame(maxWidth: .infinity, alignment: .leading)
             } label: {
                 Text(language.text("连接详情", "Connection details"))
             }.accessibilityIdentifier("next.local-proxy.connection-details")
             DisclosureGroup(isExpanded: detailExpansion(.network)) {
-                ScrollView { networkSettings.padding(8) }.frame(maxHeight: 260)
+                networkSettings.padding(8).frame(maxWidth: .infinity, alignment: .leading)
             } label: {
                 Text(language.text("跟随当前 Clash 连接", "Use current Clash connection"))
             }.accessibilityIdentifier("next.local-proxy.network-details")
             DisclosureGroup(isExpanded: detailExpansion(.quota)) {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 8) {
-                        creditSettings
-                        LocalProxyPlusLimitEditor(
-                            language: language, accountCount: model.plusPolicyTargetCount,
-                            savedLimit: model.uniformPlusFiveHourUsedLimit,
-                            enabled: model.canEditPolicy, canApply: model.canApplyPlusFiveHourUsedLimit,
-                            message: model.plusPolicyMessage,
-                            save: { model.setPlusFiveHourUsedLimit($0) })
-                    }.padding(.top, 4)
-                }.frame(maxHeight: 240)
+                VStack(alignment: .leading, spacing: 8) {
+                    creditSettings
+                    LocalProxyPlusLimitEditor(
+                        language: language, accountCount: model.plusPolicyTargetCount,
+                        savedLimit: model.uniformPlusFiveHourUsedLimit,
+                        enabled: model.canEditPolicy, canApply: model.canApplyPlusFiveHourUsedLimit,
+                        message: model.plusPolicyMessage,
+                        save: { model.setPlusFiveHourUsedLimit($0) })
+                }
+                .padding(8)
+                .frame(maxWidth: .infinity, alignment: .leading)
             } label: {
                 HStack(spacing: 6) {
                     Text(language.text("额度规则", "Quota rules"))
@@ -476,7 +478,7 @@ struct LocalProxyQueueView: View {
                     }
                 }
             }.accessibilityIdentifier("next.local-proxy.quota-details")
-        }.font(.callout)
+        }.font(.callout).frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var queueHeader: some View {
@@ -570,6 +572,35 @@ struct LocalProxyQueueView: View {
                 .disabled(!model.canToggleAccount(id: row.id))
                 .accessibilityLabel(language.text("\(accountTitle(row)) 参与调用", "Use \(accountTitle(row)) for proxy requests"))
                 orderMenu(row)
+            }
+            .font(.caption).toggleStyle(WorkspaceCheckboxStyle()).controlSize(.small)
+            HStack(spacing: 12) {
+                Text(language.text("调用顺序", "Usage order")).foregroundStyle(.secondary)
+                Toggle(
+                    language.text("优先", "Priority"),
+                    isOn: Binding(
+                        get: { row.isPriority },
+                        set: {
+                            model.setAccountPriority(id: row.id, priority: $0)
+                            model.flushDisplayRows()
+                        }
+                    )
+                )
+                .disabled(!model.canReorder)
+                .accessibilityLabel(language.text("\(accountTitle(row)) 优先调用", "Prioritize \(accountTitle(row)) for proxy requests"))
+                Toggle(
+                    language.text("最后使用", "Use last"),
+                    isOn: Binding(
+                        get: { row.isLast },
+                        set: {
+                            model.setAccountLast(id: row.id, last: $0)
+                            model.flushDisplayRows()
+                        }
+                    )
+                )
+                .disabled(!model.canSetAccountLast(id: row.id))
+                .accessibilityLabel(language.text("\(accountTitle(row)) 最后使用", "Use \(accountTitle(row)) last"))
+                Spacer(minLength: 0)
             }
             .font(.caption).toggleStyle(WorkspaceCheckboxStyle()).controlSize(.small)
             LocalProxyAccountPolicyEditor(
@@ -709,31 +740,6 @@ struct LocalProxyQueueView: View {
 
     private func orderMenu(_ row: LocalProxyQueueRow) -> some View {
         Menu {
-            Toggle(
-                language.text("优先", "Priority"),
-                isOn: Binding(
-                    get: { row.isPriority },
-                    set: {
-                        model.setAccountPriority(id: row.id, priority: $0)
-                        model.flushDisplayRows()
-                    }
-                )
-            )
-            .disabled(!model.canReorder)
-            .accessibilityLabel(language.text("\(accountTitle(row)) 优先调用", "Prioritize \(accountTitle(row)) for proxy requests"))
-            Toggle(
-                language.text("最后使用", "Use last"),
-                isOn: Binding(
-                    get: { row.isLast },
-                    set: {
-                        model.setAccountLast(id: row.id, last: $0)
-                        model.flushDisplayRows()
-                    }
-                )
-            )
-            .disabled(!model.canSetAccountLast(id: row.id))
-            .accessibilityLabel(language.text("\(accountTitle(row)) 最后使用", "Use \(accountTitle(row)) last"))
-            Divider()
             Button(language.text("上移", "Move up")) {
                 model.moveAccount(id: row.id, by: -1)
                 model.flushDisplayRows()
@@ -748,7 +754,7 @@ struct LocalProxyQueueView: View {
             Image(systemName: "arrow.up.arrow.down")
         }
         .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
-        .help(language.text("排序与使用顺序；优先和最后使用互斥", "Order and usage; Priority and Use last are mutually exclusive"))
+        .help(language.text("调整同组内排序；优先和最后使用在下方设置", "Move within the group; set Priority and Use last below"))
         .accessibilityLabel(language.text("\(accountTitle(row)) 排序", "Order \(accountTitle(row))"))
     }
 
@@ -951,9 +957,11 @@ private struct LocalProxyAccountPolicyEditor<QuotaContent: View, ResetAction: Vi
     }
     private var dirty: Bool { initialized && policy != savedPolicy }
     private var policy: LocalProxyAccountPolicy? {
-        guard let value = Double(limit.trimmingCharacters(in: .whitespacesAndNewlines)) else { return nil }
         var candidate = savedPolicy ?? savedState.policy
-        candidate.fiveHourUsedLimit = value
+        if !row.isProPlan {
+            guard let value = Double(limit.trimmingCharacters(in: .whitespacesAndNewlines)) else { return nil }
+            candidate.fiveHourUsedLimit = value
+        }
         candidate.allowsCredits = allowsCredits
         candidate.creditPrimaryFloor = usesDefaults ? nil : Int(primary)
         candidate.creditSecondaryFloor = usesDefaults ? nil : Int(secondary)
@@ -974,7 +982,7 @@ private struct LocalProxyAccountPolicyEditor<QuotaContent: View, ResetAction: Vi
                 Divider()
                 accessory
                 LocalProxyPolicyFieldsLayout(trailingAction: true) {
-                    limitFields
+                    if !row.isProPlan { limitFields }
                     allowCreditsToggle
                     saveButton
                 }
@@ -1072,6 +1080,9 @@ private struct LocalProxyAccountPolicyEditor<QuotaContent: View, ResetAction: Vi
         let limit = savedLimit.rounded() == savedLimit ? String(Int(savedLimit)) : String(savedLimit)
         let credits = saved.allowsCredits ? language.text("允许点数", "Credits allowed") : language.text("仅订阅", "Subscription only")
         let floors = "\(saved.creditPrimaryFloor ?? defaultPrimary) / \(saved.creditSecondaryFloor ?? defaultSecondary)"
+        if row.isProPlan {
+            return language.text("按官方 7 天额度 · \(credits) · 保留 \(floors) 点", "Official 7d quota · \(credits) · Keep \(floors) points")
+        }
         return language.text("5h 已用上限 \(limit)% · \(credits) · 保留 \(floors) 点", "5h used limit \(limit)% · \(credits) · Keep \(floors) points")
     }
 

@@ -322,7 +322,7 @@ struct ResetCreditLocalSummary {
     func planBreakdown(_ language: WidgetLanguage) -> String? {
         guard availableCards != nil, !availableCardsByPlan.isEmpty else { return nil }
         let orderedPlans = availableCardsByPlan.keys.sorted {
-            let preferred = ["PRO 20x", "PRO 5x", "PRO", "PLUS"]
+            let preferred = ["PRO 25x", "PRO 20x", "PRO 10x", "PRO 5x", "PRO", "PLUS"]
             let left = $0.isEmpty ? Int.max : preferred.firstIndex(of: $0) ?? preferred.count
             let right = $1.isEmpty ? Int.max : preferred.firstIndex(of: $1) ?? preferred.count
             return left == right ? $0 < $1 : left < right
@@ -330,7 +330,9 @@ struct ResetCreditLocalSummary {
         return orderedPlans.map { plan in
             let label: String
             switch plan {
+            case "PRO 25x": label = language.text("Pro 25倍", "Pro 25x")
             case "PRO 20x": label = language.text("Pro 20倍", "Pro 20x")
+            case "PRO 10x": label = language.text("Pro 10倍", "Pro 10x")
             case "PRO 5x": label = language.text("Pro 5倍", "Pro 5x")
             case "PRO": label = "Pro"
             case "PLUS": label = "Plus"

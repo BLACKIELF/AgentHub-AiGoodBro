@@ -311,7 +311,7 @@ struct CodexOneShotSwitchIntent: Equatable {
             let age = now.timeIntervalSince(snapshot.refreshedAt)
             guard snapshot.quotaReadSucceeded, age >= -5,
                 age <= CodexAutomaticSwitchPolicy.quotaSnapshotMaximumAge,
-                CodexOneShotSwitchIntent.targetMultiplier(for: snapshot.account?.planType) != nil,
+                CodexOneShotSwitchIntent.isProPlan(snapshot.account?.planType),
                 let week = AutomaticSwitchQuotaState(snapshot: snapshot).sevenDayRemaining,
                 week > 0,
                 !target || week >= CodexAutomaticSwitchPolicy.minimumCandidateRemainingPercent
@@ -332,18 +332,9 @@ struct CodexOneShotSwitchIntent: Equatable {
     let operationID: UUID
     let simulateLowQuota: Bool
 
-    static func targetMultiplier(for planType: String?) -> Int? {
-        guard let plan = planType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() else { return nil }
-        switch plan {
-        case "prolite": return 5
-        case "pro": return 20
-        default: return nil
-        }
-    }
-
-    static func targetPlanMatches(_ planType: String?, displayedMultiplier: Int?) -> Bool {
-        guard let expected = targetMultiplier(for: planType) else { return false }
-        return displayedMultiplier == expected
+    static func isProPlan(_ planType: String?) -> Bool {
+        guard let plan = planType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() else { return false }
+        return plan == "pro" || plan == "prolite"
     }
 
     private static let consumedOperationsKey = "AiGoodBro.oneShotDesktopSwitch.consumedOperationIDs"
@@ -445,12 +436,10 @@ enum CodexAutomaticSwitchPolicySelfTest {
         }
         let policy = CodexOneShotSwitchIntent.QuotaPolicy.reportedWeek
         return policy.accepts(snapshot(), target: true, now: now)
-            && CodexOneShotSwitchIntent.targetPlanMatches("prolite", displayedMultiplier: 5)
-            && CodexOneShotSwitchIntent.targetPlanMatches(" Pro ", displayedMultiplier: 20)
-            && !CodexOneShotSwitchIntent.targetPlanMatches("prolite", displayedMultiplier: 20)
-            && !CodexOneShotSwitchIntent.targetPlanMatches("pro", displayedMultiplier: 5)
-            && !CodexOneShotSwitchIntent.targetPlanMatches("plus", displayedMultiplier: 5)
-            && !CodexOneShotSwitchIntent.targetPlanMatches("prolite", displayedMultiplier: nil)
+            && CodexOneShotSwitchIntent.isProPlan("prolite")
+            && CodexOneShotSwitchIntent.isProPlan(" Pro ")
+            && !CodexOneShotSwitchIntent.isProPlan("plus")
+            && !CodexOneShotSwitchIntent.isProPlan(nil)
             && policy.accepts(snapshot(plan: "prolite", weekUsed: 14), target: true, now: now)
             && policy.accepts(snapshot(plan: "prolite", weekUsed: 14), target: false, now: now)
             && !policy.accepts(snapshot(weekUsed: 75), target: true, now: now)

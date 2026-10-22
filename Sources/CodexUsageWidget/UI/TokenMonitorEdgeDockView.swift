@@ -304,8 +304,16 @@ struct TokenMonitorEdgeDockRailView: View {
                                 .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
-                        .help(cell.kind == .proxy ? "\(cell.title) · \(cell.proxyStatusTitle(language))" : cell.title)
-                        .accessibilityLabel(cell.title)
+                        .help(
+                            cell.kind == .stat && cell.metric == .today
+                                ? "\(cell.title) · \(language.text("打开主窗口", "Open main window"))"
+                                : cell.kind == .proxy ? "\(cell.title) · \(cell.proxyStatusTitle(language))" : cell.title
+                        )
+                        .accessibilityLabel(
+                            cell.kind == .stat && cell.metric == .today
+                                ? "\(cell.title), \(language.text("打开主窗口", "Open main window"))"
+                                : cell.title
+                        )
                         .accessibilityValue(accessibilityValue(cell))
                         .accessibilityIdentifier(cell.kind == .proxy ? "edge-dock-proxy" : "edge-dock-item-\(index)")
                     }

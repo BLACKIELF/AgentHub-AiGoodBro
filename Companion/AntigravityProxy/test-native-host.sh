@@ -2,7 +2,7 @@
 set -euo pipefail
 SOURCE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$SOURCE/../.." && pwd)
-RUN=$(mktemp -d /private/tmp/aigoodbro-antigravity-host.XXXXXX)
+RUN=$(mktemp -d "${TMPDIR:-/private/tmp}/aigoodbro-antigravity-host.XXXXXX")
 trap 'rm -rf "$RUN"' EXIT
 export GOCACHE="${GOCACHE:-$RUN/go-cache}"
 go build -trimpath -buildvcs=false -o "$RUN/mock-helper" "$SOURCE/fixtures/mock-helper/main.go"

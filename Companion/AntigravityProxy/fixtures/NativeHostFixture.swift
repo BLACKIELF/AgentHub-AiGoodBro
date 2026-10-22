@@ -31,6 +31,7 @@ struct NativeHostFixture {
         let helper = URL(fileURLWithPath: CommandLine.arguments[1])
         let root = URL(fileURLWithPath: CommandLine.arguments[2])
         try await multiProvider(helper: helper, root: root)
+        try await sameProviderAccounts(helper: helper, root: root)
         let (removal, removalCredentials, removalDirectory) = await start(helper: helper, root: root, scenario: "removal-retry")
         await add(.claude, to: removal, count: 1)
         let removalID = removal.accounts[0].id
@@ -66,12 +67,22 @@ struct NativeHostFixture {
                     "rejected refresh changed credentials: \(scenario)")
             await stop(store)
         }
+        let (failedAdd, failedCredentials, _) = await start(helper: helper, root: root, scenario: "keychain-add-failure")
+        failedCredentials.rejectWrites = true
+        await failedAdd.addAccount(provider: .antigravity)
+        await eventually("failed add did not end") { !failedAdd.signInPending }
+        require(failedAdd.accounts.isEmpty && failedAdd.issue?.contains("钥匙串") == true,
+                "add Keychain failure was overwritten by generic OAuth result")
+        await stop(failedAdd)
         let (cancelled, cancelCredentials, _) = await start(helper: helper, root: root, scenario: "cancel-late")
         let cancelBefore = cancelCredentials.data, cancelWrites = cancelCredentials.writes
         await cancelled.addAccount(provider: .kimi)
         require(cancelled.signInPending, "authorization was not pending before cancellation")
         cancelled.cancelSignIn()
-        await eventually("late cancelled authorization was not exercised") { cancelled.issue != nil }
+        require(cancelled.signInPending, "cancel unlocked before the helper terminal result")
+        await cancelled.addAccount(provider: .kimi)
+        require(cancelled.signInPending, "retry bypassed the old helper cancellation")
+        await eventually("late cancelled authorization was not exercised") { !cancelled.signInPending }
         require(!cancelled.signInPending && cancelled.accounts.isEmpty && cancelCredentials.data == cancelBefore && cancelCredentials.writes == cancelWrites,
                 "late cancelled authorization reached Keychain")
         await stop(cancelled)
@@ -147,6 +158,23 @@ struct NativeHostFixture {
         require(store.models(for: .antigravity).contains("antigravity-fixture"), "disabling one provider affected another")
         let disabled = try JSONDecoder().decode([AntigravityProxyAccount].self, from: Data(contentsOf: file))
         require(disabled.first { $0.id == claude.id }?.enabled == false, "participation was not durable")
+        await stop(store)
+    }
+
+    static func sameProviderAccounts(helper: URL, root: URL) async throws {
+        let (store, credentials, directory) = await start(helper: helper, root: root, scenario: "multi-same-provider")
+        await add(.antigravity, to: store, count: 1)
+        let firstID = store.completedSignInAccountID
+        await add(.antigravity, to: store, count: 2)
+        let secondID = store.completedSignInAccountID
+        require(firstID != nil && secondID != nil && firstID != secondID, "second Antigravity account did not get a distinct success receipt")
+        await store.addAccount(provider: .antigravity)
+        await eventually("duplicate did not end") { !store.signInPending }
+        require(store.accounts.count == 2 && store.issue?.contains("已在") == true && store.completedSignInAccountID == nil,
+                "duplicate Antigravity login was mistaken for a new account")
+        require(credentials.data.count == 3, "second account did not use a separate Keychain item")
+        let saved = try JSONDecoder().decode([AntigravityProxyAccount].self, from: Data(contentsOf: directory.appendingPathComponent("accounts-v1.json")))
+        require(Set(saved.map(\.id)) == Set(store.accounts.map(\.id)), "both Antigravity accounts were not durably saved")
         await stop(store)
     }
 

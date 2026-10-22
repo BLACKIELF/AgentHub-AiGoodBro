@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	ag "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/antigravity"
 	executor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 )
@@ -77,6 +78,27 @@ func (b *fakeBackend) stream(ctx context.Context, c credential, r executor.Reque
 	return b.streamFn(ctx, c, r, o)
 }
 func noPersist(context.Context, credential, string, string) error { return nil }
+
+func TestAuthResultCodeRetainsSafeStageOnly(t *testing.T) {
+	cases := []struct {
+		err  error
+		want string
+	}{
+		{nil, "ok"},
+		{context.Canceled, "oauth_cancelled"},
+		{context.DeadlineExceeded, "oauth_timeout"},
+		{errors.New("credential_store_rejected"), "credential_store_rejected"},
+		{oauthStageError{code: "oauth_token_exchange_failed", status: 400}, "oauth_token_exchange_failed_http_400"},
+		{oauthStageError{code: "oauth_identity_failed", status: 503}, "oauth_identity_failed_http_503"},
+		{oauthStageFailure(context.Background(), "oauth_project_failed", &ag.HTTPStatusError{StatusCodeValue: 403, Message: "secret response body"}), "oauth_project_failed_http_403"},
+		{errors.New("oauth_token_exchange_failed: secret response body"), "oauth_failed"},
+	}
+	for _, item := range cases {
+		if got := authResultCode(item.err); got != item.want {
+			t.Fatalf("auth result code = %q, want %q", got, item.want)
+		}
+	}
+}
 
 func TestOAuthPKCEAndOneShotCallback(t *testing.T) {
 	state, verifier := randomID(), randomID()
