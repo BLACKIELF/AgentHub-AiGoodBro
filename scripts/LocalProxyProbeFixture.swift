@@ -202,7 +202,7 @@ extension LocalProxyHostFixtures {
         LocalProxyProbeURLProtocol.reset([.init(hold: true)])
         let unlockedTask = Task { await store.handle(request()) }
         try await waitForRequests(1)
-        let gatesFree = await Task.detached { () -> Bool in
+        let gatesFree = await Task.detached { [central] () -> Bool in
             let gates = [CodexCredentialAccessGate.lock,
                 CodexCredentialAccessGate.homeLock(forHomePath: peer.codexHomeURL.path),
                 CodexCredentialAccessGate.homeLock(forHomePath: central.codexHomeURL.path)]
@@ -268,7 +268,7 @@ extension LocalProxyHostFixtures {
         expect(desktopProof.ok && LocalProxyProbeURLProtocol.requests.first?.0.value(forHTTPHeaderField: "Authorization") == "Bearer " + centralToken,
                "enrolled desktop account probes with the verified current central credential")
         // Client endpoint checks require the actual models schema and exact
-        // loopback route, and discovery keeps the fixed user-approved order.
+        // loopback route, and discovery follows actual Selector members.
         for endpoint in ["http://example.invalid/v1", "https://127.0.0.1:18080/v1", "http://127.0.0.1:18080/other", "http://user@127.0.0.1:18080/v1"] {
             LocalProxyProbeURLProtocol.reset([])
             let ok = try await LocalProxyNetworkProbe.models(endpoint: endpoint, key: "synthetic-client")
@@ -282,16 +282,42 @@ extension LocalProxyHostFixtures {
             expect(ok == wanted, "models validates status and nonempty model IDs")
             expect(LocalProxyProbeURLProtocol.requests[0].0.value(forHTTPHeaderField: "Authorization") == "Bearer synthetic-client", "models verifies with current client key")
         }
-        var settings = LocalProxyEgressSettings(); settings.group = "fixture-group"; settings.mihomoSecret = "synthetic-controller"
-        let firstNode = "[vip1]①日本-A", secondNode = "[vip2]⑥日本-B", outside = "[vip1]⑤日本-outside", missing = "[vip1]③日本-missing"
-        let catalog: [String: Any] = ["proxies": [settings.group: ["type": "Selector", "all": [secondNode, missing, firstNode, "other"]],
-            firstNode: [:], secondNode: [:], outside: [:]]]
+        var settings = LocalProxyEgressSettings(); settings.enabled = true; settings.mihomoAPI = "http://127.0.0.1:9097"; settings.group = "fixture-group"; settings.mihomoSecret = "synthetic-controller"
+        let hongKong = ["香港-01", "🇭🇰-02", "Hong Kong 03", "Hongkong-04", "HK01", "[HK] 05", "HKG-06", "港01", "港区-02"]
+        for name in hongKong { expect(LocalProxyNetworkProbe.isHongKongNode(name), "Hong Kong marker is excluded") }
+        for name in ["新加坡-01", "日本-02", "US-03", "Shikoku", "ShkRoute", "BHK-01", "Hokkaido"] {
+            expect(!LocalProxyNetworkProbe.isHongKongNode(name), "non-Hong-Kong node is retained without substring false positives")
+        }
+        let singapore = "新加坡-01", japan = "日本-02", usa = "US-03", outside = "outside-group", missing = "missing-node"
+        let excludedTypes = ["Direct", "Reject", "RejectDrop", "Compatible", "Pass", "PassRule", "Rematch", "Dns", "Unknown",
+            "Selector", "URLTest", "Fallback", "LoadBalance", "Relay"]
+        var proxies: [String: Any] = [
+            singapore: ["type": "Shadowsocks"], japan: ["type": "Trojan"], usa: ["type": "Vmess"], outside: ["type": "Socks5"],
+            "untyped": [:], "empty-type": ["type": ""], "nested-group": ["type": "FutureGroup", "all": [singapore]],
+            "bad\nnode": ["type": "Http"], " spaced ": ["type": "Http"],
+        ]
+        for type in excludedTypes { proxies["adapter-" + type] = ["type": type] }
+        for name in hongKong { proxies[name] = ["type": "Shadowsocks"] }
+        let members = [singapore, missing, japan, singapore, usa, "untyped", "empty-type", "nested-group", "bad\nnode", " spaced "]
+            + excludedTypes.map { "adapter-" + $0 } + hongKong
+        proxies[settings.group] = ["type": "Selector", "all": members]
+        let catalog: [String: Any] = ["proxies": proxies]
         LocalProxyProbeURLProtocol.reset([.init(body: try JSONSerialization.data(withJSONObject: catalog))])
-        let discovered = try await LocalProxyNetworkProbe.japaneseNodes(settings: settings)
-        expect(discovered == [firstNode, secondNode], "discovery follows fixed whitelist order and only existing group members")
+        let discovered = try await LocalProxyNetworkProbe.selectorNodes(settings: settings)
+        expect(discovered == [singapore, japan, usa], "discovery accepts every region in current Selector order and removes duplicates")
+        expect(!discovered.contains(outside) && !discovered.contains(missing), "discovery excludes missing nodes and nodes outside the chosen group")
+        expect(discovered.allSatisfy { !($0.hasPrefix("adapter-") || $0.contains("\n")) },
+            "discovery excludes routing adapters, all group types, untyped and unsafe members")
         let discovery = LocalProxyProbeURLProtocol.requests[0].0
         expect(discovery.httpMethod == "GET" && discovery.url?.absoluteString == "http://127.0.0.1:9097/proxies"
                && discovery.value(forHTTPHeaderField: "Authorization") == "Bearer synthetic-controller", "controller discovery is read-only authenticated loopback GET")
+        for invalidGroup in [["type": "URLTest", "all": [singapore]], ["type": "Selector", "all": "invalid"]] as [[String: Any]] {
+            LocalProxyProbeURLProtocol.reset([.init(body: try JSONSerialization.data(withJSONObject: ["proxies": [settings.group: invalidGroup]]))])
+            do {
+                _ = try await LocalProxyNetworkProbe.selectorNodes(settings: settings)
+                expect(false, "invalid selector shape must be rejected")
+            } catch { expect(true, "non-Selector or malformed group cannot supply candidate nodes") }
+        }
         for value in [" fixture", "fixture ", "a\0b", "a\nb"] {
             var bad = settings; bad.group = value; expect(!bad.isValid, "unsafe controller group rejected")
             bad = settings; bad.whitelist = [value]; expect(!bad.isValid, "unsafe whitelist node rejected")
@@ -309,6 +335,7 @@ extension LocalProxyHostFixtures {
             LocalProxyQueueRow(id: peer.id, label: "synthetic unknown", isEnabled: true, isPriority: false, isCurrent: false,
                 quotaText: nil, state: "quota_unknown", cooldownUntil: nil)]
         store.endpoint = "http://127.0.0.1:18080/v1"; store.clientKey = "synthetic-client"
+        store.egressSettings = settings
         LocalProxyProbeURLProtocol.reset([.init(), .init(body: Data(#"{"object":"list","data":[{"id":"fixture-model"}]}"#.utf8))])
         store.runSelfCheck()
         let checkID = store.selfCheckRequestID!
@@ -322,6 +349,17 @@ extension LocalProxyHostFixtures {
                "synthetic no-system-proxy result is distinct from four successful actual checks")
         expect(store.selfCheck.steps.last?.detail.contains("未确认 1") == true, "pool status includes unconfirmed accounts")
         expect(LocalProxyProbeURLProtocol.requests.allSatisfy { $0.0.httpMethod == "GET" }, "self-check only performs reads")
+        store.egressSettings = LocalProxyEgressSettings()
+        LocalProxyProbeURLProtocol.reset([.init(), .init(body: Data(#"{"object":"list","data":[{"id":"fixture-model"}]}"#.utf8))])
+        store.runSelfCheck()
+        store.consumeEgress(["state": "disabled", "requestID": store.selfCheckRequestID!])
+        await store.selfCheckTask?.value
+        expect(store.selfCheck.steps.first { $0.id == "egress" }?.passed == true
+            && store.selfCheck.steps.first { $0.id == "egress" }?.detail == "跟随系统代理，自动切换未开启",
+            "default self-check reports optional switching disabled without claiming node health")
+        expect(LocalProxyProbeURLProtocol.requests.count == 2
+            && LocalProxyProbeURLProtocol.requests.allSatisfy { $0.0.url?.port != 9097 },
+            "default self-check verifies official backend and models without a controller connection")
         // A fixed-port mismatch must never publish a different usable endpoint.
         let mismatch = LocalProxyQueueStore(usageStore: usage)
         mismatch.phase = .starting; mismatch.runID = UUID().uuidString; mismatch.preferences.listenPort = 18080

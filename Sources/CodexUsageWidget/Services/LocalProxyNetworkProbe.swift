@@ -29,17 +29,36 @@ enum LocalProxyNetworkProbe {
         return models.allSatisfy { ($0["id"] as? String)?.isEmpty == false }
     }
 
-    static func japaneseNodes(settings: LocalProxyEgressSettings) async throws -> [String] {
+    static func selectorNodes(settings: LocalProxyEgressSettings) async throws -> [String] {
         guard settings.isValid, let url = URL(string: settings.mihomoAPI + "/proxies") else { throw LocalProxyFailure.unavailable }
         var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 5)
         if !settings.mihomoSecret.isEmpty { request.setValue("Bearer " + settings.mihomoSecret, forHTTPHeaderField: "Authorization") }
         let response = try await localTransport().send(request, maximumResponseBytes: 1_048_576)
         guard response.statusCode == 200, let object = try? JSONSerialization.jsonObject(with: response.body) as? [String: Any],
             let proxies = object["proxies"] as? [String: Any], let group = proxies[settings.group] as? [String: Any],
-            group["type"] as? String == "Selector", let members = group["all"] as? [String]
+            group["type"] as? String == "Selector", let members = group["all"] as? [String], members.count <= 10000
         else { throw LocalProxyFailure.unavailable }
-        let prefixes = ["[vip1]①日本", "[vip2]⑥日本", "[vip1]⑤日本", "[vip1]③日本", "[vip1]㉑日本", "[vip1]㉓日本"]
-        return prefixes.flatMap { prefix in members.filter { $0.hasPrefix(prefix) }.sorted() }.filter { proxies[$0] != nil }
+        // mihomo AdapterType.String values: only leaf transports are candidates.
+        let excludedTypes: Set<String> = [
+            "Direct", "Reject", "RejectDrop", "Compatible", "Pass", "PassRule", "Rematch", "Dns", "Unknown",
+            "Relay", "Selector", "Fallback", "URLTest", "LoadBalance",
+        ]
+        var seen: Set<String> = []
+        return members.filter { name in
+            guard !name.isEmpty, name.utf8.count <= 512, name.trimmingCharacters(in: .whitespacesAndNewlines) == name,
+                !name.contains(where: { $0 == "\r" || $0 == "\n" || $0 == "\0" }),
+                !isHongKongNode(name), let node = proxies[name] as? [String: Any], node["all"] == nil,
+                let type = node["type"] as? String, !type.isEmpty, !excludedTypes.contains(type)
+            else { return false }
+            return seen.insert(name).inserted
+        }
+    }
+
+    static func isHongKongNode(_ name: String) -> Bool {
+        if name.contains("香港") || name.contains("港区") || name.contains("港澳") || name.contains("🇭🇰") { return true }
+        return name.range(
+            of: #"hong[\s._-]*kong|(^|[^a-z])hkg?([0-9]+)?($|[^a-z])|(^|[\s\[（(【_./|·-])港([0-9]|$|[\s\]）)】_./|·-])"#,
+            options: [.regularExpression, .caseInsensitive]) != nil
     }
 
     private static func localTransport() -> TokenMonitorURLSessionTransport {

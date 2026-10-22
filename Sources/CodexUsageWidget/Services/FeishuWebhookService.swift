@@ -314,7 +314,17 @@ final class FeishuWebhookService {
     private let keychainReadTimeout: TimeInterval
     private let keychainInteraction: FeishuKeychainInteraction
     private let updateItem: (CFDictionary, CFDictionary) -> OSStatus
+    private let addItem: (CFDictionary, UnsafeMutablePointer<CFTypeRef?>?) -> OSStatus
+    private let deleteItem: (CFDictionary) -> OSStatus
     private let copyMatching: (CFDictionary, UnsafeMutablePointer<CFTypeRef?>?) -> OSStatus
+    private let credentialLock = NSLock()
+    private var credentialGeneration: UInt64 = 0
+    private var authorizedWebhook: URL?
+
+    private struct Credential {
+        let endpoint: URL
+        let generation: UInt64
+    }
 
     init(
         keychainReadTimeout: TimeInterval = 5,
@@ -322,12 +332,16 @@ final class FeishuWebhookService {
         sessionConfiguration: URLSessionConfiguration = .ephemeral,
         keychainInteraction: FeishuKeychainInteraction = .system,
         updateItem: @escaping (CFDictionary, CFDictionary) -> OSStatus = SecItemUpdate,
+        addItem: @escaping (CFDictionary, UnsafeMutablePointer<CFTypeRef?>?) -> OSStatus = SecItemAdd,
+        deleteItem: @escaping (CFDictionary) -> OSStatus = SecItemDelete,
         copyMatching: @escaping (CFDictionary, UnsafeMutablePointer<CFTypeRef?>?) -> OSStatus = SecItemCopyMatching
     ) {
         precondition(keychainReadTimeout > 0 && maximumPendingReads > 0)
         self.keychainReadTimeout = keychainReadTimeout
         self.keychainInteraction = keychainInteraction
         self.updateItem = updateItem
+        self.addItem = addItem
+        self.deleteItem = deleteItem
         keychainCapacity = DispatchSemaphore(value: maximumPendingReads)
         self.copyMatching = copyMatching
         let configuration = sessionConfiguration
@@ -355,47 +369,85 @@ final class FeishuWebhookService {
 
     func storeWebhook(_ rawValue: String, completion: @escaping (Result<Void, FeishuWebhookError>) -> Void) {
         performUserKeychainAction(
-            {
-                try self.storeWebhookSynchronously(rawValue)
-                _ = try self.loadStoredWebhook()
+            { generation in
+                try self.storeWebhookSynchronously(rawValue, generation: generation)
+                guard self.isCurrentCredential(generation) else { throw FeishuWebhookError.cancelled }
+                let endpoint = try self.loadStoredWebhook()
+                guard endpoint == (try Self.validatedWebhookURL(from: rawValue)) else { throw FeishuWebhookError.invalidWebhook }
+                return endpoint
             }, completion: completion)
     }
 
     func authorizeStoredWebhook(completion: @escaping (Result<Void, FeishuWebhookError>) -> Void) {
-        performUserKeychainAction({ _ = try self.loadStoredWebhook() }, completion: completion)
+        performUserKeychainAction({ _ in try self.loadStoredWebhook() }, completion: completion)
     }
 
     func removeStoredWebhook(completion: @escaping (Result<Void, FeishuWebhookError>) -> Void) {
         performUserKeychainAction(
-            {
-                let status = SecItemDelete(Self.keychainQuery as CFDictionary)
+            { _ in
+                let status = self.deleteItem(Self.keychainQuery as CFDictionary)
                 guard status == errSecSuccess || status == errSecItemNotFound else {
                     throw FeishuWebhookError.credential(status)
                 }
+                return nil
             }, completion: completion)
+    }
+
+    /// Keep an explicitly approved endpoint only for this connection's lifetime.
+    /// Disabling or replacing the connection also invalidates queued/late reads.
+    func invalidateCredentialCache() {
+        _ = beginCredentialGeneration()
+    }
+
+    private func beginCredentialGeneration() -> UInt64 {
+        credentialLock.lock()
+        defer { credentialLock.unlock() }
+        credentialGeneration &+= 1
+        authorizedWebhook = nil
+        return credentialGeneration
+    }
+
+    private func isCurrentCredential(_ generation: UInt64) -> Bool {
+        credentialLock.lock()
+        defer { credentialLock.unlock() }
+        return credentialGeneration == generation
     }
 
     /// Only explicit setup actions may request the native system password dialog.
     /// Keep the action pending until it returns so retries cannot stack dialogs.
     private func performUserKeychainAction(
-        _ operation: @escaping () throws -> Void,
+        _ operation: @escaping (UInt64) throws -> URL?,
         completion: @escaping (Result<Void, FeishuWebhookError>) -> Void
     ) {
+        let generation = beginCredentialGeneration()
         keychainQueue.async {
             let result: Result<Void, FeishuWebhookError>
             do {
-                try self.keychainInteraction.perform(allowInteraction: true, operation)
+                guard self.isCurrentCredential(generation) else { throw FeishuWebhookError.cancelled }
+                let endpoint = try self.keychainInteraction.perform(allowInteraction: true) {
+                    // Another channel can hold the process-wide lock while this
+                    // connection is disabled or replaced. Check after acquiring it.
+                    guard self.isCurrentCredential(generation) else { throw FeishuWebhookError.cancelled }
+                    return try operation(generation)
+                }
+                self.credentialLock.lock()
+                let current = self.credentialGeneration == generation
+                if current { self.authorizedWebhook = endpoint }
+                self.credentialLock.unlock()
+                guard current else { throw FeishuWebhookError.cancelled }
                 result = .success(())
             } catch let error as FeishuWebhookError {
                 result = .failure(error)
             } catch {
                 result = .failure(.invalidWebhook)
             }
-            DispatchQueue.main.async { completion(result) }
+            DispatchQueue.main.async {
+                completion(self.isCurrentCredential(generation) ? result : .failure(.cancelled))
+            }
         }
     }
 
-    private func storeWebhookSynchronously(_ rawValue: String) throws {
+    private func storeWebhookSynchronously(_ rawValue: String, generation: UInt64) throws {
         let endpoint = try Self.validatedWebhookURL(from: rawValue)
         let data = Data(endpoint.absoluteString.utf8)
         let query = Self.keychainQuery
@@ -403,6 +455,7 @@ final class FeishuWebhookService {
             kSecValueData as String: data,
             kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
         ]
+        guard isCurrentCredential(generation) else { throw FeishuWebhookError.cancelled }
         let updateStatus = updateItem(query as CFDictionary, attributes as CFDictionary)
         if updateStatus == errSecSuccess { return }
         guard updateStatus == errSecItemNotFound else {
@@ -411,22 +464,21 @@ final class FeishuWebhookService {
 
         var item = query
         attributes.forEach { item[$0.key] = $0.value }
-        let addStatus = SecItemAdd(item as CFDictionary, nil)
+        guard isCurrentCredential(generation) else { throw FeishuWebhookError.cancelled }
+        let addStatus = addItem(item as CFDictionary, nil)
         guard addStatus == errSecSuccess else {
             throw FeishuWebhookError.credential(addStatus)
         }
     }
 
     func hasStoredWebhook(completion: @escaping (Result<Bool, FeishuWebhookError>) -> Void) {
-        readCredential(
-            {
-                do {
-                    _ = try self.loadStoredWebhook()
-                    return true
-                } catch FeishuWebhookError.missingWebhook {
-                    return false
-                }
-            }, completion: completion)
+        readCredential { result in
+            switch result {
+            case .success: completion(.success(true))
+            case .failure(.missingWebhook): completion(.success(false))
+            case .failure(let error): completion(.failure(error))
+            }
+        }
     }
 
     func send(
@@ -434,31 +486,35 @@ final class FeishuWebhookService {
         shouldSend: @escaping () -> Bool = { true },
         completion: @escaping (Result<Void, FeishuWebhookError>) -> Void
     ) {
-        readCredential(
-            { try self.loadStoredWebhook() },
-            completion: { result in
-                guard shouldSend() else {
-                    completion(.failure(.cancelled))
-                    return
-                }
-                switch result {
-                case .success(let endpoint):
-                    self.send(notification, to: endpoint, completion: completion)
-                case .failure(let error):
-                    completion(.failure(error))
-                }
-            })
+        readCredential(completion: { result in
+            guard shouldSend() else {
+                completion(.failure(.cancelled))
+                return
+            }
+            switch result {
+            case .success(let credential):
+                self.send(notification, to: credential.endpoint, credentialGeneration: credential.generation, completion: completion)
+            case .failure(let error):
+                completion(.failure(error))
+            }
+        })
     }
 
-    private func readCredential<Value>(
-        _ operation: @escaping () throws -> Value,
-        completion: @escaping (Result<Value, FeishuWebhookError>) -> Void
+    private func readCredential(
+        completion: @escaping (Result<Credential, FeishuWebhookError>) -> Void
     ) {
+        credentialLock.lock()
+        let generation = credentialGeneration
+        credentialLock.unlock()
         guard keychainCapacity.wait(timeout: .now()) == .success else {
-            DispatchQueue.main.async { completion(.failure(.keychainBusy)) }
+            DispatchQueue.main.async {
+                completion(.failure(self.isCurrentCredential(generation) ? .keychainBusy : .cancelled))
+            }
             return
         }
-        let read = FeishuKeychainRead<Value>(timeout: keychainReadTimeout, completion: completion)
+        let read = FeishuKeychainRead<Credential>(timeout: keychainReadTimeout) { result in
+            completion(self.isCurrentCredential(generation) ? result : .failure(.cancelled))
+        }
         DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + keychainReadTimeout) {
             read.finish(.failure(.keychainTimedOut))
         }
@@ -469,7 +525,19 @@ final class FeishuWebhookService {
                 return
             }
             do {
-                read.finish(.success(try self.keychainInteraction.perform(allowInteraction: false, operation)))
+                self.credentialLock.lock()
+                let current = self.credentialGeneration == generation
+                let cached = self.authorizedWebhook
+                self.credentialLock.unlock()
+                guard current else { throw FeishuWebhookError.cancelled }
+                let endpoint =
+                    try cached
+                    ?? self.keychainInteraction.perform(allowInteraction: false) {
+                        guard self.isCurrentCredential(generation) else { throw FeishuWebhookError.cancelled }
+                        return try self.loadStoredWebhook()
+                    }
+                guard self.isCurrentCredential(generation) else { throw FeishuWebhookError.cancelled }
+                read.finish(.success(Credential(endpoint: endpoint, generation: generation)))
             } catch let error as FeishuWebhookError {
                 read.finish(.failure(error))
             } catch {
@@ -488,18 +556,16 @@ final class FeishuWebhookService {
             completion(.failure(.invalidNotification))
             return
         }
-        readCredential(
-            { try self.loadStoredWebhook() },
-            completion: { result in
-                guard shouldSend() else {
-                    completion(.failure(.cancelled))
-                    return
-                }
-                switch result {
-                case .success(let endpoint): self.send(body: body, to: endpoint, completion: completion)
-                case .failure(let error): completion(.failure(error))
-                }
-            })
+        readCredential(completion: { result in
+            guard shouldSend() else {
+                completion(.failure(.cancelled))
+                return
+            }
+            switch result {
+            case .success(let credential): self.send(body: body, to: credential.endpoint, credentialGeneration: credential.generation, completion: completion)
+            case .failure(let error): completion(.failure(error))
+            }
+        })
     }
 
     func sendPublicResetForecast(
@@ -512,18 +578,16 @@ final class FeishuWebhookService {
             completion(.failure(.invalidNotification))
             return
         }
-        readCredential(
-            { try self.loadStoredWebhook() },
-            completion: { result in
-                guard shouldSend() else {
-                    completion(.failure(.cancelled))
-                    return
-                }
-                switch result {
-                case .success(let endpoint): self.send(body: body, to: endpoint, completion: completion)
-                case .failure(let error): completion(.failure(error))
-                }
-            })
+        readCredential(completion: { result in
+            guard shouldSend() else {
+                completion(.failure(.cancelled))
+                return
+            }
+            switch result {
+            case .success(let credential): self.send(body: body, to: credential.endpoint, credentialGeneration: credential.generation, completion: completion)
+            case .failure(let error): completion(.failure(error))
+            }
+        })
     }
 
     static func publicResetPayload(
@@ -615,18 +679,16 @@ final class FeishuWebhookService {
             completion(.failure(.invalidNotification))
             return
         }
-        readCredential(
-            { try self.loadStoredWebhook() },
-            completion: { result in
-                guard shouldSend() else {
-                    completion(.failure(.cancelled))
-                    return
-                }
-                switch result {
-                case .success(let endpoint): self.send(body: body, to: endpoint, completion: completion)
-                case .failure(let error): completion(.failure(error))
-                }
-            })
+        readCredential(completion: { result in
+            guard shouldSend() else {
+                completion(.failure(.cancelled))
+                return
+            }
+            switch result {
+            case .success(let credential): self.send(body: body, to: credential.endpoint, credentialGeneration: credential.generation, completion: completion)
+            case .failure(let error): completion(.failure(error))
+            }
+        })
     }
 
     static func taskCompletionPayload(
@@ -694,6 +756,7 @@ final class FeishuWebhookService {
     private func send(
         _ notification: FeishuSwitchNotification,
         to endpoint: URL,
+        credentialGeneration: UInt64,
         completion: @escaping (Result<Void, FeishuWebhookError>) -> Void
     ) {
         let body: Data
@@ -707,11 +770,12 @@ final class FeishuWebhookService {
             return
         }
 
-        send(body: body, to: endpoint, completion: completion)
+        send(body: body, to: endpoint, credentialGeneration: credentialGeneration, completion: completion)
     }
 
     private func send(
         body: Data, to endpoint: URL,
+        credentialGeneration: UInt64,
         completion: @escaping (Result<Void, FeishuWebhookError>) -> Void
     ) {
         var request = URLRequest(
@@ -725,6 +789,10 @@ final class FeishuWebhookService {
         request.setValue("application/json", forHTTPHeaderField: "Accept")
 
         Task { [request] in
+            guard self.isCurrentCredential(credentialGeneration) else {
+                completion(.failure(.cancelled))
+                return
+            }
             do {
                 let (bytes, response) = try await session.bytes(for: request)
                 defer { bytes.task.cancel() }
@@ -1269,6 +1337,7 @@ final class FeishuWebhookService {
 private final class FeishuWebhookTestProtocol: URLProtocol {
     private static let lock = NSLock()
     private static var count = 0
+    private static var endpoint: URL?
 
     static var requestCount: Int {
         lock.lock()
@@ -1276,11 +1345,18 @@ private final class FeishuWebhookTestProtocol: URLProtocol {
         return count
     }
 
+    static var lastEndpoint: URL? {
+        lock.lock()
+        defer { lock.unlock() }
+        return endpoint
+    }
+
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
         Self.lock.lock()
         Self.count += 1
+        Self.endpoint = request.url
         Self.lock.unlock()
         guard let url = request.url,
             let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)
@@ -1550,6 +1626,8 @@ enum FeishuWebhookServiceSelfTest {
                 )) == nil, "rounded quota must not falsely meet the low-quota threshold")
             failures += credentialIsolationTests(notification: testNotification, endpoint: valid[0])
             failures += credentialAuthorizationTests(notification: testNotification, endpoint: valid[0])
+            failures += credentialLifecycleTests(notification: testNotification, endpoint: valid[0])
+            failures += credentialLockWaitTests(endpoint: valid[0])
             for change in [
                 CodexQuotaEvent.quotaReset(fiveHour: true, sevenDay: true),
                 .resetCreditsAdded(added: 2, available: 3),
@@ -1808,7 +1886,6 @@ enum FeishuWebhookServiceSelfTest {
             }
         }
         var allowed = true
-        var authorized = false
         var policy: [Bool] = []
         var prompts = 0
         var readOnMain = false
@@ -1823,11 +1900,9 @@ enum FeishuWebhookServiceSelfTest {
         let service = FeishuWebhookService(sessionConfiguration: configuration, keychainInteraction: interaction) { query, result in
             readOnMain = readOnMain || Thread.isMainThread
             guard (query as NSDictionary)[kSecReturnData as String] as? Bool == true else { return errSecParam }
-            if !authorized {
-                guard allowed else { return errSecInteractionNotAllowed }
-                prompts += 1
-                authorized = true
-            }
+            // Model Allow Once: each Security read needs its own interaction.
+            guard allowed else { return errSecInteractionNotAllowed }
+            prompts += 1
             result?.pointee = Data(endpoint.utf8) as CFData
             return errSecSuccess
         }
@@ -1856,7 +1931,17 @@ enum FeishuWebhookServiceSelfTest {
         waitUntil { delivered != nil }
         service.keychainQueue.sync {}
         expect(delivered?.isSuccess == true && prompts == 1, "authorized background delivery requested another prompt")
-        expect(policy == [false, true, false, true, true, true, false, true], "Keychain UI policy was not scoped to explicit actions")
+        expect(policy == [false, true, false, true, true, true], "cached send accessed Keychain or UI policy was not restored")
+        var cachedProbe: Result<Bool, FeishuWebhookError>?
+        service.hasStoredWebhook { cachedProbe = $0 }
+        waitUntil { cachedProbe != nil }
+        if case .success(true)? = cachedProbe {} else { failures.append("authorized probe reread an Allow Once credential") }
+        service.invalidateCredentialCache()
+        var disabledSend: Result<Void, FeishuWebhookError>?
+        service.send(notification) { disabledSend = $0 }
+        waitUntil { disabledSend != nil }
+        if case .failure(.keychainAuthorizationRequired)? = disabledSend {} else { failures.append("cleared connection reused its authorized endpoint") }
+        expect(FeishuWebhookTestProtocol.requestCount == requestsBefore + 1, "cleared connection reached transport")
 
         let cancelled = FeishuWebhookService(sessionConfiguration: configuration, keychainInteraction: interaction) { _, _ in errSecUserCanceled }
         var cancellation: Result<Void, FeishuWebhookError>?
@@ -1892,6 +1977,198 @@ enum FeishuWebhookServiceSelfTest {
         if let saveResult {
             expect(UsageStore.feishuConnectionCompletionSelfTest(saveResult), "failed connection retained stale readiness or cleared unrelated transport readiness")
         }
+        return failures
+    }
+
+    private static func credentialLockWaitTests(endpoint: String) -> [String] {
+        var failures: [String] = []
+        func waitUntil(_ condition: () -> Bool) {
+            let deadline = Date().addingTimeInterval(2)
+            while !condition(), Date() < deadline {
+                RunLoop.current.run(until: Date().addingTimeInterval(0.005))
+            }
+        }
+        for action in ["authorize", "save", "remove", "probe"] {
+            let entered = DispatchSemaphore(value: 0)
+            let release = DispatchSemaphore(value: 0)
+            var operations = 0
+            // Pause inside perform, before its operation. This deterministically
+            // models the connection changing while waiting for the shared lock.
+            let interaction = FeishuKeychainInteraction(
+                getAllowed: {
+                    entered.signal()
+                    _ = release.wait(timeout: .now() + 2)
+                    return true
+                }, setAllowed: { _ in })
+            let service = FeishuWebhookService(
+                keychainInteraction: interaction,
+                updateItem: { _, _ in
+                    operations += 1
+                    return errSecSuccess
+                },
+                addItem: { _, _ in
+                    operations += 1
+                    return errSecSuccess
+                },
+                deleteItem: { _ in
+                    operations += 1
+                    return errSecSuccess
+                },
+                copyMatching: { _, result in
+                    operations += 1
+                    result?.pointee = Data(endpoint.utf8) as CFData
+                    return errSecSuccess
+                })
+            var result: Result<Void, FeishuWebhookError>?
+            switch action {
+            case "authorize": service.authorizeStoredWebhook { result = $0 }
+            case "save": service.storeWebhook(endpoint) { result = $0 }
+            case "remove": service.removeStoredWebhook { result = $0 }
+            default: service.hasStoredWebhook { result = $0.map { _ in () } }
+            }
+            if entered.wait(timeout: .now() + 2) != .success { failures.append("\(action) did not enter the lock-wait fixture") }
+            service.invalidateCredentialCache()
+            release.signal()
+            waitUntil { result != nil }
+            if case .failure(.cancelled)? = result {} else { failures.append("\(action) was not cancelled after waiting for the lock") }
+            if operations != 0 { failures.append("\(action) accessed Keychain after invalidation while waiting for the lock") }
+        }
+        // A system update already in progress cannot be cancelled, but its
+        // follow-up Add/readback must not start after the connection is cleared.
+        for updateStatus in [errSecSuccess, errSecItemNotFound] {
+            weak var interrupted: FeishuWebhookService?
+            var followUpCalls = 0
+            let service = FeishuWebhookService(
+                keychainInteraction: FeishuKeychainInteraction(getAllowed: { true }, setAllowed: { _ in }),
+                updateItem: { _, _ in
+                    interrupted?.invalidateCredentialCache()
+                    return updateStatus
+                },
+                addItem: { _, _ in
+                    followUpCalls += 1
+                    return errSecSuccess
+                },
+                copyMatching: { _, result in
+                    followUpCalls += 1
+                    result?.pointee = Data(endpoint.utf8) as CFData
+                    return errSecSuccess
+                })
+            interrupted = service
+            var result: Result<Void, FeishuWebhookError>?
+            service.storeWebhook(endpoint) { result = $0 }
+            waitUntil { result != nil }
+            if case .failure(.cancelled)? = result {} else { failures.append("interrupted update did not cancel its save") }
+            if followUpCalls != 0 { failures.append("interrupted update started Add or readback after invalidation") }
+        }
+        return failures
+    }
+
+    private static func credentialLifecycleTests(notification: FeishuSwitchNotification, endpoint: String) -> [String] {
+        var failures: [String] = []
+        func expect(_ condition: @autoclosure () -> Bool, _ message: String) {
+            if !condition() { failures.append(message) }
+        }
+        func waitUntil(_ condition: () -> Bool) {
+            let deadline = Date().addingTimeInterval(2)
+            while !condition(), Date() < deadline {
+                RunLoop.current.run(until: Date().addingTimeInterval(0.005))
+            }
+        }
+        var allowed = true
+        let interaction = FeishuKeychainInteraction(getAllowed: { allowed }, setAllowed: { allowed = $0 })
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [FeishuWebhookTestProtocol.self]
+        let replacement = "https://open.larksuite.com/open-apis/bot/v2/hook/fixture-replacement-123456"
+        var stored = Data(endpoint.utf8)
+        let entered = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
+        var blockFirstRead = true
+        var deleted = false
+        let service = FeishuWebhookService(
+            sessionConfiguration: configuration, keychainInteraction: interaction,
+            updateItem: { _, attributes in
+                stored = (attributes as NSDictionary)[kSecValueData as String] as! Data
+                return errSecSuccess
+            },
+            deleteItem: { _ in
+                deleted = true
+                return errSecSuccess
+            },
+            copyMatching: { _, result in
+                guard allowed else { return errSecInteractionNotAllowed }
+                let value = stored
+                if blockFirstRead {
+                    blockFirstRead = false
+                    entered.signal()
+                    _ = release.wait(timeout: .now() + 2)
+                }
+                result?.pointee = value as CFData
+                return errSecSuccess
+            })
+        var oldAuthorization: Result<Void, FeishuWebhookError>?
+        service.authorizeStoredWebhook { oldAuthorization = $0 }
+        expect(entered.wait(timeout: .now() + 2) == .success, "authorization fixture did not start")
+        var replacementResult: Result<Void, FeishuWebhookError>?
+        service.storeWebhook(replacement) { replacementResult = $0 }
+        release.signal()
+        waitUntil { oldAuthorization != nil && replacementResult != nil }
+        if case .failure(.cancelled)? = oldAuthorization {} else { failures.append("late authorization revived the replaced connection") }
+        expect(replacementResult?.isSuccess == true, "replacement was not saved and read back")
+        let requestsBefore = FeishuWebhookTestProtocol.requestCount
+        var delivered: Result<Void, FeishuWebhookError>?
+        service.send(notification) { result in DispatchQueue.main.async { delivered = result } }
+        waitUntil { delivered != nil }
+        expect(delivered?.isSuccess == true, "replacement cache did not support background delivery")
+        expect(FeishuWebhookTestProtocol.lastEndpoint == URL(string: replacement), "replacement used the old endpoint")
+
+        var pendingSend: Result<Void, FeishuWebhookError>?
+        service.send(notification) { pendingSend = $0 }
+        service.invalidateCredentialCache()
+        waitUntil { pendingSend != nil }
+        if case .failure(.cancelled)? = pendingSend {} else { failures.append("cleared pending read was not cancelled") }
+        expect(FeishuWebhookTestProtocol.requestCount == requestsBefore + 1, "clear allowed a pending notification through")
+
+        // A successful Security call with a queued main-thread completion must
+        // not report readiness after the user closes the connection.
+        var lateCompletion: Result<Void, FeishuWebhookError>?
+        service.authorizeStoredWebhook { lateCompletion = $0 }
+        service.keychainQueue.sync {}
+        service.invalidateCredentialCache()
+        waitUntil { lateCompletion != nil }
+        if case .failure(.cancelled)? = lateCompletion {} else { failures.append("late authorization completion reported a cleared connection ready") }
+
+        var authorization: Result<Void, FeishuWebhookError>?
+        service.authorizeStoredWebhook { authorization = $0 }
+        waitUntil { authorization != nil }
+        expect(authorization?.isSuccess == true, "fixture authorization did not recover")
+        var removal: Result<Void, FeishuWebhookError>?
+        service.removeStoredWebhook { removal = $0 }
+        waitUntil { removal != nil }
+        expect(deleted && removal?.isSuccess == true, "remove did not use the isolated Keychain operation")
+        var removedSend: Result<Void, FeishuWebhookError>?
+        service.send(notification) { removedSend = $0 }
+        waitUntil { removedSend != nil }
+        if case .failure(.keychainAuthorizationRequired)? = removedSend {} else { failures.append("removed connection reused cached authorization") }
+        expect(FeishuWebhookTestProtocol.requestCount == requestsBefore + 1, "removed connection reached transport")
+
+        let readEntered = DispatchSemaphore(value: 0)
+        let readRelease = DispatchSemaphore(value: 0)
+        let readService = FeishuWebhookService(
+            sessionConfiguration: configuration, keychainInteraction: interaction,
+            copyMatching: { _, result in
+                readEntered.signal()
+                _ = readRelease.wait(timeout: .now() + 2)
+                result?.pointee = Data(endpoint.utf8) as CFData
+                return errSecSuccess
+            })
+        var oldRead: Result<Bool, FeishuWebhookError>?
+        readService.hasStoredWebhook { oldRead = $0 }
+        expect(readEntered.wait(timeout: .now() + 2) == .success, "background fixture did not start")
+        readService.invalidateCredentialCache()
+        readRelease.signal()
+        waitUntil { oldRead != nil }
+        if case .failure(.cancelled)? = oldRead {} else { failures.append("late background read revived a cleared connection") }
+        expect(allowed, "lifecycle test left Keychain interaction disabled")
         return failures
     }
 }

@@ -10,10 +10,17 @@ import (
 	"net/http"
 	"net/url"
 	"reflect"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
 )
+
+var hongKongNodeMarker = regexp.MustCompile(`(?i)hong[\s._-]*kong|(^|[^a-z])hkg?([0-9]+)?($|[^a-z])|(^|[\s\[（(【_./|·-])港([0-9]|$|[\s\]）)】_./|·-])`)
+
+func isHongKongNode(name string) bool {
+	return strings.Contains(name, "香港") || strings.Contains(name, "港区") || strings.Contains(name, "港澳") || strings.Contains(name, "🇭🇰") || hongKongNodeMarker.MatchString(name)
+}
 
 type egressSettings struct {
 	Enabled      bool     `json:"enabled"`
@@ -203,7 +210,7 @@ func (n *networkRecovery) checkEgress(ctx context.Context, maySwitch bool, reque
 			outcome.State = "unavailable"
 			return
 		}
-		if candidate == initial.Now || !containsNode(initial.All, candidate) {
+		if isHongKongNode(candidate) || candidate == initial.Now || !containsNode(initial.All, candidate) {
 			continue
 		}
 		state, latency = c.delay(bounded, candidate)

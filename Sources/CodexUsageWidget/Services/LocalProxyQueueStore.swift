@@ -258,13 +258,15 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
                         saved.persistentClientKey = secrets.clientKey
                         if saved.egress != nil { saved.egress?.mihomoSecret = secrets.mihomoSecret }
                     }
+                    let inheritedEgressDefault = saved.egress?.isUntouchedLegacyDefault == true
+                    if inheritedEgressDefault { saved.egress = LocalProxyEgressSettings() }
                     guard saved.schemaVersion == 1, saved.order.count <= 1000, Set(saved.order).count == saved.order.count,
                         saved.enabledIDs.count <= 1000, saved.validAccountPolicies, saved.validAccountRepresentatives, saved.validLastIDs, saved.validLastOverrides,
                         saved.validResetStopRules, saved.validNetworkSettings,
                         LocalProxyPreferences.validCreditFloors(primary: saved.creditFloors.primary, secondary: saved.creditFloors.secondary)
                     else { throw LocalProxyFailure.unavailable }
                     preferences = saved
-                    if saved.secretsReference == nil && (saved.persistentClientKey != nil || !(saved.egress?.mihomoSecret.isEmpty ?? true)) {
+                    if inheritedEgressDefault || (saved.secretsReference == nil && (saved.persistentClientKey != nil || !(saved.egress?.mihomoSecret.isEmpty ?? true))) {
                         guard savePreferences() else { throw LocalProxyFailure.unavailable }
                     }
                 }
@@ -320,8 +322,8 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
         discoveringNodes = true
         defer { discoveringNodes = false }
         do {
-            let nodes = try await LocalProxyNetworkProbe.japaneseNodes(settings: settings)
-            if nodes.isEmpty { issue = "未找到指定分组中的日本候选节点，请核对控制地址与分组。" }
+            let nodes = try await LocalProxyNetworkProbe.selectorNodes(settings: settings)
+            if nodes.isEmpty { issue = "未找到指定分组中的可用候选节点，请核对控制地址与分组。" }
             return nodes
         } catch {
             issue = "无法读取出口节点，请核对控制地址、密钥与分组。"
@@ -378,6 +380,9 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
     func runSelfCheck() {
         guard phase == .running, !usageStore.isPreview, !selfCheck.isRunning, let run = runID, let endpoint, let key = clientKey else { return }
         selfCheck.begin()
+        if !egressSettings.enabled {
+            selfCheck.update("egress", passed: true, detail: "跟随系统代理，自动切换未开启")
+        }
         let checkID = UUID().uuidString
         selfCheckRequestID = checkID
         sendNetworkCommand(["command": "self_check", "requestID": checkID])
@@ -427,8 +432,12 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
         egressState = state
         if let requestID = object["requestID"] as? String, requestID == selfCheckRequestID {
             let latency = (object["latencyMS"] as? Int).flatMap { (0...60000).contains($0) ? $0 : nil }
-            selfCheck.update(
-                "egress", passed: state == "healthy", detail: state == "healthy" ? "当前分组节点可达" + (latency.map { " · \($0) ms" } ?? "") : "出口未验证（\(state)）；请检查控制地址、分组和节点")
+            if state == "disabled", !egressSettings.enabled {
+                selfCheck.update("egress", passed: true, detail: "跟随系统代理，自动切换未开启")
+            } else {
+                selfCheck.update(
+                    "egress", passed: state == "healthy", detail: state == "healthy" ? "当前分组节点可达" + (latency.map { " · \($0) ms" } ?? "") : "出口未验证（\(state)）；请检查控制地址、分组和节点")
+            }
         }
         if ["switched", "all_dead"].contains(state), let runID {
             try? DispatchActivityStore.live.appendIssue(

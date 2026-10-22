@@ -10,6 +10,22 @@ extension LocalProxyHostFixtures {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let profile = CodexProfile(id: "network-fixture", lastSnapshot: .init(fetchedAt: Date(), fiveHour: .init(usedPercent: 10, resetsAt: Date().addingTimeInterval(3600)), sevenDay: .init(usedPercent: 10, resetsAt: Date().addingTimeInterval(86400))))
         let usage = UsageStore([profile]); usage.isPreview = false
+        let defaults = LocalProxyEgressSettings()
+        expect(!defaults.enabled && defaults.mihomoAPI.isEmpty && defaults.group.isEmpty && defaults.isValid,
+            "default follows system proxy without requiring a controller or group")
+        var oldDefault = defaults; oldDefault.enabled = true; oldDefault.mihomoAPI = "http://127.0.0.1:9097"; oldDefault.group = "极简"
+        var oldPreferences = LocalProxyPreferences(); oldPreferences.egress = oldDefault
+        let oldURL = root.appendingPathComponent("local-proxy-queue-v1.json")
+        try DispatchParticipationSync.writePrivateProxyPreferences(JSONEncoder().encode(oldPreferences), at: oldURL)
+        let inherited = LocalProxyQueueStore(usageStore: usage)
+        expect(!inherited.preferencesBlocked && !inherited.egressSettings.enabled && inherited.egressSettings.mihomoAPI.isEmpty,
+            "untouched old default migrates to current system proxy")
+        oldDefault.whitelist = ["新加坡-01"]; oldPreferences.egress = oldDefault
+        try DispatchParticipationSync.writePrivateProxyPreferences(JSONEncoder().encode(oldPreferences), at: oldURL)
+        let explicit = LocalProxyQueueStore(usageStore: usage)
+        expect(!explicit.preferencesBlocked && explicit.egressSettings.enabled && explicit.egressSettings.whitelist == ["新加坡-01"],
+            "explicit saved controller candidates retain their opt-in")
+        try FileManager.default.removeItem(at: oldURL)
         let legacy = LocalProxyPreferences()
         expect(legacy.effectiveListenPort == 18080 && legacy.effectiveClientKeyMode == .persistent && legacy.validNetworkSettings, "legacy defaults are fixed port and persistent key")
         let store = LocalProxyQueueStore(usageStore: usage)

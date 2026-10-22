@@ -79,8 +79,8 @@ struct NewFeatureSetupControls: View {
                 featureHeading(language.text("本次更新 · 2.5.2（150）", "What's new · 2.5.2 (150)"), symbol: "arrow.triangle.2.circlepath")
                 Text(
                     language.text(
-                        "Codex 反代默认使用 18080 端口和持久访问密钥。高级规则可设置出口看门狗；仅当前节点不可达时尝试候选节点。自检逐项检查系统代理、出口、官方后端、本地端点和账号池。",
-                        "The Codex proxy defaults to port 18080 and a persistent access key. Configure the egress watchdog under Advanced rules; it only tries candidates when the current node is unreachable. Self-check verifies the system proxy, egress, official backend, local endpoint and account pool."
+                        "Codex 反代默认使用 18080 端口和持久访问密钥，沿用开启时的系统 Clash 连接。连接、网络和额度详情默认收起；自动恢复需手动开启，候选排除香港且仅当前节点失效时切换。自检分别核验连接与账号池。",
+                        "The Codex proxy defaults to port 18080 and a persistent access key, using the current system Clash connection. Connection, network and quota details start collapsed. Automatic recovery is optional, excludes Hong Kong candidates and only switches a failed node. Self-check verifies the connection and account pool."
                     )
                 )
                 .font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)

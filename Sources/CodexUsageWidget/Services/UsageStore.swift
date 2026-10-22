@@ -4330,6 +4330,11 @@ final class UsageStore: ObservableObject {
         feishuConfigurationRevision += 1
         feishuTaskCompletionObserver = FeishuTaskCompletionObserver()
         feishuNotificationsEnabled = enabled
+        if !enabled {
+            feishuWebhookService.invalidateCredentialCache()
+            feishuWebhookConfigured = false
+            feishuNeedsAuthorization = false
+        }
         if !isPreview { UserDefaults.standard.set(enabled, forKey: Self.feishuNotificationsEnabledKey) }
         resetQuotaEventTrackerForNotificationConfiguration()
         scheduleWarmUpMaintenanceTimer()
@@ -6509,6 +6514,7 @@ final class UsageStore: ObservableObject {
     func start() {
         guard !hasStarted else { return }
         hasStarted = true
+        if feishuNotificationsEnabled && !feishuWebhookConfigured { refreshFeishuWebhookConfiguration() }
         resetNoticeRunRevision = UUID()
         resetNoticeLocalRevision = UUID()
         if !isPreview {
@@ -6951,6 +6957,9 @@ final class UsageStore: ObservableObject {
 
     @MainActor
     func stop() {
+        feishuConfigurationRevision += 1
+        feishuWebhookService.invalidateCredentialCache()
+        feishuWebhookConfigured = false
         resetNoticeRunRevision = UUID()
         resetNoticeLocalRevision = UUID()
         resetNoticeTimer?.invalidate()

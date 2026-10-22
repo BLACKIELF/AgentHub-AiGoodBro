@@ -484,6 +484,56 @@ func TestNetworkWatchdogOnlySwitchesDeadAndReadsBack(t *testing.T) {
 		})
 	}
 }
+
+func TestNetworkWatchdogHongKongExclusionAndCurrentChoice(t *testing.T) {
+	for _, name := range []string{"香港-01", "🇭🇰-02", "Hong Kong 03", "Hongkong-04", "HK01", "[HK] 05", "HKG-06", "港01", "港区-02"} {
+		if !isHongKongNode(name) {
+			t.Fatalf("Hong Kong marker accepted: %q", name)
+		}
+	}
+	for _, name := range []string{"新加坡-01", "日本-02", "US-03", "Shikoku", "ShkRoute", "BHK-01", "Hokkaido"} {
+		if isHongKongNode(name) {
+			t.Fatalf("unrelated node excluded: %q", name)
+		}
+	}
+	for _, scenario := range []string{"disabled", "old-whitelist", "healthy-current-hk"} {
+		t.Run(scenario, func(t *testing.T) {
+			rt, b, s, out := networkFixture(t)
+			classifyFixture(t, rt)
+			f := &controllerFixture{now: "current", all: []string{"current", "HK01", "Singapore-01"}, delays: map[string]string{"current": "dead"}}
+			if scenario == "healthy-current-hk" {
+				f.now = "HK01"
+			}
+			server := httptest.NewServer(http.HandlerFunc(f.serve))
+			defer server.Close()
+			rt.network.settings = egressSettings{Enabled: scenario != "disabled", MihomoAPI: server.URL, Group: "group", Whitelist: []string{"HK01", "Singapore-01"}}
+			b.beforeReply = func(q bridgeRequest, r bridgeReply) bridgeReply {
+				if q.Command == "egress_probe" {
+					return probeProof(q, s)
+				}
+				return r
+			}
+			rt.network.checkEgress(context.Background(), true, "hk-check")
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			if scenario == "old-whitelist" {
+				if !reflect.DeepEqual(f.puts, []string{"Singapore-01"}) {
+					t.Fatalf("old HK whitelist selected: %v", f.puts)
+				}
+				for _, call := range f.calls {
+					if strings.Contains(call, "/HK01/delay") {
+						t.Fatal("HK candidate was probed")
+					}
+				}
+			} else if len(f.puts) != 0 {
+				t.Fatalf("current node changed: %v", f.puts)
+			}
+			if scenario == "disabled" && (len(f.calls) != 0 || !strings.Contains(out.String(), `"state":"disabled"`)) {
+				t.Fatal("disabled default contacted controller or failed to report disabled")
+			}
+		})
+	}
+}
 func TestNetworkControllerNoRedirectNoEnvironmentProxy(t *testing.T) {
 	var external atomic.Int32
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { external.Add(1) }))

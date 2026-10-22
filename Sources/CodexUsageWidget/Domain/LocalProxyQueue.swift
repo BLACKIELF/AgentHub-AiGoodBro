@@ -262,18 +262,24 @@ enum LocalProxyClientKeyMode: String, Codable, CaseIterable {
 }
 
 struct LocalProxyEgressSettings: Codable, Equatable {
-    var enabled = true
-    var mihomoAPI = "http://127.0.0.1:9097"
+    var enabled = false
+    var mihomoAPI = ""
     // Hydrated from the dedicated Keychain item; omitted from persisted preferences.
     var mihomoSecret = ""
-    var group = "极简"
+    var group = ""
     var whitelist: [String] = []
+    var isUntouchedLegacyDefault: Bool {
+        enabled && mihomoAPI == "http://127.0.0.1:9097" && group == "极简" && whitelist.isEmpty && mihomoSecret.isEmpty
+    }
     var isValid: Bool {
-        guard let url = URLComponents(string: mihomoAPI), url.scheme == "http",
-            ["127.0.0.1", "[::1]", "::1"].contains(url.host ?? ""),
-            url.user == nil, url.password == nil, url.query == nil, url.fragment == nil,
-            url.path.isEmpty, url.port.map({ (1...65535).contains($0) }) != false,
-            !group.isEmpty, group.utf8.count <= 256, !group.contains(where: \.isNewline), !group.contains("\0"),
+        if enabled || !mihomoAPI.isEmpty {
+            guard let url = URLComponents(string: mihomoAPI), url.scheme == "http",
+                ["127.0.0.1", "[::1]", "::1"].contains(url.host ?? ""),
+                url.user == nil, url.password == nil, url.query == nil, url.fragment == nil,
+                url.path.isEmpty, url.port.map({ (1...65535).contains($0) }) != false
+            else { return false }
+        }
+        guard !enabled || !group.isEmpty, group.utf8.count <= 256, !group.contains(where: \.isNewline), !group.contains("\0"),
             group == group.trimmingCharacters(in: .whitespacesAndNewlines),
             mihomoSecret.utf8.count <= 4096, !mihomoSecret.contains(where: \.isNewline), !mihomoSecret.contains("\0"),
             whitelist.count <= 64, Set(whitelist).count == whitelist.count
