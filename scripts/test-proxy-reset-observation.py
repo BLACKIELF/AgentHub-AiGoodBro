@@ -83,7 +83,8 @@ enum FeishuWebhookError: Error {
     case keychainAuthorizationRequired, keychainTimedOut, keychainBusy, missingWebhook, transportFailed
 }
 final class FixtureWebhookService {
-    var reads = 0, removes = 0
+    var reads = 0, removes = 0, cacheInvalidations = 0
+    func invalidateCredentialCache() { cacheInvalidations += 1 }
     func hasStoredWebhook(_ completion: (Result<Bool, FeishuWebhookError>) -> Void) {
         reads += 1
         completion(.success(true))
@@ -165,8 +166,12 @@ let configurations: [(String, Configuration)] = [
         check(!h.localNotificationsEnabled, "local notification toggle executes")
     }),
     ("Feishu notifications", { h in
-        h.setFeishuNotificationsEnabled(true); h.setFeishuNotificationsEnabled(false)
+        h.setFeishuNotificationsEnabled(true)
+        check(h.feishuWebhookService.cacheInvalidations == 0, "enabling Feishu retains the authorized cache")
+        h.setFeishuNotificationsEnabled(false)
         check(!h.feishuNotificationsEnabled && h.feishuConfigurationRevision == 2, "Feishu notification toggles execute")
+        check(h.feishuWebhookService.cacheInvalidations == 1 && !h.feishuWebhookConfigured,
+            "disabling Feishu invalidates its credential cache and clears configured state")
     }),
     ("Feishu quota alerts", { h in
         h.setFeishuQuotaResetEnabled(true); h.setFeishuQuotaResetEnabled(false)
