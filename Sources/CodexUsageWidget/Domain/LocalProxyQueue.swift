@@ -238,10 +238,13 @@ enum LocalProxyAdmission {
         if !isPro && snapshot.fiveHour == nil { return .quotaUnknown }
         let windows = isPro ? [seven] : [seven] + [snapshot.fiveHour, snapshot.monthly].compactMap { $0 }
         guard windows.allSatisfy({ $0.usedPercent.isFinite && (0...100).contains($0.usedPercent) && $0.resetsAt.map({ $0 > now }) == true }) else { return .quotaUnknown }
+        let extraWindows: [CodexQuotaWindowSnapshot] = [snapshot.fiveHour, snapshot.monthly].compactMap { $0 }
         let reportedExtraExhausted =
             isPro
-            && [snapshot.fiveHour, snapshot.monthly].compactMap { $0 }.contains {
-                $0.usedPercent.isFinite && $0.usedPercent >= 100 && $0.usedPercent <= 100 && $0.resetsAt.map { $0 > now } == true
+            && extraWindows.contains { window in
+                let validExhaustedPercent = window.usedPercent.isFinite && window.usedPercent >= 100 && window.usedPercent <= 100
+                let hasFutureReset = window.resetsAt.map { $0 > now } == true
+                return validExhaustedPercent && hasFutureReset
             }
         if !isPro && policy.fiveHourUsedLimit < 100,
             let fiveHour = snapshot.fiveHour, fiveHour.usedPercent >= policy.fiveHourUsedLimit
