@@ -46,7 +46,7 @@ struct TokenMonitorURLSessionTransport {
         try FileManager.default.createSymbolicLink(at: link, withDestinationURL: profile)
         do { try ProviderProxyClientLauncher.prepareAgyProfile(link); fatalError("symlink accepted") } catch {}
         let result = await ProviderProxyClientLauncher.runCodex(provider: .claude, model: "fixture-model", workingDirectory: root)
-        precondition(result == 0, "isolated child environment or arguments incorrect")
+        precondition(result == 0, "isolated child environment or arguments incorrect: exit \(result)")
         let invalid = await ProviderProxyClientLauncher.runCodex(provider: .claude, model: "missing-model", workingDirectory: root)
         precondition(invalid == 1, "unlisted model must not launch")
         do { _ = try await ProviderProxyClientLauncher.catalog(endpoint: "https://example.invalid", key: "fixture"); fatalError("remote endpoint accepted") } catch {}
@@ -54,13 +54,21 @@ struct TokenMonitorURLSessionTransport {
     }
 }
 '''
-with tempfile.TemporaryDirectory(prefix="agb-client-", dir="/private/tmp") as folder:
-    folder = Path(folder)
+with tempfile.TemporaryDirectory(prefix="agb-client-") as folder:
+    folder = Path(folder).resolve()
     (folder / "stubs.swift").write_text(STUBS)
     fake = folder / "fake-codex"
-    fake.write_text("#!/bin/sh\n[ \"$CODEX_HOME\" = \"$PWD/proxy-clients/codex-claude\" ] || exit 31\n[ -n \"$AIGOODBRO_PROXY_KEY\" ] || exit 32\n[ -z \"${OPENAI_API_KEY-}\" ] || exit 33\n[ \"$1\" = -m ] && [ \"$2\" = fixture-model ] || exit 34\ncase \"$*\" in *fixture_fixture*) exit 35;; esac\nexit 0\n")
+    # Foundation and shells may spell the same directory with a trailing slash
+    # or a /tmp alias; compare identity while still rejecting another profile.
+    fake.write_text("#!/bin/sh\n[ \"$CODEX_HOME\" -ef \"$PWD/proxy-clients/codex-claude\" ] || exit 31\n[ -n \"$AIGOODBRO_PROXY_KEY\" ] || exit 32\n[ -z \"${OPENAI_API_KEY-}\" ] || exit 33\n[ \"$1\" = -m ] && [ \"$2\" = fixture-model ] || exit 34\ncase \"$*\" in *fixture_fixture*) exit 35;; esac\nexit 0\n")
     fake.chmod(0o700)
     env = dict(os.environ, FIXTURE_ROOT=str(folder), FIXTURE_CLI=str(fake), OPENAI_API_KEY="must-not-inherit")
     sdk = subprocess.check_output(["xcrun", "--sdk", "macosx", "--show-sdk-path"], text=True).strip()
     subprocess.run(["xcrun", "swiftc", "-parse-as-library", "-sdk", sdk, "-module-cache-path", str(folder / "cache"), str(ROOT / "Sources/CodexUsageWidget/Services/ProviderProxyClientLauncher.swift"), str(folder / "stubs.swift"), "-o", str(folder / "fixture")], check=True)
     subprocess.run([str(folder / "fixture")], env=env, check=True)
+    child_env = {"CODEX_HOME": str(folder / "proxy-clients/codex-claude") + "/", "AIGOODBRO_PROXY_KEY": "fixture-key"}
+    subprocess.run([str(fake), "-m", "fixture-model"], cwd=folder, env=child_env, check=True)
+    child_env["CODEX_HOME"] = str(folder / "profiles/agy")
+    wrong_profile = subprocess.run([str(fake), "-m", "fixture-model"], cwd=folder, env=child_env, check=False)
+    assert wrong_profile.returncode == 31, "different profile must still fail isolation check"
+    print("PASS: profile identity check accepts a trailing slash and rejects a different directory")

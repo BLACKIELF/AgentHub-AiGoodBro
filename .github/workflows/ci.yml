@@ -50,6 +50,8 @@ jobs:
           cache: false
       - name: Lint Swift sources
         run: make lint
+      - name: Validate isolated provider client launchers
+        run: python3 scripts/test-provider-client-launcher.py
       - name: Validate rendered local proxy policy editor
         run: python3 scripts/test-local-proxy-policy-editor.py
       - name: Validate native local proxy host with synthetic accounts
@@ -145,7 +147,6 @@ jobs:
           go vet -mod=readonly ./...
       - name: Validate provider pools and isolated client launchers
         run: |
-          python3 scripts/test-provider-client-launcher.py
           cd Companion/AntigravityProxy
           bash test-native-host.sh
           go test -mod=readonly -race -timeout=10m ./...
