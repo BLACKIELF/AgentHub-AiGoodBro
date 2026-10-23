@@ -46,6 +46,8 @@ parts = [
     "import AppKit\nimport SwiftUI\n",
     declaration(domain, "struct LocalProxyQueueRow:"),
     declaration(domain, "struct LocalProxyQuotaWindow:"),
+    declaration(domain, "enum LocalProxyClientKeyMode:"),
+    declaration(domain, "struct LocalProxyEgressSettings:"),
     declaration(domain, "struct LocalProxyPreferences:"),
     declaration(domain, "struct LocalProxyAccountPolicy:"),
     declaration(domain, "struct LocalProxyResetStopRule:"),

@@ -108,7 +108,7 @@ import Foundation
         tierProfile.lastSnapshot?.planType = "plus"
         expect(!LocalProxyRouting.isLastResort(tierProfile), "Plus with a stale Pro multiplier remains in the ordinary group")
         tierProfile.lastSnapshot?.planType = " Pro "
-        expect(LocalProxyRouting.isLastResort(tierProfile), "official Pro20x is a last-resort account")
+        expect(LocalProxyRouting.isLastResort(tierProfile), "verified Pro defaults to Use last")
         expect(LocalProxyRouting.group(tierProfile, userLast: false) == 1,
             "unconfigured Pro20x inherits the last group")
         expect(LocalProxyRouting.group(tierProfile, userLast: true, lastOverride: false) == 0,
@@ -116,14 +116,21 @@ import Foundation
         expect(LocalProxyRouting.group(tierProfile, userLast: false, lastOverride: true) == 1,
             "explicit true selects the same last group as the default")
         tierProfile.proTierMultiplier = 5
-        expect(!LocalProxyRouting.isLastResort(tierProfile), "known Pro5x stays in the ordinary group")
+        expect(LocalProxyRouting.isLastResort(tierProfile), "Pro5x shares the verified Pro default")
+        tierProfile.proTierMultiplier = 10
+        expect(LocalProxyRouting.isLastResort(tierProfile), "Pro10x shares the verified Pro default")
+        tierProfile.proTierMultiplier = 25
+        expect(LocalProxyRouting.isLastResort(tierProfile), "Pro25x shares the verified Pro default")
         tierProfile.proTierMultiplier = nil
         expect(LocalProxyRouting.isLastResort(tierProfile), "Pro with an unknown multiplier is conservatively last")
         tierProfile.proTierMultiplier = 7
         expect(LocalProxyRouting.isLastResort(tierProfile), "invalid Pro multiplier cannot promote a last-resort account")
         tierProfile.lastSnapshot?.planType = "prolite"
         tierProfile.proTierMultiplier = 20
-        expect(!LocalProxyRouting.isLastResort(tierProfile), "Prolite stays ordinary despite stale saved 20x metadata")
+        expect(LocalProxyRouting.isLastResort(tierProfile), "verified Prolite shares the Pro default despite stale local metadata")
+        expect(LocalProxyRouting.group(tierProfile, userLast: false) == 1
+            && LocalProxyRouting.group(tierProfile, userLast: true, lastOverride: false) == 0,
+            "Prolite default and explicit cancellation use the same persistent routing groups")
         tierProfile.lastSnapshot?.planType = "pro"
         tierProfile.lastSnapshot?.quotaReadSucceeded = false
         tierProfile.officialProfile = CodexOfficialProfileSnapshot(planType: "plus")
@@ -213,7 +220,38 @@ import Foundation
         expect(
             LocalProxyAdmission.quota(weeklyOnly, now: now, creditFloor: 0, allowPaidCredits: true, policy: noCredits) == .quota,
             "per-account credit opt-out overrides global opt-in")
-        expect(LocalProxyAdmission.quota(weeklyOnly, now: now, policy: stopAt60) == .quotaUnknown, "missing 5h cannot satisfy a custom 5h cap")
+        expect(LocalProxyAdmission.quota(weeklyOnly, now: now, policy: stopAt60) == .quota, "Pro ignores a legacy 5h cap and follows exhausted weekly quota")
+        for plan in ["pro", "prolite"] {
+            for multiplier in [5, 10, 20, 25] {
+                var pro = profile
+                pro.lastSnapshot?.planType = plan
+                pro.proTierMultiplier = multiplier
+                pro.lastSnapshot?.fiveHour?.usedPercent = 75
+                pro.lastSnapshot?.monthly = CodexQuotaWindowSnapshot(usedPercent: 80, resetsAt: now.addingTimeInterval(3_600))
+                expect(LocalProxyAdmission.quota(pro, now: now, policy: stopAt60) == nil,
+                    "Pro tiers use official weekly quota without a legacy custom 5h cap")
+                pro.lastSnapshot?.fiveHour?.usedPercent = 100
+                expect(LocalProxyAdmission.quota(pro, now: now, policy: stopAt60) == .quota,
+                    "Pro tiers retain an official exhausted short-window hard limit")
+                pro.lastSnapshot?.creditBalance = "5000"
+                pro.lastSnapshot?.creditBalanceUnlimited = false
+                expect(LocalProxyAdmission.quota(pro, now: now, creditFloor: 0, allowPaidCredits: true, policy: stopAt60) == .quota,
+                    "paid credits cannot bypass a reported Pro hard limit")
+                pro.lastSnapshot?.fiveHour = nil
+                pro.lastSnapshot?.monthly?.usedPercent = 100
+                expect(LocalProxyAdmission.quota(pro, now: now, policy: stopAt60) == .quota,
+                    "Pro tiers retain an official exhausted monthly hard limit")
+                pro.lastSnapshot?.monthly = nil
+                expect(LocalProxyAdmission.quota(pro, now: now, policy: stopAt60) == nil,
+                    "missing extra windows do not block valid Pro weekly quota")
+                pro.lastSnapshot?.sevenDay?.usedPercent = 100
+                expect(LocalProxyAdmission.quota(pro, now: now, policy: stopAt60) == .quota,
+                    "Pro tiers stop when official weekly quota is exhausted")
+                pro.lastSnapshot?.sevenDay = nil
+                expect(LocalProxyAdmission.quota(pro, now: now, policy: stopAt60) == .quotaUnknown,
+                    "Pro tiers never admit when official weekly quota is missing")
+            }
+        }
         for limit in [-1.0, 100.1, .nan, .infinity] {
             expect(!LocalProxyAccountPolicy(fiveHourUsedLimit: limit).isValid, "invalid custom cap rejected")
         }
@@ -244,6 +282,14 @@ import Foundation
         expect(duplicateResetStore.resetCreditTarget(for: profile.id) == nil, "reset-card entry rejects duplicate profile IDs")
         expect(store.rows.first?.isEnabled == true, "new independent queue participation default")
         expect(store.rows.first?.quotaText == "Remaining: 5h 99.0% · Weekly 99.0%", "verified remaining quota labels omit unreported monthly window")
+        var displayedPro = profile
+        displayedPro.lastSnapshot?.planType = "prolite"
+        displayedPro.proTierMultiplier = 25
+        let proDisplay = LocalProxyQueueStore(usageStore: UsageStore([displayedPro]))
+        expect(proDisplay.rows.first?.isProPlan == true && proDisplay.rows.first?.windows.map(\.id) == ["7d"],
+            "Pro card projects only the official weekly window for every manual tier")
+        expect(proDisplay.rows.first?.quotaText == "Remaining: Weekly 99.0%", "Pro queue hint omits five-hour quota")
+        await proDisplay.finishForTermination()
         var weeklyExhausted = profile
         weeklyExhausted.lastSnapshot?.fiveHour?.usedPercent = 44
         weeklyExhausted.lastSnapshot?.sevenDay?.usedPercent = 100

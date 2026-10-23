@@ -26,6 +26,7 @@ SIGN_IDENTITY ?= -
 APP_SIGN_IDENTITY ?= $(SIGN_IDENTITY)
 BUNDLE_COMPANION ?= 1
 BUNDLE_LOCAL_PROXY ?= 1
+BUNDLE_ANTIGRAVITY_PROXY ?= 1
 INSTALL_LAUNCH ?= 1
 TOKEN_MONITOR_CACHE ?= $(HOME)/Library/Caches/AiGoodBro/Next/token-monitor-downloads
 TOKEN_MONITOR_RECEIPT_DIR ?= .build-receipts/AiGoodBro/Next
@@ -95,6 +96,7 @@ build:
 		-framework UserNotifications
 	python3 scripts/prepare-companion-resources.py --resources "$(RESOURCES_DIR)" --arch "$(ARCH_NAME)" --sign-identity "$(SIGN_IDENTITY)" $(if $(filter 1,$(BUNDLE_COMPANION)),--include-hub,)
 	$(if $(filter 1,$(BUNDLE_LOCAL_PROXY)),python3 scripts/prepare-local-proxy-resources.py --resources "$(RESOURCES_DIR)" --arch "$(ARCH_NAME)" --sign-identity "$(SIGN_IDENTITY)",@true)
+	$(if $(filter 1,$(BUNDLE_ANTIGRAVITY_PROXY)),python3 scripts/prepare-antigravity-proxy-resources.py --resources "$(RESOURCES_DIR)" --arch "$(ARCH_NAME)" --sign-identity "$(SIGN_IDENTITY)",@true)
 	$(if $(filter 1,$(BUNDLE_TOKEN_MONITOR_DESKTOP)),python3 scripts/prepare-token-monitor-desktop.py --arch "$(ARCH_NAME)" --runtime-app "$(TOKEN_MONITOR_DESKTOP_RUNTIME)" --output "$(TOKEN_MONITOR_DESKTOP_APP)" --receipt "$(TOKEN_MONITOR_DESKTOP_RECEIPT)" --cache "$(TOKEN_MONITOR_CACHE)" --replace $(if $(filter 1,$(TOKEN_MONITOR_OFFLINE)),--offline,) $(if $(TOKEN_MONITOR_DESKTOP_DMG),--source-dmg "$(TOKEN_MONITOR_DESKTOP_DMG)",),@true)
 	python3 scripts/prepare-token-monitor-resources.py --resources "$(RESOURCES_DIR)" --arch "$(ARCH_NAME)" --cache "$(TOKEN_MONITOR_CACHE)" --trusted-receipt "$(TOKEN_MONITOR_RECEIPT)" --sign-identity "$(SIGN_IDENTITY)" $(if $(filter 1,$(TOKEN_MONITOR_OFFLINE)),--offline,) $(if $(TOKEN_MONITOR_NODE_ARCHIVE),--node-archive "$(TOKEN_MONITOR_NODE_ARCHIVE)",) $(if $(filter 1,$(BUNDLE_TOKEN_MONITOR_DESKTOP)),--shared-desktop-runtime --desktop-trusted-receipt "$(TOKEN_MONITOR_DESKTOP_RECEIPT)",)
 	codesign $(filter-out --deep,$(CODESIGN_FLAGS)) "$(APP_DIR)"
@@ -117,6 +119,7 @@ lint:
 verify-runtime-resources:
 	@python3 scripts/prepare-companion-resources.py --verify --resources "$(RESOURCES_DIR)" --arch "$(ARCH_NAME)" $(if $(filter 1,$(BUNDLE_COMPANION)),--include-hub,)
 	$(if $(filter 1,$(BUNDLE_LOCAL_PROXY)),@python3 scripts/prepare-local-proxy-resources.py --verify --resources "$(RESOURCES_DIR)" --arch "$(ARCH_NAME)",@true)
+	$(if $(filter 1,$(BUNDLE_ANTIGRAVITY_PROXY)),@python3 scripts/prepare-antigravity-proxy-resources.py --verify --resources "$(RESOURCES_DIR)" --arch "$(ARCH_NAME)",@true)
 	$(if $(filter 1,$(BUNDLE_TOKEN_MONITOR_DESKTOP)),@python3 scripts/prepare-token-monitor-desktop.py --arch "$(ARCH_NAME)" --output "$(TOKEN_MONITOR_DESKTOP_APP)" --trusted-receipt "$(TOKEN_MONITOR_DESKTOP_RECEIPT)" --verify-only,@true)
 	@for resource in $(RUNTIME_PNG_RESOURCES); do \
 		bundled="$(RESOURCES_DIR)/$$(basename "$$resource")"; \

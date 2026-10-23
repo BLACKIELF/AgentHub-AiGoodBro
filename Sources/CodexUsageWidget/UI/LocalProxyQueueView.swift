@@ -6,12 +6,18 @@ struct LocalProxyQueueView: View {
     var onClose: (() -> Void)? = nil
     var isCurrentPresentation: () -> Bool = { true }
     var previewExpandedRules = false
+    var previewExpandedDetail: String? = nil
     @Environment(\.dismiss) private var dismiss
+    @State private var portText = "18080"
+    @State private var keyMode = LocalProxyClientKeyMode.persistent
+    @State private var networkDraft = LocalProxyEgressSettings()
+    @State private var whitelistText = ""
+    @State private var networkSaved = false
     @State private var primaryFloorText = ""
     @State private var secondaryFloorText = ""
     @State private var creditFloorDraftsInitialized = false
     @State private var confirmingStop = false
-    @State private var advancedExpanded = false
+    @State private var expandedDetail: DetailSection?
     @State private var showingPanelInfo = false
     @State private var confirmingLegacyCooldown = false
     @State private var legacyCooldownAccountID: String?
@@ -20,27 +26,38 @@ struct LocalProxyQueueView: View {
     @FocusState private var focusedCreditFloor: CreditFloor?
 
     private enum CreditFloor: Hashable { case primary, secondary }
+    private enum DetailSection: String { case connection, network, quota }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             headerBar
             proxyToolbar
-            advancedRules
-            queueHeader
+            if ["dead", "all_dead", "unavailable"].contains(model.egressState) {
+                Label(
+                    language.text(
+                        "出口连接异常，请检查节点或控制 API；看门狗仅在当前节点不可达时切换。", "Egress is unavailable. Check the node and control API; failover only occurs when the current node is unreachable."),
+                    systemImage: "exclamationmark.triangle"
+                )
+                .font(.caption).foregroundStyle(.red)
+            }
             ScrollView {
-                LazyVStack(spacing: 4) {
-                    if model.displayRows.isEmpty {
-                        Text(language.text("暂无可加入的账号。请先在账号管理中添加账号。", "No accounts are available. Add an account in account management first."))
-                            .font(.callout).foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity, minHeight: 100)
-                    }
-                    ForEach(Array(model.displayRows.enumerated()), id: \.element.id) { index, row in
-                        accountRow(row, index: index)
+                VStack(alignment: .leading, spacing: 8) {
+                    settingsDetails
+                    queueHeader
+                    LazyVStack(spacing: 4) {
+                        if model.displayRows.isEmpty {
+                            Text(language.text("暂无可加入的账号。请先在账号管理中添加账号。", "No accounts are available. Add an account in account management first."))
+                                .font(.callout).foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity, minHeight: 100)
+                        }
+                        ForEach(Array(model.displayRows.enumerated()), id: \.element.id) { index, row in
+                            accountRow(row, index: index)
+                        }
                     }
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-
             if let failure = model.preferencesFailure {
                 Label(
                     failure == .save
@@ -76,7 +93,7 @@ struct LocalProxyQueueView: View {
             // the backdrop under it so the outer edge reads as one surface.
             WorkspaceGlassBackdrop().ignoresSafeArea()
         }
-        .buttonStyle(WorkspaceActionButtonStyle(prominent: true))
+        .buttonStyle(WorkspaceActionButtonStyle())
         .accessibilityIdentifier("next.local-proxy.panel")
         .alert(language.text("停止反代？", "Stop the proxy?"), isPresented: $confirmingStop) {
             Button(language.text("取消", "Cancel"), role: .cancel) {}
@@ -90,6 +107,11 @@ struct LocalProxyQueueView: View {
         }
         .onAppear {
             guard !creditFloorDraftsInitialized else { return }
+            expandedDetail = previewExpandedDetail.flatMap(DetailSection.init(rawValue:))
+            portText = String(model.listenPort)
+            keyMode = model.clientKeyMode
+            networkDraft = model.egressSettings
+            whitelistText = model.egressSettings.whitelist.joined(separator: "\n")
             primaryFloorText = String(model.creditPrimaryFloor)
             secondaryFloorText = String(model.creditSecondaryFloor)
             creditFloorDraftsInitialized = true
@@ -135,6 +157,11 @@ struct LocalProxyQueueView: View {
 
     private var connectionActions: some View {
         HStack(spacing: 8) {
+            Button(language.text("自检", "Self-check")) {
+                expandedDetail = .connection
+                model.runSelfCheck()
+            }
+            .disabled(model.selfCheck.isRunning).accessibilityIdentifier("next.local-proxy.self-check")
             Button(language.text("复制连接配置", "Copy connection config")) { model.copyConnectionDetails() }
                 .help(language.text("复制本地地址和访问密钥", "Copy the local endpoint and access key"))
             if model.desktopAvailable {
@@ -142,6 +169,104 @@ struct LocalProxyQueueView: View {
                     .help(language.text("先退出 Codex，再从这里重新打开；任务使用各自选择的模型。", "Quit Codex, then reopen it here. Each task keeps its selected model."))
             }
         }.fixedSize()
+    }
+
+    private var selfCheckResults: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            ForEach(model.selfCheck.steps) { step in
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: step.passed == true ? "checkmark.circle.fill" : step.passed == false ? "xmark.circle.fill" : "circle.dotted")
+                        .foregroundStyle(step.passed == true ? Color.green : step.passed == false ? Color.red : Color.secondary)
+                    Text(step.title).fontWeight(.medium).frame(width: 72, alignment: .leading)
+                    Text(step.detail).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }.font(.caption).padding(8).background(WorkspaceGlassSurface(cornerRadius: 10))
+    }
+
+    private var connectionSettings: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if let endpoint = model.endpoint { endpointLabel(endpoint) }
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 12) {
+                    portSetting
+                    keyModeSetting
+                }
+                VStack(alignment: .leading, spacing: 8) {
+                    portSetting
+                    keyModeSetting
+                }
+            }
+            saveNetworkSettingsButton
+            if !model.selfCheck.steps.isEmpty { selfCheckResults }
+        }
+        .font(.caption).controlSize(.small).textFieldStyle(.roundedBorder)
+    }
+
+    private var portSetting: some View {
+        HStack {
+            Text(language.text("监听端口", "Listen port"))
+            TextField("18080", text: $portText).frame(width: 80)
+            Text(language.text("0 为随机端口", "0 uses a random port")).foregroundStyle(.secondary)
+        }.disabled(!model.canEdit)
+    }
+
+    private var keyModeSetting: some View {
+        Picker(language.text("访问密钥", "Access key"), selection: $keyMode) {
+            Text(language.text("持久保存", "Persistent")).tag(LocalProxyClientKeyMode.persistent)
+            Text(language.text("每次生成", "Per run")).tag(LocalProxyClientKeyMode.perRun)
+        }.frame(width: 190).disabled(!model.canEdit)
+    }
+
+    private var networkSettings: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(language.text("开启时沿用系统当前代理入口。自动恢复为可选设置。", "Use the current system proxy when starting. Automatic recovery is optional."))
+                .foregroundStyle(.secondary)
+            Toggle(language.text("自动恢复（仅当前节点失效时切换）", "Automatic recovery (only switch a failed node)"), isOn: $networkDraft.enabled)
+            if networkDraft.enabled {
+                VStack(alignment: .leading, spacing: 6) {
+                    TextField(language.text("控制 API", "Control API"), text: $networkDraft.mihomoAPI)
+                    HStack {
+                        SecureField(language.text("控制密钥", "Control secret"), text: $networkDraft.mihomoSecret)
+                        TextField(language.text("分组", "Group"), text: $networkDraft.group).frame(width: 150)
+                    }
+                }
+                HStack {
+                    Text(language.text("候选节点（每行一个）", "Candidate nodes (one per line)"))
+                    Spacer(minLength: 0)
+                    Button(language.text("读取分组节点", "Read group nodes")) {
+                        Task {
+                            if let nodes = await model.discoverEgressNodes(settings: networkDraft) { whitelistText = nodes.joined(separator: "\n") }
+                        }
+                    }.disabled(model.discoveringNodes)
+                }
+                TextEditor(text: $whitelistText).font(.caption.monospaced()).frame(height: 72)
+                Text(language.text("候选已排除香港，保留需要的节点并保存；仅当前节点失效时切换。", "Hong Kong is excluded. Keep the candidates you want, then save. Switch only if the current node fails."))
+                    .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+            saveNetworkSettingsButton
+        }.font(.caption).controlSize(.small).textFieldStyle(.roundedBorder)
+            .disabled(!model.canEdit)
+    }
+
+    private var saveNetworkSettingsButton: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Button(language.text("保存连接设置", "Save connection")) {
+                guard let port = Int(portText) else { return }
+                var draft = networkDraft
+                draft.whitelist = whitelistText.split(whereSeparator: \.isNewline).map { String($0).trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+                networkSaved = model.setNetworkSettings(port: port, mode: keyMode, egress: draft)
+            }.disabled(!model.canEdit)
+            if !model.canEdit { Text(language.text("停止反代后可修改连接设置", "Stop the proxy to edit connection settings")).foregroundStyle(.secondary) }
+            if networkSaved { Text(language.text("连接设置已保存", "Connection settings saved")).foregroundStyle(.green) }
+            if Int(portText).map({ $0 == 0 || (1024...65535).contains($0) }) != true {
+                Text(language.text("端口须为 0 或 1024–65535", "Use port 0 or 1024–65535")).foregroundStyle(.red)
+            }
+        }.font(.caption).controlSize(.small)
+            .onChange(of: portText) { _ in networkSaved = false }
+            .onChange(of: keyMode) { _ in networkSaved = false }
+            .onChange(of: networkDraft) { _ in networkSaved = false }
+            .onChange(of: whitelistText) { _ in networkSaved = false }
     }
 
     private var parsedCreditFloors: (primary: Int, secondary: Int)? {
@@ -270,8 +395,8 @@ struct LocalProxyQueueView: View {
                     )
                     Text(
                         language.text(
-                            "先用订阅额度，再用点数。Pro20x 默认最后使用，可随时调整；优先、最后使用与排序对新请求生效，开关与账号页同步。",
-                            "Subscriptions precede credits. Pro20x defaults to Use last and can be changed. Priority, Use last and order apply to new requests and sync with the account page."
+                            "先用订阅额度，再用点数。Pro 账号默认最后使用，可随时调整；优先、最后使用与排序对新请求生效，开关与账号页同步。",
+                            "Subscriptions precede credits. Pro accounts default to Use last and can be changed. Priority, Use last and order apply to new requests and sync with the account page."
                         )
                     )
                     Text(
@@ -306,45 +431,54 @@ struct LocalProxyQueueView: View {
             HStack(spacing: 12) {
                 runActions
                 Spacer(minLength: 0)
-                if let endpoint = model.endpoint {
-                    endpointLabel(endpoint)
-                    connectionActions
-                }
+                if model.endpoint != nil { connectionActions }
             }
             VStack(alignment: .leading, spacing: 8) {
                 runActions
-                if let endpoint = model.endpoint {
-                    HStack(spacing: 12) {
-                        endpointLabel(endpoint)
-                        Spacer(minLength: 0)
-                        connectionActions
-                    }
-                }
+                if model.endpoint != nil { connectionActions }
             }
         }
         .padding(8)
         .background(WorkspaceGlassSurface(cornerRadius: 10))
     }
 
-    private var advancedRules: some View {
-        DisclosureGroup(isExpanded: $advancedExpanded) {
-            VStack(alignment: .leading, spacing: 8) {
-                creditSettings
-                LocalProxyPlusLimitEditor(
-                    language: language, accountCount: model.plusPolicyTargetCount,
-                    savedLimit: model.uniformPlusFiveHourUsedLimit,
-                    enabled: model.canEditPolicy, canApply: model.canApplyPlusFiveHourUsedLimit,
-                    message: model.plusPolicyMessage,
-                    save: { model.setPlusFiveHourUsedLimit($0) })
-            }.padding(.top, 4)
-        } label: {
-            HStack(spacing: 6) {
-                Text(language.text("高级规则（点数底线 · Plus 上限）", "Advanced rules (credit floors · Plus limit)")).font(.callout)
-                if creditFloorsChanged {
-                    Text(language.text("未保存", "Unsaved")).font(.caption).foregroundStyle(WorkspaceStatusForeground.warning)
+    private func detailExpansion(_ section: DetailSection) -> Binding<Bool> {
+        Binding(get: { expandedDetail == section }, set: { expandedDetail = $0 ? section : nil })
+    }
+
+    private var settingsDetails: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            DisclosureGroup(isExpanded: detailExpansion(.connection)) {
+                connectionSettings.padding(8).frame(maxWidth: .infinity, alignment: .leading)
+            } label: {
+                Text(language.text("连接详情", "Connection details"))
+            }.accessibilityIdentifier("next.local-proxy.connection-details")
+            DisclosureGroup(isExpanded: detailExpansion(.network)) {
+                networkSettings.padding(8).frame(maxWidth: .infinity, alignment: .leading)
+            } label: {
+                Text(language.text("跟随当前 Clash 连接", "Use current Clash connection"))
+            }.accessibilityIdentifier("next.local-proxy.network-details")
+            DisclosureGroup(isExpanded: detailExpansion(.quota)) {
+                VStack(alignment: .leading, spacing: 8) {
+                    creditSettings
+                    LocalProxyPlusLimitEditor(
+                        language: language, accountCount: model.plusPolicyTargetCount,
+                        savedLimit: model.uniformPlusFiveHourUsedLimit,
+                        enabled: model.canEditPolicy, canApply: model.canApplyPlusFiveHourUsedLimit,
+                        message: model.plusPolicyMessage,
+                        save: { model.setPlusFiveHourUsedLimit($0) })
                 }
-            }
-        }
+                .padding(8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            } label: {
+                HStack(spacing: 6) {
+                    Text(language.text("额度规则", "Quota rules"))
+                    if creditFloorsChanged {
+                        Text(language.text("未保存", "Unsaved")).font(.caption).foregroundStyle(WorkspaceStatusForeground.warning)
+                    }
+                }
+            }.accessibilityIdentifier("next.local-proxy.quota-details")
+        }.font(.callout).frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var queueHeader: some View {
@@ -440,6 +574,35 @@ struct LocalProxyQueueView: View {
                 orderMenu(row)
             }
             .font(.caption).toggleStyle(WorkspaceCheckboxStyle()).controlSize(.small)
+            HStack(spacing: 12) {
+                Text(language.text("调用顺序", "Usage order")).foregroundStyle(.secondary)
+                Toggle(
+                    language.text("优先", "Priority"),
+                    isOn: Binding(
+                        get: { row.isPriority },
+                        set: {
+                            model.setAccountPriority(id: row.id, priority: $0)
+                            model.flushDisplayRows()
+                        }
+                    )
+                )
+                .disabled(!model.canReorder)
+                .accessibilityLabel(language.text("\(accountTitle(row)) 优先调用", "Prioritize \(accountTitle(row)) for proxy requests"))
+                Toggle(
+                    language.text("最后使用", "Use last"),
+                    isOn: Binding(
+                        get: { row.isLast },
+                        set: {
+                            model.setAccountLast(id: row.id, last: $0)
+                            model.flushDisplayRows()
+                        }
+                    )
+                )
+                .disabled(!model.canSetAccountLast(id: row.id))
+                .accessibilityLabel(language.text("\(accountTitle(row)) 最后使用", "Use \(accountTitle(row)) last"))
+                Spacer(minLength: 0)
+            }
+            .font(.caption).toggleStyle(WorkspaceCheckboxStyle()).controlSize(.small)
             LocalProxyAccountPolicyEditor(
                 row: row, language: language, enabled: model.canEditPolicy(for: row.id),
                 globalCreditsEnabled: model.creditFallbackEnabled,
@@ -454,6 +617,12 @@ struct LocalProxyQueueView: View {
                 HStack(spacing: 4) {
                     Text(language.text("冷却至", "Cooldown until"))
                     Text(deadline, style: .time)
+                    if row.cooldownKind == "egress" {
+                        Text(row.probeState == "probing" ? language.text("探测恢复中", "Probing recovery") : language.text("出口异常 · 等待探测", "Egress issue · Awaiting probe"))
+                        Button(language.text("立即探测", "Probe now")) { model.probeNow(profileID: row.id) }
+                            .disabled(model.phase != .running || row.probeState == "probing")
+                            .accessibilityIdentifier("next.local-proxy.probe-\(row.id)")
+                    }
                 }.font(.caption).foregroundStyle(.secondary)
             }
             if model.legacyCooldownRecoveryIDs.contains(row.id) {
@@ -571,31 +740,6 @@ struct LocalProxyQueueView: View {
 
     private func orderMenu(_ row: LocalProxyQueueRow) -> some View {
         Menu {
-            Toggle(
-                language.text("优先", "Priority"),
-                isOn: Binding(
-                    get: { row.isPriority },
-                    set: {
-                        model.setAccountPriority(id: row.id, priority: $0)
-                        model.flushDisplayRows()
-                    }
-                )
-            )
-            .disabled(!model.canReorder)
-            .accessibilityLabel(language.text("\(accountTitle(row)) 优先调用", "Prioritize \(accountTitle(row)) for proxy requests"))
-            Toggle(
-                language.text("最后使用", "Use last"),
-                isOn: Binding(
-                    get: { row.isLast },
-                    set: {
-                        model.setAccountLast(id: row.id, last: $0)
-                        model.flushDisplayRows()
-                    }
-                )
-            )
-            .disabled(!model.canSetAccountLast(id: row.id))
-            .accessibilityLabel(language.text("\(accountTitle(row)) 最后使用", "Use \(accountTitle(row)) last"))
-            Divider()
             Button(language.text("上移", "Move up")) {
                 model.moveAccount(id: row.id, by: -1)
                 model.flushDisplayRows()
@@ -610,7 +754,7 @@ struct LocalProxyQueueView: View {
             Image(systemName: "arrow.up.arrow.down")
         }
         .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
-        .help(language.text("排序与使用顺序；优先和最后使用互斥", "Order and usage; Priority and Use last are mutually exclusive"))
+        .help(language.text("调整同组内排序；优先和最后使用在下方设置", "Move within the group; set Priority and Use last below"))
         .accessibilityLabel(language.text("\(accountTitle(row)) 排序", "Order \(accountTitle(row))"))
     }
 
@@ -813,9 +957,11 @@ private struct LocalProxyAccountPolicyEditor<QuotaContent: View, ResetAction: Vi
     }
     private var dirty: Bool { initialized && policy != savedPolicy }
     private var policy: LocalProxyAccountPolicy? {
-        guard let value = Double(limit.trimmingCharacters(in: .whitespacesAndNewlines)) else { return nil }
         var candidate = savedPolicy ?? savedState.policy
-        candidate.fiveHourUsedLimit = value
+        if !row.isProPlan {
+            guard let value = Double(limit.trimmingCharacters(in: .whitespacesAndNewlines)) else { return nil }
+            candidate.fiveHourUsedLimit = value
+        }
         candidate.allowsCredits = allowsCredits
         candidate.creditPrimaryFloor = usesDefaults ? nil : Int(primary)
         candidate.creditSecondaryFloor = usesDefaults ? nil : Int(secondary)
@@ -836,7 +982,7 @@ private struct LocalProxyAccountPolicyEditor<QuotaContent: View, ResetAction: Vi
                 Divider()
                 accessory
                 LocalProxyPolicyFieldsLayout(trailingAction: true) {
-                    limitFields
+                    if !row.isProPlan { limitFields }
                     allowCreditsToggle
                     saveButton
                 }
@@ -934,6 +1080,9 @@ private struct LocalProxyAccountPolicyEditor<QuotaContent: View, ResetAction: Vi
         let limit = savedLimit.rounded() == savedLimit ? String(Int(savedLimit)) : String(savedLimit)
         let credits = saved.allowsCredits ? language.text("允许点数", "Credits allowed") : language.text("仅订阅", "Subscription only")
         let floors = "\(saved.creditPrimaryFloor ?? defaultPrimary) / \(saved.creditSecondaryFloor ?? defaultSecondary)"
+        if row.isProPlan {
+            return language.text("按官方 7 天额度 · \(credits) · 保留 \(floors) 点", "Official 7d quota · \(credits) · Keep \(floors) points")
+        }
         return language.text("5h 已用上限 \(limit)% · \(credits) · 保留 \(floors) 点", "5h used limit \(limit)% · \(credits) · Keep \(floors) points")
     }
 

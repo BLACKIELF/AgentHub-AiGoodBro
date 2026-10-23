@@ -15,12 +15,15 @@ import (
 // SDK selection. This never refreshes credentials or changes participation.
 type quotaRecovery struct {
 	accounts map[string]*quotaRecoveryAccount // Immutable after startup.
+	manager  *auth.Manager
 }
 
 type quotaRecoveryAccount struct {
-	mu        sync.Mutex
-	active    int
-	nextCheck time.Time
+	mu              sync.Mutex
+	active          int
+	nextCheck       time.Time
+	egressNextCheck time.Time
+	egressProbing   bool
 }
 
 const quotaResultLockKey = "aigoodbro.quota-result-lock"
@@ -53,6 +56,15 @@ func (r *quotaRecovery) ApplyResultPolicy(_ context.Context, result auth.Result)
 		metadata[key] = value
 	}
 	metadata[quotaResultLockKey] = &quotaResultLock{account: account}
+	if r.manager != nil {
+		if a, ok := r.manager.GetByID(result.AuthID); ok {
+			priorQuota := a.Quota.Exceeded
+			if ms := a.ModelStates[networkModelKey(result.Model)]; ms != nil {
+				priorQuota = priorQuota || ms.Quota.Exceeded
+			}
+			metadata["aigoodbro.egress-prior-quota"] = priorQuota
+		}
+	}
 	result.Options.Metadata = metadata
 	if !result.Success {
 		if result.Error == nil {
@@ -166,7 +178,7 @@ func isCredentialQuotaError(err *auth.Error) bool {
 }
 
 func quotaProofObserved(reply bridgeReply, now time.Time) (time.Time, bool) {
-	if !reply.OK || reply.Error != "" || reply.LeaseID != "" || reply.AccessToken != "" || reply.AccountID != "" || reply.ExpiresAt != 0 || reply.Resolution != "" || reply.RetryAt != 0 || reply.CreditFallback || len(reply.Order) != 0 || len(reply.LastResortIDs) != 0 || len(reply.DeferredIDs) != 0 || math.IsNaN(reply.QuotaObservedAt) || math.IsInf(reply.QuotaObservedAt, 0) {
+	if !reply.OK || reply.Error != "" || reply.LeaseID != "" || reply.AccessToken != "" || reply.AccountID != "" || reply.ExpiresAt != 0 || reply.Resolution != "" || reply.RetryAt != 0 || reply.CreditFallback || len(reply.Order) != 0 || len(reply.LastResortIDs) != 0 || len(reply.DeferredIDs) != 0 || reply.ProbeStatus != "" || reply.ProbeObservedAt != 0 || reply.ProbeIdentityHash != "" || math.IsNaN(reply.QuotaObservedAt) || math.IsInf(reply.QuotaObservedAt, 0) {
 		return time.Time{}, false
 	}
 	// Bound the float before converting to nanoseconds, including hostile or
@@ -200,7 +212,7 @@ func (rt *runtime) reconcileQuota(ctx context.Context) {
 		now := time.Now()
 		a, _ := rt.manager.GetByID(id)
 		_, recoverable := quotaRecoveryCutoff(a, now)
-		if !recoverable || account.active != 0 || now.Before(account.nextCheck) {
+		if !recoverable || account.active != 0 || now.Before(account.nextCheck) || rt.store.hasIndependentCooldown(id, now) {
 			account.mu.Unlock()
 			continue
 		}
@@ -217,7 +229,7 @@ func (rt *runtime) reconcileQuota(ctx context.Context) {
 		observed, valid := quotaProofObserved(reply, now)
 		a, _ = rt.manager.GetByID(id)
 		cutoff, recoverable := quotaRecoveryCutoff(a, now)
-		if proofContext.Err() == nil && account.active == 0 && recoverable && valid && observed.After(cutoff) {
+		if proofContext.Err() == nil && account.active == 0 && recoverable && valid && observed.After(cutoff) && !rt.store.hasIndependentCooldown(id, now) {
 			if _, _, resetErr := rt.manager.ResetQuota(ctx, id); resetErr == nil {
 				rt.selector.events.emit(event{Event: "account", ProfileID: id, State: "ready"})
 			}
@@ -247,6 +259,19 @@ func (rt *runtime) emitRestoredCooldowns() {
 		}
 		if !until.After(time.Now()) {
 			continue
+		}
+		if rt.network != nil {
+			egress := false
+			for _, ms := range a.ModelStates {
+				if egressModel(ms) {
+					egress = true
+					break
+				}
+			}
+			if egress {
+				rt.network.emitAccount(a, "waiting")
+				continue
+			}
 		}
 		state := "temporary_error"
 		if a.Quota.Exceeded {

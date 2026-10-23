@@ -788,6 +788,11 @@ final class TokenMonitorEdgeDockController: NSObject {
             openProxySettings()
             return
         }
+        if cells[index].kind == .stat, cells[index].metric == .today {
+            hoveredIndex = index
+            openDashboard()
+            return
+        }
         railPinned = true
         railVisible = true
         if cardIndex != index { cardPinned = false }
@@ -889,7 +894,34 @@ final class TokenMonitorEdgeDockController: NSObject {
         dock.cardIndex = 1
         dock.hoverStartedAt = .distantPast
         dock.openProxySettings()
-        return usageOpens == 1 && proxyOpens == 2 && dock.cardIndex == nil && dock.hoverStartedAt == nil
+        guard usageOpens == 1, proxyOpens == 2, dock.cardIndex == nil, dock.hoverStartedAt == nil else { return false }
+
+        let statDock = TokenMonitorEdgeDockController()
+        let statCells = TokenMonitorEdgeDockProjection.make(
+            preferences: .init(items: [.stat(.today), .stat(.liveRate), .stat(.sessions)]),
+            quotaSources: [], usage: TokenMonitorDashboardSnapshot(response: nil), language: .en)
+        var dashboardOpens = 0
+        statDock.configure(
+            preferences: .init(), cells: statCells, language: .en,
+            onPreferencesChange: { _ in }, onOpenDashboard: { dashboardOpens += 1 },
+            onOpenUsageOverview: {}, onOpenProxy: {})
+        defer { statDock.shutdown() }
+        guard statCells.count == 3, statCells[0].metric == .today,
+            statCells[1].metric == .liveRate, statCells[2].metric == .sessions
+        else { return false }
+        statDock.cardIndex = 1
+        statDock.cardPinned = true
+        statDock.hoverStartedAt = .distantPast
+        statDock.outsideStartedAt = .distantPast
+        statDock.activateCell(at: 0)
+        guard dashboardOpens == 1, statDock.cardIndex == nil, !statDock.cardPinned,
+            statDock.hoveredIndex == 0, statDock.hoverStartedAt == nil, statDock.outsideStartedAt == nil
+        else { return false }
+        for index in [1, 2] {
+            statDock.activateCell(at: index)
+            guard statDock.cardIndex == index, dashboardOpens == 1 else { return false }
+        }
+        return true
     }
 
     private func changePage(_ direction: Int) {

@@ -394,7 +394,11 @@ extension LocalProxyHostFixtures {
                 migrated.preferences.accountRepresentatives?[identityHash] == mirrorA.id && migrated.preferences.validAccountRepresentatives,
                 "legacy representative migrates using only a valid identity hash")
             migrated.setAccountEnabled(id: mirrorA.id, enabled: false)
-            let persisted = try Data(contentsOf: file)
+            // Later scenarios replay this metadata snapshot after newer saves.
+            // Model a legacy metadata-only file, not a stale deleted Keychain revision.
+            var metadataSnapshot = try JSONDecoder().decode(LocalProxyPreferences.self, from: Data(contentsOf: file))
+            metadataSnapshot.secretsReference = nil
+            let persisted = try JSONEncoder().encode(metadataSnapshot)
             expect(
                 !String(decoding: persisted, as: UTF8.self).contains("mirror@example.invalid")
                     && LocalProxyQueueStore(usageStore: usage).rows.first?.id == mirrorA.id,

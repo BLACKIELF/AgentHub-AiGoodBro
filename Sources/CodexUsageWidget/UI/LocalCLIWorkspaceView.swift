@@ -30,7 +30,15 @@ struct LocalCLIWorkspaceView: View {
     @State private var avatarEditor: AccountAvatarTarget?
     @State private var showsClaudeSubscriptions = false
     @State private var linkConfigurationAfterClaude = false
-    @State private var claudeDetailsProfile: LocalCLIProfile?
+    @State private var accountDetailsProfile: LocalCLIProfile?
+    @ObservedObject private var providerPool = AntigravityProxyStore.shared
+    @State private var addingPoolAccount = false
+    @State private var showLocalAccounts = false
+    private var poolProvider: AntigravityProxyProvider? { AntigravityProxyProvider.local(kind) }
+    private var displayedAccountCount: Int {
+        if let provider = poolProvider, !showLocalAccounts { return model.isPreview ? 0 : providerPool.accounts.filter { $0.provider == provider }.count }
+        return model.profiles(for: kind).count
+    }
 
     private enum AccountAdditionMethod: String, CaseIterable, Identifiable {
         case create, link
@@ -44,19 +52,19 @@ struct LocalCLIWorkspaceView: View {
                     LocalCLIIcon(kind: kind).frame(width: 30, height: 30)
                     VStack(alignment: .leading, spacing: 3) {
                         Text(kind.displayName).font(.title2.weight(.semibold))
-                        Text(language.text("\(model.profiles(for: kind).count) 个账号 · 账号与额度", "\(model.profiles(for: kind).count) accounts · Accounts and limits"))
+                        Text(language.text("\(displayedAccountCount) 个账号 · 账号与额度", "\(displayedAccountCount) accounts · Accounts and limits"))
                             .font(.caption).foregroundStyle(.secondary)
                     }
                     Spacer()
                     AccountCardDensityPicker()
+                    Picker(language.text("显示方式", "Layout"), selection: $settings.accountWorkspaceLayout) {
+                        Text(language.text("卡片", "Cards")).tag(AccountWorkspaceLayout.cards)
+                        Text(language.text("列表", "List")).tag(AccountWorkspaceLayout.rows)
+                    }
+                    .pickerStyle(.segmented).labelsHidden()
+                    .accessibilityLabel(language.text("显示方式", "Layout"))
+                    .frame(width: 112)
                     if kind == .claudeCode {
-                        Picker(language.text("显示方式", "Layout"), selection: $settings.accountWorkspaceLayout) {
-                            Text(language.text("卡片", "Cards")).tag(AccountWorkspaceLayout.cards)
-                            Text(language.text("列表", "List")).tag(AccountWorkspaceLayout.rows)
-                        }
-                        .pickerStyle(.segmented).labelsHidden()
-                        .accessibilityLabel(language.text("显示方式", "Layout"))
-                        .frame(width: 112)
                         Button {
                             openClaudeSubscriptions()
                         } label: {
@@ -65,14 +73,22 @@ struct LocalCLIWorkspaceView: View {
                         .disabled(model.isPreview || !model.claudeSwitching.isEmpty || !model.signingIn.isEmpty)
                     }
                     Button {
-                        for profile in model.profiles(for: kind) { model.refresh(profile) }
+                        if poolProvider != nil && !showLocalAccounts { providerPool.refreshStatus() } else { for profile in model.profiles(for: kind) { model.refresh(profile) } }
                     } label: {
                         Image(systemName: "arrow.clockwise")
                     }
                     .help(language.text("刷新额度", "Refresh limits"))
                     .accessibilityLabel(language.text("刷新额度", "Refresh limits"))
-                    .disabled(model.isPreview || model.profiles(for: kind).isEmpty || model.profiles(for: kind).allSatisfy { model.refreshing.contains($0.id) })
+                    .disabled(
+                        model.isPreview
+                            || (poolProvider != nil && !showLocalAccounts
+                                ? providerPool.phase != .running : model.profiles(for: kind).isEmpty || model.profiles(for: kind).allSatisfy { model.refreshing.contains($0.id) })
+                    )
                     Button {
+                        if poolProvider != nil && !showLocalAccounts {
+                            addingPoolAccount = true
+                            return
+                        }
                         if kind == .claudeCode {
                             openClaudeSubscriptions()
                             return
@@ -89,19 +105,35 @@ struct LocalCLIWorkspaceView: View {
                     .buttonStyle(.borderedProminent)
                     .disabled(model.isPreview || !model.signingIn.isEmpty)
                 }
-                DisclosureGroup(language.text("平台说明", "Provider details")) { Text(workspaceSummary) }
-                    .font(.callout).foregroundStyle(.secondary)
+                if poolProvider != nil {
+                    Picker(language.text("账号来源", "Account source"), selection: $showLocalAccounts) {
+                        Text(language.text("授权账号池", "Authorized pool")).tag(false)
+                        Text(language.text("本机账号", "Local accounts")).tag(true)
+                    }.pickerStyle(.segmented).frame(width: 240)
+                }
+                DisclosureGroup(language.text("平台说明", "Provider details")) {
+                    Text(
+                        poolProvider != nil && !showLocalAccounts
+                            ? language.text(
+                                "通过官方授权添加多个账号，分别控制是否参与反代。模型目录与授权状态由各平台实际响应核实。",
+                                "Authorize multiple accounts and control proxy participation individually. Model catalogs and authorization status use actual provider responses.")
+                            : workspaceSummary)
+                }
+                .font(.callout).foregroundStyle(.secondary)
             }
-            if showsAccounts {
-                if kind == .claudeCode, onlyProfileID == nil, (embeddedLayout ?? settings.accountWorkspaceLayout) == .cards {
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: cardDensity.minimumWidth), alignment: .top)], alignment: .leading, spacing: 10) {
+            if onlyProfileID == nil, showsAccounts, let provider = poolProvider, !showLocalAccounts {
+                ProviderAccountPoolView(pool: providerPool, settings: settings, provider: provider, isPreview: model.isPreview, addingAccount: $addingPoolAccount)
+            }
+            if showsAccounts && (onlyProfileID != nil || poolProvider == nil || showLocalAccounts) {
+                if onlyProfileID == nil, (embeddedLayout ?? settings.accountWorkspaceLayout) == .cards {
+                    AccountCardGridLayout(minimumWidth: cardDensity.minimumWidth) {
                         ForEach(orderedWorkspaceProfiles) { profile in accountCard(profile) }
                     }
                 } else {
                     ForEach(orderedWorkspaceProfiles) { profile in accountCard(profile) }
                 }
             }
-            if onlyProfileID == nil, let message = model.message {
+            if onlyProfileID == nil, poolProvider == nil || showLocalAccounts, let message = model.message {
                 Label(message, systemImage: "info.circle").font(.caption).foregroundStyle(.secondary)
             }
         }
@@ -153,13 +185,13 @@ struct LocalCLIWorkspaceView: View {
                 addingAccount = true
             }
         ) { claudeSubscriptionsSheet }
-        .sheet(item: $claudeDetailsProfile) { profile in
+        .sheet(item: $accountDetailsProfile) { profile in
             VStack(alignment: .leading, spacing: 14) {
                 HStack {
                     Text(profile.displayName).font(.title3.weight(.semibold))
                     Spacer()
                     Button {
-                        claudeDetailsProfile = nil
+                        accountDetailsProfile = nil
                     } label: {
                         Image(systemName: "xmark")
                     }
@@ -205,6 +237,31 @@ struct LocalCLIWorkspaceView: View {
     private var addAccountSheet: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text(language.text("添加 \(kind.displayName) 账号", "Add a \(kind.displayName) account")).font(.headline)
+            if !model.canCreateAccount(kind: kind), poolProvider == nil {
+                Text(
+                    language.text(
+                        "此平台的独立网页授权与反代账号池尚未接通。可打开官方登录入口；关联已有环境仅用于查看，不代表已加入反代。",
+                        "Isolated web authorization and proxy pooling are not connected for this provider yet. You can open its official sign-in; linking an existing environment is for viewing and does not enroll it in the proxy."
+                    )
+                )
+                .font(.callout).foregroundStyle(.secondary)
+                if let profile = model.profiles(for: kind).first(where: \.isDefault) {
+                    if model.canSignIn(profile) {
+                        Button(language.text("打开官方登录", "Open official sign-in")) {
+                            addingAccount = false
+                            model.signIn(profile)
+                        }
+                        .buttonStyle(.borderedProminent)
+                    } else if model.canOpen(profile) {
+                        Button(language.text("打开官方应用登录", "Sign in with official app")) {
+                            addingAccount = false
+                            openNative(profile)
+                        }
+                        .buttonStyle(.borderedProminent)
+                    }
+                }
+                if kind.supportsLinkedEnvironments { Text(language.text("已有环境（高级）", "Existing environment (advanced)")).font(.caption).foregroundStyle(.secondary) }
+            }
             if model.canCreateAccount(kind: kind) || kind.supportsLinkedEnvironments {
                 TextField(language.text("账号名称，例如：工作账号", "Account name, for example: Work"), text: $newAccountName)
                     .textFieldStyle(.roundedBorder)
@@ -223,8 +280,9 @@ struct LocalCLIWorkspaceView: View {
                     }
                     Text(
                         language.text(
-                            "为这个账号建立独立配置，并打开官方登录流程。已有账号会保留，可分别查看额度与重命名。",
-                            "Create a separate configuration and open the official sign-in flow. Existing accounts remain available with their own quota and name.")
+                            "1. 为账号建立独立环境\n2. 打开官方登录，按平台提示完成授权\n3. 返回后核验账号，分别查看额度与重命名\n此入口管理官方客户端账号，反代能力另行显示。",
+                            "1. Create an isolated account environment\n2. Open official sign-in and follow its authorization steps\n3. Return to verify the account, view quota and rename it\nThis flow manages official client accounts; proxy capability is shown separately."
+                        )
                     )
                     .font(.callout).foregroundStyle(.secondary)
                 } else {
@@ -380,17 +438,8 @@ struct LocalCLIWorkspaceView: View {
         } else if isClaudeSubscriptionProfile(profile) {
             let layout = embeddedLayout ?? settings.accountWorkspaceLayout
             claudeSubscriptionAccount(profile, layout: layout)
-        } else if kind == .claudeCode, embeddedLayout == nil, settings.accountWorkspaceLayout == .cards {
-            embeddedAccount(profile, layout: .cards)
-        } else if let layout = embeddedLayout {
-            embeddedAccount(profile, layout: layout)
         } else {
-            VStack(alignment: .leading, spacing: 8) {
-                embeddedAccount(profile, layout: .rows)
-                DisclosureGroup(language.text("更多账号信息", "More account information")) {
-                    fullAccountCard(profile)
-                }.font(.caption).foregroundStyle(.secondary)
-            }
+            embeddedAccount(profile, layout: embeddedLayout ?? settings.accountWorkspaceLayout)
         }
     }
 
@@ -475,7 +524,7 @@ struct LocalCLIWorkspaceView: View {
         HStack(spacing: 1) {
             Spacer(minLength: 0)
             Button {
-                openClaudeCardDetails(profile)
+                openAccountDetails(profile)
             } label: {
                 Image(systemName: "info.circle").frame(width: 26, height: 26)
             }
@@ -520,13 +569,11 @@ struct LocalCLIWorkspaceView: View {
         .buttonStyle(.plain).font(.system(size: 12)).foregroundStyle(.secondary)
     }
 
-    private func openClaudeCardDetails(_ profile: LocalCLIProfile) {
-        if isClaudeSubscriptionProfile(profile) {
-            claudeDetailsProfile = profile
-        } else if let onOpenDetails {
+    private func openAccountDetails(_ profile: LocalCLIProfile) {
+        if onlyProfileID != nil, let onOpenDetails {
             onOpenDetails()
         } else {
-            preparationProfile = profile
+            accountDetailsProfile = profile
         }
     }
 
@@ -819,7 +866,15 @@ struct LocalCLIWorkspaceView: View {
                         if isClaudeSubscriptionProfile(profile) { claudeSwitchButton(profile, compact: false) }
                         primaryAction(profile)
                         Button {
-                            if let onOpenDetails { onOpenDetails() } else { preparationProfile = profile }
+                            model.refresh(profile)
+                        } label: {
+                            Image(systemName: "arrow.clockwise").frame(width: 26, height: 26)
+                        }
+                        .disabled(model.isPreview || model.refreshing.contains(profile.id))
+                        .help(language.text("刷新额度", "Refresh limits"))
+                        .accessibilityLabel(language.text("刷新额度", "Refresh limits"))
+                        Button {
+                            openAccountDetails(profile)
                         } label: {
                             Image(systemName: "info.circle").frame(width: 26, height: 26)
                         }

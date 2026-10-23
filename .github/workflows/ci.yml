@@ -50,6 +50,8 @@ jobs:
           cache: false
       - name: Lint Swift sources
         run: make lint
+      - name: Validate isolated provider client launchers
+        run: python3 scripts/test-provider-client-launcher.py
       - name: Validate rendered local proxy policy editor
         run: python3 scripts/test-local-proxy-policy-editor.py
       - name: Validate native local proxy host with synthetic accounts
@@ -141,6 +143,12 @@ jobs:
           python3 scripts/test-local-proxy-host.py --cleanup-retry-only
           python3 Companion/LocalProxy/fixtures/test-cross-language.py --helper build/AiGoodBro.app/Contents/Resources/LocalProxy/aigoodbro-local-proxy
           cd Companion/LocalProxy
+          go test -mod=readonly -race -timeout=10m ./...
+          go vet -mod=readonly ./...
+      - name: Validate provider pools and isolated client launchers
+        run: |
+          cd Companion/AntigravityProxy
+          bash test-native-host.sh
           go test -mod=readonly -race -timeout=10m ./...
           go vet -mod=readonly ./...
       - name: Run dashboard DOM acceptance (real Chromium)

@@ -921,7 +921,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         if store.isLaunchingCodex { return .terminateCancel }
         guard terminationTask == nil else { return .terminateLater }
         terminationTask = Task { @MainActor in
-            if localProxy.requiresStopConfirmation {
+            if localProxy.requiresStopConfirmation || !AntigravityProxyStore.shared.canFinishTermination {
                 let alert = NSAlert()
                 alert.alertStyle = .warning
                 alert.messageText = settings.language.text("退出并停止反代？", "Quit and stop the proxy?")
@@ -943,7 +943,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
                 await store.finishLoginForTermination()
             }
             await localProxy.finishForTermination()
-            let canTerminate = localProxy.canFinishTermination
+            await AntigravityProxyStore.shared.finishForTermination()
+            let canTerminate = localProxy.canFinishTermination && AntigravityProxyStore.shared.canFinishTermination
             if !canTerminate { terminationTask = nil }
             sender.reply(toApplicationShouldTerminate: canTerminate)
             if !canTerminate {
@@ -1036,7 +1037,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         if sender === window {
-            if settings.keepRunningWhenMainWindowClosed || localProxy.requiresStopConfirmation {
+            if settings.keepRunningWhenMainWindowClosed || localProxy.requiresStopConfirmation || !AntigravityProxyStore.shared.canFinishTermination {
                 hideMainWindowAfterClose()
             } else {
                 NSApp.terminate(nil)

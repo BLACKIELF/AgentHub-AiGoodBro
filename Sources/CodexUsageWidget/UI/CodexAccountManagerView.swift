@@ -293,7 +293,6 @@ private struct UpstreamHomeStatistics: View {
     let state: TokenMonitorEngineState
     let language: WidgetLanguage
     @Binding var preferences: HomeDashboardPreferences
-    let summaryTotals: UpstreamTrendView.SummaryTotals
     @State private var dragStartHeight: CGFloat?
     @State private var draggingHeight: CGFloat?
     @State private var hoveringResize = false
@@ -303,8 +302,11 @@ private struct UpstreamHomeStatistics: View {
         let hasCache = state.lastGood != nil
         if state.phase == .loading {
             return hasCache
-                ? nil
+                ? language.text("正在刷新 · 显示上次记录", "Refreshing · showing previous records")
                 : language.text("正在读取历史用量；记录较多时可能需要几分钟，额度会独立刷新", "Initializing usage history; large archives can take a few minutes. Quotas refresh independently.")
+        }
+        if state.phase == .partial {
+            return language.text("部分来源有数据缺口", "Some usage sources have gaps")
         }
         if state.failureCode == .missingBundle {
             return hasCache
@@ -335,8 +337,7 @@ private struct UpstreamHomeStatistics: View {
                 VStack(spacing: 0) {
                     UpstreamTrendView(
                         dashboardJSON: dashboardJSON, height: dashboardHeight,
-                        homePreferences: preferences, onHomePreferences: { preferences = $0 },
-                        summaryTotals: summaryTotals
+                        homePreferences: preferences, onHomePreferences: { preferences = $0 }
                     )
                     .environment(\.widgetLanguage, language)
                     .overlay(alignment: .bottom) {
@@ -416,7 +417,6 @@ struct CodexAccountManagerView: View {
     @ObservedObject var store: UsageStore
     @ObservedObject private var resetAnnouncementMonitor: PublicResetAnnouncementMonitor
     @ObservedObject var settings: AppSettings
-    @ObservedObject private var tokenDesktop = TokenMonitorDesktopController.shared
     let paletteCatalog: PaletteCatalog
     private let previewReferenceDate: Date?
     private let previewForecastBy: Date?
@@ -819,12 +819,12 @@ struct CodexAccountManagerView: View {
                 snapshot: TokenMonitorFloatingBubbleSnapshot(
                     providerID: selectedLocalCLI?.rawValue ?? AgentNavCatalog.codexID,
                     providerName: selectedLocalCLI?.displayName ?? "Codex",
-                    percentRemaining: overviewQuota.fiveHour?.remainingPercent,
-                    resetLabel: overviewQuota.fiveHour?.resetsAt.map { language.dateTime($0) } ?? language.text("待获取", "Pending"),
+                    percentRemaining: (overviewIsPro ? overviewQuota.sevenDay : overviewQuota.fiveHour)?.remainingPercent,
+                    resetLabel: (overviewIsPro ? overviewQuota.sevenDay : overviewQuota.fiveHour)?.resetsAt.map { language.dateTime($0) } ?? language.text("待获取", "Pending"),
                     costLabel: "—",
                     customText: settings.floatingBubble.customText,
-                    isUnknown: overviewQuota.fiveHour?.remainingPercent == nil,
-                    isZero: overviewQuota.fiveHour?.remainingPercent == 0
+                    isUnknown: (overviewIsPro ? overviewQuota.sevenDay : overviewQuota.fiveHour)?.remainingPercent == nil,
+                    isZero: (overviewIsPro ? overviewQuota.sevenDay : overviewQuota.fiveHour)?.remainingPercent == 0
                 ),
                 language: language,
                 providers: AgentNavCatalog.workspaceProviders,
@@ -1385,16 +1385,9 @@ struct CodexAccountManagerView: View {
     private var homeTokenTotals: some View {
         switch store.statisticsEngineChoice {
         case .upstream:
-            let usage = TokenMonitorDashboardSnapshot(state: store.engineState, hub: store.tokenMonitorHubSync)
-            let usesDesktop = !store.isPreview && tokenDesktop.isBundled
-            let desktopUsage = tokenDesktop.allTimeUsage
             UpstreamHomeStatistics(
                 state: store.engineState, language: language,
-                preferences: $settings.homeDashboardPreferences,
-                summaryTotals: .init(
-                    tokens: usesDesktop ? desktopUsage.totalTokens : usage.tokenCount(for: .total),
-                    costUSD: usesDesktop ? desktopUsage.totalCostUSD : usage.value(for: .total, metric: .cost),
-                    isPartial: !usesDesktop && !usage.isHubSource && store.engineState.lastGood?.coverage.cost == .partial))
+                preferences: $settings.homeDashboardPreferences)
         case .custom:
             VStack(alignment: .leading, spacing: 10) {
                 Text(language.text("自定义已记录累计", "Custom recorded cumulative")).font(.headline)
@@ -1524,16 +1517,19 @@ struct CodexAccountManagerView: View {
                     quotaConnected: connected,
                     isAvailable: available,
                     isStale: health == .stale || health == .failed,
-                    windows: [
-                        CrossProviderQuotaWindow(
-                            label: language.text("5 小时", "5h"),
-                            remainingPercent: fiveHourRemaining(for: profile)
-                        ),
-                        CrossProviderQuotaWindow(
-                            label: language.text("7 天", "7d"),
-                            remainingPercent: sevenDayRemaining(for: profile)
-                        ),
-                    ],
+                    windows: (profile.isProPlan
+                        ? []
+                        : [
+                            CrossProviderQuotaWindow(
+                                label: language.text("5 小时", "5h"),
+                                remainingPercent: fiveHourRemaining(for: profile)
+                            )
+                        ]) + [
+                            CrossProviderQuotaWindow(
+                                label: language.text("7 天", "7d"),
+                                remainingPercent: sevenDayRemaining(for: profile)
+                            )
+                        ],
                     statusLabel: status
                 )
             )
@@ -1568,16 +1564,19 @@ struct CodexAccountManagerView: View {
             monitored: CrossProviderMonitoredQuota(
                 providerName: "Codex",
                 connected: quota.readSucceeded,
-                windows: [
-                    CrossProviderQuotaWindow(
-                        label: language.text("5 小时", "5h"),
-                        remainingPercent: quota.fiveHour?.remainingPercent
-                    ),
-                    CrossProviderQuotaWindow(
-                        label: language.text("7 天", "7d"),
-                        remainingPercent: quota.sevenDay?.remainingPercent
-                    ),
-                ]
+                windows: (overviewIsPro
+                    ? []
+                    : [
+                        CrossProviderQuotaWindow(
+                            label: language.text("5 小时", "5h"),
+                            remainingPercent: quota.fiveHour?.remainingPercent
+                        )
+                    ]) + [
+                        CrossProviderQuotaWindow(
+                            label: language.text("7 天", "7d"),
+                            remainingPercent: quota.sevenDay?.remainingPercent
+                        )
+                    ]
             )
         )
     }
@@ -2121,8 +2120,11 @@ struct CodexAccountManagerView: View {
 
     private var codexOverviewQuotaText: String {
         let quota = overviewQuota
-        let fiveHour = QuotaAvailabilityPresentation.percentText(quota.fiveHour?.remainingPercent)
         let sevenDay = QuotaAvailabilityPresentation.percentText(quota.sevenDay?.remainingPercent)
+        if overviewIsPro {
+            return language.text("7 天 \(sevenDay)", "7d \(sevenDay)")
+        }
+        let fiveHour = QuotaAvailabilityPresentation.percentText(quota.fiveHour?.remainingPercent)
         return language.text("5 小时 \(fiveHour) · 7 天 \(sevenDay)", "5h \(fiveHour) · 7d \(sevenDay)")
     }
 
@@ -2361,10 +2363,14 @@ struct CodexAccountManagerView: View {
         var feed = QuotaProviderFeed()
         let quota = overviewQuota
         feed.codexConnected = quota.readSucceeded
-        feed.codexWindows = [
-            QuotaProviderWindow(kind: "session", remainingPercent: quota.fiveHour?.remainingPercent),
-            QuotaProviderWindow(kind: "weekly", remainingPercent: quota.sevenDay?.remainingPercent),
-        ]
+        feed.codexWindows =
+            (overviewIsPro
+                ? []
+                : [
+                    QuotaProviderWindow(kind: "session", remainingPercent: quota.fiveHour?.remainingPercent)
+                ]) + [
+                QuotaProviderWindow(kind: "weekly", remainingPercent: quota.sevenDay?.remainingPercent)
+            ]
         feed.hostAccounts = LocalCLIKind.allCases.flatMap { kind in
             localCLIAccounts.profiles(for: kind).map { profile in
                 let result = localCLIAccounts.quotas[profile.id]
@@ -2490,14 +2496,8 @@ struct CodexAccountManagerView: View {
         WorkspacePresentation(profiles: store.profiles, selectedProfileID: store.selectedMonitorProfileID)
     }
 
-    private var overviewWeeklyOnlyPro: Bool {
-        let now = presentationPreviewDate ?? Date()
-        if let profile = presentation.quotaProfile, profile.id != store.selectedMonitorProfileID {
-            return QuotaAvailabilityPresentation.weeklyOnlyPro(profile, now: now)
-        }
-        return QuotaAvailabilityPresentation.weeklyOnlyPro(
-            store.snapshot,
-            lastFailureAt: store.selectedMonitorProfile?.lastQuotaReadFailureAt, now: now)
+    private var overviewIsPro: Bool {
+        presentation.quotaProfile?.isProPlan ?? store.selectedMonitorProfile?.isProPlan ?? false
     }
 
     private var overviewQuota: (fiveHour: RateWindow?, sevenDay: RateWindow?, readSucceeded: Bool) {
@@ -2675,13 +2675,14 @@ struct CodexAccountManagerView: View {
             }
 
             HStack(spacing: 16) {
-                QuotaDetailTile(
-                    title: language.text("5 小时剩余", "5h available"),
-                    icon: "timer",
-                    window: overviewQuota.fiveHour,
-                    prominent: true,
-                    isWeeklyOnlyPro: overviewWeeklyOnlyPro
-                )
+                if !overviewIsPro {
+                    QuotaDetailTile(
+                        title: language.text("5 小时剩余", "5h available"),
+                        icon: "timer",
+                        window: overviewQuota.fiveHour,
+                        prominent: true
+                    )
+                }
                 QuotaDetailTile(
                     title: language.text("7 天剩余", "7d remaining"),
                     icon: "calendar.badge.clock",
@@ -4691,11 +4692,13 @@ struct CodexAccountMenuView: View {
             )
             .font(.system(size: 10.5, weight: .semibold))
             .lineLimit(1)
-            menuQuotaBar(
-                title: text("5h 剩余", "5h remaining"),
-                remaining: menuQuota.fiveHour?.remainingPercent,
-                succeeded: menuQuota.readSucceeded
-            )
+            if selectedProfile?.isProPlan != true {
+                menuQuotaBar(
+                    title: text("5h 剩余", "5h remaining"),
+                    remaining: menuQuota.fiveHour?.remainingPercent,
+                    succeeded: menuQuota.readSucceeded
+                )
+            }
             menuQuotaBar(
                 title: text("7d 剩余", "7d remaining"),
                 remaining: menuQuota.sevenDay?.remainingPercent,
@@ -5415,18 +5418,22 @@ struct CodexAccountMenuView: View {
             }
 
             HStack(spacing: 8) {
-                profileQuotaWindowLabel(
-                    title: text("5 小时", "5h"),
-                    window: profileFiveHourWindow(profile), isWeeklyOnlyPro: profileWeeklyOnlyPro(profile)
-                )
+                if !profile.isProPlan {
+                    profileQuotaWindowLabel(
+                        title: text("5 小时", "5h"),
+                        window: profileFiveHourWindow(profile)
+                    )
+                }
                 profileQuotaWindowLabel(
                     title: text("7 天", "7d"),
                     window: profileSevenDayWindow(profile)
                 )
-                profileQuotaWindowLabel(
-                    title: text("月", "Month"),
-                    window: profileMonthlyWindow(profile)
-                )
+                if !profile.isProPlan {
+                    profileQuotaWindowLabel(
+                        title: text("月", "Month"),
+                        window: profileMonthlyWindow(profile)
+                    )
+                }
                 Spacer(minLength: 0)
             }
 
@@ -5516,23 +5523,14 @@ struct CodexAccountMenuView: View {
                 visibleIDs: filteredVisibleProfiles.map(\.id), language: language))
     }
 
-    private func profileQuotaWindowLabel(title: String, window: RateWindow?, isWeeklyOnlyPro: Bool = false) -> some View {
+    private func profileQuotaWindowLabel(title: String, window: RateWindow?) -> some View {
         HStack(spacing: 3) {
             Text(title)
                 .foregroundStyle(.secondary)
-            QuotaPercentageRing(percent: window?.remainingPercent, diameter: 34, isWeeklyOnlyPro: isWeeklyOnlyPro)
-                .help(isWeeklyOnlyPro ? QuotaAvailabilityPresentation.weeklyOnlyProHelp(language) : "")
+            QuotaPercentageRing(percent: window?.remainingPercent, diameter: 34)
         }
         .font(.system(size: 9.5, weight: .semibold))
         .lineLimit(1)
-    }
-
-    private func profileWeeklyOnlyPro(_ profile: CodexProfile) -> Bool {
-        if profile.id == store.selectedMonitorProfileID {
-            return QuotaAvailabilityPresentation.weeklyOnlyPro(
-                store.snapshot, lastFailureAt: profile.lastQuotaReadFailureAt)
-        }
-        return QuotaAvailabilityPresentation.weeklyOnlyPro(profile)
     }
 
     private func profileFiveHourWindow(_ profile: CodexProfile) -> RateWindow? {
@@ -6485,12 +6483,13 @@ private struct ProfileRow: View {
 
     private var quotaSummary: some View {
         HStack(alignment: .top, spacing: 10) {
-            CompactQuotaView(
-                title: "5h", remaining: fiveHourRemainingPercent, reset: fiveHourResetsAt,
-                constrainedByWeekly: QuotaAvailabilityPresentation.isWeeklyExhausted(remainingPercent),
-                isWeeklyOnlyPro: quotaReadSucceeded && QuotaAvailabilityPresentation.weeklyOnlyPro(profile, now: currentDate)
-            )
-            .frame(maxWidth: .infinity, alignment: .leading)
+            if !profile.isProPlan {
+                CompactQuotaView(
+                    title: "5h", remaining: fiveHourRemainingPercent, reset: fiveHourResetsAt,
+                    constrainedByWeekly: QuotaAvailabilityPresentation.isWeeklyExhausted(remainingPercent)
+                )
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
             CompactQuotaView(title: "7d", remaining: remainingPercent, reset: resetsAt, paletteRole: .secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -6573,7 +6572,7 @@ private struct ProfileRow: View {
 
     private var accountLabelControls: some View {
         HStack(spacing: 10) {
-            if isProPlan && profile.resolvedPlanType != "prolite" {
+            if isProPlan {
                 Picker(
                     language.text("Pro 档位", "Pro tier label"),
                     selection: Binding(
@@ -6583,12 +6582,14 @@ private struct ProfileRow: View {
                 ) {
                     Text(language.text("未指定", "Not set")).tag(Int?.none)
                     Text("5x").tag(Int?.some(5))
+                    Text("10x").tag(Int?.some(10))
                     Text("20x").tag(Int?.some(20))
+                    Text("25x").tag(Int?.some(25))
                 }
                 .pickerStyle(.menu)
                 .controlSize(.small)
                 .frame(width: 132)
-                .help(language.text("手动标记官方 Pro 档位；只影响显示，不参与额度或切换判断", "Manual Pro tier label for display only. Does not change limits or account selection."))
+                .help(language.text("本机 Pro 倍率标签仅用于显示；官方套餐与额度决定调用资格", "Local Pro multiplier label is for display only; official plan and limits determine eligibility."))
             }
             Menu {
                 Button(language.text("自动匹配 / 账号专属", "Automatic / dedicated profile")) { onSetChromeProfile(nil) }
@@ -6939,11 +6940,13 @@ enum AccountDisplay {
         let plan = profile?.resolvedPlanType ?? fallbackPlan
         guard let plan, !plan.isEmpty else { return empty }
         let normalized = plan.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
-        if normalized == "PROLITE" { return "PRO 5x" }
-        guard normalized == "PRO", let multiplier = profile?.displayedProTierMultiplier else {
-            return normalized
+        if normalized == "PROLITE" {
+            return "PRO \(profile?.displayedProTierMultiplier ?? 5)x"
         }
-        return "PRO \(multiplier)x"
+        if normalized == "PRO", let multiplier = profile?.displayedProTierMultiplier {
+            return "PRO \(multiplier)x"
+        }
+        return normalized
     }
 
     static func profileName(
@@ -6995,19 +6998,38 @@ enum AccountDisplay {
             return false
         }
         var planProfile = profile
-        for (rawPlan, label) in [("prolite", "PRO 5x"), ("pro", "PRO 20x"), ("plus", "PLUS"), ("business", "BUSINESS"), ("free", "FREE")] {
-            planProfile.proTierMultiplier = 20
+        for (rawPlan, label) in [("prolite", "PRO 5x"), ("pro", "PRO"), ("plus", "PLUS"), ("business", "BUSINESS"), ("free", "FREE")] {
+            planProfile.proTierMultiplier = nil
             planProfile.lastSnapshot = CodexAccountSnapshot(
                 accountType: "chatgpt", planType: rawPlan, email: nil,
                 limitId: nil, limitName: nil, fiveHour: nil, sevenDay: nil, monthly: nil,
                 fetchedAt: Date(), appServerVersion: nil)
             guard planLabel(planProfile) == label else {
-                print("Account display self-test failed: plan family and multiplier")
+                print("Account display self-test failed: default plan label")
+                return false
+            }
+        }
+        for rawPlan in ["pro", "prolite"] {
+            planProfile.lastSnapshot = CodexAccountSnapshot(
+                accountType: "chatgpt", planType: rawPlan, email: nil,
+                limitId: nil, limitName: nil, fiveHour: nil, sevenDay: nil, monthly: nil,
+                fetchedAt: Date(), appServerVersion: nil)
+            for multiplier in [5, 10, 20, 25] {
+                planProfile.proTierMultiplier = multiplier
+                guard planLabel(planProfile) == "PRO \(multiplier)x" else {
+                    print("Account display self-test failed: manual Pro multiplier")
+                    return false
+                }
+            }
+            planProfile.proTierMultiplier = nil
+            guard planLabel(planProfile) == (rawPlan == "prolite" ? "PRO 5x" : "PRO") else {
+                print("Account display self-test failed: cleared Pro multiplier")
                 return false
             }
         }
         planProfile.lastSnapshot = nil
         guard planLabel(planProfile) == "—", planLabel(nil) == "—",
+            planLabel(nil, fallbackPlan: "prolite") == "PRO 5x",
             AccountInformationView.maskedID(nil) == "—",
             AccountInformationView.maskedID("account-fixture") == "acco…ture",
             CodexOfficialProfileReader.reportedTokenCount(NSNumber(value: true)) == nil,

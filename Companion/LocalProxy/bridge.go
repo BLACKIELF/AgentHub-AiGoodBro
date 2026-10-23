@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -26,19 +27,22 @@ type bridgeRequest struct {
 	LeaseID       string `json:"leaseID,omitempty"`
 }
 type bridgeReply struct {
-	OK              bool     `json:"ok"`
-	Order           []string `json:"order,omitempty"`
-	LastResortIDs   []string `json:"lastResortIDs,omitempty"`
-	DeferredIDs     []string `json:"deferredIDs,omitempty"`
-	CreditFallback  bool     `json:"creditFallback,omitempty"`
-	LeaseID         string   `json:"leaseID"`
-	AccessToken     string   `json:"accessToken"`
-	AccountID       string   `json:"accountID"`
-	ExpiresAt       int64    `json:"expiresAt"`
-	Error           string   `json:"error"`
-	Resolution      string   `json:"resolution"`
-	RetryAt         int64    `json:"retryAt"`
-	QuotaObservedAt float64  `json:"quotaObservedAt,omitempty"`
+	OK                bool     `json:"ok"`
+	Order             []string `json:"order,omitempty"`
+	LastResortIDs     []string `json:"lastResortIDs,omitempty"`
+	DeferredIDs       []string `json:"deferredIDs,omitempty"`
+	CreditFallback    bool     `json:"creditFallback,omitempty"`
+	LeaseID           string   `json:"leaseID"`
+	AccessToken       string   `json:"accessToken"`
+	AccountID         string   `json:"accountID"`
+	ExpiresAt         int64    `json:"expiresAt"`
+	Error             string   `json:"error"`
+	Resolution        string   `json:"resolution"`
+	RetryAt           int64    `json:"retryAt"`
+	QuotaObservedAt   float64  `json:"quotaObservedAt,omitempty"`
+	ProbeStatus       string   `json:"probeStatus,omitempty"`
+	ProbeObservedAt   float64  `json:"probeObservedAt,omitempty"`
+	ProbeIdentityHash string   `json:"probeIdentityHash,omitempty"`
 }
 
 func (b *bridge) call(ctx context.Context, command, requestID, profileID, leaseID string) (bridgeReply, error) {
@@ -80,7 +84,7 @@ func (b *bridge) call(ctx context.Context, command, requestID, profileID, leaseI
 	// Once issued, a lease operation must finish or be reconciled even if its
 	// HTTP client disconnects. The host gets the full exchange bound here.
 	wireContext := ctx
-	if command != "order" && command != "order_end" && command != "quota_recovery" {
+	if command != "order" && command != "order_end" && command != "quota_recovery" && command != "egress_probe" {
 		wireContext = context.WithoutCancel(ctx)
 	}
 	exchangeLimit := b.exchangeTimeout
@@ -129,7 +133,7 @@ func (b *bridge) call(ctx context.Context, command, requestID, profileID, leaseI
 				return reply, nil
 			}
 			// A busy response is authoritative only without success or payload data.
-			if reply.OK || reply.LeaseID != "" || reply.AccessToken != "" || reply.AccountID != "" || len(reply.Order) != 0 || len(reply.LastResortIDs) != 0 || len(reply.DeferredIDs) != 0 || reply.ExpiresAt != 0 || reply.CreditFallback || reply.Resolution != "" || reply.RetryAt != 0 || reply.QuotaObservedAt != 0 {
+			if reply.OK || reply.LeaseID != "" || reply.AccessToken != "" || reply.AccountID != "" || len(reply.Order) != 0 || len(reply.LastResortIDs) != 0 || len(reply.DeferredIDs) != 0 || reply.ExpiresAt != 0 || reply.CreditFallback || reply.Resolution != "" || reply.RetryAt != 0 || reply.QuotaObservedAt != 0 || reply.ProbeStatus != "" || reply.ProbeObservedAt != 0 || reply.ProbeIdentityHash != "" {
 				return bridgeReply{}, errors.New("bridge_invalid")
 			}
 			busyRetryReserve = max(exchangeElapsed, 50*time.Millisecond)
@@ -209,6 +213,13 @@ func (b *bridge) exchange(ctx context.Context, command, requestID, profileID, le
 	}
 	var reply bridgeReply
 	if json.Unmarshal(line, &reply) != nil {
+		return bridgeReply{}, errors.New("bridge_decode")
+	}
+	decode := json.NewDecoder(bytes.NewReader(line))
+	if command == "egress_probe" {
+		decode.DisallowUnknownFields()
+	}
+	if decode.Decode(&reply) != nil {
 		return bridgeReply{}, errors.New("bridge_decode")
 	}
 	return reply, nil

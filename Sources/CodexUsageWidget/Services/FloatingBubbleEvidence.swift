@@ -12,34 +12,29 @@ enum FloatingBubbleEvidence {
             let loggedIn = snapshot?.quotaReadSucceeded == true && !invalidated
             let stale = failedSinceRead || snapshot.map { now.timeIntervalSince($0.fetchedAt) > 300 } == true
             var metrics: [TokenMonitorFloatingBubbleMetric] = []
-            let windows: [(String, String, CodexQuotaWindowSnapshot?)] = [
-                ("five-hour", language.text("五小时额度", "5-hour quota"), snapshot?.fiveHour),
-                ("seven-day", language.text("每周额度", "Weekly quota"), snapshot?.sevenDay),
-                ("monthly", language.text("每月额度", "Monthly quota"), snapshot?.monthly),
-            ]
-            if QuotaAvailabilityPresentation.weeklyOnlyPro(profile) {
-                metrics.append(
-                    TokenMonitorFloatingBubbleMetric(
-                        id: "five-hour", name: language.text("五小时额度", "5-hour quota"),
-                        sourceID: "codex:\(profile.id):five-hour", fetchedAt: snapshot?.fetchedAt,
-                        isStale: stale, isAvailable: loggedIn, value: .text("∞"),
-                        resetLabel: QuotaAvailabilityPresentation.weeklyOnlyProHelp(language)))
-            }
+            let windows: [(String, String, CodexQuotaWindowSnapshot?)] =
+                profile.isProPlan
+                ? [("seven-day", language.text("每周额度", "Weekly quota"), snapshot?.sevenDay)]
+                : [
+                    ("five-hour", language.text("五小时额度", "5-hour quota"), snapshot?.fiveHour),
+                    ("seven-day", language.text("每周额度", "Weekly quota"), snapshot?.sevenDay),
+                    ("monthly", language.text("每月额度", "Monthly quota"), snapshot?.monthly),
+                ]
             for (id, name, window) in windows {
-                guard let window else { continue }
-                let valid = window.usedPercent.isFinite && (0...100).contains(window.usedPercent)
+                if window == nil && !profile.isProPlan { continue }
+                let valid = window.map { $0.usedPercent.isFinite && (0...100).contains($0.usedPercent) } ?? false
                 metrics.append(
                     TokenMonitorFloatingBubbleMetric(
                         id: id, name: name, sourceID: "codex:\(profile.id):\(id)",
                         fetchedAt: snapshot?.fetchedAt,
-                        isStale: stale || window.resetsAt.map { $0 <= now } == true, isAvailable: loggedIn,
-                        value: valid ? .percentRemaining(100 - window.usedPercent) : .unknown,
-                        resetLabel: window.resetsAt.map { language.dateTime($0) } ?? "—"))
+                        isStale: stale || window?.resetsAt.map { $0 <= now } == true, isAvailable: loggedIn,
+                        value: valid ? .percentRemaining(100 - (window?.usedPercent ?? 0)) : .unknown,
+                        resetLabel: window?.resetsAt.map { language.dateTime($0) } ?? "—"))
             }
             return TokenMonitorFloatingBubbleAccount(
                 providerID: AgentNavCatalog.codexID, providerName: "Codex",
                 accountID: profile.id, accountName: AccountDisplay.numberedName(profile, allProfiles: store.profiles),
-                isLoggedIn: loggedIn, metrics: metrics,
+                isLoggedIn: loggedIn, metrics: metrics, proSevenDayOnly: profile.isProPlan,
                 edgeDockPrimaryMetricID: TokenMonitorEdgeDockProjection.codexPrimaryMetricID(
                     plan: snapshot?.planType, readSucceeded: snapshot?.quotaReadSucceeded == true))
         }

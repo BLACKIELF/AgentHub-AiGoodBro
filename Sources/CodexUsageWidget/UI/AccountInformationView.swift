@@ -46,7 +46,7 @@ struct AccountInformationView: View {
                 row(language.text("账号 ID", "Account ID"), Self.maskedID(profile.lastSnapshot?.accountID))
                 row(language.text("账号类型", "Account type"), accountType)
                 row(language.text("当前套餐", "Current plan"), AccountDisplay.planLabel(profile))
-                if profile.resolvedPlanType == "pro", profile.displayedProTierMultiplier != nil {
+                if profile.isProPlan, profile.proTierMultiplier != nil {
                     Text(language.text("Pro 倍率为本机手动标记。", "The Pro multiplier is a local manual label."))
                         .foregroundStyle(.secondary)
                 }
@@ -61,11 +61,15 @@ struct AccountInformationView: View {
                     Text(language.text("额度记录待刷新，以下保留上次读取时间。", "Allowance needs a refresh; the last read time is retained below."))
                         .foregroundStyle(FixedVisualPalette.statusWarningForeground(colorScheme))
                 }
-                window(language.text("5 小时", "5 hours"), profile.lastSnapshot?.fiveHour)
+                if !profile.isProPlan {
+                    window(language.text("5 小时", "5 hours"), profile.lastSnapshot?.fiveHour)
+                }
                 window(language.text("7 天", "7 days"), profile.lastSnapshot?.sevenDay)
-                if profile.lastSnapshot?.monthly != nil { window(language.text("月额度", "Monthly"), profile.lastSnapshot?.monthly) }
+                if !profile.isProPlan, profile.lastSnapshot?.monthly != nil {
+                    window(language.text("月额度", "Monthly"), profile.lastSnapshot?.monthly)
+                }
                 row(language.text("额度更新", "Allowance updated"), date(profile.lastSnapshot?.fetchedAt))
-                Text(language.text("未核实的窗口显示 —；Pro 五小时 ∞ 表示以周额度为准。", "Unverified windows show —; Pro 5-hour ∞ uses the weekly allowance."))
+                Text(language.text("未核实的窗口显示 —；Pro 以官方 7 天额度为准。", "Unverified windows show —; Pro uses the official 7-day allowance."))
                     .foregroundStyle(.secondary)
             }
             section(language.text("官方使用统计", "Reported usage statistics")) {

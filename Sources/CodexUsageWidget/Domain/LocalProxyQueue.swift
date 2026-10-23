@@ -10,12 +10,15 @@ struct LocalProxyQueueRow: Identifiable, Equatable {
     var resetCardCount: Int? = nil
     var snapshotStale = false
     var isDesktopAccount = false
+    var isProPlan = false
     let isEnabled: Bool
     let isPriority: Bool
     let isCurrent: Bool
     let quotaText: String?
     let state: String
     let cooldownUntil: Date?
+    var cooldownKind: String? = nil
+    var probeState: String? = nil
     var activeRequestCount = 0
     var policy = LocalProxyAccountPolicy()
     var usesDefaultCreditFloors = true
@@ -48,6 +51,20 @@ struct LocalProxyPreferences: Codable {
     var resetStopRules: [String: LocalProxyResetStopRule]? = nil
     // Persist the visible home for a known identity without storing its email.
     var accountRepresentatives: [String: String]? = nil
+
+    var listenPort: Int? = nil
+    var clientKeyMode: LocalProxyClientKeyMode? = nil
+    // In-memory credentials; the store writes only a Keychain reference to disk.
+    var secretsReference: String? = nil
+    var persistentClientKey: String? = nil
+    var egress: LocalProxyEgressSettings? = nil
+    var effectiveListenPort: Int { listenPort ?? 18080 }
+    var effectiveClientKeyMode: LocalProxyClientKeyMode { clientKeyMode ?? .persistent }
+    var validNetworkSettings: Bool {
+        (effectiveListenPort == 0 || (1024...65535).contains(effectiveListenPort))
+            && (persistentClientKey.map { Data(base64Encoded: $0)?.count == 32 } ?? true)
+            && (egress ?? LocalProxyEgressSettings()).isValid
+    }
 
     var creditFloors: (primary: Int, secondary: Int) {
         (creditPrimaryFloor ?? 2000, creditSecondaryFloor ?? 1500)
@@ -161,15 +178,18 @@ struct LocalProxyReply: Encodable, Sendable {
     var retryAt: Int64? = nil
     var resolution: String? = nil
     var quotaObservedAt: Double? = nil
+    var probeStatus: String? = nil
+    var probeObservedAt: Double? = nil
+    var probeIdentityHash: String? = nil
     static func failure(_ reason: LocalProxyFailure) -> Self { Self(ok: false, error: reason.rawValue) }
 }
 
 /// This affects selection order only; quota and identity admission stay separate.
 enum LocalProxyRouting {
     static func isLastResort(_ profile: CodexProfile) -> Bool {
-        // Keep an official Pro plan at the end unless its known tier is 5x.
-        // Unknown plans and account names are never treated as tier evidence.
-        profile.resolvedPlanType == "pro" && profile.displayedProTierMultiplier != 5
+        // All verified Pro plans share the same default. A local multiplier or
+        // account name is display metadata, never routing evidence.
+        ["pro", "prolite"].contains(profile.resolvedPlanType ?? "")
     }
     static func group(_ profile: CodexProfile, userLast: Bool, lastOverride: Bool? = nil) -> Int {
         // Default and explicit last choices share one movable group. Only a
@@ -211,21 +231,29 @@ enum LocalProxyAdmission {
             (profile.lastQuotaReadFailureAt ?? .distantPast) < snapshot.fetchedAt,
             let seven = snapshot.sevenDay
         else { return .quotaUnknown }
-        // Official Pro can expose only a weekly subscription window. A positive
-        // credit balance does not invalidate that subscription; paid admission
-        // remains a separate explicit stage after the subscription is exhausted.
-        if snapshot.fiveHour == nil {
-            guard ["pro", "prolite"].contains(snapshot.planType?.lowercased() ?? "") else { return .quotaUnknown }
-            guard policy.fiveHourUsedLimit == 100 else { return .quotaUnknown }
-        }
-        let windows = [seven] + [snapshot.fiveHour, snapshot.monthly].compactMap { $0 }
+        // Pro and Prolite require the official seven-day window. Absent short
+        // windows do not block admission, but a valid reported exhausted limit
+        // still prevents subscription use. The display multiplier is irrelevant.
+        let isPro = profile.isProPlan
+        if !isPro && snapshot.fiveHour == nil { return .quotaUnknown }
+        let windows = isPro ? [seven] : [seven] + [snapshot.fiveHour, snapshot.monthly].compactMap { $0 }
         guard windows.allSatisfy({ $0.usedPercent.isFinite && (0...100).contains($0.usedPercent) && $0.resetsAt.map({ $0 > now }) == true }) else { return .quotaUnknown }
-        if policy.fiveHourUsedLimit < 100,
+        let extraWindows: [CodexQuotaWindowSnapshot] = [snapshot.fiveHour, snapshot.monthly].compactMap { $0 }
+        let reportedExtraExhausted =
+            isPro
+            && extraWindows.contains { window in
+                let validExhaustedPercent = window.usedPercent.isFinite && window.usedPercent >= 100 && window.usedPercent <= 100
+                let hasFutureReset = window.resetsAt.map { $0 > now } == true
+                return validExhaustedPercent && hasFutureReset
+            }
+        if !isPro && policy.fiveHourUsedLimit < 100,
             let fiveHour = snapshot.fiveHour, fiveHour.usedPercent >= policy.fiveHourUsedLimit
         {
             return .usageLimit
         }
-        let exhausted = windows.contains { $0.usedPercent >= 100 }
+        let exhausted = windows.contains { $0.usedPercent >= 100 } || reportedExtraExhausted
+        // An explicit official extra hard limit cannot be bypassed with points.
+        if reportedExtraExhausted { return .quota }
         guard let creditFloor else { return exhausted ? .quota : nil }
         guard allowPaidCredits, policy.allowsCredits, creditFloor >= 0, exhausted else { return .quota }
         guard snapshot.creditBalanceUnlimited == false,
@@ -235,5 +263,38 @@ enum LocalProxyAdmission {
             balance > Decimal(creditFloor)
         else { return .quota }
         return nil
+    }
+}
+
+enum LocalProxyClientKeyMode: String, Codable, CaseIterable {
+    case persistent, perRun
+}
+
+struct LocalProxyEgressSettings: Codable, Equatable {
+    var enabled = false
+    var mihomoAPI = ""
+    // Hydrated from the dedicated Keychain item; omitted from persisted preferences.
+    var mihomoSecret = ""
+    var group = ""
+    var whitelist: [String] = []
+    var isUntouchedLegacyDefault: Bool {
+        enabled && mihomoAPI == "http://127.0.0.1:9097" && group == "极简" && whitelist.isEmpty && mihomoSecret.isEmpty
+    }
+    var isValid: Bool {
+        if enabled || !mihomoAPI.isEmpty {
+            guard let url = URLComponents(string: mihomoAPI), url.scheme == "http",
+                ["127.0.0.1", "[::1]", "::1"].contains(url.host ?? ""),
+                url.user == nil, url.password == nil, url.query == nil, url.fragment == nil,
+                url.path.isEmpty, url.port.map({ (1...65535).contains($0) }) != false
+            else { return false }
+        }
+        guard !enabled || !group.isEmpty, group.utf8.count <= 256, !group.contains(where: \.isNewline), !group.contains("\0"),
+            group == group.trimmingCharacters(in: .whitespacesAndNewlines),
+            mihomoSecret.utf8.count <= 4096, !mihomoSecret.contains(where: \.isNewline), !mihomoSecret.contains("\0"),
+            whitelist.count <= 64, Set(whitelist).count == whitelist.count
+        else { return false }
+        return whitelist.allSatisfy {
+            !$0.isEmpty && $0.utf8.count <= 512 && !$0.contains(where: \.isNewline) && !$0.contains("\0") && $0 == $0.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
     }
 }

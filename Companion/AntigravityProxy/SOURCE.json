@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "upstreamModule": "github.com/router-for-me/CLIProxyAPI/v8",
+  "upstreamVersion": "v8.0.38",
+  "upstreamCommit": "0db19025571684b198a2ef508f99b41c717337e8",
+  "moduleSum": "h1:m+a2kr/wB1Jp/XZttcNBhCm50edVwGoaphdf7q4u88U=",
+  "upstreamRepository": "https://github.com/router-for-me/CLIProxyAPI",
+  "integration": "Pinned Antigravity, Claude, Kimi and xAI executors and translators; provider-isolated loopback gateway and private browser/device OAuth, S256 PKCE for browser callbacks, Keychain ACK persistence, no upstream service startup. Offline fixture validation only; no real account login or provider request acceptance is claimed.",
+  "oauthReference": "https://developers.google.com/identity/protocols/oauth2/native-app"
+}

@@ -466,9 +466,12 @@ final class AtomicProbeFixture {
               weeklyFinalGate(sourcePlan: "pro", policy: .reportedWeek))
         check("one-shot complete still requires the 5h window",
               !weeklyFinalGate(sourcePlan: "pro", policy: .complete))
-        check("one-shot weekly-only rejects Plus and mismatched Pro tier",
+        check("one-shot weekly-only checks official Pro plan without treating its local multiplier as a plan",
               !weeklyFinalGate(sourcePlan: "plus", policy: .reportedWeek)
-                && !weeklyFinalGate(sourcePlan: "pro", policy: .reportedWeek, targetMultiplier: 5))
+                && [5, 10, 20, 25].allSatisfy {
+                    weeklyFinalGate(sourcePlan: "pro", policy: .reportedWeek, targetMultiplier: $0)
+                }
+                && weeklyFinalGate(sourcePlan: "pro", policy: .reportedWeek, targetMultiplier: nil))
         check("one-shot weekly-only still requires the reported week",
               !weeklyFinalGate(sourcePlan: "pro", policy: .reportedWeek, targetHasWeek: false))
         for name in ["disabled", "expired", "future", "read-failed", "failed-after", "partial-source", "plus-missing-five", "exhausted-target", "partial-target", "tasks-nil", "active-task", "desktop", "busy", "cooldown", "identity", "reservation"] {

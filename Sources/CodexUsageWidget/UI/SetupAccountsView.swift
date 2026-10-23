@@ -34,12 +34,12 @@ struct SetupAccountsView: View {
                 !$0.isSystemProfile && $0.lastSnapshot?.accountID?.isEmpty == false && AccountRecoveryGuide.quotaVerified($0)
             }
         }
+        if profiles(id).contains(where: { localAccounts.signingIn.contains($0.id) }) { return false }
         if id == "claudeCode" {
             // A configured credential is not enough for the Claude guide: the
             // official login must have been freshly verified and saved.
             return localAccounts.claudeActiveProfileID != nil
                 && !localAccounts.claudeIdentityUnavailable
-                && !profiles(id).contains(where: { localAccounts.signingIn.contains($0.id) })
         }
         // Coding Plan evidence cannot confirm the ZCode desktop session.
         if id == "zcode" || id == "trae" { return false }
@@ -356,6 +356,12 @@ struct SetupAccountsView: View {
                         for profile in profiles(current) { localAccounts.checkInteractiveSignIn(profile) }
                     } else {
                         localAccounts.discoverClaudeSubscriptions()
+                    }
+                    if profiles(current).contains(where: { localAccounts.signingIn.contains($0.id) }) {
+                        feedback = language.text(
+                            "正在等待本轮官方登录命令结束；请先完成原终端窗口中的步骤。",
+                            "Waiting for this official sign-in command to finish. Complete the steps in its terminal first.")
+                        return
                     }
                     reviewedTools = reviewed.union([current]).sorted().joined(separator: ",")
                     launchedTool = nil

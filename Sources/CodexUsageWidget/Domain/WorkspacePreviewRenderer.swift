@@ -946,16 +946,26 @@ enum WorkspacePreviewRenderer {
                 }
                 for scheme in [ColorScheme.dark, .light] {
                     let tokens = catalog.resolve(id: settings.paletteID, appearance: scheme == .dark ? .dark : .light)
-                    let proxyView = LocalProxyQueueView(model: proxy, language: locale)
-                        .environment(\.widgetLanguage, locale)
-                        .environment(\.visualTokens, tokens)
-                        .environment(\.workspacePreviewDate, referenceDate)
-                        .environment(\.workspacePreviewOpaqueSurface, true)
-                        .environment(\.colorScheme, scheme)
-                    for width in [CGFloat(680), 830] {
-                        try renderView(
-                            proxyView, size: CGSize(width: width, height: 660), scheme: scheme,
-                            to: directory.appendingPathComponent("compact-proxy-\(locale.rawValue)-\(scheme == .dark ? "dark" : "light")-\(Int(width)).png"))
+                    for detail in [nil, "connection", "network", "quota"] as [String?] {
+                        let proxyView = LocalProxyQueueView(model: proxy, language: locale, previewExpandedDetail: detail)
+                            .environment(\.widgetLanguage, locale)
+                            .environment(\.visualTokens, tokens)
+                            .environment(\.workspacePreviewDate, referenceDate)
+                            .environment(\.workspacePreviewOpaqueSurface, true)
+                            .environment(\.colorScheme, scheme)
+                        let suffix = detail.map { "-" + $0 } ?? ""
+                        for width in [CGFloat(680), 830] {
+                            let heights: [CGFloat] =
+                                (width == 680 && (detail == nil || detail == "connection"))
+                                ? [440, 660] : [660]
+                            for height in heights {
+                                let heightSuffix = height == 660 ? "" : "-h\(Int(height))"
+                                try renderView(
+                                    proxyView, size: CGSize(width: width, height: height), scheme: scheme,
+                                    to: directory.appendingPathComponent(
+                                        "compact-proxy-\(locale.rawValue)-\(scheme == .dark ? "dark" : "light")-\(Int(width))\(heightSuffix)\(suffix).png"))
+                            }
+                        }
                     }
                 }
             }

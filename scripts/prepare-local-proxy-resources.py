@@ -12,9 +12,10 @@ import tempfile
 ROOT = Path(__file__).resolve().parent.parent
 SOURCE = ROOT / "Companion/LocalProxy"
 EXECUTABLE = "aigoodbro-local-proxy"
+RESOURCE_DIRECTORY = "LocalProxy"
 UPSTREAM_MODULE = "github.com/router-for-me/CLIProxyAPI/v8"
-UPSTREAM_VERSION = "v8.0.28"
-UPSTREAM_COMMIT = "0d18d3b365be000eeaee7de4615f9da596b2059d"
+UPSTREAM_VERSION = "v8.0.38"
+UPSTREAM_COMMIT = "0db19025571684b198a2ef508f99b41c717337e8"
 
 
 def digest(path):
@@ -42,7 +43,7 @@ def architecture(path, expected):
 
 
 def verify(resources, arch):
-    directory = resources / "LocalProxy"
+    directory = resources / RESOURCE_DIRECTORY
     if directory.is_symlink() or not directory.is_dir():
         raise ValueError("Local proxy resources missing or symlinked")
     manifest_path = directory / "manifest.json"
@@ -107,7 +108,7 @@ def build(resources, arch, identity):
             or provenance.get("upstreamVersion") != UPSTREAM_VERSION):
         raise ValueError("Local proxy source provenance does not match reviewed version")
     resources.mkdir(parents=True, exist_ok=True)
-    destination = resources / "LocalProxy"
+    destination = resources / RESOURCE_DIRECTORY
     if destination.exists() or destination.is_symlink():
         raise ValueError("Build resources already contain LocalProxy; use a clean candidate build")
     environment = dict(os.environ, GOOS="darwin", GOARCH="arm64" if arch == "arm64" else "amd64", CGO_ENABLED="0")

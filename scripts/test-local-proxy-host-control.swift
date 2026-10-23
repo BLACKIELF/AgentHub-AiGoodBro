@@ -349,7 +349,8 @@ extension LocalProxyHostFixtures {
             let requestID = controlFixtureRequestID(), expires = scenario.hasSuffix("expires") || scenario == "rollback-unknown"
             var request = LocalProxyRequest(schemaVersion: 1, runID: run, key: key, command: "acquire", requestID: requestID, profileID: profile.id, leaseID: nil)
             request.receivedAt = ProcessInfo.processInfo.systemUptime - (expires ? 17.2 : 16)
-            _ = await store.handle(.init(schemaVersion: 1, runID: run, key: key, command: "order", requestID: requestID, profileID: profile.id, leaseID: nil))
+            let ordered = await store.handle(.init(schemaVersion: 1, runID: run, key: key, command: "order", requestID: requestID, profileID: profile.id, leaseID: nil))
+            try expect(ordered.ok && ordered.order == [profile.id], "\(scenario) starts with a valid membership snapshot")
             var held = false
             let unlocked = DispatchSemaphore(value: 0)
             func hold() {
@@ -844,8 +845,12 @@ extension LocalProxyHostFixtures {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let preferenceURL = root.appendingPathComponent("local-proxy-queue-v1.json")
         let previous = FileManager.default.fileExists(atPath: preferenceURL.path) ? try Data(contentsOf: preferenceURL) : nil
+        // Production saves rotate secret references. Restore the paired fixture
+        // Keychain state with the JSON so later stores never see a stale reference.
+        let previousSecrets = LocalProxyPreferenceSecrets.items
         defer {
             LocalProxyFixtureRuntime.failPreferenceRename = false
+            LocalProxyPreferenceSecrets.items = previousSecrets
             if let previous { try? DispatchParticipationSync.writePrivateProxyPreferences(previous, at: preferenceURL) }
             else { try? FileManager.default.removeItem(at: preferenceURL) }
         }

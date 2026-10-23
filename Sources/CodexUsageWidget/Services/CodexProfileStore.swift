@@ -661,9 +661,10 @@ struct CodexProfile: Codable, Equatable, Identifiable {
     }
 
     var displayedProTierMultiplier: Int? {
-        if resolvedPlanType == "prolite" { return 5 }
-        guard let proTierMultiplier, proTierMultiplier == 5 || proTierMultiplier == 20 else { return nil }
-        return proTierMultiplier
+        if let proTierMultiplier, [5, 10, 20, 25].contains(proTierMultiplier) {
+            return proTierMultiplier
+        }
+        return resolvedPlanType == "prolite" ? 5 : nil
     }
 
     /// Quota responses report the current plan; profile metadata derives its
@@ -1823,7 +1824,7 @@ final class CodexProfileStore {
     }
 
     func setProTierMultiplier(_ multiplier: Int?, for id: String) throws {
-        guard multiplier == nil || multiplier == 5 || multiplier == 20 else {
+        if let multiplier, ![5, 10, 20, 25].contains(multiplier) {
             throw CocoaError(.validationMissingMandatoryProperty)
         }
         try mutateState {
@@ -3264,6 +3265,18 @@ enum CodexProfileStoreSelfTest {
             }
             try first.setChromeProfile(chromeProfile, for: added.id)
             try first.setAutomaticSwitchParticipation(false, for: added.id)
+            try first.setProTierMultiplier(10, for: added.id)
+            guard first.profiles.first(where: { $0.id == added.id })?.displayedProTierMultiplier == 10 else { return false }
+            try first.setProTierMultiplier(25, for: added.id)
+            guard first.profiles.first(where: { $0.id == added.id })?.displayedProTierMultiplier == 25 else { return false }
+            try first.setProTierMultiplier(nil, for: added.id)
+            let clearedProTier = CodexProfileStore(homeDirectory: home, applicationSupportDirectory: support)
+            guard let cleared = clearedProTier.profiles.first(where: { $0.id == added.id }),
+                cleared.proTierMultiplier == nil, cleared.displayedProTierMultiplier == nil
+            else {
+                print("Codex profile store self-test failed: clearing Pro multiplier did not restore default")
+                return false
+            }
             try first.setProTierMultiplier(20, for: added.id)
             try first.record(managedSnapshot, for: added.id)
             try testWriteAuth(for: first.profiles.first(where: \.isSystemProfile)!, email: "first@example.com")

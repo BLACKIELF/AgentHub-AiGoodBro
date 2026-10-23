@@ -6,9 +6,11 @@ AiGoodBro 是面向个人自用的 macOS AI 工作台。它集中查看 Codex �
 
 [中文] | [English](README.en.md)
 
-本页介绍 **2.5.2（147）· 1017v1**。本版改进反代建连前重试、故障诊断、登录失效显示和按钮样式，保留现有账号与定制。完整本地构建与 35 组原生自测已通过；本机已覆盖安装并核对界面及配置保留。DMG／ZIP 的内容、版本、签名及校验值已核对；远端检查见 [GitHub Actions](https://github.com/BLACKIELF/AgentHub-AiGoodBro/actions)。功能、验证与已知边界见 [2.5.2 发布说明](docs/release-notes-v2.5.2.md)。
+**最新预发布：2.5.2（153）· 1023v1。** 反代面板采用紧凑布局并直接显示“优先／最后使用”；Pro 支持 5／10／20／25 倍手动标签与官方周额度显示。修复非 Codex 登录状态、账号池取消后的迟到回调、首页统计口径和侧栏“今日”入口，保留固定反代入口、可选网络恢复与飞书授权修复。[预发布下载](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/tag/v2.5.2-1023v1) · [153 完整说明与验证边界](docs/release-notes-v2.5.2-1023v1.md)。
 
-[DMG（Apple Silicon）](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.5.2/AiGoodBro-2.5.2-mac-arm64.dmg) · [ZIP 备用包](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.5.2/AiGoodBro-2.5.2-mac-arm64.zip) · [发布说明](docs/release-notes-v2.5.2.md)
+**稳定版：2.5.2（147）· 1017v1。** 该版改进反代建连前重试、故障诊断、登录失效显示和按钮样式，保留现有账号与定制。完整本地构建与 35 组原生自测已通过；本机已覆盖安装并核对界面及配置保留。DMG／ZIP 的内容、版本、签名及校验值已核对；远端检查见 [GitHub Actions](https://github.com/BLACKIELF/AgentHub-AiGoodBro/actions)。功能、验证与已知边界见 [稳定版发布说明](docs/release-notes-v2.5.2.md)。
+
+稳定版下载：[DMG（Apple Silicon）](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.5.2/AiGoodBro-2.5.2-mac-arm64.dmg) · [ZIP 备用包](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.5.2/AiGoodBro-2.5.2-mac-arm64.zip) · [发布说明](docs/release-notes-v2.5.2.md)
 
 **宣传片与界面展示 · 1012v1：** [中文原片（48 秒 MP4）](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.5.0/AiGoodBro-demo-1011v4.mp4) · [English（48 秒 MP4）](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.5.0/AiGoodBro-English-1011v1.mp4) · [英文展示源码](docs/showcase/1012v1/README.md) · [英文完整资料包（ZIP，含英文原视频）](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.5.0/AiGoodBro-Showcase-1012v2.zip)
 
@@ -67,9 +69,9 @@ AiGoodBro 是面向个人自用的 macOS AI 工作台。它集中查看 Codex �
 2. 等待连接信息就绪，退出 Codex 后使用“接入桌面”重新启动并接入本机路由。已经运行的 Codex 进程不会自动改走反代。
 3. 完成任务后在面板点击“停止反代”。关闭主窗口只会隐藏窗口；退出应用时会询问是否停止服务。
 
-**队列怎么工作：** 参与、优先、最后使用和排序只影响新请求，并与账号页同步；Pro20x 默认最后使用，可调整。普通组暂时忙碌时先在原有时限内等待，不立即转用最后使用账号。额度不足或未参与的账号继续跳过；身份、冷却和额度检查保持。订阅额度先于点数，点数接续默认关闭，用户主动开启后才会在额度耗尽时进入点数档。忙碌或未知账号不会被当成额度耗尽。
+**队列怎么工作：** 参与、优先、最后使用和排序只影响新请求，并与账号页同步；已核实的 Pro 账号默认最后使用，可调整，手动倍率标签不决定路由。普通组暂时忙碌时先在原有时限内等待，不立即转用最后使用账号。额度不足或未参与的账号继续跳过；身份、冷却和额度检查保持。订阅额度先于点数，点数接续默认关闭，用户主动开启后才会在额度耗尽时进入点数档。忙碌或未知账号不会被当成额度耗尽。
 
-运行中取消参与后，尚未准入的等待和重试会跳过该账号，已经接入的流式响应继续完成。网关拒绝、超时、取消和普通转发失败分别提示；HTTP 503 保留，不自动重连。2.5 把阻塞读取移出协作线程池，并保护断线回包；有明确来源的额度冷却，仅在核验更新的订阅额度后解除。来源不明的旧冷却，可停止反代后在对应账号下选择“清理旧版冷却…”，通过最新额度和身份核验、备份确认后清理，再手动重新开启反代。自定义 5 小时已用上限按保存值执行，规则摘要与编辑框保持一致。已确认退出的子进程清理租约时，忙碌锁最多短暂重试 3 次，并保护新的运行和仍活跃的子进程。本版进一步区分共享状态锁竞争与真实占用，等待和重试遵守原期限及取消信号，超时提供稍后重试提示；已发送响应不自动重放。CLIProxyAPI 更新至 8.0.28，改善多行流式响应解析和连接关闭分类。历史“必须重启才恢复”的故障根因仍未完全确认，不能把本次修复写成永久稳定保证。
+运行中取消参与后，尚未准入的等待和重试会跳过该账号，已经接入的流式响应继续完成。网关拒绝、超时、取消和普通转发失败分别提示；HTTP 503 保留，不自动重连。2.5 把阻塞读取移出协作线程池，并保护断线回包；有明确来源的额度冷却，仅在核验更新的订阅额度后解除。来源不明的旧冷却，可停止反代后在对应账号下选择“清理旧版冷却…”，通过最新额度和身份核验、备份确认后清理，再手动重新开启反代。Plus 自定义 5 小时已用上限按保存值执行，规则摘要与编辑框保持一致；Pro 保留旧值，但不将该上限用于准入。已确认退出的子进程清理租约时，忙碌锁最多短暂重试 3 次，并保护新的运行和仍活跃的子进程。本版进一步区分共享状态锁竞争与真实占用，等待和重试遵守原期限及取消信号，超时提供稍后重试提示；已发送响应不自动重放。CLIProxyAPI 更新至 8.0.38，保留多行流式响应解析和连接关闭分类，并增加并发冷却保护与工具调用兼容修复。历史“必须重启才恢复”的故障根因仍未完全确认，不能把本次修复写成永久稳定保证。
 
 本版还提供统一的 Plus 账号 5 小时已用上限，支持批量应用后逐账号调整；低于 100% 时达到上限停止新请求，已有响应继续完成。100% 沿用原有点数接续规则，Pro 规则保留。
 
@@ -231,7 +233,7 @@ make build
 | [codexU](https://github.com/shanggqm/codexU) | 历史固定源码的二次开发与宿主适配；SwiftUI、额度、配色和 Windows 基础由 AiGoodBro 继续维护。 |
 | [Token Monitor v0.68.0](https://github.com/Javis603/token-monitor/tree/5d2db368d8313415763860d594de00e46a663418) | 固定 0.68.0 界面与官方 macOS 运行时的宿主适配；本版选择性回移 0.70／0.71 修复，保留统计引擎、桌面看板、图表及既有设置。 |
 | [TokScale 4.18.0 fork](https://github.com/Javis603/tokscale/tree/fa5f0c13324838d1a988fda317597f9b90da7ad0) · [原项目](https://github.com/junhoyeo/tokscale) | 4.18.0 基线与固定扫描器修订，用于统计采集和定价；许可证随包保留。 |
-| [CLIProxyAPI v8.0.28](https://github.com/router-for-me/CLIProxyAPI/tree/v8.0.28) | 固定 Go SDK 的调度、Codex 执行器和 Responses 处理器宿主适配；保留身份、额度、点数底线和流式响应不重放检查。 |
+| [CLIProxyAPI v8.0.38](https://github.com/router-for-me/CLIProxyAPI/tree/v8.0.38) | 固定 Go SDK 的调度、Codex 执行器和 Responses 处理器宿主适配；保留身份、额度、点数底线和流式响应不重放检查。 |
 | [Codex-Manager](https://github.com/qxcnm/Codex-Manager) | 协议适配与静态研究参考；暖号请求和 SSE 完成规则独立实现。 |
 | [Hazmat wrapper 脚本](https://github.com/dredozubov/hazmat/blob/c112d222bb53e888dd17a8927927286792f7c20e/scripts/check-codex-desktop-attach-smoke.sh) | 仅参考 `CODEX_CLI_PATH` 的 stdio wrapper 入口，未集成 Hazmat 沙箱或服务。 |
 | [BlackHole1/aswap v1.1.0](https://github.com/BlackHole1/aswap/releases/tag/v1.1.0) | Claude 多账号 CLI／Chrome 资料隔离工具的协议适配与静态参考；未复制、未打包。 |

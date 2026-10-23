@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/signal"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -47,7 +48,9 @@ type startup struct {
 	Accounts        []struct {
 		ID string `json:"id"`
 	} `json:"accounts"`
-	Models []string `json:"models"`
+	Models                []string          `json:"models"`
+	AccountIdentityHashes map[string]string `json:"accountIdentityHashes,omitempty"`
+	Egress                egressSettings    `json:"egress,omitempty"`
 }
 type event struct {
 	Event            string `json:"event"`
@@ -58,6 +61,10 @@ type event struct {
 	ErrorCode        string `json:"errorCode,omitempty"`
 	ErrorDetail      string `json:"errorDetail,omitempty"`
 	ResolutionDetail string `json:"resolutionDetail,omitempty"`
+	CooldownKind     string `json:"cooldownKind,omitempty"`
+	ProbeState       string `json:"probeState,omitempty"`
+	RequestID        string `json:"requestID,omitempty"`
+	LatencyMS        int    `json:"latencyMS,omitempty"`
 }
 type events struct {
 	mu          sync.Mutex
@@ -95,10 +102,13 @@ func (e *events) emit(v event) {
 var identifier = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
 
 func (s startup) validate() error {
-	if s.SchemaVersion != 1 || !identifier.MatchString(s.RunID) || s.Port != 0 || len(s.ControlKey) < 24 || len(s.ClientKey) < 24 || len(s.Accounts) == 0 || len(s.Accounts) > 100 || len(s.Models) == 0 || len(s.Models) > 100 || s.ControlSocket == "" || s.StateDirectory == "" {
+	if s.SchemaVersion != 1 || !identifier.MatchString(s.RunID) || (s.Port != 0 && (s.Port < 1024 || s.Port > 65535)) || len(s.ControlKey) < 24 || len(s.ClientKey) < 24 || len(s.Accounts) == 0 || len(s.Accounts) > 100 || len(s.Models) == 0 || len(s.Models) > 100 || s.ControlSocket == "" || s.StateDirectory == "" {
 		return errors.New("invalid_startup")
 	}
 	if _, err := parseNetworkProxy(s.NetworkProxy); err != nil {
+		return err
+	}
+	if err := s.Egress.validate(); err != nil {
 		return err
 	}
 	seen := map[string]bool{}
@@ -107,6 +117,11 @@ func (s startup) validate() error {
 			return errors.New("invalid_startup")
 		}
 		seen[a.ID] = true
+	}
+	for id, hash := range s.AccountIdentityHashes {
+		if !seen[id] || !identityDigest.MatchString(hash) {
+			return errors.New("invalid_identity_hash")
+		}
 	}
 	for _, m := range s.Models {
 		if len(m) > 128 || strings.TrimSpace(m) != m || m == "" || strings.ContainsAny(m, "/\\\r\n\x00") {
@@ -747,10 +762,14 @@ type hook struct {
 	auth.NoopHook
 	events  *events
 	manager *auth.Manager
+	network *networkRecovery
 }
 
 func (h *hook) OnResult(_ context.Context, r auth.Result) {
 	defer finishQuotaResult(r)
+	if h.network != nil {
+		h.network.observe(r)
+	}
 	state := "ready"
 	code := ""
 	var until int64
@@ -782,8 +801,19 @@ func (h *hook) OnResult(_ context.Context, r auth.Result) {
 			until = a.NextRetryAfter.Unix()
 		}
 		for _, ms := range a.ModelStates {
+			if ms == nil {
+				continue
+			}
 			if ms.NextRetryAfter.After(time.Now()) && ms.NextRetryAfter.Unix() > until {
 				until = ms.NextRetryAfter.Unix()
+			}
+		}
+		if h.network != nil {
+			for _, ms := range a.ModelStates {
+				if egressModel(ms) {
+					h.network.emitAccount(a, "waiting")
+					return
+				}
 			}
 		}
 	}
@@ -832,6 +862,7 @@ type runtime struct {
 	gate      sync.Mutex
 	stopping  bool
 	recovery  *quotaRecovery
+	network   *networkRecovery
 }
 
 func newRuntime(s startup, e *events, testBaseURL string) (*runtime, error) {
@@ -842,6 +873,7 @@ func newRuntime(s startup, e *events, testBaseURL string) (*runtime, error) {
 	if err != nil {
 		return nil, err
 	}
+	store.identities = s.AccountIdentityHashes
 	ctx, cancel := context.WithCancel(context.Background())
 	b := &bridge{socket: s.ControlSocket, key: s.ControlKey, runID: s.RunID}
 	sel := &selector{bridge: b, events: e, baseURL: testBaseURL, desktopFallback: s.DesktopFallback}
@@ -885,6 +917,7 @@ func newRuntime(s startup, e *events, testBaseURL string) (*runtime, error) {
 	m.RegisterExecutor(&imageExecutor{CodexExecutor: provider.NewCodexExecutor(cfg), transports: transports, baseURL: imageBaseURL})
 	rt := &runtime{selector: sel, manager: m, ids: sel.order, cancel: cancel, store: store, transport: transport, models: make(map[string]*registry.ModelInfo)}
 	rt.recovery = newQuotaRecovery(sel.order)
+	rt.recovery.manager = m
 	m.SetResultPolicy(rt.recovery)
 	// This is a discovery seed, not the set of models Desktop may request.
 	for _, model := range append(append([]string(nil), s.Models...), nativeImageModel) {
@@ -907,6 +940,8 @@ func newRuntime(s startup, e *events, testBaseURL string) (*runtime, error) {
 		rt.close()
 		return nil, errors.New("cooldown_restore_failed")
 	}
+	rt.network = newNetworkRecovery(rt, s, e)
+	h.network = rt.network
 	rt.emitRestoredCooldowns()
 	base := handlers.NewBaseAPIHandlers(&cfg.SDKConfig, m)
 	base.SetModelRouterHost(codexModelRoute{})
@@ -976,6 +1011,9 @@ func (rt *runtime) close() {
 		rt.stopping = true
 		rt.gate.Unlock()
 		rt.cancel()
+		if rt.network != nil {
+			rt.network.close()
+		}
 		rt.requests.Wait()
 		for _, id := range rt.ids {
 			registry.GetGlobalRegistry().UnregisterClient(id)
@@ -997,7 +1035,7 @@ func main() {
 		os.Exit(runDesktopAdapter(connectionPath, os.Args[1:]))
 	}
 	if len(os.Args) == 2 && os.Args[1] == "--version" {
-		_, _ = io.WriteString(os.Stdout, "AiGoodBro Local Proxy 1014v1; CLIProxyAPI v8.0.28\n")
+		_, _ = io.WriteString(os.Stdout, "AiGoodBro Local Proxy 1022v1; CLIProxyAPI v8.0.38\n")
 		return
 	}
 	logrus.SetOutput(io.Discard)
@@ -1022,25 +1060,29 @@ func main() {
 		e.emit(event{Event: "error", ErrorCode: "startup_failed"})
 		return
 	}
-	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	listener, err := listenProxy(s.Port)
 	if err != nil {
 		rt.close()
-		e.emit(event{Event: "error", ErrorCode: "listen_failed"})
+		code := "listen_failed"
+		if errors.Is(err, syscall.EADDRINUSE) {
+			code = "listen_port_occupied"
+		}
+		e.emit(event{Event: "error", ErrorCode: code})
 		return
 	}
 	server := &http.Server{Handler: rt.handler, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 15 * time.Minute, WriteTimeout: 15 * time.Minute, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 64 << 10, ErrorLog: log.New(io.Discard, "", 0)}
 	done := make(chan struct{})
 	go func() { defer close(done); _ = server.Serve(listener) }()
 	e.emit(event{Event: "ready", Port: listener.Addr().(*net.TCPAddr).Port})
+	rt.network.start()
 	stop := make(chan struct{}, 1)
 	go func() {
 		for scanner.Scan() {
-			var v struct {
-				Command string `json:"command"`
-			}
+			var v networkCommand
 			if json.Unmarshal(scanner.Bytes(), &v) != nil || v.Command == "stop" {
 				break
 			}
+			rt.network.command(v)
 		}
 		stop <- struct{}{}
 	}()
@@ -1055,4 +1097,11 @@ func main() {
 	rt.close()
 	signal.Stop(sig)
 	e.emit(event{Event: "stopped"})
+}
+
+func listenProxy(port int) (net.Listener, error) {
+	if port != 0 && (port < 1024 || port > 65535) {
+		return nil, errors.New("invalid_listen_port")
+	}
+	return net.Listen("tcp4", "127.0.0.1:"+strconv.Itoa(port))
 }

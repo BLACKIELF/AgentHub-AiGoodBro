@@ -54,7 +54,7 @@ checks = {
     'final_user_thresholds': 'currentQuota.triggeredWindows(thresholds: self.lowQuotaAlertThresholds)' in final,
     'final_complete_source': all(x in quota_gate for x in [
         'oneShotIntent.map { intent in',
-        'CodexOneShotSwitchIntent.targetPlanMatches(',
+        'CodexOneShotSwitchIntent.isProPlan(',
         'intent.quotaPolicy.accepts(currentSystemSnapshot, target: false, now: preflightNow)',
         'intent.quotaPolicy.accepts(verifiedSnapshot, target: true, now: preflightNow)',
         '?? (currentQuota.hasCompleteApplicableWindows',

@@ -318,8 +318,17 @@ private struct FloatingBubbleSelectionFields: View {
         TokenMonitorFloatingBubbleProjection.accounts(in: sources, providerID: preferences.selectedProviderID)
     }
 
-    private var metrics: [TokenMonitorFloatingBubbleMetric] {
-        accounts.first { $0.accountID == preferences.selectedProfileID }?.metrics ?? []
+    private var selectedAccount: TokenMonitorFloatingBubbleAccount? {
+        accounts.first { $0.accountID == preferences.selectedProfileID }
+    }
+
+    private var metrics: [TokenMonitorFloatingBubbleMetric] { selectedAccount?.metrics ?? [] }
+
+    private var selectedMetricID: String? {
+        if preferences.selectedMetricID == "five-hour", selectedAccount?.proSevenDayOnly == true {
+            return "seven-day"
+        }
+        return preferences.selectedMetricID
     }
 
     var body: some View {
@@ -368,12 +377,12 @@ private struct FloatingBubbleSelectionFields: View {
             Picker(
                 language.text("显示指标", "Display metric"),
                 selection: Binding(
-                    get: { preferences.selectedMetricID ?? "" },
+                    get: { selectedMetricID ?? "" },
                     set: { preferences.selectedMetricID = $0 }
                 )
             ) {
                 Text(language.text("请选择 / 暂不可用", "Select / unavailable"))
-                    .tag(metrics.contains { $0.id == preferences.selectedMetricID } ? "" : preferences.selectedMetricID ?? "")
+                    .tag(metrics.contains { $0.id == selectedMetricID } ? "" : selectedMetricID ?? "")
                 ForEach(metrics) { metric in
                     Text(metric.name + (metric.isAvailable ? "" : language.text(" · 暂不可用", " · Unavailable")))
                         .tag(metric.id)
@@ -383,8 +392,8 @@ private struct FloatingBubbleSelectionFields: View {
             .frame(minWidth: 0, maxWidth: .infinity)
             .lineLimit(1)
             .truncationMode(.middle)
-            .accessibilityValue(metrics.first { $0.id == preferences.selectedMetricID }?.name ?? language.text("请选择 / 暂不可用", "Select / unavailable"))
-            .help(metrics.first { $0.id == preferences.selectedMetricID }?.name ?? language.text("请选择 / 暂不可用", "Select / unavailable"))
+            .accessibilityValue(metrics.first { $0.id == selectedMetricID }?.name ?? language.text("请选择 / 暂不可用", "Select / unavailable"))
+            .help(metrics.first { $0.id == selectedMetricID }?.name ?? language.text("请选择 / 暂不可用", "Select / unavailable"))
         }
     }
 }

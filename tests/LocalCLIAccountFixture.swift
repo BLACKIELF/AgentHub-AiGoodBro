@@ -14,21 +14,27 @@ enum LocalCLITerminalLauncher {
     @MainActor static var permitsSyntheticSession = false
     @MainActor static var launchCount = 0
     @MainActor static var syntheticExitCode: Int32?
+    @MainActor static var syntheticExitCodes: [Int: Int32] = [:]
+    @MainActor static var syntheticTimeoutSessions: Set<Int> = []
+    @MainActor static var ignoresCancellation: Set<Int> = []
     enum Action { case signIn, open }
-    struct Session {}
+    struct Session { let id: Int }
     @MainActor static func launch(profile: LocalCLIProfile, executable: String, action: Action, workingDirectory: URL) async throws -> Session {
         if permitsSyntheticSession {
             launchCount += 1
-            return Session()
+            return Session(id: launchCount)
         }
         throw FixtureFailure.failed("interactive launcher must not run in the persistence fixture")
     }
     @MainActor static func waitForExit(_ session: Session) async throws -> Int32 {
         if permitsSyntheticSession {
             while true {
-                try Task.checkCancellation()
-                if let code = syntheticExitCode { return code }
-                try await Task.sleep(nanoseconds: 5_000_000)
+                if !ignoresCancellation.contains(session.id) { try Task.checkCancellation() }
+                if syntheticTimeoutSessions.contains(session.id) {
+                    throw FixtureFailure.failed("synthetic terminal receipt timeout")
+                }
+                if let code = syntheticExitCodes[session.id] ?? syntheticExitCode { return code }
+                try? await Task.sleep(nanoseconds: 5_000_000)
             }
         }
         throw FixtureFailure.failed("interactive launcher must not run in the persistence fixture")
@@ -515,7 +521,13 @@ private func testOpenCodeReusesSavedProviderUnlessUpdateRequested() async throws
     try expect(store.authentication[profile.id] == .providers(1), "saved provider is recognized without OpenCode Go quota")
     LocalCLITerminalLauncher.permitsSyntheticSession = true
     LocalCLITerminalLauncher.launchCount = 0
-    defer { LocalCLITerminalLauncher.permitsSyntheticSession = false }
+    LocalCLITerminalLauncher.syntheticExitCodes = [:]
+    LocalCLITerminalLauncher.syntheticTimeoutSessions = []
+    defer {
+        LocalCLITerminalLauncher.permitsSyntheticSession = false
+        LocalCLITerminalLauncher.syntheticExitCodes = [:]
+        LocalCLITerminalLauncher.syntheticTimeoutSessions = []
+    }
     store.signIn(profile)
     for _ in 0..<8 { await Task.yield() }
     try expect(LocalCLITerminalLauncher.launchCount == 0 && store.signingIn.isEmpty,
@@ -527,9 +539,192 @@ private func testOpenCodeReusesSavedProviderUnlessUpdateRequested() async throws
     try expect(LocalCLITerminalLauncher.launchCount == 1,
                "an explicit provider update still opens the official authentication entry")
     store.checkLocalSignIns()
-    try expect(store.signingIn.isEmpty, "an existing credential never leaves the checklist waiting for terminal exit")
+    store.checkInteractiveSignIn(profile)
+    try expect(store.signingIn.contains(profile.id), "old OpenCode credentials cannot finish a provider update")
+    LocalCLITerminalLauncher.syntheticExitCodes[1] = 1
+    for _ in 0..<100 where store.signingIn.contains(profile.id) { try await Task.sleep(nanoseconds: 5_000_000) }
+    try expect(!store.signingIn.contains(profile.id)
+        && store.loginMessages[profile.id]?.contains("登录未完成") == true,
+        "a failed official command cannot reuse the old provider as this attempt's result")
+
+    store.signIn(profile, updateProvider: true)
+    for _ in 0..<100 where LocalCLITerminalLauncher.launchCount < 2 { try await Task.sleep(nanoseconds: 5_000_000) }
+    try expect(LocalCLITerminalLauncher.launchCount == 2, "provider update can retry after a failed exit")
+    let updated = Data(#"{"provider":{"type":"api","key":"synthetic-saved-provider"},"new":{"type":"api","key":"synthetic-new-provider"}}"#.utf8)
+    try updated.write(to: auth, options: .atomic)
+    store.checkLocalSignIns()
+    try expect(store.signingIn.contains(profile.id), "a changed file only triggers verification after this command exits")
+    LocalCLITerminalLauncher.syntheticExitCodes[2] = 0
+    for _ in 0..<100 where store.signingIn.contains(profile.id) { try await Task.sleep(nanoseconds: 5_000_000) }
+    try expect(!store.signingIn.contains(profile.id) && store.authentication[profile.id] == .providers(2),
+        "a successful official exit reads the updated provider configuration")
     let after = try Data(contentsOf: auth)
-    try expect(after == credentials, "reuse and provider-update launch never rewrite stored credentials")
+    try expect(after == updated, "the store never rewrites credentials during provider updates")
+}
+
+@MainActor
+private func testOldOneShotCredentialsWaitForTheirOwnExit() async throws {
+    let paths = try makeRoot("one-shot-old-credentials")
+    defer { try? FileManager.default.removeItem(at: paths.root) }
+    for kind: LocalCLIKind in [.grok, .kimi] {
+        let executable = paths.home.appendingPathComponent(".local/bin/" + kind.commandName)
+        try Data("synthetic executable".utf8).write(to: executable)
+        guard chmod(executable.path, 0o700) == 0 else { throw FixtureFailure.failed("chmod synthetic CLI") }
+        let directory = kind.defaultConfigDirectory(home: paths.home)
+        let file = directory.appendingPathComponent(
+            kind == .grok ? "auth.json" : "credentials/kimi-code.json")
+        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let bytes = kind == .grok
+            ? Data(#"{"https://auth.x.ai::fixture":{"key":"synthetic-old"}}"#.utf8)
+            : Data(#"{"refresh_token":"synthetic-old"}"#.utf8)
+        try bytes.write(to: file)
+    }
+    let store = makeStore(home: paths.home, support: paths.support)
+    store.discover()
+    LocalCLITerminalLauncher.permitsSyntheticSession = true
+    LocalCLITerminalLauncher.launchCount = 0
+    LocalCLITerminalLauncher.syntheticExitCodes = [:]
+    LocalCLITerminalLauncher.syntheticTimeoutSessions = []
+    defer {
+        LocalCLITerminalLauncher.permitsSyntheticSession = false
+        LocalCLITerminalLauncher.syntheticExitCodes = [:]
+        LocalCLITerminalLauncher.syntheticTimeoutSessions = []
+    }
+    for (offset, kind) in [LocalCLIKind.grok, .kimi].enumerated() {
+        guard let profile = store.profiles(for: kind).first else { throw FixtureFailure.failed("one-shot profile") }
+        try expect(store.authentication[profile.id] == .oauth, "preexisting credential is visible")
+        store.signIn(profile)
+        let sessionID = offset + 1
+        for _ in 0..<100 where LocalCLITerminalLauncher.launchCount < sessionID {
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        store.checkLocalSignIns()
+        store.checkInteractiveSignIn(profile)
+        try expect(store.signingIn.contains(profile.id), "old Grok/Kimi credentials cannot cancel a new command")
+        LocalCLITerminalLauncher.syntheticExitCodes[sessionID] = 0
+        for _ in 0..<100 where store.signingIn.contains(profile.id) {
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        try expect(!store.signingIn.contains(profile.id)
+            && store.loginMessages[profile.id]?.contains("旧凭据不能证明本轮授权") == true,
+            "exit zero without a new credential cannot claim a new authorization")
+    }
+    guard let kimi = store.profiles(for: .kimi).first else { throw FixtureFailure.failed("Kimi retry profile") }
+    store.signIn(kimi)
+    for _ in 0..<100 where LocalCLITerminalLauncher.launchCount < 3 {
+        try await Task.sleep(nanoseconds: 5_000_000)
+    }
+    LocalCLITerminalLauncher.syntheticTimeoutSessions.insert(3)
+    for _ in 0..<100 where store.signingIn.contains(kimi.id) {
+        try await Task.sleep(nanoseconds: 5_000_000)
+    }
+    try expect(!store.signingIn.contains(kimi.id)
+        && store.loginMessages[kimi.id]?.contains("暂未确认登录结果") == true,
+        "receipt timeout revokes the attempt without claiming old credentials")
+    store.signIn(kimi)
+    for _ in 0..<100 where LocalCLITerminalLauncher.launchCount < 4 {
+        try await Task.sleep(nanoseconds: 5_000_000)
+    }
+    store.checkLocalSignIns()
+    try expect(store.signingIn.contains(kimi.id), "retry after timeout is not completed by old credentials")
+    LocalCLITerminalLauncher.syntheticExitCodes[4] = 1
+    for _ in 0..<100 where store.signingIn.contains(kimi.id) {
+        try await Task.sleep(nanoseconds: 5_000_000)
+    }
+    try expect(store.loginMessages[kimi.id]?.contains("登录未完成") == true,
+        "the retried command's own exit determines failure")
+}
+
+@MainActor
+private func testInteractiveRetryRejectsOldCallback() async throws {
+    let paths = try makeRoot("interactive-retry")
+    defer { try? FileManager.default.removeItem(at: paths.root) }
+    let directory = LocalCLIKind.gemini.defaultConfigDirectory(home: paths.home)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let executable = paths.home.appendingPathComponent(".local/bin/gemini")
+    try Data("synthetic executable".utf8).write(to: executable)
+    guard chmod(executable.path, 0o700) == 0 else { throw FixtureFailure.failed("chmod synthetic Gemini") }
+    try Data(#"{"security":{"auth":{"selectedType":"gemini-api-key"}}}"#.utf8)
+        .write(to: directory.appendingPathComponent("settings.json"))
+    let credentials = directory.appendingPathComponent(".env")
+    try Data("GEMINI_API_KEY=synthetic-old\n".utf8).write(to: credentials)
+    let store = makeStore(home: paths.home, support: paths.support)
+    store.discover()
+    guard let profile = store.profiles(for: .gemini).first else { throw FixtureFailure.failed("Gemini profile") }
+    LocalCLITerminalLauncher.permitsSyntheticSession = true
+    LocalCLITerminalLauncher.launchCount = 0
+    LocalCLITerminalLauncher.syntheticExitCodes = [:]
+    LocalCLITerminalLauncher.ignoresCancellation = [1]
+    defer {
+        LocalCLITerminalLauncher.permitsSyntheticSession = false
+        LocalCLITerminalLauncher.syntheticExitCodes = [:]
+        LocalCLITerminalLauncher.ignoresCancellation = []
+    }
+    store.signIn(profile)
+    for _ in 0..<100 where LocalCLITerminalLauncher.launchCount < 1 {
+        try await Task.sleep(nanoseconds: 5_000_000)
+    }
+    store.checkLocalSignIns()
+    try expect(store.signingIn.contains(profile.id), "old Gemini key does not finish a new TUI")
+    try Data("GEMINI_API_KEY=synthetic-updated-value\n".utf8).write(to: credentials, options: .atomic)
+    store.checkLocalSignIns()
+    try expect(store.signingIn.contains(profile.id), "metadata change with old configured state cannot claim new identity")
+    store.checkInteractiveSignIn(profile)
+    try expect(!store.signingIn.contains(profile.id), "explicit return closes the interactive wait")
+    store.signIn(profile)
+    for _ in 0..<100 where LocalCLITerminalLauncher.launchCount < 2 {
+        try await Task.sleep(nanoseconds: 5_000_000)
+    }
+    try expect(store.signingIn.contains(profile.id), "retry owns a new attempt")
+    LocalCLITerminalLauncher.syntheticExitCodes[1] = 0
+    for _ in 0..<20 { try await Task.sleep(nanoseconds: 5_000_000) }
+    try expect(store.signingIn.contains(profile.id), "late first-attempt success cannot finish the retry")
+    LocalCLITerminalLauncher.syntheticExitCodes[2] = 1
+    for _ in 0..<100 where store.signingIn.contains(profile.id) {
+        try await Task.sleep(nanoseconds: 5_000_000)
+    }
+    try expect(!store.signingIn.contains(profile.id)
+        && store.loginMessages[profile.id]?.contains("登录未完成") == true,
+        "retry's own failing exit determines its result")
+}
+
+@MainActor
+private func testDeletedProfileRejectsLateLoginExit() async throws {
+    let paths = try makeRoot("deleted-login")
+    defer { try? FileManager.default.removeItem(at: paths.root) }
+    let executable = paths.home.appendingPathComponent(".local/bin/kimi")
+    try Data("synthetic executable".utf8).write(to: executable)
+    guard chmod(executable.path, 0o700) == 0 else { throw FixtureFailure.failed("chmod synthetic Kimi") }
+    let directory = paths.root.appendingPathComponent("linked-kimi", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let store = makeStore(home: paths.home, support: paths.support)
+    store.discover()
+    store.link(kind: .kimi, directory: directory, name: "Linked")
+    guard let profile = store.profiles(for: .kimi).first(where: { !$0.isDefault }) else {
+        throw FixtureFailure.failed("linked Kimi profile")
+    }
+    LocalCLITerminalLauncher.permitsSyntheticSession = true
+    LocalCLITerminalLauncher.launchCount = 0
+    LocalCLITerminalLauncher.syntheticExitCodes = [:]
+    LocalCLITerminalLauncher.ignoresCancellation = [1]
+    defer {
+        LocalCLITerminalLauncher.permitsSyntheticSession = false
+        LocalCLITerminalLauncher.syntheticExitCodes = [:]
+        LocalCLITerminalLauncher.ignoresCancellation = []
+    }
+    store.signIn(profile)
+    for _ in 0..<100 where LocalCLITerminalLauncher.launchCount < 1 {
+        try await Task.sleep(nanoseconds: 5_000_000)
+    }
+    try expect(store.signingIn.contains(profile.id), "linked login starts")
+    try Data("[]".utf8).write(to: storage(paths.support), options: .atomic)
+    store.discover()
+    try expect(!store.profiles.contains(where: { $0.id == profile.id }) && !store.signingIn.contains(profile.id),
+        "external account removal revokes the pending attempt")
+    LocalCLITerminalLauncher.syntheticExitCodes[1] = 0
+    for _ in 0..<20 { try await Task.sleep(nanoseconds: 5_000_000) }
+    try expect(store.loginMessages[profile.id] == nil && store.authentication[profile.id] == nil
+        && store.quotas[profile.id] == nil, "late login exit cannot revive a deleted profile")
 }
 
 @MainActor
@@ -1451,6 +1646,9 @@ private final class ClaudeStoreTransport: LocalCLIQuotaTransport, @unchecked Sen
         try await testClaudeKeychainChangeClearsCachedIdentity()
         try await testAuthenticationWithoutQuotaOrTerminalExit()
         try await testOpenCodeReusesSavedProviderUnlessUpdateRequested()
+        try await testOldOneShotCredentialsWaitForTheirOwnExit()
+        try await testInteractiveRetryRejectsOldCallback()
+        try await testDeletedProfileRejectsLateLoginExit()
         try await testVisibleKimiRefreshAfterExternalLogin()
         try await testVisibleKimiLinkedProfilesStayIsolated()
         try await testVisibleKimiRateLimitBackoff()
