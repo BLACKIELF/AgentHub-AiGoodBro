@@ -45,6 +45,12 @@ struct TokenMonitorURLSessionTransport {
         let link = root.appendingPathComponent("profiles/linked")
         try FileManager.default.createSymbolicLink(at: link, withDestinationURL: profile)
         do { try ProviderProxyClientLauncher.prepareAgyProfile(link); fatalError("symlink accepted") } catch {}
+        let isolated = root.appendingPathComponent("proxy-clients/codex-claude", isDirectory: true)
+        try ProviderProxyClientLauncher.preparePrivateDirectory(isolated)
+        let privateLink = root.appendingPathComponent("proxy-clients/linked", isDirectory: true)
+        try FileManager.default.createSymbolicLink(at: privateLink, withDestinationURL: isolated)
+        do { try ProviderProxyClientLauncher.preparePrivateDirectory(privateLink); fatalError("private symlink accepted") } catch {}
+        print("PASS: directory-hinted private profile creation and symlink rejection")
         let result = await ProviderProxyClientLauncher.runCodex(provider: .claude, model: "fixture-model", workingDirectory: root)
         precondition(result == 0, "isolated child environment or arguments incorrect: exit \(result)")
         let invalid = await ProviderProxyClientLauncher.runCodex(provider: .claude, model: "missing-model", workingDirectory: root)

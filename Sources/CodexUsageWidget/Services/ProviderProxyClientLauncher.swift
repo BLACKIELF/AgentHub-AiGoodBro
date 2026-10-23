@@ -233,7 +233,14 @@ enum ProviderProxyClientLauncher {
     }
 
     static func preparePrivateDirectory(_ directory: URL) throws {
-        guard directory.standardizedFileURL == directory.resolvingSymlinksInPath().standardizedFileURL else { throw AntigravityProxyFailure.storage }
+        // Older Foundation includes the directory hint in URL equality. Compare
+        // canonical path spelling while still rejecting every symlink component.
+        func comparablePath(_ url: URL) -> String {
+            var path = url.standardizedFileURL.path
+            while path.count > 1 && path.hasSuffix("/") { path.removeLast() }
+            return path
+        }
+        guard comparablePath(directory) == comparablePath(directory.resolvingSymlinksInPath()) else { throw AntigravityProxyFailure.storage }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         for candidate in [directory.deletingLastPathComponent(), directory] {
             var info = stat()
