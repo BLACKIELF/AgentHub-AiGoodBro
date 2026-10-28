@@ -15,7 +15,7 @@ import (
 
 func controlTestBridge(t *testing.T, handler func(net.Conn, bridgeRequest)) *bridge {
 	t.Helper()
-	dir, err := os.MkdirTemp("/tmp", "lp-control-")
+	dir, err := os.MkdirTemp(os.TempDir(), "lp-control-")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -533,6 +533,10 @@ struct LocalCLIQuotaResult: Equatable {
     let balanceCurrency: String?
     let sourceLabel: String
     let messageCode: String?
+    /// A validated Retry-After from a quota HTTP 429, independent of the quota
+    /// observation's age. Optional so existing producers and saved profiles keep
+    /// their previous shape; quota results themselves are not persisted.
+    var serverRetryAt: Date? = nil
     /// `nil` means the official response carried no reset-card fields (the case for
     /// Grok per review-inputs/grok-reset-schema-0911v1.json). A non-nil list comes
     /// only from future officially documented exact card evidence; quota reset dates

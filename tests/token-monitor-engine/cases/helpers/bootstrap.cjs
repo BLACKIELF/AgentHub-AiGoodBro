@@ -8,12 +8,13 @@ require.cache[target] = { id: target, filename: target, loaded: true, exports: {
   upstreamRoot: () => root, upstreamSrcRoot: () => path.join(root, 'src'),
   upstreamModule: name => path.join(root, 'src', name)
 } };
-const home = fs.mkdtempSync('/tmp/token-monitor-next-test-');
+const home = fs.realpathSync(fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'token-monitor-next-test-')));
 const { scopedEnvironment } = require('../../lib/runtime/source-scope.cjs');
 const mode = process.env.TOKEN_MONITOR_ENGINE_FIXTURES_MODE;
 const testContext = process.env.NODE_TEST_CONTEXT;
 for (const key of Object.keys(process.env)) delete process.env[key];
 Object.assign(process.env, scopedEnvironment(home));
+process.env.TMPDIR = home;
 if (process.versions.electron) process.env.ELECTRON_RUN_AS_NODE = '1';
 if (testContext) process.env.NODE_TEST_CONTEXT = testContext;
 if (mode) process.env.TOKEN_MONITOR_ENGINE_FIXTURES_MODE = mode;

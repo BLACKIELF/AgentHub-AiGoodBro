@@ -44,6 +44,23 @@ private final class LocalProxyReleaseFence: @unchecked Sendable {
 
 private let localProxyReleaseFence = LocalProxyReleaseFence()
 
+/// Disk I/O cannot be cancelled reliably. Complete the caller at most once,
+/// while a late worker remains unable to declare the cleanup successful.
+private final class LocalProxyIOCompletion<Value>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Value?, Never>?
+
+    init(_ continuation: CheckedContinuation<Value?, Never>) { self.continuation = continuation }
+
+    func complete(_ value: Value?) {
+        lock.lock()
+        let pending = continuation
+        continuation = nil
+        lock.unlock()
+        pending?.resume(returning: value)
+    }
+}
+
 /// Keeps the last displayed value separate from the queue's current control state.
 /// Routine changes are throttled to the latest value at a fixed deadline;
 /// explicit actions can publish immediately without waiting for that deadline.
@@ -76,6 +93,28 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
 
 /// Independent opt-in queue. Construction never starts a helper or opens auth files.
 @MainActor final class LocalProxyQueueStore: ObservableObject {
+    nonisolated private static let issueQueue = DispatchQueue(label: "AiGoodBro.LocalProxyIssues", qos: .utility)
+    nonisolated private static let issueSlots = DispatchSemaphore(value: 16)
+
+    nonisolated private static func recordIssue(id: String, phase: String, summary: String) {
+        // The journal is best effort; a blocked disk must not prevent Stop or
+        // Quit, and a failed disk must not create an unbounded task backlog.
+        guard issueSlots.wait(timeout: .now()) == .success else { return }
+        issueQueue.async {
+            defer { issueSlots.signal() }
+            for attempt in 0..<3 {
+                do {
+                    try DispatchActivityStore.live.appendIssue(id: id, phase: phase, summary: summary)
+                    return
+                } catch DispatchActivityStore.Failure.busy where attempt < 2 {
+                    Thread.sleep(forTimeInterval: 0.05)
+                } catch {
+                    return
+                }
+            }
+        }
+    }
+
     enum ExitReason: String {
         case requestedStop = "requested_stop"
         case startupFailure = "startup_failure"
@@ -112,6 +151,9 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
         preferencesFailure != nil && issue == message(.unavailable) ? nil : issue
     }
     @Published private(set) var isEnabled = false
+    @Published private(set) var automaticRecoveryEnabled = false
+    @Published private(set) var automaticRecoveryMessage: String?
+    @Published private(set) var isAutomaticallyRecovering = false
     @Published private(set) var desktopAvailable = false
     @Published private(set) var creditFallbackEnabled = false
     @Published private(set) var creditPrimaryFloor = 2000
@@ -135,10 +177,12 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
         phase == .running && process?.isRunning == true && rows.contains(where: { $0.id == id })
             && registeredPool[id] != nil && !isRegisteredBindingCurrent(id)
     }
-    var canStart: Bool {
+    private var canStartRun: Bool {
         canEdit && !isPreparingLegacyCooldownRecovery && legacyRecoveryPreparedConfirmation == nil && rows.count <= 100 && rows.contains(where: \.isEnabled)
-            && !usageStore.isPreview && !preferencesBlocked
+            && !usageStore.isPreview && !preferencesBlocked && !finishing
     }
+    var canStart: Bool { canStartRun && !isAutomaticallyRecovering }
+    var canSetAutomaticRecovery: Bool { !usageStore.isPreview && !preferencesBlocked && !finishing }
     func canToggleAccount(id: String) -> Bool {
         guard !usageStore.isPreview, !preferencesBlocked, !finishing, rows.contains(where: { $0.id == id }) else { return false }
         if canEdit { return true }
@@ -150,10 +194,10 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
         // differs; re-enabling requires the binding verified at startup.
         return preferences.enabledIDs.contains(id) || (registeredPool[id] != nil && isRegisteredBindingCurrent(id))
     }
-    var canStop: Bool { (process != nil || exitCleanupID != nil) && phase != .stopping }
-    var canFinishTermination: Bool { process == nil && leases.isEmpty && exitCleanupID == nil }
+    var canStop: Bool { isAutomaticallyRecovering || ((process != nil || exitCleanupID != nil) && phase != .stopping) }
+    var canFinishTermination: Bool { process == nil && leases.isEmpty && exitCleanupID == nil && !isAutomaticallyRecovering }
     var requiresStopConfirmation: Bool {
-        process != nil || !leases.isEmpty || exitCleanupID != nil || phase == .starting || phase == .stopping
+        process != nil || !leases.isEmpty || exitCleanupID != nil || isAutomaticallyRecovering || phase == .starting || phase == .stopping
     }
 
     private let usageStore: UsageStore
@@ -172,7 +216,7 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
     private var clientKey: String?
     private var desktopConnection: URL?
     private var activeIDs = Set<String>()
-    private struct PoolBinding {
+    private struct PoolBinding: Equatable {
         let home: URL
         let account: String
         let accountID: String
@@ -192,7 +236,7 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
     // idempotent order_end; this timeout bounds leaked snapshots after failure.
     private let membershipSnapshotLifetime: TimeInterval = 16 * 60
     private let maximumMembershipSnapshots = 4096
-    private struct Lease {
+    private struct Lease: Sendable {
         let id: String
         let profileID: String
         let requestID: String
@@ -208,8 +252,28 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
     private var quotaTask: Task<Void, Never>?
     private var exitCleanupTask: Task<Void, Never>?
     private var exitCleanupID: UUID?
+    private var exitCleanupRunID: String?
+    private var exitCleanupEvidenceID: UUID?
+    private var exitCleanupEvidence: ExitCleanupEvidence?
+    private let exitCleanupWorker = DispatchSemaphore(value: 1)
     private var finishing = false
+    private var forceTerminationRequested = false
     private var requestedExitReason: ExitReason?
+    private var startAttemptID: UUID?
+    private struct AutomaticRecoveryPlan {
+        let id: UUID
+        let failedRun: String
+        let port: Int
+        let clientKey: String
+        let bindings: [String: PoolBinding]
+        let systemIdentity: LegacyRecoveryIdentity
+        let delay: UInt64
+    }
+    private var automaticRecoveryPlan: AutomaticRecoveryPlan?
+    private var automaticRecoveryTask: Task<Void, Never>?
+    private var automaticRecoveryStartingRun: String?
+    private var cancelledAutomaticRecoveryRun: String?
+    private var automaticRecoveryAttempts: [TimeInterval] = []
     private struct LegacyRecoveryIdentity: Equatable {
         let id: String
         let home: URL
@@ -280,6 +344,7 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
         clientKeyMode = preferences.effectiveClientKeyMode
         egressSettings = preferences.egress ?? LocalProxyEgressSettings()
         isEnabled = preferences.isEnabled
+        automaticRecoveryEnabled = preferences.automaticRecoveryEnabled == true
         creditFallbackEnabled = preferences.creditFallback == true
         creditPrimaryFloor = preferences.creditFloors.primary
         creditSecondaryFloor = preferences.creditFloors.secondary
@@ -440,13 +505,14 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
             }
         }
         if ["switched", "all_dead"].contains(state), let runID {
-            try? DispatchActivityStore.live.appendIssue(
+            Self.recordIssue(
                 id: "proxy-network-\(runID)", phase: state,
                 summary: state == "switched" ? "Local proxy watchdog switched an unavailable egress node." : "Local proxy watchdog found no reachable allowlisted node.")
         }
     }
 
     func setOptIn(_ value: Bool) {
+        if !value { cancelAutomaticRecovery(stopStartingRun: true) }
         guard canEdit, !usageStore.isPreview, !preferencesBlocked else { return }
         let previous = preferences
         preferences.isEnabled = value
@@ -455,6 +521,158 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
             return
         }
         isEnabled = value
+    }
+    @discardableResult
+    func setAutomaticRecovery(_ enabled: Bool) -> Bool {
+        // Revocation takes effect even if saving the preference subsequently fails.
+        if !enabled { cancelAutomaticRecovery(stopStartingRun: true) }
+        guard canSetAutomaticRecovery else { return false }
+        let previous = preferences
+        preferences.automaticRecoveryEnabled = enabled
+        guard savePreferences() else {
+            preferences = previous
+            cancelAutomaticRecovery()
+            return false
+        }
+        automaticRecoveryEnabled = enabled
+        return true
+    }
+
+    private func cancelAutomaticRecovery(message: String? = nil, stopStartingRun: Bool = false) {
+        if stopStartingRun, let run = automaticRecoveryStartingRun, runID == run, phase == .starting {
+            cancelledAutomaticRecoveryRun = run
+            Task { [weak self] in await self?.stop(expectedRun: run) }
+        }
+        // Revoke the generation, not the stop/start Task: cancelling a graceful
+        // stop's sleeps would accelerate its termination deadlines.
+        automaticRecoveryPlan = nil
+        automaticRecoveryTask = nil
+        automaticRecoveryStartingRun = nil
+        isAutomaticallyRecovering = false
+        automaticRecoveryMessage = message
+    }
+
+    private func failAutomaticRecovery(_ reason: String) {
+        guard let plan = automaticRecoveryPlan else { return }
+        Self.recordIssue(
+            id: "proxy-recovery-\(plan.failedRun)", phase: "recovery_failed",
+            summary: "Local proxy automatic recovery stopped: \(reason).")
+        cancelAutomaticRecovery(
+            message: WidgetLanguage.storedOrAutomatic().text(
+                "自动恢复未完成，请检查后手动开启反代。", "Automatic recovery did not complete. Check the issue and start the proxy manually."))
+    }
+
+    private func prepareAutomaticRecovery(run: String, code: String, detail: String?, resolution: String?) {
+        if automaticRecoveryPlan == nil { automaticRecoveryMessage = nil }
+        let transient: Set<String> = ["timeout", "eof", "transport_unavailable", "registry_unavailable", "control_busy", "unavailable"]
+        guard ["lease_acquire_unknown", "lease_release_unknown", "lease_heartbeat_failed"].contains(code),
+            let detail, transient.contains(detail),
+            resolution.map({ transient.contains($0) }) ?? (code != "lease_acquire_unknown")
+        else {
+            failAutomaticRecovery("ineligible_failure")
+            return
+        }
+        if automaticRecoveryPlan?.failedRun == run { return }
+        guard
+            runID == run, phase == .running, process?.isRunning == true,
+            automaticRecoveryEnabled, isEnabled, !preferencesBlocked, !finishing,
+            preferences.effectiveListenPort != 0, preferences.effectiveClientKeyMode == .persistent,
+            let clientKey, clientKey == preferences.persistentClientKey,
+            endpoint == "http://127.0.0.1:\(preferences.effectiveListenPort)/v1",
+            let system = usageStore.profiles.first(where: \.isSystemProfile), let systemIdentity = LegacyRecoveryIdentity(system),
+            system.lastSnapshot?.email?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+        else {
+            failAutomaticRecovery("ineligible_failure")
+            return
+        }
+        let now = ProcessInfo.processInfo.systemUptime
+        automaticRecoveryAttempts.removeAll { now - $0 >= 600 }
+        guard automaticRecoveryAttempts.count < 3 else {
+            automaticRecoveryMessage = WidgetLanguage.storedOrAutomatic().text(
+                "10 分钟内已尝试自动恢复 3 次，已暂停；请检查后手动开启。",
+                "Automatic recovery paused after 3 attempts in 10 minutes. Check the issue and start manually.")
+            Self.recordIssue(
+                id: "proxy-recovery-\(run)", phase: "recovery_exhausted",
+                summary: "Local proxy automatic recovery exhausted its 10-minute budget.")
+            return
+        }
+        let delays: [UInt64] = [2, 5, 10]
+        let delay = delays[automaticRecoveryAttempts.count]
+        automaticRecoveryAttempts.append(now)
+        automaticRecoveryPlan = AutomaticRecoveryPlan(
+            id: UUID(), failedRun: run, port: preferences.effectiveListenPort, clientKey: clientKey,
+            bindings: registeredPool, systemIdentity: systemIdentity, delay: delay)
+        isAutomaticallyRecovering = true
+        automaticRecoveryMessage = WidgetLanguage.storedOrAutomatic().text(
+            "正在安全停止故障反代，随后自动恢复…", "Safely stopping the failed proxy before automatic recovery…")
+        Self.recordIssue(
+            id: "proxy-recovery-\(run)", phase: "recovery_pending",
+            summary: "Local proxy automatic recovery scheduled (attempt \(automaticRecoveryAttempts.count) of 3).")
+    }
+
+    private func automaticRecoveryInputsMatch(_ plan: AutomaticRecoveryPlan) -> Bool {
+        guard automaticRecoveryEnabled, isEnabled, !preferencesBlocked, !finishing,
+            preferences.effectiveListenPort == plan.port, preferences.effectiveClientKeyMode == .persistent,
+            preferences.persistentClientKey == plan.clientKey,
+            let system = usageStore.profiles.first(where: \.isSystemProfile), LegacyRecoveryIdentity(system) == plan.systemIdentity,
+            (try? makeRegisteredPool()) == plan.bindings
+        else { return false }
+        let enabledRows = rows.filter(\.isEnabled)
+        return !enabledRows.isEmpty
+            && enabledRows.allSatisfy { row in
+                guard let profile = usageStore.profiles.first(where: { $0.id == row.id }), !profile.isSystemProfile,
+                    let accountID = profile.lastSnapshot?.accountID, !accountID.isEmpty
+                else { return false }
+                return plan.bindings[row.id] == PoolBinding(home: profile.codexHomeURL, account: profile.recordedAccountKey, accountID: accountID)
+            }
+    }
+
+    private func scheduleAutomaticRecoveryAfterCleanup() {
+        guard let plan = automaticRecoveryPlan, automaticRecoveryTask == nil else { return }
+        guard canStartRun, automaticRecoveryInputsMatch(plan) else {
+            failAutomaticRecovery("cleanup_or_configuration_not_ready")
+            return
+        }
+        automaticRecoveryMessage = WidgetLanguage.storedOrAutomatic().text(
+            "将在 \(plan.delay) 秒后自动恢复反代…", "Automatically recovering the proxy in \(plan.delay) seconds…")
+        automaticRecoveryTask = Task { [weak self] in
+            do { try await Task.sleep(nanoseconds: plan.delay * 1_000_000_000) } catch { return }
+            guard let self, self.automaticRecoveryPlan?.id == plan.id else { return }
+            guard self.canStartRun, self.automaticRecoveryInputsMatch(plan) else {
+                self.failAutomaticRecovery("configuration_changed")
+                return
+            }
+            // Reuse the bounded, read-only credential validator off-main. It
+            // neither refreshes tokens nor switches the central Desktop account.
+            let profiles = self.usageStore.profiles.filter { !$0.isSystemProfile && self.preferences.enabledIDs.contains($0.id) && plan.bindings[$0.id] != nil }
+            let validatedIDs = Set(profiles.map(\.id))
+            guard let system = self.usageStore.profiles.first(where: \.isSystemProfile) else {
+                self.failAutomaticRecovery("identity_unconfirmed")
+                return
+            }
+            let identitiesValid = await Task.detached {
+                do {
+                    for profile in profiles {
+                        _ = try LocalProxyCredentialReader.readForProbe(
+                            profile: profile, system: system, allowDesktopAccount: profile.lastSnapshot?.accountID == system.lastSnapshot?.accountID,
+                            requireSystemIdentity: true)
+                    }
+                    return !profiles.isEmpty
+                } catch { return false }
+            }.value
+            guard self.automaticRecoveryPlan?.id == plan.id else { return }
+            guard identitiesValid, self.canStartRun, self.automaticRecoveryInputsMatch(plan),
+                Set(self.rows.filter(\.isEnabled).map(\.id)) == validatedIDs
+            else {
+                self.failAutomaticRecovery("identity_or_configuration_unconfirmed")
+                return
+            }
+            self.automaticRecoveryMessage = WidgetLanguage.storedOrAutomatic().text("正在恢复反代…", "Recovering the proxy…")
+            await self.startRun()
+            // ready clears this exact plan. A failed or superseded start must
+            // never be reported as recovered or restart a newer user session.
+            if self.automaticRecoveryPlan?.id == plan.id { self.failAutomaticRecovery("start_failed") }
+        }
     }
     func setCreditFallback(_ enabled: Bool) {
         guard canEditPolicy else { return }
@@ -1042,11 +1260,31 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
 
     func start() async {
         guard canStart, isEnabled else { return }
+        cancelAutomaticRecovery()
+        await startRun()
+    }
+
+    private func makeRegisteredPool() throws -> [String: PoolBinding] {
+        var pool: [String: PoolBinding] = [:]
+        for row in rows {
+            guard let profile = usageStore.profiles.first(where: { $0.id == row.id }),
+                !profile.isSystemProfile, pool[row.id] == nil
+            else { throw LocalProxyFailure.identity }
+            guard let accountID = profile.lastSnapshot?.accountID, !accountID.isEmpty else { continue }
+            pool[row.id] = PoolBinding(home: profile.codexHomeURL, account: profile.recordedAccountKey, accountID: accountID)
+        }
+        guard !pool.isEmpty, pool.count <= 100 else { throw LocalProxyFailure.unavailable }
+        return pool
+    }
+
+    private func startRun() async {
+        guard canStartRun, isEnabled else { return }
+        let attempt = UUID()
+        startAttemptID = attempt
         exitCleanupTask?.cancel()
         exitCleanupTask = nil
         phase = .starting
         issue = nil
-        finishing = false
         refreshStatus()
         var startupStep = "network"
         do {
@@ -1054,7 +1292,29 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
             startupStep = "helper"
             let helper = try verifiedHelper()
             startupStep = "activity"
-            try DispatchActivityStore.live.finishStoppedProxyRuns(retiringCurrentRun: true)
+            // The registry can be stalled behind a reservation or a disk sync.
+            // Keep startup cancellable and keep Stop/Quit gated until the
+            // same worker has really released its ownership.
+            let preflightID = UUID()
+            exitCleanupID = preflightID
+            let deadline = ProcessInfo.processInfo.systemUptime + 3
+            while true {
+                guard startAttemptID == attempt, exitCleanupID == preflightID, phase == .starting else { return }
+                let preflight = await Self.boundedExitCleanup(
+                    nil, leases: [], gate: exitCleanupWorker, timeout: max(0, deadline - ProcessInfo.processInfo.systemUptime))
+                guard startAttemptID == attempt, exitCleanupID == preflightID, phase == .starting else { return }
+                guard let preflight else { throw LocalProxyFailure.unavailable }
+                if !preflight.registryFailed {
+                    exitCleanupID = nil
+                    break
+                }
+                let remaining = deadline - ProcessInfo.processInfo.systemUptime
+                guard preflight.busy, !preflight.nonRetryable, remaining > 0 else {
+                    exitCleanupID = nil
+                    throw LocalProxyFailure.unavailable
+                }
+                try await Task.sleep(nanoseconds: UInt64(min(0.1, remaining) * 1_000_000_000))
+            }
             startupStep = "state"
             let run = UUID().uuidString.lowercased()
             let control = try randomKey()
@@ -1076,24 +1336,14 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
             let stateDirectory = directory.appendingPathComponent("LocalProxy", isDirectory: true)
             try Self.prepareStateDirectory(stateDirectory)
             runID = run
+            if automaticRecoveryPlan != nil { automaticRecoveryStartingRun = run }
             controlKey = control
             clientKey = client
             runDirectory = folder
             // Register the entire verified managed pool once. Live toggles
             // only select a subset; no new auth object is introduced mid-run.
-            var pool: [String: PoolBinding] = [:]
-            for row in rows {
-                guard let profile = usageStore.profiles.first(where: { $0.id == row.id }),
-                    !profile.isSystemProfile, pool[row.id] == nil
-                else { throw LocalProxyFailure.identity }
-                // A known visible representative can temporarily lack identity.
-                // It remains editable but cannot join this verified run.
-                guard let accountID = profile.lastSnapshot?.accountID, !accountID.isEmpty else { continue }
-                pool[row.id] = PoolBinding(
-                    home: profile.codexHomeURL,
-                    account: profile.recordedAccountKey, accountID: accountID)
-            }
-            guard !pool.isEmpty, pool.count <= 100 else { throw LocalProxyFailure.unavailable }
+            let pool = try makeRegisteredPool()
+            if let plan = automaticRecoveryPlan, pool != plan.bindings { throw LocalProxyFailure.identity }
             registeredPool = pool
             membershipSnapshots = [:]
             memberRevocations = [:]
@@ -1157,10 +1407,11 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
                         await MainActor.run { [weak self] in
                             guard let self, self.runID == run else { return }
                             self.issue = self.message(.unavailable)
-                            try? DispatchActivityStore.live.appendIssue(
+                            Self.recordIssue(
                                 id: "proxy-control-\(run)", phase: "control_failure",
                                 summary: "Local proxy acquire reply rollback remained unknown after reconciliation.")
-                            Task { await self.stop(reason: .controlFailure) }
+                            self.failAutomaticRecovery("rollback_unconfirmed")
+                            Task { await self.stop(reason: .controlFailure, expectedRun: run) }
                         }
                     }
                 },
@@ -1182,10 +1433,13 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
             child.terminationHandler = { [weak self] child in
                 Task { @MainActor [weak self] in self?.childExited(child) }
             }
-            process = child
             input = stdin.fileHandleForWriting
             startupStep = "launch"
             try child.run()
+            // A Process that failed to launch has no terminationStatus; never
+            // pass it to the exited-child path. Its callback runs on MainActor
+            // after this synchronous launch and assignment complete.
+            process = child
             var configuration: [String: Any] = [
                 "schemaVersion": 1, "runID": run, "controlSocket": folder.appendingPathComponent("control.sock").path,
                 "controlKey": control, "clientKey": client, "port": preferences.effectiveListenPort, "stateDirectory": stateDirectory.resolvingSymlinksInPath().path,
@@ -1215,24 +1469,27 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
                 try? output.close()
             }
             for _ in 0..<100 {
-                if runID != run || phase != .starting { return }
+                if startAttemptID != attempt || runID != run || phase != .starting { return }
                 try await Task.sleep(nanoseconds: 100_000_000)
             }
-            if runID == run, phase == .starting {
+            if startAttemptID == attempt, runID == run, phase == .starting {
                 issue = message(.unavailable)
-                await stop(reason: .startupFailure)
-                phase = .failed
+                failAutomaticRecovery("ready_timeout")
+                await stop(reason: .startupFailure, expectedRun: run)
+                if startAttemptID == attempt { phase = .failed }
             }
         } catch {
+            guard startAttemptID == attempt else { return }
+            failAutomaticRecovery("startup_failed")
             let nsError = error as NSError
             let detail = " [\(startupStep):\(nsError.code)]"
             issue = (error as? LocalProxyNetworkSettings.Failure).map { LocalProxyNetworkSettings.message($0, language: .storedOrAutomatic()) } ?? (message(.unavailable) + detail)
             if let child = process {
-                if child.isRunning { await stop(reason: .startupFailure) } else { childExited(child) }
+                if child.isRunning { await stop(reason: .startupFailure, expectedRun: runID) } else { childExited(child) }
             } else {
-                cleanupConfirmedExit()
+                cleanupConfirmedExit(preserveFailure: true)
             }
-            phase = .failed
+            if startAttemptID == attempt, exitCleanupID == nil { phase = .failed }
         }
     }
 
@@ -1270,9 +1527,18 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
         else { throw LocalProxyFailure.unavailable }
     }
 
-    func stop(reason: ExitReason = .requestedStop) async {
+    func stop(reason: ExitReason = .requestedStop, expectedRun: String? = nil) async {
+        guard !forceTerminationRequested else { return }
+        if let expectedRun, runID != expectedRun { return }
+        if reason == .requestedStop {
+            startAttemptID = nil
+            cancelAutomaticRecovery()
+        } else if reason == .startupFailure {
+            failAutomaticRecovery("startup_failed")
+        }
         if phase == .stopping {
             for _ in 0..<90 {
+                guard !forceTerminationRequested else { return }
                 if phase != .stopping {
                     await exitCleanupTask?.value
                     return
@@ -1283,7 +1549,9 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
         }
         requestedExitReason = reason
         phase = .stopping
-        try? input?.write(contentsOf: Data("{\"command\":\"stop\"}\n".utf8))
+        // The helper treats EOF like its stop command. Closing cannot wait for
+        // space in a full input pipe; the child is still confirmed gone before
+        // any lease is retired.
         try? input?.close()
         input = nil
         guard let child = process else {
@@ -1292,57 +1560,189 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
             return
         }
         for _ in 0..<40 {
+            guard !forceTerminationRequested else { return }
             if !child.isRunning { break }
             try? await Task.sleep(nanoseconds: 100_000_000)
         }
+        guard !forceTerminationRequested else { return }
         if child.isRunning { child.terminate() }
         for _ in 0..<20 {
+            guard !forceTerminationRequested else { return }
             if !child.isRunning { break }
             try? await Task.sleep(nanoseconds: 100_000_000)
         }
+        guard !forceTerminationRequested else { return }
         if child.isRunning { _ = kill(child.processIdentifier, SIGKILL) }
         for _ in 0..<20 {
+            guard !forceTerminationRequested else { return }
             if !child.isRunning { break }
             try? await Task.sleep(nanoseconds: 100_000_000)
         }
+        guard !forceTerminationRequested else { return }
         if !child.isRunning {
             childExited(child)
             await exitCleanupTask?.value
         } else {
+            failAutomaticRecovery("child_exit_unconfirmed")
             phase = .failed
             issue = message(.stopping)
-            for lease in leases.values { try? update(lease, state: "uncertain") }
+            let unresolved = Array(leases.values)
+            DispatchQueue.global(qos: .utility).async {
+                for lease in unresolved {
+                    try? DispatchActivityStore.live.updateProxy(
+                        lease.id, runID: lease.runID, requestID: lease.requestID, profileID: lease.profileID, state: "uncertain")
+                }
+            }
         }
     }
     func shutdown() async { await finishForTermination() }
+    /// Called only after the user confirms interruption and forced exit. Do not
+    /// await a registry, treat any lease as retired, or look up other processes.
+    func forceStopForConfirmedTermination() {
+        forceTerminationRequested = true
+        finishing = true
+        startAttemptID = nil
+        automaticRecoveryTask?.cancel()
+        cancelAutomaticRecovery()
+        exitCleanupTask?.cancel()
+        outputTask?.cancel()
+        quotaTask?.cancel()
+        selfCheckTask?.cancel()
+        phase = .stopping
+        try? input?.close()
+        input = nil
+        if let child = process, child.isRunning, child.processIdentifier > 1 {
+            _ = kill(child.processIdentifier, SIGKILL)
+        }
+    }
+
     func finishForTermination() async {
         finishing = true
         await stop()
     }
+    func resumeAfterCancelledTermination() {
+        // AppKit has explicitly rejected quitting; keep recovery revoked while
+        // allowing the user to finish cleanup and start manually again.
+        cancelAutomaticRecovery()
+        finishing = false
+    }
 
     private func childExited(_ child: Process) {
-        guard process === child, !child.isRunning else { return }
+        guard !forceTerminationRequested, process === child, !child.isRunning else { return }
         let unexpected = phase == .running || phase == .starting
         let reason = unexpected ? ExitReason.unexpectedExit : (requestedExitReason ?? .requestedStop)
         if let runID {
             let summary = "Local proxy helper exited with status \(child.terminationStatus) (\(reason.rawValue))."
-            try? DispatchActivityStore.live.appendIssue(id: "proxy-\(runID)", phase: reason.rawValue, summary: summary)
+            Self.recordIssue(id: "proxy-\(runID)", phase: reason.rawValue, summary: summary)
         }
-        cleanupConfirmedExit()
+        cleanupConfirmedExit(preserveFailure: unexpected && automaticRecoveryPlan == nil)
         requestedExitReason = nil
-        if unexpected {
-            phase = .failed
+        if unexpected && automaticRecoveryPlan == nil {
+            automaticRecoveryMessage = nil
             issue = message(.unavailable)
         }
     }
-    private func cleanupConfirmedExit(retryID: UUID? = nil, remainingRetries: Int = 3) {
-        guard process?.isRunning != true else { return }
+    private struct ExitCleanupResult: Sendable {
+        let retired: [Lease]
+        let registryFailed: Bool
+        let busy: Bool
+        let nonRetryable: Bool
+    }
+
+    /// Exact durable successes remain usable if the registry later prunes its
+    /// bounded terminal history. This is scoped to one confirmed-exit owner;
+    /// absent records without this evidence never count as retired.
+    private final class ExitCleanupEvidence: @unchecked Sendable {
+        private let lock = NSLock()
+        private var retired: [String: Lease] = [:]
+
+        func remember(_ lease: Lease) {
+            lock.lock()
+            retired[lease.id] = lease
+            lock.unlock()
+        }
+
+        func take() -> [Lease] {
+            lock.lock()
+            let result = Array(retired.values)
+            retired.removeAll()
+            lock.unlock()
+            return result
+        }
+    }
+
+    nonisolated private static func retireExitedRun(_ run: String?, leases: [Lease], gate: DispatchSemaphore, evidence: ExitCleanupEvidence?) -> ExitCleanupResult {
+        guard gate.wait(timeout: .now()) == .success else {
+            return ExitCleanupResult(retired: [], registryFailed: true, busy: true, nonRetryable: false)
+        }
+        defer { gate.signal() }
+        if let run { DispatchActivityStore.closeProxyRun(run) }
+        var remaining = leases
+        var retired: [Lease] = []
+        var busy = false
+        var nonRetryable = false
+        func retireRemaining() {
+            var failed: [Lease] = []
+            for lease in remaining {
+                do {
+                    try DispatchActivityStore.live.updateProxy(
+                        lease.id, runID: lease.runID, requestID: lease.requestID, profileID: lease.profileID,
+                        state: "cancelled", allowTerminalCleanup: true)
+                    retired.append(lease)
+                    evidence?.remember(lease)
+                } catch {
+                    failed.append(lease)
+                    if let failure = error as? DispatchActivityStore.Failure, case .busy = failure {
+                        busy = true
+                    } else {
+                        nonRetryable = true
+                    }
+                }
+            }
+            remaining = failed
+        }
+        retireRemaining()
+        var registryFailed = false
+        do { try DispatchActivityStore.live.finishStoppedProxyRuns(retiringCurrentRun: true) } catch {
+            registryFailed = true
+            if let failure = error as? DispatchActivityStore.Failure, case .busy = failure {
+                busy = true
+            } else {
+                nonRetryable = true
+            }
+        }
+        if !registryFailed {
+            // Batch retirement can resolve an earlier failed individual write.
+            nonRetryable = false
+            retireRemaining()
+        }
+        return ExitCleanupResult(retired: retired, registryFailed: registryFailed, busy: busy, nonRetryable: nonRetryable)
+    }
+
+    nonisolated private static func boundedExitCleanup(_ run: String?, leases: [Lease], gate: DispatchSemaphore, evidence: ExitCleanupEvidence? = nil, timeout: TimeInterval = 3) async -> ExitCleanupResult? {
+        await withCheckedContinuation { continuation in
+            let completion = LocalProxyIOCompletion(continuation)
+            DispatchQueue.global(qos: .utility).async {
+                completion.complete(retireExitedRun(run, leases: leases, gate: gate, evidence: evidence))
+            }
+            DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + timeout) {
+                completion.complete(nil)
+            }
+        }
+    }
+
+    private func cleanupConfirmedExit(retryID: UUID? = nil, remainingRetries: Int = 3, preserveFailure: Bool = false) {
+        guard !forceTerminationRequested, process?.isRunning != true else { return }
         // A delayed cleanup must never act on a subsequently started run, or
         // replace the task owned by a newer manual cleanup attempt.
         if let retryID {
             guard exitCleanupID == retryID, process == nil, runID == nil, phase == .failed else { return }
         } else {
             exitCleanupTask?.cancel()
+            if runID != nil {
+                exitCleanupEvidenceID = nil
+                exitCleanupEvidence = nil
+            }
             // An instance that never owned a run has no local retirement to
             // await; unrelated registry contention must not prevent quitting.
             let ownsCleanup = process != nil || runID != nil || !leases.isEmpty || exitCleanupID != nil
@@ -1350,50 +1750,25 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
         }
         exitCleanupTask = nil
         let cleanupID = exitCleanupID
-        if let runID {
-            DispatchActivityStore.closeProxyRun(runID)
-            localProxyReleaseFence.clear(runID: runID)
+        if cleanupID != nil, exitCleanupEvidenceID == nil {
+            exitCleanupEvidenceID = UUID()
+            exitCleanupEvidence = ExitCleanupEvidence()
         }
-        var registryCleanupFailed = false
-        var cleanupBusy = false
-        var cleanupNonRetryable = false
-        for lease in Array(leases.values) {
-            do {
-                try retireLeaseAfterExit(lease)
-            } catch {
-                if let failure = error as? DispatchActivityStore.Failure, case .busy = failure {
-                    cleanupBusy = true
-                } else {
-                    cleanupNonRetryable = true
-                }
-                issue = message(.unavailable)
+        let evidenceID = exitCleanupEvidenceID
+        let evidence = exitCleanupEvidence
+        for lease in evidence?.take() ?? [] {
+            guard let current = leases[lease.id], current.runID == lease.runID,
+                current.requestID == lease.requestID, current.profileID == lease.profileID
+            else { continue }
+            leases.removeValue(forKey: lease.id)
+            if balanceRefreshLeases.remove(lease.id) != nil {
+                creditRefreshAfter[lease.profileID] = Date()
             }
         }
-        do { try DispatchActivityStore.live.finishStoppedProxyRuns(retiringCurrentRun: true) } catch {
-            registryCleanupFailed = true
-            if let failure = error as? DispatchActivityStore.Failure, case .busy = failure {
-                cleanupBusy = true
-            } else {
-                cleanupNonRetryable = true
-            }
-            issue = message(.unavailable)
-        }
-        if !registryCleanupFailed {
-            cleanupNonRetryable = false
-            // A contended per-lease write can precede a successful batch
-            // retirement. Reconcile its exact terminal record before dropping
-            // the run identity; otherwise an old UI mirror blocks the next start.
-            for lease in Array(leases.values) {
-                do { try retireLeaseAfterExit(lease) } catch {
-                    if let failure = error as? DispatchActivityStore.Failure, case .busy = failure {
-                        cleanupBusy = true
-                    } else {
-                        cleanupNonRetryable = true
-                    }
-                    issue = message(.unavailable)
-                }
-            }
-        }
+        if let runID { exitCleanupRunID = runID }
+        let cleanupRun = exitCleanupRunID
+        if let cleanupRun { localProxyReleaseFence.clear(runID: cleanupRun) }
+        let cleanupLeases = Array(leases.values)
         try? input?.close()
         input = nil
         process = nil
@@ -1406,6 +1781,7 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
         if let runDirectory { try? FileManager.default.removeItem(at: runDirectory) }
         runDirectory = nil
         runID = nil
+        cancelledAutomaticRecoveryRun = nil
         controlKey = nil
         clientKey = nil
         selfCheckTask?.cancel()
@@ -1423,32 +1799,68 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
         membershipSnapshots = [:]
         memberRevocations = [:]
         refreshMembershipWaitState()
-        let complete = leases.isEmpty && !registryCleanupFailed
-        if complete { exitCleanupID = nil }
-        phase = complete ? .stopped : .failed
         accountStates = [:]
         cooldowns = [:]
-        rebuildRows()
-        guard let cleanupID, !complete, cleanupBusy, !cleanupNonRetryable, remainingRetries > 0 else { return }
-        // Retry only the existing exact-lease/closed-run retirement after the
-        // child is proven gone. Three 200 ms waits bound recovery and quit.
-        exitCleanupTask = Task { [weak self] in
-            do { try await Task.sleep(nanoseconds: 200_000_000) } catch { return }
-            guard let self, !Task.isCancelled, self.exitCleanupID == cleanupID,
-                self.process == nil, self.runID == nil, self.phase == .failed
-            else { return }
-            self.cleanupConfirmedExit(retryID: cleanupID, remainingRetries: remainingRetries - 1)
-            // stop()/finishForTermination() await this chain before their
-            // callers decide whether disabling or quitting has completed.
-            await self.exitCleanupTask?.value
+        guard let cleanupID else {
+            phase = .stopped
+            rebuildRows()
+            return
         }
-    }
-
-    private func retireLeaseAfterExit(_ lease: Lease) throws {
-        try update(lease, state: "cancelled", allowTerminalCleanup: true)
-        leases.removeValue(forKey: lease.id)
-        if balanceRefreshLeases.remove(lease.id) != nil {
-            creditRefreshAfter[lease.profileID] = Date()
+        phase = .stopping
+        let gate = exitCleanupWorker
+        exitCleanupTask = Task { [weak self] in
+            let result = await Self.boundedExitCleanup(cleanupRun, leases: cleanupLeases, gate: gate, evidence: evidence)
+            guard let self, !Task.isCancelled, self.exitCleanupID == cleanupID,
+                self.exitCleanupEvidenceID == evidenceID, self.process == nil, self.runID == nil
+            else { return }
+            self.exitCleanupTask = nil
+            for lease in evidence?.take() ?? [] {
+                guard let current = self.leases[lease.id], current.runID == lease.runID,
+                    current.requestID == lease.requestID, current.profileID == lease.profileID
+                else { continue }
+                self.leases.removeValue(forKey: lease.id)
+                if self.balanceRefreshLeases.remove(lease.id) != nil {
+                    self.creditRefreshAfter[lease.profileID] = Date()
+                }
+            }
+            self.refreshMembershipWaitState()
+            guard let result else {
+                // The worker may still finish later. Keep the run identity and
+                // every lease without exact durable evidence; never permit
+                // start or quit until the full cleanup has been confirmed.
+                self.phase = .failed
+                self.issue = self.message(.unavailable)
+                self.failAutomaticRecovery("lease_cleanup_unconfirmed")
+                return
+            }
+            let complete = self.leases.isEmpty && !result.registryFailed
+            if complete {
+                self.exitCleanupID = nil
+                self.exitCleanupRunID = nil
+                self.exitCleanupEvidenceID = nil
+                self.exitCleanupEvidence = nil
+            }
+            self.phase = complete && !preserveFailure ? .stopped : .failed
+            self.rebuildRows()
+            if complete {
+                self.scheduleAutomaticRecoveryAfterCleanup()
+                return
+            }
+            self.issue = self.message(.unavailable)
+            guard result.busy, !result.nonRetryable, remainingRetries > 0 else {
+                self.failAutomaticRecovery("lease_cleanup_unconfirmed")
+                return
+            }
+            // Retry only exact retirement after the child is confirmed gone.
+            self.exitCleanupTask = Task { [weak self] in
+                do { try await Task.sleep(nanoseconds: 200_000_000) } catch { return }
+                guard let self, !Task.isCancelled, self.exitCleanupID == cleanupID,
+                    self.process == nil, self.runID == nil, self.phase == .failed
+                else { return }
+                self.cleanupConfirmedExit(retryID: cleanupID, remainingRetries: remainingRetries - 1, preserveFailure: preserveFailure)
+                await self.exitCleanupTask?.value
+            }
+            await self.exitCleanupTask?.value
         }
     }
 
@@ -1842,12 +2254,6 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
         rebuildRows()
     }
 
-    private func update(_ lease: Lease, state: String, allowTerminalCleanup: Bool = false) throws {
-        try DispatchActivityStore.live.updateProxy(
-            lease.id, runID: lease.runID, requestID: lease.requestID, profileID: lease.profileID,
-            state: state, allowTerminalCleanup: allowTerminalCleanup)
-    }
-
     private func updateAfterContention(_ lease: Lease, state: String, deadline: TimeInterval) async throws {
         while true {
             do {
@@ -1888,24 +2294,41 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
     }
 
     private func consume(_ data: Data, run: String) {
-        guard runID == run, data.count <= 8192,
+        guard !forceTerminationRequested, runID == run, data.count <= 8192,
             let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any], let type = (object["event"] ?? object["type"]) as? String
         else { return }
         switch type {
         case "ready":
             guard phase == .starting, let port = object["port"] as? Int, (1024...65535).contains(port) else { return }
+            guard cancelledAutomaticRecoveryRun != run else { return }
+            if let plan = automaticRecoveryPlan, automaticRecoveryStartingRun == run,
+                process?.isRunning != true || startAttemptID == nil || !automaticRecoveryInputsMatch(plan)
+            {
+                failAutomaticRecovery("ready_identity_or_process_unconfirmed")
+                Task { [weak self] in await self?.stop(reason: .startupFailure, expectedRun: run) }
+                return
+            }
             guard preferences.effectiveListenPort == 0 || preferences.effectiveListenPort == port else {
                 issue = message(.unavailable)
-                Task { [weak self] in await self?.stop(reason: .startupFailure) }
+                Task { [weak self] in await self?.stop(reason: .startupFailure, expectedRun: run) }
                 return
             }
             endpoint = "http://127.0.0.1:\(port)/v1"
             do { try prepareDesktopConnection() } catch {
                 issue = message(.unavailable)
-                Task { [weak self] in await self?.stop(reason: .startupFailure) }
+                Task { [weak self] in await self?.stop(reason: .startupFailure, expectedRun: run) }
                 return
             }
             phase = .running
+            if let plan = automaticRecoveryPlan, automaticRecoveryStartingRun == run {
+                Self.recordIssue(
+                    id: "proxy-recovery-\(plan.failedRun)", phase: "recovery_ready",
+                    summary: "Local proxy restarted on its original endpoint. In-flight requests were not replayed.")
+                cancelAutomaticRecovery(
+                    message: WidgetLanguage.storedOrAutomatic().text(
+                        "反代已自动重新开启；中断的请求请重试。",
+                        "The proxy restarted automatically. Retry any interrupted request."))
+            }
             quotaTask = Task { [weak self] in
                 while !Task.isCancelled {
                     do { try await Task.sleep(nanoseconds: 60_000_000_000) } catch { return }
@@ -1949,7 +2372,7 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
             let resolutionDetail = (object["resolutionDetail"] as? String).flatMap { details.contains($0) ? $0 : nil }
             if code == "lease_acquire_reconciled" {
                 if let runID, phase == .running || phase == .starting {
-                    try? DispatchActivityStore.live.appendIssue(
+                    Self.recordIssue(
                         id: "proxy-control-\(runID)", phase: "reconciled",
                         summary: "Local proxy acquire reconciled\(detail.map { ": \($0)" } ?? "").")
                 }
@@ -1962,12 +2385,15 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
                 issue = message(.unavailable)
             }
             if ["lease_acquire_unknown", "lease_release_unknown", "lease_heartbeat_failed"].contains(code) {
+                // A present but unrecognized detail is not an absent field.
+                let recoveryResolution = object["resolutionDetail"] == nil ? nil : (resolutionDetail ?? "rejected")
+                prepareAutomaticRecovery(run: run, code: code, detail: detail, resolution: recoveryResolution)
                 if let runID, phase == .running || phase == .starting {
-                    try? DispatchActivityStore.live.appendIssue(
+                    Self.recordIssue(
                         id: "proxy-control-\(runID)", phase: "control_failure",
                         summary: "Local proxy control failure: \(code)\(detail.map { ": \($0)" } ?? "")\(resolutionDetail.map { "; resolution: \($0)" } ?? "").")
                 }
-                Task { [weak self] in await self?.stop(reason: .controlFailure) }
+                Task { [weak self] in await self?.stop(reason: .controlFailure, expectedRun: run) }
             }
         case "stopped": break  // A message is not proof that the process has exited.
         default: break

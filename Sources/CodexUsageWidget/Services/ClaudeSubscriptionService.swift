@@ -327,11 +327,48 @@ struct ClaudeSubscriptionService {
         }
         return stored
     }
+    /// Only reasonable future server deadlines are actionable. Never shorten a
+    /// valid deadline; invalid, expired or excessively distant values use the
+    /// caller's existing local backoff instead.
+    static let maximumQuotaRetryDelay: TimeInterval = 7 * 24 * 60 * 60
+    static func quotaRetryAfter(_ headers: [String: String], now: Date) -> Date? {
+        let values = headers.filter { $0.key.caseInsensitiveCompare("Retry-After") == .orderedSame }.map(\.value)
+        guard values.count == 1, now.timeIntervalSince1970.isFinite else { return nil }
+        let raw = values[0].trimmingCharacters(in: .whitespaces)
+        guard !raw.isEmpty, raw.utf8.count <= 128,
+            !raw.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains)
+        else { return nil }
+        let deadline: Date
+        if raw.utf8.allSatisfy({ (48...57).contains($0) }) {
+            guard let seconds = TimeInterval(raw), seconds.isFinite, seconds > 0,
+                seconds <= maximumQuotaRetryDelay
+            else { return nil }
+            deadline = now.addingTimeInterval(seconds)
+        } else {
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.calendar = Calendar(identifier: .gregorian)
+            formatter.timeZone = TimeZone(secondsFromGMT: 0)
+            formatter.isLenient = false
+            var parsed: Date?
+            for format in ["EEE, dd MMM yyyy HH:mm:ss 'GMT'", "EEEE, dd-MMM-yy HH:mm:ss 'GMT'", "EEE MMM d HH:mm:ss yyyy"] {
+                formatter.dateFormat = format
+                if let date = formatter.date(from: raw) { parsed = date; break }
+            }
+            guard let parsed else { return nil }
+            deadline = parsed
+        }
+        let delay = deadline.timeIntervalSince(now)
+        guard deadline.timeIntervalSince1970.isFinite, delay.isFinite,
+            delay > 0, delay <= maximumQuotaRetryDelay
+        else { return nil }
+        return deadline
+    }
     func loadQuota(_ reference: ClaudeSubscriptionReference, now: Date) async -> LocalCLIQuotaResult {
-        func result(_ state: LocalCLIQuotaState, _ code: String?, identity: Identity? = nil, plan: String? = nil, windows: [LocalCLIQuotaWindow] = []) -> LocalCLIQuotaResult {
+        func result(_ state: LocalCLIQuotaState, _ code: String?, identity: Identity? = nil, plan: String? = nil, windows: [LocalCLIQuotaWindow] = [], serverRetryAt: Date? = nil) -> LocalCLIQuotaResult {
             LocalCLIQuotaResult(
                 state: state, fetchedAt: now, maskedIdentity: identity?.email.map(LocalCLIQuotaPresentation.maskedIdentity), identityFingerprint: identity?.fingerprint,
-                planLabel: plan, windows: windows, balance: nil, balanceCurrency: nil, sourceLabel: "Anthropic OAuth usage", messageCode: code)
+                planLabel: plan, windows: windows, balance: nil, balanceCurrency: nil, sourceLabel: "Anthropic OAuth usage", messageCode: code, serverRetryAt: serverRetryAt)
         }
         do {
             let before = try credential(reference)
@@ -347,7 +384,9 @@ struct ClaudeSubscriptionService {
             let response = try await dependencies.transport.response(for: request)
             guard try credential(reference).credential == before.credential, try activeFingerprint() == beforeActive else { throw Failure.identityChanged }
             guard response.statusCode == 200 else {
-                return result(response.statusCode == 429 ? .rateLimited : .unavailable, response.statusCode == 429 ? "local_cli_rate_limited" : "local_cli_unavailable")
+                return result(response.statusCode == 429 ? .rateLimited : .unavailable, response.statusCode == 429 ? "local_cli_rate_limited" : "local_cli_unavailable",
+                    identity: response.statusCode == 429 ? identity : nil,
+                    serverRetryAt: response.statusCode == 429 ? Self.quotaRetryAfter(response.headers, now: dependencies.now()) : nil)
             }
             let windows = try LocalCLIQuotaReader.parseClaude(response.data)
             guard LocalCLIQuotaPresentation.validWindows(windows) else { throw Failure.invalid }

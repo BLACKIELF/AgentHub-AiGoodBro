@@ -1,0 +1,73 @@
+{
+  "architecture": "aarch64-apple-darwin",
+  "baseCommit": "fa5f0c13324838d1a988fda317597f9b90da7ad0",
+  "binaryBytes": 18651296,
+  "binaryReceiptSHA256": "48a21d1d67e94eeac3d647c7550437d165afa6126dce08b5ca6266f9c0ee2b81",
+  "binaryRegressionCases": 24,
+  "binarySHA256": "6659112e16347834c73595d2900e95d2c1e70afe2635b26340126fa1279b33fa",
+  "buildEnvironment": {
+    "RUSTFLAGS": "--remap-path-prefix=<task-root>=/aigoodbro-build",
+    "jobs": 2,
+    "locked": true
+  },
+  "command": "cargo +1.98.0 build --locked -j 2 --release -p tokscale-cli --bin tokscale --target aarch64-apple-darwin",
+  "crateTests": {
+    "countingNote": "Top-level cargo result groups; one nested subprocess result is excluded from the count.",
+    "failed": 0,
+    "groups": 21,
+    "ignored": 5,
+    "passed": 4291
+  },
+  "patchSHA256": "2c1afdecc430185eddbbb302a139bef4aacc14233cc3688e5a8ccc215ff2b5fa",
+  "preserved": [
+    "fork client/report contracts",
+    "custom and provider-reported pricing",
+    "parent links",
+    "source filtering",
+    "private-text exclusion",
+    "persistent source cache",
+    "bridge confirmed cleanup",
+    "native 32MiB transport/render limits"
+  ],
+  "previousEngineReviewEvidenceSHA256": "6a4e5fa9b854867231d5ff20a0452fb4e9a7973d72953ac0a658b05ab9c7365b",
+  "privacy": {
+    "taskVolumePathAbsent": true,
+    "userHomePathAbsent": true
+  },
+  "productInstalled": false,
+  "pullRequests": [
+    1439,
+    1453,
+    1456,
+    1527
+  ],
+  "realHistoryScanned": false,
+  "rustVersion": "1.98.0",
+  "schemaVersion": 1,
+  "sourceArchiveSHA256": "5f7fcc2872b40d61319ef88a847c9ef4bb0ef240cfd16139a4fa65de03f47503",
+  "sourceDelta": [
+    {
+      "afterSHA256": "2a1e1b5a9eb54570dfb6a97f28a7804b555cf3ad0580b409409f42515be89bcf",
+      "beforeSHA256": "292963ac4b313b70d7188bc706ca49877740a35b443244d1c12d460e7fb43dbf",
+      "path": "crates/tokscale-core/src/lib.rs"
+    },
+    {
+      "afterSHA256": "3567760d42a6421eb3ca6ee5574f34b4a9b8c65a8528fd89a1e66186e0b89469",
+      "beforeSHA256": "55009267acf6a91a27952c6b2c84ab4e13c0966cb8c91d9a86d89efc40fe5ec7",
+      "path": "crates/tokscale-core/src/message_cache.rs"
+    },
+    {
+      "afterSHA256": "f4eb57305436ce16446ac47ed50405a232a1c55954f7740af5d130cf3a4bb799",
+      "beforeSHA256": "817422aa4461f615e519b93bb9c11ded9d8fb56f78ad24683f84e538518ecb03",
+      "path": "crates/tokscale-core/src/sessions/codex.rs"
+    },
+    {
+      "afterSHA256": "b46139466a6250ebc3d212639da3589f1a1c2519b3de5fc219f3b3c950f574e1",
+      "beforeSHA256": "7c6ff6c910b9c7650d84b6501b9b4d35ed5da8c6975e23cdef738a905bb3cd85",
+      "path": "crates/tokscale-core/src/sessions/qwen.rs"
+    }
+  ],
+  "sourceInventorySHA256": "f0fd0041de015e1b31e4f7da2e98e25441c0c42cecdd0b4f349dc8a05913c7ef",
+  "unchangedSourceFiles": 793,
+  "version": "1026v1"
+}

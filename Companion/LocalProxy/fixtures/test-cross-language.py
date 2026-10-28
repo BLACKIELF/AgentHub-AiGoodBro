@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Actual Swift bridge and Go processes; generated synthetic credentials only."""
-import argparse, http.client, json, os, pathlib, queue, socket as unix_socket, subprocess, tempfile, threading, time, uuid
+import argparse, http.client, json, os, pathlib, queue, socket as unix_socket, subprocess, sys, tempfile, threading, time, uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 MODULE = pathlib.Path(__file__).resolve().parents[1]
@@ -56,7 +56,7 @@ class Upstream(BaseHTTPRequestHandler):
 
 
 def run(helper=None):
-    with tempfile.TemporaryDirectory(prefix='lp-cross-',dir='/private/tmp') as temporary:
+    with tempfile.TemporaryDirectory(prefix='lp-cross-',dir=os.environ.get("TMPDIR")) as temporary:
         folder=pathlib.Path(temporary);os.chmod(folder,0o700)
         bridge_source=(ROOT/'Sources/CodexUsageWidget/Services/LocalProxyBridge.swift').read_text()
         reader_start=bridge_source.index('\nenum LocalProxyCredentialReader')
@@ -71,9 +71,9 @@ def run(helper=None):
         subprocess.run(['xcrun','swiftc','-swift-version','5','-parse-as-library',str(folder/'Bridge.swift'),str(folder/'Domain.swift'),str(MODULE/'fixtures/BridgeFixture.swift'),'-o',str(folder/'bridge')],check=True)
         if helper is None:
             helper=folder/'production-helper'
-            subprocess.run(['go','build','-mod=readonly','-o',str(helper),'.'],cwd=MODULE,env={**os.environ,'CGO_ENABLED':'0'},check=True)
+            subprocess.run([sys.executable,'go.py','build','-mod=readonly','-o',str(helper),'.'],cwd=MODULE,env={**os.environ,'CGO_ENABLED':'0'},check=True)
         test_helper=folder/'test-helper'
-        subprocess.run(['go','test','-mod=readonly','-c','-o',str(test_helper),'.'],cwd=MODULE,check=True)
+        subprocess.run([sys.executable,'go.py','test','-mod=readonly','-c','-o',str(test_helper),'.'],cwd=MODULE,check=True)
         upstream=ThreadingHTTPServer(('127.0.0.1',0),Upstream);threading.Thread(target=upstream.serve_forever,daemon=True).start()
         try:
             for mode in ('deny','allow','late'):

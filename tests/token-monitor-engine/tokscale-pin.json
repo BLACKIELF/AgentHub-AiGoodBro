@@ -1,54 +1,76 @@
 {
-  "mode": "override",
-  "fork": "Javis603/tokscale",
-  "commit": "fa5f0c13324838d1a988fda317597f9b90da7ad0",
   "baseVersion": "4.18.0",
-  "releaseTag": "token-monitor-fa5f0c13",
+  "commit": "fa5f0c13324838d1a988fda317597f9b90da7ad0",
+  "fork": "Javis603/tokscale",
+  "localBackport": {
+    "baseCommit": "fa5f0c13324838d1a988fda317597f9b90da7ad0",
+    "patchSHA256": "a5c09f55a7e70f167e4a48b793a169043fdc45c946773360b4e2739cdff5f52d",
+    "platforms": {
+      "darwin-arm64": {
+        "sha256": "5a5e66b0db6deea3234e4f2e793ad975b2e606c3c76f7c8c09f64eea24a6e7f8"
+      }
+    },
+    "pullRequests": [
+      1439,
+      1453,
+      1456,
+      1527,
+      1531,
+      1544,
+      1550
+    ],
+    "reviewEvidenceSHA256": "c4aba3b90ef03d3042477d0211b4968658d8da17e70a854239bfd7f79d774ee3",
+    "scope": "Retain selected Codex/Qwen 1026 fixes; add Qwen explicit-zero semantics and Cursor snapshot deduplication/cache migration. Existing fork full-history sync, pricing override policy and all other parsers are preserved.",
+    "sourceInventorySHA256": "5f9c2d938d7df0167cbe316f5bd3c9cba8991994283119f517faf029ef5e3054",
+    "version": "1027v1"
+  },
+  "mode": "override",
   "platformSha256": {
     "android-arm64": {
-      "package": "@tokscale/cli-android-arm64",
       "asset": "tokscale-android-arm64",
+      "package": "@tokscale/cli-android-arm64",
       "sha256": "40ee233d0be2fe67b7d985e1f816d7413a8d6eae17b0d99c229dd8d7ff8ad78d"
     },
     "darwin-arm64": {
-      "package": "@tokscale/cli-darwin-arm64",
       "asset": "tokscale-darwin-arm64",
-      "sha256": "61d6422139fe13c68ed8905e8c718d434460ee4f3efd90f68c7619f271245757"
+      "package": "@tokscale/cli-darwin-arm64",
+      "sha256": "5a5e66b0db6deea3234e4f2e793ad975b2e606c3c76f7c8c09f64eea24a6e7f8"
     },
     "darwin-x64": {
-      "package": "@tokscale/cli-darwin-x64",
       "asset": "tokscale-darwin-x64",
+      "package": "@tokscale/cli-darwin-x64",
       "sha256": "1c3674291fc9c8967764e13c004aaf8546ef9a714bd808f79180733359dfd782"
     },
     "linux-arm64": {
-      "package": "@tokscale/cli-linux-arm64-gnu",
       "asset": "tokscale-linux-arm64",
+      "package": "@tokscale/cli-linux-arm64-gnu",
       "sha256": "f345d149052489f55b3379b30dde43c44b077cde39ee57d81fe1c33889f21367"
     },
     "linux-arm64-musl": {
-      "package": "@tokscale/cli-linux-arm64-musl",
       "asset": "tokscale-linux-arm64-musl",
+      "package": "@tokscale/cli-linux-arm64-musl",
       "sha256": "e10fd248553587d92a46d7bb16f60d3a19b215d8b72dd016971ee81a7a3b90a0"
     },
     "linux-x64": {
-      "package": "@tokscale/cli-linux-x64-gnu",
       "asset": "tokscale-linux-x64",
+      "package": "@tokscale/cli-linux-x64-gnu",
       "sha256": "ac432d4e1f369cda10961c003ac04b84ebfa3a2f9669d8802997e47b86a31f04"
     },
     "linux-x64-musl": {
-      "package": "@tokscale/cli-linux-x64-musl",
       "asset": "tokscale-linux-x64-musl",
+      "package": "@tokscale/cli-linux-x64-musl",
       "sha256": "21f1bf46e6fdcd6ac49b7062795aadcc523d477c75165b795d03e93a0989ae2a"
     },
     "win32-arm64": {
-      "package": "@tokscale/cli-win32-arm64-msvc",
       "asset": "tokscale-win32-arm64.exe",
+      "package": "@tokscale/cli-win32-arm64-msvc",
       "sha256": "52cb5582d0a191c1ce6f11e856b01fa93b34f47f2ccda064f2aa9774eaf9ccfb"
     },
     "win32-x64": {
-      "package": "@tokscale/cli-win32-x64-msvc",
       "asset": "tokscale-win32-x64.exe",
+      "package": "@tokscale/cli-win32-x64-msvc",
       "sha256": "5887f4fae41d5ae4ca684c4a50af96dff9b633fbf9942cd827eca9736765d97a"
     }
-  }
+  },
+  "releaseTag": "token-monitor-fa5f0c13"
 }

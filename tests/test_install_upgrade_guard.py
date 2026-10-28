@@ -478,6 +478,7 @@ mv() {{
 python3() {{
     case "$1" in
         scripts/check-build-target-idle.py) [ "$failure" != idle ] ;;
+        scripts/check-upgrade-identity.py) [ "$failure" != identity ] ;;
         scripts/write-install-receipt.py)
             echo receipt >> "$fixture_events"
             case "$failure" in receipt|withdraw|restore) return 1 ;; esac
@@ -511,7 +512,7 @@ open() {{ echo open >> "$fixture_events"; }}
         self.assertFalse(self.prev.exists())
 
     def test_copy_codesign_idle_aside_and_promote_failures_never_write_receipt(self):
-        for failure in ("copy", "codesign", "idle", "aside", "promote"):
+        for failure in ("copy", "codesign", "identity", "idle", "aside", "promote"):
             with self.subTest(failure=failure):
                 self._bundle(self.dest, APP_NAME, "old")
                 result, events = self._run(failure)

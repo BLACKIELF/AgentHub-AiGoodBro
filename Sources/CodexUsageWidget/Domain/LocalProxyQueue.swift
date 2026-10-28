@@ -37,6 +37,8 @@ struct LocalProxyQuotaWindow: Identifiable, Equatable {
 struct LocalProxyPreferences: Codable {
     var schemaVersion = 1
     var isEnabled = false
+    // Existing installations stay opt-in; this does not start the proxy on launch.
+    var automaticRecoveryEnabled: Bool? = nil
     var order: [String] = []
     var enabledIDs: Set<String> = []
     var knownIDs: Set<String> = []

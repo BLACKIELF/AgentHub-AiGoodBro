@@ -465,12 +465,12 @@ struct UpstreamTrendView: View {
             guard needsRender else { return }
             if dashboardJSON != incoming {
                 let data = incoming.data(using: .utf8)
-                let object = data.flatMap { $0.count <= 16 * 1_024 * 1_024 ? (try? JSONSerialization.jsonObject(with: $0)) : nil } as? [String: Any]
+                let object = data.flatMap { $0.count <= TokenMonitorEngine.maximumOutputBytes ? (try? JSONSerialization.jsonObject(with: $0)) : nil } as? [String: Any]
                 dashboardSnapshotIsValid = (object?["schemaVersion"] as? Int) == 1 && object?["payload"] is [String: Any]
                 dashboardSnapshotRevision &+= 1
                 transferredDashboardID = nil
                 homeSummaryCost = nil
-                if homeDashboard, let data, data.count <= 16 * 1_024 * 1_024, let response = try? JSONDecoder().decode(TokenMonitorResponse.self, from: data) {
+                if homeDashboard, let data, data.count <= TokenMonitorEngine.maximumOutputBytes, let response = try? JSONDecoder().decode(TokenMonitorResponse.self, from: data) {
                     // Use exactly the same cumulative cost projection as the tray.
                     let cost = TokenMonitorDashboardSnapshot(response: response).value(for: .total, metric: .cost)
                     homeSummaryCost = ["value": cost.map { $0 as Any } ?? NSNull(), "status": response.coverage.cost.rawValue]

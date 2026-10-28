@@ -28,6 +28,8 @@ final class LocalCLIAccountStore: ObservableObject {
     private var loginVerification: Set<String> = []
     private var quotaAttemptedAt: [String: Date] = [:]
     private var quotaAttemptState: [String: LocalCLIQuotaState] = [:]
+    private var quotaServerRetryAt: [String: Date] = [:]
+    private var quotaServerRetryIdentity: [String: String] = [:]
     private var quotaCredentialVersions: [String: CredentialVersion] = [:]
     private var queuedCredentialRefresh: Set<String> = []
     private var saved: [LocalCLIProfile] = []
@@ -223,6 +225,7 @@ final class LocalCLIAccountStore: ObservableObject {
             (try? claudeService.isCurrent(current)) == true
         {
             claudeActiveProfileID = profiles.first { $0.claudeSubscription?.identityFingerprint == current.fingerprint }?.id
+            clearClaudeRetryForChangedIdentity(current)
             return
         }
         claudeCurrent = nil
@@ -241,11 +244,32 @@ final class LocalCLIAccountStore: ObservableObject {
                     self.profiles.first {
                         $0.claudeSubscription?.identityFingerprint == current.fingerprint
                     }?.id
+                self.clearClaudeRetryForChangedIdentity(current)
             } catch {
                 guard !Task.isCancelled else { return }
                 self.claudeCurrent = nil
                 self.claudeActiveProfileID = nil
             }
+        }
+    }
+
+    private func clearClaudeRetryForChangedIdentity(_ current: ClaudeSubscriptionService.VerifiedCurrent) {
+        // Only the verified default login can replace this identity. A token
+        // rotation, file timestamp or unreadable identity is never permission
+        // to bypass a server deadline. Saved subscriptions retain their own UUID.
+        for profile in profiles where profile.kind == .claudeCode && profile.isDefault {
+            guard let previous = quotaServerRetryIdentity[profile.id], previous != current.fingerprint else { continue }
+            quotaServerRetryAt.removeValue(forKey: profile.id)
+            quotaServerRetryIdentity.removeValue(forKey: profile.id)
+            quotaAttemptedAt.removeValue(forKey: profile.id)
+            quotaAttemptState.removeValue(forKey: profile.id)
+            tasks.removeValue(forKey: profile.id)?.cancel()
+            requests.removeValue(forKey: profile.id)
+            refreshing.remove(profile.id)
+            queuedCredentialRefresh.remove(profile.id)
+            quotas.removeValue(forKey: profile.id)
+            stale.remove(profile.id)
+            refresh(profile)
         }
     }
 
@@ -259,6 +283,8 @@ final class LocalCLIAccountStore: ObservableObject {
             quotaCredentialVersions.removeValue(forKey: profile.id)
             quotaAttemptedAt.removeValue(forKey: profile.id)
             quotaAttemptState.removeValue(forKey: profile.id)
+            quotaServerRetryAt.removeValue(forKey: profile.id)
+            quotaServerRetryIdentity.removeValue(forKey: profile.id)
         }
     }
 
@@ -867,7 +893,7 @@ final class LocalCLIAccountStore: ObservableObject {
             }
             if let attemptedAt = quotaAttemptedAt[profile.id] {
                 let elapsed = max(0, now.timeIntervalSince(attemptedAt))
-                if quotaAttemptState[profile.id] == .rateLimited, elapsed < 15 * 60 { continue }
+                if quotaRateLimitIsActive(profileID: profile.id, now: now) { continue }
                 // Successful reads use the original snapshot age below. A
                 // slow success must not add another 60 seconds after completion.
                 // Failed reads and rate limits retain their existing backoff.
@@ -1013,6 +1039,8 @@ final class LocalCLIAccountStore: ObservableObject {
             authenticationTasks.removeValue(forKey: profile.id)?.cancel()
             quotaAttemptedAt.removeValue(forKey: profile.id)
             quotaAttemptState.removeValue(forKey: profile.id)
+            quotaServerRetryAt.removeValue(forKey: profile.id)
+            quotaServerRetryIdentity.removeValue(forKey: profile.id)
             quotaCredentialVersions.removeValue(forKey: profile.id)
             queuedCredentialRefresh.remove(profile.id)
         }
@@ -1027,6 +1055,9 @@ final class LocalCLIAccountStore: ObservableObject {
         let currentAuthentication = authenticationReader.read(profile)
         authentication[profile.id] = currentAuthentication
         let requestCredentialVersion = credentialVersion(for: profile)
+        let requestClaudeIdentity = profile.claudeSubscription?.identityFingerprint
+            ?? (profile.kind == .claudeCode && profile.isDefault
+                ? claudeCurrent.flatMap { (try? claudeService.isCurrent($0)) == true ? $0.fingerprint : nil } : nil)
         let credentialsChanged = quotaCredentialVersions[profile.id].map { $0 != requestCredentialVersion } ?? false
         let authenticationChanged = previousAuthentication != nil && previousAuthentication != currentAuthentication
         if credentialsChanged || authenticationChanged {
@@ -1037,6 +1068,9 @@ final class LocalCLIAccountStore: ObservableObject {
             if credentialsChanged || authenticationChanged { queuedCredentialRefresh.insert(profile.id) }
             return
         }
+        // Manual refresh keeps its existing entry point but cannot send another
+        // quota request before this account's validated server deadline.
+        if profile.kind == .claudeCode, let retryAt = quotaServerRetryAt[profile.id], retryAt > clock() { return }
         quotaAttemptedAt[profile.id] = clock()
         quotaCredentialVersions[profile.id] = requestCredentialVersion
         let request = UUID()
@@ -1053,6 +1087,9 @@ final class LocalCLIAccountStore: ObservableObject {
             else { return }
             self.refreshing.remove(profile.id)
             if profile.kind == .claudeCode { self.reconcileClaudeIdentity() }
+            // Identity reconciliation may have invalidated this exact request
+            // and started the replacement account's read.
+            guard !Task.isCancelled, self.requests[profile.id] == request else { return }
             self.tasks.removeValue(forKey: profile.id)
             let queuedRefresh = self.queuedCredentialRefresh.remove(profile.id) != nil
             if self.credentialVersion(for: profile) != requestCredentialVersion || queuedRefresh {
@@ -1061,9 +1098,7 @@ final class LocalCLIAccountStore: ObservableObject {
                 self.stale.remove(profile.id)
                 self.quotaCredentialVersions.removeValue(forKey: profile.id)
                 let now = self.clock()
-                let previousRateLimitStillActive =
-                    self.quotaAttemptState[profile.id] == .rateLimited
-                    && self.quotaAttemptedAt[profile.id].map { max(0, now.timeIntervalSince($0)) < 15 * 60 } == true
+                let previousRateLimitStillActive = self.quotaRateLimitIsActive(profileID: profile.id, now: now)
                 if loaded.state == .rateLimited {
                     self.quotaAttemptedAt[profile.id] = now
                     self.quotaAttemptState[profile.id] = .rateLimited
@@ -1082,7 +1117,7 @@ final class LocalCLIAccountStore: ObservableObject {
                 profile.kind == .grok
                 ? self.grokObservationReader.load(from: self.support, now: now)
                 : nil
-            let result = GrokResetStatusMerger.merge(
+            var result = GrokResetStatusMerger.merge(
                 previous: previous,
                 incoming: loaded,
                 profileKind: profile.kind,
@@ -1090,6 +1125,17 @@ final class LocalCLIAccountStore: ObservableObject {
                 now: now)
             self.quotaAttemptedAt[profile.id] = now
             self.quotaAttemptState[profile.id] = loaded.state
+            if profile.kind == .claudeCode, loaded.state == .rateLimited, let retryAt = loaded.serverRetryAt,
+                retryAt.timeIntervalSince1970.isFinite,
+                (0...ClaudeSubscriptionService.maximumQuotaRetryDelay).contains(retryAt.timeIntervalSince(now)), retryAt > now
+            {
+                self.quotaServerRetryAt[profile.id] = retryAt
+                self.quotaServerRetryIdentity[profile.id] = loaded.identityFingerprint ?? requestClaudeIdentity
+            } else {
+                self.quotaServerRetryAt.removeValue(forKey: profile.id)
+                self.quotaServerRetryIdentity.removeValue(forKey: profile.id)
+            }
+            result.serverRetryAt = self.quotaServerRetryAt[profile.id]
             if self.loginVerification.remove(profile.id) != nil {
                 self.loginMessages[profile.id] =
                     result.state == .available
@@ -1109,12 +1155,23 @@ final class LocalCLIAccountStore: ObservableObject {
                 self.quotaCredentialVersions.removeValue(forKey: profile.id)
             }
             if !credentialSourceChanged, result.state != .available, result.state != .needsLogin, previous?.state == .available {
+                // Keep the quota and its original timestamp while separately
+                // publishing why the latest refresh is waiting.
+                var snapshot = previous!
+                snapshot.serverRetryAt = result.serverRetryAt
+                self.quotas[profile.id] = snapshot
                 self.stale.insert(profile.id)
             } else {
                 self.quotas[profile.id] = result
                 self.stale.remove(profile.id)
             }
         }
+    }
+
+    private func quotaRateLimitIsActive(profileID: String, now: Date) -> Bool {
+        if let retryAt = quotaServerRetryAt[profileID], retryAt > now { return true }
+        return quotaAttemptState[profileID] == .rateLimited
+            && quotaAttemptedAt[profileID].map { max(0, now.timeIntervalSince($0)) < 15 * 60 } == true
     }
 
     func sharesQuota(_ profile: LocalCLIProfile) -> Bool {
@@ -1264,6 +1321,8 @@ final class LocalCLIAccountStore: ObservableObject {
         loginMessages = loginMessages.filter { retainedIDs.contains($0.key) }
         quotaAttemptedAt = quotaAttemptedAt.filter { retainedIDs.contains($0.key) }
         quotaAttemptState = quotaAttemptState.filter { retainedIDs.contains($0.key) }
+        quotaServerRetryAt = quotaServerRetryAt.filter { retainedIDs.contains($0.key) }
+        quotaServerRetryIdentity = quotaServerRetryIdentity.filter { retainedIDs.contains($0.key) }
         quotaCredentialVersions = quotaCredentialVersions.filter { retainedIDs.contains($0.key) }
         queuedCredentialRefresh.formIntersection(retainedIDs)
     }

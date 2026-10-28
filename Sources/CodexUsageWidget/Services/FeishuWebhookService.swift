@@ -299,6 +299,54 @@ final class FeishuKeychainInteraction {
     }
 }
 
+/// UI-owned, bounded silent retries. This never authorizes or sends a message.
+/// A generation fence also rejects work already dequeued when settings change.
+final class MessageCredentialRetry {
+    private var pending: DispatchWorkItem?
+    private var generation = UUID()
+    private var attempt = 0
+    private let schedule: (TimeInterval, DispatchWorkItem) -> Void
+
+    init(
+        schedule: @escaping (TimeInterval, DispatchWorkItem) -> Void = { delay, work in
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+        }
+    ) {
+        self.schedule = schedule
+    }
+
+    func cancel(resetDelay: Bool = true) {
+        generation = UUID()
+        pending?.cancel()
+        pending = nil
+        if resetDelay { attempt = 0 }
+    }
+
+    func retry(after error: FeishuWebhookError, _ operation: @escaping () -> Void) {
+        switch error {
+        case .keychainBusy, .keychainTimedOut, .keychainAuthorizationRequired: break
+        case .keychain(let status) where status == errSecNotAvailable: break
+        default:
+            cancel()
+            return
+        }
+        guard pending == nil else { return }
+        let delays: [TimeInterval] = [2, 10, 30, 60]
+        let delay = delays[attempt]
+        attempt = min(attempt + 1, delays.count - 1)
+        let token = generation
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.generation == token else { return }
+            self.pending = nil
+            operation()
+        }
+        pending = work
+        schedule(delay, work)
+    }
+
+    deinit { pending?.cancel() }
+}
+
 final class FeishuWebhookService {
     static let keychainService = "com.blackielf.codex-account-manager-next.feishu-webhook"
 
@@ -505,7 +553,18 @@ final class FeishuWebhookService {
     ) {
         credentialLock.lock()
         let generation = credentialGeneration
+        let cached = authorizedWebhook
         credentialLock.unlock()
+        // An already authorized endpoint must not queue behind another channel's
+        // system dialog. Invalidation still fences the asynchronous completion.
+        if let cached {
+            DispatchQueue.main.async {
+                completion(
+                    self.isCurrentCredential(generation)
+                        ? .success(Credential(endpoint: cached, generation: generation)) : .failure(.cancelled))
+            }
+            return
+        }
         guard keychainCapacity.wait(timeout: .now()) == .success else {
             DispatchQueue.main.async {
                 completion(.failure(self.isCurrentCredential(generation) ? .keychainBusy : .cancelled))
@@ -536,7 +595,12 @@ final class FeishuWebhookService {
                         guard self.isCurrentCredential(generation) else { throw FeishuWebhookError.cancelled }
                         return try self.loadStoredWebhook()
                     }
-                guard self.isCurrentCredential(generation) else { throw FeishuWebhookError.cancelled }
+                guard !read.isFinished else { return }
+                self.credentialLock.lock()
+                let stillCurrent = self.credentialGeneration == generation
+                if stillCurrent { self.authorizedWebhook = endpoint }
+                self.credentialLock.unlock()
+                guard stillCurrent else { throw FeishuWebhookError.cancelled }
                 read.finish(.success(Credential(endpoint: endpoint, generation: generation)))
             } catch let error as FeishuWebhookError {
                 read.finish(.failure(error))
@@ -1906,6 +1970,30 @@ enum FeishuWebhookServiceSelfTest {
             result?.pointee = Data(endpoint.utf8) as CFData
             return errSecSuccess
         }
+        // A successful silent startup read must be reused in memory. A later
+        // locked/busy Keychain must not turn a ready channel into a password flow.
+        var silentReads = 0
+        let silent = FeishuWebhookService(sessionConfiguration: configuration, keychainInteraction: interaction) { _, result in
+            silentReads += 1
+            guard silentReads == 1 else { return errSecInteractionNotAllowed }
+            result?.pointee = Data(endpoint.utf8) as CFData
+            return errSecSuccess
+        }
+        var silentProbe: Result<Bool, FeishuWebhookError>?
+        silent.hasStoredWebhook { silentProbe = $0 }
+        waitUntil { silentProbe != nil }
+        var silentSecondProbe: Result<Bool, FeishuWebhookError>?
+        silent.hasStoredWebhook { silentSecondProbe = $0 }
+        waitUntil { silentSecondProbe != nil }
+        if case .success(true)? = silentSecondProbe {} else { failures.append("successful silent read was not cached") }
+        expect(silentReads == 1, "ready connection unnecessarily reread Keychain")
+        silent.invalidateCredentialCache()
+        var silentInvalidated: Result<Bool, FeishuWebhookError>?
+        silent.hasStoredWebhook { silentInvalidated = $0 }
+        waitUntil { silentInvalidated != nil }
+        if case .failure(.keychainAuthorizationRequired)? = silentInvalidated {} else { failures.append("invalidated silent cache reused an old credential") }
+        // Keep the subsequent explicit-authorization policy assertions isolated.
+        policy.removeAll()
         let requestsBefore = FeishuWebhookTestProtocol.requestCount
         var probe: Result<Bool, FeishuWebhookError>?
         service.hasStoredWebhook { probe = $0 }

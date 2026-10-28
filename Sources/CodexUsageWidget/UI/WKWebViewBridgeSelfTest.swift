@@ -181,7 +181,7 @@ enum WKWebViewBridgeSelfTest {
         let fixture = """
             {"schemaVersion":1,"collectedAt":"2026-09-28T10:00:00Z","timezone":"Asia/Shanghai","coverage":{"cost":"known"},
             "payload":{"aggregate":{"history":{"daily":[{"date":"2026-09-27","tokens":20,"cost":1,"perClient":{"codex":{"tokens":20}}},
-            {"date":"2026-09-28","tokens":30,"cost":2,"perClient":{"kimi":{"tokens":30}}}],"summary":{"totalTokens":15000000000,"totalCost":3}}}}}
+            {"date":"2026-09-28","tokens":30,"cost":2,"perClient":{"kimi":{"tokens":30}}}],"summary":{"totalTokens":15000000000,"totalCost":3,"activeTimeMs":3720000}}}}}
             """
         var received: [HomeDashboardPreferences] = []
         renderer.onHomePreferences = { received.append($0) }
@@ -214,6 +214,67 @@ enum WKWebViewBridgeSelfTest {
             }
             wait(on: done, seconds: 5)
             return result
+        }
+        for (duration, expected) in [("3720000", "1h 2m"), ("null", "—"), ("0", "0m"), ("3720000", "1h 2m")] {
+            let input = fixture.replacingOccurrences(of: "\"activeTimeMs\":3720000", with: "\"activeTimeMs\":\(duration)")
+            renderer.update(dashboardJSON: input, resetAnnotations: [], height: 380, homePreferences: .init())
+            let durationDeadline = Date().addingTimeInterval(3)
+            while Date() < durationDeadline {
+                if evaluateValue("document.querySelectorAll('.dash-card-v')[4]?.textContent") as? String == expected { break }
+                RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+            }
+            guard evaluateValue("document.querySelectorAll('.dash-card-v')[4]?.textContent") as? String == expected else {
+                print("Home dashboard native bridge failed: duration value or unknown state")
+                return false
+            }
+        }
+        // The desktop provider can report this literal as a model placeholder.
+        // Check the actual WebKit DOM, including the hover path, after transport
+        // through the production native renderer.
+        let placeholderFixture = fixture
+            .replacingOccurrences(of: "\"perClient\":{\"codex\":{\"tokens\":20}}",
+                                  with: "\"perClient\":{\"codex\":{\"tokens\":20}},\"perModel\":{\"<synthetic>\":{\"tokens\":20}}")
+            .replacingOccurrences(of: "\"activeTimeMs\":3720000", with: "\"activeTimeMs\":3720000,\"favoriteModel\":\"<synthetic>\"")
+        var modelPreferences = HomeDashboardPreferences()
+        modelPreferences.stackBy = "model"
+        renderer.update(dashboardJSON: placeholderFixture, resetAnnotations: [], height: 380, homePreferences: modelPreferences)
+        let placeholderDeadline = Date().addingTimeInterval(5)
+        while Date() < placeholderDeadline {
+            if evaluateValue("document.querySelector('.dash-legend-name')?.textContent") as? String == "<synthetic>" { break }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+        }
+        guard let placeholder = evaluate(
+            """
+            (() => {
+              document.getElementById('breakdownDetails').open = true;
+              const hit = document.querySelector('#dashChart .bar-hover');
+              hit?.dispatchEvent(new MouseEvent('mousemove', {bubbles:true, clientX:20, clientY:20}));
+              const card = document.querySelectorAll('.dash-card-v')[6];
+              const legend = document.querySelector('.dash-legend-name');
+              const breakdown = Array.from(document.querySelectorAll('.dash-bd-name')).find(el => el.textContent === '<synthetic>');
+              const tooltip = Array.from(document.querySelectorAll('#dashTooltip .tt-name')).find(el => el.textContent === '<synthetic>');
+              return {card:card?.textContent, legend:legend?.textContent, breakdown:breakdown?.textContent,
+                tooltip:tooltip?.textContent, escaped:card?.innerHTML.includes('&lt;synthetic&gt;') &&
+                  legend?.innerHTML.includes('&lt;synthetic&gt;') && breakdown?.innerHTML.includes('&lt;synthetic&gt;') &&
+                  tooltip?.innerHTML.includes('&lt;synthetic&gt;'), injected:!!document.querySelector('synthetic')};
+            })()
+            """), placeholder["card"] as? String == "<synthetic>", placeholder["legend"] as? String == "<synthetic>",
+            placeholder["breakdown"] as? String == "<synthetic>", placeholder["tooltip"] as? String == "<synthetic>",
+            placeholder["escaped"] as? Bool == true, placeholder["injected"] as? Bool == false
+        else {
+            print("Home dashboard native bridge failed: model placeholder text escaping")
+            return false
+        }
+        print("Home dashboard model placeholder passed: card, legend, breakdown and hover display escaped text")
+        renderer.update(dashboardJSON: fixture, resetAnnotations: [], height: 380, homePreferences: .init())
+        let restoreDeadline = Date().addingTimeInterval(5)
+        while Date() < restoreDeadline {
+            if evaluateValue("document.querySelectorAll('.dash-card-v')[6]?.textContent") as? String != "<synthetic>" { break }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+        }
+        guard evaluateValue("document.querySelectorAll('.dash-card-v')[6]?.textContent") as? String != "<synthetic>" else {
+            print("Home dashboard native bridge failed: original snapshot restoration")
+            return false
         }
         guard
             let initial = evaluate(
@@ -458,6 +519,58 @@ enum WKWebViewBridgeSelfTest {
             print("Home dashboard native bridge failed: native preview fallback after desktop option removal")
             return false
         }
+        // Exercise the complete production renderer with bounded snapshots that
+        // exceed the former 16 MiB ceiling. Native cumulative cost must travel
+        // with the snapshot rather than silently falling back to history cost.
+        guard let fixtureData = fixture.data(using: .utf8),
+            var largeObject = (try? JSONSerialization.jsonObject(with: fixtureData)) as? [String: Any],
+            var payload = largeObject["payload"] as? [String: Any],
+            var aggregate = payload["aggregate"] as? [String: Any]
+        else { return false }
+        largeObject["requestId"] = "large-dashboard-fixture"
+        largeObject["engine"] = ["repository": "Javis603/token-monitor", "commit": TokenMonitorResponse.commit, "version": "fixture"]
+        largeObject["status"] = "partial"
+        largeObject["sources"] = []
+        largeObject["errors"] = []
+        largeObject["coverage"] = ["entries": [], "days": [], "cost": "known"]
+        for (index, size) in [18 * 1_024 * 1_024, 32 * 1_024 * 1_024].enumerated() {
+            let expectedCost = Double(41 + index)
+            aggregate["allTime"] = ["costUsd": expectedCost]
+            payload["aggregate"] = aggregate
+            largeObject["payload"] = payload
+            guard let bytes = try? JSONSerialization.data(withJSONObject: largeObject),
+                let json = String(data: bytes, encoding: .utf8)
+            else { return false }
+            let large = json + String(repeating: " ", count: size - bytes.count)
+            let previousSnapshot = evaluateValue("window.AiGoodBroDashboard.snapshotID") as? String
+            renderer.update(dashboardJSON: large, resetAnnotations: [], height: 480, language: .en, homePreferences: widths)
+            let largeDeadline = Date().addingTimeInterval(15)
+            while Date() < largeDeadline, renderer.state != .failed(.invalidData) {
+                if renderer.state == .ready,
+                    evaluateValue("window.AiGoodBroDashboard.snapshotID") as? String != previousSnapshot,
+                    evaluateValue("window.AiGoodBroDashboard.history.summary.totalCost") as? Double == expectedCost
+                {
+                    break
+                }
+                RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+            }
+            guard renderer.state == .ready,
+                evaluateValue("window.AiGoodBroDashboard.snapshotID") as? String != previousSnapshot,
+                evaluateValue("window.AiGoodBroDashboard.history.summary.totalCost") as? Double == expectedCost,
+                evaluateValue("!!document.querySelector('#dashHeatmap svg') && !!document.querySelector('#dashChart svg')") as? Bool == true
+            else {
+                print("Home dashboard native bridge failed: large snapshot transport or cumulative cost (\(size) bytes)")
+                return false
+            }
+        }
+        let oversized = fixture + String(repeating: " ", count: 32 * 1_024 * 1_024 + 1 - fixture.utf8.count)
+        renderer.update(dashboardJSON: oversized, resetAnnotations: [], height: 480, homePreferences: widths)
+        guard renderer.state == .failed(.invalidData) else {
+            print("Home dashboard native bridge failed: oversized snapshot was accepted")
+            return false
+        }
+        print("Home dashboard bounds passed: 18 MiB and 32 MiB render with native cost; 32 MiB plus one byte is rejected")
+
         print(
             "Home dashboard native bridge passed: atomic tray token/USD/CNY totals, exact integers, unknown/zero, saved metric widths, split panes, guarded callbacks and snapshot reuse"
         )
@@ -471,12 +584,21 @@ enum WKWebViewBridgeSelfTest {
         let support = root.appendingPathComponent("support", isDirectory: true)
         let producer = root.appendingPathComponent("fixture-helper")
         let responseURL = support.appendingPathComponent("reply.json")
-        let controller = TokenMonitorDesktopController(executableOverride: producer, supportDirectoryOverride: support, startupAttempts: 40)
+        let initialScope = String(repeating: "b", count: 64)
+        let controller = TokenMonitorDesktopController(
+            executableOverride: producer, supportDirectoryOverride: support, startupAttempts: 40,
+            homePendingLimitSeconds: 0.05)
         defer {
             controller.shutdown()
             try? FileManager.default.removeItem(at: root)
         }
         func writeResponse(_ object: [String: Any]) throws {
+            var object = object
+            if object["homeUsageScope"] == nil { object["homeUsageScope"] = initialScope }
+            if var snapshot = object["homeUsage"] as? [String: Any], snapshot["scopeKey"] == nil {
+                snapshot["scopeKey"] = initialScope
+                object["homeUsage"] = snapshot
+            }
             try JSONSerialization.data(withJSONObject: object).write(to: responseURL, options: .atomic)
         }
         func waitFor(_ condition: () -> Bool, seconds: Double = 4) -> Bool {
@@ -526,6 +648,80 @@ enum WKWebViewBridgeSelfTest {
             try writeResponse(["ready": true, "allTimeTokens": 27_123_456_789, "allTimeCostUsd": 19732.09])
             guard waitFor({ controller.allTimeUsage == .init(totalTokens: 27_123_456_789, totalCostUSD: 19732.09) })
             else { throw TotalsFixtureFailure.failed("snapshot polling") }
+            let homeJSON = """
+                {"schemaVersion":1,"authority":"token-monitor-desktop","coverage":{"tokens":"known","cost":"known"},"payload":{"aggregate":{"allTime":{"totalTokens":27123456789,"costUsd":19732.09},"history":{"daily":[],"summary":{"totalTokens":27123456789,"totalCost":19732.09}}}}}
+                """
+            let homeRevision = String(repeating: "a", count: 64)
+            try writeResponse(["ready": true, "homeUsage": ["pending": true]])
+            var homeReadDone = false
+            Task { await controller.refreshHomeUsage(); homeReadDone = true }
+            guard waitFor({ homeReadDone }), controller.homeUsage.phase == .pending,
+                controller.homeUsage.dashboardJSON == nil
+            else { throw TotalsFixtureFailure.failed("first pending has no charts") }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+            homeReadDone = false
+            Task { await controller.refreshHomeUsage(); homeReadDone = true }
+            guard waitFor({ homeReadDone }), controller.homeUsage.phase == .delayed,
+                controller.homeUsage.dashboardJSON == nil
+            else { throw TotalsFixtureFailure.failed("first long pending is explicit") }
+            try writeResponse(["ready": true, "allTimeTokens": 27_123_456_789, "allTimeCostUsd": 19732.09,
+                               "homeUsage": ["revision": homeRevision, "dashboardJSON": homeJSON]])
+            homeReadDone = false
+            Task { await controller.refreshHomeUsage(); homeReadDone = true }
+            guard waitFor({ homeReadDone }), controller.homeUsage.phase == .ready,
+                controller.homeUsage.dashboardJSON == homeJSON
+            else { throw TotalsFixtureFailure.failed("shared home snapshot") }
+            try writeResponse(["ready": true, "homeUsage": ["pending": true]])
+            homeReadDone = false
+            Task { await controller.refreshHomeUsage(); homeReadDone = true }
+            guard waitFor({ homeReadDone }), controller.homeUsage.phase == .pending,
+                controller.homeUsage.dashboardJSON == homeJSON, controller.homeUsage.revision == homeRevision
+            else { throw TotalsFixtureFailure.failed("same-scope pending keeps previous charts") }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+            homeReadDone = false
+            Task { await controller.refreshHomeUsage(); homeReadDone = true }
+            guard waitFor({ homeReadDone }), controller.homeUsage.phase == .delayed,
+                controller.homeUsage.dashboardJSON == homeJSON
+            else { throw TotalsFixtureFailure.failed("long pending is explicit and keeps previous charts") }
+            try writeResponse(["ready": true, "homeUsage": ["revision": homeRevision, "unchanged": true]])
+            homeReadDone = false
+            Task { await controller.refreshHomeUsage(); homeReadDone = true }
+            guard waitFor({ homeReadDone }), controller.homeUsage.phase == .ready, controller.homeUsage.dashboardJSON == homeJSON
+            else { throw TotalsFixtureFailure.failed("unchanged home keeps cached charts") }
+            try writeResponse(["ready": true, "homeUsage": ["revision": homeRevision,
+                               "dashboardJSON": homeJSON.replacingOccurrences(of: "\"daily\":[]", with: "\"daily\":[],\"prompt\":\"must-not-cross\"")]])
+            homeReadDone = false
+            Task { await controller.refreshHomeUsage(); homeReadDone = true }
+            guard waitFor({ homeReadDone }), controller.homeUsage.phase == .unavailable,
+                controller.homeUsage.dashboardJSON == homeJSON
+            else { throw TotalsFixtureFailure.failed("unsafe home snapshot rejected without corrupting cache") }
+            try writeResponse(["ready": true, "homeUsage": ["pending": true]])
+            homeReadDone = false
+            Task { await controller.refreshHomeUsage(); homeReadDone = true }
+            guard waitFor({ homeReadDone }), controller.homeUsage.phase == .unavailable,
+                controller.homeUsage.dashboardJSON == homeJSON
+            else { throw TotalsFixtureFailure.failed("pending cannot conceal a previous failure") }
+            try writeResponse(["ready": true, "homeUsage": ["revision": homeRevision, "unchanged": true]])
+            homeReadDone = false
+            Task { await controller.refreshHomeUsage(); homeReadDone = true }
+            guard waitFor({ homeReadDone }), controller.homeUsage.phase == .ready,
+                controller.homeUsage.dashboardJSON == homeJSON
+            else { throw TotalsFixtureFailure.failed("successful unchanged response clears failure") }
+            try writeResponse(["ready": true, "homeUsage": ["scopeKey": String(repeating: "c", count: 64), "pending": true]])
+            homeReadDone = false
+            Task { await controller.refreshHomeUsage(); homeReadDone = true }
+            guard waitFor({ homeReadDone }), controller.homeUsage.phase == .unavailable,
+                controller.homeUsage.dashboardJSON == nil
+            else { throw TotalsFixtureFailure.failed("mismatched reply scope clears previous charts") }
+            try writeResponse(["ready": true, "homeUsage": ["revision": homeRevision, "dashboardJSON": homeJSON]])
+            homeReadDone = false
+            Task { await controller.refreshHomeUsage(); homeReadDone = true }
+            guard waitFor({ homeReadDone }), controller.homeUsage.phase == .ready,
+                controller.homeUsage.dashboardJSON == homeJSON
+            else { throw TotalsFixtureFailure.failed("valid reply restores same-scope charts") }
+            try writeResponse(["ready": true, "homeUsageScope": String(repeating: "c", count: 64)])
+            guard waitFor({ controller.homeUsage.dashboardJSON == nil })
+            else { throw TotalsFixtureFailure.failed("changed scope clears previous charts") }
             try writeResponse(["ready": true, "allTimeCostUsd": 1.25])
             guard waitFor({ controller.allTimeUsage == .init(totalTokens: nil, totalCostUSD: 1.25) }), controller.isReady
             else { throw TotalsFixtureFailure.failed("connected token evidence loss") }
@@ -535,6 +731,8 @@ enum WKWebViewBridgeSelfTest {
             try writeResponse(["ready": false])
             guard waitFor({ !controller.isReady && controller.allTimeUsage == .init(totalTokens: nil, totalCostUSD: nil) }, seconds: 5)
             else { throw TotalsFixtureFailure.failed("missed-status stale clearing") }
+            guard controller.homeUsage.dashboardJSON == nil, controller.homeUsage.phase == .unavailable
+            else { throw TotalsFixtureFailure.failed("disconnected home snapshot cleared and unavailable") }
             try writeResponse(["ready": true, "allTimeTokens": 28_123_456_789, "allTimeCostUsd": 20732.09])
             guard waitFor({ controller.isReady && controller.allTimeUsage == .init(totalTokens: 28_123_456_789, totalCostUSD: 20732.09) })
             else { throw TotalsFixtureFailure.failed("status recovery") }

@@ -47,6 +47,7 @@ final class AntigravityProxyStore: ObservableObject {
     private var input: FileHandle?
     private var outputTask: Task<Void, Never>?
     private var runID: UUID?
+    private var forceTerminationRequested = false
     private var signInSession: String?
     private var signInCancelling = false
     private var revoked = Set<String>()
@@ -77,7 +78,7 @@ final class AntigravityProxyStore: ObservableObject {
     }
 
     func start(networkProxy: String = "") async {
-        guard canStart else { return }
+        guard !forceTerminationRequested, canStart else { return }
         phase = .starting
         issue = nil
         do {
@@ -144,6 +145,7 @@ final class AntigravityProxyStore: ObservableObject {
             }
             if runID == run, phase == .starting { throw AntigravityProxyFailure.connection }
         } catch {
+            guard !forceTerminationRequested else { return }
             stop()
             phase = .failed
             issue = Self.message(for: error)
@@ -151,6 +153,7 @@ final class AntigravityProxyStore: ObservableObject {
     }
 
     func stop() {
+        guard !forceTerminationRequested else { return }
         signInSession = nil
         signInProvider = nil
         signInCancelling = false
@@ -186,6 +189,28 @@ final class AntigravityProxyStore: ObservableObject {
 
     /// The caller owns any confirmation for interrupting live requests.
     /// Only this store's exact child is stopped; no system CLI is searched.
+    func forceStopForConfirmedTermination() {
+        forceTerminationRequested = true
+        runID = nil
+        signInSession = nil
+        signInProvider = nil
+        signInCancelling = false
+        signInPending = false
+        authorizationUserCode = nil
+        outputTask?.cancel()
+        phase = .failed
+        // EOF does not wait for space in a full helper input pipe. The exact
+        // held Process objects include a previous child already terminating.
+        try? input?.close()
+        input = nil
+        if let child = process, child.isRunning, child.processIdentifier > 1 {
+            _ = kill(child.processIdentifier, SIGKILL)
+        }
+        if let child = terminatingProcess, child !== process, child.isRunning, child.processIdentifier > 1 {
+            _ = kill(child.processIdentifier, SIGKILL)
+        }
+    }
+
     func finishForTermination() async {
         stop()
         for _ in 0..<50 {
@@ -577,6 +602,7 @@ final class AntigravityProxyStore: ObservableObject {
     }
 
     private func exited(run: UUID, child: Process) {
+        guard !forceTerminationRequested else { return }
         if terminatingProcess === child { terminatingProcess = nil }
         guard runID == run else { return }
         stop()

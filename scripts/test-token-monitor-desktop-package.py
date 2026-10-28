@@ -36,6 +36,12 @@ class AsarPackageTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Unsupported desktop runtime architecture"):
             PACKAGE.select_manifest(manifest, "i386")
 
+    def test_local_scanner_effective_pin_keeps_upstream_release_truth(self):
+        manifest = {'platforms': {'darwin-arm64': {'package': '@tokscale/cli-darwin-arm64', 'sha256': 'upstream'}, 'darwin-x64': {'sha256': 'intel-upstream'}}, 'localBackport': {'platforms': {'darwin-arm64': {'sha256': 'patched'}}}}
+        self.assertEqual(PACKAGE.effective_scanner_pin(manifest, 'arm64')['sha256'], 'patched')
+        self.assertEqual(PACKAGE.effective_scanner_pin(manifest, 'x64')['sha256'], 'intel-upstream')
+        self.assertEqual(manifest['platforms']['darwin-arm64']['sha256'], 'upstream')
+
     def test_round_trip_and_integrity_detection(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "app.asar"

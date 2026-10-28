@@ -15,7 +15,16 @@ enum LocalCLIAccountPresentation {
             + (currency.map { $0 == "CREDITS" ? language.text(" 点", " credits") : " " + $0 } ?? "")
     }
 
-    static func quotaExplanation(kind: LocalCLIKind, result: LocalCLIQuotaResult?, language: WidgetLanguage) -> String? {
+    static func quotaExplanation(kind: LocalCLIKind, result: LocalCLIQuotaResult?, language: WidgetLanguage, now: Date = Date()) -> String? {
+        if kind == .claudeCode, let retryAt = result?.serverRetryAt, retryAt.timeIntervalSince1970.isFinite {
+            return retryAt > now
+                ? language.text(
+                    "额度查询暂被限流；服务端允许在 \(language.dateTime(retryAt)) 后重试，无需重新登录。",
+                    "Quota requests are rate limited. The server allows a retry after \(language.dateTime(retryAt)); no new sign-in is needed.")
+                : language.text(
+                    "服务端等待时间已过，可刷新额度；限流无需重新登录。",
+                    "The server's waiting period has ended. Refresh the quota; no new sign-in is needed.")
+        }
         guard let code = result?.messageCode else { return nil }
         switch code {
         case "local_cli_usage_not_reported":

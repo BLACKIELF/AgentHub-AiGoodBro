@@ -240,7 +240,7 @@ enum LocalProxyCredentialReader {
         let expiresAt: Double
     }
     /// Probe reads never wait behind a writer or hold a gate across HTTP.
-    static func readForProbe(profile: CodexProfile, system: CodexProfile, allowDesktopAccount: Bool) throws -> Value {
+    static func readForProbe(profile: CodexProfile, system: CodexProfile, allowDesktopAccount: Bool, requireSystemIdentity: Bool = false) throws -> Value {
         guard CodexCredentialAccessGate.lock.try() else { throw LocalProxyFailure.credentialsBusy }
         defer { CodexCredentialAccessGate.lock.unlock() }
         let homes = Set([profile.codexHomeURL, system.codexHomeURL].map { CodexCredentialTransaction.canonical($0).path }).sorted()
@@ -251,11 +251,11 @@ enum LocalProxyCredentialReader {
             guard gate.try() else { throw LocalProxyFailure.credentialsBusy }
             held.append(gate)
         }
-        return try read(profile: profile, system: system, allowDesktopAccount: allowDesktopAccount, probeOnly: true)
+        return try read(profile: profile, system: system, allowDesktopAccount: allowDesktopAccount, probeOnly: true, requireSystemIdentity: requireSystemIdentity)
     }
     static func read(
         profile: CodexProfile, system: CodexProfile, now: Date = Date(), allowDesktopAccount: Bool = false, creditFloor: Int? = nil, allowPaidCredits: Bool = false,
-        policy: LocalProxyAccountPolicy = LocalProxyAccountPolicy(), deadline: TimeInterval? = nil, probeOnly: Bool = false
+        policy: LocalProxyAccountPolicy = LocalProxyAccountPolicy(), deadline: TimeInterval? = nil, probeOnly: Bool = false, requireSystemIdentity: Bool = false
     )
         throws -> Value
     {
@@ -268,6 +268,7 @@ enum LocalProxyCredentialReader {
                 let data = try readSnapshot(home: home),
                 let centralData = try readSnapshot(home: central),
                 let centralIdentity = CodexOfficialProfileReader.credentialIdentity(fromAuthData: centralData),
+                !requireSystemIdentity || system.matchesRecordedCredential(centralIdentity),
                 profile.matchesRecordedCredential(CodexOfficialProfileReader.credentialIdentity(fromAuthData: data))
             else { throw LocalProxyFailure.identity }
             // The enrolled Desktop account can have an invalidated managed

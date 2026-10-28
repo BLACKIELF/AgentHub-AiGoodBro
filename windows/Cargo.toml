@@ -3,7 +3,7 @@ members = ["crates/codexu-core", "crates/codexu-cli", "apps/codexu-tauri/src-tau
 resolver = "2"
 
 [workspace.package]
-version = "0.1.0"
+version = "2.5.3"
 edition = "2021"
 authors = ["Codex Account Manager Next contributors"]
 license = "MIT"

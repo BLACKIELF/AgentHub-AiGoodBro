@@ -661,7 +661,7 @@ final class UsageStore: ObservableObject {
     private var codexHistoryConfirmationTimeout: DispatchWorkItem?
     private var hasStarted = false
     private var pendingLaunchProfileID: String?
-    private var isMainWindowActive = false
+    @Published private(set) var isMainWindowActive = false
     private var lastFullRefreshCompletedAt: Date?
     private var fullRefreshCancellation: TokenMonitorCancellation?
     private var identityRefreshCancellation: TokenMonitorCancellation?
@@ -676,6 +676,8 @@ final class UsageStore: ObservableObject {
     private let feishuWebhookService = FeishuWebhookService()
     let messageChannels = MessageChannelsController()
     private var feishuConfigurationRevision = 0
+    private var feishuCredentialReadID: UUID?
+    private let feishuCredentialRetry = MessageCredentialRetry()
     private var feishuTaskCompletionObserver = FeishuTaskCompletionObserver()
     private let automationAuditStore = AccountAutomationAuditStore()
     private let terminalLauncher = TerminalAppLauncher()
@@ -4325,6 +4327,8 @@ final class UsageStore: ObservableObject {
         feishuConfigurationRevision += 1
         feishuTaskCompletionObserver = FeishuTaskCompletionObserver()
         feishuNotificationsEnabled = enabled
+        feishuCredentialReadID = nil
+        feishuCredentialRetry.cancel()
         if !enabled {
             feishuWebhookService.invalidateCredentialCache()
             feishuWebhookConfigured = false
@@ -4422,16 +4426,23 @@ final class UsageStore: ObservableObject {
     }
 
     private func refreshFeishuWebhookConfiguration() {
-        guard !isPreview, !isUpdatingFeishuConnection else { return }
-        feishuConfigurationRevision += 1
-        feishuTaskCompletionObserver = FeishuTaskCompletionObserver()
-        let revision = feishuConfigurationRevision
+        guard !isPreview, !isUpdatingFeishuConnection, !feishuWebhookConfigured, feishuCredentialReadID == nil else { return }
+        feishuCredentialRetry.cancel(resetDelay: false)
+        let readID = UUID()
+        feishuCredentialReadID = readID
         feishuWebhookService.hasStoredWebhook { [weak self] result in
-            guard let self, self.feishuConfigurationRevision == revision else { return }
+            // Content preferences invalidate delivery, not this independent read.
+            guard let self, self.feishuCredentialReadID == readID else { return }
+            self.feishuCredentialReadID = nil
             switch result {
             case .success(let configured):
+                self.feishuCredentialRetry.cancel()
                 self.feishuWebhookConfigured = configured
                 self.feishuNeedsAuthorization = false
+                if configured {
+                    self.feishuNotificationMessage = WidgetLanguage.storedOrAutomatic().text(
+                        "已恢复飞书本机连接；消息投递以发送结果为准。", "Saved Feishu connection restored; delivery is verified by send results.")
+                }
             case .failure(let error):
                 self.feishuWebhookConfigured = false
                 self.handleFeishuCredentialFailure(error)
@@ -4472,6 +4483,8 @@ final class UsageStore: ObservableObject {
     }
 
     private func beginFeishuConnectionUpdate() {
+        feishuCredentialReadID = nil
+        feishuCredentialRetry.cancel()
         isUpdatingFeishuConnection = true
         feishuConfigurationRevision += 1
         feishuNotificationMessage = WidgetLanguage.storedOrAutomatic().text(
@@ -4510,20 +4523,40 @@ final class UsageStore: ObservableObject {
         // for an already confirmed connection must not require setup again.
         store.feishuWebhookConfigured = true
         store.handleFeishuCredentialFailure(.transportFailed)
-        return store.feishuWebhookConfigured
+        guard store.feishuWebhookConfigured else { return false }
+        for error in [FeishuWebhookError.keychainBusy, .keychainTimedOut] {
+            store.feishuWebhookConfigured = true
+            store.feishuNeedsAuthorization = true
+            store.handleFeishuCredentialFailure(error)
+            guard !store.feishuWebhookConfigured, !store.feishuNeedsAuthorization else { return false }
+        }
+        store.handleFeishuCredentialFailure(.keychainAuthorizationRequired)
+        return store.feishuNeedsAuthorization
     }
 
     private func handleFeishuCredentialFailure(_ error: FeishuWebhookError) {
         feishuNotificationMessage = error.localizedDescription
         switch error {
-        case .keychainAuthorizationRequired, .keychainTimedOut, .keychainBusy:
+        case .keychainAuthorizationRequired:
             feishuWebhookConfigured = false
             feishuNeedsAuthorization = true
+        case .keychainTimedOut, .keychainBusy:
+            feishuWebhookConfigured = false
+            feishuNeedsAuthorization = false
+        case .keychain(let status) where status == errSecNotAvailable:
+            feishuWebhookConfigured = false
+            feishuNeedsAuthorization = false
         case .missingWebhook:
             feishuWebhookConfigured = false
             feishuNeedsAuthorization = false
         default:
             break
+        }
+        if hasStarted, !isPreview, feishuNotificationsEnabled, !feishuWebhookConfigured, !isUpdatingFeishuConnection {
+            feishuCredentialRetry.retry(after: error) { [weak self] in
+                guard let self, self.hasStarted, self.feishuNotificationsEnabled else { return }
+                self.refreshFeishuWebhookConfiguration()
+            }
         }
     }
 
@@ -6810,6 +6843,8 @@ final class UsageStore: ObservableObject {
                 queue: .main
             ) { [weak self] _ in
                 self?.checkResetCreditAuto()
+                if self?.feishuNotificationsEnabled == true { self?.refreshFeishuWebhookConfiguration() }
+                self?.messageChannels.recoverSavedConnections()
                 self?.codexInactiveSince = nil
                 self?.updateCodexForegroundState()
                 self?.taskClient.refreshThreads()
@@ -6952,6 +6987,8 @@ final class UsageStore: ObservableObject {
 
     @MainActor
     func stop() {
+        feishuCredentialReadID = nil
+        feishuCredentialRetry.cancel()
         feishuConfigurationRevision += 1
         feishuWebhookService.invalidateCredentialCache()
         feishuWebhookConfigured = false

@@ -1035,7 +1035,7 @@ func main() {
 		os.Exit(runDesktopAdapter(connectionPath, os.Args[1:]))
 	}
 	if len(os.Args) == 2 && os.Args[1] == "--version" {
-		_, _ = io.WriteString(os.Stdout, "AiGoodBro Local Proxy 1022v1; CLIProxyAPI v8.0.38\n")
+		_, _ = io.WriteString(os.Stdout, "AiGoodBro Local Proxy 1026v1; CLIProxyAPI v8.0.38 + metadata patch 9e79552\n")
 		return
 	}
 	logrus.SetOutput(io.Discard)

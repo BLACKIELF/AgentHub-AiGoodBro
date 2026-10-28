@@ -102,6 +102,25 @@ enum LocalProxyLegacyCooldownRecovery {
         return true
     }
 
+    private static func credentialQuota(_ row: [String: Any]) -> Bool {
+        guard let error = row["error"] as? [String: Any], Set(error.keys).isSubset(of: ["httpStatus", "credentialQuota", "absent"]),
+            let status = error["httpStatus"] as? NSNumber, CFGetTypeID(status) != CFBooleanGetTypeID(), status.doubleValue == 429,
+            boolean(error["credentialQuota"]) == true,
+            error["absent"] == nil || boolean(error["absent"]) == false
+        else { return false }
+        return true
+    }
+
+    private static func propagatedAbsence(_ row: [String: Any]) -> Bool {
+        guard boolean(row["credentialQuotaPropagated"]) == true,
+            let error = row["error"] as? [String: Any], Set(error.keys).isSubset(of: ["httpStatus", "credentialQuota", "absent"]),
+            let status = error["httpStatus"] as? NSNumber, CFGetTypeID(status) != CFBooleanGetTypeID(), status.doubleValue == 0,
+            boolean(error["absent"]) == true,
+            error["credentialQuota"] == nil || boolean(error["credentialQuota"]) == false
+        else { return false }
+        return true
+    }
+
     static func prepare(at directory: URL, profileID: String, now: Date = Date()) throws -> Prepared {
         let (bytes, version) = try read(directory)
         return try prepare(bytes: bytes, version: version, directory: directory, profileID: profileID, now: now)
@@ -114,18 +133,30 @@ enum LocalProxyLegacyCooldownRecovery {
         let target = rows.filter { $0["id"] as? String == profileID }
         guard !target.isEmpty,
             let root = target.first(where: { ($0["model"] as? String ?? "").isEmpty }),
-            root["reason"] as? String == "credential_quota", let until = date(root["until"]), until > now
+            root["reason"] as? String == "credential_quota", let until = date(root["until"]), until > now,
+            target.contains(where: unknown)
         else { throw Failure.ineligible }
+        let provenRoot = credentialQuota(root)
+        guard unknown(root) || provenRoot else { throw Failure.ineligible }
         var latest = version.modified
         var models = Set<String>()
         for row in target {
             let model = row["model"] as? String ?? ""
-            guard unknown(row), boolean(row["exceeded"]) == true,
-                let reason = row["reason"] as? String, ["credential_quota", "temporary_error"].contains(reason),
+            guard Set(row.keys).isSubset(of: ["id", "model", "reason", "until", "recover", "exceeded", "backoff", "updatedAt", "error", "kind", "identityHash", "credentialQuotaPropagated"]),
+                row["kind"] == nil || row["kind"] as? String == "account",
+                row["credentialQuotaPropagated"] == nil || boolean(row["credentialQuotaPropagated"]) != nil,
+                boolean(row["exceeded"]) == true, let reason = row["reason"] as? String,
                 date(row["until"]) == until, date(row["recover"]) == until,
                 row["model"] == nil || row["model"] is String,
                 model.utf8.count <= 128, models.insert(model).inserted
             else { throw Failure.ineligible }
+            // Explicit recovery can encounter partially migrated records: a
+            // proven account quota alongside older unknown model errors. Keep
+            // automatic recovery strict, and never discard an independent layer.
+            let legacy = unknown(row) && ["credential_quota", "temporary_error"].contains(reason)
+            let proven = provenRoot && credentialQuota(row) && ["credential_quota", "quota"].contains(reason)
+            let cleanSibling = provenRoot && !model.isEmpty && reason == "credential_quota" && propagatedAbsence(row)
+            guard legacy || proven || cleanSibling else { throw Failure.ineligible }
             if let raw = row["updatedAt"] {
                 guard let updated = date(raw) else { throw Failure.ineligible }
                 latest = max(latest, updated)

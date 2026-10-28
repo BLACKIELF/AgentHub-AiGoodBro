@@ -1,6 +1,6 @@
 {
   "component": "AiGoodBro Local Proxy",
-  "version": "1022v1",
+  "version": "1026v1",
   "upstream": "https://github.com/router-for-me/CLIProxyAPI",
   "upstreamVersion": "v8.0.38",
   "upstreamCommit": "0db19025571684b198a2ef508f99b41c717337e8",
@@ -11,7 +11,7 @@
   "dependencyNotices": "THIRD-PARTY-NOTICES.txt",
   "goVersionMinimum": "1.26.0",
   "runtimeDependencies": [],
-  "sourceModifications": "No upstream module edits; the host adapter embeds the fixed v8.0.38 module. Existing custom selector, host IPC/admission, quota recovery, no-refresh identities and synchronous pre-bootstrap Codex 408 EOF guard are retained. RequestRetry remains zero. This upgrade adds execution-order protection for active cooldowns, preserves independent model cooldowns beneath credential quota, reconciles replayed web_search_call declarations and preserves explicit parallel_tool_calls=false. Local identity, admission, quota and stream-commit boundaries remain owned by the adapter.",
+  "sourceModifications": "The base module remains unmodified v8.0.38 in the shared Go cache. Release/test entry points verify its full module checksum, copy an isolated build source and apply only the pinned 9e79552 response.metadata bootstrap-buffering patch from upstream-patches/manifest.json. No full SDK upgrade or extra provider feature is included. Existing custom selector, host IPC/admission, independent cooldown persistence, quota recovery, no-refresh identities, precise pre-bootstrap Codex 408 EOF guard and RequestRetry=0 remain. Local identity, participation, ordering, quota, credits, request lifecycle and post-commit non-replay boundaries remain owned by the adapter.",
   "hostAdaptations": [
     {
       "upstreamReference": "https://github.com/router-for-me/CLIProxyAPI/commit/9e71c20d016960cd47bb8532a16fcf1f16f5fff3",
@@ -77,5 +77,6 @@
     "cooldownCompatibility": "CooldownStateRecord adds IndependentState and CredentialQuotaPropagated for the independent model layer beneath credential quota. Custom persistence and quota recovery must preserve independent failures and must not treat quota restoration as proof of network recovery.",
     "streamCompatibility": "The existing Codex bootstrap buffering and post-commit non-replay boundaries remain. Responses failures now preserve a sanitized response.failed envelope; replayed web_search_call history is reconciled with the declared tools.",
     "dependencyValidation": "go mod verify and go list -mod=readonly -deps -json . passed; 457 packages and 38 linked dependency modules. Adapter regression results are recorded separately from source inspection."
-  }
+  },
+  "upstreamPatchManifest": "upstream-patches/manifest.json"
 }

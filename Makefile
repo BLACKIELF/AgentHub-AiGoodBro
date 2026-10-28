@@ -283,6 +283,12 @@ install: build
 		echo "install: existing app is missing its executable; refusing to replace without an idle check." >&2; \
 		exit 1; \
 	fi; \
+	if [ -n "$$live" ]; then \
+		python3 scripts/check-upgrade-identity.py "$$live" "$$staging" || { \
+			rm -rf "$$staging"; \
+			exit 1; \
+		}; \
+	fi; \
 	for bundle in "$$dest" "$$legacy"; do \
 		for exe in "$(APP_NAME)" "$(LEGACY_APP_NAME)"; do \
 			if [ -f "$$bundle/Contents/MacOS/$$exe" ]; then \

@@ -1,4 +1,4 @@
-# AiGoodBro · AgentHub（2.5.2）
+# AiGoodBro · AgentHub（2.5.3）
 
 **把额度、用量、重置消息和本机任务放在一页看清；需要时，让任务使用自己的 Codex 账号池。**
 
@@ -6,11 +6,11 @@ AiGoodBro 是面向个人自用的 macOS AI 工作台。它集中查看 Codex �
 
 [中文] | [English](README.en.md)
 
-**最新预发布：2.5.2（153）· 1023v1。** 反代面板采用紧凑布局并直接显示“优先／最后使用”；Pro 支持 5／10／20／25 倍手动标签与官方周额度显示。修复非 Codex 登录状态、账号池取消后的迟到回调、首页统计口径和侧栏“今日”入口，保留固定反代入口、可选网络恢复与飞书授权修复。[预发布下载](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/tag/v2.5.2-1023v1) · [153 完整说明与验证边界](docs/release-notes-v2.5.2-1023v1.md)。
+**当前发布版本：2.5.3（161）· 1028v1。** 修复主页统计与使用时长显示，反代停止与清理改为后台限时处理，二次确认后可强制退出；保留已有账号、规则与外观，并收录此前通过审查的用量解析、消息凭据恢复和上游适配。软件内更新介绍同步。[发布与下载](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/tag/v2.5.3) · [完整变化与验证边界](docs/release-notes-v2.5.3.md)。
 
-**稳定版：2.5.2（147）· 1017v1。** 该版改进反代建连前重试、故障诊断、登录失效显示和按钮样式，保留现有账号与定制。完整本地构建与 35 组原生自测已通过；本机已覆盖安装并核对界面及配置保留。DMG／ZIP 的内容、版本、签名及校验值已核对；远端检查见 [GitHub Actions](https://github.com/BLACKIELF/AgentHub-AiGoodBro/actions)。功能、验证与已知边界见 [稳定版发布说明](docs/release-notes-v2.5.2.md)。
+**Windows 2.5.3 独立发布。** 提供本地工作台、目录关联、额度读取和隔离终端工作流，按 Windows 构建与测试，不要求与 macOS 功能完全一致。[Windows 功能和安装说明](windows/README.md)。
 
-稳定版下载：[DMG（Apple Silicon）](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.5.2/AiGoodBro-2.5.2-mac-arm64.dmg) · [ZIP 备用包](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.5.2/AiGoodBro-2.5.2-mac-arm64.zip) · [发布说明](docs/release-notes-v2.5.2.md)
+下载：[DMG（Apple Silicon）](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.5.3/AiGoodBro-2.5.3-mac-arm64.dmg) · [macOS ZIP 备用包](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.5.3/AiGoodBro-2.5.3-161-1028v1-mac-arm64.zip) · [Windows MSI](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.5.3/CodexAccountManagerNext-2.5.3-windows-x86_64.msi) · [Windows EXE](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.5.3/CodexAccountManagerNext-2.5.3-windows-x86_64-setup.exe)
 
 **宣传片与界面展示 · 1012v1：** [中文原片（48 秒 MP4）](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.5.0/AiGoodBro-demo-1011v4.mp4) · [English（48 秒 MP4）](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.5.0/AiGoodBro-English-1011v1.mp4) · [英文展示源码](docs/showcase/1012v1/README.md) · [英文完整资料包（ZIP，含英文原视频）](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.5.0/AiGoodBro-Showcase-1012v2.zip)
 
@@ -207,19 +207,19 @@ AiGoodBro 是面向个人自用的 macOS AI 工作台。它集中查看 Codex �
 
 ## 16 · 下载、升级与构建
 
-本版面向 **macOS 13+、Apple Silicon ARM64**，采用本地 ad-hoc 签名，未做 Apple 公证。2.5.2 使用独立版本号，发布后 2.5.0／2.5.1 客户端可发现更新；原有 Release 和安装包保留。9.6.x 旧客户端仍需手动下载覆盖。准备升级时，先结束自己的任务、停止反代、正常退出并备份旧 App 和本机数据；覆盖后核对 **2.5.2（147）／1017v1**，再按引导检查微信、飞书和新设置。
+macOS 包面向 **macOS 13+、Apple Silicon ARM64**，沿用固定本地签名身份，未做 Apple 公证。Windows x86_64 单独提供 MSI / NSIS EXE，功能范围见 [Windows 说明](windows/README.md)。原有 Release 和安装包保留；9.6.x 旧客户端仍需手动下载覆盖。准备升级时，先结束任务、停止反代、正常退出并备份旧 App 和本机数据；macOS 覆盖后核对 **2.5.3（161）／1028v1**。
 
-147 已通过完整本地构建与 35 组原生自测；Carbon 系统热键集成子检查明确跳过。本机已覆盖安装，12 个账号配置及既有规则保留，安装版与构建、DMG、ZIP 的完整内容一致，已核对启动和界面。实包核查、最终 SHA256 与验证边界见[2.5.2 发布记录](docs/release-notes-v2.5.2.md)。历史反代断开的现场根因仍未确认；长期真实调用稳定性、Pro5x 重新登录后的恢复、重置卡兑换、手机收件和全局快捷键尚未在本轮验收。
+构建、包内容、签名与校验值按本次产物独立核验，结果见 [2.5.3 发布记录](docs/release-notes-v2.5.3.md)和 [GitHub Actions](https://github.com/BLACKIELF/AgentHub-AiGoodBro/actions)。本轮发布不替换正在运行的安装版；历史反代断开的底层现场原因、长期真实调用、全部登录和通知送达仍有待实机验收，不用旧版本测试代替本包验证。
 
 以下按本次版本标签构建：
 
 ```sh
-git clone --branch v2.5.2 https://github.com/BLACKIELF/AgentHub-AiGoodBro.git AiGoodBro-2.5.2
-cd AiGoodBro-2.5.2
+git clone --branch v2.5.3 https://github.com/BLACKIELF/AgentHub-AiGoodBro.git AiGoodBro-2.5.3
+cd AiGoodBro-2.5.3
 make build
 ```
 
-构建需要 macOS、Go 1.26+ 和经 SHA256 校验的 Token Monitor 0.68.0 macOS 运行时；本版在该界面基线上回移指定修复，不提供 Intel 或 Windows 安装包。
+macOS 构建需要 Go 1.26+ 和经 SHA256 校验的 Token Monitor 0.68.0 macOS 运行时；本版在该界面基线上回移指定修复，不提供 Intel Mac 包。Windows 使用自己的 Rust / Tauri / Node 构建流程，见 [Windows 构建说明](windows/README.md)。
 
 <a id="sources"></a>
 
@@ -240,13 +240,13 @@ make build
 
 AiGoodBro 使用 [MIT 许可证](LICENSE)。第三方许可见 [`Resources/THIRD_PARTY_NOTICES.txt`](Resources/THIRD_PARTY_NOTICES.txt)、[`Companion/LocalProxy/LICENSE.CLIProxyAPI`](Companion/LocalProxy/LICENSE.CLIProxyAPI)、[`Companion/LocalProxy/LICENSE.Hazmat`](Companion/LocalProxy/LICENSE.Hazmat) 和 [`Companion/LocalProxy/THIRD-PARTY-NOTICES.txt`](Companion/LocalProxy/THIRD-PARTY-NOTICES.txt)。
 
-文档入口：[详细使用说明](docs/usage-guide.md) · [本机 CLI 额度范围](docs/local-cli-accounts.md) · [反代实现与验证](docs/local-proxy-0928v1.md) · [2.5.2 发布记录](docs/release-notes-v2.5.2.md) · [2.5.1 发布记录](docs/release-notes-v2.5.1.md) · [2.5.0 发布记录](docs/release-notes-v2.5.0.md) · [图片来源与校验](docs/public-ui-1012v1-promo.md) · [问题反馈](https://github.com/BLACKIELF/AgentHub-AiGoodBro/issues) · [安全说明](SECURITY.md)
+文档入口：[详细使用说明](docs/usage-guide.md) · [本机 CLI 额度范围](docs/local-cli-accounts.md) · [反代实现与验证](docs/local-proxy-0928v1.md) · [2.5.3 发布记录](docs/release-notes-v2.5.3.md) · [2.5.2 发布记录](docs/release-notes-v2.5.2.md) · [2.5.1 发布记录](docs/release-notes-v2.5.1.md) · [2.5.0 发布记录](docs/release-notes-v2.5.0.md) · [图片来源与校验](docs/public-ui-1012v1-promo.md) · [问题反馈](https://github.com/BLACKIELF/AgentHub-AiGoodBro/issues) · [安全说明](SECURITY.md)
 
 <a id="actual-screenshots"></a>
 
 ## 18 · 实际软件截图
 
-主界面及账号、用量裁图来自已安装的 **2.3.0（137）**；六张登录、引导和设置图来自 **2.3.0（139）**，均为历史界面记录。反代状态局部图未显示版本号。图中数值和连接状态是拍摄时快照，不作为 2.5.2（147）安装、真实调用或消息送达的验收；来源、原始尺寸和校验值见[历史截图记录](docs/public-ui-1009v2.md)。点击图片可查看原图。
+主界面及账号、用量裁图来自已安装的 **2.3.0（137）**；六张登录、引导和设置图来自 **2.3.0（139）**，均为历史界面记录。反代状态局部图未显示版本号。图中数值和连接状态是拍摄时快照，不作为 2.5.3（161）安装、真实调用或消息送达的验收；来源、原始尺寸和校验值见[历史截图记录](docs/public-ui-1009v2.md)。点击图片可查看原图。
 
 ### 01 · 主界面
 

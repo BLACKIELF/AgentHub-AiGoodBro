@@ -427,15 +427,45 @@ struct LocalProxyQueueView: View {
     }
 
     private var proxyToolbar: some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(spacing: 12) {
-                runActions
-                Spacer(minLength: 0)
-                if model.endpoint != nil { connectionActions }
+        VStack(alignment: .leading, spacing: 6) {
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 12) {
+                    runActions
+                    Spacer(minLength: 0)
+                    if model.endpoint != nil { connectionActions }
+                }
+                VStack(alignment: .leading, spacing: 8) {
+                    runActions
+                    if model.endpoint != nil { connectionActions }
+                }
             }
-            VStack(alignment: .leading, spacing: 8) {
-                runActions
-                if model.endpoint != nil { connectionActions }
+            Toggle(
+                language.text("故障自动恢复", "Recover proxy failures automatically"),
+                isOn: Binding(
+                    get: { model.automaticRecoveryEnabled },
+                    set: { _ = model.setAutomaticRecovery($0) }
+                )
+            )
+            .toggleStyle(.checkbox).font(.caption)
+            .disabled(!model.canSetAutomaticRecovery)
+            .accessibilityIdentifier("next.local-proxy.automatic-recovery")
+            .help(
+                language.text(
+                    "开启后，内部故障停止且安全清理完成时自动重开反代。10 分钟内最多 3 次，沿用固定端口与持久密钥；手动停止会取消恢复。",
+                    "After an internal failure, restart only after safe cleanup. Up to 3 attempts in 10 minutes using the same fixed port and persistent key. Manual stop cancels recovery."
+                ))
+            if model.automaticRecoveryEnabled && (model.listenPort == 0 || model.clientKeyMode != .persistent) {
+                Text(
+                    language.text(
+                        "请在连接详情中使用固定端口和持久密钥，自动恢复才能保持桌面连接。",
+                        "Use a fixed port and persistent key in Connection details to preserve Desktop connectivity during recovery.")
+                )
+                .font(.caption).foregroundStyle(WorkspaceStatusForeground.warning)
+            }
+            if let message = model.automaticRecoveryMessage {
+                Text(message).font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("next.local-proxy.recovery-status")
             }
         }
         .padding(8)
@@ -510,7 +540,7 @@ struct LocalProxyQueueView: View {
 
     private var runActions: some View {
         HStack(spacing: 8) {
-            if model.phase == .starting || model.phase == .stopping {
+            if model.phase == .starting || model.phase == .stopping || model.isAutomaticallyRecovering {
                 ProgressView().controlSize(.small)
             }
             Button(language.text("开启反代", "Start proxy")) {
@@ -523,7 +553,7 @@ struct LocalProxyQueueView: View {
             Button(language.text("停止反代", "Stop proxy")) {
                 if model.requiresStopConfirmation { confirmingStop = true } else { disableProxy() }
             }
-            .disabled((!model.canStop && !model.isEnabled) || model.phase == .stopping)
+            .disabled((!model.canStop && !model.isEnabled) || (model.phase == .stopping && !model.isAutomaticallyRecovering))
             .accessibilityIdentifier("next.local-proxy.stop")
         }
         .fixedSize()
@@ -710,6 +740,7 @@ struct LocalProxyQueueView: View {
     }
 
     private var phaseTitle: String {
+        if model.isAutomaticallyRecovering { return language.text("正在自动恢复", "Recovering automatically") }
         switch model.phase {
         case .stopped: return language.text("已停止", "Stopped")
         case .starting: return language.text("正在启动", "Starting")
@@ -720,6 +751,7 @@ struct LocalProxyQueueView: View {
     }
 
     private var phaseColor: Color {
+        if model.isAutomaticallyRecovering { return FixedVisualPalette.statusWarning }
         switch model.phase {
         case .running: return FixedVisualPalette.statusSuccess
         case .starting, .stopping: return FixedVisualPalette.statusWarning
