@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { AssistantContact } from '../components/AssistantContact';
+import { AppUpdatePanel } from '../components/AppUpdatePanel';
 import { open } from '@tauri-apps/plugin-dialog';
 import { FolderOpen, Palette, RefreshCw, Trash2 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
@@ -315,6 +316,7 @@ export function Settings() {
             <p className="text-sm text-secondary">{t('settings.version')}</p>
             <p className="text-xs text-tertiary mt-2">{t('settings.dataFolder')}</p>
             <p className="text-xs text-tertiary mt-2">{t('settings.privacy')}</p>
+            <AppUpdatePanel />
             {!canInvokeTauri && (
               <p className="text-xs text-status-warn mt-3">
                 {t('settings.browserWarning')}

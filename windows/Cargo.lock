@@ -462,10 +462,12 @@ name = "codexu-core"
 version = "3.0.0"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "chrono",
  "chrono-tz",
  "dirs 5.0.1",
  "futures-util",
+ "getrandom 0.3.4",
  "rusqlite",
  "serde",
  "serde_json",
@@ -474,7 +476,9 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "tokio-tungstenite",
+ "toml 0.8.2",
  "tracing",
+ "url",
  "windows",
 ]
 

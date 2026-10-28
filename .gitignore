@@ -46,3 +46,6 @@ explore/
 /task-test-outputs/
 /review-outputs/
 /HANDOFF.md
+# Windows helper/resources are generated and source-bound by windows/proxy/prepare-resource.py.
+/windows/apps/codexu-tauri/src-tauri/resources/proxy/
+/windows/apps/codexu-tauri/src-tauri/resources/token-monitor/

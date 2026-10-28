@@ -23,9 +23,12 @@ export async function installTauriStub(page, { settings, dashboard, windowLabel 
   const initialize = ({ settingsPayload, dashboardPayload, label }) => {
       const callbacks = new Map();
       let nextCallbackId = 1;
+      const statistics={phase:'idle',revision:0,contextKey:null,sources:[],timezone:null,snapshot:null,tokenRate:null,failureCode:null};
 
       const responses = {
         list_profiles: [],
+        list_managed_accounts: [],
+        list_claude_subscriptions: [],
         // Synthetic platform catalogue: one managed platform, one that only
         // supports its default directory, and the Antigravity desktop adapter.
         list_platforms: [
@@ -61,6 +64,9 @@ export async function installTauriStub(page, { settings, dashboard, windowLabel 
           return id;
         },
         async invoke(cmd, args) {
+          if(cmd==='set_token_monitor_timezone'){statistics.timezone=args.timezone;return structuredClone(statistics);}
+          if(cmd==='get_token_monitor_state'||cmd==='refresh_token_monitor_usage'||cmd==='set_token_monitor_sources')return structuredClone(statistics);
+          if(cmd==='cancel_token_monitor_usage'){statistics.phase='stopped';statistics.revision++;return structuredClone(statistics);}
           // Event subscription plumbing used by `@tauri-apps/api/event`.
           if (cmd === 'plugin:event|listen') {
             return nextCallbackId++;

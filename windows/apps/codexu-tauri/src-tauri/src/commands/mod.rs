@@ -1,6 +1,12 @@
+pub mod account_lifecycle;
+pub mod app_update;
 pub mod cli_workflow;
+pub mod local_proxy;
+pub mod notifications;
 pub mod profile_quota;
 pub mod profiles;
+pub mod proxy_accounts;
 pub mod public_feed;
 pub mod settings;
+pub mod token_monitor;
 pub mod usage;

@@ -12,7 +12,10 @@ use std::{
     collections::BTreeMap,
     io::Read,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
 };
 use tauri::State;
 use tokio::sync::Mutex;
@@ -38,6 +41,7 @@ struct Session {
     phase: Phase,
     started_at: Option<i64>,
     process: Option<console::OwnedConsole>,
+    dispatch_activity: Option<codexu_core::managed_proxy::ManagedActivityGuard>,
     removing: bool,
 }
 
@@ -47,6 +51,7 @@ impl Session {
             match process.has_exited() {
                 Ok(true) => {
                     self.process = None;
+                    self.dispatch_activity = None;
                     self.phase = Phase::Exited;
                 }
                 Ok(false) => {}
@@ -63,6 +68,12 @@ impl Session {
 #[derive(Default)]
 pub struct WorkflowState {
     sessions: Mutex<BTreeMap<u64, Session>>,
+    quitting: AtomicBool,
+}
+impl WorkflowState {
+    pub fn begin_force_quit(&self) {
+        self.quitting.store(true, Ordering::Release);
+    }
 }
 
 #[derive(serde::Serialize)]
@@ -324,9 +335,13 @@ pub async fn read_workflow_models(
 pub async fn start_account_terminal(
     state: State<'_, Arc<AppState>>,
     workflow: State<'_, WorkflowState>,
+    services: State<'_, crate::native_services::NativeServices>,
     id: String,
     workspace: PathBuf,
 ) -> Result<WorkflowDto, String> {
+    if workflow.quitting.load(Ordering::Acquire) {
+        return Err("launch_cancelled".into());
+    }
     let id = parse_id(&id)?;
     let root = linked_root(&state, id).await?;
     if !workspace.is_absolute() || !workspace.is_dir() {
@@ -337,6 +352,7 @@ pub async fn start_account_terminal(
         .map_err(|_| "workspace_unavailable")?;
     let (executable, guard) = native_executable().await.map_err(|_| "cli_unavailable")?;
     let auth = auth_snapshot(&root).map_err(|_| "login_unavailable")?;
+    let mut activity = Some(services.reserve_terminal(&auth)?);
     let (generation, preference) = {
         let mut sessions = workflow.sessions.lock().await;
         let preferences =
@@ -383,7 +399,10 @@ pub async fn start_account_terminal(
             read_preferences(&state.app_data_dir).map_err(|_| "settings_unavailable")?;
         let current = preferences.profiles.get(&id).cloned().unwrap_or_default();
         let session = sessions.entry(id).or_default();
-        if session.generation != generation || session.phase != Phase::Checking || session.removing
+        if workflow.quitting.load(Ordering::Acquire)
+            || session.generation != generation
+            || session.phase != Phase::Checking
+            || session.removing
         {
             return Err("launch_cancelled");
         }
@@ -396,6 +415,7 @@ pub async fn start_account_terminal(
         let process = console::OwnedConsole::start(&executable, &root, &workspace, &args, guard)
             .map_err(|_| "launch_failed")?;
         session.process = Some(process);
+        session.dispatch_activity = activity.take();
         session.phase = Phase::Running;
         session.started_at = Some(chrono::Utc::now().timestamp_millis());
         Ok(project(id, &preferences, session))
@@ -427,6 +447,7 @@ pub async fn stop_account_terminal(
         process.stop().map_err(|_| "stop_failed")?;
     }
     session.process = None;
+    session.dispatch_activity = None;
     session.generation = session
         .generation
         .checked_add(1)
@@ -475,6 +496,28 @@ pub fn should_block_exit(workflow: &WorkflowState) -> bool {
         session.refresh();
         session.active()
     })
+}
+
+/// Called only after the native Force Quit confirmation and off the UI thread.
+/// A contended state must not hold the user's exit hostage. OS Job handles are
+/// closed when this process exits; unknown dispatch leases are not retired here.
+pub fn force_stop_owned(workflow: &WorkflowState) {
+    workflow.begin_force_quit();
+    let Ok(mut sessions) = workflow.sessions.try_lock() else {
+        return;
+    };
+    for session in sessions.values_mut() {
+        session.generation = session.generation.saturating_add(1);
+        if let Some(process) = session.process.as_mut() {
+            if process.stop().is_ok() {
+                session.process = None;
+                session.dispatch_activity = None;
+                session.phase = Phase::Stopped;
+            }
+        } else if session.phase == Phase::Checking {
+            session.phase = Phase::Stopped;
+        }
+    }
 }
 
 #[cfg(test)]

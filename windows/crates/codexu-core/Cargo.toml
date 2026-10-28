@@ -23,6 +23,10 @@ rusqlite = { workspace = true, features = ["bundled", "chrono"] }
 
 tempfile = "3.10"
 sha2 = "0.10"
+url = "2.5.8"
+base64 = "0.22"
+getrandom = "0.3"
+toml = "=0.8.2"
 
 # Windows-native probing for the Antigravity desktop adapter: process snapshot,
 # command line, TCP owner-PID table and the loopback WinHTTP transport.

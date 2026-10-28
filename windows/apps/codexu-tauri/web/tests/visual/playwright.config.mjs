@@ -10,7 +10,8 @@ const repoRoot = path.resolve(here, '..', '..', '..', '..', '..', '..');
 
 // Baselines, actuals and diffs are local artifacts only. `.local-artifacts/`
 // is Git-ignored at the repository root, so nothing here can be committed.
-const artifactRoot = path.join(repoRoot, '.local-artifacts', 'visual').replace(/\\/g, '/');
+const artifactRoot = (process.env.CODEXU_VISUAL_ARTIFACT_ROOT
+    || path.join(repoRoot, '.local-artifacts', 'visual')).replace(/\\/g, '/');
 
 // Baselines, actuals and diffs stay under `artifactRoot/snapshots`. Only the
 // per-run scratch directory (traces, videos, error context) is transient, and it

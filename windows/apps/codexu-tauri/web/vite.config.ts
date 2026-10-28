@@ -1,10 +1,12 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
+import { tokenMonitorCharts } from './tooling/tokenMonitorCharts';
 
 // https://vitejs.dev/config/
 export default defineConfig(async () => ({
   base: './',
-  plugins: [react()],
+  plugins: [react(), tokenMonitorCharts()],
+  cacheDir: process.env.CODEXU_VITE_CACHE_DIR || 'node_modules/.vite',
   clearScreen: false,
   server: {
     port: 1420,

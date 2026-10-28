@@ -4,6 +4,11 @@ on:
   pull_request:
     paths:
       - "windows/**"
+      - "Companion/LocalProxy/**"
+      - "Companion/TokenMonitorEngine/**"
+      - "Resources/UpstreamCharts/**"
+      - "Sources/CodexUsageWidget/Services/CodexProfileStore.swift"
+      - "scripts/build-windows-release.ps1"
       - ".github/workflows/release-windows.yml"
   workflow_dispatch:
     inputs:
@@ -18,7 +23,8 @@ permissions:
 jobs:
   windows:
     runs-on: windows-latest
-    timeout-minutes: 90
+    # Native scanner validation now precedes workspace tests and both installers.
+    timeout-minutes: 120
     env:
       # Keep the checkout stable when Tauri serializes Cargo.toml with LF.
       # Command-scoped Git configuration affects only this temporary runner.
@@ -48,6 +54,13 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: windows/apps/codexu-tauri/web/package-lock.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: Companion/LocalProxy/go.mod
+          cache: false
       - uses: dtolnay/rust-toolchain@1.97.1
         with:
           components: rustfmt
@@ -98,4 +111,9 @@ jobs:
           path: |
             dist/windows-readiness/report.json
             dist/windows-readiness/source-diagnostics.json
+            dist/windows-readiness/proxy-build/*.json
+            dist/windows-readiness/token-monitor-build/scanner/SCANNER-RECEIPT.json
+            dist/windows-readiness/token-monitor-build/resource-pin.txt
+            windows/apps/codexu-tauri/src-tauri/resources/proxy/resource-receipt.json
+            windows/apps/codexu-tauri/src-tauri/resources/token-monitor/WINDOWS-RESOURCES.json
           if-no-files-found: ignore

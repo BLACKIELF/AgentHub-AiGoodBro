@@ -1,0 +1,5 @@
+{
+  "bundle": {
+    "resources": {"resources/proxy/": "proxy/", "resources/token-monitor/": "token-monitor/"}
+  }
+}

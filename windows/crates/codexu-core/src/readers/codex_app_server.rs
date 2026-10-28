@@ -385,7 +385,7 @@ fn valid_balance(value: f64) -> bool {
     value.is_finite() && (0.0..=1_000_000_000.0).contains(&value)
 }
 
-fn selected_rate_limits(response: &Value) -> Option<&Value> {
+pub(crate) fn selected_rate_limits(response: &Value) -> Option<&Value> {
     response
         .get("rateLimitsByLimitId")
         .and_then(|buckets| buckets.get("codex"))

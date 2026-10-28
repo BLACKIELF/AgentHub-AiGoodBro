@@ -86,6 +86,21 @@ if ($InstalledToolchains -notmatch [regex]::Escape($Toolchain)) {
     Invoke-Checked "rustup" @("toolchain", "install", $Toolchain, "--profile", "minimal", "--component", "rustfmt")
 }
 
+# Resource preparation remains required even when a preceding readiness run
+# already performed validation. Never package a stale or missing proxy helper.
+$PreviousStatisticsPin = [Environment]::GetEnvironmentVariable('AIGOODBRO_TOKEN_MONITOR_RESOURCE_SHA256', 'Process')
+try {
+$ProxyBuildRoot = Join-Path $RepoRoot ('.local-artifacts\windows-proxy-build-' + [guid]::NewGuid().ToString('N'))
+$ProxyArguments = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $RepoRoot 'windows\scripts\Prepare-ProxyResources.ps1'), '-BuildRoot', $ProxyBuildRoot)
+if (-not $SkipValidation) { $ProxyArguments += '-RunNativeTests' }
+Invoke-Checked 'pwsh.exe' $ProxyArguments
+$StatisticsBuildRoot = Join-Path $RepoRoot ('.local-artifacts\windows-statistics-build-' + [guid]::NewGuid().ToString('N'))
+$StatisticsArguments = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $RepoRoot 'windows\scripts\Prepare-TokenMonitorResources.ps1'), '-BuildRoot', $StatisticsBuildRoot)
+if (-not $SkipValidation) { $StatisticsArguments += '-RunNativeTests' }
+Invoke-Checked 'pwsh.exe' $StatisticsArguments
+$StatisticsManifest = Join-Path $AppRoot 'src-tauri\resources\token-monitor\WINDOWS-RESOURCES.json'
+$env:AIGOODBRO_TOKEN_MONITOR_RESOURCE_SHA256 = (Get-FileHash -LiteralPath $StatisticsManifest -Algorithm SHA256).Hash.ToLowerInvariant()
+
 if (-not $SkipValidation) {
     Push-Location $WindowsRoot
     try {
@@ -180,6 +195,7 @@ $Manifest = [ordered]@{
     target = "windows-x86_64"
     installers = @($Artifacts.Name)
     generated_utc = [DateTime]::UtcNow.ToString("o")
+    token_monitor_manifest_sha256 = $env:AIGOODBRO_TOKEN_MONITOR_RESOURCE_SHA256
 }
 [System.IO.File]::WriteAllText(
     (Join-Path $OutputDirectory "manifest.json"),
@@ -188,3 +204,6 @@ $Manifest = [ordered]@{
 )
 
 Write-Host "Windows release artifacts verified for Codex Account Manager Next $Version"
+} finally {
+    [Environment]::SetEnvironmentVariable('AIGOODBRO_TOKEN_MONITOR_RESOURCE_SHA256', $PreviousStatisticsPin, 'Process')
+}

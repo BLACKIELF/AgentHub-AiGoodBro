@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
+import { RefreshCw } from 'lucide-react';
 import { useI18n } from '../i18n/I18nProvider';
 import { acceptWorkflowState, parseWorkflowModels, parseWorkflowState, workflowError, type AccountWorkflowState, type WorkflowModel } from '../utils/accountWorkflow';
 
@@ -119,7 +120,7 @@ export function AccountWorkflow({ profileId, initiallyExpanded = true }: { profi
         <div className="flex flex-wrap items-center gap-2">
           <button type="button" className="glass-button-solid px-3 py-2 text-xs" disabled={!state.supported || !preference?.participating || active || starting || saving} onClick={() => void start()}>{starting ? text('正在准备…', 'Preparing…') : text('选择工作目录并打开 Codex', 'Choose workspace and open Codex')}</button>
           {(active || starting) && <button type="button" className="glass-button px-3 py-2 text-xs" disabled={stopping} onClick={() => setConfirmStop(true)}>{text('结束此终端', 'Stop this terminal')}</button>}
-          <button type="button" className="glass-button px-3 py-2 text-xs" onClick={() => { setError(null); void reload(); }}>{text('刷新状态', 'Refresh status')}</button>
+          <button type="button" className="icon-action" aria-label={text('刷新状态', 'Refresh status')} title={text('刷新状态', 'Refresh status')} onClick={() => { setError(null); void reload(); }}><RefreshCw size={14} aria-hidden="true" /></button>
         </div>
         <p className="text-xs leading-relaxed text-secondary">{text('使用此账号目录打开独立终端，由你在终端中输入任务；这里不会自动提交提示词。模型设置用于下一次启动。退出 AiGoodBro 前，请先在终端中退出或在此结束终端。', 'Opens an independent terminal for this account directory; enter your task there. No prompt is submitted automatically. Model settings apply to the next launch. Exit the terminal or stop it here before quitting AiGoodBro.')}</p>
         {!state.supported && <p className="text-xs text-secondary">{text('启动功能仅在 Windows 桌面版可用。', 'Terminal launch is available in the Windows desktop app.')}</p>}

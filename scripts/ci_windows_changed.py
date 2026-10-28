@@ -21,6 +21,9 @@ def windows_changed(event_name, event, cwd=None):
     result = subprocess.run(
         ["git", "diff", "--quiet", *revisions, "--", "windows/",
          "Resources/Palettes/", "Resources/LeadershipBadges/",
+         "Resources/UpstreamCharts/", "Companion/TokenMonitorEngine/",
+         "Companion/LocalProxy/", "Sources/CodexUsageWidget/Services/CodexProfileStore.swift",
+         "scripts/build-windows-release.ps1", ".github/workflows/release-windows.yml",
          ".github/workflows/ci.yml", "scripts/ci_windows_changed.py",
          "tests/test_ci_windows_changed.py"],
         cwd=cwd,

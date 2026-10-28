@@ -3,11 +3,14 @@
 
 use std::sync::Arc;
 
-use tauri::{Emitter, Manager};
+use tauri::Manager;
 use tracing::info;
 
 mod app_state;
 mod commands;
+mod native_services;
+mod quit;
+mod statistics_sources;
 mod tray;
 
 use app_state::AppState;
@@ -104,7 +107,9 @@ fn main() {
         .init();
 
     tauri::Builder::default()
+        .manage(commands::app_update::UpdateRuntime::default())
         .manage(commands::cli_workflow::WorkflowState::default())
+        .manage(quit::QuitState::default())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let app_data_dir = app.path().app_data_dir().map_err(|e| {
@@ -114,6 +119,7 @@ fn main() {
             // Keep user-specific storage locations out of runtime logs.
             info!("Next app data directory initialized");
 
+            native_services::install(app, app_data_dir.clone())?;
             let state = Arc::new(AppState::new(app_data_dir));
             let initial_language = state
                 .config
@@ -149,6 +155,61 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            commands::account_lifecycle::list_managed_accounts,
+            commands::account_lifecycle::create_managed_account,
+            commands::account_lifecycle::begin_account_login,
+            commands::account_lifecycle::get_login_attempt,
+            commands::account_lifecycle::open_account_login_page,
+            commands::account_lifecycle::cancel_account_login,
+            commands::account_lifecycle::prepare_account_switch,
+            commands::account_lifecycle::commit_account_switch,
+            commands::account_lifecycle::cancel_account_switch,
+            commands::account_lifecycle::list_claude_subscriptions,
+            commands::account_lifecycle::begin_claude_subscription_login,
+            commands::account_lifecycle::get_claude_subscription_login,
+            commands::account_lifecycle::cancel_claude_subscription_login,
+            commands::account_lifecycle::capture_claude_subscription,
+            commands::account_lifecycle::prepare_claude_subscription_switch,
+            commands::account_lifecycle::commit_claude_subscription_switch,
+            commands::account_lifecycle::cancel_claude_subscription_switch,
+            commands::account_lifecycle::read_claude_subscription_quota,
+            commands::local_proxy::get_local_proxy_status,
+            commands::local_proxy::get_local_proxy_preferences,
+            commands::local_proxy::set_local_proxy_preferences,
+            commands::local_proxy::start_local_proxy,
+            commands::local_proxy::stop_local_proxy,
+            commands::local_proxy::get_local_proxy_connection,
+            commands::local_proxy::local_proxy_network_command,
+            commands::local_proxy::set_local_proxy_plus_five_hour_used_limit,
+            commands::local_proxy::prepare_local_proxy_desktop,
+            commands::local_proxy::launch_local_proxy_desktop,
+            commands::local_proxy::connect_local_proxy_desktop,
+            commands::local_proxy::get_local_proxy_desktop_status,
+            commands::local_proxy::cancel_local_proxy_desktop,
+            commands::proxy_accounts::get_local_proxy_accounts,
+            commands::proxy_accounts::refresh_local_proxy_accounts,
+            commands::token_monitor::get_token_monitor_state,
+            commands::token_monitor::refresh_token_monitor_usage,
+            commands::token_monitor::set_token_monitor_sources,
+            commands::token_monitor::set_token_monitor_timezone,
+            commands::token_monitor::cancel_token_monitor_usage,
+            commands::notifications::get_notification_channels,
+            commands::notifications::set_notification_channel_enabled,
+            commands::notifications::save_notification_channel,
+            commands::notifications::set_notification_channel_options,
+            commands::notifications::forget_notification_channel,
+            commands::notifications::restore_notification_channels,
+            commands::notifications::cancel_notification_channel,
+            commands::notifications::test_notification_channel,
+            commands::notifications::begin_personal_wechat_login,
+            commands::notifications::get_personal_wechat_login,
+            commands::notifications::poll_personal_wechat_login,
+            commands::notifications::refresh_personal_wechat_context,
+            commands::app_update::get_app_update_state,
+            commands::app_update::check_app_update,
+            commands::app_update::download_app_update,
+            commands::app_update::cancel_app_update,
+            commands::app_update::open_app_update,
             commands::cli_workflow::get_account_workflow,
             commands::cli_workflow::set_account_workflow,
             commands::cli_workflow::read_workflow_models,
@@ -173,16 +234,25 @@ fn main() {
         .expect("error while building tauri application")
         .run(|app, event| {
             if let tauri::RunEvent::ExitRequested { api, .. } = event {
-                if commands::cli_workflow::should_block_exit(
-                    &app.state::<commands::cli_workflow::WorkflowState>(),
-                ) {
+                if !app.state::<quit::QuitState>().confirmed()
+                    && (commands::cli_workflow::should_block_exit(
+                        &app.state::<commands::cli_workflow::WorkflowState>(),
+                    ) || app
+                        .state::<native_services::NativeServices>()
+                        .proxy_blocks_normal_exit())
+                {
                     api.prevent_exit();
                     if let Some(window) = app.get_webview_window("main") {
                         let _ = window.show();
                         let _ = window.set_focus();
                     }
-                    let _ = app.emit("workflow:exit-blocked", ());
+                    quit::ask(app);
                 }
+            } else if let tauri::RunEvent::Exit = event {
+                app.state::<native_services::NativeServices>()
+                    .cancel_monitor();
+                app.state::<native_services::NativeServices>()
+                    .stop_passive_services();
             }
         });
 }

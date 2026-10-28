@@ -62,6 +62,15 @@ CODEXU_VISUAL_BROWSER=chromium npx playwright test --config tests/visual/playwri
 CODEXU_VISUAL_BROWSER=chromium npm run test:visual -- profiles.visual.spec.mjs
 ```
 
+## Isolated artifact locations
+
+Set `CODEXU_VISUAL_ARTIFACT_ROOT` to a task evidence directory to keep baselines
+and screenshots outside the checkout; the default remains the Git-ignored local
+artifact folder. `CODEXU_VISUAL_SCRATCH_ROOT` selects a distinct per-run trace and
+result folder. Keep these two directories separate. Set `CODEXU_VITE_CACHE_DIR`
+when reusing dependencies from another checkout so its development cache stays
+inside the current task.
+
 ## Artifacts stay local
 
 Baselines, actuals, diffs and traces are written to

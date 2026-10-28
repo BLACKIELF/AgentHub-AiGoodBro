@@ -44,7 +44,8 @@ test.describe('Windows dashboard rendering (synthetic fixtures)', () => {
   test('the synthetic bridge feeds real data into the dashboard', async ({ page }) => {
     // Guards against silently screenshotting an empty or error shell.
     await expect(page.locator('.dashboard-home-overview')).toBeVisible();
-    await expect(page.locator('.dashboard-home-metrics')).toBeVisible();
+    await expect(page.locator('.dashboard-home-metrics')).toHaveCount(0);
+    await expect(page.locator('[data-home-section="usage-summary"]')).toBeVisible();
     await expect(page.getByRole('tab')).toHaveCount(TABS.length);
     await expect(page.locator('main')).not.toContainText('Failed to load usage data');
     await expect(page.locator('main')).not.toContainText('Tauri runtime is unavailable');
@@ -57,31 +58,31 @@ test.describe('Windows dashboard rendering (synthetic fixtures)', () => {
     const toggle = section.getByRole('button', { name: 'Usage statistics', exact: true });
     const notices = page.locator('[data-home-section="notices"]');
     await expect(toggle).toHaveAttribute('aria-expanded', 'false');
-    await expect(section.locator('.usage-panel')).toHaveCount(0);
+    await expect(section.locator('.token-monitor-panel')).toHaveCount(0);
     await expect(notices.locator('[data-home-section="usage-summary"]')).toHaveCount(0);
     expect(await page.locator('.home-notice-strip').evaluate(element => element.nextElementSibling?.id)).toBe('windows-usage');
     expect(await page.locator('#windows-usage').evaluate(element => element.nextElementSibling?.id)).toBe('windows-accounts');
     await expect(notices.locator(':scope > button')).toHaveAttribute('aria-expanded', 'false');
     await expect(section).toHaveScreenshot('home-usage-statistics-collapsed.png');
     await toggle.click();
-    await expect(section.locator('.usage-panel')).toBeVisible();
-    await expect(section.locator('.usage-panel .recharts-wrapper')).toBeVisible();
-    await expect(section.getByText('Recent usage', { exact: true })).toBeVisible();
-    await expect(section.getByText('apply_patch', { exact: true })).toBeVisible();
+    await expect(section.locator('.token-monitor-panel')).toBeVisible();
+    await expect(section).toContainText('Token Monitor');
+    await expect(section.getByTestId('token-monitor-allTime')).toContainText('—');
     await expect(notices.locator(':scope > button')).toHaveAttribute('aria-expanded', 'false');
     await expect(section).toHaveScreenshot('home-usage-statistics.png');
     await page.reload();
     await expect(toggle).toHaveAttribute('aria-expanded', 'true');
-    await expect(section.locator('.usage-panel')).toBeVisible();
-    await expect(section.getByText('apply_patch', { exact: true })).toBeVisible();
+    await expect(section.locator('.token-monitor-panel')).toBeVisible();
+    await expect(section).toContainText('Token Monitor');
     await toggle.click();
     await expect(toggle).toHaveAttribute('aria-expanded', 'false');
-    await expect(section.locator('.usage-panel')).toHaveCount(0);
+    await expect(section.locator('.token-monitor-panel')).toHaveCount(0);
     await page.reload();
     await expect(page.locator('[data-home-section="usage-summary"] > button')).toHaveAttribute('aria-expanded', 'false');
     await expect(page.locator('[data-home-section="overview"] > button')).toHaveAttribute('aria-expanded', 'true');
     await page.locator('#dashboard-home-tab-usage').click();
     await expect(page.locator('#dashboard-home-panel-usage .usage-panel')).toBeVisible();
+    await expect(page.locator('#dashboard-home-panel-usage')).toContainText('apply_patch');
   });
 
   test('header region', async ({ page }) => {
@@ -119,7 +120,7 @@ test.describe('Windows dashboard rendering (synthetic fixtures)', () => {
     await expect(page.locator('html')).toHaveAttribute('data-palette', 'codexu.default');
   });
 
-  test('overview region (leadership + quota + metrics + monthly value)', async ({ page }) => {
+  test('overview keeps leadership and quota while Token Monitor owns aggregate statistics', async ({ page }) => {
     await expect(page.locator('.dashboard-home-overview')).toHaveScreenshot('dashboard-overview.png');
   });
 

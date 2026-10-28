@@ -22,6 +22,12 @@ class WindowsCISelectionTest(unittest.TestCase):
         cls.palette = cls.commit("Resources/Palettes/example/tokens/light.json", "{}")
         cls.badge = cls.commit("Resources/LeadershipBadges/example.png", "synthetic fixture")
         cls.other_resource = cls.commit("Resources/Other/example.txt", "unrelated resource")
+        cls.proxy = cls.commit("Companion/LocalProxy/bridge.go", "synthetic shared proxy source")
+        cls.models = cls.commit("Sources/CodexUsageWidget/Services/CodexProfileStore.swift", "synthetic model declaration")
+        cls.packager = cls.commit("scripts/build-windows-release.ps1", "synthetic package entry")
+        cls.release_workflow = cls.commit(".github/workflows/release-windows.yml", "synthetic release workflow")
+        cls.statistics_engine = cls.commit("Companion/TokenMonitorEngine/scanner-backports/1027v1/scanner.patch", "synthetic reviewed scanner patch")
+        cls.statistics_charts = cls.commit("Resources/UpstreamCharts/standalone.js", "synthetic chart source")
         cls.git("checkout", "-q", "-b", "base-only-change", cls.base)
         cls.diverged_base = cls.commit("windows/source.txt", "base-only Windows change")
 
@@ -72,9 +78,23 @@ class WindowsCISelectionTest(unittest.TestCase):
         self.assertFalse(self.push(self.badge, self.other_resource))
         self.assertFalse(self.pull(self.badge, self.other_resource))
 
+    def test_shared_proxy_and_release_inputs_select_windows(self):
+        for before, after in ((self.other_resource, self.proxy), (self.proxy, self.models), (self.models, self.packager), (self.packager, self.release_workflow)):
+            with self.subTest(after=after):
+                self.assertTrue(self.push(before, after))
+                self.assertTrue(self.pull(before, after))
+                self.assertTrue(self.push(after, before))
+
     def test_pr_uses_merge_base_not_unrelated_base_changes(self):
         self.assertFalse(self.pull(self.diverged_base, self.mac))
         self.assertTrue(self.push(self.diverged_base, self.mac))
+
+    def test_pinned_statistics_inputs_run_windows(self):
+        for before, after in ((self.release_workflow, self.statistics_engine), (self.statistics_engine, self.statistics_charts)):
+            with self.subTest(after=after):
+                self.assertTrue(self.push(before, after))
+                self.assertTrue(self.pull(before, after))
+                self.assertTrue(self.push(after, before))
 
     def test_removing_windows_code_still_runs_checks(self):
         self.assertTrue(self.push(self.windows, self.mac))

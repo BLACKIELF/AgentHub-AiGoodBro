@@ -4,6 +4,7 @@ import { useI18n } from '../i18n/I18nProvider';
 import { parseForecast, parseNotices, type Forecast, type Notice } from '../utils/publicFeeds';
 import { ResetCountdown } from './ResetCountdown';
 import { HomeSection } from './HomeSection';
+import { RefreshCw } from 'lucide-react';
 
 type Feed = 'forecast' | 'history' | 'messages';
 type State = { checkedAt: number; forecast: Forecast | null; notices: Notice[]; cached: boolean; failed: boolean };
@@ -72,7 +73,7 @@ export function PublicResetPanel() {
   const history = usePublicFeed('history');
   const deadline = forecast.forecast?.deadline;
   return <HomeSection id="resets" title={text('重置消息', 'Reset updates')}><section className="glass-panel p-4 space-y-3" aria-label={text('公开重置消息', 'Public reset updates')}>
-    <div className="flex justify-between items-center gap-3"><h2 className="text-sm font-semibold text-primary">{text('Codex 重置预告', 'Codex reset forecast')}</h2><button className="glass-button px-3 py-1 text-xs" disabled={forecast.busy || history.busy} onClick={() => { void forecast.refresh(); void history.refresh(); }}>{text('刷新', 'Refresh')}</button></div>
+    <div className="flex justify-between items-center gap-3"><h2 className="text-sm font-semibold text-primary">{text('Codex 重置预告', 'Codex reset forecast')}</h2><button className="icon-action" aria-label={text('刷新', 'Refresh')} title={text('刷新', 'Refresh')} disabled={forecast.busy || history.busy} onClick={() => { void forecast.refresh(); void history.refresh(); }}><RefreshCw size={14} aria-hidden="true" /></button></div>
     {forecast.forecast ? <div className="rounded-xl border border-status-warn/30 bg-status-warn/8 p-3 space-y-2">
       <span className="text-xs text-status-warn">{text('公开预告 · 待确认', 'Public forecast · unconfirmed')}{forecast.cached && text(' · 缓存', ' · cached')}</span>
       <p className="font-semibold text-primary">{deadline === null ? text('时间待公布', 'Time to be announced') : text('预计最晚 ', 'Expected by ') + new Intl.DateTimeFormat(language === 'zh-Hans' ? 'zh-CN' : 'en-GB', { timeZone: 'Asia/Shanghai', year: 'numeric', month: 'short', day: 'numeric', weekday: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(deadline) + text(' · 北京时间', ' · Beijing time')}</p>
@@ -91,7 +92,7 @@ export function PublisherMessagePanel() {
   const feed = usePublicFeed('messages');
   const zh = language === 'zh-Hans';
   return <HomeSection id="messages" title={zh ? 'AiGoodBro 消息' : 'AiGoodBro messages'}><section className="glass-panel p-4 space-y-3" aria-label={zh ? '维护者公告' : 'Publisher announcements'}>
-    <div className="flex justify-between items-center"><p className="text-xs text-secondary">{zh ? '最近 3 条有效公告' : 'Latest 3 active announcements'}</p><button className="glass-button px-3 py-1 text-xs" disabled={feed.busy} onClick={() => void feed.refresh()}>{zh ? '刷新' : 'Refresh'}</button></div>
+    <div className="flex justify-between items-center"><p className="text-xs text-secondary">{zh ? '最近 3 条有效公告' : 'Latest 3 active announcements'}</p><button className="icon-action" aria-label={zh ? '刷新' : 'Refresh'} title={zh ? '刷新' : 'Refresh'} disabled={feed.busy} onClick={() => void feed.refresh()}><RefreshCw size={14} aria-hidden="true" /></button></div>
     <NoticeList notices={feed.notices.slice(0, 3)} />
     {feed.notices.length === 0 && <p className="text-sm text-secondary">{feed.busy ? (zh ? '正在读取…' : 'Loading…') : feed.failed ? (zh ? '公告暂不可用，可刷新重试。' : 'Announcements unavailable. Refresh to retry.') : (zh ? '暂无有效公告' : 'No active announcements')}</p>}
   </section></HomeSection>;

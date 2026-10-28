@@ -17,6 +17,7 @@ function Read-ScriptAst {
 }
 $entryAst = Read-ScriptAst $entry
 $packageAst = Read-ScriptAst $packageEntry
+$null = Read-ScriptAst (Join-Path $root 'windows\scripts\Prepare-TokenMonitorResources.ps1')
 function Import-TestedFunction {
     param($Ast, [string] $Name)
     $definition = $Ast.Find({ param($node)
@@ -61,9 +62,13 @@ try {
 
     $plan = @(Get-ReleaseReadinessPlan -Root $root -ReleaseVersion '9.6.9' -Output $fixture -Preflight (Join-Path $fixture 'preflight.json') -PowerShell51 'powershell.exe' -PowerShell7 'pwsh.exe' -Package $true)
     Assert-True ($plan[0].name -eq 'native-preflight' -and '-PreflightOnly' -in $plan[0].arguments) 'Default native step must only preflight.'
-    Assert-True (@($plan | Where-Object { $_.name -like 'ps51:*' }).Count -eq 4) 'PowerShell 5.1 contract coverage incomplete.'
-    Assert-True (@($plan | Where-Object { $_.name -like 'ps7:*' }).Count -eq 4) 'PowerShell 7 contract coverage incomplete.'
+    Assert-True (@($plan | Where-Object { $_.name -like 'ps51:*' }).Count -eq 5) 'PowerShell 5.1 contract coverage incomplete.'
+    Assert-True (@($plan | Where-Object { $_.name -like 'ps7:*' }).Count -eq 5) 'PowerShell 7 contract coverage incomplete.'
     $names = @($plan | ForEach-Object { $_.name })
+    Assert-True ([array]::IndexOf($names, 'proxy-native-resources') -lt [array]::IndexOf($names, 'rust-tests')) 'The actual helper must be built and exercised before workspace validation.'
+    Assert-True ('-RunNativeTests' -in $plan[[array]::IndexOf($names, 'proxy-native-resources')].arguments) 'Release validation omitted the real helper fixture tests.'
+    Assert-True ([array]::IndexOf($names, 'token-monitor-native-resources') -lt [array]::IndexOf($names, 'rust-tests')) 'The real statistics resources must precede workspace validation.'
+    Assert-True ('-RunNativeTests' -in $plan[[array]::IndexOf($names, 'token-monitor-native-resources')].arguments) 'Release validation omitted native statistics process tests.'
     Assert-True ([array]::IndexOf($names, 'visual-baseline') -lt [array]::IndexOf($names, 'visual-repeat')) 'Visual verification must follow baseline creation.'
     Assert-True ($names[-1] -eq 'package') 'Packages must follow successful verification.'
     Assert-True ('--update-snapshots' -notin $plan[[array]::IndexOf($names, 'visual-repeat')].arguments) 'The second visual run must compare the existing baseline.'

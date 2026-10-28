@@ -123,6 +123,12 @@ test('late response from previous source cannot overwrite the selected source', 
   await expect(page.getByText('Synthetic source B', { exact: false })).toBeVisible();
 });
 
+async function accountAction(row, name) {
+  const menu = row.locator('details.account-more');
+  if (!await menu.evaluate(element => element.open)) await menu.locator('summary').click();
+  await row.getByRole('button', { name, exact: true }).click();
+}
+
 const panel = page => page.getByRole('region', { name: 'Account directories', exact: true });
 test('credit-only quota preserves true zero without inventing a percentage or reset time', async ({ page }) => {
   const first = page.getByTestId('profile-1');
@@ -163,8 +169,10 @@ test('stable order, one-step move, view selection and no paths', async ({ page }
   const region = panel(page);
   await expect(region).toContainText('does not switch Codex login');
   await expect(region).not.toContainText('C:\\');
+  await page.getByTestId('profile-1').locator('summary').click();
   await expect(page.getByTestId('profile-1').getByRole('button', { name: 'Move up' })).toBeDisabled();
-  await page.getByTestId('profile-2').getByRole('button', { name: 'Move up' }).click();
+  await page.getByTestId('profile-1').locator('summary').click();
+  await accountAction(page.getByTestId('profile-2'), 'Move up');
   await expect(region.locator('li').first()).toContainText('Synthetic B');
   await page.getByTestId('profile-2').getByRole('button', { name: 'View usage' }).click();
   await expect(page.getByTestId('profile-2').getByRole('button', { name: 'Viewing' })).toBeDisabled();
@@ -172,7 +180,7 @@ test('stable order, one-step move, view selection and no paths', async ({ page }
 });
 
 test('failed save keeps editor, retry saves without moving row', async ({ page }) => {
-  await page.getByTestId('profile-1').getByRole('button', { name: 'Rename' }).click();
+  await accountAction(page.getByTestId('profile-1'), 'Rename');
   await page.getByRole('textbox', { name: 'Alias (not email)' }).fill('Renamed');
   await page.evaluate(() => { window.failProfileSave = true; });
   await panel(page).getByRole('button', { name: 'Save', exact: true }).click();
@@ -194,12 +202,12 @@ test('link cancellation does not write; remove requires confirmation', async ({ 
   await page.evaluate(() => { window.cancelProfilePick = false; });
   await panel(page).getByRole('button', { name: 'Choose directory and link' }).click();
   await expect(page.getByTestId('profile-3')).toBeVisible();
-  await page.getByTestId('profile-3').getByRole('button', { name: 'Remove', exact: true }).click();
+  await accountAction(page.getByTestId('profile-3'), 'Remove');
   await expect(panel(page)).toContainText('Keep files, credentials and login unchanged');
   await expect(panel(page)).toHaveScreenshot('profiles-remove-confirm.png');
   await panel(page).getByRole('button', { name: 'Cancel', exact: true }).click();
   await expect(page.getByTestId('profile-3')).toBeVisible();
-  await page.getByTestId('profile-3').getByRole('button', { name: 'Remove', exact: true }).click();
+  await accountAction(page.getByTestId('profile-3'), 'Remove');
   await panel(page).getByRole('button', { name: 'Confirm removal', exact: true }).click();
   await expect(page.getByTestId('profile-3')).toHaveCount(0);
 });
@@ -216,7 +224,7 @@ test('quota is manual, scoped to its row, and stable across reorder', async ({ p
   await expect(second).toContainText('Not read yet');
   await second.getByRole('button', { name: 'Read quota', exact: true }).click();
   await expect(second).toContainText('Weekly remaining 80%');
-  await second.getByRole('button', { name: 'Move up' }).click();
+  await accountAction(second, 'Move up');
   await expect(panel(page).locator('li').first()).toContainText('Synthetic B');
   await expect(first).toContainText('Weekly remaining 59%');
   expect(await page.evaluate(() => window.quotaCalls)).toEqual(['1', '2']);
@@ -252,7 +260,7 @@ test('pending quota cannot be duplicated or restored after unlink', async ({ pag
   await expect(first.getByRole('button', { name: 'Reading…', exact: true })).toBeDisabled();
   expect(await page.evaluate(() => window.quotaCalls)).toEqual(['1']);
   await expect(panel(page)).toHaveScreenshot('profiles-quota-reading.png');
-  await first.getByRole('button', { name: 'Remove', exact: true }).click();
+  await accountAction(first, 'Remove');
   await panel(page).getByRole('button', { name: 'Confirm removal', exact: true }).click();
   await expect(first).toHaveCount(0);
   await page.evaluate(() => window.releaseProfileQuota());
@@ -323,8 +331,8 @@ test('account details keep the matching alias after reorder and rename', async (
   const first = page.getByTestId('profile-1'), second = page.getByTestId('profile-2');
   await first.getByRole('button', { name: 'Read quota', exact: true }).click();
   await second.getByRole('button', { name: 'Read quota', exact: true }).click();
-  await second.getByRole('button', { name: 'Move up', exact: true }).click();
-  await second.getByRole('button', { name: 'Rename', exact: true }).click();
+  await accountAction(second, 'Move up');
+  await accountAction(second, 'Rename');
   await page.getByRole('textbox', { name: 'Alias (not email)' }).fill('Renamed B');
   await panel(page).getByRole('button', { name: 'Save', exact: true }).click();
   await expect(panel(page).locator('li').first()).toContainText('Renamed B');
@@ -348,7 +356,7 @@ test('account details keep the matching alias after reorder and rename', async (
 test('a non-Codex account reports its own state and never fabricates a success', async ({ page }) => {
   const region = panel(page);
   await region.getByRole('button', { name: 'Link existing directory' }).click();
-  await page.getByRole('combobox', { name: 'Platform' }).selectOption('antigravity');
+  await page.getByRole('combobox', { name: 'Platform', exact: true }).selectOption('antigravity');
   await expect(region).toContainText('cannot be isolated on Windows');
   await page.getByRole('textbox', { name: 'Alias (not email)' }).fill('Gravity');
   await region.getByRole('button', { name: 'Choose directory and link' }).click();

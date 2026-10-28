@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useI18n } from '../i18n/I18nProvider';
 import { ResetCountdown } from './ResetCountdown';
+import { RefreshCw } from 'lucide-react';
+import { QuotaRing } from './QuotaRing';
 import { parseLocalQuota, localQuotaStateLabel, localQuotaMessage, localQuotaExpiryNotice, isLocalQuotaLive, type LocalQuota } from '../utils/localCliQuota';
 
 /**
@@ -41,15 +43,15 @@ export function LocalProfileQuota({ profileId, disabled }: { profileId: string; 
   // A reading the platform did report still stops being current once it ages out
   // or its period has ended, so freshness — not just the state — decides whether
   // the panel may present live percentages.
-  const live = quota !== null && isLocalQuotaLive(quota, now);
+  const live = quota !== null && !failed && isLocalQuotaLive(quota, now);
   const history = quota !== null && !live;
-  const expired = quota !== null && quota.state === 'available' && !live;
+  const expired = quota !== null && quota.state === 'available' && !isLocalQuotaLive(quota, now);
   const message = quota ? localQuotaMessage(quota.message_code, language) : null;
   const expiryNotice = quota ? localQuotaExpiryNotice(quota.state, language) : null;
   return <div className="account-quota account-local-quota space-y-2 text-xs text-secondary" aria-label={text('平台额度', 'Platform quota')}>
     <div className="flex flex-wrap items-center gap-2">
-      <button className="glass-button rounded-lg px-2 py-1" disabled={disabled || busy} onClick={() => void readQuota()}>
-        {busy ? text('正在读取…', 'Reading…') : text('读取额度', 'Read quota')}
+      <button className="icon-action" aria-label={busy ? text('正在读取…', 'Reading…') : text('读取额度', 'Read quota')} title={text('读取额度', 'Read quota')} disabled={disabled || busy} onClick={() => void readQuota()}>
+        <RefreshCw size={14} className={busy ? 'animate-spin' : ''} aria-hidden="true" />
       </button>
       {!quota && !failed && !busy && <span>{text('尚未读取', 'Not read yet')}</span>}
       {failed && <span role="status" className="text-status-warn">{text('读取失败，可重试。', 'Read failed. You can retry.')}</span>}
@@ -71,13 +73,8 @@ export function LocalProfileQuota({ profileId, disabled }: { profileId: string; 
           const remaining = Number(window.remaining_percent.toFixed(1));
           const used = Number((100 - remaining).toFixed(1));
           return <div key={window.id} className="account-quota-window min-w-0 space-y-1.5">
-            <div className="flex flex-wrap justify-between gap-x-3 gap-y-1">
-              <span>{window.label} {history ? text('历史剩余', 'history remaining') : text('剩余', 'remaining')} <strong className="text-primary">{remaining}%</strong></span>
-              <span>{history ? text('历史已用', 'history used') : text('已用', 'used')} {used}%</span>
-            </div>
-            <div className="h-1 rounded-full bg-surface-inset overflow-hidden" aria-hidden="true">
-              <div className="h-full rounded-full" style={{ width: `${remaining}%`, background: history ? 'var(--text-tertiary)' : remaining <= 20 ? 'var(--status-error)' : remaining <= 50 ? 'var(--status-warn)' : 'linear-gradient(90deg, var(--quota-primary-start), var(--quota-primary-end))' }} />
-            </div>
+            <QuotaRing label={window.label} remaining={remaining} stale={history}
+              description={`${window.label} ${history ? text('历史剩余', 'history remaining') : text('剩余', 'remaining')} ${remaining}% · ${history ? text('历史已用', 'history used') : text('已用', 'used')} ${used}%`} />
             <p className="text-tertiary">{window.resets_at === null ? text('重置时间未知', 'Reset time unknown') : text('重置 ', 'Reset ') + formatTime(window.resets_at)}</p>
             {window.resets_at !== null && !history && <ResetCountdown deadline={window.resets_at} />}
           </div>;

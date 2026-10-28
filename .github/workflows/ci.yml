@@ -185,9 +185,23 @@ jobs:
     needs: changes
     if: needs.changes.outputs.windows == 'true'
     runs-on: windows-latest
-    timeout-minutes: 10
+    # Includes a fresh patched MSVC scanner and owned-process native tests.
+    timeout-minutes: 60
+    env:
+      GIT_CONFIG_COUNT: "2"
+      GIT_CONFIG_KEY_0: core.autocrlf
+      GIT_CONFIG_VALUE_0: "false"
+      GIT_CONFIG_KEY_1: core.eol
+      GIT_CONFIG_VALUE_1: lf
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: Companion/LocalProxy/go.mod
+          cache: false
       - uses: dtolnay/rust-toolchain@1.97.1
         with:
           components: rustfmt
@@ -216,6 +230,7 @@ jobs:
           .\windows\scripts\tests\Test-NativeWindowSelection.ps1
           .\windows\scripts\tests\Test-NativeVisualCaptureWorkflow.ps1
           .\windows\scripts\tests\Test-ReleaseReadiness.ps1
+          .\windows\scripts\tests\Test-AppUpdateTransport.ps1
       - name: Test native visual script contracts with PowerShell 7
         if: ${{ !cancelled() }}
         shell: pwsh
@@ -224,11 +239,34 @@ jobs:
           .\windows\scripts\tests\Test-NativeWindowSelection.ps1
           .\windows\scripts\tests\Test-NativeVisualCaptureWorkflow.ps1
           .\windows\scripts\tests\Test-ReleaseReadiness.ps1
+          .\windows\scripts\tests\Test-AppUpdateTransport.ps1
+
+      - name: Build and exercise the Windows proxy helper with isolated accounts
+        shell: pwsh
+        run: .\windows\scripts\Prepare-ProxyResources.ps1 -BuildRoot (Join-Path $env:RUNNER_TEMP 'aigoodbro-proxy-validation') -RunNativeTests
+
+      - name: Build and exercise Token Monitor with isolated logs
+        shell: pwsh
+        run: .\windows\scripts\Prepare-TokenMonitorResources.ps1 -BuildRoot (Join-Path $env:RUNNER_TEMP 'aigoodbro-statistics-validation') -RunNativeTests
 
       - name: Test Windows Rust workspace
         if: ${{ !cancelled() }}
         working-directory: windows
         run: cargo test --workspace --locked
+
+      - name: Preserve native statistics validation receipts
+        uses: actions/upload-artifact@v4
+        if: ${{ always() && !cancelled() }}
+        with:
+          name: windows-statistics-validation
+          path: |
+            ${{ runner.temp }}/aigoodbro-statistics-validation/scanner/*.log
+            ${{ runner.temp }}/aigoodbro-statistics-validation/scanner/SCANNER-RECEIPT.json
+            ${{ runner.temp }}/aigoodbro-statistics-validation/scanner/synthetic-regression/receipt.json
+            ${{ runner.temp }}/aigoodbro-statistics-validation/resource-pin.txt
+            windows/apps/codexu-tauri/src-tauri/resources/token-monitor/WINDOWS-RESOURCES.json
+          if-no-files-found: ignore
+          retention-days: 7
 
   windows-web:
     needs: changes
@@ -264,9 +302,22 @@ jobs:
     needs: changes
     if: needs.changes.outputs.windows == 'true'
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
+    env:
+      GIT_CONFIG_COUNT: "2"
+      GIT_CONFIG_KEY_0: core.autocrlf
+      GIT_CONFIG_VALUE_0: "false"
+      GIT_CONFIG_KEY_1: core.eol
+      GIT_CONFIG_VALUE_1: lf
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: Companion/LocalProxy/go.mod
+          cache: false
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -286,6 +337,12 @@ jobs:
         run: |
           npm ci --no-audit --no-fund
           npm run build
+      - name: Prepare the verified Windows proxy resources
+        shell: pwsh
+        run: .\windows\scripts\Prepare-ProxyResources.ps1 -BuildRoot (Join-Path $env:RUNNER_TEMP 'aigoodbro-proxy-resources')
+      - name: Prepare the verified Token Monitor resources
+        shell: pwsh
+        run: .\windows\scripts\Prepare-TokenMonitorResources.ps1 -BuildRoot (Join-Path $env:RUNNER_TEMP 'aigoodbro-statistics-resources')
       - name: Build the native release application
         working-directory: windows
         run: cargo build --release --locked -p codexu-tauri --features custom-protocol
@@ -294,6 +351,18 @@ jobs:
         run: |
           .\windows\scripts\tests\Test-NativeVisualCaptureCoverage.ps1
           .\windows\scripts\tests\Test-NativeVisualCaptureCoverage.ps1
+      - name: Preserve native statistics build receipts
+        uses: actions/upload-artifact@v4
+        if: ${{ always() && !cancelled() }}
+        with:
+          name: windows-statistics-native-build
+          path: |
+            ${{ runner.temp }}/aigoodbro-statistics-resources/scanner/*.log
+            ${{ runner.temp }}/aigoodbro-statistics-resources/scanner/SCANNER-RECEIPT.json
+            ${{ runner.temp }}/aigoodbro-statistics-resources/resource-pin.txt
+            windows/apps/codexu-tauri/src-tauri/resources/token-monitor/WINDOWS-RESOURCES.json
+          if-no-files-found: ignore
+          retention-days: 7
       - uses: actions/cache/save@v4
         if: ${{ always() && !cancelled() && steps.native-cache.outputs.cache-hit != 'true' }}
         with:

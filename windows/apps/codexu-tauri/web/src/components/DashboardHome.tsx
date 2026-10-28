@@ -12,12 +12,16 @@ import { StatCard } from './StatCard';
 import { useI18n } from '../i18n/I18nProvider';
 import type { MessageKey } from '../i18n/messages';
 import { HomeSection } from './HomeSection';
+import { ToolUsageList } from './ToolUsageList';
 
 interface DashboardHomeProps {
   snapshot: UsageSnapshot | null | undefined;
   quotaSourceLabel: string | null | undefined;
   leadershipSignal: CodexLeadershipSignal | null | undefined;
   onQuotaRefresh: () => void;
+  showOverview?: boolean;
+  showTools?: boolean;
+  showLocalStatistics?: boolean;
 }
 
 type DashboardContentTab = 'tasks' | 'leadership' | 'usage' | 'projects' | 'skills';
@@ -35,7 +39,7 @@ const formatUSD = (value: unknown): string => {
   return value.toFixed(2);
 };
 
-export function DashboardHome({ snapshot, quotaSourceLabel, leadershipSignal, onQuotaRefresh }: DashboardHomeProps) {
+export function DashboardHome({ snapshot, quotaSourceLabel, leadershipSignal, onQuotaRefresh, showOverview = true, showTools = true, showLocalStatistics = true }: DashboardHomeProps) {
   const { t, language } = useI18n();
   const usage = snapshot?.local ?? null;
   const signal = leadershipSignal ?? null;
@@ -80,7 +84,7 @@ export function DashboardHome({ snapshot, quotaSourceLabel, leadershipSignal, on
 
   return (
     <div className="space-y-4 dashboard-home">
-      <HomeSection id="overview" title={language === 'zh-Hans' ? '用量与额度概览' : 'Usage and quota overview'}>
+      {showOverview && <HomeSection id="overview" title={language === 'zh-Hans' ? '用量与额度概览' : 'Usage and quota overview'}>
       <div className="dashboard-home-overview">
         <LeadershipOverviewCard
           signal={signal}
@@ -90,7 +94,7 @@ export function DashboardHome({ snapshot, quotaSourceLabel, leadershipSignal, on
 
         <QuotaOverview snapshot={snapshot} sourceLabel={quotaSourceLabel} onRefresh={onQuotaRefresh} />
 
-        <section className="dashboard-home-metrics" aria-label={t('dashboard.aria.localTokenMetrics')}>
+        {showLocalStatistics && <section className="dashboard-home-metrics" aria-label={t('dashboard.aria.localTokenMetrics')}>
           <StatCard
             label={t('dashboard.metrics.today')}
             value={formatNumber(hasUsage ? usage?.today_tokens ?? null : null)}
@@ -127,14 +131,15 @@ export function DashboardHome({ snapshot, quotaSourceLabel, leadershipSignal, on
             compact
             accent="tertiary"
           />
-        </section>
+        </section>}
 
-        <div className="dashboard-home-monthly">
+        {showLocalStatistics && <div className="dashboard-home-monthly">
           <MonthlyValueProgress usage={usage} />
-        </div>
+        </div>}
       </div>
 
-      </HomeSection>
+      </HomeSection>}
+      {showTools && <>
       <div
         onKeyDown={handleLowerTabKeyDown}
         role="tablist"
@@ -188,7 +193,7 @@ export function DashboardHome({ snapshot, quotaSourceLabel, leadershipSignal, on
           id="dashboard-home-panel-usage"
           aria-labelledby="dashboard-home-tab-usage"
         >
-          <HomeSection id="usage" title={t('dashboard.tabs.usage')}><UsagePanel usage={usage} /></HomeSection>
+          <HomeSection id="usage" title={t('dashboard.tabs.usage')}><UsagePanel usage={usage} /><ToolUsageList tools={usage?.tool_usages ?? []} /></HomeSection>
         </section>
       )}
 
@@ -214,6 +219,7 @@ export function DashboardHome({ snapshot, quotaSourceLabel, leadershipSignal, on
           <HomeSection id="skills" title={t('dashboard.tabs.skills')}><SkillsPanel skills={usage?.skill_usages ?? []} /></HomeSection>
         </section>
       )}
+      </>}
     </div>
   );
 }

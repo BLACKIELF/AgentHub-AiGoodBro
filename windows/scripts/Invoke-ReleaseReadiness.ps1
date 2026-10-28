@@ -21,11 +21,13 @@ function Get-ReleaseReadinessPlan {
     # release entry point cannot run its own scripts on a freshly installed machine.
     $plan.Add(@{ name = 'native-preflight'; executable = $PowerShell51; directory = $Root; arguments = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $Root 'windows\scripts\Capture-NativeVisuals.ps1'), '-PreflightOnly', '-PreflightResultPath', $Preflight) })
     foreach ($hostEntry in @(@{ name = 'ps51'; executable = $PowerShell51 }, @{ name = 'ps7'; executable = $PowerShell7 })) {
-        foreach ($test in @('Test-PublicFeedSyntax.ps1', 'Test-NativeWindowSelection.ps1', 'Test-NativeVisualCaptureWorkflow.ps1', 'Test-ReleaseReadiness.ps1')) {
+        foreach ($test in @('Test-PublicFeedSyntax.ps1', 'Test-NativeWindowSelection.ps1', 'Test-NativeVisualCaptureWorkflow.ps1', 'Test-ReleaseReadiness.ps1', 'Test-AppUpdateTransport.ps1')) {
             $plan.Add(@{ name = ($hostEntry.name + ':' + $test); executable = $hostEntry.executable; directory = $Root; arguments = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $Root ('windows\scripts\tests\' + $test))) })
         }
     }
     $plan.Add(@{ name = 'rust-format'; executable = 'cargo'; directory = $windows; arguments = @('+1.97.1-x86_64-pc-windows-msvc', 'fmt', '--all', '--', '--check') })
+    $plan.Add(@{ name = 'proxy-native-resources'; executable = $PowerShell7; directory = $Root; arguments = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $Root 'windows\scripts\Prepare-ProxyResources.ps1'), '-BuildRoot', (Join-Path $Output 'proxy-build'), '-RunNativeTests') })
+    $plan.Add(@{ name = 'token-monitor-native-resources'; executable = $PowerShell7; directory = $Root; arguments = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $Root 'windows\scripts\Prepare-TokenMonitorResources.ps1'), '-BuildRoot', (Join-Path $Output 'token-monitor-build'), '-RunNativeTests') })
     $plan.Add(@{ name = 'rust-tests'; executable = 'cargo'; directory = $windows; arguments = @('+1.97.1-x86_64-pc-windows-msvc', 'test', '--workspace', '--locked') })
     $plan.Add(@{ name = 'web-dependencies'; executable = 'npm.cmd'; directory = $web; arguments = @('ci', '--no-audit', '--no-fund') })
     $plan.Add(@{ name = 'web-tests'; executable = 'npm.cmd'; directory = $web; arguments = @('test') })
@@ -172,6 +174,7 @@ $report = [ordered]@{
     )
 }
 $oldVisualBrowser = [Environment]::GetEnvironmentVariable('CODEXU_VISUAL_BROWSER', 'Process')
+$oldStatisticsPin = [Environment]::GetEnvironmentVariable('AIGOODBRO_TOKEN_MONITOR_RESOURCE_SHA256', 'Process')
 $nativeRunner = {
     param($step)
     Push-Location $step.directory
@@ -181,13 +184,20 @@ $nativeRunner = {
         $executable = $step.executable
         $arguments = [string[]]$step.arguments
         & $executable @arguments | Out-Host
-        return [int]$LASTEXITCODE
+        $code = [int]$LASTEXITCODE
+        if ($code -eq 0 -and $step.name -eq 'token-monitor-native-resources') {
+            # Child process environment changes do not reach this runner. Bind
+            # every later Rust build to the exact validated resource manifest.
+            $manifest = Join-Path $repositoryRoot 'windows\apps\codexu-tauri\src-tauri\resources\token-monitor\WINDOWS-RESOURCES.json'
+            $env:AIGOODBRO_TOKEN_MONITOR_RESOURCE_SHA256 = (Get-FileHash -LiteralPath $manifest -Algorithm SHA256).Hash.ToLowerInvariant()
+        }
+        return $code
     } finally { Pop-Location }
 }
 try {
     Save-ReadinessReport -Report $report -Path $reportPath
     if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) { throw 'windows_required' }
-    foreach ($command in @('git', 'cargo', 'rustup', 'npm.cmd', 'node', 'powershell.exe', 'pwsh.exe')) {
+    foreach ($command in @('git', 'cargo', 'rustup', 'npm.cmd', 'node', 'python', 'go', 'powershell.exe', 'pwsh.exe')) {
         if (-not (Get-Command $command -ErrorAction SilentlyContinue)) { throw ('missing_tool:' + $command) }
     }
     $report.git = Get-SourceStamp -Root $repositoryRoot
@@ -215,6 +225,7 @@ try {
     throw ('Windows release readiness failed: ' + $report.error_code + '. See report.json for completed steps.')
 } finally {
     [Environment]::SetEnvironmentVariable('CODEXU_VISUAL_BROWSER', $oldVisualBrowser, 'Process')
+    [Environment]::SetEnvironmentVariable('AIGOODBRO_TOKEN_MONITOR_RESOURCE_SHA256', $oldStatisticsPin, 'Process')
     $report.finished_utc = [DateTime]::UtcNow.ToString('o')
     Save-ReadinessReport -Report $report -Path $reportPath
     Write-Host ('RELEASE_READINESS_REPORT=' + $reportPath)
