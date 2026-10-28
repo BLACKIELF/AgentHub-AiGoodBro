@@ -268,6 +268,9 @@ class AsarPackageTests(unittest.TestCase):
             "src/shared/providers/grok/sessionMetadata.js",
             # Reviewed local Codex machine plan-type propagation.
             "src/shared/limits/core.js", "src/shared/providers/codex/limits.js",
+            # Approved Cursor PR1145 canonical-account quota/cache adaptations.
+            "src/shared/limits/runtime.js",
+            "src/shared/providers/cursor/probe.js", "src/shared/providers/cursor/limits.js",
             # Approved selective v0.70 statistics/archive backports.
             "src/shared/history.js", "src/shared/hubBuildRegistry.json",
             "src/shared/providers/codex/sessionContext.js",
