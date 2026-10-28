@@ -34,9 +34,10 @@ def main():
         BASE / "Domain/UsageModels.swift",
         BASE / "Domain/FeishuMessageOptions.swift",
         BASE / "Domain/CodexResetNotice.swift",
+        BASE / "Services/FeishuWebhookService.swift",
     ]
     inputs = {path: path.read_text() for path in paths}
-    store, tracker, models, options, notices = (inputs[path] for path in paths)
+    store, tracker, models, options, notices, webhook = (inputs[path] for path in paths)
     helper_name = "resetQuotaEventTrackerForNotificationConfiguration()"
     helper = block(store, "    private func " + helper_name)
     methods = [block(store, needle) for needle in [
@@ -59,11 +60,13 @@ def main():
 
     declarations = [
         "import Foundation",
+        "import Security",
         block(models, "struct RateWindow:"),
         block(notices, "struct CodexResetCreditExpiryBatch:"),
         block(tracker, "enum CodexQuotaEvent:"),
         block(tracker, "struct CodexQuotaEventTracker {"),
         block(options, "struct FeishuMessageOptions:"),
+        block(webhook, "final class MessageCredentialRetry {"),
     ]
     support = r'''
 // Deliberately shadows Foundation.UserDefaults; setters only record memory writes.
@@ -80,6 +83,7 @@ enum WidgetLanguage {
 }
 struct FeishuTaskCompletionObserver {}
 enum FeishuWebhookError: Error {
+    case keychain(OSStatus)
     case keychainAuthorizationRequired, keychainTimedOut, keychainBusy, missingWebhook, transportFailed
 }
 final class FixtureWebhookService {
@@ -123,6 +127,10 @@ final class Harness {
     var feishuNotificationsEnabled = false, feishuQuotaResetEnabled = false, feishuResetCreditEnabled = false
     var feishuWebhookConfigured = true, feishuNeedsAuthorization = false
     var feishuConfigurationRevision = 0, maintenanceSchedules = 0, authorizationRefreshes = 0
+    var feishuCredentialReadID: UUID?
+    let feishuCredentialRetry = MessageCredentialRetry { _, _ in
+        fatalError("Configuration fixture must not schedule credential retries")
+    }
     var feishuNotificationMessage = ""
     var pausedAutomationFeatures: Set<Feature> = []
     var feishuTaskCompletionObserver = FeishuTaskCompletionObserver()
@@ -188,6 +196,7 @@ let configurations: [(String, Configuration)] = [
         check(h.feishuMessageOptions == options && h.feishuConfigurationRevision == 1, "quota-related message options execute")
     }),
     ("webhook refresh callback", { h in
+        h.feishuWebhookConfigured = false
         h.refreshWebhook()
         check(h.feishuWebhookService.reads == 1 && h.feishuWebhookConfigured, "synthetic refresh callback executes")
     }),
@@ -290,7 +299,7 @@ print("PASS production proxy reset observation: \(scenarios) scenarios, \(checks
             "exitCode": code,
             "inputs": {str(path.relative_to(ROOT)): hashlib.sha256(value.encode()).hexdigest() for path, value in inputs.items()},
             "inputsUnchangedDuringRun": unchanged,
-            "scope": "Extracted production helper, eight configuration methods, message callback, observer gate, RateWindow and quota tracker; synthetic synchronous services and memory-only defaults; no full UsageStore or real identity admission",
+            "scope": "Extracted production helper, eight configuration methods, message callback, observer gate, RateWindow, quota tracker and credential retry with forbidden scheduling; synthetic synchronous services and memory-only defaults; no full UsageStore or real identity admission",
             "realAccountIO": False, "userDefaultsIO": False, "keychainIO": False,
             "networkSends": 0, "notificationSubmissions": 0,
         }, sort_keys=True))
