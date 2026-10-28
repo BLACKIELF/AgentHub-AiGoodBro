@@ -37,7 +37,8 @@ jobs:
 
   macos:
     runs-on: macos-14
-    timeout-minutes: 45
+    # Keep the complete native, renderer and proxy suite within one bounded job.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
