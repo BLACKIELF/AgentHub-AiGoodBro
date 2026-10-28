@@ -184,13 +184,22 @@ def prepare_source(directory, environment, source=SOURCE):
     if re.search(rb"(?m)^[ \t]*replace\b", module_data):
         raise ValueError("Provider module contains an unreviewed replacement")
     # Query the effective module, not a different manually downloaded copy.
-    upstream = json.loads(subprocess.check_output(
-        ["go", "list", "-mod=readonly", "-m", "-json", MODULE],
-        cwd=source, env=environment, text=True))
-    if (upstream.get("Path") != MODULE or upstream.get("Version") != VERSION or upstream.get("Replace")
-            or upstream.get("Sum") != manifest["moduleSum"]
-            or upstream.get("GoModSum") != manifest["moduleGoModSum"]):
-        raise ValueError("Effective upstream module does not match the pinned checksums")
+    for attempt in range(2):
+        upstream = json.loads(subprocess.check_output(
+            ["go", "list", "-mod=readonly", "-m", "-json", MODULE],
+            cwd=source, env=environment, text=True))
+        if (upstream.get("Path") != MODULE or upstream.get("Version") != VERSION or upstream.get("Replace")
+                or upstream.get("Sum") != manifest["moduleSum"]
+                or upstream.get("GoModSum") != manifest["moduleGoModSum"]):
+            raise ValueError("Effective upstream module does not match the pinned checksums")
+        if isinstance(upstream.get("Dir"), str) and upstream["Dir"]:
+            break
+        if attempt:
+            raise ValueError("Pinned upstream module source is unavailable after download")
+        # A fresh Go cache can resolve metadata without extracting source files.
+        # Download only the reviewed version, then recheck the effective module.
+        subprocess.run(["go", "mod", "download", MODULE + "@" + VERSION],
+                       cwd=source, env=environment, check=True)
     module = Path(upstream["Dir"])
     if directory.is_symlink():
         raise ValueError("Upstream source directory must not be a symlink")

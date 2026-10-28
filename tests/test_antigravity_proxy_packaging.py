@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import subprocess
 import tempfile
 import unittest
 from unittest import mock
@@ -13,6 +14,74 @@ SOURCE = ROOT / 'Companion/AntigravityProxy'
 spec = importlib.util.spec_from_file_location('provider_packager', ROOT / 'scripts/prepare-antigravity-proxy-resources.py')
 packager = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(packager)
+
+
+class ColdModuleCacheTests(unittest.TestCase):
+    def test_both_builders_download_only_missing_pinned_source(self):
+        for name in ('LocalProxy', 'AntigravityProxy'):
+            for cold in (False, True):
+                with self.subTest(adapter=name, cold=cold):
+                    self.exercise(name, cold=cold)
+
+    def test_changed_identity_after_download_is_rejected(self):
+        for name in ('LocalProxy', 'AntigravityProxy'):
+            for field, value in (('Version', 'v8.0.39'), ('Sum', 'h1:wrong'),
+                                 ('GoModSum', 'h1:wrong'), ('Replace', {'Dir': 'other'})):
+                with self.subTest(adapter=name, field=field):
+                    self.exercise(name, cold=True, changed={field: value})
+
+    def test_missing_directory_after_download_fails_without_retry_loop(self):
+        for name in ('LocalProxy', 'AntigravityProxy'):
+            with self.subTest(adapter=name):
+                self.exercise(name, cold=True, unavailable=True)
+
+    def test_download_failure_is_not_accepted_as_source(self):
+        for name in ('LocalProxy', 'AntigravityProxy'):
+            with self.subTest(adapter=name):
+                self.exercise(name, cold=True, download_error=True)
+
+    def exercise(self, name, *, cold, changed=None, unavailable=False, download_error=False):
+        spec = importlib.util.spec_from_file_location('cold_' + name, ROOT / 'Companion' / name / 'go.py')
+        support = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(support)
+        pin = support.load_manifest()
+        metadata = {'Path': support.MODULE, 'Version': support.VERSION,
+                    'Sum': pin['moduleSum'], 'GoModSum': pin['moduleGoModSum']}
+        with tempfile.TemporaryDirectory(prefix='cold-module-') as temporary:
+            directory = Path(temporary)
+            ready = dict(metadata, Dir=str(directory / 'sdk'))
+            ready.update(changed or {})
+            if unavailable:
+                ready.pop('Dir')
+            responses = [json.dumps(metadata), json.dumps(ready)] if cold else [json.dumps(ready)]
+            target = directory / 'sdk' / pin['patches'][0]['target']
+            original_read = support.regular_bytes
+
+            class ReachedVerifiedSource(Exception):
+                pass
+
+            def read(path):
+                if path == target:
+                    raise ReachedVerifiedSource()
+                return original_read(path)
+
+            expected = subprocess.CalledProcessError if download_error else (
+                ValueError if changed or unavailable else ReachedVerifiedSource)
+            with mock.patch.object(support.subprocess, 'check_output', side_effect=responses) as query, \
+                    mock.patch.object(support.subprocess, 'run') as download, \
+                    mock.patch.object(support, 'regular_bytes', side_effect=read), \
+                    mock.patch.object(support, 'verify_module_tree', side_effect=ReachedVerifiedSource):
+                if download_error:
+                    download.side_effect = subprocess.CalledProcessError(1, ['go', 'mod', 'download'])
+                with self.assertRaises(expected):
+                    support.prepare_source(directory / 'build', {'GOWORK': 'off'})
+                self.assertEqual(query.call_count, 2 if cold and not download_error else 1)
+                if cold:
+                    download.assert_called_once_with(
+                        ['go', 'mod', 'download', support.MODULE + '@' + support.VERSION],
+                        cwd=support.SOURCE, env={'GOWORK': 'off'}, check=True)
+                else:
+                    download.assert_not_called()
 
 
 class ProviderPatchPackagingTests(unittest.TestCase):
