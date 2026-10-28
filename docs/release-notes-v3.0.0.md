@@ -21,7 +21,9 @@ Windows 安装包由独立 Windows 构建流程生成 MSI 与 NSIS EXE，运行�
 
 ## 验证与边界
 
-本次发布前已有隔离测试覆盖历史统计、来源切换、反代停止清理、自动恢复与确认强退。软件的完整构建、签名、包内容、校验值和 Windows 原生构建结果，将在包验收完成后补充到本说明与 GitHub Release。
+macOS 完整构建通过：35 组原生自测、73 项打包 Engine 检查、95 项实际 ASAR 内 Cursor 检查及 15 项主页用量检查通过；Carbon 热键集成子检查明确跳过。DMG 实际只读挂载和 ZIP 解压后的 2,194 项 App 内容均与已签名候选一致，递归签名与升级身份核验通过。隔离测试另覆盖历史统计、来源切换、反代停止清理、自动恢复与确认强退。
+
+Windows 的 Rust、网页回归及两次原生冷启动由 Windows runner 执行。安装器必须额外通过源码未漂移检查；失败产物不发布。最终构建记录与安装器校验文件随 [GitHub Release](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/tag/v3.0.0) 提供。
 
 - 当前运行的安装版不会由打包或上传操作自动替换；没有执行真实账号切换、额度消耗、通知发送或生产反代重启。
 - 历史红色状态与 503 的底层现场原因尚未完全确定；隔离测试通过不等于所有真实网络故障或长期运行问题已经解决。
@@ -34,3 +36,12 @@ Windows 安装包由独立 Windows 构建流程生成 MSI 与 NSIS EXE，运行�
 先完成当前任务并正常停止反代、退出旧 App，保留旧版本和配置备份后再覆盖安装。macOS 升级后核对 **3.0.0（161）/ 1028v1**；Windows 安装后核对 **3.0.0**。历史 Release 保留，可按各平台说明回退。
 
 安装包以本次 GitHub Release 中的独立校验文件为准；不将源码 ZIP 当作可安装程序。
+
+## macOS 安装包校验
+
+| 文件 | 大小（字节） | SHA256 |
+| --- | ---: | --- |
+| AiGoodBro-3.0.0-mac-arm64.dmg | 213320988 | `0ebae6fad4a1fb9ea6142d39a0fab9b3386d73c9339eab83cb9d5c00113d352c` |
+| AiGoodBro-3.0.0-161-1028v1-mac-arm64.zip | 192734221 | `945c890284b0adc7eeef5721052b5738f5a2dac1fc3ddeee9b29cae20b61841b` |
+
+DMG 使用 HFS+ 容器，App 内容与备用 ZIP 相同。签名完整性验证不等于 Apple 公证。
