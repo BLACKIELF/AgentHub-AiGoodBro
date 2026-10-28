@@ -353,7 +353,10 @@ struct ClaudeSubscriptionService {
             var parsed: Date?
             for format in ["EEE, dd MMM yyyy HH:mm:ss 'GMT'", "EEEE, dd-MMM-yy HH:mm:ss 'GMT'", "EEE MMM d HH:mm:ss yyyy"] {
                 formatter.dateFormat = format
-                if let date = formatter.date(from: raw) { parsed = date; break }
+                if let date = formatter.date(from: raw) {
+                    parsed = date
+                    break
+                }
             }
             guard let parsed else { return nil }
             deadline = parsed
@@ -365,7 +368,9 @@ struct ClaudeSubscriptionService {
         return deadline
     }
     func loadQuota(_ reference: ClaudeSubscriptionReference, now: Date) async -> LocalCLIQuotaResult {
-        func result(_ state: LocalCLIQuotaState, _ code: String?, identity: Identity? = nil, plan: String? = nil, windows: [LocalCLIQuotaWindow] = [], serverRetryAt: Date? = nil) -> LocalCLIQuotaResult {
+        func result(_ state: LocalCLIQuotaState, _ code: String?, identity: Identity? = nil, plan: String? = nil, windows: [LocalCLIQuotaWindow] = [], serverRetryAt: Date? = nil)
+            -> LocalCLIQuotaResult
+        {
             LocalCLIQuotaResult(
                 state: state, fetchedAt: now, maskedIdentity: identity?.email.map(LocalCLIQuotaPresentation.maskedIdentity), identityFingerprint: identity?.fingerprint,
                 planLabel: plan, windows: windows, balance: nil, balanceCurrency: nil, sourceLabel: "Anthropic OAuth usage", messageCode: code, serverRetryAt: serverRetryAt)
@@ -384,7 +389,8 @@ struct ClaudeSubscriptionService {
             let response = try await dependencies.transport.response(for: request)
             guard try credential(reference).credential == before.credential, try activeFingerprint() == beforeActive else { throw Failure.identityChanged }
             guard response.statusCode == 200 else {
-                return result(response.statusCode == 429 ? .rateLimited : .unavailable, response.statusCode == 429 ? "local_cli_rate_limited" : "local_cli_unavailable",
+                return result(
+                    response.statusCode == 429 ? .rateLimited : .unavailable, response.statusCode == 429 ? "local_cli_rate_limited" : "local_cli_unavailable",
                     identity: response.statusCode == 429 ? identity : nil,
                     serverRetryAt: response.statusCode == 429 ? Self.quotaRetryAfter(response.headers, now: dependencies.now()) : nil)
             }

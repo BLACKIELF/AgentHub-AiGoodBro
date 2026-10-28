@@ -1055,7 +1055,8 @@ final class LocalCLIAccountStore: ObservableObject {
         let currentAuthentication = authenticationReader.read(profile)
         authentication[profile.id] = currentAuthentication
         let requestCredentialVersion = credentialVersion(for: profile)
-        let requestClaudeIdentity = profile.claudeSubscription?.identityFingerprint
+        let requestClaudeIdentity =
+            profile.claudeSubscription?.identityFingerprint
             ?? (profile.kind == .claudeCode && profile.isDefault
                 ? claudeCurrent.flatMap { (try? claudeService.isCurrent($0)) == true ? $0.fingerprint : nil } : nil)
         let credentialsChanged = quotaCredentialVersions[profile.id].map { $0 != requestCredentialVersion } ?? false

@@ -1719,7 +1719,9 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
         return ExitCleanupResult(retired: retired, registryFailed: registryFailed, busy: busy, nonRetryable: nonRetryable)
     }
 
-    nonisolated private static func boundedExitCleanup(_ run: String?, leases: [Lease], gate: DispatchSemaphore, evidence: ExitCleanupEvidence? = nil, timeout: TimeInterval = 3) async -> ExitCleanupResult? {
+    nonisolated private static func boundedExitCleanup(_ run: String?, leases: [Lease], gate: DispatchSemaphore, evidence: ExitCleanupEvidence? = nil, timeout: TimeInterval = 3)
+        async -> ExitCleanupResult?
+    {
         await withCheckedContinuation { continuation in
             let completion = LocalProxyIOCompletion(continuation)
             DispatchQueue.global(qos: .utility).async {

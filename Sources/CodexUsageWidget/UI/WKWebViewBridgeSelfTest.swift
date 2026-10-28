@@ -231,9 +231,12 @@ enum WKWebViewBridgeSelfTest {
         // The desktop provider can report this literal as a model placeholder.
         // Check the actual WebKit DOM, including the hover path, after transport
         // through the production native renderer.
-        let placeholderFixture = fixture
-            .replacingOccurrences(of: "\"perClient\":{\"codex\":{\"tokens\":20}}",
-                                  with: "\"perClient\":{\"codex\":{\"tokens\":20}},\"perModel\":{\"<synthetic>\":{\"tokens\":20}}")
+        let placeholderFixture =
+            fixture
+            .replacingOccurrences(
+                of: "\"perClient\":{\"codex\":{\"tokens\":20}}",
+                with: "\"perClient\":{\"codex\":{\"tokens\":20}},\"perModel\":{\"<synthetic>\":{\"tokens\":20}}"
+            )
             .replacingOccurrences(of: "\"activeTimeMs\":3720000", with: "\"activeTimeMs\":3720000,\"favoriteModel\":\"<synthetic>\"")
         var modelPreferences = HomeDashboardPreferences()
         modelPreferences.stackBy = "model"
@@ -243,22 +246,23 @@ enum WKWebViewBridgeSelfTest {
             if evaluateValue("document.querySelector('.dash-legend-name')?.textContent") as? String == "<synthetic>" { break }
             RunLoop.current.run(until: Date().addingTimeInterval(0.01))
         }
-        guard let placeholder = evaluate(
-            """
-            (() => {
-              document.getElementById('breakdownDetails').open = true;
-              const hit = document.querySelector('#dashChart .bar-hover');
-              hit?.dispatchEvent(new MouseEvent('mousemove', {bubbles:true, clientX:20, clientY:20}));
-              const card = document.querySelectorAll('.dash-card-v')[6];
-              const legend = document.querySelector('.dash-legend-name');
-              const breakdown = Array.from(document.querySelectorAll('.dash-bd-name')).find(el => el.textContent === '<synthetic>');
-              const tooltip = Array.from(document.querySelectorAll('#dashTooltip .tt-name')).find(el => el.textContent === '<synthetic>');
-              return {card:card?.textContent, legend:legend?.textContent, breakdown:breakdown?.textContent,
-                tooltip:tooltip?.textContent, escaped:card?.innerHTML.includes('&lt;synthetic&gt;') &&
-                  legend?.innerHTML.includes('&lt;synthetic&gt;') && breakdown?.innerHTML.includes('&lt;synthetic&gt;') &&
-                  tooltip?.innerHTML.includes('&lt;synthetic&gt;'), injected:!!document.querySelector('synthetic')};
-            })()
-            """), placeholder["card"] as? String == "<synthetic>", placeholder["legend"] as? String == "<synthetic>",
+        guard
+            let placeholder = evaluate(
+                """
+                (() => {
+                  document.getElementById('breakdownDetails').open = true;
+                  const hit = document.querySelector('#dashChart .bar-hover');
+                  hit?.dispatchEvent(new MouseEvent('mousemove', {bubbles:true, clientX:20, clientY:20}));
+                  const card = document.querySelectorAll('.dash-card-v')[6];
+                  const legend = document.querySelector('.dash-legend-name');
+                  const breakdown = Array.from(document.querySelectorAll('.dash-bd-name')).find(el => el.textContent === '<synthetic>');
+                  const tooltip = Array.from(document.querySelectorAll('#dashTooltip .tt-name')).find(el => el.textContent === '<synthetic>');
+                  return {card:card?.textContent, legend:legend?.textContent, breakdown:breakdown?.textContent,
+                    tooltip:tooltip?.textContent, escaped:card?.innerHTML.includes('&lt;synthetic&gt;') &&
+                      legend?.innerHTML.includes('&lt;synthetic&gt;') && breakdown?.innerHTML.includes('&lt;synthetic&gt;') &&
+                      tooltip?.innerHTML.includes('&lt;synthetic&gt;'), injected:!!document.querySelector('synthetic')};
+                })()
+                """), placeholder["card"] as? String == "<synthetic>", placeholder["legend"] as? String == "<synthetic>",
             placeholder["breakdown"] as? String == "<synthetic>", placeholder["tooltip"] as? String == "<synthetic>",
             placeholder["escaped"] as? Bool == true, placeholder["injected"] as? Bool == false
         else {
@@ -654,68 +658,108 @@ enum WKWebViewBridgeSelfTest {
             let homeRevision = String(repeating: "a", count: 64)
             try writeResponse(["ready": true, "homeUsage": ["pending": true]])
             var homeReadDone = false
-            Task { await controller.refreshHomeUsage(); homeReadDone = true }
+            Task {
+                await controller.refreshHomeUsage()
+                homeReadDone = true
+            }
             guard waitFor({ homeReadDone }), controller.homeUsage.phase == .pending,
                 controller.homeUsage.dashboardJSON == nil
             else { throw TotalsFixtureFailure.failed("first pending has no charts") }
             RunLoop.current.run(until: Date().addingTimeInterval(0.1))
             homeReadDone = false
-            Task { await controller.refreshHomeUsage(); homeReadDone = true }
+            Task {
+                await controller.refreshHomeUsage()
+                homeReadDone = true
+            }
             guard waitFor({ homeReadDone }), controller.homeUsage.phase == .delayed,
                 controller.homeUsage.dashboardJSON == nil
             else { throw TotalsFixtureFailure.failed("first long pending is explicit") }
-            try writeResponse(["ready": true, "allTimeTokens": 27_123_456_789, "allTimeCostUsd": 19732.09,
-                               "homeUsage": ["revision": homeRevision, "dashboardJSON": homeJSON]])
+            try writeResponse([
+                "ready": true, "allTimeTokens": 27_123_456_789, "allTimeCostUsd": 19732.09,
+                "homeUsage": ["revision": homeRevision, "dashboardJSON": homeJSON],
+            ])
             homeReadDone = false
-            Task { await controller.refreshHomeUsage(); homeReadDone = true }
+            Task {
+                await controller.refreshHomeUsage()
+                homeReadDone = true
+            }
             guard waitFor({ homeReadDone }), controller.homeUsage.phase == .ready,
                 controller.homeUsage.dashboardJSON == homeJSON
             else { throw TotalsFixtureFailure.failed("shared home snapshot") }
             try writeResponse(["ready": true, "homeUsage": ["pending": true]])
             homeReadDone = false
-            Task { await controller.refreshHomeUsage(); homeReadDone = true }
+            Task {
+                await controller.refreshHomeUsage()
+                homeReadDone = true
+            }
             guard waitFor({ homeReadDone }), controller.homeUsage.phase == .pending,
                 controller.homeUsage.dashboardJSON == homeJSON, controller.homeUsage.revision == homeRevision
             else { throw TotalsFixtureFailure.failed("same-scope pending keeps previous charts") }
             RunLoop.current.run(until: Date().addingTimeInterval(0.1))
             homeReadDone = false
-            Task { await controller.refreshHomeUsage(); homeReadDone = true }
+            Task {
+                await controller.refreshHomeUsage()
+                homeReadDone = true
+            }
             guard waitFor({ homeReadDone }), controller.homeUsage.phase == .delayed,
                 controller.homeUsage.dashboardJSON == homeJSON
             else { throw TotalsFixtureFailure.failed("long pending is explicit and keeps previous charts") }
             try writeResponse(["ready": true, "homeUsage": ["revision": homeRevision, "unchanged": true]])
             homeReadDone = false
-            Task { await controller.refreshHomeUsage(); homeReadDone = true }
+            Task {
+                await controller.refreshHomeUsage()
+                homeReadDone = true
+            }
             guard waitFor({ homeReadDone }), controller.homeUsage.phase == .ready, controller.homeUsage.dashboardJSON == homeJSON
             else { throw TotalsFixtureFailure.failed("unchanged home keeps cached charts") }
-            try writeResponse(["ready": true, "homeUsage": ["revision": homeRevision,
-                               "dashboardJSON": homeJSON.replacingOccurrences(of: "\"daily\":[]", with: "\"daily\":[],\"prompt\":\"must-not-cross\"")]])
+            try writeResponse([
+                "ready": true,
+                "homeUsage": [
+                    "revision": homeRevision,
+                    "dashboardJSON": homeJSON.replacingOccurrences(of: "\"daily\":[]", with: "\"daily\":[],\"prompt\":\"must-not-cross\""),
+                ],
+            ])
             homeReadDone = false
-            Task { await controller.refreshHomeUsage(); homeReadDone = true }
+            Task {
+                await controller.refreshHomeUsage()
+                homeReadDone = true
+            }
             guard waitFor({ homeReadDone }), controller.homeUsage.phase == .unavailable,
                 controller.homeUsage.dashboardJSON == homeJSON
             else { throw TotalsFixtureFailure.failed("unsafe home snapshot rejected without corrupting cache") }
             try writeResponse(["ready": true, "homeUsage": ["pending": true]])
             homeReadDone = false
-            Task { await controller.refreshHomeUsage(); homeReadDone = true }
+            Task {
+                await controller.refreshHomeUsage()
+                homeReadDone = true
+            }
             guard waitFor({ homeReadDone }), controller.homeUsage.phase == .unavailable,
                 controller.homeUsage.dashboardJSON == homeJSON
             else { throw TotalsFixtureFailure.failed("pending cannot conceal a previous failure") }
             try writeResponse(["ready": true, "homeUsage": ["revision": homeRevision, "unchanged": true]])
             homeReadDone = false
-            Task { await controller.refreshHomeUsage(); homeReadDone = true }
+            Task {
+                await controller.refreshHomeUsage()
+                homeReadDone = true
+            }
             guard waitFor({ homeReadDone }), controller.homeUsage.phase == .ready,
                 controller.homeUsage.dashboardJSON == homeJSON
             else { throw TotalsFixtureFailure.failed("successful unchanged response clears failure") }
             try writeResponse(["ready": true, "homeUsage": ["scopeKey": String(repeating: "c", count: 64), "pending": true]])
             homeReadDone = false
-            Task { await controller.refreshHomeUsage(); homeReadDone = true }
+            Task {
+                await controller.refreshHomeUsage()
+                homeReadDone = true
+            }
             guard waitFor({ homeReadDone }), controller.homeUsage.phase == .unavailable,
                 controller.homeUsage.dashboardJSON == nil
             else { throw TotalsFixtureFailure.failed("mismatched reply scope clears previous charts") }
             try writeResponse(["ready": true, "homeUsage": ["revision": homeRevision, "dashboardJSON": homeJSON]])
             homeReadDone = false
-            Task { await controller.refreshHomeUsage(); homeReadDone = true }
+            Task {
+                await controller.refreshHomeUsage()
+                homeReadDone = true
+            }
             guard waitFor({ homeReadDone }), controller.homeUsage.phase == .ready,
                 controller.homeUsage.dashboardJSON == homeJSON
             else { throw TotalsFixtureFailure.failed("valid reply restores same-scope charts") }

@@ -1,5 +1,7 @@
 # Codex Account Manager Next for Windows
 
+发布版本：3.0.0 · Windows x86_64（MSI / NSIS）。
+
 该工作区保留上游 `codexU` 的 Rust crate/CLI 内部名称，但桌面产品、安装标识、安装包和缓存目录已切换到独立 Next 命名空间，不覆盖旧版 Windows App。
 
 当前 checkout 已包含 Phase 1/2 的本地数据管线和 Phase 4 Dashboard UI：

@@ -1,4 +1,4 @@
-# AiGoodBro · AgentHub (2.5.3)
+# AiGoodBro · AgentHub (3.0.0)
 
 **See quotas, usage, reset messages and local work in one place; when needed, route work through your own Codex account pool.**
 
@@ -6,11 +6,11 @@ AiGoodBro is a macOS AI workspace for personal use. It brings together Codex acc
 
 [中文](README.md) | **English**
 
-**Current release version: 2.5.3 (161) · 1028v1.** Fixes home statistics and usage-duration display, moves proxy stopping and cleanup to bounded background work, and supports force quit after explicit confirmation. Existing accounts, rules and appearance are preserved, together with reviewed usage-parser, credential-recovery and upstream fixes. The in-app update introduction is included. [Release and downloads](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/tag/v2.5.3) · [Changes and validation boundaries](docs/release-notes-v2.5.3.md).
+**Current release version: 3.0.0 (161) · 1028v1.** Fixes home statistics and usage-duration display, moves proxy stopping and cleanup to bounded background work, and supports force quit after explicit confirmation. Existing accounts, rules and appearance are preserved, together with reviewed usage-parser, credential-recovery and upstream fixes. The in-app update introduction is included. [Release and downloads](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/tag/v3.0.0) · [Changes and validation boundaries](docs/release-notes-v3.0.0.md).
 
-**Windows 2.5.3 is released independently.** It provides a local dashboard, linked directories, quota reading and isolated terminal workflows, built and tested on Windows. It does not claim full macOS feature parity. [Windows features and installation](windows/README.md).
+**Windows 3.0.0 is released independently.** It provides a local dashboard, linked directories, quota reading and isolated terminal workflows, built and tested on Windows. It does not claim full macOS feature parity. [Windows features and installation](windows/README.md).
 
-Downloads: [DMG (Apple Silicon)](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.5.3/AiGoodBro-2.5.3-mac-arm64.dmg) · [macOS ZIP](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.5.3/AiGoodBro-2.5.3-161-1028v1-mac-arm64.zip) · [Windows MSI](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.5.3/CodexAccountManagerNext-2.5.3-windows-x86_64.msi) · [Windows EXE](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.5.3/CodexAccountManagerNext-2.5.3-windows-x86_64-setup.exe)
+Downloads: [DMG (Apple Silicon)](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v3.0.0/AiGoodBro-3.0.0-mac-arm64.dmg) · [macOS ZIP](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v3.0.0/AiGoodBro-3.0.0-161-1028v1-mac-arm64.zip) · [Windows MSI](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v3.0.0/CodexAccountManagerNext-3.0.0-windows-x86_64.msi) · [Windows EXE](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v3.0.0/CodexAccountManagerNext-3.0.0-windows-x86_64-setup.exe)
 
 **Promotional videos and interface showcase · 1012v1:** [Chinese original, 48 seconds (MP4)](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.5.0/AiGoodBro-demo-1011v4.mp4) · [English original, 48 seconds (MP4)](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.5.0/AiGoodBro-English-1011v1.mp4) · [English showcase and editable source](docs/showcase/1012v1/README.md) · [Complete English package (ZIP, with the English video)](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.5.0/AiGoodBro-Showcase-1012v2.zip)
 
@@ -207,15 +207,15 @@ Recommendations retain optional REA and JEV installation entries. A detectable n
 
 ## 16 · Downloads, upgrades and builds
 
-The macOS package supports **macOS 13+ on Apple Silicon ARM64**, retaining the stable local signing identity without Apple notarization. Windows x86_64 has separate MSI / NSIS installers; see [Windows scope](windows/README.md). Existing Releases and assets are retained. Clients on 9.6.x still need a manual download. Finish work, stop the proxy, quit normally and back up the old app and local data before upgrading. Confirm **2.5.3 (161) / 1028v1** after replacing the macOS app.
+The macOS package supports **macOS 13+ on Apple Silicon ARM64**, retaining the stable local signing identity without Apple notarization. Windows x86_64 has separate MSI / NSIS installers; see [Windows scope](windows/README.md). Existing Releases and assets are retained. Clients on 9.6.x still need a manual download. Finish work, stop the proxy, quit normally and back up the old app and local data before upgrading. Confirm **3.0.0 (161) / 1028v1** after replacing the macOS app.
 
-Build, package-content, signature and checksum checks are specific to these artifacts; see the [2.5.3 release record](docs/release-notes-v2.5.3.md) and [GitHub Actions](https://github.com/BLACKIELF/AgentHub-AiGoodBro/actions). This publication does not replace the running installation. The historical proxy disconnect cause, long-running real-provider calls, all sign-in flows and notification delivery still require device acceptance; earlier release results do not certify this package.
+Build, package-content, signature and checksum checks are specific to these artifacts; see the [3.0.0 release record](docs/release-notes-v3.0.0.md) and [GitHub Actions](https://github.com/BLACKIELF/AgentHub-AiGoodBro/actions). This publication does not replace the running installation. The historical proxy disconnect cause, long-running real-provider calls, all sign-in flows and notification delivery still require device acceptance; earlier release results do not certify this package.
 
 Build from this release tag:
 
 ```sh
-git clone --branch v2.5.3 https://github.com/BLACKIELF/AgentHub-AiGoodBro.git AiGoodBro-2.5.3
-cd AiGoodBro-2.5.3
+git clone --branch v3.0.0 https://github.com/BLACKIELF/AgentHub-AiGoodBro.git AiGoodBro-3.0.0
+cd AiGoodBro-3.0.0
 make build
 ```
 
@@ -240,13 +240,13 @@ The table lists code and resources actually reused, adapted or consulted as stat
 
 AiGoodBro is released under the [MIT License](LICENSE). Third-party notices are in [`Resources/THIRD_PARTY_NOTICES.txt`](Resources/THIRD_PARTY_NOTICES.txt), [`Companion/LocalProxy/LICENSE.CLIProxyAPI`](Companion/LocalProxy/LICENSE.CLIProxyAPI), [`Companion/LocalProxy/LICENSE.Hazmat`](Companion/LocalProxy/LICENSE.Hazmat) and [`Companion/LocalProxy/THIRD-PARTY-NOTICES.txt`](Companion/LocalProxy/THIRD-PARTY-NOTICES.txt).
 
-Documentation: [detailed guide](docs/usage-guide.md) · [native CLI quota coverage](docs/local-cli-accounts.md) · [proxy implementation and validation](docs/local-proxy-0928v1.md) · [2.5.3 release record](docs/release-notes-v2.5.3.md) · [2.5.2 release record](docs/release-notes-v2.5.2.md) · [2.5.1 release record](docs/release-notes-v2.5.1.md) · [2.5.0 release record](docs/release-notes-v2.5.0.md) · [image sources and checksums](docs/public-ui-1012v1-promo.md) · [issues](https://github.com/BLACKIELF/AgentHub-AiGoodBro/issues) · [security](SECURITY.md)
+Documentation: [detailed guide](docs/usage-guide.md) · [native CLI quota coverage](docs/local-cli-accounts.md) · [proxy implementation and validation](docs/local-proxy-0928v1.md) · [3.0.0 release record](docs/release-notes-v3.0.0.md) · [2.5.2 release record](docs/release-notes-v2.5.2.md) · [2.5.1 release record](docs/release-notes-v2.5.1.md) · [2.5.0 release record](docs/release-notes-v2.5.0.md) · [image sources and checksums](docs/public-ui-1012v1-promo.md) · [issues](https://github.com/BLACKIELF/AgentHub-AiGoodBro/issues) · [security](SECURITY.md)
 
 <a id="actual-screenshots"></a>
 
 ## 18 · Actual app screenshots
 
-The home capture and its account and usage crops come from installed **2.3.0 (137)**. The six sign-in, guide and settings images come from **2.3.0 (139)**, and are historical interface records. The proxy-status crop has no visible build number. Values and connection states are capture-time snapshots, not acceptance of a 2.5.3 (161) installation, real model calls or message delivery. See the [historical image record](docs/public-ui-1009v2.md) for sources, original dimensions and checksums. Click an image to open the original.
+The home capture and its account and usage crops come from installed **2.3.0 (137)**. The six sign-in, guide and settings images come from **2.3.0 (139)**, and are historical interface records. The proxy-status crop has no visible build number. Values and connection states are capture-time snapshots, not acceptance of a 3.0.0 (161) installation, real model calls or message delivery. See the [historical image record](docs/public-ui-1009v2.md) for sources, original dimensions and checksums. Click an image to open the original.
 
 ### 01 · Main UI
 

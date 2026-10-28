@@ -109,7 +109,8 @@ struct DispatchActivityStore {
     private enum RegistryCause: String { case io, invalid, capacity }
 
     private static func logRegistryFailure(_ stage: RegistryStage, _ cause: RegistryCause, systemError: Int32 = 0) {
-        os_log("registry_failure stage=%{public}s cause=%{public}s errno=%{public}d",
+        os_log(
+            "registry_failure stage=%{public}s cause=%{public}s errno=%{public}d",
             log: registryLog, type: .error, stage.rawValue, cause.rawValue, systemError)
     }
 

@@ -142,7 +142,10 @@ enum LocalProxyLegacyCooldownRecovery {
         var models = Set<String>()
         for row in target {
             let model = row["model"] as? String ?? ""
-            guard Set(row.keys).isSubset(of: ["id", "model", "reason", "until", "recover", "exceeded", "backoff", "updatedAt", "error", "kind", "identityHash", "credentialQuotaPropagated"]),
+            guard
+                Set(row.keys).isSubset(of: [
+                    "id", "model", "reason", "until", "recover", "exceeded", "backoff", "updatedAt", "error", "kind", "identityHash", "credentialQuotaPropagated",
+                ]),
                 row["kind"] == nil || row["kind"] as? String == "account",
                 row["credentialQuotaPropagated"] == nil || boolean(row["credentialQuotaPropagated"]) != nil,
                 boolean(row["exceeded"]) == true, let reason = row["reason"] as? String,

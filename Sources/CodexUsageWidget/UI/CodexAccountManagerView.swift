@@ -303,8 +303,9 @@ private struct UpstreamHomeStatistics: View {
     private var dashboardJSON: String? { useDesktopStatistics ? desktop.homeUsage.dashboardJSON : state.dashboardJSON }
     private var sharedTotals: UpstreamTrendView.SummaryTotals? {
         guard useDesktopStatistics else { return nil }
-        return .init(tokens: desktop.allTimeUsage.totalTokens, costUSD: desktop.allTimeUsage.totalCostUSD,
-                     isPartial: desktop.allTimeUsage.costIsPartial)
+        return .init(
+            tokens: desktop.allTimeUsage.totalTokens, costUSD: desktop.allTimeUsage.totalCostUSD,
+            isPartial: desktop.allTimeUsage.costIsPartial)
     }
 
     private var statusText: String? {
