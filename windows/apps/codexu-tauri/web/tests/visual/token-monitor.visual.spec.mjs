@@ -10,7 +10,7 @@ async function setup(page,{language='en',theme='dark',failSave=false,delayRefres
     localStorage.setItem('aigoodbro.workspace.page','usage');
     const original=window.__TAURI_INTERNALS__.invoke;
     window.tmState=${JSON.stringify(initial())};window.tmCalls=[];window.tmListeners={};window.tmFailSave=${failSave};window.tmDelay=${delayRefresh};window.tmRefreshCount=0;
-    window.tmEmit=(event)=>{for(const callback of window.tmListeners[event]||[])window['_'+callback]({event,payload:null,id:1});};
+    window.tmEmit=(event)=>{for(const callback of window.tmListeners[event]||[])window['_'+callback]({event,payload:event==='token-monitor:changed'?structuredClone(window.tmState):null,id:1});};
     window.__TAURI_INTERNALS__.invoke=async(command,args)=>{
       if(command==='plugin:event|listen'){(window.tmListeners[args.event]||=[]).push(args.handler);return original(command,args);}
       if(command.includes('token_monitor'))window.tmCalls.push({command,args:structuredClone(args||{})});
@@ -42,6 +42,7 @@ test('original renderer retains heatmap, trends, ranges and provider/model contr
  await frame.locator('[data-stack="model"]').click();await frame.locator('[data-mode="kline"]').click();
  expect(await frame.locator('body').evaluate(()=>window.AiGoodBroDashboard.preferences.stackBy)).toBe('model');
  expect(await frame.locator('body').evaluate(()=>window.AiGoodBroDashboard.preferences.mode)).toBe('kline');
+ await expect.poll(()=>page.evaluate(()=>JSON.parse(localStorage.getItem('aigoodbro.token-monitor.chart')||'{}').mode)).toBe('kline');
  await page.reload();await expect(panel.getByTestId('token-monitor-allTime')).toContainText('300');await expect(frame.locator('[data-mode="kline"]')).toHaveClass(/active/);
  expect(await frame.locator('body').evaluate(()=>window.AiGoodBroDashboard.settings.themeColors.bg)).toBe(await page.evaluate(()=>getComputedStyle(document.documentElement).getPropertyValue('--surface').trim()));
  await expect(panel).toHaveScreenshot('token-monitor-en-dark.png');
@@ -66,11 +67,12 @@ test('cancellation fences a late refresh response and retains only the previous 
  await expect.poll(()=>page.evaluate(()=>typeof window.tmResolve)).toBe('function');await panel.getByRole('button',{name:'Stop statistics scanning',exact:true}).click();await expect(panel).toContainText('Scanning stopped');
  await page.evaluate(()=>window.tmResolve());await page.waitForTimeout(50);await expect(panel.getByTestId('token-monitor-allTime')).toContainText('300');await expect(panel).not.toContainText('999,999');
 });
-test('native scope events refresh composition while ordinary polling remains cache-only',async({page})=>{
+test('native scope events refresh composition while state updates use pushes without polling',async({page})=>{
  const panel=await setup(page);await expect(panel.getByTestId('token-monitor-allTime')).toContainText('300');
  await page.waitForTimeout(1200);const before=await page.evaluate(()=>window.tmRefreshCount);expect(before).toBe(1);
+ expect(await page.evaluate(()=>window.tmCalls.filter(call=>call.command==='get_token_monitor_state').length)).toBe(1);
  await page.evaluate(()=>window.tmEmit('profiles:changed'));await expect.poll(()=>page.evaluate(()=>window.tmRefreshCount)).toBe(2);
- const calls=await page.evaluate(()=>window.tmCalls);expect(calls[0].command).toBe('set_token_monitor_timezone');expect(calls[1].command).toBe('refresh_token_monitor_usage');
+ const calls=await page.evaluate(()=>window.tmCalls);expect(calls[0].command).toBe('get_token_monitor_state');expect(calls[1].command).toBe('set_token_monitor_timezone');expect(calls[2].command).toBe('refresh_token_monitor_usage');
 });
 test('wrong provenance or private fields cannot replace a valid visible snapshot',async({page})=>{
  const panel=await setup(page);await expect(panel.getByTestId('token-monitor-allTime')).toContainText('300');
@@ -79,12 +81,36 @@ test('wrong provenance or private fields cannot replace a valid visible snapshot
 });
 test('a true zero rate is retained but an expired rate never appears live',async({page})=>{
  const panel=await setup(page);await expect(panel.getByTestId('token-monitor-allTime')).toContainText('300');
- await page.evaluate(()=>{const now=Date.now();window.tmState.tokenRate={mode:'burn',scope:'local',burnPerMinute:0,speedPerSecond:0,sampledAt:now,expiresAt:now+8000,idle:false,revision:1,contextKey:window.tmState.contextKey};window.tmState.revision++;});
+ await page.evaluate(()=>{const now=Date.now();window.tmState.tokenRate={mode:'burn',scope:'local',burnPerMinute:0,speedPerSecond:0,sampledAt:now,expiresAt:now+8000,idle:false,revision:1,contextKey:window.tmState.contextKey};window.tmState.revision++;window.tmEmit('token-monitor:changed');});
  await expect(panel.getByTestId('token-monitor-rate').locator('strong')).toHaveText('0');
- await page.evaluate(()=>{window.tmState.tokenRate.sampledAt=Date.now()-9000;window.tmState.tokenRate.expiresAt=Date.now()-1000;window.tmState.revision++;});
+ await page.evaluate(()=>{window.tmState.tokenRate.sampledAt=Date.now()-9000;window.tmState.tokenRate.expiresAt=Date.now()-1000;window.tmState.revision++;window.tmEmit('token-monitor:changed');});
  await expect(panel.getByTestId('token-monitor-rate').locator('strong')).toHaveText('—');
 });
 test('an unknown browser timezone never becomes an implicit UTC collection',async({page})=>{
  const panel=await setup(page,{missingZone:true});await expect(panel.getByRole('alert')).toContainText('local time zone is unconfirmed');
  expect(await page.evaluate(()=>window.tmCalls.filter(call=>call.command==='refresh_token_monitor_usage').length)).toBe(0);await expect(panel.getByTestId('token-monitor-allTime')).toContainText('—');
+});
+
+test('ordered native pushes reject an older scope and a malformed high revision without any repeated state read',async({page})=>{
+ const panel=await setup(page);await expect(panel.getByTestId('token-monitor-allTime')).toContainText('300');
+ await page.evaluate(()=>{window.tmState.revision=3;window.tmState.snapshot.requestId='push-3';window.tmState.snapshot.collectedAt='2026-09-13T02:00:01.000Z';window.tmState.snapshot.payload.aggregate.allTime.totalTokens=600;window.tmEmit('token-monitor:changed');});
+ await expect(panel.getByTestId('token-monitor-allTime')).toContainText('600');
+ await page.evaluate(()=>{window.tmState.revision=2;window.tmState.snapshot.payload.aggregate.allTime.totalTokens=999999;window.tmEmit('token-monitor:changed');});
+ await expect(panel.getByTestId('token-monitor-allTime')).toContainText('600');
+ await page.evaluate(()=>{window.tmOld=structuredClone(window.tmState);window.tmState.revision=4;window.tmState.contextKey='b'.repeat(64);window.tmState.snapshot=null;window.tmState.tokenRate=null;window.tmEmit('token-monitor:changed');});
+ await expect(panel.getByTestId('token-monitor-allTime')).toContainText('—');
+ await page.evaluate(()=>{const current=window.tmState;window.tmState=window.tmOld;window.tmEmit('token-monitor:changed');window.tmState=current;});
+ await expect(panel.getByTestId('token-monitor-allTime')).toContainText('—');
+ await page.evaluate(()=>{window.tmState.revision=99;window.tmState.snapshot=structuredClone(window.tmOld.snapshot);window.tmState.snapshot.payload.history.daily[0].prompt='SYNTHETIC_PRIVATE_MUST_NOT_RENDER';window.tmEmit('token-monitor:changed');});
+ await expect(panel.getByRole('alert')).toContainText('could not update');await expect(panel).not.toContainText('SYNTHETIC_PRIVATE_MUST_NOT_RENDER');
+ await expect(panel.getByTestId('token-monitor-allTime')).toContainText('—');
+ expect(await page.evaluate(()=>window.tmCalls.filter(call=>call.command==='get_token_monitor_state').length)).toBe(1);
+});
+test('rate expiry is one local presentation deadline and performs no IPC polling or new collection',async({page})=>{
+ const panel=await setup(page);await expect(panel.getByTestId('token-monitor-allTime')).toContainText('300');
+ await page.evaluate(()=>{const now=Date.now();window.tmState.tokenRate={mode:'burn',scope:'local',burnPerMinute:120,speedPerSecond:2,sampledAt:now,expiresAt:now+700,idle:false,revision:1,contextKey:window.tmState.contextKey};window.tmState.revision++;window.tmEmit('token-monitor:changed');});
+ await expect(panel.getByTestId('token-monitor-rate').locator('strong')).toHaveText('120');
+ await expect(panel.getByTestId('token-monitor-rate').locator('strong')).toHaveText('—');
+ expect(await page.evaluate(()=>window.tmRefreshCount)).toBe(1);
+ expect(await page.evaluate(()=>window.tmCalls.filter(call=>call.command==='get_token_monitor_state').length)).toBe(1);
 });

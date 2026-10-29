@@ -4,19 +4,21 @@ import { listen } from '@tauri-apps/api/event';
 import { requireTauriRuntime } from '../utils/tauri';
 import { parseStatisticsState, statisticsFailure, type StatisticsState } from '../utils/tokenMonitor';
 
-export function useTokenMonitor() {
+export function useTokenMonitor(passive=false) {
   const [state,setState]=useState<StatisticsState|null>(null);
   const [error,setError]=useState<string|null>(null);
   const [busy,setBusy]=useState(false);
-  const generation=useRef(0), alive=useRef(false), operation=useRef<number|null>(null), initialized=useRef(false), invalidated=useRef(false);
+  const generation=useRef(0), alive=useRef(false), operation=useRef<number|null>(null), invalidated=useRef(false);
   const current=useRef<StatisticsState|null>(null), pendingScope=useRef(false);
   const requestRefresh=useRef<(clearScope?:boolean)=>Promise<void>>(async()=>{});
   const apply=useCallback((raw:unknown,epoch:number)=>{
     if(!alive.current||epoch!==generation.current)return;
     const next=parseStatisticsState(raw);
+    const timezone=Intl.DateTimeFormat().resolvedOptions().timeZone;
+    if(!timezone)throw Error('statistics_timezone_required');
     if(current.current&&next.revision<current.current.revision)return;
     if(next.snapshot&&current.current?.snapshot?.requestId===next.snapshot.requestId&&current.current.snapshot.collectedAt===next.snapshot.collectedAt&&current.current.contextKey===next.contextKey)next.snapshot=current.current.snapshot;
-    const visible=invalidated.current?{...next,snapshot:null,tokenRate:null}:next;
+    const visible=invalidated.current||next.timezone!==timezone?{...next,snapshot:null,tokenRate:null}:next;
     current.current=visible;setState(visible);setError(null);
   },[]);
   const refresh=useCallback(async(clearScope=false)=>{
@@ -33,7 +35,7 @@ export function useTokenMonitor() {
       if(!alive.current||epoch!==generation.current)return;
       const next=await invoke('refresh_token_monitor_usage');
       if(!alive.current||epoch!==generation.current)return;
-      invalidated.current=pendingScope.current;apply(next,epoch);initialized.current=true;
+      invalidated.current=pendingScope.current;apply(next,epoch);
     }catch(error){if(alive.current&&epoch===generation.current)setError(statisticsFailure(error));}
     finally{if(operation.current===epoch)operation.current=null;if(alive.current&&epoch===generation.current)setBusy(false);if(alive.current&&pendingScope.current&&operation.current===null){pendingScope.current=false;queueMicrotask(()=>void requestRefresh.current(true));}}
   },[apply]);
@@ -46,7 +48,7 @@ export function useTokenMonitor() {
       if(!alive.current||epoch!==generation.current)return false;
       invalidated.current=pendingScope.current;apply(next,epoch);
       const collected=await invoke('refresh_token_monitor_usage');
-      apply(collected,epoch);initialized.current=true;return true;
+      apply(collected,epoch);return true;
     }catch(error){if(alive.current&&epoch===generation.current)setError(statisticsFailure(error));return false;}
     finally{if(operation.current===epoch)operation.current=null;if(alive.current&&epoch===generation.current)setBusy(false);if(alive.current&&pendingScope.current&&operation.current===null){pendingScope.current=false;queueMicrotask(()=>void requestRefresh.current(true));}}
   },[apply]);
@@ -60,18 +62,45 @@ export function useTokenMonitor() {
   },[apply]);
   requestRefresh.current=refresh;
   useEffect(()=>{
-    alive.current=true;let disposed=false,polling=false;const unlisteners:Array<()=>void>=[];
-    queueMicrotask(()=>{if(!disposed)void refresh();});
-    const poll=setInterval(()=>{
-      if(!initialized.current||operation.current!==null||polling)return;
-      polling=true;const epoch=generation.current;
-      void invoke('get_token_monitor_state').then(raw=>apply(raw,epoch)).catch(error=>{if(alive.current&&epoch===generation.current)setError(statisticsFailure(error));}).finally(()=>{polling=false;});
-    },1000);
-    for(const name of ['settings:changed','profiles:changed','managed-accounts:changed']){
-      void listen(name,()=>{if(!disposed&&alive.current)void refresh(true);}).then(unlisten=>{if(!disposed)unlisteners.push(unlisten);else unlisten();}).catch(()=>{if(!disposed&&alive.current)setError('statistics_events_unavailable');});
-    }
-    return()=>{disposed=true;alive.current=false;generation.current++;operation.current=null;clearInterval(poll);unlisteners.forEach(unlisten=>unlisten());};
-  },[apply,refresh]);
+    alive.current=true;let disposed=false;const unlisteners:Array<()=>void>=[];
+    const subscribe=async()=>{
+      const events=[listen<unknown>('token-monitor:changed',event=>{
+        if(disposed||!alive.current)return;
+        try{apply(event.payload,generation.current);}catch(error){setError(statisticsFailure(error));}
+      })];
+      if(!passive)for(const name of ['settings:changed','profiles:changed','managed-accounts:changed']){
+        events.push(listen(name,()=>{if(!disposed&&alive.current)void refresh(true);}));
+      }
+      const registrations=await Promise.allSettled(events);
+      let failed=false;
+      for(const result of registrations){
+        if(result.status==='fulfilled'){if(disposed)result.value();else unlisteners.push(result.value);}
+        else failed=true;
+      }
+      if(disposed)return;
+      const epoch=generation.current;
+      try{const raw=await invoke('get_token_monitor_state');apply(raw,epoch);}
+      catch(error){if(!disposed&&alive.current&&epoch===generation.current)setError(statisticsFailure(error));}
+      if(disposed)return;
+      if(failed){setError('statistics_events_unavailable');return;}
+      // Main retains its existing initial collection. Compact consumers only
+      // read this shared state and receive native pushes; no extra host/timer.
+      if(!passive)void refresh();
+    };
+    void subscribe();
+    return()=>{disposed=true;alive.current=false;generation.current++;operation.current=null;unlisteners.forEach(unlisten=>unlisten());};
+  },[apply,refresh,passive]);
+  useEffect(()=>{
+    const rate=state?.tokenRate;if(!rate)return;
+    const expected=state.contextKey,revision=state.revision;
+    // One presentation deadline hides an expired rate without periodic IPC.
+    const timer=setTimeout(()=>{
+      const previous=current.current;
+      if(previous?.contextKey!==expected||previous.revision!==revision||previous.tokenRate?.expiresAt!==rate.expiresAt)return;
+      const next={...previous,tokenRate:null};current.current=next;setState(next);
+    },Math.max(0,rate.expiresAt-Date.now()));
+    return()=>clearTimeout(timer);
+  },[state?.contextKey,state?.revision,state?.tokenRate]);
   return {state,error,busy,refresh:()=>refresh(),selectSources,cancel};
 }
 export type TokenMonitorController=ReturnType<typeof useTokenMonitor>;

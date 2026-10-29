@@ -136,6 +136,26 @@ struct Event {
     code: Option<String>,
 }
 
+type StateListener = Arc<dyn Fn(TokenMonitorState) + Send + Sync>;
+#[derive(Default)]
+struct StateNotifications {
+    listener: Option<StateListener>,
+    dispatching: bool,
+    pending: bool,
+    delivered_revision: Option<u64>,
+}
+/// Declared before operation/source/state guards so publication runs after all
+/// those guards are dropped, including early error returns.
+struct PublishState<'a> {
+    service: &'a TokenMonitorService,
+    generation: Option<u64>,
+}
+impl Drop for PublishState<'_> {
+    fn drop(&mut self) {
+        self.service.publish_state(self.generation);
+    }
+}
+
 pub struct TokenMonitorService {
     resources: PathBuf,
     data: PathBuf,
@@ -143,6 +163,7 @@ pub struct TokenMonitorService {
     sources: Mutex<Vec<TokenMonitorSource>>,
     enabled: Mutex<BTreeSet<String>>,
     state: Mutex<TokenMonitorState>,
+    notifications: Mutex<StateNotifications>,
     runtime: Mutex<Option<process::OwnedRuntime>>,
     cancel_handle: Mutex<Option<process::CancelHandle>>,
     operation: Mutex<()>,
@@ -215,6 +236,7 @@ impl TokenMonitorService {
                 token_rate: None,
                 failure_code: None,
             }),
+            notifications: Mutex::new(StateNotifications::default()),
             runtime: Mutex::new(None),
             cancel_handle: Mutex::new(None),
             operation: Mutex::new(()),
@@ -222,11 +244,105 @@ impl TokenMonitorService {
             exiting: AtomicBool::new(false),
         }))
     }
+    /// Installs the native emission bridge and publishes the current safe state.
+    /// No callback is invoked while a service/notification lock is held.
+    pub fn install_state_listener(&self, listener: StateListener) -> Result<()> {
+        {
+            let mut notifications = self
+                .notifications
+                .lock()
+                .map_err(|_| Failure("statistics_unavailable"))?;
+            notifications.listener = Some(listener);
+            notifications.delivered_revision = None;
+        }
+        self.publish_state(None);
+        Ok(())
+    }
+    fn publish_state(&self, generation: Option<u64>) {
+        if self.exiting.load(Ordering::Acquire)
+            || generation.is_some_and(|value| value != self.epoch.load(Ordering::Acquire))
+        {
+            return;
+        }
+        {
+            let Ok(mut notifications) = self.notifications.lock() else {
+                return;
+            };
+            if notifications.listener.is_none() {
+                return;
+            }
+            notifications.pending = true;
+            if notifications.dispatching {
+                return;
+            }
+            notifications.dispatching = true;
+        }
+        loop {
+            let listener = {
+                let Ok(mut notifications) = self.notifications.lock() else {
+                    return;
+                };
+                if !notifications.pending || self.exiting.load(Ordering::Acquire) {
+                    notifications.dispatching = false;
+                    notifications.pending = false;
+                    return;
+                }
+                notifications.pending = false;
+                notifications.listener.clone()
+            };
+            let epoch = self.epoch.load(Ordering::Acquire);
+            let Ok(value) = self.state() else {
+                if let Ok(mut notifications) = self.notifications.lock() {
+                    notifications.dispatching = false;
+                }
+                return;
+            };
+            // Coalesce to the latest committed state. An old output callback
+            // cannot enqueue a captured snapshot after a scope change.
+            let still_current = self.epoch.load(Ordering::Acquire) == epoch
+                && self
+                    .state
+                    .lock()
+                    .map(|state| state.revision == value.revision)
+                    .unwrap_or(false);
+            if !still_current {
+                if let Ok(mut notifications) = self.notifications.lock() {
+                    notifications.pending = true;
+                }
+                continue;
+            }
+            let deliver = {
+                let Ok(mut notifications) = self.notifications.lock() else {
+                    return;
+                };
+                if notifications
+                    .delivered_revision
+                    .is_some_and(|revision| revision >= value.revision)
+                {
+                    false
+                } else {
+                    notifications.delivered_revision = Some(value.revision);
+                    true
+                }
+            };
+            if deliver {
+                if let Some(listener) = listener {
+                    // Presentation failures must not poison scanner locks or
+                    // turn a successful collection into a runtime failure.
+                    let _ =
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| listener(value)));
+                }
+            }
+        }
+    }
     pub fn state(&self) -> Result<TokenMonitorState> {
         let mut state = self
             .state
             .lock()
-            .map_err(|_| Failure("statistics_unavailable"))?;
+            .map_err(|_| Failure("statistics_unavailable"))?
+            .clone();
+        // Expiry is a read projection, not a silent mutation requiring another
+        // timer. Consumers also hide the rate at its existing expiresAt.
         if state
             .token_rate
             .as_ref()
@@ -234,9 +350,13 @@ impl TokenMonitorService {
         {
             state.token_rate = None;
         }
-        Ok(state.clone())
+        Ok(state)
     }
     pub fn refresh(self: &Arc<Self>) -> Result<TokenMonitorState> {
+        let _publish = PublishState {
+            service: self,
+            generation: None,
+        };
         let _guard = self
             .operation
             .try_lock()
@@ -274,6 +394,10 @@ impl TokenMonitorService {
                     .map_err(|_| Failure("statistics_unavailable"))?;
                 s.phase = "loading";
                 s.failure_code = None;
+                s.revision = s
+                    .revision
+                    .checked_add(1)
+                    .ok_or(Failure("statistics_unavailable"))?;
                 return Ok(s.clone());
             }
             runtime.take();
@@ -310,6 +434,10 @@ impl TokenMonitorService {
             s.context_key = Some(context.clone());
             s.phase = "loading";
             s.failure_code = None;
+            s.revision = s
+                .revision
+                .checked_add(1)
+                .ok_or(Failure("statistics_unavailable"))?;
         }
         *runtime = Some(child);
         let weak = Arc::downgrade(self);
@@ -373,6 +501,10 @@ impl TokenMonitorService {
         self.state()
     }
     fn fail_generation(&self, epoch: u64, error: Failure) {
+        let _publish = PublishState {
+            service: self,
+            generation: None,
+        };
         // Recheck while holding the runtime lock: an old EOF/watchdog must
         // never stop a replacement host created while it was waiting.
         let Ok(mut runtime) = self.runtime.lock() else {
@@ -390,6 +522,10 @@ impl TokenMonitorService {
             }
         }
         if let Ok(mut state) = self.state.lock() {
+            let Some(revision) = state.revision.checked_add(1) else {
+                return;
+            };
+            state.revision = revision;
             state.phase = "failed";
             state.failure_code = Some(if cleaned {
                 error.code()
@@ -400,6 +536,10 @@ impl TokenMonitorService {
         }
     }
     pub fn select_sources(self: &Arc<Self>, ids: Vec<String>) -> Result<TokenMonitorState> {
+        let _publish = PublishState {
+            service: self,
+            generation: None,
+        };
         let _guard = self
             .operation
             .try_lock()
@@ -450,6 +590,10 @@ impl TokenMonitorService {
     }
     /// Native composition only. It accepts no WebView supplied paths.
     pub fn replace_sources(&self, sources: Vec<TokenMonitorSource>) -> Result<TokenMonitorState> {
+        let _publish = PublishState {
+            service: self,
+            generation: None,
+        };
         validate_sources(&sources)?;
         if *self
             .sources
@@ -514,6 +658,10 @@ impl TokenMonitorService {
         Ok(state.clone())
     }
     pub fn set_timezone(self: &Arc<Self>, timezone: String) -> Result<TokenMonitorState> {
+        let _publish = PublishState {
+            service: self,
+            generation: None,
+        };
         if !valid_timezone(&timezone) {
             return fail("invalid_statistics_timezone");
         }
@@ -551,6 +699,10 @@ impl TokenMonitorService {
         Ok(state.clone())
     }
     pub fn cancel(&self) -> Result<TokenMonitorState> {
+        let _publish = PublishState {
+            service: self,
+            generation: None,
+        };
         self.epoch.fetch_add(1, Ordering::AcqRel);
         let _guard = self
             .operation
@@ -569,6 +721,10 @@ impl TokenMonitorService {
             state.phase = "failed";
             state.failure_code = Some("statistics_cleanup_unconfirmed");
             state.token_rate = None;
+            state.revision = state
+                .revision
+                .checked_add(1)
+                .ok_or(Failure("statistics_unavailable"))?;
             return fail("statistics_cleanup_unconfirmed");
         }
         let mut runtime = self
@@ -584,6 +740,10 @@ impl TokenMonitorService {
                 s.phase = "failed";
                 s.failure_code = Some("statistics_cleanup_unconfirmed");
                 s.token_rate = None;
+                s.revision = s
+                    .revision
+                    .checked_add(1)
+                    .ok_or(Failure("statistics_unavailable"))?;
                 return fail("statistics_cleanup_unconfirmed");
             }
         }
@@ -598,6 +758,10 @@ impl TokenMonitorService {
             .map_err(|_| Failure("statistics_unavailable"))?;
         state.phase = "stopped";
         state.token_rate = None;
+        state.revision = state
+            .revision
+            .checked_add(1)
+            .ok_or(Failure("statistics_unavailable"))?;
         Ok(())
     }
     pub fn cancel_for_exit(&self) {
@@ -628,6 +792,10 @@ impl TokenMonitorService {
         )
     }
     fn accept_event(&self, bytes: &[u8], context: &str, epoch: u64) -> Result<()> {
+        let _publish = PublishState {
+            service: self,
+            generation: Some(epoch),
+        };
         serde_json::from_slice::<UniqueJson>(bytes)
             .map_err(|_| Failure("statistics_invalid_response"))?;
         let event: Event =
@@ -647,6 +815,9 @@ impl TokenMonitorService {
             || state.context_key.as_deref() != Some(context)
         {
             return fail("statistics_cancelled");
+        }
+        if let Some(rate) = &event.rate {
+            validate_rate(rate, context)?;
         }
         match event.event.as_str() {
             "snapshot" => {
@@ -684,9 +855,6 @@ impl TokenMonitorService {
                 state.failure_code = Some("statistics_collection_failed");
             }
             _ => return fail("statistics_invalid_response"),
-        }
-        if let Some(rate) = &event.rate {
-            validate_rate(rate, context)?;
         }
         state.token_rate = event.rate;
         state.revision = state

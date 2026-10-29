@@ -3,7 +3,7 @@ use tauri::tray::{MouseButton, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager};
 
 use crate::app_state::ResolvedLanguage;
-use crate::commands::usage::refresh_usage;
+use crate::commands::token_monitor::{refresh_token_monitor_usage, TokenMonitorAppState};
 
 struct TrayMenu {
     open: MenuItem<tauri::Wry>,
@@ -41,7 +41,7 @@ pub fn setup_tray(app: &AppHandle, language: ResolvedLanguage) -> anyhow::Result
 
     TrayIconBuilder::new()
         .icon(app.default_window_icon().unwrap().clone())
-        .tooltip("Codex Account Manager Next")
+        .tooltip("AiGoodBro")
         .menu(&menu)
         .on_tray_icon_event(|tray, event| {
             if let TrayIconEvent::Click {
@@ -64,7 +64,9 @@ pub fn setup_tray(app: &AppHandle, language: ResolvedLanguage) -> anyhow::Result
                 let app = app.clone();
                 tauri::async_runtime::spawn(async move {
                     let state = app.state::<std::sync::Arc<crate::app_state::AppState>>();
-                    let _ = refresh_usage(app.clone(), state).await;
+                    let statistics = app.state::<TokenMonitorAppState>();
+                    let native = app.state::<crate::native_services::NativeServices>();
+                    let _ = refresh_token_monitor_usage(statistics, state, native).await;
                 });
             }
             "quit" => app.exit(0),

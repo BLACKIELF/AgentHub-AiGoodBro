@@ -126,6 +126,7 @@ fn service(data: PathBuf, sources: Vec<TokenMonitorSource>) -> Arc<TokenMonitorS
             token_rate: None,
             failure_code: None,
         }),
+        notifications: Mutex::new(StateNotifications::default()),
         runtime: Mutex::new(None),
         cancel_handle: Mutex::new(None),
         operation: Mutex::new(()),
@@ -343,4 +344,173 @@ fn staged_node_and_scanner_native_smoke() {
     assert_eq!(cancelled.phase, "stopped");
     assert!(!s.has_inflight_operation());
     assert_eq!(hash(&fs::read(&file).unwrap()), before);
+}
+
+#[test]
+fn listener_install_reads_current_state_reentrantly_without_a_service_lock() {
+    let home = tempfile::tempdir().unwrap();
+    let service = service(home.path().to_owned(), vec![]);
+    let weak = Arc::downgrade(&service);
+    let (sent, received) = std::sync::mpsc::channel();
+    let install = service.clone();
+    std::thread::spawn(move || {
+        let result = install.install_state_listener(Arc::new(move |value| {
+            let current = weak.upgrade().unwrap().state().unwrap();
+            sent.send((value.revision, current.revision)).unwrap();
+        }));
+        assert!(result.is_ok());
+    });
+    assert_eq!(
+        received
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap(),
+        (0, 0)
+    );
+}
+
+#[test]
+fn listener_deduplicates_revision_and_callback_panic_cannot_poison_collection_state() {
+    let home = tempfile::tempdir().unwrap();
+    let service = service(home.path().to_owned(), vec![]);
+    let called = Arc::new(AtomicU64::new(0));
+    let count = called.clone();
+    service
+        .install_state_listener(Arc::new(move |_| {
+            count.fetch_add(1, Ordering::AcqRel);
+            panic!("synthetic presentation callback failure");
+        }))
+        .unwrap();
+    service.publish_state(None);
+    assert_eq!(called.load(Ordering::Acquire), 1);
+    service.state.lock().unwrap().revision = 1;
+    service.publish_state(None);
+    assert_eq!(called.load(Ordering::Acquire), 2);
+    assert_eq!(service.state().unwrap().revision, 1);
+    assert!(service.notifications.lock().is_ok());
+}
+
+#[test]
+fn listener_serializes_callbacks_and_coalesces_pending_to_latest_revision() {
+    let home = tempfile::tempdir().unwrap();
+    let service = service(home.path().to_owned(), vec![]);
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let records = seen.clone();
+    let (entered, waiting) = std::sync::mpsc::channel();
+    let (release, released) = std::sync::mpsc::channel();
+    let released = Mutex::new(released);
+    service
+        .install_state_listener(Arc::new(move |value| {
+            records.lock().unwrap().push(value.revision);
+            if value.revision == 1 {
+                entered.send(()).unwrap();
+                released
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(std::time::Duration::from_secs(2))
+                    .unwrap();
+            }
+        }))
+        .unwrap();
+    service.state.lock().unwrap().revision = 1;
+    let publish = service.clone();
+    let first = std::thread::spawn(move || publish.publish_state(None));
+    waiting
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .unwrap();
+    service.state.lock().unwrap().revision = 2;
+    service.publish_state(None);
+    service.state.lock().unwrap().revision = 3;
+    service.publish_state(None);
+    release.send(()).unwrap();
+    first.join().unwrap();
+    assert_eq!(*seen.lock().unwrap(), vec![0, 1, 3]);
+}
+
+#[test]
+fn listener_can_reentrantly_cancel_and_publishes_cleared_rate_after_current_callback() {
+    let home = tempfile::tempdir().unwrap();
+    let service = service(home.path().to_owned(), vec![]);
+    let weak = Arc::downgrade(&service);
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let records = seen.clone();
+    service.state.lock().unwrap().snapshot = Some(json!({"previous":true}));
+    service
+        .install_state_listener(Arc::new(move |value| {
+            records.lock().unwrap().push((
+                value.revision,
+                value.phase,
+                value.token_rate.is_none(),
+                value.snapshot.is_some(),
+            ));
+            if value.revision == 0 {
+                weak.upgrade().unwrap().cancel().unwrap();
+            }
+        }))
+        .unwrap();
+    let records = seen.lock().unwrap();
+    assert_eq!(records.len(), 2);
+    assert_eq!(records[0], (0, "idle", true, true));
+    assert_eq!(records[1], (1, "stopped", true, true));
+}
+
+#[test]
+fn listener_source_change_clears_scope_and_late_previous_generation_never_republishes() {
+    let home = tempfile::tempdir().unwrap();
+    let service = service(
+        home.path().to_owned(),
+        vec![source(home.path().join("codex"), "system-history", true)],
+    );
+    let context = "a".repeat(64);
+    service.epoch.store(5, Ordering::Release);
+    service.state.lock().unwrap().context_key = Some(context.clone());
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let records = seen.clone();
+    service
+        .install_state_listener(Arc::new(move |value| {
+            records.lock().unwrap().push(value);
+        }))
+        .unwrap();
+    let rate =
+        serde_json::to_vec(&json!({"event":"rate","contextKey":context,"rate":null})).unwrap();
+    service.accept_event(&rate, &context, 5).unwrap();
+    service.state.lock().unwrap().snapshot = Some(json!({"previous":true}));
+    let after = service.select_sources(vec![]).unwrap();
+    assert!(after.context_key.is_none());
+    assert!(after.snapshot.is_none());
+    assert!(after.token_rate.is_none());
+    let before = seen.lock().unwrap().len();
+    assert!(service.accept_event(&rate, &context, 5).is_err());
+    service.publish_state(Some(5));
+    let records = seen.lock().unwrap();
+    assert_eq!(records.len(), before);
+    let last = records.last().unwrap();
+    assert_eq!(last.revision, after.revision);
+    assert!(last.context_key.is_none() && last.snapshot.is_none() && last.token_rate.is_none());
+    assert!(records
+        .windows(2)
+        .all(|rows| rows[0].revision < rows[1].revision));
+}
+
+#[test]
+fn listener_identical_catalog_and_timezone_are_silent_and_exit_seals_publication() {
+    let home = tempfile::tempdir().unwrap();
+    let sources = vec![source(home.path().join("codex"), "system-history", true)];
+    let service = service(home.path().to_owned(), sources.clone());
+    let called = Arc::new(AtomicU64::new(0));
+    let count = called.clone();
+    service
+        .install_state_listener(Arc::new(move |_| {
+            count.fetch_add(1, Ordering::AcqRel);
+        }))
+        .unwrap();
+    service.replace_sources(sources).unwrap();
+    assert_eq!(called.load(Ordering::Acquire), 1);
+    service.set_timezone("Asia/Shanghai".into()).unwrap();
+    let after = called.load(Ordering::Acquire);
+    service.set_timezone("Asia/Shanghai".into()).unwrap();
+    assert_eq!(called.load(Ordering::Acquire), after);
+    service.cancel_for_exit();
+    service.state.lock().unwrap().revision += 1;
+    service.publish_state(None);
+    assert_eq!(called.load(Ordering::Acquire), after);
 }

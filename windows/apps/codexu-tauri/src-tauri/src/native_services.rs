@@ -211,6 +211,17 @@ pub fn install(app: &mut App, root: PathBuf) -> Result<(), Box<dyn std::error::E
             String::new(),
         )
         .map_err(|e| e.code())
+        .and_then(|statistics| {
+            // All views receive the same sanitized generation. Creating or
+            // revealing a compact window never starts another collector.
+            let handle = app.handle().clone();
+            statistics
+                .install_state_listener(Arc::new(move |state| {
+                    let _ = handle.emit("token-monitor:changed", state);
+                }))
+                .map_err(|e| e.code())?;
+            Ok(statistics)
+        })
     });
     if gate.is_ok() {
         if let Ok(accounts) = &accounts {
