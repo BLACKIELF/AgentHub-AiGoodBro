@@ -326,19 +326,29 @@ import Foundation
             let lockPath = root.appendingPathComponent(DispatchActivityStore.lockName).path
             let fd = Darwin.open(lockPath, O_RDWR | O_CREAT | O_CLOEXEC, 0o600)
             guard fd >= 0, flock(fd, LOCK_EX | LOCK_NB) == 0 else { throw NSError(domain: "fixture", code: 11) }
-            DispatchQueue.global().asyncAfter(deadline: .now() + 1.0) { _ = flock(fd, LOCK_UN); Darwin.close(fd) }
+            defer { _ = flock(fd, LOCK_UN); Darwin.close(fd) }
             LocalProxyFixtureRuntime.helperLaunches = 0
             LocalProxyFixtureRuntime.startupAttempts = 0
             let start = Task { await store.start() }
-            try await Task.sleep(nanoseconds: 150_000_000)
-            let attemptsBeforeStop = LocalProxyFixtureRuntime.startupAttempts
-            let stop = Task { await store.stop() }
+            let retryDeadline = ProcessInfo.processInfo.systemUptime + 3
+            while LocalProxyFixtureRuntime.startupAttempts < 2 {
+                guard ProcessInfo.processInfo.systemUptime < retryDeadline else { throw NSError(domain: "fixture", code: 12) }
+                try await Task.sleep(nanoseconds: 10_000_000)
+            }
+            var attemptsAtStop = 0
+            let stop = Task { @MainActor in
+                // Snapshot when Stop actually runs; queued startup retries before
+                // this task's first turn are not post-cancellation work.
+                attemptsAtStop = LocalProxyFixtureRuntime.startupAttempts
+                await store.stop()
+            }
             await start.value
-            check(attemptsBeforeStop > 0 && LocalProxyFixtureRuntime.startupAttempts == attemptsBeforeStop
+            check(attemptsAtStop > 0 && LocalProxyFixtureRuntime.startupAttempts == attemptsAtStop && store.startAttemptID == nil
                     && store.exitCleanupID != nil && !store.canStart && !store.canFinishTermination && LocalProxyFixtureRuntime.helperLaunches == 0,
                 "stop during busy startup retry revokes the old attempt and retains cleanup")
+            // Keep contention until the intermediate cancellation checks finish.
+            guard flock(fd, LOCK_UN) == 0 else { throw NSError(domain: "fixture", code: 13) }
             await stop.value
-            try await Task.sleep(nanoseconds: 1_000_000_000)
             if !store.canFinishTermination { await store.stop() }
             check(store.canFinishTermination && LocalProxyFixtureRuntime.helperLaunches == 0,
                 "busy startup cancellation can be confirmed after the registry unlocks")
