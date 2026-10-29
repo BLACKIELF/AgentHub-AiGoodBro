@@ -17,6 +17,48 @@ use std::{
 fn error(code: &'static str) -> AccountError {
     AccountError { code }
 }
+/// Deliberately prints only the driver's fixed diagnostic protocol. Neither
+/// its command, raw output, private path nor synthetic auth reaches CI logs.
+fn evidence_driver_failure(stderr: &[u8]) -> &'static str {
+    const CODES: [&str; 7] = [
+        "paths_rejected",
+        "input_rejected",
+        "cache_unavailable",
+        "launch_failed",
+        "go_test_failed",
+        "timeout",
+        "proof_missing",
+    ];
+    for line in stderr.split(|b| *b == b'\n') {
+        let line = line.strip_suffix(b"\r").unwrap_or(line);
+        for code in CODES {
+            if line == format!("AIGOODBRO_EVIDENCE_FIXTURE_ERROR={code}").as_bytes() {
+                return code;
+            }
+        }
+    }
+    "driver_failed"
+}
+
+#[test]
+fn evidence_driver_failure_exposes_only_exact_allowlisted_code() {
+    assert_eq!(
+        evidence_driver_failure(
+            b"synthetic private stderr\nAIGOODBRO_EVIDENCE_FIXTURE_ERROR=cache_unavailable\r\n"
+        ),
+        "cache_unavailable"
+    );
+    assert_eq!(
+        evidence_driver_failure(
+            b"AIGOODBRO_EVIDENCE_FIXTURE_ERROR=cache_unavailable synthetic-private-path\n"
+        ),
+        "driver_failed"
+    );
+    assert_eq!(
+        evidence_driver_failure(b"AIGOODBRO_EVIDENCE_FIXTURE_ERROR=unknown-private-value\n"),
+        "driver_failed"
+    );
+}
 fn claims(value: Value) -> String {
     format!(
         "synthetic.{}.not-a-real-signature",
@@ -1867,7 +1909,9 @@ fn actual_go_desktop_evidence_is_accepted_by_real_account_manager() {
         .expect("isolated Go fixture driver starts");
     assert!(
         result.status.success(),
-        "isolated Go fixture driver failed (output kept private)"
+        "isolated Go fixture driver failed: category={}, exit={:?}",
+        evidence_driver_failure(&result.stderr),
+        result.status.code()
     );
     let proof: codexu_core::proxy::DesktopQuotaEvidence =
         serde_json::from_slice(&std::fs::read(&output).unwrap()).unwrap();

@@ -57,7 +57,10 @@ class Upstream(BaseHTTPRequestHandler):
 
 def run(helper=None):
     with tempfile.TemporaryDirectory(prefix='lp-cross-',dir=os.environ.get("TMPDIR")) as temporary:
-        folder=pathlib.Path(temporary);os.chmod(folder,0o700)
+        # macOS TMPDIR may traverse /var -> /private/var. The production
+        # cooldown store correctly rejects symlink ancestors, so hand it the
+        # canonical fixture directory, as the native Go fixtures already do.
+        folder=pathlib.Path(temporary).resolve(strict=True);os.chmod(folder,0o700)
         bridge_source=(ROOT/'Sources/CodexUsageWidget/Services/LocalProxyBridge.swift').read_text()
         reader_start=bridge_source.index('\nenum LocalProxyCredentialReader')
         reader_comment=bridge_source.rfind('\n///',0,reader_start)

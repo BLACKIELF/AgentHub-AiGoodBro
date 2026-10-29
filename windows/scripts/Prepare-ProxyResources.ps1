@@ -23,7 +23,7 @@ $previousHelper = [Environment]::GetEnvironmentVariable('AIGOODBRO_TEST_PROXY_HE
 $previousEvidenceDriver = [Environment]::GetEnvironmentVariable('AIGOODBRO_TEST_GO_EVIDENCE_DRIVER', 'Process')
 $previousPython = [Environment]::GetEnvironmentVariable('AIGOODBRO_TEST_PYTHON', 'Process')
 try {
-    Invoke-ProxyBuildCommand 'python' @('-m', 'unittest', 'discover', '-s', 'windows/proxy', '-p', 'test_build.py', '-v')
+    Invoke-ProxyBuildCommand 'python' @('-m', 'unittest', 'discover', '-s', 'windows/proxy', '-p', 'test_*.py', '-v')
     Invoke-ProxyBuildCommand 'python' @('windows/proxy/prepare-resource.py', '--build-root', $BuildRoot, '--target', 'windows-amd64')
     if ($RunNativeTests) {
         Invoke-ProxyBuildCommand 'python' @('windows/proxy/build.py', '--build-root', $BuildRoot, '--target', 'windows-amd64', 'test', '-mod=readonly', '-run', '^TestWindows', '.')
