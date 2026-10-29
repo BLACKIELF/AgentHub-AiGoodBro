@@ -554,7 +554,7 @@ impl LocalProxyService {
         // std::io::pipe uses synchronous CreatePipe handles on Windows.
         // ChildStdin from Stdio::piped() instead uses an overlapped handle,
         // which cannot safely use our synchronous nonblocking frame writer.
-        let (input, mut stdin) = match std::io::pipe() {
+        let (input, mut stdin) = match command_pipe::owned_pipe() {
             Ok(pipe) => pipe,
             Err(_) => {
                 let _ = host.retire(true);
@@ -1252,9 +1252,10 @@ fn write_startup(
             if Instant::now() >= deadline {
                 #[cfg(test)]
                 eprintln!(
-                    "proxy_startup_fixture write_deadline total_bytes={} accepted_bytes={}",
+                    "proxy_startup_fixture write_deadline total_bytes={} accepted_bytes={} {}",
                     frame.len(),
-                    _chunk_index * 512
+                    _chunk_index * 512,
+                    command_pipe::diagnostics(stdin)
                 );
                 return Err(ProxyFailure::StartupFailed);
             }
@@ -1580,7 +1581,7 @@ mod native_tests {
         let run = "7".repeat(32);
         crate::proxy::recovery::prepare_helper(&receipts, &run).unwrap();
         crate::proxy::recovery::launching(&receipts, "helper", &run).unwrap();
-        let (input, stdin) = std::io::pipe().unwrap();
+        let (input, stdin) = command_pipe::owned_pipe().unwrap();
         let mut child = Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",

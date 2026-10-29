@@ -1,6 +1,34 @@
 //! One bounded frame on the sole owned writer. Never leave a partial JSON line
 //! available to the next command, and never wait for the helper to drain stdin.
-use std::io::PipeWriter;
+use std::io::{PipeReader, PipeWriter};
+
+pub(super) fn owned_pipe() -> std::io::Result<(PipeReader, PipeWriter)> {
+    let (reader, writer) = std::io::pipe()?;
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle;
+        use windows::Win32::{
+            Foundation::HANDLE,
+            System::Pipes::{SetNamedPipeHandleState, PIPE_NOWAIT},
+        };
+        // Configure the sole writer before a child can issue its first read.
+        // Keep this mode for its lifetime: every write uses the bounded path.
+        unsafe {
+            SetNamedPipeHandleState(
+                HANDLE(writer.as_raw_handle()),
+                Some(&PIPE_NOWAIT),
+                None,
+                None,
+            )
+        }
+        .map_err(|error| {
+            #[cfg(test)]
+            eprintln!("proxy_pipe_fixture prepare_hresult={}", error.code().0);
+            std::io::Error::other(error)
+        })?;
+    }
+    Ok((reader, writer))
+}
 
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum FrameFailure {
@@ -59,30 +87,57 @@ fn quota(handle: windows::Win32::Foundation::HANDLE) -> Result<u32, FrameFailure
     Ok(info.WriteQuotaAvailable)
 }
 
+#[cfg(all(test, windows))]
+pub(super) fn diagnostics(stdin: &PipeWriter) -> String {
+    use std::os::windows::io::AsRawHandle;
+    use windows::{
+        Wdk::Storage::FileSystem::{
+            FilePipeLocalInformation, NtQueryInformationFile, FILE_PIPE_LOCAL_INFORMATION,
+        },
+        Win32::{Foundation::HANDLE, System::IO::IO_STATUS_BLOCK},
+    };
+    let mut info = FILE_PIPE_LOCAL_INFORMATION::default();
+    let mut status = IO_STATUS_BLOCK::default();
+    let result = unsafe {
+        NtQueryInformationFile(
+            HANDLE(stdin.as_raw_handle()),
+            &mut status,
+            &mut info as *mut _ as _,
+            std::mem::size_of_val(&info) as u32,
+            FilePipeLocalInformation,
+        )
+    };
+    format!("ntstatus={} info_bytes={} write_quota={} read_available={} inbound_quota={} outbound_quota={} pipe_state={} pipe_end={}", result.0, status.Information, info.WriteQuotaAvailable, info.ReadDataAvailable, info.InboundQuota, info.OutboundQuota, info.NamedPipeState, info.NamedPipeEnd)
+}
+
+#[cfg(all(test, not(windows)))]
+pub(super) fn diagnostics(_: &PipeWriter) -> &'static str {
+    "non_windows"
+}
+
 #[cfg(windows)]
 fn send_handle(
     handle: windows::Win32::Foundation::HANDLE,
     bytes: &[u8],
 ) -> Result<(), FrameFailure> {
-    use windows::Win32::{
-        Storage::FileSystem::WriteFile,
-        System::Pipes::{SetNamedPipeHandleState, PIPE_NOWAIT, PIPE_WAIT},
-    };
+    use windows::Win32::Storage::FileSystem::WriteFile;
     if bytes.is_empty() || bytes.len() > 512 || quota(handle)? < bytes.len() as u32 {
         return Err(FrameFailure::Unchanged);
     }
-    // SetNamedPipeHandleState explicitly supports CreatePipe handles. The
-    // caller owns the only writer and serializes it with ServiceInner. Readers
-    // can only increase free quota between this check and the one WriteFile.
-    unsafe { SetNamedPipeHandleState(handle, Some(&PIPE_NOWAIT), None, None) }
-        .map_err(|_| FrameFailure::Unchanged)?;
+    // owned_pipe configures PIPE_NOWAIT before spawning the reader. The caller
+    // owns the only writer and serializes complete command frames.
     let mut written = 0;
     let result = unsafe { WriteFile(handle, Some(bytes), Some(&mut written), None) };
-    let restored = unsafe { SetNamedPipeHandleState(handle, Some(&PIPE_WAIT), None, None) };
-    if restored.is_err() || written != 0 && written != bytes.len() as u32 {
+    if written != 0 && written != bytes.len() as u32 {
         return Err(FrameFailure::Poisoned);
     }
-    if result.is_err() {
+    if let Err(_error) = result {
+        #[cfg(test)]
+        eprintln!(
+            "proxy_pipe_fixture write_hresult={} written={}",
+            _error.code().0,
+            written
+        );
         return Err(FrameFailure::Poisoned);
     }
     if written == bytes.len() as u32 {
@@ -156,13 +211,26 @@ mod tests {
         };
         if role == "hold" {
             std::thread::sleep(Duration::from_secs(5));
-        } else if role == "consume" {
+        } else if role == "consume" || role == "slow_consume" {
             use std::io::BufRead;
             let mut frame = Vec::new();
-            std::io::stdin()
-                .lock()
-                .read_until(b'\n', &mut frame)
-                .unwrap();
+            if role == "consume" {
+                std::io::stdin()
+                    .lock()
+                    .read_until(b'\n', &mut frame)
+                    .unwrap();
+            } else {
+                let mut input = std::io::stdin().lock();
+                while frame.last() != Some(&b'\n') {
+                    let mut buffer = [0; 4096];
+                    let n = input.read(&mut buffer).unwrap();
+                    if n == 0 {
+                        break;
+                    }
+                    frame.extend_from_slice(&buffer[..n]);
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            }
             assert_eq!(frame.len(), 65537);
             assert_eq!(frame.last(), Some(&b'\n'));
             assert!(frame[..65536].iter().all(|byte| *byte == b'x'));
@@ -175,54 +243,76 @@ mod tests {
     fn actual_helper_startup_pipe_reader_accepts_complete_large_frame() {
         use std::process::{Command, Stdio};
         use std::sync::atomic::AtomicUsize;
-        let (input, mut writer) = std::io::pipe().unwrap();
-        let mut command = Command::new(std::env::current_exe().unwrap());
-        command
-            .args([
-                "--exact",
-                "proxy::process::command_pipe::tests::blocked_pipe_child",
-                "--ignored",
-                "--nocapture",
-            ])
-            .env("AIGOODBRO_PIPE_FIXTURE_ROLE", "consume")
-            .stdin(Stdio::from(input))
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null());
-        let mut child = command.spawn().unwrap();
-        drop(command);
-        let at = Instant::now();
-        let mut frame = vec![b'x'; 65536];
-        frame.push(b'\n');
-        let write = super::super::write_startup(
-            &mut writer,
-            &frame,
-            &AtomicUsize::new(1),
-            1,
-            None,
-            at + Duration::from_secs(3),
-        );
-        drop(writer);
-        let exit = loop {
-            if let Some(exit) = child.try_wait().unwrap() {
-                break Some(exit);
+        for role in ["consume", "slow_consume"] {
+            let (input, mut writer) = owned_pipe().unwrap();
+            let mut command = Command::new(std::env::current_exe().unwrap());
+            command
+                .args([
+                    "--exact",
+                    "proxy::process::command_pipe::tests::blocked_pipe_child",
+                    "--ignored",
+                    "--nocapture",
+                ])
+                .env("AIGOODBRO_PIPE_FIXTURE_ROLE", role)
+                .stdin(Stdio::from(input))
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null());
+            let mut child = command.spawn().unwrap();
+            drop(command);
+            let at = Instant::now();
+            let mut frame = vec![b'x'; 65536];
+            frame.push(b'\n');
+            let write = super::super::write_startup(
+                &mut writer,
+                &frame,
+                &AtomicUsize::new(1),
+                1,
+                None,
+                at + Duration::from_secs(3),
+            );
+            #[cfg(windows)]
+            if write.is_err() {
+                // Diagnostic only, against this synthetic consuming child.
+                // Never turn a failed startup into a pass or continue its line.
+                use std::os::windows::io::AsRawHandle;
+                let mut written = 0;
+                let result = unsafe {
+                    windows::Win32::Storage::FileSystem::WriteFile(
+                        windows::Win32::Foundation::HANDLE(writer.as_raw_handle()),
+                        Some(&[b'x'; 512]),
+                        Some(&mut written),
+                        None,
+                    )
+                };
+                eprintln!(
+                    "proxy_pipe_fixture post_failure_direct_write_hresult={} written={}",
+                    result.err().map(|error| error.code().0).unwrap_or(0),
+                    written
+                );
             }
-            if write.is_err() || at.elapsed() >= Duration::from_secs(5) {
-                let _ = child.kill();
-                let _ = child.wait();
-                break None;
-            }
-            std::thread::sleep(Duration::from_millis(5));
-        };
-        let mut output = String::new();
-        child
-            .stdout
-            .take()
-            .unwrap()
-            .read_to_string(&mut output)
-            .unwrap();
-        assert_eq!(write, Ok(()));
-        assert!(exit.is_some_and(|exit| exit.success()));
-        assert!(output.contains("synthetic_startup_frame_complete"));
+            drop(writer);
+            let exit = loop {
+                if let Some(exit) = child.try_wait().unwrap() {
+                    break Some(exit);
+                }
+                if write.is_err() || at.elapsed() >= Duration::from_secs(5) {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    break None;
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            };
+            let mut output = String::new();
+            child
+                .stdout
+                .take()
+                .unwrap()
+                .read_to_string(&mut output)
+                .unwrap();
+            assert_eq!(write, Ok(()));
+            assert!(exit.is_some_and(|exit| exit.success()));
+            assert!(output.contains("synthetic_startup_frame_complete"));
+        }
     }
 
     #[test]
@@ -234,7 +324,7 @@ mod tests {
             Arc,
         };
         for role in ["hold", "timeout", "exit"] {
-            let (input, mut writer) = std::io::pipe().unwrap();
+            let (input, mut writer) = owned_pipe().unwrap();
             let mut command = Command::new(std::env::current_exe().unwrap());
             command
                 .args([
@@ -304,7 +394,7 @@ mod tests {
     #[test]
     #[ignore = "explicit native helper contract uses the same owned synchronous pipe type"]
     fn actual_helper_command_pipe_full_rejects_whole_frame_without_blocking_or_corruption() {
-        let (mut read, mut write) = std::io::pipe().unwrap();
+        let (mut read, mut write) = owned_pipe().unwrap();
         let frame = b"{\"command\":\"fixture\"}\n";
         let mut fill = vec![b'x'; 512];
         fill[511] = b'\n';
