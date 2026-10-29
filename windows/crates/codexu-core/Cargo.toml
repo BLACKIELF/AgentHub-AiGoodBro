@@ -36,6 +36,7 @@ uds_windows = "=1.1.0"
 async-io = "=2.6.0"
 tokio-util = { version = "=0.7.19", features = ["compat"] }
 windows = { version = "0.61.3", features = [
+    "Wdk_Storage_FileSystem",
     "Data_Xml_Dom",
     "Foundation",
     "UI_Notifications",
@@ -51,4 +52,7 @@ windows = { version = "0.61.3", features = [
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_LibraryLoader",
     "Win32_System_Threading",
+    "Win32_System_IO",
+    "Win32_System_Pipes",
+    "Win32_Storage_FileSystem",
 ] }

@@ -264,6 +264,49 @@ impl ProxyHost {
     pub(crate) fn running_id(&self) -> Option<String> {
         self.running.then(|| self.run_id.clone())
     }
+    pub(crate) fn registration_candidate(
+        &self,
+        id: &str,
+    ) -> Result<AccountRegistration, ProxyFailure> {
+        if !self.trusted_ids()?.contains(id) {
+            return Err(ProxyFailure::Identity);
+        }
+        let candidate = self.gate.registration(id)?;
+        if candidate.profile_id != id
+            || !policy::valid_hash(&candidate.identity_hash)
+            || candidate.identity_hash != candidate.identity_hash.to_ascii_lowercase()
+            || self.registered.iter().any(|(other, identity)| {
+                (other == id && identity != &candidate.identity_hash)
+                    || (!self.registered.contains_key(id)
+                        && other != id
+                        && identity == &candidate.identity_hash)
+            })
+        {
+            return Err(ProxyFailure::Identity);
+        }
+        Ok(candidate)
+    }
+    pub(crate) fn is_registered(&self, id: &str) -> bool {
+        self.registered.contains_key(id)
+    }
+    /// Called only after the owned helper's matching registration acknowledgement.
+    /// Existing request memberships remain frozen; new requests can discover it.
+    pub(crate) fn commit_registration(
+        &mut self,
+        run: &str,
+        id: &str,
+        identity: &str,
+    ) -> Result<(), ProxyFailure> {
+        if !self.run_matches(run) {
+            return Err(ProxyFailure::Stopping);
+        }
+        let current = self.registration_candidate(id)?;
+        if current.identity_hash != identity || self.registered.len() >= 100 {
+            return Err(ProxyFailure::Identity);
+        }
+        self.registered.insert(id.to_owned(), identity.to_owned());
+        Ok(())
+    }
     pub(crate) fn has_unretired_run(&self) -> bool {
         !self.run_id.is_empty() || !self.leases.is_empty()
     }

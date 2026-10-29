@@ -1524,6 +1524,40 @@ function Find-InstallationGuide {
   return $null
 }
 
+function Assert-CaptureStorage {
+  param([string] $RuntimeRoot, [ValidateSet('pending', 'deferred')] [string] $ExpectedStatus)
+  $stateRoot = Join-Path $RuntimeRoot 'app-state'
+  $settings = Join-Path $stateRoot 'settings.json'
+  if (-not (Test-Path -LiteralPath $settings -PathType Leaf)) {
+    throw 'capture_isolated_settings_missing'
+  }
+  $saved = Get-Content -LiteralPath $settings -Raw -Encoding UTF8 | ConvertFrom-Json
+  $cache = [string]$saved.cache_dir
+  # Rust canonical Windows paths use the local-drive extended prefix.
+  if ($cache.StartsWith('\\?\')) { $cache = $cache.Substring(4) }
+  $cache = [System.IO.Path]::GetFullPath($cache)
+  $expectedCache = [System.IO.Path]::GetFullPath((Join-Path $stateRoot 'cache'))
+  if (-not $cache.Equals($expectedCache, [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw 'capture_cache_not_isolated'
+  }
+  $codex = [string]$saved.codex_root
+  if ($codex.StartsWith('\\?\')) { $codex = $codex.Substring(4) }
+  $codex = [System.IO.Path]::GetFullPath($codex)
+  $expectedCodex = [System.IO.Path]::GetFullPath((Join-Path $stateRoot 'codex'))
+  if (-not $codex.Equals($expectedCodex, [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw 'capture_codex_not_isolated'
+  }
+  if ($saved.installation_onboarding.status -ne $ExpectedStatus) {
+    throw 'capture_isolated_onboarding_state_mismatch'
+  }
+  return [ordered]@{
+    state_root = 'runtime/fullscreen/app-state'
+    cache_isolated = $true
+    codex_isolated = $true
+    onboarding_status = $ExpectedStatus
+  }
+}
+
 function Defer-FirstLaunchGuide {
   param([IntPtr] $Window, [int] $ProcessId, [IntPtr] $ExpectedForeground)
   # Every capture starts with a fresh task-local profile. Observe its real
@@ -2077,6 +2111,7 @@ function Invoke-MaximizedCapture {
     $startInfo.EnvironmentVariables['APPDATA'] = $appData
     $startInfo.EnvironmentVariables['LOCALAPPDATA'] = $localAppData
     $startInfo.EnvironmentVariables['WEBVIEW2_USER_DATA_FOLDER'] = $webViewData
+    $startInfo.EnvironmentVariables['AIGOODBRO_NATIVE_CAPTURE_ROOT'] = $sizeRuntime
 
     $process = [System.Diagnostics.Process]::new()
     $process.StartInfo = $startInfo
@@ -2097,6 +2132,8 @@ function Invoke-MaximizedCapture {
       -Window $window `
       -ExpectedForeground $foregroundBefore
     Wait-WebViewDocument -Window $window
+    $sizeRecord.storage_before_onboarding = Assert-CaptureStorage `
+      -RuntimeRoot $sizeRuntime -ExpectedStatus 'pending'
     $sizeRecord.before_onboarding = [ordered]@{
       task_noactivate = ([NativeVisualCaptureDriver]::GetWindowExtendedStyle($window) -band 0x08000000) -ne 0
       foreground_is_expected = [NativeVisualCaptureDriver]::GetForegroundWindowHandle() -eq $foregroundBefore
@@ -2107,6 +2144,8 @@ function Invoke-MaximizedCapture {
       -Stage 'before first-launch guide defer'
     $sizeRecord.onboarding = Defer-FirstLaunchGuide `
       -Window $window -ProcessId $process.Id -ExpectedForeground $foregroundBefore
+    $sizeRecord.storage_after_onboarding = Assert-CaptureStorage `
+      -RuntimeRoot $sizeRuntime -ExpectedStatus 'deferred'
     Assert-ForegroundPreserved `
       -ExpectedForeground $foregroundBefore `
       -TaskWindow $window `
@@ -2300,7 +2339,7 @@ $script:workflowManifest = [ordered]@{
   capture_argument = '--codexu-native-capture-background'
   taskbar_policy = 'excluded'
   alt_tab_policy = 'excluded'
-  real_local_codex_input = 'read-only'
+  real_local_codex_input = 'not-read; empty task-owned Codex root'
   app_runtime_storage = 'task-local under .local-artifacts'
   build = [ordered]@{
     command = $preflight.build_command

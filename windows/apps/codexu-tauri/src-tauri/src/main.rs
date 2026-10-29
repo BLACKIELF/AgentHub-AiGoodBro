@@ -7,6 +7,7 @@ use tauri::Manager;
 use tracing::info;
 
 mod app_state;
+mod capture_storage;
 mod commands;
 mod compact_projection;
 mod compact_ui;
@@ -116,10 +117,18 @@ fn main() {
         .manage(quit::QuitState::default())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            let app_data_dir = app.path().app_data_dir().map_err(|e| {
-                eprintln!("Failed to resolve app data dir: {}", e);
-                e
-            })?;
+            let app_data_dir = match capture_storage::initialize(
+                is_background_capture(),
+                std::env::var_os(capture_storage::ROOT_ENV),
+            )
+            .map_err(std::io::Error::other)?
+            {
+                Some(root) => root,
+                None => app.path().app_data_dir().map_err(|e| {
+                    eprintln!("Failed to resolve app data dir: {}", e);
+                    e
+                })?,
+            };
             // Keep user-specific storage locations out of runtime logs.
             info!("Next app data directory initialized");
 

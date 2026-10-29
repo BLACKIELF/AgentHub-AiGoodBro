@@ -288,6 +288,21 @@ pub fn install(app: &mut App, root: PathBuf) -> Result<(), Box<dyn std::error::E
         },
         Err(error) => (Err(error), None),
     };
+    if let (Ok(accounts), Ok(proxy)) = (&accounts, &proxy) {
+        let proxy = Arc::downgrade(proxy);
+        let handle = app.handle().clone();
+        accounts
+            .install_first_verified_listener(Arc::new(move |id| {
+                if let Some(proxy) = proxy.upgrade() {
+                    // The service exposes any failed enrollment as account state;
+                    // a successful login must not be reported as a proxy success.
+                    let _ = proxy.enroll_new_verified_account(id);
+                }
+                let _ = handle.emit("managed-accounts:changed", ());
+                let _ = handle.emit("local-proxy:changed", ());
+            }))
+            .map_err(|e| e.code)?;
+    }
     let desktop = accounts.as_ref().map_err(|e| *e).and_then(|accounts| {
         let proxy = proxy.as_ref().map_err(|e| *e)?;
         ProxyDesktopConnector::native(proxy, accounts.clone(), root.join("desktop-receipts"))

@@ -63,6 +63,16 @@ $fullscreenRun = $manifest.fullscreen_run
 Assert-True ($null -ne $fullscreenRun) 'Coverage capture did not record its fullscreen run.'
 Assert-True ($fullscreenRun.status -eq 'complete') 'Fullscreen Overview capture is not complete.'
 Assert-True (
+  $fullscreenRun.storage_before_onboarding.state_root -eq 'runtime/fullscreen/app-state' -and
+  [bool]$fullscreenRun.storage_before_onboarding.cache_isolated -and
+  [bool]$fullscreenRun.storage_before_onboarding.codex_isolated -and
+  $fullscreenRun.storage_before_onboarding.onboarding_status -eq 'pending' -and
+  $fullscreenRun.storage_after_onboarding.state_root -eq 'runtime/fullscreen/app-state' -and
+  [bool]$fullscreenRun.storage_after_onboarding.cache_isolated -and
+  [bool]$fullscreenRun.storage_after_onboarding.codex_isolated -and
+  $fullscreenRun.storage_after_onboarding.onboarding_status -eq 'deferred'
+) 'Each capture must independently save Pending then Deferred under its own state and cache root.'
+Assert-True (
   [bool]$fullscreenRun.onboarding.observed -and
   [bool]$fullscreenRun.onboarding.defer_invoked -and
   [bool]$fullscreenRun.onboarding.dialog_dismissed

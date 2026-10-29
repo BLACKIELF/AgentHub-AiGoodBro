@@ -106,6 +106,23 @@ test('participation never reorders cards; Pro last-use is cancellable and exclud
   expect(await panel.locator('.proxy-account').evaluateAll(rows => rows.map(row => row.dataset.testid))).toEqual(['proxy-account-a', 'proxy-account-b', 'proxy-account-c']);
 });
 
+test('native hot enrollment refreshes participation without restarting and preserves other opt-outs', async ({ page }) => {
+  const panel = await proxyPage(page);
+  const c = panel.getByTestId('proxy-account-c');
+  await panel.getByRole('button', { name: 'Start', exact: true }).click();
+  await expect(panel).toHaveAttribute('data-proxy-phase', 'running');
+  await expect(c.getByRole('button', { name: 'Disabled', exact: true })).toBeVisible();
+  await page.evaluate(() => {
+    window.proxyPrefs.enabledIds = ['a', 'c'];
+    window.proxyState.accounts.c = { state: 'quota_unknown', cooldownUntil: null, cooldownKind: null, probeState: null };
+  });
+  await expect(c.getByRole('button', { name: 'Enabled', exact: true })).toBeVisible();
+  await expect(panel.getByTestId('proxy-account-b').getByRole('button', { name: 'Disabled', exact: true })).toBeVisible();
+  await expect(panel).toHaveAttribute('data-proxy-phase', 'running');
+  expect(await page.evaluate(() => window.proxyWrites.filter(v => v.command === 'stop_local_proxy').length)).toBe(0);
+  expect(await page.evaluate(() => window.proxyWrites.filter(v => v.command === 'start_local_proxy').length)).toBe(1);
+});
+
 test('a failed rule save keeps the draft; only a successful reply changes the committed limit', async ({ page }) => {
   const panel = await proxyPage(page);
   const a = panel.getByTestId('proxy-account-a');

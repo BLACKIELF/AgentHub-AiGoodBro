@@ -20,9 +20,11 @@ const egressErrorCode = "aigoodbro_egress_forbidden"
 var identityDigest = regexp.MustCompile(`^[a-fA-F0-9]{64}$`)
 
 type networkCommand struct {
-	Command   string `json:"command"`
-	ProfileID string `json:"profileID,omitempty"`
-	RequestID string `json:"requestID,omitempty"`
+	Command      string `json:"command"`
+	RunID        string `json:"runID,omitempty"`
+	IdentityHash string `json:"identityHash,omitempty"`
+	ProfileID    string `json:"profileID,omitempty"`
+	RequestID    string `json:"requestID,omitempty"`
 }
 
 type forbiddenObservation struct {
@@ -35,6 +37,7 @@ type networkRecovery struct {
 	rt                     *runtime
 	events                 *events
 	settings               egressSettings
+	identityMu             sync.RWMutex
 	identities             map[string]string
 	ctx                    context.Context
 	cancel                 context.CancelFunc
@@ -71,7 +74,7 @@ func (n *networkRecovery) observe(r auth.Result) {
 	model := networkModelKey(r.Model)
 	ms := a.ModelStates[model]
 	priorQuota, _ := r.Options.Metadata["aigoodbro.egress-prior-quota"].(bool)
-	valid := !r.Success && plainForbidden(r.Error) && plainForbidden(errorForModel(ms)) && ms.NextRetryAfter.After(time.Now()) && (!ms.Quota.Exceeded || (ms.Quota.Reason == "cloudflare challenge" && !priorQuota)) && !a.Disabled && a.Status != auth.StatusDisabled && identityDigest.MatchString(n.identities[r.AuthID])
+	valid := !r.Success && plainForbidden(r.Error) && plainForbidden(errorForModel(ms)) && ms.NextRetryAfter.After(time.Now()) && (!ms.Quota.Exceeded || (ms.Quota.Reason == "cloudflare challenge" && !priorQuota)) && !a.Disabled && a.Status != auth.StatusDisabled && identityDigest.MatchString(n.identity(r.AuthID))
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	if !valid {
@@ -79,7 +82,7 @@ func (n *networkRecovery) observe(r auth.Result) {
 		return
 	}
 	now := time.Now()
-	observation := forbiddenObservation{id: r.AuthID, model: model, identity: n.identities[r.AuthID], at: ms.UpdatedAt, until: ms.UpdatedAt.Add(5 * time.Minute), generation: a.Generation, epoch: a.RegistrationEpoch, version: a.CredentialVersion}
+	observation := forbiddenObservation{id: r.AuthID, model: model, identity: n.identity(r.AuthID), at: ms.UpdatedAt, until: ms.UpdatedAt.Add(5 * time.Minute), generation: a.Generation, epoch: a.RegistrationEpoch, version: a.CredentialVersion}
 	streak := n.streaks[model][:0]
 	for _, prior := range n.streaks[model] {
 		if now.Sub(prior.at) <= time.Minute && prior.id != r.AuthID {
@@ -145,7 +148,7 @@ func (n *networkRecovery) applyPending() bool {
 		if n.ctx.Err() != nil {
 			break
 		}
-		account := n.rt.recovery.accounts[o.id]
+		account := n.rt.recovery.account(o.id)
 		if account == nil {
 			continue
 		}
@@ -323,7 +326,7 @@ func (n *networkRecovery) probeAccounts(ctx context.Context, profile string, for
 	// Match the host's two read-only credential probe slots. Queue the rest
 	// here so a pool-wide recovery does not turn healthy accounts into busy.
 	slots := make(chan struct{}, 2)
-	for _, id := range n.rt.ids {
+	for _, id := range n.rt.registeredIDs() {
 		if bounded.Err() != nil {
 			return
 		}
@@ -340,8 +343,8 @@ func (n *networkRecovery) probeAccounts(ctx context.Context, profile string, for
 	}
 }
 func (n *networkRecovery) probeAccount(ctx context.Context, id string, force bool) {
-	account := n.rt.recovery.accounts[id]
-	if account == nil || !identityDigest.MatchString(n.identities[id]) {
+	account := n.rt.recovery.account(id)
+	if account == nil || !identityDigest.MatchString(n.identity(id)) {
 		return
 	}
 	if _, err := uuid.Parse(id); err != nil {
@@ -376,7 +379,7 @@ func (n *networkRecovery) probeAccount(ctx context.Context, id string, force boo
 	defer account.mu.Unlock()
 	account.egressProbing = false
 	current, _ := n.rt.manager.GetByID(id)
-	observed, valid := egressProofObserved(reply, n.identities[id], started, time.Now())
+	observed, valid := egressProofObserved(reply, n.identity(id), started, time.Now())
 	if err != nil || !validContext || ctx.Err() != nil || !valid || reply.ProbeStatus != "reachable" {
 		n.emitAccount(current, "failed")
 		return
@@ -466,7 +469,7 @@ func (n *networkRecovery) command(c networkCommand) {
 	switch c.Command {
 	case "probe":
 		if c.ProfileID != "" {
-			if _, ok := n.identities[c.ProfileID]; !ok {
+			if n.identity(c.ProfileID) == "" {
 				return
 			}
 			if _, err := uuid.Parse(c.ProfileID); err != nil {

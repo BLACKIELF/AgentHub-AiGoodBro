@@ -293,6 +293,64 @@ fn current_order_freezes_and_pro_default_is_movable() {
     );
 }
 #[test]
+fn new_registration_rechecks_identity_run_and_preserves_old_membership() {
+    let (mut host, gate) = fixture();
+    host.handle(request("order", "A", REQUEST));
+    let mut new = evidence("new", "plus", 10.0);
+    new.identity_hash = "b".repeat(64);
+    new.quota.as_mut().unwrap().identity_hash = new.identity_hash.clone();
+    gate.evidence
+        .lock()
+        .unwrap()
+        .insert("new".into(), new.clone());
+    let candidate = host.registration_candidate("new").unwrap();
+    let mut next = host.preferences();
+    next.enabled_ids.insert("new".into());
+    assert_eq!(
+        host.update_preferences(next.clone()),
+        Err(ProxyFailure::InvalidSettings)
+    );
+    assert_eq!(
+        host.commit_registration("old-run", "new", &candidate.identity_hash),
+        Err(ProxyFailure::Stopping)
+    );
+    assert_eq!(
+        host.commit_registration("fixture-run", "new", &"c".repeat(64)),
+        Err(ProxyFailure::Identity)
+    );
+    host.commit_registration("fixture-run", "new", &candidate.identity_hash)
+        .unwrap();
+    host.update_preferences(next).unwrap();
+    assert!(!host
+        .handle(request("order", "A", REQUEST))
+        .order
+        .unwrap()
+        .contains(&"new".into()));
+    assert!(host
+        .handle(request("order", "A", REQUEST2))
+        .order
+        .unwrap()
+        .contains(&"new".into()));
+    assert_eq!(
+        host.handle(request("acquire", "new", REQUEST)).error,
+        Some("identity")
+    );
+    new.profile_id = "duplicate".into();
+    gate.evidence
+        .lock()
+        .unwrap()
+        .insert("duplicate".into(), new);
+    assert!(matches!(
+        host.registration_candidate("duplicate"),
+        Err(ProxyFailure::Identity)
+    ));
+    host.stopping();
+    assert_eq!(
+        host.commit_registration("fixture-run", "new", &candidate.identity_hash),
+        Err(ProxyFailure::Stopping)
+    );
+}
+#[test]
 fn removal_and_reenable_never_revives_old_admission() {
     let (mut h, g) = fixture();
     h.handle(request("order", "A", REQUEST));

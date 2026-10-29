@@ -26,6 +26,8 @@ function failureText(error: unknown, text: Text): string {
     control_busy: ['账号正在执行其他操作，请稍后重试。', 'Another account operation is in progress. Try again shortly.'],
     save_failed: ['保存失败，编辑内容已保留。', 'Saving failed. Your edits have been kept.'],
     startup_failed: ['反代未能启动，请检查账号与网络后重试。', 'The proxy could not start. Check accounts and network, then retry.'],
+    registration_failed: ['账号加入反代尚未确认，请重试参与操作。', 'Proxy enrollment is unconfirmed. Retry enabling this account.'],
+    stopping: ['反代正在停止，本次加入未生效。', 'The proxy is stopping. This enrollment was not applied.'],
     lease_cleanup_unconfirmed: ['停止结果尚未确认，请刷新状态。', 'Stopping is not yet confirmed. Refresh status.'],
     login_expired: ['登录已过期，请重新登录。', 'The login has expired. Sign in again.'],
     subscription_pending: ['套餐状态尚未确认，请刷新额度。', 'The subscription is unconfirmed. Refresh quota.'],
@@ -44,6 +46,7 @@ function stateText(state: string | undefined, text: Text): string {
     subscription_pending: ['套餐待确认', 'Subscription unconfirmed'], unauthorized: ['需登录', 'Sign-in required'], login_expired: ['登录过期', 'Login expired'],
     forbidden: ['访问受限', 'Access restricted'], temporary_error: ['暂时不可用', 'Temporarily unavailable'], cooldown: ['冷却中', 'Cooling down'],
     unavailable: ['不可用', 'Unavailable'], identity: ['身份待确认', 'Identity unconfirmed'], not_participating: ['未参与', 'Not participating'],
+    registration_failed: ['加入未确认', 'Enrollment unconfirmed'],
   };
   const value = state ? states[state] : undefined;
   return value ? text(...value) : text('未确认', 'Unconfirmed');
@@ -161,10 +164,11 @@ export function LocalProxyPanel() {
       if (disposed || operation.current || pollPending.current) return;
       pollPending.current = true;
       const current = generation.current;
-      const results = await Promise.allSettled([invoke('get_local_proxy_status'), invoke('get_local_proxy_accounts')]);
+      const results = await Promise.allSettled([invoke('get_local_proxy_status'), invoke('get_local_proxy_accounts'), invoke('get_local_proxy_preferences')]);
       if (!disposed && alive.current && current === generation.current) {
         try { if (results[0].status === 'rejected') throw results[0].reason; setStatus(parseProxyStatus(results[0].value)); setStatusFresh(true); } catch { setStatusFresh(false); }
         try { if (results[1].status === 'rejected') throw results[1].reason; setAccounts(parseProxyAccounts(results[1].value)); setAccountsFresh(true); } catch { setAccountsFresh(false); }
+        try { if (results[2].status === 'rejected') throw results[2].reason; setPreferences(parseProxyPreferences(results[2].value)); } catch { /* Keep the last saved participation until the native snapshot succeeds. */ }
       }
       pollPending.current = false;
     }, 2000);

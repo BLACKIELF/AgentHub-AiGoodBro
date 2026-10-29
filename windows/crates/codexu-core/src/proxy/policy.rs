@@ -32,6 +32,7 @@ pub enum ProxyFailure {
     DesktopStateUnknown,
     DesktopPreparationExpired,
     DesktopLaunchFailed,
+    RegistrationFailed,
 }
 impl ProxyFailure {
     pub fn code(self) -> &'static str {
@@ -64,6 +65,7 @@ impl ProxyFailure {
             Self::DesktopStateUnknown => "desktop_state_unknown",
             Self::DesktopPreparationExpired => "desktop_preparation_expired",
             Self::DesktopLaunchFailed => "desktop_launch_failed",
+            Self::RegistrationFailed => "registration_failed",
         }
     }
 }

@@ -59,6 +59,7 @@ pub struct AccountManager {
     login_spawner: Arc<dyn super::AccountLoginSpawner>,
     exiting: AtomicBool,
     cleanup_unconfirmed: AtomicBool,
+    first_verified_listener: RwLock<Option<Arc<dyn Fn(&str) + Send + Sync>>>,
 }
 
 impl AccountManager {
@@ -233,7 +234,24 @@ impl AccountManager {
             login_spawner,
             exiting: AtomicBool::new(false),
             cleanup_unconfirmed: AtomicBool::new(false),
+            first_verified_listener: RwLock::new(None),
         }))
+    }
+    /// Native composition hook; called once after the first credential commit,
+    /// with account/write locks released. Re-login does not reset participation.
+    pub fn install_first_verified_listener(
+        &self,
+        listener: Arc<dyn Fn(&str) + Send + Sync>,
+    ) -> AccountResult<()> {
+        let mut slot = self
+            .first_verified_listener
+            .write()
+            .map_err(|_| fail("account_state_unavailable"))?;
+        if slot.is_some() {
+            return Err(fail("account_busy"));
+        }
+        *slot = Some(listener);
+        Ok(())
     }
     pub fn install_occupancy_gate(&self, gate: Arc<dyn AccountOccupancyGate>) -> AccountResult<()> {
         let _operation = self.mutation.try_lock().map_err(|_| fail("account_busy"))?;
@@ -620,18 +638,23 @@ impl AccountManager {
                 .revision
                 .checked_add(1)
                 .ok_or_else(|| fail("vault_invalid"))?;
+            let first_verified = record.credential.is_none();
             record.credential = Some(verified.into_stored(super::nonce()?));
             self.require_accepting()?;
             writer.recheck()?;
             store.save()?;
-            Ok(())
+            Ok(first_verified)
         })();
+        let first_verified = matches!(result, Ok(true));
+        // Registration reads the committed credential through the shared gate;
+        // release this writer before invoking the native completion listener.
+        drop(writer);
         // Runtime has confirmed child cleanup before returning. TempDir is now gone.
         self.update_attempt(attempt_id, |dto| {
             dto.verification_url = None;
             dto.user_code = None;
             match result {
-                Ok(()) => {
+                Ok(_) => {
                     dto.phase = "verified";
                     dto.error_code = None;
                 }
@@ -645,6 +668,16 @@ impl AccountManager {
                 }
             }
         });
+        if first_verified {
+            let listener = self
+                .first_verified_listener
+                .read()
+                .ok()
+                .and_then(|slot| slot.clone());
+            if let Some(listener) = listener {
+                listener(account_id);
+            }
+        }
     }
     pub fn get_login_attempt(&self, id: &str) -> AccountResult<LoginAttemptDto> {
         self.attempts
