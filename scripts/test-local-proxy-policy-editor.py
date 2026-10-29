@@ -129,9 +129,9 @@ with tempfile.TemporaryDirectory(prefix="aigoodbro-policy-editor-fixture-") as t
     print(result.stdout, end="", flush=True)
     if args.stale_row_negative:
         assert result.returncode == 1 and "FAIL A live input reverted after saving 30.0" in result.stdout, result.stdout
-        assert "TRACE save requested limit=30.0" in result.stdout, result.stdout
-        assert any(line.startswith('TRACE saved 30: inputs=["100"], saved=30.0,')
+        assert "TRACE save requested limit=70.0" in result.stdout, result.stdout
+        assert any(line.startswith('TRACE saved 30: inputs=["0"], saved=70.0,')
                    for line in result.stdout.splitlines()), result.stdout
-        print("PASS negative control: restoring only the stale-row read reproduces 30 saved / 100 input")
+        print("PASS negative control: restoring only the stale-row read reproduces 30 remaining saved / 0 input")
     else:
         result.check_returncode()

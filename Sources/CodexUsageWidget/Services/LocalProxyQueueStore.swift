@@ -759,6 +759,17 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
         else { return nil }
         return first
     }
+    var uniformPlusFiveHourRemainingReserve: Double? {
+        uniformPlusFiveHourUsedLimit.map(LocalProxyAccountPolicy.complementPercent)
+    }
+    @discardableResult
+    func setPlusFiveHourRemainingReserve(_ remaining: Double) -> Bool {
+        guard remaining.isFinite, (0...100).contains(remaining) else {
+            plusPolicyMessage = WidgetLanguage.storedOrAutomatic().text("请输入 0–100 的剩余额度百分比。", "Enter a remaining-quota percentage from 0 to 100.")
+            return false
+        }
+        return setPlusFiveHourUsedLimit(LocalProxyAccountPolicy.complementPercent(remaining))
+    }
     var canApplyPlusFiveHourUsedLimit: Bool {
         let targets = plusPolicyRows
         return canEditPolicy && !targets.isEmpty && Set(targets.map(\.id)).count == targets.count
@@ -772,7 +783,7 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
     func setPlusFiveHourUsedLimit(_ limit: Double) -> Bool {
         let language = WidgetLanguage.storedOrAutomatic()
         guard limit.isFinite, (0...100).contains(limit) else {
-            plusPolicyMessage = language.text("请输入 0–100 的已用百分比。", "Enter a used percentage from 0 to 100.")
+            plusPolicyMessage = language.text("请输入 0–100 的剩余额度百分比。", "Enter a remaining-quota percentage from 0 to 100.")
             return false
         }
         guard plusPolicyTargetCount > 0 else {
@@ -801,8 +812,8 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
         }
         policyChanged()
         plusPolicyMessage = language.text(
-            "已为 \(targets.count) 个 Plus 账号保存 5 小时已用上限 \(limit.formatted())%；其他套餐不变。",
-            "Saved a \(limit.formatted())% 5h used limit for \(targets.count) Plus accounts; other plans remain unchanged.")
+            "已为 \(targets.count) 个 Plus 账号保存 5 小时剩余额度 \(LocalProxyAccountPolicy.complementPercent(limit).formatted())%；其他套餐不变。",
+            "Saved a \(LocalProxyAccountPolicy.complementPercent(limit).formatted())% 5h remaining-quota reserve for \(targets.count) Plus accounts; other plans remain unchanged.")
         return true
     }
     private func policyChanged() {
@@ -2907,7 +2918,7 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
         case .acquireAbandoned: return language.text("本次账号接入已回滚，请重新请求", "Account admission rolled back; retry request")
         case .identity: return language.text("账号身份未确认", "Account identity is unverified")
         case .quota: return language.text("订阅额度已用尽", "Subscription quota exhausted")
-        case .usageLimit: return language.text("已达自定已用上限", "Custom used limit reached")
+        case .usageLimit: return language.text("已达剩余额度底线", "Remaining-quota reserve reached")
         case .quotaUnknown: return language.text("额度未知或已过期，请刷新", "Quota missing or stale; refresh limits")
         case .loginExpired: return language.text("登录已过期，请手动重新登录", "Login expired; sign in manually")
         case .stageNotApplicable: return message(.unavailable)

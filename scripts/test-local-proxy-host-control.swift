@@ -81,7 +81,7 @@ extension LocalProxyHostFixtures {
         try expect(reload.plusPolicyTargetCount == 2 && reload.uniformPlusFiveHourUsedLimit == 30,
             "production Store reloads only the saved Plus 5h limit")
         try expect(LocalProxyAdmission.quota(plus, now: now, policy: cap) == .usageLimit, "Plus equality stops at 5h used percentage")
-        try expect(LocalProxyAdmission.quota(pro, now: now, policy: reload.preferences.policy(for: pro.id)) == .quotaUnknown
+        try expect(LocalProxyAdmission.quota(pro, now: now, policy: reload.preferences.policy(for: pro.id)) == nil
             && LocalProxyAdmission.quota(fullPro, now: now, policy: reload.preferences.policy(for: fullPro.id)) == nil,
             "weekly-only Pro old 80 and 100 admission semantics stay unchanged")
         var belowPlus = plus
@@ -115,6 +115,64 @@ extension LocalProxyHostFixtures {
             && noPlus.plusPolicyMessage?.contains("No verified Plus accounts") == true,
             "no known Plus disables batch and explicitly skips unknown/other plans")
 
+        // Exercise the user-facing remaining-quota API and genuine legacy policy decoding.
+        let legacyJSON = Data(#"{"fiveHourUsedLimit":80.1,"allowsCredits":true}"#.utf8)
+        let legacy = try JSONDecoder().decode(LocalProxyAccountPolicy.self, from: legacyJSON)
+        try expect(legacy.fiveHourUsedLimit == 80.1 && legacy.sevenDayUsedLimit == nil
+            && legacy.remainingReserve(isProPlan: false) == 19.9 && legacy.remainingReserve(isProPlan: true) == 0,
+            "legacy policy JSON preserves exact used cutoff and defaults weekly reserve to zero")
+        try expect(try JSONDecoder().decode(LocalProxyAccountPolicy.self, from: encoder.encode(legacy)) == legacy,
+            "legacy optional weekly nil survives a Codable round trip")
+        for value in [Double.nan, .infinity, -.infinity, -0.1, 100.1] {
+            try expect(!LocalProxyAccountPolicy(sevenDayUsedLimit: value).isValid && !reload.setPlusFiveHourRemainingReserve(value),
+                "invalid weekly cutoff and remaining input are rejected without clamping")
+        }
+        for remaining in [20.0, 20.1, 0, 100] {
+            try expect(reload.setPlusFiveHourRemainingReserve(remaining)
+                && reload.uniformPlusFiveHourRemainingReserve == remaining
+                && LocalProxyQueueStore(usageStore: usage).preferences.policy(for: plus.id).fiveHourUsedLimit == LocalProxyAccountPolicy.complementPercent(remaining),
+                "remaining input \(remaining) converts once and survives production persistence")
+        }
+        try expect(reload.setPlusFiveHourRemainingReserve(20) && reload.plusPolicyMessage?.contains("20% 5h remaining") == true,
+            "success message uses the same remaining percentage the user entered")
+        for plan in ["plus", "pro", "prolite"] {
+            var candidate = profile("reserve-" + plan, plan: plan, fiveHour: plan == "plus" ? five : nil)
+            let weeklyOnly = plan != "plus"
+            var policy = LocalProxyAccountPolicy()
+            if weeklyOnly { policy.sevenDayUsedLimit = 80 } else { policy.fiveHourUsedLimit = 80 }
+            func setUsed(_ used: Double) {
+                if weeklyOnly { candidate.lastSnapshot?.sevenDay?.usedPercent = used } else { candidate.lastSnapshot?.fiveHour?.usedPercent = used }
+            }
+            setUsed(79.99)
+            try expect(LocalProxyAdmission.quota(candidate, now: now, policy: policy) == nil, "\(plan): just above remaining20 admits")
+            for used in [80.0, 100] {
+                setUsed(used)
+                try expect(LocalProxyAdmission.quota(candidate, now: now, policy: policy) == .usageLimit
+                    && LocalProxyAdmission.quota(candidate, now: now, creditFloor: 0, allowPaidCredits: true, policy: policy) == .usageLimit,
+                    "\(plan): remaining20 equality/exhaustion stops new subscription and credit requests")
+            }
+            if weeklyOnly { policy.sevenDayUsedLimit = 100 } else { policy.fiveHourUsedLimit = 100 }
+            try expect(LocalProxyAdmission.quota(candidate, now: now, policy: policy) == .quota
+                && LocalProxyAdmission.quota(candidate, now: now, creditFloor: 0, allowPaidCredits: true, policy: policy) == nil,
+                "\(plan): remaining0 retains official exhaustion and explicitly authorized credit fallback")
+            setUsed(0)
+            if weeklyOnly { policy.sevenDayUsedLimit = 0 } else { policy.fiveHourUsedLimit = 0 }
+            try expect(LocalProxyAdmission.quota(candidate, now: now, policy: policy) == .usageLimit,
+                "\(plan): remaining100 admits no new requests even at used0")
+            candidate.lastSnapshot?.sevenDay = nil
+            try expect(LocalProxyAdmission.quota(candidate, now: now, policy: policy) == .quotaUnknown,
+                "\(plan): missing weekly evidence remains unknown before threshold checks")
+            candidate.lastSnapshot?.sevenDay = weekly
+            candidate.lastSnapshot?.fetchedAt = now.addingTimeInterval(-121)
+            try expect(LocalProxyAdmission.quota(candidate, now: now, policy: policy) == .quotaUnknown,
+                "\(plan): stale evidence remains unknown before threshold checks")
+        }
+        var hardLimitedPro = profile("weekly-extra-hard-limit", plan: "pro", fiveHour: five)
+        hardLimitedPro.lastSnapshot?.fiveHour?.usedPercent = 100
+        try expect(LocalProxyAdmission.quota(hardLimitedPro, now: now, creditFloor: 0, allowPaidCredits: true,
+            policy: .init(sevenDayUsedLimit: 100)) == .quota, "weekly reserve zero never bypasses a reported official extra hard limit")
+        try expect(reload.setPlusFiveHourUsedLimit(30), "restore isolated baseline for runtime admission checks")
+
         let child = Process()
         child.executableURL = URL(fileURLWithPath: "/bin/sleep")
         child.arguments = ["45"]
@@ -145,6 +203,20 @@ extension LocalProxyHostFixtures {
                 "reloaded \(profile.id) acquire stops before credentials or reservation")
             _ = await reload.handle(request("order_end", id: id))
         }
+        var weeklyCap = oldPro
+        weeklyCap.sevenDayUsedLimit = 30
+        try expect(reload.setAccountPolicy(id: pro.id, policy: weeklyCap), "running Pro weekly reserve persists without restarting helper")
+        let weeklyRequestID = UUID().uuidString
+        func weeklyRequest(_ command: String) -> LocalProxyRequest {
+            .init(schemaVersion: 1, runID: reload.runID!, key: reload.controlKey!, command: command,
+                  requestID: weeklyRequestID, profileID: command == "order_end" ? "" : pro.id, leaseID: nil)
+        }
+        _ = await reload.handle(weeklyRequest("order"))
+        let weeklyAcquire = await reload.handle(weeklyRequest("acquire"))
+        try expect(weeklyAcquire.error == "usage_limit" && weeklyAcquire.leaseID == nil && weeklyAcquire.accessToken == nil,
+            "running Pro acquire enforces persisted weekly reserve before creating a credential lease")
+        _ = await reload.handle(weeklyRequest("order_end"))
+        try expect(reload.setAccountPolicy(id: pro.id, policy: oldPro), "isolated Pro legacy policy restores exactly after weekly test")
         usage.profiles[2].lastSnapshot?.accountID = "changed-skipped-pro"
         try expect(reload.setPlusFiveHourUsedLimit(30) && reload.preferences.policy(for: pro.id) == oldPro,
             "a skipped Pro running binding cannot block or change the Plus-only batch")
