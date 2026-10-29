@@ -353,6 +353,18 @@ jobs:
         run: |
           .\windows\scripts\tests\Test-NativeVisualCaptureCoverage.ps1
           .\windows\scripts\tests\Test-NativeVisualCaptureCoverage.ps1
+      - name: Preserve task-owned native capture diagnostics
+        uses: actions/upload-artifact@v4
+        if: ${{ always() && !cancelled() }}
+        with:
+          name: windows-native-capture-diagnostics
+          path: |
+            .local-artifacts/windows-visual-captures/coverage-contract-*/manifest.json
+            .local-artifacts/windows-visual-captures/coverage-contract-*/logs/failure-uia.json
+            .local-artifacts/windows-visual-captures/coverage-contract-*/screenshots/fullscreen/failure.png
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7
       - name: Preserve native statistics build receipts
         uses: actions/upload-artifact@v4
         if: ${{ always() && !cancelled() }}

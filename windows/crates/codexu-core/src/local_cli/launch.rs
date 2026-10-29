@@ -338,7 +338,10 @@ mod tests {
         assert!(own.iter().any(|(k, _)| k == "OPENAI_API_KEY"));
         assert!(!own.iter().any(|(k, _)| k == "NODE_OPTIONS"));
         let temp = tempfile::tempdir().unwrap();
-        let probe = Environment::dependency_probe(temp.path())
+        // Production creates a new probe home with explicit private ownership;
+        // it must not take ownership of an existing ambient temporary directory.
+        let probe_root = temp.path().join("verification-home");
+        let probe = Environment::dependency_probe(&probe_root)
             .unwrap()
             .apply(inherited)
             .unwrap();
@@ -349,6 +352,11 @@ mod tests {
             .iter()
             .any(|(k, v)| k == "SystemRoot" && v == "synthetic-system-root"));
         assert!(probe.iter().any(|(k, v)| k == "PATH" && v.is_empty()));
+        for name in ["HOME", "USERPROFILE"] {
+            assert!(probe
+                .iter()
+                .any(|(k, v)| k == name && Path::new(v) == probe_root));
+        }
     }
     #[test]
     fn prepared_profiles_are_isolated_and_rollback_preserves_foreign_content() {

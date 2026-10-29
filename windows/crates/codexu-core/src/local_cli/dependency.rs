@@ -494,12 +494,15 @@ mod tests {
     #[test]
     fn capture_is_exclusive_and_source_is_embedded_bytes() {
         let temp = tempfile::tempdir().unwrap();
-        let (path, mut guard) = verifier_file(temp.path()).unwrap();
+        // The runtime verifies inside a prepared private task, not the outer
+        // temporary directory whose Windows owner may be an administrator group.
+        let task = prepare(temp.path(), LocalCliKind::Grok, None).unwrap();
+        let (path, mut guard) = verifier_file(&task.directory).unwrap();
         assert_eq!(read(&mut guard, 256 * 1024).unwrap(), VERIFIER);
         assert_eq!(path.file_name().unwrap(), "verify.cjs");
-        let _capture = capture_file(temp.path(), "verification.json").unwrap();
-        assert!(capture_file(temp.path(), "verification.json").is_err());
-        assert!(capture_file(temp.path(), "../report").is_err());
+        let _capture = capture_file(&task.directory, "verification.json").unwrap();
+        assert!(capture_file(&task.directory, "verification.json").is_err());
+        assert!(capture_file(&task.directory, "../report").is_err());
     }
     #[test]
     fn version_probe_requires_exact_bounded_printed_version() {

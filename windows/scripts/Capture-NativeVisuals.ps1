@@ -1321,6 +1321,88 @@ function Open-DashboardWorkspace {
   [void](Wait-ForElement -Window $Window -AutomationId 'dashboard-home-tab-tasks' -TimeoutSeconds 20)
 }
 
+function Save-OwnedWindowUiaDiagnostic {
+  param([IntPtr] $Window, [int] $ProcessId, [string] $OutputPath)
+  $root = [System.Windows.Automation.AutomationElement]::FromHandle($Window)
+  if ($root.Current.ProcessId -ne $ProcessId) {
+    throw 'diagnostic_window_owner_mismatch'
+  }
+  $walker = [System.Windows.Automation.TreeWalker]::ControlViewWalker
+  $queue = [System.Collections.Queue]::new()
+  $queue.Enqueue([pscustomobject]@{ element = $root; depth = 0 })
+  $nodes = [System.Collections.ArrayList]::new()
+  $deadline = (Get-Date).AddSeconds(8)
+  $limit = 256
+  while ($queue.Count -gt 0 -and $nodes.Count -lt $limit -and (Get-Date) -lt $deadline) {
+    $item = $queue.Dequeue()
+    try {
+      $current = $item.element.Current
+      $name = [string]$current.Name
+      $name = [regex]::Replace($name, '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}', '[email]')
+      $name = [regex]::Replace($name, '(?i)([a-z]:\\|/Users/)\S+', '[path]')
+      $name = [regex]::Replace($name, '\b(?:sk-|eyJ)[A-Za-z0-9._-]{16,}\b', '[credential]')
+      if ($name.Length -gt 160) { $name = $name.Substring(0, 160) }
+      $id = [string]$current.AutomationId
+      $id = [regex]::Replace($id, '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}', '[email]')
+      $id = [regex]::Replace($id, '(?i)([a-z]:\\|/Users/)\S+', '[path]')
+      $id = [regex]::Replace($id, '\b(?:sk-|eyJ)[A-Za-z0-9._-]{16,}\b', '[credential]')
+      if ($id.Length -gt 160) { $id = '[long-id]' }
+      $bounds = $current.BoundingRectangle
+      [void]$nodes.Add([ordered]@{
+        depth = $item.depth
+        name = $name
+        automation_id = $id
+        control_type = $current.ControlType.ProgrammaticName
+        patterns = @($item.element.GetSupportedPatterns() | ForEach-Object { $_.ProgrammaticName })
+        offscreen = $current.IsOffscreen
+        bounds = @($bounds.X, $bounds.Y, $bounds.Width, $bounds.Height)
+      })
+      if ($item.depth -lt 12) {
+        $child = $walker.GetFirstChild($item.element)
+        while ($null -ne $child -and ($queue.Count + $nodes.Count) -lt $limit -and (Get-Date) -lt $deadline) {
+          $queue.Enqueue([pscustomobject]@{ element = $child; depth = $item.depth + 1 })
+          $child = $walker.GetNextSibling($child)
+        }
+      }
+    } catch {
+      if ($nodes.Count -lt $limit) {
+        [void]$nodes.Add([ordered]@{ depth = $item.depth; unavailable = $true })
+      }
+    }
+  }
+  $diagnostic = [ordered]@{
+    scope = 'exact task-owned HWND only; isolated capture profile'
+    owner_verified = $true
+    node_limit = $limit
+    depth_limit = 12
+    traversal_deadline_seconds = 8
+    truncated = ($queue.Count -gt 0 -or $nodes.Count -ge $limit)
+    nodes = @($nodes)
+  }
+  [System.IO.File]::WriteAllText($OutputPath, ($diagnostic | ConvertTo-Json -Depth 8), [System.Text.UTF8Encoding]::new($false))
+}
+
+function Save-OwnedWindowFailureImage {
+  param([IntPtr] $Window, [int] $ProcessId, [string] $CaptureTool, [string] $OutputPath)
+  if ([System.Windows.Automation.AutomationElement]::FromHandle($Window).Current.ProcessId -ne $ProcessId) {
+    throw 'diagnostic_window_owner_mismatch'
+  }
+  $capture = [System.Diagnostics.Process]::new()
+  $capture.StartInfo.FileName = $CaptureTool
+  $capture.StartInfo.Arguments = ('{0} "{1}"' -f ([long]$Window), $OutputPath)
+  $capture.StartInfo.UseShellExecute = $false
+  $capture.StartInfo.CreateNoWindow = $true
+  try {
+    if (-not $capture.Start()) { throw 'diagnostic_capture_start_failed' }
+    if (-not $capture.WaitForExit(10000)) { throw 'diagnostic_capture_timeout' }
+    if ($capture.ExitCode -ne 0) { throw 'diagnostic_capture_failed' }
+  } finally {
+    try {
+      if (-not $capture.HasExited) { $capture.Kill(); [void]$capture.WaitForExit(2000) }
+    } finally { $capture.Dispose() }
+  }
+}
+
 function Move-DashboardScrollToTop {
   param([IntPtr] $Renderer)
   [void][NativeVisualCaptureDriver]::ScrollRendererPage($Renderer, 120, 40)
@@ -1701,6 +1783,7 @@ function Invoke-MaximizedCapture {
   Save-WorkflowManifest
 
   $process = $null
+  $window = [IntPtr]::Zero
   $stdoutTask = $null
   $stderrTask = $null
   $records = [System.Collections.ArrayList]::new()
@@ -1803,7 +1886,20 @@ function Invoke-MaximizedCapture {
   } catch {
     $sizeRecord.status = 'failed'
     $sizeRecord.error = $_.Exception.Message
-    throw
+    $captureFailure = $_
+    # Preserve evidence before task-owned cleanup, never the desktop or another
+    # process. Diagnostic failure must not replace the original capture error.
+    if ($window -ne [IntPtr]::Zero -and $null -ne $process -and -not $process.HasExited) {
+      try {
+        Save-OwnedWindowUiaDiagnostic -Window $window -ProcessId $process.Id `
+          -OutputPath (Join-Path $LogsRoot 'failure-uia.json')
+        Save-OwnedWindowFailureImage -CaptureTool $CaptureTool -Window $window -ProcessId $process.Id `
+          -OutputPath (Join-Path $sizeScreenshots 'failure.png')
+      } catch {
+        $sizeRecord.failure_diagnostic_error = 'owned_window_diagnostic_unavailable'
+      }
+    }
+    throw $captureFailure
   } finally {
     if ($null -ne $process) {
       $sizeRecord.cleanup = Stop-RecordedTaskProcesses `
