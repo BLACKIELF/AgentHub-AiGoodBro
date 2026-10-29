@@ -37,7 +37,7 @@ function Get-ReleaseReadinessPlan {
     $plan.Add(@{ name = 'visual-baseline'; executable = 'npm.cmd'; directory = $web; arguments = @('run', 'test:visual', '--', '--update-snapshots') })
     $plan.Add(@{ name = 'visual-repeat'; executable = 'npm.cmd'; directory = $web; arguments = @('run', 'test:visual') })
     if ($Package) {
-        $plan.Add(@{ name = 'package'; executable = $PowerShell7; directory = $Root; arguments = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $Root 'scripts\build-windows-release.ps1'), '-Version', $ReleaseVersion, '-OutputDirectory', (Join-Path $Output 'packages'), '-SkipValidation') })
+        $plan.Add(@{ name = 'package'; executable = $PowerShell7; directory = $Root; arguments = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $Root 'scripts\build-windows-release.ps1'), '-Version', $ReleaseVersion, '-OutputDirectory', (Join-Path $Output 'packages'), '-SkipValidation', '-VerifiedScannerBuildRoot', (Join-Path $Output 'token-monitor-build\scanner')) })
     }
     return $plan.ToArray()
 }

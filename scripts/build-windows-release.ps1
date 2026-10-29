@@ -4,12 +4,17 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$Version,
     [string]$OutputDirectory,
+    # Exact scanner already exercised by the enclosing readiness run.
+    [string]$VerifiedScannerBuildRoot,
     # The readiness entry point records these checks before invoking packaging.
     [switch]$SkipValidation
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+if ($VerifiedScannerBuildRoot -and -not $SkipValidation) {
+    throw 'Verified scanner reuse is only valid after the readiness validation plan.'
+}
 
 if ($Version.StartsWith("v")) {
     $Version = $Version.Substring(1)
@@ -97,6 +102,7 @@ Invoke-Checked 'pwsh.exe' $ProxyArguments
 $StatisticsBuildRoot = Join-Path $RepoRoot ('.local-artifacts\windows-statistics-build-' + [guid]::NewGuid().ToString('N'))
 $StatisticsArguments = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $RepoRoot 'windows\scripts\Prepare-TokenMonitorResources.ps1'), '-BuildRoot', $StatisticsBuildRoot)
 if (-not $SkipValidation) { $StatisticsArguments += '-RunNativeTests' }
+if ($VerifiedScannerBuildRoot) { $StatisticsArguments += @('-ScannerBuildRoot', $VerifiedScannerBuildRoot) }
 Invoke-Checked 'pwsh.exe' $StatisticsArguments
 $StatisticsManifest = Join-Path $AppRoot 'src-tauri\resources\token-monitor\WINDOWS-RESOURCES.json'
 $env:AIGOODBRO_TOKEN_MONITOR_RESOURCE_SHA256 = (Get-FileHash -LiteralPath $StatisticsManifest -Algorithm SHA256).Hash.ToLowerInvariant()

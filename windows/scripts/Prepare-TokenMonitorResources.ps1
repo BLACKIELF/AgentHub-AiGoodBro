@@ -2,6 +2,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)] [string] $BuildRoot,
+    [string] $ScannerBuildRoot,
     [switch] $RunNativeTests
 )
 Set-StrictMode -Version Latest
@@ -31,7 +32,15 @@ try {
     $cache = Join-Path $root '.local-artifacts\windows-token-monitor-assets'
     $scanner = Join-Path $BuildRoot 'scanner'
     $staged = Join-Path $BuildRoot 'resources'
-    Invoke-StatisticsBuildCommand 'python' @('windows/token-monitor/build_scanner.py', '--output', $scanner, '--cache', $cache, '--target', 'x86_64-pc-windows-msvc', '--target-dir', (Join-Path $root '.local-artifacts\windows-token-monitor-target'), '--download', '--jobs', '2')
+    if ($ScannerBuildRoot) {
+        # Preserve the exact binary tested by this readiness run. prepare.py
+        # still checks its bytes, pinned source, unit and synthetic receipts;
+        # missing or altered evidence fails without rebuilding a substitute.
+        if (-not [IO.Path]::IsPathRooted($ScannerBuildRoot)) { throw 'statistics_scanner_root_invalid' }
+        $scanner = [IO.Path]::GetFullPath($ScannerBuildRoot)
+    } else {
+        Invoke-StatisticsBuildCommand 'python' @('windows/token-monitor/build_scanner.py', '--output', $scanner, '--cache', $cache, '--target', 'x86_64-pc-windows-msvc', '--target-dir', (Join-Path $root '.local-artifacts\windows-token-monitor-target'), '--download', '--jobs', '2')
+    }
     Invoke-StatisticsBuildCommand 'python' @('windows/token-monitor/prepare.py', '--output', $staged, '--cache', $cache, '--scanner', (Join-Path $scanner 'tokscale.exe'), '--scanner-receipt', (Join-Path $scanner 'SCANNER-RECEIPT.json'), '--arch', 'x64', '--download')
     $manifest = Join-Path $staged 'WINDOWS-RESOURCES.json'
     $pin = (Get-FileHash -LiteralPath $manifest -Algorithm SHA256).Hash.ToLowerInvariant()
