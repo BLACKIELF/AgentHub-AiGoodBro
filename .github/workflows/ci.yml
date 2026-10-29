@@ -246,6 +246,7 @@ jobs:
         run: .\windows\scripts\Prepare-ProxyResources.ps1 -BuildRoot (Join-Path $env:RUNNER_TEMP 'aigoodbro-proxy-validation') -RunNativeTests
 
       - name: Build and exercise Token Monitor with isolated logs
+        if: ${{ !cancelled() }}
         shell: pwsh
         run: .\windows\scripts\Prepare-TokenMonitorResources.ps1 -BuildRoot (Join-Path $env:RUNNER_TEMP 'aigoodbro-statistics-validation') -RunNativeTests
 
@@ -341,6 +342,7 @@ jobs:
         shell: pwsh
         run: .\windows\scripts\Prepare-ProxyResources.ps1 -BuildRoot (Join-Path $env:RUNNER_TEMP 'aigoodbro-proxy-resources')
       - name: Prepare the verified Token Monitor resources
+        if: ${{ !cancelled() }}
         shell: pwsh
         run: .\windows\scripts\Prepare-TokenMonitorResources.ps1 -BuildRoot (Join-Path $env:RUNNER_TEMP 'aigoodbro-statistics-resources')
       - name: Build the native release application

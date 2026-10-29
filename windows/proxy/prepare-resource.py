@@ -56,7 +56,7 @@ def model_seed(data):
             break
     if depth != 0 or not values or len(values) > 100 or len(set(values)) != len(values) or len(set(names)) != len(names):
         raise ValueError("The complete Mac model declaration could not be verified")
-    return values, digest(''.join(lines).encode())
+    return values, digest(''.join(lines).encode("utf-8"))
 
 
 def safe_output(directory):
@@ -133,11 +133,11 @@ def main():
             environment = dict(os.environ)
             environment.pop("AIGOODBRO_PROXY_CONNECTION_FILE", None)
             environment.pop("AIGOODBRO_PROXY_KEY", None)
-            version = subprocess.check_output([str(helper), "--version"], env=environment, timeout=10, text=True)
+            version = subprocess.check_output([str(helper), "--version"], env=environment, timeout=10, text=True, encoding="utf-8", errors="strict")
             if version.strip() != "AiGoodBro Local Proxy 1026v1; CLIProxyAPI v8.0.38 + metadata patch 9e79552":
                 raise ValueError("The native Windows helper version is not the reviewed component")
             runtime_check = "native --version passed"
-        files = {"aigoodbro-local-proxy.exe": helper_data, "models.json": (json.dumps(models, indent=2) + "\n").encode()}
+        files = {"aigoodbro-local-proxy.exe": helper_data, "models.json": (json.dumps(models, indent=2) + "\n").encode("utf-8")}
         for name in ("SOURCE.json", "LICENSE.CLIProxyAPI", "LICENSE.Hazmat", "THIRD-PARTY-NOTICES.txt"):
             files[name] = regular_bytes(SHARED / name)
         for path in sorted((SHARED / "upstream-patches").rglob("*")):
@@ -167,7 +167,7 @@ def main():
         for name, data in files.items():
             if regular_bytes(resource / name) != data:
                 raise ValueError("Generated resource readback mismatch")
-        atomic_write(resource / "resource-receipt.json", (json.dumps(receipt, indent=2, sort_keys=True) + "\n").encode())
+        atomic_write(resource / "resource-receipt.json", (json.dumps(receipt, indent=2, sort_keys=True) + "\n").encode("utf-8"))
         print(json.dumps({"models": models, "changedFiles": changed, "helperSHA256": digest(helper_data), "runtimeCheck": runtime_check}))
     return 0
 

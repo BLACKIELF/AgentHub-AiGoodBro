@@ -34,6 +34,11 @@ def replace_once(text, old, new):
     return text.replace(old, new, 1)
 
 
+def write_utf8(path, text):
+    with path.open("w", encoding="utf-8", newline="\n") as output:
+        output.write(text)
+
+
 def stage(destination):
     destination.mkdir(parents=True, exist_ok=False)
     inputs = {}
@@ -42,12 +47,12 @@ def stage(destination):
         inputs[path.name] = hashlib.sha256(data).hexdigest()
         if path.name in PLATFORM_BOUNDARIES and inputs[path.name] != PLATFORM_BOUNDARIES[path.name]:
             raise ValueError("Shared LocalProxy platform input changed; review required: " + path.name)
-        text = data.decode()
+        text = data.decode("utf-8")
         if path.name in ("desktop.go", "desktop_bridge.go"):
             text = "//go:build !windows\n\n" + text
         if path.name == "desktop.go":
             pure = text[text.index("func desktopCleanKey("):text.index("func runDesktopAdapter(")]
-            (destination / "desktop_common_windows.go").write_text(
+            write_utf8(destination / "desktop_common_windows.go",
                 '//go:build windows\n\npackage main\nimport ("bufio"; "bytes"; "encoding/json"; "io"; "strconv"; "strings")\n'
                 + pure)
         if path.name == "main_test.go":
@@ -77,13 +82,13 @@ def stage(destination):
                                 'selected := desktopRequestConnection(request.In.Context(), c)\n\t\t\tcurrentTarget, _ := url.Parse(selected.Endpoint)\n\t\t\tcurrentTarget.Path = ""\n\t\t\trequest.SetURL(currentTarget)\n\t\t\trequest.Out.Header.Set("Authorization", "Bearer "+selected.ClientKey)')
             text = replace_once(text, 'handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {',
                                 'handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {\n\t\tcurrent, err := desktopCurrentConnection(c)\n\t\tif err != nil { http.Error(w, "Desktop proxy connection is unavailable.", http.StatusServiceUnavailable); return }\n\t\tr = r.WithContext(context.WithValue(r.Context(), desktopConnectionContext{}, current))')
-        (destination / path.name).write_text(text)
+        write_utf8(destination / path.name, text)
     for path in sorted(HERE.glob("*.go")):
         shutil.copyfile(path, destination / path.name)
     for name in ("go.mod", "go.sum", "SOURCE.json", "LICENSE.CLIProxyAPI", "LICENSE.Hazmat", "THIRD-PARTY-NOTICES.txt"):
         shutil.copyfile(SHARED / name, destination / name)
     shutil.copytree(SHARED / "upstream-patches", destination / "upstream-patches")
-    (destination / "windows-source.json").write_text(json.dumps({
+    write_utf8(destination / "windows-source.json", json.dumps({
         "schemaVersion": 1, "sharedInputs": inputs,
         "platformInputs": {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(HERE.glob("*.go"))},
         "stagedInputs": {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(destination.glob("*.go"))},
@@ -124,14 +129,14 @@ def main():
         out_flags = [str((Path.cwd() / f).resolve()) if i > 0 and flags[i - 1] == "-o" else f for i, f in enumerate(flags)]
         result = subprocess.run(["go", args.command, *out_flags], cwd=adapter, env=environment)
         if result.returncode == 0:
-            receipt = json.loads((source / "windows-source.json").read_text())
+            receipt = json.loads((source / "windows-source.json").read_text(encoding="utf-8"))
             receipt.update(target=args.target, command=args.command, upstream=manifest)
             receipt["arguments"] = ["<output>" if i > 0 and out_flags[i-1] == "-o" else f for i, f in enumerate(out_flags)]
             if "-o" in out_flags:
                 artifact = Path(out_flags[out_flags.index("-o")+1])
                 if artifact.is_file():
                     receipt["artifact"] = {"name":artifact.name,"size":artifact.stat().st_size,"sha256":hashlib.sha256(artifact.read_bytes()).hexdigest()}
-            (root / (args.command + "-" + args.target + ".json")).write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n")
+            write_utf8(root / (args.command + "-" + args.target + ".json"), json.dumps(receipt, indent=2, sort_keys=True) + "\n")
         return result.returncode
 
 

@@ -78,6 +78,12 @@ with persistent keys stored by the encrypted native vault. Windows cooldown and
 Desktop connection files require protected owner ACLs and reject reparse paths.
 Only held child handles are terminated; Windows Jobs own their descendants.
 
+Source and receipt text I/O explicitly uses UTF-8 with LF output. Generated
+resource files are copied as verified bytes. No global `PYTHONUTF8` setting is
+required. The builder regression runs a real child interpreter with UTF-8 mode
+disabled and cp1252 default text streams: its non-ANSI negative control must
+fail, while actual staging and resource-byte readback must succeed.
+
 The Windows Desktop wrapper preserves the shared argument and RPC transforms,
 uses the same authenticated gateway and a held-handle Job for the backend. It
 cannot use POSIX exec replacement. The explicit connector discovers the official
