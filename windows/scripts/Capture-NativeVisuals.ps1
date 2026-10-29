@@ -484,11 +484,24 @@ public static class NativeVisualCaptureDriver
         return GetForegroundWindow();
     }
 
+    public static uint GetWindowProcessId(IntPtr hwnd)
+    {
+        uint processId;
+        GetWindowThreadProcessId(hwnd, out processId);
+        return processId;
+    }
+
+    public static long GetWindowExtendedStyle(IntPtr hwnd)
+    {
+        return GetWindowLongPtr(hwnd, -20).ToInt64();
+    }
+
     public static bool ApplyCaptureWindowStyle(IntPtr hwnd)
     {
         const int GWL_EXSTYLE = -20;
         const long WS_EX_TOOLWINDOW = 0x00000080L;
         const long WS_EX_APPWINDOW = 0x00040000L;
+        const long WS_EX_NOACTIVATE = 0x08000000L;
         const uint SWP_NOSIZE = 0x0001;
         const uint SWP_NOMOVE = 0x0002;
         const uint SWP_NOZORDER = 0x0004;
@@ -496,7 +509,7 @@ public static class NativeVisualCaptureDriver
         const uint SWP_FRAMECHANGED = 0x0020;
 
         long current = GetWindowLongPtr(hwnd, GWL_EXSTYLE).ToInt64();
-        long updated = (current | WS_EX_TOOLWINDOW) & ~WS_EX_APPWINDOW;
+        long updated = (current | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE) & ~WS_EX_APPWINDOW;
         SetWindowLongPtr(hwnd, GWL_EXSTYLE, new IntPtr(updated));
         long applied = GetWindowLongPtr(hwnd, GWL_EXSTYLE).ToInt64();
         if (applied != updated)
@@ -521,6 +534,7 @@ public static class NativeVisualCaptureDriver
         }
         return (
             (updated & WS_EX_TOOLWINDOW) != 0 &&
+            (updated & WS_EX_NOACTIVATE) != 0 &&
             (updated & WS_EX_APPWINDOW) == 0
         );
     }
@@ -1231,13 +1245,28 @@ function Wait-TaskWindow {
 function Assert-ForegroundPreserved {
   param(
     [IntPtr] $ExpectedForeground,
-    [string] $Stage
+    [string] $Stage,
+    [IntPtr] $TaskWindow = [IntPtr]::Zero
   )
   if ($ExpectedForeground -eq [IntPtr]::Zero) {
     return
   }
   $actualForeground = [NativeVisualCaptureDriver]::GetForegroundWindowHandle()
   if ($actualForeground -ne $ExpectedForeground) {
+    # Numeric ownership/style metadata only; never inspect another window's
+    # title, content, accessibility tree or screenshot, and never restore focus.
+    $script:workflowManifest.foreground_failure = [ordered]@{
+      stage = $Stage
+      expected_hwnd = $ExpectedForeground.ToInt64()
+      expected_process_id = [NativeVisualCaptureDriver]::GetWindowProcessId($ExpectedForeground)
+      actual_hwnd = $actualForeground.ToInt64()
+      actual_process_id = [NativeVisualCaptureDriver]::GetWindowProcessId($actualForeground)
+      task_hwnd = $TaskWindow.ToInt64()
+      task_process_id = [NativeVisualCaptureDriver]::GetWindowProcessId($TaskWindow)
+      actual_is_task_window = $actualForeground -eq $TaskWindow
+      task_noactivate = $TaskWindow -ne [IntPtr]::Zero -and
+        (([NativeVisualCaptureDriver]::GetWindowExtendedStyle($TaskWindow) -band 0x08000000) -ne 0)
+    }
     throw "Background capture changed the active foreground window during $Stage."
   }
 }
@@ -1348,7 +1377,7 @@ function Find-InstallationGuide {
 }
 
 function Defer-FirstLaunchGuide {
-  param([IntPtr] $Window, [int] $ProcessId)
+  param([IntPtr] $Window, [int] $ProcessId, [IntPtr] $ExpectedForeground)
   # Every capture starts with a fresh task-local profile. Observe its real
   # first-launch modal before navigating; Home can appear before the async read.
   $deadline = (Get-Date).AddSeconds(30)
@@ -1376,8 +1405,33 @@ function Defer-FirstLaunchGuide {
   if (-not $buttons[0].Current.IsEnabled -or $buttons[0].Current.IsOffscreen) {
     throw 'installation_guide_defer_unavailable'
   }
+  $focusBefore = [NativeVisualCaptureDriver]::GetForegroundWindowHandle()
+  $script:workflowManifest.fullscreen_run.onboarding_focus = [ordered]@{
+    before_hwnd = $focusBefore.ToInt64()
+    before_process_id = [NativeVisualCaptureDriver]::GetWindowProcessId($focusBefore)
+    before_is_task_window = $focusBefore -eq $Window
+    noactivate_before_reapply = ([NativeVisualCaptureDriver]::GetWindowExtendedStyle($Window) -band 0x08000000) -ne 0
+  }
+  # Reapply and verify the owned HWND's non-activation style immediately before
+  # UIA. This does not restore foreground or excuse an explicit activation.
+  if (-not [NativeVisualCaptureDriver]::ApplyCaptureWindowStyle($Window)) {
+    throw 'installation_guide_noactivate_style_not_applied'
+  }
+  $script:workflowManifest.fullscreen_run.onboarding_focus.noactivate_before_invoke =
+    ([NativeVisualCaptureDriver]::GetWindowExtendedStyle($Window) -band 0x08000000) -ne 0
+  if (-not $script:workflowManifest.fullscreen_run.onboarding_focus.noactivate_before_invoke) {
+    throw 'installation_guide_noactivate_style_not_retained'
+  }
+  Assert-ForegroundPreserved -ExpectedForeground $ExpectedForeground -TaskWindow $Window -Stage 'before guide Invoke'
   $pattern = $buttons[0].GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
   $pattern.Invoke()
+  $focusAfter = [NativeVisualCaptureDriver]::GetForegroundWindowHandle()
+  $script:workflowManifest.fullscreen_run.onboarding_focus.after_hwnd = $focusAfter.ToInt64()
+  $script:workflowManifest.fullscreen_run.onboarding_focus.after_process_id =
+    [NativeVisualCaptureDriver]::GetWindowProcessId($focusAfter)
+  $script:workflowManifest.fullscreen_run.onboarding_focus.after_is_task_window = $focusAfter -eq $Window
+  $script:workflowManifest.fullscreen_run.onboarding_focus.noactivate_after_invoke =
+    ([NativeVisualCaptureDriver]::GetWindowExtendedStyle($Window) -band 0x08000000) -ne 0
   $deadline = (Get-Date).AddSeconds(30)
   do {
     if ($null -eq (Find-InstallationGuide -Window $Window -ProcessId $ProcessId)) {
@@ -1893,9 +1947,19 @@ function Invoke-MaximizedCapture {
       -Window $window `
       -ExpectedForeground $foregroundBefore
     Wait-WebViewDocument -Window $window
-    $sizeRecord.onboarding = Defer-FirstLaunchGuide -Window $window -ProcessId $process.Id
+    $sizeRecord.before_onboarding = [ordered]@{
+      task_noactivate = ([NativeVisualCaptureDriver]::GetWindowExtendedStyle($window) -band 0x08000000) -ne 0
+      foreground_is_expected = [NativeVisualCaptureDriver]::GetForegroundWindowHandle() -eq $foregroundBefore
+    }
     Assert-ForegroundPreserved `
       -ExpectedForeground $foregroundBefore `
+      -TaskWindow $window `
+      -Stage 'before first-launch guide defer'
+    $sizeRecord.onboarding = Defer-FirstLaunchGuide `
+      -Window $window -ProcessId $process.Id -ExpectedForeground $foregroundBefore
+    Assert-ForegroundPreserved `
+      -ExpectedForeground $foregroundBefore `
+      -TaskWindow $window `
       -Stage 'first-launch guide defer'
     [void](Wait-ForElement -Window $window -AutomationId 'workspace-nav-home')
     # The existing Overview and five task/tool panels are now lazy-mounted
