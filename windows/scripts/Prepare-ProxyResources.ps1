@@ -62,6 +62,7 @@ try {
         foreach ($test in @(
             'proxy::process::registration::tests::actual_helper_hot_registration_keeps_run_port_pid_and_manual_opt_out',
             'proxy::process::command_pipe::tests::actual_helper_command_pipe_full_rejects_whole_frame_without_blocking_or_corruption',
+            'proxy::process::command_pipe::tests::actual_helper_command_pipe_injected_short_write_closes_before_next_frame',
             'proxy::process::command_pipe::tests::actual_helper_startup_unread_pipe_is_cancellable_and_dead_reader_fails_bounded',
             'proxy::process::command_pipe::tests::actual_helper_startup_pipe_reader_accepts_complete_large_frame'
         )) {

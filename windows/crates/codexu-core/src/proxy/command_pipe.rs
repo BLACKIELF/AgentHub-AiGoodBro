@@ -44,11 +44,19 @@ fn valid_frame(bytes: &[u8]) -> bool {
 }
 
 pub(super) fn send(stdin: &mut Option<PipeWriter>, bytes: &[u8]) -> Result<(), FrameFailure> {
+    send_with(stdin, bytes, send_chunk)
+}
+
+fn send_with(
+    stdin: &mut Option<PipeWriter>,
+    bytes: &[u8],
+    write_chunk: impl FnOnce(&mut PipeWriter, &[u8]) -> Result<(), FrameFailure>,
+) -> Result<(), FrameFailure> {
     if !valid_frame(bytes) {
         return Err(FrameFailure::Unchanged);
     }
     let writer = stdin.as_mut().ok_or(FrameFailure::Poisoned)?;
-    let result = send_chunk(writer, bytes);
+    let result = write_chunk(writer, bytes);
     if result == Err(FrameFailure::Poisoned) {
         // A partial frame can never be followed by a second command. Closing
         // the sole writer here makes that invariant independent of the caller.
@@ -132,7 +140,7 @@ fn send_handle(
     handle: windows::Win32::Foundation::HANDLE,
     bytes: &[u8],
 ) -> Result<(), FrameFailure> {
-    use windows::Win32::{Foundation::ERROR_NO_DATA, Storage::FileSystem::WriteFile};
+    use windows::Win32::Storage::FileSystem::WriteFile;
     if bytes.is_empty() || bytes.len() > 512 {
         return Err(FrameFailure::Unchanged);
     }
@@ -142,7 +150,18 @@ fn send_handle(
     // only the actual nonblocking write decides whether bytes were accepted.
     let mut written = 0;
     let result = unsafe { WriteFile(handle, Some(bytes), Some(&mut written), None) };
-    if written != 0 && written != bytes.len() as u32 {
+    classify_write(handle, bytes.len(), written, result)
+}
+
+#[cfg(windows)]
+fn classify_write(
+    handle: windows::Win32::Foundation::HANDLE,
+    requested: usize,
+    written: u32,
+    result: windows::core::Result<()>,
+) -> Result<(), FrameFailure> {
+    use windows::Win32::Foundation::ERROR_NO_DATA;
+    if written != 0 && written != requested as u32 {
         return Err(FrameFailure::Poisoned);
     }
     if let Err(_error) = result {
@@ -157,7 +176,7 @@ fn send_handle(
         );
         return Err(FrameFailure::Poisoned);
     }
-    if written == bytes.len() as u32 {
+    if written == requested as u32 {
         Ok(())
     } else {
         no_write_progress(handle)
@@ -423,7 +442,9 @@ mod tests {
         {
             // Draining one byte from a 512-byte queued write does not release
             // that entry's storage. Drain the complete entry, then refill all
-            // but one byte to exercise an actual partial write.
+            // but one byte. The OS may write zero or that one byte; both
+            // outcomes require exact readback. The separate injection below
+            // always exercises the defensive short-write path.
             let mut first = [0u8; 512];
             read.read_exact(&mut first).unwrap();
             assert_eq!(first.as_slice(), fill.as_slice());
@@ -435,16 +456,32 @@ mod tests {
                 diagnostics(write.as_ref().unwrap())
             );
             let result = send(&mut write, frame);
-            assert_eq!(result, Err(FrameFailure::Poisoned));
-            assert!(write.is_none());
-            assert_eq!(send(&mut write, frame), Err(FrameFailure::Poisoned));
-            let mut remaining = Vec::new();
-            read.read_to_end(&mut remaining).unwrap();
             let mut expected: Vec<u8> = fill.iter().cycle().take(count - 512).copied().collect();
             expected.extend_from_slice(&refill);
-            expected.push(frame[0]);
-            assert_eq!(remaining, expected);
-            // No newline/complete command or later command followed the prefix.
+            match result {
+                Err(FrameFailure::Unchanged) => {
+                    assert!(write.is_some());
+                    // Drain the known prefix, then verify one complete later
+                    // frame and EOF. Any unexpected byte fails the readback.
+                    let mut remaining = vec![0; expected.len()];
+                    read.read_exact(&mut remaining).unwrap();
+                    assert_eq!(remaining, expected);
+                    send(&mut write, frame).unwrap();
+                    drop(write.take());
+                    let mut received = Vec::new();
+                    read.read_to_end(&mut received).unwrap();
+                    assert_eq!(received, frame);
+                }
+                Err(FrameFailure::Poisoned) => {
+                    assert!(write.is_none());
+                    assert_eq!(send(&mut write, frame), Err(FrameFailure::Poisoned));
+                    expected.push(frame[0]);
+                    let mut received = Vec::new();
+                    read.read_to_end(&mut received).unwrap();
+                    assert_eq!(received, expected);
+                }
+                Ok(()) => panic!("full command cannot fit in the one-byte remainder"),
+            }
             return;
         }
         #[cfg(not(windows))]
@@ -475,5 +512,35 @@ mod tests {
             );
             write.as_mut().unwrap().flush().unwrap();
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "explicit native contract: injected short syscall writes real bytes, not natural OS partial-write evidence"]
+    fn actual_helper_command_pipe_injected_short_write_closes_before_next_frame() {
+        use std::os::windows::io::AsRawHandle;
+        use windows::Win32::{Foundation::HANDLE, Storage::FileSystem::WriteFile};
+        let (mut read, writer) = owned_pipe().unwrap();
+        let mut writer = Some(writer);
+        let frame = b"{\"command\":\"fixture\"}\n";
+        let at = Instant::now();
+        let result = send_with(&mut writer, frame, |writer, requested| {
+            let handle = HANDLE(writer.as_raw_handle());
+            let mut written = 0;
+            // Inject a legal short syscall outcome without pretending this
+            // Windows version naturally produced it for a <=512-byte frame.
+            // Classification and sole-writer closure are production code.
+            let result =
+                unsafe { WriteFile(handle, Some(&requested[..1]), Some(&mut written), None) };
+            assert_eq!(written, 1);
+            classify_write(handle, requested.len(), written, result)
+        });
+        assert!(at.elapsed() < Duration::from_secs(1));
+        assert_eq!(result, Err(FrameFailure::Poisoned));
+        assert!(writer.is_none());
+        assert_eq!(send(&mut writer, frame), Err(FrameFailure::Poisoned));
+        let mut received = Vec::new();
+        read.read_to_end(&mut received).unwrap();
+        assert_eq!(received, &frame[..1]);
     }
 }
