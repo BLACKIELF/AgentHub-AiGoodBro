@@ -1,0 +1,12 @@
+{
+  "adaptation": "Original TypeScript bytes retained; append a module export only.",
+  "commit": "720f62bddb7226106071d4728c292cb1df519ceb",
+  "fileSHA256": "1615599918f370b32accf0568a19d397a2e2ee94fed95b0f2305414098de0487",
+  "licenseSHA256": "aa22f0fefb530552bfcc713e3791c80796c2a2e666ed61856bcf4767a6852984",
+  "networkAtRuntime": false,
+  "project": "nayuki/QR-Code-generator",
+  "sourceSHA256": "c4749095a91bf9696e3a303998b9905e467094f53041e64393e65e6d887737fd",
+  "sourceURL": "https://raw.githubusercontent.com/nayuki/QR-Code-generator/720f62bddb7226106071d4728c292cb1df519ceb/typescript-javascript/qrcodegen.ts",
+  "tagObject": "7ad95cedd8464a87f82221283612732ae4f3f305",
+  "version": "1.8.0"
+}

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { AssistantContact } from '../components/AssistantContact';
 import { AppUpdatePanel } from '../components/AppUpdatePanel';
+import { NotificationChannelsPanel } from '../components/NotificationChannelsPanel';
 import { open } from '@tauri-apps/plugin-dialog';
 import { FolderOpen, Palette, RefreshCw, Trash2 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
@@ -311,6 +312,8 @@ export function Settings() {
               </button>
             </div>
           </Section>
+
+          <NotificationChannelsPanel />
 
           <Section title={t('settings.about')}>
             <p className="text-sm text-secondary">{t('settings.version')}</p>
