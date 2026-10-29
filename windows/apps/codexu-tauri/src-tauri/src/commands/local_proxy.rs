@@ -109,6 +109,21 @@ pub async fn set_local_proxy_plus_five_hour_used_limit(
 }
 
 #[tauri::command]
+pub async fn set_local_proxy_shared_quota_used_limit(
+    service: tauri::State<'_, LocalProxyState>,
+    limit: f64,
+) -> Result<ProxyPreferences, String> {
+    let service = service.service()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        service
+            .set_shared_quota_used_limit(limit)
+            .map_err(|e| e.code().into())
+    })
+    .await
+    .map_err(|_| "unavailable".to_string())?
+}
+
+#[tauri::command]
 pub async fn prepare_local_proxy_desktop(
     desktop: tauri::State<'_, LocalProxyDesktopState>,
     account_id: String,

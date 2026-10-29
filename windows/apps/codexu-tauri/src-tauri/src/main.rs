@@ -225,6 +225,7 @@ fn main() {
             commands::local_proxy::get_local_proxy_connection,
             commands::local_proxy::local_proxy_network_command,
             commands::local_proxy::set_local_proxy_plus_five_hour_used_limit,
+            commands::local_proxy::set_local_proxy_shared_quota_used_limit,
             commands::local_proxy::prepare_local_proxy_desktop,
             commands::local_proxy::launch_local_proxy_desktop,
             commands::local_proxy::connect_local_proxy_desktop,

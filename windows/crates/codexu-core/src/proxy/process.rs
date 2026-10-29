@@ -328,6 +328,16 @@ impl LocalProxyService {
         host.update_preferences(next.clone())?;
         Ok(next)
     }
+    pub fn set_shared_quota_used_limit(
+        &self,
+        limit: f64,
+    ) -> Result<ProxyPreferences, ProxyFailure> {
+        let mut host = self.host.lock().map_err(|_| ProxyFailure::Unavailable)?;
+        let next = host.shared_quota_policy(limit)?;
+        persist_preferences(&self.preferences_path, &next)?;
+        host.update_preferences(next.clone())?;
+        Ok(next)
+    }
     /// Presentation-only snapshot. Unlike status(), this cannot reconcile or
     /// stop a helper; compact windows only observe the existing lifecycle owner.
     pub fn cached_status(&self) -> Result<ProxyStatus, ProxyFailure> {
@@ -379,6 +389,16 @@ impl LocalProxyService {
                 .map_err(|_| ProxyFailure::Unavailable)?
                 .is_some()
             {
+                #[cfg(test)]
+                eprintln!(
+                    "proxy_startup_fixture child_exit={:?}",
+                    child
+                        .child
+                        .try_wait()
+                        .ok()
+                        .flatten()
+                        .and_then(|exit| exit.code())
+                );
                 self.host
                     .lock()
                     .map_err(|_| ProxyFailure::Unavailable)?
@@ -654,6 +674,17 @@ impl LocalProxyService {
                         _ => break,
                     };
                     if let Ok(event) = serde_json::from_slice::<ProxyEvent>(&line) {
+                        #[cfg(test)]
+                        if event.event == "error" {
+                            eprintln!(
+                                "proxy_startup_fixture helper_error={}",
+                                event
+                                    .error_code
+                                    .as_deref()
+                                    .filter(|code| safe_error(code))
+                                    .unwrap_or("unclassified")
+                            );
+                        }
                         if event.event == "account_registered" {
                             if generations.load(Ordering::Acquire) == event_generation {
                                 registration::accept_event(&registration, &event);
@@ -716,6 +747,17 @@ impl LocalProxyService {
                 return Ok(status);
             }
             if status.phase == ProxyPhase::Failed || Instant::now() >= deadline {
+                #[cfg(test)]
+                eprintln!(
+                    "proxy_startup_fixture ready_wait phase={:?} safe_issue={} deadline={}",
+                    status.phase,
+                    status
+                        .issue
+                        .as_deref()
+                        .filter(|code| safe_error(code))
+                        .unwrap_or("none_or_unclassified"),
+                    Instant::now() >= deadline
+                );
                 let cleanup = self.stop_generation(Some(generation));
                 let recoverable = cleanup.is_ok()
                     && self.command_generation.load(Ordering::Acquire) == generation
@@ -1200,7 +1242,7 @@ fn write_startup(
     if frame.is_empty() || frame.len() > 1 << 20 {
         return Err(ProxyFailure::StartupFailed);
     }
-    for chunk in frame.chunks(512) {
+    for (_chunk_index, chunk) in frame.chunks(512).enumerate() {
         loop {
             if commands.load(Ordering::Acquire) != generation
                 || cancel.is_some_and(|c| c.load(Ordering::Acquire))
@@ -1208,12 +1250,24 @@ fn write_startup(
                 return Err(ProxyFailure::Stopping);
             }
             if Instant::now() >= deadline {
+                #[cfg(test)]
+                eprintln!(
+                    "proxy_startup_fixture write_deadline total_bytes={} accepted_bytes={}",
+                    frame.len(),
+                    _chunk_index * 512
+                );
                 return Err(ProxyFailure::StartupFailed);
             }
             match command_pipe::send_chunk(stdin, chunk) {
                 Ok(()) => break,
                 Err(command_pipe::FrameFailure::Poisoned) => {
-                    return Err(ProxyFailure::StartupFailed)
+                    #[cfg(test)]
+                    eprintln!(
+                        "proxy_startup_fixture write_poisoned total_bytes={} accepted_bytes={}",
+                        frame.len(),
+                        _chunk_index * 512
+                    );
+                    return Err(ProxyFailure::StartupFailed);
                 }
                 Err(command_pipe::FrameFailure::Unchanged) => {
                     thread::sleep(Duration::from_millis(5))
@@ -1221,6 +1275,11 @@ fn write_startup(
             }
         }
     }
+    #[cfg(test)]
+    eprintln!(
+        "proxy_startup_fixture write_complete total_bytes={}",
+        frame.len()
+    );
     Ok(())
 }
 fn apply_event(status: &mut ProxyStatus, event: ProxyEvent) {

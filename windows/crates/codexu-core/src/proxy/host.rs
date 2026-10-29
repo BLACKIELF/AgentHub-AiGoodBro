@@ -161,6 +161,16 @@ impl ProxyHost {
         Ok(())
     }
     pub(crate) fn plus_policy(&self, limit: f64) -> Result<ProxyPreferences, ProxyFailure> {
+        self.quota_policy(limit, false)
+    }
+    pub(crate) fn shared_quota_policy(&self, limit: f64) -> Result<ProxyPreferences, ProxyFailure> {
+        self.quota_policy(limit, true)
+    }
+    fn quota_policy(
+        &self,
+        limit: f64,
+        include_pro: bool,
+    ) -> Result<ProxyPreferences, ProxyFailure> {
         if !limit.is_finite() || !(0.0..=100.0).contains(&limit) {
             return Err(ProxyFailure::InvalidSettings);
         }
@@ -168,9 +178,11 @@ impl ProxyHost {
         let mut targets = vec![];
         for id in &trusted {
             let e = self.gate.evidence(id)?;
-            if e.plan.as_deref() != Some("plus") {
-                continue;
-            }
+            let pro = match e.plan.as_deref() {
+                Some("plus") => false,
+                Some("pro" | "prolite") if include_pro => true,
+                _ => continue,
+            };
             if !e.identity_verified
                 || e.is_system_home
                 || e.profile_id != *id
@@ -179,18 +191,20 @@ impl ProxyHost {
             {
                 return Err(ProxyFailure::Identity);
             }
-            targets.push(id.clone());
+            targets.push((id.clone(), pro));
         }
         if targets.is_empty() {
             return Err(ProxyFailure::Identity);
         }
         let mut next = self.preferences.clone();
         next.known_ids = trusted;
-        for id in targets {
-            next.account_policies
-                .entry(id)
-                .or_default()
-                .five_hour_used_limit = limit;
+        for (id, pro) in targets {
+            let policy = next.account_policies.entry(id).or_default();
+            if pro {
+                policy.seven_day_used_limit = limit;
+            } else {
+                policy.five_hour_used_limit = limit;
+            }
         }
         self.validate_update(&next)?;
         Ok(next)

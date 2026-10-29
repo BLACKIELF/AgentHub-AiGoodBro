@@ -156,7 +156,73 @@ mod tests {
         };
         if role == "hold" {
             std::thread::sleep(Duration::from_secs(5));
+        } else if role == "consume" {
+            use std::io::BufRead;
+            let mut frame = Vec::new();
+            std::io::stdin()
+                .lock()
+                .read_until(b'\n', &mut frame)
+                .unwrap();
+            assert_eq!(frame.len(), 65537);
+            assert_eq!(frame.last(), Some(&b'\n'));
+            assert!(frame[..65536].iter().all(|byte| *byte == b'x'));
+            println!("synthetic_startup_frame_complete");
         }
+    }
+
+    #[test]
+    #[ignore = "explicit native helper contract; same synchronous pipe with a consuming child"]
+    fn actual_helper_startup_pipe_reader_accepts_complete_large_frame() {
+        use std::process::{Command, Stdio};
+        use std::sync::atomic::AtomicUsize;
+        let (input, mut writer) = std::io::pipe().unwrap();
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "proxy::process::command_pipe::tests::blocked_pipe_child",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("AIGOODBRO_PIPE_FIXTURE_ROLE", "consume")
+            .stdin(Stdio::from(input))
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        let mut child = command.spawn().unwrap();
+        drop(command);
+        let at = Instant::now();
+        let mut frame = vec![b'x'; 65536];
+        frame.push(b'\n');
+        let write = super::super::write_startup(
+            &mut writer,
+            &frame,
+            &AtomicUsize::new(1),
+            1,
+            None,
+            at + Duration::from_secs(3),
+        );
+        drop(writer);
+        let exit = loop {
+            if let Some(exit) = child.try_wait().unwrap() {
+                break Some(exit);
+            }
+            if write.is_err() || at.elapsed() >= Duration::from_secs(5) {
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        let mut output = String::new();
+        child
+            .stdout
+            .take()
+            .unwrap()
+            .read_to_string(&mut output)
+            .unwrap();
+        assert_eq!(write, Ok(()));
+        assert!(exit.is_some_and(|exit| exit.success()));
+        assert!(output.contains("synthetic_startup_frame_complete"));
     }
 
     #[test]
