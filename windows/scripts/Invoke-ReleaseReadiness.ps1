@@ -175,6 +175,7 @@ $report = [ordered]@{
 }
 $oldVisualBrowser = [Environment]::GetEnvironmentVariable('CODEXU_VISUAL_BROWSER', 'Process')
 $oldStatisticsPin = [Environment]::GetEnvironmentVariable('AIGOODBRO_TOKEN_MONITOR_RESOURCE_SHA256', 'Process')
+$oldPythonBytecode = [Environment]::GetEnvironmentVariable('PYTHONDONTWRITEBYTECODE', 'Process')
 $nativeRunner = {
     param($step)
     Push-Location $step.directory
@@ -210,6 +211,7 @@ try {
     $report.powershell_versions = @{ ps51 = $version51; ps7 = $version7 }
     $plan = @(Get-ReleaseReadinessPlan -Root $repositoryRoot -ReleaseVersion $Version -Output $OutputDirectory -Preflight $preflight -PowerShell51 $ps51 -PowerShell7 $ps7 -Package (-not $SkipPackaging))
     [Environment]::SetEnvironmentVariable('CODEXU_VISUAL_BROWSER', 'chromium', 'Process')
+    [Environment]::SetEnvironmentVariable('PYTHONDONTWRITEBYTECODE', '1', 'Process')
     Invoke-ReleasePlan -Plan $plan -Report $report -ReportPath $reportPath -Runner $nativeRunner
     if (-not $SkipPackaging) { $report.packages = @(Get-ReleasePackageEvidence -Directory (Join-Path $OutputDirectory 'packages') -ReleaseVersion $Version) }
     $after = Get-SourceStamp -Root $repositoryRoot
@@ -226,6 +228,7 @@ try {
 } finally {
     [Environment]::SetEnvironmentVariable('CODEXU_VISUAL_BROWSER', $oldVisualBrowser, 'Process')
     [Environment]::SetEnvironmentVariable('AIGOODBRO_TOKEN_MONITOR_RESOURCE_SHA256', $oldStatisticsPin, 'Process')
+    [Environment]::SetEnvironmentVariable('PYTHONDONTWRITEBYTECODE', $oldPythonBytecode, 'Process')
     $report.finished_utc = [DateTime]::UtcNow.ToString('o')
     Save-ReadinessReport -Report $report -Path $reportPath
     Write-Host ('RELEASE_READINESS_REPORT=' + $reportPath)
