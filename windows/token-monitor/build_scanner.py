@@ -27,6 +27,64 @@ def tool_homes(environment=None,user_home=None):
     result={name:str(Path(environment.get(name)or user_home/default).expanduser().resolve())for name,default in [('CARGO_HOME','.cargo'),('RUSTUP_HOME','.rustup')]}
     need(all(Path(path).is_dir()for path in result.values()),'scanner_toolchain_home_unavailable')
     return result
+# Only public Windows build-tool discovery/configuration crosses isolation.
+# VS auto-discovery needs these installer roots; the scanner never receives
+# account, proxy, GitHub or provider environment variables.
+BUILD_ENV_KEYS=('PATH','SystemRoot','WINDIR','PATHEXT','COMSPEC','ProgramFiles','ProgramFiles(x86)','ProgramW6432','SystemDrive','CARGO_HOME','RUSTUP_HOME','RUSTUP_TOOLCHAIN')
+VS_ENV_KEYS=('PATH','LIB','LIBPATH','INCLUDE','VCToolsInstallDir','VCINSTALLDIR','VSINSTALLDIR','WindowsSdkDir','WindowsSDKVersion','WindowsSdkBinPath','WindowsSdkVerBinPath','UniversalCRTSdkDir','UCRTVersion','ExtensionSdkDir','FrameworkDir','FrameworkVersion','Framework40Version','VSCMD_ARG_TGT_ARCH','VSCMD_ARG_HOST_ARCH')
+def msvc_environment(environment,target,run=subprocess.run):
+    """Locate installed Microsoft tools before HOME isolation, never bare link.exe.
+
+    Official VS installer vswhere locates the C++ workload; vcvarsall supplies
+    the matching compiler, Windows SDK and library environment. The restricted
+    caller PATH alone can resolve Git's unrelated GNU link.exe instead.
+    """
+    need(target in TARGETS,'scanner_msvc_target_invalid')
+    program_files=environment.get('ProgramFiles(x86)')or environment.get('ProgramFiles')
+    system_root=environment.get('SystemRoot')or environment.get('WINDIR')
+    need(program_files and system_root,'scanner_msvc_locator_unavailable')
+    locator=Path(program_files)/'Microsoft Visual Studio/Installer/vswhere.exe'
+    command=Path(system_root)/'System32/cmd.exe'
+    need(locator.is_file()and command.is_file(),'scanner_msvc_locator_unavailable')
+    component='Microsoft.VisualStudio.Component.VC.Tools.x86.x64'if TARGETS[target]=='AMD64'else'Microsoft.VisualStudio.Component.VC.Tools.ARM64'
+    discovered=run([str(locator),'-latest','-products','*','-requires',component,'-property','installationPath','-utf8'],env=environment,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=30,check=False)
+    need(discovered.returncode==0,'scanner_msvc_locator_failed')
+    lines=discovered.stdout.decode('utf-8-sig',errors='strict').splitlines()
+    need(len(lines)==1 and lines[0].strip(),'scanner_msvc_installation_ambiguous')
+    installation=Path(lines[0].strip()).resolve()
+    setup=installation/'VC/Auxiliary/Build/vcvarsall.bat'
+    need(installation.is_dir()and setup.is_file()and not setup.is_symlink(),'scanner_msvc_setup_unavailable')
+    # The path is an installer result, but cmd expansion characters must still
+    # fail closed. Parentheses/spaces are normal in Program Files (x86).
+    need(not any(character in str(setup)for character in '\r\n"%!^&|<>'),'scanner_msvc_setup_path_invalid')
+    arch='x64'if TARGETS[target]=='AMD64'else'arm64'
+    # Pass an exact Windows command line, not a Python argv list: list2cmdline
+    # escapes embedded quotes as \\" which cmd /c does not parse as C argv.
+    # /s strips the first/last command quotes, leaving the quoted batch path.
+    command_line=f'"{command}" /d /u /s /c "call "{setup}" {arch} >nul && set"'
+    initialized=run(command_line,executable=str(command),shell=False,env=environment,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=60,check=False)
+    need(initialized.returncode==0,'scanner_msvc_setup_failed')
+    entries={}
+    for line in initialized.stdout.decode('utf-16le',errors='strict').splitlines():
+        name,separator,value=line.partition('=')
+        if separator and name:entries[name.lower()]=value
+    selected={name:entries[name.lower()]for name in VS_ENV_KEYS if name.lower()in entries}
+    need(all(selected.get(name)for name in ('PATH','LIB','INCLUDE','VCToolsInstallDir','WindowsSdkDir')),'scanner_msvc_environment_incomplete')
+    tools=Path(selected['VCToolsInstallDir']).resolve()
+    need(tools.is_relative_to(installation/'VC/Tools/MSVC'),'scanner_msvc_tool_path_invalid')
+    binary=tools/'bin'/('Hostx64'if arch=='x64'else'Hostarm64')/arch
+    linker=binary/'link.exe'
+    need(all((binary/name).is_file()and not(binary/name).is_symlink()for name in ('link.exe','cl.exe','lib.exe')),'scanner_msvc_tools_unavailable')
+    libraries=[Path(value)for value in selected['LIB'].split(';')if value]
+    need(any((root/'kernel32.lib').is_file()for root in libraries)and any((root/'libcmt.lib').is_file()for root in libraries),'scanner_msvc_libraries_unavailable')
+    # This also fixes native host build scripts (proc-macro2/quote), which do
+    # not necessarily use the target linker variable while Cargo cross builds.
+    selected['PATH']=str(binary)+';'+selected['PATH']
+    selected['CARGO_TARGET_'+target.upper().replace('-','_')+'_LINKER']=str(linker)
+    selected['CC_'+target.replace('-','_')]=str(binary/'cl.exe')
+    selected['CXX_'+target.replace('-','_')]=str(binary/'cl.exe')
+    return selected
+
 def archive(args):
     if args.archive is not None:return args.archive
     path=args.cache/('sha256-'+ARCHIVE_SHA)
@@ -42,11 +100,12 @@ def build(args):
     need(os.name=='nt' and platform.machine().upper()==TARGETS[args.target],'native_windows_build_required')
     homes=tool_homes()
     need(not args.output.exists(),'scanner_build_output_exists');args.output.mkdir(parents=True)
-    source=args.output/'source';reconstruct(archive(args),source)
     home=args.output/'isolated-home';home.mkdir();tmp=args.output/'tmp';tmp.mkdir()
-    env={key:os.environ[key] for key in ('PATH','SystemRoot','WINDIR','PATHEXT','COMSPEC','CARGO_HOME','RUSTUP_HOME','RUSTUP_TOOLCHAIN','RUSTFLAGS','VCToolsInstallDir','VCINSTALLDIR','WindowsSdkDir','WindowsSDKVersion','LIB','LIBPATH','INCLUDE')if key in os.environ}
+    env={key:os.environ[key]for key in BUILD_ENV_KEYS if key in os.environ}
     env.update(homes)
     env.update(HOME=str(home),USERPROFILE=str(home),APPDATA=str(home/'AppData/Roaming'),LOCALAPPDATA=str(home/'AppData/Local'),TEMP=str(tmp),TMP=str(tmp),TMPDIR=str(tmp),CARGO_TARGET_DIR=str(args.target_dir or args.output/'target'),TOKSCALE_PRICING_CACHE_ONLY='1',TOKSCALE_AUTOSUBMIT_SKIP_SCHEDULER='1',TZ='UTC',CI='1',CARGO_BUILD_JOBS=str(args.jobs))
+    env.update(msvc_environment(env,args.target))
+    source=args.output/'source';reconstruct(archive(args),source)
     # Shared public dependency caches/toolchains may be reused; account/model/
     # GitHub tokens and ambient provider/proxy settings are never forwarded.
     common=['--manifest-path',str(source/'Cargo.toml'),'--target',args.target,'--locked']+(['--offline']if args.offline else[])

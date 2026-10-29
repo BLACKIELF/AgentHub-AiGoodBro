@@ -247,7 +247,10 @@ func createPrivateFileAt(root *os.Root, name string) (*os.File, error) {
 		ObjectName: objectName, Attributes: windows.OBJ_CASE_INSENSITIVE | windows.OBJ_DONT_REPARSE, SecurityDescriptor: sd,
 	}
 	var handle windows.Handle
-	err = windows.NtCreateFile(&handle, windows.FILE_GENERIC_WRITE|windows.READ_CONTROL, &attributes, &windows.IO_STATUS_BLOCK{}, nil,
+	// Match os.OpenFile's metadata rights even for an O_WRONLY file. Windows
+	// FILE_GENERIC_WRITE omits READ_ATTRIBUTES/READ_EA; without these, f.Stat
+	// cannot prove the identity/regular-file invariant before the first write.
+	err = windows.NtCreateFile(&handle, windows.FILE_GENERIC_WRITE|windows.READ_CONTROL|windows.FILE_READ_ATTRIBUTES|windows.FILE_READ_EA, &attributes, &windows.IO_STATUS_BLOCK{}, nil,
 		windows.FILE_ATTRIBUTE_NORMAL, windows.FILE_SHARE_READ, windows.FILE_CREATE,
 		windows.FILE_NON_DIRECTORY_FILE|windows.FILE_SYNCHRONOUS_IO_NONALERT|windows.FILE_OPEN_REPARSE_POINT, 0, 0)
 	if err != nil {

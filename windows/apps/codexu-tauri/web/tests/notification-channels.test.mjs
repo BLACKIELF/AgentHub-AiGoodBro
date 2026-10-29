@@ -44,8 +44,8 @@ test('Mac compact/detailed presets preserve both notification opt-outs and exact
 test('the exact licensed QR encoder is vendored with only its module export added',()=>{
  const provenance=JSON.parse(readFileSync(new URL('../src/vendor/qrcodegen/SOURCE.json',import.meta.url)));const source=readFileSync(new URL('../src/vendor/qrcodegen/qrcodegen.ts',import.meta.url));
  const append=Buffer.from('\n// Module export for the existing Windows application bundle.\nexport { qrcodegen };\n');assert.equal(source.subarray(-append.length).equals(append),true);
- assert.equal(createHash('sha256').update(source.subarray(0,-append.length)).digest('hex'),provenance.sourceSHA256);assert.equal(provenance.commit,'720f62bddb7226106071d4728c292cb1df519ceb');
- assert.match(readFileSync(new URL('../public/licenses/qrcodegen-MIT-1.8.0.txt',import.meta.url),'utf8'),/Permission is hereby granted/);
+ assert.equal(createHash('sha256').update(source.subarray(0,-append.length)).digest('hex'),provenance.sourceSHA256);assert.equal(provenance.commit,'720f62bddb7226106071d4728c292cb1df519ceb');assert.equal(createHash('sha256').update(source).digest('hex'),provenance.fileSHA256);
+ const license=readFileSync(new URL('../public/licenses/qrcodegen-MIT-1.8.0.txt',import.meta.url));assert.match(license.toString('utf8'),/Permission is hereby granted/);assert.equal(createHash('sha256').update(license).digest('hex'),provenance.licenseSHA256);
 });
 test('pairing payloads become bounded pixel paths without HTML, URLs or external requests',()=>{
  const encoded=qr.notificationQr('SYNTHETIC_QR_ONLY_NOT_A_LOGIN');assert.ok(encoded.size>=29&&encoded.size<=185);assert.match(encoded.path,/^M/);assert.match(encoded.path,/^[M0-9,hvz-]+$/);assert.equal(encoded.path.includes('SYNTHETIC'),false);

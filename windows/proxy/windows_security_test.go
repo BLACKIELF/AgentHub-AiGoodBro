@@ -148,6 +148,40 @@ func TestWindowsPrivateCooldownHasProtectedOwnerACLAndRoundtrips(t *testing.T) {
 	}
 	f.Close()
 }
+
+func TestWindowsPrivateWriteHandleSupportsRequiredIdentityChecks(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "private-state")
+	if err := privateDirectory(dir, true); err != nil {
+		t.Fatal(err)
+	}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	file, err := createPrivateFileAt(root, "owned-write-only.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	actual, err := file.Stat()
+	if err != nil {
+		t.Fatalf("new write handle cannot supply required metadata: %v", err)
+	}
+	entry, err := root.Lstat("owned-write-only.json")
+	if err != nil {
+		t.Fatalf("new write handle prevents anchored metadata check: %v", err)
+	}
+	if !actual.Mode().IsRegular() || !os.SameFile(actual, entry) || !platformDesktopOwned(file, actual) {
+		t.Fatal("new write handle failed exact regular-file/identity/owner checks before any payload write")
+	}
+	if _, err := file.Write([]byte("synthetic-not-a-credential")); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Sync(); err != nil {
+		t.Fatal(err)
+	}
+}
 func TestWindowsPrivateStateRejectsFileAndReparsePath(t *testing.T) {
 	parent := t.TempDir()
 	file := filepath.Join(parent, "file")
