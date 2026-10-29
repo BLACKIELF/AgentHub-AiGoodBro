@@ -95,6 +95,39 @@ pub(super) fn diagnostics(_: &PipeWriter) -> &'static str {
 }
 
 #[cfg(windows)]
+fn no_write_progress(handle: windows::Win32::Foundation::HANDLE) -> Result<(), FrameFailure> {
+    use windows::{
+        Wdk::Storage::FileSystem::{
+            FilePipeLocalInformation, NtQueryInformationFile, FILE_PIPE_CONNECTED_STATE,
+            FILE_PIPE_LOCAL_INFORMATION,
+        },
+        Win32::System::IO::IO_STATUS_BLOCK,
+    };
+    // owned_pipe gives us a synchronous handle. Query only after a zero-byte
+    // write; a connected full pipe may be retried, a closed reader may not.
+    // Buffer quota is deliberately not used as an admission condition.
+    let mut info = FILE_PIPE_LOCAL_INFORMATION::default();
+    let mut status = IO_STATUS_BLOCK::default();
+    let result = unsafe {
+        NtQueryInformationFile(
+            handle,
+            &mut status,
+            &mut info as *mut _ as _,
+            std::mem::size_of_val(&info) as u32,
+            FilePipeLocalInformation,
+        )
+    };
+    if result.0 == 0
+        && status.Information == std::mem::size_of_val(&info)
+        && info.NamedPipeState == FILE_PIPE_CONNECTED_STATE
+    {
+        Err(FrameFailure::Unchanged)
+    } else {
+        Err(FrameFailure::Poisoned)
+    }
+}
+
+#[cfg(windows)]
 fn send_handle(
     handle: windows::Win32::Foundation::HANDLE,
     bytes: &[u8],
@@ -114,7 +147,7 @@ fn send_handle(
     }
     if let Err(_error) = result {
         if written == 0 && _error.code() == windows::core::HRESULT::from_win32(ERROR_NO_DATA.0) {
-            return Err(FrameFailure::Unchanged);
+            return no_write_progress(handle);
         }
         #[cfg(test)]
         eprintln!(
@@ -127,7 +160,7 @@ fn send_handle(
     if written == bytes.len() as u32 {
         Ok(())
     } else {
-        Err(FrameFailure::Unchanged)
+        no_write_progress(handle)
     }
 }
 
@@ -357,7 +390,7 @@ mod tests {
             if let Some(cancel) = cancel {
                 cancel.join().unwrap();
             }
-            assert!(at.elapsed() < Duration::from_secs(2));
+            assert!(at.elapsed() < Duration::from_secs(2), "role={role}");
             assert_eq!(
                 result,
                 Err(if role == "hold" {
@@ -386,26 +419,29 @@ mod tests {
         let at = Instant::now();
         assert_eq!(send(&mut write, frame), Err(FrameFailure::Unchanged));
         assert!(at.elapsed() < Duration::from_secs(1));
-        // POSIX rejects this atomically. Windows byte pipes can write the
-        // one available byte; that must poison and close the sole writer.
-        let mut one = [0u8; 1];
-        read.read_exact(&mut one).unwrap();
-        assert_eq!(one[0], b'x');
-        let result = send(&mut write, frame);
         #[cfg(windows)]
         {
+            // Draining one byte from a 512-byte queued write does not release
+            // that entry's storage. Drain the complete entry, then refill all
+            // but one byte to exercise an actual partial write.
+            let mut first = [0u8; 512];
+            read.read_exact(&mut first).unwrap();
+            assert_eq!(first.as_slice(), fill.as_slice());
+            let mut refill = vec![b'y'; 511];
+            refill[510] = b'\n';
+            send(&mut write, &refill).unwrap();
+            eprintln!(
+                "proxy_pipe_fixture one_byte_room {}",
+                diagnostics(write.as_ref().unwrap())
+            );
+            let result = send(&mut write, frame);
             assert_eq!(result, Err(FrameFailure::Poisoned));
             assert!(write.is_none());
             assert_eq!(send(&mut write, frame), Err(FrameFailure::Poisoned));
             let mut remaining = Vec::new();
             read.read_to_end(&mut remaining).unwrap();
-            let mut expected: Vec<u8> = fill
-                .iter()
-                .cycle()
-                .skip(1)
-                .take(count - 1)
-                .copied()
-                .collect();
+            let mut expected: Vec<u8> = fill.iter().cycle().take(count - 512).copied().collect();
+            expected.extend_from_slice(&refill);
             expected.push(frame[0]);
             assert_eq!(remaining, expected);
             // No newline/complete command or later command followed the prefix.
@@ -413,6 +449,11 @@ mod tests {
         }
         #[cfg(not(windows))]
         {
+            // POSIX rejects the small frame atomically with one byte free.
+            let mut one = [0u8; 1];
+            read.read_exact(&mut one).unwrap();
+            assert_eq!(one[0], b'x');
+            let result = send(&mut write, frame);
             assert_eq!(result, Err(FrameFailure::Unchanged));
             let mut remaining = vec![0; count - 1];
             read.read_exact(&mut remaining).unwrap();
