@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use crate::local_cli::{read_authentication_evidence, LocalCliKind};
 
 pub mod antigravity;
+mod remote;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -165,6 +166,9 @@ pub fn read_local_cli_quota(
             Some("local_cli_codex_uses_official_reader"),
         ),
         LocalCliKind::Antigravity => antigravity::load_default(root, is_shared, now),
+        LocalCliKind::Grok | LocalCliKind::Kimi | LocalCliKind::OpenCode => {
+            remote::load(kind, root, now)
+        }
         _ => {
             let evidence = read_authentication_evidence(kind, root);
             if !evidence.is_configured() {

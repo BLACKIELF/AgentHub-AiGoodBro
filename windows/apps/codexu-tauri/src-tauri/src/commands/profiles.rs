@@ -72,7 +72,14 @@ pub async fn list_platforms() -> Result<Vec<PlatformDto>, String> {
                 codexu_core::local_cli::IsolationMode::Unsupported => "unsupported",
             }
             .to_string(),
-            quota_supported: *kind == LocalCliKind::Codex || *kind == LocalCliKind::Antigravity,
+            quota_supported: matches!(
+                kind,
+                LocalCliKind::Codex
+                    | LocalCliKind::Antigravity
+                    | LocalCliKind::Grok
+                    | LocalCliKind::Kimi
+                    | LocalCliKind::OpenCode
+            ),
             desktop: kind.is_desktop_application(),
         })
         .collect())
