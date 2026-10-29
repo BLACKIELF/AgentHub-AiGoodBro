@@ -176,11 +176,22 @@ mod tests {
             Err("capture_storage_root_invalid")
         );
         let path = root(&outside, "invalid");
-        let traversal = path.join("..").join("fullscreen");
+        // PathBuf::push normalizes .. for Windows verbatim paths returned by
+        // canonicalize. Build raw input so this tests the rejection boundary.
+        let mut traversal = path.as_os_str().to_os_string();
+        traversal.push(std::path::MAIN_SEPARATOR_STR);
+        traversal.push("..");
+        traversal.push(std::path::MAIN_SEPARATOR_STR);
+        traversal.push("fullscreen");
+        assert!(Path::new(&traversal)
+            .components()
+            .any(|part| matches!(part, Component::ParentDir)));
+        assert!(!path.join("app-state").exists());
         assert_eq!(
-            initialize(true, Some(traversal.into_os_string())),
+            initialize(true, Some(traversal)),
             Err("capture_storage_root_invalid")
         );
+        assert!(!path.join("app-state").exists());
         std::fs::write(path.join("app-state"), b"preserve").unwrap();
         assert_eq!(
             initialize(true, Some(path.clone().into_os_string())),
