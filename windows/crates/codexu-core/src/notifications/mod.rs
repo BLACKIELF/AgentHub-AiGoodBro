@@ -4,6 +4,7 @@ mod domain;
 mod events;
 mod personal;
 mod protocol;
+mod public_reset;
 mod service;
 mod storage;
 mod transport;
@@ -11,6 +12,10 @@ mod transport;
 pub use domain::*;
 pub use events::{OfficialQuotaObservation, OfficialRateWindow, ResetCard};
 pub use personal::PersonalLoginDto;
+pub use public_reset::{
+    NativePublicResetSource, PublicResetAnnouncementDto, PublicResetDeliveryState,
+    PublicResetForecastDto, PublicResetRequest, PublicResetResponse, PublicResetSource,
+};
 pub use service::NotificationMonitor;
 pub use service::NotificationService;
 pub use transport::{

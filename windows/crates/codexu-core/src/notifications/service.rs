@@ -21,10 +21,11 @@ pub struct NotificationService {
     pub(crate) storage: Storage,
     pub(crate) transport: Arc<dyn NotificationTransport>,
     pub(crate) state: Mutex<RuntimeState>,
-    exiting: AtomicBool,
+    pub(crate) exiting: AtomicBool,
+    pub(crate) public_runtime: super::public_reset::Runtime,
     monitor_active: Arc<AtomicBool>,
     pending: Mutex<Pending>,
-    wake: Arc<(Mutex<()>, std::sync::Condvar)>,
+    pub(crate) wake: Arc<(Mutex<()>, std::sync::Condvar)>,
     queue_failure: AtomicU8,
 }
 #[derive(Default)]
@@ -105,6 +106,7 @@ pub(crate) struct RuntimeState {
     pub login: Option<LoginAttempt>,
     failure: Option<&'static str>,
     failures: BTreeMap<ChannelKind, &'static str>,
+    public_operations: Vec<(Arc<AtomicBool>, Arc<AtomicBool>)>,
 }
 pub(crate) struct Operation {
     service: Arc<NotificationService>,
@@ -222,6 +224,9 @@ impl NotificationService {
                                     if cancelled.load(Ordering::Acquire) {
                                         break;
                                     }
+                                    if matches!(event.body, EventBody::CardsChanged { .. }) {
+                                        continue;
+                                    }
                                     if let Err(e) = service
                                         .dispatch_controlled(&event, Some((&cancelled, &poll)))
                                     {
@@ -234,8 +239,22 @@ impl NotificationService {
                         if let Ok(mut current) = poll.lock() {
                             *current = None;
                         }
+                        if let Err(e) =
+                            service.drain_card_changes_controlled(Some((&cancelled, &poll)))
+                        {
+                            service.record_failure(e.0);
+                        }
                         changed();
                         continue;
+                    }
+                    match service.drain_card_changes_controlled(Some((&cancelled, &poll))) {
+                        Ok(receipts) if !receipts.is_empty() => changed(),
+                        Err(e) => service.record_failure(e.0),
+                        _ => (),
+                    }
+                    match service.public_reset_tick(Some((&cancelled, &poll))) {
+                        Ok(true) | Err(_) => changed(),
+                        _ => (),
                     }
                     let bound = service.storage.read(|v| {
                         Ok(v.configs
@@ -295,10 +314,11 @@ impl NotificationService {
         if !cfg!(windows) {
             return fail("windows_required");
         }
-        Self::with_components(
+        Self::with_components_and_public_source(
             app_data.join("notifications-v1"),
             Arc::new(DpapiProtector),
             Arc::new(NativeNotificationTransport),
+            Arc::new(super::NativePublicResetSource),
         )
     }
     pub fn with_components(
@@ -312,6 +332,7 @@ impl NotificationService {
             transport,
             state: Mutex::new(RuntimeState::default()),
             exiting: AtomicBool::new(false),
+            public_runtime: Default::default(),
             monitor_active: Arc::new(AtomicBool::new(false)),
             pending: Mutex::new(Pending::default()),
             wake: Arc::new((Mutex::new(()), std::sync::Condvar::new())),
@@ -323,6 +344,27 @@ impl NotificationService {
             .into_iter()
             .map(|k| self.channel_state(k))
             .collect()
+    }
+    pub fn with_components_and_public_source(
+        root: PathBuf,
+        protector: Arc<dyn SecretProtector>,
+        transport: Arc<dyn NotificationTransport>,
+        source: Arc<dyn super::PublicResetSource>,
+    ) -> Result<Arc<Self>> {
+        let s = Self::with_components(root, protector, transport)?;
+        *s.public_runtime
+            .source
+            .write()
+            .map_err(|_| Failure("public_reset_source_unavailable"))? = source;
+        Ok(s)
+    }
+    pub(crate) fn cancel_public_sends(&self) {
+        self.public_runtime.cancel();
+        if let Ok(state) = self.state.try_lock() {
+            for (c, _) in &state.public_operations {
+                c.store(true, Ordering::Release);
+            }
+        }
     }
     pub fn channel_state(&self, kind: ChannelKind) -> Result<ChannelState> {
         let state = self
@@ -407,6 +449,38 @@ impl NotificationService {
         self.channel_state(kind)
     }
     pub fn set_options(&self, kind: ChannelKind, options: MessageOptions) -> Result<ChannelState> {
+        if matches!(kind, ChannelKind::WeCom | ChannelKind::PersonalWeChat) {
+            if self.exiting.load(Ordering::Acquire) {
+                return fail("notification_exiting");
+            }
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| Failure("notification_busy"))?;
+            self.storage.change(|v| {
+                for shared in [ChannelKind::WeCom, ChannelKind::PersonalWeChat] {
+                    let c = v.configs.entry(shared).or_default();
+                    c.options = options.clone();
+                    c.revision = c
+                        .revision
+                        .checked_add(1)
+                        .ok_or(Failure("notification_store_invalid"))?;
+                }
+                Ok(())
+            })?;
+            for shared in [ChannelKind::WeCom, ChannelKind::PersonalWeChat] {
+                if let Some(ops) = state.operations.get(&shared) {
+                    for (cancel, _) in ops {
+                        cancel.store(true, Ordering::Release);
+                    }
+                }
+                state.verified.remove(&shared);
+                state.failures.remove(&shared);
+            }
+            state.login = None;
+            drop(state);
+            return self.channel_state(kind);
+        }
         self.mutate_config(kind, |c| {
             c.options = options;
             Ok(())
@@ -514,6 +588,7 @@ impl NotificationService {
     /// No I/O, no wait and no new work during application exit.
     pub fn cancel_inflight_for_exit(&self) {
         self.exiting.store(true, Ordering::Release);
+        self.public_runtime.cancel();
         if let Ok(mut state) = self.state.try_lock() {
             for ops in state.operations.values() {
                 for (cancel, _) in ops {
@@ -528,14 +603,16 @@ impl NotificationService {
         }
     }
     pub fn has_inflight_operation(&self) -> bool {
-        self.state
-            .try_lock()
-            .map(|s| {
-                s.operations
-                    .values()
-                    .any(|v| v.iter().any(|(_, done)| !done.load(Ordering::Acquire)))
-            })
-            .unwrap_or(true)
+        self.public_runtime.checking.load(Ordering::Acquire)
+            || self
+                .state
+                .try_lock()
+                .map(|s| {
+                    s.operations
+                        .values()
+                        .any(|v| v.iter().any(|(_, done)| !done.load(Ordering::Acquire)))
+                })
+                .unwrap_or(true)
     }
     pub(crate) fn operation(
         self: &Arc<Self>,
@@ -593,7 +670,13 @@ impl NotificationService {
         let kinds = self.storage.read(|v| {
             Ok(v.configs
                 .iter()
-                .filter(|(_, c)| c.enabled)
+                .filter(|(kind, c)| {
+                    c.enabled
+                        && (!matches!(event.body, EventBody::CardsChanged { .. })
+                            || v.card_changes.contains_key(&super::hash(
+                                format!("{}:{}", kind.id(), event.key).as_bytes(),
+                            )))
+                })
                 .map(|(k, _)| *k)
                 .collect::<Vec<_>>())
         })?;
@@ -718,12 +801,72 @@ impl NotificationService {
             .change(|v| events::observe(v, observation, now, (five_hour, seven_day)))?;
         let mut receipts = Vec::new();
         for event in events {
+            if matches!(event.body, EventBody::CardsChanged { .. }) {
+                continue;
+            }
             receipts.extend(self.dispatch(&event)?);
+        }
+        receipts.extend(self.drain_card_changes()?);
+        Ok(receipts)
+    }
+    /// Worker-only durable retry path. A pending count change is rebound only
+    /// to fresh official evidence with that same current end count. It never
+    /// uses the age of a persisted observation as evidence of freshness.
+    pub fn drain_card_changes(self: &Arc<Self>) -> Result<Vec<DeliveryReceipt>> {
+        self.drain_card_changes_controlled(None)
+    }
+    fn drain_card_changes_controlled(
+        self: &Arc<Self>,
+        control: Option<(&AtomicBool, &Mutex<Option<Arc<AtomicBool>>>)>,
+    ) -> Result<Vec<DeliveryReceipt>> {
+        let candidates = self.storage.read(|v| {
+            let now = super::now();
+            let mut pending = Vec::new();
+            for (key, c) in &v.card_changes {
+                let Some(b) = v.baselines.get(&c.account_hash).filter(|b| {
+                    b.verified
+                        && b.available == Some(c.available)
+                        && b.observed_at >= c.observed_at
+                        && b.observed_at <= now
+                        && now - b.observed_at <= 300
+                }) else {
+                    continue;
+                };
+                if !v.configs.get(&c.channel).is_some_and(|cfg| cfg.enabled)
+                    || v.deliveries
+                        .get(key)
+                        .is_some_and(|d| d.phase != Phase::Pending)
+                    || c.last_attempt_at
+                        .is_some_and(|at| now - at < 300 && b.observed_at <= at)
+                {
+                    continue;
+                }
+                pending.push((c.observed_at, c.channel, c.event(b.observed_at)?));
+            }
+            pending.sort_by_key(|(at, kind, _)| (*at, *kind));
+            Ok(pending.into_iter().take(20).collect::<Vec<_>>())
+        })?;
+        let mut receipts = Vec::new();
+        for (_, kind, event) in candidates {
+            receipts.push(
+                self.send_event_to_controlled(kind, &event, control)
+                    .unwrap_or_else(|e| DeliveryReceipt {
+                        channel: kind,
+                        event_id: event.key,
+                        state: "not_sent",
+                        checked_at: super::now(),
+                        remote_message_id: None,
+                        failure_code: Some(e.0),
+                    }),
+            );
         }
         Ok(receipts)
     }
     fn event_current(v: &Vault, event: &NotificationEvent, now: i64) -> bool {
         event.current(now)
+            && event
+                .public_revision
+                .is_none_or(|rev| v.public_reset.enabled && v.public_reset.revision == rev)
             && event.proof.as_ref().is_none_or(|(id, at)| {
                 v.baselines
                     .get(id)
@@ -737,13 +880,31 @@ impl NotificationService {
     ) -> Result<DeliveryReceipt> {
         self.send_event_to_controlled(kind, event, None)
     }
-    fn send_event_to_controlled(
+    pub(crate) fn send_event_to_controlled(
         self: &Arc<Self>,
         kind: ChannelKind,
         event: &NotificationEvent,
         control: Option<(&AtomicBool, &Mutex<Option<Arc<AtomicBool>>>)>,
     ) -> Result<DeliveryReceipt> {
         let (op, c) = self.operation(kind)?;
+        if event
+            .expected_channel_revision
+            .is_some_and(|revision| revision != c.revision)
+        {
+            return fail("configuration_changed");
+        }
+        if event.public_revision.is_some() {
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| Failure("notification_busy"))?;
+            state
+                .public_operations
+                .retain(|(_, done)| !done.load(Ordering::Acquire));
+            state
+                .public_operations
+                .push((op.cancelled.clone(), op.completed.clone()));
+        }
         if let Some((stop, active)) = control {
             *active.lock().map_err(|_| Failure("notification_busy"))? = Some(op.cancelled.clone());
             if stop.load(Ordering::Acquire) {
@@ -835,6 +996,9 @@ impl NotificationService {
                 return fail("notification_store_capacity");
             }
             for key in &keys {
+                if let Some(pending) = v.card_changes.get_mut(key) {
+                    pending.last_attempt_at = Some(super::now());
+                }
                 v.deliveries.insert(
                     key.clone(),
                     Delivery {
@@ -860,14 +1024,14 @@ impl NotificationService {
         // A crash from this durable reservation onwards is uncertain, never an
         // automatic retry. Only a proven pre-send failure or rejection is pending.
         if let Err(e) = op.current() {
-            self.finish(&keys, &op, Phase::Pending)?;
+            self.finish(&keys, &op, Phase::Pending, event.public_revision)?;
             return Err(e);
         }
         let current = self
             .storage
             .read(|v| Ok(Self::event_current(v, event, super::now())))?;
         if !current {
-            self.finish(&keys, &op, Phase::Pending)?;
+            self.finish(&keys, &op, Phase::Pending, event.public_revision)?;
             return fail("stale_notification");
         }
         let result = self.transport.send(&request, &op.cancelled);
@@ -875,7 +1039,12 @@ impl NotificationService {
             Ok(r) => protocol::parse_response(kind, r),
             Err(e) => Accepted::Uncertain(e),
         };
-        let parsed = if op.current().is_err() {
+        let parsed = if op.current().is_err()
+            || !self
+                .storage
+                .read(|v| Ok(Self::event_current(v, event, super::now())))
+                .unwrap_or(false)
+        {
             Accepted::Uncertain(Failure("cancelled"))
         } else {
             parsed
@@ -885,7 +1054,9 @@ impl NotificationService {
             Accepted::Rejected(e) => (Phase::Pending, "rejected", None, Some(e.0)),
             Accepted::Uncertain(e) => (Phase::Uncertain, "uncertain", None, Some(e.0)),
         };
-        if self.finish(&keys, &op, phase)? == Phase::Uncertain && state == "accepted" {
+        if self.finish(&keys, &op, phase, event.public_revision)? == Phase::Uncertain
+            && state == "accepted"
+        {
             state = "uncertain";
             id = None;
             error = Some("cancelled");
@@ -917,11 +1088,20 @@ impl NotificationService {
             failure_code: error,
         })
     }
-    fn finish(&self, keys: &[String], op: &Operation, mut phase: Phase) -> Result<Phase> {
+    fn finish(
+        &self,
+        keys: &[String],
+        op: &Operation,
+        mut phase: Phase,
+        public_revision: Option<u64>,
+    ) -> Result<Phase> {
         self.storage.change(|v| {
             if phase == Phase::Sent
                 && (op.cancelled.load(Ordering::Acquire)
                     || self.exiting.load(Ordering::Acquire)
+                    || public_revision.is_some_and(|rev| {
+                        !v.public_reset.enabled || v.public_reset.revision != rev
+                    })
                     || v.configs
                         .get(&op.kind)
                         .is_none_or(|c| !c.enabled || c.revision != op.revision))
@@ -938,6 +1118,18 @@ impl NotificationService {
                 }
                 e.phase = phase.clone();
                 e.at = super::now();
+                if phase == Phase::Sent {
+                    if let Some(sent) = v.card_changes.get(key).cloned() {
+                        v.card_changes.retain(|_, c| {
+                            c.channel != sent.channel
+                                || c.account_hash != sent.account_hash
+                                || c.observed_at > sent.observed_at
+                        });
+                    }
+                }
+                if matches!(phase, Phase::Sent | Phase::Uncertain) {
+                    v.card_changes.remove(key);
+                }
             }
             Ok(phase)
         })

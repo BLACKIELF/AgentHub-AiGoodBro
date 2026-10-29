@@ -66,7 +66,7 @@ impl NotificationTransport for NativeNotificationTransport {
         }
         #[cfg(windows)]
         {
-            windows_send(r, cancelled)
+            windows_send(r, cancelled, 65536).map(|r| r.response)
         }
     }
 }
@@ -117,7 +117,17 @@ fn validate(r: &TransportRequest) -> Result<()> {
 }
 
 #[cfg(windows)]
-fn windows_send(r: &TransportRequest, cancelled: &AtomicBool) -> Result<TransportResponse> {
+pub(crate) struct NativeResponse {
+    pub response: TransportResponse,
+    pub content_type: Option<String>,
+    pub retry_after: Option<String>,
+}
+#[cfg(windows)]
+pub(crate) fn windows_send(
+    r: &TransportRequest,
+    cancelled: &AtomicBool,
+    limit: usize,
+) -> Result<NativeResponse> {
     use std::{
         ffi::c_void,
         time::{Duration, Instant},
@@ -302,13 +312,37 @@ fn windows_send(r: &TransportRequest, cancelled: &AtomicBool) -> Result<Transpor
             break;
         }
         body.extend_from_slice(&buf[..count as usize]);
-        if body.len() > 65536 {
+        if body.len() > limit {
             return fail("response_too_large");
         }
     }
     check()?;
-    Ok(TransportResponse {
-        status: u16::try_from(status).map_err(|_| Failure("invalid_response"))?,
-        body,
+    let header = |name: &str| {
+        let name = wide(name);
+        let mut buffer = [0u16; 256];
+        let mut len = (buffer.len() * 2) as u32;
+        if unsafe {
+            WinHttpQueryHeaders(
+                request.0,
+                65535,
+                name.as_ptr(),
+                buffer.as_mut_ptr() as *mut c_void,
+                &mut len,
+                std::ptr::null_mut(),
+            )
+        } == 0
+        {
+            return None;
+        }
+        let end = buffer.iter().position(|v| *v == 0).unwrap_or(buffer.len());
+        String::from_utf16(&buffer[..end]).ok()
+    };
+    Ok(NativeResponse {
+        content_type: header("Content-Type"),
+        retry_after: header("Retry-After"),
+        response: TransportResponse {
+            status: u16::try_from(status).map_err(|_| Failure("invalid_response"))?,
+            body,
+        },
     })
 }

@@ -277,6 +277,9 @@ pub(crate) fn parse_response(kind: ChannelKind, r: TransportResponse) -> Accepte
     if r.status == 429 {
         return Accepted::Rejected(Failure("rate_limited"));
     }
+    if kind == ChannelKind::Feishu && (400..500).contains(&r.status) {
+        return Accepted::Rejected(Failure("http_status"));
+    }
     if !(200..300).contains(&r.status) {
         return Accepted::Uncertain(Failure("http_status"));
     }

@@ -2,7 +2,7 @@
 //! through the Rust-only NotificationService dispatcher, never arbitrary IPC.
 use codexu_core::notifications::{
     ChannelKind, ChannelState, DeliveryReceipt, MessageOptions, NotificationService,
-    PersonalLoginDto,
+    PersonalLoginDto, PublicResetDeliveryState,
 };
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, State};
@@ -26,6 +26,34 @@ async fn run<T: Send + 'static>(
 }
 fn changed(app: &AppHandle) {
     let _ = app.emit("notification-channels:changed", ());
+}
+#[tauri::command]
+pub async fn get_public_reset_delivery_state(
+    state: State<'_, NotificationState>,
+) -> Result<PublicResetDeliveryState, String> {
+    run(state.manager()?, |m| m.public_reset_delivery_state()).await
+}
+#[tauri::command]
+pub async fn set_public_reset_delivery_enabled(
+    app: AppHandle,
+    state: State<'_, NotificationState>,
+    enabled: bool,
+) -> Result<PublicResetDeliveryState, String> {
+    let result = run(state.manager()?, move |m| {
+        m.set_public_reset_delivery_enabled(enabled)
+    })
+    .await;
+    changed(&app);
+    result
+}
+#[tauri::command]
+pub async fn request_public_reset_check(
+    app: AppHandle,
+    state: State<'_, NotificationState>,
+) -> Result<PublicResetDeliveryState, String> {
+    let result = run(state.manager()?, |m| m.request_public_reset_check()).await;
+    changed(&app);
+    result
 }
 
 #[tauri::command]

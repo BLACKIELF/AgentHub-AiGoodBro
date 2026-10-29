@@ -142,6 +142,8 @@ pub struct NotificationEvent {
     pub(crate) account: Option<String>,
     pub(crate) proof: Option<(String, i64)>,
     pub(crate) facts: Option<(Option<i64>, Option<i64>, Option<u32>)>,
+    pub(crate) public_revision: Option<u64>,
+    pub(crate) expected_channel_revision: Option<u64>,
     pub(crate) body: EventBody,
 }
 #[derive(Clone)]
@@ -159,6 +161,7 @@ pub(crate) enum EventBody {
         previous: u32,
         available: u32,
         previous_at: i64,
+        observed_at: i64,
     },
     CardsExpiring {
         batches: Vec<(i64, u32)>,
@@ -176,6 +179,11 @@ pub(crate) enum EventBody {
         banked: bool,
         text: String,
         announced_at: i64,
+    },
+    PublicForecast {
+        announced_at: i64,
+        latest_by: Option<i64>,
+        source_url: String,
     },
 }
 pub(crate) fn safe_label(s: &str) -> bool {
@@ -231,7 +239,7 @@ impl NotificationEvent {
             .filter(|s| !s.contains(['@', '/', '\\', ':', '.', '．', '｡', '。']))
             .collect::<Vec<_>>()
             .join(" ");
-        if clean.is_empty() || announced_at <= 0 || announced_at > at {
+        if clean.is_empty() || announced_at <= 0 || announced_at > at + 300 {
             return fail("invalid_notification");
         }
         Self::new(
@@ -263,6 +271,8 @@ impl NotificationEvent {
             account: account.map(str::to_owned),
             proof: None,
             facts: None,
+            public_revision: None,
+            expected_channel_revision: None,
             body,
         })
     }
@@ -295,8 +305,12 @@ impl NotificationEvent {
             EventBody::Switch { failure: None } => ("账号切换成功", "green"),
             EventBody::Switch { .. } => ("账号切换失败", "red"),
             EventBody::Task { .. } => ("任务状态变化", "blue"),
+            EventBody::PublicReset { ref text, .. } if public_claim_is_forecast(text) => {
+                ("公开重置预告 · 尚未确认", "orange")
+            }
             EventBody::PublicReset { banked: true, .. } => ("公开重置公告 · 重置卡", "purple"),
             EventBody::PublicReset { .. } => ("公开重置公告 · 常规额度", "turquoise"),
+            EventBody::PublicForecast { .. } => ("公开重置预告 · 尚未确认", "orange"),
         };
         let mut lines = Vec::new();
         if options.includes_agent_name {
@@ -330,6 +344,7 @@ impl NotificationEvent {
                 previous,
                 available,
                 previous_at,
+                observed_at,
             } => {
                 if options.includes_reset_credits {
                     lines.push(format!(
@@ -339,7 +354,7 @@ impl NotificationEvent {
                     lines.push(format!(
                         "上次：{}；本次：{}",
                         beijing(*previous_at),
-                        beijing(self.at)
+                        beijing(*observed_at)
                     ));
                     if available < previous {
                         lines.push("减少原因未确认。".into());
@@ -377,8 +392,32 @@ impl NotificationEvent {
                 text, announced_at, ..
             } => {
                 lines.push(text.clone());
+                lines.push(
+                    if public_claim_is_forecast(text) {
+                        "公开重置预告，尚未确认完成。"
+                    } else {
+                        "公开重置公告；公告类型本身不证明已完成或已到账。"
+                    }
+                    .into(),
+                );
                 lines.push(format!("公告时间（北京时间）：{}", beijing(*announced_at)));
                 lines.push("个人额度与重置卡以账号页官方读取为准。".into());
+            }
+            EventBody::PublicForecast {
+                announced_at,
+                latest_by,
+                source_url,
+            } => {
+                lines.push(format!("原帖时间（北京时间）：{}", beijing(*announced_at)));
+                if let Some(at) = latest_by {
+                    lines.push(format!("预计最晚（北京时间）：{}", beijing(*at)));
+                } else {
+                    lines.push("时间待公布".into());
+                }
+                lines.push(
+                    "仍待来源确认；到点不代表已完成重置。个人额度以账号官方读取为准。".into(),
+                );
+                lines.push(source_url.clone());
             }
             _ => {}
         }
@@ -404,6 +443,36 @@ impl NotificationEvent {
         }
         (title.into(), color, lines)
     }
+}
+
+fn public_claim_is_forecast(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    lower.contains("lands end of day")
+        || lower.split(|c: char| !c.is_alphabetic()).any(|w| {
+            matches!(
+                w,
+                "will"
+                    | "would"
+                    | "may"
+                    | "might"
+                    | "could"
+                    | "plan"
+                    | "planned"
+                    | "planning"
+                    | "expect"
+                    | "expected"
+                    | "soon"
+                    | "tomorrow"
+                    | "potential"
+                    | "potentially"
+                    | "possibly"
+                    | "hope"
+                    | "hoping"
+                    | "scheduled"
+                    | "intend"
+                    | "intended"
+            )
+        })
 }
 pub(crate) fn beijing(at: i64) -> String {
     chrono::DateTime::from_timestamp(at, 0)

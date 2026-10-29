@@ -16,6 +16,25 @@ use std::{
 
 struct SyntheticProtector;
 struct FailingProtector(Arc<AtomicBool>);
+struct FailingFromSeal {
+    calls: AtomicUsize,
+    from: AtomicUsize,
+}
+impl SecretProtector for FailingFromSeal {
+    fn seal(&self, c: &str, b: &[u8]) -> AccountResult<Vec<u8>> {
+        let call = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
+        if call >= self.from.load(Ordering::Acquire) {
+            Err(AccountError {
+                code: "synthetic_seal_failed",
+            })
+        } else {
+            SyntheticProtector.seal(c, b)
+        }
+    }
+    fn unseal(&self, c: &str, b: &[u8]) -> AccountResult<Vec<u8>> {
+        SyntheticProtector.unseal(c, b)
+    }
+}
 impl SecretProtector for FailingProtector {
     fn seal(&self, c: &str, b: &[u8]) -> AccountResult<Vec<u8>> {
         if self.0.load(Ordering::Acquire) {
@@ -925,6 +944,143 @@ fn ledger_write_failure_blocks_before_send_and_preserves_uncertain_after_accepta
             assert_eq!(transport.calls.load(Ordering::SeqCst), 1);
         }
     }
+}
+
+#[test]
+fn card_change_pending_is_atomic_with_baseline_and_recovers_before_reserve_after_restart() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp
+        .path()
+        .canonicalize()
+        .unwrap()
+        .join("synthetic-card-outbox");
+    let protector = Arc::new(FailingFromSeal {
+        calls: AtomicUsize::new(0),
+        from: AtomicUsize::new(usize::MAX),
+    });
+    let transport = SyntheticTransport::new();
+    let service =
+        NotificationService::with_components(root.clone(), protector.clone(), transport.clone())
+            .unwrap();
+    service
+        .save_channel(
+            ChannelKind::WeCom,
+            "11111111-2222-3333-4444-555555555555".into(),
+            None,
+        )
+        .unwrap();
+    service.set_enabled(ChannelKind::WeCom, true).unwrap();
+    let now = chrono::Utc::now().timestamp();
+    service
+        .observe_official_quota(official(now - 3, None, Some(2), None))
+        .unwrap();
+    protector.from.store(
+        protector.calls.load(Ordering::SeqCst) + 2,
+        Ordering::Release,
+    );
+    let result = service
+        .observe_official_quota(official(now - 2, None, Some(1), None))
+        .unwrap();
+    assert!(result.iter().all(|r| r.state == "not_sent"));
+    assert_eq!(transport.calls.load(Ordering::SeqCst), 0);
+    let plain = protector
+        .unseal(
+            "AiGoodBro.Next.Windows.notifications.v1",
+            &std::fs::read(root.join("channels.dpapi")).unwrap(),
+        )
+        .unwrap();
+    let vault: Value = serde_json::from_slice(&plain).unwrap();
+    assert_eq!(vault["card_changes"].as_object().unwrap().len(), 1);
+    protector.from.store(usize::MAX, Ordering::Release);
+    let reopened =
+        NotificationService::with_components(root, protector, transport.clone()).unwrap();
+    transport.json(json!({"errcode":0}));
+    assert_eq!(reopened.drain_card_changes().unwrap()[0].state, "accepted");
+    assert!(reopened.drain_card_changes().unwrap().is_empty());
+    assert_eq!(transport.calls.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn pending_count_change_needs_fresh_verified_matching_end_count() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp
+        .path()
+        .canonicalize()
+        .unwrap()
+        .join("synthetic-fresh-outbox");
+    let protector = Arc::new(FailingFromSeal {
+        calls: AtomicUsize::new(0),
+        from: AtomicUsize::new(usize::MAX),
+    });
+    let transport = SyntheticTransport::new();
+    let service =
+        NotificationService::with_components(root.clone(), protector.clone(), transport.clone())
+            .unwrap();
+    service
+        .save_channel(
+            ChannelKind::WeCom,
+            "11111111-2222-3333-4444-555555555555".into(),
+            None,
+        )
+        .unwrap();
+    service.set_enabled(ChannelKind::WeCom, true).unwrap();
+    let now = chrono::Utc::now().timestamp();
+    service
+        .observe_official_quota(official(now - 4, None, Some(2), None))
+        .unwrap();
+    protector.from.store(
+        protector.calls.load(Ordering::SeqCst) + 2,
+        Ordering::Release,
+    );
+    service
+        .observe_official_quota(official(now - 3, None, Some(1), None))
+        .unwrap();
+    protector.from.store(usize::MAX, Ordering::Release);
+    let reopened =
+        NotificationService::with_components(root, protector, transport.clone()).unwrap();
+    let unverified = OfficialQuotaObservation::new(
+        "synthetic-quota-account",
+        "Fixture",
+        now - 2,
+        false,
+        None,
+        None,
+        None,
+        Some(1),
+        None,
+    )
+    .unwrap();
+    assert!(reopened
+        .observe_official_quota(unverified)
+        .unwrap()
+        .is_empty());
+    assert!(reopened.drain_card_changes().unwrap().is_empty());
+    assert_eq!(transport.calls.load(Ordering::SeqCst), 0);
+    transport.json(json!({"errcode":0}));
+    let result = reopened
+        .observe_official_quota(official(now - 1, None, Some(1), None))
+        .unwrap();
+    assert_eq!(result.len(), 1);
+    assert_eq!(result[0].state, "accepted");
+    assert_eq!(transport.calls.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn wecom_and_personal_use_shared_mac_message_options_without_enabling_either() {
+    let f = Fixture::new();
+    let mut options = MessageOptions::default();
+    options.includes_quotas = false;
+    options.notifies_five_hour_reset = false;
+    f.service
+        .set_options(ChannelKind::PersonalWeChat, options)
+        .unwrap();
+    for channel in [ChannelKind::WeCom, ChannelKind::PersonalWeChat] {
+        let c = f.service.channel_state(channel).unwrap();
+        assert!(!c.enabled);
+        assert!(!c.options.includes_quotas);
+        assert!(!c.options.notifies_five_hour_reset);
+    }
+    assert_eq!(f.transport.calls.load(Ordering::SeqCst), 0);
 }
 
 #[cfg(windows)]

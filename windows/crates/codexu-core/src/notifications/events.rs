@@ -233,6 +233,7 @@ pub(crate) fn observe(
                         previous: before,
                         available: after,
                         previous_at: p.observed_at,
+                        observed_at: current.observed_at,
                     },
                 )?;
             }
@@ -269,6 +270,40 @@ pub(crate) fn observe(
             event.expiry_items = Some(expiry_items);
             event.proof = Some((o.account_hash, current.observed_at));
             events.push(event);
+        }
+    }
+    // Baseline and each enabled channel's safe pending intent commit together.
+    // A crash before reserve therefore cannot erase an observed count change.
+    for event in &events {
+        if let EventBody::CardsChanged {
+            previous,
+            available,
+            previous_at,
+            observed_at,
+        } = event.body
+        {
+            for (channel, config) in &v.configs {
+                if !config.enabled {
+                    continue;
+                }
+                let pending = super::storage::PendingCardChange {
+                    channel: *channel,
+                    account_hash: event.proof.as_ref().unwrap().0.clone(),
+                    label: o.label.clone(),
+                    previous,
+                    available,
+                    previous_at,
+                    observed_at,
+                    last_attempt_at: None,
+                };
+                let key = pending.key();
+                if !v.card_changes.contains_key(&key) {
+                    if v.card_changes.len() >= 16384 {
+                        return fail("notification_store_capacity");
+                    }
+                    v.card_changes.insert(key, pending);
+                }
+            }
         }
     }
     Ok(events)

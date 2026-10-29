@@ -54,6 +54,57 @@ pub(crate) struct Delivery {
     pub revision: u64,
     pub at: i64,
 }
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PendingCardChange {
+    pub channel: ChannelKind,
+    pub account_hash: String,
+    pub label: String,
+    pub previous: u32,
+    pub available: u32,
+    pub previous_at: i64,
+    pub observed_at: i64,
+    pub last_attempt_at: Option<i64>,
+}
+impl PendingCardChange {
+    pub fn event(&self, at: i64) -> Result<NotificationEvent> {
+        let mut event = NotificationEvent::new(
+            &format!("{}:cards-change:{}", self.account_hash, self.observed_at),
+            Some(&self.label),
+            EventBody::CardsChanged {
+                previous: self.previous,
+                available: self.available,
+                previous_at: self.previous_at,
+                observed_at: self.observed_at,
+            },
+            at,
+        )?;
+        event.proof = Some((self.account_hash.clone(), at));
+        Ok(event)
+    }
+    pub fn key(&self) -> String {
+        super::hash(
+            format!(
+                "{}:{}",
+                self.channel.id(),
+                super::hash(
+                    format!("{}:cards-change:{}", self.account_hash, self.observed_at).as_bytes()
+                )
+            )
+            .as_bytes(),
+        )
+    }
+    fn valid(&self) -> bool {
+        super::valid_hash(&self.account_hash)
+            && safe_label(&self.label)
+            && self.previous <= 1_000_000
+            && self.available <= 1_000_000
+            && self.previous != self.available
+            && self.previous_at > 0
+            && self.observed_at > self.previous_at
+            && self.last_attempt_at.is_none_or(|at| at > 0)
+    }
+}
 #[derive(Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Vault {
@@ -61,6 +112,10 @@ pub(crate) struct Vault {
     pub configs: BTreeMap<ChannelKind, ChannelConfig>,
     pub deliveries: BTreeMap<String, Delivery>,
     pub baselines: BTreeMap<String, Baseline>,
+    #[serde(default)]
+    pub card_changes: BTreeMap<String, PendingCardChange>,
+    #[serde(default)]
+    pub public_reset: super::public_reset::PublicData,
 }
 impl Vault {
     fn empty() -> Self {
@@ -74,6 +129,12 @@ impl Vault {
             || self.configs.len() > 4
             || self.deliveries.len() > 16384
             || self.baselines.len() > 512
+            || self.card_changes.len() > 16384
+            || !self.public_reset.valid(super::now() * 1000)
+            || self
+                .card_changes
+                .iter()
+                .any(|(key, c)| !c.valid() || *key != c.key())
             || self
                 .deliveries
                 .iter()
@@ -106,6 +167,25 @@ impl Storage {
         fs::secure_directory(&root).map_err(|_| Failure("notification_store_unavailable"))?;
         let s = Self { root, protector };
         s.read(|_| Ok(()))?;
+        if s.read(|v| {
+            Ok(v.deliveries.values().any(|d| d.phase == Phase::Sending)
+                || v.public_reset.has_sending())
+        })? {
+            s.change(|v| {
+                for d in v.deliveries.values_mut() {
+                    if d.phase == Phase::Sending {
+                        d.phase = Phase::Uncertain;
+                    }
+                }
+                v.card_changes.retain(|key, _| {
+                    v.deliveries
+                        .get(key)
+                        .is_none_or(|d| !matches!(d.phase, Phase::Sent | Phase::Uncertain))
+                });
+                v.public_reset.recover();
+                Ok(())
+            })?;
+        }
         Ok(s)
     }
     fn load(&self) -> Result<Vault> {
