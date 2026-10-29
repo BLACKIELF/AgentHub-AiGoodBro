@@ -24,12 +24,20 @@ def replace_once(text, original, replacement):
         raise RuntimeError("production injection point missing or ambiguous")
     return text.replace(original, replacement, 1)
 
+def replace_log_sink(text):
+    # Swift formatting may place the fixed format string on the next line.
+    # Match only that whitespace; preserve the exact diagnostic and arguments
+    # and still reject a missing or duplicated production call.
+    pattern = (re.escape('os_log(') + r'\s*' +
+               re.escape('"registry_failure stage=%{public}s cause=%{public}s errno=%{public}d",') + r'\s*' +
+               re.escape('log: registryLog, type: .error, stage.rawValue, cause.rawValue, systemError)'))
+    if len(re.findall(pattern, text)) != 1:
+        raise RuntimeError("production log injection point missing or ambiguous")
+    return re.sub(pattern, 'RegistryFault.record(stage.rawValue, cause.rawValue, systemError)', text, count=1)
+
 original = source.read_text()
-test_source = original
+test_source = replace_log_sink(original)
 for old, new in [
-    ('os_log("registry_failure stage=%{public}s cause=%{public}s errno=%{public}d",\n'
-     '            log: registryLog, type: .error, stage.rawValue, cause.rawValue, systemError)',
-     'RegistryFault.record(stage.rawValue, cause.rawValue, systemError)'),
     ('Darwin.open(directory.appendingPathComponent(Self.stateName).path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)',
      'RegistryFault.openRead(directory.appendingPathComponent(Self.stateName).path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)'),
     ('try handle.read(upToCount: min(64 * 1024, remaining))',
