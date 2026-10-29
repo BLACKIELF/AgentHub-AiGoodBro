@@ -112,11 +112,14 @@ test.beforeEach(async ({ page }) => {
 });
 
 test('late response from previous source cannot overwrite the selected source', async ({ page }) => {
+  await page.getByRole('navigation').getByRole('button', { name: 'Workspace', exact: true }).click();
   await expect(page.getByText('Synthetic source A', { exact: false })).toBeVisible();
   await page.evaluate(() => { window.holdNextUsage = true; });
   await page.locator('header').first().getByRole('button', { name: 'Refresh', exact: true }).click();
   await expect.poll(() => page.evaluate(() => typeof window.releaseOldUsage)).toBe('function');
+  await page.getByRole('navigation').getByRole('button', { name: 'Accounts', exact: true }).click();
   await page.getByTestId('profile-2').getByRole('button', { name: 'View usage' }).click();
+  await page.getByRole('navigation').getByRole('button', { name: 'Workspace', exact: true }).click();
   await expect(page.getByText('Synthetic source B', { exact: false })).toBeVisible();
   await page.evaluate(() => window.releaseOldUsage());
   await expect(page.getByText('Synthetic source A', { exact: false })).toHaveCount(0);

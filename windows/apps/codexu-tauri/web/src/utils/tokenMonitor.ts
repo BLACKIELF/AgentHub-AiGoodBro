@@ -1,6 +1,7 @@
 export const TOKEN_MONITOR_COMMIT = '5d2db368d8313415763860d594de00e46a663418';
 export interface StatisticsSource { id:string; providerId:string; label:string; enabled:boolean }
-export interface StatisticsPeriod { totalTokens:number|null;costUsd:number|null;timedTokens:number|null;timedOutputTokens:number|null;timedDurationMs:number|null;clients:Record<string,number|null>;models:Record<string,number|null>;capabilities:{throughput:boolean} }
+export interface StatisticsSession { client?:string;models?:Record<string,number|null>;totalTokens?:number|null;costUsd?:number|null;lastUsedAt?:string;startedAt?:string;turnEnded?:boolean;sessionKind?:string;archived?:boolean;deleted?:boolean;sourceDeleted?:boolean }
+export interface StatisticsPeriod { totalTokens:number|null;costUsd:number|null;timedTokens:number|null;timedOutputTokens:number|null;timedDurationMs:number|null;clients:Record<string,number|null>;models:Record<string,number|null>;capabilities:{throughput:boolean};sessions?:Record<string,StatisticsSession>|null }
 export interface StatisticsHistory {daily:Array<{date:string;tokens:number|null;cost:number|null;activeTimeMs:number|null;perClient:Record<string,unknown>;perModel:Record<string,unknown>}>;monthly:unknown[];summary:{totalTokens:number|null;totalCost:number|null;activeTimeMs:number|null;activeDays:number|null;messages:number|null;favoriteModel:string|null}}
 export interface StatisticsSnapshot {schemaVersion:1;requestId:string;engine:{repository:string;commit:string;version:string};collectedAt:string;timezone:string;status:'ok'|'partial'|'error';sources:Array<{id:string;providerId:string;status:string;coverage:string}>;coverage:{cost:string;entries:unknown[];days:unknown[]};errors:unknown[];historyCollectedAt:number|null;payload:{aggregate:{today:StatisticsPeriod|null;month:StatisticsPeriod|null;allTime:StatisticsPeriod|null};history:StatisticsHistory|null;costEstimates:unknown}}
 export interface StatisticsRate {mode:'burn';scope:'local';burnPerMinute:number;speedPerSecond:number;sampledAt:number;expiresAt:number;idle:boolean;revision:number;contextKey:string}
@@ -27,10 +28,27 @@ function parsePeriod(raw:unknown):StatisticsPeriod|null{
   if(raw===null)return null;const value=object(raw);
   const numeric=['totalTokens','costUsd','unpricedTokens','inputTokens','outputTokens','cacheReadTokens','cacheWriteTokens','unclassifiedTokens','timedTokens','timedOutputTokens','timedDurationMs'];
   const maps=['clients','clientCosts','clientCacheReads','clientCacheWrites','clientOutputs','clientUnclassifiedTokens','models','modelCosts','modelCacheReads','modelCacheWrites','modelOutputs','modelUnclassifiedTokens'];
-  keys(value,[...numeric,...maps,'capabilities','modelThroughput']);numeric.forEach(key=>nullable(value[key]));
+  keys(value,[...numeric,...maps,'capabilities','modelThroughput','sessions']);numeric.forEach(key=>nullable(value[key]));
   maps.forEach(key=>Object.entries(object(value[key])).forEach(([name,number])=>{string(name);nullable(number);}));
   const capability=object(value.capabilities);keys(capability,['throughput']);bool(capability.throughput);
   if(value.modelThroughput!==null)Object.values(object(value.modelThroughput)).forEach(item=>{const metrics=object(item);keys(metrics,['timedTokens','timedOutputTokens','timedDurationMs']);Object.values(metrics).forEach(nullable);});
+  if(value.sessions!=null){
+    const rows=Object.entries(object(value.sessions));if(rows.length>10000)fail();
+    for(const [id,rawRow] of rows){
+      if(!/^opaque-[a-f0-9]{24}$/.test(id))fail();const row=object(rawRow);
+      keys(row,['client','models','totalTokens','costUsd','lastUsedAt','startedAt','turnEnded','sessionKind','archived','deleted','sourceDeleted']);
+      for(const name of ['client','sessionKind'])if(name in row&&!string(row[name]).length)fail();
+      for(const name of ['totalTokens','costUsd'])if(name in row)nullable(row[name]);
+      for(const name of ['turnEnded','archived','deleted','sourceDeleted'])if(name in row)bool(row[name]);
+      for(const name of ['lastUsedAt','startedAt'])if(name in row){
+        const time=string(row[name],64);
+        if(!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(time)||!Number.isFinite(Date.parse(time)))fail();
+        const [year,month,day]=time.slice(0,10).split('-').map(Number),calendar=new Date(0);calendar.setUTCFullYear(year,month-1,day);
+        if(calendar.getUTCFullYear()!==year||calendar.getUTCMonth()!==month-1||calendar.getUTCDate()!==day)fail();
+      }
+      if('models'in row){const models=Object.entries(object(row.models));if(models.length>10000)fail();for(const [name,amount] of models){if(!string(name).length)fail();nullable(amount);}}
+    }
+  }
   return value as unknown as StatisticsPeriod;
 }
 export function parseStatisticsState(raw:unknown):StatisticsState{

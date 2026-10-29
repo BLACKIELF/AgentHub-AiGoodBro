@@ -37,16 +37,16 @@ test.describe('Windows dashboard rendering (synthetic fixtures)', () => {
     await page.clock.setFixedTime(new Date(FIXED_NOW_ISO));
     await installTauriStub(page, { settings: SYNTHETIC_SETTINGS, dashboard: SYNTHETIC_DASHBOARD });
     await page.goto('/');
-    await expect(page.locator('.dashboard-home')).toBeVisible();
+    await expect(page.locator('.workspace-main')).toBeVisible();
     await page.waitForLoadState('networkidle');
   });
 
   test('the synthetic bridge feeds real data into the dashboard', async ({ page }) => {
     // Guards against silently screenshotting an empty or error shell.
-    await expect(page.locator('.dashboard-home-overview')).toBeVisible();
+    await expect(page.locator('.dashboard-home-overview')).toHaveCount(0);
     await expect(page.locator('.dashboard-home-metrics')).toHaveCount(0);
     await expect(page.locator('[data-home-section="usage-summary"]')).toBeVisible();
-    await expect(page.getByRole('tab')).toHaveCount(TABS.length);
+    await expect(page.getByRole('tab')).toHaveCount(0);
     await expect(page.locator('main')).not.toContainText('Failed to load usage data');
     await expect(page.locator('main')).not.toContainText('Tauri runtime is unavailable');
   });
@@ -79,6 +79,7 @@ test.describe('Windows dashboard rendering (synthetic fixtures)', () => {
     await expect(section.locator('.token-monitor-panel')).toHaveCount(0);
     await page.reload();
     await expect(page.locator('[data-home-section="usage-summary"] > button')).toHaveAttribute('aria-expanded', 'false');
+    await page.getByRole('navigation').getByRole('button', { name: 'Workspace', exact: true }).click();
     await expect(page.locator('[data-home-section="overview"] > button')).toHaveAttribute('aria-expanded', 'true');
     await page.locator('#dashboard-home-tab-usage').click();
     await expect(page.locator('#dashboard-home-panel-usage .usage-panel')).toBeVisible();
@@ -120,12 +121,14 @@ test.describe('Windows dashboard rendering (synthetic fixtures)', () => {
     await expect(page.locator('html')).toHaveAttribute('data-palette', 'codexu.default');
   });
 
-  test('overview keeps leadership and quota while Token Monitor owns aggregate statistics', async ({ page }) => {
+  test('workspace retains leadership and quota while the home keeps same-source Token Monitor statistics', async ({ page }) => {
+    await page.getByRole('navigation').getByRole('button', { name: 'Workspace', exact: true }).click();
     await expect(page.locator('.dashboard-home-overview')).toHaveScreenshot('dashboard-overview.png');
   });
 
   for (const tab of TABS) {
     test(`${tab} tab panel`, async ({ page }) => {
+      await page.getByRole('navigation').getByRole('button', { name: 'Workspace', exact: true }).click();
       const tabButton = page.locator(`#dashboard-home-tab-${tab}`);
       await tabButton.click();
       await expect(tabButton).toHaveAttribute('aria-selected', 'true');

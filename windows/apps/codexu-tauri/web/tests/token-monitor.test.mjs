@@ -23,6 +23,14 @@ test('private fields, wrong source, timezone, stale provenance and unknown respo
  for(const change of [s=>s.snapshot.payload.history.daily[0].prompt='private',s=>s.snapshot.payload.aggregate.today.models['user@example.invalid']=1,s=>s.snapshot.timezone='UTC',s=>s.snapshot.engine.commit='old',s=>s.snapshot.sources[0].id='unregistered',s=>s.snapshot.payload.aggregate.today.totalTokens=-1,s=>s.unknown=true]){const value=state();change(value);assert.throws(()=>parseStatisticsState(value));}
  const value=state();value.snapshot.payload.aggregate.today.models['public/model@route']=0;assert.equal(parseStatisticsState(value).snapshot.payload.aggregate.today.models['public/model@route'],0);
 });
+test('masked session history preserves missing versus empty and rejects private or invalid rows',()=>{
+ const value=state(),period=value.snapshot.payload.aggregate.month,key='opaque-'+'a'.repeat(24);
+ period.sessions=null;assert.equal(parseStatisticsState(value).snapshot.payload.aggregate.month.sessions,null);
+ period.sessions={};assert.deepEqual(plain(parseStatisticsState(value).snapshot.payload.aggregate.month.sessions),{});
+ const row={client:'codex',models:{'public/model':0},totalTokens:0,costUsd:null,lastUsedAt:'2026-09-13T02:00:00Z',turnEnded:false};
+ period.sessions={[key]:row};assert.deepEqual(plain(parseStatisticsState(value).snapshot.payload.aggregate.month.sessions[key]),row);
+ for(const invalid of [{raw:row},{[key]:{...row,title:'private'}},{[key]:{...row,client:'private@example.invalid'}},{[key]:{...row,turnEnded:'false'}},{[key]:{...row,lastUsedAt:'2026-02-30T02:00:00Z'}},{[key]:{...row,totalTokens:-1}}]){period.sessions=invalid;assert.throws(()=>parseStatisticsState(value));}
+});
 test('live rate must match the current scope and expire according to the actual sample',()=>{
  const value=state(),now=Date.now();value.tokenRate={mode:'burn',scope:'local',burnPerMinute:0,speedPerSecond:0,sampledAt:now,expiresAt:now+8000,idle:false,revision:1,contextKey:value.contextKey};
  const parsed=parseStatisticsState(value);assert.equal(visibleStatisticsRate(parsed,now).burnPerMinute,0);assert.equal(visibleStatisticsRate(parsed,now+8000),null);assert.equal(visibleStatisticsRate({...parsed,phase:'failed'},now),null);

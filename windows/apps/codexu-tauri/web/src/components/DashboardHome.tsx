@@ -1,5 +1,5 @@
 import { Activity, Calendar, TrendingUp } from 'lucide-react';
-import { useRef, useState, type KeyboardEvent } from 'react';
+import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import type { CodexLeadershipSignal, UsageSnapshot } from '../types/models';
 import { LeadershipOverviewCard, LeadershipPanel } from './LeadershipPanel';
 import { MonthlyValueProgress } from './MonthlyValueProgress';
@@ -22,6 +22,7 @@ interface DashboardHomeProps {
   showOverview?: boolean;
   showTools?: boolean;
   showLocalStatistics?: boolean;
+  requestedToolTab?: { tab: 'tasks'; sequence: number };
 }
 
 type DashboardContentTab = 'tasks' | 'leadership' | 'usage' | 'projects' | 'skills';
@@ -39,7 +40,7 @@ const formatUSD = (value: unknown): string => {
   return value.toFixed(2);
 };
 
-export function DashboardHome({ snapshot, quotaSourceLabel, leadershipSignal, onQuotaRefresh, showOverview = true, showTools = true, showLocalStatistics = true }: DashboardHomeProps) {
+export function DashboardHome({ snapshot, quotaSourceLabel, leadershipSignal, onQuotaRefresh, showOverview = true, showTools = true, showLocalStatistics = true, requestedToolTab }: DashboardHomeProps) {
   const { t, language } = useI18n();
   const usage = snapshot?.local ?? null;
   const signal = leadershipSignal ?? null;
@@ -47,6 +48,7 @@ export function DashboardHome({ snapshot, quotaSourceLabel, leadershipSignal, on
   const hasUsage = usage !== null;
 
   const [activeDashboardTab, setActiveDashboardTab] = useState<DashboardContentTab>('tasks');
+  useEffect(() => { if (requestedToolTab) setActiveDashboardTab(requestedToolTab.tab); }, [requestedToolTab]);
   const tabRefs = useRef<Record<DashboardContentTab, HTMLButtonElement | null>>({
     tasks: null,
     leadership: null,

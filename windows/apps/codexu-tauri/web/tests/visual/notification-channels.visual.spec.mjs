@@ -1,10 +1,7 @@
 import { test, expect } from '@playwright/test';
-import path from 'node:path';
 import { FIXED_NOW_ISO, SYNTHETIC_DASHBOARD, SYNTHETIC_SETTINGS } from './synthetic-fixtures.mjs';
 import { installTauriStub } from './tauri-stub.mjs';
 
-const artifactRoot = process.env.CODEXU_VISUAL_ARTIFACT_ROOT || path.resolve('.local-artifacts/visual');
-const evidence = (name) => path.join(artifactRoot, 'notifications', name);
 const card = (page, kind) => page.getByTestId(`notification-${kind}`);
 const panel = (page) => page.locator('.notification-settings');
 async function settings(page, { language = 'en', theme = 'dark', open = true } = {}) {
@@ -95,7 +92,7 @@ test('four compact channels stay ordered, disabled until opt-in; no unfinished c
   await expect(card(page, 'telegram').getByText('Message content and alerts', { exact: true })).toHaveCount(0);
   await expect(panel(page).locator('textarea')).toHaveCount(0);
   await expect(panel(page)).not.toContainText('Task completed');
-  await panel(page).screenshot({ path: evidence('notifications-en-dark.png') });
+  await expect(panel(page)).toHaveScreenshot('notifications-en-dark.png');
 });
 
 test('save failure preserves a password draft; save does not enable or claim acceptance', async ({ page }) => {
@@ -129,12 +126,12 @@ test('API accepted, rejected, uncertain, skipped and unsent receipts remain dist
     await feishu.getByRole('button', { name: 'Send test message', exact: true }).click();
     await expect(feishu.locator('.notification-receipt')).toContainText(label);
     await expect(feishu.locator('.notification-receipt')).toHaveClass(new RegExp(`is-${state}`));
-    if (state === 'accepted') await feishu.screenshot({ path: evidence('notifications-api-accepted.png') });
-    if (state === 'uncertain') await feishu.screenshot({ path: evidence('notifications-uncertain.png') });
+    if (state === 'accepted') await expect(feishu).toHaveScreenshot('notifications-api-accepted.png');
+    if (state === 'uncertain') await expect(feishu).toHaveScreenshot('notifications-uncertain.png');
   }
   await page.waitForTimeout(2100);
   expect(await page.evaluate(() => window.notificationCalls.filter(value => value.command === 'test_notification_channel').length)).toBe(5);
-  await feishu.screenshot({ path: evidence('notifications-unsent.png') });
+  await expect(feishu).toHaveScreenshot('notifications-unsent.png');
 });
 
 test('disabling while a test is pending fences a late API acceptance', async ({ page }) => {
@@ -181,7 +178,7 @@ test('WeChat shared presets preserve reset opt-outs; failed save keeps draft and
   await editor.getByRole('button', { name: 'Save content options', exact: true }).click();
   await expect(editor.getByText('Content options saved', { exact: true })).toBeVisible();
   expect(await page.evaluate(() => window.notificationRows.filter(value => ['wechat', 'personal-wechat'].includes(value.channel)).map(value => ({ enabled: value.enabled, options: value.options })))).toEqual(Array.from({ length: 2 }, () => ({ enabled: false, options: { includesAgentName: false, includesAccountLabel: true, includesQuotas: false, includesResetTimes: false, includesResetCredits: true, resetExpiryDetail: 'none', notifiesFiveHourReset: false, notifiesSevenDayReset: true } })));
-  await editor.screenshot({ path: evidence('notifications-shared-options.png') });
+  await expect(editor).toHaveScreenshot('notifications-shared-options.png');
 });
 
 test('forget requires a concrete confirmation and only native success clears the saved binding', async ({ page }) => {
@@ -212,7 +209,7 @@ test('QR is rendered locally without requests or persisted pairing content; clos
   await expect(personal.locator('svg[role=img] path')).toHaveAttribute('d', /^M/);
   await expect(personal.locator('img, canvas, iframe')).toHaveCount(0);
   await expect(personal).not.toContainText('SYNTHETIC_QR_ONLY_NOT_A_LOGIN');
-  await personal.getByRole('img', { name: 'WeChat connection QR' }).screenshot({ path: evidence('synthetic-pairing-qr.png') });
+  await expect(personal.getByRole('img', { name: 'WeChat connection QR' })).toHaveScreenshot('synthetic-pairing-qr.png');
   expect(await page.evaluate(() => JSON.stringify({ local: { ...localStorage }, session: { ...sessionStorage } }))).not.toContain('SYNTHETIC_QR_ONLY_NOT_A_LOGIN');
   expect(requests.every(url => new URL(url).hostname === '127.0.0.1')).toBe(true);
   await panel(page).locator(':scope > summary').click();
@@ -268,7 +265,7 @@ test('verification waits for explicit bounded code, clears it on confirmed bindi
   await personal.getByRole('button', { name: 'Check WeChat context', exact: true }).click();
   await expect(personal.getByRole('button', { name: 'Send test message', exact: true })).toBeEnabled();
   expect(await page.evaluate(() => window.notificationCalls.find(value => value.command === 'refresh_personal_wechat_context').args)).toEqual({});
-  await personal.screenshot({ path: evidence('notifications-personal-context.png') });
+  await expect(personal).toHaveScreenshot('notifications-personal-context.png');
 });
 
 test('expired QR disappears and is cancelled, without a fabricated success or automatic new login', async ({ page }) => {
@@ -303,7 +300,7 @@ test('Chinese light narrow layout keeps all four cards and shared options inside
   }
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(480);
   await page.setViewportSize({ width: 480, height: 1800 });
-  await panel(page).screenshot({ path: evidence('notifications-zh-light-narrow.png') });
+  await expect(panel(page)).toHaveScreenshot('notifications-zh-light-narrow.png');
 });
 
 test('disabling supersedes a held personal cancellation without leaving a stuck cancelling state', async ({ page }) => {

@@ -144,6 +144,7 @@ pub struct NotificationEvent {
     pub(crate) facts: Option<(Option<i64>, Option<i64>, Option<u32>)>,
     pub(crate) public_revision: Option<u64>,
     pub(crate) expected_channel_revision: Option<u64>,
+    pub(crate) task_proof: Option<std::sync::Arc<super::task_completion::TaskCompletionProof>>,
     pub(crate) body: EventBody,
 }
 #[derive(Clone)]
@@ -273,6 +274,7 @@ impl NotificationEvent {
             facts: None,
             public_revision: None,
             expected_channel_revision: None,
+            task_proof: None,
             body,
         })
     }
@@ -280,6 +282,7 @@ impl NotificationEvent {
         self.at > 0
             && now >= self.at
             && now - self.at <= 300
+            && self.task_proof.as_ref().is_none_or(|proof| proof.current())
             && match &self.body {
                 EventBody::CardsExpiring { batches, .. } => batches.iter().all(|(at, _)| *at > now),
                 _ => true,

@@ -22,6 +22,8 @@ use tokio::sync::Mutex;
 
 #[path = "cli_workflow_console.rs"]
 mod console;
+#[path = "cli_workflow/local_actions.rs"]
+pub mod local_actions;
 
 #[derive(Clone, Copy, Default, serde::Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -68,6 +70,7 @@ impl Session {
 #[derive(Default)]
 pub struct WorkflowState {
     sessions: Mutex<BTreeMap<u64, Session>>,
+    local: local_actions::LocalState,
     quitting: AtomicBool,
 }
 impl WorkflowState {
@@ -140,15 +143,12 @@ fn project(id: u64, preferences: &WorkflowPreferences, session: &mut Session) ->
 }
 
 async fn linked_root(state: &AppState, id: u64) -> Result<PathBuf, String> {
-    let root = state
-        .config
-        .read()
-        .await
-        .profiles
-        .get(id)
-        .map_err(|_| "source_changed")?
-        .root
-        .clone();
+    let config = state.config.read().await;
+    let profile = config.profiles.get(id).map_err(|_| "source_changed")?;
+    if profile.kind != codexu_core::local_cli::LocalCliKind::Codex {
+        return Err("platform_not_supported".into());
+    }
+    let root = profile.root.clone();
     if normalize_root(&root).ok().as_ref() != Some(&root) {
         return Err("source_changed".into());
     }
@@ -460,6 +460,9 @@ pub async fn stop_account_terminal(
 /// Profile removal must call this before unlinking a row, keeping the owned
 /// terminal's stop control reachable. Turning participation off stays allowed.
 pub async fn has_owned_session(workflow: &WorkflowState, id: u64) -> bool {
+    if local_actions::profile_active(workflow, id).await {
+        return true;
+    }
     let mut sessions = workflow.sessions.lock().await;
     if let Some(session) = sessions.get_mut(&id) {
         session.refresh();
@@ -471,6 +474,9 @@ pub async fn has_owned_session(workflow: &WorkflowState, id: u64) -> bool {
 
 pub async fn begin_remove(workflow: &WorkflowState, id: u64) -> Result<(), String> {
     let mut sessions = workflow.sessions.lock().await;
+    if local_actions::profile_active(workflow, id).await {
+        return Err("Stop this account's terminal before unlinking".into());
+    }
     let session = sessions.entry(id).or_default();
     session.refresh();
     if session.active() || session.removing {
@@ -489,6 +495,9 @@ pub async fn end_remove(workflow: &WorkflowState, id: u64) {
 /// Use from ExitRequested before allowing a normal app quit. A contended
 /// state is conservatively active, so a launch cannot race normal shutdown.
 pub fn should_block_exit(workflow: &WorkflowState) -> bool {
+    if local_actions::blocks_exit(workflow) {
+        return true;
+    }
     let Ok(mut sessions) = workflow.sessions.try_lock() else {
         return true;
     };
@@ -503,6 +512,7 @@ pub fn should_block_exit(workflow: &WorkflowState) -> bool {
 /// closed when this process exits; unknown dispatch leases are not retired here.
 pub fn force_stop_owned(workflow: &WorkflowState) {
     workflow.begin_force_quit();
+    local_actions::force_stop(workflow);
     let Ok(mut sessions) = workflow.sessions.try_lock() else {
         return;
     };

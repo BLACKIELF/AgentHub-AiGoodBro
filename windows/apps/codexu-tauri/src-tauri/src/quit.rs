@@ -76,6 +76,7 @@ pub fn ask(app: &AppHandle) {
                 .state::<commands::cli_workflow::WorkflowState>()
                 .begin_force_quit();
             handle.state::<NativeServices>().seal_accounts_for_exit();
+            crate::compact_projection::shutdown(&handle);
             // Arm the independent exit deadline before any cleanup is attempted.
             // Only this process exits; no PID/name-based termination is used.
             let watchdog = std::thread::Builder::new()
@@ -94,6 +95,7 @@ pub fn ask(app: &AppHandle) {
             let spawned = std::thread::Builder::new()
                 .name("agb-exit-cleanup".into())
                 .spawn(move || {
+                    crate::compact_ui::shutdown(&cleanup_handle);
                     cleanup_handle.state::<NativeServices>().force_stop_owned();
                     commands::cli_workflow::force_stop_owned(
                         &cleanup_handle.state::<commands::cli_workflow::WorkflowState>(),

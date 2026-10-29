@@ -218,7 +218,42 @@ impl AccountRuntime for NativeAccountRuntime {
                 .enable_all()
                 .build()
                 .map_err(|_| fail("verification_unavailable"))?;
-            runtime.block_on(verify_official(&executable, home, expected))
+            runtime.block_on(verify_official(&executable, home, expected, None))
+        }
+    }
+    fn verify_in_operation(
+        &self,
+        home: &Path,
+        expected: &AccountIdentity,
+        guard: &dyn super::SwitchCommitGuard,
+    ) -> AccountResult<VerifiedCredential> {
+        #[cfg(not(windows))]
+        {
+            let _ = (home, expected, guard);
+            Err(fail("windows_required"))
+        }
+        #[cfg(windows)]
+        {
+            guard.recheck()?;
+            let permit = guard
+                .verification_process_permit()
+                .ok_or_else(|| fail("verification_process_authority_unavailable"))?;
+            let (executable, _executable_guard) =
+                resolve_executable_with_permit(home, Some(permit.clone()))?;
+            permit.recheck()?;
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|_| fail("verification_unavailable"))?;
+            let result = runtime.block_on(verify_official(
+                &executable,
+                home,
+                expected,
+                Some(permit.clone()),
+            ));
+            // The exact child/job has already reached stop_confirmed before
+            // result is observed. A cancelled guard cannot skip that cleanup.
+            result
         }
     }
     fn require_system_idle(&self) -> AccountResult<()> {
@@ -371,6 +406,13 @@ pub fn parse_authorization(bytes: &[u8]) -> AccountResult<Option<LoginAuthorizat
 
 #[cfg(windows)]
 fn resolve_executable(home: &Path) -> AccountResult<(PathBuf, std::fs::File)> {
+    resolve_executable_with_permit(home, None)
+}
+#[cfg(windows)]
+fn resolve_executable_with_permit(
+    home: &Path,
+    permit: Option<std::sync::Arc<dyn super::VerificationProcessPermit>>,
+) -> AccountResult<(PathBuf, std::fs::File)> {
     use std::os::windows::fs::OpenOptionsExt;
     let (package, triple) = if cfg!(target_arch = "aarch64") {
         ("codex-win32-arm64", "aarch64-pc-windows-msvc")
@@ -421,7 +463,17 @@ fn resolve_executable(home: &Path) -> AccountResult<(PathBuf, std::fs::File)> {
         else {
             continue;
         };
-        let mut child = match process::Child::start(&candidate, home, &["--version".into()]) {
+        let start = if let Some(permit) = &permit {
+            process::Child::start_for_verification(
+                &candidate,
+                home,
+                &["--version".into()],
+                permit.clone(),
+            )
+        } else {
+            process::Child::start(&candidate, home, &["--version".into()])
+        };
+        let mut child = match start {
             Ok(child) => child,
             Err(error) if error.code == "cleanup_unconfirmed" => return Err(error),
             Err(_) => continue,
@@ -470,6 +522,7 @@ async fn verify_official(
     executable: &Path,
     home: &Path,
     expected: &AccountIdentity,
+    permit: Option<std::sync::Arc<dyn super::VerificationProcessPermit>>,
 ) -> AccountResult<VerifiedCredential> {
     use futures_util::{SinkExt, StreamExt};
     use serde_json::{json, Value};
@@ -495,7 +548,11 @@ async fn verify_official(
     drop(listener);
     let mut args = crate::workflow::official_arguments();
     args.extend(["app-server".into(), "--listen".into(), endpoint.clone()]);
-    let mut child = process::Child::start(executable, home, &args)?;
+    let mut child = if let Some(permit) = permit {
+        process::Child::start_for_verification(executable, home, &args, permit)?
+    } else {
+        process::Child::start(executable, home, &args)?
+    };
     let result = timeout(Duration::from_secs(20),async {
         let deadline = tokio::time::Instant::now()+Duration::from_secs(5);
         let mut socket = loop {

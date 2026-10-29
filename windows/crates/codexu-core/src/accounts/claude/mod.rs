@@ -1,13 +1,15 @@
 //! Windows subscription accounts. OAuth stays in the official CLI and native
 //! encrypted vault; this module never starts a model request or returns secrets.
+mod cache;
 mod identity;
 mod native;
 mod service;
 mod storage;
 
+pub use cache::ClaudeQuotaDisplaySnapshot;
 pub use identity::{parse_claude_usage, ClaudeVerifiedCredential};
 pub use native::NativeClaudeRuntime;
-pub use service::ClaudeSubscriptionManager;
+pub use service::{ClaudeOpenScope, ClaudeSubscriptionManager};
 pub use storage::ClaudeAccountPaths;
 
 use super::{AccountResult, ManagedAccountDto};

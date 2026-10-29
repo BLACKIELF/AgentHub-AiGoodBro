@@ -17,7 +17,10 @@ export function useTokenMonitor(passive=false) {
     const timezone=Intl.DateTimeFormat().resolvedOptions().timeZone;
     if(!timezone)throw Error('statistics_timezone_required');
     if(current.current&&next.revision<current.current.revision)return;
-    if(next.snapshot&&current.current?.snapshot?.requestId===next.snapshot.requestId&&current.current.snapshot.collectedAt===next.snapshot.collectedAt&&current.current.contextKey===next.contextKey)next.snapshot=current.current.snapshot;
+    // A request ID and timestamp do not prove that a pushed payload is unchanged.
+    // Retain the reference only for an identical validated snapshot (for example
+    // a rate-only event), otherwise session and chart consumers must see it.
+    if(next.snapshot&&current.current?.snapshot&&current.current.contextKey===next.contextKey&&JSON.stringify(current.current.snapshot)===JSON.stringify(next.snapshot))next.snapshot=current.current.snapshot;
     const visible=invalidated.current||next.timezone!==timezone?{...next,snapshot:null,tokenRate:null}:next;
     current.current=visible;setState(visible);setError(null);
   },[]);

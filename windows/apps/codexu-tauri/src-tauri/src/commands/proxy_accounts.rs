@@ -14,7 +14,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
-use tauri::State;
+use tauri::{AppHandle, Emitter, State};
 
 static REFRESHING: AtomicBool = AtomicBool::new(false);
 struct RefreshGuard;
@@ -214,17 +214,20 @@ pub async fn get_local_proxy_accounts(
 }
 #[tauri::command]
 pub async fn refresh_local_proxy_accounts(
+    app: AppHandle,
     accounts: State<'_, ManagedAccountState>,
     proxy: State<'_, LocalProxyState>,
     native: State<'_, crate::native_services::NativeServices>,
     notifications: State<'_, NotificationState>,
 ) -> Result<Vec<ProxyAccountDto>, String> {
-    read(
+    let result = read(
         accounts.manager()?,
         native.gate.as_ref().map_err(|e| e.to_string())?.clone(),
         proxy.service()?,
         true,
         notifications.manager().ok(),
     )
-    .await
+    .await;
+    let _ = app.emit("quota-display:changed", ());
+    result
 }

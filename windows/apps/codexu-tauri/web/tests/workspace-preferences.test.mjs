@@ -25,3 +25,10 @@ test('display persistence writes only its chosen key and tolerates a denied writ
   assert.deepEqual(writes, [['aigoodbro.workspace.mode', 'simple']]);
   assert.doesNotThrow(() => preferences({ setItem() { throw Error('denied'); } }).saveChoice('mode', 'simple'));
 });
+
+test('native workspace navigation accepts only existing pages and the task tab', () => {
+  const parse = preferences({}).parseWorkspaceNavigation;
+  assert.equal(parse({ page: 'accounts' }).page, 'accounts');
+  assert.equal(parse({ page: 'tools', toolTab: 'tasks' }).toolTab, 'tasks');
+  for (const value of [null, [], { page: 'shell' }, { page: 'home', toolTab: 'tasks' }, { page: 'tools', toolTab: 'unverified' }, { page: 'home', path: '/synthetic' }]) assert.equal(parse(value), null);
+});

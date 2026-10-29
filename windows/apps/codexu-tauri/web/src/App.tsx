@@ -1,5 +1,6 @@
 import { Dashboard } from './windows/Dashboard';
 import { Settings } from './windows/Settings';
+import { TokenMonitorCompact } from './windows/TokenMonitorCompact';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import React from 'react';
 import { useI18n } from './i18n/I18nProvider';
@@ -43,7 +44,8 @@ function getWindowLabel() {
 
 function App() {
   const label = getWindowLabel();
-  return label === 'settings' ? <Settings /> : <Dashboard />;
+  const surface=({'token-monitor-popover':'popover','token-monitor-edge-peek':'edge_peek','token-monitor-edge-rail':'edge_rail','token-monitor-edge-card':'edge_card'} as const)[label as 'token-monitor-popover'];
+  return surface ? <TokenMonitorCompact surface={surface}/> : label === 'settings' ? <Settings /> : <Dashboard />;
 }
 
 function ErrorFallback({ error }: { error: Error | null }) {

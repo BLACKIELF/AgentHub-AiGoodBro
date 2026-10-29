@@ -17,6 +17,13 @@ async function claudePage(page, { language = 'en', theme = 'dark' } = {}) {
     window.__TAURI_INTERNALS__.invoke = async (command, args) => {
       if (command === 'plugin:event|listen' && args.event === 'claude-subscriptions:changed') { listeners.push(args.handler); return 381; }
       if (command === 'list_claude_subscriptions') { if (window.failClaudeRead) throw 'account_service_unavailable'; return structuredClone(window.claudeRows); }
+      if (command === 'rename_claude_subscription' || command === 'remove_claude_subscription') {
+        window.claudeCalls.push({ command, ...args });
+        if (window.failClaudeEdit) throw window.failClaudeEdit;
+        if (command === 'rename_claude_subscription') window.claudeRows.find(row => row.id === args.accountId).label = args.label;
+        else window.claudeRows = window.claudeRows.filter(row => row.id !== args.accountId);
+        window.emitClaudeChange(); return { account_id: args.accountId, phase: command === 'rename_claude_subscription' ? 'renamed' : 'removed', error_code: null };
+      }
       if (command === 'begin_claude_subscription_login') {
         window.claudeCalls.push({ command }); window.advanceClaudeLogin('starting');
         if (window.holdClaudeBegin) return new Promise(resolve => { window.finishClaudeBegin = () => resolve(structuredClone(window.claudeAttempt)); });
@@ -65,6 +72,30 @@ async function claudePage(page, { language = 'en', theme = 'dark' } = {}) {
   await expect(panel.getByTestId('claude-subscription-claude_a')).toBeVisible();
   return panel;
 }
+
+test('subscription more menu preserves a failed alias and removes only after a successful receipt', async ({ page }) => {
+  const panel = await claudePage(page), row = panel.getByTestId('claude-subscription-claude_b');
+  await row.getByLabel('More actions for Synthetic Claude B', { exact: true }).click();
+  await row.getByRole('button', { name: 'Rename', exact: true }).click();
+  let editor = page.getByRole('dialog', { name: 'Rename account', exact: true });
+  await editor.getByLabel('Account alias', { exact: true }).fill('Synthetic Claude Renamed');
+  await page.evaluate(() => { window.failClaudeEdit = 'duplicate_label'; });
+  await editor.getByRole('button', { name: 'Save alias', exact: true }).click();
+  await expect(editor.getByRole('alert')).toContainText('already exists');
+  await expect(editor.getByLabel('Account alias', { exact: true })).toHaveValue('Synthetic Claude Renamed');
+  await expect(row.locator('h3')).toHaveText('Synthetic Claude B');
+  await page.evaluate(() => { window.failClaudeEdit = null; });
+  await editor.getByRole('button', { name: 'Save alias', exact: true }).click();
+  await expect(editor).toHaveCount(0); await expect(row.locator('h3')).toHaveText('Synthetic Claude Renamed');
+  await row.getByLabel('More actions for Synthetic Claude Renamed', { exact: true }).click();
+  await row.getByRole('button', { name: 'Remove saved account', exact: true }).click();
+  editor = page.getByRole('dialog', { name: 'Remove saved account', exact: true });
+  await expect(editor).toContainText('system sign-in, Desktop settings and history are retained');
+  await expect(editor).toHaveScreenshot('claude-subscription-remove-confirm.png');
+  await editor.getByRole('button', { name: 'Remove account', exact: true }).click();
+  await expect(editor).toHaveCount(0); await expect(row).toHaveCount(0);
+  expect(await page.evaluate(() => window.claudeCalls.map(call => call.command))).toEqual(['rename_claude_subscription', 'rename_claude_subscription', 'remove_claude_subscription']);
+});
 
 test('official login stays separate from explicit capture and never returns OAuth URLs to the page', async ({ page }) => {
   const panel = await claudePage(page);

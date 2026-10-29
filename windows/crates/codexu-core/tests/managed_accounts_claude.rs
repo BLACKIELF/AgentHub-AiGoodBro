@@ -718,6 +718,245 @@ fn claude_usage_projects_only_returned_mac_fields_and_rejects_invalid_percent() 
         assert!(parse_claude_usage(body).is_err());
     }
 }
+
+#[test]
+fn claude_display_cache_getter_is_memory_only_and_keeps_original_success_receipt() {
+    let f = Fixture::new(true);
+    let id = f.saved_source();
+    assert!(f
+        .manager
+        .cached_claude_subscription_quota(&id)
+        .unwrap()
+        .is_none());
+    let result = f.manager.read_claude_subscription_quota(&id).unwrap();
+    let before = f.runtime.usage_count.load(Ordering::Acquire);
+    let path = f.paths.vault_root.join("subscriptions.dpapi");
+    let bytes = std::fs::read(&path).unwrap();
+    std::fs::remove_file(&path).unwrap();
+    for _ in 0..10 {
+        let cached = f
+            .manager
+            .cached_claude_subscription_quota(&id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(cached.account_id, id);
+        assert_eq!(
+            cached.identity_hash,
+            result.quota.identity_fingerprint.as_deref().unwrap()
+        );
+        assert_eq!(cached.last_success.unwrap().quota, result.quota);
+    }
+    assert_eq!(f.runtime.usage_count.load(Ordering::Acquire), before);
+    windows_creation::write_private_file_new(&path, &bytes).unwrap();
+    let snapshot = f
+        .manager
+        .cached_claude_subscription_quota(&id)
+        .unwrap()
+        .unwrap();
+    let debug = format!("{snapshot:?}");
+    assert!(!debug.contains("synthetic-access"));
+    assert!(!debug.contains("refreshToken"));
+}
+
+#[test]
+fn claude_display_cache_429_retains_success_and_no_extra_usage_requests() {
+    let f = Fixture::new(true);
+    let id = f.saved_source();
+    let success = f.manager.read_claude_subscription_quota(&id).unwrap();
+    *f.runtime.usage.lock().unwrap() = (429, Vec::new(), Some("900".into()));
+    let limited = f.manager.read_claude_subscription_quota(&id).unwrap();
+    assert!(limited.server_retry_at.is_some());
+    let cached = f
+        .manager
+        .cached_claude_subscription_quota(&id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(cached.last_success.unwrap().quota, success.quota);
+    assert_eq!(
+        cached.last_attempt.unwrap().quota.state,
+        codexu_core::readers::local_cli_quota::LocalCliQuotaState::RateLimited
+    );
+    let calls = f.runtime.usage_count.load(Ordering::Acquire);
+    f.manager.read_claude_subscription_quota(&id).unwrap();
+    assert_eq!(f.runtime.usage_count.load(Ordering::Acquire), calls);
+    let reopened = ClaudeSubscriptionManager::with_components(
+        f.paths.clone(),
+        f.protector.clone(),
+        f.runtime.clone(),
+        Some(f.gate.clone()),
+    )
+    .unwrap();
+    assert!(reopened
+        .cached_claude_subscription_quota(&id)
+        .unwrap()
+        .is_none());
+    assert_eq!(
+        reopened
+            .read_claude_subscription_quota(&id)
+            .unwrap()
+            .server_retry_at,
+        limited.server_retry_at
+    );
+    assert_eq!(f.runtime.usage_count.load(Ordering::Acquire), calls);
+    assert!(reopened
+        .cached_claude_subscription_quota(&id)
+        .unwrap()
+        .unwrap()
+        .last_success
+        .is_none());
+}
+
+#[test]
+fn claude_display_cache_unknown_query_keeps_history_but_never_available_attempt() {
+    use codexu_core::readers::local_cli_quota::LocalCliQuotaState;
+    let f = Fixture::new(true);
+    let id = f.saved_source();
+    let success = f.manager.read_claude_subscription_quota(&id).unwrap();
+    f.runtime.fail_next.store(true, Ordering::Release);
+    assert!(f.manager.read_claude_subscription_quota(&id).is_err());
+    let cached = f
+        .manager
+        .cached_claude_subscription_quota(&id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(cached.last_success.unwrap().quota, success.quota);
+    assert_eq!(
+        cached.last_attempt.unwrap().quota.state,
+        LocalCliQuotaState::Unavailable
+    );
+    *f.runtime.usage.lock().unwrap() = (503, Vec::new(), None);
+    assert_eq!(
+        f.manager
+            .read_claude_subscription_quota(&id)
+            .unwrap()
+            .quota
+            .state,
+        LocalCliQuotaState::Unavailable
+    );
+    let cached = f
+        .manager
+        .cached_claude_subscription_quota(&id)
+        .unwrap()
+        .unwrap();
+    assert!(cached.last_success.is_some());
+    assert_eq!(
+        cached.last_attempt.unwrap().quota.state,
+        LocalCliQuotaState::Unavailable
+    );
+}
+
+#[test]
+fn claude_display_cache_late_target_change_cannot_insert_or_keep_success() {
+    let f = Fixture::new(true);
+    let id = f.saved_source();
+    f.manager.read_claude_subscription_quota(&id).unwrap();
+    f.runtime.change_during_usage.store(true, Ordering::Release);
+    assert!(f.manager.read_claude_subscription_quota(&id).is_err());
+    assert!(f
+        .manager
+        .cached_claude_subscription_quota(&id)
+        .unwrap()
+        .is_none());
+}
+
+#[test]
+fn claude_display_cache_catalog_revision_change_invalidates_old_scope_without_fetch() {
+    let f = Fixture::new(true);
+    let id = f.saved_source();
+    f.manager.read_claude_subscription_quota(&id).unwrap();
+    let old = f
+        .manager
+        .cached_claude_subscription_quota(&id)
+        .unwrap()
+        .unwrap();
+    f.mutate_vault(|v| {
+        let r = v["records"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|r| r["id"] == id)
+            .unwrap();
+        r["revision"] = json!(old.record_revision + 1);
+    });
+    let calls = f.runtime.usage_count.load(Ordering::Acquire);
+    f.manager.list_claude_subscriptions().unwrap();
+    assert!(f
+        .manager
+        .cached_claude_subscription_quota(&id)
+        .unwrap()
+        .is_none());
+    assert_eq!(f.runtime.usage_count.load(Ordering::Acquire), calls);
+}
+
+#[test]
+fn claude_display_cache_credential_rotation_and_switch_invalidate_matching_receipts() {
+    let f = Fixture::new(true);
+    let source = f.saved_source();
+    let target = f.saved_target();
+    f.manager.read_claude_subscription_quota(&source).unwrap();
+    f.manager.read_claude_subscription_quota(&target).unwrap();
+    f.expire_target(&target);
+    let ticket = f.ready(&target);
+    assert_eq!(f.runtime.refresh_count.load(Ordering::Acquire), 1);
+    assert!(f
+        .manager
+        .cached_claude_subscription_quota(&target)
+        .unwrap()
+        .is_none());
+    assert!(f
+        .manager
+        .cached_claude_subscription_quota(&source)
+        .unwrap()
+        .is_none());
+    f.manager
+        .cancel_claude_subscription_switch(&ticket)
+        .unwrap();
+}
+
+#[test]
+fn claude_display_cache_expired_or_pending_credentials_keep_history_as_needs_login() {
+    use codexu_core::readers::local_cli_quota::LocalCliQuotaState;
+    let f = Fixture::new(true);
+    f.saved_source();
+    let target = f.saved_target();
+    f.manager.read_claude_subscription_quota(&target).unwrap();
+    f.expire_target(&target);
+    assert!(f.manager.read_claude_subscription_quota(&target).is_err());
+    let cached = f
+        .manager
+        .cached_claude_subscription_quota(&target)
+        .unwrap()
+        .unwrap();
+    assert!(cached.last_success.is_some());
+    assert_eq!(
+        cached.last_attempt.unwrap().quota.state,
+        LocalCliQuotaState::NeedsLogin
+    );
+}
+
+#[test]
+fn claude_display_cache_missing_windows_stay_empty_and_exit_rejects_future_gets() {
+    let f = Fixture::new(true);
+    let id = f.saved_source();
+    *f.runtime.usage.lock().unwrap() = (200, b"{}".to_vec(), None);
+    let real = f.manager.read_claude_subscription_quota(&id).unwrap();
+    assert!(real.quota.windows.is_empty());
+    let cached = f
+        .manager
+        .cached_claude_subscription_quota(&id)
+        .unwrap()
+        .unwrap();
+    assert!(cached.last_success.unwrap().quota.windows.is_empty());
+    f.manager.cancel_inflight_for_exit();
+    assert_eq!(
+        f.manager
+            .cached_claude_subscription_quota(&id)
+            .err()
+            .unwrap()
+            .code,
+        "account_service_exiting"
+    );
+}
 #[test]
 fn claude_quota_uses_saved_official_identity_and_preserves_rate_limit_deadline() {
     let f = Fixture::new(true);
@@ -860,4 +1099,209 @@ fn claude_explicit_login_and_prepare_retry_recovery_but_external_target_stays_un
         .join("switch-journal.dpapi")
         .exists());
     another.unchanged();
+}
+
+#[test]
+fn claude_catalog_rename_preserves_current_login_and_same_label_does_not_write() {
+    let f = Fixture::new(true);
+    let current = f.saved_source();
+    let target = f.saved_target();
+    f.manager.read_claude_subscription_quota(&current).unwrap();
+    let result = f
+        .manager
+        .rename_claude_subscription(&current, "Renamed".into())
+        .unwrap();
+    assert_eq!(result.phase, "renamed");
+    assert!(f
+        .manager
+        .cached_claude_subscription_quota(&current)
+        .unwrap()
+        .is_none());
+    let list = f.manager.list_claude_subscriptions().unwrap();
+    let record = list.iter().find(|r| r.id == current).unwrap();
+    assert_eq!(record.label, "Renamed");
+    assert_eq!(record.active_state, "verified");
+    let path = f.paths.vault_root.join("subscriptions.dpapi");
+    let before = std::fs::read(&path).unwrap();
+    f.manager
+        .rename_claude_subscription(&current, "Renamed".into())
+        .unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    assert_eq!(
+        f.manager
+            .rename_claude_subscription(&target, "renamed".into())
+            .err()
+            .unwrap()
+            .code,
+        "duplicate_label"
+    );
+    assert_eq!(
+        f.manager
+            .rename_claude_subscription(&target, "".into())
+            .err()
+            .unwrap()
+            .code,
+        "invalid_label"
+    );
+    f.unchanged();
+}
+
+#[test]
+fn claude_catalog_remove_only_saved_target_keeps_system_files_and_persistent_history() {
+    let f = Fixture::new(true);
+    let current = f.saved_source();
+    let target = f.saved_target();
+    f.manager.read_claude_subscription_quota(&target).unwrap();
+    let history = f.paths.live_directory.join("history.jsonl");
+    windows_creation::write_private_file_new(&history, b"synthetic retained history\n").unwrap();
+    assert_eq!(
+        f.manager
+            .remove_claude_subscription(&current)
+            .err()
+            .unwrap()
+            .code,
+        "account_is_current"
+    );
+    assert_eq!(
+        f.manager.remove_claude_subscription(&target).unwrap().phase,
+        "removed"
+    );
+    assert_eq!(f.manager.list_claude_subscriptions().unwrap().len(), 1);
+    assert!(f
+        .manager
+        .cached_claude_subscription_quota(&target)
+        .unwrap()
+        .is_none());
+    assert_eq!(
+        std::fs::read(history).unwrap(),
+        b"synthetic retained history\n"
+    );
+    assert_eq!(
+        f.manager
+            .remove_claude_subscription(&target)
+            .err()
+            .unwrap()
+            .code,
+        "account_not_found"
+    );
+    f.unchanged();
+}
+
+#[test]
+fn claude_catalog_pending_switch_login_unknown_identity_and_busy_block_slot_mutation() {
+    let f = Fixture::new(true);
+    f.saved_source();
+    let target = f.saved_target();
+    let ticket = f.ready(&target);
+    assert_eq!(
+        f.manager
+            .remove_claude_subscription(&target)
+            .err()
+            .unwrap()
+            .code,
+        "switch_in_progress"
+    );
+    assert_eq!(
+        f.manager
+            .rename_claude_subscription(&target, "Blocked".into())
+            .err()
+            .unwrap()
+            .code,
+        "switch_in_progress"
+    );
+    f.manager
+        .cancel_claude_subscription_switch(&ticket)
+        .unwrap();
+    f.gate.busy.store(true, Ordering::SeqCst);
+    assert_eq!(
+        f.manager
+            .remove_claude_subscription(&target)
+            .err()
+            .unwrap()
+            .code,
+        "account_busy"
+    );
+    f.gate.busy.store(false, Ordering::SeqCst);
+    f.runtime.wait.store(true, Ordering::SeqCst);
+    let login = f.manager.begin_claude_subscription_login().unwrap();
+    assert_eq!(
+        f.manager
+            .remove_claude_subscription(&target)
+            .err()
+            .unwrap()
+            .code,
+        "login_in_progress"
+    );
+    f.manager
+        .cancel_claude_subscription_login(&login.attempt_id)
+        .unwrap();
+    assert_eq!(f.finish(&login.attempt_id).phase, "cancelled");
+    // Same identity with externally advanced token bytes must not be treated
+    // as the old verified system login, even though the account UUID matches.
+    let mut advanced: Value = serde_json::from_slice(&f.before_auth).unwrap();
+    advanced["claudeAiOauth"]["refreshToken"] = json!("synthetic-new-system-refresh");
+    std::fs::write(
+        f.paths.live_directory.join(".credentials.json"),
+        serde_json::to_vec(&advanced).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        f.manager
+            .remove_claude_subscription(&target)
+            .err()
+            .unwrap()
+            .code,
+        "account_identity_unverified"
+    );
+    assert_eq!(f.manager.list_claude_subscriptions().unwrap().len(), 2);
+}
+
+#[test]
+fn claude_catalog_storage_failure_keeps_saved_slot_and_never_returns_removed() {
+    let f = Fixture::new(true);
+    f.saved_source();
+    let target = f.saved_target();
+    f.protector.reject.store(true, Ordering::SeqCst);
+    assert_eq!(
+        f.manager
+            .remove_claude_subscription(&target)
+            .err()
+            .unwrap()
+            .code,
+        "fixture_seal_failed"
+    );
+    f.protector.reject.store(false, Ordering::SeqCst);
+    assert!(f
+        .manager
+        .list_claude_subscriptions()
+        .unwrap()
+        .iter()
+        .any(|r| r.id == target));
+    f.unchanged();
+}
+
+#[test]
+fn claude_open_scope_is_read_only_current_bound_and_revoked_by_token_rotation() {
+    let f = Fixture::new(true);
+    let current = f.saved_source();
+    let other = f.saved_target();
+    let path = f.paths.vault_root.join("subscriptions.dpapi");
+    let vault = std::fs::read(&path).unwrap();
+    let calls = f.runtime.usage_count.load(Ordering::Acquire);
+    let scope = f.manager.current_open_scope(Some(&current)).unwrap();
+    assert_eq!(scope.account_id(), current);
+    assert!(scope.canonical_home().is_absolute());
+    f.manager.recheck_open_scope(&scope).unwrap();
+    assert!(f.manager.current_open_scope(Some(&other)).is_err());
+    assert_eq!(std::fs::read(&path).unwrap(), vault);
+    assert_eq!(f.runtime.usage_count.load(Ordering::Acquire), calls);
+    let mut advanced: Value = serde_json::from_slice(&f.before_auth).unwrap();
+    advanced["claudeAiOauth"]["refreshToken"] = json!("synthetic-external-successor");
+    std::fs::write(
+        f.paths.live_directory.join(".credentials.json"),
+        serde_json::to_vec(&advanced).unwrap(),
+    )
+    .unwrap();
+    assert!(f.manager.recheck_open_scope(&scope).is_err());
+    assert_eq!(std::fs::read(&path).unwrap(), vault);
 }

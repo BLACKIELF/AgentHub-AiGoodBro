@@ -1,6 +1,8 @@
 pub mod account_lifecycle;
 pub mod app_update;
+pub mod automatic_switch;
 pub mod cli_workflow;
+pub mod compact_ui;
 pub mod local_proxy;
 pub mod notifications;
 pub mod profile_quota;

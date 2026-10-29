@@ -29,7 +29,7 @@ export interface PreparedAccountSwitch {
   reason_code: string | null;
   expires_at: number | null;
 }
-export interface AccountOperation { account_id: string; phase: 'committed' | 'cancelled' | 'verified'; error_code: string | null }
+export interface AccountOperation { account_id: string; phase: 'committed' | 'cancelled' | 'verified' | 'renamed' | 'removed'; error_code: string | null }
 export const OFFICIAL_CODEX_DEVICE_URL = 'https://auth.openai.com/codex/device';
 const fail = (): never => { throw new Error('invalid_response'); };
 const object = (raw: unknown): Record<string, unknown> => raw && typeof raw === 'object' && !Array.isArray(raw) ? raw as Record<string, unknown> : fail();

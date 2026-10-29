@@ -14,6 +14,9 @@ const MAX_RECORDS: usize = 2048;
 const MAX_JOURNAL: u64 = 1024 * 1024;
 const REFRESH_AGE: i64 = 45;
 
+mod automatic;
+pub use automatic::AutomaticMaintenanceLease;
+
 fn now_ms() -> u64 {
     chrono::Utc::now().timestamp_millis().max(0) as u64
 }
@@ -47,6 +50,14 @@ struct Credential {
     expires_at: i64,
 }
 trait CredentialSource: Send + Sync {
+    fn recheck_active_scope(
+        &self,
+        _scope: &accounts::ActiveSystemScope,
+    ) -> accounts::AccountResult<()> {
+        Err(accounts::AccountError {
+            code: "active_scope_unverified",
+        })
+    }
     fn managed_ids(&self) -> Result<Vec<String>, ProxyFailure>;
     fn read(&self, id: &str, refresh: bool) -> Result<Credential, ProxyFailure>;
     fn identity(&self, id: &str) -> Result<Option<String>, ProxyFailure> {
@@ -72,6 +83,17 @@ trait CredentialSource: Send + Sync {
 }
 struct ManagedSource(Weak<accounts::AccountManager>);
 impl CredentialSource for ManagedSource {
+    fn recheck_active_scope(
+        &self,
+        scope: &accounts::ActiveSystemScope,
+    ) -> accounts::AccountResult<()> {
+        self.0
+            .upgrade()
+            .ok_or(accounts::AccountError {
+                code: "active_scope_unverified",
+            })?
+            .recheck_active_system_scope(scope)
+    }
     fn managed_ids(&self) -> Result<Vec<String>, ProxyFailure> {
         let manager = self.0.upgrade().ok_or(ProxyFailure::Unavailable)?;
         Ok(manager
@@ -279,6 +301,8 @@ struct Journal {
     records: Vec<Reservation>,
     #[serde(default)]
     desktop_writers: Vec<DesktopWriter>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    automatic_hold: Option<automatic::DurableReservation>,
 }
 impl Default for Journal {
     fn default() -> Self {
@@ -287,6 +311,7 @@ impl Default for Journal {
             active_run: None,
             records: vec![],
             desktop_writers: vec![],
+            automatic_hold: None,
         }
     }
 }
@@ -297,6 +322,12 @@ impl Journal {
             || self.desktop_writers.len() > 100
             || self.active_run.as_ref().is_some_and(|id| !opaque_id(id))
             || (self.active_run.is_none() && !self.records.is_empty())
+            || self.automatic_hold.as_ref().is_some_and(|hold| {
+                !hold.valid()
+                    || self.active_run.is_some()
+                    || !self.records.is_empty()
+                    || !self.desktop_writers.is_empty()
+            })
         {
             return Err(ProxyFailure::RegistryStateInvalid);
         }
@@ -342,6 +373,7 @@ struct State {
     journal: Journal,
     poisoned: bool,
     maintenance: Option<String>,
+    automatic_maintenance: Option<automatic::Reservation>,
     activities: BTreeMap<String, String>,
     credential_writers: BTreeMap<String, CredentialWriter>,
     /// Restarted processes cannot adopt an old ownership claim using its text.
@@ -426,12 +458,17 @@ impl ManagedProxyGate {
             None => Journal::default(),
         };
         journal.validate()?;
+        let recovered_maintenance = journal
+            .automatic_hold
+            .as_ref()
+            .map(|hold| hold.operation.clone());
         Ok(Arc::new(Self {
             shared: Arc::new(Shared {
                 state: Mutex::new(State {
                     journal,
                     poisoned: false,
-                    maintenance: None,
+                    maintenance: recovered_maintenance,
+                    automatic_maintenance: None,
                     activities: BTreeMap::new(),
                     credential_writers: BTreeMap::new(),
                     owned_desktop_writers: std::collections::BTreeSet::new(),
@@ -1361,6 +1398,7 @@ struct CredentialWriter {
     id: String,
     purpose: accounts::CredentialWritePurpose,
     identity: Option<String>,
+    automatic_operation: Option<String>,
 }
 fn check_write_purpose(
     s: &State,
@@ -1442,6 +1480,20 @@ fn check_managed_write_identity(s: &State, identity: Option<&str>) -> accounts::
     Ok(())
 }
 impl accounts::AccountOccupancyGate for ManagedProxyGate {
+    fn adopt_automatic_maintenance(
+        &self,
+        lease: &AutomaticMaintenanceLease,
+        target: &str,
+    ) -> accounts::AccountResult<Box<dyn accounts::SwitchMaintenanceLease>> {
+        self.adopt_automatic(lease, target)
+    }
+    fn acquire_automatic_credential_write(
+        &self,
+        lease: &AutomaticMaintenanceLease,
+        target: &str,
+    ) -> accounts::AccountResult<Box<dyn accounts::CredentialWriteLease>> {
+        self.automatic_credential_write(lease, target)
+    }
     fn acquire_switch_maintenance(
         &self,
         _account: &str,
@@ -1477,7 +1529,10 @@ impl accounts::AccountOccupancyGate for ManagedProxyGate {
             code: "occupancy_unknown",
         };
         let mut s = self.lock().map_err(|_| fail())?;
-        if !opaque_id(profile) || !s.credential_writers.is_empty() {
+        if !opaque_id(profile)
+            || !s.credential_writers.is_empty()
+            || s.journal.automatic_hold.is_some()
+        {
             return Err(accounts::AccountError {
                 code: "account_busy",
             });
@@ -1528,6 +1583,7 @@ impl accounts::AccountOccupancyGate for ManagedProxyGate {
                 id: id.clone(),
                 purpose,
                 identity,
+                automatic_operation: None,
             },
         );
         Ok(Box::new(CredentialWriteGuard {
@@ -1548,6 +1604,18 @@ impl accounts::CredentialWriteLease for CredentialWriteGuard {
         }
         let writer = s.credential_writers.get(&self.profile).ok_or_else(fail)?;
         if writer.id != self.id {
+            return Err(fail());
+        }
+        if let Some(operation) = &writer.automatic_operation {
+            if s.maintenance.as_ref() != Some(operation)
+                || !s
+                    .automatic_maintenance
+                    .as_ref()
+                    .is_some_and(|r| r.target == self.profile)
+            {
+                return Err(fail());
+            }
+        } else if s.automatic_maintenance.is_some() {
             return Err(fail());
         }
         check_write_purpose(&s, &self.profile, &writer.purpose)?;

@@ -1,5 +1,5 @@
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
-use tauri::tray::{MouseButton, TrayIconBuilder, TrayIconEvent};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager};
 
 use crate::app_state::ResolvedLanguage;
@@ -43,13 +43,24 @@ pub fn setup_tray(app: &AppHandle, language: ResolvedLanguage) -> anyhow::Result
         .icon(app.default_window_icon().unwrap().clone())
         .tooltip("AiGoodBro")
         .menu(&menu)
+        .show_menu_on_left_click(false)
         .on_tray_icon_event(|tray, event| {
             if let TrayIconEvent::Click {
                 button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                position,
                 ..
             } = event
             {
-                show_main_window(tray.app_handle());
+                let app = tray.app_handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(code) =
+                        crate::compact_ui::toggle_popover(app.clone(), Some(position)).await
+                    {
+                        tracing::warn!(code, "Compact interface unavailable");
+                        show_main_window(&app);
+                    }
+                });
             }
         })
         .on_menu_event(|app, event| match event.id.as_ref() {

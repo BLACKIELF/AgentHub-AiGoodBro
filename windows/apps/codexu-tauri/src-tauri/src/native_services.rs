@@ -8,6 +8,10 @@ use crate::commands::{
 };
 use codexu_core::{
     accounts::{claude::ClaudeSubscriptionManager, AccountManager},
+    automatic_switch::{
+        AutomaticSwitchEvent, AutomaticSwitchMonitor, AutomaticSwitchObserver,
+        AutomaticSwitchService,
+    },
     managed_proxy::{ManagedActivityGuard, ManagedProxyGate, ManagedProxySecrets},
     notifications::{NotificationMonitor, NotificationService},
     proxy::{LocalProxyService, ProxyDesktopConnector, ProxyDesktopMonitor, ProxyRecoveryMonitor},
@@ -30,6 +34,9 @@ pub struct NativeServices {
     monitor: Mutex<Option<ProxyRecoveryMonitor>>,
     desktop_monitor: Mutex<Option<ProxyDesktopMonitor>>,
     notification_monitor: Mutex<Option<NotificationMonitor>>,
+    live_tasks: Result<Arc<crate::live_tasks::LiveTasks>, &'static str>,
+    automatic_switch: Result<Arc<AutomaticSwitchService>, &'static str>,
+    automatic_monitor: Mutex<Option<AutomaticSwitchMonitor>>,
 }
 impl NativeServices {
     pub fn statistics_accounts(&self) -> Result<Arc<AccountManager>, String> {
@@ -45,9 +52,13 @@ impl NativeServices {
             .map_err(|e| e.code().to_owned())
     }
     pub fn proxy_blocks_normal_exit(&self) -> bool {
-        self.accounts
+        self.automatic_switch
             .as_ref()
             .is_ok_and(|service| service.has_inflight_operation())
+            || self
+                .accounts
+                .as_ref()
+                .is_ok_and(|service| service.has_inflight_operation())
             || self
                 .claude
                 .as_ref()
@@ -63,6 +74,9 @@ impl NativeServices {
     }
     /// Synchronous no-I/O fence applied in the confirmation callback itself.
     pub fn seal_accounts_for_exit(&self) {
+        if let Ok(service) = &self.automatic_switch {
+            service.cancel_for_exit();
+        }
         if let Ok(accounts) = &self.accounts {
             accounts.cancel_inflight_for_exit();
         }
@@ -87,6 +101,17 @@ impl NativeServices {
     /// Background statistics do not count as an interactive task. A normal
     /// exit still closes their owned process tree without an extra prompt.
     pub fn stop_passive_services(&self) {
+        if let Ok(service) = &self.automatic_switch {
+            service.cancel_for_exit();
+        }
+        if let Ok(monitor) = self.automatic_monitor.try_lock() {
+            if let Some(monitor) = &*monitor {
+                monitor.cancel();
+            }
+        }
+        if let Ok(live) = &self.live_tasks {
+            live.cancel();
+        }
         if let Ok(notifications) = &self.notifications {
             notifications.cancel_inflight_for_exit();
         }
@@ -109,6 +134,56 @@ impl NativeServices {
             if let Some(monitor) = monitor.as_ref() {
                 monitor.cancel();
             }
+        }
+    }
+}
+struct SwitchObserver {
+    app: tauri::AppHandle,
+    notifications: Option<Arc<NotificationService>>,
+}
+impl AutomaticSwitchObserver for SwitchObserver {
+    fn record(&self, event: AutomaticSwitchEvent) {
+        use codexu_core::notifications::{NotificationEvent, SwitchFailure};
+        let _ = self.app.emit("automatic-switch:changed", ());
+        let (key, failure, at) = match event {
+            AutomaticSwitchEvent::Succeeded {
+                source_id,
+                target_id,
+                at_ms,
+            } => {
+                let _ = self.app.emit("managed-accounts:changed", ());
+                (format!("auto:{source_id}:{target_id}:{at_ms}"), None, at_ms)
+            }
+            AutomaticSwitchEvent::Failed {
+                source_id,
+                target_id,
+                failure,
+                at_ms,
+            } => {
+                let safe = match failure {
+                    codexu_core::automatic_switch::Failure::NoEligibleCandidate => {
+                        SwitchFailure::NoEligibleAccount
+                    }
+                    codexu_core::automatic_switch::Failure::TaskBusy
+                    | codexu_core::automatic_switch::Failure::AccountBusy => SwitchFailure::AppBusy,
+                    codexu_core::automatic_switch::Failure::IdentityChanged => {
+                        SwitchFailure::ValidationFailed
+                    }
+                    _ => SwitchFailure::Unknown,
+                };
+                (
+                    format!("auto:{source_id}:{target_id}:{at_ms}"),
+                    Some(safe),
+                    at_ms,
+                )
+            }
+            AutomaticSwitchEvent::LowQuota { .. } => return,
+        };
+        if let (Some(service), Ok(event)) = (
+            &self.notifications,
+            NotificationEvent::account_switch(&key, "Codex", failure, (at / 1000) as i64),
+        ) {
+            let _ = service.queue_event(event);
         }
     }
 }
@@ -178,7 +253,12 @@ pub fn install(app: &mut App, root: PathBuf) -> Result<(), Box<dyn std::error::E
         make_proxy(&root, &resources, accounts, gate)
     });
     let (proxy, monitor) = match proxy {
-        Ok(proxy) => match proxy.start_recovery_monitor() {
+        Ok(proxy) => match proxy.start_recovery_monitor_with_listener({
+            let handle = app.handle().clone();
+            Arc::new(move |_| {
+                let _ = handle.emit("local-proxy:changed", ());
+            })
+        }) {
             Ok(monitor) => (Ok(proxy), Some(monitor)),
             Err(_) => (Err("proxy_monitor_unavailable"), None),
         },
@@ -269,6 +349,38 @@ pub fn install(app: &mut App, root: PathBuf) -> Result<(), Box<dyn std::error::E
     app.manage(LocalProxyDesktopState(desktop.clone()));
     app.manage(TokenMonitorAppState(statistics.clone()));
     app.manage(NotificationState(notifications.clone()));
+    let live_tasks = accounts.as_ref().map_err(|e| *e).and_then(|accounts| {
+        crate::live_tasks::LiveTasks::new(
+            app.handle().clone(),
+            accounts.clone(),
+            gate.as_ref().map_err(|e| *e)?.clone(),
+            notifications.as_ref().ok(),
+        )
+    });
+    app.manage(crate::live_tasks::LiveTaskAppState(live_tasks.clone()));
+    let automatic_switch = accounts.as_ref().map_err(|e| *e).and_then(|accounts| {
+        AutomaticSwitchService::new_with_native_controller(
+            root.join("automatic-switch-v1.json"),
+            accounts.clone(),
+            gate.as_ref().map_err(|e| *e)?.clone(),
+            live_tasks.as_ref().map_err(|e| *e)?.source.clone(),
+            Some(Arc::new(SwitchObserver {
+                app: app.handle().clone(),
+                notifications: notifications.as_ref().ok().cloned(),
+            })),
+        )
+        .map_err(|e| e.code())
+    });
+    let (automatic_switch, automatic_monitor) = match automatic_switch {
+        Ok(service) => match service.start_monitor() {
+            Ok(monitor) => (Ok(service), Some(monitor)),
+            Err(error) => (Err(error.code()), None),
+        },
+        Err(error) => (Err(error), None),
+    };
+    app.manage(crate::commands::automatic_switch::AutomaticSwitchState(
+        automatic_switch.clone(),
+    ));
     app.manage(NativeServices {
         gate,
         accounts,
@@ -277,6 +389,9 @@ pub fn install(app: &mut App, root: PathBuf) -> Result<(), Box<dyn std::error::E
         desktop,
         statistics,
         notifications,
+        live_tasks,
+        automatic_switch,
+        automatic_monitor: Mutex::new(automatic_monitor),
         monitor: Mutex::new(monitor),
         desktop_monitor: Mutex::new(desktop_monitor),
         notification_monitor: Mutex::new(notification_monitor),

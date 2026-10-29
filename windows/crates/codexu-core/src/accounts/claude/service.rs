@@ -3,6 +3,7 @@ use super::super::{
     PreparedSwitchDto, SecretProtector, SwitchMaintenanceLease,
 };
 use super::{
+    cache::{Attempt as QuotaAttempt, DisplayCache, Scope as QuotaScope},
     identity,
     storage::{
         self, ActiveProof, Journal, MutationLocks, QuotaRetry, Record, RefreshRecovery, Store,
@@ -47,6 +48,7 @@ pub struct ClaudeSubscriptionManager {
     tickets: Mutex<HashMap<String, Ticket>>,
     exiting: AtomicBool,
     cleanup_unconfirmed: AtomicBool,
+    quota_cache: DisplayCache,
 }
 impl ClaudeSubscriptionManager {
     pub fn native(app_data_dir: PathBuf) -> AccountResult<Arc<Self>> {
@@ -89,6 +91,7 @@ impl ClaudeSubscriptionManager {
             tickets: Mutex::new(HashMap::new()),
             exiting: AtomicBool::new(false),
             cleanup_unconfirmed: AtomicBool::new(false),
+            quota_cache: DisplayCache::default(),
         }))
     }
     fn store(&self) -> AccountResult<Store<'_>> {
@@ -104,6 +107,7 @@ impl ClaudeSubscriptionManager {
     fn recovered(&self) -> AccountResult<()> {
         self.accepting()?;
         if self.cleanup_unconfirmed.load(Ordering::SeqCst) {
+            self.quota_cache.degrade_all();
             return Err(fail("cleanup_unconfirmed"));
         }
         if self
@@ -113,9 +117,11 @@ impl ClaudeSubscriptionManager {
             .values()
             .any(|a| a.dto.error_code == Some("cleanup_unconfirmed"))
         {
+            self.quota_cache.degrade_all();
             return Err(fail("cleanup_unconfirmed"));
         }
         if self.paths.journal().exists() {
+            self.quota_cache.degrade_all();
             Err(fail("recovery_required"))
         } else {
             Ok(())
@@ -198,7 +204,7 @@ impl ClaudeSubscriptionManager {
             .read()
             .map_err(|_| fail("occupancy_unknown"))?
             .is_some();
-        Ok(store
+        let result = store
             .vault
             .records
             .iter()
@@ -261,7 +267,25 @@ impl ClaudeSubscriptionManager {
                     recovery_required: recovery,
                 }
             })
-            .collect())
+            .collect();
+        let scopes = store
+            .vault
+            .records
+            .iter()
+            .map(|r| {
+                (
+                    quota_scope(r),
+                    store.vault.refresh.contains_key(&r.id)
+                        || identity::oauth(&r.credential.bytes, false).is_err(),
+                )
+            })
+            .collect::<Vec<_>>();
+        drop(store);
+        self.quota_cache.sync_catalog(
+            &scopes,
+            recovery || self.cleanup_unconfirmed.load(Ordering::Acquire),
+        );
+        Ok(result)
     }
     pub fn begin_claude_subscription_login(
         self: &Arc<Self>,
@@ -270,6 +294,7 @@ impl ClaudeSubscriptionManager {
         let _op = self.mutation.try_lock().map_err(|_| fail("account_busy"))?;
         self.recovered()?;
         self.no_other_operation()?;
+        self.quota_cache.degrade_all();
         self.runtime.validate_environment()?;
         if !self.runtime.available() {
             return Err(fail("claude_cli_unavailable"));
@@ -343,6 +368,7 @@ impl ClaudeSubscriptionManager {
                 .is_err_and(|e| e.code == "cleanup_unconfirmed")
             {
                 self.cleanup_unconfirmed.store(true, Ordering::SeqCst);
+                self.quota_cache.degrade_all();
                 let _ = directory.keep();
                 return Err(fail("cleanup_unconfirmed"));
             }
@@ -421,6 +447,7 @@ impl ClaudeSubscriptionManager {
         let _op = self.mutation.try_lock().map_err(|_| fail("account_busy"))?;
         self.recovered()?;
         self.no_other_operation()?;
+        self.quota_cache.degrade_all();
         crate::profiles::validate_label(&label).map_err(|_| fail("invalid_label"))?;
         self.runtime.validate_environment()?;
         let lease = self.maintenance("claude-capture")?;
@@ -535,6 +562,7 @@ impl ClaudeSubscriptionManager {
             store.vault.active = Some(active_proof(&id, &fingerprint, &target)?);
         }
         self.accepting()?;
+        self.quota_cache.invalidate(&id);
         store.save()?;
         drop(store);
         if let Some(attempt) = attempt_id {
@@ -553,6 +581,7 @@ impl ClaudeSubscriptionManager {
     /// The pending record is durable before a rotating grant is consumed. A
     /// lost response never permits retrying that old grant on a later attempt.
     fn verified_saved(&self, id: &str) -> AccountResult<Record> {
+        self.quota_cache.invalidate(id);
         let (record, pending) = {
             let store = self.store()?;
             (
@@ -673,6 +702,7 @@ impl ClaudeSubscriptionManager {
         let _op = self.mutation.try_lock().map_err(|_| fail("account_busy"))?;
         self.recovered()?;
         self.no_other_operation()?;
+        self.quota_cache.degrade_all();
         self.runtime.validate_environment()?;
         let lease = self.maintenance(id)?;
         let before = Target::read(&self.paths)?;
@@ -727,6 +757,7 @@ impl ClaudeSubscriptionManager {
             }
             current.credential = source;
             current.revision += 1;
+            self.quota_cache.invalidate(&source_id);
             store.save()?;
             store.vault.revision
         };
@@ -780,6 +811,7 @@ impl ClaudeSubscriptionManager {
     ) -> AccountResult<AccountOperationDto> {
         let _op = self.mutation.try_lock().map_err(|_| fail("account_busy"))?;
         self.recovered()?;
+        self.quota_cache.degrade_all();
         let ticket = self
             .tickets
             .lock()
@@ -905,6 +937,7 @@ impl ClaudeSubscriptionManager {
         let Some(journal) = storage::read_journal(&self.paths, self.protector.as_ref())? else {
             return Ok(None);
         };
+        self.quota_cache.degrade_all();
         let lease = self.maintenance(&journal.account_id)?;
         let current = Target::read(&self.paths)?;
         current.validate()?;
@@ -933,6 +966,7 @@ impl ClaudeSubscriptionManager {
             "rolled_back"
         };
         storage::clear_journal(&self.paths)?;
+        self.quota_cache.invalidate_all();
         Ok(Some(AccountOperationDto {
             account_id: journal.account_id,
             phase,
@@ -950,6 +984,54 @@ impl ClaudeSubscriptionManager {
         &self,
         id: &str,
     ) -> AccountResult<ClaudeSubscriptionQuotaDto> {
+        let mut attempt = None;
+        let result = self.read_quota_inner(id, &mut attempt);
+        match (&result, attempt) {
+            (Ok(value), Some(attempt)) if !self.exiting.load(Ordering::Acquire) => {
+                self.quota_cache.finish(attempt, value)
+            }
+            (Err(error), _)
+                if matches!(
+                    error.code,
+                    "claude_identity_mismatch"
+                        | "claude_credentials_changed"
+                        | "account_changed"
+                        | "account_not_found"
+                        | "claude_vault_invalid"
+                        | "claude_credentials_invalid"
+                ) =>
+            {
+                self.quota_cache.invalidate(id)
+            }
+            (Err(error), _) => self.quota_cache.fail_existing(
+                id,
+                matches!(
+                    error.code,
+                    "claude_credentials_expired"
+                        | "claude_reauthentication_required"
+                        | "claude_login_required"
+                ),
+            ),
+            _ => (),
+        }
+        result
+    }
+    /// Memory-only historical display receipt; no I/O, refresh, gate or
+    /// admission authority. Pair its record revision with the current list.
+    pub fn cached_claude_subscription_quota(
+        &self,
+        id: &str,
+    ) -> AccountResult<Option<super::ClaudeQuotaDisplaySnapshot>> {
+        if self.exiting.load(Ordering::Acquire) {
+            return Err(fail("account_service_exiting"));
+        }
+        self.quota_cache.snapshot(id)
+    }
+    fn read_quota_inner(
+        &self,
+        id: &str,
+        attempt: &mut Option<QuotaAttempt>,
+    ) -> AccountResult<ClaudeSubscriptionQuotaDto> {
         let _op = self.mutation.try_lock().map_err(|_| fail("account_busy"))?;
         self.recovered()?;
         self.no_other_operation()?;
@@ -960,6 +1042,7 @@ impl ClaudeSubscriptionManager {
             }
             store.vault.record(id)?.clone()
         };
+        *attempt = self.quota_cache.begin(quota_scope(&record));
         if let Some(retry) = self
             .store()?
             .vault
@@ -1080,6 +1163,7 @@ impl ClaudeSubscriptionManager {
     }
     pub fn cancel_inflight_for_exit(&self) {
         self.exiting.store(true, Ordering::SeqCst);
+        self.quota_cache.seal();
         if let Ok(mut attempts) = self.attempts.try_lock() {
             for a in attempts.values_mut() {
                 a.cancelled.store(true, Ordering::SeqCst);
@@ -1089,6 +1173,20 @@ impl ClaudeSubscriptionManager {
                 }
             }
         }
+    }
+}
+#[path = "catalog.rs"]
+mod catalog;
+#[path = "open_scope.rs"]
+mod open_scope;
+pub use open_scope::ClaudeOpenScope;
+fn quota_scope(record: &Record) -> QuotaScope {
+    QuotaScope {
+        id: record.id.clone(),
+        revision: record.revision,
+        identity: record.credential.identity.fingerprint(),
+        generation: record.credential.generation.clone(),
+        masked: record.credential.identity.masked(),
     }
 }
 fn active_proof(id: &str, identity: &str, target: &Target) -> AccountResult<ActiveProof> {

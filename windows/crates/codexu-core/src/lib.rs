@@ -1,5 +1,6 @@
 pub mod accounts;
 pub mod atomic_settings;
+pub mod automatic_switch;
 pub mod local_cli;
 pub mod managed_proxy;
 pub mod models;

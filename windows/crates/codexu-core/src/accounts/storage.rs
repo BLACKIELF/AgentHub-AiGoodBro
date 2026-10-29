@@ -68,6 +68,10 @@ pub(crate) struct ActiveProof {
     pub account_id: String,
     pub generation: String,
     pub target_digest: String,
+    #[serde(default)]
+    pub established_at_unix_ms: Option<u64>,
+    #[serde(default)]
+    pub target_config_digest: Option<String>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct Vault {

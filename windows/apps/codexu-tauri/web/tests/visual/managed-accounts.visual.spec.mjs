@@ -38,6 +38,13 @@ async function managedPage(page, { language = 'en', theme = 'dark' } = {}) {
         if (window.failManagedCreate) throw 'duplicate_label';
         const created = account('managed_new', args.label, false); window.managedRows.push(created); window.emitManagedChange(); return structuredClone(created);
       }
+      if (command === 'rename_managed_account' || command === 'remove_managed_account') {
+        window.managedCalls.push({ command, ...args });
+        if (window.failManagedEdit) throw window.failManagedEdit;
+        if (command === 'rename_managed_account') window.managedRows.find(row => row.id === args.accountId).label = args.label;
+        else window.managedRows = window.managedRows.filter(row => row.id !== args.accountId);
+        window.emitManagedChange(); return { account_id: args.accountId, phase: command === 'rename_managed_account' ? 'renamed' : 'removed', error_code: null };
+      }
       if (command === 'begin_account_login') {
         window.managedCalls.push({ command, ...args });
         if (args.accountId !== 'managed_b') throw 'account_not_found';
@@ -118,6 +125,33 @@ test('failed creation preserves alias without inventing an account', async ({ pa
   await expect(panel.getByLabel('Codex account alias', { exact: true })).toHaveValue('Synthetic Duplicate');
   await expect(panel).toContainText('That alias already exists.');
   await expect(panel.locator('.managed-account-card')).toHaveCount(3);
+});
+
+test('saved account menu renames only after acknowledgement and retains a denied removal', async ({ page }) => {
+  const panel = await managedPage(page), row = panel.getByTestId('managed-account-managed_a');
+  await row.getByLabel('More actions for Synthetic Managed A', { exact: true }).click();
+  await row.getByRole('button', { name: 'Rename', exact: true }).click();
+  let editor = page.getByRole('dialog', { name: 'Rename account', exact: true });
+  await editor.getByLabel('Account alias', { exact: true }).fill('Synthetic Renamed');
+  await page.evaluate(() => { window.failManagedEdit = 'duplicate_label'; });
+  await editor.getByRole('button', { name: 'Save alias', exact: true }).click();
+  await expect(editor.getByRole('alert')).toContainText('already exists');
+  await expect(editor.getByLabel('Account alias', { exact: true })).toHaveValue('Synthetic Renamed');
+  await expect(row.locator('h3')).toHaveText('Synthetic Managed A');
+  await page.evaluate(() => { window.failManagedEdit = null; });
+  await editor.getByRole('button', { name: 'Save alias', exact: true }).click();
+  await expect(editor).toHaveCount(0); await expect(row.locator('h3')).toHaveText('Synthetic Renamed');
+  await row.getByLabel('More actions for Synthetic Renamed', { exact: true }).click();
+  await row.getByRole('button', { name: 'Remove saved account', exact: true }).click();
+  editor = page.getByRole('dialog', { name: 'Remove saved account', exact: true });
+  await expect(editor).toContainText('system sign-in, Desktop settings and history are retained');
+  await page.evaluate(() => { window.failManagedEdit = 'account_is_current'; });
+  await editor.getByRole('button', { name: 'Remove account', exact: true }).click();
+  await expect(editor.getByRole('alert')).toContainText('saved alias is current');
+  await expect(row).toHaveCount(1);
+  await expect(editor).toHaveScreenshot('managed-account-remove-denied.png');
+  await editor.getByRole('button', { name: 'Cancel', exact: true }).click();
+  expect(await page.evaluate(() => window.managedCalls.map(call => call.command))).toEqual(['rename_managed_account', 'rename_managed_account', 'remove_managed_account']);
 });
 
 test('official pairing opens only by attempt command; clipboard and failed open have separate real receipts', async ({ page }) => {

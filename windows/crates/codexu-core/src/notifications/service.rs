@@ -54,7 +54,7 @@ mod tests {
     fn operation_drop_during_state_lock_cannot_leak_inflight_or_capacity() {
         let dir = tempfile::tempdir().unwrap();
         let service = NotificationService::with_components(
-            dir.path().canonicalize().unwrap(),
+            dir.path().canonicalize().unwrap().join("notifications"),
             Arc::new(SyntheticProtector),
             Arc::new(NativeNotificationTransport),
         )
@@ -72,7 +72,7 @@ mod tests {
     fn old_session_expiry_cannot_cancel_a_new_configuration_operation() {
         let dir = tempfile::tempdir().unwrap();
         let service = NotificationService::with_components(
-            dir.path().canonicalize().unwrap(),
+            dir.path().canonicalize().unwrap().join("notifications"),
             Arc::new(SyntheticProtector),
             Arc::new(NativeNotificationTransport),
         )

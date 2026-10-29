@@ -1302,7 +1302,7 @@ fn validate_period(value: &Value) -> Result<()> {
     if obj.keys().any(|k| {
         !numeric.contains(&k.as_str())
             && !maps.contains(&k.as_str())
-            && !["capabilities", "modelThroughput"].contains(&k.as_str())
+            && !["capabilities", "modelThroughput", "sessions"].contains(&k.as_str())
     }) {
         return fail("statistics_invalid_response");
     }
@@ -1311,6 +1311,7 @@ fn validate_period(value: &Value) -> Result<()> {
             number(&value[key])?;
         }
     }
+    validate_sessions(&value["sessions"])?;
     for key in maps {
         let map = value[key]
             .as_object()
@@ -1346,6 +1347,87 @@ fn validate_period(value: &Value) -> Result<()> {
             for key in ["timedTokens", "timedOutputTokens", "timedDurationMs"] {
                 if !bucket[key].is_null() {
                     number(&bucket[key])?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_sessions(value: &Value) -> Result<()> {
+    if value.is_null() {
+        return Ok(());
+    }
+    let rows = value
+        .as_object()
+        .ok_or(Failure("statistics_invalid_response"))?;
+    if rows.len() > 10000 {
+        return fail("statistics_invalid_response");
+    }
+    for (id, row) in rows {
+        if !id.strip_prefix("opaque-").is_some_and(|hash| {
+            hash.len() == 24
+                && hash
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        }) {
+            return fail("statistics_invalid_response");
+        }
+        only(
+            row,
+            &[
+                "client",
+                "models",
+                "totalTokens",
+                "costUsd",
+                "lastUsedAt",
+                "startedAt",
+                "turnEnded",
+                "sessionKind",
+                "archived",
+                "deleted",
+                "sourceDeleted",
+            ],
+        )?;
+        for key in ["client", "sessionKind"] {
+            if let Some(value) = row.get(key) {
+                if !value.as_str().is_some_and(safe_label) {
+                    return fail("statistics_invalid_response");
+                }
+            }
+        }
+        for key in ["totalTokens", "costUsd"] {
+            if !row[key].is_null() {
+                number(&row[key])?;
+            }
+        }
+        for key in ["lastUsedAt", "startedAt"] {
+            if let Some(value) = row.get(key) {
+                if !value.as_str().is_some_and(|text| {
+                    text.len() <= 64 && DateTime::parse_from_rfc3339(text).is_ok()
+                }) {
+                    return fail("statistics_invalid_response");
+                }
+            }
+        }
+        for key in ["turnEnded", "archived", "deleted", "sourceDeleted"] {
+            if row.get(key).is_some_and(|v| v.as_bool().is_none()) {
+                return fail("statistics_invalid_response");
+            }
+        }
+        if let Some(models) = row.get("models") {
+            let models = models
+                .as_object()
+                .ok_or(Failure("statistics_invalid_response"))?;
+            if models.len() > 10000 {
+                return fail("statistics_invalid_response");
+            }
+            for (model, count) in models {
+                if !safe_label(model) {
+                    return fail("statistics_invalid_response");
+                }
+                if !count.is_null() {
+                    number(count)?;
                 }
             }
         }

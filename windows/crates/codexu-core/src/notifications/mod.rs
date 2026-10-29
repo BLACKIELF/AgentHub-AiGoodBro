@@ -7,6 +7,7 @@ mod protocol;
 mod public_reset;
 mod service;
 mod storage;
+mod task_completion;
 mod transport;
 
 pub use domain::*;
@@ -18,6 +19,7 @@ pub use public_reset::{
 };
 pub use service::NotificationMonitor;
 pub use service::NotificationService;
+pub use task_completion::NativeTaskCompletionProducer;
 pub use transport::{
     NativeNotificationTransport, NotificationTransport, TransportRequest, TransportResponse,
 };

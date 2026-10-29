@@ -60,6 +60,122 @@ pub struct AccountManager {
 }
 
 impl AccountManager {
+    /// Pure read evidence, separate from any task/quota or exit authority.
+    /// Legacy active records deliberately have no trustworthy establishment
+    /// time and are unavailable until a real successful system switch.
+    pub fn verified_active_system_scope(&self) -> AccountResult<super::ActiveSystemScope> {
+        let _operation = self.mutation.try_lock().map_err(|_| fail("account_busy"))?;
+        self.active_system_scope_locked()
+    }
+    fn active_system_scope_locked(&self) -> AccountResult<super::ActiveSystemScope> {
+        self.require_accepting()?;
+        if self.cleanup_unconfirmed.load(Ordering::Acquire) {
+            return Err(fail("cleanup_unconfirmed"));
+        }
+        {
+            let attempts = self
+                .attempts
+                .try_lock()
+                .map_err(|_| fail("account_state_unavailable"))?;
+            if attempts
+                .values()
+                .any(|a| a.dto.error_code == Some("cleanup_unconfirmed"))
+            {
+                return Err(fail("cleanup_unconfirmed"));
+            }
+            if attempts.values().any(|a| {
+                matches!(
+                    a.dto.phase,
+                    "starting" | "waiting" | "verifying" | "cancelling"
+                )
+            }) {
+                return Err(fail("login_in_progress"));
+            }
+        }
+        if !self
+            .tickets
+            .try_lock()
+            .map_err(|_| fail("account_state_unavailable"))?
+            .is_empty()
+        {
+            return Err(fail("switch_in_progress"));
+        }
+        if storage::read_optional(&self.paths.journal(), 16 * 1024 * 1024)?.is_some() {
+            return Err(fail("recovery_required"));
+        }
+        storage::ensure_no_links(&self.paths.system_home)?;
+        let target = TargetSnapshot::read(&self.paths.system_home)?;
+        self.runtime
+            .validate_target_configuration(&self.paths.system_home)?;
+        let home = std::fs::canonicalize(&self.paths.system_home)
+            .map_err(|_| fail("target_home_unavailable"))?;
+        let store = self.store()?;
+        let active = store
+            .vault
+            .active
+            .as_ref()
+            .ok_or_else(|| fail("active_scope_unverified"))?;
+        let established = active
+            .established_at_unix_ms
+            .filter(|at| {
+                *at > 0 && *at <= chrono::Utc::now().timestamp_millis().max(0) as u64 + 300000
+            })
+            .ok_or_else(|| fail("active_scope_unverified"))?;
+        let config = active
+            .target_config_digest
+            .as_deref()
+            .filter(|s| s.len() == 64)
+            .ok_or_else(|| fail("active_scope_unverified"))?;
+        let record = store.vault.account(&active.account_id)?;
+        let credential = record
+            .credential
+            .as_ref()
+            .ok_or_else(|| fail("active_scope_unverified"))?;
+        let (identity, expires) = parse_auth(&credential.auth)?;
+        if identity != credential.identity
+            || expires <= super::now() + 30
+            || credential.generation != active.generation
+            || auth_digest(&credential.auth) != active.target_digest
+            || target
+                .auth
+                .as_deref()
+                .is_none_or(|a| auth_digest(a) != active.target_digest)
+            || config != system_config_digest(&target.config)
+        {
+            return Err(fail("active_scope_changed"));
+        }
+        storage::ensure_no_links(&self.paths.system_home)?;
+        if TargetSnapshot::read(&self.paths.system_home)? != target
+            || std::fs::canonicalize(&self.paths.system_home)
+                .map_err(|_| fail("target_home_unavailable"))?
+                != home
+            || storage::read_optional(&self.paths.journal(), 16 * 1024 * 1024)?.is_some()
+        {
+            return Err(fail("active_scope_changed"));
+        }
+        self.require_accepting()?;
+        if self.cleanup_unconfirmed.load(Ordering::Acquire) {
+            return Err(fail("cleanup_unconfirmed"));
+        }
+        Ok(super::ActiveSystemScope::new(
+            home,
+            record.id.clone(),
+            identity.identity_hash(),
+            credential.generation.clone(),
+            active.target_digest.clone(),
+            config.into(),
+            established,
+        ))
+    }
+    pub fn recheck_active_system_scope(
+        &self,
+        scope: &super::ActiveSystemScope,
+    ) -> AccountResult<()> {
+        if self.verified_active_system_scope()? != *scope {
+            return Err(fail("active_scope_changed"));
+        }
+        Ok(())
+    }
     /// Product constructor. There is no plaintext/fake encryption fallback.
     /// A missing shared maintenance gate intentionally disables switching.
     pub fn native(app_data_dir: PathBuf) -> AccountResult<Arc<Self>> {
@@ -581,7 +697,28 @@ impl AccountManager {
         account_id: String,
     ) -> AccountResult<PreparedSwitchDto> {
         self.retry_pending_recovery()?;
-        let result = self.prepare_switch(&account_id);
+        let result = self.prepare_switch(&account_id, None, None);
+        self.finish_preparation(account_id, result)
+    }
+    /// Native automatic policy retains its exact shared exclusion reservation
+    /// from before graceful close until commit/rollback. It cannot reacquire a
+    /// different operation between those phases.
+    pub fn prepare_account_switch_in_operation(
+        self: &Arc<Self>,
+        account_id: &str,
+        lease: &crate::managed_proxy::AutomaticMaintenanceLease,
+        guard: &dyn super::SwitchCommitGuard,
+    ) -> AccountResult<PreparedSwitchDto> {
+        lease.recheck()?;
+        guard.recheck()?;
+        let result = self.prepare_switch(account_id, Some(lease), Some(guard));
+        self.finish_preparation(account_id.to_owned(), result)
+    }
+    fn finish_preparation(
+        self: &Arc<Self>,
+        account_id: String,
+        result: AccountResult<PreparedSwitchDto>,
+    ) -> AccountResult<PreparedSwitchDto> {
         match result {
             Ok(dto) => {
                 let manager = Arc::downgrade(self);
@@ -620,7 +757,13 @@ impl AccountManager {
             }),
         }
     }
-    fn prepare_switch(&self, account_id: &str) -> AccountResult<PreparedSwitchDto> {
+    fn prepare_switch(
+        &self,
+        account_id: &str,
+        automatic: Option<&crate::managed_proxy::AutomaticMaintenanceLease>,
+        guard: Option<&dyn super::SwitchCommitGuard>,
+    ) -> AccountResult<PreparedSwitchDto> {
+        let policy = || guard.map_or(Ok(()), |guard| guard.recheck());
         let _operation = self.mutation.try_lock().map_err(|_| fail("account_busy"))?;
         self.require_recovered()?;
         self.require_no_login()?;
@@ -633,9 +776,27 @@ impl AccountManager {
         {
             return Err(fail("switch_in_progress"));
         }
-        let operation_id = super::nonce()?;
-        let lease = self.acquire_maintenance(account_id, &operation_id)?;
-        let write_lease = self.credential_write(account_id, CredentialWritePurpose::Managed)?;
+        policy()?;
+        let (operation_id, lease, write_lease) = if let Some(automatic) = automatic {
+            if self.active_system_scope_locked()? != *automatic.source_scope() {
+                return Err(fail("active_scope_changed"));
+            }
+            self.runtime.require_system_idle()?;
+            let gate = self
+                .occupancy
+                .read()
+                .map_err(|_| fail("occupancy_unknown"))?
+                .clone()
+                .ok_or_else(|| fail("occupancy_unknown"))?;
+            let lease = gate.adopt_automatic_maintenance(automatic, account_id)?;
+            let writer = gate.acquire_automatic_credential_write(automatic, account_id)?;
+            (automatic.operation_id().to_owned(), lease, writer)
+        } else {
+            let id = super::nonce()?;
+            let lease = self.acquire_maintenance(account_id, &id)?;
+            let writer = self.credential_write(account_id, CredentialWritePurpose::Managed)?;
+            (id, lease, writer)
+        };
         let target = TargetSnapshot::read(&self.paths.system_home)?;
         self.runtime
             .validate_target_configuration(&self.paths.system_home)?;
@@ -650,10 +811,21 @@ impl AccountManager {
                     .ok_or_else(|| fail("login_required"))?,
             )
         };
+        if automatic.is_some_and(|lease| {
+            credential.identity.identity_hash() != lease.target_identity_hash()
+        }) {
+            return Err(fail("account_changed"));
+        }
+        policy()?;
         let staging = storage::private_tempdir(&self.paths.staging(), "verify-")
             .map_err(|_| fail("verification_unavailable"))?;
         storage::atomic_write(&staging.path().join("auth.json"), &credential.auth)?;
-        let result = self.runtime.verify(staging.path(), &credential.identity);
+        let result = if let Some(guard) = guard {
+            self.runtime
+                .verify_in_operation(staging.path(), &credential.identity, guard)
+        } else {
+            self.runtime.verify(staging.path(), &credential.identity)
+        };
         if result
             .as_ref()
             .is_err_and(|e| e.code == "cleanup_unconfirmed")
@@ -668,6 +840,7 @@ impl AccountManager {
         }
         lease.recheck()?;
         write_lease.recheck()?;
+        policy()?;
         self.runtime.require_system_idle()?;
         if TargetSnapshot::read(&self.paths.system_home)? != target {
             return Err(fail("target_changed"));
@@ -689,6 +862,7 @@ impl AccountManager {
             .ok_or_else(|| fail("vault_invalid"))?;
         let revision = record.revision;
         self.require_accepting()?;
+        policy()?;
         store.save()?;
         self.require_accepting()?;
         let expires_at = super::now() + 30;
@@ -821,9 +995,16 @@ impl AccountManager {
             self.runtime.require_system_idle()?;
             journal.verification_started = true;
             storage::save_journal(&self.paths, self.protector.as_ref(), &journal)?;
-            let verified = self
-                .runtime
-                .verify(&self.paths.system_home, &credential.identity)?;
+            let verified = if guard.verification_process_permit().is_some() {
+                self.runtime.verify_in_operation(
+                    &self.paths.system_home,
+                    &credential.identity,
+                    guard,
+                )?
+            } else {
+                self.runtime
+                    .verify(&self.paths.system_home, &credential.identity)?
+            };
             if verified.identity != credential.identity {
                 return Err(fail("identity_mismatch"));
             }
@@ -872,6 +1053,11 @@ impl AccountManager {
                 account_id: ticket.account_id.clone(),
                 generation,
                 target_digest: digest,
+                established_at_unix_ms: Some(
+                    u64::try_from(chrono::Utc::now().timestamp_millis())
+                        .map_err(|_| fail("clock_unavailable"))?,
+                ),
+                target_config_digest: Some(system_config_digest(&journal.before.config)),
             });
             self.require_accepting()?;
             ticket.write_lease.recheck()?;
@@ -1973,6 +2159,22 @@ impl AccountManager {
         }
     }
 }
+fn system_config_digest(config: &Option<Vec<u8>>) -> String {
+    let mut bytes = b"AiGoodBro.system-config.v1\0".to_vec();
+    match config {
+        None => bytes.push(0),
+        Some(value) => {
+            bytes.push(1);
+            bytes.extend(value);
+        }
+    }
+    auth_digest(&bytes)
+}
+#[cfg(test)]
+#[path = "active_scope_tests.rs"]
+mod active_scope_tests;
+#[path = "catalog.rs"]
+mod catalog;
 
 impl Drop for AccountManager {
     fn drop(&mut self) {

@@ -15,7 +15,10 @@ async function workspace(page, { language = 'en', theme = 'dark' } = {}) {
     ];
     const preferences = new Map();
     window.workspaceWrites = [];
+    window.workspaceNavigationListeners = [];
+    window.emitWorkspaceNavigation = payload => window.workspaceNavigationListeners.forEach(handler => window[`_${handler}`]({ event: 'workspace:navigate', id: 451, payload }));
     window.__TAURI_INTERNALS__.invoke = async (command, args) => {
+      if (command === 'plugin:event|listen' && args.event === 'workspace:navigate') window.workspaceNavigationListeners.push(args.handler);
       if (command === 'list_profiles') return structuredClone(profiles);
       if (command === 'get_account_workflow' || command === 'set_account_workflow') {
         const prior = preferences.get(args.id) || { participating: false, model: null, effort: null, revision: 0 };
@@ -53,6 +56,7 @@ for (const scenario of [
     await workspace(page, scenario);
     const zh = scenario.language === 'zh-Hans';
     const first = page.getByTestId('profile-1');
+    await expect(page.locator('.workspace-main')).toHaveScreenshot(`workspace-home-${scenario.theme}-${scenario.language}-${scenario.width}.png`);
     await first.getByRole('button', { name: zh ? '读取额度' : 'Read quota', exact: true }).click();
     await expect(first.locator('.quota-ring[data-known="true"]')).toHaveCount(3);
     await expect(first.getByRole('img', { name: /71%/ })).toBeVisible();
@@ -85,6 +89,20 @@ test('navigation and simple mode persist without losing tools or directory seman
   await expect(nav.getByRole('button', { name: 'Accounts', exact: true })).toHaveAttribute('aria-current', 'page');
   await expect(page.getByRole('button', { name: 'Simple', exact: true })).toHaveAttribute('aria-pressed', 'true');
   await expect(page.locator('.workspace-main')).toHaveScreenshot('workspace-accounts-simple.png');
+});
+
+test('native workspace navigation selects the actual tasks tab and ignores unknown pages', async ({ page }) => {
+  await workspace(page);
+  await page.getByRole('navigation').getByRole('button', { name: 'Workspace', exact: true }).click();
+  await page.getByRole('tab', { name: 'Projects', exact: true }).click();
+  await expect(page.getByRole('tab', { name: 'Projects', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await page.evaluate(() => window.emitWorkspaceNavigation({ page: 'tools', toolTab: 'tasks' }));
+  await expect(page.getByRole('tab', { name: 'Tasks', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.locator('#dashboard-home-panel-tasks')).toBeVisible();
+  await page.evaluate(() => window.emitWorkspaceNavigation({ page: 'unrecognized', toolTab: 'tasks' }));
+  await expect(page.locator('.workspace-main')).toHaveAttribute('data-page', 'tools');
+  await expect(page.getByRole('tab', { name: 'Tasks', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.locator('#dashboard-home-panel-tasks')).toHaveScreenshot('workspace-native-task-navigation.png');
 });
 
 test('card size, list and platform filter persist while preserving global numbering', async ({ page }) => {

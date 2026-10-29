@@ -26,10 +26,39 @@ function safeName(value) {
 function metric(value) { return value === null || value === undefined ? null : typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= Number.MAX_SAFE_INTEGER ? value : (() => { throw Error('invalid_response'); })(); }
 function metrics(value, keys) { return Object.fromEntries(keys.map(key => [key, metric(value?.[key])])); }
 function groups(value, keys) { return Object.fromEntries(Object.entries(value || {}).map(([key, item]) => [safeName(key), metrics(item, keys)])); }
+function sessionTime(value) {
+  if (typeof value !== 'string' || value.length > 64 || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(value) || !Number.isFinite(Date.parse(value))) throw Error('invalid_response');
+  const [year, month, day] = value.slice(0, 10).split('-').map(Number);
+  const calendar = new Date(0); calendar.setUTCFullYear(year, month - 1, day);
+  if (calendar.getUTCFullYear() !== year || calendar.getUTCMonth() !== month - 1 || calendar.getUTCDate() !== day) throw Error('invalid_response');
+  return value;
+}
+// Already sanitized Engine history. No titles, paths, prompts or raw session
+// identifiers leave this host; these rows are never a live-task authority.
+function sessions(value) {
+  if (value == null) return null;
+  if (typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length > 10000) throw Error('invalid_response');
+  return Object.fromEntries(Object.entries(value).map(([key, raw]) => {
+    if (!/^opaque-[a-f0-9]{24}$/.test(key) || !raw || typeof raw !== 'object' || Array.isArray(raw)) throw Error('invalid_response');
+    const row = {};
+    for (const name of ['client', 'sessionKind']) if (raw[name] != null) row[name] = safeName(raw[name]);
+    for (const name of ['lastUsedAt', 'startedAt']) if (raw[name] != null) row[name] = sessionTime(raw[name]);
+    for (const name of ['totalTokens', 'costUsd']) if (Object.hasOwn(raw, name)) row[name] = metric(raw[name]);
+    for (const name of ['turnEnded', 'archived', 'deleted', 'sourceDeleted']) if (raw[name] != null) {
+      if (typeof raw[name] !== 'boolean') throw Error('invalid_response');
+      row[name] = raw[name];
+    }
+    if (raw.models != null) {
+      if (typeof raw.models !== 'object' || Array.isArray(raw.models) || Object.keys(raw.models).length > 10000) throw Error('invalid_response');
+      row.models = Object.fromEntries(Object.entries(raw.models).map(([model, count]) => [safeName(model), metric(count)]));
+    }
+    return [key, row];
+  }));
+}
 function period(value) {
   if (!value || typeof value !== 'object') return null;
   const maps = ['clients', 'clientCosts', 'clientCacheReads', 'clientCacheWrites', 'clientOutputs', 'clientUnclassifiedTokens', 'models', 'modelCosts', 'modelCacheReads', 'modelCacheWrites', 'modelOutputs', 'modelUnclassifiedTokens'];
-  return { ...metrics(value, METRICS), capabilities: { throughput: value.capabilities?.throughput === true },
+  return { ...metrics(value, METRICS), capabilities: { throughput: value.capabilities?.throughput === true }, sessions: sessions(value.sessions),
     ...Object.fromEntries(maps.map(key => [key, Object.fromEntries(Object.entries(value[key] || {}).map(([label, number]) => [safeName(label), metric(number)]))])),
     modelThroughput: value.modelThroughput ? groups(value.modelThroughput, ['timedTokens', 'timedOutputTokens', 'timedDurationMs']) : null };
 }
@@ -188,4 +217,4 @@ async function main() {
   process.stdin.on('error',()=>{process.exitCode=2;close();});
 }
 if (require.main === module) main().catch(() => process.exit(1));
-module.exports = { createRuntime, publicSnapshot, period, history, safeName, constrainModules };
+module.exports = { createRuntime, publicSnapshot, period, history, sessions, safeName, constrainModules };

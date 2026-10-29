@@ -59,6 +59,35 @@ pub async fn create_managed_account(
 }
 
 #[tauri::command]
+pub async fn rename_managed_account(
+    app: AppHandle,
+    state: State<'_, ManagedAccountState>,
+    account_id: String,
+    label: String,
+) -> Result<AccountOperationDto, String> {
+    let result = blocking(state.manager()?, move |manager| {
+        manager.rename_managed_account(&account_id, label)
+    })
+    .await?;
+    let _ = app.emit("managed-accounts:changed", ());
+    Ok(result)
+}
+
+#[tauri::command]
+pub async fn remove_managed_account(
+    app: AppHandle,
+    state: State<'_, ManagedAccountState>,
+    account_id: String,
+) -> Result<AccountOperationDto, String> {
+    let result = blocking(state.manager()?, move |manager| {
+        manager.remove_managed_account(&account_id)
+    })
+    .await?;
+    let _ = app.emit("managed-accounts:changed", ());
+    Ok(result)
+}
+
+#[tauri::command]
 pub async fn begin_account_login(
     state: State<'_, ManagedAccountState>,
     account_id: String,
@@ -293,6 +322,36 @@ pub async fn capture_claude_subscription(
     let _ = app.emit("claude-subscriptions:changed", ());
     Ok(result)
 }
+
+#[tauri::command]
+pub async fn rename_claude_subscription(
+    app: AppHandle,
+    state: State<'_, ClaudeSubscriptionState>,
+    account_id: String,
+    label: String,
+) -> Result<AccountOperationDto, String> {
+    let result = claude_blocking(state.manager()?, move |manager| {
+        manager.rename_claude_subscription(&account_id, label)
+    })
+    .await?;
+    let _ = app.emit("claude-subscriptions:changed", ());
+    Ok(result)
+}
+
+#[tauri::command]
+pub async fn remove_claude_subscription(
+    app: AppHandle,
+    state: State<'_, ClaudeSubscriptionState>,
+    account_id: String,
+) -> Result<AccountOperationDto, String> {
+    let result = claude_blocking(state.manager()?, move |manager| {
+        manager.remove_claude_subscription(&account_id)
+    })
+    .await?;
+    let _ = app.emit("claude-subscriptions:changed", ());
+    Ok(result)
+}
+
 #[tauri::command]
 pub async fn prepare_claude_subscription_switch(
     state: State<'_, ClaudeSubscriptionState>,
@@ -328,11 +387,14 @@ pub async fn cancel_claude_subscription_switch(
 }
 #[tauri::command]
 pub async fn read_claude_subscription_quota(
+    app: AppHandle,
     state: State<'_, ClaudeSubscriptionState>,
     account_id: String,
 ) -> Result<ClaudeSubscriptionQuotaDto, String> {
-    claude_blocking(state.manager()?, move |manager| {
+    let result = claude_blocking(state.manager()?, move |manager| {
         manager.read_claude_subscription_quota(&account_id)
     })
-    .await
+    .await;
+    let _ = app.emit("quota-display:changed", ());
+    result
 }

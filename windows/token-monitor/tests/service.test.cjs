@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const path = require('node:path');
 const fs = require('node:fs');
 const os = require('node:os');
-const { createRuntime, publicSnapshot, period, history } = require('../service.cjs');
+const { createRuntime, publicSnapshot, period, history, sessions } = require('../service.cjs');
 const root = path.resolve(__dirname, '../../..');
 const sourceEngine = path.join(root, 'Companion/TokenMonitorEngine');
 const pinned = {repository:'Javis603/token-monitor',commit:'5d2db368d8313415763860d594de00e46a663418',version:'0.68.0'};
@@ -20,15 +20,21 @@ function harness(handler) {
 }
 async function settle(runtime){await runtime.collect();await new Promise(resolve=>setImmediate(resolve));}
 
-test('projection preserves true zero, unknown and actual model identity; strips session detail',()=>{
-  const value=response();value.payload.aggregate.today.totalTokens=0;value.payload.aggregate.today.sessions={secret:{prompt:'must not leave host'}};
+test('projection preserves true zero, unknown and model identity; strips private session detail',()=>{
+  const value=response();value.payload.aggregate.today.totalTokens=0;value.payload.aggregate.today.sessions={['opaque-'+'a'.repeat(24)]:{client:'codex',totalTokens:0,prompt:'must not leave host',title:'must not leave host'}};
   const projected=publicSnapshot(value,123);
   assert.equal(projected.payload.aggregate.today.totalTokens,0);
   assert.equal(projected.payload.aggregate.today.costUsd,null);
   assert.equal(projected.payload.aggregate.today.models['public/model@route'],100);
-  assert.equal(projected.payload.aggregate.today.sessions,undefined);
+  assert.deepEqual(projected.payload.aggregate.today.sessions,{['opaque-'+'a'.repeat(24)]:{client:'codex',totalTokens:0}});
   assert.equal(projected.authority,undefined);
   assert.equal(JSON.stringify(projected).includes('must not leave host'),false);
+});
+test('session history distinguishes unknown and empty and retains only valid masked evidence',()=>{
+  assert.equal(sessions(undefined),null);assert.equal(sessions(null),null);assert.deepEqual(sessions({}),{});
+  const key='opaque-'+'b'.repeat(24),row={client:'codex',models:{'public/model':0},totalTokens:0,costUsd:null,lastUsedAt:'2026-09-13T02:00:00Z',startedAt:'2026-09-12T21:00:00+08:00',turnEnded:false,archived:true,sessionKind:'background-review'};
+  assert.deepEqual(sessions({[key]:row}),{[key]:row});
+  for(const value of [{raw:row},{[key]:[]},{[key]:{client:'private@example.invalid'}},{[key]:{turnEnded:'false'}},{[key]:{lastUsedAt:'2026-02-30T00:00:00Z'}},{[key]:{totalTokens:-1}},{[key]:{models:{'/private/model':1}}}])assert.throws(()=>sessions(value));
 });
 test('projection rejects private identities, nonfinite counters, excess history and wrong provenance',()=>{
   for(const key of ['private@example.invalid','C:\\Users\\private','/home/private','https://invalid.test','sk-abcdefghijk'])assert.throws(()=>period({models:{[key]:1}}));

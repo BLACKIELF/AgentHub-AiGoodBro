@@ -1,5 +1,25 @@
 use super::*;
 #[test]
+fn session_history_accepts_only_masked_bounded_metadata() {
+    let id = format!("opaque-{}", "a".repeat(24));
+    let row = json!({"client":"codex","models":{"public/model":0},"totalTokens":0,"costUsd":null,"lastUsedAt":"2026-09-13T02:00:00Z","turnEnded":false});
+    assert!(validate_sessions(&Value::Null).is_ok());
+    assert!(validate_sessions(&json!({})).is_ok());
+    assert!(validate_sessions(&json!({id.clone():row.clone()})).is_ok());
+    assert!(validate_sessions(&json!({"raw":row.clone()})).is_err());
+    for (field, value) in [
+        ("title", json!("private")),
+        ("client", Value::Null),
+        ("turnEnded", json!("false")),
+        ("lastUsedAt", json!("2026-02-30T00:00:00Z")),
+        ("totalTokens", json!(-1)),
+    ] {
+        let mut invalid = row.clone();
+        invalid[field] = value;
+        assert!(validate_sessions(&json!({id.clone():invalid})).is_err());
+    }
+}
+#[test]
 fn rate_requires_actual_current_timed_evidence() {
     let now = Utc::now().timestamp_millis();
     let mut rate = TokenRate {

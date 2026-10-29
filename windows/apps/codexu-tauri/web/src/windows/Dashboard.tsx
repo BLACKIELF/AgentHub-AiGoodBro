@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { listen } from '@tauri-apps/api/event';
 import { Activity, CircleDashed } from 'lucide-react';
 import { Header } from '../components/Header';
 import { DashboardHome } from '../components/DashboardHome';
@@ -16,7 +17,7 @@ import { TokenMonitorPanel } from '../components/TokenMonitorPanel';
 import { applyAppTheme } from '../utils/appTheme';
 import { DEFAULT_PALETTE_ID, type PaletteId } from '../utils/paletteCatalog';
 import { useI18n } from '../i18n/I18nProvider';
-import { readChoice, saveChoice, type WorkspaceMode, type WorkspacePage } from '../utils/workspacePreferences';
+import { parseWorkspaceNavigation, readChoice, saveChoice, type WorkspaceMode, type WorkspacePage } from '../utils/workspacePreferences';
 
 export function Dashboard() {
   const { t, language } = useI18n();
@@ -24,12 +25,27 @@ export function Dashboard() {
   const [mode, setMode] = useState<WorkspaceMode>(() => readChoice('aigoodbro.workspace.mode', ['professional', 'simple'], 'professional'));
   const [managedVisited, setManagedVisited] = useState(page === 'accounts');
   const [proxyVisited, setProxyVisited] = useState(page === 'proxy');
+  const [toolsVisited, setToolsVisited] = useState(page === 'tools');
+  const [requestedToolTab, setRequestedToolTab] = useState<{ tab: 'tasks'; sequence: number }>();
   const main = useRef<HTMLElement>(null);
-  const navigate = (next: WorkspacePage) => { if (next === 'accounts') setManagedVisited(true); if (next === 'proxy') setProxyVisited(true); setPage(next); saveChoice('aigoodbro.workspace.page', next); main.current?.scrollTo({ top: 0 }); };
+  const navigate = useCallback((next: WorkspacePage) => { if (next === 'accounts') setManagedVisited(true); if (next === 'proxy') setProxyVisited(true); if (next === 'tools') setToolsVisited(true); setPage(next); saveChoice('aigoodbro.workspace.page', next); main.current?.scrollTo({ top: 0 }); }, []);
   const changeMode = (next: WorkspaceMode) => { setMode(next); saveChoice('aigoodbro.workspace.mode', next); };
   const { dashboard, loading, error, refresh, changeSource } = useUsage();
   const statistics=useTokenMonitor();
   const { settings, update, error: settingsError, paletteFallbackNotice } = useSettings();
+
+  useEffect(() => {
+    let disposed = false;
+    let stop: (() => void) | undefined;
+    void listen('workspace:navigate', event => {
+      if (disposed) return;
+      const value = parseWorkspaceNavigation(event.payload);
+      if (!value) return;
+      navigate(value.page);
+      if (value.toolTab) setRequestedToolTab(previous => ({ tab: 'tasks', sequence: (previous?.sequence ?? 0) + 1 }));
+    }).then(unlisten => { if (disposed) unlisten(); else stop = unlisten; }).catch(() => {});
+    return () => { disposed = true; stop?.(); };
+  }, [navigate]);
 
   useEffect(() => {
     applyAppTheme(
@@ -119,9 +135,9 @@ export function Dashboard() {
           <div className="home-notice-strip workspace-page" hidden={page !== 'home'}>{notices}</div>
           {managedVisited && <div className="workspace-page space-y-4" hidden={page !== 'accounts'}><ManagedAccountsPanel /><ClaudeSubscriptionsPanel /></div>}
           {usageStatistics}
-          <div id="windows-accounts" className="workspace-page" hidden={page !== 'home' && page !== 'accounts'}><HomeSection forceOpen={page === 'accounts'} id="accounts" title={language === 'zh-Hans' ? '已登录账号' : 'Linked accounts'}><ProfilesPanel onSourceChange={changeSource} /></HomeSection></div>
+          <div id="windows-accounts" className="workspace-page" hidden={page !== 'home' && page !== 'accounts'}><HomeSection forceOpen={page === 'accounts'} id="accounts" title={language === 'zh-Hans' ? '账号目录' : 'Account directories'}><ProfilesPanel onSourceChange={changeSource} /></HomeSection></div>
           {proxyVisited && <div className="workspace-page" hidden={page !== 'proxy'}><LocalProxyPanel /></div>}
-          <div className="workspace-page flex items-center justify-between gap-2" hidden={page === 'proxy'}>
+          <div className="workspace-page flex items-center justify-between gap-2" hidden={page !== 'tools'}>
             <div className="flex items-center gap-2">
               <span className={`inline-flex items-center gap-1.5 chip-like ${quotaStatusClass}`}>
                 <Activity size={12} /> {quotaStatusLabel}
@@ -140,21 +156,22 @@ export function Dashboard() {
               })}
             </span>
           </div>
-          {page !== 'proxy' && dashboard?.messages?.length ? (
+          {page === 'tools' && dashboard?.messages?.length ? (
             <p className="text-xs text-tertiary mt-2">
               {t('dashboard.errors.status', { messages: dashboard.messages.join(' · ') })}
             </p>
           ) : null}
 
-          <div className="workspace-page" hidden={page === 'accounts' || page === 'usage' || page === 'proxy'}><DashboardHome
-            showOverview={page==='home'}
+          {toolsVisited && <div className="workspace-page" hidden={page !== 'tools'}><DashboardHome
+            showOverview={true}
             showLocalStatistics={false}
-            showTools={page === 'tools' || mode === 'professional'}
+            showTools={true}
             snapshot={dashboard?.codex?.snapshot}
             quotaSourceLabel={dashboard?.codex?.quota_source_label}
             leadershipSignal={dashboard?.leadership ?? null}
             onQuotaRefresh={refresh}
-          /></div>
+            requestedToolTab={requestedToolTab}
+          /></div>}
         </div>
       </main>
     </div>

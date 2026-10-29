@@ -1,12 +1,15 @@
 //! Managed credentials are distinct from the metadata-only linked-profile catalog.
 //! No credential-bearing type in this module is a WebView DTO.
+mod active_scope;
 pub mod claude;
 mod desktop;
 mod identity;
 mod native;
 mod service;
 pub(crate) mod storage;
+mod verification;
 
+pub use active_scope::ActiveSystemScope;
 pub use desktop::{DesktopHomeCleanup, ProxyDesktopHome};
 pub use identity::{AccountIdentity, VerifiedCredential, VerifiedCredentialSnapshot};
 pub use native::{
@@ -14,6 +17,9 @@ pub use native::{
 };
 pub use service::AccountManager;
 pub use storage::{AccountPaths, SecretProtector};
+pub use verification::{
+    OwnedVerificationProcess, VerificationProcessPermit, VerificationSpawnLease,
+};
 
 use serde::Serialize;
 use std::sync::atomic::AtomicBool;
@@ -128,6 +134,14 @@ pub trait AccountRuntime: Send + Sync {
         home: &std::path::Path,
         expected: &AccountIdentity,
     ) -> AccountResult<VerifiedCredential>;
+    fn verify_in_operation(
+        &self,
+        _home: &std::path::Path,
+        _expected: &AccountIdentity,
+        _guard: &dyn SwitchCommitGuard,
+    ) -> AccountResult<VerifiedCredential> {
+        Err(fail("verification_process_authority_unavailable"))
+    }
     /// No process evidence is not the same as positively established idle.
     fn require_system_idle(&self) -> AccountResult<()>;
     fn validate_target_configuration(&self, home: &std::path::Path) -> AccountResult<()>;
@@ -138,6 +152,9 @@ pub trait AccountRuntime: Send + Sync {
 /// reenter this manager/vault while commit holds its OS lock.
 pub trait SwitchCommitGuard: Send + Sync {
     fn recheck(&self) -> AccountResult<()>;
+    fn verification_process_permit(&self) -> Option<std::sync::Arc<dyn VerificationProcessPermit>> {
+        None
+    }
 }
 
 /// Production uses a real owned worker; the explicit boundary lets failure-to-
@@ -164,6 +181,22 @@ pub trait AccountOccupancyGate: Send + Sync {
         account_id: &str,
         operation_id: &str,
     ) -> AccountResult<Box<dyn SwitchMaintenanceLease>>;
+    /// Adopt an already-held native reservation, never a renderer-supplied ID.
+    /// Other gate implementations cannot accidentally turn this into a new lock.
+    fn adopt_automatic_maintenance(
+        &self,
+        _lease: &crate::managed_proxy::AutomaticMaintenanceLease,
+        _target: &str,
+    ) -> AccountResult<Box<dyn SwitchMaintenanceLease>> {
+        Err(fail("occupancy_unknown"))
+    }
+    fn acquire_automatic_credential_write(
+        &self,
+        _lease: &crate::managed_proxy::AutomaticMaintenanceLease,
+        _target: &str,
+    ) -> AccountResult<Box<dyn CredentialWriteLease>> {
+        Err(fail("occupancy_unknown"))
+    }
     /// Native writer fence, shared with durable Desktop ownership. Absence is
     /// never permission to refresh or overwrite an active Desktop grant.
     fn acquire_credential_write(

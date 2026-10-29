@@ -1,6 +1,7 @@
 //! Manual per-directory quota reads, independent of local transcript availability.
 //! No credentials, raw account metadata or source paths cross the WebView boundary.
 use crate::app_state::AppState;
+use crate::{compact_ui::cache::QuotaWindow, quota_display::Reading};
 use codexu_core::local_cli::{LocalCliKind, PlatformDirectories};
 use codexu_core::profiles::normalize_root_for;
 use codexu_core::readers::codex_app_server::{
@@ -8,7 +9,7 @@ use codexu_core::readers::codex_app_server::{
 };
 use codexu_core::readers::{read_local_cli_quota, LocalCliQuotaResult};
 use std::{future::Future, path::PathBuf, sync::Arc};
-use tauri::State;
+use tauri::{AppHandle, Emitter, State};
 
 const READ_FAILED: &str = "Quota unavailable; check Codex CLI, directory login and retry";
 const SOURCE_CHANGED: &str = "Linked directory changed or was removed; result discarded";
@@ -135,37 +136,95 @@ where
         .profile_quota_slots
         .try_acquire()
         .map_err(|_| "Two quota reads are already running; retry after they finish".to_string())?;
-    let (root, kind) = {
+    let (profile, sequence) = {
         let config = state.config.read().await;
         let profile = config
             .profiles
             .get(id)
             .map_err(|_| SOURCE_CHANGED.to_string())?;
-        (profile.root.clone(), profile.kind)
+        let sequence = state
+            .quota_display
+            .lock()
+            .ok()
+            .and_then(|mut cache| cache.begin(profile, &config.profiles.entries));
+        (profile.clone(), sequence)
     };
-    check_root(kind, root.clone()).await?;
-    // Only explicit user clicks reach this reader. No snapshot/usage scan is required.
-    let quota = reader(root.clone())
-        .await
-        .map_err(|_| READ_FAILED.to_string())?;
-    check_root(kind, root.clone()).await?;
-    let config = state.config.read().await;
-    if config.profiles.get(id).map(|profile| &profile.root).ok() != Some(&root) {
-        return Err(SOURCE_CHANGED.into());
+    let result = async {
+        check_root(profile.kind, profile.root.clone()).await?;
+        // Only explicit user clicks reach this reader. Compact surfaces reuse
+        // the receipt below and cannot start another official query.
+        let quota = reader(profile.root.clone())
+            .await
+            .map_err(|_| READ_FAILED.to_string())?;
+        check_root(profile.kind, profile.root.clone()).await?;
+        let config = state.config.read().await;
+        if !config
+            .profiles
+            .get(id)
+            .is_ok_and(|p| p.root == profile.root && p.kind == profile.kind)
+        {
+            return Err(SOURCE_CHANGED.into());
+        }
+        project(id, quota)
     }
-    project(id, quota)
+    .await;
+    if let Some(sequence) = sequence {
+        if let Ok(mut cache) = state.quota_display.lock() {
+            cache.finish(
+                &profile,
+                sequence,
+                result
+                    .as_ref()
+                    .map(codex_reading)
+                    .map_err(|_| "quota_read_failed"),
+            );
+        }
+    }
+    result
+}
+
+fn codex_reading(value: &ProfileQuotaDto) -> Reading {
+    Reading {
+        observed_at: value.checked_at,
+        available: true,
+        reason: None,
+        plan: value.account.as_ref().and_then(|a| a.plan_type.clone()),
+        windows: value
+            .windows
+            .iter()
+            .map(|w| {
+                let (id, label) = match w.kind {
+                    WindowKind::FiveHour => ("five_hour", "5h"),
+                    WindowKind::SevenDay => ("seven_day", "7d"),
+                    WindowKind::Monthly => ("monthly", "Monthly"),
+                };
+                QuotaWindow {
+                    id: id.into(),
+                    label: label.into(),
+                    used_percent: Some(w.used_percent),
+                    resets_at: w.resets_at,
+                }
+            })
+            .collect(),
+        usd: value.credits.usd,
+        points: value.credits.points.map(|p| p.to_string()),
+        reset_cards: value.credits.reset_cards,
+    }
 }
 
 #[tauri::command]
 pub async fn read_profile_quota(
+    app: AppHandle,
     state: State<'_, Arc<AppState>>,
     id: String,
 ) -> Result<ProfileQuotaDto, String> {
     let id = id.parse::<u64>().map_err(|_| SOURCE_CHANGED.to_string())?;
-    read_with(&state, id, |root| async move {
+    let result = read_with(&state, id, |root| async move {
         read_codex_quota_for_home(&root).await
     })
-    .await
+    .await;
+    let _ = app.emit("quota-display:changed", ());
+    result
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -238,6 +297,41 @@ fn project_local(id: u64, kind: LocalCliKind, quota: LocalCliQuotaResult) -> Loc
     }
 }
 
+fn local_reading(value: &LocalProfileQuotaDto) -> Reading {
+    Reading {
+        observed_at: value.checked_at,
+        available: value.state == "available",
+        reason: (value.state != "available").then(|| {
+            match value.state.as_str() {
+                "needs_login" => "needs_login",
+                "unsupported" => "quota_unsupported",
+                "rate_limited" => "rate_limited",
+                _ => "quota_unavailable",
+            }
+            .into()
+        }),
+        plan: value.plan_label.clone(),
+        windows: value
+            .windows
+            .iter()
+            .map(|w| QuotaWindow {
+                id: w.id.clone(),
+                label: w.label.clone(),
+                used_percent: Some(w.used_percent),
+                resets_at: w.resets_at,
+            })
+            .collect(),
+        usd: value.balance.filter(|_| {
+            value
+                .balance_currency
+                .as_deref()
+                .is_some_and(|c| c.eq_ignore_ascii_case("USD"))
+        }),
+        points: None,
+        reset_cards: None,
+    }
+}
+
 fn is_platform_default_directory(kind: LocalCliKind, root: &std::path::Path) -> bool {
     is_platform_default_directory_in(&PlatformDirectories::detect(), kind, root)
 }
@@ -263,6 +357,7 @@ fn is_platform_default_directory_in(
 
 #[tauri::command]
 pub async fn read_profile_local_quota(
+    app: AppHandle,
     state: State<'_, Arc<AppState>>,
     id: String,
 ) -> Result<LocalProfileQuotaDto, String> {
@@ -271,31 +366,59 @@ pub async fn read_profile_local_quota(
         .profile_quota_slots
         .try_acquire()
         .map_err(|_| "Two quota reads are already running; retry after they finish".to_string())?;
-    let (root, kind) = {
+    let (profile, sequence) = {
         let config = state.config.read().await;
         let profile = config
             .profiles
             .get(id)
             .map_err(|_| SOURCE_CHANGED.to_string())?;
-        (profile.root.clone(), profile.kind)
+        if profile.kind == LocalCliKind::Codex {
+            return Err("Codex uses the official app-server quota reader".to_string());
+        }
+        let sequence = state
+            .quota_display
+            .lock()
+            .ok()
+            .and_then(|mut cache| cache.begin(profile, &config.profiles.entries));
+        (profile.clone(), sequence)
     };
-    if kind == LocalCliKind::Codex {
-        return Err("Codex uses the official app-server quota reader".to_string());
+    let result = async {
+        let kind = profile.kind;
+        check_root(kind, profile.root.clone()).await?;
+        let shared = is_platform_default_directory(kind, &profile.root);
+        let now = chrono::Utc::now();
+        let read_root = profile.root.clone();
+        let quota = tokio::task::spawn_blocking(move || {
+            read_local_cli_quota(kind, &read_root, shared, now)
+        })
+        .await
+        .map_err(|_| READ_FAILED.to_string())?;
+        check_root(kind, profile.root.clone()).await?;
+        let config = state.config.read().await;
+        if !config
+            .profiles
+            .get(id)
+            .is_ok_and(|p| p.root == profile.root && p.kind == kind)
+        {
+            return Err(SOURCE_CHANGED.into());
+        }
+        Ok(project_local(id, kind, quota))
     }
-    check_root(kind, root.clone()).await?;
-    let shared = is_platform_default_directory(kind, &root);
-    let now = chrono::Utc::now();
-    let read_root = root.clone();
-    let quota =
-        tokio::task::spawn_blocking(move || read_local_cli_quota(kind, &read_root, shared, now))
-            .await
-            .map_err(|_| READ_FAILED.to_string())?;
-    check_root(kind, root.clone()).await?;
-    let config = state.config.read().await;
-    if config.profiles.get(id).map(|profile| &profile.root).ok() != Some(&root) {
-        return Err(SOURCE_CHANGED.into());
+    .await;
+    if let Some(sequence) = sequence {
+        if let Ok(mut cache) = state.quota_display.lock() {
+            cache.finish(
+                &profile,
+                sequence,
+                result
+                    .as_ref()
+                    .map(local_reading)
+                    .map_err(|_| "quota_read_failed"),
+            );
+        }
     }
-    Ok(project_local(id, kind, quota))
+    let _ = app.emit("quota-display:changed", ());
+    result
 }
 
 #[cfg(test)]

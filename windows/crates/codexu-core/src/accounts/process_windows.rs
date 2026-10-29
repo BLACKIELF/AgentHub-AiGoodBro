@@ -7,6 +7,7 @@ use std::{
     fs::{File, OpenOptions},
     os::windows::{ffi::OsStrExt, fs::OpenOptionsExt},
     path::Path,
+    sync::Arc,
     time::{Duration, Instant},
 };
 type Handle = *mut c_void;
@@ -177,6 +178,7 @@ unsafe extern "system" {
         overlapped: *mut c_void,
     ) -> i32;
     fn GetLastError() -> u32;
+    fn IsProcessInJob(process: Handle, job: Handle, result: *mut i32) -> i32;
     fn CreateToolhelp32Snapshot(flags: u32, pid: u32) -> Handle;
     fn Process32FirstW(snapshot: Handle, entry: *mut ProcessEntry) -> i32;
     fn Process32NextW(snapshot: Handle, entry: *mut ProcessEntry) -> i32;
@@ -186,6 +188,79 @@ impl OwnedHandle {
     fn raw(&self) -> Handle {
         self.0 as Handle
     }
+}
+pub(in crate::accounts) struct VerificationReceipt {
+    pub(super) process: Arc<OwnedHandle>,
+    pub(super) job: Arc<OwnedHandle>,
+    pub(super) _image: Arc<File>,
+    pub(super) created: u64,
+}
+impl VerificationReceipt {
+    pub(in crate::accounts) fn contains_process(
+        &self,
+        process: usize,
+        observed_created: u64,
+    ) -> AccountResult<bool> {
+        if process == 0
+            || observed_created < self.created
+            || created(process as Handle)? != observed_created
+            || created(self.process.raw())? != self.created
+        {
+            return Ok(false);
+        }
+        let mut value = 0;
+        if unsafe { IsProcessInJob(process as Handle, self.job.raw(), &mut value) } == 0 {
+            return Err(fail("verification_process_unavailable"));
+        }
+        Ok(value != 0)
+    }
+    pub(in crate::accounts) fn confirmed_empty(&self) -> AccountResult<bool> {
+        let mut accounting = Accounting::default();
+        if unsafe {
+            QueryInformationJobObject(
+                self.job.raw(),
+                1,
+                &mut accounting as *mut _ as *mut c_void,
+                std::mem::size_of::<Accounting>() as u32,
+                std::ptr::null_mut(),
+            )
+        } == 0
+        {
+            return Err(fail("verification_process_unavailable"));
+        }
+        Ok(accounting.active == 0 && unsafe { WaitForSingleObject(self.process.raw(), 0) } == 0)
+    }
+}
+fn created(process: Handle) -> AccountResult<u64> {
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct FileTime {
+        low: u32,
+        high: u32,
+    }
+    unsafe extern "system" {
+        fn GetProcessTimes(
+            process: Handle,
+            created: *mut FileTime,
+            exited: *mut FileTime,
+            kernel: *mut FileTime,
+            user: *mut FileTime,
+        ) -> i32;
+    }
+    let mut times = [FileTime { low: 0, high: 0 }; 4];
+    if unsafe {
+        GetProcessTimes(
+            process,
+            times.as_mut_ptr(),
+            times.as_mut_ptr().add(1),
+            times.as_mut_ptr().add(2),
+            times.as_mut_ptr().add(3),
+        )
+    } == 0
+    {
+        return Err(fail("verification_process_unavailable"));
+    }
+    Ok((u64::from(times[0].high) << 32) | u64::from(times[0].low))
 }
 impl Drop for OwnedHandle {
     fn drop(&mut self) {
@@ -302,12 +377,16 @@ fn environment(home: &Path) -> AccountResult<Vec<u16>> {
     Ok(output)
 }
 pub(in crate::accounts) struct Child {
-    process: OwnedHandle,
-    job: OwnedHandle,
+    process: Arc<OwnedHandle>,
+    job: Arc<OwnedHandle>,
     pipe: OwnedHandle,
-    _executable: File,
+    _executable: Arc<File>,
     cleaned: bool,
     pid: u32,
+    verification: Option<(
+        super::super::OwnedVerificationProcess,
+        Arc<dyn super::super::VerificationProcessPermit>,
+    )>,
 }
 impl Child {
     pub(in crate::accounts) fn start(
@@ -315,7 +394,26 @@ impl Child {
         home: &Path,
         args: &[String],
     ) -> AccountResult<Self> {
-        Self::start_with_environment(executable, home, args, environment(home)?)
+        Self::start_with_environment(executable, home, args, environment(home)?, None)
+    }
+    pub(in crate::accounts) fn start_for_verification(
+        executable: &Path,
+        home: &Path,
+        args: &[String],
+        permit: Arc<dyn super::super::VerificationProcessPermit>,
+    ) -> AccountResult<Self> {
+        permit.recheck()?;
+        let publisher = crate::readers::local_cli_quota::antigravity::publisher_of(executable)
+            .ok_or_else(|| fail("verification_process_untrusted"))?
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric())
+            .flat_map(char::to_lowercase)
+            .collect::<String>();
+        if !matches!(publisher.as_str(), "openai" | "openaillc" | "openaiinc") {
+            return Err(fail("verification_process_untrusted"));
+        }
+        let _spawn = permit.begin_spawn()?;
+        Self::start_with_environment(executable, home, args, environment(home)?, Some(permit))
     }
     pub(in crate::accounts) fn start_claude(
         executable: &Path,
@@ -360,13 +458,14 @@ impl Child {
         if env.len() > 32767 {
             return Err(fail("native_environment_invalid"));
         }
-        Self::start_with_environment(executable, home, args, env)
+        Self::start_with_environment(executable, home, args, env, None)
     }
     fn start_with_environment(
         executable: &Path,
         home: &Path,
         args: &[String],
         environment: Vec<u16>,
+        permit: Option<Arc<dyn super::super::VerificationProcessPermit>>,
     ) -> AccountResult<Self> {
         let executable_guard = OpenOptions::new()
             .read(true)
@@ -466,13 +565,29 @@ impl Child {
             return Err(fail("native_process_unavailable"));
         }
         let mut child = Self {
-            process,
-            job,
+            process: Arc::new(process),
+            job: Arc::new(job),
             pipe,
-            _executable: executable_guard,
+            _executable: Arc::new(executable_guard),
             cleaned: false,
             pid: information.process_id,
+            verification: None,
         };
+        if let Some(permit) = permit {
+            let receipt = super::super::OwnedVerificationProcess::native(VerificationReceipt {
+                process: child.process.clone(),
+                job: child.job.clone(),
+                _image: child._executable.clone(),
+                created: created(child.process.raw())?,
+            });
+            // No business instruction executes before this real held job has
+            // entered the exact maintenance operation's private permit.
+            if let Err(error) = permit.register(receipt.clone()) {
+                child.stop_confirmed()?;
+                return Err(error);
+            }
+            child.verification = Some((receipt, permit));
+        }
         if unsafe { ResumeThread(thread.raw()) } != 1 {
             child.stop_confirmed()?;
             return Err(fail("native_process_unavailable"));
@@ -557,6 +672,9 @@ impl Child {
             }
             if accounting.active == 0 && self.exit_code()?.is_some() {
                 self.cleaned = true;
+                if let Some((receipt, permit)) = &self.verification {
+                    permit.completed(receipt)?;
+                }
                 return Ok(());
             }
             std::thread::sleep(Duration::from_millis(10));
@@ -679,6 +797,90 @@ mod tests {
     fn powershell() -> std::path::PathBuf {
         std::path::PathBuf::from(std::env::var_os("SystemRoot").expect("Windows SystemRoot"))
             .join("System32/WindowsPowerShell/v1.0/powershell.exe")
+    }
+    struct FixtureSpawn;
+    impl super::super::super::VerificationSpawnLease for FixtureSpawn {}
+    struct FixturePermit(std::sync::Mutex<Vec<super::super::super::OwnedVerificationProcess>>);
+    impl super::super::super::VerificationProcessPermit for FixturePermit {
+        fn recheck(&self) -> AccountResult<()> {
+            Ok(())
+        }
+        fn begin_spawn(
+            &self,
+        ) -> AccountResult<Box<dyn super::super::super::VerificationSpawnLease>> {
+            Ok(Box::new(FixtureSpawn))
+        }
+        fn register(
+            &self,
+            receipt: super::super::super::OwnedVerificationProcess,
+        ) -> AccountResult<()> {
+            // The root exists in its actual Job and is still suspended here.
+            assert!(!receipt.confirmed_empty()?);
+            self.0.lock().unwrap().push(receipt);
+            Ok(())
+        }
+        fn completed(
+            &self,
+            receipt: &super::super::super::OwnedVerificationProcess,
+        ) -> AccountResult<()> {
+            assert!(receipt.confirmed_empty()?);
+            assert!(self
+                .0
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|known| known.same(receipt)));
+            Ok(())
+        }
+    }
+    #[test]
+    fn verification_receipt_uses_exact_held_job_and_birth_and_requires_positive_whole_job_exit() {
+        let temp = tempfile::tempdir().unwrap();
+        let permit = Arc::new(FixturePermit(std::sync::Mutex::new(Vec::new())));
+        // This explicitly synthetic native fixture bypasses only the production
+        // OpenAI publisher check to run a task-owned Windows PowerShell child.
+        let mut child = Child::start_with_environment(
+            &powershell(),
+            temp.path(),
+            &[
+                "-NoProfile".into(),
+                "-NonInteractive".into(),
+                "-Command".into(),
+                "Start-Sleep -Seconds 60".into(),
+            ],
+            environment(temp.path()).unwrap(),
+            Some(permit.clone()),
+        )
+        .unwrap();
+        let receipt = permit.0.lock().unwrap()[0].clone();
+        let birth = created(child.process.raw()).unwrap();
+        assert!(receipt
+            .contains_process(child.process.raw() as usize, birth)
+            .unwrap());
+        assert!(!receipt
+            .contains_process(child.process.raw() as usize, birth + 1)
+            .unwrap());
+        let mut independent = Child::start(
+            &powershell(),
+            temp.path(),
+            &[
+                "-NoProfile".into(),
+                "-NonInteractive".into(),
+                "-Command".into(),
+                "Start-Sleep -Seconds 60".into(),
+            ],
+        )
+        .unwrap();
+        assert!(!receipt
+            .contains_process(
+                independent.process.raw() as usize,
+                created(independent.process.raw()).unwrap()
+            )
+            .unwrap());
+        assert!(!receipt.confirmed_empty().unwrap());
+        child.stop_confirmed().unwrap();
+        assert!(receipt.confirmed_empty().unwrap());
+        independent.stop_confirmed().unwrap();
     }
     #[test]
     fn owned_process_captures_output_and_confirms_entire_job_exit() {

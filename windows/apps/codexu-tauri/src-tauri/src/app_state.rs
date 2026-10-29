@@ -176,6 +176,8 @@ pub struct AppState {
     pub refresh_lock: Mutex<()>,
     /// Manual row reads are bounded, never queued for all linked accounts.
     pub profile_quota_slots: Semaphore,
+    pub(crate) quota_display: std::sync::Mutex<crate::quota_display::LinkedQuotaDisplayCache>,
+    pub(crate) compact_refresh_lock: Mutex<()>,
     pub app_data_dir: PathBuf,
     source_generation: AtomicU64,
     #[cfg(test)]
@@ -195,6 +197,8 @@ impl AppState {
             snapshot: RwLock::new(None),
             refresh_lock: Mutex::new(()),
             profile_quota_slots: Semaphore::new(2),
+            quota_display: Default::default(),
+            compact_refresh_lock: Mutex::new(()),
             app_data_dir,
             source_generation: AtomicU64::new(0),
             #[cfg(test)]

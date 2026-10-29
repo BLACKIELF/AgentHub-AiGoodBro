@@ -8,8 +8,12 @@ use tracing::info;
 
 mod app_state;
 mod commands;
+mod compact_projection;
+mod compact_ui;
+mod live_tasks;
 mod native_services;
 mod quit;
+mod quota_display;
 mod statistics_sources;
 mod tray;
 
@@ -120,13 +124,18 @@ fn main() {
             info!("Next app data directory initialized");
 
             native_services::install(app, app_data_dir.clone())?;
-            let state = Arc::new(AppState::new(app_data_dir));
+            let state = Arc::new(AppState::new(app_data_dir.clone()));
             let initial_language = state
                 .config
                 .try_read()
                 .map(|config| config.language.resolved(app_state::ResolvedLanguage::En))
                 .unwrap_or(app_state::ResolvedLanguage::En);
             app.manage(state.clone());
+            if let Err(code) = compact_ui::install(app.handle(), app_data_dir) {
+                tracing::warn!(code, "Compact interface unavailable");
+            } else {
+                compact_projection::install(app.handle());
+            }
 
             let background_capture = is_background_capture();
 
@@ -155,8 +164,26 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            live_tasks::get_live_task_state,
+            live_tasks::reconnect_live_tasks,
+            commands::automatic_switch::get_automatic_switch_preferences,
+            commands::automatic_switch::set_automatic_switch_preferences,
+            commands::automatic_switch::get_automatic_switch_status,
+            commands::automatic_switch::evaluate_automatic_switch,
+            commands::automatic_switch::cancel_automatic_switch,
+            commands::cli_workflow::local_actions::get_local_cli_actions,
+            commands::cli_workflow::local_actions::create_local_cli_profile,
+            commands::cli_workflow::local_actions::start_local_cli,
+            commands::cli_workflow::local_actions::get_local_cli_session,
+            commands::cli_workflow::local_actions::stop_local_cli_session,
+            commands::compact_ui::get_compact_ui_state,
+            commands::compact_ui::retry_compact_ui_shortcut,
+            commands::compact_ui::set_compact_ui_preferences,
+            commands::compact_ui::compact_ui_action,
             commands::account_lifecycle::list_managed_accounts,
             commands::account_lifecycle::create_managed_account,
+            commands::account_lifecycle::rename_managed_account,
+            commands::account_lifecycle::remove_managed_account,
             commands::account_lifecycle::begin_account_login,
             commands::account_lifecycle::get_login_attempt,
             commands::account_lifecycle::open_account_login_page,
@@ -165,6 +192,8 @@ fn main() {
             commands::account_lifecycle::commit_account_switch,
             commands::account_lifecycle::cancel_account_switch,
             commands::account_lifecycle::list_claude_subscriptions,
+            commands::account_lifecycle::rename_claude_subscription,
+            commands::account_lifecycle::remove_claude_subscription,
             commands::account_lifecycle::begin_claude_subscription_login,
             commands::account_lifecycle::get_claude_subscription_login,
             commands::account_lifecycle::cancel_claude_subscription_login,
@@ -252,6 +281,8 @@ fn main() {
                     quit::ask(app);
                 }
             } else if let tauri::RunEvent::Exit = event {
+                compact_projection::shutdown(app);
+                compact_ui::shutdown(app);
                 app.state::<native_services::NativeServices>()
                     .cancel_monitor();
                 app.state::<native_services::NativeServices>()

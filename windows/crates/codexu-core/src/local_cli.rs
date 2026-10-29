@@ -17,6 +17,8 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+pub mod launch;
+
 /// Bounded read used by every marker and evidence check in this module.
 const MAX_EVIDENCE_BYTES: u64 = 1024 * 1024;
 
@@ -219,7 +221,12 @@ impl LocalCliKind {
     pub fn supports_terminal_sign_in(self) -> bool {
         matches!(
             self,
-            Self::ClaudeCode | Self::Grok | Self::OpenCode | Self::WorkBuddy | Self::Kimi
+            Self::ClaudeCode
+                | Self::Grok
+                | Self::OpenCode
+                | Self::WorkBuddy
+                | Self::Kimi
+                | Self::Gemini
         )
     }
 
@@ -263,11 +270,8 @@ impl LocalCliKind {
             Self::Grok => IsolationMode::Managed,
             Self::Kimi => IsolationMode::Managed,
             Self::WorkBuddy => IsolationMode::Managed,
+            Self::OpenCode => IsolationMode::Managed,
             Self::Gemini => IsolationMode::DefaultOnly,
-            // OpenCode's documented isolation is the POSIX XDG set, which a
-            // Windows build of the CLI does not read. Report it instead of
-            // pretending the variables take effect.
-            Self::OpenCode => IsolationMode::Unsupported,
             Self::Trae | Self::ZCode | Self::Antigravity | Self::Mimo => IsolationMode::Unsupported,
         }
     }
@@ -300,6 +304,7 @@ impl LocalCliKind {
                 ("KIMI_SHARE_DIR".to_string(), value),
                 ("KIMI_CLI_NO_AUTO_UPDATE".to_string(), "1".to_string()),
             ],
+            Self::OpenCode => launch::opencode_environment(directory).ok()?,
             Self::WorkBuddy => vec![
                 ("ELECTRON_RUN_AS_NODE".to_string(), "1".to_string()),
                 ("CODEBUDDY_CONFIG_DIR".to_string(), value.clone()),
@@ -324,11 +329,17 @@ impl LocalCliKind {
             Self::Codex => &["CODEX_HOME"],
             Self::ClaudeCode => &[
                 "CLAUDE_CONFIG_DIR",
+                "CLAUDE_SECURESTORAGE_CONFIG_DIR",
                 "CLAUDE_CODE_OAUTH_TOKEN",
                 "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR",
                 "ANTHROPIC_API_KEY",
                 "ANTHROPIC_AUTH_TOKEN",
                 "ANTHROPIC_BASE_URL",
+                "CLAUDE_CODE_USE_BEDROCK",
+                "CLAUDE_CODE_USE_VERTEX",
+                "CLAUDE_CODE_USE_FOUNDRY",
+                "CLAUDE_CODE_USE_MANTLE",
+                "DISABLE_LOGIN_COMMAND",
             ],
             Self::Grok => &[
                 "GROK_HOME",
@@ -344,11 +355,15 @@ impl LocalCliKind {
                 "KIMI_CODE_API_KEY",
                 "KIMI_BASE_URL",
                 "OPENAI_API_KEY",
+                "OPENAI_BASE_URL",
                 "ANTHROPIC_API_KEY",
+                "ANTHROPIC_BASE_URL",
             ],
             Self::WorkBuddy => &[
                 "ACC_PRODUCT_CONFIG",
                 "ACC_PRODUCT_CONFIG_PATH",
+                "ACC_PRODUCT_CONFIG_V2",
+                "ACC_PRODUCT_CONFIG_V3",
                 "CODEBUDDY_CONFIG_DIR",
                 "WORKBUDDY_CONFIG_DIR",
                 "CODEBUDDY_API_KEY",
@@ -360,14 +375,39 @@ impl LocalCliKind {
                 "GEMINI_API_KEY",
                 "GOOGLE_API_KEY",
                 "GOOGLE_APPLICATION_CREDENTIALS",
+                "GOOGLE_GENAI_USE_VERTEXAI",
+                "GOOGLE_CLOUD_PROJECT",
+                "GOOGLE_CLOUD_LOCATION",
+                "GOOGLE_GEMINI_BASE_URL",
+                "GEMINI_API_KEY_AUTH_HEADER",
             ],
             Self::OpenCode => &[
                 "OPENCODE_AUTH_JSON",
+                "OPENCODE_AUTH_CONTENT",
                 "OPENCODE_CONFIG",
                 "OPENCODE_CONFIG_DIR",
                 "OPENCODE_CONFIG_CONTENT",
+                "OPENCODE_TUI_CONFIG",
                 "OPENAI_API_KEY",
                 "ANTHROPIC_API_KEY",
+                "AWS_ACCESS_KEY_ID",
+                "AWS_SECRET_ACCESS_KEY",
+                "AWS_SESSION_TOKEN",
+                "AZURE_OPENAI_API_KEY",
+                "COHERE_API_KEY",
+                "DASHSCOPE_API_KEY",
+                "DEEPSEEK_API_KEY",
+                "GEMINI_API_KEY",
+                "GOOGLE_GENERATIVE_AI_API_KEY",
+                "GROQ_API_KEY",
+                "MISTRAL_API_KEY",
+                "OPENROUTER_API_KEY",
+                "XAI_API_KEY",
+                "XDG_CONFIG_HOME",
+                "XDG_DATA_HOME",
+                "XDG_STATE_HOME",
+                "XDG_CACHE_HOME",
+                "XDG_RUNTIME_DIR",
             ],
             Self::Mimo => &["OPENAI_API_KEY", "ANTHROPIC_API_KEY"],
             _ => &[],
@@ -379,6 +419,14 @@ impl LocalCliKind {
     pub fn recognizes_directory(self, directory: &Path) -> bool {
         if !directory.is_dir() {
             return false;
+        }
+        if matches!(
+            self,
+            Self::Grok | Self::OpenCode | Self::Kimi | Self::WorkBuddy
+        ) && read_object(directory, ".aigoodbro-profile.json")
+            .is_some_and(|value| value["schema"] == 1 && value["platform"] == self.id())
+        {
+            return true;
         }
         let markers = self.directory_markers();
         if markers.is_empty() {
@@ -630,19 +678,19 @@ mod tests {
         let local = Path::new(r"C:\Users\example\AppData\Local");
         assert_eq!(
             LocalCliKind::Codex.default_config_directory(home, roaming, local),
-            PathBuf::from(r"C:\Users\example\.codex")
+            home.join(".codex")
         );
         assert_eq!(
             LocalCliKind::Antigravity.default_config_directory(home, roaming, local),
-            PathBuf::from(r"C:\Users\example\AppData\Roaming\Antigravity")
+            roaming.join("Antigravity")
         );
         assert_eq!(
             LocalCliKind::OpenCode.default_config_directory(home, roaming, local),
-            PathBuf::from(r"C:\Users\example\AppData\Local\opencode")
+            local.join("opencode")
         );
         assert_eq!(
             LocalCliKind::WorkBuddy.alternate_config_directory(home, roaming, local),
-            Some(PathBuf::from(r"C:\Users\example\.workbuddy-ai"))
+            Some(home.join(".workbuddy-ai"))
         );
     }
 
@@ -680,11 +728,11 @@ mod tests {
         }
         assert_eq!(
             directories.default_directory(LocalCliKind::Antigravity),
-            PathBuf::from(r"C:\Users\example\AppData\Roaming\Antigravity")
+            directories.roaming.join("Antigravity")
         );
         assert_eq!(
             directories.alternate_directory(LocalCliKind::WorkBuddy),
-            Some(PathBuf::from(r"C:\Users\example\.workbuddy-ai"))
+            Some(directories.home.join(".workbuddy-ai"))
         );
         assert_eq!(directories.alternate_directory(LocalCliKind::Codex), None);
     }
@@ -717,10 +765,10 @@ mod tests {
                 | LocalCliKind::ClaudeCode
                 | LocalCliKind::Grok
                 | LocalCliKind::Kimi
+                | LocalCliKind::OpenCode
                 | LocalCliKind::WorkBuddy => IsolationMode::Managed,
                 LocalCliKind::Gemini => IsolationMode::DefaultOnly,
-                LocalCliKind::OpenCode
-                | LocalCliKind::Trae
+                LocalCliKind::Trae
                 | LocalCliKind::ZCode
                 | LocalCliKind::Mimo
                 | LocalCliKind::Antigravity => IsolationMode::Unsupported,
@@ -758,7 +806,7 @@ mod tests {
         }
         assert_eq!(
             LocalCliKind::OpenCode.isolation_mode(),
-            IsolationMode::Unsupported
+            IsolationMode::Managed
         );
         assert!(LocalCliKind::OpenCode
             .isolation_environment(directory)

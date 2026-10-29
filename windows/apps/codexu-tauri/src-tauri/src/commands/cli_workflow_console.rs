@@ -220,17 +220,12 @@ mod native {
         result.push(0);
         Ok(result)
     }
-    fn environment(home: &Path) -> std::io::Result<Vec<u16>> {
-        let mut entries: Vec<(OsString, OsString)> = std::env::vars_os()
-            .filter(|(key, _)| {
-                !key.to_string_lossy().eq_ignore_ascii_case("CODEX_HOME")
-                    && !codexu_core::workflow::EXTERNAL_API_ENVIRONMENT
-                        .iter()
-                        .any(|blocked| key.to_string_lossy().eq_ignore_ascii_case(blocked))
-            })
-            .collect();
-        entries.push((OsString::from("CODEX_HOME"), home.as_os_str().to_owned()));
-        entries.sort_by_key(|(key, _)| key.to_string_lossy().to_uppercase());
+    fn environment(
+        spec: &codexu_core::local_cli::launch::Environment,
+    ) -> std::io::Result<Vec<u16>> {
+        let entries = spec
+            .apply(std::env::vars_os())
+            .map_err(|_| std::io::Error::other("Invalid provider environment"))?;
         let mut result = Vec::new();
         for (key, value) in entries {
             let mut item = key;
@@ -260,10 +255,29 @@ mod native {
             args: &[String],
             guard: File,
         ) -> std::io::Result<Self> {
+            let spec = codexu_core::local_cli::launch::Environment::codex(home)
+                .map_err(|_| std::io::Error::other("Invalid Codex environment"))?;
+            Self::start_provider(
+                executable,
+                workspace,
+                args,
+                guard,
+                &spec,
+                "AiGoodBro - Codex",
+            )
+        }
+        pub fn start_provider(
+            executable: &Path,
+            workspace: &Path,
+            args: &[String],
+            guard: File,
+            spec: &codexu_core::local_cli::launch::Environment,
+            title: &str,
+        ) -> std::io::Result<Self> {
             let job = Job::create()?;
             let application = wide(executable.as_os_str())?;
             let directory = wide(workspace.as_os_str())?;
-            let environment = environment(home)?;
+            let environment = environment(spec)?;
             let mut command_line = quote_argument(&application[..application.len() - 1]);
             for argument in args {
                 let argument = wide(OsStr::new(argument))?;
@@ -277,7 +291,7 @@ mod native {
                     "Command exceeds Windows limit",
                 ));
             }
-            let mut title = wide(OsStr::new("AiGoodBro - Codex"))?;
+            let mut title = wide(OsStr::new(title))?;
             let mut startup: StartupInfo = unsafe { std::mem::zeroed() };
             startup.size = std::mem::size_of::<StartupInfo>() as u32;
             startup.title = title.as_mut_ptr();
@@ -327,7 +341,9 @@ mod native {
         }
         pub fn has_exited(&mut self) -> std::io::Result<bool> {
             match unsafe { WaitForSingleObject(self.process.raw(), 0) } {
-                0 => Ok(true),
+                // The original root process can hand work to a descendant.
+                // Keep the reservation until every Job member has exited.
+                0 => Ok(self.job.active_processes()? == 0),
                 258 => Ok(false),
                 _ => Err(std::io::Error::last_os_error()),
             }
@@ -365,6 +381,19 @@ impl OwnedConsole {
     }
     pub fn has_exited(&mut self) -> std::io::Result<bool> {
         Ok(true)
+    }
+    pub fn start_provider(
+        _: &Path,
+        _: &Path,
+        _: &[String],
+        _: File,
+        _: &codexu_core::local_cli::launch::Environment,
+        _: &str,
+    ) -> std::io::Result<Self> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "Windows required",
+        ))
     }
     pub fn stop(&mut self) -> std::io::Result<()> {
         Ok(())

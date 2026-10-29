@@ -20,7 +20,7 @@ pub enum ProxyPhase {
     Stopping,
     Failed,
 }
-#[derive(Clone, Default, Debug, Serialize, Deserialize)]
+#[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProxyAccountState {
     pub state: String,
@@ -28,7 +28,7 @@ pub struct ProxyAccountState {
     pub cooldown_kind: Option<String>,
     pub probe_state: Option<String>,
 }
-#[derive(Clone, Default, Debug, Serialize, Deserialize)]
+#[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProxyStatus {
     pub phase: ProxyPhase,
@@ -38,7 +38,7 @@ pub struct ProxyStatus {
     pub last_event_at: Option<f64>,
     pub egress: Option<ProxyEgressState>,
 }
-#[derive(Clone, Default, Debug, Serialize, Deserialize)]
+#[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProxyEgressState {
     pub state: String,
@@ -281,6 +281,14 @@ impl LocalProxyService {
         persist_preferences(&self.preferences_path, &next)?;
         host.update_preferences(next.clone())?;
         Ok(next)
+    }
+    /// Presentation-only snapshot. Unlike status(), this cannot reconcile or
+    /// stop a helper; compact windows only observe the existing lifecycle owner.
+    pub fn cached_status(&self) -> Result<ProxyStatus, ProxyFailure> {
+        self.status
+            .lock()
+            .map(|value| value.clone())
+            .map_err(|_| ProxyFailure::Unavailable)
     }
     pub fn status(&self) -> Result<ProxyStatus, ProxyFailure> {
         let mut inner = self.inner.lock().map_err(|_| ProxyFailure::Unavailable)?;
@@ -815,6 +823,14 @@ impl LocalProxyService {
     /// Explicitly owned by the product lifecycle. A saved enabled preference
     /// does not autostart a proxy on launch; only a started run can recover.
     pub fn start_recovery_monitor(self: &Arc<Self>) -> Result<ProxyRecoveryMonitor, ProxyFailure> {
+        self.start_recovery_monitor_with_listener(Arc::new(|_| {}))
+    }
+    /// One existing lifecycle worker publishes changes outside all service
+    /// locks. Observers cannot create a second timer or helper owner.
+    pub fn start_recovery_monitor_with_listener(
+        self: &Arc<Self>,
+        listener: Arc<dyn Fn(Option<ProxyStatus>) + Send + Sync>,
+    ) -> Result<ProxyRecoveryMonitor, ProxyFailure> {
         if self
             .monitor_active
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -833,6 +849,7 @@ impl LocalProxyService {
                 let mut next = Instant::now();
                 let mut generation = usize::MAX;
                 let mut healthy_since = None;
+                let mut delivered = None;
                 while !worker_stop.load(Ordering::Acquire) {
                     let Some(service) = weak.upgrade() else {
                         break;
@@ -845,6 +862,13 @@ impl LocalProxyService {
                         healthy_since = None;
                     }
                     let status = service.status();
+                    let current_status = status.as_ref().ok().cloned();
+                    if delivered.as_ref() != Some(&current_status) {
+                        delivered = Some(current_status.clone());
+                        if !worker_stop.load(Ordering::Acquire) {
+                            listener(current_status);
+                        }
+                    }
                     let prefs = service.preferences();
                     if matches!(
                         status,
