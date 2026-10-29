@@ -137,6 +137,8 @@ test: build
 	python3 tests/test_dispatch_registry_io.py
 	python3 scripts/test-app-updates.py
 	python3 scripts/test-reset-credit-auto.py
+	python3 scripts/test-manual-account-actions.py
+	python3 scripts/test-manual-reset-notices.py
 	python3 scripts/test-hub-warm-up-capacity.py
 	python3 scripts/test-proxy-reset-observation.py
 	python3 scripts/test-local-proxy-host.py --reset-stop-only

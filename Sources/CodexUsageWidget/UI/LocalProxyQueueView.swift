@@ -491,12 +491,12 @@ struct LocalProxyQueueView: View {
             DisclosureGroup(isExpanded: detailExpansion(.quota)) {
                 VStack(alignment: .leading, spacing: 8) {
                     creditSettings
-                    LocalProxyPlusLimitEditor(
-                        language: language, accountCount: model.plusPolicyTargetCount,
-                        savedLimit: model.uniformPlusFiveHourRemainingReserve,
-                        enabled: model.canEditPolicy, canApply: model.canApplyPlusFiveHourUsedLimit,
-                        message: model.plusPolicyMessage,
-                        save: { model.setPlusFiveHourRemainingReserve($0) })
+                    LocalProxyQuotaLimitEditor(
+                        language: language, accountCount: model.quotaPolicyTargetCount,
+                        savedLimit: model.uniformQuotaRemainingReserve,
+                        enabled: model.canEditPolicy, canApply: model.canApplyQuotaRemainingReserve,
+                        message: model.quotaPolicyMessage,
+                        save: { model.setQuotaRemainingReserve($0) })
                 }
                 .padding(8)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -751,7 +751,8 @@ struct LocalProxyQueueView: View {
             ResetCreditButton(
                 profile: target.profile, selectedProfileID: target.selectedProfileID,
                 hubAccountAlias: target.hubAccountAlias,
-                onConfirmedResult: { model.refreshAfterResetCredit(target) }, displayNumber: row.accountNumber,
+                onConfirmedResult: { model.refreshAfterResetCredit(target) },
+                onManualResetConfirmed: { model.recordManualResetConfirmed($0) }, displayNumber: row.accountNumber,
                 prominent: true
             ).accessibilityIdentifier("next.local-proxy.reset-card-\(row.id)")
         } else {
@@ -867,7 +868,7 @@ struct LocalProxyQueueView: View {
     }
 }
 
-private struct LocalProxyPlusLimitEditor: View {
+private struct LocalProxyQuotaLimitEditor: View {
     let language: WidgetLanguage
     let accountCount: Int
     let savedLimit: Double?
@@ -900,25 +901,26 @@ private struct LocalProxyPlusLimitEditor: View {
             }
             Text(
                 language.text(
-                    "当前 \(accountCount) 个 Plus（含未参与）；Pro 等其他及未知套餐规则不变。",
-                    "\(accountCount) current Plus accounts, including non-participants; Pro, other and unknown plans remain unchanged.")
+                    "当前 \(accountCount) 个 Plus / Pro（含未参与）；Plus 设 5 小时，Pro 各档（5x / 10x / 25x 等）设 7 天。其他及未知套餐不变。",
+                    "\(accountCount) current Plus / Pro accounts, including non-participants: Plus uses 5h; all Pro tiers (5x / 10x / 25x and others) use 7d. Other and unknown plans remain unchanged."
+                )
             )
             .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             Text(
                 language.text(
-                    "仅设 5 小时剩余额度；例如 20% 表示剩余到 20% 时停新请求。0% 不额外保留，100% 不接新请求。",
-                    "Set the 5h remaining quota; for example, 20% stops new requests at 20% remaining. 0% adds no reserve; 100% admits no new requests.")
+                    "统一设置各自窗口的剩余额度；例如 20% 表示剩余到 20% 时停新请求。0% 不额外保留，100% 不接新请求。",
+                    "Set the remaining quota for each account’s window; for example, 20% stops new requests at 20% remaining. 0% adds no reserve; 100% admits no new requests.")
             )
             .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             if savedLimit == nil && !dirty {
-                Text(language.text("没有已核实的 Plus 账号，或 Plus 剩余额度设置不同。", "No verified Plus accounts, or Plus remaining-quota settings differ.")).foregroundStyle(.secondary)
+                Text(language.text("没有已核实的 Plus / Pro 账号，或各账号剩余额度设置不同。", "No verified Plus / Pro accounts, or their remaining-quota settings differ.")).foregroundStyle(.secondary)
             }
             if dirty && value == nil {
                 Text(language.text("请输入 0–100 的剩余额度百分比，可用小数。", "Enter a remaining-quota percentage from 0 to 100; decimals are allowed."))
                     .foregroundStyle(WorkspaceStatusForeground.warning)
             }
             if enabled && accountCount > 0 && !canApply {
-                Text(language.text("有 Plus 账号身份或运行绑定待核实，全部规则暂不能修改。", "A Plus account identity or running binding needs verification; no rules can be changed."))
+                Text(language.text("有目标账号身份或运行绑定待核实，全部规则暂不能修改。", "A target account identity or running binding needs verification; no rules can be changed."))
                     .foregroundStyle(WorkspaceStatusForeground.warning)
             }
             if let message {
@@ -948,13 +950,13 @@ private struct LocalProxyPlusLimitEditor: View {
 
     private var limitField: some View {
         HStack(spacing: 6) {
-            Text(language.text("Plus 5h 剩余额度", "Plus 5h remaining quota"))
+            Text(language.text("统一剩余额度", "Shared remaining quota"))
             TextField("0–100", text: $limit).textFieldStyle(.plain)
                 .font(.system(size: 12, weight: .medium).monospacedDigit())
                 .padding(.horizontal, 8).frame(width: 76, height: 30)
                 .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
                 .overlay { RoundedRectangle(cornerRadius: 6).strokeBorder(Color.primary.opacity(0.25), lineWidth: 1) }
-                .accessibilityLabel(language.text("Plus 账号 5 小时剩余额度百分比", "Remaining 5h quota percentage for Plus accounts"))
+                .accessibilityLabel(language.text("Plus 5 小时和 Pro 7 天统一剩余额度百分比", "Shared remaining percentage for Plus 5h and Pro 7d quota"))
                 .accessibilityIdentifier("next.local-proxy.uniform-used-limit")
                 .disabled(!enabled)
             Text("%")
@@ -962,7 +964,7 @@ private struct LocalProxyPlusLimitEditor: View {
         }
     }
     private var applyButton: some View {
-        Button(language.text("应用到 Plus 账号", "Apply to Plus accounts")) {
+        Button(language.text("应用到 Plus / Pro 账号", "Apply to Plus / Pro accounts")) {
             guard let value else { return }
             if save(value) {
                 savedValue = value

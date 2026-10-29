@@ -4450,6 +4450,7 @@ final class UsageStore: ObservableObject {
                 self.feishuWebhookConfigured = configured
                 self.feishuNeedsAuthorization = false
                 if configured {
+                    Task { @MainActor [weak self] in self?.queuePendingManualResetNotices() }
                     self.feishuNotificationMessage = WidgetLanguage.storedOrAutomatic().text(
                         "已恢复飞书本机连接；消息投递以发送结果为准。", "Saved Feishu connection restored; delivery is verified by send results.")
                 }
@@ -4881,6 +4882,7 @@ final class UsageStore: ObservableObject {
         quota: AutomaticSwitchQuotaState,
         factsSnapshot: UsageSnapshot? = nil,
         resetCreditComparison: CodexResetCreditComparison? = nil,
+        suppressFeishuResetCreditComparison: Bool = false,
         eventID: UUID,
         switchOrigin: FeishuSwitchNotification.SwitchOrigin = .manual,
         isTest: Bool = false
@@ -4921,7 +4923,7 @@ final class UsageStore: ObservableObject {
                         fiveHourRemaining: quota.fiveHourRemaining,
                         sevenDayRemaining: quota.sevenDayRemaining
                     ),
-                resetCreditComparison: resetCreditComparison,
+                resetCreditComparison: suppressFeishuResetCreditComparison ? nil : resetCreditComparison,
                 messageOptions: feishuMessageOptions,
                 occurredAt: observedAt,
                 eventID: eventID
@@ -5220,10 +5222,13 @@ final class UsageStore: ObservableObject {
                     let channels = resetNoticeChannels(expiry: false).filter {
                         intended == nil || intended!.contains($0)
                     }
+                    let duplicateManual = try resetNoticeDeliveryStore.hasSingleManualReset(
+                        accountHash: noticeObservation.accountHash, previous: receipt.previousAvailable, available: receipt.available,
+                        after: receipt.previousObservedAt, through: receipt.observedAt)
                     let deliveries = try resetNoticeDeliveryStore.enqueueChange(
                         accountHash: noticeObservation.accountHash, previous: receipt.previousAvailable,
                         available: receipt.available, previousObservedAt: receipt.previousObservedAt,
-                        observedAt: receipt.observedAt, channels: channels,
+                        observedAt: receipt.observedAt, channels: duplicateManual ? channels.filter { $0 != .feishu } : channels,
                         createIfMissing: intended != nil)
                     resetNoticeUnsavedChanges.removeValue(forKey: noticeObservation.accountHash)
                     queueResetNotices(deliveries, source: source, snapshot: current)
@@ -5234,6 +5239,7 @@ final class UsageStore: ObservableObject {
                 "重置卡提醒记录暂不可用，已保留原记录并暂停本次推送。",
                 "Reset-card notice records are unavailable. Existing records are retained; this send is paused.")
         }
+        Task { @MainActor [weak self] in self?.queuePendingManualResetNotices() }
         scheduleResetNoticeTimer()
         guard verified, let source = maskedAccount(for: profile) else { return }
         let observation = CodexQuotaEventTracker.Observation(
@@ -5264,8 +5270,124 @@ final class UsageStore: ObservableObject {
             sendFeishuNotification(
                 event: .quotaChange(change), source: source, target: nil,
                 quota: AutomaticSwitchQuotaState(snapshot: current), factsSnapshot: current,
-                resetCreditComparison: resetCreditComparison, eventID: UUID()
+                resetCreditComparison: resetCreditComparison,
+                suppressFeishuResetCreditComparison: resetCreditComparison.map { comparison in
+                    (try? resetNoticeDeliveryStore.hasSingleManualReset(
+                        accountHash: noticeObservation.accountHash, previous: comparison.previousAvailable, available: comparison.available,
+                        after: comparison.previousObservedAt, through: comparison.observedAt)) == true
+                } ?? false,
+                eventID: UUID()
             )
+        }
+    }
+
+    /// Called only by the explicit manual-control success receipt. Balance
+    /// observations never call this method or establish a manual operation.
+    @MainActor
+    func recordManualResetConfirmed(_ receipt: CodexResetCreditController.ManualResetConfirmation) {
+        guard hasStarted, !isPreview, receipt.eventID.hasPrefix("manual-reset-") else { return }
+        let manual = CodexManualResetNotice(
+            eventHash: String(receipt.eventID.dropFirst("manual-reset-".count)),
+            profileHash: CodexResetNoticeKey.hash(receipt.profileID), confirmedAt: receipt.confirmedAt)
+        let candidate = CodexResetNoticeCandidate(accountHash: receipt.accountKey, observedAt: receipt.confirmedAt, content: .manualReset(manual))
+        guard manualResetSource(for: candidate) != nil else { return }
+        do {
+            _ = try resetNoticeDeliveryStore.enqueueManualReset(
+                accountHash: receipt.accountKey, manual: manual,
+                notifyFeishu: resetNoticeChannels(expiry: false).contains(.feishu))
+            queuePendingManualResetNotices()
+        } catch {
+            feishuNotificationMessage = WidgetLanguage.storedOrAutomatic().text(
+                "手动使用已成功；通知记录暂不可用，本次未推送。", "Manual use succeeded; notice records are unavailable, so no notice was sent.")
+        }
+    }
+
+    private func manualResetSource(for candidate: CodexResetNoticeCandidate) -> FeishuMaskedAccount? {
+        guard candidate.isValid, candidate.observedAt <= Date(), case .manualReset(let manual) = candidate.content else { return nil }
+        let matches = profileStore.profiles.filter { CodexResetNoticeKey.hash($0.id) == manual.profileHash }
+        guard matches.count == 1, let profile = matches.first,
+            let accountID = profile.lastSnapshot?.accountID, CodexResetNoticeKey.hash(accountID) == candidate.accountHash,
+            let identity = CodexOfficialProfileReader.credentialIdentity(codexHomeURL: profile.codexHomeURL),
+            identity.accountID == accountID, profile.matchesRecordedCredential(identity)
+        else { return nil }
+        return maskedAccount(for: profile)
+    }
+
+    @MainActor
+    private func queuePendingManualResetNotices() {
+        guard resetNoticeRevision(.feishu, expiry: false) != nil,
+            let deliveries = try? resetNoticeDeliveryStore.pendingManualResets()
+        else { return }
+        for delivery in deliveries {
+            guard resetNoticeTasks.keys.filter({ $0.hasPrefix("feishu:") }).count < 4,
+                let revision = resetNoticeRevision(.feishu, expiry: false),
+                let source = manualResetSource(for: delivery.candidate),
+                case .manualReset(let manual) = delivery.candidate.content
+            else { continue }
+            let key = "feishu:" + delivery.batchKey
+            guard resetNoticeTasks[key] == nil,
+                let reservation = try? resetNoticeDeliveryStore.reserve(delivery, revision: revision)
+            else { continue }
+            let runRevision = resetNoticeRunRevision
+            let taskID = UUID()
+            let task = Task { @MainActor [weak self] in
+                guard let self else { return }
+                defer { if self.resetNoticeTasks[key]?.id == taskID { self.resetNoticeTasks.removeValue(forKey: key) } }
+                let valid: @MainActor () -> Bool = {
+                    !Task.isCancelled && self.resetNoticeRunRevision == runRevision
+                        && self.resetNoticeRevision(.feishu, expiry: false) == revision
+                        && self.manualResetSource(for: delivery.candidate) != nil
+                        && (try? self.resetNoticeDeliveryStore.isCurrent(reservation)) == true
+                }
+                guard valid() else {
+                    _ = try? self.resetNoticeDeliveryStore.releaseUnsent(reservation)
+                    return
+                }
+                let outcome: CodexResetNoticeDeliveryReceipt = await withCheckedContinuation { continuation in
+                    self.feishuWebhookService.sendManualReset(
+                        manual, sourceAccount: source,
+                        messageOptions: self.feishuMessageOptions, shouldSend: valid
+                    ) { result in
+                        DispatchQueue.main.async {
+                            let receipt: CodexResetNoticeDeliveryReceipt
+                            switch result {
+                            case .success: receipt = .accepted
+                            case .failure(let error):
+                                switch error {
+                                case .transportFailed, .invalidResponse: receipt = .uncertain
+                                case .httpStatus(let status): receipt = status == 429 ? .rejected : .uncertain
+                                case .rejected: receipt = .rejected
+                                default: receipt = .notSent
+                                }
+                            }
+                            continuation.resume(returning: receipt)
+                        }
+                    }
+                }
+                do {
+                    if self.resetNoticeRunRevision == runRevision,
+                        self.resetNoticeRevision(.feishu, expiry: false, requiringReadiness: false) == revision
+                    {
+                        guard try self.resetNoticeDeliveryStore.record(reservation, receipt: outcome, currentRevision: revision) else {
+                            self.feishuNotificationMessage = WidgetLanguage.storedOrAutomatic().text(
+                                "手动使用成功通知的投递记录已变化，结果待核实。", "The manual-use notice record changed; delivery needs verification.")
+                            return
+                        }
+                        if outcome == .accepted {
+                            self.feishuNotificationMessage = WidgetLanguage.storedOrAutomatic().text(
+                                "飞书 API 已接收手动使用成功通知。", "Feishu API accepted the manual-use success notice.")
+                        }
+                    } else if outcome == .notSent {
+                        _ = try self.resetNoticeDeliveryStore.releaseUnsent(reservation)
+                    } else {
+                        _ = try self.resetNoticeDeliveryStore.markUncertain(reservation)
+                    }
+                } catch {
+                    self.feishuNotificationMessage = WidgetLanguage.storedOrAutomatic().text(
+                        "手动使用成功通知的投递结果待核实，已暂停重发。", "Manual-use notice delivery needs verification; resend is paused.")
+                }
+            }
+            resetNoticeTasks[key] = (taskID, task)
         }
     }
 
@@ -5325,6 +5447,7 @@ final class UsageStore: ObservableObject {
     }
 
     private func resetNoticeIsCurrent(_ candidate: CodexResetNoticeCandidate, now: Date = Date()) -> Bool {
+        if case .manualReset = candidate.content { return manualResetSource(for: candidate) != nil }
         guard let observation = resetNoticeObservations[candidate.accountHash] else { return false }
         let evaluation = CodexResetNoticeEvaluator.evaluate(observation, now: now)
         guard evaluation.verificationSucceeded else { return false }
@@ -5346,6 +5469,7 @@ final class UsageStore: ObservableObject {
                 && Set(cards).isSubset(of: Set(evaluation.eligibleCards))
         case .change(let change):
             return observation.observedAt >= change.observedAt && evaluation.availableCount == change.available
+        case .manualReset: return false  // Dedicated success queue above.
         }
     }
 
@@ -5365,6 +5489,7 @@ final class UsageStore: ObservableObject {
             let expiry: Bool
             let event: CodexQuotaEvent
             switch delivery.candidate.content {
+            case .manualReset: continue  // Sent without inventing a quota observation.
             case .expiry:
                 expiry = true
                 event = .resetCreditsExpiring(batches: delivery.candidate.expiryBatches, observedAt: delivery.candidate.observedAt)
@@ -6579,7 +6704,10 @@ final class UsageStore: ObservableObject {
         resetNoticeRunRevision = UUID()
         resetNoticeLocalRevision = UUID()
         if !isPreview {
-            do { try resetNoticeDeliveryStore.recoverInterruptedSends() } catch {
+            do {
+                try resetNoticeDeliveryStore.recoverInterruptedSends()
+                queuePendingManualResetNotices()
+            } catch {
                 localNotificationMessage = WidgetLanguage.storedOrAutomatic().text(
                     "重置卡提醒记录恢复失败，本次提醒会等待核验。",
                     "Reset-card notice recovery failed. Notices wait for verification.")
@@ -7314,7 +7442,9 @@ final class UsageStore: ObservableObject {
     }
 
     func referralAccount(for profileID: String) throws -> CodexReferralAccount {
-        guard !isPreview, !isLoggingIn, !isLaunchingCodex, !isAccountSwitchTransactionActive,
+        // Unrelated account tasks do not block invitations. The referral client
+        // binds the exact home and revalidates its stable credential identity.
+        guard !isPreview,
             let profile = profiles.first(where: { $0.id == profileID }),
             let credentialHome = profileStore.effectiveCredentialHome(for: profileID)
         else { throw CodexReferralFailure.unavailable }

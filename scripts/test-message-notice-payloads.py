@@ -22,7 +22,8 @@ feishu = read("Services/FeishuWebhookService.swift")
 # can execute in this fixture.
 feishu_types = feishu.split("private final class FeishuRedirectGuard", 1)[0]
 feishu_builders = (
-    between(feishu, "    static func publicResetPayload(", "    /// Sends an observer-confirmed")
+    between(feishu, "    static func manualResetPayload(", "    func sendPublicResetAnnouncement(")
+    +     between(feishu, "    static func publicResetPayload(", "    /// Sends an observer-confirmed")
     + between(feishu, "    static func taskCompletionPayload(", "    private func send(")
     + between(feishu, "    static func payloadData(", "    static func parseResponse(")
     + between(feishu, "    private struct NoticeInput {", "\n}\n\nprivate final class FeishuWebhookTestProtocol")
@@ -98,6 +99,29 @@ let now = Date()
 var previews: [String: Data] = [:]
 let previousAt = now.addingTimeInterval(-1800)
 let account = try FeishuMaskedAccount(displayName: "Work account")
+
+let manual = CodexManualResetNotice(eventHash: String(repeating: "a", count: 64), profileHash: String(repeating: "b", count: 64), confirmedAt: now)
+for language in [WidgetLanguage.zh, .en] {
+    let data = try FeishuWebhookService.manualResetPayload(manual, sourceAccount: account, language: language)
+    let parsed = try card(data)
+    expect(parsed.title.contains(language.text("手动使用成功", "Manual use succeeded")), "manual success title")
+    expect(parsed.body.contains(language.text("手动使用 1 张", "Manually used 1")), "explicit manual action")
+    expect(parsed.body.contains(language.text("官方已确认重置成功", "Official service confirmed")), "official success truth")
+    expect(!parsed.body.contains("未核实") && !parsed.body.contains("unverified"), "confirmed action not mislabeled unknown")
+    expect(!parsed.body.contains(manual.eventHash) && !parsed.body.contains(manual.profileHash), "internal hashes not rendered")
+    expect(!parsed.body.contains("5h") && !parsed.body.contains("7d"), "no fabricated quota window")
+    expect(hasOneFooter(parsed.body), "manual notice source footer")
+    previews[language == .zh ? "manual-reset-zh" : "manual-reset-en"] = data
+}
+var hiddenManualOptions = FeishuMessageOptions.standard
+hiddenManualOptions.includesAccountLabel = false
+hiddenManualOptions.includesAgentName = false
+let hiddenManual = try card(FeishuWebhookService.manualResetPayload(manual, sourceAccount: account, messageOptions: hiddenManualOptions, language: .en)).body
+expect(!hiddenManual.contains("Work account") && !hiddenManual.contains("Agent"), "manual options hide account and agent")
+do {
+    _ = try FeishuWebhookService.manualResetPayload(.init(eventHash: "raw-id", profileHash: manual.profileHash, confirmedAt: now), sourceAccount: account)
+    preconditionFailure("invalid manual metadata accepted")
+} catch FeishuWebhookError.invalidNotification {}
 let yearBefore = ISO8601DateFormatter().date(from: "2026-12-31T15:50:00Z")!
 let yearAfter = ISO8601DateFormatter().date(from: "2026-12-31T16:10:00Z")!
 let yearFacts = try FeishuAccountFacts(fiveHour: .finite(remainingPercent: 100, resetsAt: yearAfter.addingTimeInterval(3600)),
@@ -352,6 +376,9 @@ if let flag = CommandLine.arguments.firstIndex(of: "--preview-dir"), flag + 1 < 
         try pretty.write(to: payloadDirectory.appendingPathComponent(id + ".json"), options: .atomic)
         sampleMarkdown += "\n## " + id + " · 模拟\n\n" + value.title + "\n\n" + value.body + "\n"
     }
+    let sampleManual = CodexManualResetNotice(eventHash: String(repeating: "a", count: 64), profileHash: String(repeating: "b", count: 64), confirmedAt: sampleAt)
+    try addSample("manual-reset-zh", "手动使用成功", FeishuWebhookService.manualResetPayload(sampleManual, sourceAccount: sampleAccount, language: .zh))
+    try addSample("manual-reset-en", "手动使用成功", FeishuWebhookService.manualResetPayload(sampleManual, sourceAccount: sampleAccount, language: .en))
     try addSample("test", "连接与切换", sampleNotice(.test))
     try addSample("low-quota", "连接与切换", sampleNotice(.lowQuotaDetected, target: sampleTarget, fiveHour: 4, sevenDay: 12))
     try addSample("switch-success", "连接与切换", sampleNotice(.switchSucceeded, target: sampleTarget))
@@ -404,11 +431,11 @@ if let flag = CommandLine.arguments.firstIndex(of: "--preview-dir"), flag + 1 < 
             accountLabel: sampleAccount, occurredAt: sampleAt, now: sampleAt)
         try addSample("task-" + category.rawValue, "任务结束", FeishuWebhookService.taskCompletionPayload(notification, language: .zh))
     }
-    expect(samples.count == 29 && Set(samples.compactMap { $0["id"] as? String }).count == 29, "Feishu example inventory incomplete or duplicated")
+    expect(samples.count == 31 && Set(samples.compactMap { $0["id"] as? String }).count == 31, "Feishu example inventory incomplete or duplicated")
     let manifest = try JSONSerialization.data(withJSONObject: samples, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
     try manifest.write(to: directory.appendingPathComponent("feishu-examples-1020v3.json"), options: .atomic)
     try sampleMarkdown.write(to: directory.appendingPathComponent("飞书消息样例-1020v3.md"), atomically: true, encoding: .utf8)
-    print("PASS 29 synthetic Feishu examples: fixed account/date, production payload objects, all source lines exactly once and no external URLs")
+    print("PASS 31 synthetic Feishu examples: fixed account/date, production payload objects, all source lines exactly once and no external URLs")
 }
 print("PASS notice payloads: signed/zero window comparisons, privacy switches, complete public source recovery, marker rejection, expiry and local policy; no account or network I/O")
 """

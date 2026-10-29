@@ -177,7 +177,7 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
     @Published private(set) var creditSecondaryFloor = 1500
     @Published private(set) var legacyCooldownRecoveryIDs = Set<String>()
     @Published private(set) var isPreparingLegacyCooldownRecovery = false
-    @Published private(set) var plusPolicyMessage: String?
+    @Published private(set) var quotaPolicyMessage: String?
     var canEdit: Bool { process == nil && (phase == .stopped || phase == .failed) && leases.isEmpty && exitCleanupID == nil }
     var canReorder: Bool {
         !usageStore.isPreview && !preferencesBlocked && !finishing
@@ -746,74 +746,70 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
         policyChanged()
         return true
     }
-    private var plusPolicyRows: [LocalProxyQueueRow] {
-        rows.filter { row in
-            usageStore.profiles.contains { $0.id == row.id && !$0.isSystemProfile && $0.resolvedPlanType == "plus" }
+    // Only verified plan types select a window. A label or display multiplier
+    // never promotes an unknown/other plan into this batch.
+    private var quotaPolicyTargets: [(id: String, isProPlan: Bool)] {
+        rows.compactMap { row in
+            guard
+                let profile = usageStore.profiles.first(where: {
+                    $0.id == row.id && !$0.isSystemProfile && ($0.resolvedPlanType == "plus" || $0.isProPlan)
+                })
+            else { return nil }
+            return (row.id, profile.isProPlan)
         }
     }
-    var plusPolicyTargetCount: Int { plusPolicyRows.count }
-    var uniformPlusFiveHourUsedLimit: Double? {
-        let targets = plusPolicyRows
-        guard let first = targets.first?.policy.fiveHourUsedLimit,
-            targets.allSatisfy({ $0.policy.fiveHourUsedLimit == first })
-        else { return nil }
+    var quotaPolicyTargetCount: Int { quotaPolicyTargets.count }
+    var uniformQuotaRemainingReserve: Double? {
+        let targets = quotaPolicyTargets
+        let values = targets.map { preferences.policy(for: $0.id).remainingReserve(isProPlan: $0.isProPlan) }
+        guard let first = values.first, values.allSatisfy({ $0 == first }) else { return nil }
         return first
     }
-    var uniformPlusFiveHourRemainingReserve: Double? {
-        uniformPlusFiveHourUsedLimit.map(LocalProxyAccountPolicy.complementPercent)
-    }
-    @discardableResult
-    func setPlusFiveHourRemainingReserve(_ remaining: Double) -> Bool {
-        guard remaining.isFinite, (0...100).contains(remaining) else {
-            plusPolicyMessage = WidgetLanguage.storedOrAutomatic().text("请输入 0–100 的剩余额度百分比。", "Enter a remaining-quota percentage from 0 to 100.")
-            return false
-        }
-        return setPlusFiveHourUsedLimit(LocalProxyAccountPolicy.complementPercent(remaining))
-    }
-    var canApplyPlusFiveHourUsedLimit: Bool {
-        let targets = plusPolicyRows
+    var canApplyQuotaRemainingReserve: Bool {
+        let targets = quotaPolicyTargets
         return canEditPolicy && !targets.isEmpty && Set(targets.map(\.id)).count == targets.count
-            && targets.allSatisfy { row in
-                let matches = usageStore.profiles.filter { $0.id == row.id }
+            && targets.allSatisfy { target in
+                let matches = usageStore.profiles.filter { $0.id == target.id }
                 return matches.count == 1 && matches.first?.isSystemProfile == false
-                    && matches.first?.lastSnapshot?.accountID?.isEmpty == false && canEditPolicy(for: row.id)
+                    && matches.first?.lastSnapshot?.accountID?.isEmpty == false && canEditPolicy(for: target.id)
             }
     }
     @discardableResult
-    func setPlusFiveHourUsedLimit(_ limit: Double) -> Bool {
+    func setQuotaRemainingReserve(_ remaining: Double) -> Bool {
         let language = WidgetLanguage.storedOrAutomatic()
-        guard limit.isFinite, (0...100).contains(limit) else {
-            plusPolicyMessage = language.text("请输入 0–100 的剩余额度百分比。", "Enter a remaining-quota percentage from 0 to 100.")
+        guard remaining.isFinite, (0...100).contains(remaining) else {
+            quotaPolicyMessage = language.text("请输入 0–100 的剩余额度百分比。", "Enter a remaining-quota percentage from 0 to 100.")
             return false
         }
-        guard plusPolicyTargetCount > 0 else {
-            plusPolicyMessage = language.text("当前没有已核实的 Plus 账号；其他及未知套餐规则未修改。", "No verified Plus accounts; other and unknown plan rules remain unchanged.")
+        guard quotaPolicyTargetCount > 0 else {
+            quotaPolicyMessage = language.text("当前没有已核实的 Plus 或 Pro 账号；其他及未知套餐规则未修改。", "No verified Plus or Pro accounts; other and unknown plan rules remain unchanged.")
             return false
         }
-        guard canApplyPlusFiveHourUsedLimit else {
-            plusPolicyMessage = language.text(
-                "全部规则未修改：有 Plus 账号身份或运行绑定无法核实，请核对后再试。",
-                "No rules changed: a Plus account identity or running binding could not be verified. Check it and retry.")
+        guard canApplyQuotaRemainingReserve else {
+            quotaPolicyMessage = language.text(
+                "全部规则未修改：有目标账号身份或运行绑定无法核实，请核对后再试。",
+                "No rules changed: a target account identity or running binding could not be verified. Check it and retry.")
             return false
         }
-        let targets = plusPolicyRows
+        let targets = quotaPolicyTargets
+        let usedLimit = LocalProxyAccountPolicy.complementPercent(remaining)
         let previous = preferences
         var policies = preferences.accountPolicies ?? [:]
-        for row in targets {
-            var policy = preferences.policy(for: row.id)
-            policy.fiveHourUsedLimit = limit
-            policies[row.id] = policy
+        for target in targets {
+            var policy = preferences.policy(for: target.id)
+            if target.isProPlan { policy.sevenDayUsedLimit = usedLimit } else { policy.fiveHourUsedLimit = usedLimit }
+            policies[target.id] = policy
         }
         preferences.accountPolicies = policies
         guard preferences.validAccountPolicies, savePreferences() else {
             preferences = previous
-            plusPolicyMessage = language.text("全部规则未保存，仍使用原规则。", "No rules were saved; previous rules remain.")
+            quotaPolicyMessage = language.text("全部规则未保存，仍使用原规则。", "No rules were saved; previous rules remain.")
             return false
         }
         policyChanged()
-        plusPolicyMessage = language.text(
-            "已为 \(targets.count) 个 Plus 账号保存 5 小时剩余额度 \(LocalProxyAccountPolicy.complementPercent(limit).formatted())%；其他套餐不变。",
-            "Saved a \(LocalProxyAccountPolicy.complementPercent(limit).formatted())% 5h remaining-quota reserve for \(targets.count) Plus accounts; other plans remain unchanged.")
+        quotaPolicyMessage = language.text(
+            "已为 \(targets.count) 个 Plus / Pro 账号保存剩余额度 \(remaining.formatted())%：Plus 5 小时，Pro 7 天；其他套餐不变。",
+            "Saved a \(remaining.formatted())% remaining-quota reserve for \(targets.count) Plus / Pro accounts: Plus 5h, Pro 7d; other plans remain unchanged.")
         return true
     }
     private func policyChanged() {
@@ -1159,6 +1155,9 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
     }
 
     /// The button calls this only after its existing two-confirmation flow succeeds.
+    func recordManualResetConfirmed(_ receipt: CodexResetCreditController.ManualResetConfirmation) {
+        usageStore.recordManualResetConfirmed(receipt)
+    }
     func refreshAfterResetCredit(_ target: ResetCreditTarget) {
         guard !usageStore.isPreview, target.selectedProfileID == target.profile.id,
             let current = resetCreditTarget(for: target.profile.id),

@@ -105,13 +105,13 @@ private struct PolicyEditorFixtureRoot: View {
     var saved: [Double] = []
     func save(_ limit: Double) -> Bool {
         guard !failSave else { message = "No rules were saved"; return false }
-        saved.append(limit); savedLimit = limit; message = "Saved current Plus accounts"; return true
+        saved.append(limit); savedLimit = limit; message = "Saved current Plus / Pro accounts"; return true
     }
 }
 private struct UniformPolicyFixtureRoot: View {
     @ObservedObject var model: UniformPolicyFixtureModel
     var body: some View {
-        LocalProxyPlusLimitEditor(language: .en, accountCount: 2, savedLimit: model.savedLimit,
+        LocalProxyQuotaLimitEditor(language: .en, accountCount: 2, savedLimit: model.savedLimit,
             enabled: true, canApply: true, message: model.message, save: { model.save($0) })
             .padding(12).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .background(PolicyEditorFixtureBounds(name: "uniform-root"))
@@ -433,9 +433,13 @@ private enum LocalProxyPolicyEditorFixture {
             while let event = app.nextEvent(matching: [.leftMouseDown, .leftMouseUp], until: Date(), inMode: .default, dequeue: true) { app.sendEvent(event) }
             pump()
         }
-        require(uniformFields().count == 1 && uniformFields()[0].stringValue.isEmpty, "Unset/mixed limit fabricated a default 100")
-        editUniform("37.25"); applyUniform()
-        require(uniform.saved == [37.25] && uniformFields()[0].stringValue == "37.25", "Native uniform click failed to retain saved decimal")
+        require(uniformFields().count == 1 && uniformFields()[0].stringValue.isEmpty, "Mixed Plus/Pro policy fabricated a shared value")
+        uniform.savedLimit = 0; pump()
+        require(uniformFields()[0].stringValue == "0", "Uniform default remaining0 did not render as zero")
+        uniform.savedLimit = nil; pump()
+        require(uniformFields()[0].stringValue.isEmpty, "Mixed Plus/Pro refresh did not clear a clean shared input")
+        editUniform("20"); applyUniform()
+        require(uniform.saved == [20] && uniformFields()[0].stringValue == "20", "Native shared control did not save the requested remaining20")
         editUniform("55.5")
         let uniformInputID = ObjectIdentifier(uniformFields()[0])
         uniform.savedLimit = 70; pump()
@@ -445,9 +449,9 @@ private enum LocalProxyPolicyEditorFixture {
                 && uniformFields()[0].stringValue == "55.5", "Uniform resize/refresh replaced the input or unsaved draft")
         }
         uniform.failSave = true; applyUniform()
-        require(uniform.saved == [37.25] && uniformFields()[0].stringValue == "55.5", "Rejected uniform save changed rules or lost the draft")
+        require(uniform.saved == [20] && uniformFields()[0].stringValue == "55.5", "Rejected uniform save changed rules or lost the draft")
         uniform.failSave = false; applyUniform()
-        require(uniform.saved == [37.25, 55.5] && uniformFields()[0].stringValue == "55.5", "Uniform draft retry did not save current input")
+        require(uniform.saved == [20, 55.5] && uniformFields()[0].stringValue == "55.5", "Uniform draft retry did not save current input")
         for invalid in ["", "nan", "-1", "101"] {
             editUniform(invalid); applyUniform()
             require(uniform.saved.count == 2 && uniformFields()[0].stringValue == invalid, "Invalid uniform draft was saved or replaced")

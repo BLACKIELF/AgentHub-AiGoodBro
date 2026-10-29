@@ -6,6 +6,20 @@ struct CodexResetCreditExpiryBatch: Codable, Equatable {
     let count: Int
 }
 
+/// A successful official single-card consume response, never inferred from a balance delta.
+/// Only hashes and the confirmation time are persisted or passed to notification builders.
+struct CodexManualResetNotice: Codable, Equatable {
+    let eventHash: String
+    let profileHash: String
+    let confirmedAt: Date
+
+    var isValid: Bool {
+        [eventHash, profileHash].allSatisfy { value in
+            value.utf8.count == 64 && value.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
+        } && confirmedAt.timeIntervalSinceReferenceDate.isFinite
+    }
+}
+
 enum CodexResetNoticeChannel: String, Codable, CaseIterable {
     case local, feishu, telegram
     case weChat = "wechat"
@@ -153,6 +167,7 @@ struct CodexResetNoticeCandidate: Codable, Equatable {
     enum Content: Codable, Equatable {
         case expiry(cards: [CodexResetNoticeCard])
         case change(CodexResetNoticeChange)
+        case manualReset(CodexManualResetNotice)
     }
 
     let accountHash: String
@@ -177,6 +192,8 @@ struct CodexResetNoticeCandidate: Codable, Equatable {
                 && Set(cards.map(\.cardHash)).count == cards.count
         case .change(let change):
             return change.isValid && observedAt == change.observedAt
+        case .manualReset(let manual):
+            return manual.isValid && observedAt == manual.confirmedAt
         }
     }
 
@@ -184,7 +201,7 @@ struct CodexResetNoticeCandidate: Codable, Equatable {
         switch content {
         case .expiry(let cards):
             return cards.sorted { $0.cardHash < $1.cardHash }.map { .expiry(cards: [$0]) }
-        case .change: return [content]
+        case .change, .manualReset: return [content]
         }
     }
 }
@@ -222,6 +239,8 @@ enum CodexResetNoticeKey {
         case .expiry(let cards):
             guard cards.count == 1, let card = cards.first, let expiresAt = card.expiresAt else { return "" }
             return expiry(accountHash: accountHash, cardHash: card.cardHash, expiresAt: expiresAt, channel: channel)
+        case .manualReset(let manual):
+            return hash(["manual-reset-v1", accountHash, manual.eventHash, channel.rawValue].joined(separator: "|"))
         case .change(let value):
             return change(
                 accountHash: accountHash, previous: value.previous, available: value.available,

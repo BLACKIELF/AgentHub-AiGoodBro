@@ -20,6 +20,15 @@ final class CodexResetCreditController: ObservableObject {
         }
     }
 
+    /// A confirmed manual redemption, separate from the refresh callback for other outcomes.
+    /// Account and attempt identifiers are hashed; the pending key and card ID stay private.
+    struct ManualResetConfirmation: Equatable {
+        let eventID: String
+        let profileID: String
+        let accountKey: String
+        let confirmedAt: Date
+    }
+
     @Published private(set) var step: ConfirmationStep = .idle
     @Published private(set) var isWorking = false
     @Published var notice: Notice?
@@ -137,9 +146,11 @@ final class CodexResetCreditController: ObservableObject {
         profile: CodexProfile,
         selectedProfileID: String?,
         hubAccountAlias: String?,
-        onConfirmedResult: @escaping () -> Void
+        onConfirmedResult: @escaping () -> Void,
+        onManualResetConfirmed: @escaping (ManualResetConfirmation) -> Void = { _ in }
     ) {
-        guard !isWorking, case .consumption(let review) = step,
+        guard !isWorking else { return }
+        guard case .consumption(let review) = step,
             current(profile: profile, selectedProfileID: selectedProfileID, matches: review)
         else {
             invalidate(with: .selectionChanged)
@@ -150,22 +161,13 @@ final class CodexResetCreditController: ObservableObject {
             return
         }
 
-        let leaseID: String
-        do {
-            leaseID = try activityStore.reserveMaintenance(
-                account: profile.recordedAccountKey,
-                alias: hubAccountAlias ?? "reset-\(DispatchActivityStore.hash(profile.recordedAccountKey))"
-            )
-        } catch {
-            invalidate(with: .conflictingActivity)
-            return
-        }
+        // Explicitly confirmed manual redemption is allowed while this account has
+        // work in progress. The reader still verifies the exact identity and card.
         let pending: ResetCreditPendingAttempt
         let reusesPendingAttempt: Bool
         do {
             (pending, reusesPendingAttempt) = try pendingStore.loadOrCreate(for: review)
         } catch {
-            try? activityStore.finishMaintenance(leaseID, succeeded: false)
             invalidate(with: .pendingAttemptRequiresReconciliation)
             return
         }
@@ -177,17 +179,10 @@ final class CodexResetCreditController: ObservableObject {
         let operation = UUID()
         generation = operation
         let context = RuntimeLoadContext.live(codexHomeDirectory: profile.codexHomeURL)
-        Task { [activityStore, pendingStore] in
-            let available: Bool
-            if let hubAccountAlias {
-                available = await HubConsoleModel.warmUpAvailability(for: hubAccountAlias, excludingLocalLease: leaseID) == .idle
-            } else {
-                available = true
-            }
-            guard available, self.generation == operation else {
-                try? activityStore.finishMaintenance(leaseID, succeeded: false)
+        Task { [pendingStore] in
+            guard self.generation == operation else {
                 if !reusesPendingAttempt { try? pendingStore.clear(expected: pending) }
-                self.invalidate(with: available ? .selectionChanged : .conflictingActivity)
+                self.invalidate(with: .selectionChanged)
                 return
             }
             let result = await Task.detached(priority: .userInitiated) {
@@ -203,7 +198,6 @@ final class CodexResetCreditController: ObservableObject {
             case .success: confirmed = true
             case .failure: confirmed = false
             }
-            try? activityStore.finishMaintenance(leaseID, succeeded: confirmed)
             if confirmed { try? pendingStore.clear(expected: pending) }
             if case .failure(let failure) = result,
                 !reusesPendingAttempt, failure != .outcomeUnknown
@@ -212,6 +206,15 @@ final class CodexResetCreditController: ObservableObject {
             }
             DispatchQueue.main.async { [weak self] in
                 if Self.activeProfileID == profile.id { Self.activeProfileID = nil }
+                if case .success(.reset) = result {
+                    onManualResetConfirmed(
+                        ManualResetConfirmation(
+                            eventID: "manual-reset-" + DispatchActivityStore.hash(pending.idempotencyKey),
+                            profileID: review.profileID,
+                            accountKey: pending.accountKey,
+                            confirmedAt: Date()
+                        ))
+                }
                 if confirmed { onConfirmedResult() }
                 guard let self else { return }
                 self.ownedProfileID = nil

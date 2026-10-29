@@ -55,7 +55,7 @@ parts = [
     declaration(interaction, "struct WorkspaceCheckboxStyle:"),
 ]
 # Editor-specific helpers stay in the actual source, directly next to the editor.
-start = ui.index("private struct LocalProxyPlusLimitEditor:")
+start = ui.index("private struct LocalProxyQuotaLimitEditor:")
 parts.append(ui[start:])
 parts.append((ROOT / "tests/LocalProxyPolicyEditorFixture.swift").read_text())
 frozen = "\n\n".join(parts)

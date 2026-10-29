@@ -610,6 +610,52 @@ final class FeishuWebhookService {
         }
     }
 
+    func sendManualReset(
+        _ confirmation: CodexManualResetNotice, sourceAccount: FeishuMaskedAccount,
+        messageOptions: FeishuMessageOptions, shouldSend: @escaping @MainActor () -> Bool,
+        completion: @escaping (Result<Void, FeishuWebhookError>) -> Void
+    ) {
+        let body: Data
+        do { body = try Self.manualResetPayload(confirmation, sourceAccount: sourceAccount, messageOptions: messageOptions) } catch {
+            completion(.failure(.invalidNotification))
+            return
+        }
+        readCredential(completion: { result in
+            Task { @MainActor in
+                guard shouldSend() else {
+                    completion(.failure(.cancelled))
+                    return
+                }
+                switch result {
+                case .success(let credential):
+                    self.send(
+                        body: body, to: credential.endpoint, credentialGeneration: credential.generation,
+                        admission: shouldSend, completion: completion)
+                case .failure(let error): completion(.failure(error))
+                }
+            }
+        })
+    }
+
+    static func manualResetPayload(
+        _ confirmation: CodexManualResetNotice, sourceAccount: FeishuMaskedAccount,
+        messageOptions: FeishuMessageOptions = .standard, language: WidgetLanguage = .storedOrAutomatic()
+    ) throws -> Data {
+        guard confirmation.isValid else { throw FeishuWebhookError.invalidNotification }
+        var lines = [
+            language.text("**操作**：手动使用 1 张重置卡", "**Action**: Manually used 1 reset card"),
+            language.text("**结果**：官方已确认重置成功", "**Result**: Official service confirmed the reset succeeded"),
+        ]
+        if messageOptions.includesAgentName { lines.append("**Agent**: Codex") }
+        if messageOptions.includesAccountLabel {
+            lines.append(language.text("**账号**：", "**Account**: ") + escapedLabel(sourceAccount.value))
+        }
+        lines.append(language.text("**确认时间**：", "**Confirmed**: ") + MessageNoticeFormat.fullDate(confirmation.confirmedAt))
+        return try resetCardData(
+            title: language.text("重置卡 · 手动使用成功", "Reset card · Manual use succeeded"),
+            template: "green", sections: [lines.joined(separator: "\n")])
+    }
+
     func sendPublicResetAnnouncement(
         _ announcement: PublicResetAnnouncement,
         shouldSend: @escaping () -> Bool,
@@ -840,6 +886,7 @@ final class FeishuWebhookService {
     private func send(
         body: Data, to endpoint: URL,
         credentialGeneration: UInt64,
+        admission: (@MainActor () -> Bool)? = nil,
         completion: @escaping (Result<Void, FeishuWebhookError>) -> Void
     ) {
         var request = URLRequest(
@@ -852,8 +899,9 @@ final class FeishuWebhookService {
         request.setValue("application/json; charset=utf-8", forHTTPHeaderField: "Content-Type")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
 
-        Task { [request] in
-            guard self.isCurrentCredential(credentialGeneration) else {
+        Task { @MainActor [request] in
+            // Recheck after task scheduling and before the first possible POST.
+            guard admission?() != false, self.isCurrentCredential(credentialGeneration) else {
                 completion(.failure(.cancelled))
                 return
             }

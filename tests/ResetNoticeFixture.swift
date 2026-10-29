@@ -84,6 +84,7 @@ enum ResetNoticeFixture {
         try thresholdAndInvalidationTests(root: root)
         try deliveryTests(root: root)
         try changeTests(root: root)
+        try manualTests(root: root)
         try retentionTests(root: root)
         try capacityTests(root: root)
         try integrityTests(root: root)
@@ -314,6 +315,68 @@ enum ResetNoticeFixture {
         let bytes = try JSONEncoder().encode(ledger)
         try bytes.write(to: store.url)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: store.url.path)
+    }
+
+
+    static func manualTests(root: URL) throws {
+        let ledger = store("manual", root: root)
+        let event = CodexManualResetNotice(eventHash: CodexResetNoticeKey.hash("synthetic-idempotency"),
+            profileHash: CodexResetNoticeKey.hash("synthetic-profile"), confirmedAt: now)
+        let ready = try ledger.enqueueManualReset(accountHash: account, manual: event, notifyFeishu: true, now: now)
+        expect(ready.count == 1 && ready[0].channel == .feishu, "confirmed manual succeeds without invented quota observation")
+        expect(try ledger.read().accounts.isEmpty, "manual receipt does not create quota observations")
+        expect(try ledger.enqueueManualReset(accountHash: account, manual: event, notifyFeishu: true, now: now).count == 1,
+            "duplicate pending callback keeps one intent")
+        expect(try ledger.read().records.count == 1, "duplicate callback never creates a second record")
+        let later = CodexManualResetNotice(eventHash: event.eventHash, profileHash: event.profileHash, confirmedAt: now.addingTimeInterval(1))
+        expect(try ledger.enqueueManualReset(accountHash: account, manual: later, notifyFeishu: true, now: now.addingTimeInterval(1))[0].candidate.observedAt == now,
+            "repeated success preserves first confirmed time")
+        let forged = CodexResetNoticeDelivery(channel: .feishu, candidate: .init(accountHash: account, observedAt: later.confirmedAt, content: .manualReset(later)))
+        expect(try ledger.reserve(forged, revision: revision, now: later.confirmedAt) == nil, "same key with forged time cannot reserve")
+        expect(throwsError { _ = try ledger.enqueueManualReset(accountHash: CodexResetNoticeKey.hash("another-account"), manual: event, notifyFeishu: true, now: now) }, "event cannot rebind account")
+        let rebound = CodexManualResetNotice(eventHash: event.eventHash, profileHash: CodexResetNoticeKey.hash("another-profile"), confirmedAt: now)
+        expect(throwsError { _ = try ledger.enqueueManualReset(accountHash: account, manual: rebound, notifyFeishu: true, now: now) }, "event cannot rebind profile")
+        let restarted = CodexResetNoticeDeliveryStore(url: ledger.url)
+        expect(try restarted.pendingManualResets().count == 1, "restart recovers pending manual intent")
+        let claim = try restarted.reserve(ready[0], revision: revision, now: now)!
+        expect(try restarted.isCurrent(claim, now: now), "manual reservation checks exact durable event")
+        _ = try restarted.record(claim, receipt: .notSent, currentRevision: revision, now: now)
+        expect(try restarted.pendingManualResets().count == 1, "known zero-transport cancellation can retry")
+        let retry = try restarted.reserve(ready[0], revision: revision, now: now)!
+        _ = try restarted.record(retry, receipt: .rejected, currentRevision: revision, now: now)
+        expect(try restarted.pendingManualResets().count == 1, "explicit remote rejection can retry")
+        let sent = try restarted.reserve(ready[0], revision: revision, now: now)!
+        expect(try !restarted.record(sent, receipt: .accepted, currentRevision: UUID(), now: now), "stale revision cannot claim accepted")
+        expect(try restarted.record(sent, receipt: .accepted, currentRevision: revision, now: now), "accepted transport persists sent")
+        expect(try restarted.enqueueManualReset(accountHash: account, manual: event, notifyFeishu: true, now: now).isEmpty, "accepted callback never resends")
+        let before = now.addingTimeInterval(-10), after = now.addingTimeInterval(10)
+        expect(try restarted.hasSingleManualReset(accountHash: account, previous: 2, available: 1, after: before, through: after), "exact one-card decrement correlates confirmed event")
+        expect(try !restarted.hasSingleManualReset(accountHash: account, previous: 2, available: 0, after: before, through: after), "two-card decrement remains unconfirmed")
+        expect(try !restarted.hasSingleManualReset(accountHash: account, previous: 1, available: 2, after: before, through: after), "increase remains separate")
+        expect(try !restarted.hasSingleManualReset(accountHash: account, previous: 2, available: 1, after: now, through: after), "previous timestamp is exclusive")
+        expect(try !restarted.hasSingleManualReset(accountHash: account, previous: 2, available: 1, after: before, through: before), "invalid interval remains unconfirmed")
+        expect(try !restarted.hasSingleManualReset(accountHash: account, previous: 2, available: 1, after: before, through: now.addingTimeInterval(-1)), "receipt outside interval cannot explain drop")
+        expect(try !restarted.hasSingleManualReset(accountHash: CodexResetNoticeKey.hash("another-account"), previous: 2, available: 1, after: before, through: after), "cross-account receipt never suppresses")
+        expect(try !restarted.hasSingleManualReset(accountHash: account, previous: Int.max, available: Int.min, after: before, through: after), "invalid counts do not overflow")
+        let second = CodexManualResetNotice(eventHash: CodexResetNoticeKey.hash("second-event"), profileHash: event.profileHash, confirmedAt: now.addingTimeInterval(1))
+        _ = try restarted.enqueueManualReset(accountHash: account, manual: second, notifyFeishu: true, now: after)
+        expect(try !restarted.hasSingleManualReset(accountHash: account, previous: 2, available: 1, after: before, through: after), "multiple manual receipts remain ambiguous")
+        let secondReady = try restarted.pendingManualResets()[0]
+        _ = try restarted.reserve(secondReady, revision: revision, now: after)!
+        let interrupted = CodexResetNoticeDeliveryStore(url: ledger.url)
+        _ = try interrupted.recoverInterruptedSends(now: after)
+        expect(try interrupted.pendingManualResets().isEmpty, "sending on restart becomes uncertain and never auto-replays")
+        expect(try interrupted.hasSingleManualReset(accountHash: account, previous: 2, available: 1, after: now, through: after), "consumption truth independent of uncertain delivery")
+        let disabled = store("manual-disabled", root: root)
+        expect(try disabled.enqueueManualReset(accountHash: account, manual: event, notifyFeishu: false, now: now).isEmpty, "disabled channel only persists confirmed baseline")
+        expect(try disabled.enqueueManualReset(accountHash: account, manual: event, notifyFeishu: true, now: now).isEmpty, "later enable cannot acquire historical notification intent")
+        expect(try disabled.hasSingleManualReset(accountHash: account, previous: 2, available: 1, after: before, through: after), "baseline still records confirmed consumption")
+        let raw = String(decoding: try Data(contentsOf: ledger.url), as: UTF8.self)
+        expect(!raw.contains("synthetic-idempotency") && !raw.contains("synthetic-profile") && !raw.contains("synthetic-account-a"), "ledger contains hashes only")
+        let invalid = CodexManualResetNotice(eventHash: "raw-secret", profileHash: event.profileHash, confirmedAt: now)
+        expect(throwsError { _ = try ledger.enqueueManualReset(accountHash: account, manual: invalid, notifyFeishu: true, now: now) }, "malformed event rejected")
+        expect(throwsError { _ = try ledger.enqueueManualReset(accountHash: account, manual: later, notifyFeishu: true, now: now) }, "future confirmation rejected")
+        print("PASS manual: confirmation, dedup, identity, opt-in, restart, uncertainty and strict correlation")
     }
 
     static func retentionTests(root: URL) throws {

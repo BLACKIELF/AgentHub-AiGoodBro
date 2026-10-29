@@ -113,6 +113,7 @@ final class FixtureMessageChannels {
     var onConfigurationChanged: (() -> Void)?
 }
 final class Harness {
+ func queuePendingManualResetNotices() {}
     static let localNotificationsEnabledKey = "fixture.local"
     static let feishuNotificationsEnabledKey = "fixture.feishu"
     static let feishuQuotaResetEnabledKey = "fixture.feishu.quota"

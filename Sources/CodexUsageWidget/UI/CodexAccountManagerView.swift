@@ -3013,6 +3013,8 @@ struct CodexAccountManagerView: View {
                         if settings.accountWorkspaceLayout == .cards { AccountCardDensityPicker() }
                         Divider()
                         Button(language.text("管理账号", "Manage accounts")) {
+                            accountScope = .all
+                            focusedAccountID = nil
                             isEditingProfiles = true
                             directReorder.cancel()
                         }
@@ -3128,7 +3130,8 @@ struct CodexAccountManagerView: View {
                     onOpenResetAutoSettings: {
                         resetCreditAutoFocusedProfileID = profile.id
                         isResetCreditAutoSettingsPresented = true
-                    }
+                    },
+                    onManualResetConfirmed: { store.recordManualResetConfirmed($0) }
                 ))
         }
         return AnyView(
@@ -3235,7 +3238,8 @@ struct CodexAccountManagerView: View {
                 onRename: { store.setProfileRemark($0, for: profile.id) },
                 onSetChromeProfile: { store.setChromeProfile($0, for: profile.id) },
                 onDelete: { store.deleteProfile(profile.id) },
-                onAdjustResetCount: { store.adjustResetCount(for: profile, delta: $0) }
+                onAdjustResetCount: { store.adjustResetCount(for: profile, delta: $0) },
+                onManualResetConfirmed: { store.recordManualResetConfirmed($0) }
             )
             .contextMenu {
                 let key = ResetCardPresentation.codexKey(profile.id)
@@ -6071,6 +6075,7 @@ private struct ProfileRow: View {
     let onSetChromeProfile: (ChromeProfileBinding?) -> Void
     let onDelete: () -> Void
     let onAdjustResetCount: (Int) -> Void
+    var onManualResetConfirmed: (CodexResetCreditController.ManualResetConfirmation) -> Void = { _ in }
     @Environment(\.accountCardDensity) private var cardDensity
     @State private var isEditingRemark = false
     @State private var isConfirmingDelete = false
@@ -6252,7 +6257,7 @@ private struct ProfileRow: View {
             ResetCreditButton(
                 profile: profile, selectedProfileID: profile.id,
                 hubAccountAlias: hubAccountAlias, onConfirmedResult: onRefresh,
-                displayNumber: displayNumber, compact: true
+                onManualResetConfirmed: onManualResetConfirmed, displayNumber: displayNumber, compact: true
             )
             .fixedSize()
             .disabled(!allowsResetCreditAction)

@@ -42,7 +42,7 @@ struct AccountInformationView: View {
             section(language.text("账号资料", "Account information")) {
                 row(language.text("显示名称", "Display name"), safe(profile.officialProfile?.displayName))
                 row(language.text("用户名", "Username"), safe(profile.officialProfile?.username))
-                row(language.text("登录邮箱", "Sign-in email"), safe(profile.lastSnapshot?.email ?? profile.officialProfile?.accountEmail))
+                row(language.text("登录邮箱", "Sign-in email"), safe(profile.lastSnapshot?.email ?? profile.officialProfile?.accountEmail, masked: false))
                 row(language.text("账号 ID", "Account ID"), Self.maskedID(profile.lastSnapshot?.accountID))
                 row(language.text("账号类型", "Account type"), accountType)
                 row(language.text("当前套餐", "Current plan"), AccountDisplay.planLabel(profile))
@@ -144,11 +144,11 @@ struct AccountInformationView: View {
         }
     }
 
-    private func safe(_ value: String?) -> String {
+    private func safe(_ value: String?, masked: Bool = true) -> String {
         guard let value, !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return "—" }
-        let cleaned = String(value.filter { !$0.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) }.prefix(160))
+        let cleaned = String(value.filter { !$0.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) }.prefix(masked ? 160 : 254))
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        return cleaned.isEmpty ? "—" : AccountDisplay.masked(cleaned)
+        return cleaned.isEmpty ? "—" : (masked ? AccountDisplay.masked(cleaned) : cleaned)
     }
 
     static func hasFreshQuota(_ profile: CodexProfile, now: Date) -> Bool {
