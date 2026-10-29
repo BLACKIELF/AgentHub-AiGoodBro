@@ -74,7 +74,7 @@ export function Header({
           { id: 'usage' as const, label: text('统计', 'Statistics'), icon: ChartNoAxesCombined },
           { id: 'proxy' as const, label: text('反代', 'Proxy'), icon: Network },
           { id: 'tools' as const, label: text('工作台', 'Workspace'), icon: PanelsTopLeft },
-        ].map(item => <button key={item.id} type="button" className={page === item.id ? 'is-active' : ''}
+        ].map(item => <button key={item.id} id={`workspace-nav-${item.id}`} type="button" className={page === item.id ? 'is-active' : ''}
           aria-current={page === item.id ? 'page' : undefined} onClick={() => onNavigate(item.id)}>
           <item.icon size={14} aria-hidden="true" />{item.label}
         </button>)}

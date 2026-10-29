@@ -105,6 +105,23 @@ test('native workspace navigation selects the actual tasks tab and ignores unkno
   await expect(page.locator('#dashboard-home-panel-tasks')).toHaveScreenshot('workspace-native-task-navigation.png');
 });
 
+for (const language of ['en', 'zh-Hans']) {
+  test(`native capture navigation reaches every lazy workspace panel in ${language}`, async ({ page }) => {
+    await workspace(page, { language });
+    await expect(page.locator('#workspace-nav-home')).toHaveAttribute('aria-current', 'page');
+    await expect(page.locator('#dashboard-home-tab-tasks')).toHaveCount(0);
+    await page.locator('#workspace-nav-tools').click();
+    await expect(page.locator('#workspace-nav-tools')).toHaveAttribute('aria-current', 'page');
+    await expect(page.locator('.dashboard-home-overview')).toBeVisible();
+    for (const tab of ['tasks', 'leadership', 'usage', 'projects', 'skills']) {
+      await page.locator(`#dashboard-home-tab-${tab}`).click();
+      await expect(page.locator(`#dashboard-home-tab-${tab}`)).toHaveAttribute('aria-selected', 'true');
+      await expect(page.locator(`#dashboard-home-panel-${tab}`)).toBeVisible();
+    }
+    expect(await page.evaluate(() => window.workspaceWrites)).toEqual([]);
+  });
+}
+
 test('card size, list and platform filter persist while preserving global numbering', async ({ page }) => {
   await workspace(page);
   const region = page.getByRole('region', { name: 'Account directories', exact: true });

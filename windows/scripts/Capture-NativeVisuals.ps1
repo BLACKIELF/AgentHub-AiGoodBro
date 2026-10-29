@@ -1311,6 +1311,16 @@ function Select-DashboardTab {
   [void](Wait-ForElement -Window $Window -AutomationId $PanelId -TimeoutSeconds 20)
 }
 
+function Open-DashboardWorkspace {
+  param([IntPtr] $Window)
+  $navigation = Wait-ForElement -Window $Window -AutomationId 'workspace-nav-tools'
+  $pattern = $navigation.GetCurrentPattern(
+    [System.Windows.Automation.InvokePattern]::Pattern
+  )
+  $pattern.Invoke()
+  [void](Wait-ForElement -Window $Window -AutomationId 'dashboard-home-tab-tasks' -TimeoutSeconds 20)
+}
+
 function Move-DashboardScrollToTop {
   param([IntPtr] $Renderer)
   [void][NativeVisualCaptureDriver]::ScrollRendererPage($Renderer, 120, 40)
@@ -1733,13 +1743,17 @@ function Invoke-MaximizedCapture {
       -Window $window `
       -ExpectedForeground $foregroundBefore
     Wait-WebViewDocument -Window $window
-    [void](Wait-ForElement -Window $window -AutomationId 'dashboard-home-tab-tasks')
+    [void](Wait-ForElement -Window $window -AutomationId 'workspace-nav-home')
+    # The existing Overview and five task/tool panels are now lazy-mounted
+    # behind Workspace. Keep capturing those surfaces, not the new Home page.
+    Open-DashboardWorkspace -Window $window
     $renderer = [NativeVisualCaptureDriver]::FindRenderer($window)
     if ($renderer -eq [IntPtr]::Zero) {
       throw 'Could not identify the task application renderer child HWND.'
     }
     $sizeRecord.accessibility = [ordered]@{
       document_present = $true
+      workspace_navigation_present = $true
       dashboard_tab_present = $true
       renderer_present = $true
     }
@@ -1758,7 +1772,7 @@ function Invoke-MaximizedCapture {
         -LogPath (Join-Path $LogsRoot 'graphics-capture.log')
       $sizeRecord.captures += [ordered]@{
         surface = 'Overview'
-        framing = 'page top in maximized window'
+        framing = 'Workspace overview at page top in maximized window'
         file = $overviewPath
         physical_frame = $overviewCapture.physical_frame
         capture_engine = $overviewCapture.engine
