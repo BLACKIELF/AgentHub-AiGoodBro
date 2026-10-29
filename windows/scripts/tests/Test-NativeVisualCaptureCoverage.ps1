@@ -19,8 +19,12 @@ function Assert-Sequence {
 $repositoryRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\..'))
 $entry = Join-Path $repositoryRoot 'windows\scripts\Capture-NativeVisuals.ps1'
 $powershell = (Get-Command powershell.exe -ErrorAction Stop).Source
+$runScope = ''
+if ($env:GITHUB_RUN_ID -match '^\d+$' -and $env:GITHUB_RUN_ATTEMPT -match '^\d+$') {
+  $runScope = $env:GITHUB_RUN_ID + '-' + $env:GITHUB_RUN_ATTEMPT + '-'
+}
 $outputRoot = Join-Path $repositoryRoot (
-  '.local-artifacts\windows-visual-captures\coverage-contract-' +
+  '.local-artifacts\windows-visual-captures\coverage-contract-' + $runScope +
   [guid]::NewGuid().ToString('N')
 )
 $expectedSurfaces = @('Tasks', 'AI Leadership', 'Usage', 'Projects', 'Skills')

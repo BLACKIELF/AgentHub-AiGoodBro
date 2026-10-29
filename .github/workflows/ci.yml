@@ -359,12 +359,28 @@ jobs:
         with:
           name: windows-native-capture-diagnostics
           path: |
-            .local-artifacts/windows-visual-captures/coverage-contract-*/manifest.json
-            .local-artifacts/windows-visual-captures/coverage-contract-*/logs/failure-uia.json
-            .local-artifacts/windows-visual-captures/coverage-contract-*/screenshots/fullscreen/failure.png
+            .local-artifacts/windows-visual-captures/coverage-contract-${{ github.run_id }}-${{ github.run_attempt }}-*/manifest.json
+            .local-artifacts/windows-visual-captures/coverage-contract-${{ github.run_id }}-${{ github.run_attempt }}-*/logs/failure-uia.json
+            .local-artifacts/windows-visual-captures/coverage-contract-${{ github.run_id }}-${{ github.run_attempt }}-*/screenshots/fullscreen/failure.png
           include-hidden-files: true
           if-no-files-found: ignore
           retention-days: 7
+      - name: Upload successful owned-window visual evidence
+        if: ${{ success() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-native-visual-evidence
+          include-hidden-files: true
+          retention-days: 7
+          if-no-files-found: error
+          path: |
+            .local-artifacts/windows-visual-captures/coverage-contract-${{ github.run_id }}-${{ github.run_attempt }}-*/manifest.json
+            .local-artifacts/windows-visual-captures/coverage-contract-${{ github.run_id }}-${{ github.run_attempt }}-*/screenshots/fullscreen/overview.png
+            .local-artifacts/windows-visual-captures/coverage-contract-${{ github.run_id }}-${{ github.run_attempt }}-*/screenshots/fullscreen/tasks-*.png
+            .local-artifacts/windows-visual-captures/coverage-contract-${{ github.run_id }}-${{ github.run_attempt }}-*/screenshots/fullscreen/ai-leadership-*.png
+            .local-artifacts/windows-visual-captures/coverage-contract-${{ github.run_id }}-${{ github.run_attempt }}-*/screenshots/fullscreen/usage-*.png
+            .local-artifacts/windows-visual-captures/coverage-contract-${{ github.run_id }}-${{ github.run_attempt }}-*/screenshots/fullscreen/projects-*.png
+            .local-artifacts/windows-visual-captures/coverage-contract-${{ github.run_id }}-${{ github.run_attempt }}-*/screenshots/fullscreen/skills-*.png
       - name: Preserve native statistics build receipts
         uses: actions/upload-artifact@v4
         if: ${{ always() && !cancelled() }}
