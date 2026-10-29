@@ -707,10 +707,12 @@ struct LocalProxyQueueView: View {
                 .font(.caption)
                 .accessibilityIdentifier("next.local-proxy.registration-\(row.id)")
                 if let failure = model.hotActivationErrors[row.id] {
-                    Text(failure == "cooldown_pending"
-                        ? language.text("此账号仍有冷却记录，请在冷却结束后重试。", "This account has a remaining cooldown. Retry when it expires.")
-                        : language.text("热激活未完成，账号未加入。请确认登记和登录状态后重试。", "Activation did not finish; the account has not joined. Confirm registration and sign-in, then retry."))
-                        .font(.caption).foregroundStyle(WorkspaceStatusForeground.warning)
+                    Text(
+                        failure == "cooldown_pending"
+                            ? language.text("此账号仍有冷却记录，请在冷却结束后重试。", "This account has a remaining cooldown. Retry when it expires.")
+                            : language.text("热激活未完成，账号未加入。请确认登记和登录状态后重试。", "Activation did not finish; the account has not joined. Confirm registration and sign-in, then retry.")
+                    )
+                    .font(.caption).foregroundStyle(WorkspaceStatusForeground.warning)
                 }
             } else if model.hasStaleRunningBinding(for: row.id) {
                 Text(

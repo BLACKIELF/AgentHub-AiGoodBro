@@ -49,8 +49,16 @@ private final class LocalProxyRunProfiles: @unchecked Sendable {
     private let lock = NSLock()
     private var ids: Set<String>
     init(_ ids: Set<String>) { self.ids = ids }
-    func insert(_ id: String) { lock.lock(); defer { lock.unlock() }; ids.insert(id) }
-    func snapshot() -> Set<String> { lock.lock(); defer { lock.unlock() }; return ids }
+    func insert(_ id: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        ids.insert(id)
+    }
+    func snapshot() -> Set<String> {
+        lock.lock()
+        defer { lock.unlock() }
+        return ids
+    }
 }
 
 /// Disk I/O cannot be cancelled reliably. Complete the caller at most once,
@@ -957,7 +965,10 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
                 writable.revents & Int16(POLLERR | POLLHUP | POLLNVAL) == 0
             else { throw LocalProxyFailure.unavailable }
             try pipe.write(contentsOf: data)
-        } catch { hotActivationErrors[id] = "unavailable"; return }
+        } catch {
+            hotActivationErrors[id] = "unavailable"
+            return
+        }
         for _ in 0..<100 {
             guard current() else { return }
             if hotRegistrations[id]?.acknowledged == true { break }
@@ -976,7 +987,11 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
         let previous = preferences
         preferences.knownIDs.insert(id)
         preferences.enabledIDs.insert(id)
-        guard savePreferences() else { preferences = previous; hotActivationErrors[id] = "save"; return }
+        guard savePreferences() else {
+            preferences = previous
+            hotActivationErrors[id] = "save"
+            return
+        }
         runProfiles.insert(id)
         registeredPool[id] = binding
         activeIDs.insert(id)
@@ -2489,7 +2504,8 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
                 hotRegistrations[id] = pending
             } else {
                 let reason = object["errorCode"] as? String ?? "unavailable"
-                hotActivationErrors[id] = ["identity", "duplicate_identity", "pool_full", "cooldown_pending", "cooldown_unavailable", "registration_failed"].contains(reason) ? reason : "unavailable"
+                hotActivationErrors[id] =
+                    ["identity", "duplicate_identity", "pool_full", "cooldown_pending", "cooldown_unavailable", "registration_failed"].contains(reason) ? reason : "unavailable"
                 cancelHotActivation(id: id)
             }
         case "account":

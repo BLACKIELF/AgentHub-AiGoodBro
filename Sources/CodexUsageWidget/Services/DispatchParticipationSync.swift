@@ -239,8 +239,7 @@ struct DispatchParticipationSync {
                 // process exits between files, the next verified refresh can
                 // reconcile the same alias/code instead of losing registration.
                 let replacementOrder: [Int]
-                if case .registration = change { replacementOrder = [1, 2, 0] }
-                else { replacementOrder = Array(urls.indices) }
+                if case .registration = change { replacementOrder = [1, 2, 0] } else { replacementOrder = Array(urls.indices) }
                 for index in replacementOrder {
                     try checkpoint(.beforeReplace(index))
                     for check in urls.indices {
