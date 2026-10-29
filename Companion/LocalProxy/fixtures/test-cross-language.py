@@ -57,7 +57,7 @@ class Upstream(BaseHTTPRequestHandler):
 
 def run(helper=None):
     with tempfile.TemporaryDirectory(prefix='lp-cross-',dir=os.environ.get("TMPDIR")) as temporary:
-        folder=pathlib.Path(temporary);os.chmod(folder,0o700)
+        folder=pathlib.Path(temporary).resolve();os.chmod(folder,0o700)
         bridge_source=(ROOT/'Sources/CodexUsageWidget/Services/LocalProxyBridge.swift').read_text()
         reader_start=bridge_source.index('\nenum LocalProxyCredentialReader')
         reader_comment=bridge_source.rfind('\n///',0,reader_start)
