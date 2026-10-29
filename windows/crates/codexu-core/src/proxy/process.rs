@@ -925,12 +925,13 @@ impl LocalProxyService {
         child: &mut OwnedHelper,
         frame: &[u8],
     ) -> Result<(), ProxyFailure> {
-        let stdin = child.stdin.as_mut().ok_or(ProxyFailure::Unavailable)?;
-        if let Err(error) = command_pipe::send(stdin, frame) {
+        if child.stdin.is_none() {
+            return Err(ProxyFailure::Unavailable);
+        }
+        if let Err(error) = command_pipe::send(&mut child.stdin, frame) {
             if error == command_pipe::FrameFailure::Poisoned {
-                // Never append a later command to an incomplete frame. EOF
-                // leaves the held process available to the normal stop owner.
-                child.stdin.take();
+                // The pipe owner already closed a partial frame. Revoke new
+                // admissions while normal stop retains process ownership.
                 self.host
                     .lock()
                     .map_err(|_| ProxyFailure::Unavailable)?

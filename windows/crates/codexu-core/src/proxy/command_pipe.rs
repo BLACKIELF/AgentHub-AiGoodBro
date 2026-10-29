@@ -43,12 +43,18 @@ fn valid_frame(bytes: &[u8]) -> bool {
         && !bytes[..bytes.len() - 1].contains(&b'\n')
 }
 
-#[cfg(windows)]
-pub(super) fn send(stdin: &mut PipeWriter, bytes: &[u8]) -> Result<(), FrameFailure> {
+pub(super) fn send(stdin: &mut Option<PipeWriter>, bytes: &[u8]) -> Result<(), FrameFailure> {
     if !valid_frame(bytes) {
         return Err(FrameFailure::Unchanged);
     }
-    send_chunk(stdin, bytes)
+    let writer = stdin.as_mut().ok_or(FrameFailure::Poisoned)?;
+    let result = send_chunk(writer, bytes);
+    if result == Err(FrameFailure::Poisoned) {
+        // A partial frame can never be followed by a second command. Closing
+        // the sole writer here makes that invariant independent of the caller.
+        stdin.take();
+    }
+    result
 }
 
 #[cfg(windows)]
@@ -58,33 +64,6 @@ pub(super) fn send_chunk(stdin: &mut PipeWriter, bytes: &[u8]) -> Result<(), Fra
         windows::Win32::Foundation::HANDLE(stdin.as_raw_handle()),
         bytes,
     )
-}
-
-#[cfg(windows)]
-fn quota(handle: windows::Win32::Foundation::HANDLE) -> Result<u32, FrameFailure> {
-    use windows::{
-        Wdk::Storage::FileSystem::{
-            FilePipeLocalInformation, NtQueryInformationFile, FILE_PIPE_LOCAL_INFORMATION,
-        },
-        Win32::System::IO::IO_STATUS_BLOCK,
-    };
-    let mut info = FILE_PIPE_LOCAL_INFORMATION::default();
-    let mut status = IO_STATUS_BLOCK::default();
-    // PipeWriter/CreatePipe are synchronous local pipe handles. This queries
-    // kernel pipe state only; it never sends a request to the helper process.
-    let result = unsafe {
-        NtQueryInformationFile(
-            handle,
-            &mut status,
-            &mut info as *mut _ as _,
-            std::mem::size_of_val(&info) as u32,
-            FilePipeLocalInformation,
-        )
-    };
-    if result.0 != 0 || status.Information != std::mem::size_of_val(&info) {
-        return Err(FrameFailure::Poisoned);
-    }
-    Ok(info.WriteQuotaAvailable)
 }
 
 #[cfg(all(test, windows))]
@@ -120,18 +99,23 @@ fn send_handle(
     handle: windows::Win32::Foundation::HANDLE,
     bytes: &[u8],
 ) -> Result<(), FrameFailure> {
-    use windows::Win32::Storage::FileSystem::WriteFile;
-    if bytes.is_empty() || bytes.len() > 512 || quota(handle)? < bytes.len() as u32 {
+    use windows::Win32::{Foundation::ERROR_NO_DATA, Storage::FileSystem::WriteFile};
+    if bytes.is_empty() || bytes.len() > 512 {
         return Err(FrameFailure::Unchanged);
     }
     // owned_pipe configures PIPE_NOWAIT before spawning the reader. The caller
-    // owns the only writer and serializes complete command frames.
+    // owns the only writer and serializes complete command frames. Kernel
+    // WriteQuotaAvailable can be zero while a pending reader accepts data;
+    // only the actual nonblocking write decides whether bytes were accepted.
     let mut written = 0;
     let result = unsafe { WriteFile(handle, Some(bytes), Some(&mut written), None) };
     if written != 0 && written != bytes.len() as u32 {
         return Err(FrameFailure::Poisoned);
     }
     if let Err(_error) = result {
+        if written == 0 && _error.code() == windows::core::HRESULT::from_win32(ERROR_NO_DATA.0) {
+            return Err(FrameFailure::Unchanged);
+        }
         #[cfg(test)]
         eprintln!(
             "proxy_pipe_fixture write_hresult={} written={}",
@@ -145,14 +129,6 @@ fn send_handle(
     } else {
         Err(FrameFailure::Unchanged)
     }
-}
-
-#[cfg(unix)]
-pub(super) fn send(stdin: &mut PipeWriter, bytes: &[u8]) -> Result<(), FrameFailure> {
-    if !valid_frame(bytes) {
-        return Err(FrameFailure::Unchanged);
-    }
-    send_chunk(stdin, bytes)
 }
 
 #[cfg(unix)]
@@ -200,7 +176,9 @@ fn send_fd(fd: std::os::fd::RawFd, bytes: &[u8]) -> Result<(), FrameFailure> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::{Read, Write};
+    use std::io::Read;
+    #[cfg(not(windows))]
+    use std::io::Write;
     use std::time::{Duration, Instant};
 
     #[test]
@@ -394,7 +372,8 @@ mod tests {
     #[test]
     #[ignore = "explicit native helper contract uses the same owned synchronous pipe type"]
     fn actual_helper_command_pipe_full_rejects_whole_frame_without_blocking_or_corruption() {
-        let (mut read, mut write) = owned_pipe().unwrap();
+        let (mut read, write) = owned_pipe().unwrap();
+        let mut write = Some(write);
         let frame = b"{\"command\":\"fixture\"}\n";
         let mut fill = vec![b'x'; 512];
         fill[511] = b'\n';
@@ -407,29 +386,53 @@ mod tests {
         let at = Instant::now();
         assert_eq!(send(&mut write, frame), Err(FrameFailure::Unchanged));
         assert!(at.elapsed() < Duration::from_secs(1));
-        // Even with some capacity, the next frame must not be split.
+        // POSIX rejects this atomically. Windows byte pipes can write the
+        // one available byte; that must poison and close the sole writer.
         let mut one = [0u8; 1];
         read.read_exact(&mut one).unwrap();
         assert_eq!(one[0], b'x');
-        assert_eq!(send(&mut write, frame), Err(FrameFailure::Unchanged));
-        let mut remaining = vec![0; count - 1];
-        read.read_exact(&mut remaining).unwrap();
-        let expected: Vec<u8> = fill
-            .iter()
-            .cycle()
-            .skip(1)
-            .take(count - 1)
-            .copied()
-            .collect();
-        assert_eq!(remaining, expected);
-        send(&mut write, frame).unwrap();
-        let mut received = vec![0; frame.len()];
-        read.read_exact(&mut received).unwrap();
-        assert_eq!(received, frame);
-        assert_eq!(
-            send(&mut write, b"bad\nframe\n"),
-            Err(FrameFailure::Unchanged)
-        );
-        write.flush().unwrap();
+        let result = send(&mut write, frame);
+        #[cfg(windows)]
+        {
+            assert_eq!(result, Err(FrameFailure::Poisoned));
+            assert!(write.is_none());
+            assert_eq!(send(&mut write, frame), Err(FrameFailure::Poisoned));
+            let mut remaining = Vec::new();
+            read.read_to_end(&mut remaining).unwrap();
+            let mut expected: Vec<u8> = fill
+                .iter()
+                .cycle()
+                .skip(1)
+                .take(count - 1)
+                .copied()
+                .collect();
+            expected.push(frame[0]);
+            assert_eq!(remaining, expected);
+            // No newline/complete command or later command followed the prefix.
+            return;
+        }
+        #[cfg(not(windows))]
+        {
+            assert_eq!(result, Err(FrameFailure::Unchanged));
+            let mut remaining = vec![0; count - 1];
+            read.read_exact(&mut remaining).unwrap();
+            let expected: Vec<u8> = fill
+                .iter()
+                .cycle()
+                .skip(1)
+                .take(count - 1)
+                .copied()
+                .collect();
+            assert_eq!(remaining, expected);
+            send(&mut write, frame).unwrap();
+            let mut received = vec![0; frame.len()];
+            read.read_exact(&mut received).unwrap();
+            assert_eq!(received, frame);
+            assert_eq!(
+                send(&mut write, b"bad\nframe\n"),
+                Err(FrameFailure::Unchanged)
+            );
+            write.as_mut().unwrap().flush().unwrap();
+        }
     }
 }
