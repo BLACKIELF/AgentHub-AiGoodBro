@@ -27,7 +27,8 @@ def replace_once(text, original, replacement):
 original = source.read_text()
 test_source = original
 for old, new in [
-    ('os_log("registry_failure stage=%{public}s cause=%{public}s errno=%{public}d",\n'
+    ('os_log(\n'
+     '            "registry_failure stage=%{public}s cause=%{public}s errno=%{public}d",\n'
      '            log: registryLog, type: .error, stage.rawValue, cause.rawValue, systemError)',
      'RegistryFault.record(stage.rawValue, cause.rawValue, systemError)'),
     ('Darwin.open(directory.appendingPathComponent(Self.stateName).path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)',
