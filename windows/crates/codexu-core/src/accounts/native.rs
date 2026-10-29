@@ -11,6 +11,9 @@ use std::{
 };
 
 #[cfg(windows)]
+#[path = "private_windows.rs"]
+pub(in crate::accounts) mod private;
+#[cfg(windows)]
 #[path = "process_windows.rs"]
 pub(in crate::accounts) mod process;
 
@@ -123,46 +126,7 @@ fn protect(context: &str, bytes: &[u8], decrypt: bool) -> AccountResult<Vec<u8>>
 
 #[cfg(windows)]
 pub(crate) fn restrict_access(path: &Path) -> AccountResult<()> {
-    use std::{ffi::c_void, os::windows::ffi::OsStrExt};
-    #[link(name = "advapi32")]
-    unsafe extern "system" {
-        fn ConvertStringSecurityDescriptorToSecurityDescriptorW(
-            text: *const u16,
-            revision: u32,
-            descriptor: *mut *mut c_void,
-            size: *mut u32,
-        ) -> i32;
-        fn SetFileSecurityW(path: *const u16, information: u32, descriptor: *const c_void) -> i32;
-    }
-    #[link(name = "kernel32")]
-    unsafe extern "system" {
-        fn LocalFree(memory: *mut c_void) -> *mut c_void;
-    }
-    // Protected DACL: owner, SYSTEM, administrators only. Descendants inherit.
-    let sddl: Vec<u16> = "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;OW)\0"
-        .encode_utf16()
-        .collect();
-    let path: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
-    let mut descriptor = std::ptr::null_mut();
-    if unsafe {
-        ConvertStringSecurityDescriptorToSecurityDescriptorW(
-            sddl.as_ptr(),
-            1,
-            &mut descriptor,
-            std::ptr::null_mut(),
-        )
-    } == 0
-    {
-        return Err(fail("private_storage_unavailable"));
-    }
-    let ok = unsafe { SetFileSecurityW(path.as_ptr(), 0x8000_0004, descriptor) };
-    unsafe {
-        LocalFree(descriptor);
-    }
-    if ok == 0 {
-        return Err(fail("private_storage_unavailable"));
-    }
-    Ok(())
+    private::restrict(path)
 }
 
 pub struct NativeAccountRuntime;

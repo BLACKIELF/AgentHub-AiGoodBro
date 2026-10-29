@@ -1,7 +1,9 @@
 use super::{fail, identity::StoredCredential, AccountResult};
 use serde::{Deserialize, Serialize};
+#[cfg(not(windows))]
+use std::fs::OpenOptions;
 use std::{
-    fs::{File, OpenOptions},
+    fs::File,
     io::{Read, Write},
     path::{Path, PathBuf},
 };
@@ -151,13 +153,13 @@ impl StoreLock {
         secure_directory(root)?;
         let path = root.join("accounts.lock");
         ensure_no_links(&path)?;
+        #[cfg(not(windows))]
         let mut options = OpenOptions::new();
+        #[cfg(not(windows))]
         options.read(true).write(true).create(true);
         #[cfg(windows)]
-        {
-            use std::os::windows::fs::OpenOptionsExt;
-            options.share_mode(0);
-        }
+        let file = super::native::private::open_lock(&path)?;
+        #[cfg(not(windows))]
         let file = options
             .open(&path)
             .map_err(|_| fail("account_store_busy"))?;
@@ -348,20 +350,27 @@ pub(crate) fn read_optional(path: &Path, maximum: usize) -> AccountResult<Option
     Ok(Some(data))
 }
 pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> AccountResult<()> {
-    ensure_no_links(path)?;
-    let parent = path.parent().ok_or_else(|| fail("account_paths_invalid"))?;
-    if !parent.is_dir() {
-        return Err(fail("account_storage_unavailable"));
+    #[cfg(windows)]
+    {
+        return super::native::private::atomic_write(path, bytes);
     }
-    let mut temp =
-        tempfile::NamedTempFile::new_in(parent).map_err(|_| fail("account_storage_unavailable"))?;
-    secure_file(temp.path())?;
-    temp.write_all(bytes)
-        .and_then(|_| temp.as_file().sync_all())
-        .map_err(|_| fail("account_save_failed"))?;
-    temp.persist(path)
-        .map_err(|_| fail("account_save_failed"))?;
-    Ok(())
+    #[cfg(not(windows))]
+    {
+        ensure_no_links(path)?;
+        let parent = path.parent().ok_or_else(|| fail("account_paths_invalid"))?;
+        if !parent.is_dir() {
+            return Err(fail("account_storage_unavailable"));
+        }
+        let mut temp = tempfile::NamedTempFile::new_in(parent)
+            .map_err(|_| fail("account_storage_unavailable"))?;
+        secure_file(temp.as_file(), temp.path())?;
+        temp.write_all(bytes)
+            .and_then(|_| temp.as_file().sync_all())
+            .map_err(|_| fail("account_save_failed"))?;
+        temp.persist(path)
+            .map_err(|_| fail("account_save_failed"))?;
+        Ok(())
+    }
 }
 pub(crate) fn restore_owned(
     home: &Path,
@@ -412,7 +421,23 @@ pub(crate) fn ensure_no_links(path: &Path) -> AccountResult<()> {
 }
 pub(crate) fn secure_directory(path: &Path) -> AccountResult<()> {
     ensure_no_links(path)?;
+    #[cfg(not(windows))]
     std::fs::create_dir_all(path).map_err(|_| fail("account_storage_unavailable"))?;
+    #[cfg(windows)]
+    if !path.exists() {
+        let mut missing = Vec::new();
+        let mut next = path;
+        while !next.exists() {
+            missing.push(next);
+            next = next.parent().ok_or_else(|| fail("account_paths_invalid"))?;
+        }
+        for new in missing.into_iter().rev() {
+            super::native::private::create_directory(new)?;
+        }
+    }
+    if !path.is_dir() {
+        return Err(fail("account_storage_invalid"));
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -423,14 +448,59 @@ pub(crate) fn secure_directory(path: &Path) -> AccountResult<()> {
     super::native::restrict_access(path)?;
     Ok(())
 }
-fn secure_file(path: &Path) -> AccountResult<()> {
+#[cfg(not(windows))]
+fn secure_file(_file: &File, path: &Path) -> AccountResult<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
             .map_err(|_| fail("account_storage_unavailable"))?;
     }
-    #[cfg(windows)]
-    super::native::restrict_access(path)?;
     Ok(())
+}
+
+/// Exclusive creation, including the Windows owner/DACL at creation time.
+/// A pre-existing directory is a contention result, never an owned lock.
+pub(crate) fn create_private_directory(path: &Path) -> AccountResult<()> {
+    ensure_no_links(path)?;
+    #[cfg(windows)]
+    super::native::private::create_directory(path)?;
+    #[cfg(not(windows))]
+    {
+        std::fs::create_dir(path).map_err(|_| fail("account_storage_unavailable"))?;
+        secure_directory(path)?;
+    }
+    Ok(())
+}
+
+/// Only this owned temporary directory may be recursively removed on Drop.
+/// A runtime with unknown child cleanup must retain it with `keep`.
+pub(crate) struct PrivateTempDir(Option<PathBuf>);
+impl PrivateTempDir {
+    pub(crate) fn path(&self) -> &Path {
+        self.0.as_deref().expect("owned temporary directory")
+    }
+    pub(crate) fn keep(mut self) -> PathBuf {
+        self.0.take().expect("owned temporary directory")
+    }
+}
+impl Drop for PrivateTempDir {
+    fn drop(&mut self) {
+        if let Some(path) = self.0.take() {
+            let _ = std::fs::remove_dir_all(path);
+        }
+    }
+}
+pub(crate) fn private_tempdir(parent: &Path, prefix: &str) -> AccountResult<PrivateTempDir> {
+    ensure_no_links(parent)?;
+    if !parent.is_dir()
+        || !prefix
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+    {
+        return Err(fail("account_paths_invalid"));
+    }
+    let path = parent.join(format!("{prefix}{}", super::nonce()?));
+    create_private_directory(&path)?;
+    Ok(PrivateTempDir(Some(path)))
 }

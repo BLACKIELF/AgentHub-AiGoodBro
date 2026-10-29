@@ -2,6 +2,8 @@
 //! native CLI, real profile, Keychain, network, App or proxy is started.
 use codexu_core::accounts::{claude::*, *};
 use serde_json::{json, Value};
+#[path = "support/windows_creation.rs"]
+mod windows_creation;
 use std::{
     path::{Path, PathBuf},
     sync::{
@@ -205,18 +207,19 @@ struct Fixture {
 impl Fixture {
     fn new(gated: bool) -> Self {
         let temp = tempfile::tempdir().unwrap();
-        let root = temp.path().canonicalize().unwrap();
+        let root = windows_creation::fixture_root(temp.path());
         let system = root.join("synthetic-claude");
-        std::fs::create_dir(&system).unwrap();
+        windows_creation::create_private_dir(&system).unwrap();
         let config = root.join("synthetic-claude.json");
         let before_auth = credentials("source");
         let before_config = serde_json::to_vec(
             &json!({"oauthAccount":account("source"),"preferences":{"fixture":"keep"}}),
         )
         .unwrap();
-        std::fs::write(system.join(".credentials.json"), &before_auth).unwrap();
-        std::fs::write(&config, &before_config).unwrap();
-        std::fs::write(system.join("settings.json"), b"{}").unwrap();
+        windows_creation::write_private_file_new(&system.join(".credentials.json"), &before_auth)
+            .unwrap();
+        windows_creation::write_private_file_new(&config, &before_config).unwrap();
+        windows_creation::write_private_file_new(&system.join("settings.json"), b"{}").unwrap();
         let paths =
             ClaudeAccountPaths::isolated(root.join("vault"), system.clone(), config.clone())
                 .unwrap();

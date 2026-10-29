@@ -28,6 +28,28 @@ try {
     if ($RunNativeTests) {
         Invoke-ProxyBuildCommand 'python' @('windows/proxy/build.py', '--build-root', $BuildRoot, '--target', 'windows-amd64', 'test', '-mod=readonly', '-run', '^TestWindows', '.')
         Invoke-ProxyBuildCommand 'python' @('windows/proxy/build.py', '--build-root', $BuildRoot, '--target', 'windows-amd64', 'vet', '-mod=readonly', './...')
+        # The hosted Windows runner is elevated: its default TokenOwner can be
+        # Administrators. Execute the creation and no-adoption regressions on
+        # synthetic temporary objects without changing the runner token.
+        $ownerArguments = @('+1.97.1-x86_64-pc-windows-msvc', 'test', '--manifest-path', 'windows/Cargo.toml', '--locked', '-p', 'codexu-core', '--lib', 'windows_private_', '--', '--nocapture')
+        $ownerTests = @(
+            'windows_private_creation_sets_token_user_owner_before_sensitive_write',
+            'windows_private_atomic_write_pins_parent_and_anchors_ancestor_changes'
+        )
+        if ($env:GITHUB_ACTIONS -eq 'true') {
+            $ownerArguments += '--include-ignored'
+            $ownerTests += 'windows_private_existing_administrators_owner_is_rejected_unchanged'
+        }
+        $ownerOutput = @(& cargo @ownerArguments 2>&1)
+        $ownerExit = $LASTEXITCODE
+        $ownerOutput | Out-Host
+        if ($ownerExit -ne 0) { throw 'proxy_owner_contract_failed' }
+        $ownerText = $ownerOutput -join "`n"
+        foreach ($test in $ownerTests) {
+            if ($ownerText -notmatch ('(?m)^test accounts::native::private::tests::' + [regex]::Escape($test) + ' \.\.\. ok\s*$')) {
+                throw ('proxy_owner_contract_not_executed:' + $test)
+            }
+        }
         # Only synthetic account/credential fixtures are used. The packaged
         # helper must be the fresh, source-verified candidate from this run.
         $env:AIGOODBRO_TEST_PROXY_HELPER = Join-Path $root 'windows\apps\codexu-tauri\src-tauri\resources\proxy\aigoodbro-local-proxy.exe'

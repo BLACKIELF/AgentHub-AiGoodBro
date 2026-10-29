@@ -244,16 +244,32 @@ func runDesktopAdapter(connectionPath string, args []string) int {
 func runDesktopBridge(string) int { return 78 }
 
 func ownWindowsBackend(process *os.Process) (func(), error) {
+	job, err := attachWindowsBackend(process)
+	if err != nil {
+		return nil, err
+	}
+	return job.close, nil
+}
+
+type windowsBackendJob struct {
+	handle windows.Handle
+	once   sync.Once
+}
+
+func (job *windowsBackendJob) close() {
+	job.once.Do(func() { _ = windows.CloseHandle(job.handle) })
+}
+
+func attachWindowsBackend(process *os.Process) (*windowsBackendJob, error) {
 	job, err := windows.CreateJobObject(nil, nil)
 	if err != nil {
 		return nil, err
 	}
-	var once sync.Once
-	closeJob := func() { once.Do(func() { _ = windows.CloseHandle(job) }) }
+	owned := &windowsBackendJob{handle: job}
 	info := windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION{}
 	info.BasicLimitInformation.LimitFlags = windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
 	if _, err = windows.SetInformationJobObject(job, windows.JobObjectExtendedLimitInformation, uintptr(unsafe.Pointer(&info)), uint32(unsafe.Sizeof(info))); err != nil {
-		closeJob()
+		owned.close()
 		return nil, err
 	}
 	var assignErr error
@@ -261,12 +277,12 @@ func ownWindowsBackend(process *os.Process) (func(), error) {
 	// accidentally attach a reused unrelated PID to a kill-on-close job.
 	err = process.WithHandle(func(handle uintptr) { assignErr = windows.AssignProcessToJobObject(job, windows.Handle(handle)) })
 	if err != nil {
-		closeJob()
+		owned.close()
 		return nil, err
 	}
 	if assignErr != nil {
-		closeJob()
+		owned.close()
 		return nil, assignErr
 	}
-	return closeJob, nil
+	return owned, nil
 }

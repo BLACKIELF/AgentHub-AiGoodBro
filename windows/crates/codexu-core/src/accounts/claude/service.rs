@@ -323,11 +323,9 @@ impl ClaudeSubscriptionManager {
     fn run_login(&self, id: &str, cancelled: &AtomicBool) {
         let result = (|| {
             self.accepting()?;
-            let directory = tempfile::Builder::new()
-                .prefix("claude-login-")
-                .tempdir_in(self.paths.staging())
-                .map_err(|_| fail("login_unavailable"))?;
-            super::super::storage::secure_directory(directory.path())?;
+            let directory =
+                super::super::storage::private_tempdir(&self.paths.staging(), "claude-login-")
+                    .map_err(|_| fail("login_unavailable"))?;
             let mut waiting = || {
                 if !cancelled.load(Ordering::SeqCst) {
                     if let Ok(mut attempts) = self.attempts.lock() {

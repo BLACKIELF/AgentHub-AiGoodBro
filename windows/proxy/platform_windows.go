@@ -18,6 +18,28 @@ func currentSID() (*windows.SID, error) {
 	}
 	return u.User.Sid, nil
 }
+func privateCreationDescriptor() (*windows.SECURITY_DESCRIPTOR, error) {
+	user, err := currentSID()
+	if err != nil {
+		return nil, err
+	}
+	// An elevated token's default owner can be Administrators. New private
+	// objects must still be owned by this user; never take over an existing
+	// object or accept a group owner in the read-side ownership check.
+	return windows.SecurityDescriptorFromString("O:" + user.String() + "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;" + user.String() + ")")
+}
+func createPrivateDirectory(path string) error {
+	p, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return err
+	}
+	sd, err := privateCreationDescriptor()
+	if err != nil {
+		return err
+	}
+	sa := windows.SecurityAttributes{Length: uint32(unsafe.Sizeof(windows.SecurityAttributes{})), SecurityDescriptor: sd}
+	return windows.CreateDirectory(p, &sa)
+}
 func noReparse(path string) error {
 	p, err := windows.UTF16PtrFromString(path)
 	if err != nil {
@@ -53,7 +75,7 @@ func windowsPath(path string, create bool) error {
 			if !create || !os.IsNotExist(err) {
 				return err
 			}
-			if err = os.Mkdir(part, 0700); err != nil {
+			if err = createPrivateDirectory(part); err != nil {
 				return err
 			}
 			if err = noReparse(part); err != nil {
@@ -97,6 +119,10 @@ func privateDescriptor(sd *windows.SECURITY_DESCRIPTOR) bool {
 func privateDirectory(path string, set bool) error {
 	if err := windowsPath(path, set); err != nil {
 		return err
+	}
+	info, err := os.Lstat(path)
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return errors.New("private_directory_required")
 	}
 	sd, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION)
 	if err != nil {
@@ -172,7 +198,15 @@ func platformCooldownOpen(root *os.Root, name string, flag int, perm os.FileMode
 	if err == nil && (!before.Mode().IsRegular() || before.Mode()&os.ModeSymlink != 0) {
 		return nil, errors.New("invalid_cooldown")
 	}
-	f, err := root.OpenFile(name, flag, perm)
+	var f *os.File
+	if flag&os.O_CREATE != 0 && flag&os.O_EXCL != 0 {
+		if flag != os.O_CREATE|os.O_EXCL|os.O_WRONLY {
+			return nil, errors.New("invalid_private_create_flags")
+		}
+		f, err = createPrivateFileAt(root, name)
+	} else {
+		f, err = root.OpenFile(name, flag, perm)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -183,4 +217,41 @@ func platformCooldownOpen(root *os.Root, name string, flag int, perm os.FileMode
 		return nil, errors.New("invalid_cooldown")
 	}
 	return f, nil
+}
+
+// FILE_CREATE is exclusive and the descriptor applies at creation. A handle
+// opened through os.Root anchors the parent even if its pathname is renamed.
+// Existing files, links, ADS and subpaths are never opened or re-owned here.
+func createPrivateFileAt(root *os.Root, name string) (*os.File, error) {
+	if name == "" || name == "." || name == ".." || strings.ContainsAny(name, `\/:`) || filepath.Base(name) != name {
+		return nil, errors.New("invalid_private_filename")
+	}
+	parent, err := root.Open(".")
+	if err != nil {
+		return nil, err
+	}
+	defer parent.Close()
+	if !platformDesktopOwned(parent, nil) {
+		return nil, errors.New("state_owner_rejected")
+	}
+	sd, err := privateCreationDescriptor()
+	if err != nil {
+		return nil, err
+	}
+	objectName, err := windows.NewNTUnicodeString(name)
+	if err != nil {
+		return nil, err
+	}
+	attributes := windows.OBJECT_ATTRIBUTES{
+		Length: uint32(unsafe.Sizeof(windows.OBJECT_ATTRIBUTES{})), RootDirectory: windows.Handle(parent.Fd()),
+		ObjectName: objectName, Attributes: windows.OBJ_CASE_INSENSITIVE | windows.OBJ_DONT_REPARSE, SecurityDescriptor: sd,
+	}
+	var handle windows.Handle
+	err = windows.NtCreateFile(&handle, windows.FILE_GENERIC_WRITE|windows.READ_CONTROL, &attributes, &windows.IO_STATUS_BLOCK{}, nil,
+		windows.FILE_ATTRIBUTE_NORMAL, windows.FILE_SHARE_READ, windows.FILE_CREATE,
+		windows.FILE_NON_DIRECTORY_FILE|windows.FILE_SYNCHRONOUS_IO_NONALERT|windows.FILE_OPEN_REPARSE_POINT, 0, 0)
+	if err != nil {
+		return nil, err
+	}
+	return os.NewFile(uintptr(handle), filepath.Join(root.Name(), name)), nil
 }

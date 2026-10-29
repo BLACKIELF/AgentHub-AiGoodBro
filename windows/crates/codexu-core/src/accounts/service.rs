@@ -440,11 +440,8 @@ impl AccountManager {
     ) {
         let result = (|| {
             self.require_accepting()?;
-            let staging = tempfile::Builder::new()
-                .prefix("login-")
-                .tempdir_in(self.paths.staging())
+            let staging = storage::private_tempdir(&self.paths.staging(), "login-")
                 .map_err(|_| fail("login_unavailable"))?;
-            storage::secure_directory(staging.path())?;
             let mut report = |auth: super::LoginAuthorization| {
                 if !cancelled.load(Ordering::SeqCst) {
                     self.update_attempt(attempt_id, |dto| {
@@ -653,11 +650,8 @@ impl AccountManager {
                     .ok_or_else(|| fail("login_required"))?,
             )
         };
-        let staging = tempfile::Builder::new()
-            .prefix("verify-")
-            .tempdir_in(self.paths.staging())
+        let staging = storage::private_tempdir(&self.paths.staging(), "verify-")
             .map_err(|_| fail("verification_unavailable"))?;
-        storage::secure_directory(staging.path())?;
         storage::atomic_write(&staging.path().join("auth.json"), &credential.auth)?;
         let result = self.runtime.verify(staging.path(), &credential.identity);
         if result
@@ -1851,11 +1845,8 @@ impl AccountManager {
             )
         };
         let writer = self.credential_write(account_id, CredentialWritePurpose::Managed)?;
-        let staging = tempfile::Builder::new()
-            .prefix("refresh-")
-            .tempdir_in(self.paths.staging())
+        let staging = storage::private_tempdir(&self.paths.staging(), "refresh-")
             .map_err(|_| fail("verification_unavailable"))?;
-        storage::secure_directory(staging.path())?;
         storage::atomic_write(&staging.path().join("auth.json"), &credential.auth)?;
         let result = self.runtime.verify(staging.path(), &credential.identity);
         if result

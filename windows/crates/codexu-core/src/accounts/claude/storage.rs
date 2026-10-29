@@ -425,10 +425,9 @@ impl MutationLocks {
             config_lock,
         ] {
             shared::ensure_no_links(&path)?;
-            std::fs::create_dir(&path).map_err(|_| fail("claude_account_busy"))?;
+            shared::create_private_directory(&path).map_err(|_| fail("claude_account_busy"))?;
             let marker = super::super::nonce()?.into_bytes();
             result.locks.push((path.clone(), marker.clone()));
-            shared::secure_directory(&path)?;
             shared::atomic_write(&path.join("aigoodbro-owner"), &marker)?;
         }
         result.verify()?;

@@ -3,6 +3,8 @@
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use codexu_core::accounts::*;
 use serde_json::{json, Value};
+#[path = "support/windows_creation.rs"]
+mod windows_creation;
 use std::{
     path::{Path, PathBuf},
     sync::{
@@ -222,13 +224,13 @@ struct Fixture {
 impl Fixture {
     fn new(gated: bool) -> Self {
         let temp = tempfile::tempdir().unwrap();
-        let root = temp.path().canonicalize().unwrap();
+        let root = windows_creation::fixture_root(temp.path());
         let system = root.join("synthetic-system-home");
-        std::fs::create_dir(&system).unwrap();
+        windows_creation::create_private_dir(&system).unwrap();
         let before = credential("original");
-        std::fs::write(system.join("auth.json"), &before).unwrap();
-        std::fs::write(
-            system.join("config.toml"),
+        windows_creation::write_private_file_new(&system.join("auth.json"), &before).unwrap();
+        windows_creation::write_private_file_new(
+            &system.join("config.toml"),
             b"model_provider = 'openai'\ncli_auth_credentials_store = 'file'\n",
         )
         .unwrap();

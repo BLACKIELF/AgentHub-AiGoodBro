@@ -1,6 +1,8 @@
 #![cfg(windows)]
 //! Native crypto/ACL/lock fixtures only, never a real CLI/account/login.
 use codexu_core::accounts::*;
+#[path = "support/windows_creation.rs"]
+mod windows_creation;
 use std::{
     path::Path,
     sync::{atomic::AtomicBool, Arc},
@@ -58,9 +60,9 @@ fn native_dpapi_roundtrip_is_context_bound_and_not_plaintext() {
 fn native_vault_acl_dpapi_and_exclusive_os_lock_work_on_synthetic_paths() {
     use std::os::windows::fs::OpenOptionsExt;
     let temp = tempfile::tempdir().unwrap();
-    let root = temp.path().canonicalize().unwrap();
+    let root = windows_creation::fixture_root(temp.path());
     let system = root.join("synthetic-system");
-    std::fs::create_dir(&system).unwrap();
+    windows_creation::create_private_dir(&system).unwrap();
     let paths = AccountPaths::isolated(root.join("vault"), system).unwrap();
     let manager = AccountManager::with_components(
         paths.clone(),

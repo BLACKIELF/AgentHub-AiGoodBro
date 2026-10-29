@@ -57,7 +57,12 @@ func TestWindowsDesktopActualAdapterUsesOneBackendForAuthenticatedEvidence(t *te
 		t.Fatal(err)
 	}
 	defer source.Close()
-	destination, err := os.OpenFile(backend, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	destination, err := createPrivateFileAt(root, filepath.Base(backend))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,9 +71,7 @@ func TestWindowsDesktopActualAdapterUsesOneBackendForAuthenticatedEvidence(t *te
 	}
 	destination.Close()
 	auth := []byte(`{"auth_mode":"chatgpt","tokens":{"access_token":"synthetic-test-token"}}`)
-	if err = os.WriteFile(filepath.Join(dir, "auth.json"), auth, 0600); err != nil {
-		t.Fatal(err)
-	}
+	writeWindowsPrivateFixture(t, filepath.Join(dir, "auth.json"), auth)
 	listener, err := net.Listen("tcp4", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -95,9 +98,7 @@ func TestWindowsDesktopActualAdapterUsesOneBackendForAuthenticatedEvidence(t *te
 	connection := desktopConnection{SchemaVersion: 1, RunID: "fixture-proxy-run", Endpoint: "http://127.0.0.1:42123/v1", ClientKey: strings.Repeat("c", 64), CodexExecutable: backend, WriterID: "fixture-writer", EvidenceEndpoint: "tcp:" + listener.Addr().String(), EvidenceKey: key}
 	path := filepath.Join(dir, "desktop-connection.json")
 	data, _ := json.Marshal(connection)
-	if err = os.WriteFile(path, data, 0600); err != nil {
-		t.Fatal(err)
-	}
+	writeWindowsPrivateFixture(t, path, data)
 	command := exec.Command(os.Args[0], "app-server")
 	command.Env = append(os.Environ(), "AIGOODBRO_DESKTOP_TEST_CHILD=1", "AIGOODBRO_WINDOWS_BACKEND_FIXTURE=1", "AIGOODBRO_PROXY_CONNECTION_FILE="+path, "CODEX_HOME="+dir)
 	input, err := command.StdinPipe()
@@ -165,7 +166,12 @@ func TestWindowsDesktopGatewayReloadsOnlySameWriterConnectionAfterRestart(t *tes
 	}
 	defer source.Close()
 	backend := filepath.Join(dir, "fixture-evidence-backend.exe")
-	destination, err := os.OpenFile(backend, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	destination, err := createPrivateFileAt(root, filepath.Base(backend))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,9 +179,7 @@ func TestWindowsDesktopGatewayReloadsOnlySameWriterConnectionAfterRestart(t *tes
 		t.Fatal(err)
 	}
 	destination.Close()
-	if err = os.WriteFile(filepath.Join(dir, "auth.json"), []byte(`{"auth_mode":"chatgpt","tokens":{"access_token":"synthetic-local-bearer"}}`), 0600); err != nil {
-		t.Fatal(err)
-	}
+	writeWindowsPrivateFixture(t, filepath.Join(dir, "auth.json"), []byte(`{"auth_mode":"chatgpt","tokens":{"access_token":"synthetic-local-bearer"}}`))
 	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer "+strings.Repeat("a", 64) {
 			t.Error("first run key mismatch")
@@ -194,9 +198,7 @@ func TestWindowsDesktopGatewayReloadsOnlySameWriterConnectionAfterRestart(t *tes
 	path := filepath.Join(dir, "desktop-connection.json")
 	save := func() {
 		data, _ := json.Marshal(c)
-		if err := os.WriteFile(path, data, 0600); err != nil {
-			t.Fatal(err)
-		}
+		writeWindowsPrivateFixture(t, path, data)
 	}
 	save()
 	t.Setenv("AIGOODBRO_PROXY_CONNECTION_FILE", path)
