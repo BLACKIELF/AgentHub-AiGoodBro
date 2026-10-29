@@ -107,11 +107,11 @@ pub(super) fn legacy_manager(value: &str) -> bool {
             "cc-switch.exe" | "claude-swap.exe" | "cswap.exe"
         )
 }
-pub(super) fn script_host(value: &str) -> bool {
-    matches!(
-        value.to_ascii_lowercase().as_str(),
-        "node.exe" | "bun.exe" | "deno.exe"
-    )
+pub(super) fn related_codex(name: &str, image_path: &str, same_verified_image: bool) -> bool {
+    potential_codex(name)
+        || legacy_manager(name)
+        || potential_codex(image_path)
+        || same_verified_image
 }
 
 #[cfg(test)]
@@ -168,7 +168,26 @@ mod tests {
             assert!(potential_codex(name));
         }
         assert!(legacy_manager("CodexAccountManagerNext.exe"));
-        assert!(script_host("NODE.exe"));
+        assert!(!related_codex(
+            "node.exe",
+            "C:\\UnrelatedTool\\node.exe",
+            false
+        ));
+        assert!(!related_codex(
+            "unsigned-tool.exe",
+            "C:\\UnrelatedTool\\unsigned-tool.exe",
+            false
+        ));
+        assert!(related_codex(
+            "renamed.exe",
+            "C:\\UnrelatedTool\\renamed.exe",
+            true
+        ));
+        assert!(related_codex(
+            "node.exe",
+            "C:\\OpenAI\\Codex\\node.exe",
+            false
+        ));
         assert!(!potential_codex("notepad.exe"));
     }
     #[test]

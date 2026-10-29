@@ -143,6 +143,7 @@ impl Fixture {
     }
     fn setup(&self, kind: ChannelKind) {
         let (secret, target) = match kind {
+            ChannelKind::System => panic!("system channel has no credential binding"),
             ChannelKind::Feishu => (
                 "https://open.feishu.cn/open-apis/bot/v2/hook/synthetic-not-a-real-webhook"
                     .to_owned(),

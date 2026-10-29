@@ -413,6 +413,20 @@ fn resolve_executable_with_permit(
     home: &Path,
     permit: Option<std::sync::Arc<dyn super::VerificationProcessPermit>>,
 ) -> AccountResult<(PathBuf, std::fs::File)> {
+    resolve_executable_with_policy(home, permit, false)
+}
+#[cfg(windows)]
+pub(in crate::accounts) fn maintenance_executable(
+    home: &Path,
+) -> AccountResult<(PathBuf, std::fs::File)> {
+    resolve_executable_with_policy(home, None, true)
+}
+#[cfg(windows)]
+fn resolve_executable_with_policy(
+    home: &Path,
+    permit: Option<std::sync::Arc<dyn super::VerificationProcessPermit>>,
+    official_only: bool,
+) -> AccountResult<(PathBuf, std::fs::File)> {
     use std::os::windows::fs::OpenOptionsExt;
     let (package, triple) = if cfg!(target_arch = "aarch64") {
         ("codex-win32-arm64", "aarch64-pc-windows-msvc")
@@ -463,6 +477,17 @@ fn resolve_executable_with_permit(
         else {
             continue;
         };
+        if official_only {
+            let publisher = crate::readers::local_cli_quota::antigravity::publisher_of(&candidate)
+                .unwrap_or_default()
+                .chars()
+                .filter(|c| c.is_ascii_alphanumeric())
+                .flat_map(char::to_lowercase)
+                .collect::<String>();
+            if !matches!(publisher.as_str(), "openai" | "openaillc" | "openaiinc") {
+                continue;
+            }
+        }
         let start = if let Some(permit) = &permit {
             process::Child::start_for_verification(
                 &candidate,

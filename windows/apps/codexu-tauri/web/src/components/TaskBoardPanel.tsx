@@ -1,6 +1,7 @@
 import { Archive, CalendarClock, CircleDashed, CircleDot, ClipboardList, Clock3 } from 'lucide-react';
 import type { TaskBoard, TaskItem } from '../types/models';
 import { useI18n } from '../i18n/I18nProvider';
+import { LiveTasksPanel } from './LiveTasksPanel';
 
 interface TaskBoardPanelProps {
   taskBoard: TaskBoard | null;
@@ -14,6 +15,9 @@ const COLUMN_ICONS = {
 } as const;
 
 export function TaskBoardPanel({ taskBoard }: TaskBoardPanelProps) {
+  return <div className="space-y-3"><LiveTasksPanel /><RecordedTaskBoard taskBoard={taskBoard} /></div>;
+}
+function RecordedTaskBoard({ taskBoard }: TaskBoardPanelProps) {
   const { t } = useI18n();
   if (!taskBoard) {
     return (
@@ -32,6 +36,7 @@ export function TaskBoardPanel({ taskBoard }: TaskBoardPanelProps) {
   return (
     <section className="glass-panel p-4 sm:p-5 space-y-4" aria-label={t('tasks.ariaLabel')} aria-live="polite">
       <PanelHeading t={t} summary={taskBoardSummary(taskBoard, itemCount, t)} />
+      <p className="text-xs text-tertiary">{t('tasks.recorded')}</p>
       {isEmpty ? (
         <div className="task-board-empty flex items-start gap-2 rounded-xl border border-theme bg-surface-inset px-3 py-2.5">
           <CircleDashed size={15} aria-hidden="true" className="mt-0.5 shrink-0 text-tertiary" />

@@ -17,6 +17,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+pub mod dependency;
 pub mod launch;
 
 /// Bounded read used by every marker and evidence check in this module.

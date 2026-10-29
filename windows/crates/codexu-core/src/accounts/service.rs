@@ -16,6 +16,8 @@ use std::{
         Arc, Mutex, RwLock,
     },
 };
+#[path = "maintenance.rs"]
+pub mod maintenance;
 
 struct Attempt {
     dto: LoginAttemptDto,

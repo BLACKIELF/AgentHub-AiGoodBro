@@ -36,12 +36,14 @@ pub(super) type Connected<'a> = Pin<Box<dyn Future<Output = LiveResult<Connectio
 pub(super) trait Connector: Send + Sync {
     fn connect<'a>(&'a self, scope: &'a SystemDaemonScope, stop: Arc<AtomicBool>) -> Connected<'a>;
 }
-struct NativeConnector;
+struct NativeConnector {
+    domains: Arc<OwnedProcessDomains>,
+}
 impl Connector for NativeConnector {
     fn connect<'a>(&'a self, scope: &'a SystemDaemonScope, stop: Arc<AtomicBool>) -> Connected<'a> {
         #[cfg(windows)]
         {
-            Box::pin(super::native::connect(scope, stop))
+            Box::pin(super::native::connect(scope, stop, self.domains.clone()))
         }
         #[cfg(not(windows))]
         {
@@ -88,6 +90,14 @@ impl SystemDaemonSource {
         activity: Arc<dyn SystemActivitySource>,
         observer: Option<Arc<dyn LiveTaskObserver>>,
     ) -> LiveResult<Arc<Self>> {
+        Self::native_with_owned_domains(authority, activity, observer, OwnedProcessDomains::new())
+    }
+    pub fn native_with_owned_domains(
+        authority: Arc<dyn SystemScopeAuthority>,
+        activity: Arc<dyn SystemActivitySource>,
+        observer: Option<Arc<dyn LiveTaskObserver>>,
+        domains: Arc<OwnedProcessDomains>,
+    ) -> LiveResult<Arc<Self>> {
         if !cfg!(windows) {
             return Err(LiveIssue::Unavailable);
         }
@@ -95,7 +105,7 @@ impl SystemDaemonSource {
             authority,
             activity,
             observer,
-            Arc::new(NativeConnector),
+            Arc::new(NativeConnector { domains }),
         ))
     }
     fn with_connector(

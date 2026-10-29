@@ -114,6 +114,8 @@ pub fn arguments(kind: LocalCliKind, action: Action) -> Result<Vec<String>> {
 pub struct Environment {
     kind: LocalCliKind,
     bindings: Vec<(String, String)>,
+    own_codex: bool,
+    clean: bool,
 }
 impl Environment {
     pub fn codex(home: &Path) -> Result<Self> {
@@ -121,6 +123,8 @@ impl Environment {
         Ok(Self {
             kind: LocalCliKind::Codex,
             bindings: vec![("CODEX_HOME".into(), home.to_string_lossy().into())],
+            own_codex: false,
+            clean: false,
         })
     }
     pub fn for_profile(kind: LocalCliKind, root: &Path, default: bool) -> Result<Self> {
@@ -134,7 +138,63 @@ impl Environment {
             kind.isolation_environment(root)
                 .ok_or_else(|| fail("isolation_unavailable"))?
         };
-        Ok(Self { kind, bindings })
+        Ok(Self {
+            kind,
+            bindings,
+            own_codex: false,
+            clean: false,
+        })
+    }
+    /// Uses this Windows user's current Codex login/environment. No account
+    /// directory or approval/model setting is replaced by the setup task.
+    pub fn own_codex() -> Self {
+        Self {
+            kind: LocalCliKind::Codex,
+            bindings: vec![],
+            own_codex: true,
+            clean: false,
+        }
+    }
+    /// The verifier and version probe see synthetic local directories and no
+    /// account, Node injection, proxy credential or provider environment.
+    pub fn dependency_probe(root: &Path) -> Result<Self> {
+        check_path(root)?;
+        let mut bindings = vec![];
+        for (name, path) in [
+            ("HOME", root.to_owned()),
+            ("USERPROFILE", root.to_owned()),
+            ("APPDATA", root.join("AppData/Roaming")),
+            ("LOCALAPPDATA", root.join("AppData/Local")),
+            ("TEMP", root.join("tmp")),
+            ("TMP", root.join("tmp")),
+        ] {
+            crate::accounts::storage::secure_directory(&path)
+                .map_err(|_| fail("dependency_storage_failed"))?;
+            bindings.push((name.into(), path.to_string_lossy().into()));
+        }
+        bindings.push(("PATH".into(), String::new()));
+        Ok(Self {
+            kind: LocalCliKind::Codex,
+            bindings,
+            own_codex: false,
+            clean: true,
+        })
+    }
+    pub fn with_verified_product(
+        mut self,
+        runtime: &super::dependency::VerifiedRuntime,
+    ) -> Result<Self> {
+        if self.kind == LocalCliKind::WorkBuddy {
+            let product = runtime
+                .product_config()
+                .ok_or_else(|| fail("workbuddy_product_unverified"))?;
+            check_path(product)?;
+            self.bindings.push((
+                "ACC_PRODUCT_CONFIG_PATH".into(),
+                product.to_string_lossy().into(),
+            ));
+        }
+        Ok(self)
     }
     /// Only backend-generated provider bindings can be applied. No WebView map
     /// or arbitrary environment key is accepted at the process boundary.
@@ -145,19 +205,33 @@ impl Environment {
         let mut out = Vec::new();
         for (key, value) in inherited {
             let name = key.to_string_lossy();
-            if self
-                .kind
-                .inherited_environment_to_clear()
-                .iter()
-                .any(|s| name.eq_ignore_ascii_case(s))
-                || (self.kind == LocalCliKind::Codex
-                    && crate::workflow::EXTERNAL_API_ENVIRONMENT
-                        .iter()
-                        .any(|s| name.eq_ignore_ascii_case(s)))
-                || self
-                    .bindings
+            if self.clean
+                && !matches!(
+                    name.to_ascii_uppercase().as_str(),
+                    "SYSTEMROOT"
+                        | "WINDIR"
+                        | "COMSPEC"
+                        | "PATHEXT"
+                        | "NUMBER_OF_PROCESSORS"
+                        | "PROCESSOR_ARCHITECTURE"
+                )
+            {
+                continue;
+            }
+            if (!self.own_codex
+                && (self
+                    .kind
+                    .inherited_environment_to_clear()
                     .iter()
-                    .any(|(k, _)| name.eq_ignore_ascii_case(k))
+                    .any(|s| name.eq_ignore_ascii_case(s))
+                    || (self.kind == LocalCliKind::Codex
+                        && crate::workflow::EXTERNAL_API_ENVIRONMENT
+                            .iter()
+                            .any(|s| name.eq_ignore_ascii_case(s)))
+                    || self
+                        .bindings
+                        .iter()
+                        .any(|(k, _)| name.eq_ignore_ascii_case(k))))
                 || matches!(
                     name.to_ascii_uppercase().as_str(),
                     "NODE_OPTIONS" | "NODE_PATH" | "BUN_OPTIONS" | "ELECTRON_RUN_AS_NODE"
@@ -246,6 +320,36 @@ pub fn authentication_version(kind: LocalCliKind, root: &Path) -> Result<String>
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn own_codex_preserves_its_login_but_probe_has_no_ambient_credentials() {
+        let inherited = vec![
+            ("CODEX_HOME".into(), "existing-own-home".into()),
+            (
+                "OPENAI_API_KEY".into(),
+                "synthetic-existing-credential".into(),
+            ),
+            ("NODE_OPTIONS".into(), "--require injected".into()),
+            ("SystemRoot".into(), "synthetic-system-root".into()),
+        ];
+        let own = Environment::own_codex().apply(inherited.clone()).unwrap();
+        assert!(own
+            .iter()
+            .any(|(k, v)| k == "CODEX_HOME" && v == "existing-own-home"));
+        assert!(own.iter().any(|(k, _)| k == "OPENAI_API_KEY"));
+        assert!(!own.iter().any(|(k, _)| k == "NODE_OPTIONS"));
+        let temp = tempfile::tempdir().unwrap();
+        let probe = Environment::dependency_probe(temp.path())
+            .unwrap()
+            .apply(inherited)
+            .unwrap();
+        assert!(probe
+            .iter()
+            .all(|(k, _)| k != "CODEX_HOME" && k != "OPENAI_API_KEY" && k != "NODE_OPTIONS"));
+        assert!(probe
+            .iter()
+            .any(|(k, v)| k == "SystemRoot" && v == "synthetic-system-root"));
+        assert!(probe.iter().any(|(k, v)| k == "PATH" && v.is_empty()));
+    }
     #[test]
     fn prepared_profiles_are_isolated_and_rollback_preserves_foreign_content() {
         let temp = tempfile::tempdir().unwrap();

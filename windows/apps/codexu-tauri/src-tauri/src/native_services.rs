@@ -2,12 +2,17 @@
 //! usage, profile or settings views; no fallback account/lease is synthesized.
 use crate::commands::{
     account_lifecycle::{ClaudeSubscriptionState, ManagedAccountState},
+    account_maintenance::AccountMaintenanceState,
     local_proxy::{LocalProxyDesktopState, LocalProxyState},
     notifications::NotificationState,
     token_monitor::TokenMonitorAppState,
 };
 use codexu_core::{
-    accounts::{claude::ClaudeSubscriptionManager, AccountManager},
+    accounts::{
+        claude::ClaudeSubscriptionManager,
+        maintenance::{AccountMaintenanceMonitor, AccountMaintenanceService},
+        AccountManager,
+    },
     automatic_switch::{
         AutomaticSwitchEvent, AutomaticSwitchMonitor, AutomaticSwitchObserver,
         AutomaticSwitchService,
@@ -25,6 +30,7 @@ use tauri::{App, Emitter, Manager};
 
 pub struct NativeServices {
     pub gate: Result<Arc<ManagedProxyGate>, &'static str>,
+    pub owned_domains: Arc<codexu_core::automatic_switch::live::OwnedProcessDomains>,
     accounts: Result<Arc<AccountManager>, &'static str>,
     claude: Result<Arc<ClaudeSubscriptionManager>, &'static str>,
     proxy: Result<Arc<LocalProxyService>, &'static str>,
@@ -37,6 +43,8 @@ pub struct NativeServices {
     live_tasks: Result<Arc<crate::live_tasks::LiveTasks>, &'static str>,
     automatic_switch: Result<Arc<AutomaticSwitchService>, &'static str>,
     automatic_monitor: Mutex<Option<AutomaticSwitchMonitor>>,
+    account_maintenance: Result<Arc<AccountMaintenanceService>, &'static str>,
+    maintenance_monitor: Mutex<Option<AccountMaintenanceMonitor>>,
 }
 impl NativeServices {
     pub fn statistics_accounts(&self) -> Result<Arc<AccountManager>, String> {
@@ -55,6 +63,10 @@ impl NativeServices {
         self.automatic_switch
             .as_ref()
             .is_ok_and(|service| service.has_inflight_operation())
+            || self
+                .account_maintenance
+                .as_ref()
+                .is_ok_and(|service| service.has_inflight_operation())
             || self
                 .accounts
                 .as_ref()
@@ -75,6 +87,9 @@ impl NativeServices {
     /// Synchronous no-I/O fence applied in the confirmation callback itself.
     pub fn seal_accounts_for_exit(&self) {
         if let Ok(service) = &self.automatic_switch {
+            service.cancel_for_exit();
+        }
+        if let Ok(service) = &self.account_maintenance {
             service.cancel_for_exit();
         }
         if let Ok(accounts) = &self.accounts {
@@ -101,6 +116,14 @@ impl NativeServices {
     /// Background statistics do not count as an interactive task. A normal
     /// exit still closes their owned process tree without an extra prompt.
     pub fn stop_passive_services(&self) {
+        if let Ok(service) = &self.account_maintenance {
+            service.cancel_for_exit();
+        }
+        if let Ok(monitor) = self.maintenance_monitor.try_lock() {
+            if let Some(monitor) = &*monitor {
+                monitor.cancel();
+            }
+        }
         if let Ok(service) = &self.automatic_switch {
             service.cancel_for_exit();
         }
@@ -215,6 +238,7 @@ fn make_proxy(
     Ok(Arc::new(service))
 }
 pub fn install(app: &mut App, root: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+    let owned_domains = codexu_core::automatic_switch::live::OwnedProcessDomains::new();
     let notifications = NotificationService::native(root.clone()).map_err(|e| e.code());
     let (notifications, notification_monitor) = match notifications {
         Ok(service) => {
@@ -284,11 +308,12 @@ pub fn install(app: &mut App, root: PathBuf) -> Result<(), Box<dyn std::error::E
             .path()
             .resource_dir()
             .map_err(|_| "statistics_resources_unavailable")?;
-        TokenMonitorService::native(
+        TokenMonitorService::native_with_owned_domains(
             resources.join("token-monitor"),
             root.join("token-monitor-v1"),
             sources,
             String::new(),
+            Some(owned_domains.clone()),
         )
         .map_err(|e| e.code())
         .and_then(|statistics| {
@@ -355,6 +380,7 @@ pub fn install(app: &mut App, root: PathBuf) -> Result<(), Box<dyn std::error::E
             accounts.clone(),
             gate.as_ref().map_err(|e| *e)?.clone(),
             notifications.as_ref().ok(),
+            owned_domains.clone(),
         )
     });
     app.manage(crate::live_tasks::LiveTaskAppState(live_tasks.clone()));
@@ -381,8 +407,28 @@ pub fn install(app: &mut App, root: PathBuf) -> Result<(), Box<dyn std::error::E
     app.manage(crate::commands::automatic_switch::AutomaticSwitchState(
         automatic_switch.clone(),
     ));
+    let account_maintenance = accounts.as_ref().map_err(|e| *e).and_then(|accounts| {
+        // An installed account occupancy gate is required before any opt-in work.
+        gate.as_ref().map_err(|e| *e)?;
+        AccountMaintenanceService::new(root.join("account-maintenance-v1.json"), accounts.clone())
+            .map_err(|e| e.code())
+    });
+    let (account_maintenance, maintenance_monitor) = match account_maintenance {
+        Ok(service) => {
+            let handle = app.handle().clone();
+            match service.start_monitor_with_listener(Arc::new(move || {
+                let _ = handle.emit("account-maintenance:changed", ());
+            })) {
+                Ok(monitor) => (Ok(service), Some(monitor)),
+                Err(error) => (Err(error.code()), None),
+            }
+        }
+        Err(error) => (Err(error), None),
+    };
+    app.manage(AccountMaintenanceState(account_maintenance.clone()));
     app.manage(NativeServices {
         gate,
+        owned_domains,
         accounts,
         claude,
         proxy,
@@ -392,6 +438,8 @@ pub fn install(app: &mut App, root: PathBuf) -> Result<(), Box<dyn std::error::E
         live_tasks,
         automatic_switch,
         automatic_monitor: Mutex::new(automatic_monitor),
+        account_maintenance,
+        maintenance_monitor: Mutex::new(maintenance_monitor),
         monitor: Mutex::new(monitor),
         desktop_monitor: Mutex::new(desktop_monitor),
         notification_monitor: Mutex::new(notification_monitor),

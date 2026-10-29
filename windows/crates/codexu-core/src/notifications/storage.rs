@@ -1,7 +1,11 @@
 use super::{domain::*, events::Baseline, fail, Failure, Result};
 use crate::accounts::{storage as fs, SecretProtector};
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    path::PathBuf,
+    sync::{Arc, Mutex},
+};
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -126,7 +130,7 @@ impl Vault {
     }
     fn validate(&self) -> Result<()> {
         if self.schema != 1
-            || self.configs.len() > 4
+            || self.configs.len() > 5
             || self.deliveries.len() > 16384
             || self.baselines.len() > 512
             || self.card_changes.len() > 16384
@@ -143,6 +147,11 @@ impl Vault {
             return fail("notification_store_invalid");
         }
         for (kind, c) in &self.configs {
+            if *kind == ChannelKind::System
+                && (c.secret.is_some() || c.target.is_some() || c.binding.is_some())
+            {
+                return fail("notification_store_invalid");
+            }
             if let Some(secret) = &c.secret {
                 super::protocol::validate_credential(
                     *kind,
@@ -158,6 +167,9 @@ impl Vault {
 pub(crate) struct Storage {
     root: PathBuf,
     protector: Arc<dyn SecretProtector>,
+    // The monitor and UI share this instance. Serialize their short vault
+    // transactions before taking the nonblocking cross-process file lock.
+    transaction: Mutex<()>,
 }
 impl Storage {
     pub fn new(root: PathBuf, protector: Arc<dyn SecretProtector>) -> Result<Self> {
@@ -165,7 +177,11 @@ impl Storage {
             return fail("notification_store_invalid");
         }
         fs::secure_directory(&root).map_err(|_| Failure("notification_store_unavailable"))?;
-        let s = Self { root, protector };
+        let s = Self {
+            root,
+            protector,
+            transaction: Mutex::new(()),
+        };
         s.read(|_| Ok(()))?;
         if s.read(|v| {
             Ok(v.deliveries.values().any(|d| d.phase == Phase::Sending)
@@ -206,11 +222,19 @@ impl Storage {
         }
     }
     pub fn read<T>(&self, f: impl FnOnce(&Vault) -> Result<T>) -> Result<T> {
+        let _transaction = self
+            .transaction
+            .lock()
+            .map_err(|_| Failure("notification_store_busy"))?;
         let _lock =
             fs::StoreLock::acquire(&self.root).map_err(|_| Failure("notification_store_busy"))?;
         f(&self.load()?)
     }
     pub fn change<T>(&self, f: impl FnOnce(&mut Vault) -> Result<T>) -> Result<T> {
+        let _transaction = self
+            .transaction
+            .lock()
+            .map_err(|_| Failure("notification_store_busy"))?;
         let _lock =
             fs::StoreLock::acquire(&self.root).map_err(|_| Failure("notification_store_busy"))?;
         let mut v = self.load()?;
@@ -227,5 +251,68 @@ impl Storage {
         fs::atomic_write(&self.root.join("channels.dpapi"), &sealed)
             .map_err(|_| Failure("notification_store_unavailable"))?;
         Ok(result)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::accounts::AccountResult;
+    use std::{sync::mpsc, time::Duration};
+
+    struct SyntheticProtector;
+    impl SecretProtector for SyntheticProtector {
+        fn seal(&self, _: &str, bytes: &[u8]) -> AccountResult<Vec<u8>> {
+            Ok(bytes.to_vec())
+        }
+        fn unseal(&self, _: &str, bytes: &[u8]) -> AccountResult<Vec<u8>> {
+            Ok(bytes.to_vec())
+        }
+    }
+
+    #[test]
+    fn same_instance_waits_for_its_transaction_but_other_instances_remain_excluded() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("notifications");
+        let first = Arc::new(Storage::new(root.clone(), Arc::new(SyntheticProtector)).unwrap());
+        let other = Storage::new(root, Arc::new(SyntheticProtector)).unwrap();
+        let (entered, holding) = mpsc::channel();
+        let (release, released) = mpsc::channel();
+        let owner = first.clone();
+        let transaction = std::thread::spawn(move || {
+            owner.change(|vault| {
+                entered.send(()).unwrap();
+                released.recv_timeout(Duration::from_secs(3)).unwrap();
+                vault.public_reset.enabled = true;
+                Ok(())
+            })
+        });
+        holding.recv_timeout(Duration::from_secs(3)).unwrap();
+        assert_eq!(
+            other.read(|_| Ok(())).unwrap_err().0,
+            "notification_store_busy"
+        );
+        let (started, waiting) = mpsc::channel();
+        let (done, result) = mpsc::channel();
+        let reader = first.clone();
+        let concurrent = std::thread::spawn(move || {
+            started.send(()).unwrap();
+            done.send(reader.read(|vault| Ok(vault.public_reset.enabled)))
+                .unwrap();
+        });
+        waiting.recv_timeout(Duration::from_secs(3)).unwrap();
+        let before_release = result.recv_timeout(Duration::from_millis(100));
+        release.send(()).unwrap();
+        transaction.join().unwrap().unwrap();
+        assert!(matches!(
+            before_release,
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+        assert!(result
+            .recv_timeout(Duration::from_secs(3))
+            .unwrap()
+            .unwrap());
+        concurrent.join().unwrap();
+        assert!(other.read(|vault| Ok(vault.public_reset.enabled)).unwrap());
     }
 }

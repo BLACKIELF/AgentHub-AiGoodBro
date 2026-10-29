@@ -1,3 +1,8 @@
+import { HomeResizable } from '../components/HomeResizable';
+import { ProviderMark, providerName } from '../components/ProviderMark';
+import { InstallationGuide } from '../components/InstallationGuide';
+import { canonicalCompactProvider } from '../utils/compactUi';
+import type { Platform } from '../utils/localCliQuota';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { Activity, CircleDashed } from 'lucide-react';
@@ -23,12 +28,15 @@ export function Dashboard() {
   const { t, language } = useI18n();
   const [page, setPage] = useState<WorkspacePage>(() => readChoice('aigoodbro.workspace.page', ['home', 'accounts', 'usage', 'proxy', 'tools'], 'home'));
   const [mode, setMode] = useState<WorkspaceMode>(() => readChoice('aigoodbro.workspace.mode', ['professional', 'simple'], 'professional'));
-  const [managedVisited, setManagedVisited] = useState(page === 'accounts');
+  const [managedVisited, setManagedVisited] = useState(page === 'accounts' || page === 'home');
+  const [providers, setProviders] = useState<Platform[]>([]);
+  const [provider, setProvider] = useState(() => { try { return localStorage.getItem('AiGoodBro.home.provider') || 'all'; } catch { return 'all'; } });
+  const chooseProvider = (id: string) => { setProvider(id); try { localStorage.setItem('AiGoodBro.home.provider', id); } catch {} };
   const [proxyVisited, setProxyVisited] = useState(page === 'proxy');
   const [toolsVisited, setToolsVisited] = useState(page === 'tools');
   const [requestedToolTab, setRequestedToolTab] = useState<{ tab: 'tasks'; sequence: number }>();
   const main = useRef<HTMLElement>(null);
-  const navigate = useCallback((next: WorkspacePage) => { if (next === 'accounts') setManagedVisited(true); if (next === 'proxy') setProxyVisited(true); if (next === 'tools') setToolsVisited(true); setPage(next); saveChoice('aigoodbro.workspace.page', next); main.current?.scrollTo({ top: 0 }); }, []);
+  const navigate = useCallback((next: WorkspacePage) => { if (next === 'accounts' || next === 'home') setManagedVisited(true); if (next === 'proxy') setProxyVisited(true); if (next === 'tools') setToolsVisited(true); setPage(next); saveChoice('aigoodbro.workspace.page', next); main.current?.scrollTo({ top: 0 }); }, []);
   const changeMode = (next: WorkspaceMode) => { setMode(next); saveChoice('aigoodbro.workspace.mode', next); };
   const { dashboard, loading, error, refresh, changeSource } = useUsage();
   const statistics=useTokenMonitor();
@@ -86,7 +94,7 @@ export function Dashboard() {
     <div className="space-y-3 pt-1"><PublicResetPanel /><PublisherMessagePanel /><HomeSection id="recommendations" title={language === 'zh-Hans' ? '推荐 Skills 与应用' : 'Recommended Skills and apps'}><RecommendedSkills /></HomeSection></div>
   </HomeSection>;
   const usageStatistics = <div id="windows-usage" className="workspace-page" hidden={page !== 'home' && page !== 'usage'}><HomeSection forceOpen={page === 'usage'} id="usage-summary" title={language === 'zh-Hans' ? '用量统计' : 'Usage statistics'} initialOpen={false}>
-    <TokenMonitorPanel controller={statistics}/>
+    <HomeResizable id="statistics" title={language === 'zh-Hans' ? '用量统计' : 'usage statistics'}><TokenMonitorPanel controller={statistics}/></HomeResizable>
   </HomeSection></div>;
 
 
@@ -103,6 +111,7 @@ export function Dashboard() {
         page={page} mode={mode} onNavigate={navigate} onModeChange={changeMode}
       />
 
+      <InstallationGuide onAccounts={() => navigate('accounts')} />
       <main ref={main} id="windows-home" className="workspace-main flex-1 min-h-0 overflow-auto p-4 md:p-5" data-page={page}>
         {error && page==='tools' && <div role="alert" className="workspace-error"><span>{t('dashboard.errors.failedToLoadUsage')} · {error}</span><button type="button" className="glass-button px-3 py-1" onClick={refresh}>{t('common.retry')}</button></div>}
         {!dashboard && page==='tools' && (
@@ -133,9 +142,9 @@ export function Dashboard() {
           {settingsError && <p role="alert" className="text-xs text-status-warn">{language === 'zh-Hans' ? '外观设置暂不可用，请重试。' : 'Appearance settings are unavailable. Try again.'}</p>}
           {paletteFallbackNotice && <p role="status" className="text-xs text-status-warn">{language === 'zh-Hans' ? '原配色不可用，已使用经典默认配色。' : 'Saved palette is unavailable; the classic default is in use.'}</p>}
           <div className="home-notice-strip workspace-page" hidden={page !== 'home'}>{notices}</div>
-          {managedVisited && <div className="workspace-page space-y-4" hidden={page !== 'accounts'}><ManagedAccountsPanel /><ClaudeSubscriptionsPanel /></div>}
+
           {usageStatistics}
-          <div id="windows-accounts" className="workspace-page" hidden={page !== 'home' && page !== 'accounts'}><HomeSection forceOpen={page === 'accounts'} id="accounts" title={language === 'zh-Hans' ? '账号目录' : 'Account directories'}><ProfilesPanel onSourceChange={changeSource} /></HomeSection></div>
+          <div id="windows-accounts" className="workspace-page" hidden={page !== 'home' && page !== 'accounts'}><HomeSection forceOpen={page === 'accounts'} id="accounts" title={language === 'zh-Hans' ? '账号目录' : 'Account directories'}><HomeResizable id="accounts" title={language === 'zh-Hans' ? '账号' : 'accounts'}><nav className="home-provider-rail" aria-label={language === 'zh-Hans' ? '账号平台' : 'Account providers'}><button type="button" aria-pressed={provider === 'all'} onClick={() => chooseProvider('all')}>{language === 'zh-Hans' ? '全部' : 'All'}</button>{[...new Set(['codex', 'claude', ...providers.map(value => canonicalCompactProvider(value.id))])].map(id => <button key={id} type="button" aria-pressed={provider === id} onClick={() => chooseProvider(id)}><ProviderMark provider={id} size={20}/>{providerName(id)}</button>)}</nav><div className="space-y-4">{managedVisited && <><div hidden={provider !== 'all' && provider !== 'codex'}><ManagedAccountsPanel /></div><div hidden={provider !== 'all' && provider !== 'claude'}><ClaudeSubscriptionsPanel /></div></>}<ProfilesPanel onSourceChange={changeSource} providerFilter={provider} onProviderChange={chooseProvider} onPlatformsChange={setProviders}/></div></HomeResizable></HomeSection></div>
           {proxyVisited && <div className="workspace-page" hidden={page !== 'proxy'}><LocalProxyPanel /></div>}
           <div className="workspace-page flex items-center justify-between gap-2" hidden={page !== 'tools'}>
             <div className="flex items-center gap-2">

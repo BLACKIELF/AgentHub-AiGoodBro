@@ -21,7 +21,7 @@ function Invoke-StatisticsBuildCommand {
     if ($LASTEXITCODE -ne 0) { throw ('statistics_validation_failed:' + $Executable + ':' + $LASTEXITCODE) }
     if ($RequireTests -and (($commandOutput -join "`n") -notmatch 'test result: ok\. [1-9][0-9]* passed; 0 failed;')) { throw 'statistics_native_test_selection_empty' }
 }
-$names = @('RUSTUP_TOOLCHAIN', 'TOKEN_MONITOR_TEST_ENGINE', 'TOKEN_MONITOR_TEST_NATIVE', 'TOKEN_MONITOR_TEST_SCANNER_SHA256', 'AIGOODBRO_TM_TEST_RESOURCES', 'AIGOODBRO_TOKEN_MONITOR_RESOURCE_SHA256')
+$names = @('RUSTUP_TOOLCHAIN', 'TOKEN_MONITOR_TEST_ENGINE', 'TOKEN_MONITOR_TEST_NATIVE', 'TOKEN_MONITOR_TEST_SCANNER_SHA256', 'AIGOODBRO_TM_TEST_RESOURCES', 'AIGOODBRO_TOKEN_MONITOR_RESOURCE_SHA256', 'AIGOODBRO_TEST_SEMVER_PATH', 'AIGOODBRO_FIXTURE_DIR')
 $previous = @{}
 foreach ($name in $names) { $previous[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }
 New-Item -ItemType Directory -Path $BuildRoot | Out-Null
@@ -44,6 +44,12 @@ try {
     $env:AIGOODBRO_TM_TEST_RESOURCES = $staged
     # The real pinned engine and scanner are exercised only on isolated fixtures.
     Invoke-StatisticsBuildCommand (Join-Path $staged 'runtime\node.exe') @('--test', 'windows/token-monitor/tests/service.test.cjs')
+    # Dependency verification uses the same bundled semver as production and
+    # synthetic package bytes; it never loads a user's CLI or contacts a model.
+    $env:AIGOODBRO_TEST_SEMVER_PATH = Join-Path $staged 'engine\vendor\node_modules\semver'
+    $env:AIGOODBRO_FIXTURE_DIR = Join-Path $BuildRoot 'dependency-fixtures'
+    New-Item -ItemType Directory -Path $env:AIGOODBRO_FIXTURE_DIR | Out-Null
+    Invoke-StatisticsBuildCommand (Join-Path $staged 'runtime\node.exe') @('--test', 'windows/crates/codexu-core/tests/local_cli_dependency.test.cjs')
     if ($RunNativeTests) {
         Invoke-StatisticsBuildCommand 'cargo' @('test', '--manifest-path', 'windows/Cargo.toml', '-p', 'codexu-core', '--test', 'token_monitor', '--locked') -RequireTests
         foreach ($test in @('token_monitor::process::native_tests::owned_job_ends_its_descendants_and_leaves_unrelated_child_alive', 'token_monitor::process::native_tests::held_resource_blocks_write_delete_and_replace_until_release', 'token_monitor::tests::staged_node_and_scanner_native_smoke')) {

@@ -15,6 +15,7 @@ pub use identity::{AccountIdentity, VerifiedCredential, VerifiedCredentialSnapsh
 pub use native::{
     parse_authorization, validate_target_configuration, DpapiProtector, NativeAccountRuntime,
 };
+pub use service::maintenance;
 pub use service::AccountManager;
 pub use storage::{AccountPaths, SecretProtector};
 pub use verification::{

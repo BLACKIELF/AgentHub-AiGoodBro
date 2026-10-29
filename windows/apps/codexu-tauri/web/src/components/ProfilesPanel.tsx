@@ -1,3 +1,5 @@
+import { LocalAccountAvatar } from './LocalAccountAvatar';
+import { canonicalCompactProvider } from '../utils/compactUi';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
@@ -10,17 +12,20 @@ import { AccountWorkflow } from './AccountWorkflow';
 import { CodexAccountGuide } from './CodexAccountGuide';
 import { parsePlatforms, localIsolationNotice, type Platform } from '../utils/localCliQuota';
 import { readChoice, saveChoice, type AccountCardSize } from '../utils/workspacePreferences';
+import { LocalCliCatalog, LocalCliProfileActions } from './LocalCliActions';
 
 type Profile = { id: string; label: string; selected: boolean; platform: string; platform_name: string; can_view_usage: boolean };
 
-export function ProfilesPanel({ onSourceChange }: { onSourceChange: () => void }) {
+export function ProfilesPanel({ onSourceChange, providerFilter, onProviderChange, onPlatformsChange }: { onSourceChange: () => void; providerFilter?: string; onProviderChange?: (id: string) => void; onPlatformsChange?: (platforms: Platform[]) => void }) {
   const { language } = useI18n();
   const text = (zh: string, en: string) => language === 'zh-Hans' ? zh : en;
   const [guide, setGuide] = useState(false);
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [platforms, setPlatforms] = useState<Platform[]>([]);
   const [platform, setPlatform] = useState('codex');
-  const [platformFilter, setPlatformFilter] = useState('all');
+  const [localPlatformFilter, setLocalPlatformFilter] = useState('all');
+  const platformFilter = providerFilter ?? localPlatformFilter;
+  const setPlatformFilter = onProviderChange ?? setLocalPlatformFilter;
   const [cardSize, setCardSize] = useState<AccountCardSize>(() => readChoice('aigoodbro.home.accounts.size', ['small', 'medium', 'large'], 'small'));
   const [layout, setLayout] = useState<'cards' | 'list'>(() => {
     try { return localStorage.getItem('aigoodbro.home.accounts.layout') === 'list' ? 'list' : 'cards'; }
@@ -42,13 +47,13 @@ export function ProfilesPanel({ onSourceChange }: { onSourceChange: () => void }
     const epoch = ++request.current;
     try {
       const rows = await invoke<Profile[]>('list_profiles');
-      if (epoch === request.current) { setProfiles(rows); setPlatformFilter(current => current === 'all' || rows.some(profile => profile.platform === current) ? current : 'all'); setError(false); }
+      if (epoch === request.current) { setProfiles(rows); setError(false); }
     } catch { if (epoch === request.current) setError(true); }
   }, []);
   useEffect(() => {
     void reload();
     void invoke<unknown>('list_platforms')
-      .then(rows => setPlatforms(parsePlatforms(rows)))
+      .then(rows => { const values = parsePlatforms(rows); setPlatforms(values); onPlatformsChange?.(values); })
       // The panel still works without the platform list; it simply stays Codex-only.
       .catch(() => setPlatforms([]));
     let cancelled = false;
@@ -89,7 +94,7 @@ export function ProfilesPanel({ onSourceChange }: { onSourceChange: () => void }
         <label className="profile-platform-filter"><span className="sr-only">{text('筛选平台', 'Filter platform')}</span>
           <select aria-label={text('筛选平台', 'Filter platform')} value={platformFilter} onChange={event => setPlatformFilter(event.target.value)}>
             <option value="all">{text('全部平台', 'All platforms')}</option>
-            {[...new Map(profiles.map(profile => [profile.platform, profile.platform_name])).entries()].map(([id, name]) => <option key={id} value={id}>{name}</option>)}
+            {[...new Map([...platforms.map(platform => [canonicalCompactProvider(platform.id), platform.name] as const), ...profiles.map(profile => [canonicalCompactProvider(profile.platform), profile.platform_name] as const)]).entries()].map(([id, name]) => <option key={id} value={canonicalCompactProvider(id)}>{name}</option>)}
           </select><ChevronDown size={12} aria-hidden="true" />
         </label>
         <div className="account-layout-switch" role="group" aria-label={text('账号布局', 'Account layout')}>
@@ -105,12 +110,13 @@ export function ProfilesPanel({ onSourceChange }: { onSourceChange: () => void }
         </button>
       </header>
       <p className="account-directory-note text-xs text-secondary">{text('切换查看不同目录的用量，不切换 Codex 登录身份；目录存在不代表身份已验证。', 'View usage from different directories; does not switch Codex login. A linked folder is not a verified identity.')}</p>
+      <LocalCliCatalog platforms={platforms} onCreated={()=>void reload()}/>
       {profiles.length === 0 && <p className="text-sm text-tertiary">{text('尚未关联账号目录，仍显示设置中的数据来源。', 'No linked directories. The configured data source is still displayed.')}</p>}
       <ul className={`account-directory-grid is-size-${cardSize} ${layout === 'list' ? 'is-list' : 'is-cards'}`}>
         {profiles.map((profile, index) => (
-          <li key={profile.id} hidden={platformFilter !== 'all' && platformFilter !== profile.platform} data-testid={'profile-' + profile.id} data-platform={profile.platform} className={`account-directory-card ${profile.selected ? 'is-selected' : ''}`}>
+          <li key={profile.id} hidden={platformFilter !== 'all' && platformFilter !== canonicalCompactProvider(profile.platform)} data-testid={'profile-' + profile.id} data-platform={profile.platform} className={`account-directory-card ${profile.selected ? 'is-selected' : ''}`}>
             <div className="account-directory-heading">
-              <span className="account-directory-number">{String(index + 1).padStart(2, '0')}</span>
+              <LocalAccountAvatar id={profile.id} provider={profile.platform} label={profile.label} /><span className="account-directory-number">{String(index + 1).padStart(2, '0')}</span>
               <span className="min-w-0 flex-1 truncate text-sm font-semibold text-primary" title={profile.label}>{profile.label}</span>
               {/* `leading-4` keeps the badge box on a whole-pixel grid: an
                   inherited fractional line height would shift every following
@@ -133,6 +139,7 @@ export function ProfilesPanel({ onSourceChange }: { onSourceChange: () => void }
               {profile.can_view_usage && <button className="glass-button px-2 py-1 text-xs" disabled={busy || profile.selected} onClick={() => void perform({ kind: 'view', id: profile.id })}>{profile.selected ? text('正在查看', 'Viewing') : text('查看用量', 'View usage')}</button>}
             </div>
             {profile.platform === 'codex' && <AccountWorkflow profileId={profile.id} initiallyExpanded={false} />}
+            {profile.platform !== 'codex' && <LocalCliProfileActions profileId={profile.id} platform={profile.platform} disabled={busy}/>}
           </li>
         ))}
       </ul>

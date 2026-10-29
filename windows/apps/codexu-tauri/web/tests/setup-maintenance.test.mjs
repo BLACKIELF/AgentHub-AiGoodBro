@@ -1,0 +1,12 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import vm from 'node:vm';
+import ts from 'typescript';
+function load(name){const exports={};vm.runInNewContext(ts.transpileModule(fs.readFileSync(new URL('../src/utils/'+name+'.ts',import.meta.url),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,{exports,Number,Object,Array,Set,Error});return exports;}
+const setup=load('setupContext'),maintenance=load('accountMaintenance');
+const context=()=>({version:'3.0.0',eventId:'files:v1:abcd:1234',status:'pending',audience:null,shouldPresent:true,failureCode:null});
+test('onboarding requires native file identity and explicit outcome, never just app version',()=>{assert.equal(setup.parseSetupContext(context()).shouldPresent,true);for(const mutate of [v=>v.eventId='version:3.0.0',v=>v.status='completed',v=>v.shouldPresent=false,v=>v.eventId=null,v=>v.path='secret']){const v=context();mutate(v);assert.throws(()=>setup.parseSetupContext(v));}assert.equal(setup.parseSetupContext({...context(),status:'deferred',shouldPresent:false}).status,'deferred');assert.equal(setup.parseSetupContext({...context(),eventId:null,status:'unavailable',shouldPresent:false,failureCode:'installation_identity_unavailable'}).shouldPresent,false);});
+const prefs=()=>({fiveHourWarmup:false,sevenDayWarmup:false,resetLeadMinutes:30,resetAuthorizations:[{profileId:'a',authorized:true,identityCurrent:false}]});
+test('maintenance opt-ins preserve expired authorization and reject unsafe or duplicate records',()=>{assert.equal(maintenance.parseMaintenancePreferences(prefs()).resetAuthorizations[0].identityCurrent,false);for(const mutate of [v=>v.resetLeadMinutes=0,v=>v.resetLeadMinutes=1441,v=>v.fiveHourWarmup='true',v=>v.resetAuthorizations.push({...v.resetAuthorizations[0]}),v=>v.resetAuthorizations[0].profileId='../auth']){const v=prefs();mutate(v);assert.throws(()=>maintenance.parseMaintenancePreferences(v));}});
+test('maintenance status never converts unconfirmed receipt to success',()=>{const v={phase:'blocked',issueCode:'maintenance_unconfirmed',runningProfileId:null,nativeImplementationAvailable:true,entries:[{profileId:'a',kind:'reset_credit',phase:'uncertain',issueCode:null,lastAttemptAtMs:123,lastSucceededAtMs:null,nextEligibleAtMs:null}]};assert.equal(maintenance.parseMaintenanceStatus(v).entries[0].phase,'uncertain');v.entries[0].lastSucceededAtMs='yesterday';assert.throws(()=>maintenance.parseMaintenanceStatus(v));});

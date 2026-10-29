@@ -42,6 +42,34 @@ enum Queued {
 mod tests {
     use super::*;
     struct SyntheticProtector;
+    struct SystemTransport {
+        allowed: AtomicBool,
+        uncertain: bool,
+        calls: std::sync::atomic::AtomicUsize,
+    }
+    impl NotificationTransport for SystemTransport {
+        fn system_permission(&self) -> super::super::SystemNotificationPermission {
+            if self.allowed.load(Ordering::Acquire) {
+                super::super::SystemNotificationPermission::Enabled
+            } else {
+                super::super::SystemNotificationPermission::DisabledUser
+            }
+        }
+        fn send_system(&self, _: &str, _: &str, cancelled: &AtomicBool) -> Result<()> {
+            if cancelled.load(Ordering::Acquire) {
+                return fail("cancelled");
+            }
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            if self.uncertain {
+                fail("system_notification_submission_failed")
+            } else {
+                Ok(())
+            }
+        }
+        fn send(&self, _: &TransportRequest, _: &AtomicBool) -> Result<TransportResponse> {
+            panic!("a local system notification must never reach HTTP")
+        }
+    }
     impl SecretProtector for SyntheticProtector {
         fn seal(&self, _: &str, b: &[u8]) -> crate::accounts::AccountResult<Vec<u8>> {
             Ok(b.iter().map(|v| v ^ 0x73).collect())
@@ -49,6 +77,90 @@ mod tests {
         fn unseal(&self, _: &str, b: &[u8]) -> crate::accounts::AccountResult<Vec<u8>> {
             Ok(b.iter().map(|v| v ^ 0x73).collect())
         }
+    }
+    #[test]
+    fn system_notifications_require_opt_in_and_actual_permission_and_share_deduplication() {
+        let dir = tempfile::tempdir().unwrap();
+        let transport = Arc::new(SystemTransport {
+            allowed: AtomicBool::new(false),
+            uncertain: false,
+            calls: Default::default(),
+        });
+        let service = NotificationService::with_components(
+            dir.path().canonicalize().unwrap().join("notifications"),
+            Arc::new(SyntheticProtector),
+            transport.clone(),
+        )
+        .unwrap();
+        assert!(!service.channel_state(ChannelKind::System).unwrap().enabled);
+        assert!(service.send_test(ChannelKind::System).is_err());
+        service.set_enabled(ChannelKind::System, true).unwrap();
+        assert!(service.send_test(ChannelKind::System).is_err());
+        assert_eq!(transport.calls.load(Ordering::SeqCst), 0);
+        transport.allowed.store(true, Ordering::Release);
+        let event = NotificationEvent::new(
+            "synthetic-system-test",
+            None,
+            EventBody::Test,
+            super::super::now(),
+        )
+        .unwrap();
+        assert_eq!(
+            service
+                .send_event_to(ChannelKind::System, &event)
+                .unwrap()
+                .state,
+            "accepted"
+        );
+        assert_eq!(
+            service
+                .send_event_to(ChannelKind::System, &event)
+                .unwrap()
+                .state,
+            "duplicate_skipped"
+        );
+        assert_eq!(transport.calls.load(Ordering::SeqCst), 1);
+        assert!(service
+            .save_channel(ChannelKind::System, "invalid".into(), None)
+            .is_err());
+    }
+    #[test]
+    fn uncertain_system_submission_never_retries_the_same_event() {
+        let dir = tempfile::tempdir().unwrap();
+        let transport = Arc::new(SystemTransport {
+            allowed: AtomicBool::new(true),
+            uncertain: true,
+            calls: Default::default(),
+        });
+        let service = NotificationService::with_components(
+            dir.path().canonicalize().unwrap().join("notifications"),
+            Arc::new(SyntheticProtector),
+            transport.clone(),
+        )
+        .unwrap();
+        service.set_enabled(ChannelKind::System, true).unwrap();
+        let event = NotificationEvent::new(
+            "synthetic-system-uncertain",
+            None,
+            EventBody::Test,
+            super::super::now(),
+        )
+        .unwrap();
+        assert_eq!(
+            service
+                .send_event_to(ChannelKind::System, &event)
+                .unwrap()
+                .state,
+            "uncertain"
+        );
+        assert_eq!(
+            service
+                .send_event_to(ChannelKind::System, &event)
+                .unwrap()
+                .state,
+            "duplicate_skipped"
+        );
+        assert_eq!(transport.calls.load(Ordering::SeqCst), 1);
     }
     #[test]
     fn operation_drop_during_state_lock_cannot_leak_inflight_or_capacity() {
@@ -345,6 +457,9 @@ impl NotificationService {
             .map(|k| self.channel_state(k))
             .collect()
     }
+    pub fn system_permission(&self) -> super::SystemNotificationPermission {
+        self.transport.system_permission()
+    }
     pub fn with_components_and_public_source(
         root: PathBuf,
         protector: Arc<dyn SecretProtector>,
@@ -382,7 +497,7 @@ impl NotificationService {
                 "disabled"
             } else if c.session_expired {
                 "session_expired"
-            } else if c.secret.is_none() {
+            } else if c.secret.is_none() && kind != ChannelKind::System {
                 "needs_setup"
             } else if kind == ChannelKind::PersonalWeChat
                 && c.binding.as_ref().is_none_or(|b| b.context_token.is_none())
@@ -434,6 +549,9 @@ impl NotificationService {
         secret: String,
         target: Option<String>,
     ) -> Result<ChannelState> {
+        if kind == ChannelKind::System {
+            return fail("system_notification_has_no_credentials");
+        }
         if kind == ChannelKind::PersonalWeChat {
             return fail("wechat_qr_login_required");
         }
@@ -970,7 +1088,22 @@ impl NotificationService {
                 return fail("notification_filtered");
             }
         }
-        let request = protocol::send_request(kind, &c, event)?;
+        let request = if kind == ChannelKind::System {
+            // Mac local notifications cover quota/reset facts. Channel setup
+            // never broadens this to unrelated conversation or switch alerts.
+            if matches!(
+                event.body,
+                EventBody::Task { .. } | EventBody::Switch { .. }
+            ) {
+                return fail("notification_filtered");
+            }
+            if self.system_permission() != super::SystemNotificationPermission::Enabled {
+                return fail("system_notifications_disabled");
+            }
+            None
+        } else {
+            Some(protocol::send_request(kind, &c, event)?)
+        };
         op.current()?;
         let keys = event
             .keys
@@ -1034,10 +1167,19 @@ impl NotificationService {
             self.finish(&keys, &op, Phase::Pending, event.public_revision)?;
             return fail("stale_notification");
         }
-        let result = self.transport.send(&request, &op.cancelled);
-        let parsed = match result {
-            Ok(r) => protocol::parse_response(kind, r),
-            Err(e) => Accepted::Uncertain(e),
+        let parsed = match request {
+            Some(request) => match self.transport.send(&request, &op.cancelled) {
+                Ok(r) => protocol::parse_response(kind, r),
+                Err(e) => Accepted::Uncertain(e),
+            },
+            None => {
+                let (title, _, lines) = event.content(&c.options);
+                let body = format!("{}\n\naigoodbro.com", lines.join("\n"));
+                match self.transport.send_system(&title, &body, &op.cancelled) {
+                    Ok(()) => Accepted::Ok(None),
+                    Err(e) => Accepted::Uncertain(e),
+                }
+            }
         };
         let parsed = if op.current().is_err()
             || !self

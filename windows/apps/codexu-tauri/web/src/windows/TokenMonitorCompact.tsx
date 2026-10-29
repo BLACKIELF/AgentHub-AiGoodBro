@@ -6,7 +6,7 @@ import { useSettings } from '../hooks/useSettings';
 import { useI18n } from '../i18n/I18nProvider';
 import { applyAppTheme } from '../utils/appTheme';
 import { visibleStatisticsRate,durationText,type StatisticsState } from '../utils/tokenMonitor';
-import { compactBreakdown,compactCalendarDate,compactHistoryDays,compactPeriodValue,compactSnapshotStale,compactProviderUsage,compactSessions,compactRecentSessions,type CompactSessionIndex,type CompactMetric,type CompactPeriod } from '../utils/compactStatistics';
+import { compactBreakdown,compactDerivedPeriod,compactHistoryDays,compactPeriodValue,compactSnapshotStale,compactProviderUsage,compactSessions,compactRecentSessions,type CompactSessionIndex,type CompactMetric,type CompactPeriod } from '../utils/compactStatistics';
 import { canonicalCompactProvider,compactHeadlineAccount,compactPrimaryWindow,type CompactAccount,type CompactAction,type CompactState,type CompactSurface,type DockItem,type DockMetric } from '../utils/compactUi';
 import { QuotaRing } from '../components/QuotaRing';
 
@@ -33,14 +33,11 @@ export function TokenMonitorCompact({surface}:{surface:CompactSurface}){
   if(item.metric==='liveRate')return number(rate?.burnPerMinute,locale);
   if(item.metric==='sessions')return sessions.known?number(compactRecentSessions(sessions,{runningOnly:item.runningOnly}).length,locale):'—';
   if(['today','month','allTime'].includes(item.metric??''))return number(compactPeriodValue(statistics.state,item.metric as CompactPeriod,'tokens'),locale);
-  const today=compactCalendarDate(statistics.state?.timezone);
-  const weekday=today?new Date(today+'T00:00:00Z').getUTCDay():null;
-  const count=item.metric==='last7'?7:item.metric==='last30'?30:item.metric==='week'&&weekday!==null?(language==='zh-Hans'?(weekday+6)%7:weekday)+1:0;
-  const days=compactHistoryDays(statistics.state,count);
-  // Do not claim a complete period when any day has no comparable evidence.
-  return count&&days.length===count&&days.every(day=>day.tokens!==null)?number(days.reduce((sum,day)=>sum+(day.tokens??0),0),locale):'—';
+  return ['week','last7','last30'].includes(item.metric??'')?number(compactDerivedPeriod(statistics.state,item.metric as 'week'|'last7'|'last30','tokens',locale).value,locale):'—';
  };
  function accounts(item:DockItem):CompactAccount[]{return state?.cachedProjection.accounts.filter(account=>canonicalCompactProvider(account.providerId)===canonicalCompactProvider(item.providerId??'')&&(!item.accountId||item.accountId===account.id)&&!item.hiddenAccountIds.includes(account.id))??[];}
+ const itemBreakdown=(item:DockItem)=>['today','month','allTime'].includes(item.metric??'')?compactBreakdown(statistics.state,item.metric as CompactPeriod,'tokens',false):['week','last7','last30'].includes(item.metric??'')?compactDerivedPeriod(statistics.state,item.metric as 'week'|'last7'|'last30','tokens',locale).byTool:[];
+ const itemTotal=(item:DockItem)=>['today','month','allTime'].includes(item.metric??'')?compactPeriodValue(statistics.state,item.metric as CompactPeriod,'tokens'):['week','last7','last30'].includes(item.metric??'')?compactDerivedPeriod(statistics.state,item.metric as 'week'|'last7'|'last30','tokens',locale).value:null;
  const problem=ui.error||state?.failureCode;
  const controls=<><button aria-label={text('置顶','Pin')} aria-pressed={window?.pinned??false} disabled={ui.busy||!window} onClick={()=>action(window?.pinned?'unpin':'pin')}><Pin size={13}/></button>{surface==='popover'&&<button aria-label={text('收起或展开','Collapse or expand')} disabled={ui.busy} onClick={()=>action('collapse')}><ChevronDown size={14}/></button>}<button aria-label={text('关闭','Close')} disabled={ui.busy} onClick={()=>action('close')}><X size={14}/></button></>;
  const feedback=<>{problem&&<p className="compact-note is-error" role="alert">{text('悬浮窗口状态未确认，请重试。','Compact window state is unconfirmed. Try again.')} <button disabled={ui.busy} onClick={()=>void ui.read()}>{text('重新读取','Read again')}</button></p>}{statistics.error&&<p role="alert" className="compact-note is-error">{text('统计暂未确认。','Statistics are unconfirmed.')}</p>}{stale&&<p role="status" className="compact-note">{text('上次统计快照','Previous statistics snapshot')}</p>}</>;
@@ -62,7 +59,7 @@ export function TokenMonitorCompact({surface}:{surface:CompactSurface}){
     {item?.type==='limit'?<AccountDetails item={item} accounts={accounts(item)} native={state} statistics={statistics.state} sessions={sessions} locale={locale} text={text} onOpenTasks={()=>action('open_running_tasks')}/>
      :item?.type==='proxy'?<><strong className="compact-total">{phaseName(state?.cachedProjection.proxy?.phase,text)}</strong><p>{text('当前请求','Current requests')} {number(state?.cachedProjection.proxy?.activeRequests,locale)}</p><p>{text('出口回读','Egress readback')} {egressName(state?.cachedProjection.proxy?.egressState,text)}</p><button className="glass-button" onClick={()=>action('open_proxy')}>{text('打开反代设置','Open proxy settings')}</button></>
      :item?.metric==='sessions'?<><strong className="compact-total">{itemValue(item)}</strong><SessionList index={sessions} provider={undefined} item={item} locale={locale} text={text}/><button className="glass-button compact-card-link" onClick={()=>action('open_running_tasks')}>{text('打开任务','Open tasks')}</button></>
-     :item?<><strong className="compact-total">{itemValue(item)}</strong>{item.metric==='liveRate'&&<p>{number(rate?.speedPerSecond,locale)} tok/s {rate?.idle?text('· 上次采样','· Last sample'):''}</p>}<Breakdown rows={['today','month','allTime'].includes(item.metric??'')?compactBreakdown(statistics.state,item.metric as CompactPeriod,'tokens',false):[]} total={['today','month','allTime'].includes(item.metric??'')?compactPeriodValue(statistics.state,item.metric as CompactPeriod,'tokens'):null} locale={locale} text={text}/></>
+     :item?<><strong className="compact-total">{itemValue(item)}</strong>{item.metric==='liveRate'&&<p>{number(rate?.speedPerSecond,locale)} tok/s {rate?.idle?text('· 上次采样','· Last sample'):''}</p>}<Breakdown rows={itemBreakdown(item)} total={itemTotal(item)} locale={locale} text={text}/></>
      :<p>{text('尚无可显示项目','No item is available')}</p>}
    </div>
   </main>;

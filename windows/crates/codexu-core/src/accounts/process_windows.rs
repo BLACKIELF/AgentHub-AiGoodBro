@@ -754,7 +754,7 @@ fn require_named_idle(names: &[&str]) -> AccountResult<()> {
 
 /// Bind the RPC transport to this exact owned CLI, not just an ephemeral port
 /// somebody else could win between reservation and listen.
-pub(super) fn owns_loopback_listener(pid: u32, port: u16) -> AccountResult<bool> {
+pub(in crate::accounts) fn owns_loopback_listener(pid: u32, port: u16) -> AccountResult<bool> {
     #[link(name = "iphlpapi")]
     unsafe extern "system" {
         fn GetExtendedTcpTable(

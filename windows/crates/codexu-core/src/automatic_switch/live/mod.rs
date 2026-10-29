@@ -12,6 +12,8 @@ use std::{
 
 mod activity;
 mod client;
+mod owned_domains;
+pub use owned_domains::{OwnedDomainPurpose, OwnedDomainRegistration, OwnedProcessDomains};
 #[cfg(windows)]
 mod native;
 #[cfg(windows)]

@@ -1,8 +1,13 @@
+import { AccountMaintenanceSettings } from '../components/AccountMaintenanceSettings';
+import { SystemNotifications } from '../components/SystemNotifications';
+import { AboutCredits } from '../components/AboutCredits';
+import { FloatingBubbleSettings } from '../components/FloatingBubbleSettings';
 import { useEffect, useState } from 'react';
 import { AssistantContact } from '../components/AssistantContact';
 import { AppUpdatePanel } from '../components/AppUpdatePanel';
 import { NotificationChannelsPanel } from '../components/NotificationChannelsPanel';
 import { CompactDockSettings } from '../components/CompactDockSettings';
+import { AutomaticSwitchSettings } from '../components/AutomaticSwitchSettings';
 import { open } from '@tauri-apps/plugin-dialog';
 import { FolderOpen, Palette, RefreshCw, Trash2 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
@@ -171,6 +176,7 @@ export function Settings() {
 
       <main className="flex-1 overflow-auto p-6 md:p-7">
         <div className="max-w-lg mx-auto w-full space-y-6">
+          <nav className="settings-group-links" aria-label={language === 'zh-Hans' ? '设置分组' : 'Settings groups'}>{[['settings-appearance', t('settings.appearance')], ['settings-notifications', language === 'zh-Hans' ? '通知' : 'Notifications'], ['settings-automation', language === 'zh-Hans' ? '自动化' : 'Automation'], ['settings-windows', language === 'zh-Hans' ? '悬浮窗' : 'Floating windows'], ['settings-about', t('settings.about')]].map(([id, label]) => <a key={id} href={'#' + id}>{label}</a>)}</nav>
           <Section title={t('settings.dataPaths')}>
             <PathField
               label={t('settings.codexDataRoot')}
@@ -184,7 +190,7 @@ export function Settings() {
             />
           </Section>
 
-          <Section title={t('settings.appearance')}>
+          <Section id="settings-appearance" title={t('settings.appearance')}>
             {paletteFallbackNotice && <p role="status" className="mb-3 text-xs text-status-warn">{language === 'zh-Hans' ? '原配色不可用，已使用经典默认配色。' : 'Saved palette is unavailable; the classic default is in use.'}</p>}
             <div className="grid grid-cols-3 gap-2">
               {(['light', 'dark', 'system'] as ThemeMode[]).map((themeValue) => (
@@ -314,11 +320,15 @@ export function Settings() {
             </div>
           </Section>
 
-          <NotificationChannelsPanel />
-          <CompactDockSettings />
+          <div id="settings-notifications" className="space-y-4"><SystemNotifications />
+          <NotificationChannelsPanel /></div>
+          <div id="settings-automation" className="space-y-4"><AutomaticSwitchSettings />
+          <AccountMaintenanceSettings /></div>
+          <div id="settings-windows" className="space-y-4"><CompactDockSettings />
+          <FloatingBubbleSettings /></div>
 
-          <Section title={t('settings.about')}>
-            <p className="text-sm text-secondary">{t('settings.version')}</p>
+          <Section id="settings-about" title={t('settings.about')}>
+            <AboutCredits />
             <p className="text-xs text-tertiary mt-2">{t('settings.dataFolder')}</p>
             <p className="text-xs text-tertiary mt-2">{t('settings.privacy')}</p>
             <AppUpdatePanel />
@@ -338,9 +348,9 @@ export function Settings() {
   );
 }
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+function Section({ id, title, children }: { id?: string; title: string; children: React.ReactNode }) {
   return (
-    <div className="glass-panel p-4 sm:p-5">
+    <div id={id} className="glass-panel p-4 sm:p-5">
       <h2 className="text-sm font-semibold text-primary mb-3">{title}</h2>
       {children}
     </div>

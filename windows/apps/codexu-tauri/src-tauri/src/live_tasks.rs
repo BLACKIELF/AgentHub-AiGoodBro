@@ -66,15 +66,17 @@ impl LiveTasks {
         manager: Arc<AccountManager>,
         gate: Arc<ManagedProxyGate>,
         notifications: Option<&Arc<NotificationService>>,
+        owned_domains: Arc<OwnedProcessDomains>,
     ) -> Result<Arc<Self>, &'static str> {
         let completion = notifications.map(NativeTaskCompletionProducer::new);
-        let source = SystemDaemonSource::native(
+        let source = SystemDaemonSource::native_with_owned_domains(
             Arc::new(Authority(manager)),
             Arc::new(Dispatch(gate)),
             Some(Arc::new(Observer {
                 completion: completion.clone(),
                 app,
             })),
+            owned_domains,
         )
         .map_err(LiveIssue::code)?;
         if let Some(completion) = completion {

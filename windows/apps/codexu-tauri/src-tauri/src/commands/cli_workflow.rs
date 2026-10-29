@@ -1,4 +1,4 @@
-//! Explicit, directory-scoped interactive terminals. Never submits a prompt.
+//! Directory-scoped interactive terminals and a fixed own-Codex setup task.
 use crate::app_state::AppState;
 use codexu_core::{
     profiles::normalize_root,
@@ -22,6 +22,8 @@ use tokio::sync::Mutex;
 
 #[path = "cli_workflow_console.rs"]
 mod console;
+#[path = "cli_workflow/dependency_actions.rs"]
+pub mod dependency_actions;
 #[path = "cli_workflow/local_actions.rs"]
 pub mod local_actions;
 
@@ -71,6 +73,7 @@ impl Session {
 pub struct WorkflowState {
     sessions: Mutex<BTreeMap<u64, Session>>,
     local: local_actions::LocalState,
+    dependency: dependency_actions::DependencyState,
     quitting: AtomicBool,
 }
 impl WorkflowState {
@@ -412,8 +415,20 @@ pub async fn start_account_terminal(
         if current != preference {
             return Err("selection_changed");
         }
-        let process = console::OwnedConsole::start(&executable, &root, &workspace, &args, guard)
-            .map_err(|_| "launch_failed")?;
+        let environment = codexu_core::local_cli::launch::Environment::codex(&root)
+            .map_err(|_| "environment_invalid")?;
+        let process = console::OwnedConsole::start_registered(
+            &executable,
+            &workspace,
+            &args,
+            guard,
+            &environment,
+            "AiGoodBro - Codex",
+            Some(services.owned_domains.clone()),
+            None,
+            None,
+        )
+        .map_err(|_| "launch_failed")?;
         session.process = Some(process);
         session.dispatch_activity = activity.take();
         session.phase = Phase::Running;
@@ -495,7 +510,7 @@ pub async fn end_remove(workflow: &WorkflowState, id: u64) {
 /// Use from ExitRequested before allowing a normal app quit. A contended
 /// state is conservatively active, so a launch cannot race normal shutdown.
 pub fn should_block_exit(workflow: &WorkflowState) -> bool {
-    if local_actions::blocks_exit(workflow) {
+    if local_actions::blocks_exit(workflow) || dependency_actions::blocks_exit(workflow) {
         return true;
     }
     let Ok(mut sessions) = workflow.sessions.try_lock() else {
@@ -513,6 +528,7 @@ pub fn should_block_exit(workflow: &WorkflowState) -> bool {
 pub fn force_stop_owned(workflow: &WorkflowState) {
     workflow.begin_force_quit();
     local_actions::force_stop(workflow);
+    dependency_actions::force_stop(workflow);
     let Ok(mut sessions) = workflow.sessions.try_lock() else {
         return;
     };

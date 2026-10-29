@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum ChannelKind {
+    #[serde(rename = "system")]
+    System,
     #[serde(rename = "feishu")]
     Feishu,
     #[serde(rename = "telegram")]
@@ -13,7 +15,8 @@ pub enum ChannelKind {
     PersonalWeChat,
 }
 impl ChannelKind {
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 5] = [
+        Self::System,
         Self::Feishu,
         Self::Telegram,
         Self::WeCom,
@@ -21,6 +24,7 @@ impl ChannelKind {
     ];
     pub fn id(self) -> &'static str {
         match self {
+            Self::System => "system",
             Self::Feishu => "feishu",
             Self::Telegram => "telegram",
             Self::WeCom => "wechat",

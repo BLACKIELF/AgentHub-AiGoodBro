@@ -1,5 +1,8 @@
 //! The owned process joins a job while suspended, before it can spawn children.
-use std::{fs::File, path::Path};
+use codexu_core::automatic_switch::live::{
+    OwnedDomainPurpose, OwnedDomainRegistration, OwnedProcessDomains,
+};
+use std::{fs::File, path::Path, sync::Arc};
 
 pub fn lock_executable(path: &Path) -> std::io::Result<File> {
     let mut options = std::fs::OpenOptions::new();
@@ -43,6 +46,7 @@ mod native {
     use std::{
         ffi::{c_void, OsStr, OsString},
         os::windows::ffi::OsStrExt,
+        os::windows::io::{AsRawHandle, BorrowedHandle},
         time::{Duration, Instant},
     };
     type Handle = *mut c_void;
@@ -119,6 +123,11 @@ mod native {
         process_id: u32,
         thread_id: u32,
     }
+    #[repr(C)]
+    struct StartupInfoEx {
+        startup: StartupInfo,
+        attributes: *mut c_void,
+    }
     #[link(name = "kernel32")]
     extern "system" {
         fn CreateJobObjectW(attributes: *const c_void, name: *const u16) -> Handle;
@@ -153,6 +162,33 @@ mod native {
         ) -> i32;
         fn ResumeThread(thread: Handle) -> u32;
         fn TerminateProcess(process: Handle, code: u32) -> i32;
+        fn GetExitCodeProcess(process: Handle, code: *mut u32) -> i32;
+        fn GetCurrentProcess() -> Handle;
+        fn DuplicateHandle(
+            source: Handle,
+            handle: Handle,
+            target: Handle,
+            copy: *mut Handle,
+            access: u32,
+            inherit: i32,
+            options: u32,
+        ) -> i32;
+        fn InitializeProcThreadAttributeList(
+            list: *mut c_void,
+            count: u32,
+            flags: u32,
+            size: *mut usize,
+        ) -> i32;
+        fn UpdateProcThreadAttribute(
+            list: *mut c_void,
+            flags: u32,
+            attribute: usize,
+            value: *mut c_void,
+            size: usize,
+            previous: *mut c_void,
+            returned: *mut usize,
+        ) -> i32;
+        fn DeleteProcThreadAttributeList(list: *mut c_void);
     }
     // Owned handles, never caller-supplied PIDs. Integers permit Send for the
     // job/process handles, whose Win32 APIs support calls from other threads.
@@ -168,6 +204,75 @@ mod native {
                 CloseHandle(self.raw());
             }
         }
+    }
+    struct HandleList {
+        storage: Vec<usize>,
+        initialized: bool,
+    }
+    impl HandleList {
+        fn new(handles: &mut [Handle]) -> std::io::Result<Self> {
+            let mut bytes = 0;
+            unsafe {
+                InitializeProcThreadAttributeList(std::ptr::null_mut(), 1, 0, &mut bytes);
+            }
+            if bytes == 0 || bytes > 65536 {
+                return Err(std::io::Error::other("Invalid inherited handle list"));
+            }
+            let mut result = Self {
+                storage: vec![0; bytes.div_ceil(std::mem::size_of::<usize>())],
+                initialized: false,
+            };
+            if unsafe { InitializeProcThreadAttributeList(result.raw(), 1, 0, &mut bytes) } == 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            result.initialized = true;
+            if unsafe {
+                UpdateProcThreadAttribute(
+                    result.raw(),
+                    0,
+                    0x0002_0002,
+                    handles.as_mut_ptr().cast(),
+                    std::mem::size_of_val(handles),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                )
+            } == 0
+            {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(result)
+        }
+        fn raw(&mut self) -> *mut c_void {
+            self.storage.as_mut_ptr().cast()
+        }
+    }
+    impl Drop for HandleList {
+        fn drop(&mut self) {
+            if self.initialized {
+                unsafe {
+                    DeleteProcThreadAttributeList(self.raw());
+                }
+            }
+        }
+    }
+    fn inheritable(file: &File) -> std::io::Result<OwnedHandle> {
+        let mut copy = std::ptr::null_mut();
+        let current = unsafe { GetCurrentProcess() };
+        if unsafe {
+            DuplicateHandle(
+                current,
+                file.as_raw_handle().cast(),
+                current,
+                &mut copy,
+                0,
+                1,
+                2,
+            )
+        } == 0
+        {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(OwnedHandle(copy as usize))
     }
     struct Job(OwnedHandle);
     impl Job {
@@ -245,7 +350,8 @@ mod native {
     pub struct OwnedConsole {
         process: OwnedHandle,
         job: Job,
-        _executable: File,
+        _domain: Option<OwnedDomainRegistration>,
+        _resources: Arc<dyn Send + Sync>,
     }
     impl OwnedConsole {
         pub fn start(
@@ -274,6 +380,24 @@ mod native {
             spec: &codexu_core::local_cli::launch::Environment,
             title: &str,
         ) -> std::io::Result<Self> {
+            Self::start_registered(
+                executable, workspace, args, guard, spec, title, None, None, None,
+            )
+        }
+        /// Native-only arguments and resources. Capture permits only these two
+        /// explicit inheritable handles; no unrelated handle enters the child.
+        pub fn start_registered(
+            executable: &Path,
+            workspace: &Path,
+            args: &[String],
+            guard: File,
+            spec: &codexu_core::local_cli::launch::Environment,
+            title: &str,
+            domains: Option<Arc<OwnedProcessDomains>>,
+            resources: Option<Arc<dyn Send + Sync>>,
+            capture: Option<&File>,
+        ) -> std::io::Result<Self> {
+            let resources: Arc<dyn Send + Sync> = Arc::new((Arc::new(guard), resources));
             let job = Job::create()?;
             let application = wide(executable.as_os_str())?;
             let directory = wide(workspace.as_os_str())?;
@@ -292,9 +416,33 @@ mod native {
                 ));
             }
             let mut title = wide(OsStr::new(title))?;
-            let mut startup: StartupInfo = unsafe { std::mem::zeroed() };
-            startup.size = std::mem::size_of::<StartupInfo>() as u32;
-            startup.title = title.as_mut_ptr();
+            let mut startup: StartupInfoEx = unsafe { std::mem::zeroed() };
+            startup.startup.size = std::mem::size_of::<StartupInfo>() as u32;
+            startup.startup.title = title.as_mut_ptr();
+            let output = capture.map(inheritable).transpose()?;
+            let null = if capture.is_some() {
+                Some(inheritable(
+                    &std::fs::OpenOptions::new()
+                        .read(true)
+                        .write(true)
+                        .open("NUL")?,
+                )?)
+            } else {
+                None
+            };
+            let mut handles = output
+                .as_ref()
+                .zip(null.as_ref())
+                .map(|(o, n)| [o.raw(), n.raw()]);
+            let mut handle_list = handles.as_mut().map(|h| HandleList::new(h)).transpose()?;
+            if let Some(list) = &mut handle_list {
+                startup.startup.size = std::mem::size_of::<StartupInfoEx>() as u32;
+                startup.startup.flags = 0x100;
+                startup.startup.stdout = output.as_ref().unwrap().raw();
+                startup.startup.stdin = null.as_ref().unwrap().raw();
+                startup.startup.stderr = null.as_ref().unwrap().raw();
+                startup.attributes = list.raw();
+            }
             let mut information: ProcessInfo = unsafe { std::mem::zeroed() };
             // No inherited handles. New console supplies its own stdin/out.
             // CREATE_SUSPENDED | CREATE_NEW_CONSOLE | CREATE_UNICODE_ENVIRONMENT.
@@ -304,11 +452,15 @@ mod native {
                     command_line.as_mut_ptr(),
                     std::ptr::null(),
                     std::ptr::null(),
-                    0,
-                    0x0000_0414,
+                    if capture.is_some() { 1 } else { 0 },
+                    if capture.is_some() {
+                        0x0808_0404
+                    } else {
+                        0x0000_0414
+                    },
                     environment.as_ptr() as *const c_void,
                     directory.as_ptr(),
-                    &mut startup,
+                    &mut startup.startup,
                     &mut information,
                 )
             };
@@ -325,6 +477,28 @@ mod native {
                 }
                 return Err(error);
             }
+            let domain = if let Some(domains) = domains {
+                let receipt = unsafe {
+                    domains.register_native(
+                        BorrowedHandle::borrow_raw(process.raw()),
+                        BorrowedHandle::borrow_raw(job.0.raw()),
+                        resources.clone(),
+                        OwnedDomainPurpose::ManagedConsole,
+                    )
+                };
+                match receipt {
+                    Ok(value) => Some(value),
+                    Err(_) => {
+                        unsafe {
+                            TerminateJobObject(job.0.raw(), 1);
+                            WaitForSingleObject(process.raw(), 2000);
+                        }
+                        return Err(std::io::Error::other("Owned console registration failed"));
+                    }
+                }
+            } else {
+                None
+            };
             if unsafe { ResumeThread(thread.raw()) } != 1 {
                 let error = std::io::Error::other("Could not resume owned terminal");
                 unsafe {
@@ -336,7 +510,8 @@ mod native {
             Ok(Self {
                 process,
                 job,
-                _executable: guard,
+                _domain: domain,
+                _resources: resources,
             })
         }
         pub fn has_exited(&mut self) -> std::io::Result<bool> {
@@ -363,6 +538,16 @@ mod native {
                 std::thread::sleep(Duration::from_millis(10));
             }
             Ok(())
+        }
+        pub fn exit_success(&mut self) -> std::io::Result<bool> {
+            if !self.has_exited()? {
+                return Ok(false);
+            }
+            let mut code = 0;
+            if unsafe { GetExitCodeProcess(self.process.raw(), &mut code) } == 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(code == 0)
         }
     }
 }
@@ -397,6 +582,25 @@ impl OwnedConsole {
     }
     pub fn stop(&mut self) -> std::io::Result<()> {
         Ok(())
+    }
+    pub fn exit_success(&mut self) -> std::io::Result<bool> {
+        Ok(false)
+    }
+    pub fn start_registered(
+        _: &Path,
+        _: &Path,
+        _: &[String],
+        _: File,
+        _: &codexu_core::local_cli::launch::Environment,
+        _: &str,
+        _: Option<Arc<OwnedProcessDomains>>,
+        _: Option<Arc<dyn Send + Sync>>,
+        _: Option<&File>,
+    ) -> std::io::Result<Self> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "Windows required",
+        ))
     }
 }
 
