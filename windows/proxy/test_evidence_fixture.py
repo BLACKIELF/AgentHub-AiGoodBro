@@ -50,7 +50,7 @@ class EvidenceFixtureTests(unittest.TestCase):
             source.write_bytes(json.dumps({"syntheticFixture":False,"private":"not-for-diagnostics"}).encode())
             result=subprocess.run([sys.executable,str(Path(driver.__file__)),"--input",str(source),"--output",str(root/"proof"),"--build-root",str(root/"build")],capture_output=True,timeout=10)
             self.assertEqual(result.returncode,1);self.assertEqual(result.stdout,b"")
-            self.assertEqual(result.stderr,b"AIGOODBRO_EVIDENCE_FIXTURE_ERROR=input_rejected\n")
+            self.assertIn(result.stderr,(b"AIGOODBRO_EVIDENCE_FIXTURE_ERROR=input_rejected\n",b"AIGOODBRO_EVIDENCE_FIXTURE_ERROR=input_rejected\r\n"))
 
 
 if __name__=="__main__":
