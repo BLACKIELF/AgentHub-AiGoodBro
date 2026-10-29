@@ -172,9 +172,9 @@ test('stable order, one-step move, view selection and no paths', async ({ page }
   const region = panel(page);
   await expect(region).toContainText('does not switch Codex login');
   await expect(region).not.toContainText('C:\\');
-  await page.getByTestId('profile-1').locator('summary').click();
+  await page.getByTestId('profile-1').locator('details.account-more > summary').click();
   await expect(page.getByTestId('profile-1').getByRole('button', { name: 'Move up' })).toBeDisabled();
-  await page.getByTestId('profile-1').locator('summary').click();
+  await page.getByTestId('profile-1').locator('details.account-more > summary').click();
   await accountAction(page.getByTestId('profile-2'), 'Move up');
   await expect(region.locator('li').first()).toContainText('Synthetic B');
   await page.getByTestId('profile-2').getByRole('button', { name: 'View usage' }).click();

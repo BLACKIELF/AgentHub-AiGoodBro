@@ -72,7 +72,7 @@ mod native {
         Data::Xml::Dom::XmlDocument,
         UI::Notifications::{NotificationSetting, ToastNotification, ToastNotificationManager},
     };
-    #[link(name = "combase")]
+    #[link(name = "runtimeobject")]
     unsafe extern "system" {
         fn RoInitialize(kind: u32) -> i32;
         fn RoUninitialize();

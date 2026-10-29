@@ -114,7 +114,7 @@ test('card size, list and platform filter persist while preserving global number
   expect((await first.boundingBox()).width).toBeGreaterThan(small);
   await expect(region).toHaveScreenshot('workspace-cards-medium.png');
   await region.getByRole('button', { name: 'List', exact: true }).click();
-  await region.getByRole('combobox', { name: 'Filter platform' }).selectOption('claude_code');
+  await region.getByRole('combobox', { name: 'Filter platform' }).selectOption('claude');
   await expect(first).toBeHidden();
   await expect(page.getByTestId('profile-3').locator('.account-directory-number')).toHaveText('03');
   await region.getByRole('combobox', { name: 'Filter platform' }).selectOption('all');
@@ -138,11 +138,11 @@ test('participation changes no display order and more menu keeps destructive act
   await expect(first.getByRole('switch')).toBeChecked();
   expect(await ids()).toEqual(before);
   expect(await page.evaluate(() => window.workspaceWrites.map(write => write.command))).toEqual(['set_account_workflow']);
-  await first.locator('summary').click();
+  await first.locator('details.account-more > summary').click();
   await expect(first.getByRole('button', { name: 'Move up', exact: true })).toBeDisabled();
   await expect(first.getByRole('button', { name: 'Rename', exact: true })).toBeVisible();
   await expect(first).toHaveScreenshot('workspace-account-more.png');
   await page.keyboard.press('Escape');
   await expect(first.locator('details.account-more')).not.toHaveAttribute('open');
-  await expect(first.locator('summary')).toBeFocused();
+  await expect(first.locator('details.account-more > summary')).toBeFocused();
 });
