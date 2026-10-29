@@ -1321,6 +1321,73 @@ function Open-DashboardWorkspace {
   [void](Wait-ForElement -Window $Window -AutomationId 'dashboard-home-tab-tasks' -TimeoutSeconds 20)
 }
 
+function Find-InstallationGuide {
+  param([IntPtr] $Window, [int] $ProcessId)
+  $root = [System.Windows.Automation.AutomationElement]::FromHandle($Window)
+  if ($root.Current.ProcessId -ne $ProcessId) {
+    throw 'installation_guide_window_owner_mismatch'
+  }
+  $english = [System.Windows.Automation.PropertyCondition]::new(
+    [System.Windows.Automation.AutomationElement]::NameProperty, 'Welcome to AiGoodBro'
+  )
+  # Keep this BOM-free script ASCII for Windows PowerShell 5.1 decoding.
+  $chineseName = (-join [char[]]@(0x6b22, 0x8fce, 0x4f7f, 0x7528)) + ' AiGoodBro'
+  $chinese = [System.Windows.Automation.PropertyCondition]::new(
+    [System.Windows.Automation.AutomationElement]::NameProperty, $chineseName
+  )
+  $names = [System.Windows.Automation.OrCondition]::new($english, $chinese)
+  $windowType = [System.Windows.Automation.PropertyCondition]::new(
+    [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+    [System.Windows.Automation.ControlType]::Window
+  )
+  $condition = [System.Windows.Automation.AndCondition]::new($windowType, $names)
+  $matches = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition)
+  if ($matches.Count -gt 1) { throw 'installation_guide_not_unique' }
+  if ($matches.Count -eq 1) { return $matches[0] }
+  return $null
+}
+
+function Defer-FirstLaunchGuide {
+  param([IntPtr] $Window, [int] $ProcessId)
+  # Every capture starts with a fresh task-local profile. Observe its real
+  # first-launch modal before navigating; Home can appear before the async read.
+  $deadline = (Get-Date).AddSeconds(30)
+  do {
+    $guide = Find-InstallationGuide -Window $Window -ProcessId $ProcessId
+    if ($null -ne $guide) { break }
+    Start-Sleep -Milliseconds 150
+  } while ((Get-Date) -lt $deadline)
+  if ($null -eq $guide) { throw 'fresh_capture_installation_guide_missing' }
+  $deferName = if ($guide.Current.Name -eq 'Welcome to AiGoodBro') {
+    'Set up later'
+  } else {
+    -join [char[]]@(0x7a0d, 0x540e, 0x8bbe, 0x7f6e)
+  }
+  $name = [System.Windows.Automation.PropertyCondition]::new(
+    [System.Windows.Automation.AutomationElement]::NameProperty, $deferName
+  )
+  $buttonType = [System.Windows.Automation.PropertyCondition]::new(
+    [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+    [System.Windows.Automation.ControlType]::Button
+  )
+  $condition = [System.Windows.Automation.AndCondition]::new($buttonType, $name)
+  $buttons = $guide.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition)
+  if ($buttons.Count -ne 1) { throw 'installation_guide_defer_not_unique' }
+  if (-not $buttons[0].Current.IsEnabled -or $buttons[0].Current.IsOffscreen) {
+    throw 'installation_guide_defer_unavailable'
+  }
+  $pattern = $buttons[0].GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
+  $pattern.Invoke()
+  $deadline = (Get-Date).AddSeconds(30)
+  do {
+    if ($null -eq (Find-InstallationGuide -Window $Window -ProcessId $ProcessId)) {
+      return [ordered]@{ observed = $true; defer_invoked = $true; dialog_dismissed = $true }
+    }
+    Start-Sleep -Milliseconds 150
+  } while ((Get-Date) -lt $deadline)
+  throw 'installation_guide_defer_did_not_close_modal'
+}
+
 function Save-OwnedWindowUiaDiagnostic {
   param([IntPtr] $Window, [int] $ProcessId, [string] $OutputPath)
   $root = [System.Windows.Automation.AutomationElement]::FromHandle($Window)
@@ -1826,6 +1893,10 @@ function Invoke-MaximizedCapture {
       -Window $window `
       -ExpectedForeground $foregroundBefore
     Wait-WebViewDocument -Window $window
+    $sizeRecord.onboarding = Defer-FirstLaunchGuide -Window $window -ProcessId $process.Id
+    Assert-ForegroundPreserved `
+      -ExpectedForeground $foregroundBefore `
+      -Stage 'first-launch guide defer'
     [void](Wait-ForElement -Window $window -AutomationId 'workspace-nav-home')
     # The existing Overview and five task/tool panels are now lazy-mounted
     # behind Workspace. Keep capturing those surfaces, not the new Home page.

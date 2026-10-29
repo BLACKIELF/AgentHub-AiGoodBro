@@ -59,6 +59,11 @@ $fullscreenRun = $manifest.fullscreen_run
 Assert-True ($null -ne $fullscreenRun) 'Coverage capture did not record its fullscreen run.'
 Assert-True ($fullscreenRun.status -eq 'complete') 'Fullscreen Overview capture is not complete.'
 Assert-True (
+  [bool]$fullscreenRun.onboarding.observed -and
+  [bool]$fullscreenRun.onboarding.defer_invoked -and
+  [bool]$fullscreenRun.onboarding.dialog_dismissed
+) 'Fresh native capture must observe the first-launch guide and invoke its existing defer action.'
+Assert-True (
   [bool]$fullscreenRun.accessibility.document_present -and
   [bool]$fullscreenRun.accessibility.dashboard_tab_present -and
   [bool]$fullscreenRun.accessibility.renderer_present
