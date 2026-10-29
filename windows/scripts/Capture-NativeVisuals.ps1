@@ -1410,13 +1410,59 @@ function Wait-ForElement {
 }
 
 function Select-DashboardTab {
-  param([IntPtr] $Window, [string] $TabId, [string] $PanelId)
-  $tab = Wait-ForElement -Window $Window -AutomationId $TabId
-  $pattern = $tab.GetCurrentPattern(
-    [System.Windows.Automation.SelectionItemPattern]::Pattern
+  param(
+    [IntPtr] $Window, [int] $ProcessId, [IntPtr] $ExpectedForeground,
+    [string] $TabId, [string] $PanelId
   )
-  $pattern.Select()
+  [void](Wait-ForElement -Window $Window -AutomationId $TabId)
+  $condition = [System.Windows.Automation.PropertyCondition]::new(
+    [System.Windows.Automation.AutomationElement]::AutomationIdProperty, $TabId
+  )
+  if ($ProcessId -le 0 -or [NativeVisualCaptureDriver]::GetWindowProcessId($Window) -ne $ProcessId) {
+    throw 'dashboard_tab_window_owner_mismatch'
+  }
+  $renderer = [NativeVisualCaptureDriver]::FindRenderer($Window)
+  if ($renderer -eq [IntPtr]::Zero) { throw 'dashboard_tab_renderer_missing' }
+  # A SelectionItem action scrolls offscreen tabs but can activate WebView2.
+  # Scroll only our renderer, then click the actual fully visible tab bounds.
+  Move-DashboardScrollToTop -Renderer $renderer
+  Move-RendererToLeft -Renderer $renderer
+  $tab = $null
+  for ($step = 0; $step -le 18; $step++) {
+    Assert-ForegroundPreserved -ExpectedForeground $ExpectedForeground -TaskWindow $Window -Stage ('align ' + $TabId)
+    $root = [System.Windows.Automation.AutomationElement]::FromHandle($Window)
+    $matches = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition)
+    if ($matches.Count -gt 1) { throw 'dashboard_tab_not_unique' }
+    $workspace = Find-ElementByAutomationId -Window $Window -AutomationId 'windows-home'
+    if ($matches.Count -eq 1 -and $null -ne $workspace) {
+      $candidate = $matches[0]
+      $bounds = $candidate.Current.BoundingRectangle
+      $viewport = $workspace.Current.BoundingRectangle
+      $client = Get-ClientScreenBounds -Window $Window
+      if (-not $candidate.Current.IsOffscreen -and $bounds.Width -gt 0 -and $bounds.Height -gt 0 -and
+          $bounds.Left -ge [math]::Max($client.left, $viewport.Left) -and
+          $bounds.Top -ge [math]::Max($client.top, $viewport.Top) -and
+          $bounds.Right -le [math]::Min($client.right, $viewport.Right) -and
+          $bounds.Bottom -le [math]::Min($client.bottom, $viewport.Bottom)) {
+        $tab = $candidate
+        break
+      }
+    }
+    if ($step -lt 18) {
+      if (-not [NativeVisualCaptureDriver]::ScrollRendererPage($renderer, -120, 1)) {
+        throw 'dashboard_tab_scroll_not_delivered'
+      }
+      Start-Sleep -Milliseconds 650
+    }
+  }
+  if ($null -eq $tab) { throw 'dashboard_tab_not_fully_visible' }
+  Click-OwnedControl -Window $Window -ProcessId $ProcessId -Element $tab `
+    -ExpectedControlType ([System.Windows.Automation.ControlType]::TabItem) `
+    -ExpectedForeground $ExpectedForeground -Stage $TabId
   [void](Wait-ForElement -Window $Window -AutomationId $PanelId -TimeoutSeconds 20)
+  $selectedTab = Wait-ForElement -Window $Window -AutomationId $TabId
+  $selection = $selectedTab.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern)
+  if (-not $selection.Current.IsSelected) { throw 'dashboard_tab_click_not_selected' }
 }
 
 function Open-DashboardWorkspace {
@@ -1428,19 +1474,20 @@ function Open-DashboardWorkspace {
   )
   $matches = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition)
   if ($matches.Count -ne 1) { throw 'workspace_navigation_not_unique' }
-  Click-OwnedButton -Window $Window -ProcessId $ProcessId -Element $matches[0] `
+  Click-OwnedControl -Window $Window -ProcessId $ProcessId -Element $matches[0] `
     -ExpectedForeground $ExpectedForeground -Stage 'Workspace navigation'
   [void](Wait-ForElement -Window $Window -AutomationId 'dashboard-home-tab-tasks' -TimeoutSeconds 20)
   Assert-ForegroundPreserved -ExpectedForeground $ExpectedForeground -TaskWindow $Window -Stage 'Workspace navigation result'
 }
 
-function Click-OwnedButton {
+function Click-OwnedControl {
   param(
     [IntPtr] $Window, [int] $ProcessId,
     [System.Windows.Automation.AutomationElement] $Element,
+    [System.Windows.Automation.ControlType] $ExpectedControlType = [System.Windows.Automation.ControlType]::Button,
     [IntPtr] $ExpectedForeground, [string] $Stage
   )
-  if ($Element.Current.ControlType -ne [System.Windows.Automation.ControlType]::Button -or
+  if ($Element.Current.ControlType -ne $ExpectedControlType -or
       -not $Element.Current.IsEnabled -or $Element.Current.IsOffscreen) {
     throw 'owned_control_click_unavailable'
   }
@@ -1524,7 +1571,7 @@ function Defer-FirstLaunchGuide {
     throw 'installation_guide_noactivate_style_not_retained'
   }
   $script:workflowManifest.fullscreen_run.onboarding_focus.input_method = 'owned renderer client mouse messages'
-  Click-OwnedButton -Window $Window -ProcessId $ProcessId -Element $buttons[0] `
+  Click-OwnedControl -Window $Window -ProcessId $ProcessId -Element $buttons[0] `
     -ExpectedForeground $ExpectedForeground -Stage 'first-launch guide click'
   $deadline = (Get-Date).AddSeconds(30)
   do {
@@ -2106,6 +2153,8 @@ function Invoke-MaximizedCapture {
     foreach ($surface in $selectedPanelSurfaces) {
       Select-DashboardTab `
         -Window $window `
+        -ProcessId $process.Id `
+        -ExpectedForeground $foregroundBefore `
         -TabId $surface.tab `
         -PanelId $surface.panel
       Assert-ForegroundPreserved -ExpectedForeground $foregroundBefore -TaskWindow $window -Stage ($surface.name + ' selection')
