@@ -11,6 +11,7 @@ struct LocalProxyQueueRow: Identifiable, Equatable {
     var snapshotStale = false
     var isDesktopAccount = false
     var isProPlan = false
+    var requiresRunRegistration = false
     let isEnabled: Bool
     let isPriority: Bool
     let isCurrent: Bool

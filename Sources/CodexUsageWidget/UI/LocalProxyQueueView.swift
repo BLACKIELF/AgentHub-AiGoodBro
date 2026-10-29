@@ -689,7 +689,16 @@ struct LocalProxyQueueView: View {
                     Spacer(minLength: 0)
                 }
             }
-            if model.hasStaleRunningBinding(for: row.id) {
+            if row.requiresRunRegistration {
+                Text(
+                    language.text(
+                        "此账号尚未加入本次反代。请等当前任务结束后停止并重新开启反代；核验通过且已勾选参与后，才会用于新请求。",
+                        "This account has not joined this proxy run. After current tasks finish, stop and start the proxy. It can serve new requests once verified and enabled."
+                    )
+                )
+                .font(.caption).foregroundStyle(WorkspaceStatusForeground.warning)
+                .accessibilityIdentifier("next.local-proxy.registration-\(row.id)")
+            } else if model.hasStaleRunningBinding(for: row.id) {
                 Text(
                     language.text(
                         "此账号登录身份与反代启动时不同；关闭反代后可保存规则，重新开启后用于新请求。",
@@ -762,6 +771,7 @@ struct LocalProxyQueueView: View {
 
     private func rowStatusColor(_ row: LocalProxyQueueRow) -> Color {
         if !row.isEnabled { return FixedVisualPalette.statusNeutral }
+        if row.requiresRunRegistration { return FixedVisualPalette.statusWarning }
         if row.state == "login_expired" { return FixedVisualPalette.statusDanger }
         if row.state == "quota" || row.state == "usage_limit" { return FixedVisualPalette.statusWarning }
         if let deadline = row.cooldownUntil, deadline > Date() { return FixedVisualPalette.statusWarning }
@@ -824,6 +834,7 @@ struct LocalProxyQueueView: View {
         if row.isCurrent && !row.isEnabled { return language.text("完成后退出", "Finishing request") }
         if row.isCurrent { return language.text("快照有请求", "Active in snapshot") }
         if !row.isEnabled { return language.text("未参与", "Not participating") }
+        if row.requiresRunRegistration { return language.text("待加入本次反代", "Pending proxy registration") }
         if let deadline = row.cooldownUntil, deadline > Date() { return language.text("冷却中", "Cooling down") }
         switch row.state {
         case "current": return language.text("快照有请求", "Active in snapshot")

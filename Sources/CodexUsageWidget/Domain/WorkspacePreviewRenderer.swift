@@ -864,7 +864,9 @@ enum WorkspacePreviewRenderer {
                             creditPrimaryFloor: index == 2 ? 3000 : nil, creditSecondaryFloor: index == 2 ? 1000 : nil)
                     )
                 })
-            let proxy = LocalProxyQueueStore(usageStore: store, previewPreferences: proxyPreferences)
+            let proxy = LocalProxyQueueStore(
+                usageStore: store, previewPreferences: proxyPreferences,
+                previewPendingRegistrationIDs: Set(store.profiles.prefix(1).map(\.id)))
             for locale in [WidgetLanguage.zh, .en] {
                 settings.language = locale
                 defaults.set(true, forKey: "AiGoodBro.home.section.recommended-announcements.expanded")

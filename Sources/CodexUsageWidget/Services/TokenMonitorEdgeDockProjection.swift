@@ -566,8 +566,8 @@ enum TokenMonitorEdgeDockProjection {
             for (key, value) in source {
                 guard value["sessionKind"]?.string != "background-review",
                     let client = value["client"]?.string, !client.isEmpty,
-                    let rawDate = value["lastUsedAt"]?.string ?? value["startedAt"]?.string,
-                    let lastUsed = parseTimestamp(rawDate)
+                    let lastUsed = value["lastUsedAt"]?.string.flatMap(parseTimestamp)
+                        ?? value["startedAt"]?.string.flatMap(parseTimestamp)
                 else { continue }
                 let ended: Bool
                 if case .some(.bool(true)) = value["turnEnded"] { ended = true } else { ended = false }

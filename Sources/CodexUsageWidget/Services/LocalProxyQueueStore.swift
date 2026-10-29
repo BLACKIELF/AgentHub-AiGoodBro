@@ -201,6 +201,7 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
     }
 
     private let usageStore: UsageStore
+    private let previewPendingRegistrationIDs: Set<String>
     private let directory: URL
     private var preferences = LocalProxyPreferences()
     private var preferencesBlocked = false
@@ -303,8 +304,9 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
     private var legacyRecoveryPreparedConfirmation: LocalProxyLegacyCooldownRecovery.Confirmation?
     private var legacyRecoveryGeneration = UUID()
 
-    init(usageStore: UsageStore, previewPreferences: LocalProxyPreferences? = nil) {
+    init(usageStore: UsageStore, previewPreferences: LocalProxyPreferences? = nil, previewPendingRegistrationIDs: Set<String> = []) {
         self.usageStore = usageStore
+        self.previewPendingRegistrationIDs = usageStore.isPreview ? previewPendingRegistrationIDs : []
         directory = DispatchParticipationPaths.supportDirectory()
         if usageStore.isPreview, let previewPreferences, previewPreferences.validAccountPolicies, previewPreferences.validAccountRepresentatives,
             previewPreferences.validLastIDs, previewPreferences.validLastOverrides, previewPreferences.validResetStopRules
@@ -2534,6 +2536,8 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
                 resetCardCount: usageStore.availableResetCredits(for: profile),
                 snapshotStale: profile.lastQuotaReadFailureAt != nil || profile.lastSnapshot.map { Date().timeIntervalSince($0.fetchedAt) > 1_800 } != false,
                 isDesktopAccount: isDesktop(id), isProPlan: isProPlan,
+                requiresRunRegistration: previewPendingRegistrationIDs.contains(id)
+                    || (phase == .running && process?.isRunning == true && registeredPool[id] == nil),
                 isEnabled: preferences.enabledIDs.contains(id),
                 isPriority: preferences.priorityIDs.contains(id) && orderingGroup(for: id) != 1, isCurrent: state == "current", quotaText: quota, state: state,
                 cooldownUntil: cooldowns[id], cooldownKind: cooldownKinds[id], probeState: probeStates[id],

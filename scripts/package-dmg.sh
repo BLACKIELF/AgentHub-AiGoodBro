@@ -108,6 +108,7 @@ hdiutil create \
   -volname "$VOLUME_NAME" \
   -srcfolder "$DMG_ROOT" \
   -ov \
+  -fs HFS+ \
   -format UDZO \
   "$TMP_DMG"
 
