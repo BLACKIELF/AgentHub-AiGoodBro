@@ -21,9 +21,9 @@
 	<key>CFBundleShortVersionString</key>
 	<string>3.0.0</string>
 	<key>CFBundleVersion</key>
-	<string>162</string>
+	<string>163</string>
 	<key>CodexAccountManagerNextReleaseName</key>
-	<string>1029v1</string>
+	<string>1029v2</string>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.developer-tools</string>
 	<key>LSMinimumSystemVersion</key>

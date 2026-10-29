@@ -141,8 +141,10 @@ test: build
 	python3 scripts/test-proxy-reset-observation.py
 	python3 scripts/test-local-proxy-host.py --reset-stop-only
 	python3 scripts/test-local-proxy-host.py --participation-only
+	python3 scripts/test-local-proxy-host.py --hot-activation-only
 	python3 scripts/test-wechat-bot.py
 	python3 scripts/test-dispatch-participation.py --tests-only
+	python3 scripts/test-new-account-registration.py
 	$(MAKE) --no-print-directory test-token-monitor-backports
 
 .PHONY: test-token-monitor-backports

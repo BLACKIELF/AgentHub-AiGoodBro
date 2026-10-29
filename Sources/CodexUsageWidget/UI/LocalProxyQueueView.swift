@@ -690,14 +690,28 @@ struct LocalProxyQueueView: View {
                 }
             }
             if row.requiresRunRegistration {
-                Text(
-                    language.text(
-                        "此账号尚未加入本次反代。请等当前任务结束后停止并重新开启反代；核验通过且已勾选参与后，才会用于新请求。",
-                        "This account has not joined this proxy run. After current tasks finish, stop and start the proxy. It can serve new requests once verified and enabled."
-                    )
-                )
-                .font(.caption).foregroundStyle(WorkspaceStatusForeground.warning)
+                HStack {
+                    if model.hotActivationIDs.contains(row.id) {
+                        ProgressView().controlSize(.small)
+                        Text(language.text("正在热激活…", "Activating…"))
+                        Button(language.text("取消", "Cancel")) { model.cancelHotActivation(id: row.id) }
+                    } else {
+                        Button(language.text("热激活并参与", "Activate and participate")) {
+                            Task { await model.hotActivateAccount(id: row.id) }
+                        }
+                        .disabled(!model.canHotActivateAccount(id: row.id))
+                        .accessibilityIdentifier("next.local-proxy.activate-\(row.id)")
+                        Text(language.text("核验后加入新请求，已有请求继续。", "Join new requests after verification; existing requests continue."))
+                    }
+                }
+                .font(.caption)
                 .accessibilityIdentifier("next.local-proxy.registration-\(row.id)")
+                if let failure = model.hotActivationErrors[row.id] {
+                    Text(failure == "cooldown_pending"
+                        ? language.text("此账号仍有冷却记录，请在冷却结束后重试。", "This account has a remaining cooldown. Retry when it expires.")
+                        : language.text("热激活未完成，账号未加入。请确认登记和登录状态后重试。", "Activation did not finish; the account has not joined. Confirm registration and sign-in, then retry."))
+                        .font(.caption).foregroundStyle(WorkspaceStatusForeground.warning)
+                }
             } else if model.hasStaleRunningBinding(for: row.id) {
                 Text(
                     language.text(

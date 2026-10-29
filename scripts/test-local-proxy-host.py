@@ -30,6 +30,7 @@ focused_fixture=next((entry for flag,entry in [
     ('--plus-policy-only','plusPolicyFixtures'),
     ('--reset-stop-only','resetStopFixtures'),
     ('--participation-only','participationFixtures'),
+    ('--hot-activation-only','hotActivationFixtures'),
     ('--quota-admission-budget-only','quotaAdmissionBudgetFixtures'),
     ('--control-recovery-only','controlRecoveryFixtures'),
     ('--control-progress-negative','controlProgressFixtures'),
@@ -59,7 +60,7 @@ struct CodexQuotaWindowSnapshot: Equatable { var usedPercent: Double; var resets
 struct CodexAccountSnapshot: Equatable { var quotaReadSucceeded: Bool? = true; var planType:String? = nil; var creditBalance:String? = nil; var creditBalanceUnlimited:Bool? = nil; var accountID: String? = "account-fixture"; var email: String? = "fixture@example.invalid"; var fetchedAt: Date; var fiveHour: CodexQuotaWindowSnapshot?; var sevenDay: CodexQuotaWindowSnapshot?; var monthly: CodexQuotaWindowSnapshot? = nil }
 struct CodexCredentialIdentity: Equatable { let email: String; let accountID: String }
 struct CodexOfficialProfileSnapshot: Equatable { var planType: String? }
-struct CodexProfile: Equatable { let id: String; var isSystemProfile=false; var lastSnapshot: CodexAccountSnapshot?; var lastQuotaReadFailureAt: Date?=nil; var lastQuotaReadFailureReason:String?=nil; var isDispatchPriorityEnabled=false; var officialProfile:CodexOfficialProfileSnapshot?=nil; var proTierMultiplier:Int?=nil; var fixtureHomeURL:URL?=nil; var codexHomeURL: URL { fixtureHomeURL ?? DispatchParticipationPaths.supportDirectory().appendingPathComponent("credentials/"+id).resolvingSymlinksInPath() }; var recordedAccountKey:String { lastSnapshot?.email ?? id }; func matchesRecordedCredential(_ identity:CodexCredentialIdentity?) -> Bool { identity?.email == lastSnapshot?.email && identity?.accountID == lastSnapshot?.accountID } }
+struct CodexProfile: Equatable { let id: String; var isSystemProfile=false; var lastSnapshot: CodexAccountSnapshot?; var lastQuotaReadFailureAt: Date?=nil; var lastQuotaReadFailureReason:String?=nil; var isDispatchPriorityEnabled=false; var dispatchRegistrationPending:Bool?=nil; var officialProfile:CodexOfficialProfileSnapshot?=nil; var proTierMultiplier:Int?=nil; var fixtureHomeURL:URL?=nil; var codexHomeURL: URL { fixtureHomeURL ?? DispatchParticipationPaths.supportDirectory().appendingPathComponent("credentials/"+id).resolvingSymlinksInPath() }; var recordedAccountKey:String { lastSnapshot?.email ?? id }; func matchesRecordedCredential(_ identity:CodexCredentialIdentity?) -> Bool { identity?.email == lastSnapshot?.email && identity?.accountID == lastSnapshot?.accountID } }
 enum CodexCredentialAccessGate { static let lock=NSRecursiveLock(); static func homeLock(forHomePath:String)->NSRecursiveLock { lock } }
 enum WidgetLanguage { case fixture; static func storedOrAutomatic()->Self { .fixture }; func text(_ zh:String,_ en:String)->String { en } }
 enum HubAccountTaskPhase { case maintenance,starting,running,cancelRequested,uncertain,awaitingAcceptance,succeeded,failed,cancelled,unavailable }
@@ -67,7 +68,7 @@ struct HubAccountTaskStatus { let phase:HubAccountTaskPhase; let updatedAt:Date?
 enum HubWarmUpAvailability { case idle,busy,unavailable }
 enum HubConsoleModel { static var fixtureAvailability: HubWarmUpAvailability = .unavailable; static var fixtureOnWarmUp:(()->Void)?; static func warmUpAvailability(for:String,excludingLocalLease:String?,deadline:TimeInterval? = nil,maxConcurrent:Int = 1) async ->HubWarmUpAvailability { fixtureOnWarmUp?(); return fixtureAvailability } }
 enum HubAccountTaskStatusResolver { static func canonicalAlias(_ value:String)->String { value.lowercased() } }
-enum DispatchCodeCatalog { static func alias(for:String)->String? { "fixture-alias" } }
+enum DispatchCodeCatalog { static var fixtureMissing=Set<String>(); static func alias(for id:String)->String? { fixtureMissing.contains(id) ? nil : "fixture-alias" } }
 enum AccountDisplay { static func profileName(_ p:CodexProfile,allProfiles:[CodexProfile])->String { p.id }; static func number(for p:CodexProfile,in profiles:[CodexProfile])->Int? { profiles.firstIndex(where:{$0.id == p.id}).map{$0+1} } }
 struct CodexExecutionPreference { enum Model:String,CaseIterable { case fixture="fixture-model" } }
 @MainActor final class UsageStore:ObservableObject { var proxyQuotaResetObservationEnabled=false; var onProxyOfficialQuotaReset:((String,String,Date)->Void)?; @Published var profiles:[CodexProfile]; var isPreview=true; var refreshCount=0; var onRefresh:((Set<String>)->Void)?; init(_ profiles:[CodexProfile]) { self.profiles=profiles }; func refreshLocalProxyQuotas(profileIDs:Set<String>){refreshCount += 1; onRefresh?(profileIDs)}; func creditBalancePresentation(for:CodexProfile)->CreditBalancePresentation { .init() }; func availableResetCredits(for:CodexProfile)->Int? { nil } }
@@ -88,6 +89,8 @@ enum LocalProxyFixtureRuntime {
 }
 struct DispatchParticipationPaths { static func supportDirectory()->URL { URL(fileURLWithPath:ProcessInfo.processInfo.environment["PROXY_FIXTURE_ROOT"]!) }; static let snapshotFileName="fixture.json"; var hubConfig:URL; static func live(snapshot:URL)throws->Self { throw LocalProxyFailure.unavailable } }
 '''
+if focused_fixture == 'hotActivationFixtures':
+    stubs=stubs.replace('? nil : "fixture-alias"', '? nil : "fixture-"+id')
 if focused_fixture == 'networkProbeFixtures':
     stubs=stubs.replace('enum CodexCredentialAccessGate { static let lock=NSRecursiveLock(); static func homeLock(forHomePath:String)->NSRecursiveLock { lock } }', '''
 enum CodexCredentialAccessGate {
@@ -168,6 +171,7 @@ with tempfile.TemporaryDirectory(prefix='aigoodbro-proxy-host-fixture-', dir=(st
         files.insert(-1, root/'scripts/LocalProxyProbeFixture.swift')
         files.insert(-1, root/'scripts/LocalProxyAccountEventFixture.swift')
         files.insert(-1, root/'scripts/LocalProxyParticipationFixture.swift')
+        files.insert(-1, root/'scripts/LocalProxyHotActivationFixture.swift')
         files.insert(-1, root/'scripts/LocalProxyResetStopFixture.swift')
         files.insert(-1, root/'scripts/LocalProxyLegacyCooldownRecoveryFixture.swift')
     # Credential transaction fixture only uses its actual read and gate routines.
@@ -518,7 +522,7 @@ record({'event': 'command', 'runID': configuration['runID'], 'command': 'stop'})
         for source in files:
             shutil.copy2(source, copied/source.name)
         originals=[root/'Sources/CodexUsageWidget/Domain/LocalProxyQueue.swift', service/'LocalProxyQueueStore.swift',
-                   root/'scripts/LocalProxyParticipationFixture.swift',root/'scripts/test-local-proxy-host-control.swift',Path(__file__)]
+                   root/'scripts/LocalProxyParticipationFixture.swift',root/'scripts/LocalProxyHotActivationFixture.swift',root/'scripts/test-local-proxy-host-control.swift',Path(__file__)]
         if focused_fixture == 'networkProbeFixtures':
             originals += [service/'LocalProxyBridge.swift',service/'LocalProxyNetworkProbe.swift',service/'TokenMonitorHTTPTransport.swift',root/'scripts/LocalProxyProbeFixture.swift']
         (evidence/(focused_fixture+'-compiled-source.json')).write_text(json.dumps({

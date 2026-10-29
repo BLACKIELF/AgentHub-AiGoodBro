@@ -44,6 +44,15 @@ private final class LocalProxyReleaseFence: @unchecked Sendable {
 
 private let localProxyReleaseFence = LocalProxyReleaseFence()
 
+/// A run-owned, append-only permission set shared by independent control queues.
+private final class LocalProxyRunProfiles: @unchecked Sendable {
+    private let lock = NSLock()
+    private var ids: Set<String>
+    init(_ ids: Set<String>) { self.ids = ids }
+    func insert(_ id: String) { lock.lock(); defer { lock.unlock() }; ids.insert(id) }
+    func snapshot() -> Set<String> { lock.lock(); defer { lock.unlock() }; return ids }
+}
+
 /// Disk I/O cannot be cancelled reliably. Complete the caller at most once,
 /// while a late worker remains unable to declare the cleanup successful.
 private final class LocalProxyIOCompletion<Value>: @unchecked Sendable {
@@ -231,6 +240,17 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
         let capturedAt: TimeInterval
     }
     private var registeredPool: [String: PoolBinding] = [:]
+    private var runProfiles: LocalProxyRunProfiles?
+    private struct HotRegistration {
+        let requestID: String
+        let runID: String
+        let binding: PoolBinding
+        var acknowledged = false
+    }
+    private var hotRegistrations: [String: HotRegistration] = [:]
+    private var attemptedHotBindings: [String: PoolBinding] = [:]
+    @Published private(set) var hotActivationIDs = Set<String>()
+    @Published private(set) var hotActivationErrors: [String: String] = [:]
     private var membershipSnapshots: [String: MembershipSnapshot] = [:]
     private var memberRevocations: [String: UUID] = [:]
     // HTTP requests have a 15-minute bound. Completed requests send an
@@ -856,6 +876,116 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
         flushDisplayRows()
     }
 
+    func canHotActivateAccount(id: String) -> Bool {
+        guard !usageStore.isPreview, !preferencesBlocked, !finishing,
+            phase == .running, process?.isRunning == true, registeredPool[id] == nil,
+            hotActivationIDs.isEmpty, registeredPool.count < 100, runProfiles != nil,
+            let binding = hotActivationBinding(id: id)
+        else { return false }
+        return attemptedHotBindings[id].map { $0 == binding } ?? true
+    }
+
+    private func hotActivationBinding(id: String) -> PoolBinding? {
+        let matches = usageStore.profiles.filter { $0.id == id && !$0.isSystemProfile }
+        guard matches.count == 1, let profile = matches.first,
+            rows.contains(where: { $0.id == id }), profile.dispatchRegistrationPending != true,
+            let accountID = profile.lastSnapshot?.accountID, !accountID.isEmpty,
+            alias(for: profile) != nil,
+            !registeredPool.values.contains(where: { $0.accountID == accountID || $0.account == profile.recordedAccountKey })
+        else { return nil }
+        return PoolBinding(home: profile.codexHomeURL, account: profile.recordedAccountKey, accountID: accountID)
+    }
+
+    func cancelHotActivation(id: String) {
+        hotRegistrations.removeValue(forKey: id)
+        hotActivationIDs.remove(id)
+        // Any helper placeholder remains denied by host membership. Retain its
+        // immutable attempted binding so a changed identity cannot reuse it.
+    }
+
+    func hotActivateAccount(id: String) async {
+        guard canHotActivateAccount(id: id), let binding = hotActivationBinding(id: id),
+            let run = runID, let child = process, let pipe = input, let runProfiles,
+            let profile = usageStore.profiles.first(where: { $0.id == id }),
+            let system = usageStore.profiles.first(where: \.isSystemProfile)
+        else { return }
+        let requestID = UUID().uuidString.lowercased()
+        hotRegistrations[id] = HotRegistration(requestID: requestID, runID: run, binding: binding)
+        hotActivationIDs.insert(id)
+        hotActivationErrors.removeValue(forKey: id)
+        defer {
+            if hotRegistrations[id]?.requestID == requestID { hotRegistrations.removeValue(forKey: id) }
+            if hotRegistrations[id] == nil { hotActivationIDs.remove(id) }
+        }
+        func current() -> Bool {
+            !Task.isCancelled && !finishing && phase == .running && runID == run && process === child && child.isRunning
+                && hotRegistrations[id]?.requestID == requestID && hotActivationBinding(id: id) == binding
+                && usageStore.profiles.first(where: \.isSystemProfile).map {
+                    $0.codexHomeURL == system.codexHomeURL && $0.recordedAccountKey == system.recordedAccountKey
+                        && $0.lastSnapshot?.accountID == system.lastSnapshot?.accountID
+                } == true
+        }
+        func verified() async -> Bool {
+            await Task.detached {
+                do {
+                    _ = try LocalProxyCredentialReader.readForProbe(
+                        profile: profile, system: system,
+                        allowDesktopAccount: profile.lastSnapshot?.accountID == system.lastSnapshot?.accountID,
+                        requireSystemIdentity: true)
+                    return true
+                } catch { return false }
+            }.value
+        }
+        guard await verified(), current() else {
+            if hotRegistrations[id]?.requestID == requestID { hotActivationErrors[id] = "identity" }
+            return
+        }
+        attemptedHotBindings[id] = binding
+        do {
+            var data = try JSONSerialization.data(withJSONObject: [
+                "command": "register_account", "runID": run, "requestID": requestID,
+                "profileID": id, "identityHash": DispatchActivityStore.hash(binding.accountID),
+            ])
+            data.append(10)
+            // All writes to this inherited control pipe are MainActor-serialized.
+            // Require room for one atomic pipe record so a stalled helper cannot
+            // block the UI or postpone cancellation/ACK timeout indefinitely.
+            let descriptor = pipe.fileDescriptor
+            var writable = pollfd(fd: descriptor, events: Int16(POLLOUT), revents: 0)
+            guard data.count <= fpathconf(descriptor, _PC_PIPE_BUF),
+                Darwin.poll(&writable, 1, 0) == 1, writable.revents & Int16(POLLOUT) != 0,
+                writable.revents & Int16(POLLERR | POLLHUP | POLLNVAL) == 0
+            else { throw LocalProxyFailure.unavailable }
+            try pipe.write(contentsOf: data)
+        } catch { hotActivationErrors[id] = "unavailable"; return }
+        for _ in 0..<100 {
+            guard current() else { return }
+            if hotRegistrations[id]?.acknowledged == true { break }
+            do { try await Task.sleep(nanoseconds: 100_000_000) } catch { return }
+        }
+        guard current(), hotRegistrations[id]?.acknowledged == true else {
+            if hotRegistrations[id]?.requestID == requestID { hotActivationErrors[id] = "timeout" }
+            return
+        }
+        // Recheck the local identity after acknowledgment. No network quota
+        // refresh or model request is sent to validate registration.
+        guard await verified(), current() else {
+            if hotRegistrations[id]?.requestID == requestID { hotActivationErrors[id] = "identity" }
+            return
+        }
+        let previous = preferences
+        preferences.knownIDs.insert(id)
+        preferences.enabledIDs.insert(id)
+        guard savePreferences() else { preferences = previous; hotActivationErrors[id] = "save"; return }
+        runProfiles.insert(id)
+        registeredPool[id] = binding
+        activeIDs.insert(id)
+        accountStates.removeValue(forKey: id)
+        hotActivationErrors.removeValue(forKey: id)
+        rebuildRows()
+        flushDisplayRows()
+    }
+
     func setAccountEnabled(id: String, enabled: Bool) {
         guard canToggleAccount(id: id), !enabled || canEdit || isRegisteredBindingCurrent(id),
             let profile = usageStore.profiles.first(where: { $0.id == id })
@@ -1342,8 +1472,8 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
             controlKey = control
             clientKey = client
             runDirectory = folder
-            // Register the entire verified managed pool once. Live toggles
-            // only select a subset; no new auth object is introduced mid-run.
+            // Register the initial verified pool. Later additions require an explicit
+            // identity-bound helper acknowledgment before they enter new orders.
             let pool = try makeRegisteredPool()
             if let plan = automaticRecoveryPlan, pool != plan.bindings { throw LocalProxyFailure.identity }
             registeredPool = pool
@@ -1353,13 +1483,14 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
             accountStates = [:]
             cooldowns = [:]
             startupStep = "bridge"
-            let permittedProfiles = Set(pool.keys)
+            let permittedProfiles = LocalProxyRunProfiles(Set(pool.keys))
+            runProfiles = permittedProfiles
             bridge = try LocalProxyBridge(
                 path: folder.appendingPathComponent("control.sock").path,
                 resolve: { [weak self] request in
                     guard request.schemaVersion == 1, request.command == "acquire_resolve",
                         request.runID == run, request.key == control, request.leaseID == nil,
-                        UUID(uuidString: request.requestID) != nil, permittedProfiles.contains(request.profileID)
+                        UUID(uuidString: request.requestID) != nil, permittedProfiles.snapshot().contains(request.profileID)
                     else { return .failure(.identity) }
                     do {
                         let resolution = try DispatchActivityStore.live.abandonProxy(
@@ -1370,7 +1501,7 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
                 },
                 maintenance: { [weak self] request in
                     let reply = Self.maintainLease(
-                        request, run: run, key: control, permittedProfiles: permittedProfiles)
+                        request, run: run, key: control, permittedProfiles: permittedProfiles.snapshot())
                     if reply.ok, request.command == "release" {
                         // Ownership is durably released before acknowledging.
                         // UI work must never delay a control reply.
@@ -1800,6 +1931,11 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
         endpoint = nil
         activeIDs = []
         registeredPool = [:]
+        runProfiles = nil
+        hotRegistrations = [:]
+        attemptedHotBindings = [:]
+        hotActivationIDs = []
+        hotActivationErrors = [:]
         membershipSnapshots = [:]
         memberRevocations = [:]
         refreshMembershipWaitState()
@@ -2340,6 +2476,21 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
                     self.pruneMembershipSnapshots(at: ProcessInfo.processInfo.systemUptime)
                     self.refreshStatus()
                 }
+            }
+        case "account_registered":
+            guard let id = object["profileID"] as? String, var pending = hotRegistrations[id],
+                pending.runID == run, object["runID"] as? String == run,
+                object["requestID"] as? String == pending.requestID,
+                object["identityHash"] as? String == DispatchActivityStore.hash(pending.binding.accountID),
+                phase == .running, !finishing
+            else { return }
+            if object["state"] as? String == "registered", object["errorCode"] == nil {
+                pending.acknowledged = true
+                hotRegistrations[id] = pending
+            } else {
+                let reason = object["errorCode"] as? String ?? "unavailable"
+                hotActivationErrors[id] = ["identity", "duplicate_identity", "pool_full", "cooldown_pending", "cooldown_unavailable", "registration_failed"].contains(reason) ? reason : "unavailable"
+                cancelHotActivation(id: id)
             }
         case "account":
             guard let id = object["profileID"] as? String, activeIDs.contains(id),

@@ -1265,7 +1265,9 @@ final class UsageStore: ObservableObject {
                     break
                 }
                 do {
-                    try self.recordOfficialSnapshot(verifiedSnapshot, for: profile.id, allowAccountOnly: true)
+                    try self.recordOfficialSnapshot(
+                        verifiedSnapshot, for: profile.id, allowAccountOnly: true,
+                        requestDispatchRegistration: true)
                     if let officialProfile {
                         try self.profileStore.recordOfficialProfile(officialProfile, for: profile.id)
                     }
@@ -1273,6 +1275,7 @@ final class UsageStore: ObservableObject {
                         try self.profileStore.setRemark("", for: replacingSystemProfileID)
                     }
                     try self.profileStore.selectMonitor(profile.id)
+                    self.registerPendingDispatchProfile(after: verifiedSnapshot, profileID: profile.id)
                     self.syncProfiles()
                     self.configureAuthMonitoring()
                     self.isLoggingIn = false
@@ -1283,6 +1286,13 @@ final class UsageStore: ObservableObject {
                             && self.profiles.first(where: { $0.id == profile.id })?.lastQuotaReadFailureAt == nil
                         ? .completed : .quotaPending
                     self.accountManagerMessage = WidgetLanguage.storedOrAutomatic().text("已添加 \(AccountDisplay.masked(email))", "Added \(AccountDisplay.masked(email)).")
+                    if self.profiles.first(where: { $0.id == profile.id })?.dispatchRegistrationPending == true {
+                        let notice = WidgetLanguage.storedOrAutomatic().text(
+                            "账号已保存，调度登记尚未完成；下次额度验证成功后会自动重试。",
+                            "The account is saved. Pool registration is pending and will retry after the next verified quota refresh.")
+                        self.accountManagerMessage = notice
+                        self.deviceLogin?.notice = notice
+                    }
                     self.clearDisplayedAccount()
                     self.refresh(queueIfBusy: true)
                 } catch {
@@ -5108,15 +5118,20 @@ final class UsageStore: ObservableObject {
     @discardableResult
     private func recordOfficialSnapshot(
         _ snapshot: UsageSnapshot, for profileID: String,
-        allowAccountOnly: Bool = false, allowSystemAccountChange: Bool = false
+        allowAccountOnly: Bool = false, allowSystemAccountChange: Bool = false,
+        requestDispatchRegistration: Bool = false
     ) throws -> CodexResetCreditReceipt? {
         do {
             let previousProfiles = profileStore.profiles
             let receipt = try profileStore.record(
                 snapshot, for: profileID, allowAccountOnly: allowAccountOnly,
                 allowSystemAccountChange: allowSystemAccountChange,
-                noticeChannels: resetNoticeChannels(expiry: false).map(\.rawValue))
+                noticeChannels: resetNoticeChannels(expiry: false).map(\.rawValue),
+                requestDispatchRegistration: requestDispatchRegistration)
             let saved = profileStore.profiles.first(where: { $0.id == profileID })?.lastSnapshot
+            if !requestDispatchRegistration {
+                registerPendingDispatchProfile(after: snapshot, profileID: profileID)
+            }
             let comparison = saved.flatMap {
                 $0.fetchedAt == snapshot.refreshedAt
                     ? CodexResetCreditReceipt.comparison(previousProfiles: previousProfiles, current: $0) : nil
@@ -5135,6 +5150,24 @@ final class UsageStore: ObservableObject {
                 }
             }
             throw error
+        }
+    }
+
+    private func registerPendingDispatchProfile(after snapshot: UsageSnapshot, profileID: String) {
+        guard !isPreview, snapshot.quotaReadSucceeded,
+            profileStore.profiles.first(where: { $0.id == profileID })?.lastSnapshot?.fetchedAt == snapshot.refreshedAt
+        else { return }
+        do {
+            if try profileStore.registerPendingDispatchProfile(for: profileID) {
+                DispatchCodeCatalog.reload()
+            }
+        } catch {
+            // Registration is separately retryable. A failure must not discard
+            // a successfully verified account or quota snapshot. The add flow
+            // invokes this only after its other throwing save steps complete.
+            accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
+                "账号已保存，调度登记尚未完成；下次额度验证成功后会自动重试。",
+                "The account is saved. Pool registration is pending and will retry after the next verified quota refresh.")
         }
     }
 
