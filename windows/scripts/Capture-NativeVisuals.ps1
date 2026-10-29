@@ -381,6 +381,15 @@ public static class NativeVisualCaptureDriver
     [DllImport("user32.dll", SetLastError = true)]
     private static extern bool ClientToScreen(IntPtr hwnd, ref POINT point);
 
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool ScreenToClient(IntPtr hwnd, ref POINT point);
+
+    [DllImport("user32.dll")]
+    private static extern bool IsChild(IntPtr parent, IntPtr child);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetAncestor(IntPtr hwnd, uint flags);
+
     [DllImport("user32.dll")]
     private static extern bool ShowWindow(IntPtr hwnd, int command);
 
@@ -451,7 +460,7 @@ public static class NativeVisualCaptureDriver
         int maxCount
     );
 
-    [DllImport("user32.dll")]
+    [DllImport("user32.dll", SetLastError = true)]
     private static extern bool PostMessage(
         IntPtr hwnd,
         uint message,
@@ -594,6 +603,76 @@ public static class NativeVisualCaptureDriver
             IntPtr.Zero
         );
         return result;
+    }
+
+    public static int[] GetBoundedControlClickPoint(
+        double left, double top, double width, double height,
+        int clientLeft, int clientTop, int clientWidth, int clientHeight)
+    {
+        double[] values = { left, top, width, height };
+        foreach (double value in values)
+            if (Double.IsNaN(value) || Double.IsInfinity(value))
+                throw new ArgumentException("Control bounds must be finite.");
+        if (width <= 0 || height <= 0 || clientWidth <= 0 || clientHeight <= 0 ||
+            left < clientLeft || top < clientTop ||
+            left + width > (double)clientLeft + clientWidth ||
+            top + height > (double)clientTop + clientHeight)
+            throw new ArgumentException("Control bounds must remain inside the owned renderer client.");
+        return new int[] {
+            checked((int)Math.Floor(left + width / 2)),
+            checked((int)Math.Floor(top + height / 2))
+        };
+    }
+
+    public static void ClickOwnedControl(
+        IntPtr window, int expectedProcessId,
+        double left, double top, double width, double height)
+    {
+        if (expectedProcessId <= 0 || GetWindowProcessId(window) != (uint)expectedProcessId)
+            throw new InvalidOperationException("Control click window owner mismatch.");
+        IntPtr renderer = FindRenderer(window);
+        if (renderer == IntPtr.Zero || !IsChild(window, renderer) || GetAncestor(renderer, 2) != window)
+            throw new InvalidOperationException("Control click renderer is not in the owned window family.");
+        IntPtr previousDpiContext = SetThreadDpiAwarenessContext(new IntPtr(-4));
+        try
+        {
+            RECT client = ReadClientRect(renderer);
+            POINT origin = new POINT { X = client.Left, Y = client.Top };
+            if (!ClientToScreen(renderer, ref origin))
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            int clientWidth = client.Right - client.Left;
+            int clientHeight = client.Bottom - client.Top;
+            int[] center = GetBoundedControlClickPoint(
+                left, top, width, height, origin.X, origin.Y, clientWidth, clientHeight);
+            POINT point = new POINT { X = center[0], Y = center[1] };
+            if (!ScreenToClient(renderer, ref point))
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            if (point.X < 0 || point.Y < 0 || point.X >= clientWidth || point.Y >= clientHeight ||
+                point.X > Int16.MaxValue || point.Y > Int16.MaxValue)
+                throw new InvalidOperationException("Control click client coordinates are out of range.");
+            IntPtr coordinates = new IntPtr(((long)(point.Y & 0xffff) << 16) | (uint)(point.X & 0xffff));
+            if (!PostMessage(renderer, 0x0200, IntPtr.Zero, coordinates))
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            bool downPosted = false;
+            try
+            {
+                if (!PostMessage(renderer, 0x0201, new IntPtr(1), coordinates))
+                    throw new Win32Exception(Marshal.GetLastWin32Error());
+                downPosted = true;
+            }
+            finally
+            {
+                // Always release this targeted button message; no global input,
+                // cursor movement, focus activation, or foreground restoration.
+                if (downPosted && !PostMessage(renderer, 0x0202, IntPtr.Zero, coordinates))
+                    throw new Win32Exception(Marshal.GetLastWin32Error());
+            }
+        }
+        finally
+        {
+            if (previousDpiContext != IntPtr.Zero)
+                SetThreadDpiAwarenessContext(previousDpiContext);
+        }
     }
 
     public static bool ScrollRenderer(IntPtr renderer, int wheelDelta, int count)
@@ -1341,13 +1420,35 @@ function Select-DashboardTab {
 }
 
 function Open-DashboardWorkspace {
-  param([IntPtr] $Window)
-  $navigation = Wait-ForElement -Window $Window -AutomationId 'workspace-nav-tools'
-  $pattern = $navigation.GetCurrentPattern(
-    [System.Windows.Automation.InvokePattern]::Pattern
+  param([IntPtr] $Window, [int] $ProcessId, [IntPtr] $ExpectedForeground)
+  [void](Wait-ForElement -Window $Window -AutomationId 'workspace-nav-tools')
+  $root = [System.Windows.Automation.AutomationElement]::FromHandle($Window)
+  $condition = [System.Windows.Automation.PropertyCondition]::new(
+    [System.Windows.Automation.AutomationElement]::AutomationIdProperty, 'workspace-nav-tools'
   )
-  $pattern.Invoke()
+  $matches = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition)
+  if ($matches.Count -ne 1) { throw 'workspace_navigation_not_unique' }
+  Click-OwnedButton -Window $Window -ProcessId $ProcessId -Element $matches[0] `
+    -ExpectedForeground $ExpectedForeground -Stage 'Workspace navigation'
   [void](Wait-ForElement -Window $Window -AutomationId 'dashboard-home-tab-tasks' -TimeoutSeconds 20)
+  Assert-ForegroundPreserved -ExpectedForeground $ExpectedForeground -TaskWindow $Window -Stage 'Workspace navigation result'
+}
+
+function Click-OwnedButton {
+  param(
+    [IntPtr] $Window, [int] $ProcessId,
+    [System.Windows.Automation.AutomationElement] $Element,
+    [IntPtr] $ExpectedForeground, [string] $Stage
+  )
+  if ($Element.Current.ControlType -ne [System.Windows.Automation.ControlType]::Button -or
+      -not $Element.Current.IsEnabled -or $Element.Current.IsOffscreen) {
+    throw 'owned_control_click_unavailable'
+  }
+  $bounds = $Element.Current.BoundingRectangle
+  Assert-ForegroundPreserved -ExpectedForeground $ExpectedForeground -TaskWindow $Window -Stage ('before ' + $Stage)
+  [NativeVisualCaptureDriver]::ClickOwnedControl(
+    $Window, $ProcessId, $bounds.Left, $bounds.Top, $bounds.Width, $bounds.Height
+  )
 }
 
 function Find-InstallationGuide {
@@ -1413,28 +1514,30 @@ function Defer-FirstLaunchGuide {
     noactivate_before_reapply = ([NativeVisualCaptureDriver]::GetWindowExtendedStyle($Window) -band 0x08000000) -ne 0
   }
   # Reapply and verify the owned HWND's non-activation style immediately before
-  # UIA. This does not restore foreground or excuse an explicit activation.
+  # targeted client input. This does not restore foreground or excuse activation.
   if (-not [NativeVisualCaptureDriver]::ApplyCaptureWindowStyle($Window)) {
     throw 'installation_guide_noactivate_style_not_applied'
   }
-  $script:workflowManifest.fullscreen_run.onboarding_focus.noactivate_before_invoke =
+  $script:workflowManifest.fullscreen_run.onboarding_focus.noactivate_before_click =
     ([NativeVisualCaptureDriver]::GetWindowExtendedStyle($Window) -band 0x08000000) -ne 0
-  if (-not $script:workflowManifest.fullscreen_run.onboarding_focus.noactivate_before_invoke) {
+  if (-not $script:workflowManifest.fullscreen_run.onboarding_focus.noactivate_before_click) {
     throw 'installation_guide_noactivate_style_not_retained'
   }
-  Assert-ForegroundPreserved -ExpectedForeground $ExpectedForeground -TaskWindow $Window -Stage 'before guide Invoke'
-  $pattern = $buttons[0].GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
-  $pattern.Invoke()
-  $focusAfter = [NativeVisualCaptureDriver]::GetForegroundWindowHandle()
-  $script:workflowManifest.fullscreen_run.onboarding_focus.after_hwnd = $focusAfter.ToInt64()
-  $script:workflowManifest.fullscreen_run.onboarding_focus.after_process_id =
-    [NativeVisualCaptureDriver]::GetWindowProcessId($focusAfter)
-  $script:workflowManifest.fullscreen_run.onboarding_focus.after_is_task_window = $focusAfter -eq $Window
-  $script:workflowManifest.fullscreen_run.onboarding_focus.noactivate_after_invoke =
-    ([NativeVisualCaptureDriver]::GetWindowExtendedStyle($Window) -band 0x08000000) -ne 0
+  $script:workflowManifest.fullscreen_run.onboarding_focus.input_method = 'owned renderer client mouse messages'
+  Click-OwnedButton -Window $Window -ProcessId $ProcessId -Element $buttons[0] `
+    -ExpectedForeground $ExpectedForeground -Stage 'first-launch guide click'
   $deadline = (Get-Date).AddSeconds(30)
   do {
     if ($null -eq (Find-InstallationGuide -Window $Window -ProcessId $ProcessId)) {
+      # PostMessage is asynchronous: sample the result only after the real
+      # dialog has disappeared, not immediately after queuing input.
+      $focusAfter = [NativeVisualCaptureDriver]::GetForegroundWindowHandle()
+      $script:workflowManifest.fullscreen_run.onboarding_focus.result_after_hwnd = $focusAfter.ToInt64()
+      $script:workflowManifest.fullscreen_run.onboarding_focus.result_after_process_id =
+        [NativeVisualCaptureDriver]::GetWindowProcessId($focusAfter)
+      $script:workflowManifest.fullscreen_run.onboarding_focus.result_after_is_task_window = $focusAfter -eq $Window
+      $script:workflowManifest.fullscreen_run.onboarding_focus.noactivate_after_result =
+        ([NativeVisualCaptureDriver]::GetWindowExtendedStyle($Window) -band 0x08000000) -ne 0
       return [ordered]@{ observed = $true; defer_invoked = $true; dialog_dismissed = $true }
     }
     Start-Sleep -Milliseconds 150
@@ -1964,7 +2067,7 @@ function Invoke-MaximizedCapture {
     [void](Wait-ForElement -Window $window -AutomationId 'workspace-nav-home')
     # The existing Overview and five task/tool panels are now lazy-mounted
     # behind Workspace. Keep capturing those surfaces, not the new Home page.
-    Open-DashboardWorkspace -Window $window
+    Open-DashboardWorkspace -Window $window -ProcessId $process.Id -ExpectedForeground $foregroundBefore
     $renderer = [NativeVisualCaptureDriver]::FindRenderer($window)
     if ($renderer -eq [IntPtr]::Zero) {
       throw 'Could not identify the task application renderer child HWND.'
@@ -1988,6 +2091,7 @@ function Invoke-MaximizedCapture {
         -Window $window `
         -OutputPath $overviewPath `
         -LogPath (Join-Path $LogsRoot 'graphics-capture.log')
+      Assert-ForegroundPreserved -ExpectedForeground $foregroundBefore -TaskWindow $window -Stage 'Overview capture'
       $sizeRecord.captures += [ordered]@{
         surface = 'Overview'
         framing = 'Workspace overview at page top in maximized window'
@@ -2004,6 +2108,7 @@ function Invoke-MaximizedCapture {
         -Window $window `
         -TabId $surface.tab `
         -PanelId $surface.panel
+      Assert-ForegroundPreserved -ExpectedForeground $foregroundBefore -TaskWindow $window -Stage ($surface.name + ' selection')
       Move-DashboardScrollToTop -Renderer $renderer
       Move-RendererToLeft -Renderer $renderer
       [void](Capture-DashboardSurfaceSegments `
@@ -2014,6 +2119,7 @@ function Invoke-MaximizedCapture {
         -OutputDirectory $sizeScreenshots `
         -LogPath (Join-Path $LogsRoot 'graphics-capture.log') `
         -SizeRecord $sizeRecord)
+      Assert-ForegroundPreserved -ExpectedForeground $foregroundBefore -TaskWindow $window -Stage ($surface.name + ' capture')
       Update-TaskProcessRecords -RootProcessId $process.Id -Records $records
       Save-WorkflowManifest
     }
