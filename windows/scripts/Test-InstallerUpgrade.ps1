@@ -133,6 +133,48 @@ function Assert-Registration([string]$Brand) {
 function Assert-RunUnchanged($Expected) {
     if ((ConvertTo-Json -InputObject @(Run-Values) -Depth 3 -Compress) -cne (ConvertTo-Json -InputObject @($Expected) -Depth 3 -Compress)) { throw 'Installers changed autostart registration.' }
 }
+function Select-RollbackSequenceSlots([int]$RemoveFilesSequence, [int]$FinalizeSequence, [int[]]$Occupied) {
+    # MSI sequence numbers are signed 16-bit values. Select only inside the
+    # install-script interval; never move or overwrite an existing action.
+    if ($RemoveFilesSequence -le 0 -or $FinalizeSequence -gt 32767 -or $FinalizeSequence -le $RemoveFilesSequence) { throw 'Invalid MSI rollback sequence boundaries.' }
+    $used = [System.Collections.Generic.HashSet[int]]::new()
+    foreach ($sequence in $Occupied) { [void]$used.Add($sequence) }
+    $free = [System.Collections.Generic.List[int]]::new()
+    for ($sequence = $FinalizeSequence - 1; $sequence -gt $RemoveFilesSequence -and $free.Count -lt 2; $sequence--) {
+        if (-not $used.Contains($sequence)) { $free.Add($sequence) }
+    }
+    if ($free.Count -ne 2) { throw 'MSI rollback fixture requires two unused sequence slots after RemoveFiles and before InstallFinalize.' }
+    return [pscustomobject]@{ data = $free[1]; failure = $free[0] }
+}
+function Test-RollbackSequenceContract {
+    foreach ($case in @(
+        @{ removeAt=3500; finalizeAt=6600; occupied=@(3500, 6600); data=6598; failure=6599 },
+        @{ removeAt=3500; finalizeAt=6600; occupied=@(3500, 6598, 6599, 6600); data=6596; failure=6597 },
+        @{ removeAt=10; finalizeAt=16; occupied=@(-1, 11, 13, 15); data=12; failure=14 },
+        @{ removeAt=10; finalizeAt=13; occupied=@(); data=11; failure=12 },
+        @{ removeAt=32763; finalizeAt=32767; occupied=@(32766); data=32764; failure=32765 }
+    )) {
+        $selected = Select-RollbackSequenceSlots -RemoveFilesSequence $case.removeAt -FinalizeSequence $case.finalizeAt -Occupied $case.occupied
+        if ($selected.data -ne $case.data -or $selected.failure -ne $case.failure -or
+            $selected.data -le $case.removeAt -or $selected.failure -ge $case.finalizeAt -or
+            $selected.data -ge $selected.failure -or $selected.data -in $case.occupied -or $selected.failure -in $case.occupied) { throw 'MSI rollback sequence positive fixture failed.' }
+    }
+    foreach ($case in @(
+        @{ removeAt=0; finalizeAt=5; occupied=@() },
+        @{ removeAt=10; finalizeAt=10; occupied=@() },
+        @{ removeAt=12; finalizeAt=10; occupied=@() },
+        @{ removeAt=10; finalizeAt=32768; occupied=@() },
+        @{ removeAt=10; finalizeAt=12; occupied=@() },
+        @{ removeAt=10; finalizeAt=14; occupied=@(11, 12, 13) },
+        @{ removeAt=10; finalizeAt=15; occupied=@(11, 12, 14) }
+    )) {
+        $rejected = $false
+        try { $null = Select-RollbackSequenceSlots -RemoveFilesSequence $case.removeAt -FinalizeSequence $case.finalizeAt -Occupied $case.occupied } catch { $rejected = $true }
+        if (-not $rejected) { throw 'MSI rollback sequence negative fixture was accepted.' }
+    }
+    Write-Output 'PASS: rollback sequence selector contract (5 positive, 7 negative)'
+}
+Test-RollbackSequenceContract
 function New-RollbackTransform([string[]]$ShortcutPaths) {
     if ($ShortcutPaths.Count -ne 2 -or @($ShortcutPaths | Select-Object -Unique).Count -ne 2 -or @($ShortcutPaths | Where-Object { $_ -match '[|\[\]\r\n]' }).Count) { throw 'Rollback fixture requires two exact shortcut paths.' }
     $copy = Owned-Path (Join-Path $runnerRoot ('aigoodbro-rollback-' + [guid]::NewGuid().ToString('N') + '.msi'))
@@ -170,16 +212,30 @@ throw new Error("AIGOODBRO_SYNTHETIC_ROLLBACK_AFTER_OWNED_LINK_REMOVAL");
                 $view.Execute($record)
             } finally { $view.Close(); [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($record); [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($view) }
         }
-        $view = $changed.OpenView('SELECT `Sequence` FROM `InstallExecuteSequence` WHERE `Action` = ''InstallFinalize''')
-        try { $view.Execute(); $record = $view.Fetch(); if ($null -eq $record) { throw 'MSI InstallFinalize sequence missing.' }; $finalize = $record.IntegerData(1); [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($record) }
+        $sequenceRows = @()
+        $view = $changed.OpenView('SELECT `Action`, `Sequence` FROM `InstallExecuteSequence`')
+        try {
+            $view.Execute()
+            while ($null -ne ($record = $view.Fetch())) {
+                try { $sequenceRows += [pscustomobject]@{ action = $record.StringData(1); sequence = [int]$record.IntegerData(2) } }
+                finally { [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($record) }
+            }
+        }
         finally { $view.Close(); [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($view) }
-        $view = $changed.OpenView('SELECT `Action` FROM `InstallExecuteSequence` WHERE `Sequence` >= ' + ($finalize - 2) + ' AND `Sequence` < ' + $finalize)
-        try { $view.Execute(); $record = $view.Fetch(); if ($null -ne $record) { [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($record); throw 'Rollback fixture sequence slots are occupied.' } }
-        finally { $view.Close(); [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($view) }
+        $removeFiles = @($sequenceRows | Where-Object { $_.action -ceq 'RemoveFiles' })
+        $finalize = @($sequenceRows | Where-Object { $_.action -ceq 'InstallFinalize' })
+        $sequenceDiagnostic = [ordered]@{ schema=1; newInstallerSha256=$newHash; actions=$sequenceRows; selectedSlots=$null }
+        try {
+            if ($removeFiles.Count -ne 1 -or $finalize.Count -ne 1) { throw 'MSI rollback sequence boundaries missing or duplicated.' }
+            $slots = Select-RollbackSequenceSlots -RemoveFilesSequence $removeFiles[0].sequence -FinalizeSequence $finalize[0].sequence -Occupied @($sequenceRows | ForEach-Object { $_.sequence })
+            $sequenceDiagnostic.selectedSlots = $slots
+        } finally {
+            $sequenceDiagnostic | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Owned-Path (Join-Path $output 'rollback-sequence.json')) -Encoding utf8
+        }
         Execute-MsiInsert 'INSERT INTO `CustomAction` (`Action`, `Type`, `Source`, `Target`) VALUES (?, ?, ?, ?)' @('AgbFixtureRollbackData', 51, 'AgbFixtureRollbackFailure', ((@($ShortcutPaths) + @($proof)) -join '|'))
         Execute-MsiInsert 'INSERT INTO `CustomAction` (`Action`, `Type`, `Source`, `Target`) VALUES (?, ?, ?, ?)' @('AgbFixtureRollbackFailure', (37 + 1024), $null, $failureScript)
-        Execute-MsiInsert 'INSERT INTO `InstallExecuteSequence` (`Action`, `Condition`, `Sequence`) VALUES (?, ?, ?)' @('AgbFixtureRollbackData', 'WIX_UPGRADE_DETECTED AND NOT Installed', ($finalize - 2))
-        Execute-MsiInsert 'INSERT INTO `InstallExecuteSequence` (`Action`, `Condition`, `Sequence`) VALUES (?, ?, ?)' @('AgbFixtureRollbackFailure', 'WIX_UPGRADE_DETECTED AND NOT Installed', ($finalize - 1))
+        Execute-MsiInsert 'INSERT INTO `InstallExecuteSequence` (`Action`, `Condition`, `Sequence`) VALUES (?, ?, ?)' @('AgbFixtureRollbackData', 'WIX_UPGRADE_DETECTED AND NOT Installed', $slots.data)
+        Execute-MsiInsert 'INSERT INTO `InstallExecuteSequence` (`Action`, `Condition`, `Sequence`) VALUES (?, ?, ?)' @('AgbFixtureRollbackFailure', 'WIX_UPGRADE_DETECTED AND NOT Installed', $slots.failure)
         $changed.Commit()
         if (-not $changed.GenerateTransform($original, $transform)) { throw 'MSI rollback transform contained no changes.' }
         # No suppressed transform errors; pin language, product, all three

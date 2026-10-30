@@ -6,12 +6,31 @@ PowerShell path normalization, shortcut rollback and upgrade remain native gates
 import json
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "windows/scripts/Test-InstallerUpgrade.ps1"
+
+
+class RollbackSequenceTests(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("pwsh"), "Actual PowerShell selector requires pwsh; the same contract runs in the native upgrade job.")
+    def test_actual_sequence_selector_contract(self):
+        source = SCRIPT.read_text(encoding="utf-8")
+        matches = re.findall(
+            r"(function Select-RollbackSequenceSlots\b.*?\nTest-RollbackSequenceContract)\nfunction New-RollbackTransform",
+            source, re.S)
+        self.assertEqual(len(matches), 1)
+        # Execute the real selector and its occupied/sparse/exhausted/boundary
+        # cases, without the installer's host guard, COM or install operations.
+        command = "$ErrorActionPreference = 'Stop'\nSet-StrictMode -Version Latest\n" \
+            + matches[0] + "\nWrite-Output 'rollback-sequence-contract-pass'\n"
+        result = subprocess.run(
+            [shutil.which("pwsh"), "-NoProfile", "-NonInteractive", "-Command", command],
+            capture_output=True, text=True, check=True)
+        self.assertIn("rollback-sequence-contract-pass", result.stdout)
 
 
 class RollbackExecutionProofTests(unittest.TestCase):
