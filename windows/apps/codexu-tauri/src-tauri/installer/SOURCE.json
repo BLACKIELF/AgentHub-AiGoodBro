@@ -55,11 +55,11 @@
       "replacements": [
         {
           "before": "Software\\\\{{manufacturer}}\\\\{{product_name}}",
-          "after": "Software\\\\Codex Account Manager Next contributors\\\\Codex Account Manager Next",
+          "after": "Software\\Codex Account Manager Next contributors\\Codex Account Manager Next",
           "count": 6
         }
       ],
-      "local_sha256": "fd67900d478589a3c73b8f07005bd306d5fd61c835d7d6773848056aab540941",
+      "local_sha256": "65e6f5f90690d86e570fd0f243dd1ba99f691505956a242b12f1b5affcafca80",
       "upstream_git_blob": "a11b2ec4381cb05fb0d340b17ef5197ad951529c"
     }
   }

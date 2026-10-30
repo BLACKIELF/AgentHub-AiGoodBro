@@ -3,6 +3,7 @@
 import hashlib
 import json
 import pathlib
+import re
 import subprocess
 import tempfile
 import unittest
@@ -59,6 +60,18 @@ class WindowsBranding(unittest.TestCase):
         for prefix in ("AiGoodBro", "CodexAccountManagerNext"):
             for suffix in (".msi", "-setup.exe"):
                 self.assertIn(prefix + '-{version}-windows-x86_64' + suffix, source)
+
+    def test_wix_registry_paths_have_no_empty_segments(self):
+        source = (TAURI / "installer/wix-main.wxs").read_text(encoding="utf-8")
+        keys = re.findall(r'<Registry(?:Search|Key|Value)\b[^>]*\bKey="([^"]+)"', source)
+        # Dynamic Handlebars paths retain the upstream escaping contract.
+        keys = [key for key in keys if "{{" not in key]
+        self.assertGreaterEqual(len(keys), 10)
+        for key in keys:
+            with self.subTest(key=key):
+                self.assertNotIn("", key.split("\\"), "WiX registry keys use literal single separators")
+        legacy = "Software\\Codex Account Manager Next contributors\\Codex Account Manager Next"
+        self.assertEqual(keys.count(legacy), 6)
 
     @unittest.skipUnless(__import__("os").name != "nt", "Bash checksum contract runs on Unix; native package contracts run on Windows")
     def test_cross_platform_assets_require_new_names_and_real_checksums(self):
