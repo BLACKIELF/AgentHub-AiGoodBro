@@ -50,7 +50,12 @@ jobs:
           go-version-file: Companion/LocalProxy/go.mod
           cache: false
       - name: Lint Swift sources
-        run: make lint
+        env:
+          DEVELOPER_DIR: /Applications/Xcode_26.0.1.app/Contents/Developer
+        run: |
+          xcrun --find swift-format
+          xcrun swift-format --version
+          make lint
       - name: Validate isolated provider client launchers
         run: python3 scripts/test-provider-client-launcher.py
       - name: Validate rendered local proxy policy editor
