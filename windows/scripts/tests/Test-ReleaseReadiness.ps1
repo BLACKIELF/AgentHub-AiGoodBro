@@ -10,6 +10,9 @@ $entry = Join-Path $root 'windows\scripts\Invoke-ReleaseReadiness.ps1'
 $packageEntry = Join-Path $root 'scripts\build-windows-release.ps1'
 & python -B (Join-Path $root 'tests\test_windows_branding.py')
 if ($LASTEXITCODE -ne 0) { throw 'Windows branding or upgrade identity validation failed.' }
+$null = Get-Command pwsh -CommandType Application -ErrorAction Stop
+& python -B (Join-Path $root 'tests\test_windows_upgrade_fixture.py')
+if ($LASTEXITCODE -ne 0) { throw 'Windows installer rollback fixture contracts failed.' }
 function Read-ScriptAst {
     param([string] $Path)
     $tokens = $null; $errors = $null

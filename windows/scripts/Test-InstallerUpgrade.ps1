@@ -175,6 +175,12 @@ function Test-RollbackSequenceContract {
     Write-Output 'PASS: rollback sequence selector contract (5 positive, 7 negative)'
 }
 Test-RollbackSequenceContract
+function Get-RollbackTransformPath([object[]]$Values, [string]$Expected) {
+    if ($Values.Count -ne 1 -or $Values[0] -isnot [string] -or $Values[0] -cne $Expected) {
+        throw 'Rollback transform must return exactly its one original path; incidental output is not a path.'
+    }
+    return $Values[0]
+}
 function New-RollbackTransform([string[]]$ShortcutPaths) {
     if ($ShortcutPaths.Count -ne 2 -or @($ShortcutPaths | Select-Object -Unique).Count -ne 2 -or @($ShortcutPaths | Where-Object { $_ -match '[|\[\]\r\n]' }).Count) { throw 'Rollback fixture requires two exact shortcut paths.' }
     $copy = Owned-Path (Join-Path $runnerRoot ('aigoodbro-rollback-' + [guid]::NewGuid().ToString('N') + '.msi'))
@@ -209,19 +215,19 @@ throw new Error("AIGOODBRO_SYNTHETIC_ROLLBACK_AFTER_OWNED_LINK_REMOVAL");
                     if ($Values[$i] -is [int]) { $record.IntegerData($i + 1) = $Values[$i] }
                     elseif ($null -ne $Values[$i]) { $record.StringData($i + 1) = [string]$Values[$i] }
                 }
-                $view.Execute($record)
-            } finally { $view.Close(); [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($record); [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($view) }
+                [void]$view.Execute($record)
+            } finally { [void]$view.Close(); [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($record); [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($view) }
         }
         $sequenceRows = @()
         $view = $changed.OpenView('SELECT `Action`, `Sequence` FROM `InstallExecuteSequence`')
         try {
-            $view.Execute()
+            [void]$view.Execute()
             while ($null -ne ($record = $view.Fetch())) {
                 try { $sequenceRows += [pscustomobject]@{ action = $record.StringData(1); sequence = [int]$record.IntegerData(2) } }
                 finally { [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($record) }
             }
         }
-        finally { $view.Close(); [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($view) }
+        finally { [void]$view.Close(); [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($view) }
         $removeFiles = @($sequenceRows | Where-Object { $_.action -ceq 'RemoveFiles' })
         $finalize = @($sequenceRows | Where-Object { $_.action -ceq 'InstallFinalize' })
         $sequenceDiagnostic = [ordered]@{ schema=1; newInstallerSha256=$newHash; actions=$sequenceRows; selectedSlots=$null }
@@ -236,7 +242,7 @@ throw new Error("AIGOODBRO_SYNTHETIC_ROLLBACK_AFTER_OWNED_LINK_REMOVAL");
         Execute-MsiInsert 'INSERT INTO `CustomAction` (`Action`, `Type`, `Source`, `Target`) VALUES (?, ?, ?, ?)' @('AgbFixtureRollbackFailure', (37 + 1024), $null, $failureScript)
         Execute-MsiInsert 'INSERT INTO `InstallExecuteSequence` (`Action`, `Condition`, `Sequence`) VALUES (?, ?, ?)' @('AgbFixtureRollbackData', 'WIX_UPGRADE_DETECTED AND NOT Installed', $slots.data)
         Execute-MsiInsert 'INSERT INTO `InstallExecuteSequence` (`Action`, `Condition`, `Sequence`) VALUES (?, ?, ?)' @('AgbFixtureRollbackFailure', 'WIX_UPGRADE_DETECTED AND NOT Installed', $slots.failure)
-        $changed.Commit()
+        [void]$changed.Commit()
         if (-not $changed.GenerateTransform($original, $transform)) { throw 'MSI rollback transform contained no changes.' }
         # No suppressed transform errors; pin language, product, all three
         # version fields with equality, and UpgradeCode to this exact MSI.
@@ -280,7 +286,9 @@ try {
         if (@($oldOwned | Where-Object { $_.path -in $desktopCandidates }).Count -ne 1 -or @($oldOwned | Where-Object { $_.path -in $programCandidates }).Count -ne 1) { throw 'Old shortcuts are not the two fixed legacy migration paths.' }
         $snapshots = @($oldOwned | ForEach-Object { [ordered]@{ path=$_.path; target=$_.target; beforeSha256=(Hash-File $_.path); restoredSha256=$null } })
         $oldExeHash = Hash-File (Join-Path $install 'codexu-tauri.exe')
-        $transform = New-RollbackTransform @($snapshots | ForEach-Object { $_.path })
+        $transformOutput = @(New-RollbackTransform @($snapshots | ForEach-Object { $_.path }))
+        $transform = Get-RollbackTransformPath -Values $transformOutput -Expected (Owned-Path (Join-Path $output 'shortcut-rollback.mst'))
+        Write-Output 'PASS: native rollback transform single-path output'
         $rollbackLog = Join-Path $output 'rollback-msi.log'
         Execute-Installer 'msiexec.exe' @('/i', ('"' + $newFile + '"'), ('TRANSFORMS="' + $transform + '"'), '/qn', '/norestart', '/l*v', ('"' + $rollbackLog + '"')) 'Synthetic MSI rollback' @(1603)
         $marker = 'AIGOODBRO_SYNTHETIC_ROLLBACK_AFTER_OWNED_LINK_REMOVAL'
