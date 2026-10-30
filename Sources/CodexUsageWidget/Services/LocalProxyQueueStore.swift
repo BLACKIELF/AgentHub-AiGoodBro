@@ -918,6 +918,38 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
         // immutable attempted binding so a changed identity cannot reuse it.
     }
 
+    private func failHotActivation(id: String, code: String, requestID: String) {
+        let allowed = [
+            "identity", "credentials_busy", "login_expired", "unavailable", "timeout", "save",
+            "duplicate_identity", "pool_full", "cooldown_pending", "cooldown_unavailable", "registration_failed",
+        ]
+        let reason = allowed.contains(code) ? code : "unavailable"
+        hotActivationErrors[id] = reason
+        Self.recordIssue(
+            id: "proxy-hot-\(requestID)", phase: "hot_activation_\(reason)",
+            summary: "Local proxy account hot activation did not finish: \(reason).")
+    }
+
+    func hotActivationFailureMessage(_ code: String) -> String {
+        let language = WidgetLanguage.storedOrAutomatic()
+        switch code {
+        case "credentials_busy": return language.text("凭据正在读取或更新，账号尚未加入；请稍后重试。", "Credentials are being read or updated. The account has not joined; retry shortly.")
+        case "login_expired":
+            return language.text("登录凭据已过期或尚未同步额度，请刷新此账号后重试。", "Sign-in credentials expired or need a matching quota observation. Refresh this account, then retry.")
+        case "identity":
+            return language.text("账号身份与已登记资料不一致，账号尚未加入；请检查此账号的登录状态。", "The account identity does not match its registration. The account has not joined; check its sign-in.")
+        case "duplicate_identity": return language.text("此账号身份已在反代中，请使用已参与的同身份账号卡。", "This account identity is already in the proxy. Use its participating account card.")
+        case "pool_full": return language.text("当前反代已登记 100 个账号，无法继续加入。", "The current proxy has registered 100 accounts and cannot add another.")
+        case "cooldown_pending": return language.text("此账号仍有冷却记录，请在冷却结束后重试。", "This account has a remaining cooldown. Retry when it expires.")
+        case "cooldown_unavailable": return language.text("无法核对冷却记录，账号尚未加入；请稍后重试。", "Cooldown records could not be verified. The account has not joined; retry shortly.")
+        case "timeout":
+            return language.text("反代未在 10 秒内确认加入，账号尚未加入；请稍后重试。", "The proxy did not acknowledge registration within 10 seconds. The account has not joined; retry shortly.")
+        case "save": return language.text("参与设置保存失败，账号尚未加入；请检查可用空间后重试。", "Participation settings could not be saved. The account has not joined; check free space, then retry.")
+        case "registration_failed": return language.text("反代登记失败，账号尚未加入；请稍后重试。", "Proxy registration failed. The account has not joined; retry shortly.")
+        default: return language.text("反代控制通道暂不可用，账号尚未加入；请稍后重试。", "The proxy control channel is unavailable. The account has not joined; retry shortly.")
+        }
+    }
+
     func hotActivateAccount(id: String) async {
         guard canHotActivateAccount(id: id), let binding = hotActivationBinding(id: id),
             let run = runID, let child = process, let pipe = input, let runProfiles,
@@ -940,19 +972,35 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
                         && $0.lastSnapshot?.accountID == system.lastSnapshot?.accountID
                 } == true
         }
-        func verified() async -> Bool {
-            await Task.detached {
-                do {
-                    _ = try LocalProxyCredentialReader.readForProbe(
-                        profile: profile, system: system,
-                        allowDesktopAccount: profile.lastSnapshot?.accountID == system.lastSnapshot?.accountID,
-                        requireSystemIdentity: true)
-                    return true
-                } catch { return false }
-            }.value
+        func verified() async -> LocalProxyFailure? {
+            let deadline = ProcessInfo.processInfo.systemUptime + 2
+            var retry = false
+            while current() {
+                if retry, ProcessInfo.processInfo.systemUptime >= deadline { return .credentialsBusy }
+                guard let currentProfile = usageStore.profiles.first(where: { $0.id == profile.id }),
+                    let currentSystem = usageStore.profiles.first(where: \.isSystemProfile)
+                else { return .identity }
+                let failure = await Task.detached { () -> LocalProxyFailure? in
+                    do {
+                        _ = try LocalProxyCredentialReader.readForProbe(
+                            profile: currentProfile, system: currentSystem,
+                            allowDesktopAccount: currentProfile.lastSnapshot?.accountID == currentSystem.lastSnapshot?.accountID,
+                            requireSystemIdentity: true)
+                        return nil
+                    } catch let failure as LocalProxyFailure { return failure } catch { return .unavailable }
+                }.value
+                guard current() else { return .stopping }
+                let remaining = deadline - ProcessInfo.processInfo.systemUptime
+                guard failure == .credentialsBusy, remaining > 0 else { return failure }
+                retry = true
+                do { try await Task.sleep(nanoseconds: UInt64(min(0.05, remaining) * 1_000_000_000)) } catch { return .stopping }
+            }
+            return .stopping
         }
-        guard await verified(), current() else {
-            if hotRegistrations[id]?.requestID == requestID { hotActivationErrors[id] = "identity" }
+        let initialFailure = await verified()
+        guard current() else { return }
+        if let failure = initialFailure {
+            failHotActivation(id: id, code: failure.rawValue, requestID: requestID)
             return
         }
         attemptedHotBindings[id] = binding
@@ -973,7 +1021,7 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
             else { throw LocalProxyFailure.unavailable }
             try pipe.write(contentsOf: data)
         } catch {
-            hotActivationErrors[id] = "unavailable"
+            failHotActivation(id: id, code: "unavailable", requestID: requestID)
             return
         }
         for _ in 0..<100 {
@@ -982,13 +1030,15 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
             do { try await Task.sleep(nanoseconds: 100_000_000) } catch { return }
         }
         guard current(), hotRegistrations[id]?.acknowledged == true else {
-            if hotRegistrations[id]?.requestID == requestID { hotActivationErrors[id] = "timeout" }
+            if hotRegistrations[id]?.requestID == requestID { failHotActivation(id: id, code: "timeout", requestID: requestID) }
             return
         }
         // Recheck the local identity after acknowledgment. No network quota
         // refresh or model request is sent to validate registration.
-        guard await verified(), current() else {
-            if hotRegistrations[id]?.requestID == requestID { hotActivationErrors[id] = "identity" }
+        let finalFailure = await verified()
+        guard current() else { return }
+        if let failure = finalFailure {
+            failHotActivation(id: id, code: failure.rawValue, requestID: requestID)
             return
         }
         let previous = preferences
@@ -996,7 +1046,7 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
         preferences.enabledIDs.insert(id)
         guard savePreferences() else {
             preferences = previous
-            hotActivationErrors[id] = "save"
+            failHotActivation(id: id, code: "save", requestID: requestID)
             return
         }
         runProfiles.insert(id)
@@ -1601,7 +1651,7 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
             var configuration: [String: Any] = [
                 "schemaVersion": 1, "runID": run, "controlSocket": folder.appendingPathComponent("control.sock").path,
                 "controlKey": control, "clientKey": client, "port": preferences.effectiveListenPort, "stateDirectory": stateDirectory.resolvingSymlinksInPath().path,
-                "accounts": rows.map { ["id": $0.id] },
+                "accounts": rows.filter { pool[$0.id] != nil }.map { ["id": $0.id] },
                 "models": CodexExecutionPreference.Model.allCases.map(\.rawValue),
                 "desktopFallback": true,
             ]
@@ -2514,8 +2564,7 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
                 hotRegistrations[id] = pending
             } else {
                 let reason = object["errorCode"] as? String ?? "unavailable"
-                hotActivationErrors[id] =
-                    ["identity", "duplicate_identity", "pool_full", "cooldown_pending", "cooldown_unavailable", "registration_failed"].contains(reason) ? reason : "unavailable"
+                failHotActivation(id: id, code: reason, requestID: pending.requestID)
                 cancelHotActivation(id: id)
             }
         case "account":
