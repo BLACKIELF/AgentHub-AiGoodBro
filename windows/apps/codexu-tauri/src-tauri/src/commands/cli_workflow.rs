@@ -3,8 +3,8 @@ use crate::app_state::AppState;
 use codexu_core::{
     profiles::normalize_root,
     workflow::{
-        interactive_arguments, resolve_selection, WorkflowModel, WorkflowPreference,
-        WorkflowPreferences,
+        interactive_arguments, resolve_selection, DispatchWindow, WorkflowModel,
+        WorkflowPreference, WorkflowPreferences,
     },
     workflow_reader::read_evidence,
 };
@@ -21,7 +21,7 @@ use tauri::State;
 use tokio::sync::Mutex;
 
 #[path = "cli_workflow_console.rs"]
-mod console;
+pub(super) mod console;
 #[path = "cli_workflow/dependency_actions.rs"]
 pub mod dependency_actions;
 #[path = "cli_workflow/local_actions.rs"]
@@ -98,7 +98,7 @@ fn parse_id(id: &str) -> Result<u64, String> {
         .ok_or_else(|| "source_changed".into())
 }
 
-fn read_preferences(directory: &Path) -> anyhow::Result<WorkflowPreferences> {
+pub(super) fn read_preferences(directory: &Path) -> anyhow::Result<WorkflowPreferences> {
     let path = directory.join("workflow-preferences-v1.json");
     let result: WorkflowPreferences = match std::fs::symlink_metadata(&path) {
         Ok(meta) => {
@@ -174,7 +174,7 @@ fn auth_snapshot(root: &Path) -> anyhow::Result<Vec<u8>> {
     Ok(bytes)
 }
 
-async fn native_executable() -> anyhow::Result<(PathBuf, std::fs::File)> {
+pub(super) async fn native_executable() -> anyhow::Result<(PathBuf, std::fs::File)> {
     anyhow::ensure!(cfg!(windows), "Windows required");
     let mut candidates = Vec::new();
     let (package, triple) = if cfg!(target_arch = "aarch64") {
@@ -280,6 +280,9 @@ pub async fn get_account_workflow(
 #[derive(serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum WorkflowAction {
+    DispatchWindow {
+        window: DispatchWindow,
+    },
     Participation {
         value: bool,
     },
@@ -303,6 +306,7 @@ pub async fn set_account_workflow(
     let mut preferences =
         read_preferences(&state.app_data_dir).map_err(|_| "settings_unavailable")?;
     match action {
+        WorkflowAction::DispatchWindow { window } => preferences.set_dispatch_window(id, window),
         WorkflowAction::Participation { value } => preferences.set_participating(id, value),
         WorkflowAction::Selection { model, effort } => preferences.set_selection(id, model, effort),
     }
@@ -361,7 +365,7 @@ pub async fn start_account_terminal(
         let preferences =
             read_preferences(&state.app_data_dir).map_err(|_| "settings_unavailable")?;
         let preference = preferences.profiles.get(&id).cloned().unwrap_or_default();
-        if !preference.participating {
+        if !preference.allows_new_work_at_ms(chrono::Utc::now().timestamp_millis()) {
             return Err("launch_disabled".into());
         }
         let session = sessions.entry(id).or_default();
@@ -409,7 +413,7 @@ pub async fn start_account_terminal(
         {
             return Err("launch_cancelled");
         }
-        if !current.participating {
+        if !current.allows_new_work_at_ms(chrono::Utc::now().timestamp_millis()) {
             return Err("launch_disabled");
         }
         if current != preference {

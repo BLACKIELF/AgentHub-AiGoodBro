@@ -250,6 +250,11 @@ jobs:
         shell: pwsh
         run: .\windows\scripts\Prepare-TokenMonitorResources.ps1 -BuildRoot (Join-Path $env:RUNNER_TEMP 'aigoodbro-statistics-validation') -RunNativeTests
 
+      - name: Build and exercise the Windows companion Hub
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: .\windows\scripts\Prepare-HubResources.ps1 -BuildRoot (Join-Path $env:RUNNER_TEMP 'aigoodbro-hub-validation') -RunNativeTests
+
       - name: Test Windows Rust workspace
         if: ${{ !cancelled() }}
         working-directory: windows
@@ -266,6 +271,8 @@ jobs:
             ${{ runner.temp }}/aigoodbro-statistics-validation/scanner/synthetic-regression/receipt.json
             ${{ runner.temp }}/aigoodbro-statistics-validation/resource-pin.txt
             windows/apps/codexu-tauri/src-tauri/resources/token-monitor/WINDOWS-RESOURCES.json
+            ${{ runner.temp }}/aigoodbro-hub-validation/*.json*
+            ${{ runner.temp }}/aigoodbro-hub-validation/*.log
           if-no-files-found: ignore
           retention-days: 7
 
@@ -345,6 +352,10 @@ jobs:
         if: ${{ !cancelled() }}
         shell: pwsh
         run: .\windows\scripts\Prepare-TokenMonitorResources.ps1 -BuildRoot (Join-Path $env:RUNNER_TEMP 'aigoodbro-statistics-resources')
+      - name: Prepare the verified companion Hub resources
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: .\windows\scripts\Prepare-HubResources.ps1 -BuildRoot (Join-Path $env:RUNNER_TEMP 'aigoodbro-hub-resources')
       - name: Build the native release application
         working-directory: windows
         run: cargo build --release --locked -p codexu-tauri --features custom-protocol

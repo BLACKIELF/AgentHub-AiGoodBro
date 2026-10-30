@@ -28,6 +28,7 @@ function Get-ReleaseReadinessPlan {
     $plan.Add(@{ name = 'rust-format'; executable = 'cargo'; directory = $windows; arguments = @('+1.97.1-x86_64-pc-windows-msvc', 'fmt', '--all', '--', '--check') })
     $plan.Add(@{ name = 'proxy-native-resources'; executable = $PowerShell7; directory = $Root; arguments = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $Root 'windows\scripts\Prepare-ProxyResources.ps1'), '-BuildRoot', (Join-Path $Output 'proxy-build'), '-RunNativeTests') })
     $plan.Add(@{ name = 'token-monitor-native-resources'; executable = $PowerShell7; directory = $Root; arguments = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $Root 'windows\scripts\Prepare-TokenMonitorResources.ps1'), '-BuildRoot', (Join-Path $Output 'token-monitor-build'), '-RunNativeTests') })
+    $plan.Add(@{ name = 'hub-native-resources'; executable = $PowerShell7; directory = $Root; arguments = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $Root 'windows\scripts\Prepare-HubResources.ps1'), '-BuildRoot', (Join-Path $Output 'hub-build'), '-RunNativeTests') })
     $plan.Add(@{ name = 'rust-tests'; executable = 'cargo'; directory = $windows; arguments = @('+1.97.1-x86_64-pc-windows-msvc', 'test', '--workspace', '--locked') })
     $plan.Add(@{ name = 'web-dependencies'; executable = 'npm.cmd'; directory = $web; arguments = @('ci', '--no-audit', '--no-fund') })
     $plan.Add(@{ name = 'web-tests'; executable = 'npm.cmd'; directory = $web; arguments = @('test') })
@@ -37,7 +38,7 @@ function Get-ReleaseReadinessPlan {
     $plan.Add(@{ name = 'visual-baseline'; executable = 'npm.cmd'; directory = $web; arguments = @('run', 'test:visual', '--', '--update-snapshots') })
     $plan.Add(@{ name = 'visual-repeat'; executable = 'npm.cmd'; directory = $web; arguments = @('run', 'test:visual') })
     if ($Package) {
-        $plan.Add(@{ name = 'package'; executable = $PowerShell7; directory = $Root; arguments = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $Root 'scripts\build-windows-release.ps1'), '-Version', $ReleaseVersion, '-OutputDirectory', (Join-Path $Output 'packages'), '-SkipValidation', '-VerifiedScannerBuildRoot', (Join-Path $Output 'token-monitor-build\scanner')) })
+        $plan.Add(@{ name = 'package'; executable = $PowerShell7; directory = $Root; arguments = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $Root 'scripts\build-windows-release.ps1'), '-Version', $ReleaseVersion, '-OutputDirectory', (Join-Path $Output 'packages'), '-SkipValidation', '-VerifiedScannerBuildRoot', (Join-Path $Output 'token-monitor-build\scanner'), '-VerifiedHubBuildRoot', (Join-Path $Output 'hub-build')) })
     }
     return $plan.ToArray()
 }
@@ -106,9 +107,9 @@ function Get-SourceStamp {
         if ($LASTEXITCODE -ne 0 -or $commit -notmatch '^[0-9a-f]{40}$') { throw 'Git commit unavailable.' }
         $status = (& git status --porcelain=v1 --untracked-files=normal | Out-String)
         if ($LASTEXITCODE -ne 0) { throw 'Git status unavailable.' }
-        $diff = (& git diff --binary HEAD -- windows scripts/build-windows-release.ps1 | Out-String)
+        $diff = (& git diff --binary HEAD -- windows Companion/Hub scripts/build-windows-release.ps1 | Out-String)
         if ($LASTEXITCODE -ne 0) { throw 'Git diff unavailable.' }
-        $untracked = [string]::Join("`n", @(& git ls-files --others --exclude-standard -z -- windows scripts/build-windows-release.ps1))
+        $untracked = [string]::Join("`n", @(& git ls-files --others --exclude-standard -z -- windows Companion/Hub scripts/build-windows-release.ps1))
         if ($LASTEXITCODE -ne 0) { throw 'Git file inventory unavailable.' }
         $untrackedHashes = [Text.StringBuilder]::new()
         foreach ($relative in @($untracked.Split([char]0) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object)) {
@@ -127,8 +128,8 @@ function Get-SourceStamp {
 function Get-ReleasePackageEvidence {
     param([string] $Directory, [string] $ReleaseVersion)
     $manifest = Get-Content -LiteralPath (Join-Path $Directory 'manifest.json') -Raw -Encoding UTF8 | ConvertFrom-Json
-    if ($manifest.version -ne $ReleaseVersion -or $manifest.target -ne 'windows-x86_64') { throw 'Package manifest does not match requested version/target.' }
-    $expected = @("CodexAccountManagerNext-$ReleaseVersion-windows-x86_64.msi", "CodexAccountManagerNext-$ReleaseVersion-windows-x86_64-setup.exe")
+    if ($manifest.product -cne 'AiGoodBro' -or $manifest.version -ne $ReleaseVersion -or $manifest.target -ne 'windows-x86_64') { throw 'Package manifest does not match requested product/version/target.' }
+    $expected = @("AiGoodBro-$ReleaseVersion-windows-x86_64.msi", "AiGoodBro-$ReleaseVersion-windows-x86_64-setup.exe")
     if (@($manifest.installers).Count -ne 2) { throw 'Expected both installer formats.' }
     $evidence = @()
     foreach ($name in $expected) {

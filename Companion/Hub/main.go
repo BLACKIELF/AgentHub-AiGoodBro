@@ -21,7 +21,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -68,13 +67,19 @@ func main() {
 	}
 	hub.dispatchPolicyPath = policyPath
 	hub.activityDirectory = filepath.Dir(defaultManagerSnapshotPath())
+	if config.ActivityDirectory != "" {
+		hub.activityDirectory = config.ActivityDirectory
+	}
+	if config.ManagerSnapshotPath != "" {
+		hub.managerSnapshotPath = config.ManagerSnapshotPath
+	}
 	board, err := newCodexBoard(config, hub)
 	if err != nil {
 		hub.shutdown(context.Background())
 		log.Fatal("codex board recovery blocked: ", safeCode(err))
 	}
 	requireToken := config.RequireToken == nil || *config.RequireToken
-	api := &API{hub: hub, board: board, token: token, requireToken: requireToken, requireTokenSet: true, managerSnapshotPath: defaultManagerSnapshotPath()}
+	api := &API{hub: hub, board: board, token: token, requireToken: requireToken, requireTokenSet: true, managerSnapshotPath: hub.managerSnapshotPath}
 	server := &http.Server{
 		Addr:              config.Listen,
 		Handler:           api.routes(),
@@ -85,16 +90,21 @@ func main() {
 		ErrorLog:          log.New(io.Discard, "", 0),
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := signal.NotifyContext(context.Background(), shutdownSignals()...)
 	defer stop()
 	listener, err := net.Listen("tcp", config.Listen)
 	if err != nil {
 		hub.shutdown(context.Background())
 		log.Fatal("server stopped: listen_failed")
 	}
+	if err := writeReadyFile(config.ReadyFile, listener.Addr().String()); err != nil {
+		listener.Close()
+		hub.shutdown(context.Background())
+		log.Fatal("server stopped: ready_file")
+	}
 	go board.run(ctx)
 	errChannel := make(chan error, 1)
-	log.Printf("agent remote control %s listening on %s", version, config.Listen)
+	log.Printf("agent remote control %s listening on %s", version, listener.Addr().String())
 	go func() {
 		errChannel <- server.Serve(listener)
 	}()
@@ -139,7 +149,7 @@ func loadConfig(path string) (Config, error) {
 	if config.Listen == "" {
 		config.Listen = "127.0.0.1:8787"
 	}
-	if err := validateLoopback(config.Listen); err != nil {
+	if err := validateConfiguredListen(config); err != nil {
 		return Config{}, err
 	}
 	if config.ApprovalTTLSeconds == 0 {
@@ -194,6 +204,14 @@ func loadConfig(path string) (Config, error) {
 	}
 	if tokenRequired && config.TokenFile == "" {
 		config.TokenFile = "./var/token"
+	}
+	for _, value := range []*string{&config.ManagerSnapshotPath, &config.ActivityDirectory, &config.ReadyFile, &config.WorkflowPreferencesPath, &config.WorkflowCatalogPath} {
+		if *value != "" {
+			*value = resolveRelative(base, *value)
+		}
+	}
+	if strings.HasSuffix(config.Listen, ":0") && (config.ReadyFile == "" || !tokenRequired) {
+		return Config{}, fmt.Errorf("listen_ready_required")
 	}
 	config.DataDir = resolveRelative(base, config.DataDir)
 	if tokenRequired {
@@ -287,7 +305,7 @@ func initToken(config Config) error {
 	if _, err := rand.Read(random); err != nil {
 		return fmt.Errorf("token_random")
 	}
-	file, err := os.OpenFile(config.TokenFile, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	file, err := openPrivateFile(config.TokenFile, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return fmt.Errorf("token_exists_or_unwritable")
 	}
@@ -302,13 +320,12 @@ func initToken(config Config) error {
 }
 
 func readToken(path string) ([]byte, error) {
-	file, err := os.Open(path)
+	file, err := openPrivateFile(path, os.O_RDONLY, 0)
 	if err != nil {
 		return nil, fmt.Errorf("token_read")
 	}
 	defer file.Close()
-	info, err := file.Stat()
-	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 {
+	if privateFilePermissions(file) != nil {
 		return nil, fmt.Errorf("token_permissions")
 	}
 	value, err := io.ReadAll(io.LimitReader(file, 257))

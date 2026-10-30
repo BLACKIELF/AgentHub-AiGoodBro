@@ -62,6 +62,10 @@ pub(crate) struct AccountRecord {
     pub platform: String,
     pub revision: u64,
     pub credential: Option<StoredCredential>,
+    #[serde(default)]
+    pub created_at_ms: Option<i64>,
+    #[serde(default)]
+    pub browser: super::browser::BrowserPreference,
 }
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct ActiveProof {
@@ -103,6 +107,8 @@ impl Vault {
             if !valid_id(&record.id)
                 || !ids.insert(&record.id)
                 || record.platform != "codex"
+                || record.created_at_ms.is_some_and(|v| v <= 0)
+                || !record.browser.valid()
                 || crate::profiles::validate_label(&record.label).is_err()
             {
                 return Err(fail("vault_invalid"));

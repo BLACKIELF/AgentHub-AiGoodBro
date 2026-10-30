@@ -286,6 +286,18 @@ pub(crate) fn observe(
                 if !config.enabled {
                     continue;
                 }
+                if *channel == ChannelKind::Feishu
+                    && super::manual_reset::explains_decrease(
+                        v,
+                        &event.proof.as_ref().unwrap().0,
+                        previous,
+                        available,
+                        previous_at,
+                        observed_at,
+                    )
+                {
+                    continue;
+                }
                 let pending = super::storage::PendingCardChange {
                     channel: *channel,
                     account_hash: event.proof.as_ref().unwrap().0.clone(),

@@ -1,0 +1,66 @@
+{
+  "upstream": "https://github.com/tauri-apps/tauri",
+  "ref": "tauri-cli-v2.6.2",
+  "license": "MIT",
+  "paths": {
+    "nsis-installer.nsi": "crates/tauri-bundler/src/bundle/windows/nsis/installer.nsi",
+    "wix-main.wxs": "crates/tauri-bundler/src/bundle/windows/msi/main.wxs"
+  },
+  "purpose": "Preserve pre-branding upgrade registry identity while rendering AiGoodBro labels. Same Tauri template and all original gates retained.",
+  "files": {
+    "nsis-installer.nsi": {
+      "upstream_sha256": "9c6e92470d26e25d7c138b07c3000116c89ef0a32f29e5009a554ed5ca233ceb",
+      "replacements": [
+        {
+          "before": "!define UNINSTKEY \"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\${PRODUCTNAME}\"",
+          "after": "; Stable upgrade identity predates the AiGoodBro display name.\n!define LEGACYPRODUCTNAME \"Codex Account Manager Next\"\n!define LEGACYMANUFACTURER \"Codex Account Manager Next contributors\"\n!define UNINSTKEY \"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\${LEGACYPRODUCTNAME}\"",
+          "count": 1
+        },
+        {
+          "before": "!define MANUKEY \"Software\\${MANUFACTURER}\"",
+          "after": "!define MANUKEY \"Software\\${LEGACYMANUFACTURER}\"",
+          "count": 1
+        },
+        {
+          "before": "!define MANUPRODUCTKEY \"${MANUKEY}\\${PRODUCTNAME}\"",
+          "after": "!define MANUPRODUCTKEY \"${MANUKEY}\\${LEGACYPRODUCTNAME}\"",
+          "count": 1
+        },
+        {
+          "before": "    StrCmp \"$R0$R1\" \"${PRODUCTNAME}${MANUFACTURER}\" 0 wix_loop",
+          "after": "    StrCmp \"$R0$R1\" \"${PRODUCTNAME}${MANUFACTURER}\" wix_identity_match\n    StrCmp \"$R0$R1\" \"${LEGACYPRODUCTNAME}${LEGACYMANUFACTURER}\" 0 wix_loop\n    wix_identity_match:",
+          "count": 1
+        },
+        {
+          "before": "Function CreateOrUpdateStartMenuShortcut\n",
+          "after": "; Rename only our existing legacy shortcuts; never overwrite another shortcut.\n!macro MigrateLegacyBrandShortcut FOLDER\n  !insertmacro IsShortcutTarget \"${FOLDER}\\${LEGACYPRODUCTNAME}.lnk\" \"$INSTDIR\\${MAINBINARYNAME}.exe\"\n  Pop $0\n  ${If} $0 = 1\n  ${AndIfNot} ${FileExists} \"${FOLDER}\\${PRODUCTNAME}.lnk\"\n    Rename \"${FOLDER}\\${LEGACYPRODUCTNAME}.lnk\" \"${FOLDER}\\${PRODUCTNAME}.lnk\"\n  ${EndIf}\n!macroend\n\nFunction CreateOrUpdateStartMenuShortcut\n  !insertmacro MigrateLegacyBrandShortcut \"$SMPROGRAMS\\$AppStartMenuFolder\"\n  !insertmacro MigrateLegacyBrandShortcut \"$SMPROGRAMS\"\n",
+          "count": 1
+        },
+        {
+          "before": "Function CreateOrUpdateDesktopShortcut\n",
+          "after": "Function CreateOrUpdateDesktopShortcut\n  !insertmacro MigrateLegacyBrandShortcut \"$DESKTOP\"\n",
+          "count": 1
+        },
+        {
+          "before": "Function RestorePreviousInstallLocation\n  ReadRegStr $4 SHCTX \"${MANUPRODUCTKEY}\" \"\"\n  StrCmp $4 \"\" +2 0\n",
+          "after": "Function RestorePreviousInstallLocation\n  ReadRegStr $4 SHCTX \"${MANUPRODUCTKEY}\" \"\"\n  ${If} $4 == \"\"\n    ; WiX records the same owned installation path under a named value.\n    ReadRegStr $4 SHCTX \"${MANUPRODUCTKEY}\" \"InstallDir\"\n  ${EndIf}\n  StrCmp $4 \"\" +2 0\n",
+          "count": 1
+        }
+      ],
+      "local_sha256": "9a0a2e79d333d8ddac4b7b6ea56045abafc6d13f729b51a7b42a7daf7e5c9d1d",
+      "upstream_git_blob": "fb8e9bb406dc6862a939f71258c14a08c4aa5361"
+    },
+    "wix-main.wxs": {
+      "upstream_sha256": "c49ce8f2f138b70d492ce3135436504e0cdacebd810baa3b59dd6054d42f562b",
+      "replacements": [
+        {
+          "before": "Software\\\\{{manufacturer}}\\\\{{product_name}}",
+          "after": "Software\\\\Codex Account Manager Next contributors\\\\Codex Account Manager Next",
+          "count": 6
+        }
+      ],
+      "local_sha256": "fd67900d478589a3c73b8f07005bd306d5fd61c835d7d6773848056aab540941",
+      "upstream_git_blob": "a11b2ec4381cb05fb0d340b17ef5197ad951529c"
+    }
+  }
+}

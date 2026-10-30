@@ -119,6 +119,8 @@ pub(crate) struct Vault {
     #[serde(default)]
     pub card_changes: BTreeMap<String, PendingCardChange>,
     #[serde(default)]
+    pub manual_resets: BTreeMap<String, super::manual_reset::ManualResetRecord>,
+    #[serde(default)]
     pub public_reset: super::public_reset::PublicData,
 }
 impl Vault {
@@ -134,6 +136,8 @@ impl Vault {
             || self.deliveries.len() > 16384
             || self.baselines.len() > 512
             || self.card_changes.len() > 16384
+            || self.manual_resets.len() > 4096
+            || self.manual_resets.iter().any(|(key, r)| !r.valid(key))
             || !self.public_reset.valid(super::now() * 1000)
             || self
                 .card_changes

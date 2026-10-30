@@ -16,8 +16,14 @@ use std::{
         Arc, Mutex, RwLock,
     },
 };
+#[path = "browser.rs"]
+pub mod browser;
+#[path = "hub_snapshot.rs"]
+pub mod hub_snapshot;
 #[path = "maintenance.rs"]
 pub mod maintenance;
+#[path = "manual_accounts.rs"]
+pub mod manual_accounts;
 
 struct Attempt {
     dto: LoginAttemptDto,
@@ -481,6 +487,8 @@ impl AccountManager {
                 platform,
                 revision: 1,
                 credential: None,
+                created_at_ms: Some(chrono::Utc::now().timestamp_millis()),
+                browser: Default::default(),
             });
             store.save()?;
         }

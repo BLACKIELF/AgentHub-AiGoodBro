@@ -30,7 +30,7 @@ function validQuota(value: Quota, id: string): boolean {
 }
 
 /** Explicit row-local official read. The clock ages labels without making API requests. */
-export function ProfileQuota({ profileId, profileLabel, disabled }: { profileId: string; profileLabel: string; disabled: boolean }) {
+export function ProfileQuota({ profileId, profileLabel, disabled, refreshToken = 0 }: { profileId: string; profileLabel: string; disabled: boolean; refreshToken?: number }) {
   const { language } = useI18n();
   const text = (zh: string, en: string) => language === 'zh-Hans' ? zh : en;
   const [quota, setQuota] = useState<Quota | null>(null);
@@ -56,6 +56,7 @@ export function ProfileQuota({ profileId, profileLabel, disabled }: { profileId:
     } catch { if (epoch === generation.current) setFailed(true); }
     finally { if (epoch === generation.current) { inFlight.current = false; setBusy(false); } }
   }
+  useEffect(() => { if (refreshToken > 0) void readQuota(); }, [refreshToken]);
   const formatTime = (value: number) => new Intl.DateTimeFormat(language === 'zh-Hans' ? 'zh-CN' : 'en-GB',
     { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(value);
   const old = quota !== null && (failed || now < quota.checked_at || now - quota.checked_at >= 300000
@@ -96,6 +97,6 @@ export function ProfileQuota({ profileId, profileLabel, disabled }: { profileId:
         <p className="text-tertiary">{text('重置时间待读取', 'Read for reset time')}</p>
       </div>)}
     </div>}
-    {details && <AccountDetails profileLabel={profileLabel} details={quota ? { account: quota.account ?? null, credits, checked_at: quota.checked_at } : null} current={!old} onClose={() => setDetails(false)} />}
+    {details && <AccountDetails profileId={profileId} profileLabel={profileLabel} details={quota ? { account: quota.account ?? null, credits, checked_at: quota.checked_at } : null} current={!old} onClose={() => setDetails(false)} />}
   </div>;
 }

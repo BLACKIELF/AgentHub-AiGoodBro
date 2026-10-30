@@ -6,6 +6,7 @@ import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
 import { ChevronDown, LayoutGrid, List, MoreHorizontal, Pencil, ArrowUp, ArrowDown, Unlink } from 'lucide-react';
 import { useI18n } from '../i18n/I18nProvider';
+import { AccountActions } from './AccountActions';
 import { ProfileQuota } from './ProfileQuota';
 import { LocalProfileQuota } from './LocalProfileQuota';
 import { AccountWorkflow } from './AccountWorkflow';
@@ -19,6 +20,7 @@ type Profile = { id: string; label: string; selected: boolean; platform: string;
 export function ProfilesPanel({ onSourceChange, providerFilter, onProviderChange, onPlatformsChange }: { onSourceChange: () => void; providerFilter?: string; onProviderChange?: (id: string) => void; onPlatformsChange?: (platforms: Platform[]) => void }) {
   const { language } = useI18n();
   const text = (zh: string, en: string) => language === 'zh-Hans' ? zh : en;
+  const [quotaRefresh, setQuotaRefresh] = useState<Record<string, number>>({});
   const [guide, setGuide] = useState(false);
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [platforms, setPlatforms] = useState<Platform[]>([]);
@@ -133,11 +135,13 @@ export function ProfilesPanel({ onSourceChange, providerFilter, onProviderChange
             </div>
             <div className="account-directory-subheading"><span className="account-platform-badge">{profile.platform_name}</span></div>
             {profile.platform === 'codex'
-              ? <ProfileQuota profileId={profile.id} profileLabel={profile.label} disabled={busy} />
+              ? <ProfileQuota profileId={profile.id} profileLabel={profile.label} disabled={busy} refreshToken={quotaRefresh[profile.id] ?? 0} />
               : <LocalProfileQuota profileId={profile.id} disabled={busy} />}
             <div className="account-directory-actions">
+              <button type="button" className="glass-button px-2 py-1 text-xs" disabled={busy} onClick={() => { setEditing(profile.id); setLabel(profile.label); setRemoving(null); }}>{text('自定义名称', 'Customize name')}</button>
               {profile.can_view_usage && <button className="glass-button px-2 py-1 text-xs" disabled={busy || profile.selected} onClick={() => void perform({ kind: 'view', id: profile.id })}>{profile.selected ? text('正在查看', 'Viewing') : text('查看用量', 'View usage')}</button>}
             </div>
+            {profile.platform === 'codex' && <AccountActions profileId={profile.id} profileLabel={profile.label} onChanged={() => { setQuotaRefresh(prior => ({ ...prior, [profile.id]: (prior[profile.id] ?? 0) + 1 })); onSourceChange(); }} />}
             {profile.platform === 'codex' && <AccountWorkflow profileId={profile.id} initiallyExpanded={false} />}
             {profile.platform !== 'codex' && <LocalCliProfileActions profileId={profile.id} platform={profile.platform} disabled={busy}/>}
           </li>

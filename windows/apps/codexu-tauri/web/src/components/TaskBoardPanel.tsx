@@ -2,6 +2,7 @@ import { Archive, CalendarClock, CircleDashed, CircleDot, ClipboardList, Clock3 
 import type { TaskBoard, TaskItem } from '../types/models';
 import { useI18n } from '../i18n/I18nProvider';
 import { LiveTasksPanel } from './LiveTasksPanel';
+import { TaskHubPanel } from './TaskHubPanel';
 
 interface TaskBoardPanelProps {
   taskBoard: TaskBoard | null;
@@ -15,7 +16,7 @@ const COLUMN_ICONS = {
 } as const;
 
 export function TaskBoardPanel({ taskBoard }: TaskBoardPanelProps) {
-  return <div className="space-y-3"><LiveTasksPanel /><RecordedTaskBoard taskBoard={taskBoard} /></div>;
+  return <div className="space-y-3"><TaskHubPanel /><LiveTasksPanel /><RecordedTaskBoard taskBoard={taskBoard} /></div>;
 }
 function RecordedTaskBoard({ taskBoard }: TaskBoardPanelProps) {
   const { t } = useI18n();

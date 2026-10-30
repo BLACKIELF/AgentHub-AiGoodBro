@@ -177,8 +177,8 @@ pub fn update_window_titles(app: &AppHandle, language: ResolvedLanguage) {
 
 fn settings_window_title(language: ResolvedLanguage) -> &'static str {
     match language {
-        ResolvedLanguage::ZhHans => "设置 — Codex Account Manager Next",
-        ResolvedLanguage::En => "Settings — Codex Account Manager Next",
+        ResolvedLanguage::ZhHans => "设置 — AiGoodBro",
+        ResolvedLanguage::En => "Settings — AiGoodBro",
     }
 }
 

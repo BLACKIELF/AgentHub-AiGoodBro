@@ -48,6 +48,7 @@ test.beforeEach(async ({ page }) => {
         if (window.localQuotaMode === 'fail') throw new Error('Synthetic private failure');
         return base;
       }
+      if (cmd === 'get_account_local_details') return { profileId: args.profileId, email: 'synthetic.account@example.invalid' };
       if (cmd === 'read_profile_quota') {
         window.quotaCalls.push(args.id);
         if (window.quotaMode === 'fail') throw new Error('Synthetic private failure');
@@ -317,7 +318,8 @@ test('account metadata shows official units, details close and guide focuses cor
   const dialog = page.getByRole('dialog');
   await expect(dialog).toBeVisible();
   await expect(dialog).toHaveAccessibleName('Account details · Synthetic A');
-  await expect(dialog).not.toContainText('@');
+  await expect(dialog).toContainText('synthetic.account@example.invalid');
+  await expect(dialog).not.toContainText('address hidden');
   await expect(dialog.getByRole('button', { name: 'Close', exact: true })).toBeFocused();
   await expect(dialog).toHaveScreenshot('account-details.png');
   await page.keyboard.press('Escape');

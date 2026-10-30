@@ -1,6 +1,7 @@
 //! Windows-only composition. Failure in a new service must not disable existing
 //! usage, profile or settings views; no fallback account/lease is synthesized.
 use crate::commands::{
+    account_actions::ManualAccountState,
     account_lifecycle::{ClaudeSubscriptionState, ManagedAccountState},
     account_maintenance::AccountMaintenanceState,
     local_proxy::{LocalProxyDesktopState, LocalProxyState},
@@ -11,6 +12,7 @@ use codexu_core::{
     accounts::{
         claude::ClaudeSubscriptionManager,
         maintenance::{AccountMaintenanceMonitor, AccountMaintenanceService},
+        manual_accounts::{ManualAccountMonitor, ManualAccountService},
         AccountManager,
     },
     automatic_switch::{
@@ -45,6 +47,8 @@ pub struct NativeServices {
     automatic_monitor: Mutex<Option<AutomaticSwitchMonitor>>,
     account_maintenance: Result<Arc<AccountMaintenanceService>, &'static str>,
     maintenance_monitor: Mutex<Option<AccountMaintenanceMonitor>>,
+    manual_accounts: Result<Arc<ManualAccountService>, &'static str>,
+    manual_monitor: Mutex<Option<ManualAccountMonitor>>,
 }
 impl NativeServices {
     pub fn statistics_accounts(&self) -> Result<Arc<AccountManager>, String> {
@@ -60,9 +64,13 @@ impl NativeServices {
             .map_err(|e| e.code().to_owned())
     }
     pub fn proxy_blocks_normal_exit(&self) -> bool {
-        self.automatic_switch
+        self.manual_accounts
             .as_ref()
-            .is_ok_and(|service| service.has_inflight_operation())
+            .is_ok_and(|s| s.has_inflight_operation())
+            || self
+                .automatic_switch
+                .as_ref()
+                .is_ok_and(|service| service.has_inflight_operation())
             || self
                 .account_maintenance
                 .as_ref()
@@ -86,6 +94,9 @@ impl NativeServices {
     }
     /// Synchronous no-I/O fence applied in the confirmation callback itself.
     pub fn seal_accounts_for_exit(&self) {
+        if let Ok(service) = &self.manual_accounts {
+            service.cancel_for_exit();
+        }
         if let Ok(service) = &self.automatic_switch {
             service.cancel_for_exit();
         }
@@ -116,6 +127,14 @@ impl NativeServices {
     /// Background statistics do not count as an interactive task. A normal
     /// exit still closes their owned process tree without an extra prompt.
     pub fn stop_passive_services(&self) {
+        if let Ok(service) = &self.manual_accounts {
+            service.cancel_for_exit();
+        }
+        if let Ok(monitor) = self.manual_monitor.try_lock() {
+            if let Some(monitor) = &*monitor {
+                monitor.cancel();
+            }
+        }
         if let Ok(service) = &self.account_maintenance {
             service.cancel_for_exit();
         }
@@ -441,6 +460,47 @@ pub fn install(app: &mut App, root: PathBuf) -> Result<(), Box<dyn std::error::E
         Err(error) => (Err(error), None),
     };
     app.manage(AccountMaintenanceState(account_maintenance.clone()));
+    let manual_accounts = accounts.as_ref().map_err(|e| *e).and_then(|manager| {
+        let notice_service = notifications.as_ref().ok().cloned();
+        ManualAccountService::new(
+            manager.clone(),
+            account_maintenance.as_ref().map_err(|e| *e)?.clone(),
+            Arc::new(move || {
+                notice_service
+                    .as_ref()
+                    .and_then(|s| s.manual_reset_authorization().ok())
+                    .unwrap_or_default()
+            }),
+        )
+        .map_err(|e| e.code)
+    });
+    let manual_monitor = match (&manual_accounts, &notifications) {
+        (Ok(service), Ok(notifications)) => {
+            let notifications = notifications.clone();
+            service
+                .start_confirmation_monitor(Arc::new(move |e| {
+                    let notice = codexu_core::notifications::ManualResetNotice::new(
+                        &e.event_id,
+                        &e.account_key,
+                        &e.masked_label,
+                        e.confirmed_at_ms / 1000,
+                        e.available_cards,
+                    )
+                    .map_err(|_| codexu_core::accounts::AccountError {
+                        code: "manual_notice_unavailable",
+                    })?;
+                    notifications
+                        .record_manual_reset_authorized(notice, e.authorization.clone())
+                        .map_err(|_| codexu_core::accounts::AccountError {
+                            code: "manual_notice_unavailable",
+                        })
+                }))
+                .ok()
+        }
+        _ => None,
+    };
+    app.manage(ManualAccountState(manual_accounts.clone()));
+
     app.manage(NativeServices {
         gate,
         owned_domains,
@@ -454,6 +514,8 @@ pub fn install(app: &mut App, root: PathBuf) -> Result<(), Box<dyn std::error::E
         automatic_switch,
         automatic_monitor: Mutex::new(automatic_monitor),
         account_maintenance,
+        manual_accounts,
+        manual_monitor: Mutex::new(manual_monitor),
         maintenance_monitor: Mutex::new(maintenance_monitor),
         monitor: Mutex::new(monitor),
         desktop_monitor: Mutex::new(desktop_monitor),

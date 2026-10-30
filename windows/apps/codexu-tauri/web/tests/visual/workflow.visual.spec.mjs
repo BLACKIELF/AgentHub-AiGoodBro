@@ -21,6 +21,7 @@ test.beforeEach(async ({ page }) => {
         window.workflowCalls.push({ cmd, action: structuredClone(args.action) });
         if (window.workflowSaveFails) throw 'save_failed';
         if (args.action.kind === 'participation') state.preference.participating = args.action.value;
+        else if (args.action.kind === 'dispatch_window') state.preference.dispatch_window = structuredClone(args.action.window);
         else { state.preference.model = args.action.model; state.preference.effort = args.action.effort; }
         state.preference.revision++;
         localStorage.setItem('synthetic-workflow', JSON.stringify(state));
@@ -98,4 +99,47 @@ test('real model choices, unavailable quota, and explicit owned-terminal stop', 
   await section.getByRole('button', { name: 'Confirm stop' }).click();
   await expect(section).toContainText('Stopped');
   expect(await page.evaluate(() => window.workflowCalls.filter(call => call.cmd === 'stop_account_terminal').length)).toBe(1);
+});
+
+test('dispatch windows save explicit timezone and overnight weekdays, retain dirty draft after failed save and reload saved rule', async ({ page }) => {
+  const workflow = page.getByTestId('account-workflow-1'), window = workflow.getByRole('region', { name: 'Dispatch windows' });
+  await window.getByRole('button', { name: /Dispatch windows/ }).click();
+  await window.getByRole('combobox', { name: 'Window rule' }).selectOption('onlyWithin'); await window.getByRole('textbox', { name: 'Time zone' }).fill('Asia/Shanghai');
+  await expect(window).toContainText('With no windows, no new work will be admitted.');
+  await window.getByRole('button', { name: 'Add window' }).click();
+  await window.getByRole('checkbox', { name: 'Every day', exact: true }).uncheck();
+  for (const day of ['Tue', 'Wed', 'Thu', 'Fri']) await window.getByRole('checkbox', { name: day, exact: true }).uncheck();
+  await window.getByLabel('Start 1', { exact: true }).fill('23:00'); await window.getByLabel('End 1', { exact: true }).fill('01:00');
+  await page.evaluate(() => { window.workflowSaveFails = true; }); await window.getByRole('button', { name: 'Save window rule' }).click();
+  await expect(workflow.getByRole('alert')).toContainText('previous setting was retained'); await expect(window.getByLabel('Start 1')).toHaveValue('23:00'); await expect(window).toContainText('Unsaved changes');
+  await page.evaluate(() => { window.workflowSaveFails = false; }); await window.getByRole('button', { name: 'Save window rule' }).click(); await expect(window).not.toContainText('Unsaved changes');
+  expect((await page.evaluate(() => window.workflowCalls.at(-1))).action.window).toEqual({ mode: 'onlyWithin', timeZoneIdentifier: 'Asia/Shanghai', intervals: [{ startMinute: 1380, endMinute: 60, allDays: false, weekdays: [1], allDay: false }] });
+  await expect(window).toHaveScreenshot('workflow-overnight-window.png');
+  await window.getByLabel('End 1').fill('23:00'); await expect(window.getByRole('button', { name: 'Save window rule' })).toBeDisabled(); await window.getByRole('checkbox', { name: 'All day', exact: true }).check(); await expect(window.getByRole('button', { name: 'Save window rule' })).toBeEnabled();
+  await window.getByRole('textbox', { name: 'Time zone' }).fill('Unknown/Timezone'); await expect(window.getByRole('button', { name: 'Save window rule' })).toBeDisabled();
+  await page.reload(); await page.getByTestId('account-workflow-1').getByRole('button', { name: /Model and scheduling/ }).click();
+  await page.getByRole('region', { name: 'Dispatch windows' }).getByRole('button', { name: /Dispatch windows/ }).click();
+  await expect(page.getByLabel('Start 1')).toHaveValue('23:00'); await expect(page.getByLabel('End 1')).toHaveValue('01:00');
+});
+test('reusing the workflow component cannot move a dirty schedule draft or late save into another account', async ({ page }) => {
+  await page.evaluate(async () => {
+    document.getElementById('root').style.display = 'none';
+    const original = window.__TAURI_INTERNALS__.invoke;
+    window.__TAURI_INTERNALS__.invoke = async (command, args) => {
+      if (command === 'get_account_workflow') return { profile_id: args.id, preference: { participating: true, model: null, effort: null, revision: 0 }, phase: 'idle', started_at: null, supported: true };
+      if (command === 'set_account_workflow') { window.workflowCalls.push({ cmd: command, id: args.id, action: structuredClone(args.action) }); return new Promise(resolve => { window.releaseWorkflow = () => resolve({ profile_id: args.id, preference: { participating: true, model: null, effort: null, revision: 1, dispatch_window: args.action.window }, phase: 'idle', started_at: null, supported: true }); }); }
+      return original(command, args);
+    };
+    const { mountAccountComponent } = await import('/tests/visual/account-actions-component.fixture.tsx'); window.workflowFixture = mountAccountComponent('workflow', 'A');
+  });
+  const fixture = page.getByTestId('account-component-fixture');
+  await fixture.getByRole('region', { name: 'Dispatch windows' }).getByRole('button', { name: /Dispatch windows/ }).click();
+  await fixture.getByRole('combobox', { name: 'Window rule' }).selectOption('onlyWithin');
+  await fixture.getByRole('button', { name: 'Save window rule' }).click(); await expect.poll(() => page.evaluate(() => typeof window.releaseWorkflow)).toBe('function');
+  await page.evaluate(() => window.workflowFixture.render('B'));
+  await expect(fixture.getByTestId('account-workflow-B')).toBeVisible();
+  await fixture.getByRole('region', { name: 'Dispatch windows' }).getByRole('button', { name: /Dispatch windows/ }).click();
+  await expect(fixture.getByRole('combobox', { name: 'Window rule' })).toHaveValue('unrestricted'); await expect(fixture.getByRole('button', { name: 'Save window rule' })).toBeDisabled();
+  await page.evaluate(() => window.releaseWorkflow());
+  await expect(fixture.getByRole('combobox', { name: 'Window rule' })).toHaveValue('unrestricted'); expect(await page.evaluate(() => window.workflowCalls.filter(call => call.id === 'B'))).toHaveLength(0);
 });

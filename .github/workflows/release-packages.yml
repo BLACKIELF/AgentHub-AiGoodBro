@@ -157,7 +157,7 @@ jobs:
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: account-manager-next-windows-${{ needs.resolve-version.outputs.version }}
+          name: aigoodbro-windows-${{ needs.resolve-version.outputs.version }}
           path: dist/windows/*
           if-no-files-found: error
 
@@ -174,7 +174,7 @@ jobs:
       - uses: actions/download-artifact@v4
         if: needs.windows.result == 'success'
         with:
-          name: account-manager-next-windows-${{ needs.resolve-version.outputs.version }}
+          name: aigoodbro-windows-${{ needs.resolve-version.outputs.version }}
           path: dist/windows
       - name: Verify macOS checksums
         working-directory: dist
@@ -195,6 +195,6 @@ jobs:
           path: |
             dist/AiGoodBro-${{ needs.resolve-version.outputs.version }}-mac-arm64.dmg*
             dist/AiGoodBro-${{ needs.resolve-version.outputs.version }}-mac-x86_64.dmg*
-            dist/windows/CodexAccountManagerNext-${{ needs.resolve-version.outputs.version }}-windows-x86_64.msi*
-            dist/windows/CodexAccountManagerNext-${{ needs.resolve-version.outputs.version }}-windows-x86_64-setup.exe*
+            dist/windows/AiGoodBro-${{ needs.resolve-version.outputs.version }}-windows-x86_64.msi*
+            dist/windows/AiGoodBro-${{ needs.resolve-version.outputs.version }}-windows-x86_64-setup.exe*
           if-no-files-found: error

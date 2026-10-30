@@ -49,3 +49,4 @@ explore/
 # Windows helper/resources are generated and source-bound by windows/proxy/prepare-resource.py.
 /windows/apps/codexu-tauri/src-tauri/resources/proxy/
 /windows/apps/codexu-tauri/src-tauri/resources/token-monitor/
+/windows/apps/codexu-tauri/src-tauri/resources/companion-hub/

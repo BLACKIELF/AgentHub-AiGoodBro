@@ -114,6 +114,7 @@ fn main() {
     tauri::Builder::default()
         .manage(commands::app_update::UpdateRuntime::default())
         .manage(commands::cli_workflow::WorkflowState::default())
+        .manage(commands::task_hub::HubState::default())
         .manage(quit::QuitState::default())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
@@ -189,6 +190,19 @@ fn main() {
             commands::compact_ui::retry_compact_ui_shortcut,
             commands::compact_ui::set_compact_ui_preferences,
             commands::compact_ui::compact_ui_action,
+            commands::account_actions::get_account_local_details,
+            commands::account_actions::get_account_browser_settings,
+            commands::account_actions::set_account_browser_settings,
+            commands::account_actions::refresh_account_local_details,
+            commands::account_actions::set_account_pro_multiplier,
+            commands::account_actions::begin_manual_reset_review,
+            commands::account_actions::confirm_manual_reset_review,
+            commands::account_actions::cancel_manual_reset_review,
+            commands::account_actions::consume_manual_reset_credit,
+            commands::account_actions::get_account_referral_eligibility,
+            commands::account_actions::send_account_referral_invites,
+            commands::account_actions::get_account_referral_tracking,
+            commands::account_actions::check_account_referral_outcome,
             commands::account_lifecycle::list_managed_accounts,
             commands::account_maintenance::get_account_maintenance_preferences,
             commands::account_maintenance::set_account_warmup_selection,
@@ -286,6 +300,12 @@ fn main() {
             commands::settings::set_settings,
             commands::settings::open_settings_window,
             commands::settings::sync_runtime_language,
+            commands::task_hub::get_task_hub,
+            commands::task_hub::get_task_hub_messages,
+            commands::task_hub::select_task_hub_workspace,
+            commands::task_hub::connect_task_hub,
+            commands::task_hub::task_hub_action,
+            commands::task_hub::disconnect_task_hub,
             tray_show_main_window,
         ])
         .build(tauri::generate_context!())
@@ -295,6 +315,8 @@ fn main() {
                 if !app.state::<quit::QuitState>().confirmed()
                     && (commands::cli_workflow::should_block_exit(
                         &app.state::<commands::cli_workflow::WorkflowState>(),
+                    ) || commands::task_hub::should_block_exit(
+                        &app.state::<commands::task_hub::HubState>(),
                     ) || app
                         .state::<native_services::NativeServices>()
                         .proxy_blocks_normal_exit())
@@ -307,6 +329,7 @@ fn main() {
                     quit::ask(app);
                 }
             } else if let tauri::RunEvent::Exit = event {
+                commands::task_hub::force_stop_owned(&app.state::<commands::task_hub::HubState>());
                 compact_projection::shutdown(app);
                 compact_ui::shutdown(app);
                 app.state::<native_services::NativeServices>()

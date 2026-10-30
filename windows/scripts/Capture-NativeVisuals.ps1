@@ -1997,7 +1997,10 @@ function Set-MaximizedWindow {
   if ($description -notmatch '^maximized=(?<maximized>true);foregroundPreserved=(?<foregroundPreserved>true|false);toolWindow=(?<toolWindow>true|false);client=(?<width>\d+)x(?<height>\d+);clientPhysical=(?<physicalWidth>\d+)x(?<physicalHeight>\d+);outer=(?<outerWidth>\d+)x(?<outerHeight>\d+);dpi=(?<dpi>\d+)$') {
     throw "Could not parse maximized window dimensions: $description"
   }
+  $title = [System.Windows.Automation.AutomationElement]::FromHandle($Window).Current.Name
+  if ($title -cne 'AiGoodBro') { throw 'The native main window title must be AiGoodBro.' }
   return [ordered]@{
+    title = $title
     maximized = $true
     activation_mode = 'non-activating'
     foreground_policy = 'preserve active window'

@@ -437,7 +437,9 @@ fn official_reset_cards_use_backend_ids_and_expiry_is_deduplicated() {
             Some(vec![
                 ResetCard::from_official_id("synthetic-card-one", Some(now + 100)).unwrap(),
                 ResetCard::from_official_id("synthetic-card-two", None).unwrap(),
-                ResetCard::from_official_id("synthetic-card-three", Some(now + 86401)).unwrap(),
+                // A card one second outside the 24-hour window can become newly due
+                // between observations. Keep this deduplication fixture well outside it.
+                ResetCard::from_official_id("synthetic-card-three", Some(now + 2 * 86400)).unwrap(),
             ]),
         )
         .unwrap()
@@ -454,6 +456,8 @@ fn official_reset_cards_use_backend_ids_and_expiry_is_deduplicated() {
     assert_eq!(f.transport.calls.load(Ordering::SeqCst), 1);
     let body = f.transport.requests.lock().unwrap()[0].2.to_string();
     assert!(body.contains("24小时"));
+    assert!(body.contains("到期：1 张"));
+    assert!(!body.contains("到期：2 张"));
     assert!(body.contains("未知：1"));
     assert!(!body.contains("synthetic-card-one"));
 }
@@ -1121,4 +1125,217 @@ fn native_dpapi_roundtrip_notification_vault_is_opaque_without_network() {
         .credential_present
     );
     assert_eq!(transport.calls.load(Ordering::SeqCst), 0);
+}
+
+fn manual_notice(id: &str, account: &str, at: i64, available: Option<u32>) -> ManualResetNotice {
+    ManualResetNotice::new(id, account, "Fixture account", at, available).unwrap()
+}
+#[test]
+fn manual_reset_confirmed_is_durable_deduplicated_and_explicit_copy() {
+    let f = Fixture::new();
+    f.setup(ChannelKind::Feishu);
+    f.setup(ChannelKind::WeCom);
+    let notice = manual_notice(
+        "one",
+        "identity",
+        chrono::Utc::now().timestamp() - 900,
+        Some(1),
+    );
+    f.service.record_manual_reset(notice.clone()).unwrap();
+    f.service.record_manual_reset(notice.clone()).unwrap();
+    assert_eq!(f.transport.calls.load(Ordering::SeqCst), 0);
+    let next = f.reconnect();
+    f.transport.json(json!({"code":0}));
+    let receipts = next.drain_manual_resets().unwrap();
+    assert_eq!(receipts.len(), 1);
+    assert_eq!(receipts[0].state, "accepted");
+    assert_eq!(receipts[0].channel, ChannelKind::Feishu);
+    let payload = f.transport.requests.lock().unwrap()[0].2.to_string();
+    for copy in [
+        "手动使用 1 张重置卡",
+        "官方已确认重置成功",
+        "重置卡 · 手动使用成功",
+        "可用重置卡：1",
+    ] {
+        assert!(payload.contains(copy));
+    }
+    assert!(!payload.contains("未核实"));
+    assert!(!payload.contains("identity"));
+    next.record_manual_reset(notice).unwrap();
+    assert!(f.reconnect().drain_manual_resets().unwrap().is_empty());
+    assert_eq!(f.transport.calls.load(Ordering::SeqCst), 1);
+}
+#[test]
+fn manual_reset_disabled_or_reconfigured_channel_is_not_retroactively_sent() {
+    let f = Fixture::new();
+    let now = chrono::Utc::now().timestamp();
+    let first = manual_notice("disabled", "identity", now, None);
+    f.service.record_manual_reset(first.clone()).unwrap();
+    f.setup(ChannelKind::Feishu);
+    f.service.record_manual_reset(first).unwrap();
+    assert!(f.service.drain_manual_resets().unwrap().is_empty());
+    f.service
+        .record_manual_reset(manual_notice("before-config", "identity", now, None))
+        .unwrap();
+    f.service.set_enabled(ChannelKind::Feishu, false).unwrap();
+    f.service.set_enabled(ChannelKind::Feishu, true).unwrap();
+    assert!(f.service.drain_manual_resets().unwrap().is_empty());
+    assert_eq!(f.transport.calls.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn manual_reset_native_authorization_survives_outbox_delay_and_restart() {
+    for mode in [
+        "disabled_at_success",
+        "reconfigured_before_relay",
+        "legacy",
+        "same_revision",
+    ] {
+        let f = Fixture::new();
+        if mode != "disabled_at_success" {
+            f.setup(ChannelKind::Feishu);
+        }
+        let authorization = if mode == "legacy" {
+            ManualResetAuthorization::default()
+        } else {
+            f.service.manual_reset_authorization().unwrap()
+        };
+        let serialized = serde_json::to_vec(&authorization).unwrap();
+        if mode == "disabled_at_success" {
+            f.setup(ChannelKind::Feishu);
+        } else if mode == "reconfigured_before_relay" {
+            f.service.set_enabled(ChannelKind::Feishu, false).unwrap();
+            f.service.set_enabled(ChannelKind::Feishu, true).unwrap();
+        }
+        let reopened = f.reconnect();
+        reopened
+            .record_manual_reset_authorized(
+                manual_notice(mode, "identity", chrono::Utc::now().timestamp() - 60, None),
+                serde_json::from_slice(&serialized).unwrap(),
+            )
+            .unwrap();
+        if mode == "same_revision" {
+            f.transport.json(json!({"code":0}));
+            assert_eq!(reopened.drain_manual_resets().unwrap()[0].state, "accepted");
+            assert!(f.reconnect().drain_manual_resets().unwrap().is_empty());
+            assert_eq!(f.transport.calls.load(Ordering::SeqCst), 1);
+        } else {
+            assert!(reopened.drain_manual_resets().unwrap().is_empty());
+            assert_eq!(f.transport.calls.load(Ordering::SeqCst), 0);
+        }
+    }
+}
+#[test]
+fn manual_reset_uncertain_send_never_retries_after_restart() {
+    let f = Fixture::new();
+    f.setup(ChannelKind::Feishu);
+    f.service
+        .record_manual_reset(manual_notice(
+            "unknown-send",
+            "identity",
+            chrono::Utc::now().timestamp(),
+            None,
+        ))
+        .unwrap();
+    f.transport
+        .responses
+        .lock()
+        .unwrap()
+        .push_back(Err(Failure("synthetic_timeout")));
+    let receipt = f.service.drain_manual_resets().unwrap();
+    assert_eq!(receipt[0].state, "uncertain");
+    assert!(f.reconnect().drain_manual_resets().unwrap().is_empty());
+    assert_eq!(f.transport.calls.load(Ordering::SeqCst), 1);
+}
+#[test]
+fn manual_reset_identity_time_and_single_decrease_gate_duplicate_summary() {
+    for scenario in [
+        "same",
+        "other-account",
+        "multiple",
+        "wrong-balance",
+        "before-baseline",
+    ] {
+        let f = Fixture::new();
+        f.setup(ChannelKind::Feishu);
+        let now = chrono::Utc::now().timestamp();
+        assert!(f
+            .service
+            .observe_official_quota(official(now - 20, None, Some(2), None))
+            .unwrap()
+            .is_empty());
+        let identity = if scenario == "other-account" {
+            "different"
+        } else {
+            "synthetic-quota-account"
+        };
+        let at = if scenario == "before-baseline" {
+            now - 30
+        } else {
+            now - 10
+        };
+        let available = if scenario == "wrong-balance" {
+            Some(0)
+        } else {
+            Some(1)
+        };
+        f.service
+            .record_manual_reset(manual_notice("first", identity, at, available))
+            .unwrap();
+        if scenario == "multiple" {
+            f.service
+                .record_manual_reset(manual_notice("second", identity, at + 1, available))
+                .unwrap();
+        }
+        if scenario != "same" {
+            f.transport.json(json!({"code":0}));
+        }
+        let receipts = f
+            .service
+            .observe_official_quota(official(now - 1, None, Some(1), None))
+            .unwrap();
+        assert_eq!(receipts.is_empty(), scenario == "same", "{scenario}");
+    }
+}
+#[test]
+fn manual_reset_notice_cannot_change_same_event_or_accept_sensitive_label_or_future() {
+    let f = Fixture::new();
+    let now = chrono::Utc::now().timestamp();
+    f.service
+        .record_manual_reset(manual_notice("event", "identity", now, Some(1)))
+        .unwrap();
+    assert!(f
+        .service
+        .record_manual_reset(manual_notice("event", "identity", now, Some(0)))
+        .is_err());
+    assert!(f
+        .service
+        .record_manual_reset(manual_notice("future", "identity", now + 10, None))
+        .is_err());
+    assert!(
+        ManualResetNotice::new("event", "identity", "name@example.invalid", now, None).is_err()
+    );
+    assert!(ManualResetNotice::new("", "identity", "Fixture", now, None).is_err());
+    assert_eq!(f.transport.calls.load(Ordering::SeqCst), 0);
+}
+#[test]
+fn native_notification_monitor_drains_manual_confirmations_without_user_action() {
+    let f = Fixture::new();
+    f.setup(ChannelKind::Feishu);
+    f.transport.json(json!({"code":0}));
+    let monitor = f.service.start_monitor().unwrap();
+    f.service
+        .record_manual_reset(manual_notice(
+            "worker",
+            "identity",
+            chrono::Utc::now().timestamp(),
+            None,
+        ))
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while f.transport.calls.load(Ordering::SeqCst) == 0 && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    monitor.cancel();
+    assert_eq!(f.transport.calls.load(Ordering::SeqCst), 1);
 }

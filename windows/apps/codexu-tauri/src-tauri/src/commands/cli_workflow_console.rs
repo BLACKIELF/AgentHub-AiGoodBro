@@ -348,6 +348,7 @@ mod native {
         Ok(result)
     }
     pub struct OwnedConsole {
+        pid: u32,
         process: OwnedHandle,
         job: Job,
         _domain: Option<OwnedDomainRegistration>,
@@ -508,11 +509,15 @@ mod native {
                 return Err(error);
             }
             Ok(Self {
+                pid: information.process_id,
                 process,
                 job,
                 _domain: domain,
                 _resources: resources,
             })
+        }
+        pub fn pid(&self) -> u32 {
+            self.pid
         }
         pub fn has_exited(&mut self) -> std::io::Result<bool> {
             match unsafe { WaitForSingleObject(self.process.raw(), 0) } {
@@ -558,6 +563,9 @@ pub use native::OwnedConsole;
 pub struct OwnedConsole;
 #[cfg(not(windows))]
 impl OwnedConsole {
+    pub fn pid(&self) -> u32 {
+        0
+    }
     pub fn start(_: &Path, _: &Path, _: &Path, _: &[String], _: File) -> std::io::Result<Self> {
         Err(std::io::Error::new(
             std::io::ErrorKind::Unsupported,

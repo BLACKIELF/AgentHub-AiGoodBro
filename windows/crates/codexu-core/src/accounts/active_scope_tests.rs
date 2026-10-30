@@ -159,6 +159,8 @@ impl Fixture {
                     label: name.into(),
                     platform: "codex".into(),
                     revision: 1,
+                    created_at_ms: None,
+                    browser: Default::default(),
                     credential: Some(
                         verified(auth(name))
                             .unwrap()

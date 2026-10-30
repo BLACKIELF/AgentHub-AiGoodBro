@@ -2,7 +2,8 @@ import { useEffect, useId, useRef, useState } from 'react';
 import { MoreHorizontal, Pencil, Trash2 } from 'lucide-react';
 import { useI18n } from '../i18n/I18nProvider';
 
-export function ManagedAccountMenu({ label, disabled, error, onRename, onRemove }: {
+export function ManagedAccountMenu({ label, disabled, error, onRename, onRemove, showRename = false }: {
+  showRename?: boolean;
   label: string; disabled: boolean; error: string | null;
   onRename: (label: string) => Promise<boolean>; onRemove: () => Promise<boolean>;
 }) {
@@ -26,6 +27,7 @@ export function ManagedAccountMenu({ label, disabled, error, onRename, onRemove 
     finally { pending.current = false; if (alive.current) setBusy(false); }
   };
   return <>
+    {showRename && <button type="button" className="glass-button proxy-action" disabled={disabled} onClick={() => open('rename')}><Pencil size={13} />{text('自定义名称', 'Customize name')}</button>}
     <details ref={menu} className="account-more" onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); if (menu.current) menu.current.open = false; summary.current?.focus(); } }}>
       <summary ref={summary} className="icon-action" aria-label={text(`${label} 更多操作`, `More actions for ${label}`)} aria-disabled={disabled} onClick={event => { if (disabled) event.preventDefault(); }}><MoreHorizontal size={15} /></summary>
       <div className="account-more-content"><button type="button" disabled={disabled} onClick={() => open('rename')}><Pencil size={13} />{text('重命名', 'Rename')}</button><button type="button" disabled={disabled} className="text-status-error" onClick={() => open('remove')}><Trash2 size={13} />{text('移除保存的账号', 'Remove saved account')}</button></div>

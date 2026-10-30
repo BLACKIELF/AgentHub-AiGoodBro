@@ -6,14 +6,15 @@ param(
     [string]$OutputDirectory,
     # Exact scanner already exercised by the enclosing readiness run.
     [string]$VerifiedScannerBuildRoot,
+    [string]$VerifiedHubBuildRoot,
     # The readiness entry point records these checks before invoking packaging.
     [switch]$SkipValidation
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
-if ($VerifiedScannerBuildRoot -and -not $SkipValidation) {
-    throw 'Verified scanner reuse is only valid after the readiness validation plan.'
+if (($VerifiedScannerBuildRoot -or $VerifiedHubBuildRoot) -and -not $SkipValidation) {
+    throw 'Verified helper reuse is only valid after the readiness validation plan.'
 }
 
 if ($Version.StartsWith("v")) {
@@ -66,9 +67,12 @@ function Invoke-Checked {
     }
 }
 
+& python -B (Join-Path $RepoRoot "tests\test_windows_branding.py")
+if ($LASTEXITCODE -ne 0) { throw "Windows branding or upgrade identity validation failed." }
+
 function Select-FreshBundle {
     param([object[]] $Files, [string] $ReleaseVersion, [DateTime] $StartedUtc)
-    $pattern = '_' + [regex]::Escape($ReleaseVersion) + '_x64(?:_|-)'
+    $pattern = '^AiGoodBro_' + [regex]::Escape($ReleaseVersion) + '_x64(?:_|-)'
     return $Files |
         Where-Object { $_.LastWriteTimeUtc -ge $StartedUtc -and $_.Name -match $pattern } |
         Sort-Object LastWriteTimeUtc -Descending |
@@ -106,6 +110,12 @@ if ($VerifiedScannerBuildRoot) { $StatisticsArguments += @('-ScannerBuildRoot', 
 Invoke-Checked 'pwsh.exe' $StatisticsArguments
 $StatisticsManifest = Join-Path $AppRoot 'src-tauri\resources\token-monitor\WINDOWS-RESOURCES.json'
 $env:AIGOODBRO_TOKEN_MONITOR_RESOURCE_SHA256 = (Get-FileHash -LiteralPath $StatisticsManifest -Algorithm SHA256).Hash.ToLowerInvariant()
+$HubBuildRoot = if ($VerifiedHubBuildRoot) { $VerifiedHubBuildRoot } else { Join-Path $RepoRoot '.local-artifacts\windows-hub-build' }
+$HubArguments = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $RepoRoot 'windows\scripts\Prepare-HubResources.ps1'), '-BuildRoot', $HubBuildRoot)
+if ($VerifiedHubBuildRoot) { $HubArguments += '-VerifiedReuse' } else { $HubArguments += '-RunNativeTests' }
+Invoke-Checked 'pwsh.exe' $HubArguments
+$HubManifest = Join-Path $AppRoot 'src-tauri\resources\companion-hub\WINDOWS-RESOURCES.json'
+$HubManifestHash = (Get-FileHash -LiteralPath $HubManifest -Algorithm SHA256).Hash.ToLowerInvariant()
 
 if (-not $SkipValidation) {
     Push-Location $WindowsRoot
@@ -146,6 +156,10 @@ try {
         }
     }
 
+    $TauriVersion = (& cargo "+$Toolchain" tauri --version | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0 -or $TauriVersion -notmatch '^tauri-cli 2\.6\.2$') {
+        throw 'The reviewed Windows installer templates require tauri-cli 2.6.2.'
+    }
     Invoke-Checked "cargo" @(
         "+$Toolchain", "tauri", "build",
         "--config", $TauriConfig,
@@ -180,8 +194,8 @@ if (-not $Nsis) {
 }
 
 $Artifacts = @(
-    @{ Source = $Msi.FullName; Name = "CodexAccountManagerNext-$Version-windows-x86_64.msi" },
-    @{ Source = $Nsis.FullName; Name = "CodexAccountManagerNext-$Version-windows-x86_64-setup.exe" }
+    @{ Source = $Msi.FullName; Name = "AiGoodBro-$Version-windows-x86_64.msi" },
+    @{ Source = $Nsis.FullName; Name = "AiGoodBro-$Version-windows-x86_64-setup.exe" }
 )
 $Utf8NoBom = [System.Text.UTF8Encoding]::new($false)
 
@@ -196,12 +210,13 @@ foreach ($Artifact in $Artifacts) {
 }
 
 $Manifest = [ordered]@{
-    product = "Codex Account Manager Next"
+    product = "AiGoodBro"
     version = $Version
     target = "windows-x86_64"
     installers = @($Artifacts.Name)
     generated_utc = [DateTime]::UtcNow.ToString("o")
     token_monitor_manifest_sha256 = $env:AIGOODBRO_TOKEN_MONITOR_RESOURCE_SHA256
+    companion_hub_manifest_sha256 = $HubManifestHash
 }
 [System.IO.File]::WriteAllText(
     (Join-Path $OutputDirectory "manifest.json"),
@@ -209,7 +224,7 @@ $Manifest = [ordered]@{
     $Utf8NoBom
 )
 
-Write-Host "Windows release artifacts verified for Codex Account Manager Next $Version"
+Write-Host "Windows release artifacts verified for AiGoodBro $Version"
 } finally {
     [Environment]::SetEnvironmentVariable('AIGOODBRO_TOKEN_MONITOR_RESOURCE_SHA256', $PreviousStatisticsPin, 'Process')
 }

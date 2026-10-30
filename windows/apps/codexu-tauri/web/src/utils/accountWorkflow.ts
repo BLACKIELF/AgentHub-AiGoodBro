@@ -1,4 +1,18 @@
-export type WorkflowPreference = { participating: boolean; model: string | null; effort: string | null; revision: number };
+export type DispatchInterval = { startMinute: number; endMinute: number; allDays: boolean; weekdays: number[]; allDay: boolean };
+export type DispatchWindow = { mode: 'unrestricted' | 'onlyWithin' | 'exceptWithin'; timeZoneIdentifier: string; intervals: DispatchInterval[] };
+export const defaultDispatchWindow = (): DispatchWindow => ({ mode: 'unrestricted', timeZoneIdentifier: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC', intervals: [] });
+export function parseDispatchWindow(raw: unknown): DispatchWindow {
+  const fail = (): never => { throw new Error('Invalid dispatch window'); };
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return fail();
+  const w = raw as DispatchWindow;
+  if (!['unrestricted', 'onlyWithin', 'exceptWithin'].includes(w.mode) || typeof w.timeZoneIdentifier !== 'string' || !w.timeZoneIdentifier || w.timeZoneIdentifier.length > 100 || w.timeZoneIdentifier === 'Local' || !Array.isArray(w.intervals) || w.intervals.length > 32) return fail();
+  try { new Intl.DateTimeFormat('en', { timeZone: w.timeZoneIdentifier }); } catch { return fail(); }
+  for (const i of w.intervals) {
+    if (!i || typeof i !== 'object' || typeof i.allDays !== 'boolean' || typeof i.allDay !== 'boolean' || !Number.isInteger(i.startMinute) || i.startMinute < 0 || i.startMinute >= 1440 || !Number.isInteger(i.endMinute) || i.endMinute < 0 || i.endMinute >= 1440 || (!i.allDay && i.startMinute === i.endMinute) || !Array.isArray(i.weekdays) || i.weekdays.some(day => !Number.isInteger(day) || day < 1 || day > 7) || new Set(i.weekdays).size !== i.weekdays.length || (!i.allDays && i.weekdays.length === 0)) return fail();
+  }
+  return w;
+}
+export type WorkflowPreference = { participating: boolean; model: string | null; effort: string | null; revision: number; dispatch_window?: DispatchWindow | null };
 export type WorkflowPhase = 'idle' | 'checking' | 'running' | 'exited' | 'stopped' | 'failed';
 export type AccountWorkflowState = { profile_id: string; preference: WorkflowPreference; phase: WorkflowPhase; started_at: number | null; supported: boolean };
 export type WorkflowModel = { id: string; label: string; efforts: string[]; default_effort: string; is_default: boolean };
@@ -13,6 +27,7 @@ export function parseWorkflowState(raw: unknown, id: string): AccountWorkflowSta
     || !p || typeof p.participating !== 'boolean' || !Number.isSafeInteger(p.revision) || p.revision < 0
     || !(p.model === null || validModel(p.model)) || !(p.effort === null || validEffort(p.effort)) || (p.model === null && p.effort !== null)
     || !(value.started_at === null || Number.isSafeInteger(value.started_at))) throw new Error('Invalid workflow');
+  if (p.dispatch_window != null) parseDispatchWindow(p.dispatch_window);
   return value;
 }
 
@@ -40,7 +55,7 @@ export function workflowError(code: unknown, chinese: boolean): string {
     cli_unavailable: ['未找到原生 Codex CLI，请先安装官方 Windows CLI。', 'Native Codex CLI not found. Install the official Windows CLI first.'],
     source_changed: ['账号目录或登录已改变，请重新读取后再试。', 'The directory or login changed. Read it again before retrying.'],
     login_unavailable: ['此目录没有可读取的登录，请先按添加账号指引完成登录。', 'No readable login in this directory. Complete the account guide first.'],
-    launch_disabled: ['已关闭参与调度，本次未启动终端。', 'Participation is off. No terminal was started.'],
+    launch_disabled: ['参与调度已关闭或不在允许时间段，本次未启动终端。', 'Participation is off or outside the allowed window. No terminal was started.'],
     selection_changed: ['启动期间设置已改变，请按新设置重新打开。', 'Settings changed during startup. Open again with the new settings.'],
     selection_unavailable: ['所选模型或思考强度当前不可用，请重新读取模型。', 'The selected model or effort is unavailable. Read available models again.'],
     quota_or_identity_unavailable: ['暂不能启动：需确认 ChatGPT 登录、未过期的可用额度，以及明确为零且非无限的信用余额。请刷新账号信息后重试。', 'Cannot start: verify ChatGPT login, current available quota, and an explicitly zero, non-unlimited credit balance. Refresh account information and retry.'],

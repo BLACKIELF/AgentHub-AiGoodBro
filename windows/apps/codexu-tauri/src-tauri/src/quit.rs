@@ -75,6 +75,9 @@ pub fn ask(app: &AppHandle) {
             handle
                 .state::<commands::cli_workflow::WorkflowState>()
                 .begin_force_quit();
+            handle
+                .state::<commands::task_hub::HubState>()
+                .begin_force_quit();
             handle.state::<NativeServices>().seal_accounts_for_exit();
             crate::compact_projection::shutdown(&handle);
             // Arm the independent exit deadline before any cleanup is attempted.
@@ -96,6 +99,9 @@ pub fn ask(app: &AppHandle) {
                 .name("agb-exit-cleanup".into())
                 .spawn(move || {
                     crate::compact_ui::shutdown(&cleanup_handle);
+                    commands::task_hub::force_stop_owned(
+                        &cleanup_handle.state::<commands::task_hub::HubState>(),
+                    );
                     cleanup_handle.state::<NativeServices>().force_stop_owned();
                     commands::cli_workflow::force_stop_owned(
                         &cleanup_handle.state::<commands::cli_workflow::WorkflowState>(),

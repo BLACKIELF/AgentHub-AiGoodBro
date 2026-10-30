@@ -5,7 +5,7 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Core domain models and data readers for Codex Account Manager Next on Windows"
+description = "Core domain models and data readers for AiGoodBro on Windows"
 
 [dependencies]
 serde.workspace = true

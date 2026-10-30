@@ -1,14 +1,16 @@
 [package]
 name = "codexu-tauri"
 version = "3.0.0"
-description = "Codex Account Manager Next Windows desktop app"
-authors = ["Codex Account Manager Next contributors"]
+description = "AiGoodBro Windows desktop app"
+authors = ["AiGoodBro contributors"]
 license = "MIT"
-repository = "https://github.com/BLACKIELF/codex-account-manager-next"
+repository = "https://github.com/BLACKIELF/AgentHub-AiGoodBro"
 edition = "2021"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+serde_json = { workspace = true }
+sha2 = "0.10"
 
 [dependencies]
 codexu-core = { path = "../../../crates/codexu-core" }

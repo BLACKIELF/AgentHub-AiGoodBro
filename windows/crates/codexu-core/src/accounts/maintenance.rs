@@ -252,7 +252,7 @@ struct Credential {
     active_identity: bool,
 }
 #[derive(Clone, Debug, PartialEq)]
-enum Outcome {
+pub(super) enum Outcome {
     Succeeded,
     Reset,
     NothingToReset,
@@ -261,15 +261,27 @@ enum Outcome {
     NotSent,
     Unknown,
 }
-struct Execution {
-    outcome: Outcome,
-    verified: Option<super::super::VerifiedCredential>,
+pub(super) struct Execution {
+    pub(super) outcome: Outcome,
+    pub(super) verified: Option<super::super::VerifiedCredential>,
 }
-struct Card {
-    id: String,
-    expires_at_ms: i64,
-    fingerprint: String,
+pub(super) struct Card {
+    pub(super) id: String,
+    pub(super) expires_at_ms: i64,
+    pub(super) fingerprint: String,
 }
+pub(super) fn manual_card(value: &Value, expected: &str, time: i64) -> Result<Card> {
+    card(value, expected, time)
+}
+pub(super) fn manual_consume(
+    home: &Path,
+    credential: &super::super::identity::StoredCredential,
+    claim: &dyn Fn(&Card) -> Result<String>,
+    admit: &dyn Fn() -> Result<()>,
+) -> Execution {
+    native::manual_reset(home, credential, claim, admit)
+}
+
 trait Runtime: Send + Sync {
     fn available(&self) -> bool;
     fn warmup(
@@ -320,6 +332,21 @@ impl AccountMaintenanceService {
             exiting: AtomicBool::new(false),
             monitor_active: AtomicBool::new(false),
         }))
+    }
+    /// Manual actions share only identity-specific reset reconciliation, never
+    /// the automatic occupancy/idle policy. The shared reset-flight lock is
+    /// held by the caller, so a durable automatic claim cannot race this read.
+    pub(super) fn manual_reset_admission(&self, identity: &str) -> Result<()> {
+        let saved = read(&self.path)?;
+        if saved.entries.iter().any(|e| {
+            e.identity == identity
+                && e.kind == "reset_credit"
+                && e.card_hash.is_some()
+                && matches!(e.phase.as_str(), "running" | "uncertain")
+        }) {
+            return Err(Failure::RecoveryRequired);
+        }
+        Ok(())
     }
     pub fn preferences(&self) -> Result<AccountMaintenancePreferences> {
         let settings = self
@@ -414,6 +441,23 @@ impl AccountMaintenanceService {
                 s.reset_authorizations.remove(profile_id);
             }
         })
+    }
+    /// Display only: never project another identity's saved history after a slot relogin.
+    pub(super) fn history_for_identity(
+        &self,
+        profile: &str,
+        identity: &str,
+    ) -> Result<Vec<MaintenanceEntryDto>> {
+        let state = self.state.lock().map_err(|_| Failure::Unavailable)?;
+        Ok(state
+            .saved
+            .entries
+            .iter()
+            .filter(|entry| {
+                entry.profile_id == profile && entry.identity == identity && entry.kind == "warmup"
+            })
+            .map(Into::into)
+            .collect())
     }
     pub fn status(&self) -> Result<AccountMaintenanceStatus> {
         let s = self.state.lock().map_err(|_| Failure::Unavailable)?;
@@ -555,6 +599,16 @@ impl AccountMaintenanceService {
         {
             return Err(Failure::RecoveryRequired);
         }
+        // Share only the reset operation fence with explicit manual redemption.
+        // This does not hold the account vault/proxy/task reservation.
+        let _manual_reset_guard = if reset {
+            Some(
+                super::manual_accounts::automatic_reset_guard(&self.manager, &identity)
+                    .map_err(account_error)?,
+            )
+        } else {
+            None
+        };
         let _mutation = self
             .manager
             .mutation

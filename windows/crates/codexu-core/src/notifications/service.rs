@@ -323,6 +323,11 @@ impl NotificationService {
                             .map(Queued::Event)
                             .or_else(|| q.quotas.pop_first().map(|(_, o)| Queued::Quota(o)))
                     });
+                    match service.drain_manual_resets_controlled(Some((&cancelled, &poll))) {
+                        Ok(receipts) if !receipts.is_empty() => changed(),
+                        Err(e) => service.record_failure(e.0),
+                        _ => (),
+                    }
                     if let Some(queued) = queued {
                         let events = match queued {
                             Queued::Event(e) => Ok(vec![e]),
@@ -790,6 +795,8 @@ impl NotificationService {
                 .iter()
                 .filter(|(kind, c)| {
                     c.enabled
+                        && (!matches!(event.body, EventBody::ManualReset { .. })
+                            || **kind == ChannelKind::Feishu)
                         && (!matches!(event.body, EventBody::CardsChanged { .. })
                             || v.card_changes.contains_key(&super::hash(
                                 format!("{}:{}", kind.id(), event.key).as_bytes(),
@@ -982,6 +989,7 @@ impl NotificationService {
     }
     fn event_current(v: &Vault, event: &NotificationEvent, now: i64) -> bool {
         event.current(now)
+            && super::manual_reset::current(v, event)
             && event
                 .public_revision
                 .is_none_or(|rev| v.public_reset.enabled && v.public_reset.revision == rev)
@@ -1004,6 +1012,9 @@ impl NotificationService {
         event: &NotificationEvent,
         control: Option<(&AtomicBool, &Mutex<Option<Arc<AtomicBool>>>)>,
     ) -> Result<DeliveryReceipt> {
+        if matches!(event.body, EventBody::ManualReset { .. }) && kind != ChannelKind::Feishu {
+            return fail("notification_filtered");
+        }
         let (op, c) = self.operation(kind)?;
         if event
             .expected_channel_revision
@@ -1111,6 +1122,28 @@ impl NotificationService {
             .map(|k| super::hash(format!("{}:{k}", kind.id()).as_bytes()))
             .collect::<Vec<_>>();
         let reserved = self.storage.change(|v| {
+            if let EventBody::CardsChanged {
+                previous,
+                available,
+                previous_at,
+                observed_at,
+            } = event.body
+            {
+                if kind == ChannelKind::Feishu
+                    && event.proof.as_ref().is_some_and(|(account, _)| {
+                        super::manual_reset::explains_decrease(
+                            v,
+                            account,
+                            previous,
+                            available,
+                            previous_at,
+                            observed_at,
+                        )
+                    })
+                {
+                    return fail("notification_filtered");
+                }
+            }
             if !Self::event_current(v, event, super::now())
                 || v.configs
                     .get(&kind)
@@ -1129,6 +1162,9 @@ impl NotificationService {
                 return fail("notification_store_capacity");
             }
             for key in &keys {
+                if let EventBody::ManualReset { ref event_hash, .. } = event.body {
+                    super::manual_reset::mark_attempt(v, event_hash, super::now())?;
+                }
                 if let Some(pending) = v.card_changes.get_mut(key) {
                     pending.last_attempt_at = Some(super::now());
                 }

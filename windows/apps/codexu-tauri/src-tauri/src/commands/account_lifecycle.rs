@@ -115,54 +115,9 @@ pub async fn open_account_login_page(
     attempt_id: String,
 ) -> Result<(), String> {
     blocking(state.manager()?, move |manager| {
-        let url = manager.account_login_page(&attempt_id)?;
-        open_official_codex_login_page(url)
+        manager.open_account_login_browser(&attempt_id)
     })
     .await
-}
-
-fn open_official_codex_login_page(url: &str) -> AccountResult<()> {
-    if url != "https://auth.openai.com/codex/device" {
-        return Err(codexu_core::accounts::AccountError {
-            code: "login_page_unavailable",
-        });
-    }
-    #[cfg(windows)]
-    {
-        #[link(name = "shell32")]
-        unsafe extern "system" {
-            fn ShellExecuteW(
-                window: *mut std::ffi::c_void,
-                operation: *const u16,
-                file: *const u16,
-                parameters: *const u16,
-                directory: *const u16,
-                show: i32,
-            ) -> isize;
-        }
-        let verb: Vec<u16> = "open\0".encode_utf16().collect();
-        let page: Vec<u16> = url.encode_utf16().chain(std::iter::once(0)).collect();
-        let result = unsafe {
-            ShellExecuteW(
-                std::ptr::null_mut(),
-                verb.as_ptr(),
-                page.as_ptr(),
-                std::ptr::null(),
-                std::ptr::null(),
-                1,
-            )
-        };
-        if result > 32 {
-            return Ok(());
-        }
-        Err(codexu_core::accounts::AccountError {
-            code: "login_browser_unavailable",
-        })
-    }
-    #[cfg(not(windows))]
-    Err(codexu_core::accounts::AccountError {
-        code: "windows_required",
-    })
 }
 
 #[tauri::command]

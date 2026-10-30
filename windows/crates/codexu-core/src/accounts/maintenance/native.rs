@@ -23,7 +23,7 @@ impl Runtime for NativeRuntime {
     ) -> Execution {
         #[cfg(windows)]
         {
-            reset(home, credential, claim, admit)
+            reset(home, credential, claim, admit, true)
         }
         #[cfg(not(windows))]
         {
@@ -34,6 +34,30 @@ impl Runtime for NativeRuntime {
             }
         }
     }
+}
+pub(super) fn manual_reset(
+    home: &Path,
+    credential: &super::super::super::identity::StoredCredential,
+    claim: &dyn Fn(&Card) -> Result<String>,
+    admit: &dyn Fn() -> Result<()>,
+) -> Execution {
+    #[cfg(windows)]
+    {
+        reset(home, credential, claim, admit, false)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (home, credential, claim, admit);
+        Execution {
+            outcome: Outcome::NotSent,
+            verified: None,
+        }
+    }
+}
+fn card_unchanged(selected: &Card, latest: &Card, require_unchanged_quota: bool) -> bool {
+    selected.id == latest.id
+        && selected.expires_at_ms == latest.expires_at_ms
+        && (!require_unchanged_quota || selected.fingerprint == latest.fingerprint)
 }
 #[cfg(not(windows))]
 fn warmup(
@@ -64,6 +88,7 @@ fn reset(
     credential: &super::super::super::identity::StoredCredential,
     claim: &dyn Fn(&Card) -> Result<String>,
     admit: &dyn Fn() -> Result<()>,
+    require_unchanged_quota: bool,
 ) -> Execution {
     use super::super::super::native::{maintenance_executable, process};
     let not_sent = || Execution {
@@ -109,7 +134,14 @@ fn reset(
     else {
         return not_sent();
     };
-    runtime.block_on(reset_async(&executable, home, credential, claim, admit))
+    runtime.block_on(reset_async(
+        &executable,
+        home,
+        credential,
+        claim,
+        admit,
+        require_unchanged_quota,
+    ))
 }
 #[cfg(windows)]
 async fn reset_async(
@@ -118,6 +150,7 @@ async fn reset_async(
     credential: &super::super::super::identity::StoredCredential,
     claim: &dyn Fn(&Card) -> Result<String>,
     admit: &dyn Fn() -> Result<()>,
+    require_unchanged_quota: bool,
 ) -> Execution {
     use super::super::super::native::process;
     use futures_util::{SinkExt, StreamExt};
@@ -176,7 +209,7 @@ async fn reset_async(
   let selected=card(&q,&credential.identity.account_id,now())?;let key=claim(&selected)?;
   // Re-read the exact card/account and quota in this same owned connection.
   let q2=rpc!("account/rateLimits/read",Value::Null);let latest=card(&q2,&credential.identity.account_id,now())?;
-  if latest.id!=selected.id||latest.expires_at_ms!=selected.expires_at_ms||latest.fingerprint!=selected.fingerprint{return Err(Failure::IdentityChanged);}quota=Some(q2);
+  if !card_unchanged(&selected,&latest,require_unchanged_quota){return Err(Failure::IdentityChanged);}quota=Some(q2);
   admit()?;outcome=Outcome::Unknown;
   let value=rpc!("account/rateLimitResetCredit/consume",json!({"idempotencyKey":key,"creditId":selected.id}));
   outcome=match value.get("outcome").and_then(Value::as_str){Some("reset")=>Outcome::Reset,Some("nothingToReset")=>Outcome::NothingToReset,Some("noCredit")=>Outcome::NoCredit,Some("alreadyRedeemed")=>Outcome::AlreadyRedeemed,_=>Outcome::Unknown};
@@ -214,6 +247,26 @@ fn version_supported(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn manual_card_freshness_allows_concurrent_quota_usage_but_auto_stays_strict() {
+        let a = Card {
+            id: "synthetic-card".into(),
+            expires_at_ms: 1000,
+            fingerprint: "a".repeat(64),
+        };
+        let mut b = Card {
+            id: a.id.clone(),
+            expires_at_ms: a.expires_at_ms,
+            fingerprint: "b".repeat(64),
+        };
+        assert!(!card_unchanged(&a, &b, true));
+        assert!(card_unchanged(&a, &b, false));
+        b.id = "different-card".into();
+        assert!(!card_unchanged(&a, &b, false));
+        b.id = a.id.clone();
+        b.expires_at_ms = 1001;
+        assert!(!card_unchanged(&a, &b, false));
+    }
     #[test]
     fn reset_cli_version_is_actual_and_minimum_154() {
         assert!(version_supported("codex-cli 0.154.0"));

@@ -19,9 +19,12 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   windows:
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     runs-on: windows-latest
     # Native scanner validation now precedes workspace tests and both installers.
     timeout-minutes: 120
@@ -112,8 +115,49 @@ jobs:
             dist/windows-readiness/report.json
             dist/windows-readiness/source-diagnostics.json
             dist/windows-readiness/proxy-build/*.json
+            dist/windows-readiness/hub-build/*.json*
+            dist/windows-readiness/hub-build/*.log
             dist/windows-readiness/token-monitor-build/scanner/SCANNER-RECEIPT.json
             dist/windows-readiness/token-monitor-build/resource-pin.txt
             windows/apps/codexu-tauri/src-tauri/resources/proxy/resource-receipt.json
             windows/apps/codexu-tauri/src-tauri/resources/token-monitor/WINDOWS-RESOURCES.json
+            windows/apps/codexu-tauri/src-tauri/resources/companion-hub/WINDOWS-RESOURCES.json
           if-no-files-found: ignore
+
+  installer-upgrade:
+    name: Installer upgrade (${{ matrix.installer }})
+    needs: windows
+    runs-on: windows-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        installer: [msi, nsis]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download this run's new AiGoodBro installers
+        uses: actions/download-artifact@v4
+        with:
+          name: aigoodbro-windows-${{ needs.windows.outputs.version }}
+          path: ${{ runner.temp }}/aigoodbro-upgrade-new
+      - name: Download exact previously accepted Windows installers
+        uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: 40952488530
+          name: aigoodbro-windows-3.0.0
+          path: ${{ runner.temp }}/aigoodbro-upgrade-old
+      - name: Verify isolated install upgrade and uninstall without launching the app
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ needs.windows.outputs.version }}
+          INSTALLER_KIND: ${{ matrix.installer }}
+        run: |
+          .\windows\scripts\Test-InstallerUpgrade.ps1 -InstallerKind $env:INSTALLER_KIND -OldPackageDirectory "$env:RUNNER_TEMP\aigoodbro-upgrade-old" -NewPackageDirectory "$env:RUNNER_TEMP\aigoodbro-upgrade-new" -Version $env:RELEASE_VERSION -OutputDirectory "$env:RUNNER_TEMP\aigoodbro-upgrade-evidence"
+      - name: Preserve installer upgrade evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: aigoodbro-windows-upgrade-${{ matrix.installer }}-${{ needs.windows.outputs.version }}
+          path: ${{ runner.temp }}/aigoodbro-upgrade-evidence/*
+          if-no-files-found: error

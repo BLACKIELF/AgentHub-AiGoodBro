@@ -83,6 +83,7 @@ Assert-True (
   [bool]$fullscreenRun.accessibility.renderer_present
 ) 'Native capture must verify a real UIA Document, Dashboard tab and renderer.'
 Assert-True ([bool]$fullscreenRun.window.maximized) 'Overview was not captured from a maximized window.'
+Assert-True ($fullscreenRun.window.title -ceq 'AiGoodBro') 'The rendered native main window still uses the legacy product title.'
 Assert-True (
   $fullscreenRun.window.activation_mode -eq 'non-activating' -and
   $fullscreenRun.window.foreground_policy -eq 'preserve active window' -and

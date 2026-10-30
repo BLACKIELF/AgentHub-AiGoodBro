@@ -26,6 +26,7 @@ export async function installTauriStub(page, { settings, dashboard, windowLabel 
       const statistics={phase:'idle',revision:0,contextKey:null,sources:[],timezone:null,snapshot:null,tokenRate:null,failureCode:null};
 
       const responses = {
+        get_task_hub: { supported: true, connected: false, workspace: null, profileId: null, overview: null },
         list_profiles: [],
         list_managed_accounts: [],
         list_claude_subscriptions: [],
