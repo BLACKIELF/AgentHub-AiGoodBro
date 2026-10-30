@@ -161,7 +161,7 @@ try {
         throw 'The reviewed Windows installer templates require tauri-cli 2.6.2.'
     }
     Invoke-Checked "cargo" @(
-        "+$Toolchain", "tauri", "build",
+        "+$Toolchain", "tauri", "build", "--verbose",
         "--config", $TauriConfig,
         "--bundles", "msi,nsis"
     )
