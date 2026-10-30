@@ -807,6 +807,211 @@ pub fn force_stop_owned(hub: &HubState) {
 mod tests {
     use super::*;
     #[test]
+    #[cfg_attr(
+        not(windows),
+        ignore = "requires the prepared Windows Hub and owned Job Object"
+    )]
+    fn windows_settings_roundtrip_through_pinned_hub() {
+        use crate::app_state::AppConfig;
+        use codexu_core::{local_cli::LocalCliKind, workflow::WorkflowPreferences};
+        use sha2::{Digest, Sha256};
+
+        // Exercise the real Rust writers and the staged, hash-pinned Go reader.
+        // Every identity, credential and quota is synthetic. Draft/cancel only:
+        // this test never approves a task or starts a model command.
+        struct RunningHub(Session);
+        impl Drop for RunningHub {
+            fn drop(&mut self) {
+                if !self.0.process.has_exited().unwrap_or(false) {
+                    let _ = self.0.process.stop();
+                }
+            }
+        }
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().canonicalize().unwrap();
+        let data = root.join("app-data");
+        let home = root.join("synthetic-home");
+        let workspace = root.join("workspace");
+        std::fs::create_dir(&workspace).unwrap();
+        let files = HubFiles::open(&data, &workspace, "synthetic-managed-id").unwrap();
+        let auth = br#"{"fixture":"synthetic-credential-not-for-login"}"#;
+        codexu_core::atomic_settings::write_json(&home.join("auth.json"), auth, |_| Ok(()))
+            .unwrap();
+        let mut settings = AppConfig {
+            codex_root: home.clone(),
+            cache_dir: root.join("cache"),
+            ..Default::default()
+        };
+        settings
+            .profiles
+            .add(
+                LocalCliKind::Codex,
+                "synthetic-account".into(),
+                home.clone(),
+            )
+            .unwrap();
+        settings.save(&data).unwrap();
+        let mut preferences = WorkflowPreferences::default();
+        preferences.profiles.insert(
+            1,
+            WorkflowPreference {
+                participating: true,
+                model: Some("gpt-6-sol".into()),
+                effort: Some("high".into()),
+                revision: 1,
+                dispatch_window: None,
+            },
+        );
+        super::super::cli_workflow::save_preferences(&data, &preferences).unwrap();
+        let now = chrono::Utc::now().timestamp();
+        let identity = format!(
+            "{:x}",
+            Sha256::digest(b"fixture@example.invalid\0synthetic-account")
+        );
+        let manager = json!({"profiles":[{
+            "name":"account-1", "codexHomePath":home, "isSystemProfile":false,
+            "automaticSwitchParticipation":true,
+            "executionPreference":{"model":"gpt-6-sol","reasoningEffort":"high","serviceTier":"default","subagentMode":"standard"},
+            "windowsBinding":{"authSha256":format!("{:x}",Sha256::digest(auth)),"credentialExpiresAtMs":(now+600)*1000,"quotaObservedAtMs":now*1000,"identityHash":identity,"workflowRevision":1},
+            "lastSnapshot":{"email":"fixture@example.invalid","accountID":"synthetic-account","planType":"plus","quotaReadSucceeded":true,"fetchedAt":now-978307200,
+                "fiveHour":{"usedPercent":1,"resetsAt":now-978307200+3600},
+                "sevenDay":{"usedPercent":1,"resetsAt":now-978307200+604800}}
+        }]});
+        let token = format!("{}{}", nonce().unwrap(), nonce().unwrap());
+        let helper = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("resources/companion-hub/aigoodbro-hub.exe");
+        let mut guard = lock_executable(&helper).unwrap();
+        codexu_core::accounts::hub_snapshot::verify_helper(
+            &mut guard,
+            option_env!("AIGOODBRO_HUB_BINARY_SHA256"),
+        )
+        .unwrap();
+        let config = json!({"listen":"127.0.0.1:0","requireToken":true,"tokenFile":files.token_file(),"dataDir":files.data(),"readyFile":files.ready(),"managerSnapshotPath":files.manager(),"activityDirectory":files.activity(),"workflowPreferencesPath":data.join("workflow-preferences-v1.json"),"workflowCatalogPath":data.join("settings.json"),"workflowProfileId":1,"approvalTTLSeconds":300,"approvalQuotaMaxAgeSeconds":60,"mode":"workspace-write","claudeMaxBudgetUSD":1,"accountStrategy":"system","accounts":[{"alias":"account-1","home":home}],"commands":{"codex":std::env::current_exe().unwrap()},"projects":{"workspace":workspace}});
+        files.write_inputs(&config, &manager, &token).unwrap();
+        let environment = codexu_core::local_cli::launch::Environment::codex(&home).unwrap();
+        let sink = std::fs::OpenOptions::new().write(true).open("NUL").unwrap();
+        let process = OwnedConsole::start_registered(
+            &helper,
+            &workspace,
+            &[
+                "--config".into(),
+                files.config().to_string_lossy().into_owned(),
+            ],
+            guard,
+            &environment,
+            "AiGoodBro isolated Hub fixture",
+            None,
+            None,
+            Some(&sink),
+        )
+        .unwrap();
+        let mut running = RunningHub(Session {
+            quitting: Arc::new(AtomicBool::new(false)),
+            process,
+            files,
+            endpoint: "127.0.0.1:1".parse().unwrap(),
+            token,
+            needs_exit: false,
+            profile_id: 1,
+            managed_id: "synthetic-managed-id".into(),
+            alias: "account-1".into(),
+            identity,
+            home: home.clone(),
+            leases: BTreeMap::new(),
+            pending: BTreeMap::new(),
+        });
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            assert!(
+                !running.0.process.has_exited().unwrap(),
+                "isolated Hub exited before ready"
+            );
+            if let Some(value) = running.0.files.read_ready().unwrap() {
+                running.0.endpoint = endpoint(&value, running.0.process.pid()).unwrap();
+                break;
+            }
+            assert!(Instant::now() < deadline, "isolated Hub ready deadline");
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        let create = |session: &mut Session, id: &str| {
+            request(
+                session,
+                "/api/tasks",
+                Some(
+                    &json!({"requestId":id,"agent":"codex","project":"workspace","accountAlias":"account-1","prompt":"Synthetic draft only; never approve or execute."}),
+                ),
+            )
+        };
+        let cancel = |session: &mut Session, task: &Value, id: &str| {
+            assert_eq!(task["state"], "awaiting_approval");
+            let task_id = task["id"].as_str().unwrap();
+            assert!(valid_id(task_id));
+            let result = request(
+                session,
+                &format!("/api/tasks/{task_id}/cancel"),
+                Some(&json!({"requestId":id,"expectedVersion":task["version"]})),
+            )
+            .unwrap();
+            assert_eq!(result["state"], "cancelled");
+        };
+        let first = create(&mut running.0, "fixture-first").unwrap();
+        cancel(&mut running.0, &first, "fixture-cancel-first");
+
+        // Atomic replacements must remain readable, and policy changes must
+        // take effect immediately instead of admitting a stale snapshot.
+        preferences.profiles.get_mut(&1).unwrap().participating = false;
+        super::super::cli_workflow::save_preferences(&data, &preferences).unwrap();
+        assert_eq!(
+            create(&mut running.0, "fixture-disabled").unwrap_err(),
+            "hub_account_dispatch_disabled"
+        );
+        preferences.profiles.get_mut(&1).unwrap().participating = true;
+        preferences.profiles.get_mut(&1).unwrap().revision = 2;
+        super::super::cli_workflow::save_preferences(&data, &preferences).unwrap();
+        assert_eq!(
+            create(&mut running.0, "fixture-revision").unwrap_err(),
+            "hub_dispatch_policy_unavailable"
+        );
+        preferences.profiles.get_mut(&1).unwrap().revision = 1;
+        super::super::cli_workflow::save_preferences(&data, &preferences).unwrap();
+
+        settings.profiles.entries[0].root = workspace.clone();
+        settings.save(&data).unwrap();
+        assert_eq!(
+            create(&mut running.0, "fixture-remapped").unwrap_err(),
+            "hub_dispatch_policy_unavailable"
+        );
+        settings.profiles.entries[0].root = home.clone();
+        settings.save(&data).unwrap();
+        codexu_core::atomic_settings::write_json(
+            &home.join("auth.json"),
+            br#"{"fixture":"changed"}"#,
+            |_| Ok(()),
+        )
+        .unwrap();
+        assert_eq!(
+            create(&mut running.0, "fixture-auth-changed").unwrap_err(),
+            "hub_dispatch_policy_unavailable"
+        );
+        codexu_core::atomic_settings::write_json(&home.join("auth.json"), auth, |_| Ok(()))
+            .unwrap();
+        let last = create(&mut running.0, "fixture-final").unwrap();
+        cancel(&mut running.0, &last, "fixture-cancel-final");
+        let overview = request(&mut running.0, "/api/overview", None).unwrap();
+        let tasks = overview["tasks"].as_array().unwrap();
+        assert_eq!(tasks.len(), 2);
+        assert!(tasks.iter().all(|task| task["state"] == "cancelled"));
+        running.0.process.stop().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !running.0.process.has_exited().unwrap() {
+            assert!(Instant::now() < deadline, "isolated Hub did not exit");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        drop(running);
+        drop(sink);
+        temporary.close().unwrap();
+    }
+    #[test]
     fn endpoint_binds_pid_loopback_and_schema() {
         assert!(endpoint(
             &json!({"schemaVersion":1,"pid":7,"listen":"127.0.0.1:5000"}),

@@ -13,7 +13,7 @@
     },
     {
       "path": "codex_board.go",
-      "sha256": "b537bfbfdbf8cfc243c0c50c2abbb1721e21df8423ca5c34ce404281b6bef6f8"
+      "sha256": "cb2c5efc4b910188a36ee3e34e7076bc11cc61c42a381de022b6afab6f247184"
     },
     {
       "path": "codex_toolbar.go",
@@ -29,7 +29,7 @@
     },
     {
       "path": "desktop_binding_test.go",
-      "sha256": "5f283a13e613a984c86fca83733c554d70652b6e809d6f2e90ef450f7aecf023"
+      "sha256": "a218f5ce02153d2257477d62faa3b84a2f460a9fe50508dbb7852170d7e457fa"
     },
     {
       "path": "desktop_reliability_test.go",
@@ -101,7 +101,7 @@
     },
     {
       "path": "platform_windows_test.go",
-      "sha256": "43b860e6413f2a9627aab716e78bd317548024e74e685cc797d3a83c8a123aca"
+      "sha256": "0686fb986733ebc046e9530c58976e6a7cf8be357b767110948e6b651691c62f"
     },
     {
       "path": "process_other.go",
@@ -125,11 +125,11 @@
     },
     {
       "path": "storage_unix.go",
-      "sha256": "bc0a59d299562e670f99f80687d3c53d346bf3462372a280863e86e739fd687e"
+      "sha256": "f173d6058a33989d04f695c6d33c7bc1e910a2fef8e0d1ac04a1f14ef6ea662c"
     },
     {
       "path": "storage_windows.go",
-      "sha256": "ef47383e2abbdf79b7c9399314332413dd717acd84258ae09b88d3910e1428a7"
+      "sha256": "6731aded65e70b392ba379e07bbeecd6600f1772b95dbbf309a73558326835fb"
     },
     {
       "path": "task_messages.go",
@@ -157,7 +157,7 @@
     },
     {
       "path": "workflow_policy_test.go",
-      "sha256": "349add7e6e96f0f4a1ff6f351387e48def40b20252e20c55c8f957e2e13df5ae"
+      "sha256": "3a8dfe676017da79a72f4d3cc254969476a07f4cb0c4528720c765322796e7a4"
     }
   ],
   "distributionChanges": [

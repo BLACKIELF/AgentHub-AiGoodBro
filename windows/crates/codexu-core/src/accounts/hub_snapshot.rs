@@ -174,9 +174,17 @@ impl HubFiles {
         )
     }
     pub fn read_ready(&self) -> AccountResult<Option<Value>> {
-        storage::read_optional(&self.ready(), 4096)?
-            .map(|b| serde_json::from_slice(&b).map_err(|_| fail("hub_invalid_ready")))
-            .transpose()
+        let Some(bytes) = storage::read_optional(&self.ready(), 4096)? else {
+            return Ok(None);
+        };
+        match serde_json::from_slice(&bytes) {
+            Ok(value) => Ok(Some(value)),
+            // The owned helper creates this private file before writing it.
+            // An unfinished JSON record is still pending within the caller's
+            // existing process-alive and five-second readiness deadline.
+            Err(error) if error.is_eof() => Ok(None),
+            Err(_) => Err(fail("hub_invalid_ready")),
+        }
     }
 }
 
@@ -224,6 +232,29 @@ pub fn verify_helper(file: &mut File, expected: Option<&str>) -> AccountResult<(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn ready_reader_waits_only_for_incomplete_json() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().canonicalize().unwrap();
+        let files = HubFiles::open(&root.join("app-data"), &root, "fixture").unwrap();
+        assert!(files.read_ready().unwrap().is_none());
+        for bytes in [b"".as_slice(), br#"{"schemaVersion":1,"pid":"#] {
+            storage::atomic_write(&files.ready(), bytes).unwrap();
+            assert!(files.read_ready().unwrap().is_none());
+        }
+        storage::atomic_write(
+            &files.ready(),
+            br#"{"schemaVersion":1,"pid":7,"listen":"127.0.0.1:1234"}"#,
+        )
+        .unwrap();
+        assert_eq!(files.read_ready().unwrap().unwrap()["pid"], 7);
+        storage::atomic_write(&files.ready(), b"{invalid}").unwrap();
+        assert_eq!(files.read_ready().unwrap_err().code, "hub_invalid_ready");
+        storage::atomic_write(&files.ready(), &vec![b' '; 4097]).unwrap();
+        assert!(files.read_ready().is_err());
+        drop(files);
+        temporary.close().unwrap();
+    }
     #[test]
     fn locked_helper_requires_binding_and_detects_changes() {
         use sha2::{Digest, Sha256};

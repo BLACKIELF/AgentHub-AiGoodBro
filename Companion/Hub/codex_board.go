@@ -290,7 +290,7 @@ func loadThreadRefs(dataDir string) (map[string]threadRefRecord, bool, error) {
 }
 
 func saveThreadRefs(dataDir string, refs map[string]threadRefRecord) error {
-	file, err := os.CreateTemp(dataDir, "thread-refs-*.tmp")
+	file, err := createPrivateTemp(dataDir)
 	if err != nil {
 		return fmt.Errorf("thread_refs_write")
 	}

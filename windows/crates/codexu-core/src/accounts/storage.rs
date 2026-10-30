@@ -382,6 +382,37 @@ pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> AccountResult<()> {
         Ok(())
     }
 }
+
+/// Ordinary app settings predate the private account store. Keep legacy
+/// foreign-owned settings on their existing writer, without taking ownership.
+/// Current-user-owned inputs use the same explicit-owner atomic writer as Hub
+/// inputs, including when Windows would otherwise choose a group owner.
+#[cfg(windows)]
+pub(crate) fn write_private_settings_if_owned(path: &Path, bytes: &[u8]) -> AccountResult<bool> {
+    ensure_no_links(path)?;
+    let parent = path.parent().ok_or_else(|| fail("account_paths_invalid"))?;
+    let mut missing = Vec::new();
+    let mut next = parent;
+    while !next.exists() {
+        missing.push(next);
+        next = next.parent().ok_or_else(|| fail("account_paths_invalid"))?;
+    }
+    for directory in missing.into_iter().rev() {
+        create_private_directory(directory)?;
+    }
+    for item in [parent, path] {
+        if item == path && !path.exists() {
+            continue;
+        }
+        match super::native::private::check_owner(item) {
+            Ok(()) => {}
+            Err(error) if error.code == "private_storage_owner_rejected" => return Ok(false),
+            Err(error) => return Err(error),
+        }
+    }
+    atomic_write(path, bytes)?;
+    Ok(true)
+}
 pub(crate) fn restore_owned(
     home: &Path,
     written: &[u8],

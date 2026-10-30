@@ -1,21 +1,21 @@
 package main
 
 import (
-	"os"
 	"path/filepath"
 	"testing"
 )
 
 func TestDesktopWorkflowReadsFinalAdmissionAndFrozenModel(t *testing.T) {
-	dir := t.TempDir()
+	dir := filepath.Join(t.TempDir(), "owned")
+	if err := ensurePrivateDir(dir); err != nil {
+		t.Fatal(err)
+	}
 	path := filepath.Join(dir, "workflow.json")
 	hub := &Hub{config: Config{WorkflowPreferencesPath: path, WorkflowProfileID: 1}}
 	task := &Task{ExecutionPreference: &executionPreference{Model: "gpt-6-sol", ReasoningEffort: "high"}}
 	write := func(body string) {
 		t.Helper()
-		if err := os.WriteFile(path, []byte(body), 0600); err != nil {
-			t.Fatal(err)
-		}
+		writeDesktopFixture(t, path, []byte(body))
 	}
 	write(`{"profiles":{"1":{"participating":true,"model":"gpt-6-sol","effort":"high","revision":1}}}`)
 	if err := hub.desktopWorkflowAllowed(task); err != nil {

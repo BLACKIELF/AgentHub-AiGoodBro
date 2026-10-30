@@ -113,6 +113,7 @@ jobs:
           name: aigoodbro-windows-readiness-${{ steps.version.outputs.version }}
           path: |
             dist/windows-readiness/report.json
+            dist/windows-readiness/rust-tests.stdout.log
             dist/windows-readiness/source-diagnostics.json
             dist/windows-readiness/proxy-build/*.json
             dist/windows-readiness/hub-build/*.json*

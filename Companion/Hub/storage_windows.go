@@ -230,6 +230,17 @@ func openPrivateFile(path string, flag int, mode os.FileMode) (*os.File, error) 
 func lockFile(file *os.File) error {
 	return windows.LockFileEx(windows.Handle(file.Fd()), windows.LOCKFILE_EXCLUSIVE_LOCK|windows.LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, &windows.Overlapped{})
 }
+
+// An inherited DACL does not inherit the owner SID. In an elevated process,
+// os.CreateTemp can select Administrators as owner; create our temporary file
+// with the same explicit TokenUser owner and DACL as every other private file.
+func createPrivateTemp(directory string) (*os.File, error) {
+	id, err := newID()
+	if err != nil {
+		return nil, err
+	}
+	return openPrivateFile(filepath.Join(directory, "thread-refs-"+id+".tmp"), os.O_CREATE|os.O_EXCL|os.O_RDWR, 0600)
+}
 func unlockFile(file *os.File) error {
 	return windows.UnlockFileEx(windows.Handle(file.Fd()), 0, 1, 0, &windows.Overlapped{})
 }

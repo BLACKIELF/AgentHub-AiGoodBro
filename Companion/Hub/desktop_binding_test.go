@@ -43,7 +43,17 @@ func newDesktopBindingFixture(t *testing.T) desktopBindingFixture {
 }
 func writeDesktopFixture(t *testing.T, path string, body []byte) {
 	t.Helper()
-	if err := os.WriteFile(path, body, 0600); err != nil {
+	// Match native private writers: a Windows administrator's default owner
+	// may be the Administrators group, which the source gate must reject.
+	file, err := openPrivateFile(path, os.O_CREATE|os.O_WRONLY, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	if err = file.Truncate(0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = file.Write(body); err != nil {
 		t.Fatal(err)
 	}
 }

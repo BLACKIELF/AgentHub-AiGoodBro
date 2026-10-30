@@ -276,8 +276,7 @@ fn opened(
     }
     Ok(unsafe { File::from_raw_handle(handle.cast()) })
 }
-#[cfg(test)]
-fn check_owner(path: &Path) -> AccountResult<()> {
+pub(in crate::accounts) fn check_owner(path: &Path) -> AccountResult<()> {
     super::storage::ensure_no_links(path)?;
     let file = opened(path, 0x0002_0000, 1 | 2 | 4, std::ptr::null(), 3).map_err(|_| error())?;
     PrivateDescriptor::current()?.require_owner(&file)

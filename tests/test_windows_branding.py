@@ -16,7 +16,7 @@ UPGRADE_CODE = "6cd62ac1-9ad0-5e9e-a4e1-c78c6a73fd03"
 
 class WindowsBranding(unittest.TestCase):
     def test_display_brand_keeps_upgrade_and_storage_identity(self):
-        config = json.loads((TAURI / "tauri.conf.json").read_text())
+        config = json.loads((TAURI / "tauri.conf.json").read_text(encoding="utf-8"))
         self.assertEqual(config["productName"], "AiGoodBro")
         self.assertEqual(config["app"]["windows"][0]["title"], "AiGoodBro")
         self.assertEqual(config["identifier"], "com.blackielf.codex-account-manager-next.windows")
@@ -27,15 +27,15 @@ class WindowsBranding(unittest.TestCase):
         self.assertEqual(wix["template"], "installer/wix-main.wxs")
         self.assertEqual(config["bundle"]["windows"]["nsis"]["template"], "installer/nsis-installer.nsi")
         self.assertEqual(config["bundle"]["windows"]["nsis"]["installMode"], "currentUser")
-        self.assertIn('.join("CodexAccountManagerNext")', (TAURI / "src/app_state.rs").read_text())
-        self.assertIn('<title>AiGoodBro</title>', (TAURI.parent / "web/index.html").read_text())
-        settings = (TAURI / "src/commands/settings.rs").read_text()
+        self.assertIn('.join("CodexAccountManagerNext")', (TAURI / "src/app_state.rs").read_text(encoding="utf-8"))
+        self.assertIn('<title>AiGoodBro</title>', (TAURI.parent / "web/index.html").read_text(encoding="utf-8"))
+        settings = (TAURI / "src/commands/settings.rs").read_text(encoding="utf-8")
         self.assertIn('"设置 — AiGoodBro"', settings)
         self.assertIn('"Settings — AiGoodBro"', settings)
 
     def test_installer_changes_reconstruct_exact_pinned_upstream(self):
         directory = TAURI / "installer"
-        receipt = json.loads((directory / "SOURCE.json").read_text())
+        receipt = json.loads((directory / "SOURCE.json").read_text(encoding="utf-8"))
         expected = {
             "nsis-installer.nsi": "fb8e9bb406dc6862a939f71258c14a08c4aa5361",
             "wix-main.wxs": "a11b2ec4381cb05fb0d340b17ef5197ad951529c",
@@ -55,7 +55,7 @@ class WindowsBranding(unittest.TestCase):
                 self.assertEqual(hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest(), blob)
 
     def test_new_and_old_update_asset_names_remain_supported(self):
-        source = (ROOT / "windows/crates/codexu-core/src/updates.rs").read_text()
+        source = (ROOT / "windows/crates/codexu-core/src/updates.rs").read_text(encoding="utf-8")
         for prefix in ("AiGoodBro", "CodexAccountManagerNext"):
             for suffix in (".msi", "-setup.exe"):
                 self.assertIn(prefix + '-{version}-windows-x86_64' + suffix, source)

@@ -27,6 +27,9 @@ func ensurePrivateDir(path string) error {
 func openPrivateFile(path string, flag int, mode os.FileMode) (*os.File, error) {
 	return os.OpenFile(path, flag, mode)
 }
+func createPrivateTemp(directory string) (*os.File, error) {
+	return os.CreateTemp(directory, "thread-refs-*.tmp")
+}
 func privateFilePermissions(file *os.File) error {
 	info, err := file.Stat()
 	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 {

@@ -28,6 +28,7 @@ dirs = { workspace = true }
 tempfile = "3.10"
 
 [dev-dependencies]
+sha2 = "0.10"
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]

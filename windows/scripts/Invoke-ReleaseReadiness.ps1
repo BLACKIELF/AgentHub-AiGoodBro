@@ -27,8 +27,8 @@ function Get-ReleaseReadinessPlan {
     }
     $plan.Add(@{ name = 'rust-format'; executable = 'cargo'; directory = $windows; arguments = @('+1.97.1-x86_64-pc-windows-msvc', 'fmt', '--all', '--', '--check') })
     $plan.Add(@{ name = 'proxy-native-resources'; executable = $PowerShell7; directory = $Root; arguments = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $Root 'windows\scripts\Prepare-ProxyResources.ps1'), '-BuildRoot', (Join-Path $Output 'proxy-build'), '-RunNativeTests') })
-    $plan.Add(@{ name = 'token-monitor-native-resources'; executable = $PowerShell7; directory = $Root; arguments = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $Root 'windows\scripts\Prepare-TokenMonitorResources.ps1'), '-BuildRoot', (Join-Path $Output 'token-monitor-build'), '-RunNativeTests') })
     $plan.Add(@{ name = 'hub-native-resources'; executable = $PowerShell7; directory = $Root; arguments = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $Root 'windows\scripts\Prepare-HubResources.ps1'), '-BuildRoot', (Join-Path $Output 'hub-build'), '-RunNativeTests') })
+    $plan.Add(@{ name = 'token-monitor-native-resources'; executable = $PowerShell7; directory = $Root; arguments = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $Root 'windows\scripts\Prepare-TokenMonitorResources.ps1'), '-BuildRoot', (Join-Path $Output 'token-monitor-build'), '-RunNativeTests') })
     $plan.Add(@{ name = 'rust-tests'; executable = 'cargo'; directory = $windows; arguments = @('+1.97.1-x86_64-pc-windows-msvc', 'test', '--workspace', '--locked') })
     $plan.Add(@{ name = 'web-dependencies'; executable = 'npm.cmd'; directory = $web; arguments = @('ci', '--no-audit', '--no-fund') })
     $plan.Add(@{ name = 'web-tests'; executable = 'npm.cmd'; directory = $web; arguments = @('test') })
@@ -165,6 +165,7 @@ $report = [ordered]@{
     git = $null; source_unchanged = $null; error_code = $null; scope = 'automated_checks_and_packaging'
     powershell_versions = $null
     rust_toolchain = '1.97.1-x86_64-pc-windows-msvc'
+    rust_tests_stdout_sha256 = $null
     native_preflight_report = '.local-artifacts/windows-visual-captures/readiness-' + $runId + '.json'
     packaging_requested = -not [bool]$SkipPackaging
     steps = [Collections.Generic.List[object]]::new(); packages = @()
@@ -185,8 +186,23 @@ $nativeRunner = {
         Write-Host ('Running ' + $step.name)
         $executable = $step.executable
         $arguments = [string[]]$step.arguments
-        & $executable @arguments | Out-Host
-        $code = [int]$LASTEXITCODE
+        if ($step.name -eq 'rust-tests') {
+            $rustLog = Join-Path $OutputDirectory 'rust-tests.stdout.log'
+            $writer = [IO.StreamWriter]::new($rustLog, $false, [Text.UTF8Encoding]::new($false))
+            try {
+                & $executable @arguments | ForEach-Object {
+                    $writer.WriteLine([string]$_)
+                    Write-Host $_
+                }
+                $code = [int]$LASTEXITCODE
+            } finally {
+                $writer.Dispose()
+                $report.rust_tests_stdout_sha256 = (Get-FileHash -LiteralPath $rustLog -Algorithm SHA256).Hash.ToLowerInvariant()
+            }
+        } else {
+            & $executable @arguments | Out-Host
+            $code = [int]$LASTEXITCODE
+        }
         if ($code -eq 0 -and $step.name -eq 'token-monitor-native-resources') {
             # Child process environment changes do not reach this runner. Bind
             # every later Rust build to the exact validated resource manifest.

@@ -122,7 +122,10 @@ pub(super) fn read_preferences(directory: &Path) -> anyhow::Result<WorkflowPrefe
     Ok(result)
 }
 
-fn save_preferences(directory: &Path, preferences: &WorkflowPreferences) -> anyhow::Result<()> {
+pub(super) fn save_preferences(
+    directory: &Path,
+    preferences: &WorkflowPreferences,
+) -> anyhow::Result<()> {
     preferences.validate()?;
     codexu_core::atomic_settings::write_json(
         &directory.join("workflow-preferences-v1.json"),

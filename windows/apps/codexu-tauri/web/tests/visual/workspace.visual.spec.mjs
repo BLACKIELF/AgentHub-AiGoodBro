@@ -139,8 +139,14 @@ test('card size, list and platform filter persist while preserving global number
   await expect(region.getByRole('combobox', { name: 'Card size', exact: true })).toHaveValue('medium');
   await expect(region.locator('.account-directory-grid')).toHaveClass(/is-list/);
   await expect(region).toHaveScreenshot('workspace-accounts-list.png');
-  await page.setViewportSize({ width: 480, height: 1000 });
+  // Keep all three cards inside the scrolling workspace when capturing the
+  // narrow list; a taller locator image alone cannot bypass ancestor clipping.
+  await page.setViewportSize({ width: 480, height: 1600 });
   expect(await region.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+  const last = page.getByTestId('profile-3');
+  await expect(last).toBeInViewport({ ratio: 1 });
+  const lastBounds = await last.boundingBox();
+  expect(lastBounds.y + lastBounds.height).toBeLessThanOrEqual(page.viewportSize().height);
   await expect(region).toHaveScreenshot('workspace-accounts-list-narrow.png');
 });
 

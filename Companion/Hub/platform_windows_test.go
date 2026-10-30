@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"golang.org/x/sys/windows"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -231,7 +232,22 @@ func testNativeUncertainParentExit(t *testing.T, shutdown bool) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		hub.shutdown(ctx)
-		if state, e := windows.WaitForSingleObject(child, 0); e != nil || state != windows.WAIT_OBJECT_0 {
+		select {
+		case <-handle.stopDone:
+		default:
+			t.Fatal("shutdown returned before owned stop completed")
+		}
+		if ctx.Err() != nil || !handle.groupStopped {
+			t.Fatal("shutdown did not confirm empty Job within deadline", ctx.Err(), handle.groupStopped)
+		}
+		deadline, _ := ctx.Deadline()
+		remainingMillis := time.Until(deadline).Milliseconds()
+		if remainingMillis <= 0 {
+			t.Fatal("shutdown exhausted descendant wait budget")
+		}
+		// TerminateJobObject initiates asynchronous termination. Reuse this
+		// same five-second deadline to require the held child to be signaled.
+		if state, e := windows.WaitForSingleObject(child, uint32(remainingMillis)); e != nil || state != windows.WAIT_OBJECT_0 {
 			t.Fatal("explicit shutdown left retained descendant", state, e)
 		}
 		hub.mu.Lock()
@@ -314,14 +330,18 @@ func TestNativeWindowsDesktopSourceAllowsReadOnlyACL(t *testing.T) {
 			t.Fatal(e)
 		}
 		name, _ := windows.UTF16PtrFromString(path)
-		h, e := windows.CreateFile(name, windows.WRITE_DAC, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE, nil, windows.OPEN_EXISTING, windows.FILE_FLAG_OPEN_REPARSE_POINT, 0)
+		h, e := windows.CreateFile(name, windows.WRITE_DAC|windows.READ_CONTROL|windows.FILE_READ_ATTRIBUTES, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE, nil, windows.OPEN_EXISTING, windows.FILE_FLAG_OPEN_REPARSE_POINT, 0)
 		if e != nil {
-			t.Fatal(e)
+			t.Fatal("open ACL fixture", e)
+		}
+		if _, e = windows.GetSecurityInfo(h, windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION); e != nil {
+			windows.CloseHandle(h)
+			t.Fatal("read ACL fixture", e)
 		}
 		e = windows.SetSecurityInfo(h, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION, nil, nil, acl, nil)
 		windows.CloseHandle(h)
 		if e != nil {
-			t.Fatal(e)
+			t.Fatal("set ACL fixture", e)
 		}
 	}
 	setACL("FR")
@@ -462,9 +482,21 @@ func TestNativeWindowsHubApprovalAndCancel(t *testing.T) {
 	if state, err := windows.WaitForSingleObject(child, 1000); err != nil || state != windows.WAIT_OBJECT_0 {
 		t.Fatal("cancelled task left child", state, err)
 	}
-	journal, err := os.ReadFile(filepath.Join(config.DataDir, "events.ndjson"))
+	// Windows byte-range locks also apply to another handle in this process.
+	// Inspect through the owning handle without releasing the journal lock.
+	hub.mu.Lock()
+	info, err := hub.store.file.Stat()
+	var journal []byte
+	if err == nil {
+		journal, err = io.ReadAll(io.NewSectionReader(hub.store.file, 0, info.Size()))
+	}
+	hub.mu.Unlock()
 	if err != nil {
 		t.Fatal(err)
+	}
+	if second, e := openStore(config.DataDir); e == nil {
+		second.Close()
+		t.Fatal("journal inspection released exclusive ownership")
 	}
 	if strings.Contains(string(journal), request.Prompt) {
 		t.Fatal("prompt persisted")
@@ -507,8 +539,25 @@ func TestNativeWindowsPrivateStoreAndLocks(t *testing.T) {
 	if leases, err := hub.readDispatchActivity(); err != nil || len(leases) != 0 {
 		t.Fatal("private activity unreadable", err)
 	}
+	temporary, err := createPrivateTemp(root)
+	if err != nil {
+		t.Fatal("private temporary creation", err)
+	}
+	temporaryPath := temporary.Name()
+	if err = privateFilePermissions(temporary); err != nil {
+		temporary.Close()
+		os.Remove(temporaryPath)
+		t.Fatal("private temporary owner/ACL", err)
+	}
+	temporary.Close()
+	if err = os.Remove(temporaryPath); err != nil {
+		t.Fatal(err)
+	}
 	if err := saveThreadRefs(root, map[string]threadRefRecord{}); err != nil {
 		t.Fatal(err)
+	}
+	if err := saveThreadRefs(root, map[string]threadRefRecord{}); err != nil {
+		t.Fatal("private replacement", err)
 	}
 	if _, exists, err := loadThreadRefs(root); err != nil || !exists {
 		t.Fatal("thread ref roundtrip", err)
@@ -542,14 +591,18 @@ func TestNativeWindowsRejectsBroadACLAndHardlink(t *testing.T) {
 		t.Fatal(err)
 	}
 	name, _ := windows.UTF16PtrFromString(path)
-	h, err := windows.CreateFile(name, windows.WRITE_DAC, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE, nil, windows.OPEN_EXISTING, windows.FILE_FLAG_OPEN_REPARSE_POINT, 0)
+	h, err := windows.CreateFile(name, windows.WRITE_DAC|windows.READ_CONTROL|windows.FILE_READ_ATTRIBUTES, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE, nil, windows.OPEN_EXISTING, windows.FILE_FLAG_OPEN_REPARSE_POINT, 0)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatal("open broad ACL fixture", err)
+	}
+	if _, err = windows.GetSecurityInfo(h, windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION); err != nil {
+		windows.CloseHandle(h)
+		t.Fatal("read broad ACL fixture", err)
 	}
 	err = windows.SetSecurityInfo(h, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION, nil, nil, acl, nil)
 	windows.CloseHandle(h)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatal("set broad ACL fixture", err)
 	}
 	if f, err := openPrivateFile(path, os.O_RDONLY, 0); err == nil {
 		f.Close()

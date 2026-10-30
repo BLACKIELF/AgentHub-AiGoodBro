@@ -245,15 +245,15 @@ jobs:
         shell: pwsh
         run: .\windows\scripts\Prepare-ProxyResources.ps1 -BuildRoot (Join-Path $env:RUNNER_TEMP 'aigoodbro-proxy-validation') -RunNativeTests
 
-      - name: Build and exercise Token Monitor with isolated logs
-        if: ${{ !cancelled() }}
-        shell: pwsh
-        run: .\windows\scripts\Prepare-TokenMonitorResources.ps1 -BuildRoot (Join-Path $env:RUNNER_TEMP 'aigoodbro-statistics-validation') -RunNativeTests
-
       - name: Build and exercise the Windows companion Hub
         if: ${{ !cancelled() }}
         shell: pwsh
         run: .\windows\scripts\Prepare-HubResources.ps1 -BuildRoot (Join-Path $env:RUNNER_TEMP 'aigoodbro-hub-validation') -RunNativeTests
+
+      - name: Build and exercise Token Monitor with isolated logs
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: .\windows\scripts\Prepare-TokenMonitorResources.ps1 -BuildRoot (Join-Path $env:RUNNER_TEMP 'aigoodbro-statistics-validation') -RunNativeTests
 
       - name: Test Windows Rust workspace
         if: ${{ !cancelled() }}
@@ -300,10 +300,29 @@ jobs:
       - name: Render and verify Windows UI fixtures twice
         env:
           CODEXU_VISUAL_BROWSER: chromium
+          CODEXU_VISUAL_ARTIFACT_ROOT: ${{ github.workspace }}/.local-artifacts/web-visual/${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           npx playwright install chromium
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:CODEXU_VISUAL_SCRATCH_ROOT = Join-Path $env:CODEXU_VISUAL_ARTIFACT_ROOT 'baseline'
           npm run test:visual -- --update-snapshots
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:CODEXU_VISUAL_SCRATCH_ROOT = Join-Path $env:CODEXU_VISUAL_ARTIFACT_ROOT 'repeat'
           npm run test:visual
+      - name: Preserve the account-layout failure screenshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: aigoodbro-web-narrow-failures-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            .local-artifacts/web-visual/${{ github.run_id }}-${{ github.run_attempt }}/**/profiles-quota-narrow*.png
+            .local-artifacts/web-visual/${{ github.run_id }}-${{ github.run_attempt }}/**/workspace-cards-medium*.png
+            .local-artifacts/web-visual/${{ github.run_id }}-${{ github.run_attempt }}/**/workspace-accounts-list-narrow*.png
+            .local-artifacts/web-visual/${{ github.run_id }}-${{ github.run_attempt }}/**/profiles.visual-all-quota--*/error-context.md
+            .local-artifacts/web-visual/${{ github.run_id }}-${{ github.run_attempt }}/**/workspace.visual-card-size-*/error-context.md
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7
 
 
   windows-native-visual:

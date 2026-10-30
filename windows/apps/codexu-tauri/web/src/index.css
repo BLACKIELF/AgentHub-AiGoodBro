@@ -1392,6 +1392,9 @@ body {
 .workspace-shell .account-directory-grid.is-cards.is-size-large { grid-template-columns: repeat(auto-fill, minmax(min(100%, 370px), 1fr)); }
 .workspace-shell .account-directory-card { position: relative; padding: 11px; border-radius: 10px; border: 1px solid var(--border); background: var(--surface); box-shadow: none; min-width: 0; }
 .workspace-shell .account-directory-card.is-selected { border-color: var(--selection-stroke); background: var(--selection-fill); }
+/* The card already supplies the backdrop. A blur layer per button makes text
+   rasterization depend on fractional grid positions in Chromium. */
+.workspace-shell .account-directory-card .glass-button { backdrop-filter: none; }
 .account-directory-heading { gap: 6px; min-width: 0; flex-wrap: nowrap; }
 .workspace-shell .account-directory-number { flex-shrink: 0; width: 22px; height: 22px; padding: 0; border-radius: 6px; display: inline-flex; align-items: center; justify-content: center; font: 10px ui-monospace, monospace; white-space: nowrap; line-height: 1; }
 .account-platform-badge { max-width: 84px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex-shrink: 1; }
