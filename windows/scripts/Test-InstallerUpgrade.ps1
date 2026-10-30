@@ -70,7 +70,7 @@ function Run-Values {
 function Assert-NoApp {
     if (@(Get-Process -Name 'codexu-tauri' -ErrorAction SilentlyContinue).Count -ne 0) { throw 'Installer unexpectedly launched the application.' }
 }
-function Execute-Installer([string]$File, [string[]]$Arguments, [string]$Phase) {
+function Execute-Installer([string]$File, [string[]]$Arguments, [string]$Phase, [int[]]$ExpectedExitCodes = @(0, 3010)) {
     Assert-NoApp
     # No /R and no AUTOLAUNCHAPP: the app must never run in this acceptance job.
     $process = Start-Process -FilePath $File -ArgumentList $Arguments -PassThru
@@ -79,7 +79,7 @@ function Execute-Installer([string]$File, [string[]]$Arguments, [string]$Phase) 
         throw "$Phase timed out."
     }
     $process.Refresh()
-    if ($process.ExitCode -notin @(0, 3010)) { throw "$Phase failed with exit code $($process.ExitCode)." }
+    if ($process.ExitCode -notin $ExpectedExitCodes) { throw "$Phase failed with exit code $($process.ExitCode)." }
     Assert-NoApp
 }
 $shortcutRoots = @([Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('CommonDesktopDirectory'), [Environment]::GetFolderPath('Programs'), [Environment]::GetFolderPath('CommonPrograms')) | Where-Object { $_ } | Select-Object -Unique
@@ -99,20 +99,112 @@ function Shortcuts {
     } finally { [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($shell) }
     return $rows
 }
+function Normalize-InstallLocation([string]$Value) {
+    # NSIS writes one quoted absolute path; do not trim arbitrary quotes or
+    # interpret relative paths against the validator's working directory.
+    if ($Value.StartsWith('"') -or $Value.EndsWith('"')) {
+        if ($Value.Length -lt 2 -or -not ($Value.StartsWith('"') -and $Value.EndsWith('"'))) { throw 'Unpaired InstallLocation quotes.' }
+        $Value = $Value.Substring(1, $Value.Length - 2)
+    }
+    if (-not $Value -or $Value.Contains('"') -or $Value -match '[\x00-\x1f]' -or $Value.Trim() -cne $Value -or
+        $Value -notmatch '^(?:[A-Za-z]:[\\/]|\\\\[^\\/:*?"<>|]+\\[^\\/:*?"<>|]+(?:\\|$))' -or
+        -not [IO.Path]::IsPathFullyQualified($Value)) { throw 'InstallLocation is not one absolute path.' }
+    return [IO.Path]::GetFullPath($Value).TrimEnd('\')
+}
+function Test-InstallLocationContract {
+    $expected = 'C:\AiGoodBro fixture\installed'
+    foreach ($value in @($expected, ('"' + $expected + '"'), ($expected + '\'), 'C:\AiGoodBro fixture\prior\..\installed')) {
+        if ((Normalize-InstallLocation $value) -cne $expected) { throw 'InstallLocation positive fixture failed.' }
+    }
+    foreach ($value in @('', 'relative', 'C:relative', '\rooted', '"C:\broken', 'C:\broken"', '""C:\nested""', 'C:\in"side', ' C:\leading', '"relative"')) {
+        $rejected = $false
+        try { $null = Normalize-InstallLocation $value } catch { $rejected = $true }
+        if (-not $rejected) { throw 'InstallLocation negative fixture was accepted.' }
+    }
+}
+Test-InstallLocationContract
 function Assert-Registration([string]$Brand) {
     $rows = @(Registrations)
     if ($rows.Count -ne 1 -or $rows[0].displayName -cne $Brand) { throw 'Expected exactly one matching uninstall registration.' }
-    if ($rows[0].installLocation -and [IO.Path]::GetFullPath($rows[0].installLocation).TrimEnd('\') -ine $install.TrimEnd('\')) { throw 'Installer changed the existing installation directory.' }
+    if ($rows[0].installLocation -and (Normalize-InstallLocation $rows[0].installLocation) -ine $install.TrimEnd('\')) { throw 'Installer changed the existing installation directory.' }
     if (-not (Test-Path -LiteralPath (Join-Path $install 'codexu-tauri.exe') -PathType Leaf)) { throw 'Installed executable not found at the preserved directory.' }
     return $rows[0]
 }
 function Assert-RunUnchanged($Expected) {
     if ((ConvertTo-Json -InputObject @(Run-Values) -Depth 3 -Compress) -cne (ConvertTo-Json -InputObject @($Expected) -Depth 3 -Compress)) { throw 'Installers changed autostart registration.' }
 }
+function New-RollbackTransform([string[]]$ShortcutPaths) {
+    if ($ShortcutPaths.Count -ne 2 -or @($ShortcutPaths | Select-Object -Unique).Count -ne 2 -or @($ShortcutPaths | Where-Object { $_ -match '[|\[\]\r\n]' }).Count) { throw 'Rollback fixture requires two exact shortcut paths.' }
+    $copy = Owned-Path (Join-Path $runnerRoot ('aigoodbro-rollback-' + [guid]::NewGuid().ToString('N') + '.msi'))
+    $transform = Owned-Path (Join-Path $output 'shortcut-rollback.mst')
+    $proof = Owned-Path (Join-Path $output 'shortcut-rollback-proof.txt')
+    if ((Test-Path -LiteralPath $proof) -or $proof -match '[|\[\]\r\n]') { throw 'Refuse unsafe or reused rollback execution proof.' }
+    Copy-Item -LiteralPath $newFile -Destination $copy
+    $engine = $null; $original = $null; $changed = $null
+    # Type 37 is literal JScript; 1024 defers it into the MSI install script.
+    # The marker is emitted only after the real RemoveFiles action removed both
+    # owned links. An unrelated early install failure cannot satisfy this test.
+    $failureScript = @'
+var paths = Session.Property("CustomActionData").split("|");
+if (paths.length !== 3 || paths[0] === paths[1] || !paths[2]) throw new Error("Invalid rollback fixture paths");
+var fs = new ActiveXObject("Scripting.FileSystemObject");
+for (var i = 0; i < 2; i++) {
+    if (!paths[i] || fs.FileExists(paths[i])) throw new Error("Owned legacy shortcut was not removed");
+}
+var proof = fs.CreateTextFile(paths[2], false, false);
+proof.WriteLine("AIGOODBRO_SYNTHETIC_ROLLBACK_AFTER_OWNED_LINK_REMOVAL");
+proof.Close();
+throw new Error("AIGOODBRO_SYNTHETIC_ROLLBACK_AFTER_OWNED_LINK_REMOVAL");
+'@
+    try {
+        $engine = New-Object -ComObject WindowsInstaller.Installer
+        $original = $engine.OpenDatabase($newFile, 0)
+        $changed = $engine.OpenDatabase($copy, 1)
+        function Execute-MsiInsert([string]$Sql, [object[]]$Values) {
+            $view = $changed.OpenView($Sql); $record = $engine.CreateRecord($Values.Count)
+            try {
+                for ($i = 0; $i -lt $Values.Count; $i++) {
+                    if ($Values[$i] -is [int]) { $record.IntegerData($i + 1) = $Values[$i] }
+                    elseif ($null -ne $Values[$i]) { $record.StringData($i + 1) = [string]$Values[$i] }
+                }
+                $view.Execute($record)
+            } finally { $view.Close(); [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($record); [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($view) }
+        }
+        $view = $changed.OpenView('SELECT `Sequence` FROM `InstallExecuteSequence` WHERE `Action` = ''InstallFinalize''')
+        try { $view.Execute(); $record = $view.Fetch(); if ($null -eq $record) { throw 'MSI InstallFinalize sequence missing.' }; $finalize = $record.IntegerData(1); [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($record) }
+        finally { $view.Close(); [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($view) }
+        $view = $changed.OpenView('SELECT `Action` FROM `InstallExecuteSequence` WHERE `Sequence` >= ' + ($finalize - 2) + ' AND `Sequence` < ' + $finalize)
+        try { $view.Execute(); $record = $view.Fetch(); if ($null -ne $record) { [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($record); throw 'Rollback fixture sequence slots are occupied.' } }
+        finally { $view.Close(); [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($view) }
+        Execute-MsiInsert 'INSERT INTO `CustomAction` (`Action`, `Type`, `Source`, `Target`) VALUES (?, ?, ?, ?)' @('AgbFixtureRollbackData', 51, 'AgbFixtureRollbackFailure', ((@($ShortcutPaths) + @($proof)) -join '|'))
+        Execute-MsiInsert 'INSERT INTO `CustomAction` (`Action`, `Type`, `Source`, `Target`) VALUES (?, ?, ?, ?)' @('AgbFixtureRollbackFailure', (37 + 1024), $null, $failureScript)
+        Execute-MsiInsert 'INSERT INTO `InstallExecuteSequence` (`Action`, `Condition`, `Sequence`) VALUES (?, ?, ?)' @('AgbFixtureRollbackData', 'WIX_UPGRADE_DETECTED AND NOT Installed', ($finalize - 2))
+        Execute-MsiInsert 'INSERT INTO `InstallExecuteSequence` (`Action`, `Condition`, `Sequence`) VALUES (?, ?, ?)' @('AgbFixtureRollbackFailure', 'WIX_UPGRADE_DETECTED AND NOT Installed', ($finalize - 1))
+        $changed.Commit()
+        if (-not $changed.GenerateTransform($original, $transform)) { throw 'MSI rollback transform contained no changes.' }
+        # No suppressed transform errors; pin language, product, all three
+        # version fields with equality, and UpgradeCode to this exact MSI.
+        [void]$changed.CreateTransformSummaryInfo($original, $transform, 0, (1 + 2 + 32 + 256 + 2048))
+    } finally {
+        foreach ($com in @($changed, $original, $engine)) { if ($null -ne $com) { [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($com) } }
+        if (Test-Path -LiteralPath $copy) { Remove-Item -LiteralPath $copy }
+    }
+    if ((Hash-File $newFile) -cne $newHash) { throw 'Rollback fixture changed the original new MSI.' }
+    return $transform
+}
+function Assert-ForeignShortcuts([string]$Phase) {
+    foreach ($entry in $foreignShortcuts) {
+        if (-not (Test-Path -LiteralPath $entry.path -PathType Leaf) -or (Hash-File $entry.path) -cne $entry.beforeSha256) { throw "Foreign shortcut changed during $Phase." }
+        $found = @(Shortcuts | Where-Object { $_.path -ieq $entry.path -and $_.target -ieq $entry.target })
+        if ($found.Count -ne 1) { throw "Foreign shortcut target changed during $Phase." }
+        $entry[$Phase] = Hash-File $entry.path
+    }
+}
 if (@(Registrations).Count -ne 0 -or @(Shortcuts).Count -ne 0) { throw 'Runner already has an installation/shortcut with this product identity.' }
 Assert-NoApp
 $runBefore = @(Run-Values)
 $receipt = [ordered]@{ schema=1; kind=$InstallerKind; oldRunId=40952488530; oldHead='2905a4227fc543ff07e4e069ce6ff4e6290c1002'; sourceCheckout=$env:GITHUB_SHA; runId=$env:GITHUB_RUN_ID; oldSha256=$oldHash; newSha256=$newHash; version=$Version; success=$false; phases=@(); applicationStarted=$false }
+$foreignShortcuts = @()
 try {
     if ($InstallerKind -eq 'msi') {
         Execute-Installer 'msiexec.exe' @('/i', ('"' + $oldFile + '"'), '/qn', '/norestart', ('INSTALLDIR="' + $install + '"'), '/l*v', ('"' + (Join-Path $output 'old-msi.log') + '"')) 'Old MSI install'
@@ -125,6 +217,40 @@ try {
     Assert-RunUnchanged $runBefore
     $receipt.phases += 'old_install_verified'
     if ($InstallerKind -eq 'msi') {
+        $oldOwned = @($oldShortcuts | Where-Object { $_.name -ceq 'Codex Account Manager Next' -and $_.target -ieq (Join-Path $install 'codexu-tauri.exe') })
+        if ($oldOwned.Count -ne 2) { throw 'MSI rollback fixture requires the original two owned shortcuts.' }
+        $desktopCandidates = @('Desktop', 'CommonDesktopDirectory' | ForEach-Object { Join-Path ([Environment]::GetFolderPath($_)) 'Codex Account Manager Next.lnk' })
+        $programCandidates = @('Programs', 'CommonPrograms' | ForEach-Object { Join-Path ([Environment]::GetFolderPath($_)) 'Codex Account Manager Next\Codex Account Manager Next.lnk' })
+        if (@($oldOwned | Where-Object { $_.path -in $desktopCandidates }).Count -ne 1 -or @($oldOwned | Where-Object { $_.path -in $programCandidates }).Count -ne 1) { throw 'Old shortcuts are not the two fixed legacy migration paths.' }
+        $snapshots = @($oldOwned | ForEach-Object { [ordered]@{ path=$_.path; target=$_.target; beforeSha256=(Hash-File $_.path); restoredSha256=$null } })
+        $oldExeHash = Hash-File (Join-Path $install 'codexu-tauri.exe')
+        $transform = New-RollbackTransform @($snapshots | ForEach-Object { $_.path })
+        $rollbackLog = Join-Path $output 'rollback-msi.log'
+        Execute-Installer 'msiexec.exe' @('/i', ('"' + $newFile + '"'), ('TRANSFORMS="' + $transform + '"'), '/qn', '/norestart', '/l*v', ('"' + $rollbackLog + '"')) 'Synthetic MSI rollback' @(1603)
+        $marker = 'AIGOODBRO_SYNTHETIC_ROLLBACK_AFTER_OWNED_LINK_REMOVAL'
+        if (-not (Get-Content -LiteralPath $rollbackLog -Raw).Contains($marker)) { throw 'MSI failed without reaching the post-removal rollback fixture.' }
+        $proof = Owned-Path (Join-Path $output 'shortcut-rollback-proof.txt')
+        if (-not (Test-Path -LiteralPath $proof -PathType Leaf) -or [IO.File]::ReadAllText($proof) -cne ($marker + "`r`n")) { throw 'Missing post-removal native execution proof.' }
+        $restored = Assert-Registration 'Codex Account Manager Next'
+        if ($restored.key -cne $oldRegistration.key -or (Hash-File (Join-Path $install 'codexu-tauri.exe')) -cne $oldExeHash) { throw 'Rollback did not restore the original installation.' }
+        foreach ($entry in $snapshots) {
+            if (-not (Test-Path -LiteralPath $entry.path -PathType Leaf) -or (Hash-File $entry.path) -cne $entry.beforeSha256) { throw 'Rollback did not restore original shortcut bytes.' }
+            $entry.restoredSha256 = Hash-File $entry.path
+        }
+        if (@(Shortcuts).Count -ne 2) { throw 'Rollback left additional product shortcuts.' }
+        Assert-RunUnchanged $runBefore
+        $receipt.shortcutMigration = [ordered]@{ schema=1; rollback=[ordered]@{ exitCode=1603; marker=$marker; removedBeforeFailure=$true; transformSha256=(Hash-File $transform); executionProofFile='shortcut-rollback-proof.txt'; executionProofSha256=(Hash-File $proof); newInstallerSha256Before=$newHash; newInstallerSha256After=(Hash-File $newFile); oldRegistrationPreserved=$true; oldExecutableSha256Before=$oldExeHash; oldExecutableSha256After=(Hash-File (Join-Path $install 'codexu-tauri.exe')); ownedShortcuts=$snapshots }; foreign=[ordered]@{ shortcuts=@(); unchangedAfterUpgrade=$false; unchangedAfterUninstall=$false; fixtureCleanupVerified=$false } }
+        $foreignTarget = Owned-Path (Join-Path $output 'synthetic-foreign-target.txt')
+        [IO.File]::WriteAllText($foreignTarget, 'Synthetic shortcut target; never executed.')
+        $shell = New-Object -ComObject WScript.Shell
+        try {
+            foreach ($entry in $snapshots) {
+                $link = $shell.CreateShortcut($entry.path)
+                try { $link.TargetPath = $foreignTarget; $link.Save() } finally { [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($link) }
+                $foreignShortcuts += [ordered]@{ path=$entry.path; target=$foreignTarget; beforeSha256=(Hash-File $entry.path); afterUpgradeSha256=$null; afterUninstallSha256=$null }
+            }
+        } finally { [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($shell) }
+        $receipt.shortcutMigration.foreign.shortcuts = $foreignShortcuts
         Execute-Installer 'msiexec.exe' @('/i', ('"' + $newFile + '"'), '/qn', '/norestart', '/l*v', ('"' + (Join-Path $output 'new-msi.log') + '"')) 'New MSI upgrade'
     } else {
         Execute-Installer $newFile @('/S') 'New NSIS upgrade'
@@ -137,8 +263,13 @@ try {
     $shortcuts = @(Shortcuts)
     $owned = @($shortcuts | Where-Object { $_.target -ieq $exe.FullName })
     if ($owned.Count -eq 0 -or @($owned | Where-Object { $_.name -cne 'AiGoodBro' }).Count -ne 0) { throw 'Upgrade left an old-brand owned shortcut or no new-brand shortcut.' }
-    # Every shortcut this job created must remain owned by the same install.
-    if (@($shortcuts | Where-Object { $_.target -ine $exe.FullName }).Count -ne 0) { throw 'Upgrade left a shortcut pointing outside the preserved installation.' }
+    if ($InstallerKind -eq 'msi' -and $owned.Count -ne 2) { throw 'MSI upgrade did not retain both new-brand shortcut surfaces.' }
+    # Only the two explicitly-created, byte-preserved foreign fixtures may lie
+    # outside this install; every other unexpected target remains a failure.
+    Assert-ForeignShortcuts 'afterUpgradeSha256'
+    $foreignPaths = @($foreignShortcuts | ForEach-Object { $_.path })
+    if (@($shortcuts | Where-Object { $_.target -ine $exe.FullName -and $_.path -notin $foreignPaths }).Count -ne 0) { throw 'Upgrade left an unexpected shortcut pointing outside the preserved installation.' }
+    if ($InstallerKind -eq 'msi') { $receipt.shortcutMigration.foreign.unchangedAfterUpgrade = $true }
     Assert-RunUnchanged $runBefore
     $receipt.phases += 'upgrade_identity_brand_path_shortcuts_resources_verified'
     $receipt.oldRegistration = $oldRegistration
@@ -153,7 +284,15 @@ try {
         if (-not (Test-Path -LiteralPath $uninstaller -PathType Leaf)) { throw 'Owned NSIS uninstaller missing.' }
         Execute-Installer $uninstaller @('/S', ('_?=' + $install)) 'New NSIS uninstall'
     }
-    if (@(Registrations).Count -ne 0 -or @(Shortcuts).Count -ne 0 -or (Test-Path -LiteralPath $exe.FullName)) { throw 'Uninstall left a product registration, shortcut or executable.' }
+    Assert-ForeignShortcuts 'afterUninstallSha256'
+    if (@(Registrations).Count -ne 0 -or @(Shortcuts | Where-Object { $_.path -notin $foreignPaths }).Count -ne 0 -or (Test-Path -LiteralPath $exe.FullName)) { throw 'Uninstall left a product registration, owned shortcut or executable.' }
+    if ($InstallerKind -eq 'msi') { $receipt.shortcutMigration.foreign.unchangedAfterUninstall = $true }
+    foreach ($entry in $foreignShortcuts) {
+        if ((Hash-File $entry.path) -cne $entry.beforeSha256) { throw 'Refuse to clean a changed synthetic shortcut.' }
+        Remove-Item -LiteralPath $entry.path
+    }
+    if (@(Shortcuts).Count -ne 0) { throw 'Synthetic shortcut cleanup left a product-name shortcut.' }
+    if ($InstallerKind -eq 'msi') { $receipt.shortcutMigration.foreign.fixtureCleanupVerified = $true }
     Assert-RunUnchanged $runBefore
     $receipt.phases += 'uninstall_cleanup_verified'
     $receipt.success = $true

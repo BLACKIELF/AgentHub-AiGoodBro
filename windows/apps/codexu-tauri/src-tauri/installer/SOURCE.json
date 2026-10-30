@@ -6,7 +6,7 @@
     "nsis-installer.nsi": "crates/tauri-bundler/src/bundle/windows/nsis/installer.nsi",
     "wix-main.wxs": "crates/tauri-bundler/src/bundle/windows/msi/main.wxs"
   },
-  "purpose": "Preserve pre-branding upgrade registry identity while rendering AiGoodBro labels. Same Tauri template and all original gates retained.",
+  "purpose": "Preserve pre-branding upgrade registry identity while rendering AiGoodBro labels. Target-owned legacy MSI links are scheduled through standard RemoveFiles for native transaction rollback; other upstream gates are retained.",
   "files": {
     "nsis-installer.nsi": {
       "upstream_sha256": "9c6e92470d26e25d7c138b07c3000116c89ef0a32f29e5009a554ed5ca233ceb",
@@ -57,9 +57,14 @@
           "before": "Software\\\\{{manufacturer}}\\\\{{product_name}}",
           "after": "Software\\Codex Account Manager Next contributors\\Codex Account Manager Next",
           "count": 6
+        },
+        {
+          "before": "        <InstallExecuteSequence>\n            <RemoveShortcuts>Installed AND NOT UPGRADINGPRODUCTCODE</RemoveShortcuts>\n        </InstallExecuteSequence>\n\n",
+          "after": "        <InstallExecuteSequence>\n            <RemoveShortcuts>Installed AND NOT UPGRADINGPRODUCTCODE</RemoveShortcuts>\n            <Custom Action=\"PlanLegacyBrandShortcuts\" Before=\"RemoveFiles\">WIX_UPGRADE_DETECTED AND NOT Installed</Custom>\n        </InstallExecuteSequence>\n\n        <!-- Old MSI deliberately retains shortcuts during major upgrades. Plan only\n             exact owned links in RemoveFile so the MSI transaction owns rollback. -->\n        <CustomAction Id=\"PlanLegacyBrandShortcuts\" Script=\"jscript\" Execute=\"immediate\" Return=\"check\"><![CDATA[\nvar fs = new ActiveXObject(\"Scripting.FileSystemObject\");\nvar shell = new ActiveXObject(\"WScript.Shell\");\nfunction absolute(path) {\n    if (!/^(?:[A-Za-z]:[\\\\\\/]|\\\\\\\\[^\\\\]+\\\\[^\\\\]+\\\\)/.test(path)) {\n        throw new Error(\"Expected an absolute installer path\");\n    }\n    return fs.GetAbsolutePathName(path).replace(/\\//g, \"\\\\\").toLowerCase();\n}\nfunction plainPath(path) {\n    if ((fs.GetFile(path).Attributes & 1024) !== 0) return false;\n    var parent = fs.GetParentFolderName(path);\n    while (parent) {\n        if ((fs.GetFolder(parent).Attributes & 1024) !== 0) return false;\n        var next = fs.GetParentFolderName(parent);\n        if (next.toLowerCase() === parent.toLowerCase()) break;\n        parent = next;\n    }\n    return true;\n}\nvar expected = absolute(fs.BuildPath(absolute(Session.Property(\"INSTALLDIR\")), \"codexu-tauri.exe\"));\nvar candidates = [\n    [\"DesktopFolder\", \"ApplicationShortcutDesktop\", \"AiGoodBroLegacyDesktop\", \"AiGoodBroLegacyDesktopDirectory\", \"\"],\n    [\"ProgramMenuFolder\", \"ApplicationShortcut\", \"AiGoodBroLegacyPrograms\", \"AiGoodBroLegacyProgramsDirectory\", \"Codex Account Manager Next\"]\n];\nfor (var i = 0; i < candidates.length; i++) {\n    var row = candidates[i];\n    var folder = absolute(Session.Property(row[0]));\n    if (row[4]) folder = fs.BuildPath(folder, row[4]);\n    var path = fs.BuildPath(folder, \"Codex Account Manager Next.lnk\");\n    var target;\n    try {\n        if (!fs.FileExists(path) || !plainPath(path)) continue;\n        target = absolute(shell.CreateShortcut(path).TargetPath);\n    }\n    catch (error) { continue; } // Unknown or malformed links belong to the user.\n    if (target !== expected) continue;\n    Session.Property(row[3]) = folder;\n    // Every SQL value is a fixed identifier/name above, never a filesystem value.\n    var view = Session.Database.OpenView(\"INSERT INTO `RemoveFile` (`FileKey`, `Component_`, `FileName`, `DirProperty`, `InstallMode`) VALUES ('\" + row[2] + \"', '\" + row[1] + \"', 'Codex Account Manager Next.lnk', '\" + row[3] + \"', 1) TEMPORARY\");\n    view.Execute();\n    view.Close();\n}\n        ]]></CustomAction>\n\n",
+          "count": 1
         }
       ],
-      "local_sha256": "65e6f5f90690d86e570fd0f243dd1ba99f691505956a242b12f1b5affcafca80",
+      "local_sha256": "6ef84113b9670ead1a0ce8ecf62ff1d01686d13b4a14bf462e16872dbdf31bb2",
       "upstream_git_blob": "a11b2ec4381cb05fb0d340b17ef5197ad951529c"
     }
   }

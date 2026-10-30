@@ -45,7 +45,55 @@
 
         <InstallExecuteSequence>
             <RemoveShortcuts>Installed AND NOT UPGRADINGPRODUCTCODE</RemoveShortcuts>
+            <Custom Action="PlanLegacyBrandShortcuts" Before="RemoveFiles">WIX_UPGRADE_DETECTED AND NOT Installed</Custom>
         </InstallExecuteSequence>
+
+        <!-- Old MSI deliberately retains shortcuts during major upgrades. Plan only
+             exact owned links in RemoveFile so the MSI transaction owns rollback. -->
+        <CustomAction Id="PlanLegacyBrandShortcuts" Script="jscript" Execute="immediate" Return="check"><![CDATA[
+var fs = new ActiveXObject("Scripting.FileSystemObject");
+var shell = new ActiveXObject("WScript.Shell");
+function absolute(path) {
+    if (!/^(?:[A-Za-z]:[\\\/]|\\\\[^\\]+\\[^\\]+\\)/.test(path)) {
+        throw new Error("Expected an absolute installer path");
+    }
+    return fs.GetAbsolutePathName(path).replace(/\//g, "\\").toLowerCase();
+}
+function plainPath(path) {
+    if ((fs.GetFile(path).Attributes & 1024) !== 0) return false;
+    var parent = fs.GetParentFolderName(path);
+    while (parent) {
+        if ((fs.GetFolder(parent).Attributes & 1024) !== 0) return false;
+        var next = fs.GetParentFolderName(parent);
+        if (next.toLowerCase() === parent.toLowerCase()) break;
+        parent = next;
+    }
+    return true;
+}
+var expected = absolute(fs.BuildPath(absolute(Session.Property("INSTALLDIR")), "codexu-tauri.exe"));
+var candidates = [
+    ["DesktopFolder", "ApplicationShortcutDesktop", "AiGoodBroLegacyDesktop", "AiGoodBroLegacyDesktopDirectory", ""],
+    ["ProgramMenuFolder", "ApplicationShortcut", "AiGoodBroLegacyPrograms", "AiGoodBroLegacyProgramsDirectory", "Codex Account Manager Next"]
+];
+for (var i = 0; i < candidates.length; i++) {
+    var row = candidates[i];
+    var folder = absolute(Session.Property(row[0]));
+    if (row[4]) folder = fs.BuildPath(folder, row[4]);
+    var path = fs.BuildPath(folder, "Codex Account Manager Next.lnk");
+    var target;
+    try {
+        if (!fs.FileExists(path) || !plainPath(path)) continue;
+        target = absolute(shell.CreateShortcut(path).TargetPath);
+    }
+    catch (error) { continue; } // Unknown or malformed links belong to the user.
+    if (target !== expected) continue;
+    Session.Property(row[3]) = folder;
+    // Every SQL value is a fixed identifier/name above, never a filesystem value.
+    var view = Session.Database.OpenView("INSERT INTO `RemoveFile` (`FileKey`, `Component_`, `FileName`, `DirProperty`, `InstallMode`) VALUES ('" + row[2] + "', '" + row[1] + "', 'Codex Account Manager Next.lnk', '" + row[3] + "', 1) TEMPORARY");
+    view.Execute();
+    view.Close();
+}
+        ]]></CustomAction>
 
         <Media Id="1" Cabinet="app.cab" EmbedCab="yes" />
 

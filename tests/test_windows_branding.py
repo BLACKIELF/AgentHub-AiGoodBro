@@ -73,6 +73,56 @@ class WindowsBranding(unittest.TestCase):
         legacy = "Software\\Codex Account Manager Next contributors\\Codex Account Manager Next"
         self.assertEqual(keys.count(legacy), 6)
 
+    def test_msi_legacy_link_plan_only_schedules_exact_owned_plain_files(self):
+        source = (TAURI / "installer/wix-main.wxs").read_text(encoding="utf-8")
+        script = re.search(r'<CustomAction Id="PlanLegacyBrandShortcuts"[^>]+><!\[CDATA\[(.*?)\]\]></CustomAction>', source, re.S).group(1)
+        self.assertIn('Before="RemoveFiles">WIX_UPGRADE_DETECTED AND NOT Installed</Custom>', source)
+        # Execute the shipped JScript with a narrow COM adapter; the Windows
+        # upgrade lane separately exercises real MSI/WSH, foreign links, rollback.
+        harness = r'''
+const vm = require("node:vm"), assert = require("node:assert/strict"), path = require("node:path").win32;
+let script = JSON.parse(require("node:fs").readFileSync(0, "utf8"));
+// JScript supports indexed COM property setters; Node needs this narrow adapter.
+assert.equal(script.split("Session.Property(row[3]) = folder;").length,2);
+script=script.replace("Session.Property(row[3]) = folder;", "Session.SetProperty(row[3], folder);");
+const legacy = "Codex Account Manager Next.lnk";
+const props = {INSTALLDIR:"D:\\Apps\\AiGoodBro\\", DesktopFolder:"C:\\Users\\Public\\Desktop\\", ProgramMenuFolder:"C:\\ProgramData\\Microsoft\\Windows\\Start Menu\\Programs\\"};
+const normalize = x => path.resolve(x).toLowerCase();
+const links = [path.join(props.DesktopFolder,legacy), path.join(props.ProgramMenuFolder,"Codex Account Manager Next",legacy)].map(normalize);
+const expected = "D:\\Apps\\AiGoodBro\\codexu-tauri.exe";
+function run(targets, reparses=[], changedProps={}, databaseError=false, metadataError=false) {
+  const queries=[], touched=[];
+  const files = new Map(targets.map((x,i) => [links[i],x]).filter(x=>x[1]!==null));
+  const fs = {GetAbsolutePathName:path.resolve, BuildPath:path.join,
+    FileExists:x=>files.has(normalize(x)), GetParentFolderName:path.dirname,
+    GetFile:x=>{if(metadataError)throw Error("metadata unavailable");return {Attributes:reparses.includes(normalize(x))?1024:0};},
+    GetFolder:x=>{if(metadataError)throw Error("metadata unavailable");return {Attributes:reparses.includes(normalize(x))?1024:0};}};
+  const shell={CreateShortcut:x=>{touched.push(normalize(x)); const target=files.get(normalize(x)); if(target===false)throw Error("unreadable link"); return {TargetPath:target};}};
+  const propertyWrites={};
+  const Session={Property:x=>({...props,...changedProps,...propertyWrites})[x],SetProperty:(k,v)=>propertyWrites[k]=v,Database:{OpenView:q=>({Execute(){if(databaseError)throw Error("insert failed");queries.push(q);},Close(){}})}};
+  vm.runInNewContext(script,{Session,ActiveXObject:function(name){if(name==="Scripting.FileSystemObject")return fs;if(name==="WScript.Shell")return shell;throw Error("unexpected COM");}});
+  for(const q of queries){assert.match(q,/^INSERT INTO `RemoveFile` /);assert.match(q,/, 1\) TEMPORARY$/);assert.equal(q.includes("D:"),false);assert.equal(q.includes("*"),false);
+    const prop=q.match(/, '([^']+)', 1\) TEMPORARY$/)[1];
+    const index=prop==="AiGoodBroLegacyDesktopDirectory"?0:1;
+    assert.equal(normalize(propertyWrites[prop]),normalize(path.dirname(links[index])));}
+  return {queries,touched};
+}
+let r=run([expected,expected.toUpperCase()]);assert.equal(r.queries.length,2);
+assert.match(r.queries[0],/'ApplicationShortcutDesktop'.*'AiGoodBroLegacyDesktopDirectory'/);
+assert.match(r.queries[1],/'ApplicationShortcut'.*'AiGoodBroLegacyProgramsDirectory'/);
+assert.equal(run([null,null]).queries.length,0);
+assert.equal(run([expected,expected],[],{AiGoodBroLegacyDesktopDirectory:"C:\\unrelated"}).queries.length,2);
+assert.equal(run([expected,expected],[],{},false,true).queries.length,0);
+for(const foreign of ["D:\\Apps\\AiGoodBro2\\codexu-tauri.exe",expected+".other","D:\\other.exe","codexu-tauri.exe","",false])assert.equal(run([foreign,foreign]).queries.length,0);
+assert.equal(run([expected,expected],[links[0]]).queries.length,1);
+assert.equal(run([expected,expected],[normalize(path.dirname(links[1]))]).queries.length,1);
+assert.throws(()=>run([expected,expected],[],{INSTALLDIR:"relative"}),/absolute installer path/);
+assert.throws(()=>run([expected,expected],[],{},true),/insert failed/);
+console.log("PASS: shipped legacy-link planner exact ownership, absent/foreign/malformed/reparse refusal, fixed temporary rows, database failure propagation");
+'''
+        result = subprocess.run(["node", "-e", harness], input=json.dumps(script), text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     @unittest.skipUnless(__import__("os").name != "nt", "Bash checksum contract runs on Unix; native package contracts run on Windows")
     def test_cross_platform_assets_require_new_names_and_real_checksums(self):
         with tempfile.TemporaryDirectory(prefix="aigoodbro-brand-") as temporary:
