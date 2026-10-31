@@ -26,6 +26,8 @@ pub(super) mod console;
 pub mod dependency_actions;
 #[path = "cli_workflow/local_actions.rs"]
 pub mod local_actions;
+#[path = "cli_workflow/provider_clients.rs"]
+pub mod provider_clients;
 
 #[derive(Clone, Copy, Default, serde::Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -74,11 +76,13 @@ pub struct WorkflowState {
     sessions: Mutex<BTreeMap<u64, Session>>,
     local: local_actions::LocalState,
     dependency: dependency_actions::DependencyState,
+    pool_clients: provider_clients::ClientState,
     quitting: AtomicBool,
 }
 impl WorkflowState {
     pub fn begin_force_quit(&self) {
         self.quitting.store(true, Ordering::Release);
+        self.pool_clients.begin_quit();
     }
 }
 
@@ -473,7 +477,10 @@ pub async fn end_remove(workflow: &WorkflowState, id: u64) {
 /// Use from ExitRequested before allowing a normal app quit. A contended
 /// state is conservatively active, so a launch cannot race normal shutdown.
 pub fn should_block_exit(workflow: &WorkflowState) -> bool {
-    if local_actions::blocks_exit(workflow) || dependency_actions::blocks_exit(workflow) {
+    if local_actions::blocks_exit(workflow)
+        || dependency_actions::blocks_exit(workflow)
+        || provider_clients::blocks_exit(workflow)
+    {
         return true;
     }
     let Ok(mut sessions) = workflow.sessions.try_lock() else {
@@ -492,6 +499,7 @@ pub fn force_stop_owned(workflow: &WorkflowState) {
     workflow.begin_force_quit();
     local_actions::force_stop(workflow);
     dependency_actions::force_stop(workflow);
+    provider_clients::force_stop(workflow);
     let Ok(mut sessions) = workflow.sessions.try_lock() else {
         return;
     };

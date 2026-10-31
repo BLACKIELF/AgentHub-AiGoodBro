@@ -4,6 +4,7 @@
       "resources/proxy/": "proxy/",
       "resources/token-monitor/": "token-monitor/",
       "resources/companion-hub/": "companion-hub/",
+      "resources/companion-setup/": "companion-setup/",
       "resources/provider-pool/": "provider-pool/",
       "../../../../Resources/SkillLibrary/": "skill-library/"
     }

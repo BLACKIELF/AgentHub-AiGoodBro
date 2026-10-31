@@ -199,6 +199,38 @@ impl SelectionStore {
             .map_err(|_| fail("runtime_save_failed"))?;
         Ok(RuntimeView::ready(version, true))
     }
+    /// Return the same held image that passed the probe. Explicit selection
+    /// and automatic discovery share the selection lock through this decision;
+    /// a failed saved selection never falls back to another executable.
+    pub(crate) fn resolve_with(
+        &self,
+        candidates: &[PathBuf],
+        probe: &dyn Probe,
+    ) -> Result<PinnedExecutable> {
+        let _lock =
+            storage::StoreLock::acquire(&self.root).map_err(|_| fail("runtime_setup_busy"))?;
+        if let Some(mut image) = self.selected()? {
+            self.inspect_image(&mut image, probe)?;
+            return Ok(image);
+        }
+        let deadline = Instant::now() + Duration::from_secs(15);
+        let mut seen = std::collections::HashSet::new();
+        for path in candidates.iter().take(12) {
+            if Instant::now() >= deadline {
+                break;
+            }
+            let Ok(mut image) = hold(path) else { continue };
+            if !seen.insert(image.path.clone()) {
+                continue;
+            }
+            match self.inspect_image(&mut image, probe) {
+                Ok(_) => return Ok(image),
+                Err(e) if e.code == "cleanup_unconfirmed" => return Err(e),
+                _ => {}
+            }
+        }
+        Err(fail("runtime_not_found"))
+    }
     pub fn inspect(&self, candidates: &[PathBuf], probe: &dyn Probe) -> RuntimeView {
         let selected = match self.selected() {
             Ok(Some(mut image)) => {

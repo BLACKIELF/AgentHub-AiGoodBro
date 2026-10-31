@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "macCommit": "ad74ecd040d498f590c889081ce7c2c8fc13f00b",
+  "macSourceFiles": {
+    "SKILL.md": "544afb68f013a39468168d796b14b1b2cf533951b964b197c044dcd3f07d3402",
+    "bin/next-dispatch": "07103aff16aa0958e5c5f205ccc5af72d4de2bca87e7e671b896b62db6cf48cb",
+    "config/dispatch-codes-v1.json": "f49f4bc5540aee22d44e4d8960138e5d89dbe94506bde50c0f1731e540ecebf9",
+    "config/dispatch-policy-v1.json": "ec2ba30c1282da2339fc641f61a6f8db0f2493a445615d9d3404eaad6ed15467",
+    "references/cli-validation.md": "ce025487614c009d1283998b75d0128abbe711567699bfbc5e0f6cadc2a60f01",
+    "references/coordination.md": "8149f855eab8a7b204ab5e95fa8d2ee57e52030bed9fef6f84bfa546877eaad2",
+    "references/dispatch-brief.md": "0cf9cf344748d7033528e3dff77b29b6483924da2393e8c48b3641a18c2f1014",
+    "references/grok-cli.md": "e8d5d1b8d06cd5284d799f90ef26cd8d5bc9bf99ece335ab155543f10163d495",
+    "references/jev-coordination.md": "f7bbc34d2b5e28ee0a9b8f75db0a64c0ae74af240a17f741e5be1857152ce0fc",
+    "references/local-runtime.md": "55fefe0131a2abaec84e13a130468ca394b35404c4b0c1dcb7f8afde18174355",
+    "references/luna-presets.md": "5497ceaa00bce535b388e3325e09abbc03c2dabe67ed513827d31e17b61347a3",
+    "references/onboarding-login.md": "b4408eef5119036bb60060d17bccfe1b21e4e089cbf45eacee2b56088a741cbb",
+    "references/runtime-setup.md": "e2776f304ad3a3608f0bc55b4727c66ac50fb75b0b813630be4d3075b51fd85f",
+    "references/update-0927v1.md": "d596b44350b48ea2e8f6009e35ba01415bb15572877961216449886ff788b654",
+    "scripts/next_dispatch_activity.py": "1190d28dc0e0afa65aa9c2366e2ed93ee7954ca7a86e749d15ea480b9ad97082",
+    "scripts/next_dispatch_invocation.py": "970a7d02a8d2e8122e79a517f9aa4a463df438fee3ec5944bde9f4a7577d4d1d",
+    "scripts/next_dispatch_preflight.py": "1b0a167369a48d64ead4fff9f55f67d35ac58d9682201acb8a6eb67aa95216a5",
+    "使用说明.md": "22101a0dea5b4161ab7511aa1073df9d78b0a418ba977d5782ae01cbe3755f04"
+  },
+  "sourceFiles": {
+    "payload/SKILL.md": "4b17cb6b1619ee346e5d4f2f87ccb691a3cf2e2b6a6374fa6321c15485ad7275",
+    "payload/references/cli-validation.md": "4c8c8201e63d83ac2053b3c5498be2606268b4d17ae40988fa1a5d2151bfd10a",
+    "payload/references/coordination.md": "9194c0b3e7e8013009834c780490bb1207155007e4d023c831148cca6e7ff0da",
+    "payload/references/dispatch-brief.md": "4d7998514444fd0efbfbf4a123001e89f753e00e71c2c22db0b8a9ca0d7d69a9",
+    "payload/references/grok-cli.md": "ebd62395760e2c331097313feaccf97cd633507cfcd7ecb3970f5bdb0fc2426c",
+    "payload/references/jev-coordination.md": "1d849f8d11ada5bf8bba194ca215ccea47d952c0a215829fc49232d67a41bb82",
+    "payload/references/local-runtime.md": "b25706a11ccd8f3f80079e8b2b0d28566f2b9b287f1f164be7284ceff7a85a04",
+    "payload/references/luna-presets.md": "30e649fac9bda0e81937901d4950b27ee19a97e038a9ec532900627cb60ed427",
+    "payload/references/onboarding-login.md": "bb713b94e7f0ccf0f83aca867aeac11116b3922cd6ce7db669195625de8ab93b",
+    "payload/references/runtime-setup.md": "1c3f35c6636af27deb865c1e1e882a253f68f1ef2c6c2f0a0ba590029ea5866b",
+    "payload/references/update-0927v1.md": "f23f0fb8bda32e12229990655362da5810109286c10d74a7bfb5a069ffd9204d",
+    "payload/scripts/next_dispatch_activity.py": "368f026edd0ec55863af2f54bd247eec7c6f286c1d471dd45266d6300726df80",
+    "payload/scripts/next_dispatch_invocation.py": "7e090ec7c365901d40ec1ea1ab4237424bb7c28496112f12a17e1db9d6e91b2d",
+    "payload/scripts/next_dispatch_preflight.py": "3549c53bfdd8ae0cfc75086ba525ac9967611d887c80bb4206b62f5d79193610",
+    "payload/使用说明.md": "086084c083fce932dd38905c39113fb9d37d52c9cd5eea271d4438c82e52179d",
+    "next-dispatch.py": "520fd738a26f7d529f4a707634318949266eef456ff9670cf3fee1f94b4bdabe"
+  },
+  "layout": "windows-native-16-v1"
+}

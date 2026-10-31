@@ -169,7 +169,9 @@ impl NativeAccountRuntime {
         }
         #[cfg(windows)]
         {
-            if !matches!(args, ["--version"] | ["exec", "--help"]) {
+            if !matches!(args, ["--version"] | ["exec", "--help"])
+                && args != crate::runtime_setup::python::probe_args()
+            {
                 return Err(fail("runtime_probe_invalid"));
             }
             let mut child = process::Child::start(

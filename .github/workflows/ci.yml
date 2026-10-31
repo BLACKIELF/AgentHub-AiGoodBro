@@ -275,6 +275,15 @@ jobs:
         shell: pwsh
         run: .\windows\scripts\Prepare-TokenMonitorResources.ps1 -BuildRoot (Join-Path $env:RUNNER_TEMP 'aigoodbro-statistics-validation') -RunNativeTests
 
+      - name: Prepare the pinned Windows Companion Skill resources
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          python -B windows/companion/prepare.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -B windows/companion/prepare.py --verify-only
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Test Windows Rust workspace
         if: ${{ !cancelled() }}
         working-directory: windows
@@ -411,6 +420,14 @@ jobs:
         if: ${{ !cancelled() }}
         shell: pwsh
         run: .\windows\scripts\Prepare-HubResources.ps1 -BuildRoot (Join-Path $env:RUNNER_TEMP 'aigoodbro-hub-resources')
+      - name: Prepare the pinned Windows Companion Skill resources
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          python -B windows/companion/prepare.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -B windows/companion/prepare.py --verify-only
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Build the native release application
         working-directory: windows
         run: cargo build --release --locked -p codexu-tauri --features custom-protocol

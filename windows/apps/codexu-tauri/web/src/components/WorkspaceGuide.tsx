@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { useI18n } from '../i18n/I18nProvider';
 import { RuntimeSetupPanel } from './RuntimeSetupPanel';
+import { PythonRuntimeSetupPanel } from './PythonRuntimeSetupPanel';
+import { CompanionSetupPanel } from './CompanionSetupPanel';
 
 export type GuideDestination = 'accounts' | 'tools' | 'proxy' | 'settings';
 const steps = ['runtime', 'accounts', 'features', 'notifications', 'updates', 'ready'] as const;
@@ -27,7 +29,7 @@ export function WorkspaceGuide({ onOpen }: { onOpen: (section: GuideDestination)
       <h2>{text('使用引导', 'Getting started')}</h2>
       <nav aria-label={text('引导步骤', 'Guide steps')}>{steps.map(id => <button key={id} type="button" aria-current={id === step ? 'step' : undefined} disabled={busy} onClick={() => { setStep(id); setError(false); }}>{titles[id]}</button>)}</nav>
       <h3>{titles[step]}</h3>
-      {step === 'runtime' && <RuntimeSetupPanel onOpenTasks={() => go('tools')} />}
+      {step === 'runtime' && <><RuntimeSetupPanel onOpenTasks={() => go('tools')} /><PythonRuntimeSetupPanel /><CompanionSetupPanel /></>}
       {step === 'accounts' && <><p>{text('在账号页添加账号或关联已有目录。只有身份核验和额度读取成功后，才能使用相应能力；打开引导不会切换账号。', 'Add an account or link an existing directory in Accounts. Identity and quota must be verified for the relevant features; opening this guide does not switch accounts.')}</p><button type="button" disabled={busy} onClick={() => void go('accounts')}>{text('打开账号页', 'Open Accounts')}</button></>}
       {step === 'features' && <><p>{text('反代参与、额度保留和任务审批都由各自页面明确设置。查看引导不会开启反代或派发任务。', 'Proxy participation, quota reserves and task approvals are explicit controls on their own pages. Viewing the guide does not enable proxying or dispatch tasks.')}</p><button type="button" disabled={busy} onClick={() => void go('proxy')}>{text('打开反代设置', 'Open proxy settings')}</button></>}
       {step === 'notifications' && <><p>{text('在设置里连接并启用通知渠道。只有明确发送或已启用的通知规则才会投递；本步骤不会发送测试消息。', 'Connect and enable notification channels in Settings. Only explicit sends or enabled notification rules deliver messages; this step sends no test message.')}</p><button type="button" disabled={busy} onClick={() => void go('settings')}>{text('打开通知设置', 'Open notification settings')}</button></>}

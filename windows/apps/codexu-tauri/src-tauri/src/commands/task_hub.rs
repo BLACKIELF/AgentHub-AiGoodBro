@@ -28,6 +28,10 @@ use std::{
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 
+#[path = "companion_bridge_backend.rs"]
+pub(super) mod companion_bridge_backend;
+pub(crate) use companion_bridge_backend::runtime::CompanionRuntime;
+
 #[derive(Default)]
 pub struct HubState {
     quitting: Arc<AtomicBool>,
@@ -52,6 +56,7 @@ struct Session {
     home: PathBuf,
     leases: BTreeMap<String, ManagedActivityGuard>,
     pending: BTreeMap<String, (Value, String, Value)>,
+    companion: companion_bridge_backend::CompanionSession,
 }
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -217,10 +222,15 @@ fn overview(session: &mut Session) -> Result<Value, String> {
         .iter()
         .any(|t| !t["state"].as_str().is_some_and(terminal));
     session.leases.retain(|id, _| {
+        if let Some(retain) = session.companion.retain_known_lease(id, tasks) {
+            return retain;
+        }
         !tasks
             .iter()
             .any(|t| t["id"].as_str() == Some(id) && t["state"].as_str().is_some_and(terminal))
     });
+    session.companion.observe_tasks(tasks);
+    session.needs_exit |= session.companion.has_unresolved();
     Ok(value)
 }
 fn view(inner: &mut Inner) -> Result<HubView, String> {
@@ -454,6 +464,7 @@ pub async fn connect_task_hub(
             home: account.home,
             leases: BTreeMap::new(),
             pending: BTreeMap::new(),
+            companion: companion_bridge_backend::CompanionSession::new()?,
         });
         view(inner)
     };
@@ -772,10 +783,12 @@ pub async fn disconnect_task_hub(hub: State<'_, HubState>) -> Result<HubView, St
     run(&hub, |inner| {
         if let Some(session) = inner.session.as_mut() {
             let v = overview(session)?;
-            if v["tasks"].as_array().is_none_or(|ts| {
-                ts.iter()
-                    .any(|t| !t["state"].as_str().is_some_and(terminal))
-            }) {
+            if session.companion.has_unresolved()
+                || v["tasks"].as_array().is_none_or(|ts| {
+                    ts.iter()
+                        .any(|t| !t["state"].as_str().is_some_and(terminal))
+                })
+            {
                 return Err(fail("hub_active_tasks"));
             }
             session
@@ -791,14 +804,22 @@ pub async fn disconnect_task_hub(hub: State<'_, HubState>) -> Result<HubView, St
 pub fn should_block_exit(hub: &HubState) -> bool {
     hub.inner
         .try_lock()
-        .map(|i| i.session.as_ref().is_some_and(|s| s.needs_exit))
+        .map(|i| {
+            i.session
+                .as_ref()
+                .is_some_and(|s| s.needs_exit || s.companion.has_unresolved())
+        })
         .unwrap_or(true)
 }
 pub fn force_stop_owned(hub: &HubState) {
     hub.begin_force_quit();
     if let Ok(mut inner) = hub.inner.try_lock() {
         if let Some(s) = inner.session.as_mut() {
-            let _ = s.process.stop();
+            if s.process.stop().is_err() {
+                // Keep adopted reservations until this owned Job is confirmed
+                // empty. A requested force-exit is not a cleanup receipt.
+                return;
+            }
         }
         inner.session = None;
     }
@@ -860,6 +881,7 @@ mod tests {
                 effort: Some("high".into()),
                 revision: 1,
                 dispatch_window: None,
+                ..Default::default()
             },
         );
         super::super::cli_workflow::save_preferences(&data, &preferences).unwrap();
@@ -919,6 +941,7 @@ mod tests {
             home: home.clone(),
             leases: BTreeMap::new(),
             pending: BTreeMap::new(),
+            companion: companion_bridge_backend::CompanionSession::new().unwrap(),
         });
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {

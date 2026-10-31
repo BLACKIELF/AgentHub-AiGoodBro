@@ -11,11 +11,11 @@ use codexu_core::{
 };
 use tauri::{AppHandle, Emitter};
 
-enum Executable {
+pub(super) enum Executable {
     Native(launch::VerifiedExecutable),
     Package(Arc<local_cli::dependency::VerifiedRuntime>),
 }
-async fn discover(
+pub(super) async fn discover(
     app: &AppHandle,
     state: &Arc<AppState>,
     workflow: &WorkflowState,

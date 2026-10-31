@@ -400,6 +400,22 @@ pub(crate) fn read_bound_optional(
     maximum: usize,
     private_owner: bool,
 ) -> AccountResult<Option<Vec<u8>>> {
+    read_bound_optional_checked(path, maximum, private_owner, private_owner)
+}
+/// Bind owner checks to the same read handle without requiring private mode
+/// bits on existing, user-owned companion documents.
+pub(crate) fn read_bound_owned_optional(
+    path: &Path,
+    maximum: usize,
+) -> AccountResult<Option<Vec<u8>>> {
+    read_bound_optional_checked(path, maximum, false, true)
+}
+fn read_bound_optional_checked(
+    path: &Path,
+    maximum: usize,
+    private_owner: bool,
+    require_owner: bool,
+) -> AccountResult<Option<Vec<u8>>> {
     ensure_no_links(path)?;
     match std::fs::symlink_metadata(path) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -412,6 +428,7 @@ pub(crate) fn read_bound_optional(
     fn identity(
         file: &File,
         private_owner: bool,
+        require_owner: bool,
     ) -> AccountResult<(u64, u64, u64, Option<std::time::SystemTime>)> {
         let meta = file
             .metadata()
@@ -426,8 +443,8 @@ pub(crate) fn read_bound_optional(
                 fn geteuid() -> u32;
             }
             if meta.nlink() != 1
-                || (private_owner
-                    && (meta.uid() != unsafe { geteuid() } || meta.mode() & 0o077 != 0))
+                || (require_owner && meta.uid() != unsafe { geteuid() })
+                || (private_owner && meta.mode() & 0o077 != 0)
             {
                 return Err(fail("account_storage_invalid"));
             }
@@ -440,7 +457,8 @@ pub(crate) fn read_bound_optional(
                 Foundation::HANDLE,
                 Storage::FileSystem::{GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION},
             };
-            if private_owner {
+            let _ = private_owner;
+            if require_owner {
                 super::native::private::check_owner_file(file)?;
             }
             let mut info = BY_HANDLE_FILE_INFORMATION::default();
@@ -458,7 +476,7 @@ pub(crate) fn read_bound_optional(
         }
         #[cfg(not(any(unix, windows)))]
         {
-            let _ = private_owner;
+            let _ = (private_owner, require_owner);
             Err(fail("platform_unsupported"))
         }
     }
@@ -472,7 +490,7 @@ pub(crate) fn read_bound_optional(
     let mut file = options
         .open(path)
         .map_err(|_| fail("account_storage_unavailable"))?;
-    let before = identity(&file, private_owner)?;
+    let before = identity(&file, private_owner, require_owner)?;
     let mut bytes = Vec::new();
     (&mut file)
         .take(maximum as u64 + 1)
@@ -484,8 +502,8 @@ pub(crate) fn read_bound_optional(
         .map_err(|_| fail("account_storage_unavailable"))?;
     if bytes.len() > maximum
         || before.2 != bytes.len() as u64
-        || identity(&file, private_owner)? != before
-        || identity(&current, private_owner)? != before
+        || identity(&file, private_owner, require_owner)? != before
+        || identity(&current, private_owner, require_owner)? != before
     {
         return Err(fail("account_storage_invalid"));
     }
@@ -593,6 +611,32 @@ pub(crate) fn ensure_no_links(path: &Path) -> AccountResult<()> {
     }
     Ok(())
 }
+/// Validate an existing user-owned entry without changing its permissions.
+/// Callers still bind any subsequent file read/write to the checked identity.
+pub(crate) fn check_existing_owned_path(path: &Path) -> AccountResult<()> {
+    ensure_no_links(path)?;
+    let metadata =
+        std::fs::symlink_metadata(path).map_err(|_| fail("account_storage_unavailable"))?;
+    if !metadata.is_file() && !metadata.is_dir() {
+        return Err(fail("account_storage_invalid"));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        unsafe extern "C" {
+            fn geteuid() -> u32;
+        }
+        if metadata.uid() != unsafe { geteuid() } || (metadata.is_file() && metadata.nlink() != 1) {
+            return Err(fail("private_storage_owner_rejected"));
+        }
+    }
+    #[cfg(windows)]
+    super::native::private::check_owner(path)?;
+    #[cfg(not(any(unix, windows)))]
+    return Err(fail("platform_unsupported"));
+    Ok(())
+}
+
 pub(crate) fn secure_directory(path: &Path) -> AccountResult<()> {
     ensure_no_links(path)?;
     #[cfg(not(windows))]

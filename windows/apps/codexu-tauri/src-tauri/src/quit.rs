@@ -37,6 +37,44 @@ impl QuitState {
     pub fn confirmed(&self) -> bool {
         self.0.load(Ordering::Acquire) == 2
     }
+    pub fn pending(&self) -> bool {
+        self.0.load(Ordering::Acquire) == 1
+    }
+    fn cancel(&self) -> bool {
+        self.0
+            .compare_exchange(1, 0, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    }
+    fn answer_or_resume(&self, confirmed: bool, resume: impl FnOnce()) -> bool {
+        if confirmed {
+            return self.answer(true);
+        }
+        if self.cancel() {
+            resume();
+        }
+        false
+    }
+}
+
+/// The normal path is still cancellable when work appears during shutdown.
+/// Restore the same previously confirmed receiver before asking in that case.
+/// A failed stop retains its owner; cancellation may attempt bounded recovery.
+pub(crate) fn normal_exit_needs_confirmation(
+    mut active: impl FnMut() -> bool,
+    stop: impl FnOnce() -> Result<(), String>,
+    restore: impl FnOnce(),
+) -> bool {
+    if active() {
+        return true;
+    }
+    if stop().is_err() {
+        return true;
+    }
+    if active() {
+        restore();
+        return true;
+    }
+    false
 }
 
 pub fn ask(app: &AppHandle) {
@@ -69,7 +107,9 @@ pub fn ask(app: &AppHandle) {
             cancel.into(),
         ))
         .show(move |confirmed| {
-            if !handle.state::<QuitState>().answer(confirmed) {
+            if !handle.state::<QuitState>().answer_or_resume(confirmed, || {
+                commands::companion_setup::resume_normal_exit(&handle);
+            }) {
                 return;
             }
             handle
@@ -99,6 +139,7 @@ pub fn ask(app: &AppHandle) {
                 .name("agb-exit-cleanup".into())
                 .spawn(move || {
                     crate::compact_ui::shutdown(&cleanup_handle);
+                    commands::companion_setup::force_stop_owned(&cleanup_handle);
                     commands::task_hub::force_stop_owned(
                         &cleanup_handle.state::<commands::task_hub::HubState>(),
                     );
@@ -136,5 +177,85 @@ mod tests {
         let state = QuitState::default();
         assert!(!state.answer(true));
         assert!(!state.confirmed());
+    }
+    #[test]
+    fn preexisting_work_does_not_stop_receiver_before_cancellable_question() {
+        assert!(normal_exit_needs_confirmation(
+            || true,
+            || panic!("must not stop before confirmation"),
+            || panic!("nothing was suspended"),
+        ));
+    }
+    #[test]
+    fn late_adopted_work_restores_before_question_and_cancel_remains_unconfirmed() {
+        use std::cell::Cell;
+        let active = Cell::new(false);
+        let stopped = Cell::new(false);
+        let restores = Cell::new(0);
+        assert!(normal_exit_needs_confirmation(
+            || active.get(),
+            || {
+                stopped.set(true);
+                active.set(true);
+                Ok(())
+            },
+            || {
+                assert!(stopped.get());
+                stopped.set(false);
+                restores.set(restores.get() + 1);
+            },
+        ));
+        assert!(!stopped.get());
+        assert_eq!(restores.get(), 1);
+        let confirmation = QuitState::default();
+        assert!(confirmation.begin());
+        assert!(confirmation.pending());
+        assert!(!confirmation.answer_or_resume(false, || {
+            // The real callback also calls the idempotent resume after the
+            // normal path already restored an owner due to a late claim.
+            assert!(!stopped.get());
+            restores.set(restores.get() + 1);
+        }));
+        assert_eq!(restores.get(), 2);
+        assert!(!confirmation.pending());
+        assert!(!confirmation.confirmed());
+        assert!(!confirmation.answer_or_resume(false, || panic!("no duplicate callback")));
+    }
+    #[test]
+    fn idle_normal_exit_stops_once_without_an_extra_confirmation() {
+        let calls = std::cell::Cell::new(0);
+        assert!(!normal_exit_needs_confirmation(
+            || false,
+            || {
+                calls.set(calls.get() + 1);
+                Ok(())
+            },
+            || panic!("successful exit needs no restore"),
+        ));
+        assert_eq!(calls.get(), 1);
+    }
+    #[test]
+    fn uncertain_stop_prevents_exit_without_automatically_rebinding_or_retrying() {
+        let calls = std::cell::Cell::new(0);
+        assert!(normal_exit_needs_confirmation(
+            || false,
+            || {
+                calls.set(calls.get() + 1);
+                Err("companion_cleanup_unconfirmed".into())
+            },
+            || panic!("unknown owner must remain until explicit cancellation recovery"),
+        ));
+        assert_eq!(calls.get(), 1);
+        let confirmation = QuitState::default();
+        assert!(confirmation.begin());
+        assert!(!confirmation.answer_or_resume(false, || calls.set(calls.get() + 1)));
+        assert_eq!(
+            calls.get(),
+            2,
+            "only explicit cancellation attempts recovery"
+        );
+        assert!(confirmation.begin());
+        assert!(confirmation.answer_or_resume(true, || panic!("force must not resume")));
+        assert!(confirmation.confirmed());
     }
 }

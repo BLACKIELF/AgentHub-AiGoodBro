@@ -123,6 +123,8 @@ if ($VerifiedProviderPoolBuildRoot) { $ProviderPoolArguments += '-VerifiedReuse'
 Invoke-Checked 'pwsh.exe' $ProviderPoolArguments
 $ProviderPoolManifest = Join-Path $AppRoot 'src-tauri\resources\provider-pool\WINDOWS-RESOURCES.json'
 $ProviderPoolManifestHash = (Get-FileHash -LiteralPath $ProviderPoolManifest -Algorithm SHA256).Hash.ToLowerInvariant()
+Invoke-Checked 'python' @('-B', (Join-Path $RepoRoot 'windows\companion\prepare.py'))
+Invoke-Checked 'python' @('-B', (Join-Path $RepoRoot 'windows\companion\prepare.py'), '--verify-only')
 Invoke-Checked 'python' @('-B', (Join-Path $RepoRoot 'windows\scripts\check-msi-encoding.py'), '--root', $RepoRoot)
 
 

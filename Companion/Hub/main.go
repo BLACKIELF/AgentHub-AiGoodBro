@@ -378,6 +378,7 @@ func (api *API) routes() http.Handler {
 	mux.HandleFunc("/api/events", api.auth(api.handleEvents))
 	mux.HandleFunc("/api/tasks", api.auth(api.handleCreate))
 	mux.HandleFunc("/api/tasks/", api.auth(api.handleTaskAction))
+	mux.HandleFunc("/api/requests/", api.auth(api.handleRequestLookup))
 	mux.HandleFunc("/api/codex/overview", api.auth(api.handleCodexOverview))
 	mux.HandleFunc("/api/codex/threads/", api.auth(api.handleCodexThreadAction))
 	mux.HandleFunc("/api/codex/findings", api.auth(api.handleCodexFindings))

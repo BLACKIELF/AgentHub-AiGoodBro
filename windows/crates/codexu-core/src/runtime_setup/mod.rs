@@ -1,5 +1,6 @@
 //! Explicit local Codex CLI selection. No account, model or installation action.
 mod probe;
+pub mod python;
 mod store;
 use crate::accounts::{AccountError, AccountResult};
 pub use probe::{automatic_candidates, NativeProbe, Probe};

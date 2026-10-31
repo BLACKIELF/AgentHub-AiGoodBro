@@ -50,6 +50,9 @@ pub async fn select_runtime_codex(
 }
 #[tauri::command]
 pub async fn open_codex_installation_guide() -> Result<(), String> {
+    open_official_guide("https://github.com/openai/codex#installing-and-running-codex-cli")
+}
+pub(super) fn open_official_guide(destination: &'static str) -> Result<(), String> {
     // Fixed official destination only; caller cannot supply URL, shell args or
     // an installer. This opens documentation, never executes installation.
     #[cfg(windows)]
@@ -73,7 +76,7 @@ pub async fn open_codex_installation_guide() -> Result<(), String> {
                 .collect::<Vec<_>>()
         };
         let verb = wide("open");
-        let url = wide("https://github.com/openai/codex#installing-and-running-codex-cli");
+        let url = wide(destination);
         let result = unsafe {
             ShellExecuteW(
                 std::ptr::null_mut(),
@@ -91,6 +94,7 @@ pub async fn open_codex_installation_guide() -> Result<(), String> {
     }
     #[cfg(not(windows))]
     {
+        let _ = destination;
         Err("windows_required".into())
     }
 }

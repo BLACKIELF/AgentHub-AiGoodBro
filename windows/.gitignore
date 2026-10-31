@@ -12,6 +12,7 @@
 
 # Tauri generated files
 **/gen/
+apps/codexu-tauri/src-tauri/resources/companion-setup/
 
 # IDE / OS
 .DS_Store

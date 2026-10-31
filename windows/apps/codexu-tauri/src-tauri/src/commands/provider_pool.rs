@@ -6,7 +6,7 @@ use tauri::{AppHandle, Emitter, State};
 
 pub struct ProviderPoolState(pub Result<Arc<ProviderPool>, &'static str>);
 impl ProviderPoolState {
-    fn service(&self) -> Result<Arc<ProviderPool>, String> {
+    pub(super) fn service(&self) -> Result<Arc<ProviderPool>, String> {
         self.0.as_ref().cloned().map_err(|e| (*e).to_owned())
     }
 }

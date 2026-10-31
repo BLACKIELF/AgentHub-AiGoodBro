@@ -1,6 +1,8 @@
 //! Explicit local inventory/decisions. No conversation writer or task runner.
 use crate::app_state::AppState;
+use codexu_core::accounts::AccountManager;
 use codexu_core::task_workbench::{Decision, TaskWorkbenchStore, WorkbenchSnapshot};
+use sha2::{Digest, Sha256};
 use std::{path::Path, sync::Arc};
 use tauri::{AppHandle, Emitter, State};
 use tauri_plugin_dialog::DialogExt;
@@ -36,6 +38,73 @@ fn snapshot(store: TaskWorkbenchStore) -> Result<WorkbenchSnapshot, String> {
     store
         .load(chrono::Utc::now().timestamp_millis())
         .map_err(|e| e.to_string())
+}
+
+fn owner_metadata_digest(
+    snapshot: &WorkbenchSnapshot,
+    expected_scope: &str,
+    thread_id: &str,
+) -> Result<String, String> {
+    if !snapshot.source_available
+        || snapshot.scope_id != expected_scope
+        || !codexu_core::task_workbench::valid_thread_id(thread_id)
+    {
+        return Err("owner_scope_unverified".into());
+    }
+    let mut matches = snapshot
+        .items
+        .iter()
+        .filter(|item| item.thread_id == thread_id);
+    let item = matches.next().ok_or("owner_thread_unavailable")?;
+    if item.archived || matches.next().is_some() {
+        return Err("owner_thread_unavailable".into());
+    }
+    // Include the saved inventory and current local metadata, but not the
+    // per-read clock. This is a local change fence, not GUI account evidence.
+    let bytes = serde_json::to_vec(item).map_err(|_| "owner_scope_unverified")?;
+    Ok(format!("{:x}", Sha256::digest(bytes)))
+}
+
+/// Native-only context for an explicit original-window action. A managed
+/// active scope supplies local concurrency/source evidence, never a claim
+/// about the separate GUI owner's account. This function starts no observer.
+pub(crate) async fn capture_owner_context(
+    state: Arc<AppState>,
+    manager: Arc<AccountManager>,
+    expected_scope: String,
+    thread_id: String,
+) -> Result<super::desktop_owner_actions::NativeOwnerContext, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let config = state.config.blocking_read();
+        let store = TaskWorkbenchStore::open(&state.app_data_dir, &config.codex_root)
+            .map_err(|_| "owner_scope_unverified")?;
+        if expected_scope.len() != 64 || store.scope_id() != expected_scope {
+            return Err("owner_scope_unverified".into());
+        }
+        let active = manager
+            .verified_active_system_scope()
+            .map_err(|_| "owner_scope_unverified")?;
+        let root = config
+            .codex_root
+            .canonicalize()
+            .map_err(|_| "owner_scope_unverified")?;
+        if root != active.canonical_home() {
+            return Err("owner_scope_unverified".into());
+        }
+        let current = snapshot(store)?;
+        let digest = owner_metadata_digest(&current, &expected_scope, &thread_id)?;
+        manager
+            .recheck_active_system_scope(&active)
+            .map_err(|_| "owner_scope_changed")?;
+        super::desktop_owner_actions::NativeOwnerContext::from_verified(
+            active,
+            expected_scope,
+            thread_id,
+            digest,
+        )
+    })
+    .await
+    .map_err(|_| "owner_scope_unverified".to_owned())?
 }
 
 #[tauri::command]

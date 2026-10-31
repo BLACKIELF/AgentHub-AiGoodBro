@@ -12,15 +12,23 @@ pub struct WorkflowPreference {
     pub participating: bool,
     pub model: Option<String>,
     pub effort: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<crate::workflow_execution::ServiceTier>,
     pub revision: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dispatch_window: Option<DispatchWindow>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dispatch_code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub not_after_ms: Option<i64>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorkflowPreferences {
     pub profiles: BTreeMap<u64, WorkflowPreference>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub excluded_plan_types: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -109,6 +117,7 @@ pub fn valid_effort(value: &str) -> bool {
 impl WorkflowPreferences {
     pub fn validate(&self) -> anyhow::Result<()> {
         anyhow::ensure!(self.profiles.len() <= 1000, "Too many workflow records");
+        crate::workflow_execution::validate_extensions(self)?;
         for (id, value) in &self.profiles {
             if let Some(window) = &value.dispatch_window {
                 window.validate()?;

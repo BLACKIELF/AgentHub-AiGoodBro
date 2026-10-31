@@ -1,0 +1,622 @@
+{
+  "schemaVersion": 1,
+  "version": "1031v1",
+  "status": "WIP handoff, not release acceptance",
+  "baseHead": "2d8ab044aa2a0b8610b2c2a68f011212fc1558ed",
+  "baseTree": "f160cc030beeea9095d657c8bfc23fad9a24cb62",
+  "sourceCount": 101,
+  "sourceBytes": 940263,
+  "files": [
+    {
+      "path": ".github/workflows/ci.yml",
+      "sha256": "ef335c31ddad3c54d6d10ea7f099a2806f4e364dce793af095c5c212aafb6aa0",
+      "bytes": 26055,
+      "tracked": true
+    },
+    {
+      "path": "Companion/Hub/main.go",
+      "sha256": "b7efa526d86d674573d9e6b5a7b045c45051645546c223bab4a992f2b9cd1414",
+      "bytes": 31053,
+      "tracked": true
+    },
+    {
+      "path": "Companion/Hub/request_lookup.go",
+      "sha256": "dd821b0c7c8822c0e5d8d12bb86a014618bb3215f5d31bc25165f979d015428d",
+      "bytes": 2171,
+      "tracked": false
+    },
+    {
+      "path": "Companion/Hub/request_lookup_test.go",
+      "sha256": "c142bced0c703028414afe2367dc0d9adfd2f901dbeecb92d741948da044b21b",
+      "bytes": 5730,
+      "tracked": false
+    },
+    {
+      "path": "scripts/build-windows-release.ps1",
+      "sha256": "831ee69123d65c5791570f42005a90ea61c4c4e1db53cfcfa819843a2c220451",
+      "bytes": 11260,
+      "tracked": true
+    },
+    {
+      "path": "windows/.gitignore",
+      "sha256": "b80156da43797cb358564467f2bcffdf849476231b0e8ba483aeeff0f764624d",
+      "bytes": 377,
+      "tracked": true
+    },
+    {
+      "path": "windows/apps/codexu-tauri/src-tauri/Cargo.toml",
+      "sha256": "04d7282bb69d8fc73fa069ace8a40365c9b0b7f18c60760c900dcdfd16bb96fa",
+      "bytes": 909,
+      "tracked": true
+    },
+    {
+      "path": "windows/apps/codexu-tauri/src-tauri/build.rs",
+      "sha256": "d311c3753c11bfcb1cecf83fd13bd52eb854b39a7b316bdd3045e9f12749b45a",
+      "bytes": 8319,
+      "tracked": true
+    },
+    {
+      "path": "windows/apps/codexu-tauri/src-tauri/src/commands/cli_workflow.rs",
+      "sha256": "a326cb1d94d63e5db75f34d2af190a75b757513829a73cedfd7d9be4616c1584",
+      "bytes": 19639,
+      "tracked": true
+    },
+    {
+      "path": "windows/apps/codexu-tauri/src-tauri/src/commands/cli_workflow/local_actions.rs",
+      "sha256": "4782c8ba9bcee3e0d88f2a4dd3e792a6d0847609927b6d8415d2a6ff6387b935",
+      "bytes": 15743,
+      "tracked": true
+    },
+    {
+      "path": "windows/apps/codexu-tauri/src-tauri/src/commands/cli_workflow/provider_clients.rs",
+      "sha256": "a913cefb7d397aa37edb8a1e209c1fe2706b9a1d5c80f69ef581c42b5e8e9df9",
+      "bytes": 17787,
+      "tracked": false
+    },
+    {
+      "path": "windows/apps/codexu-tauri/src-tauri/src/commands/companion_bridge_backend.rs",
+      "sha256": "0986048828da6242b5100cfb7f243d4a458124a5044fa94a82224e716e75061d",
+      "bytes": 24689,
+      "tracked": false
+    },
+    {
+      "path": "windows/apps/codexu-tauri/src-tauri/src/commands/companion_bridge_backend_tests.rs",
+      "sha256": "8771a82180b9bec0bceb77d8274e668d1267d0e94ec43a3d800dbdca287f3fa3",
+      "bytes": 11102,
+      "tracked": false
+    },
+    {
+      "path": "windows/apps/codexu-tauri/src-tauri/src/commands/companion_bridge_runtime.rs",
+      "sha256": "6a134bf4f9493b85cb4e6fe39b221b090af95aaa980ee23efaa622b9486b910a",
+      "bytes": 18382,
+      "tracked": false
+    },
+    {
+      "path": "windows/apps/codexu-tauri/src-tauri/src/commands/companion_bridge_runtime_tests.rs",
+      "sha256": "f7d6cebf1d07e3f37cf378141259c99d616a023d1b44c2ef800e4302be196f0d",
+      "bytes": 8642,
+      "tracked": false
+    },
+    {
+      "path": "windows/apps/codexu-tauri/src-tauri/src/commands/companion_setup.rs",
+      "sha256": "d44a0e75930b578b489ffd27c83d2b2468af559a2a37a1b75f84080e40400b2c",
+      "bytes": 4982,
+      "tracked": false
+    },
+    {
+      "path": "windows/apps/codexu-tauri/src-tauri/src/commands/desktop_owner_actions.rs",
+      "sha256": "627b6c566aea8029fcf0db8c6301b5c4e32cf1ca84d0723391174c545289fc3e",
+      "bytes": 21022,
+      "tracked": false
+    },
+    {
+      "path": "windows/apps/codexu-tauri/src-tauri/src/commands/desktop_owner_actions_tests.rs",
+      "sha256": "2976f1495110c4a56ea8bc2c6e05c85117d7df39c044881e1e8cf49272a947e4",
+      "bytes": 20358,
+      "tracked": false
+    },
+    {
+      "path": "windows/apps/codexu-tauri/src-tauri/src/commands/mod.rs",
+      "sha256": "e85ea8b8189646c2de391924d926e9dd4570fad3c0d8b23c72d87be3d37362c2",
+      "bytes": 694,
+      "tracked": true
+    },
+    {
+      "path": "windows/apps/codexu-tauri/src-tauri/src/commands/provider_pool.rs",
+      "sha256": "60b5be0befcb695f5362a182000fd014a2225de70c697da2c510caa658f2fddb",
+      "bytes": 8456,
+      "tracked": true
+    },
+    {
+      "path": "windows/apps/codexu-tauri/src-tauri/src/commands/python_runtime.rs",
+      "sha256": "03891e9d7ba4ff74302a18f7b0b24500c62399df687c05da9f1e568cdc601650",
+      "bytes": 1658,
+      "tracked": false
+    },
+    {
+      "path": "windows/apps/codexu-tauri/src-tauri/src/commands/runtime_setup.rs",
+      "sha256": "ee84ae15cef17daba3da6e2fcf1869cb8ffd8947aad3ab3181a26584d5ea001c",
+      "bytes": 3403,
+      "tracked": true
+    },
+    {
+      "path": "windows/apps/codexu-tauri/src-tauri/src/commands/task_hub.rs",
+      "sha256": "da52b862e88ea9d1b8b42625be11d884eca54d0d63eebe264634bb1926599d05",
+      "bytes": 42168,
+      "tracked": true
+    },
+    {
+      "path": "windows/apps/codexu-tauri/src-tauri/src/commands/task_workbench.rs",
+      "sha256": "235f89e3cdacdd85930e584be6e2752bfe540ea710e8ada11323e16e8800e12f",
+      "bytes": 9519,
+      "tracked": true
+    },
+    {
+      "path": "windows/apps/codexu-tauri/src-tauri/src/commands/task_workbench_tests.rs",
+      "sha256": "cac655ad726312fe314d07924d1c6c4eb4cd1183e311add25d9c72b03fc2690a",
+      "bytes": 4899,
+      "tracked": true
+    },
+    {
+      "path": "windows/apps/codexu-tauri/src-tauri/src/main.rs",
+      "sha256": "f83a532eb83e436effad3eae45f93282c9b969f6df26586873ecc5b8028760cc",
+      "bytes": 19415,
+      "tracked": true
+    },
+    {
+      "path": "windows/apps/codexu-tauri/src-tauri/src/quit.rs",
+      "sha256": "3fc82ecdc40143d1131b0931abfec5407e8e3364a59f2172906c9ca15f9c8216",
+      "bytes": 9161,
+      "tracked": true
+    },
+    {
+      "path": "windows/apps/codexu-tauri/src-tauri/tauri.windows.conf.json",
+      "sha256": "01024ab09d49d89df997da67d26d032af3dad5c3188b72c230993a11966ad824",
+      "bytes": 357,
+      "tracked": true
+    },
+    {
+      "path": "windows/apps/codexu-tauri/web/src/components/CompanionSetupPanel.tsx",
+      "sha256": "607fab8be7968493507fec2a9e103ed5d2f0a2dd0c01b208a228ddb8945fb5af",
+      "bytes": 9828,
+      "tracked": false
+    },
+    {
+      "path": "windows/apps/codexu-tauri/web/src/components/ProviderAccountPoolPanel.tsx",
+      "sha256": "97decce9fa496c2aa31a1c2ab2a298be572fcfbe0a9d5080a5ef19c1b25e6690",
+      "bytes": 9815,
+      "tracked": true
+    },
+    {
+      "path": "windows/apps/codexu-tauri/web/src/components/ProviderPoolClients.tsx",
+      "sha256": "d9d3d3f52bcf3a30b89c0e8f890462c81cd59755939a8b024c2184e784f6c90b",
+      "bytes": 8877,
+      "tracked": false
+    },
+    {
+      "path": "windows/apps/codexu-tauri/web/src/components/PythonRuntimeSetupPanel.tsx",
+      "sha256": "1d15b198551f47fe67148f04a1bb7b04540e2226cadd6d2236bdb0cc0014bcda",
+      "bytes": 5290,
+      "tracked": false
+    },
+    {
+      "path": "windows/apps/codexu-tauri/web/src/components/WorkspaceGuide.tsx",
+      "sha256": "82d27f810aa3dc353bb2d08cea55e44e8e936fccf7961cb501d68a51f47d9945",
+      "bytes": 5930,
+      "tracked": true
+    },
+    {
+      "path": "windows/apps/codexu-tauri/web/src/utils/companionSetup.ts",
+      "sha256": "3a6a98692821c4a441506b5ba4b92549864779a5c50f701aa87c107525a460c9",
+      "bytes": 3414,
+      "tracked": false
+    },
+    {
+      "path": "windows/apps/codexu-tauri/web/src/utils/providerPoolClient.ts",
+      "sha256": "5e6f6c0f533fe24a4a09a12146d4c87fa3d0a80ce301434243cdeb5c62cc9195",
+      "bytes": 1618,
+      "tracked": false
+    },
+    {
+      "path": "windows/apps/codexu-tauri/web/src/utils/pythonRuntime.ts",
+      "sha256": "fe1afcaf23af998e903ecbc05f78b9f65d693352462a817e6011ebc699d4a68f",
+      "bytes": 490,
+      "tracked": false
+    },
+    {
+      "path": "windows/apps/codexu-tauri/web/tests/companion-setup.test.mjs",
+      "sha256": "66a189d41faf4cd38f00f917efbc8682eca9e07883c636aaea2bf2233ffdba80",
+      "bytes": 3122,
+      "tracked": false
+    },
+    {
+      "path": "windows/apps/codexu-tauri/web/tests/python-runtime.test.mjs",
+      "sha256": "b3839c8b04ae79aa87a0b9006cfc742c1707de1ed27ed1fe59052babba0b6e09",
+      "bytes": 1497,
+      "tracked": false
+    },
+    {
+      "path": "windows/apps/codexu-tauri/web/tests/visual/companion-guide-integration.visual.spec.mjs",
+      "sha256": "d7c5d1bac7e005ec6e4f6c279577e4db34af6a699e2cd150d9806d41e26d178a",
+      "bytes": 2659,
+      "tracked": false
+    },
+    {
+      "path": "windows/apps/codexu-tauri/web/tests/visual/companion-setup-component.fixture.tsx",
+      "sha256": "535e7bd69a2db7c9abb852718a40d88b28fc706837b3fcc49dfcb3d08e7be5a9",
+      "bytes": 405,
+      "tracked": false
+    },
+    {
+      "path": "windows/apps/codexu-tauri/web/tests/visual/companion-setup.visual.spec.mjs",
+      "sha256": "be05cbf796607e51efbc15ca86c90f9fbfc40889655dbe894278f3ddef49201b",
+      "bytes": 10529,
+      "tracked": false
+    },
+    {
+      "path": "windows/apps/codexu-tauri/web/tests/visual/python-guide-integration.visual.spec.mjs",
+      "sha256": "c3b667ba8c2a12299f963f5c1224828f72644407949c82b5742db563e6fba994",
+      "bytes": 2251,
+      "tracked": false
+    },
+    {
+      "path": "windows/apps/codexu-tauri/web/tests/visual/python-runtime-component.fixture.tsx",
+      "sha256": "a483278028a7eb41ca37c3272d5c9d6c3a1e1b97f11b28e9f3a1d2f682c9437f",
+      "bytes": 396,
+      "tracked": false
+    },
+    {
+      "path": "windows/apps/codexu-tauri/web/tests/visual/python-runtime.visual.spec.mjs",
+      "sha256": "01311a29025488d3887662d7bfebe6cb0e177de05926e1ef5c0edeade097036e",
+      "bytes": 7210,
+      "tracked": false
+    },
+    {
+      "path": "windows/companion/SOURCE.json",
+      "sha256": "41120183e3bcb2efd4a34cd137ec8311b878e5c09584a8c5309dc9c64961d67d",
+      "bytes": 3757,
+      "tracked": false
+    },
+    {
+      "path": "windows/companion/next-dispatch.py",
+      "sha256": "520fd738a26f7d529f4a707634318949266eef456ff9670cf3fee1f94b4bdabe",
+      "bytes": 25189,
+      "tracked": false
+    },
+    {
+      "path": "windows/companion/payload/SKILL.md",
+      "sha256": "4b17cb6b1619ee346e5d4f2f87ccb691a3cf2e2b6a6374fa6321c15485ad7275",
+      "bytes": 2552,
+      "tracked": false
+    },
+    {
+      "path": "windows/companion/payload/references/cli-validation.md",
+      "sha256": "4c8c8201e63d83ac2053b3c5498be2606268b4d17ae40988fa1a5d2151bfd10a",
+      "bytes": 998,
+      "tracked": false
+    },
+    {
+      "path": "windows/companion/payload/references/coordination.md",
+      "sha256": "9194c0b3e7e8013009834c780490bb1207155007e4d023c831148cca6e7ff0da",
+      "bytes": 1395,
+      "tracked": false
+    },
+    {
+      "path": "windows/companion/payload/references/dispatch-brief.md",
+      "sha256": "4d7998514444fd0efbfbf4a123001e89f753e00e71c2c22db0b8a9ca0d7d69a9",
+      "bytes": 694,
+      "tracked": false
+    },
+    {
+      "path": "windows/companion/payload/references/grok-cli.md",
+      "sha256": "ebd62395760e2c331097313feaccf97cd633507cfcd7ecb3970f5bdb0fc2426c",
+      "bytes": 646,
+      "tracked": false
+    },
+    {
+      "path": "windows/companion/payload/references/jev-coordination.md",
+      "sha256": "1d849f8d11ada5bf8bba194ca215ccea47d952c0a215829fc49232d67a41bb82",
+      "bytes": 717,
+      "tracked": false
+    },
+    {
+      "path": "windows/companion/payload/references/local-runtime.md",
+      "sha256": "b25706a11ccd8f3f80079e8b2b0d28566f2b9b287f1f164be7284ceff7a85a04",
+      "bytes": 955,
+      "tracked": false
+    },
+    {
+      "path": "windows/companion/payload/references/luna-presets.md",
+      "sha256": "30e649fac9bda0e81937901d4950b27ee19a97e038a9ec532900627cb60ed427",
+      "bytes": 804,
+      "tracked": false
+    },
+    {
+      "path": "windows/companion/payload/references/onboarding-login.md",
+      "sha256": "bb713b94e7f0ccf0f83aca867aeac11116b3922cd6ce7db669195625de8ab93b",
+      "bytes": 930,
+      "tracked": false
+    },
+    {
+      "path": "windows/companion/payload/references/runtime-setup.md",
+      "sha256": "1c3f35c6636af27deb865c1e1e882a253f68f1ef2c6c2f0a0ba590029ea5866b",
+      "bytes": 1894,
+      "tracked": false
+    },
+    {
+      "path": "windows/companion/payload/references/update-0927v1.md",
+      "sha256": "f23f0fb8bda32e12229990655362da5810109286c10d74a7bfb5a069ffd9204d",
+      "bytes": 1007,
+      "tracked": false
+    },
+    {
+      "path": "windows/companion/payload/scripts/next_dispatch_activity.py",
+      "sha256": "368f026edd0ec55863af2f54bd247eec7c6f286c1d471dd45266d6300726df80",
+      "bytes": 668,
+      "tracked": false
+    },
+    {
+      "path": "windows/companion/payload/scripts/next_dispatch_invocation.py",
+      "sha256": "7e090ec7c365901d40ec1ea1ab4237424bb7c28496112f12a17e1db9d6e91b2d",
+      "bytes": 653,
+      "tracked": false
+    },
+    {
+      "path": "windows/companion/payload/scripts/next_dispatch_preflight.py",
+      "sha256": "3549c53bfdd8ae0cfc75086ba525ac9967611d887c80bb4206b62f5d79193610",
+      "bytes": 649,
+      "tracked": false
+    },
+    {
+      "path": "windows/companion/payload/使用说明.md",
+      "sha256": "086084c083fce932dd38905c39113fb9d37d52c9cd5eea271d4438c82e52179d",
+      "bytes": 1080,
+      "tracked": false
+    },
+    {
+      "path": "windows/companion/prepare.py",
+      "sha256": "f04682c140eeb518656ea5ff181602f20b91c03e84c025509b9f20a36aaa0bf4",
+      "bytes": 7550,
+      "tracked": false
+    },
+    {
+      "path": "windows/companion/test_client.py",
+      "sha256": "e428a09d9ca699d00fba821a939985671babe1bc19fd2832958fb9786e8138cc",
+      "bytes": 8213,
+      "tracked": false
+    },
+    {
+      "path": "windows/companion/test_prepare.py",
+      "sha256": "058913af5e63bc3e298bed218a9fb23b8dc05d607d86a8301905806726321302",
+      "bytes": 6290,
+      "tracked": false
+    },
+    {
+      "path": "windows/crates/codexu-core/src/accounts/native.rs",
+      "sha256": "e639bc9a6e9396227a1059a7ea92b3d3a86dbc67b0c5a3c40d50cfeb69e1a07e",
+      "bytes": 26787,
+      "tracked": true
+    },
+    {
+      "path": "windows/crates/codexu-core/src/accounts/storage.rs",
+      "sha256": "fd480c4b1da655b552bcfc362d6b53b21ed212703cae207ddf7b95b3b61f79d5",
+      "bytes": 25485,
+      "tracked": true
+    },
+    {
+      "path": "windows/crates/codexu-core/src/companion_bridge/host.rs",
+      "sha256": "0dd6c60b45648596d594e32b7d8377466c3fe5ba8e2aafff649ccad0d7497044",
+      "bytes": 14903,
+      "tracked": false
+    },
+    {
+      "path": "windows/crates/codexu-core/src/companion_bridge/journal.rs",
+      "sha256": "9f77879a5199e4dd2f0783f69dfe0e7f30f107d5d6664f2044f5726b908358f9",
+      "bytes": 6745,
+      "tracked": false
+    },
+    {
+      "path": "windows/crates/codexu-core/src/companion_bridge/mod.rs",
+      "sha256": "a0472bc96e3a45d3711f61b7c724822466d8c51c66a5af14eb2be193d5895892",
+      "bytes": 5452,
+      "tracked": false
+    },
+    {
+      "path": "windows/crates/codexu-core/src/companion_bridge/native_tests.rs",
+      "sha256": "7f2b3a2e2a846cc12308f02e986a8cd9e8c4f5f9e04de53809940a959d213777",
+      "bytes": 13636,
+      "tracked": false
+    },
+    {
+      "path": "windows/crates/codexu-core/src/companion_bridge/native_windows.rs",
+      "sha256": "379966c7d6eabc4f9811e5e29d99bea47c2089f5a3b019c3ca13a902442fc2b9",
+      "bytes": 29464,
+      "tracked": false
+    },
+    {
+      "path": "windows/crates/codexu-core/src/companion_bridge/protocol.rs",
+      "sha256": "d3526c05cc6ea560b5ca4b09eaa94c5596dd55d8e25f1a30c4be4934268385ae",
+      "bytes": 4991,
+      "tracked": false
+    },
+    {
+      "path": "windows/crates/codexu-core/src/companion_bridge/tests.rs",
+      "sha256": "f5919b7e773e9a074c5990ef534b9711149f978e65a26fde12462eb8f4e868e6",
+      "bytes": 19290,
+      "tracked": false
+    },
+    {
+      "path": "windows/crates/codexu-core/src/companion_setup/manifest.rs",
+      "sha256": "1b59907687dab57f0eb198d4e250ea6ee726f868bb3a80abea584304395bcf3e",
+      "bytes": 6711,
+      "tracked": false
+    },
+    {
+      "path": "windows/crates/codexu-core/src/companion_setup/mod.rs",
+      "sha256": "a251783e9940aa6d4202539dc52a71a8a26845d13a9fc942917087989133a8de",
+      "bytes": 4432,
+      "tracked": false
+    },
+    {
+      "path": "windows/crates/codexu-core/src/companion_setup/store.rs",
+      "sha256": "0b1bcc73a38d7aa681dd1ad8359d83ab8f86f95c5015e7d6ec16575f8e23f11d",
+      "bytes": 22431,
+      "tracked": false
+    },
+    {
+      "path": "windows/crates/codexu-core/src/companion_setup/tests.rs",
+      "sha256": "f115c4e4e744f16fb8b4f4f7b374882ef656be68266452c085172395747ab020",
+      "bytes": 23178,
+      "tracked": false
+    },
+    {
+      "path": "windows/crates/codexu-core/src/desktop_owner/UPSTREAM.md",
+      "sha256": "362591b33b2169fb6bb3a526604236b8e264e0be92e1c48ee5c9805cfd0a3467",
+      "bytes": 2188,
+      "tracked": false
+    },
+    {
+      "path": "windows/crates/codexu-core/src/desktop_owner/client.rs",
+      "sha256": "6081ef99363a1afc12b1a955c0d392054bfab562972a722d2c41c9743e8a7b9f",
+      "bytes": 12220,
+      "tracked": false
+    },
+    {
+      "path": "windows/crates/codexu-core/src/desktop_owner/journal.rs",
+      "sha256": "103d3c7a6c195aece1d0fd05a88b4ba5ad4fac71d0eb753d87c62b3e203ea69c",
+      "bytes": 10400,
+      "tracked": false
+    },
+    {
+      "path": "windows/crates/codexu-core/src/desktop_owner/journal_tests.rs",
+      "sha256": "0057a6e8d5abb60d9e616ba19a4a56b88cc7901f02ccb579e82101d6091ac3eb",
+      "bytes": 14106,
+      "tracked": false
+    },
+    {
+      "path": "windows/crates/codexu-core/src/desktop_owner/mod.rs",
+      "sha256": "989238c62e167a0cb9835731b9fd182bbdf4cf298bad981418053100210deffb",
+      "bytes": 5266,
+      "tracked": false
+    },
+    {
+      "path": "windows/crates/codexu-core/src/desktop_owner/native.rs",
+      "sha256": "5c3076cec228f96ccdb473826cd36a66070daad39e954e6d703335eca1960ed6",
+      "bytes": 17913,
+      "tracked": false
+    },
+    {
+      "path": "windows/crates/codexu-core/src/desktop_owner/native_tests.rs",
+      "sha256": "9857302a35614906f51dc09f5cc6b3460dca8cee807829b8d837608c63c2b3b2",
+      "bytes": 19989,
+      "tracked": false
+    },
+    {
+      "path": "windows/crates/codexu-core/src/desktop_owner/protocol.rs",
+      "sha256": "a6fe091d49bf805cd8196f2cc44d873696d3be047b5ff6365f02d3e7270fe432",
+      "bytes": 4854,
+      "tracked": false
+    },
+    {
+      "path": "windows/crates/codexu-core/src/desktop_owner/tests.rs",
+      "sha256": "77eeca93b89d9b1f183e3a7ec4aa3519ae5adaa9b57ecb26454b82ffbd852e94",
+      "bytes": 15355,
+      "tracked": false
+    },
+    {
+      "path": "windows/crates/codexu-core/src/lib.rs",
+      "sha256": "229b20b2b29afebfa16aabb3e16ef2a2d402551330183aa69a4f5407fd305ba0",
+      "bytes": 501,
+      "tracked": true
+    },
+    {
+      "path": "windows/crates/codexu-core/src/local_cli/launch.rs",
+      "sha256": "ca2a109468d8addf7bc8fae08fd69b95d5e42c72c7d96e099a6c25f5999844bd",
+      "bytes": 17663,
+      "tracked": true
+    },
+    {
+      "path": "windows/crates/codexu-core/src/local_cli/launch/provider_pool.rs",
+      "sha256": "48fc242b4bf04fce58ce1e56c025146e382cebb995a1f18dc0d8f99d5254b0b8",
+      "bytes": 3970,
+      "tracked": false
+    },
+    {
+      "path": "windows/crates/codexu-core/src/provider_pool/client.rs",
+      "sha256": "4d31bea65ec4b2305b9082f01ecd2c9ec2e330cbf31b51938401b69c84267ec1",
+      "bytes": 7728,
+      "tracked": false
+    },
+    {
+      "path": "windows/crates/codexu-core/src/provider_pool/client_tests.rs",
+      "sha256": "8fa14c22b689ea1324a516bfde573da352dd113a414c90487d5936a186314246",
+      "bytes": 5980,
+      "tracked": false
+    },
+    {
+      "path": "windows/crates/codexu-core/src/provider_pool/mod.rs",
+      "sha256": "1b7ccb68d78216f50c9e2355c9ec754c8e7eb24a02d9875b3500f95339369e00",
+      "bytes": 929,
+      "tracked": true
+    },
+    {
+      "path": "windows/crates/codexu-core/src/runtime_setup/mod.rs",
+      "sha256": "e18d40bb6309f865b8c2563a78ae362ab6d05bdd2a3c1a4b2fa65ea0ff58f286",
+      "bytes": 1524,
+      "tracked": true
+    },
+    {
+      "path": "windows/crates/codexu-core/src/runtime_setup/python.rs",
+      "sha256": "875e862189f2ec3b45c5a2e4842738b77af81429f05e012b3ad7c9f93bc463d7",
+      "bytes": 5264,
+      "tracked": false
+    },
+    {
+      "path": "windows/crates/codexu-core/src/runtime_setup/python_tests.rs",
+      "sha256": "1c0efe45d4ed88d85bbe620a02456ec4cb644ce96c0858564fb58219bfd41734",
+      "bytes": 8865,
+      "tracked": false
+    },
+    {
+      "path": "windows/crates/codexu-core/src/runtime_setup/store.rs",
+      "sha256": "27e8583affc302b371dbb514965dd3b8e00b5adaac1fea1666b7bde729bbf80f",
+      "bytes": 9834,
+      "tracked": true
+    },
+    {
+      "path": "windows/crates/codexu-core/src/workflow.rs",
+      "sha256": "c1fc232e6834a8b584a9e50a2975d81d676ad6a5fdd58f2b6407bc0678708374",
+      "bytes": 21592,
+      "tracked": true
+    },
+    {
+      "path": "windows/crates/codexu-core/src/workflow_execution.rs",
+      "sha256": "6bceb403ab75f4b2d34b89a9662afb631ee5e5c182f719544a058bd1af042722",
+      "bytes": 11784,
+      "tracked": false
+    },
+    {
+      "path": "windows/crates/codexu-core/src/workflow_execution_tests.rs",
+      "sha256": "8f054f9319b7b8fa38c39e71d68a4db603bc41839379e4da8e2c0994e151a196",
+      "bytes": 17499,
+      "tracked": false
+    },
+    {
+      "path": "windows/scripts/Invoke-ReleaseReadiness.ps1",
+      "sha256": "de6a384529755a6f55ac50a719ce2d9bab91ba918ec51c5936c4f78bcc21de69",
+      "bytes": 18780,
+      "tracked": true
+    },
+    {
+      "path": "windows/scripts/tests/Test-ReleaseReadiness.ps1",
+      "sha256": "b35f1c3c2ff95439a0016ef5f455b7c01ed8782d21ab8aa6f07d7211ad2b9793",
+      "bytes": 14632,
+      "tracked": true
+    }
+  ],
+  "authorCloseoutHashes": {
+    "newAccount": "f9c9616f4561710a2585a22f2707fd039cc1f8473c5ac5b01363606eb36ef04e",
+    "windowsRelease": "a8d1627e802e7b1c1077aa190351fcfb5a22e23ec750eacb52876451735f3967"
+  },
+  "validationBoundary": "Module-specific host/source reviews only. Final combined Windows native, integration and packaging remain pending. No new tests were run for handoff."
+}

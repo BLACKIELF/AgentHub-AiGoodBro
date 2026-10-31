@@ -1,5 +1,73 @@
 use super::*;
 
+fn owner_snapshot() -> WorkbenchSnapshot {
+    use codexu_core::task_workbench::{Outcome, WorkbenchItem};
+    WorkbenchSnapshot {
+        scope_id: "a".repeat(64),
+        checked_at_ms: 1,
+        source_available: true,
+        truncated: false,
+        items: vec![WorkbenchItem {
+            thread_id: "12345678-1234-1234-1234-123456789abc".into(),
+            title: "Synthetic local thread".into(),
+            project: "Synthetic".into(),
+            updated_at_ms: Some(10),
+            archived: false,
+            execution_state: "recorded",
+            outcome: Outcome::Unknown,
+            decision: Decision::None,
+            decision_at_ms: None,
+            inventory_is_stale: false,
+            needs_attention: false,
+            inventory: None,
+        }],
+    }
+}
+
+#[test]
+fn owner_context_metadata_rejects_changed_scope_missing_archived_or_duplicate_thread() {
+    let mut snapshot = owner_snapshot();
+    let thread = snapshot.items[0].thread_id.clone();
+    assert!(owner_metadata_digest(&snapshot, &"b".repeat(64), &thread).is_err());
+    snapshot.source_available = false;
+    assert!(owner_metadata_digest(&snapshot, &snapshot.scope_id, &thread).is_err());
+    snapshot.source_available = true;
+    snapshot.items[0].archived = true;
+    assert!(owner_metadata_digest(&snapshot, &snapshot.scope_id, &thread).is_err());
+    snapshot.items[0].archived = false;
+    assert!(owner_metadata_digest(
+        &snapshot,
+        &snapshot.scope_id,
+        "22345678-1234-1234-1234-123456789abc"
+    )
+    .is_err());
+    snapshot.items.push(owner_snapshot().items.remove(0));
+    assert!(owner_metadata_digest(&snapshot, &snapshot.scope_id, &thread).is_err());
+}
+
+#[test]
+fn owner_context_metadata_binds_actual_record_but_not_read_clock() {
+    let mut snapshot = owner_snapshot();
+    let thread = snapshot.items[0].thread_id.clone();
+    let original = owner_metadata_digest(&snapshot, &snapshot.scope_id, &thread).unwrap();
+    snapshot.checked_at_ms = 100;
+    assert_eq!(
+        owner_metadata_digest(&snapshot, &snapshot.scope_id, &thread).unwrap(),
+        original
+    );
+    snapshot.items[0].updated_at_ms = Some(11);
+    assert_ne!(
+        owner_metadata_digest(&snapshot, &snapshot.scope_id, &thread).unwrap(),
+        original
+    );
+    snapshot.items[0].updated_at_ms = Some(10);
+    snapshot.items[0].decision = Decision::Paused;
+    assert_ne!(
+        owner_metadata_digest(&snapshot, &snapshot.scope_id, &thread).unwrap(),
+        original
+    );
+}
+
 fn fixture() -> (tempfile::TempDir, AppState) {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().canonicalize().unwrap();

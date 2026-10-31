@@ -142,6 +142,11 @@ fn main() {
                 .map(|config| config.language.resolved(app_state::ResolvedLanguage::En))
                 .unwrap_or(app_state::ResolvedLanguage::En);
             app.manage(state.clone());
+            app.manage(commands::companion_setup::CompanionState::new(
+                state.clone(),
+                &app.state::<native_services::NativeServices>(),
+                &app.state::<commands::task_hub::HubState>(),
+            ));
             if let Err(code) = compact_ui::install(app.handle(), app_data_dir) {
                 tracing::warn!(code, "Compact interface unavailable");
             } else {
@@ -245,6 +250,9 @@ fn main() {
             commands::provider_pool::remove_provider_pool_account,
             commands::provider_pool::refresh_provider_pool_models,
             commands::provider_pool::copy_provider_pool_connection,
+            commands::cli_workflow::provider_clients::start_provider_pool_client,
+            commands::cli_workflow::provider_clients::get_provider_pool_clients,
+            commands::cli_workflow::provider_clients::stop_provider_pool_client,
             commands::recommendations::get_recommendations,
             commands::recommendations::recheck_recommendations,
             commands::recommendations::set_recommendation_hidden,
@@ -253,6 +261,9 @@ fn main() {
             commands::runtime_setup::inspect_runtime_setup,
             commands::runtime_setup::select_runtime_codex,
             commands::runtime_setup::open_codex_installation_guide,
+            commands::python_runtime::inspect_python_runtime,
+            commands::python_runtime::select_python_runtime,
+            commands::python_runtime::open_python_installation_guide,
             commands::local_proxy::get_local_proxy_status,
             commands::local_proxy::get_local_proxy_preferences,
             commands::local_proxy::set_local_proxy_preferences,
@@ -327,6 +338,9 @@ fn main() {
             commands::task_workbench::set_task_workbench_decision,
             commands::task_workbench::open_task_workbench_artifact,
             commands::personal_wechat_text::send_personal_wechat_text,
+            commands::companion_setup::inspect_companion_setup,
+            commands::companion_setup::prepare_companion_setup,
+            commands::companion_setup::confirm_companion_setup,
             commands::task_hub::get_task_hub,
             commands::task_hub::get_task_hub_messages,
             commands::task_hub::select_task_hub_workspace,
@@ -339,14 +353,27 @@ fn main() {
         .expect("error while building tauri application")
         .run(|app, event| {
             if let tauri::RunEvent::ExitRequested { api, .. } = event {
+                if app.state::<quit::QuitState>().pending() {
+                    api.prevent_exit();
+                    return;
+                }
                 if !app.state::<quit::QuitState>().confirmed()
-                    && (commands::cli_workflow::should_block_exit(
-                        &app.state::<commands::cli_workflow::WorkflowState>(),
-                    ) || commands::task_hub::should_block_exit(
-                        &app.state::<commands::task_hub::HubState>(),
-                    ) || app
-                        .state::<native_services::NativeServices>()
-                        .proxy_blocks_normal_exit())
+                    && quit::normal_exit_needs_confirmation(
+                        || {
+                            commands::cli_workflow::should_block_exit(
+                                &app.state::<commands::cli_workflow::WorkflowState>(),
+                            ) || commands::task_hub::should_block_exit(
+                                &app.state::<commands::task_hub::HubState>(),
+                            ) || app
+                                .state::<native_services::NativeServices>()
+                                .proxy_blocks_normal_exit()
+                                || app
+                                    .state::<commands::companion_setup::CompanionState>()
+                                    .cleanup_unconfirmed()
+                        },
+                        || commands::companion_setup::prepare_normal_exit(app),
+                        || commands::companion_setup::resume_normal_exit(app),
+                    )
                 {
                     api.prevent_exit();
                     if let Some(window) = app.get_webview_window("main") {
@@ -356,6 +383,7 @@ fn main() {
                     quit::ask(app);
                 }
             } else if let tauri::RunEvent::Exit = event {
+                commands::companion_setup::force_stop_owned(app);
                 commands::task_hub::force_stop_owned(&app.state::<commands::task_hub::HubState>());
                 compact_projection::shutdown(app);
                 compact_ui::shutdown(app);

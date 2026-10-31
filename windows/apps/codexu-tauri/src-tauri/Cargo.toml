@@ -18,6 +18,7 @@ tauri = { version = "2", features = ["tray-icon", "image-png"] }
 tauri-plugin-dialog = "2"
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = "0.10"
 tokio = { workspace = true }
 chrono = { workspace = true }
 anyhow = { workspace = true }
@@ -26,9 +27,6 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 dirs = { workspace = true }
 tempfile = "3.10"
-
-[dev-dependencies]
-sha2 = "0.10"
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]

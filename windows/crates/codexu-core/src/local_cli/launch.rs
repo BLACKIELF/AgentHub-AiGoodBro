@@ -2,6 +2,7 @@
 //! mutation is performed by discovery or plan construction.
 mod catalog;
 mod native;
+mod provider_pool;
 
 use super::{LocalCliKind, PlatformDirectories};
 pub use catalog::PreparedProfile;

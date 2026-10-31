@@ -80,6 +80,11 @@ try {
     Assert-True ('-RunNativeTests' -in $plan[[array]::IndexOf($names, 'provider-pool-native-resources')].arguments) 'Release validation omitted synthetic native provider tests.'
     Assert-True ([array]::IndexOf($names, 'hub-native-resources') -lt [array]::IndexOf($names, 'rust-tests')) 'The real Hub resources must precede workspace validation.'
     Assert-True ('-RunNativeTests' -in $plan[[array]::IndexOf($names, 'hub-native-resources')].arguments) 'Release validation omitted native Hub execution.'
+    $companionPrepare = [array]::IndexOf($names, 'companion-setup-resources')
+    $companionVerify = [array]::IndexOf($names, 'companion-setup-verify')
+    Assert-True ($companionPrepare -ge 0 -and $companionPrepare -lt $companionVerify -and $companionVerify -lt [array]::IndexOf($names, 'rust-tests')) 'Pinned Companion payloads must be prepared and verified before Rust validation.'
+    Assert-True ($plan[$companionPrepare].executable -eq 'python' -and $plan[$companionPrepare].arguments[1] -eq (Join-Path $root 'windows\companion\prepare.py')) 'Companion preparation must use the fixed native payload source.'
+    Assert-True ('--verify-only' -in $plan[$companionVerify].arguments) 'Companion readback verification is required.'
     Assert-True ([array]::IndexOf($names, 'visual-baseline') -lt [array]::IndexOf($names, 'visual-repeat')) 'Visual verification must follow baseline creation.'
     Assert-True ($names[-1] -eq 'package') 'Packages must follow successful verification.'
     $reuseIndex = [array]::IndexOf($plan[-1].arguments, '-VerifiedScannerBuildRoot')

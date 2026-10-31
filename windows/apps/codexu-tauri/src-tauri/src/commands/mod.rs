@@ -6,6 +6,8 @@ pub mod automatic_switch;
 pub mod claude_swap;
 pub mod cli_workflow;
 pub mod compact_ui;
+pub mod companion_setup;
+pub(crate) mod desktop_owner_actions;
 pub mod local_proxy;
 pub mod notifications;
 pub mod profile_quota;
@@ -26,6 +28,7 @@ pub mod account_metadata;
 
 pub mod provider_pool;
 pub mod runtime_setup;
+pub mod python_runtime;
 
 pub(super) mod native_clipboard;
 
