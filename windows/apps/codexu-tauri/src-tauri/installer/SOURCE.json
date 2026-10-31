@@ -6,7 +6,7 @@
     "nsis-installer.nsi": "crates/tauri-bundler/src/bundle/windows/nsis/installer.nsi",
     "wix-main.wxs": "crates/tauri-bundler/src/bundle/windows/msi/main.wxs"
   },
-  "purpose": "Preserve pre-branding upgrade registry identity while rendering AiGoodBro labels. Target-owned legacy MSI links are scheduled through standard RemoveFiles for native transaction rollback; other upstream gates are retained.",
+  "purpose": "Preserve pre-branding upgrade registry identity while rendering AiGoodBro labels. Target-owned legacy MSI links are scheduled through standard RemoveFiles for native transaction rollback; other upstream gates are retained. Database codepage 936 preserves the shipped Chinese resource basenames; the en-US language and summary codepage 1252 remain unchanged.",
   "files": {
     "nsis-installer.nsi": {
       "upstream_sha256": "9c6e92470d26e25d7c138b07c3000116c89ef0a32f29e5009a554ed5ca233ceb",
@@ -62,10 +62,45 @@
           "before": "        <InstallExecuteSequence>\n            <RemoveShortcuts>Installed AND NOT UPGRADINGPRODUCTCODE</RemoveShortcuts>\n        </InstallExecuteSequence>\n\n",
           "after": "        <InstallExecuteSequence>\n            <RemoveShortcuts>Installed AND NOT UPGRADINGPRODUCTCODE</RemoveShortcuts>\n            <Custom Action=\"PlanLegacyBrandShortcuts\" Before=\"RemoveFiles\">WIX_UPGRADE_DETECTED AND NOT Installed</Custom>\n        </InstallExecuteSequence>\n\n        <!-- Old MSI deliberately retains shortcuts during major upgrades. Plan only\n             exact owned links in RemoveFile so the MSI transaction owns rollback. -->\n        <CustomAction Id=\"PlanLegacyBrandShortcuts\" Script=\"jscript\" Execute=\"immediate\" Return=\"check\"><![CDATA[\nvar fs = new ActiveXObject(\"Scripting.FileSystemObject\");\nvar shell = new ActiveXObject(\"WScript.Shell\");\nfunction absolute(path) {\n    if (!/^(?:[A-Za-z]:[\\\\\\/]|\\\\\\\\[^\\\\]+\\\\[^\\\\]+\\\\)/.test(path)) {\n        throw new Error(\"Expected an absolute installer path\");\n    }\n    return fs.GetAbsolutePathName(path).replace(/\\//g, \"\\\\\").toLowerCase();\n}\nfunction plainPath(path) {\n    if ((fs.GetFile(path).Attributes & 1024) !== 0) return false;\n    var parent = fs.GetParentFolderName(path);\n    while (parent) {\n        if ((fs.GetFolder(parent).Attributes & 1024) !== 0) return false;\n        var next = fs.GetParentFolderName(parent);\n        if (next.toLowerCase() === parent.toLowerCase()) break;\n        parent = next;\n    }\n    return true;\n}\nvar expected = absolute(fs.BuildPath(absolute(Session.Property(\"INSTALLDIR\")), \"codexu-tauri.exe\"));\nvar candidates = [\n    [\"DesktopFolder\", \"ApplicationShortcutDesktop\", \"AiGoodBroLegacyDesktop\", \"AiGoodBroLegacyDesktopDirectory\", \"\"],\n    [\"ProgramMenuFolder\", \"ApplicationShortcut\", \"AiGoodBroLegacyPrograms\", \"AiGoodBroLegacyProgramsDirectory\", \"Codex Account Manager Next\"]\n];\nfor (var i = 0; i < candidates.length; i++) {\n    var row = candidates[i];\n    var folder = absolute(Session.Property(row[0]));\n    if (row[4]) folder = fs.BuildPath(folder, row[4]);\n    var path = fs.BuildPath(folder, \"Codex Account Manager Next.lnk\");\n    var target;\n    try {\n        if (!fs.FileExists(path) || !plainPath(path)) continue;\n        target = absolute(shell.CreateShortcut(path).TargetPath);\n    }\n    catch (error) { continue; } // Unknown or malformed links belong to the user.\n    if (target !== expected) continue;\n    Session.Property(row[3]) = folder;\n    // Every SQL value is a fixed identifier/name above, never a filesystem value.\n    var view = Session.Database.OpenView(\"INSERT INTO `RemoveFile` (`FileKey`, `Component_`, `FileName`, `DirProperty`, `InstallMode`) VALUES ('\" + row[2] + \"', '\" + row[1] + \"', 'Codex Account Manager Next.lnk', '\" + row[3] + \"', 1) TEMPORARY\");\n    view.Execute();\n    view.Close();\n}\n        ]]></CustomAction>\n\n",
           "count": 1
+        },
+        {
+          "before": "            Language=\"!(loc.TauriLanguage)\"\n",
+          "after": "            Language=\"!(loc.TauriLanguage)\"\n            Codepage=\"936\"\n",
+          "count": 1
         }
       ],
-      "local_sha256": "6ef84113b9670ead1a0ce8ecf62ff1d01686d13b4a14bf462e16872dbdf31bb2",
+      "local_sha256": "fa8202e64424e2fd328de51f1ae67233eeb5b6f95c8aeadac456381860670b9b",
       "upstream_git_blob": "a11b2ec4381cb05fb0d340b17ef5197ad951529c"
     }
+  },
+  "encoding_contract": {
+    "databaseCodepage": 936,
+    "summaryCodepage": 1252,
+    "language": "en-US",
+    "languageId": 1033,
+    "localizationSources": [
+      {
+        "url": "https://raw.githubusercontent.com/wixtoolset/wix3/wix3141rtm/src/ext/UIExtension/wixlib/WixUI_en-us.wxl",
+        "sha256": "b0131df8e8dee16041d211200e79546c53866fe9854df50b734b9352ed0c4cb0",
+        "valueCount": 1686,
+        "allValuesAscii": true,
+        "nonAsciiCodepoints": []
+      },
+      {
+        "url": "https://raw.githubusercontent.com/wixtoolset/wix3/wix3141rtm/src/ext/UtilExtension/wixlib/en-us.wxl",
+        "sha256": "1f279883252cce68dfbf60e93eb60d1c247414ebc4b8492e5aa4c331ee5065c3",
+        "valueCount": 65,
+        "allValuesAscii": true,
+        "nonAsciiCodepoints": []
+      },
+      {
+        "url": "https://raw.githubusercontent.com/tauri-apps/tauri/tauri-cli-v2.6.2/crates/tauri-bundler/src/bundle/windows/msi/default-locale-strings.xml",
+        "sha256": "34df49db31a56913337132beaf54135a3f675a9085724b7781ec0a32fd523815",
+        "valueCount": 12,
+        "allValuesAscii": true,
+        "nonAsciiCodepoints": []
+      }
+    ],
+    "scope": "Complete pinned en-US localization values checked for strict roundtrip; release preflight checks current template/config/resource names and the generated WXS/WXL."
   }
 }

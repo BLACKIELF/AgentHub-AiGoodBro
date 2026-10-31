@@ -123,6 +123,7 @@ if ($VerifiedProviderPoolBuildRoot) { $ProviderPoolArguments += '-VerifiedReuse'
 Invoke-Checked 'pwsh.exe' $ProviderPoolArguments
 $ProviderPoolManifest = Join-Path $AppRoot 'src-tauri\resources\provider-pool\WINDOWS-RESOURCES.json'
 $ProviderPoolManifestHash = (Get-FileHash -LiteralPath $ProviderPoolManifest -Algorithm SHA256).Hash.ToLowerInvariant()
+Invoke-Checked 'python' @('-B', (Join-Path $RepoRoot 'windows\scripts\check-msi-encoding.py'), '--root', $RepoRoot)
 
 
 if (-not $SkipValidation) {
@@ -200,6 +201,10 @@ if (-not $Msi) {
 if (-not $Nsis) {
     throw "No fresh NSIS setup executable matching the requested version was produced."
 }
+
+# Check the actual rendered XML, including escaped/localized values.
+$WixOutput = Join-Path $Msi.Directory.Parent.Parent.FullName 'wix\x64'
+Invoke-Checked 'python' @('-B', (Join-Path $RepoRoot 'windows\scripts\check-msi-encoding.py'), '--root', $RepoRoot, '--generated', $WixOutput)
 
 $Artifacts = @(
     @{ Source = $Msi.FullName; Name = "AiGoodBro-$Version-windows-x86_64.msi" },

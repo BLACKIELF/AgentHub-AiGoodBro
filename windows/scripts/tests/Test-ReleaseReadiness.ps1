@@ -13,6 +13,8 @@ if ($LASTEXITCODE -ne 0) { throw 'Windows branding or upgrade identity validatio
 $null = Get-Command pwsh -CommandType Application -ErrorAction Stop
 & python -B (Join-Path $root 'tests\test_windows_upgrade_fixture.py')
 if ($LASTEXITCODE -ne 0) { throw 'Windows installer rollback fixture contracts failed.' }
+& python -B (Join-Path $root 'tests\test_windows_msi_encoding.py')
+if ($LASTEXITCODE -ne 0) { throw 'Windows MSI encoding contracts failed.' }
 function Read-ScriptAst {
     param([string] $Path)
     $tokens = $null; $errors = $null

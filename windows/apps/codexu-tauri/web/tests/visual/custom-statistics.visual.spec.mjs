@@ -6,6 +6,7 @@ const fixture=JSON.parse(readFileSync(new URL('../../../../../token-monitor/test
 const key='aigoodbro.statistics.custom.v1';
 const saved={version:1,revision:1,engine:'custom',entries:[{name:'Manual fixture',tokens:'9007199254740993'}]};
 async function setup(context,page,{initial=null,holdStartupTimezone=false}={}){
+ const exerciseStartup=holdStartupTimezone;
  let state={phase:'ready',revision:1,contextKey:'a'.repeat(64),timezone:'UTC',sources:[{id:'codex-synthetic',providerId:'codex',label:'Codex synthetic',enabled:true},{id:'claude-synthetic',providerId:'claude',label:'Claude synthetic',enabled:true}],snapshot:{...structuredClone(fixture),timezone:'UTC'},tokenRate:null,failureCode:null};
  const calls=[];let hold=null,release,entered=false,startupEntered=false,releaseStartup;
  await context.exposeBinding('__customNative',async(_,command,args,engine)=>{
@@ -28,7 +29,12 @@ async function setup(context,page,{initial=null,holdStartupTimezone=false}={}){
   `);
   await installTauriStub(target,{settings:{...SYNTHETIC_SETTINGS,language:'en'},dashboard:SYNTHETIC_DASHBOARD,windowLabel:label},extra);await target.goto('/');
  }
- await prepare(page);return {calls,prepare,state:()=>structuredClone(state),hold:(command='refresh_token_monitor_usage')=>{hold=command;entered=false;},entered:()=>entered,release:()=>release?.(),startupEntered:()=>startupEntered,releaseStartup:()=>releaseStartup?.()};
+ await prepare(page);
+ const f={calls,prepare,state:()=>structuredClone(state),hold:(command='refresh_token_monitor_usage')=>{hold=command;entered=false;},entered:()=>entered,release:()=>release?.(),startupEntered:()=>startupEntered,releaseStartup:()=>releaseStartup?.()};
+ // Ordinary upstream cases must finish startup before arming a manual hold or
+ // counting subsequent requests. Only the explicit startup fixtures opt out.
+ if(initial?.engine!=='custom'&&!exerciseStartup)await waitForInitialCollection(page,f);
+ return f;
 }
 async function waitForInitialCollection(page,f){
  // The initial state already contains a snapshot. Its visible total does not
@@ -85,7 +91,6 @@ test('a stale window checks the persisted mode before refresh even before its st
 
 for(const action of ['refresh','sources','timezone'])test(`a held ${action} prerequisite cannot restart collection after custom is persisted`,async({context,page})=>{
  const f=await setup(context,page);await expect(page.getByTestId('token-monitor-allTime')).toContainText('300');
- await waitForInitialCollection(page,f);
  const before=f.calls.filter(c=>c.command==='refresh_token_monitor_usage').length;
  f.hold(action==='sources'?'set_token_monitor_sources':'set_token_monitor_timezone');
  const panel=page.getByRole('region',{name:'Token Monitor statistics',exact:true});
@@ -130,4 +135,29 @@ test('a visible saved snapshot precedes startup collection; only the later expli
  const evidence=testInfo.outputPath('startup-and-explicit-collection-order.json');
  writeFileSync(evidence,JSON.stringify({earlyCount,before,calls:f.calls},null,2));
  await testInfo.attach('startup-and-explicit-collection-order',{path:evidence,contentType:'application/json'});
+});
+
+test('a hold armed before startup can disable Refresh; the startup barrier reserves the later explicit hold',async({context,page},testInfo)=>{
+ const f=await setup(context,page,{holdStartupTimezone:true});
+ await expect(page.getByTestId('token-monitor-allTime')).toContainText('300');
+ await expect.poll(f.startupEntered).toBe(true);
+ const refresh=page.getByRole('button',{name:'Refresh',exact:true});
+ f.hold();f.releaseStartup();await expect.poll(f.entered).toBe(true);
+ await expect(refresh).toBeDisabled();
+ let oldClickTimedOut=false;
+ try{await refresh.click({timeout:500});}catch(error){oldClickTimedOut=error.name==='TimeoutError';}
+ expect(oldClickTimedOut).toBe(true);
+ expect(f.calls.filter(c=>c.command==='refresh_token_monitor_usage')).toHaveLength(1);
+ f.release();await waitForInitialCollection(page,f);
+ f.hold();await refresh.click();await expect.poll(f.entered).toBe(true);
+ const before=f.calls.filter(c=>c.command==='refresh_token_monitor_usage').length;
+ expect(before).toBe(2);
+ await page.getByLabel('Statistics mode',{exact:true}).selectOption('custom');
+ await expect(page.getByRole('region',{name:'Custom recorded cumulative',exact:true})).toBeVisible();
+ f.release();await expect(refresh).toBeEnabled();await refresh.click();
+ expect(f.calls.filter(c=>c.command==='refresh_token_monitor_usage')).toHaveLength(before);
+ expect(f.calls.filter(c=>c.command==='refresh_token_monitor_usage').every(c=>c.engine==='upstream')).toBe(true);
+ const evidence=testInfo.outputPath('startup-hold-and-manual-hold-order.json');
+ writeFileSync(evidence,JSON.stringify({oldClickTimedOut,before,calls:f.calls},null,2));
+ await testInfo.attach('startup-hold-and-manual-hold-order',{path:evidence,contentType:'application/json'});
 });

@@ -48,7 +48,7 @@
         "type": "downloadBootstrapper"
       },
       "wix": {
-        "language": "en-US",
+        "language": { "en-US": { "localePath": "installer/encoding-en-US.wxl" } },
         "upgradeCode": "6cd62ac1-9ad0-5e9e-a4e1-c78c6a73fd03",
         "template": "installer/wix-main.wxs"
       },

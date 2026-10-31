@@ -17,6 +17,7 @@
             Name="{{product_name}}"
             UpgradeCode="{{upgrade_code}}"
             Language="!(loc.TauriLanguage)"
+            Codepage="936"
             Manufacturer="{{manufacturer}}"
             Version="{{version}}">
 

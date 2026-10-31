@@ -266,8 +266,12 @@ if (@(Registrations).Count -ne 0 -or @(Shortcuts).Count -ne 0) { throw 'Runner a
 Assert-NoApp
 $runBefore = @(Run-Values)
 $receipt = [ordered]@{ schema=1; kind=$InstallerKind; oldRunId=40952488530; oldHead='2905a4227fc543ff07e4e069ce6ff4e6290c1002'; sourceCheckout=$env:GITHUB_SHA; runId=$env:GITHUB_RUN_ID; oldSha256=$oldHash; newSha256=$newHash; version=$Version; success=$false; phases=@(); applicationStarted=$false }
+. (Join-Path $PSScriptRoot 'MsiEncoding.ps1')
 $foreignShortcuts = @()
 try {
+    if ($InstallerKind -eq 'msi') {
+        $receipt.msiEncoding = Get-MsiEncodingEvidence -MsiPath $newFile -SourceRoot ([IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))) -EvidenceDirectory $output
+    }
     if ($InstallerKind -eq 'msi') {
         Execute-Installer 'msiexec.exe' @('/i', ('"' + $oldFile + '"'), '/qn', '/norestart', ('INSTALLDIR="' + $install + '"'), '/l*v', ('"' + (Join-Path $output 'old-msi.log') + '"')) 'Old MSI install'
     } else {
@@ -334,6 +338,10 @@ try {
     $foreignPaths = @($foreignShortcuts | ForEach-Object { $_.path })
     if (@($shortcuts | Where-Object { $_.target -ine $exe.FullName -and $_.path -notin $foreignPaths }).Count -ne 0) { throw 'Upgrade left an unexpected shortcut pointing outside the preserved installation.' }
     if ($InstallerKind -eq 'msi') { $receipt.shortcutMigration.foreign.unchangedAfterUpgrade = $true }
+    if ($InstallerKind -eq 'msi') {
+        $receipt.msiEncoding | Add-Member -NotePropertyName installedResources -NotePropertyValue @(Assert-MsiUnicodeResources -Evidence $receipt.msiEncoding -InstallRoot $install)
+        Write-Output 'PASS: MSI database CP936, summary CP1252, seven Unicode FileNames and installed resource bytes'
+    }
     Assert-RunUnchanged $runBefore
     $receipt.phases += 'upgrade_identity_brand_path_shortcuts_resources_verified'
     $receipt.oldRegistration = $oldRegistration
