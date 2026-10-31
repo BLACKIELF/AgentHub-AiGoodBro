@@ -330,7 +330,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $env:CODEXU_VISUAL_SCRATCH_ROOT = Join-Path $env:CODEXU_VISUAL_ARTIFACT_ROOT 'repeat'
           npm run test:visual
-      - name: Preserve the account-layout failure screenshots
+      - name: Preserve synthetic visual failure diagnostics
         if: failure()
         uses: actions/upload-artifact@v4
         with:
@@ -339,8 +339,9 @@ jobs:
             .local-artifacts/web-visual/${{ github.run_id }}-${{ github.run_attempt }}/**/profiles-quota-narrow*.png
             .local-artifacts/web-visual/${{ github.run_id }}-${{ github.run_attempt }}/**/workspace-cards-medium*.png
             .local-artifacts/web-visual/${{ github.run_id }}-${{ github.run_attempt }}/**/workspace-accounts-list-narrow*.png
-            .local-artifacts/web-visual/${{ github.run_id }}-${{ github.run_attempt }}/**/profiles.visual-all-quota--*/error-context.md
-            .local-artifacts/web-visual/${{ github.run_id }}-${{ github.run_attempt }}/**/workspace.visual-card-size-*/error-context.md
+            .local-artifacts/web-visual/${{ github.run_id }}-${{ github.run_attempt }}/**/error-context.md
+            .local-artifacts/web-visual/${{ github.run_id }}-${{ github.run_attempt }}/**/*.redacted.json
+            .local-artifacts/web-visual/${{ github.run_id }}-${{ github.run_attempt }}/**/trace.zip
           include-hidden-files: true
           if-no-files-found: ignore
           retention-days: 7

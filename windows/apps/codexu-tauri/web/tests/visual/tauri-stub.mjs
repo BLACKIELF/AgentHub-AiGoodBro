@@ -10,6 +10,7 @@
 // genuine Tauri internals.
 
 import { SYNTHETIC_RECOMMENDATIONS } from './synthetic-fixtures.mjs';
+import { installFailureDiagnostics } from './failure-diagnostics.mjs';
 
 let nextStubRevision = 0;
 
@@ -21,6 +22,7 @@ let nextStubRevision = 0;
  * @param {() => void} [customize] Runs after the base bridge in the same init script.
  */
 export async function installTauriStub(page, { settings, dashboard, windowLabel = 'main' }, customize = () => {}) {
+  installFailureDiagnostics(page);
   const revision = ++nextStubRevision;
   const initialize = ({ settingsPayload, dashboardPayload, recommendationsPayload, label }) => {
       const callbacks = new Map();

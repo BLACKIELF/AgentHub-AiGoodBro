@@ -44,7 +44,7 @@ export default defineConfig({
   fullyParallel: false,
   workers: 1,
   forbidOnly: true,
-  reporter: [['list']],
+  reporter: [['list'], [path.join(here, 'failure-reporter.mjs')]],
 
   snapshotPathTemplate: `${artifactRoot}/snapshots/{projectName}/{arg}{ext}`,
 
@@ -74,7 +74,9 @@ export default defineConfig({
     locale: 'en-US',
     timezoneId: 'UTC',
     colorScheme: 'dark',
-    trace: 'off',
+    // Actions belong to the synthetic fixtures. Do not capture DOM snapshots,
+    // screenshots, source files or network resource bodies in the trace.
+    trace: { mode: 'retain-on-failure', screenshots: false, snapshots: false, sources: false },
     screenshot: 'off',
     video: 'off',
   },
