@@ -1,0 +1,24 @@
+:root[data-workspace-appearance=enabled] :is(.glass-panel,.glass-panel-strong,.glass-toolbar) {
+  background: color-mix(in srgb, var(--surface) var(--appearance-opacity), transparent);
+  border-color: color-mix(in srgb, var(--text-primary) var(--appearance-line), transparent);
+}
+:root[data-workspace-appearance=enabled] .glass-button {
+  background: color-mix(in srgb, var(--text-primary) var(--appearance-control), transparent);
+  border-color: color-mix(in srgb, var(--text-primary) var(--appearance-line), transparent);
+}
+:root[data-glass-backdrop=transparent] :is(.glass-panel,.glass-panel-strong,.glass-toolbar,.glass-button) {backdrop-filter:none;}
+@keyframes quota-ring-highlight {0%,100% {filter:brightness(1);} 50% {filter:brightness(1.25);}}
+:root[data-workspace-appearance=enabled] .quota-ring-value {animation:none;}
+:root[data-appearance-active=true][data-ring-motion=default] .quota-ring:not(.is-stale)[data-known=true] .quota-ring-value,
+:root[data-appearance-active=true][data-ring-motion=powerSaving] .quota-ring:not(.is-stale)[data-known=true]:hover .quota-ring-value {
+  animation:quota-ring-highlight 3s ease-in-out infinite;
+}
+@media (prefers-reduced-motion:reduce) {
+  :root[data-workspace-appearance=enabled] .quota-ring-value {animation:none !important;}
+}
+@media (prefers-reduced-transparency:reduce), (prefers-contrast:more) {
+  :root[data-workspace-appearance=enabled] :is(.glass-panel,.glass-panel-strong,.glass-toolbar,.glass-button) {background:var(--surface);backdrop-filter:none;}
+}
+@media (forced-colors:active) {
+  :root[data-workspace-appearance=enabled] :is(.glass-panel,.glass-panel-strong,.glass-toolbar,.glass-button) {background:Canvas;border-color:CanvasText;backdrop-filter:none;}
+}

@@ -1,4 +1,5 @@
 import { AccountMaintenanceSettings } from '../components/AccountMaintenanceSettings';
+import { AppearanceControls } from '../components/AppearanceControls';
 import { SystemNotifications } from '../components/SystemNotifications';
 import { AboutCredits } from '../components/AboutCredits';
 import { FloatingBubbleSettings } from '../components/FloatingBubbleSettings';
@@ -251,6 +252,7 @@ export function Settings() {
                 })}
               </div>
             </div>
+            <AppearanceControls />
             <div className="mt-4">
               <p className="block text-sm text-secondary mb-2">{t('settings.interfaceLanguage')}</p>
               <div className="grid grid-cols-3 gap-2">

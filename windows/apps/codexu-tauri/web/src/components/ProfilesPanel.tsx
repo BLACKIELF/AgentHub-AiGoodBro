@@ -1,3 +1,4 @@
+import {normalizeAccountRemark, validAccountRemark} from '../utils/accountMetadata';
 import { LocalAccountAvatar } from './LocalAccountAvatar';
 import { canonicalCompactProvider } from '../utils/compactUi';
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -15,7 +16,7 @@ import { parsePlatforms, localIsolationNotice, type Platform } from '../utils/lo
 import { readChoice, saveChoice, type AccountCardSize } from '../utils/workspacePreferences';
 import { LocalCliCatalog, LocalCliProfileActions } from './LocalCliActions';
 
-type Profile = { id: string; label: string; selected: boolean; platform: string; platform_name: string; can_view_usage: boolean };
+type Profile = { id: string; label: string; selected: boolean; platform: string; platform_name: string; can_view_usage: boolean; managed?: boolean };
 
 export function ProfilesPanel({ onSourceChange, providerFilter, onProviderChange, onPlatformsChange }: { onSourceChange: () => void; providerFilter?: string; onProviderChange?: (id: string) => void; onPlatformsChange?: (platforms: Platform[]) => void }) {
   const { language } = useI18n();
@@ -66,6 +67,7 @@ export function ProfilesPanel({ onSourceChange, providerFilter, onProviderChange
     return () => { cancelled = true; request.current++; unlisten?.(); };
   }, [reload]);
 
+  const editingManaged = profiles.find(p=>p.id===editing)?.managed === true;
   const selectedPlatform = platforms.find(entry => entry.id === platform) ?? null;
   const isolationNotice = selectedPlatform ? localIsolationNotice(selectedPlatform.isolation, language) : null;
 
@@ -127,8 +129,8 @@ export function ProfilesPanel({ onSourceChange, providerFilter, onProviderChange
                 <summary className="icon-action" aria-label={text('更多操作', 'More actions') + ' · ' + profile.label} title={text('更多操作', 'More actions')}><MoreHorizontal size={16} aria-hidden="true" /></summary>
                 <div className="account-more-content">
                   <button type="button" disabled={busy} onClick={() => { setEditing(profile.id); setLabel(profile.label); setRemoving(null); }}><Pencil size={13} />{text('备注', 'Rename')}</button>
-                  <button type="button" disabled={busy || index === 0} onClick={() => void perform({ kind: 'move', id: profile.id, delta: -1 })}><ArrowUp size={13} />{text('上移', 'Move up')}</button>
-                  <button type="button" disabled={busy || index === profiles.length - 1} onClick={() => void perform({ kind: 'move', id: profile.id, delta: 1 })}><ArrowDown size={13} />{text('下移', 'Move down')}</button>
+                  <button type="button" disabled={busy || (profile.managed ? index === profiles.findIndex(p=>p.managed) : index === 0)} onClick={() => void perform({ kind: 'move', id: profile.id, delta: -1 })}><ArrowUp size={13} />{text('上移', 'Move up')}</button>
+                  <button type="button" disabled={busy || (profile.managed ? profile.id === profiles.filter(p=>p.managed).slice(-1)[0]?.id : index === profiles.length - 1)} onClick={() => void perform({ kind: 'move', id: profile.id, delta: 1 })}><ArrowDown size={13} />{text('下移', 'Move down')}</button>
                   <button type="button" className="text-status-error" disabled={busy} onClick={() => { setRemoving(profile.id); setEditing(null); }}><Unlink size={13} />{text('移除', 'Remove')}</button>
                 </div>
               </details>
@@ -147,14 +149,15 @@ export function ProfilesPanel({ onSourceChange, providerFilter, onProviderChange
           </li>
         ))}
       </ul>
-      {editing !== null && <form className="flex flex-wrap gap-2" onSubmit={event => { event.preventDefault(); void perform(editing === 'new' ? { kind: 'link', label: label.trim(), platform } : { kind: 'rename', id: editing, label: label.trim() }); }}>
+      {editing !== null && <form className="flex flex-wrap gap-2" onSubmit={event => { event.preventDefault(); void perform(editing === 'new' ? { kind: 'link', label: label.trim(), platform } : { kind: 'rename', id: editing, label: editingManaged ? normalizeAccountRemark(label) : label.trim() }); }}>
         {editing === 'new' && platforms.length > 0 && <select className="rounded-lg border border-theme bg-surface-inset px-3 py-2 text-sm text-primary" aria-label={text('平台', 'Platform')} value={platform} disabled={busy} onChange={e => setPlatform(e.target.value)}>
           {platforms.map(entry => <option key={entry.id} value={entry.id}>{entry.name}</option>)}
         </select>}
-        <input className="rounded-lg border border-theme bg-surface-inset px-3 py-2 text-sm text-primary" aria-label={text('账号备注（不填邮箱）', 'Alias (not email)')} placeholder={text('账号备注（不填邮箱）', 'Alias (not email)')} value={label} maxLength={64} disabled={busy} onChange={e => setLabel(e.target.value)} />
-        <button className="glass-button-solid px-3 py-2 text-sm" disabled={busy || !label.trim() || /[@/\\:\x00-\x1f]/.test(label)} type="submit">{editing === 'new' ? text('选择目录并关联', 'Choose directory and link') : text('保存', 'Save')}</button>
+        <input className="rounded-lg border border-theme bg-surface-inset px-3 py-2 text-sm text-primary" aria-label={text('账号备注（不填邮箱）', 'Alias (not email)')} placeholder={text('账号备注（不填邮箱）', 'Alias (not email)')} value={label} maxLength={editingManaged ? 16384 : 64} disabled={busy} onChange={e => setLabel(e.target.value)} />
+        <button className="glass-button-solid px-3 py-2 text-sm" disabled={busy || (editingManaged ? !validAccountRemark(label) : !label.trim() || /[@/\\:\x00-\x1f]/.test(label))} type="submit">{editing === 'new' ? text('选择目录并关联', 'Choose directory and link') : text('保存', 'Save')}</button>
         <button className="glass-button px-3 py-2 text-sm" type="button" disabled={busy} onClick={() => setEditing(null)}>{text('取消', 'Cancel')}</button>
       </form>}
+      {editingManaged && <p className="text-xs text-tertiary">{text("最多 40 个字符，留空恢复原昵称。", "Up to 40 characters. Leave empty to restore the original alias.")}</p>}
       {editing === 'new' && isolationNotice && <p className="text-xs text-tertiary" data-isolation={selectedPlatform?.isolation}>{isolationNotice}</p>}
       {removing && <div role="group" aria-label={text('确认移除', 'Confirm removal')} className="flex flex-wrap items-center gap-2 text-sm">
         <span>{text('只移除这条关联，不删除目录或凭据，也不注销登录。', 'Remove the link only. Keep files, credentials and login unchanged.')}</span>

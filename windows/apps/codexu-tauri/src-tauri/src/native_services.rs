@@ -6,6 +6,7 @@ use crate::commands::{
     account_maintenance::AccountMaintenanceState,
     local_proxy::{LocalProxyDesktopState, LocalProxyState},
     notifications::NotificationState,
+    provider_pool::{NativeAuthorizationBrowser, ProviderPoolState},
     token_monitor::TokenMonitorAppState,
 };
 use codexu_core::{
@@ -21,6 +22,7 @@ use codexu_core::{
     },
     managed_proxy::{ManagedActivityGuard, ManagedProxyGate, ManagedProxySecrets},
     notifications::{NotificationMonitor, NotificationService},
+    provider_pool::{HelperResource, ProviderPool},
     proxy::{LocalProxyService, ProxyDesktopConnector, ProxyDesktopMonitor, ProxyRecoveryMonitor},
     token_monitor::TokenMonitorService,
 };
@@ -36,6 +38,7 @@ pub struct NativeServices {
     accounts: Result<Arc<AccountManager>, &'static str>,
     claude: Result<Arc<ClaudeSubscriptionManager>, &'static str>,
     proxy: Result<Arc<LocalProxyService>, &'static str>,
+    provider_pool: Result<Arc<ProviderPool>, &'static str>,
     desktop: Result<Arc<ProxyDesktopConnector>, &'static str>,
     statistics: Result<Arc<TokenMonitorService>, &'static str>,
     notifications: Result<Arc<NotificationService>, &'static str>,
@@ -64,9 +67,13 @@ impl NativeServices {
             .map_err(|e| e.code().to_owned())
     }
     pub fn proxy_blocks_normal_exit(&self) -> bool {
-        self.manual_accounts
+        self.provider_pool
             .as_ref()
-            .is_ok_and(|s| s.has_inflight_operation())
+            .is_ok_and(|service| service.requires_exit_confirmation())
+            || self
+                .manual_accounts
+                .as_ref()
+                .is_ok_and(|s| s.has_inflight_operation())
             || self
                 .automatic_switch
                 .as_ref()
@@ -94,6 +101,9 @@ impl NativeServices {
     }
     /// Synchronous no-I/O fence applied in the confirmation callback itself.
     pub fn seal_accounts_for_exit(&self) {
+        if let Ok(service) = &self.provider_pool {
+            service.request_exit();
+        }
         if let Ok(service) = &self.manual_accounts {
             service.cancel_for_exit();
         }
@@ -127,6 +137,9 @@ impl NativeServices {
     /// Background statistics do not count as an interactive task. A normal
     /// exit still closes their owned process tree without an extra prompt.
     pub fn stop_passive_services(&self) {
+        if let Ok(service) = &self.provider_pool {
+            service.request_exit();
+        }
         if let Ok(service) = &self.manual_accounts {
             service.cancel_for_exit();
         }
@@ -256,7 +269,33 @@ fn make_proxy(
     .map_err(|e| e.code())?;
     Ok(Arc::new(service))
 }
+fn make_provider_pool(root: &Path, resources: &Path) -> Result<Arc<ProviderPool>, &'static str> {
+    let binary = option_env!("AIGOODBRO_PROVIDER_POOL_BINARY_SHA256")
+        .ok_or("provider_pool_resource_missing")?;
+    let source = option_env!("AIGOODBRO_PROVIDER_POOL_SOURCE_SHA256")
+        .ok_or("provider_pool_resource_missing")?;
+    let helper = HelperResource::new(
+        resources.join("provider-pool/aigoodbro-antigravity-proxy.exe"),
+        binary.into(),
+        source.into(),
+    )
+    .map_err(|e| e.code)?;
+    ProviderPool::new(
+        root.join("provider-pool-v1"),
+        helper,
+        Arc::new(NativeAuthorizationBrowser),
+    )
+    .map_err(|e| e.code)
+}
 pub fn install(app: &mut App, root: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+    // Construct only masked storage and a pinned resource descriptor. Starting
+    // the helper and opening authorization are explicit commands later.
+    let provider_pool = app
+        .path()
+        .resource_dir()
+        .map_err(|_| "provider_pool_resource_missing")
+        .and_then(|resources| make_provider_pool(&root, &resources));
+    app.manage(ProviderPoolState(provider_pool.clone()));
     let owned_domains = codexu_core::automatic_switch::live::OwnedProcessDomains::new();
     let notifications = NotificationService::native(root.clone()).map_err(|e| e.code());
     let (notifications, notification_monitor) = match notifications {
@@ -307,12 +346,16 @@ pub fn install(app: &mut App, root: PathBuf) -> Result<(), Box<dyn std::error::E
         },
         Err(error) => (Err(error), None),
     };
-    if let (Ok(accounts), Ok(proxy)) = (&accounts, &proxy) {
-        let proxy = Arc::downgrade(proxy);
+    if let Ok(accounts) = &accounts {
+        let registration_accounts = Arc::downgrade(accounts);
+        let proxy = proxy.as_ref().ok().map(Arc::downgrade);
         let handle = app.handle().clone();
         accounts
             .install_first_verified_listener(Arc::new(move |id| {
-                if let Some(proxy) = proxy.upgrade() {
+                if let Some(accounts) = registration_accounts.upgrade() {
+                    crate::managed_registration::retry_pending(&handle, &accounts);
+                }
+                if let Some(proxy) = proxy.as_ref().and_then(|p| p.upgrade()) {
                     // The service exposes any failed enrollment as account state;
                     // a successful login must not be reported as a proxy success.
                     let _ = proxy.enroll_new_verified_account(id);
@@ -450,7 +493,11 @@ pub fn install(app: &mut App, root: PathBuf) -> Result<(), Box<dyn std::error::E
     let (account_maintenance, maintenance_monitor) = match account_maintenance {
         Ok(service) => {
             let handle = app.handle().clone();
+            let registration_accounts = accounts.as_ref().ok().map(Arc::downgrade);
             match service.start_monitor_with_listener(Arc::new(move || {
+                if let Some(accounts) = registration_accounts.as_ref().and_then(|a| a.upgrade()) {
+                    crate::managed_registration::retry_pending(&handle, &accounts);
+                }
                 let _ = handle.emit("account-maintenance:changed", ());
             })) {
                 Ok(monitor) => (Ok(service), Some(monitor)),
@@ -507,6 +554,7 @@ pub fn install(app: &mut App, root: PathBuf) -> Result<(), Box<dyn std::error::E
         accounts,
         claude,
         proxy,
+        provider_pool,
         desktop,
         statistics,
         notifications,

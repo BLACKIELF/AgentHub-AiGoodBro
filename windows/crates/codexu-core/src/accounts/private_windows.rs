@@ -276,6 +276,10 @@ fn opened(
     }
     Ok(unsafe { File::from_raw_handle(handle.cast()) })
 }
+/// Read-only owner check on the exact file handle used by a bounded reader.
+pub(in crate::accounts) fn check_owner_file(file: &File) -> AccountResult<()> {
+    PrivateDescriptor::current()?.require_owner(file)
+}
 pub(in crate::accounts) fn check_owner(path: &Path) -> AccountResult<()> {
     super::storage::ensure_no_links(path)?;
     let file = opened(path, 0x0002_0000, 1 | 2 | 4, std::ptr::null(), 3).map_err(|_| error())?;

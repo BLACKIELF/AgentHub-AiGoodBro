@@ -475,3 +475,120 @@ fn local_day_start(now: DateTime<Utc>) -> DateTime<Utc> {
         .map(|value| value.with_timezone(&Utc))
         .unwrap_or(now)
 }
+
+/// Bounded, all-date metadata for the separate workbench. The existing daily
+/// board above is intentionally unchanged. No preview, rollout path, prompt,
+/// response, automation body or transcript is selected by this query.
+#[derive(Clone)]
+pub struct WorkbenchThreadMetadata {
+    pub thread_id: String,
+    pub title: String,
+    pub project: String,
+    pub updated_at_ms: Option<i64>,
+    pub archived: bool,
+}
+pub struct WorkbenchMetadata {
+    pub source_available: bool,
+    pub truncated: bool,
+    pub threads: Vec<WorkbenchThreadMetadata>,
+}
+
+pub fn read_workbench_metadata(codex_root: &Path) -> Result<WorkbenchMetadata> {
+    crate::accounts::storage::ensure_no_links(codex_root)?;
+    anyhow::ensure!(
+        codex_root.canonicalize()? == codex_root,
+        "Invalid source root"
+    );
+    let mut selected = None;
+    for path in [
+        codex_root.join("state_5.sqlite"),
+        codex_root.join("sqlite/state_5.sqlite"),
+    ] {
+        crate::accounts::storage::ensure_no_links(&path)?;
+        match std::fs::symlink_metadata(&path) {
+            Ok(meta) => {
+                anyhow::ensure!(meta.is_file(), "Invalid metadata source");
+                selected = Some(path);
+                break;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
+            Err(e) => return Err(e.into()),
+        }
+    }
+    let Some(path) = selected else {
+        return Ok(WorkbenchMetadata {
+            source_available: false,
+            truncated: false,
+            threads: vec![],
+        });
+    };
+    let connection = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    connection.busy_timeout(std::time::Duration::from_millis(250))?;
+    connection.execute_batch("PRAGMA query_only=ON;")?;
+    let columns = table_columns(&connection, "threads")?;
+    anyhow::ensure!(
+        columns.contains("id") && columns.contains("archived"),
+        "Unrecognized metadata schema"
+    );
+    let title = if columns.contains("title") {
+        "substr(title,1,512)"
+    } else {
+        "NULL"
+    };
+    let cwd = if columns.contains("cwd") {
+        "substr(cwd,1,4096)"
+    } else {
+        "NULL"
+    };
+    // Both official timestamp generations are supported without guessing units.
+    let time = if columns.contains("updated_at_ms") {
+        "updated_at_ms"
+    } else if columns.contains("updated_at") {
+        "updated_at * 1000"
+    } else if columns.contains("created_at_ms") {
+        "created_at_ms"
+    } else if columns.contains("created_at") {
+        "created_at * 1000"
+    } else {
+        "NULL"
+    };
+    let parent = if columns.contains("thread_source") {
+        "WHERE COALESCE(LOWER(thread_source),'') <> 'subagent'"
+    } else {
+        ""
+    };
+    let query = format!("SELECT substr(id,1,128), {title}, {cwd}, {time}, archived FROM threads {parent} ORDER BY {time} DESC, id ASC LIMIT 1001");
+    let mut statement = connection.prepare(&query)?;
+    let records = statement.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, Option<String>>(1)?,
+            row.get::<_, Option<String>>(2)?,
+            row.get::<_, Option<i64>>(3)?,
+            row.get::<_, Option<i64>>(4)?,
+        ))
+    })?;
+    let mut threads = Vec::new();
+    let mut count = 0;
+    for record in records {
+        let (thread_id, title, cwd, updated, archived) = record?;
+        count += 1;
+        if count > 1000 {
+            break;
+        }
+        threads.push(WorkbenchThreadMetadata {
+            thread_id,
+            title: normalize_task_title(title.as_deref(), None),
+            project: short_workspace_name(cwd.as_deref()),
+            updated_at_ms: updated.filter(|v| *v > 0 && *v <= 8_640_000_000_000_000),
+            archived: archived == Some(1),
+        });
+    }
+    crate::accounts::storage::ensure_no_links(&path)?;
+    anyhow::ensure!(codex_root.canonicalize()? == codex_root, "Source changed");
+    Ok(WorkbenchMetadata {
+        source_available: true,
+        truncated: count > 1000,
+        threads,
+    })
+}

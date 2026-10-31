@@ -4,7 +4,7 @@ use super::{
 };
 use serde::Serialize;
 use serde_json::{json, Value};
-use std::sync::Arc;
+use std::sync::{atomic::Ordering, Arc};
 
 pub(crate) struct LoginAttempt {
     pub id: String,
@@ -58,6 +58,9 @@ impl NotificationService {
                 .state
                 .lock()
                 .map_err(|_| Failure("notification_busy"))?;
+            if self.personal_text_active.load(Ordering::Acquire) {
+                return fail("notification_busy");
+            }
             if state.login.as_ref().is_some_and(|a| {
                 a.expires_at > super::now()
                     && matches!(

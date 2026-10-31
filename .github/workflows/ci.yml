@@ -250,6 +250,11 @@ jobs:
         shell: pwsh
         run: .\windows\scripts\Prepare-ProxyResources.ps1 -BuildRoot (Join-Path $env:RUNNER_TEMP 'aigoodbro-proxy-validation') -RunNativeTests
 
+      - name: Build and exercise the isolated Windows provider pool
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: .\windows\scripts\Prepare-ProviderPool.ps1 -BuildRoot (Join-Path $env:RUNNER_TEMP 'aigoodbro-provider-pool-validation') -RunNativeTests -AllowDependencyDownload
+
       - name: Build and exercise the Windows companion Hub
         if: ${{ !cancelled() }}
         shell: pwsh
@@ -376,6 +381,10 @@ jobs:
         if: ${{ !cancelled() }}
         shell: pwsh
         run: .\windows\scripts\Prepare-TokenMonitorResources.ps1 -BuildRoot (Join-Path $env:RUNNER_TEMP 'aigoodbro-statistics-resources')
+      - name: Prepare the verified provider-pool resources
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: .\windows\scripts\Prepare-ProviderPool.ps1 -BuildRoot (Join-Path $env:RUNNER_TEMP 'aigoodbro-provider-pool-resources') -AllowDependencyDownload
       - name: Prepare the verified companion Hub resources
         if: ${{ !cancelled() }}
         shell: pwsh

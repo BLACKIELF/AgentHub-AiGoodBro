@@ -157,6 +157,7 @@ impl Fixture {
                 store.vault.accounts.push(AccountRecord {
                     id: id.clone(),
                     label: name.into(),
+                    remark: None,
                     platform: "codex".into(),
                     revision: 1,
                     created_at_ms: None,
@@ -425,6 +426,14 @@ fn active_system_scope_same_identity_token_rotation_never_adopts_old_system_or_v
 fn managed_catalog_rename_current_preserves_identity_scope_and_same_name_is_a_noop() {
     let f = Fixture::new();
     let scope = f.switched();
+    let baseline = f
+        .manager
+        .list_managed_accounts()
+        .unwrap()
+        .into_iter()
+        .find(|r| r.id == f.target)
+        .unwrap()
+        .label;
     let before = TargetSnapshot::read(&f.manager.paths.system_home).unwrap();
     let result = f
         .manager
@@ -449,14 +458,19 @@ fn managed_catalog_rename_current_preserves_identity_scope_and_same_name_is_a_no
             .code,
         "duplicate_label"
     );
-    assert_eq!(
-        f.manager
-            .rename_managed_account(&f.source, "".into())
-            .err()
-            .unwrap()
-            .code,
-        "invalid_label"
-    );
+    f.manager
+        .rename_managed_account(&f.target, "".into())
+        .unwrap();
+    let restored = f
+        .manager
+        .list_managed_accounts()
+        .unwrap()
+        .into_iter()
+        .find(|r| r.id == f.target)
+        .unwrap();
+    assert_eq!(restored.label, baseline);
+    f.manager.recheck_active_system_scope(&scope).unwrap();
+    assert!(TargetSnapshot::read(&f.manager.paths.system_home).unwrap() == before);
 }
 
 #[test]

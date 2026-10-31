@@ -6,11 +6,16 @@ pub mod managed_proxy;
 pub mod models;
 pub mod notifications;
 pub mod profiles;
+pub mod provider_pool;
 pub mod proxy;
 pub mod readers;
+pub mod task_workbench;
 pub mod token_monitor;
 pub mod updates;
 pub mod workflow;
 pub mod workflow_reader;
 
 pub use models::*;
+
+pub mod recommendations;
+pub mod runtime_setup;

@@ -1635,3 +1635,29 @@ mod native_tests {
         assert_eq!(owned._job.exited(), Ok(true));
     }
 }
+
+// Crate-internal adapter for the other owned provider helper. The original
+// bounded pipe implementation and its native test paths remain unchanged.
+pub(crate) mod provider_wire {
+    use std::io::{PipeReader, PipeWriter};
+    #[derive(Debug, PartialEq, Eq)]
+    pub enum Failure {
+        Unchanged,
+        Poisoned,
+    }
+    fn map(error: super::command_pipe::FrameFailure) -> Failure {
+        match error {
+            super::command_pipe::FrameFailure::Unchanged => Failure::Unchanged,
+            super::command_pipe::FrameFailure::Poisoned => Failure::Poisoned,
+        }
+    }
+    pub fn pipe() -> std::io::Result<(PipeReader, PipeWriter)> {
+        super::command_pipe::owned_pipe()
+    }
+    pub fn chunk(writer: &mut PipeWriter, bytes: &[u8]) -> Result<(), Failure> {
+        super::command_pipe::send_chunk(writer, bytes).map_err(map)
+    }
+    pub fn frame(writer: &mut Option<PipeWriter>, bytes: &[u8]) -> Result<(), Failure> {
+        super::command_pipe::send(writer, bytes).map_err(map)
+    }
+}

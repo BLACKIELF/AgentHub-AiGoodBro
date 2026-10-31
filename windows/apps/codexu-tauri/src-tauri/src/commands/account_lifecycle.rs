@@ -70,6 +70,7 @@ pub async fn rename_managed_account(
     })
     .await?;
     let _ = app.emit("managed-accounts:changed", ());
+    let _ = app.emit("profiles:changed", ());
     Ok(result)
 }
 

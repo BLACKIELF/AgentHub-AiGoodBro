@@ -26,6 +26,7 @@ sha2 = "0.10"
 url = "2.5.8"
 base64 = "0.22"
 getrandom = "0.3"
+unicode-segmentation = "=1.13.3"
 toml = "=0.8.2"
 
 # Windows-native probing for the Antigravity desktop adapter: process snapshot,

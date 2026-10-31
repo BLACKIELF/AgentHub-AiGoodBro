@@ -13,6 +13,7 @@ async function setup(page, language = 'en') {
       if (command === 'read_profile_quota') return { profile_id: args.id, checked_at: Date.now(), windows: [{ kind: 'five_hour', remaining_percent: 22, resets_at: null }], account: { account_type: 'chatgpt', plan_type: 'plus', email_present: true }, credits: { usd: null, points: 0, reset_cards: 2 } };
       if (command === 'get_account_local_details' || command === 'refresh_account_local_details' || command === 'set_account_pro_multiplier') {
         window.actionCalls.push({ command, ...args }); if (command === 'set_account_pro_multiplier') { if (window.failMultiplier) throw 'save_failed'; window.multiplier = args.multiplier; } if (command === 'refresh_account_local_details' && window.failDetailsRefresh) throw 'profile_unavailable';
+        if (window.linkedOnly && command === 'get_account_local_details') return { profileId: args.profileId, linkedLocal: true, email: 'linked.account@example.invalid', accountType: 'chatgpt', planType: 'plus', quotaFresh: false };
         return { profileId: window.actionMode === 'wrong_identity' ? 'other' : args.profileId, email: 'synthetic.account@example.invalid', displayName: command === 'refresh_account_local_details' ? 'Refreshed synthetic' : 'Synthetic official name', username: 'synthetic_name', maskedAccountId: 'acc***', accountType: 'chatgpt', planType: window.detailPlan ?? 'pro', proTierMultiplier: window.multiplier ?? null, displayedProTierMultiplier: window.multiplier ?? null, subscriptionActiveUntilMs: Date.now() - 86400000, lifetimeTokens: 12000, peakDailyTokens: 3000, statsAsOfMs: Date.now() - 1000, profileFetchedAtMs: Date.now() - 1000, addedAtMs: null, model: 'gpt-synthetic', effort: 'high', participating: true, chromeProfileName: null, availableResetCards: 2, resetCardExpiresAtMs: [Date.now() + 86400000], quotaCheckedAtMs: Date.now() - 1000, quotaFresh: true, quotaWindows: [{ kind: 'five_hour', usedPercent: 10, resetsAtMs: Date.now() + 60000 }, { kind: 'seven_day', usedPercent: 80, resetsAtMs: Date.now() + (window.expiredQuota ? -1000 : 60000) }], warmupHistory: [{ atMs: Date.now() - 1000, succeeded: true, failureCode: null, phase: 'succeeded' }, { atMs: Date.now() - 2000, succeeded: null, failureCode: null, phase: 'unknown' }, { atMs: Date.now() - 3000, succeeded: false, failureCode: 'maintenance_cancelled', phase: 'cancelled' }] };
       }
       if (command === 'get_account_browser_settings' || command === 'set_account_browser_settings') {
@@ -232,4 +233,28 @@ test('unreadable Chrome profile metadata keeps the saved route visible and permi
   await dialog.getByRole('button', { name: 'Save browser settings' }).click();
   await expect(dialog.getByText('Saved for the next time you open the login page.')).toBeVisible();
   expect(await page.evaluate(() => window.actionCalls.filter(c => c.command === 'set_account_browser_settings').at(-1))).toEqual({ command: 'set_account_browser_settings', profileId: 'managed_a', mode: 'systemDefault', profileDirectory: null });
+});
+
+
+test('linked directory i shows full local email before any quota read and offers no managed-only action', async ({ page }) => {
+  await setup(page);
+  await page.evaluate(() => {
+    window.linkedOnly = true; window.linkedForbiddenCalls = [];
+    const invoke = window.__TAURI_INTERNALS__.invoke;
+    window.__TAURI_INTERNALS__.invoke = (command, args) => {
+      if (['read_profile_quota', 'refresh_account_local_details', 'set_account_pro_multiplier', 'get_account_browser_settings', 'set_account_browser_settings', 'begin_manual_reset_review', 'get_account_referral_eligibility'].includes(command)) window.linkedForbiddenCalls.push(command);
+      return invoke(command, args);
+    };
+  });
+  await page.getByTestId('profile-1').getByRole('button', { name: 'Account details', exact: true }).click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog).toContainText('linked.account@example.invalid');
+  await expect(dialog).toContainText('local sign-in record');
+  await expect(dialog.getByRole('button', { name: 'Refresh official profile', exact: true })).toHaveCount(0);
+  await expect(dialog.getByRole('region', { name: 'Local Pro multiplier' })).toHaveCount(0);
+  expect(await page.evaluate(() => window.linkedForbiddenCalls)).toEqual([]);
+  await expect(dialog).toHaveScreenshot('linked-local-account-details.png');
+  await dialog.getByRole('button', { name: 'Close', exact: true }).click();
+  await page.getByTestId('profile-1').getByRole('button', { name: 'Account details', exact: true }).click();
+  await expect(page.getByRole('dialog')).toContainText('linked.account@example.invalid');
 });

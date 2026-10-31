@@ -1,5 +1,7 @@
 use super::*;
-pub(super) struct NativeRuntime;
+pub(super) struct NativeRuntime {
+    pub selection: crate::runtime_setup::SelectionStore,
+}
 impl Runtime for NativeRuntime {
     fn available(&self) -> bool {
         cfg!(windows)
@@ -23,7 +25,7 @@ impl Runtime for NativeRuntime {
     ) -> Execution {
         #[cfg(windows)]
         {
-            reset(home, credential, claim, admit, true)
+            reset(home, credential, claim, admit, true, Some(&self.selection))
         }
         #[cfg(not(windows))]
         {
@@ -40,14 +42,15 @@ pub(super) fn manual_reset(
     credential: &super::super::super::identity::StoredCredential,
     claim: &dyn Fn(&Card) -> Result<String>,
     admit: &dyn Fn() -> Result<()>,
+    selection: Option<&crate::runtime_setup::SelectionStore>,
 ) -> Execution {
     #[cfg(windows)]
     {
-        reset(home, credential, claim, admit, false)
+        reset(home, credential, claim, admit, false, selection)
     }
     #[cfg(not(windows))]
     {
-        let _ = (home, credential, claim, admit);
+        let _ = (home, credential, claim, admit, selection);
         Execution {
             outcome: Outcome::NotSent,
             verified: None,
@@ -89,6 +92,7 @@ fn reset(
     claim: &dyn Fn(&Card) -> Result<String>,
     admit: &dyn Fn() -> Result<()>,
     require_unchanged_quota: bool,
+    selection: Option<&crate::runtime_setup::SelectionStore>,
 ) -> Execution {
     use super::super::super::native::{maintenance_executable, process};
     let not_sent = || Execution {
@@ -98,7 +102,7 @@ fn reset(
     if admit().is_err() {
         return not_sent();
     }
-    let Ok((executable, _image)) = maintenance_executable(home) else {
+    let Ok((executable, _image)) = maintenance_executable(home, selection) else {
         return not_sent();
     };
     let Ok(mut version) = process::Child::start(&executable, home, &["--version".into()]) else {

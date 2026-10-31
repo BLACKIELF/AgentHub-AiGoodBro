@@ -1,4 +1,6 @@
+use super::account_lifecycle::ManagedAccountState;
 use crate::app_state::{AppConfig, AppState};
+use codexu_core::accounts::AccountManager;
 use codexu_core::local_cli::{LocalCliKind, PlatformDirectories};
 use codexu_core::profiles::{normalize_root_for, same_root};
 use std::path::PathBuf;
@@ -14,6 +16,8 @@ pub struct ProfileDto {
     platform_name: String,
     /// Only Codex directories can become the dashboard data source.
     can_view_usage: bool,
+    /// Display metadata is owned by the managed vault, not the linked catalog.
+    managed: bool,
 }
 
 #[derive(serde::Serialize)]
@@ -27,7 +31,10 @@ pub struct PlatformDto {
     desktop: bool,
 }
 
-fn project(config: &AppConfig) -> Result<Vec<ProfileDto>, String> {
+fn project(
+    config: &AppConfig,
+    manager: Option<&AccountManager>,
+) -> Result<Vec<ProfileDto>, String> {
     config
         .profiles
         .validate()
@@ -36,19 +43,82 @@ fn project(config: &AppConfig) -> Result<Vec<ProfileDto>, String> {
         .codex_root
         .canonicalize()
         .unwrap_or_else(|_| config.codex_root.clone());
-    Ok(config
-        .profiles
-        .entries
-        .iter()
-        .map(|p| ProfileDto {
-            id: p.id.to_string(),
-            label: p.label.clone(),
-            selected: same_root(&p.root, &selected),
-            platform: p.kind.id().to_string(),
-            platform_name: p.kind.display_name().to_string(),
-            can_view_usage: p.kind == LocalCliKind::Codex,
+    let metadata = match manager {
+        Some(manager) => manager
+            .project_profile_metadata(&config.profiles)
+            .map_err(|e| e.code.to_owned())?,
+        None => config
+            .profiles
+            .entries
+            .iter()
+            .map(|p| codexu_core::accounts::metadata::ProfileMetadata {
+                id: p.id,
+                label: p.label.clone(),
+                managed_id: None,
+            })
+            .collect(),
+    };
+    metadata
+        .into_iter()
+        .map(|row| {
+            let p = config
+                .profiles
+                .get(row.id)
+                .map_err(|_| "Profile catalog needs recovery".to_owned())?;
+            Ok(ProfileDto {
+                id: p.id.to_string(),
+                label: row.label,
+                selected: same_root(&p.root, &selected),
+                platform: p.kind.id().to_string(),
+                platform_name: p.kind.display_name().to_string(),
+                can_view_usage: p.kind == LocalCliKind::Codex,
+                managed: row.managed_id.is_some(),
+            })
         })
-        .collect())
+        .collect()
+}
+
+// The caller holds the catalog read lock until this bounded metadata operation
+// completes. No settings write occurs for a managed alias or managed move.
+fn managed_action(
+    config: &AppConfig,
+    manager: Option<&AccountManager>,
+    action: &ProfileAction,
+) -> Result<bool, String> {
+    let id = match action {
+        ProfileAction::Rename { id, .. } | ProfileAction::Move { id, .. } => {
+            parse_id(id).map_err(|_| "Invalid profile ID")?
+        }
+        _ => return Ok(false),
+    };
+    let p = config.profiles.get(id).map_err(|_| "Invalid profile ID")?;
+    if p.kind != LocalCliKind::Codex {
+        return Ok(false);
+    }
+    let manager = manager.ok_or("account_service_unavailable")?;
+    match action {
+        ProfileAction::Rename { label, .. } => {
+            let rows = manager
+                .project_profile_metadata(&config.profiles)
+                .map_err(|e| e.code.to_owned())?;
+            let row = rows
+                .iter()
+                .find(|row| row.id == id)
+                .ok_or("account_not_found")?;
+            if let Some(managed_id) = &row.managed_id {
+                manager
+                    .rename_managed_account(managed_id, label.clone())
+                    .map_err(|e| e.code.to_owned())?;
+                Ok(true)
+            } else {
+                Ok(false)
+            }
+        }
+        ProfileAction::Move { delta, .. } => manager
+            .move_projected_managed_profile(&config.profiles, id, *delta)
+            .map_err(|e| e.code.to_owned()),
+        _ => Ok(false),
+    }
 }
 
 #[tauri::command]
@@ -86,9 +156,12 @@ pub async fn list_platforms() -> Result<Vec<PlatformDto>, String> {
 }
 
 #[tauri::command]
-pub async fn list_profiles(state: State<'_, Arc<AppState>>) -> Result<Vec<ProfileDto>, String> {
+pub async fn list_profiles(
+    state: State<'_, Arc<AppState>>,
+    managed: State<'_, ManagedAccountState>,
+) -> Result<Vec<ProfileDto>, String> {
     let config = state.config.read().await;
-    project(&config)
+    project(&config, managed.manager().ok().as_deref())
 }
 
 #[derive(serde::Deserialize)]
@@ -132,6 +205,7 @@ pub async fn update_profile(
     app: AppHandle,
     state: State<'_, Arc<AppState>>,
     workflow: State<'_, crate::commands::cli_workflow::WorkflowState>,
+    managed: State<'_, ManagedAccountState>,
     action: ProfileAction,
 ) -> Result<Vec<ProfileDto>, String> {
     // Canonicalize only explicit user-selected input. Return no path or OS error to the UI.
@@ -159,6 +233,15 @@ pub async fn update_profile(
     } else {
         action
     };
+    {
+        let config = state.config.read().await;
+        let manager = managed.manager().ok();
+        if managed_action(&config, manager.as_deref(), &action)? {
+            let _ = app.emit("managed-accounts:changed", ());
+            let _ = app.emit("profiles:changed", ());
+            return project(&config, manager.as_deref());
+        }
+    }
     let source_changed = matches!(&action, ProfileAction::View { .. });
     let removing = match &action {
         ProfileAction::Remove { id } => Some(id.parse::<u64>().map_err(|_| "Invalid profile ID")?),
@@ -215,8 +298,12 @@ pub async fn update_profile(
     if source_changed {
         let _ = app.emit("usage:source-changed", ());
     }
-    project(&config)
+    project(&config, managed.manager().ok().as_deref())
 }
+
+#[cfg(test)]
+#[path = "profile_metadata_tests.rs"]
+mod metadata_tests;
 
 #[cfg(test)]
 mod tests {
@@ -232,11 +319,12 @@ mod tests {
                 std::env::temp_dir().join("synthetic-codex-home"),
             )
             .unwrap();
-        let json = serde_json::to_value(project(&config).unwrap()).unwrap();
+        let json = serde_json::to_value(project(&config, None).unwrap()).unwrap();
         assert_eq!(json[0]["id"], "1");
         assert_eq!(json[0]["platform"], "codex");
         assert_eq!(json[0]["can_view_usage"], true);
-        assert_eq!(json[0].as_object().unwrap().len(), 6);
+        assert_eq!(json[0].as_object().unwrap().len(), 7);
+        assert_eq!(json[0]["managed"], false);
         assert!(json[0].get("root").is_none());
         assert!(
             serde_json::to_string(&json)
@@ -257,7 +345,7 @@ mod tests {
                 std::env::temp_dir().join("synthetic-antigravity"),
             )
             .unwrap();
-        let json = serde_json::to_value(project(&config).unwrap()).unwrap();
+        let json = serde_json::to_value(project(&config, None).unwrap()).unwrap();
         assert_eq!(json[0]["platform"], "antigravity");
         assert_eq!(json[0]["platform_name"], "Antigravity");
         assert_eq!(json[0]["can_view_usage"], false);

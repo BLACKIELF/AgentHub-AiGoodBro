@@ -161,6 +161,7 @@ pub async fn prepare_local_cli_dependency(
 #[tauri::command]
 pub async fn begin_local_cli_dependency(
     app: AppHandle,
+    state: State<'_, Arc<AppState>>,
     workflow: State<'_, WorkflowState>,
     services: State<'_, crate::native_services::NativeServices>,
     task_id: String,
@@ -168,7 +169,9 @@ pub async fn begin_local_cli_dependency(
     checked_id(&task_id)?;
     // Reuse the existing Windows native Codex resolver and current login. This
     // task never enters the account dispatch/quota/model-selection workflow.
-    let (executable, guard) = native_executable().await.map_err(|_| "cli_unavailable")?;
+    let (executable, guard) = native_executable(&state.app_data_dir)
+        .await
+        .map_err(|_| "cli_unavailable")?;
     let mut tasks = workflow.dependency.tasks.lock().await;
     if workflow.quitting.load(Ordering::Acquire) {
         return Err("launch_cancelled".into());

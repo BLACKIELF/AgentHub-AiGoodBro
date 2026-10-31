@@ -7,13 +7,14 @@ param(
     # Exact scanner already exercised by the enclosing readiness run.
     [string]$VerifiedScannerBuildRoot,
     [string]$VerifiedHubBuildRoot,
+    [string]$VerifiedProviderPoolBuildRoot,
     # The readiness entry point records these checks before invoking packaging.
     [switch]$SkipValidation
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
-if (($VerifiedScannerBuildRoot -or $VerifiedHubBuildRoot) -and -not $SkipValidation) {
+if (($VerifiedScannerBuildRoot -or $VerifiedHubBuildRoot -or $VerifiedProviderPoolBuildRoot) -and -not $SkipValidation) {
     throw 'Verified helper reuse is only valid after the readiness validation plan.'
 }
 
@@ -116,6 +117,13 @@ if ($VerifiedHubBuildRoot) { $HubArguments += '-VerifiedReuse' } else { $HubArgu
 Invoke-Checked 'pwsh.exe' $HubArguments
 $HubManifest = Join-Path $AppRoot 'src-tauri\resources\companion-hub\WINDOWS-RESOURCES.json'
 $HubManifestHash = (Get-FileHash -LiteralPath $HubManifest -Algorithm SHA256).Hash.ToLowerInvariant()
+$ProviderPoolBuildRoot = if ($VerifiedProviderPoolBuildRoot) { $VerifiedProviderPoolBuildRoot } else { Join-Path $RepoRoot '.local-artifacts\windows-provider-pool-build' }
+$ProviderPoolArguments = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $RepoRoot 'windows\scripts\Prepare-ProviderPool.ps1'), '-BuildRoot', $ProviderPoolBuildRoot)
+if ($VerifiedProviderPoolBuildRoot) { $ProviderPoolArguments += '-VerifiedReuse' } else { $ProviderPoolArguments += @('-RunNativeTests', '-AllowDependencyDownload') }
+Invoke-Checked 'pwsh.exe' $ProviderPoolArguments
+$ProviderPoolManifest = Join-Path $AppRoot 'src-tauri\resources\provider-pool\WINDOWS-RESOURCES.json'
+$ProviderPoolManifestHash = (Get-FileHash -LiteralPath $ProviderPoolManifest -Algorithm SHA256).Hash.ToLowerInvariant()
+
 
 if (-not $SkipValidation) {
     Push-Location $WindowsRoot
@@ -217,6 +225,7 @@ $Manifest = [ordered]@{
     generated_utc = [DateTime]::UtcNow.ToString("o")
     token_monitor_manifest_sha256 = $env:AIGOODBRO_TOKEN_MONITOR_RESOURCE_SHA256
     companion_hub_manifest_sha256 = $HubManifestHash
+    provider_pool_manifest_sha256 = $ProviderPoolManifestHash
 }
 [System.IO.File]::WriteAllText(
     (Join-Path $OutputDirectory "manifest.json"),

@@ -118,11 +118,15 @@ jobs:
             dist/windows-readiness/proxy-build/*.json
             dist/windows-readiness/hub-build/*.json*
             dist/windows-readiness/hub-build/*.log
+            dist/windows-readiness/provider-pool-build/WINDOWS-RESOURCES.json
+            dist/windows-readiness/provider-pool-build/STAGED-SOURCE.json
+            dist/windows-readiness/provider-pool-build/native-tests.jsonl
             dist/windows-readiness/token-monitor-build/scanner/SCANNER-RECEIPT.json
             dist/windows-readiness/token-monitor-build/resource-pin.txt
             windows/apps/codexu-tauri/src-tauri/resources/proxy/resource-receipt.json
             windows/apps/codexu-tauri/src-tauri/resources/token-monitor/WINDOWS-RESOURCES.json
             windows/apps/codexu-tauri/src-tauri/resources/companion-hub/WINDOWS-RESOURCES.json
+            windows/apps/codexu-tauri/src-tauri/resources/provider-pool/WINDOWS-RESOURCES.json
           if-no-files-found: ignore
 
   installer-upgrade:

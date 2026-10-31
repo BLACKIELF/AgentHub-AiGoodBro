@@ -11,23 +11,25 @@ impl ClaudeSubscriptionManager {
         let _operation = self.mutation.try_lock().map_err(|_| fail("account_busy"))?;
         self.recovered()?;
         self.no_other_operation()?;
-        crate::profiles::validate_label(&label).map_err(|_| fail("invalid_label"))?;
-        let mut store = self.store()?;
+        let remark = crate::accounts::service::metadata::normalize_remark(&label)?;
+        let mut store = Store::load_metadata(&self.paths, self.protector.as_ref())?;
+        let base = store.vault.record(account_id)?.label.clone();
+        let display = remark.as_deref().unwrap_or(&base);
         if store
             .vault
             .records
             .iter()
-            .any(|record| record.id != account_id && record.label.eq_ignore_ascii_case(&label))
+            .any(|r| r.id != account_id && r.display_label().eq_ignore_ascii_case(display))
         {
             return Err(fail("duplicate_label"));
         }
         let record = store.vault.record_mut(account_id)?;
-        if record.label != label {
+        if record.remark != remark {
             record.revision = record
                 .revision
                 .checked_add(1)
                 .ok_or_else(|| fail("claude_vault_invalid"))?;
-            record.label = label;
+            record.remark = remark;
             self.accepting()?;
             self.quota_cache.invalidate(account_id);
             store.save()?;

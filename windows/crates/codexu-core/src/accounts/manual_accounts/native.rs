@@ -1,5 +1,7 @@
 use super::*;
-pub(super) struct NativeRuntime;
+pub(super) struct NativeRuntime {
+    pub selection: crate::runtime_setup::SelectionStore,
+}
 impl ActionRuntime for NativeRuntime {
     fn review(
         &self,
@@ -8,7 +10,8 @@ impl ActionRuntime for NativeRuntime {
         admit: &dyn Fn() -> AccountResult<()>,
     ) -> AccountResult<Value> {
         admit()?;
-        let verified = NativeAccountRuntime.verify(home, &credential.identity)?;
+        let verified = NativeAccountRuntime::with_selection(self.selection.clone())
+            .verify(home, &credential.identity)?;
         admit()?;
         if verified.identity != credential.identity {
             return Err(fail("manual_action_identity_changed"));
@@ -39,7 +42,8 @@ impl ActionRuntime for NativeRuntime {
             ))
         };
         let check = || admit().map_err(|_| maintenance::Failure::Cancelled);
-        let result = maintenance::manual_consume(home, credential, &claim, &check);
+        let result =
+            maintenance::manual_consume(home, credential, &claim, &check, Some(&self.selection));
         Ok(match result.outcome {
             maintenance::Outcome::Reset => "reset",
             maintenance::Outcome::NothingToReset => "nothingToReset",

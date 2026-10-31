@@ -136,7 +136,8 @@ impl SwitchFailure {
 }
 
 /// Constructed by native producers only. There is no Deserialize/IPC command
-/// accepting event bodies or arbitrary message text from the WebView.
+/// accepting event bodies from the WebView. Explicit personal text uses a
+/// separate confirmed command with its own binding and durable-send gates.
 #[derive(Clone)]
 pub struct NotificationEvent {
     pub(crate) key: String,

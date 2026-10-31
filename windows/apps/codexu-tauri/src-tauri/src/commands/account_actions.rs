@@ -71,9 +71,68 @@ pub async fn get_account_local_details(
     profile_id: String,
 ) -> Result<LocalDetails, String> {
     let s = actions.service()?;
+    if let Ok(id) = profile_id.parse::<u64>() {
+        return linked_details_with(&state, id, move |root| async move {
+            run(s, move |s| {
+                let id = s.resolve_managed_root(&root)?;
+                s.local_details(&id)
+            })
+            .await
+        })
+        .await;
+    }
     let id = resolve(&state, s.clone(), profile_id.clone()).await?;
     let result = run(s, move |s| s.local_details(&id)).await?;
     Ok(project_details(&state, &profile_id, result).await)
+}
+
+async fn linked_details_with<F, Fut>(
+    state: &Arc<AppState>,
+    id: u64,
+    managed: F,
+) -> Result<LocalDetails, String>
+where
+    F: FnOnce(std::path::PathBuf) -> Fut,
+    Fut: std::future::Future<Output = Result<LocalDetails, String>>,
+{
+    let profile = state
+        .config
+        .read()
+        .await
+        .profiles
+        .get(id)
+        .map_err(|_| "manual_action_identity_changed")?
+        .clone();
+    if profile.kind != LocalCliKind::Codex {
+        return Err("manual_action_unsupported".into());
+    }
+    let result = match managed(profile.root.clone()).await {
+        Ok(dto) => dto,
+        Err(code) if code == "manual_action_registration_required" => {
+            let root = profile.root.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                codexu_core::accounts::manual_accounts::read_linked_local_details(
+                    &id.to_string(),
+                    &root,
+                )
+            })
+            .await
+            .map_err(|_| "manual_action_unavailable".to_owned())?
+            .map_err(|e| e.code.to_owned())?
+        }
+        Err(code) => return Err(code),
+    };
+    if !state
+        .config
+        .read()
+        .await
+        .profiles
+        .get(id)
+        .is_ok_and(|current| current.root == profile.root && current.kind == profile.kind)
+    {
+        return Err("manual_action_identity_changed".into());
+    }
+    Ok(project_details(state, &id.to_string(), result).await)
 }
 #[tauri::command]
 pub async fn begin_manual_reset_review(
@@ -271,3 +330,7 @@ pub async fn set_account_browser_settings(
     dto.profile_id = profile_id;
     Ok(dto)
 }
+
+#[cfg(test)]
+#[path = "account_details_tests.rs"]
+mod details_tests;

@@ -1,5 +1,11 @@
 {
   "bundle": {
-    "resources": {"resources/proxy/": "proxy/", "resources/token-monitor/": "token-monitor/", "resources/companion-hub/": "companion-hub/"}
+    "resources": {
+      "resources/proxy/": "proxy/",
+      "resources/token-monitor/": "token-monitor/",
+      "resources/companion-hub/": "companion-hub/",
+      "resources/provider-pool/": "provider-pool/",
+      "../../../../Resources/SkillLibrary/": "skill-library/"
+    }
   }
 }

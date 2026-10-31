@@ -355,7 +355,7 @@ pub async fn connect_task_hub(
         return Err(fail("hub_registration_required"));
     }
     let managed = matching[0].0.clone();
-    let (cli, cli_guard) = super::cli_workflow::native_executable()
+    let (cli, cli_guard) = super::cli_workflow::native_executable(&state.app_data_dir)
         .await
         .map_err(|_| fail("cli_unavailable"))?;
     let helper = app

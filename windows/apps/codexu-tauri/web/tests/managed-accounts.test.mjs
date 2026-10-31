@@ -4,8 +4,11 @@ import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 import ts from 'typescript';
 
+const metadataExports={};
+vm.runInNewContext(ts.transpileModule(readFileSync(new URL('../src/utils/accountMetadata.ts',import.meta.url),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2020}}).outputText,{exports:metadataExports,Intl,TextEncoder});
+const requireMetadata=id=>{assert.equal(id,'./accountMetadata');return metadataExports;};
 const source = readFileSync(new URL('../src/utils/managedAccounts.ts', import.meta.url), 'utf8');
-const context = vm.createContext({ exports: {} });
+const context = vm.createContext({ exports: {}, require:requireMetadata });
 vm.runInContext(ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 } }).outputText, context);
 const { parseManagedAccounts, parseLoginAttempt, parsePreparedSwitch, parseAccountOperation } = context.exports;
 const account = { id: 'managed_a', label: 'Synthetic Managed', platform: 'codex', storage_kind: 'managed', login_state: 'verified', active_state: 'unknown', masked_identity: 's***@synthetic.invalid', can_login: true, can_switch: false, switch_block_reason: 'occupancy_unknown', revision: 1, recovery_required: false };

@@ -130,21 +130,125 @@ pub(crate) fn restrict_access(path: &Path) -> AccountResult<()> {
 }
 
 pub struct NativeAccountRuntime;
-
-pub(super) fn proxy_codex_executable(
-    home: &Path,
-) -> AccountResult<(std::path::PathBuf, std::fs::File)> {
-    #[cfg(windows)]
-    {
-        resolve_executable(home)
+struct ConfiguredAccountRuntime {
+    selection: Option<crate::runtime_setup::SelectionStore>,
+}
+impl NativeAccountRuntime {
+    pub fn with_selection(selection: crate::runtime_setup::SelectionStore) -> impl AccountRuntime {
+        ConfiguredAccountRuntime {
+            selection: Some(selection),
+        }
     }
-    #[cfg(not(windows))]
-    {
-        let _ = home;
-        Err(fail("windows_required"))
+    pub fn selected_executable(
+        home: &Path,
+        selection: &crate::runtime_setup::SelectionStore,
+    ) -> AccountResult<(std::path::PathBuf, std::fs::File)> {
+        #[cfg(windows)]
+        {
+            resolve_executable_with_policy(home, None, false, Some(selection))
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = (home, selection);
+            Err(fail("windows_required"))
+        }
+    }
+    /// Fixed no-account local probes. Callers hold the exact image guard and
+    /// supply a fresh private CODEX_HOME. Every owned Job must be empty on return.
+    pub(crate) fn runtime_probe(
+        path: &Path,
+        home: &Path,
+        args: &[&str],
+        limit: usize,
+        seconds: u64,
+    ) -> AccountResult<Vec<u8>> {
+        #[cfg(not(windows))]
+        {
+            let _ = (path, home, args, limit, seconds);
+            Err(fail("windows_required"))
+        }
+        #[cfg(windows)]
+        {
+            if !matches!(args, ["--version"] | ["exec", "--help"]) {
+                return Err(fail("runtime_probe_invalid"));
+            }
+            let mut child = process::Child::start(
+                path,
+                home,
+                &args.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>(),
+            )?;
+            let deadline = Instant::now() + Duration::from_secs(seconds.min(3));
+            let mut output = Vec::new();
+            let result = (|| loop {
+                output.extend(child.read_available()?);
+                if output.len() > limit {
+                    return Err(fail("runtime_output_limit"));
+                }
+                if let Some(code) = child.exit_code()? {
+                    output.extend(child.read_available()?);
+                    return if code == 0 && output.len() <= limit {
+                        Ok(())
+                    } else {
+                        Err(fail("runtime_probe_failed"))
+                    };
+                }
+                if Instant::now() >= deadline {
+                    return Err(fail("runtime_probe_timeout"));
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            })();
+            crate::runtime_setup::require_confirmed_cleanup(child.stop_confirmed())?;
+            result?;
+            Ok(output)
+        }
     }
 }
 impl AccountRuntime for NativeAccountRuntime {
+    fn available(&self) -> bool {
+        cfg!(windows)
+    }
+    fn login(
+        &self,
+        home: &Path,
+        cancelled: &AtomicBool,
+        report: &mut dyn FnMut(LoginAuthorization),
+    ) -> AccountResult<VerifiedCredential> {
+        ConfiguredAccountRuntime { selection: None }.login(home, cancelled, report)
+    }
+    fn verify(&self, home: &Path, expected: &AccountIdentity) -> AccountResult<VerifiedCredential> {
+        ConfiguredAccountRuntime { selection: None }.verify(home, expected)
+    }
+    fn verify_in_operation(
+        &self,
+        home: &Path,
+        expected: &AccountIdentity,
+        guard: &dyn super::SwitchCommitGuard,
+    ) -> AccountResult<VerifiedCredential> {
+        ConfiguredAccountRuntime { selection: None }.verify_in_operation(home, expected, guard)
+    }
+    fn require_system_idle(&self) -> AccountResult<()> {
+        ConfiguredAccountRuntime { selection: None }.require_system_idle()
+    }
+    fn validate_target_configuration(&self, home: &Path) -> AccountResult<()> {
+        ConfiguredAccountRuntime { selection: None }.validate_target_configuration(home)
+    }
+}
+
+pub(super) fn proxy_codex_executable(
+    home: &Path,
+    selection: &crate::runtime_setup::SelectionStore,
+) -> AccountResult<(std::path::PathBuf, std::fs::File)> {
+    #[cfg(windows)]
+    {
+        resolve_executable_with_policy(home, None, false, Some(selection))
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (home, selection);
+        Err(fail("windows_required"))
+    }
+}
+impl AccountRuntime for ConfiguredAccountRuntime {
     fn available(&self) -> bool {
         cfg!(windows)
     }
@@ -161,7 +265,8 @@ impl AccountRuntime for NativeAccountRuntime {
         }
         #[cfg(windows)]
         {
-            let (executable, _executable_guard) = resolve_executable(home)?;
+            let (executable, _executable_guard) =
+                resolve_executable_with_policy(home, None, false, self.selection.as_ref())?;
             let mut args = crate::workflow::official_arguments();
             args.extend(["login".into(), "--device-auth".into()]);
             let mut child = process::Child::start(&executable, home, &args)?;
@@ -213,7 +318,8 @@ impl AccountRuntime for NativeAccountRuntime {
         }
         #[cfg(windows)]
         {
-            let (executable, _executable_guard) = resolve_executable(home)?;
+            let (executable, _executable_guard) =
+                resolve_executable_with_policy(home, None, false, self.selection.as_ref())?;
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
@@ -238,8 +344,12 @@ impl AccountRuntime for NativeAccountRuntime {
             let permit = guard
                 .verification_process_permit()
                 .ok_or_else(|| fail("verification_process_authority_unavailable"))?;
-            let (executable, _executable_guard) =
-                resolve_executable_with_permit(home, Some(permit.clone()))?;
+            let (executable, _executable_guard) = resolve_executable_with_policy(
+                home,
+                Some(permit.clone()),
+                false,
+                self.selection.as_ref(),
+            )?;
             permit.recheck()?;
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -413,47 +523,33 @@ fn resolve_executable_with_permit(
     home: &Path,
     permit: Option<std::sync::Arc<dyn super::VerificationProcessPermit>>,
 ) -> AccountResult<(PathBuf, std::fs::File)> {
-    resolve_executable_with_policy(home, permit, false)
+    resolve_executable_with_policy(home, permit, false, None)
 }
 #[cfg(windows)]
 pub(in crate::accounts) fn maintenance_executable(
     home: &Path,
+    selection: Option<&crate::runtime_setup::SelectionStore>,
 ) -> AccountResult<(PathBuf, std::fs::File)> {
-    resolve_executable_with_policy(home, None, true)
+    resolve_executable_with_policy(home, None, true, selection)
 }
 #[cfg(windows)]
 fn resolve_executable_with_policy(
     home: &Path,
     permit: Option<std::sync::Arc<dyn super::VerificationProcessPermit>>,
     official_only: bool,
+    selection: Option<&crate::runtime_setup::SelectionStore>,
 ) -> AccountResult<(PathBuf, std::fs::File)> {
     use std::os::windows::fs::OpenOptionsExt;
-    let (package, triple) = if cfg!(target_arch = "aarch64") {
-        ("codex-win32-arm64", "aarch64-pc-windows-msvc")
-    } else {
-        ("codex-win32-x64", "x86_64-pc-windows-msvc")
+    let selected = match selection {
+        Some(store) => store.selected()?,
+        None => None,
     };
-    let mut candidates = Vec::new();
-    if let Some(roaming) = std::env::var_os("APPDATA") {
-        candidates.push(
-            PathBuf::from(roaming)
-                .join("npm/node_modules/@openai/codex/node_modules/@openai")
-                .join(package)
-                .join("vendor")
-                .join(triple)
-                .join("bin/codex.exe"),
-        );
-    }
-    if let Some(local) = std::env::var_os("LOCALAPPDATA") {
-        candidates.push(PathBuf::from(local).join("Microsoft/WinGet/Links/codex.exe"));
-    }
-    if let Some(path) = std::env::var_os("PATH") {
-        candidates.extend(
-            std::env::split_paths(&path)
-                .filter(|p| p.is_absolute())
-                .map(|p| p.join("codex.exe")),
-        );
-    }
+    let candidates = match &selected {
+        Some(image) => vec![image.path.clone()],
+        None => crate::runtime_setup::automatic_candidates(),
+    };
+    // The selected guard remains held throughout the second image open and
+    // process creation; an explicit stale selection never silently falls back.
     let deadline = Instant::now() + Duration::from_secs(6);
     for candidate in candidates.into_iter().take(100) {
         if Instant::now() >= deadline {
@@ -521,7 +617,7 @@ fn resolve_executable_with_policy(
             }
             Ok(())
         })();
-        child.stop_confirmed()?;
+        crate::runtime_setup::require_confirmed_cleanup(child.stop_confirmed())?;
         result?;
         if successful
             && output.len() <= 256
@@ -619,3 +715,7 @@ async fn verify_official(
     }
     Ok(verified)
 }
+
+#[cfg(all(test, windows))]
+#[path = "runtime_setup_tests.rs"]
+mod runtime_setup_tests;

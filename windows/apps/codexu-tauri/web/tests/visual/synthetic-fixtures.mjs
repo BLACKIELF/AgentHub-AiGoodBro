@@ -7,6 +7,31 @@
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+// Fixed public editorial IDs with invented installation state. No file probe or
+// installation is performed by the browser bridge; action tests override it.
+export const SYNTHETIC_RECOMMENDATIONS = {
+  revision: 0,
+  checkedAtMs: null,
+  items: [
+    ['oracle', 'Oracle', 'skill', 'https://github.com/BLACKIELF/AgentHub-AiGoodBro'],
+    ['handoff', 'Handoff', 'skill', 'https://github.com/BLACKIELF/AgentHub-AiGoodBro'],
+    ['jev-use', 'Jev', 'skill', 'https://github.com/Sac-Y/Jev-cu'],
+    ['quicktoggle', 'QuickToggle', 'app', 'https://github.com/BLACKIELF/QuickToggle/releases'],
+    ['rea', 'REA', 'skill', 'https://github.com/morluto/rea'],
+    ['aihot', 'AIHOT', 'app', 'https://github.com/KKKKhazix/AIHOT'],
+  ].map(([id, title, kind, sourceUrl]) => ({
+    id, kind, sourceUrl,
+    title: { zh: title, en: title },
+    purpose: { zh: '合成推荐说明', en: 'Synthetic recommendation details' },
+    summary: { zh: '按需查看本地配套说明', en: 'Review optional companion instructions' },
+    instructions: 'Review the bundled instructions before confirming any installation.',
+    presence: id === 'quicktoggle' ? 'notApplicable' : 'unknown',
+    hidden: false,
+    packageAvailable: kind === 'skill',
+    canInstall: kind === 'skill',
+  })),
+};
+
 /** Fixed instant so relative-time rendering ("3d ago", trend cutoffs) is stable. */
 export const FIXED_NOW_ISO = '2026-09-16T03:30:00.000Z';
 export const FIXED_NOW_MS = Date.parse(FIXED_NOW_ISO);

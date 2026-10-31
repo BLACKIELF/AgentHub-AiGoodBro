@@ -4,9 +4,11 @@ import {installTauriStub} from './tauri-stub.mjs';
 async function setup(page,language='en'){
  await page.clock.setFixedTime(new Date(FIXED_NOW_ISO));
  await installTauriStub(page,{settings:{...SYNTHETIC_SETTINGS,language},dashboard:SYNTHETIC_DASHBOARD},()=>{
-  const previous=window.__TAURI_INTERNALS__.invoke;window.hubCalls=[];window.hubView={supported:true,connected:false,workspace:null,profileId:null,overview:null};
+  const previous=window.__TAURI_INTERNALS__.invoke;window.hubCalls=[];window.hubProfiles=[{id:'1',label:'Synthetic account',platform:'codex',selected:true,can_view_usage:true}];window.hubListeners=new Map();window.emitHubProfiles=()=>{for(const [id,handler] of window.hubListeners)window[`_${handler}`]({event:'profiles:changed',id,payload:null});};window.hubView={supported:true,connected:false,workspace:null,profileId:null,overview:null};
   window.__TAURI_INTERNALS__.invoke=async(command,args)=>{
-   if(command==='list_profiles')return [{id:'1',label:'Synthetic account',platform:'codex',selected:true,can_view_usage:true}];
+   if(command==='plugin:event|listen'&&args.event==='profiles:changed'){const id=await previous(command,args);window.hubListeners.set(id,args.handler);return id;}
+   if(command==='plugin:event|unlisten')window.hubListeners.delete(args.eventId);
+   if(command==='list_profiles'){const result=structuredClone(window.hubProfiles);if(window.delayNextProfiles){window.delayNextProfiles=false;return new Promise(resolve=>window.releaseOldProfiles=()=>resolve(result));}if(window.failProfiles)throw 'catalog_unavailable';return result;}
    if(command==='get_task_hub')return structuredClone(window.hubView);
    if(command==='select_task_hub_workspace'){window.hubView.workspace='Synthetic workspace';return structuredClone(window.hubView);}
    if(command==='connect_task_hub'){window.hubCalls.push({command,...args});Object.assign(window.hubView,{connected:true,profileId:args.profileId,overview:{tasks:[],agents:['codex'],accounts:['account-1'],projects:['workspace']}});return structuredClone(window.hubView);}
@@ -73,4 +75,30 @@ test('stale recovery version and owned live child rejection keep the uncertain r
 test('unconfirmed recovery preserves exactly one request ID and does not show execution success or release before its positive receipt',async({page})=>{
  const panel=await setup(page);await uncertainTask(page,panel);const dialog=await finalRecoveryStep(page,panel);await page.evaluate(()=>window.failHubAction=true);await dialog.getByRole('button',{name:'Confirm stopped and release reservation'}).click();await expect(panel.getByRole('alert')).toContainText('No operation receipt');await expect(panel.getByRole('button',{name:'Stop dispatch service'})).toBeDisabled();await expect(panel.getByRole('button',{name:'Continue task'})).toHaveCount(0);
  await panel.getByRole('button',{name:'Retry same operation'}).click();await expect(panel.getByText('Failed',{exact:true})).toBeVisible();await expect(panel.getByRole('button',{name:'Stop dispatch service'})).toBeEnabled();const actions=await page.evaluate(()=>window.hubCalls.filter(c=>c.action?.kind==='resolve').map(c=>c.action));expect(actions).toHaveLength(2);expect(actions[0]).toEqual(actions[1]);
+});
+
+
+test('mounted task selector follows registration rename and removal; stale reads and failed refresh cannot connect', async ({page}) => {
+ const panel=await setup(page), select=panel.getByRole('combobox',{name:'Account',exact:true});
+ await expect(select).toBeEnabled();
+ await page.evaluate(()=>{window.hubProfiles.push({id:'2',label:'Newly registered synthetic',platform:'codex',selected:false,can_view_usage:true});window.emitHubProfiles();});
+ await expect(select.getByRole('option',{name:'Newly registered synthetic',exact:true})).toHaveCount(1);
+ await select.selectOption('2');
+ await panel.getByRole('button',{name:'Choose working directory'}).click();
+ await page.evaluate(()=>{window.delayNextProfiles=true;});
+ await panel.getByRole('button',{name:'Refresh status'}).click();
+ await expect.poll(()=>page.evaluate(()=>typeof window.releaseOldProfiles)).toBe('function');
+ await page.evaluate(()=>{window.hubProfiles[1].label='Renamed synthetic';window.emitHubProfiles();});
+ await expect(select.getByRole('option',{name:'Renamed synthetic',exact:true})).toHaveCount(1);
+ await page.evaluate(()=>window.releaseOldProfiles());
+ await expect(select.getByRole('option',{name:'Newly registered synthetic',exact:true})).toHaveCount(0);
+ await expect(select).toHaveValue('2');
+ await page.evaluate(()=>{window.failProfiles=true;});
+ await panel.getByRole('button',{name:'Refresh status'}).click();
+ await expect(panel.getByRole('alert')).toContainText('Could not read the account list');
+ await expect(panel.getByRole('button',{name:'Enable task dispatch'})).toBeDisabled();
+ await page.evaluate(()=>{window.failProfiles=false;window.hubProfiles=window.hubProfiles.filter(row=>row.id!=='2');window.emitHubProfiles();});
+ await expect(select).toBeEnabled();await expect(select).toHaveValue('');
+ await expect(panel.getByRole('button',{name:'Enable task dispatch'})).toBeDisabled();
+ expect(await page.evaluate(()=>window.hubCalls.filter(call=>call.command==='connect_task_hub'))).toEqual([]);
 });

@@ -27,6 +27,7 @@ function Get-ReleaseReadinessPlan {
     }
     $plan.Add(@{ name = 'rust-format'; executable = 'cargo'; directory = $windows; arguments = @('+1.97.1-x86_64-pc-windows-msvc', 'fmt', '--all', '--', '--check') })
     $plan.Add(@{ name = 'proxy-native-resources'; executable = $PowerShell7; directory = $Root; arguments = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $Root 'windows\scripts\Prepare-ProxyResources.ps1'), '-BuildRoot', (Join-Path $Output 'proxy-build'), '-RunNativeTests') })
+    $plan.Add(@{ name = 'provider-pool-native-resources'; executable = $PowerShell7; directory = $Root; arguments = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $Root 'windows\scripts\Prepare-ProviderPool.ps1'), '-BuildRoot', (Join-Path $Output 'provider-pool-build'), '-RunNativeTests', '-AllowDependencyDownload') })
     $plan.Add(@{ name = 'hub-native-resources'; executable = $PowerShell7; directory = $Root; arguments = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $Root 'windows\scripts\Prepare-HubResources.ps1'), '-BuildRoot', (Join-Path $Output 'hub-build'), '-RunNativeTests') })
     $plan.Add(@{ name = 'token-monitor-native-resources'; executable = $PowerShell7; directory = $Root; arguments = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $Root 'windows\scripts\Prepare-TokenMonitorResources.ps1'), '-BuildRoot', (Join-Path $Output 'token-monitor-build'), '-RunNativeTests') })
     $plan.Add(@{ name = 'rust-tests'; executable = 'cargo'; directory = $windows; arguments = @('+1.97.1-x86_64-pc-windows-msvc', 'test', '--workspace', '--locked') })
@@ -38,7 +39,7 @@ function Get-ReleaseReadinessPlan {
     $plan.Add(@{ name = 'visual-baseline'; executable = 'npm.cmd'; directory = $web; arguments = @('run', 'test:visual', '--', '--update-snapshots') })
     $plan.Add(@{ name = 'visual-repeat'; executable = 'npm.cmd'; directory = $web; arguments = @('run', 'test:visual') })
     if ($Package) {
-        $plan.Add(@{ name = 'package'; executable = $PowerShell7; directory = $Root; arguments = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $Root 'scripts\build-windows-release.ps1'), '-Version', $ReleaseVersion, '-OutputDirectory', (Join-Path $Output 'packages'), '-SkipValidation', '-VerifiedScannerBuildRoot', (Join-Path $Output 'token-monitor-build\scanner'), '-VerifiedHubBuildRoot', (Join-Path $Output 'hub-build')) })
+        $plan.Add(@{ name = 'package'; executable = $PowerShell7; directory = $Root; arguments = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $Root 'scripts\build-windows-release.ps1'), '-Version', $ReleaseVersion, '-OutputDirectory', (Join-Path $Output 'packages'), '-SkipValidation', '-VerifiedScannerBuildRoot', (Join-Path $Output 'token-monitor-build\scanner'), '-VerifiedHubBuildRoot', (Join-Path $Output 'hub-build'), '-VerifiedProviderPoolBuildRoot', (Join-Path $Output 'provider-pool-build')) })
     }
     return $plan.ToArray()
 }

@@ -53,8 +53,8 @@ test('home categories collapse independently and persist after reload', async ({
   await expect(recommendations.getByText('Oracle', { exact: true })).toHaveCount(0);
   await expect(page.getByRole('region', { name: 'Public reset updates' })).toBeVisible();
   await page.reload();
-  await expect(recommendations.getByRole('button')).toHaveAttribute('aria-expanded', 'false');
-  await recommendations.getByRole('button').click();
+  await expect(recommendations.getByRole('button', { name: 'Recommended Skills and apps', exact: true })).toHaveAttribute('aria-expanded', 'false');
+  await recommendations.getByRole('button', { name: 'Recommended Skills and apps', exact: true }).click();
   await expect(recommendations.getByText('Oracle', { exact: true })).toBeVisible();
   await expect(recommendations).toHaveScreenshot('recommended-skills-expanded.png');
   await page.setViewportSize({ width: 720, height: 600 });

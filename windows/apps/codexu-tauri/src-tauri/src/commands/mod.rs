@@ -3,6 +3,7 @@ pub mod account_lifecycle;
 pub mod account_maintenance;
 pub mod app_update;
 pub mod automatic_switch;
+pub mod claude_swap;
 pub mod cli_workflow;
 pub mod compact_ui;
 pub mod local_proxy;
@@ -17,3 +18,15 @@ pub mod token_monitor;
 pub mod usage;
 
 pub mod task_hub;
+
+pub mod personal_wechat_text;
+pub mod task_workbench;
+
+pub mod account_metadata;
+
+pub mod provider_pool;
+pub mod runtime_setup;
+
+pub(super) mod native_clipboard;
+
+pub mod recommendations;

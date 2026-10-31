@@ -9,6 +9,8 @@
 // Production code paths are untouched: the real app still goes through the
 // genuine Tauri internals.
 
+import { SYNTHETIC_RECOMMENDATIONS } from './synthetic-fixtures.mjs';
+
 let nextStubRevision = 0;
 
 /**
@@ -20,7 +22,7 @@ let nextStubRevision = 0;
  */
 export async function installTauriStub(page, { settings, dashboard, windowLabel = 'main' }, customize = () => {}) {
   const revision = ++nextStubRevision;
-  const initialize = ({ settingsPayload, dashboardPayload, label }) => {
+  const initialize = ({ settingsPayload, dashboardPayload, recommendationsPayload, label }) => {
       const callbacks = new Map();
       let nextCallbackId = 1;
       const statistics={phase:'idle',revision:0,contextKey:null,sources:[],timezone:null,snapshot:null,tokenRate:null,failureCode:null};
@@ -42,6 +44,7 @@ export async function installTauriStub(page, { settings, dashboard, windowLabel 
         set_settings: settingsPayload,
         get_local_usage: dashboardPayload,
         refresh_usage: dashboardPayload,
+        get_recommendations: recommendationsPayload,
       };
 
       // `@tauri-apps/api` reads these two globals directly.
@@ -93,7 +96,7 @@ export async function installTauriStub(page, { settings, dashboard, windowLabel 
   await page.addInitScript({ content: `
     if ((window.__codexuSyntheticStubRevision || 0) < ${revision}) {
       window.__codexuSyntheticStubRevision = ${revision};
-      (${initialize.toString()})(${JSON.stringify({ settingsPayload: settings, dashboardPayload: dashboard, label: windowLabel })});
+      (${initialize.toString()})(${JSON.stringify({ settingsPayload: settings, dashboardPayload: dashboard, recommendationsPayload: SYNTHETIC_RECOMMENDATIONS, label: windowLabel })});
       (${customize.toString()})();
     }
   ` });

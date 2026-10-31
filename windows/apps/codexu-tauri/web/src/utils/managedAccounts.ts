@@ -1,3 +1,4 @@
+import {validAccountDisplayLabel} from './accountMetadata';
 export interface ManagedAccount {
   id: string;
   label: string;
@@ -12,6 +13,7 @@ export interface ManagedAccount {
   switch_block_reason: string | null;
   revision: number;
   recovery_required: boolean;
+  registration_pending: boolean;
 }
 export type LoginPhase = 'starting' | 'waiting' | 'verifying' | 'cancelling' | 'verified' | 'cancelled' | 'failed';
 export interface LoginAttempt {
@@ -44,7 +46,7 @@ export function parseManagedAccount(raw: unknown): ManagedAccount {
   if (value.storage_kind !== 'managed' || !Number.isSafeInteger(value.revision) || Number(value.revision) < 0) return fail();
   const identity = value.masked_identity === null ? null : string(value.masked_identity, 200);
   if (identity !== null && (!identity.includes('*') || /[\s\\/]/.test(identity))) return fail();
-  return { id: id(value.id), label: string(value.label, 200), platform: id(value.platform), storage_kind: 'managed', login_state: choice(value.login_state, ['signed_out', 'signing_in', 'verified', 'needs_reauth']), active_state: choice(value.active_state, ['unknown', 'verified', 'stale']), masked_identity: identity, plan_type: value.plan_type === null || value.plan_type === undefined ? null : string(value.plan_type, 64), can_login: boolean(value.can_login), can_switch: boolean(value.can_switch), switch_block_reason: code(value.switch_block_reason), revision: Number(value.revision), recovery_required: boolean(value.recovery_required) };
+  return { id: id(value.id), label: validAccountDisplayLabel(value.label) ? value.label : fail(), platform: id(value.platform), storage_kind: 'managed', login_state: choice(value.login_state, ['signed_out', 'signing_in', 'verified', 'needs_reauth']), active_state: choice(value.active_state, ['unknown', 'verified', 'stale']), masked_identity: identity, plan_type: value.plan_type === null || value.plan_type === undefined ? null : string(value.plan_type, 64), can_login: boolean(value.can_login), can_switch: boolean(value.can_switch), switch_block_reason: code(value.switch_block_reason), revision: Number(value.revision), recovery_required: boolean(value.recovery_required), registration_pending: value.registration_pending === undefined ? false : boolean(value.registration_pending) };
 }
 
 export function parseManagedAccounts(raw: unknown): ManagedAccount[] {
@@ -87,3 +89,9 @@ export function parseAccountOperation(raw: unknown, expectedAccount: string, exp
 }
 
 export const isLoginPending = (attempt: LoginAttempt | null): boolean => !!attempt && ['starting', 'waiting', 'verifying', 'cancelling'].includes(attempt.phase);
+
+export function parseManagedRegistration(raw: unknown, expectedAccountId: string): { accountId: string; status: 'registered'; profileId: string } {
+  const value = object(raw);
+  if (value.accountId !== expectedAccountId || value.status !== 'registered' || typeof value.profileId !== 'string' || !/^[1-9][0-9]{0,19}$/.test(value.profileId)) return fail();
+  return { accountId: expectedAccountId, status: 'registered', profileId: value.profileId };
+}

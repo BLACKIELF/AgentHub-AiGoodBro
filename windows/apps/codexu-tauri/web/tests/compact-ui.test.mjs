@@ -3,8 +3,11 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
 import ts from 'typescript';
+const metadataExports={};
+vm.runInNewContext(ts.transpileModule(fs.readFileSync(new URL('../src/utils/accountMetadata.ts',import.meta.url),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2020}}).outputText,{exports:metadataExports,Intl,TextEncoder});
+const requireMetadata=id=>{assert.equal(id,'./accountMetadata');return metadataExports;};
 const exports={};
-vm.runInNewContext(ts.transpileModule(fs.readFileSync(new URL('../src/utils/compactUi.ts',import.meta.url),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,{exports,Intl,Date,Map,Number,Object,Array,Math,Set,Error});
+vm.runInNewContext(ts.transpileModule(fs.readFileSync(new URL('../src/utils/compactUi.ts',import.meta.url),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,{exports,require:requireMetadata,Intl,Date,Map,Number,Object,Array,Math,Set,Error});
 const api=exports;
 const now=Date.parse('2026-09-13T02:00:00Z');
 const prefs=()=>({bubble:{enabled:false,showIcon:true,showQuotaBar:true,showPercent:true,showResetTime:true,showCost:false,customText:'',fontStyle:'menubar',selectedProviderId:null,selectedProfileId:null,selectedMetricId:null,valueMode:'remaining'},enabled:false,mode:'autoHide',side:'right',offset:.3,displayId:null,items:null,hapticEnabled:true,warnColors:false,quotaStyle:'ring',refreshEnabled:false,runningIndicatorEnabled:true,size:'medium',customScale:1});
@@ -21,3 +24,5 @@ test('bubble resolves exact selected identity, preserves unknown and remaps lega
 test('native underscore quota IDs retain Pro weekly selection and literal USD balances',()=>{const a=account();a.windows=a.windows.map(w=>({...w,id:w.id.replace('-','_')}));const p={...prefs().bubble,selectedProviderId:'codex',selectedProfileId:a.id,selectedMetricId:'five_hour'};assert.equal(api.resolveBubble(p,[a],now).metric.id,'seven_day');assert.equal(api.bubbleMetrics(a).length,1);a.creditsUsd=0;p.selectedMetricId='balance';assert.equal(api.resolveBubble(p,[a],now).valueLabel,'0.00 USD');assert.equal(api.resolveBubble(p,[a],now).percent,null);a.providerId='grok';p.selectedProviderId='grok';p.selectedMetricId='five_hour';assert.equal(api.resolveBubble(p,[a],now+700000).percent,null);});
 
 test('explicit bubble conflict merge changes only dirty fields and retains latest visibility',()=>{const base=prefs().bubble,draft={...base,customText:'draft'},latest={...base,enabled:true,showIcon:false};const merged=api.mergeBubbleDraft(base,draft,latest);assert.equal(merged.enabled,true);assert.equal(merged.showIcon,false);assert.equal(merged.customText,'draft');assert.equal(base.customText,'');});
+
+test("managed forty-grapheme remarks survive compact parsing without exposing email",()=>{const value=state();value.cachedProjection.accounts[0].label="\u{1f468}\u200d\u{1f469}\u200d\u{1f467}\u200d\u{1f466}".repeat(40);assert.equal(api.parseCompactState(value).cachedProjection.accounts[0].label,value.cachedProjection.accounts[0].label);value.cachedProjection.accounts[0].label="x@fixture.invalid";assert.throws(()=>api.parseCompactState(value));});

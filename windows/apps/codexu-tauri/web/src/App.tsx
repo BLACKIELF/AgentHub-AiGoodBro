@@ -5,6 +5,7 @@ import { TokenMonitorCompact } from './windows/TokenMonitorCompact';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import React from 'react';
 import { useI18n } from './i18n/I18nProvider';
+import { AppearanceRuntime } from './components/AppearanceRuntime';
 
 interface ErrorBoundaryState {
   hasError: boolean;
@@ -74,6 +75,7 @@ function ErrorFallback({ error }: { error: Error | null }) {
 export default function AppWithBoundary() {
   return (
     <AppErrorBoundary>
+      <AppearanceRuntime />
       <App />
     </AppErrorBoundary>
   );

@@ -54,8 +54,21 @@ impl ClaudeAccountPaths {
 pub(super) struct Record {
     pub id: String,
     pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remark: Option<String>,
     pub revision: u64,
     pub credential: StoredCredential,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<super::service::cswap::Reference>,
+    #[serde(skip)]
+    pub source_snapshot: Option<super::service::cswap::Snapshot>,
+    #[serde(skip)]
+    pub source_error: Option<&'static str>,
+}
+impl Record {
+    pub(super) fn display_label(&self) -> &str {
+        self.remark.as_deref().unwrap_or(&self.label)
+    }
 }
 #[derive(Clone, Serialize, Deserialize)]
 pub(super) struct ActiveProof {
@@ -116,6 +129,7 @@ impl Vault {
             if !shared::valid_id(&record.id)
                 || !ids.insert(&record.id)
                 || crate::profiles::validate_label(&record.label).is_err()
+                || !super::super::service::metadata::valid_remark(record.remark.as_deref())
                 || !identities.insert(record.credential.identity.fingerprint())
                 || !shared::valid_id(&record.credential.generation)
                 || Identity::from_account(&record.credential.oauth_account)?.fingerprint()
@@ -123,7 +137,11 @@ impl Vault {
             {
                 return Err(fail("claude_vault_invalid"));
             }
-            identity::oauth(&record.credential.bytes, true)?;
+            if let Some(source) = &record.source {
+                source.validate(&record.credential.identity)?;
+            } else {
+                identity::oauth(&record.credential.bytes, true)?;
+            }
         }
         for (id, recovery) in &self.refresh {
             if !ids.contains(id)
@@ -175,9 +193,20 @@ impl<'a> Store<'a> {
         paths: &'a ClaudeAccountPaths,
         protector: &'a dyn SecretProtector,
     ) -> AccountResult<Self> {
+        let mut store = Self::load_metadata(paths, protector)?;
+        for record in &mut store.vault.records {
+            super::service::cswap::hydrate(paths, record);
+        }
+        Ok(store)
+    }
+    /// Metadata edits never read the external source or hydrate its rotating grant.
+    pub fn load_metadata(
+        paths: &'a ClaudeAccountPaths,
+        protector: &'a dyn SecretProtector,
+    ) -> AccountResult<Self> {
         let lock = shared::StoreLock::acquire(&paths.vault_root)?;
         let original = shared::read_optional(&paths.store(), 16 * MAX_BYTES)?;
-        let vault = match &original {
+        let vault: Vault = match &original {
             Some(v) => serde_json::from_slice(&protector.unseal(CONTEXT, v)?)
                 .map_err(|_| fail("claude_vault_invalid"))?,
             None => Vault::default(),
@@ -201,7 +230,16 @@ impl<'a> Store<'a> {
             .revision
             .checked_add(1)
             .ok_or_else(|| fail("claude_vault_invalid"))?;
-        let encoded = serde_json::to_vec(&self.vault).map_err(|_| fail("claude_vault_invalid"))?;
+        // claude-swap owns its rotating grants. Only a reference and identity
+        // metadata persist here; hydration is native memory only. The existing
+        // refresh recovery journal is the sole temporary successor receipt.
+        let mut persisted = self.vault.clone();
+        for record in &mut persisted.records {
+            if record.source.is_some() {
+                record.credential.bytes.clear();
+            }
+        }
+        let encoded = serde_json::to_vec(&persisted).map_err(|_| fail("claude_vault_invalid"))?;
         let sealed = self.protector.seal(CONTEXT, &encoded)?;
         shared::atomic_write(&self.paths.store(), &sealed)?;
         self.original = Some(sealed);

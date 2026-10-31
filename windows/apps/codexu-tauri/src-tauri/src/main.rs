@@ -12,6 +12,7 @@ mod commands;
 mod compact_projection;
 mod compact_ui;
 mod live_tasks;
+mod managed_registration;
 mod native_services;
 mod quit;
 mod quota_display;
@@ -204,6 +205,7 @@ fn main() {
             commands::account_actions::get_account_referral_tracking,
             commands::account_actions::check_account_referral_outcome,
             commands::account_lifecycle::list_managed_accounts,
+            managed_registration::register_managed_account,
             commands::account_maintenance::get_account_maintenance_preferences,
             commands::account_maintenance::set_account_warmup_selection,
             commands::account_maintenance::set_reset_credit_auto_options,
@@ -212,6 +214,7 @@ fn main() {
             commands::account_maintenance::cancel_account_maintenance,
             commands::account_lifecycle::create_managed_account,
             commands::account_lifecycle::rename_managed_account,
+            commands::account_metadata::reorder_managed_accounts,
             commands::account_lifecycle::remove_managed_account,
             commands::account_lifecycle::begin_account_login,
             commands::account_lifecycle::get_login_attempt,
@@ -220,6 +223,8 @@ fn main() {
             commands::account_lifecycle::prepare_account_switch,
             commands::account_lifecycle::commit_account_switch,
             commands::account_lifecycle::cancel_account_switch,
+            commands::claude_swap::scan_claude_swap_candidates,
+            commands::claude_swap::import_claude_swap_candidate,
             commands::account_lifecycle::list_claude_subscriptions,
             commands::account_lifecycle::rename_claude_subscription,
             commands::account_lifecycle::remove_claude_subscription,
@@ -231,6 +236,23 @@ fn main() {
             commands::account_lifecycle::commit_claude_subscription_switch,
             commands::account_lifecycle::cancel_claude_subscription_switch,
             commands::account_lifecycle::read_claude_subscription_quota,
+            commands::provider_pool::get_provider_pool,
+            commands::provider_pool::start_provider_pool,
+            commands::provider_pool::stop_provider_pool,
+            commands::provider_pool::begin_provider_pool_authorization,
+            commands::provider_pool::cancel_provider_pool_authorization,
+            commands::provider_pool::set_provider_pool_enabled,
+            commands::provider_pool::remove_provider_pool_account,
+            commands::provider_pool::refresh_provider_pool_models,
+            commands::provider_pool::copy_provider_pool_connection,
+            commands::recommendations::get_recommendations,
+            commands::recommendations::recheck_recommendations,
+            commands::recommendations::set_recommendation_hidden,
+            commands::recommendations::restore_recommendations,
+            commands::recommendations::recommendation_action,
+            commands::runtime_setup::inspect_runtime_setup,
+            commands::runtime_setup::select_runtime_codex,
+            commands::runtime_setup::open_codex_installation_guide,
             commands::local_proxy::get_local_proxy_status,
             commands::local_proxy::get_local_proxy_preferences,
             commands::local_proxy::set_local_proxy_preferences,
@@ -300,6 +322,11 @@ fn main() {
             commands::settings::set_settings,
             commands::settings::open_settings_window,
             commands::settings::sync_runtime_language,
+            commands::task_workbench::get_task_workbench,
+            commands::task_workbench::import_task_workbench_inventory,
+            commands::task_workbench::set_task_workbench_decision,
+            commands::task_workbench::open_task_workbench_artifact,
+            commands::personal_wechat_text::send_personal_wechat_text,
             commands::task_hub::get_task_hub,
             commands::task_hub::get_task_hub_messages,
             commands::task_hub::select_task_hub_workspace,

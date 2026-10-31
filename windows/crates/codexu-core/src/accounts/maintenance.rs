@@ -278,8 +278,9 @@ pub(super) fn manual_consume(
     credential: &super::super::identity::StoredCredential,
     claim: &dyn Fn(&Card) -> Result<String>,
     admit: &dyn Fn() -> Result<()>,
+    selection: Option<&crate::runtime_setup::SelectionStore>,
 ) -> Execution {
-    native::manual_reset(home, credential, claim, admit)
+    native::manual_reset(home, credential, claim, admit, selection)
 }
 
 trait Runtime: Send + Sync {
@@ -309,7 +310,8 @@ pub struct AccountMaintenanceService {
 }
 impl AccountMaintenanceService {
     pub fn new(path: PathBuf, manager: Arc<AccountManager>) -> Result<Arc<Self>> {
-        Self::with_runtime(path, manager, Arc::new(native::NativeRuntime))
+        let selection = manager.runtime_selection().map_err(account_error)?;
+        Self::with_runtime(path, manager, Arc::new(native::NativeRuntime { selection }))
     }
     fn with_runtime(
         path: PathBuf,

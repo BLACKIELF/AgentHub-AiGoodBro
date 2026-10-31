@@ -1395,6 +1395,9 @@ body {
 /* The card already supplies the backdrop. A blur layer per button makes text
    rasterization depend on fractional grid positions in Chromium. */
 .workspace-shell .account-directory-card .glass-button { backdrop-filter: none; }
+/* Keep glass on the pool panel; avoid a second fractional-position blur layer on button text. */
+.provider-account-pool-panel .glass-button { backdrop-filter: none; }
+.recommendation-toolbar > .glass-button { backdrop-filter: none; }
 .account-directory-heading { gap: 6px; min-width: 0; flex-wrap: nowrap; }
 .workspace-shell .account-directory-number { flex-shrink: 0; width: 22px; height: 22px; padding: 0; border-radius: 6px; display: inline-flex; align-items: center; justify-content: center; font: 10px ui-monospace, monospace; white-space: nowrap; line-height: 1; }
 .account-platform-badge { max-width: 84px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex-shrink: 1; }

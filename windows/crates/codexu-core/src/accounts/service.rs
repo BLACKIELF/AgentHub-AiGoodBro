@@ -24,6 +24,10 @@ pub mod hub_snapshot;
 pub mod maintenance;
 #[path = "manual_accounts.rs"]
 pub mod manual_accounts;
+#[path = "metadata.rs"]
+pub mod metadata;
+#[path = "registration.rs"]
+pub mod registration;
 
 struct Attempt {
     dto: LoginAttemptDto,
@@ -198,7 +202,9 @@ impl AccountManager {
                 home.join(".codex"),
             )?,
             Arc::new(DpapiProtector),
-            Arc::new(NativeAccountRuntime),
+            Arc::new(NativeAccountRuntime::with_selection(
+                crate::runtime_setup::SelectionStore::new(&app_data_dir)?,
+            )),
             None,
         )
     }
@@ -409,8 +415,12 @@ impl AccountManager {
                     "unknown"
                 };
                 ManagedAccountDto {
+                    registration_pending: store
+                        .vault
+                        .pending_registrations
+                        .contains_key(&record.id),
                     id: record.id.clone(),
-                    label: record.label.clone(),
+                    label: record.display_label().to_owned(),
                     platform: record.platform.clone(),
                     storage_kind: "managed",
                     login_state: if signing_in {
@@ -484,6 +494,7 @@ impl AccountManager {
             store.vault.accounts.push(AccountRecord {
                 id: id.clone(),
                 label,
+                remark: None,
                 platform,
                 revision: 1,
                 credential: None,
@@ -647,7 +658,17 @@ impl AccountManager {
                 .checked_add(1)
                 .ok_or_else(|| fail("vault_invalid"))?;
             let first_verified = record.credential.is_none();
+            let registration_identity = verified.identity.identity_hash();
             record.credential = Some(verified.into_stored(super::nonce()?));
+            if first_verified {
+                store.vault.pending_registrations.insert(
+                    account_id.to_owned(),
+                    storage::RegistrationIntent {
+                        identity_hash: registration_identity,
+                        planned_profile_id: None,
+                    },
+                );
+            }
             self.require_accepting()?;
             writer.recheck()?;
             store.save()?;
@@ -2037,12 +2058,21 @@ impl AccountManager {
             ),
         )))
     }
+    pub fn runtime_selection(&self) -> AccountResult<crate::runtime_setup::SelectionStore> {
+        crate::runtime_setup::SelectionStore::new(
+            self.paths
+                .vault_root
+                .parent()
+                .ok_or_else(|| fail("runtime_storage_unavailable"))?,
+        )
+    }
     /// Native launcher composition only. The caller additionally verifies the
     /// publisher and retains the read-share guard through process creation.
     pub fn proxy_codex_executable(
+        &self,
         home: &std::path::Path,
     ) -> AccountResult<(PathBuf, std::fs::File)> {
-        super::native::proxy_codex_executable(home)
+        super::native::proxy_codex_executable(home, &self.runtime_selection()?)
     }
     /// Refresh expired evidence in a private, disposable home, never the active
     /// system home. The caller still must reserve under its shared registry.

@@ -45,7 +45,7 @@ fn safe_label(s: &str) -> String {
 }
 #[path = "manual_accounts/details.rs"]
 mod details;
-pub use details::LocalDetails;
+pub use details::{read_linked_local_details, LocalDetails};
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ResetReview {
@@ -292,9 +292,10 @@ impl ManualAccountService {
         maintenance: Arc<maintenance::AccountMaintenanceService>,
         authorization: Arc<dyn Fn() -> ManualResetAuthorization + Send + Sync>,
     ) -> AccountResult<Arc<Self>> {
+        let selection = manager.runtime_selection()?;
         Self::with_runtime_authorization(
             manager,
-            Arc::new(native::NativeRuntime),
+            Arc::new(native::NativeRuntime { selection }),
             Some(maintenance),
             authorization,
         )
@@ -354,7 +355,7 @@ impl ManualAccountService {
         }
         Ok(Credential {
             profile: r.id.clone(),
-            label: safe_label(&r.label),
+            label: safe_label(r.display_label()),
             value,
         })
     }

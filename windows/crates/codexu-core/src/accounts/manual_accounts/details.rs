@@ -10,6 +10,8 @@ const MAX_DETAILS: usize = 128 * 1024;
 #[serde(rename_all = "camelCase")]
 pub struct LocalDetails {
     pub profile_id: String,
+    /// Display-only linked-directory evidence, never managed-account authority.
+    pub linked_local: bool,
     pub email: Option<String>,
     pub display_name: Option<String>,
     pub username: Option<String>,
@@ -124,6 +126,40 @@ fn masked_id(value: &str) -> String {
         chars[..4].iter().collect::<String>(),
         chars[chars.len() - 4..].iter().collect::<String>()
     )
+}
+
+/// Read only the already linked home chosen by the native catalog. An explicit
+/// details request may display its identity without importing it into the vault
+/// or claiming that its sign-in/allowance is currently usable.
+pub fn read_linked_local_details(profile: &str, home: &Path) -> AccountResult<LocalDetails> {
+    storage::ensure_no_links(home)?;
+    let canonical = home
+        .canonicalize()
+        .map_err(|_| fail("account_paths_invalid"))?;
+    if canonical != home || !canonical.is_dir() {
+        return Err(fail("account_paths_invalid"));
+    }
+    let path = home.join("auth.json");
+    let bytes = storage::read_optional(&path, super::super::super::identity::MAX_AUTH_BYTES)?
+        .ok_or_else(|| fail("login_required"))?;
+    let (identity, _) = parse_auth(&bytes)?;
+    let (plan, expiry) = subscription(&bytes);
+    if home.canonicalize().ok().as_ref() != Some(&canonical)
+        || storage::read_optional(&path, super::super::super::identity::MAX_AUTH_BYTES)?.as_ref()
+            != Some(&bytes)
+    {
+        return Err(fail("manual_action_identity_changed"));
+    }
+    Ok(LocalDetails {
+        profile_id: profile.into(),
+        linked_local: true,
+        email: Some(identity.email.clone()),
+        masked_account_id: Some(masked_id(&identity.account_id)),
+        account_type: Some("chatgpt".into()),
+        plan_type: plan,
+        subscription_active_until_ms: expiry,
+        ..LocalDetails::default()
+    })
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -486,3 +522,7 @@ impl ManualAccountService {
 #[cfg(test)]
 #[path = "details_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "linked_details_tests.rs"]
+mod linked_tests;

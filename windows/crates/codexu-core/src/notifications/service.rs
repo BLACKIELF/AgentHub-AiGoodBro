@@ -17,6 +17,10 @@ use std::{
     },
 };
 
+#[path = "manual_text.rs"]
+mod manual_text;
+pub use manual_text::PersonalTextReceipt;
+
 pub struct NotificationService {
     pub(crate) storage: Storage,
     pub(crate) transport: Arc<dyn NotificationTransport>,
@@ -27,6 +31,7 @@ pub struct NotificationService {
     pending: Mutex<Pending>,
     pub(crate) wake: Arc<(Mutex<()>, std::sync::Condvar)>,
     queue_failure: AtomicU8,
+    pub(crate) personal_text_active: AtomicBool,
 }
 #[derive(Default)]
 struct Pending {
@@ -454,6 +459,7 @@ impl NotificationService {
             pending: Mutex::new(Pending::default()),
             wake: Arc::new((Mutex::new(()), std::sync::Condvar::new())),
             queue_failure: AtomicU8::new(0),
+            personal_text_active: AtomicBool::new(false),
         }))
     }
     pub fn states(&self) -> Result<Vec<ChannelState>> {

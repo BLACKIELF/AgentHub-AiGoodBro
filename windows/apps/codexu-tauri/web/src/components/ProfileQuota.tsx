@@ -69,8 +69,8 @@ export function ProfileQuota({ profileId, profileLabel, disabled, refreshToken =
       <button className="icon-action" aria-label={busy ? text('正在读取…', 'Reading…') : text('读取额度', 'Read quota')} title={text('读取额度', 'Read quota')} disabled={disabled || busy} onClick={() => void readQuota()}><RefreshCw size={14} className={busy ? 'animate-spin' : ''} aria-hidden="true" /></button>
       {!quota && !failed && !busy && <span>{text('尚未读取', 'Not read yet')}</span>}
       {failed && <span role="status" className="text-status-warn">{text('读取失败，可重试。', 'Read failed. You can retry.')}</span>}
-      {quota && <><span className={`quota-read-status ${old ? 'text-status-warn' : ''}`}>{old ? text('上次记录，需重读', 'Previous record; read again') : text('读取记录，非实时', 'Read snapshot, not live')}<time className="quota-read-time">{formatTime(quota.checked_at)}</time></span>
-        <button className="icon-action" aria-label={text('账号详情', 'Account details')} title={text('账号详情', 'Account details')} onClick={() => setDetails(true)}><Info size={14} aria-hidden="true" /></button></>}
+      {quota && <><span className={`quota-read-status ${old ? 'text-status-warn' : ''}`}>{old ? text('上次记录，需重读', 'Previous record; read again') : text('读取记录，非实时', 'Read snapshot, not live')}<time className="quota-read-time">{formatTime(quota.checked_at)}</time></span></>}
+      <button className="icon-action" aria-label={text('账号详情', 'Account details')} title={text('账号详情', 'Account details')} onClick={() => setDetails(true)}><Info size={14} aria-hidden="true" /></button>
     </div>
     {quota && <>
       <div className="flex flex-wrap gap-x-3 gap-y-1">
@@ -97,6 +97,6 @@ export function ProfileQuota({ profileId, profileLabel, disabled, refreshToken =
         <p className="text-tertiary">{text('重置时间待读取', 'Read for reset time')}</p>
       </div>)}
     </div>}
-    {details && <AccountDetails profileId={profileId} profileLabel={profileLabel} details={quota ? { account: quota.account ?? null, credits, checked_at: quota.checked_at } : null} current={!old} onClose={() => setDetails(false)} />}
+    {details && <AccountDetails profileId={profileId} profileLabel={profileLabel} details={quota ? { account: quota.account ?? null, credits, checked_at: quota.checked_at } : null} current={quota !== null && !old} onClose={() => setDetails(false)} />}
   </div>;
 }

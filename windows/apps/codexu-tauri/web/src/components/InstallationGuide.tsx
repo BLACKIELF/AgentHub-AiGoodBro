@@ -3,8 +3,9 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { useI18n } from '../i18n/I18nProvider';
 import { parseSetupContext, type SetupContext } from '../utils/setupContext';
+import { WorkspaceGuide, type GuideDestination } from './WorkspaceGuide';
 
-export function InstallationGuide({ onAccounts }: { onAccounts: () => void }) {
+export function InstallationGuide({ onAccounts, onOpenSection }: { onAccounts: () => void; onOpenSection?: (section: Exclude<GuideDestination, 'accounts'>) => void | Promise<void> }) {
   const { language } = useI18n(), text = (zh: string, en: string) => language === 'zh-Hans' ? zh : en;
   const [state, setState] = useState<SetupContext | null>(null), [audience, setAudience] = useState<'new' | 'returning' | null>(null), [busy, setBusy] = useState(false), [error, setError] = useState(false);
   const alive = useRef(false), serial = useRef(0), pending = useRef(false), dialog = useRef<HTMLDialogElement>(null);
@@ -22,7 +23,7 @@ export function InstallationGuide({ onAccounts }: { onAccounts: () => void }) {
     catch { if (alive.current) setError(true); }
     finally { pending.current = false; if (alive.current) setBusy(false); }
   };
-  if (!state?.shouldPresent) return null;
+  if (!state?.shouldPresent) return <WorkspaceGuide onOpen={async section => { if (section === 'accounts') onAccounts(); else if (onOpenSection) await onOpenSection(section); else if (section === 'settings') await invoke('open_settings_window'); else throw Error('guide_navigation_unavailable'); }} />;
   return <dialog ref={dialog} className="installation-guide glass-panel" aria-label={text('欢迎使用 AiGoodBro', 'Welcome to AiGoodBro')} onCancel={event => { event.preventDefault(); if (!busy) void finish('deferred'); }}>
     <h1>{text('欢迎使用 AiGoodBro', 'Welcome to AiGoodBro')}</h1><p>{text('在这里连接已有账号、查看额度与用量。', 'Connect existing accounts and view quota and usage here.')}</p>
     <fieldset disabled={busy || state.audience !== null}><legend>{text('选择适合你的开始方式', 'Choose how to begin')}</legend><label><input type="radio" name="setup-audience" checked={audience === 'new'} onChange={() => setAudience('new')} />{text('第一次使用', 'New user')}</label><label><input type="radio" name="setup-audience" checked={audience === 'returning'} onChange={() => setAudience('returning')} />{text('已有账号与配置', 'Returning user')}</label></fieldset>

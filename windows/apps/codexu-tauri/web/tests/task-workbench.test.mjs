@@ -1,0 +1,12 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import {readFileSync} from 'node:fs';
+import vm from 'node:vm';
+import ts from 'typescript';
+const context=vm.createContext({exports:{},TextEncoder});
+vm.runInContext(ts.transpileModule(readFileSync(new URL('../src/utils/taskWorkbench.ts',import.meta.url),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2020}}).outputText,context);
+const parse=context.exports.parseWorkbench,id='12345678-1234-1234-1234-123456789abc';
+const item={threadId:id,title:'Synthetic inventory',project:'fixture',updatedAtMs:100,archived:false,executionState:'recorded',outcome:'unknown',decision:'none',decisionAtMs:null,inventoryIsStale:false,needsAttention:false,inventory:null};
+const snapshot=()=>({scopeId:'a'.repeat(64),checkedAtMs:100,sourceAvailable:true,truncated:false,items:[structuredClone(item)]});
+test('only explicit manual completion can become completed and execution remains unknown',()=>{const raw=snapshot();assert.equal(parse(raw).items[0].executionState,'recorded');raw.items[0].outcome='complete';assert.throws(()=>parse(raw));raw.items[0].decision='completed';assert.equal(parse(raw).items[0].outcome,'complete');raw.items[0].executionState='running';assert.throws(()=>parse(raw));});
+test('duplicate chats, wrong inventory identity, unbounded fields and malformed scopes fail closed',()=>{const raw=snapshot();raw.items.push(structuredClone(item));assert.throws(()=>parse(raw));const wrong=snapshot();wrong.items[0].inventory={threadID:'00000000-0000-0000-0000-000000000000'};assert.throws(()=>parse(wrong));const huge=snapshot();huge.items[0].title='a'.repeat(513);assert.throws(()=>parse(huge));const scope=snapshot();scope.scopeId='../unsafe';assert.throws(()=>parse(scope));});

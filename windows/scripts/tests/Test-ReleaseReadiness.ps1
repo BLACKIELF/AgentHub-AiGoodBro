@@ -74,12 +74,16 @@ try {
     Assert-True ('-RunNativeTests' -in $plan[[array]::IndexOf($names, 'proxy-native-resources')].arguments) 'Release validation omitted the real helper fixture tests.'
     Assert-True ([array]::IndexOf($names, 'token-monitor-native-resources') -lt [array]::IndexOf($names, 'rust-tests')) 'The real statistics resources must precede workspace validation.'
     Assert-True ('-RunNativeTests' -in $plan[[array]::IndexOf($names, 'token-monitor-native-resources')].arguments) 'Release validation omitted native statistics process tests.'
+    Assert-True ([array]::IndexOf($names, 'provider-pool-native-resources') -lt [array]::IndexOf($names, 'rust-tests')) 'The pinned provider-pool resources must precede the real native Rust helper test.'
+    Assert-True ('-RunNativeTests' -in $plan[[array]::IndexOf($names, 'provider-pool-native-resources')].arguments) 'Release validation omitted synthetic native provider tests.'
     Assert-True ([array]::IndexOf($names, 'hub-native-resources') -lt [array]::IndexOf($names, 'rust-tests')) 'The real Hub resources must precede workspace validation.'
     Assert-True ('-RunNativeTests' -in $plan[[array]::IndexOf($names, 'hub-native-resources')].arguments) 'Release validation omitted native Hub execution.'
     Assert-True ([array]::IndexOf($names, 'visual-baseline') -lt [array]::IndexOf($names, 'visual-repeat')) 'Visual verification must follow baseline creation.'
     Assert-True ($names[-1] -eq 'package') 'Packages must follow successful verification.'
     $reuseIndex = [array]::IndexOf($plan[-1].arguments, '-VerifiedScannerBuildRoot')
     Assert-True ($reuseIndex -ge 0 -and $plan[-1].arguments[$reuseIndex + 1] -eq (Join-Path $fixture 'token-monitor-build\scanner')) 'Packaging must reuse this run''s native-tested scanner, not rebuild a different binary.'
+    $poolReuseIndex = [array]::IndexOf($plan[-1].arguments, '-VerifiedProviderPoolBuildRoot')
+    Assert-True ($poolReuseIndex -ge 0 -and $plan[-1].arguments[$poolReuseIndex + 1] -eq (Join-Path $fixture 'provider-pool-build')) 'Packaging must reuse this run''s native-tested provider helper.'
     $hubReuseIndex = [array]::IndexOf($plan[-1].arguments, '-VerifiedHubBuildRoot')
     Assert-True ($hubReuseIndex -ge 0 -and $plan[-1].arguments[$hubReuseIndex + 1] -eq (Join-Path $fixture 'hub-build')) 'Packaging must reuse this run''s native-tested Hub.'
     Assert-True ('--update-snapshots' -notin $plan[[array]::IndexOf($names, 'visual-repeat')].arguments) 'The second visual run must compare the existing baseline.'
