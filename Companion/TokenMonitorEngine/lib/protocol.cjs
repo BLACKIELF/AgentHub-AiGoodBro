@@ -59,6 +59,7 @@ function validateRequest(request) {
   requireField(isIso8601(request.now));
   requireField(isKnownTimeZone(request.timezone));
   requireField(isNonEmptyString(request.cacheDirectory));
+  requireField(require('node:path').isAbsolute(request.cacheDirectory.trim()) && !request.cacheDirectory.includes('\0'));
 
   const rawSources = request.sources === undefined ? [] : request.sources;
   requireField(Array.isArray(rawSources));

@@ -9,15 +9,18 @@
 // Production code paths are untouched: the real app still goes through the
 // genuine Tauri internals.
 
+let nextStubRevision = 0;
+
 /**
  * Installs the synthetic bridge before any page script runs.
  *
  * @param {import('@playwright/test').Page} page
  * @param {{ settings: unknown, dashboard: unknown, windowLabel?: string }} payload
+ * @param {() => void} [customize] Runs after the base bridge in the same init script.
  */
-export async function installTauriStub(page, { settings, dashboard, windowLabel = 'main' }) {
-  await page.addInitScript(
-    ({ settingsPayload, dashboardPayload, label }) => {
+export async function installTauriStub(page, { settings, dashboard, windowLabel = 'main' }, customize = () => {}) {
+  const revision = ++nextStubRevision;
+  const initialize = ({ settingsPayload, dashboardPayload, label }) => {
       const callbacks = new Map();
       let nextCallbackId = 1;
 
@@ -76,7 +79,15 @@ export async function installTauriStub(page, { settings, dashboard, windowLabel 
           return undefined;
         },
       };
-    },
-    { settingsPayload: settings, dashboardPayload: dashboard, label: windowLabel },
-  );
+  };
+  // Playwright does not order separate init scripts. Install the base bridge and
+  // its dependent fixture atomically, and keep the latest explicit page setup
+  // when a test changes window labels before navigating again.
+  await page.addInitScript({ content: `
+    if ((window.__codexuSyntheticStubRevision || 0) < ${revision}) {
+      window.__codexuSyntheticStubRevision = ${revision};
+      (${initialize.toString()})(${JSON.stringify({ settingsPayload: settings, dashboardPayload: dashboard, label: windowLabel })});
+      (${customize.toString()})();
+    }
+  ` });
 }

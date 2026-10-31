@@ -1,4 +1,4 @@
-# AiGoodBro · AgentHub (2.5.2)
+# AiGoodBro · AgentHub (3.0.0)
 
 **See quotas, usage, reset messages and local work in one place; when needed, route work through your own Codex account pool.**
 
@@ -6,11 +6,11 @@ AiGoodBro is a macOS AI workspace for personal use. It brings together Codex acc
 
 [中文](README.md) | **English**
 
-**Latest prerelease: 2.5.2 (153) · 1023v1.** The compact proxy panel exposes Priority and Use last directly; Pro accounts support manual 5x/10x/20x/25x labels and official weekly-quota display. This update fixes non-Codex sign-in state, late callbacks after account-pool cancellation, mixed home statistics and the sidebar Today shortcut. The fixed proxy endpoint, optional network recovery and Feishu authorization fix are retained. [Prerelease download](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/tag/v2.5.2-1023v1) · [Full 153 notes and validation boundaries](docs/release-notes-v2.5.2-1023v1.md).
+**Current release version: 3.0.0 (161) · 1028v1.** Fixes home statistics and usage-duration display, moves proxy stopping and cleanup to bounded background work, and supports force quit after explicit confirmation. Existing accounts, rules and appearance are preserved, together with reviewed usage-parser, credential-recovery and upstream fixes. The in-app update introduction is included. [Release and downloads](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/tag/v3.0.0) · [Changes and validation boundaries](docs/release-notes-v3.0.0.md).
 
-**Stable release: 2.5.2 (147) · 1017v1.** That version improves pre-connection proxy retries, fault diagnostics, expired-sign-in status and button styling while retaining existing accounts and customizations. The full local build and 35 native self-test groups passed; the replacement installation, interface and configuration preservation were checked on this Mac. DMG and ZIP contents, versions, strict signatures and checksums have been verified; see [GitHub Actions](https://github.com/BLACKIELF/AgentHub-AiGoodBro/actions) for remote checks. See the [stable release notes](docs/release-notes-v2.5.2.md) for features, validation and boundaries.
+**Windows 3.0.0 is released independently.** It provides a local dashboard, linked directories, quota reading and isolated terminal workflows, built and tested on Windows. It does not claim full macOS feature parity. [Windows features and installation](windows/README.md).
 
-Stable downloads: [DMG (Apple Silicon)](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.5.2/AiGoodBro-2.5.2-mac-arm64.dmg) · [ZIP](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.5.2/AiGoodBro-2.5.2-mac-arm64.zip) · [Release notes](docs/release-notes-v2.5.2.md)
+Downloads: [DMG (Apple Silicon)](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v3.0.0/AiGoodBro-3.0.0-mac-arm64.dmg) · [macOS ZIP](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v3.0.0/AiGoodBro-3.0.0-161-1028v1-mac-arm64.zip) · [Windows MSI](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v3.0.0/CodexAccountManagerNext-3.0.0-windows-x86_64.msi) · [Windows EXE](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v3.0.0/CodexAccountManagerNext-3.0.0-windows-x86_64-setup.exe)
 
 **Promotional videos and interface showcase · 1012v1:** [Chinese original, 48 seconds (MP4)](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.5.0/AiGoodBro-demo-1011v4.mp4) · [English original, 48 seconds (MP4)](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.5.0/AiGoodBro-English-1011v1.mp4) · [English showcase and editable source](docs/showcase/1012v1/README.md) · [Complete English package (ZIP, with the English video)](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/download/v2.5.0/AiGoodBro-Showcase-1012v2.zip)
 
@@ -71,7 +71,9 @@ Public messages do not rewrite official account records, change participation or
 
 Participation, Priority, Use last and order affect new requests and stay synchronized with the account page. Verified Pro accounts default to Use last and can be changed; a manual multiplier label does not determine routing. Temporary occupancy in the ordinary group is awaited within the existing admission deadline before Use last accounts. Exhausted or non-participating accounts are still skipped; identity, cooldown and quota checks remain. Subscription quota is used before credits; credit continuation is off unless the user enables it. Busy or unknown accounts are not treated as exhausted.
 
-Disabling participation skips that account for admissions still waiting or retrying, while an admitted stream finishes. Gateway refusal, timeout, cancellation and ordinary forwarding failures have distinct messages; HTTP 503 remains and there is no automatic reconnect. Version 2.5 moves blocking reads off the cooperative executor and protects disconnected reply writes. Proven quota cooldowns are cleared only after newer subscription evidence is verified. For unknown legacy cooldowns, stop the proxy, choose Clear legacy cooldown on that account, verify fresh quota and identity, then confirm a backup and clear before restarting manually. Custom 5-hour used limits for Plus retain their saved values in both the editor and summary; Pro preserves old values without applying that limit to admission. Cleanup for a confirmed exited child briefly retries a busy lease lock up to three times while protecting a new run and active children. This release further distinguishes shared-state lock contention from real occupancy, respects the original deadline and cancellation during waits and retries, and provides retry guidance on timeout. Issued responses are not replayed automatically. CLIProxyAPI 8.0.38 improves multiline stream parsing and closed-connection classification. The historical fault that recovered only after a restart is not fully attributed, so this is not a permanent-stability guarantee.
+Disabling participation skips that account for admissions still waiting or retrying, while an admitted stream finishes. Gateway refusal, timeout, cancellation and ordinary forwarding failures have distinct messages; HTTP 503 is preserved and issued requests are not automatically replayed on failure. Version 2.5 moves blocking reads off the cooperative executor and protects disconnected reply writes. Proven quota cooldowns are cleared only after newer subscription evidence is verified. For unknown legacy cooldowns, stop the proxy, choose Clear legacy cooldown on that account, verify fresh quota and identity, then confirm a backup and clear before restarting manually. Custom 5-hour used limits for Plus retain their saved values in both the editor and summary; Pro preserves old values without applying that limit to admission. Cleanup for a confirmed exited child briefly retries a busy lease lock up to three times while protecting a new run and active children. This release further distinguishes shared-state lock contention from real occupancy, respects the original deadline and cancellation during waits and retries, and provides retry guidance on timeout. Issued responses are not replayed automatically. CLIProxyAPI 8.0.38 improves multiline stream parsing and closed-connection classification. The historical fault that recovered only after a restart is not fully attributed, so this is not a permanent-stability guarantee.
+
+**Optional automatic recovery:** Off by default. For recognized internal failures, the app checks the previous run and cleans up only its owned instance before restoring the fixed port and connection configuration, with at most three attempts in ten minutes. Manual stop or quit cancels recovery; issued model requests are never replayed. Stopping and cleanup use bounded background work. Confirming Force Quit arms a five-second termination fallback; system scheduling may delay execution slightly.
 
 This release also offers a uniform 5-hour used-percentage limit for Plus accounts, with individual overrides after a bulk update. Below 100%, reaching the limit stops new admissions while existing responses finish. At 100%, existing credit-continuation rules remain; Pro rules are preserved.
 
@@ -207,19 +209,19 @@ Recommendations retain optional REA and JEV installation entries. A detectable n
 
 ## 16 · Downloads, upgrades and builds
 
-This release supports **macOS 13+ on Apple Silicon ARM64**, with local ad-hoc signing and no Apple notarization. Its separate version lets 2.5.0 / 2.5.1 clients discover it after publication; existing Releases and assets are retained. Clients on 9.6.x still need a manual download. Before upgrading, finish work, stop the proxy, quit normally and back up the old app and local data. After replacement, confirm **2.5.2 (147) / 1017v1**, then review WeChat, Feishu and new settings.
+The macOS package supports **macOS 13+ on Apple Silicon ARM64**, retaining the stable local signing identity without Apple notarization. Windows x86_64 has separate MSI / NSIS installers; see [Windows scope](windows/README.md). Existing Releases and assets are retained. Clients on 9.6.x still need a manual download. Finish work, stop the proxy, quit normally and back up the old app and local data before upgrading. Confirm **3.0.0 (161) / 1028v1** after replacing the macOS app.
 
-Build 147 passed the full local build and 35 native self-test groups; the Carbon system-hotkey integration sub-check was explicitly skipped. The replacement installation on this Mac preserved 12 account configurations and existing rules. Its complete contents match the build, DMG and ZIP, and startup and interface checks passed. See the [2.5.2 release record](docs/release-notes-v2.5.2.md) for package checks, final SHA256 and boundaries. The historical disconnect's field root cause remains unconfirmed; sustained real-provider stability, Pro5x recovery after signing in again, reset-card redemption, phone delivery and global hotkeys were not accepted in this round.
+Build, package-content, signature and checksum checks are specific to these artifacts; see the [3.0.0 release record](docs/release-notes-v3.0.0.md) and [GitHub Actions](https://github.com/BLACKIELF/AgentHub-AiGoodBro/actions). This publication does not replace the running installation. The historical proxy disconnect cause, long-running real-provider calls, all sign-in flows and notification delivery still require device acceptance; earlier release results do not certify this package.
 
 Build from this release tag:
 
 ```sh
-git clone --branch v2.5.2 https://github.com/BLACKIELF/AgentHub-AiGoodBro.git AiGoodBro-2.5.2
-cd AiGoodBro-2.5.2
+git clone --branch v3.0.0 https://github.com/BLACKIELF/AgentHub-AiGoodBro.git AiGoodBro-3.0.0
+cd AiGoodBro-3.0.0
 make build
 ```
 
-Builds require macOS, Go 1.26+ and the SHA256-verified Token Monitor 0.68.0 macOS runtime. This release selectively backports fixes onto that interface baseline. Intel and Windows installers are not provided.
+macOS builds require Go 1.26+ and the SHA256-verified Token Monitor 0.68.0 macOS runtime. Selected fixes are backported onto that interface baseline; no Intel Mac package is offered. Windows uses its own Rust / Tauri / Node workflow; see the [Windows build instructions](windows/README.md).
 
 <a id="sources"></a>
 
@@ -240,13 +242,13 @@ The table lists code and resources actually reused, adapted or consulted as stat
 
 AiGoodBro is released under the [MIT License](LICENSE). Third-party notices are in [`Resources/THIRD_PARTY_NOTICES.txt`](Resources/THIRD_PARTY_NOTICES.txt), [`Companion/LocalProxy/LICENSE.CLIProxyAPI`](Companion/LocalProxy/LICENSE.CLIProxyAPI), [`Companion/LocalProxy/LICENSE.Hazmat`](Companion/LocalProxy/LICENSE.Hazmat) and [`Companion/LocalProxy/THIRD-PARTY-NOTICES.txt`](Companion/LocalProxy/THIRD-PARTY-NOTICES.txt).
 
-Documentation: [detailed guide](docs/usage-guide.md) · [native CLI quota coverage](docs/local-cli-accounts.md) · [proxy implementation and validation](docs/local-proxy-0928v1.md) · [2.5.2 release record](docs/release-notes-v2.5.2.md) · [2.5.1 release record](docs/release-notes-v2.5.1.md) · [2.5.0 release record](docs/release-notes-v2.5.0.md) · [image sources and checksums](docs/public-ui-1012v1-promo.md) · [issues](https://github.com/BLACKIELF/AgentHub-AiGoodBro/issues) · [security](SECURITY.md)
+Documentation: [detailed guide](docs/usage-guide.md) · [native CLI quota coverage](docs/local-cli-accounts.md) · [proxy implementation and validation](docs/local-proxy-0928v1.md) · [3.0.0 release record](docs/release-notes-v3.0.0.md) · [2.5.2 release record](docs/release-notes-v2.5.2.md) · [2.5.1 release record](docs/release-notes-v2.5.1.md) · [2.5.0 release record](docs/release-notes-v2.5.0.md) · [image sources and checksums](docs/public-ui-1012v1-promo.md) · [issues](https://github.com/BLACKIELF/AgentHub-AiGoodBro/issues) · [security](SECURITY.md)
 
 <a id="actual-screenshots"></a>
 
 ## 18 · Actual app screenshots
 
-The home capture and its account and usage crops come from installed **2.3.0 (137)**. The six sign-in, guide and settings images come from **2.3.0 (139)**, and are historical interface records. The proxy-status crop has no visible build number. Values and connection states are capture-time snapshots, not acceptance of a 2.5.2 (147) installation, real model calls or message delivery. See the [historical image record](docs/public-ui-1009v2.md) for sources, original dimensions and checksums. Click an image to open the original.
+The home capture and its account and usage crops come from installed **2.3.0 (137)**. The six sign-in, guide and settings images come from **2.3.0 (139)**, and are historical interface records. The proxy-status crop has no visible build number. Values and connection states are capture-time snapshots, not acceptance of a 3.0.0 (161) installation, real model calls or message delivery. See the [historical image record](docs/public-ui-1009v2.md) for sources, original dimensions and checksums. Click an image to open the original.
 
 ### 01 · Main UI
 

@@ -142,6 +142,7 @@ test('self-sync is suppressed and recorded when the caller does not authorise it
 
 test('a fixture collect performs no network access and mutates no credentials', async () => {
   const home = fixtures.makeHome();
+  const cacheHome = fixtures.makeHome();
   const realFetch = globalThis.fetch;
   let fetchCalls = 0;
   globalThis.fetch = async () => {
@@ -150,7 +151,7 @@ test('a fixture collect performs no network access and mutates no credentials', 
   };
   try {
     const layout = fixtures.twoToolsTwoHomes(home);
-    const request = fixtures.baseRequest(home, { sources: layout.sources });
+    const request = fixtures.baseRequest(home, { sources: layout.sources, cacheDirectory: path.join(cacheHome, 'cache') });
     const before = snapshotTree(home);
 
     const response = await collect(request, fixtures.runners());
@@ -162,6 +163,7 @@ test('a fixture collect performs no network access and mutates no credentials', 
   } finally {
     globalThis.fetch = realFetch;
     fixtures.cleanup(home);
+    fixtures.cleanup(cacheHome);
   }
 });
 

@@ -37,7 +37,8 @@ jobs:
 
   macos:
     runs-on: macos-14
-    timeout-minutes: 45
+    # Keep the complete native, renderer and proxy suite within one bounded job.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -109,6 +110,7 @@ jobs:
           python3 -m unittest tests.test_aihot_topics tests.test_local_cli_terminal_launcher tests.test_local_cli_accounts tests.test_runtime_setup
           python3 tests/test_claude_subscriptions.py
           NODE_PATH="$PWD/build/AiGoodBro.app/Contents/Resources/TokenMonitorEngine/vendor/node_modules" ELECTRON_RUN_AS_NODE=1 "$token_node" --test Companion/TokenMonitorEngine/upstream/tests/shared/grokSessionMetadata.test.js
+          NODE_PATH="$PWD/build/AiGoodBro.app/Contents/Resources/TokenMonitorEngine/vendor/node_modules" ELECTRON_RUN_AS_NODE=1 "$token_node" --test Companion/TokenMonitorEngine/upstream/tests/shared/cursorLimits.test.js Companion/TokenMonitorEngine/upstream/tests/shared/cursorProbe.test.js Companion/TokenMonitorEngine/upstream/tests/shared/cursorUnknownPlan.test.js Companion/TokenMonitorEngine/upstream/tests/shared/limitsRuntime.test.js
           python3 tests/token-monitor-engine/run.py --resource-root build/AiGoodBro.app/Contents/Resources/TokenMonitorEngine --trusted-receipt ".build-receipts/AiGoodBro/Next/token-monitor-$(uname -m).json"
           ELECTRON_RUN_AS_NODE=1 "$token_node" scripts/test-upstream-dashboard-0913v1.js
           python3 scripts/test-upstream-dashboard-cache-0913v1.py
@@ -141,16 +143,23 @@ jobs:
           python3 scripts/test-invite-purchase-link.py
           python3 scripts/test-local-proxy-quota-refresh.py
           python3 scripts/test-local-proxy-host.py --cleanup-retry-only
+          python3 scripts/test-local-proxy-host.py --stop-responsive-only
+          python3 scripts/test-local-proxy-host.py --force-quit-only
+          FORCE_QUIT_EVIDENCE="$RUNNER_TEMP/confirmed-force-quit" python3 tests/force-quit/run.py
+          FORCE_QUIT_EVIDENCE="$RUNNER_TEMP/confirmed-force-quit" python3 tests/force-quit/run-token-monitor.py
+          DISPATCH_REGISTRY_EVIDENCE="$RUNNER_TEMP/dispatch-registry" python3 tests/test-dispatch-registry-diagnostics.py
+          PROXY_AUTOMATIC_RECOVERY_EVIDENCE="$RUNNER_TEMP/proxy-automatic-recovery" python3 scripts/test-local-proxy-host.py --automatic-recovery-only
           python3 Companion/LocalProxy/fixtures/test-cross-language.py --helper build/AiGoodBro.app/Contents/Resources/LocalProxy/aigoodbro-local-proxy
           cd Companion/LocalProxy
-          go test -mod=readonly -race -timeout=10m ./...
-          go vet -mod=readonly ./...
+          python3 go.py test -mod=readonly -race -timeout=10m ./...
+          python3 go.py vet -mod=readonly ./...
       - name: Validate provider pools and isolated client launchers
         run: |
+          python3 -m unittest tests.test_antigravity_proxy_packaging
           cd Companion/AntigravityProxy
           bash test-native-host.sh
-          go test -mod=readonly -race -timeout=10m ./...
-          go vet -mod=readonly ./...
+          python3 go.py test -mod=readonly -race -timeout=10m ./...
+          python3 go.py vet -mod=readonly ./...
       - name: Run dashboard DOM acceptance (real Chromium)
         run: |
           npm install --no-save --no-package-lock --no-audit --no-fund playwright@1.62.1

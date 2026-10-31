@@ -433,6 +433,13 @@ async function switchCodexSystemAccount(id) {`,
   if (IS_AIGOODBRO_EMBEDDED) {
     const hostBridge = globalThis.__AIGOODBRO_TOKEN_MONITOR_BRIDGE__;
     if (!hostBridge) throw new Error('AiGoodBro desktop host bridge is missing');
+    const homeUsage = require('../../aigoodbro/homeUsage.cjs').createHomeUsageProvider({
+      getStats: () => electronPresentationStats(latestStats || localStats),
+      getHistory: () => getDashboardHistory(),
+      getContext: () => JSON.stringify([mode, hubModeGeneration, settings?.hubMode,
+        settings?.hubUrl, settings?.deviceId, settings?.historyEnabled,
+        settings?.modelAliases, settings?.modelAliasGrouping, settings?.clients])
+    });
     hostBridge.bind({
       showDashboard: async () => { await refreshAiGoodBroManagedCodexAccounts(); createDashboardWindow(); },
       showView: async (viewId) => { await refreshAiGoodBroManagedCodexAccounts(); openViewFromTray(viewId); },
@@ -443,6 +450,8 @@ async function switchCodexSystemAccount(id) {`,
         return stats?.aigoodbroUsagePending === true ? null : stats?.periods?.allTime;
       },
       getTokenRate: () => aigoodbroTokenRateSnapshot(),
+      getHomeUsage: (revision) => homeUsage(revision),
+      getHomeUsageScope: () => homeUsage.scopeKey(),
       quit: () => requestAppQuit()
     });
   }

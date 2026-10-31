@@ -1,0 +1,101 @@
+name: Build Windows release packages
+
+on:
+  pull_request:
+    paths:
+      - "windows/**"
+      - ".github/workflows/release-windows.yml"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Windows product version (must match the frozen Windows source)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    env:
+      # Keep the checkout stable when Tauri serializes Cargo.toml with LF.
+      # Command-scoped Git configuration affects only this temporary runner.
+      GIT_CONFIG_COUNT: "2"
+      GIT_CONFIG_KEY_0: core.autocrlf
+      GIT_CONFIG_VALUE_0: "false"
+      GIT_CONFIG_KEY_1: core.eol
+      GIT_CONFIG_VALUE_1: lf
+    steps:
+      - uses: actions/checkout@v4
+      - id: version
+        name: Verify the Windows product version
+        shell: pwsh
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          $tauri = Get-Content windows/apps/codexu-tauri/src-tauri/tauri.conf.json -Raw | ConvertFrom-Json
+          $web = Get-Content windows/apps/codexu-tauri/web/package.json -Raw | ConvertFrom-Json
+          $version = $tauri.version
+          if ($version -notmatch '^\d+\.\d+\.\d+$') { throw 'Use a three-part Windows product version.' }
+          if ($web.version -ne $version) { throw 'Windows source version values do not match.' }
+          if ($env:EVENT_NAME -eq 'workflow_dispatch' -and $env:INPUT_VERSION -ne $version) { throw 'Requested version differs from the frozen Windows source.' }
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "version=$version" -Encoding utf8
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: windows/apps/codexu-tauri/web/package-lock.json
+      - uses: dtolnay/rust-toolchain@1.97.1
+        with:
+          components: rustfmt
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cargo/bin/cargo-tauri.exe
+            windows/target
+          key: windows-release-msvc-1.97.1-v1-${{ hashFiles('windows/Cargo.lock') }}-${{ github.sha }}
+          restore-keys: windows-release-msvc-1.97.1-v1-${{ hashFiles('windows/Cargo.lock') }}-
+      - id: readiness
+        name: Validate and package Windows x86_64
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        run: .\windows\scripts\Invoke-ReleaseReadiness.ps1 -Version $env:RELEASE_VERSION -OutputDirectory dist/windows-readiness
+      - name: Record source differences after a failed readiness check
+        if: ${{ failure() && steps.readiness.outcome == 'failure' }}
+        shell: pwsh
+        run: |
+          $diagnostics = [ordered]@{
+            head = (& git rev-parse HEAD | Out-String).Trim()
+            status = @(& git status --porcelain=v1 --untracked-files=all)
+            changed_files = @(& git diff --name-only)
+            windows_eol = @(& git ls-files --eol -- windows)
+            manifest_diff = (& git diff -- windows/apps/codexu-tauri/src-tauri/Cargo.toml windows/Cargo.lock | Out-String)
+          }
+          New-Item -ItemType Directory -Force dist/windows-readiness | Out-Null
+          $diagnostics | ConvertTo-Json -Depth 4 | Set-Content dist/windows-readiness/source-diagnostics.json -Encoding utf8
+      - name: Verify two independent native cold starts and cleanup
+        shell: powershell
+        run: |
+          .\windows\scripts\tests\Test-NativeVisualCaptureCoverage.ps1
+          .\windows\scripts\tests\Test-NativeVisualCaptureCoverage.ps1
+      - name: Upload verified Windows installers and checksums
+        uses: actions/upload-artifact@v4
+        with:
+          name: aigoodbro-windows-${{ steps.version.outputs.version }}
+          path: dist/windows-readiness/packages/*
+          if-no-files-found: error
+      - name: Upload the readiness report
+        if: ${{ always() && steps.version.outcome == 'success' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: aigoodbro-windows-readiness-${{ steps.version.outputs.version }}
+          path: |
+            dist/windows-readiness/report.json
+            dist/windows-readiness/source-diagnostics.json
+          if-no-files-found: ignore

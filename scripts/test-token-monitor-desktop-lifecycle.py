@@ -9,6 +9,8 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 CONTROLLER = ROOT / "Sources/CodexUsageWidget/Services/TokenMonitorDesktopController.swift"
+MODELS = ROOT / "Sources/CodexUsageWidget/Domain/TokenMonitorEngineModels.swift"
+ENGINE = ROOT / "Sources/CodexUsageWidget/Services/TokenMonitorEngine.swift"
 FIXTURE = ROOT / "tests/TokenMonitorDesktopLifecycleFixture.swift"
 
 
@@ -18,7 +20,7 @@ def main() -> None:
     with tempfile.TemporaryDirectory(prefix="agb-desktop-lifecycle-") as directory:
         executable = Path(directory) / "desktop-lifecycle-test"
         subprocess.run(
-            ["swiftc", "-O", "-parse-as-library", str(CONTROLLER), str(FIXTURE), "-o", str(executable)],
+            ["swiftc", "-O", "-parse-as-library", str(MODELS), str(ENGINE), str(CONTROLLER), str(FIXTURE), "-o", str(executable)],
             cwd=ROOT,
             check=True,
         )

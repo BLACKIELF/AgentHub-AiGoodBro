@@ -35,6 +35,7 @@ struct HomeCodexAccountSummary: View {
     var resetCreditsFetchedAt: Date? = nil
     var resetCreditsReadSucceeded = false
     var onOpenResetAutoSettings: (() -> Void)? = nil
+    var onManualResetConfirmed: (CodexResetCreditController.ManualResetConfirmation) -> Void = { _ in }
 
     @Environment(\.widgetLanguage) private var language
     @Environment(\.colorScheme) private var colorScheme
@@ -280,7 +281,7 @@ struct HomeCodexAccountSummary: View {
             ResetCreditButton(
                 profile: profile, selectedProfileID: profile.id,
                 hubAccountAlias: hubAccountAlias, onConfirmedResult: onRefresh,
-                displayNumber: displayNumber, compact: true
+                onManualResetConfirmed: onManualResetConfirmed, displayNumber: displayNumber, compact: true
             )
             .fixedSize()
             .disabled(!allowsResetCreditAction)

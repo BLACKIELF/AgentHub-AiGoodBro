@@ -650,7 +650,7 @@ func TestNetworkWatchdogSingleFlightAndCancellation(t *testing.T) {
 }
 
 func TestNetworkProofRejectsUnknownFields(t *testing.T) {
-	dir, err := os.MkdirTemp("/tmp", "lp-proof-")
+	dir, err := os.MkdirTemp(os.TempDir(), "lp-proof-")
 	if err != nil {
 		t.Fatal(err)
 	}

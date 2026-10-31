@@ -4,6 +4,7 @@ import Darwin
 // Application boundaries only. Production session, Store and monitor methods are compiled.
 enum HubAccountTaskPhase { case maintenance, starting, running, cancelRequested, uncertain, awaitingAcceptance, succeeded, failed, cancelled, unavailable }
 struct HubAccountTaskStatus { let phase: HubAccountTaskPhase; let updatedAt: Date? }
+enum DispatchParticipationError: Error { case fileAccess }
 enum DispatchParticipationPaths {
     static func supportDirectory() -> URL { URL(fileURLWithPath: ProcessInfo.processInfo.environment["TERMINAL_FIXTURE_ROOT"]!) }
 }

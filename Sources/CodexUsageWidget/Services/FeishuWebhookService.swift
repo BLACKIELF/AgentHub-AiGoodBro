@@ -141,6 +141,7 @@ struct FeishuSwitchNotification {
     let sevenDayRemainingPercent: Double?
     let accountFacts: FeishuAccountFacts
     let resetCreditComparison: CodexResetCreditComparison?
+    let suppressResetCreditComparison: Bool
     let messageOptions: FeishuMessageOptions
     let occurredAt: Date
     let eventID: UUID
@@ -156,6 +157,7 @@ struct FeishuSwitchNotification {
         sevenDayRemainingPercent: Double?,
         accountFacts: FeishuAccountFacts? = nil,
         resetCreditComparison: CodexResetCreditComparison? = nil,
+        suppressResetCreditComparison: Bool = false,
         messageOptions: FeishuMessageOptions = .standard,
         occurredAt: Date = Date(),
         eventID: UUID = UUID()
@@ -199,6 +201,11 @@ struct FeishuSwitchNotification {
                 accountFacts?.availableResetCredits == resetCreditComparison.available
             else { throw FeishuWebhookError.invalidNotification }
         }
+        if suppressResetCreditComparison {
+            guard let resetCreditComparison, resetCreditComparison.delta == -1 else {
+                throw FeishuWebhookError.invalidNotification
+            }
+        }
         self.event = event
         self.sourceAccount = sourceAccount
         self.targetAccount = targetAccount
@@ -214,6 +221,7 @@ struct FeishuSwitchNotification {
                 sevenDayRemaining: sevenDayRemainingPercent
             )
         self.resetCreditComparison = resetCreditComparison
+        self.suppressResetCreditComparison = suppressResetCreditComparison
         self.messageOptions = messageOptions
         self.occurredAt = occurredAt
         self.eventID = eventID
@@ -297,6 +305,54 @@ final class FeishuKeychainInteraction {
         try setAllowed(previous)
         return try result.get()
     }
+}
+
+/// UI-owned, bounded silent retries. This never authorizes or sends a message.
+/// A generation fence also rejects work already dequeued when settings change.
+final class MessageCredentialRetry {
+    private var pending: DispatchWorkItem?
+    private var generation = UUID()
+    private var attempt = 0
+    private let schedule: (TimeInterval, DispatchWorkItem) -> Void
+
+    init(
+        schedule: @escaping (TimeInterval, DispatchWorkItem) -> Void = { delay, work in
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+        }
+    ) {
+        self.schedule = schedule
+    }
+
+    func cancel(resetDelay: Bool = true) {
+        generation = UUID()
+        pending?.cancel()
+        pending = nil
+        if resetDelay { attempt = 0 }
+    }
+
+    func retry(after error: FeishuWebhookError, _ operation: @escaping () -> Void) {
+        switch error {
+        case .keychainBusy, .keychainTimedOut, .keychainAuthorizationRequired: break
+        case .keychain(let status) where status == errSecNotAvailable: break
+        default:
+            cancel()
+            return
+        }
+        guard pending == nil else { return }
+        let delays: [TimeInterval] = [2, 10, 30, 60]
+        let delay = delays[attempt]
+        attempt = min(attempt + 1, delays.count - 1)
+        let token = generation
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.generation == token else { return }
+            self.pending = nil
+            operation()
+        }
+        pending = work
+        schedule(delay, work)
+    }
+
+    deinit { pending?.cancel() }
 }
 
 final class FeishuWebhookService {
@@ -505,7 +561,18 @@ final class FeishuWebhookService {
     ) {
         credentialLock.lock()
         let generation = credentialGeneration
+        let cached = authorizedWebhook
         credentialLock.unlock()
+        // An already authorized endpoint must not queue behind another channel's
+        // system dialog. Invalidation still fences the asynchronous completion.
+        if let cached {
+            DispatchQueue.main.async {
+                completion(
+                    self.isCurrentCredential(generation)
+                        ? .success(Credential(endpoint: cached, generation: generation)) : .failure(.cancelled))
+            }
+            return
+        }
         guard keychainCapacity.wait(timeout: .now()) == .success else {
             DispatchQueue.main.async {
                 completion(.failure(self.isCurrentCredential(generation) ? .keychainBusy : .cancelled))
@@ -536,7 +603,12 @@ final class FeishuWebhookService {
                         guard self.isCurrentCredential(generation) else { throw FeishuWebhookError.cancelled }
                         return try self.loadStoredWebhook()
                     }
-                guard self.isCurrentCredential(generation) else { throw FeishuWebhookError.cancelled }
+                guard !read.isFinished else { return }
+                self.credentialLock.lock()
+                let stillCurrent = self.credentialGeneration == generation
+                if stillCurrent { self.authorizedWebhook = endpoint }
+                self.credentialLock.unlock()
+                guard stillCurrent else { throw FeishuWebhookError.cancelled }
                 read.finish(.success(Credential(endpoint: endpoint, generation: generation)))
             } catch let error as FeishuWebhookError {
                 read.finish(.failure(error))
@@ -544,6 +616,52 @@ final class FeishuWebhookService {
                 read.finish(.failure(.invalidWebhook))
             }
         }
+    }
+
+    func sendManualReset(
+        _ confirmation: CodexManualResetNotice, sourceAccount: FeishuMaskedAccount,
+        messageOptions: FeishuMessageOptions, shouldSend: @escaping @MainActor () -> Bool,
+        completion: @escaping (Result<Void, FeishuWebhookError>) -> Void
+    ) {
+        let body: Data
+        do { body = try Self.manualResetPayload(confirmation, sourceAccount: sourceAccount, messageOptions: messageOptions) } catch {
+            completion(.failure(.invalidNotification))
+            return
+        }
+        readCredential(completion: { result in
+            Task { @MainActor in
+                guard shouldSend() else {
+                    completion(.failure(.cancelled))
+                    return
+                }
+                switch result {
+                case .success(let credential):
+                    self.send(
+                        body: body, to: credential.endpoint, credentialGeneration: credential.generation,
+                        admission: shouldSend, completion: completion)
+                case .failure(let error): completion(.failure(error))
+                }
+            }
+        })
+    }
+
+    static func manualResetPayload(
+        _ confirmation: CodexManualResetNotice, sourceAccount: FeishuMaskedAccount,
+        messageOptions: FeishuMessageOptions = .standard, language: WidgetLanguage = .storedOrAutomatic()
+    ) throws -> Data {
+        guard confirmation.isValid else { throw FeishuWebhookError.invalidNotification }
+        var lines = [
+            language.text("**操作**：手动使用 1 张重置卡", "**Action**: Manually used 1 reset card"),
+            language.text("**结果**：官方已确认重置成功", "**Result**: Official service confirmed the reset succeeded"),
+        ]
+        if messageOptions.includesAgentName { lines.append("**Agent**: Codex") }
+        if messageOptions.includesAccountLabel {
+            lines.append(language.text("**账号**：", "**Account**: ") + escapedLabel(sourceAccount.value))
+        }
+        lines.append(language.text("**确认时间**：", "**Confirmed**: ") + MessageNoticeFormat.fullDate(confirmation.confirmedAt))
+        return try resetCardData(
+            title: language.text("重置卡 · 手动使用成功", "Reset card · Manual use succeeded"),
+            template: "green", sections: [lines.joined(separator: "\n")])
     }
 
     func sendPublicResetAnnouncement(
@@ -776,6 +894,7 @@ final class FeishuWebhookService {
     private func send(
         body: Data, to endpoint: URL,
         credentialGeneration: UInt64,
+        admission: (@MainActor () -> Bool)? = nil,
         completion: @escaping (Result<Void, FeishuWebhookError>) -> Void
     ) {
         var request = URLRequest(
@@ -788,8 +907,9 @@ final class FeishuWebhookService {
         request.setValue("application/json; charset=utf-8", forHTTPHeaderField: "Content-Type")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
 
-        Task { [request] in
-            guard self.isCurrentCredential(credentialGeneration) else {
+        Task { @MainActor [request] in
+            // Recheck after task scheduling and before the first possible POST.
+            guard admission?() != false, self.isCurrentCredential(credentialGeneration) else {
                 completion(.failure(.cancelled))
                 return
             }
@@ -884,6 +1004,7 @@ final class FeishuWebhookService {
                 fiveHourRemainingPercent: notification.fiveHourRemainingPercent,
                 sevenDayRemainingPercent: notification.sevenDayRemainingPercent,
                 accountFacts: notification.accountFacts, resetCreditComparison: notification.resetCreditComparison,
+                suppressResetCreditComparison: notification.suppressResetCreditComparison,
                 messageOptions: notification.messageOptions, occurredAt: notification.occurredAt), language: language)
     }
 
@@ -934,6 +1055,7 @@ final class FeishuWebhookService {
                 fiveHourRemainingPercent: status.fiveHourRemainingPercent,
                 sevenDayRemainingPercent: status.sevenDayRemainingPercent,
                 accountFacts: facts, resetCreditComparison: status.resetCreditComparison,
+                suppressResetCreditComparison: false,
                 messageOptions: options, occurredAt: context?.observedAt ?? status.occurredAt), language: language)
     }
 
@@ -996,6 +1118,7 @@ final class FeishuWebhookService {
         let sevenDayRemainingPercent: Double?
         let accountFacts: FeishuAccountFacts
         let resetCreditComparison: CodexResetCreditComparison?
+        let suppressResetCreditComparison: Bool
         let messageOptions: FeishuMessageOptions
         let occurredAt: Date
     }
@@ -1122,7 +1245,11 @@ final class FeishuWebhookService {
                 lines += resetTimeLines(for: notification.accountFacts, language: language, timeZone: MessageNoticeFormat.beijingTimeZone)
             }
             if options.includesResetCredits {
-                if let comparison = notification.resetCreditComparison {
+                if notification.suppressResetCreditComparison {
+                    // A confirmed manual event already explains this single-card decrease.
+                    // Keep the current balance without misrepresenting a present baseline as missing.
+                    appendBalance(evidence: [checked])
+                } else if let comparison = notification.resetCreditComparison {
                     let evidence = MessageNoticeFormat.comparisonLines(comparison, language: language)
                     appendBalance(evidence[0], evidence: Array(evidence.dropFirst()))
                 } else {
@@ -1906,6 +2033,30 @@ enum FeishuWebhookServiceSelfTest {
             result?.pointee = Data(endpoint.utf8) as CFData
             return errSecSuccess
         }
+        // A successful silent startup read must be reused in memory. A later
+        // locked/busy Keychain must not turn a ready channel into a password flow.
+        var silentReads = 0
+        let silent = FeishuWebhookService(sessionConfiguration: configuration, keychainInteraction: interaction) { _, result in
+            silentReads += 1
+            guard silentReads == 1 else { return errSecInteractionNotAllowed }
+            result?.pointee = Data(endpoint.utf8) as CFData
+            return errSecSuccess
+        }
+        var silentProbe: Result<Bool, FeishuWebhookError>?
+        silent.hasStoredWebhook { silentProbe = $0 }
+        waitUntil { silentProbe != nil }
+        var silentSecondProbe: Result<Bool, FeishuWebhookError>?
+        silent.hasStoredWebhook { silentSecondProbe = $0 }
+        waitUntil { silentSecondProbe != nil }
+        if case .success(true)? = silentSecondProbe {} else { failures.append("successful silent read was not cached") }
+        expect(silentReads == 1, "ready connection unnecessarily reread Keychain")
+        silent.invalidateCredentialCache()
+        var silentInvalidated: Result<Bool, FeishuWebhookError>?
+        silent.hasStoredWebhook { silentInvalidated = $0 }
+        waitUntil { silentInvalidated != nil }
+        if case .failure(.keychainAuthorizationRequired)? = silentInvalidated {} else { failures.append("invalidated silent cache reused an old credential") }
+        // Keep the subsequent explicit-authorization policy assertions isolated.
+        policy.removeAll()
         let requestsBefore = FeishuWebhookTestProtocol.requestCount
         var probe: Result<Bool, FeishuWebhookError>?
         service.hasStoredWebhook { probe = $0 }

@@ -54,6 +54,8 @@ type startup struct {
 }
 type event struct {
 	Event            string `json:"event"`
+	RunID            string `json:"runID,omitempty"`
+	IdentityHash     string `json:"identityHash,omitempty"`
 	Port             int    `json:"port,omitempty"`
 	ProfileID        string `json:"profileID,omitempty"`
 	State            string `json:"state,omitempty"`
@@ -316,6 +318,7 @@ func scopeFrom(ctx context.Context) *requestScope {
 }
 
 type selector struct {
+	poolMu          sync.RWMutex
 	order           []string
 	desktopFallback bool
 	bridge          *bridge
@@ -338,15 +341,20 @@ func (s *selector) Pick(ctx context.Context, _, _ string, _ executor.Options, ca
 	if scope.hasUsedProfiles() {
 		scope.markAdmissionUncertain("")
 	}
-	// All accounts in s.order were registered at startup from the verified
-	// managed pool. The host returns the currently participating subset for
-	// this request; later membership changes cannot alter its retry order.
+	// All accounts were registered from the identity-verified managed pool.
+	// The host returns the currently participating subset for this request;
+	// later membership changes cannot alter its retry order.
 	scope.orderOnce.Do(func() {
 		scope.mu.Lock()
 		scope.orderQueried = true
 		scope.mu.Unlock()
-		reply, err := s.bridge.call(scope.ctx, "order", scope.id, s.order[0], "")
-		if err != nil || !reply.OK || !validAccountSubset(s.order, reply.Order) || !validOrderingGroups(reply.Order, reply.DeferredIDs, reply.LastResortIDs) {
+		registered := s.registeredIDs()
+		if len(registered) == 0 {
+			scope.orderErr = admissionError("no_accounts", "no registered accounts")
+			return
+		}
+		reply, err := s.bridge.call(scope.ctx, "order", scope.id, registered[0], "")
+		if err != nil || !reply.OK || !validAccountSubset(s.registeredIDs(), reply.Order) || !validOrderingGroups(reply.Order, reply.DeferredIDs, reply.LastResortIDs) {
 			scope.orderErr = &auth.Error{Code: "unavailable", Message: "account order unavailable", HTTPStatus: 503}
 			return
 		}
@@ -849,6 +857,7 @@ func (t *guardTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 
 type runtime struct {
 	closeOnce sync.Once
+	runID     string
 	modelMu   sync.Mutex
 	models    map[string]*registry.ModelInfo
 	selector  *selector // Retained so isolated runtime fixtures can shorten admission waits.
@@ -915,7 +924,7 @@ func newRuntime(s startup, e *events, testBaseURL string) (*runtime, error) {
 		imageBaseURL = testBaseURL
 	}
 	m.RegisterExecutor(&imageExecutor{CodexExecutor: provider.NewCodexExecutor(cfg), transports: transports, baseURL: imageBaseURL})
-	rt := &runtime{selector: sel, manager: m, ids: sel.order, cancel: cancel, store: store, transport: transport, models: make(map[string]*registry.ModelInfo)}
+	rt := &runtime{runID: s.RunID, selector: sel, manager: m, ids: sel.order, cancel: cancel, store: store, transport: transport, models: make(map[string]*registry.ModelInfo)}
 	rt.recovery = newQuotaRecovery(sel.order)
 	rt.recovery.manager = m
 	m.SetResultPolicy(rt.recovery)
@@ -1015,12 +1024,14 @@ func (rt *runtime) close() {
 			rt.network.close()
 		}
 		rt.requests.Wait()
-		for _, id := range rt.ids {
+		for _, id := range rt.registeredIDs() {
 			registry.GetGlobalRegistry().UnregisterClient(id)
 		}
 		if rt.transport != nil {
 			rt.transport.CloseIdleConnections()
 		}
+		rt.modelMu.Lock()
+		defer rt.modelMu.Unlock()
 		if rt.store != nil {
 			_ = rt.store.root.Close()
 		}
@@ -1035,7 +1046,7 @@ func main() {
 		os.Exit(runDesktopAdapter(connectionPath, os.Args[1:]))
 	}
 	if len(os.Args) == 2 && os.Args[1] == "--version" {
-		_, _ = io.WriteString(os.Stdout, "AiGoodBro Local Proxy 1022v1; CLIProxyAPI v8.0.38\n")
+		_, _ = io.WriteString(os.Stdout, "AiGoodBro Local Proxy 1026v1; CLIProxyAPI v8.0.38 + metadata patch 9e79552\n")
 		return
 	}
 	logrus.SetOutput(io.Discard)
@@ -1082,7 +1093,11 @@ func main() {
 			if json.Unmarshal(scanner.Bytes(), &v) != nil || v.Command == "stop" {
 				break
 			}
-			rt.network.command(v)
+			if v.Command == "register_account" {
+				rt.registerAccount(v, e)
+			} else {
+				rt.network.command(v)
+			}
 		}
 		stop <- struct{}{}
 	}()

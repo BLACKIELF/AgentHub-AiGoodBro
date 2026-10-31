@@ -68,6 +68,10 @@ struct MessageCredentialRecoveryFixture {
         return try MessageChannelCredential(secret: "synthetic-binding", target: "synthetic-owner", personalBinding: binding).validated(for: .personalWeChat)
     }
     @MainActor static func main() async throws {
+        if ProcessInfo.processInfo.environment["MESSAGE_CONTINUITY_ONLY"] == "1" {
+            if try await !automaticCredentialRecovery() { exit(1) }
+            return
+        }
         if ProcessInfo.processInfo.environment["MESSAGE_CHANNEL_CAPACITY_ONLY"] == "1" {
             if try await !backgroundReadCapacity() { exit(1) }
             return
@@ -163,6 +167,75 @@ struct MessageCredentialRecoveryFixture {
         if try await !backgroundReadCapacity() { exit(1) }
     }
 
+    /// Real controller startup failures must recover without an interactive read.
+    @MainActor static func automaticCredentialRecovery() async throws -> Bool {
+        var failures: [String] = []
+        var scheduled: [(TimeInterval, DispatchWorkItem)] = []
+        var calls = 0
+        let retry = MessageCredentialRetry { scheduled.append(($0, $1)) }
+        for delay in [2.0, 10.0, 30.0, 60.0, 60.0] {
+            retry.retry(after: .keychainBusy) { calls += 1 }
+            retry.retry(after: .keychainBusy) { calls += 100 }
+            precondition(scheduled.count == 1 && scheduled[0].0 == delay, "Retry was duplicated or exceeded its bounded delay")
+            scheduled.removeFirst().1.perform()
+        }
+        precondition(calls == 5)
+        retry.retry(after: .keychainTimedOut) { calls += 1 }
+        let abandoned = scheduled.removeFirst().1
+        retry.cancel()
+        abandoned.perform()
+        precondition(calls == 5, "Cancelled queued retry ran")
+        retry.retry(after: .keychainAuthorizationRequired) { calls += 1 }
+        precondition(scheduled.count == 1 && scheduled[0].0 == 2)
+        retry.cancel()
+        scheduled.removeAll()
+        retry.retry(after: .missingWebhook) { calls += 1 }
+        precondition(scheduled.isEmpty, "Missing credential retried forever")
+        for (index, issue) in [FeishuWebhookError.keychainBusy, .keychainTimedOut, .keychainAuthorizationRequired].enumerated() {
+            let suite = "message-continuity-\(UUID())"
+            let defaults = UserDefaults(suiteName: suite)!
+            let storage = Storage()
+            storage.readResult = .failure(issue)
+            let directory = FileManager.default.temporaryDirectory.appendingPathComponent(suite)
+            let controller = MessageChannelsController(
+                defaults: defaults, storage: storage,
+                transport: { NoNetwork() }, personalTransport: { NoNetwork() },
+                botLedger: WeChatBotEventLedger(directory: directory))
+            controller.start()
+            controller.setEnabled(true, for: .personalWeChat)
+            storage.readResult = .success(try credential(fresh: true))
+            let deadline = Date().addingTimeInterval(3)
+            while !controller.personalWeChatConnected, Date() < deadline { try await Task.sleep(nanoseconds: 10_000_000) }
+            if !controller.personalWeChatConnected || !controller.personalWeChatHasContext || storage.reads != 2 {
+                failures.append("startup failure \(index) did not silently restore the saved binding")
+            }
+            if storage.authorizations != 0 || storage.writes != 0 { failures.append("automatic recovery requested authorization or rewrote a binding") }
+            controller.stop()
+            defaults.removePersistentDomain(forName: suite)
+            try? FileManager.default.removeItem(at: directory)
+        }
+        let suite = "message-settings-continuity-\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let storage = Storage()
+        let controller = MessageChannelsController(
+            defaults: defaults, storage: storage,
+            transport: { NoNetwork() }, personalTransport: { NoNetwork() })
+        controller.start()
+        controller.setEnabled(true, for: .personalWeChat)
+        controller.openPersonalWeChatSettings()
+        if storage.authorizations != 0 { failures.append("opening settings requested a password dialog") }
+        if storage.pending != nil { await storage.finish(.failure(.keychainAuthorizationRequired)) }
+        controller.setEnabled(false, for: .personalWeChat)
+        let readsBefore = storage.reads
+        try await Task.sleep(nanoseconds: 2_200_000_000)
+        if storage.reads != readsBefore { failures.append("disabled channel retried a credential read") }
+        controller.stop()
+        failures.forEach { print("FAIL message continuity: \($0)") }
+        if failures.isEmpty { print("PASS message continuity: busy/timeout/locked startup restores silently, settings do not authorize, disable cancels retry") }
+        return failures.isEmpty
+    }
+
     @MainActor static func backgroundReadCapacity() async throws -> Bool {
         let firstEntered = DispatchSemaphore(value: 0)
         let releaseFirst = DispatchSemaphore(value: 0)
@@ -175,9 +248,10 @@ struct MessageCredentialRecoveryFixture {
             .weChat: MessageChannelCredential(secret: "01234567-89ab-cdef-0123-456789abcdef", target: nil),
             .personalWeChat: try credential(fresh: true),
         ]
-        let encoded = try Dictionary(uniqueKeysWithValues: values.map { kind, value in
-            ("com.blackielf.codex-account-manager-next.message-channel." + kind.rawValue, try JSONEncoder().encode(value))
-        })
+        let encoded = try Dictionary(
+            uniqueKeysWithValues: values.map { kind, value in
+                ("com.blackielf.codex-account-manager-next.message-channel." + kind.rawValue, try JSONEncoder().encode(value))
+            })
         let interaction = FeishuKeychainInteraction(getAllowed: { allowed }, setAllowed: { allowed = $0 })
         let store = MessageChannelKeychainStore(interaction: interaction) { query, pointer in
             reads += 1
@@ -199,7 +273,11 @@ struct MessageCredentialRecoveryFixture {
                 continuation.resume(returning: firstEntered.wait(timeout: .now() + 3) == .success)
             }
         }
-        guard firstBlocked else { releaseFirst.signal(); print("FAIL background read capacity: first synthetic reader did not enter"); return false }
+        guard firstBlocked else {
+            releaseFirst.signal()
+            print("FAIL background read capacity: first synthetic reader did not enter")
+            return false
+        }
         store.load(.weChat) { results[.weChat] = $0 }
         store.load(.personalWeChat) { results[.personalWeChat] = $0 }
         var overflow: Result<MessageChannelCredential?, FeishuWebhookError>?
@@ -211,7 +289,8 @@ struct MessageCredentialRecoveryFixture {
         while results.count < MessageChannelKind.allCases.count, Date() < deadline { try? await Task.sleep(nanoseconds: 1_000_000) }
         var failures: [String] = []
         for kind in MessageChannelKind.allCases {
-            if case .success(let value)? = results[kind], value?.secret == values[kind]?.secret {} else {
+            if case .success(let value)? = results[kind], value?.secret == values[kind]?.secret {
+            } else {
                 let detail: String
                 if case .failure(.keychainBusy)? = results[kind] { detail = "keychainBusy" } else { detail = "missing or failed result" }
                 failures.append("\(kind.rawValue) startup read was rejected: \(detail)")
@@ -223,7 +302,9 @@ struct MessageCredentialRecoveryFixture {
         }
         failures.forEach { print("FAIL background read capacity: \($0)") }
         if failures.isEmpty {
-            print("PASS background read capacity: all 3 channel credentials restored with first reader gated; fourth refused; 3 synthetic Security reads, 0 interactive reads, no authorization or writes")
+            print(
+                "PASS background read capacity: all 3 channel credentials restored with first reader gated; fourth refused; 3 synthetic Security reads, 0 interactive reads, no authorization or writes"
+            )
         }
         return failures.isEmpty
     }
@@ -262,12 +343,15 @@ struct MessageCredentialRecoveryFixture {
             private let lock = NSLock()
             private var pending: [(URLRequest, CheckedContinuation<(Data, HTTPURLResponse), Error>)] = []
             func hasPending(_ path: String) -> Bool {
-                lock.lock(); defer { lock.unlock() }
+                lock.lock()
+                defer { lock.unlock() }
                 return pending.contains { $0.0.url?.path == path }
             }
             func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
                 try await withCheckedThrowingContinuation { continuation in
-                    lock.lock(); pending.append((request, continuation)); lock.unlock()
+                    lock.lock()
+                    pending.append((request, continuation))
+                    lock.unlock()
                 }
             }
             func finish(_ path: String? = nil, status: Int = 200, body: String = "{}", error: Error? = nil) {
@@ -276,7 +360,9 @@ struct MessageCredentialRecoveryFixture {
                 pending.removeAll { path == nil || $0.0.url?.path == path }
                 lock.unlock()
                 for (request, callback) in callbacks {
-                    if let error { callback.resume(throwing: error) } else {
+                    if let error {
+                        callback.resume(throwing: error)
+                    } else {
                         callback.resume(returning: (Data(body.utf8), HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil)!))
                     }
                 }
@@ -298,12 +384,14 @@ struct MessageCredentialRecoveryFixture {
             let defaults = UserDefaults(suiteName: suite)!
             defaults.set(true, forKey: "CodexManagerNext.messageChannel.\(kind.rawValue).enabled")
             let directory = FileManager.default.temporaryDirectory.appendingPathComponent(suite)
-            let storage = DeferredStorage(), transport = PollTransport()
+            let storage = DeferredStorage()
+            let transport = PollTransport()
             let controller = MessageChannelsController(
                 defaults: defaults, storage: storage, transport: { transport }, personalTransport: { transport },
                 botLedger: WeChatBotEventLedger(directory: directory))
             defer {
-                controller.stop(); transport.finish(error: CancellationError())
+                controller.stop()
+                transport.finish(error: CancellationError())
                 defaults.removePersistentDomain(forName: suite)
                 try? FileManager.default.removeItem(at: directory)
             }
@@ -317,7 +405,11 @@ struct MessageCredentialRecoveryFixture {
             }
             switch scenario {
             case "control", "options", "authorization-required":
-                if scenario != "control" { editOptions(); editOptions(); editOptions() }
+                if scenario != "control" {
+                    editOptions()
+                    editOptions()
+                    editOptions()
+                }
                 storage.resolve(scenario == "authorization-required" ? .failure(.keychainAuthorizationRequired) : .success(value))
                 if scenario == "authorization-required" {
                     expect(controller.personalWeChatNeedsAuthorization && !controller.personalWeChatConnected, "option edit lost the background authorization-required result")
@@ -344,7 +436,9 @@ struct MessageCredentialRecoveryFixture {
                 }
                 editOptions()
                 storage.resolve(.success(value))
-                expect(!controller.personalWeChatConnected && !transport.hasPending(poll) && controller.publicResetRevision(kind) == nil, "\(scenario): stale background load restored credentials")
+                expect(
+                    !controller.personalWeChatConnected && !transport.hasPending(poll) && controller.publicResetRevision(kind) == nil,
+                    "\(scenario): stale background load restored credentials")
                 if scenario == "restart" || scenario == "disable-enable" {
                     precondition(storage.loads.count == 1 && storage.reads == 2)
                     storage.resolve(.success(value))
@@ -366,7 +460,8 @@ struct MessageCredentialRecoveryFixture {
                 if scenario == "cancel-restore" { controller.cancelPersonalWeChatLogin(operationID: action) }
                 await storage.finishAuthorization(.success(value))
                 if scenario == "cancel-restore" {
-                    expect(!controller.personalWeChatConnected && !controller.personalWeChatHasContext && !controller.actionInFlight, "cancelled explicit authorization reconnected")
+                    expect(
+                        !controller.personalWeChatConnected && !controller.personalWeChatHasContext && !controller.actionInFlight, "cancelled explicit authorization reconnected")
                 } else {
                     let started = await waitUntil { transport.hasPending(poll) }
                     expect(controller.personalWeChatConnected && started && !controller.actionInFlight, "valid explicit authorization did not connect")
@@ -403,7 +498,9 @@ struct MessageCredentialRecoveryFixture {
         }
         failures.forEach { print("FAIL background credential lifecycle: \($0)") }
         if failures.isEmpty {
-            print("PASS background credential lifecycle: WeCom/personal options keep one pending load; disable/stop/restart/rebind/authorization reject stale loads; content changes still invalidate delivery; transport retry and three-401 recovery gates preserved")
+            print(
+                "PASS background credential lifecycle: WeCom/personal options keep one pending load; disable/stop/restart/rebind/authorization reject stale loads; content changes still invalidate delivery; transport retry and three-401 recovery gates preserved"
+            )
         }
         return failures.isEmpty
     }
@@ -507,6 +604,8 @@ struct MessageCredentialRecoveryFixture {
         precondition(storage.authorizations == 0)
         controller.openPersonalWeChatSettings()
         controller.openPersonalWeChatSettings()
+        precondition(storage.authorizations == 0 && !controller.actionInFlight, "Opening settings must not authorize")
+        controller.restorePersonalWeChatConnection()
         precondition(storage.authorizations == 1 && controller.actionInFlight)
         await storage.finish(.success(try credential(fresh: true)))
         controller.openPersonalWeChatSettings()
@@ -553,7 +652,7 @@ struct MessageCredentialRecoveryFixture {
         precondition(results == [false] && !controller.actionInFlight && controller.personalWeChatPhase == .disabled)
         precondition(storage.writes == 0)
         print(
-            "PASS settings entry and text delivery: prompt once on open, no background/redundant prompts, exact paired target/body, UTF-8 limit, duplicate/cancel guards, no credential writes"
+            "PASS settings entry and text delivery: no prompt on open, explicit restore only, exact paired target/body, UTF-8 limit, duplicate/cancel guards, no credential writes"
         )
     }
 
@@ -700,10 +799,12 @@ struct MessageCredentialRecoveryFixture {
         func refresh(_ token: String, at date: Date, cursor: String) throws -> String {
             let body: [String: Any] = [
                 "get_updates_buf": cursor,
-                "msgs": [[
-                    "message_type": 1, "from_user_id": initial.target!, "to_user_id": initial.personalBinding!.botID,
-                    "context_token": token, "create_time_ms": Int(date.timeIntervalSince1970 * 1000),
-                ]],
+                "msgs": [
+                    [
+                        "message_type": 1, "from_user_id": initial.target!, "to_user_id": initial.personalBinding!.botID,
+                        "context_token": token, "create_time_ms": Int(date.timeIntervalSince1970 * 1000),
+                    ]
+                ],
             ]
             return String(data: try JSONSerialization.data(withJSONObject: body), encoding: .utf8)!
         }
@@ -743,7 +844,8 @@ struct MessageCredentialRecoveryFixture {
         await waitUntil { storage.saved.contains { $0.personalBinding?.updatesCursor == "refresh-held-reset" } }
         expect(controller.publicResetRevision(.personalWeChat) == resetRevision, "same binding context timestamp refresh replaced the public-reset revision")
         transport.finish("/ilink/bot/sendmessage")
-        if case .success(.accepted) = await reset.value {} else {
+        if case .success(.accepted) = await reset.value {
+        } else {
             failures.append("public reset lost its API acknowledgement after context refresh")
         }
 
@@ -755,7 +857,8 @@ struct MessageCredentialRecoveryFixture {
         controller.setEnabled(false, for: .personalWeChat)
         transport.finish("/ilink/bot/sendmessage")
         expect(controller.publicResetRevision(.personalWeChat) == nil, "disabled personal channel retained public-reset admission")
-        if case .failure(.cancelled) = await cancelled.value {} else {
+        if case .failure(.cancelled) = await cancelled.value {
+        } else {
             failures.append("disabled personal channel accepted a stale public-reset acknowledgement")
         }
         transport.finish()
@@ -774,7 +877,8 @@ struct MessageCredentialRecoveryFixture {
         let retainedRevision = controller.publicResetRevision(.personalWeChat)!
         transport.finish("/ilink/bot/getupdates", body: #"{"msgs":[],"get_updates_buf":"retained-cursor-only"}"#)
         await waitUntil { storage.saved.contains { $0.personalBinding?.updatesCursor == "retained-cursor-only" } }
-        expect(controller.personalWeChatHasContext && controller.personalWeChatPhase == .ready,
+        expect(
+            controller.personalWeChatHasContext && controller.personalWeChatPhase == .ready,
             "a cursor-only poll locally expired the restored context")
         expect(controller.publicResetRevision(.personalWeChat) == retainedRevision, "restored context lost admission without a server rejection")
         let retainedReset = Task { @MainActor in
@@ -782,22 +886,27 @@ struct MessageCredentialRecoveryFixture {
         }
         await waitUntil { transport.hasPending("/ilink/bot/sendmessage") }
         transport.finish("/ilink/bot/sendmessage")
-        if case .success(.accepted) = await retainedReset.value {} else {
+        if case .success(.accepted) = await retainedReset.value {
+        } else {
             failures.append("restored context older than 24 hours blocked a tracked notification")
         }
         await waitUntil { transport.hasPending("/ilink/bot/getupdates") }
         transport.finish("/ilink/bot/getupdates", body: #"{"ret":-14}"#)
         await waitUntil { !controller.personalWeChatConnected }
-        expect(!controller.personalWeChatHasContext && controller.personalWeChatPhase == .needsSetup
-            && controller.publicResetRevision(.personalWeChat) == nil, "explicit server session expiry retained admission")
+        expect(
+            !controller.personalWeChatHasContext && controller.personalWeChatPhase == .needsSetup
+                && controller.publicResetRevision(.personalWeChat) == nil, "explicit server session expiry retained admission")
         controller.sendTest(.personalWeChat)
         expect(!transport.hasPending("/ilink/bot/sendmessage"), "server-expired context still sent a notification")
-        if case .failure(.cancelled) = await controller.sendPublicReset(event, to: .personalWeChat, revision: retainedRevision, shouldSend: { true }) {} else {
+        if case .failure(.cancelled) = await controller.sendPublicReset(event, to: .personalWeChat, revision: retainedRevision, shouldSend: { true }) {
+        } else {
             failures.append("server-expired context still sent a public reset")
         }
         failures.forEach { print("FAIL context refresh: \($0)") }
         if failures.isEmpty {
-            print("PASS context refresh: held notification/public reset keep revision and acceptance; restored context survives 24h and cursor-only polls; disable/server expiry still block delivery; synthetic background storage only")
+            print(
+                "PASS context refresh: held notification/public reset keep revision and acceptance; restored context survives 24h and cursor-only polls; disable/server expiry still block delivery; synthetic background storage only"
+            )
         }
         return failures.isEmpty
     }

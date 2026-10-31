@@ -503,7 +503,16 @@ struct LocalCLIWorkspaceView: View {
         isStale: Bool,
         layout: AccountWorkspaceLayout
     ) -> some View {
-        if isStale, result != nil {
+        if result?.serverRetryAt != nil,
+            let explanation = LocalCLIAccountPresentation.quotaExplanation(kind: .claudeCode, result: result, language: language)
+        {
+            Text((isStale ? language.text("上次快照 · ", "Previous snapshot · ") : "") + explanation)
+                .font(.caption2).foregroundStyle(WorkspaceStatusForeground.warning)
+                .lineLimit(layout == .cards ? 1 : nil)
+                .minimumScaleFactor(layout == .cards ? 0.8 : 1)
+                .frame(height: layout == .cards ? 14 : nil, alignment: .leading)
+                .help(explanation)
+        } else if isStale, result != nil {
             Text(language.text("上次快照 · 请刷新确认", "Previous snapshot · Refresh to confirm"))
                 .font(.caption2).foregroundStyle(WorkspaceStatusForeground.warning)
                 .lineLimit(layout == .cards ? 1 : nil)

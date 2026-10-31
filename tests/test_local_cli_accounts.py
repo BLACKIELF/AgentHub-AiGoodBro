@@ -24,6 +24,7 @@ class LocalCLIAccountTests(unittest.TestCase):
             ROOT / "Sources/CodexUsageWidget/Services/DispatchParticipationSync.swift",
             ROOT / "Sources/CodexUsageWidget/Services/GrokResetStatusObservationReader.swift",
             ROOT / "Sources/CodexUsageWidget/Services/LocalCLIAccountStore.swift",
+            ROOT / "Sources/CodexUsageWidget/UI/LocalCLIAccountPresentation.swift",
             ROOT / "tests/LocalCLIAccountFixture.swift",
         ]
         with tempfile.TemporaryDirectory(prefix="local-cli-accounts-") as directory:

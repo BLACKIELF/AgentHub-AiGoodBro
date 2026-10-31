@@ -19,6 +19,7 @@ class RequestScope {
     this.timedOut = false;
     this.cancelled = false;
     this.timer = null;
+    this.cleanup = null;
     this.startedAt = Date.now();
   }
 
@@ -38,7 +39,7 @@ class RequestScope {
   abort(error) {
     if (this.signal.aborted) return;
     this.controller.abort(error instanceof Error ? error : new BridgeError(CODES.CANCELLED));
-    descendants.killAll();
+    this.cleanup = descendants.killAll();
   }
 
   cancel() {
@@ -56,6 +57,10 @@ class RequestScope {
 
   elapsedMs() {
     return Date.now() - this.startedAt;
+  }
+
+  waitForCleanup() {
+    return this.cleanup || Promise.resolve(true);
   }
 
   dispose() {

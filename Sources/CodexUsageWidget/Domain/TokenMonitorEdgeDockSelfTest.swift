@@ -486,6 +486,35 @@ enum TokenMonitorEdgeDockSelfTest {
                 && firstSessions[1].isAvailable && firstSessions[2].isAvailable
                 && firstSessions[2].headlineValueLabel == "5 credits",
             "Grok and Kimi keep account and quota cards without session detail monitoring")
+        func timestampSession(lastUsedAt: String?, startedAt: String?) -> TokenMonitorJSON {
+            var fields: [String: TokenMonitorJSON] = ["client": .string("codex"), "totalTokens": .number(10), "sessionKind": .string("")]
+            fields["lastUsedAt"] = lastUsedAt.map(TokenMonitorJSON.string)
+            fields["startedAt"] = startedAt.map(TokenMonitorJSON.string)
+            return .object(fields)
+        }
+        var timestampResult = sessionResult
+        let olderTimestamp = ISO8601DateFormatter().string(from: older)
+        let newerTimestamp = ISO8601DateFormatter().string(from: newer)
+        timestampResult.payload = sessionPayload(
+            [
+                "empty-last": timestampSession(lastUsedAt: "", startedAt: olderTimestamp),
+                "invalid-last": timestampSession(lastUsedAt: "invalid", startedAt: olderTimestamp),
+                "missing-last": timestampSession(lastUsedAt: nil, startedAt: olderTimestamp),
+                "valid-last": timestampSession(lastUsedAt: newerTimestamp, startedAt: olderTimestamp),
+                "invalid-both": timestampSession(lastUsedAt: "invalid", startedAt: ""),
+            ], today: [:])
+        let timestampCells = sessionCells(timestampResult)
+        expect(
+            Set(timestampCells[3].sessions.map(\.id)) == ["empty-last", "invalid-last", "missing-last", "valid-last"],
+            "optional empty or invalid last-used metadata falls back to a valid start; two invalid dates omit the row")
+        expect(
+            timestampCells[3].sessions.first(where: { $0.id == "valid-last" })?.lastUsedAt == newer
+                && timestampCells[3].sessions.filter { $0.id != "valid-last" }.allSatisfy { $0.lastUsedAt == older },
+            "a valid last-used timestamp retains precedence over the start time")
+        expect(
+            Set(timestampCells[0].sessions.map(\.id)).isSubset(of: Set(timestampCells[3].sessions.map(\.id)))
+                && timestampCells[0].sessions.count == 3,
+            "Codex detail and generic session history share the timestamp fallback")
         sessionResult.payload = sessionPayload(
             ["c1": session("grok", at: older), "c2": session("codex", at: newer, ended: true)],
             today: ["c3": session("codex", at: now.addingTimeInterval(-20))]

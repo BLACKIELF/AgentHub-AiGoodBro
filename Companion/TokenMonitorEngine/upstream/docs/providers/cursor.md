@@ -35,6 +35,8 @@ Every enabled saved account is probed independently. Stable identity prefers the
 
 The dashboard mapping preserves separate official model pools, legacy request plans, enterprise/team pooled usage, optional Grok Bot allowance and on-demand spend. Never synthesize an overall total by summing model pools. Grok Bot is best effort and must not fail the main account row. A zero uncapped spend is hidden; positive uncapped spend remains visible.
 
+Plan-info is authoritative; sand is its fallback. If neither produces a valid response, the plan stays unknown and legacy seat windows are not displayed, even when the summary reports zero. Confirmed independent team-pool and on-demand data remain available, while missing amounts are not treated as zero. A unified included window requires a confirmed weekly or monthly period; a different period's value is not substituted. A successful proto3 response with omitted false flags remains a valid legacy identification. See the [limits collector contract](../architecture.md#limits-collector) for cached-window invalidation and partial freshness.
+
 Account-scoped enable/disable affects limits collection only. The active tokscale account and self-synced history are managed by the explicit Cursor lifecycle operations.
 
 ## Verification

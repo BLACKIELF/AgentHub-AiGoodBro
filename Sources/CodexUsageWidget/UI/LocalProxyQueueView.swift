@@ -427,15 +427,45 @@ struct LocalProxyQueueView: View {
     }
 
     private var proxyToolbar: some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(spacing: 12) {
-                runActions
-                Spacer(minLength: 0)
-                if model.endpoint != nil { connectionActions }
+        VStack(alignment: .leading, spacing: 6) {
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 12) {
+                    runActions
+                    Spacer(minLength: 0)
+                    if model.endpoint != nil { connectionActions }
+                }
+                VStack(alignment: .leading, spacing: 8) {
+                    runActions
+                    if model.endpoint != nil { connectionActions }
+                }
             }
-            VStack(alignment: .leading, spacing: 8) {
-                runActions
-                if model.endpoint != nil { connectionActions }
+            Toggle(
+                language.text("故障自动恢复", "Recover proxy failures automatically"),
+                isOn: Binding(
+                    get: { model.automaticRecoveryEnabled },
+                    set: { _ = model.setAutomaticRecovery($0) }
+                )
+            )
+            .toggleStyle(.checkbox).font(.caption)
+            .disabled(!model.canSetAutomaticRecovery)
+            .accessibilityIdentifier("next.local-proxy.automatic-recovery")
+            .help(
+                language.text(
+                    "开启后，内部故障停止且安全清理完成时自动重开反代。10 分钟内最多 3 次，沿用固定端口与持久密钥；手动停止会取消恢复。",
+                    "After an internal failure, restart only after safe cleanup. Up to 3 attempts in 10 minutes using the same fixed port and persistent key. Manual stop cancels recovery."
+                ))
+            if model.automaticRecoveryEnabled && (model.listenPort == 0 || model.clientKeyMode != .persistent) {
+                Text(
+                    language.text(
+                        "请在连接详情中使用固定端口和持久密钥，自动恢复才能保持桌面连接。",
+                        "Use a fixed port and persistent key in Connection details to preserve Desktop connectivity during recovery.")
+                )
+                .font(.caption).foregroundStyle(WorkspaceStatusForeground.warning)
+            }
+            if let message = model.automaticRecoveryMessage {
+                Text(message).font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("next.local-proxy.recovery-status")
             }
         }
         .padding(8)
@@ -461,12 +491,12 @@ struct LocalProxyQueueView: View {
             DisclosureGroup(isExpanded: detailExpansion(.quota)) {
                 VStack(alignment: .leading, spacing: 8) {
                     creditSettings
-                    LocalProxyPlusLimitEditor(
-                        language: language, accountCount: model.plusPolicyTargetCount,
-                        savedLimit: model.uniformPlusFiveHourUsedLimit,
-                        enabled: model.canEditPolicy, canApply: model.canApplyPlusFiveHourUsedLimit,
-                        message: model.plusPolicyMessage,
-                        save: { model.setPlusFiveHourUsedLimit($0) })
+                    LocalProxyQuotaLimitEditor(
+                        language: language, accountCount: model.quotaPolicyTargetCount,
+                        savedLimit: model.uniformQuotaRemainingReserve,
+                        enabled: model.canEditPolicy, canApply: model.canApplyQuotaRemainingReserve,
+                        message: model.quotaPolicyMessage,
+                        save: { model.setQuotaRemainingReserve($0) })
                 }
                 .padding(8)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -510,7 +540,7 @@ struct LocalProxyQueueView: View {
 
     private var runActions: some View {
         HStack(spacing: 8) {
-            if model.phase == .starting || model.phase == .stopping {
+            if model.phase == .starting || model.phase == .stopping || model.isAutomaticallyRecovering {
                 ProgressView().controlSize(.small)
             }
             Button(language.text("开启反代", "Start proxy")) {
@@ -523,7 +553,7 @@ struct LocalProxyQueueView: View {
             Button(language.text("停止反代", "Stop proxy")) {
                 if model.requiresStopConfirmation { confirmingStop = true } else { disableProxy() }
             }
-            .disabled((!model.canStop && !model.isEnabled) || model.phase == .stopping)
+            .disabled((!model.canStop && !model.isEnabled) || (model.phase == .stopping && !model.isAutomaticallyRecovering))
             .accessibilityIdentifier("next.local-proxy.stop")
         }
         .fixedSize()
@@ -659,7 +689,28 @@ struct LocalProxyQueueView: View {
                     Spacer(minLength: 0)
                 }
             }
-            if model.hasStaleRunningBinding(for: row.id) {
+            if row.requiresRunRegistration {
+                HStack {
+                    if model.hotActivationIDs.contains(row.id) {
+                        ProgressView().controlSize(.small)
+                        Text(language.text("正在热激活…", "Activating…"))
+                        Button(language.text("取消", "Cancel")) { model.cancelHotActivation(id: row.id) }
+                    } else {
+                        Button(language.text("热激活并参与", "Activate and participate")) {
+                            Task { await model.hotActivateAccount(id: row.id) }
+                        }
+                        .disabled(!model.canHotActivateAccount(id: row.id))
+                        .accessibilityIdentifier("next.local-proxy.activate-\(row.id)")
+                        Text(language.text("核验后加入新请求，已有请求继续。", "Join new requests after verification; existing requests continue."))
+                    }
+                }
+                .font(.caption)
+                .accessibilityIdentifier("next.local-proxy.registration-\(row.id)")
+                if let failure = model.hotActivationErrors[row.id] {
+                    Text(model.hotActivationFailureMessage(failure))
+                        .font(.caption).foregroundStyle(WorkspaceStatusForeground.warning)
+                }
+            } else if model.hasStaleRunningBinding(for: row.id) {
                 Text(
                     language.text(
                         "此账号登录身份与反代启动时不同；关闭反代后可保存规则，重新开启后用于新请求。",
@@ -696,7 +747,8 @@ struct LocalProxyQueueView: View {
             ResetCreditButton(
                 profile: target.profile, selectedProfileID: target.selectedProfileID,
                 hubAccountAlias: target.hubAccountAlias,
-                onConfirmedResult: { model.refreshAfterResetCredit(target) }, displayNumber: row.accountNumber,
+                onConfirmedResult: { model.refreshAfterResetCredit(target) },
+                onManualResetConfirmed: { model.recordManualResetConfirmed($0) }, displayNumber: row.accountNumber,
                 prominent: true
             ).accessibilityIdentifier("next.local-proxy.reset-card-\(row.id)")
         } else {
@@ -710,6 +762,7 @@ struct LocalProxyQueueView: View {
     }
 
     private var phaseTitle: String {
+        if model.isAutomaticallyRecovering { return language.text("正在自动恢复", "Recovering automatically") }
         switch model.phase {
         case .stopped: return language.text("已停止", "Stopped")
         case .starting: return language.text("正在启动", "Starting")
@@ -720,6 +773,7 @@ struct LocalProxyQueueView: View {
     }
 
     private var phaseColor: Color {
+        if model.isAutomaticallyRecovering { return FixedVisualPalette.statusWarning }
         switch model.phase {
         case .running: return FixedVisualPalette.statusSuccess
         case .starting, .stopping: return FixedVisualPalette.statusWarning
@@ -730,6 +784,7 @@ struct LocalProxyQueueView: View {
 
     private func rowStatusColor(_ row: LocalProxyQueueRow) -> Color {
         if !row.isEnabled { return FixedVisualPalette.statusNeutral }
+        if row.requiresRunRegistration { return FixedVisualPalette.statusWarning }
         if row.state == "login_expired" { return FixedVisualPalette.statusDanger }
         if row.state == "quota" || row.state == "usage_limit" { return FixedVisualPalette.statusWarning }
         if let deadline = row.cooldownUntil, deadline > Date() { return FixedVisualPalette.statusWarning }
@@ -792,6 +847,7 @@ struct LocalProxyQueueView: View {
         if row.isCurrent && !row.isEnabled { return language.text("完成后退出", "Finishing request") }
         if row.isCurrent { return language.text("快照有请求", "Active in snapshot") }
         if !row.isEnabled { return language.text("未参与", "Not participating") }
+        if row.requiresRunRegistration { return language.text("待加入本次反代", "Pending proxy registration") }
         if let deadline = row.cooldownUntil, deadline > Date() { return language.text("冷却中", "Cooling down") }
         switch row.state {
         case "current": return language.text("快照有请求", "Active in snapshot")
@@ -808,7 +864,7 @@ struct LocalProxyQueueView: View {
     }
 }
 
-private struct LocalProxyPlusLimitEditor: View {
+private struct LocalProxyQuotaLimitEditor: View {
     let language: WidgetLanguage
     let accountCount: Int
     let savedLimit: Double?
@@ -841,25 +897,26 @@ private struct LocalProxyPlusLimitEditor: View {
             }
             Text(
                 language.text(
-                    "当前 \(accountCount) 个 Plus（含未参与）；Pro 等其他及未知套餐规则不变。",
-                    "\(accountCount) current Plus accounts, including non-participants; Pro, other and unknown plans remain unchanged.")
+                    "当前 \(accountCount) 个 Plus / Pro（含未参与）；Plus 设 5 小时，Pro 各档（5x / 10x / 25x 等）设 7 天。其他及未知套餐不变。",
+                    "\(accountCount) current Plus / Pro accounts, including non-participants: Plus uses 5h; all Pro tiers (5x / 10x / 25x and others) use 7d. Other and unknown plans remain unchanged."
+                )
             )
             .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             Text(
                 language.text(
-                    "仅设 5 小时已用上限，仍可单独调整；低于 100% 达限停新请求，100% 保留原点数接续规则。",
-                    "Set only the 5h used limit; individual overrides remain. Below 100%, stop new requests at the limit; at 100%, existing credit fallback remains.")
+                    "统一设置各自窗口的剩余额度；例如 20% 表示剩余到 20% 时停新请求。0% 不额外保留，100% 不接新请求。",
+                    "Set the remaining quota for each account’s window; for example, 20% stops new requests at 20% remaining. 0% adds no reserve; 100% admits no new requests.")
             )
             .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             if savedLimit == nil && !dirty {
-                Text(language.text("没有已核实的 Plus 账号，或 Plus 上限不同。", "No verified Plus accounts, or Plus limits differ.")).foregroundStyle(.secondary)
+                Text(language.text("没有已核实的 Plus / Pro 账号，或各账号剩余额度设置不同。", "No verified Plus / Pro accounts, or their remaining-quota settings differ.")).foregroundStyle(.secondary)
             }
             if dirty && value == nil {
-                Text(language.text("请输入 0–100 的已用百分比，可用小数。", "Enter a used percentage from 0 to 100; decimals are allowed."))
+                Text(language.text("请输入 0–100 的剩余额度百分比，可用小数。", "Enter a remaining-quota percentage from 0 to 100; decimals are allowed."))
                     .foregroundStyle(WorkspaceStatusForeground.warning)
             }
             if enabled && accountCount > 0 && !canApply {
-                Text(language.text("有 Plus 账号身份或运行绑定待核实，全部规则暂不能修改。", "A Plus account identity or running binding needs verification; no rules can be changed."))
+                Text(language.text("有目标账号身份或运行绑定待核实，全部规则暂不能修改。", "A target account identity or running binding needs verification; no rules can be changed."))
                     .foregroundStyle(WorkspaceStatusForeground.warning)
             }
             if let message {
@@ -870,8 +927,8 @@ private struct LocalProxyPlusLimitEditor: View {
         .background(WorkspaceGlassSurface(cornerRadius: 10))
         .help(
             language.text(
-                "填写已用百分比，不是剩余额度。仅修改上限，不改变参与、顺序或点数授权。低于 100% 达到上限时点数不能绕过；100% 保留原点数接续规则。已接入响应继续完成。",
-                "Enter used percent, not remaining quota. Only limits change; participation, order and credit permission remain. Credits cannot bypass a reached limit below 100%; at 100%, existing credit fallback rules remain. Admitted responses finish."
+                "填写希望保留的剩余额度百分比。仅修改额度规则，不改变参与、顺序或点数授权。大于 0% 时点数不能绕过保留额度；0% 保留原点数接续规则。已接入响应继续完成。",
+                "Enter the percentage of quota to keep remaining. Only quota rules change; participation, order and credit permission remain. Credits cannot bypass a reserve above 0%; at 0%, existing credit fallback rules remain. Admitted responses finish."
             )
         )
         .onAppear {
@@ -889,13 +946,13 @@ private struct LocalProxyPlusLimitEditor: View {
 
     private var limitField: some View {
         HStack(spacing: 6) {
-            Text(language.text("Plus 5h 已用上限", "Plus 5h used limit"))
+            Text(language.text("统一剩余额度", "Shared remaining quota"))
             TextField("0–100", text: $limit).textFieldStyle(.plain)
                 .font(.system(size: 12, weight: .medium).monospacedDigit())
                 .padding(.horizontal, 8).frame(width: 76, height: 30)
                 .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
                 .overlay { RoundedRectangle(cornerRadius: 6).strokeBorder(Color.primary.opacity(0.25), lineWidth: 1) }
-                .accessibilityLabel(language.text("Plus 账号 5 小时已用百分比上限", "Maximum 5h used percentage for Plus accounts"))
+                .accessibilityLabel(language.text("Plus 5 小时和 Pro 7 天统一剩余额度百分比", "Shared remaining percentage for Plus 5h and Pro 7d quota"))
                 .accessibilityIdentifier("next.local-proxy.uniform-used-limit")
                 .disabled(!enabled)
             Text("%")
@@ -903,7 +960,7 @@ private struct LocalProxyPlusLimitEditor: View {
         }
     }
     private var applyButton: some View {
-        Button(language.text("应用到 Plus 账号", "Apply to Plus accounts")) {
+        Button(language.text("应用到 Plus / Pro 账号", "Apply to Plus / Pro accounts")) {
             guard let value else { return }
             if save(value) {
                 savedValue = value
@@ -937,6 +994,7 @@ private struct LocalProxyAccountPolicyEditor<QuotaContent: View, ResetAction: Vi
     @State private var secondary = ""
     @State private var initialized = false
     @State private var savedPolicy: LocalProxyAccountPolicy?
+    @State private var savedIsProPlan: Bool?
     @State private var savedDefaultPrimary: Int?
     @State private var savedDefaultSecondary: Int?
     @State private var expanded = false
@@ -944,6 +1002,7 @@ private struct LocalProxyAccountPolicyEditor<QuotaContent: View, ResetAction: Vi
 
     private struct SavedState: Equatable {
         var policy: LocalProxyAccountPolicy
+        let isProPlan: Bool
         let defaultPrimary: Int
         let defaultSecondary: Int
     }
@@ -953,14 +1012,18 @@ private struct LocalProxyAccountPolicyEditor<QuotaContent: View, ResetAction: Vi
             policy.creditPrimaryFloor = nil
             policy.creditSecondaryFloor = nil
         }
-        return SavedState(policy: policy, defaultPrimary: defaultPrimary, defaultSecondary: defaultSecondary)
+        return SavedState(policy: policy, isProPlan: row.isProPlan, defaultPrimary: defaultPrimary, defaultSecondary: defaultSecondary)
     }
     private var dirty: Bool { initialized && policy != savedPolicy }
     private var policy: LocalProxyAccountPolicy? {
+        // A plan refresh can render before onChange rebases the draft's window.
+        guard savedIsProPlan == row.isProPlan else { return nil }
         var candidate = savedPolicy ?? savedState.policy
-        if !row.isProPlan {
-            guard let value = Double(limit.trimmingCharacters(in: .whitespacesAndNewlines)) else { return nil }
-            candidate.fiveHourUsedLimit = value
+        guard let value = Double(limit.trimmingCharacters(in: .whitespacesAndNewlines)), value.isFinite, (0...100).contains(value) else { return nil }
+        // A clean draft must preserve a legacy nil weekly rule and its exact cutoff.
+        if value != candidate.remainingReserve(isProPlan: row.isProPlan) {
+            let usedLimit = LocalProxyAccountPolicy.complementPercent(value)
+            if row.isProPlan { candidate.sevenDayUsedLimit = usedLimit } else { candidate.fiveHourUsedLimit = usedLimit }
         }
         candidate.allowsCredits = allowsCredits
         candidate.creditPrimaryFloor = usesDefaults ? nil : Int(primary)
@@ -982,7 +1045,7 @@ private struct LocalProxyAccountPolicyEditor<QuotaContent: View, ResetAction: Vi
                 Divider()
                 accessory
                 LocalProxyPolicyFieldsLayout(trailingAction: true) {
-                    if !row.isProPlan { limitFields }
+                    limitFields
                     allowCreditsToggle
                     saveButton
                 }
@@ -991,8 +1054,11 @@ private struct LocalProxyAccountPolicyEditor<QuotaContent: View, ResetAction: Vi
                     creditFloors
                 }
                 if dirty && policy == nil {
-                    Text(language.text("上限为 0–100%；底线须为整数，第一档高于第二档，第二档不小于 0。", "Use a limit of 0–100%. Floors must be whole points: first above second, second at least 0."))
-                        .foregroundStyle(WorkspaceStatusForeground.warning).fixedSize(horizontal: false, vertical: true)
+                    Text(
+                        language.text(
+                            "剩余额度为 0–100%；点数底线须为整数，第一档高于第二档，第二档不小于 0。", "Use a remaining quota of 0–100%. Floors must be whole points: first above second, second at least 0.")
+                    )
+                    .foregroundStyle(WorkspaceStatusForeground.warning).fixedSize(horizontal: false, vertical: true)
                 }
                 if saveFailed {
                     Text(language.text("规则未保存，草稿已保留。请查看面板中的故障提示。", "Rules were not saved; your draft is retained. Check the panel warning."))
@@ -1012,16 +1078,18 @@ private struct LocalProxyAccountPolicyEditor<QuotaContent: View, ResetAction: Vi
             // SwiftUI may retain a callback with the previous row. Use the delivered snapshot.
             let preserveDraft = dirty
             let previous = savedPolicy ?? value.policy
-            let limitEdited = Double(limit.trimmingCharacters(in: .whitespacesAndNewlines)) != previous.fiveHourUsedLimit
+            let windowChanged = savedIsProPlan != value.isProPlan
+            let limitEdited = !windowChanged && Double(limit.trimmingCharacters(in: .whitespacesAndNewlines)) != previous.remainingReserve(isProPlan: value.isProPlan)
             let creditsEdited = allowsCredits != previous.allowsCredits
             let defaultsEdited = usesDefaults != (previous.creditPrimaryFloor == nil)
             let primaryEdited = !usesDefaults && (defaultsEdited || Int(primary) != (previous.creditPrimaryFloor ?? savedDefaultPrimary))
             let secondaryEdited = !usesDefaults && (defaultsEdited || Int(secondary) != (previous.creditSecondaryFloor ?? savedDefaultSecondary))
             savedPolicy = value.policy
+            savedIsProPlan = value.isProPlan
             if !preserveDraft {
                 resetDrafts(to: value)
             } else {
-                if !limitEdited { limit = limitText(value.policy.fiveHourUsedLimit) }
+                if !limitEdited { limit = limitText(value.policy.remainingReserve(isProPlan: value.isProPlan)) }
                 if !creditsEdited { allowsCredits = value.policy.allowsCredits }
                 if !defaultsEdited { usesDefaults = value.policy.creditPrimaryFloor == nil }
                 if !primaryEdited { primary = String(value.policy.creditPrimaryFloor ?? value.defaultPrimary) }
@@ -1076,24 +1144,28 @@ private struct LocalProxyAccountPolicyEditor<QuotaContent: View, ResetAction: Vi
 
     private var summary: String {
         let saved = row.policy
-        let savedLimit = saved.fiveHourUsedLimit
+        let savedLimit = saved.remainingReserve(isProPlan: row.isProPlan)
         let limit = savedLimit.rounded() == savedLimit ? String(Int(savedLimit)) : String(savedLimit)
         let credits = saved.allowsCredits ? language.text("允许点数", "Credits allowed") : language.text("仅订阅", "Subscription only")
         let floors = "\(saved.creditPrimaryFloor ?? defaultPrimary) / \(saved.creditSecondaryFloor ?? defaultSecondary)"
         if row.isProPlan {
-            return language.text("按官方 7 天额度 · \(credits) · 保留 \(floors) 点", "Official 7d quota · \(credits) · Keep \(floors) points")
+            return language.text("7 天剩余额度 \(limit)% · \(credits) · 保留 \(floors) 点", "7d remaining quota \(limit)% · \(credits) · Keep \(floors) points")
         }
-        return language.text("5h 已用上限 \(limit)% · \(credits) · 保留 \(floors) 点", "5h used limit \(limit)% · \(credits) · Keep \(floors) points")
+        return language.text("5h 剩余额度 \(limit)% · \(credits) · 保留 \(floors) 点", "5h remaining quota \(limit)% · \(credits) · Keep \(floors) points")
     }
 
     private var limitFields: some View {
         HStack(spacing: 6) {
-            Text(language.text("5h 已用上限", "5h used limit"))
-            field("0–100", text: $limit, label: language.text("5h 已用百分比上限", "Maximum 5h used percent"))
-                .help(
-                    language.text(
-                        "低于 100% 时，到达上限便停止此账号，点数不会绕过上限。100% 时可按授权接续点数。",
-                        "Below 100%, this account stops at the limit, including credits. At 100%, authorized credit fallback remains available."))
+            Text(row.isProPlan ? language.text("7 天剩余额度", "7d remaining quota") : language.text("5h 剩余额度", "5h remaining quota"))
+            field(
+                "0–100", text: $limit,
+                label: row.isProPlan ? language.text("7 天剩余额度百分比", "Remaining 7d quota percentage") : language.text("5h 剩余额度百分比", "Remaining 5h quota percentage")
+            )
+            .help(
+                language.text(
+                    "例如 20% 表示剩余到 20% 时停新请求，点数不能绕过。0% 不额外保留，仍遵守官方耗尽及点数授权；100% 不接新请求。",
+                    "For example, 20% stops new requests at 20% remaining, including credits. 0% adds no reserve and retains official exhaustion and credit rules; 100% admits no new requests."
+                ))
             Text("%")
         }.fixedSize().disabled(!enabled)
     }
@@ -1144,13 +1216,14 @@ private struct LocalProxyAccountPolicyEditor<QuotaContent: View, ResetAction: Vi
             .accessibilityLabel(label)
     }
     private func resetDrafts(to value: SavedState) {
-        let savedLimit = value.policy.fiveHourUsedLimit
+        let savedLimit = value.policy.remainingReserve(isProPlan: value.isProPlan)
         limit = limitText(savedLimit)
         allowsCredits = value.policy.allowsCredits
         usesDefaults = value.policy.creditPrimaryFloor == nil
         primary = String(value.policy.creditPrimaryFloor ?? value.defaultPrimary)
         secondary = String(value.policy.creditSecondaryFloor ?? value.defaultSecondary)
         savedPolicy = value.policy
+        savedIsProPlan = value.isProPlan
         savedDefaultPrimary = value.defaultPrimary
         savedDefaultSecondary = value.defaultSecondary
     }

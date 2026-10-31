@@ -292,13 +292,40 @@ enum HomeEngineProjection {
 private struct UpstreamHomeStatistics: View {
     let state: TokenMonitorEngineState
     let language: WidgetLanguage
+    var useDesktopStatistics = false
+    var isWindowActive = true
+    @ObservedObject private var desktop = TokenMonitorDesktopController.shared
     @Binding var preferences: HomeDashboardPreferences
     @State private var dragStartHeight: CGFloat?
     @State private var draggingHeight: CGFloat?
     @State private var hoveringResize = false
     private var dashboardHeight: CGFloat { draggingHeight ?? CGFloat(preferences.height) }
+    private var dashboardJSON: String? { useDesktopStatistics ? desktop.homeUsage.dashboardJSON : state.dashboardJSON }
+    private var sharedTotals: UpstreamTrendView.SummaryTotals? {
+        guard useDesktopStatistics else { return nil }
+        return .init(
+            tokens: desktop.allTimeUsage.totalTokens, costUSD: desktop.allTimeUsage.totalCostUSD,
+            isPartial: desktop.allTimeUsage.costIsPartial)
+    }
 
     private var statusText: String? {
+        if useDesktopStatistics {
+            switch desktop.homeUsage.phase {
+            case .pending:
+                return desktop.homeUsage.dashboardJSON == nil
+                    ? language.text("正在读取 Token Monitor 统计", "Loading Token Monitor statistics")
+                    : language.text("正在更新 Token Monitor 统计 · 显示上次图表", "Updating Token Monitor statistics · showing previous charts")
+            case .delayed:
+                return desktop.homeUsage.dashboardJSON == nil
+                    ? language.text("Token Monitor 统计尚未就绪，请稍后重试", "Token Monitor statistics are not ready yet; please retry later")
+                    : language.text("Token Monitor 统计尚未就绪 · 显示上次图表", "Token Monitor statistics are not ready yet · showing previous charts")
+            case .unavailable:
+                return desktop.homeUsage.dashboardJSON == nil
+                    ? language.text("暂时无法读取 Token Monitor 统计，请重试", "Token Monitor statistics are unavailable; please retry")
+                    : language.text("暂时无法更新 Token Monitor 统计 · 显示上次图表", "Token Monitor statistics could not update · showing previous charts")
+            case .ready: return nil
+            }
+        }
         let hasCache = state.lastGood != nil
         if state.phase == .loading {
             return hasCache
@@ -333,11 +360,12 @@ private struct UpstreamHomeStatistics: View {
                     .lineLimit(1)
                     .help(statusText)
             }
-            if let dashboardJSON = state.dashboardJSON {
+            if let dashboardJSON {
                 VStack(spacing: 0) {
                     UpstreamTrendView(
                         dashboardJSON: dashboardJSON, height: dashboardHeight,
-                        homePreferences: preferences, onHomePreferences: { preferences = $0 }
+                        homePreferences: preferences, onHomePreferences: { preferences = $0 },
+                        summaryTotals: sharedTotals
                     )
                     .environment(\.widgetLanguage, language)
                     .overlay(alignment: .bottom) {
@@ -398,6 +426,15 @@ private struct UpstreamHomeStatistics: View {
 
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .task(id: useDesktopStatistics && isWindowActive) {
+            guard useDesktopStatistics, isWindowActive else { return }
+            while !Task.isCancelled {
+                await desktop.refreshHomeUsage()
+                do {
+                    try await Task.sleep(nanoseconds: desktop.isReady && desktop.homeUsage.phase != .pending ? 30_000_000_000 : 5_000_000_000)
+                } catch { return }
+            }
+        }
     }
 
 }
@@ -1363,12 +1400,16 @@ struct CodexAccountManagerView: View {
                 .font(.system(size: 12, weight: .semibold))
                 if store.statisticsEngineChoice == .upstream {
                     Button {
-                        store.refresh()
+                        if !store.isPreview, TokenMonitorDesktopController.shared.isBundled {
+                            Task { await TokenMonitorDesktopController.shared.refreshHomeUsage() }
+                        } else {
+                            store.refresh()
+                        }
                     } label: {
                         Label(language.text("刷新", "Refresh"), systemImage: "arrow.clockwise").font(.caption)
                     }
                     .buttonStyle(WorkspaceQuietButtonStyle())
-                    .disabled(store.engineState.phase == .loading)
+                    .disabled((store.isPreview || !TokenMonitorDesktopController.shared.isBundled) && store.engineState.phase == .loading)
                     .accessibilityLabel(language.text("刷新 Token 用量", "Refresh token usage"))
                 }
             }
@@ -1387,6 +1428,8 @@ struct CodexAccountManagerView: View {
         case .upstream:
             UpstreamHomeStatistics(
                 state: store.engineState, language: language,
+                useDesktopStatistics: !store.isPreview && TokenMonitorDesktopController.shared.isBundled,
+                isWindowActive: store.isMainWindowActive,
                 preferences: $settings.homeDashboardPreferences)
         case .custom:
             VStack(alignment: .leading, spacing: 10) {
@@ -2970,6 +3013,8 @@ struct CodexAccountManagerView: View {
                         if settings.accountWorkspaceLayout == .cards { AccountCardDensityPicker() }
                         Divider()
                         Button(language.text("管理账号", "Manage accounts")) {
+                            accountScope = .all
+                            focusedAccountID = nil
                             isEditingProfiles = true
                             directReorder.cancel()
                         }
@@ -3085,7 +3130,8 @@ struct CodexAccountManagerView: View {
                     onOpenResetAutoSettings: {
                         resetCreditAutoFocusedProfileID = profile.id
                         isResetCreditAutoSettingsPresented = true
-                    }
+                    },
+                    onManualResetConfirmed: { store.recordManualResetConfirmed($0) }
                 ))
         }
         return AnyView(
@@ -3192,7 +3238,8 @@ struct CodexAccountManagerView: View {
                 onRename: { store.setProfileRemark($0, for: profile.id) },
                 onSetChromeProfile: { store.setChromeProfile($0, for: profile.id) },
                 onDelete: { store.deleteProfile(profile.id) },
-                onAdjustResetCount: { store.adjustResetCount(for: profile, delta: $0) }
+                onAdjustResetCount: { store.adjustResetCount(for: profile, delta: $0) },
+                onManualResetConfirmed: { store.recordManualResetConfirmed($0) }
             )
             .contextMenu {
                 let key = ResetCardPresentation.codexKey(profile.id)
@@ -6028,6 +6075,7 @@ private struct ProfileRow: View {
     let onSetChromeProfile: (ChromeProfileBinding?) -> Void
     let onDelete: () -> Void
     let onAdjustResetCount: (Int) -> Void
+    var onManualResetConfirmed: (CodexResetCreditController.ManualResetConfirmation) -> Void = { _ in }
     @Environment(\.accountCardDensity) private var cardDensity
     @State private var isEditingRemark = false
     @State private var isConfirmingDelete = false
@@ -6209,7 +6257,7 @@ private struct ProfileRow: View {
             ResetCreditButton(
                 profile: profile, selectedProfileID: profile.id,
                 hubAccountAlias: hubAccountAlias, onConfirmedResult: onRefresh,
-                displayNumber: displayNumber, compact: true
+                onManualResetConfirmed: onManualResetConfirmed, displayNumber: displayNumber, compact: true
             )
             .fixedSize()
             .disabled(!allowsResetCreditAction)

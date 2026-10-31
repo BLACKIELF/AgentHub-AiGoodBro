@@ -36,6 +36,8 @@ private final class MockTransport: LocalCLIQuotaTransport, @unchecked Sendable {
     var tokenThrows = false
     var tokenHook: (() async throws -> Void)?
     var tokenRequests: [URLRequest] = []
+    var usageStatus = 200
+    var usageHeaders: [String: String] = [:]
     var profileIdentityOverride: String?
     var tokenReply = Data(#"{"access_token":"synthetic-b-renewed","refresh_token":"synthetic-b-successor","expires_in":3600,"scope":"user:profile user:inference","refresh_token_expires_in":7200}"#.utf8)
     func response(for request: URLRequest) async throws -> LocalCLIHTTPResponse {
@@ -54,10 +56,33 @@ private final class MockTransport: LocalCLIQuotaTransport, @unchecked Sendable {
             return LocalCLIHTTPResponse(statusCode: 200, headers: [:], data: Data("{\"account\":{\"uuid\":\"synthetic-\(name)\",\"email\":\"\(name)@synthetic.invalid\"},\"organization\":{\"uuid\":\"synthetic-org\"}}".utf8))
         }
         afterUsage?()
-        return LocalCLIHTTPResponse(statusCode: 200, headers: [:], data: Data(#"{"five_hour":{"utilization":25,"resets_at":"2030-01-01T00:00:00Z"},"seven_day":{"utilization":50,"resets_at":"2030-01-07T00:00:00Z"},"limits":[{"is_active":true,"percent":70,"scope":{"model":{"display_name":"Synthetic Model"}},"resets_at":"2030-01-07T00:00:00Z"}]}"#.utf8))
+        return LocalCLIHTTPResponse(statusCode: usageStatus, headers: usageHeaders, data: Data(#"{"five_hour":{"utilization":25,"resets_at":"2030-01-01T00:00:00Z"},"seven_day":{"utilization":50,"resets_at":"2030-01-07T00:00:00Z"},"limits":[{"is_active":true,"percent":70,"scope":{"model":{"display_name":"Synthetic Model"}},"resets_at":"2030-01-07T00:00:00Z"}]}"#.utf8))
     }
 }
 @main struct ClaudeSubscriptionFixture {
+    private static func testQuotaRetryAfter() throws {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        for format in ["EEE, dd MMM yyyy HH:mm:ss 'GMT'", "EEEE, dd-MMM-yy HH:mm:ss 'GMT'", "EEE MMM d HH:mm:ss yyyy"] {
+            formatter.dateFormat = format
+            let header = formatter.string(from: now.addingTimeInterval(3600))
+            try expect(ClaudeSubscriptionService.quotaRetryAfter(["retry-after": header], now: now) == now.addingTimeInterval(3600), "valid HTTP Retry-After date")
+        }
+        try expect(ClaudeSubscriptionService.quotaRetryAfter(["ReTrY-AfTeR": " 120 "], now: now) == now.addingTimeInterval(120), "case insensitive delay seconds")
+        try expect(ClaudeSubscriptionService.quotaRetryAfter(["Retry-After": "604800"], now: now) == now.addingTimeInterval(604800), "maximum accepted delay is not shortened")
+        for raw in ["", "0", "-1", "+1", "1.5", "NaN", "inf", "1e3", "604801", String(repeating: "9", count: 200), "120\n", "not a date"] {
+            try expect(ClaudeSubscriptionService.quotaRetryAfter(["Retry-After": raw], now: now) == nil, "invalid Retry-After falls back: " + raw.prefix(16))
+        }
+        formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss 'GMT'"
+        for offset: TimeInterval in [-1, 0, 604801] {
+            try expect(ClaudeSubscriptionService.quotaRetryAfter(["Retry-After": formatter.string(from: now.addingTimeInterval(offset))], now: now) == nil, "expired or excessive HTTP date rejected")
+        }
+        try expect(ClaudeSubscriptionService.quotaRetryAfter([:], now: now) == nil, "missing Retry-After falls back")
+        try expect(ClaudeSubscriptionService.quotaRetryAfter(["Retry-After": "120", "retry-after": "240"], now: now) == nil, "ambiguous duplicate Retry-After rejected")
+        print("PASS claude-quota Retry-After parsing")
+    }
     private enum ConfigFile {
         case absent, regular(Data, mode_t), directory, fifo
         case symlinkRegular(Data, mode_t), symlinkDirectory, danglingSymlink
@@ -154,6 +179,7 @@ private final class MockTransport: LocalCLIQuotaTransport, @unchecked Sendable {
         print("PASS claude-global-config selection (\(cases.count) cases; guarded symlink/unreadable reads; stat error \(geteuid() == 0 ? "skipped under root" : "passed"))")
     }
     static func main() async throws {
+        try testQuotaRetryAfter()
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("claude-synthetic-" + UUID().uuidString)
         let home = root.appendingPathComponent("home"), support = root.appendingPathComponent("support")
         try FileManager.default.createDirectory(at: home.appendingPathComponent(".claude"), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
@@ -294,6 +320,22 @@ private final class MockTransport: LocalCLIQuotaTransport, @unchecked Sendable {
         try expect(try ClaudeSubscriptionService.oauth(service.credential(b).credential, now: now)["accessToken"] as? String == "synthetic-b", "switched-out current lineage preserved")
         let quota = await service.loadQuota(a, now: now)
         try expect(quota.state == .available && quota.identityFingerprint == a.identityFingerprint && quota.windows.count == 3, "identity bound 5h 7d model quota")
+        let quotaWrites = keychain.writeCount
+        transport.usageStatus = 429
+        transport.usageHeaders = ["Retry-After": "3600"]
+        let limitedQuota = await service.loadQuota(a, now: now)
+        try expect(limitedQuota.state == .rateLimited && limitedQuota.serverRetryAt == now.addingTimeInterval(3600)
+            && limitedQuota.windows.isEmpty && limitedQuota.messageCode == "local_cli_rate_limited", "HTTP 429 carries validated retry deadline without quota")
+        transport.usageHeaders = ["Retry-After": "NaN"]
+        let invalidRetry = await service.loadQuota(a, now: now)
+        try expect(invalidRetry.state == .rateLimited && invalidRetry.serverRetryAt == nil, "invalid header retains ordinary rate-limit result")
+        transport.usageStatus = 500; transport.usageHeaders = ["Retry-After": "3600"]
+        let non429Retry = await service.loadQuota(a, now: now)
+        try expect(non429Retry.state == .unavailable && non429Retry.serverRetryAt == nil, "non-429 does not gain retry metadata")
+        transport.usageStatus = 200
+        let recoveredQuota = await service.loadQuota(a, now: now)
+        try expect(recoveredQuota.state == .available && recoveredQuota.serverRetryAt == nil && keychain.writeCount == quotaWrites, "success clears metadata and quota reads never write credentials")
+        transport.usageHeaders = [:]
         let beforeKeychain = keychain.items, beforeConfig = try Data(contentsOf: configURL)
         keychain.failWrite = "Claude Code-credentials"
         do { try await service.switchTo(b, allReferences: [a,b]); throw TestFailure.failed("write failure accepted") }
@@ -367,8 +409,10 @@ private final class MockTransport: LocalCLIQuotaTransport, @unchecked Sendable {
         catch ClaudeSubscriptionService.Failure.readOnly {}
         try FileManager.default.removeItem(at: settings)
         transport.afterUsage = { keychain.items[liveKey] = credential("b") }
+        transport.usageStatus = 429; transport.usageHeaders = ["Retry-After": "3600"]
         let changed = await service.loadQuota(a, now: now)
-        try expect(changed.messageCode == "local_cli_claude_credentials_changed" && changed.windows.isEmpty, "inflight credential change discards quota")
+        try expect(changed.messageCode == "local_cli_claude_credentials_changed" && changed.windows.isEmpty && changed.serverRetryAt == nil, "inflight credential change discards quota and retry deadline")
+        transport.usageStatus = 200; transport.usageHeaders = [:]
         transport.afterUsage = nil; keychain.items[liveKey] = credential("a"); transport.fail = true
         let failed = await service.loadQuota(a, now: now)
         try expect(failed.messageCode == "local_cli_unavailable", "network failure ordinary stale signal")

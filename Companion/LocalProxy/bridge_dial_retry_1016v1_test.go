@@ -14,7 +14,7 @@ import (
 
 func missingControlSocket(t *testing.T) string {
 	t.Helper()
-	dir, err := os.MkdirTemp("/tmp", "lp-dial-")
+	dir, err := os.MkdirTemp(os.TempDir(), "lp-dial-")
 	if err != nil {
 		t.Fatal(err)
 	}

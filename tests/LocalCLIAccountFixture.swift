@@ -5,6 +5,8 @@ enum WidgetLanguage {
     case zh
     static func storedOrAutomatic() -> WidgetLanguage { .zh }
     func text(_ zh: String, _ en: String) -> String { zh }
+    var locale: Locale { Locale(identifier: "zh_CN") }
+    func dateTime(_ value: Date) -> String { value.formatted(.dateTime.locale(locale)) }
 }
 
 private enum FixtureFailure: Error { case failed(String) }
@@ -770,6 +772,152 @@ private final class FixtureClock: @unchecked Sendable {
     }
 }
 
+private actor ClaudeRetryQuotaProbe {
+    enum Reply { case available, limited(Date?), heldLimited(Date?) }
+    private var replies: [String: [Reply]] = [:]
+    private var reads: [String: Int] = [:]
+    private var held: [String: CheckedContinuation<Void, Never>] = [:]
+    func enqueue(_ id: String, _ reply: Reply) { replies[id, default: []].append(reply) }
+    func count(_ id: String) -> Int { reads[id, default: 0] }
+    func release(_ id: String) { held.removeValue(forKey: id)?.resume() }
+    func load(_ profile: LocalCLIProfile, now: Date) async -> LocalCLIQuotaResult {
+        reads[profile.id, default: 0] += 1
+        let reply = replies[profile.id]?.isEmpty == false ? replies[profile.id]!.removeFirst() : .available
+        let state: LocalCLIQuotaState
+        let retryAt: Date?
+        switch reply {
+        case .available: state = .available; retryAt = nil
+        case .limited(let deadline): state = .rateLimited; retryAt = deadline
+        case .heldLimited(let deadline):
+            await withCheckedContinuation { held[profile.id] = $0 }
+            state = .rateLimited; retryAt = deadline
+        }
+        return LocalCLIQuotaResult(
+            state: state, fetchedAt: now, maskedIdentity: nil, identityFingerprint: nil, planLabel: nil,
+            windows: state == .available ? [.init(id: "five_hour", label: "5-hour", usedPercent: 20, resetsAt: nil)] : [],
+            balance: nil, balanceCurrency: nil, sourceLabel: "Synthetic", messageCode: state == .rateLimited ? "local_cli_rate_limited" : nil,
+            serverRetryAt: retryAt)
+    }
+}
+
+@MainActor
+private func testClaudeQuotaRetryAfterBackoffAndIsolation() async throws {
+    let paths = try makeRoot("claude-retry-after")
+    defer { try? FileManager.default.removeItem(at: paths.root) }
+    let executable = paths.home.appendingPathComponent(".local/bin/claude")
+    try Data("synthetic CLI".utf8).write(to: executable)
+    guard chmod(executable.path, 0o700) == 0 else { throw FixtureFailure.failed("Claude executable mode") }
+    func credential(_ directory: URL, marker: String) throws {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try Data("{\"claudeAiOauth\":{\"accessToken\":\"synthetic-\(marker)\"}}".utf8)
+            .write(to: directory.appendingPathComponent(".credentials.json"), options: .atomic)
+    }
+    let firstDirectory = paths.root.appendingPathComponent("first-claude")
+    let secondDirectory = paths.root.appendingPathComponent("second-claude")
+    try credential(firstDirectory, marker: "first"); try credential(secondDirectory, marker: "second")
+    let first = LocalCLIProfile(id: UUID().uuidString.lowercased(), kind: .claudeCode, displayName: "First", configDirectory: firstDirectory.path, isDefault: false)
+    let second = LocalCLIProfile(id: UUID().uuidString.lowercased(), kind: .claudeCode, displayName: "Second", configDirectory: secondDirectory.path, isDefault: false)
+    // Seed the previous profile storage shape; no quota/deadline is persisted.
+    try JSONEncoder().encode([first, second]).write(to: storage(paths.support), options: .atomic)
+    let oldStorage = try Data(contentsOf: storage(paths.support))
+    let clock = FixtureClock(), probe = ClaudeRetryQuotaProbe()
+    let store = makeStore(home: paths.home, support: paths.support,
+        loader: { await probe.load($0, now: clock.now()) }, clock: { clock.now() })
+    store.discover()
+    try expect(store.profiles.contains(first) && store.profiles.contains(second), "previous profile storage loads without retry fields")
+    store.refresh(first)
+    try await waitForVisibleRefresh(store, ids: [first.id])
+    let original = store.quotas[first.id]!
+    clock.advance(300)
+    let retryAt = clock.now().addingTimeInterval(3600)
+    await probe.enqueue(first.id, .limited(retryAt))
+    store.refresh(first)
+    try await waitForVisibleRefresh(store, ids: [first.id])
+    let snapshot = store.quotas[first.id]!
+    try expect(snapshot.state == .available && snapshot.fetchedAt == original.fetchedAt && snapshot.windows == original.windows
+        && snapshot.serverRetryAt == retryAt && store.stale.contains(first.id), "429 metadata does not freshen or replace old quota")
+    let text = LocalCLIAccountPresentation.quotaExplanation(kind: .claudeCode, result: snapshot, language: .zh, now: clock.now())
+    try expect(text?.contains(WidgetLanguage.zh.dateTime(retryAt)) == true && text?.contains("无需重新登录") == true,
+        "existing status explanation shows the real server retry time alongside the stale snapshot")
+    store.refresh(first)
+    store.refreshIfNeeded(kind: .claudeCode, profileIDs: [first.id])
+    let blockedCount = await probe.count(first.id)
+    try expect(blockedCount == 2, "manual and automatic reads respect server deadline")
+    store.refresh(second)
+    try await waitForVisibleRefresh(store, ids: [second.id])
+    let otherCount = await probe.count(second.id)
+    try expect(otherCount == 1 && store.quotas[second.id]?.state == .available, "one account's 429 never blocks another account")
+    clock.advance(3599)
+    store.refreshIfNeeded(kind: .claudeCode, profileIDs: [first.id])
+    let beforeDeadlineCount = await probe.count(first.id)
+    try expect(beforeDeadlineCount == 2, "server deadline outlives the existing local fifteen-minute backoff")
+    clock.advance(1)
+    try expect(LocalCLIAccountPresentation.quotaExplanation(kind: .claudeCode, result: snapshot, language: .zh, now: clock.now())?.contains("等待时间已过") == true,
+        "expired status no longer claims the server is still blocking")
+    store.refreshIfNeeded(kind: .claudeCode, profileIDs: [first.id])
+    try await waitForVisibleRefresh(store, ids: [first.id])
+    try expect(store.quotas[first.id]?.state == .available && store.quotas[first.id]?.serverRetryAt == nil && !store.stale.contains(first.id),
+        "successful retry clears retry metadata and stale marker")
+    await probe.enqueue(first.id, .limited(clock.now().addingTimeInterval(120)))
+    store.refresh(first)
+    try await waitForVisibleRefresh(store, ids: [first.id])
+    let shortDeadlineCount = await probe.count(first.id)
+    clock.advance(120)
+    store.refreshIfNeeded(kind: .claudeCode, profileIDs: [first.id])
+    let afterShortDeadlineCount = await probe.count(first.id)
+    try expect(afterShortDeadlineCount == shortDeadlineCount, "short server deadline does not reduce existing automatic fifteen-minute backoff")
+    store.refresh(first)
+    try await waitForVisibleRefresh(store, ids: [first.id])
+    let manualAfterDeadlineCount = await probe.count(first.id)
+    try expect(manualAfterDeadlineCount == shortDeadlineCount + 1, "manual refresh resumes after server deadline without changing existing local fallback behavior")
+    for delay: TimeInterval? in [nil, -1, 604801] {
+        let deadline = delay.map { clock.now().addingTimeInterval($0) }
+        await probe.enqueue(first.id, .limited(deadline))
+        store.refresh(first)
+        try await waitForVisibleRefresh(store, ids: [first.id])
+        let count = await probe.count(first.id)
+        try expect(store.quotas[first.id]?.serverRetryAt == nil, "missing expired or excessive deadlines do not become actionable")
+        clock.advance(899)
+        store.refreshIfNeeded(kind: .claudeCode, profileIDs: [first.id])
+        let waitingCount = await probe.count(first.id)
+        try expect(waitingCount == count, "unusable deadline retains original automatic backoff")
+        clock.advance(1)
+        store.refreshIfNeeded(kind: .claudeCode, profileIDs: [first.id])
+        try await waitForVisibleRefresh(store, ids: [first.id])
+        let retriedCount = await probe.count(first.id)
+        try expect(retriedCount == count + 1, "fallback retry resumes after fifteen minutes")
+    }
+    await probe.enqueue(first.id, .heldLimited(clock.now().addingTimeInterval(7200)))
+    let heldRead = await probe.count(first.id) + 1
+    store.refresh(first)
+    for _ in 0..<100 {
+        if await probe.count(first.id) >= heldRead { break }
+        try await Task.sleep(nanoseconds: 5_000_000)
+    }
+    try credential(firstDirectory, marker: "replacement-longer")
+    store.refresh(first)
+    await probe.release(first.id)
+    try await waitForVisibleRefresh(store, ids: [first.id])
+    try expect(store.quotas[first.id] == nil, "old callback cannot attach a server deadline to changed credentials")
+    clock.advance(900)
+    store.refreshIfNeeded(kind: .claudeCode, profileIDs: [first.id])
+    try await waitForVisibleRefresh(store, ids: [first.id])
+    try expect(store.quotas[first.id]?.state == .available && store.quotas[first.id]?.serverRetryAt == nil,
+        "late old-account deadline cannot extend the replacement's local backoff")
+    let countBeforeLate = await probe.count(first.id)
+    await probe.enqueue(first.id, .heldLimited(clock.now().addingTimeInterval(7200)))
+    store.refresh(first)
+    for _ in 0..<100 {
+        if await probe.count(first.id) > countBeforeLate { break }
+        try await Task.sleep(nanoseconds: 5_000_000)
+    }
+    store.unlink(first)
+    await probe.release(first.id)
+    try await Task.sleep(nanoseconds: 20_000_000)
+    try expect(store.quotas[first.id] == nil && !store.profiles.contains(first), "removed profile rejects late 429 and deadline")
+    try expect(tryData(storage(paths.support)) != oldStorage, "only explicit unlink changes saved profiles")
+}
+
 private actor VisibleQuotaProbe {
     enum Mode { case credentialDriven, alwaysAvailable, availableThenUnavailable, rateLimited }
     private let mode: Mode
@@ -1326,6 +1474,82 @@ private final class ClaudeStoreTransport: LocalCLIQuotaTransport, @unchecked Sen
         return .init(statusCode: 200, headers: [:], data: Data(body.utf8))
     }
 }
+
+@MainActor private func testClaudeCompletedRetryDeadlineFollowsVerifiedIdentity() async throws {
+    for automatic in [false, true] {
+        let paths = try makeRoot("claude-completed-retry-identity")
+        defer { try? FileManager.default.removeItem(at: paths.root) }
+        let directory = paths.home.appendingPathComponent(".claude")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let executable = paths.home.appendingPathComponent(".local/bin/claude")
+        try Data("synthetic CLI".utf8).write(to: executable); _ = chmod(executable.path, 0o700)
+        let keychain = ClaudeStoreKeychain(), transport = ClaudeStoreTransport(), clock = FixtureClock()
+        var service = ClaudeSubscriptionService(home: paths.home, support: paths.support)
+        service.dependencies = .init(readKeychain: keychain.read, writeKeychain: keychain.write, idle: { true }, transport: transport, now: { clock.now() })
+        func setCurrent(_ name: String, rotated: Bool = false) throws {
+            let marker = name + (rotated ? "-rotated" : "")
+            keychain.items[keychain.key("Claude Code-credentials", ClaudeSubscriptionService.keychainAccount)] =
+                Data("{\"claudeAiOauth\":{\"accessToken\":\"synthetic-\(marker)\",\"expiresAt\":2000000000000}}".utf8)
+            try Data("{\"oauthAccount\":{\"accountUuid\":\"synthetic-\(name)\",\"organizationUuid\":\"synthetic-org\",\"emailAddress\":\"\(name)@synthetic.invalid\"}}".utf8)
+                .write(to: paths.home.appendingPathComponent(".claude.json"), options: .atomic)
+        }
+        try setCurrent("a")
+        let probe = ClaudeRetryQuotaProbe()
+        let store = LocalCLIAccountStore(home: paths.home, support: paths.support,
+            applicationsDirectory: paths.home.appendingPathComponent("empty-system-applications"),
+            quotaLoader: { await probe.load($0, now: clock.now()) }, claudeSubscriptionService: service, clock: { clock.now() })
+        store.discover()
+        guard let savedA = await store.captureClaudeSubscription(name: "Synthetic A"),
+            let profile = store.profiles(for: .claudeCode).first(where: \.isDefault)
+        else { throw FixtureFailure.failed("retry identity profiles") }
+        for _ in 0..<100 {
+            if store.claudeActiveProfileID == savedA.id { break }
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        let oldDeadline = clock.now().addingTimeInterval(3600)
+        await probe.enqueue(profile.id, .limited(oldDeadline))
+        store.refresh(profile)
+        try await waitForVisibleRefresh(store, ids: [profile.id])
+        try expect(store.quotas[profile.id]?.serverRetryAt == oldDeadline, "completed A deadline is stored")
+        try setCurrent("a", rotated: true)
+        if automatic { store.refreshIfNeeded(kind: .claudeCode, profileIDs: [profile.id]) } else { store.refresh(profile) }
+        try await Task.sleep(nanoseconds: 30_000_000)
+        let sameIdentityCount = await probe.count(profile.id)
+        try expect(sameIdentityCount == 1, "same verified identity token rotation cannot bypass completed 429")
+        let newDeadline = clock.now().addingTimeInterval(1800)
+        await probe.enqueue(profile.id, .limited(newDeadline))
+        try setCurrent("b")
+        if automatic { store.refreshIfNeeded(kind: .claudeCode, profileIDs: [profile.id]) } else { store.refresh(profile) }
+        for _ in 0..<100 {
+            if await probe.count(profile.id) == 2, !store.refreshing.contains(profile.id) { break }
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        let replacementCount = await probe.count(profile.id)
+        try expect(replacementCount == 2 && store.quotas[profile.id]?.serverRetryAt == newDeadline,
+            "verified B starts its own quota read and cannot inherit A's completed deadline")
+        if automatic { store.refreshIfNeeded(kind: .claudeCode, profileIDs: [profile.id]) } else { store.refresh(profile) }
+        let afterNewDeadlineCount = await probe.count(profile.id)
+        try expect(afterNewDeadlineCount == 2, "B's own fresh deadline remains enforced")
+        clock.advance(1800)
+        await probe.enqueue(profile.id, .heldLimited(clock.now().addingTimeInterval(3600)))
+        store.refresh(profile)
+        for _ in 0..<100 {
+            if await probe.count(profile.id) == 3 { break }
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        try setCurrent("a")
+        store.refresh(profile)
+        for _ in 0..<100 {
+            if await probe.count(profile.id) == 4, !store.refreshing.contains(profile.id) { break }
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        await probe.release(profile.id)
+        try await Task.sleep(nanoseconds: 20_000_000)
+        let lateCount = await probe.count(profile.id)
+        try expect(lateCount == 4 && store.quotas[profile.id]?.state == .available && store.quotas[profile.id]?.serverRetryAt == nil,
+            "late prior-identity 429 cannot restore its deadline or replace the new verified identity's result")
+    }
+}
 @MainActor private func testClaudeSubscriptionStoreIdentityAndReaderIsolation() async throws {
     let paths = try makeRoot("claude-subscription-integration")
     defer { try? FileManager.default.removeItem(at: paths.root) }
@@ -1652,6 +1876,7 @@ private final class ClaudeStoreTransport: LocalCLIQuotaTransport, @unchecked Sen
         try await testVisibleKimiRefreshAfterExternalLogin()
         try await testVisibleKimiLinkedProfilesStayIsolated()
         try await testVisibleKimiRateLimitBackoff()
+        try await testClaudeQuotaRetryAfterBackoffAndIsolation()
         try await testCredentialRotationDuringReadDropsOldQuota()
         try await testInFlightCredentialChangesClearVisibleQuotaAndCoalesce()
         try await testInFlightCredentialRemovalNeverReusesOldQuota()
@@ -1661,6 +1886,7 @@ private final class ClaudeStoreTransport: LocalCLIQuotaTransport, @unchecked Sen
         try await testFailedNewAccountReadNeverKeepsOldQuota()
         try await testZCodeCredentialFilesInvalidateFreshQuota()
         try await testConfiguredClaudeWithoutExecutable()
+        try await testClaudeCompletedRetryDeadlineFollowsVerifiedIdentity()
         try await testClaudeSubscriptionStoreIdentityAndReaderIsolation()
         try await testClaudeSubscriptionSignInRequiresExitVerificationAndExplicitCapture()
         print("local-cli-account-fixture: ok")

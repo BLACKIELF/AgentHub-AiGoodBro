@@ -29,12 +29,12 @@ profile_method = declaration(profiles, '    func recordInterruptedWarmUp(')
 model = declaration(profiles, 'struct CodexWarmUpRequest:') + '\n' + declaration(profiles, 'struct CodexWarmUpAttempt:')
 store = (SERVICE / 'DispatchActivityStore.swift').read_text()
 assert store.count('kill(ownerPID, 0)') == 2
-# Only process evidence is injectable, in the frozen fixture copy. All tuple,
-# time, shared-file locking/write and profile CAS logic is production source.
+# Only process evidence and the registry fsync failure are injectable, in the
+# frozen fixture copy. Tuple, locking/write and profile CAS remain production.
 store = store.replace('kill(ownerPID, 0)', 'FixtureProbe.kill(ownerPID, 0)')
-save_guard = 'guard written == data.count, fsync(fd) == 0,'
+save_guard = 'synced = fsync(fd)'
 assert store.count(save_guard) == 1
-store = store.replace(save_guard, 'guard written == data.count, (FixtureProbe.failRegistrySave ? false : fsync(fd) == 0),')
+store = store.replace(save_guard, 'synced = FixtureProbe.failRegistrySave ? { errno = EIO; return -1 }() : fsync(fd)')
 with tempfile.TemporaryDirectory(prefix='aigoodbro-warmup-orphan-') as temporary:
     folder = Path(temporary)
     (folder / 'DispatchActivityStore.swift').write_text(store)

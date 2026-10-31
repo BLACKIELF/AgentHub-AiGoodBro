@@ -482,8 +482,7 @@ struct LocalCLIQuotaReader {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
         request.setValue("claude-code/2.1.0", forHTTPHeaderField: "User-Agent")
-        let response = try await checkedResponse(for: request)
-        let windows = try Self.parseClaude(response.data)
+        let response = try await checkedResponse(for: request, allowRateLimited: true)
         // Compare the selected source again after the await. OAuth-to-OAuth
         // changes in Keychain are not covered by the store's file metadata.
         // These bytes remain request-local; they are never account identity.
@@ -505,6 +504,14 @@ struct LocalCLIQuotaReader {
                 throw LocalCLIReaderFailure.keychainUnavailable
             }
         }
+        if response.statusCode == 429 {
+            var limited = result(
+                state: .rateLimited, now: now, source: sourceLabel(for: .claudeCode),
+                messageCode: "local_cli_rate_limited")
+            limited.serverRetryAt = ClaudeSubscriptionService.quotaRetryAfter(response.headers, now: Date())
+            return limited
+        }
+        let windows = try Self.parseClaude(response.data)
         return result(
             state: .available,
             now: now,
@@ -542,7 +549,7 @@ struct LocalCLIQuotaReader {
             source: sourceLabel(for: .openCode))
     }
 
-    private func checkedResponse(for request: URLRequest) async throws -> LocalCLIHTTPResponse {
+    private func checkedResponse(for request: URLRequest, allowRateLimited: Bool = false) async throws -> LocalCLIHTTPResponse {
         guard request.url?.scheme == "https", request.url?.user == nil, request.url?.password == nil else {
             throw LocalCLIReaderFailure.invalidResponse
         }
@@ -560,7 +567,9 @@ struct LocalCLIQuotaReader {
         switch response.statusCode {
         case 200: return response
         case 401, 403: throw LocalCLIReaderFailure.unauthorized
-        case 429: throw LocalCLIReaderFailure.rateLimited
+        case 429:
+            if allowRateLimited { return response }
+            throw LocalCLIReaderFailure.rateLimited
         default: throw LocalCLIReaderFailure.unavailable
         }
     }

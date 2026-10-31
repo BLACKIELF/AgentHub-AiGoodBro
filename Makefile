@@ -137,12 +137,17 @@ test: build
 	python3 tests/test_dispatch_registry_io.py
 	python3 scripts/test-app-updates.py
 	python3 scripts/test-reset-credit-auto.py
+	python3 scripts/test-manual-account-actions.py
+	python3 scripts/test-manual-reset-notices.py
 	python3 scripts/test-hub-warm-up-capacity.py
 	python3 scripts/test-proxy-reset-observation.py
 	python3 scripts/test-local-proxy-host.py --reset-stop-only
 	python3 scripts/test-local-proxy-host.py --participation-only
+	python3 scripts/test-local-proxy-host.py --hot-activation-only
+	python3 scripts/test-local-proxy-host.py --plus-policy-only
 	python3 scripts/test-wechat-bot.py
 	python3 scripts/test-dispatch-participation.py --tests-only
+	python3 scripts/test-new-account-registration.py
 	$(MAKE) --no-print-directory test-token-monitor-backports
 
 .PHONY: test-token-monitor-backports
@@ -282,6 +287,12 @@ install: build
 		rm -rf "$$staging"; \
 		echo "install: existing app is missing its executable; refusing to replace without an idle check." >&2; \
 		exit 1; \
+	fi; \
+	if [ -n "$$live" ]; then \
+		python3 scripts/check-upgrade-identity.py "$$live" "$$staging" || { \
+			rm -rf "$$staging"; \
+			exit 1; \
+		}; \
 	fi; \
 	for bundle in "$$dest" "$$legacy"; do \
 		for exe in "$(APP_NAME)" "$(LEGACY_APP_NAME)"; do \

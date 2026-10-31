@@ -373,6 +373,20 @@ import Foundation
             response.payload = .object(p)
         }
         let bytes = try encoded(response)
+        // Legal bridge responses above the former 16 MiB host ceiling must
+        // survive the real pipe transport and decode. JSON whitespace isolates
+        // framing size from the domain fixtures; real-history acceptance is separate.
+        for size in [18 * 1024 * 1024, 32 * 1024 * 1024] {
+            let bridge = root.appendingPathComponent("large-\(size)")
+            var padded = bytes
+            padded.append(Data(repeating: 0x20, count: size - padded.count))
+            try padded.write(to: bridge)
+            var largeRequest = request
+            largeRequest.options.timeoutMs = 10_000
+            let actual = try TokenMonitorEngine(fixture: .init(executable: executable, bridge: bridge))
+                .collect(request: largeRequest, cancellation: TokenMonitorCancellation())
+            try check(actual.payload == response.payload, "bounded large response \(size) bytes")
+        }
         for mode in ["normal", "overflow", "stderr", "timeout", "cancel", "held", "closed", "nonzero", "early"] {
             let bridge = root.appendingPathComponent(mode)
             try bytes.write(to: bridge)

@@ -14,7 +14,7 @@ int main(int argc, char **argv) {
     if (!strcmp(mode, "early")) return 0;
     if (!strcmp(mode, "overflow") || !strcmp(mode, "stderr")) {
         char b[16384]; memset(b, 'x', sizeof(b));
-        for (int i = 0; i < 1100; i++) write(!strcmp(mode, "stderr") ? 2 : 1, b, sizeof(b));
+        for (int i = 0; i < 2200; i++) write(!strcmp(mode, "stderr") ? 2 : 1, b, sizeof(b));
         return 0;
     }
     if (!strcmp(mode, "held") || !strcmp(mode, "closed")) {

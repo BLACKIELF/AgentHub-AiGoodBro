@@ -7,7 +7,7 @@ extension LocalProxyHostFixtures {
         func expect(_ value: @autoclosure () throws -> Bool, _ label: String) throws {
             guard try value() else { throw LocalProxyControlFixtureFailure.check(label) }
             checks += 1
-            print("PLUS_POLICY_CHECK \(checks): \(label)")
+            print("QUOTA_POLICY_CHECK \(checks): \(label)")
         }
         let root = DispatchParticipationPaths.supportDirectory()
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
@@ -15,106 +15,154 @@ extension LocalProxyHostFixtures {
         let now = Date()
         let five = CodexQuotaWindowSnapshot(usedPercent: 30, resetsAt: now.addingTimeInterval(3600))
         let weekly = CodexQuotaWindowSnapshot(usedPercent: 37.25, resetsAt: now.addingTimeInterval(86400))
-        func profile(_ id: String, plan: String?, fiveHour: CodexQuotaWindowSnapshot?) -> CodexProfile {
-            CodexProfile(id: id, lastSnapshot: .init(planType: plan, creditBalance: "5000", creditBalanceUnlimited: false,
-                accountID: id + "-account", email: id + "@example.invalid", fetchedAt: now, fiveHour: fiveHour, sevenDay: weekly))
+        func profile(_ id: String, plan: String?, multiplier: Int? = nil) -> CodexProfile {
+            var result = CodexProfile(id: id, lastSnapshot: .init(planType: plan, creditBalance: "5000", creditBalanceUnlimited: false,
+                accountID: id + "-account", email: id + "@example.invalid", fetchedAt: now,
+                fiveHour: ["pro", "prolite"].contains(plan ?? "") ? nil : five, sevenDay: weekly))
+            result.proTierMultiplier = multiplier
+            return result
         }
-        let plus = profile("batch-plus", plan: "plus", fiveHour: five)
-        let otherPlus = profile("batch-other-plus", plan: "plus", fiveHour: five)
-        let pro = profile("batch-pro-80", plan: "pro", fiveHour: nil)
-        let fullPro = profile("batch-pro-100", plan: "pro", fiveHour: nil)
-        let proLite = profile("batch-prolite", plan: "prolite", fiveHour: five)
-        var pro20 = profile("batch-pro-20x", plan: "pro", fiveHour: five)
-        pro20.proTierMultiplier = 20
-        let unknown = profile("unknown-named-plus", plan: nil, fiveHour: five)
-        var system = profile("batch-system", plan: "plus", fiveHour: five)
+        let plus = profile("batch-plus", plan: "plus")
+        let otherPlus = profile("batch-other-plus", plan: "plus", multiplier: 25)
+        let pro5 = profile("batch-pro-5x", plan: "pro", multiplier: 5)
+        let pro10 = profile("batch-pro-10x", plan: "pro", multiplier: 10)
+        let pro25 = profile("batch-pro-25x", plan: "pro", multiplier: 25)
+        let proLite = profile("batch-prolite", plan: "prolite")
+        let proProfiles = [pro5, pro10, pro25, proLite]
+        let targets = [plus, otherPlus] + proProfiles
+        let unknown = profile("unknown-named-pro-25x", plan: nil, multiplier: 25)
+        let free = profile("free-named-plus", plan: "free", multiplier: 10)
+        let team = profile("team-named-pro", plan: "team")
+        let skipped = [unknown, free, team]
+        var system = profile("batch-system", plan: "pro", multiplier: 25)
         system.isSystemProfile = true
-        let profiles = [plus, otherPlus, pro, fullPro, proLite, pro20, unknown, system]
-        let skipped = [pro, fullPro, proLite, pro20, unknown]
-        let usage = UsageStore(profiles)
+        let usage = UsageStore(targets + skipped + [system])
         usage.isPreview = false
         let store = LocalProxyQueueStore(usageStore: usage)
+        try expect(store.quotaPolicyTargetCount == 6 && store.uniformQuotaRemainingReserve == 0,
+            "default Plus5h and Pro5x/10x/25x/prolite7d share remaining0; other, unknown and system are excluded")
+        try expect(store.setAccountPolicy(id: pro5.id, policy: .init(sevenDayUsedLimit: 100))
+            && store.uniformQuotaRemainingReserve == 0, "explicit weekly100 and missing weekly key show the same default remaining0")
         store.setAccountEnabled(id: otherPlus.id, enabled: false)
-        store.setAccountEnabled(id: pro.id, enabled: false)
+        store.setAccountEnabled(id: pro5.id, enabled: false)
         store.setAccountPriority(id: plus.id, priority: true)
-        store.setAccountLast(id: pro.id, last: true)
+        store.setAccountLast(id: pro5.id, last: true)
         store.setCreditFallback(true)
         try expect(store.setCreditFloors(primary: 2600, secondary: 1600), "synthetic credit floors persist")
-        let oldPro = LocalProxyAccountPolicy(fiveHourUsedLimit: 80, allowsCredits: false, creditPrimaryFloor: 1200, creditSecondaryFloor: 400)
-        try expect(store.setAccountPolicy(id: pro.id, policy: oldPro), "Pro legacy 80 rule persists before batch")
-        let oldPlus = LocalProxyAccountPolicy(fiveHourUsedLimit: 70, allowsCredits: false, creditPrimaryFloor: 1300, creditSecondaryFloor: 300)
-        try expect(store.setAccountPolicy(id: otherPlus.id, policy: oldPlus), "second Plus retains independent credit policy")
-        for (index, candidate) in [fullPro, proLite, pro20, unknown].enumerated() {
-            let old = LocalProxyAccountPolicy(fiveHourUsedLimit: index == 0 ? 100 : 80, allowsCredits: index.isMultiple(of: 2),
-                creditPrimaryFloor: 1800 + index, creditSecondaryFloor: 500 + index)
-            try expect(store.setAccountPolicy(id: candidate.id, policy: old), "non-Plus policy fixture persists")
+        let oldPlus = LocalProxyAccountPolicy(fiveHourUsedLimit: 70, sevenDayUsedLimit: 23, allowsCredits: false,
+            creditPrimaryFloor: 1300, creditSecondaryFloor: 300)
+        try expect(store.setAccountPolicy(id: otherPlus.id, policy: oldPlus), "Plus fixture has independent weekly and credit settings")
+        for (index, candidate) in (proProfiles + skipped).enumerated() {
+            let old = LocalProxyAccountPolicy(fiveHourUsedLimit: 65 + Double(index), sevenDayUsedLimit: index == 0 ? 20 : nil,
+                allowsCredits: index.isMultiple(of: 2), creditPrimaryFloor: 1800 + index, creditSecondaryFloor: 500 + index)
+            try expect(store.setAccountPolicy(id: candidate.id, policy: old), "independent existing policy fixture persists")
         }
         let previous = store.preferences
         let order = store.rows.map(\.id), revision = store.policyRevision
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         let skippedBytes = try Dictionary(uniqueKeysWithValues: skipped.map { ($0.id, try encoder.encode(previous.policy(for: $0.id))) })
-        try expect(store.plusPolicyTargetCount == 2 && store.uniformPlusFiveHourUsedLimit == nil,
-            "mixed Plus limits stay blank and count excludes Pro/prolite/20x/unknown/system")
-        try expect(store.setPlusFiveHourUsedLimit(30), "one batch saves only both current Plus accounts including non-participants")
+        try expect(store.uniformQuotaRemainingReserve == nil, "mixed comparison includes the applicable weekly window of every Pro tier")
+        try expect(store.setQuotaRemainingReserve(20), "one batch applies remaining20 to Plus5h and every Pro7d including non-participants")
         let bytes = try Data(contentsOf: file)
         let disk = try JSONDecoder().decode(LocalProxyPreferences.self, from: bytes)
-        try expect(store.policyRevision == revision + 1 && store.uniformPlusFiveHourUsedLimit == 30
-            && [plus, otherPlus].allSatisfy { disk.policy(for: $0.id).fiveHourUsedLimit == 30 },
-            "one revision publishes the persisted Plus 5h value")
+        try expect(store.policyRevision == revision + 1 && store.uniformQuotaRemainingReserve == 20,
+            "single commit publishes the shared remaining20 value")
+        for candidate in targets {
+            let old = previous.policy(for: candidate.id), saved = disk.policy(for: candidate.id)
+            try expect((candidate.isProPlan ? saved.effectiveSevenDayUsedLimit : saved.fiveHourUsedLimit) == 80,
+                "\(candidate.id) persists used80 in its applicable window")
+            try expect((candidate.isProPlan ? saved.fiveHourUsedLimit == old.fiveHourUsedLimit : saved.sevenDayUsedLimit == old.sevenDayUsedLimit)
+                && saved.allowsCredits == old.allowsCredits && saved.creditPrimaryFloor == old.creditPrimaryFloor
+                && saved.creditSecondaryFloor == old.creditSecondaryFloor,
+                "\(candidate.id) keeps its other quota window and credit permissions/floors")
+        }
         try expect(disk.enabledIDs == previous.enabledIDs && disk.order == previous.order && disk.priorityIDs == previous.priorityIDs
             && disk.lastIDs == previous.lastIDs && disk.lastOverrides == previous.lastOverrides
             && disk.creditFallback == previous.creditFallback && disk.creditPrimaryFloor == previous.creditPrimaryFloor
             && disk.creditSecondaryFloor == previous.creditSecondaryFloor && store.rows.map(\.id) == order,
-            "batch preserves participation, order, priority, last flags, credit switch and floors")
+            "mixed batch preserves participation, order, priority, last flags, global credit switch and floors")
         try expect(try skipped.allSatisfy { try encoder.encode(disk.policy(for: $0.id)) == skippedBytes[$0.id] }
-            && disk.accountPolicies?[system.id] == nil, "every non-Plus policy byte representation and system policy remain unchanged")
-        try expect(disk.policy(for: otherPlus.id).allowsCredits == oldPlus.allowsCredits
-            && disk.policy(for: otherPlus.id).creditPrimaryFloor == oldPlus.creditPrimaryFloor
-            && disk.policy(for: otherPlus.id).creditSecondaryFloor == oldPlus.creditSecondaryFloor,
-            "Plus batch changes only its existing 5h percentage")
-        try expect(store.plusPolicyMessage?.contains("2 Plus accounts") == true && store.plusPolicyMessage?.contains("other plans remain unchanged") == true,
-            "saved message exposes Plus-only scope and skipped plans")
-        try expect(!String(decoding: bytes, as: UTF8.self).contains("subscriptionUsedLimit"), "persisted schema reuses fiveHourUsedLimit with no general subscription field")
+            && disk.accountPolicies?[system.id] == nil, "unknown/free/team policies remain byte-identical and system is untouched")
+        try expect(store.quotaPolicyMessage?.contains("20% remaining-quota reserve for 6 Plus / Pro accounts: Plus 5h, Pro 7d") == true,
+            "success message reports the one remaining percentage and both correct windows")
         let reload = LocalProxyQueueStore(usageStore: usage)
-        let cap = reload.preferences.policy(for: plus.id)
-        try expect(reload.plusPolicyTargetCount == 2 && reload.uniformPlusFiveHourUsedLimit == 30,
-            "production Store reloads only the saved Plus 5h limit")
-        try expect(LocalProxyAdmission.quota(plus, now: now, policy: cap) == .usageLimit, "Plus equality stops at 5h used percentage")
-        try expect(LocalProxyAdmission.quota(pro, now: now, policy: reload.preferences.policy(for: pro.id)) == .quotaUnknown
-            && LocalProxyAdmission.quota(fullPro, now: now, policy: reload.preferences.policy(for: fullPro.id)) == nil,
-            "weekly-only Pro old 80 and 100 admission semantics stay unchanged")
-        var belowPlus = plus
-        belowPlus.lastSnapshot?.fiveHour?.usedPercent = 29.99
-        try expect(LocalProxyAdmission.quota(belowPlus, now: now, policy: cap) == nil, "decimal below-boundary allows Plus even when weekly use is higher")
-        var spent = plus
-        spent.lastSnapshot?.fiveHour?.usedPercent = 100
-        try expect(LocalProxyAdmission.quota(spent, now: now, creditFloor: 0, allowPaidCredits: true, policy: cap) == .usageLimit,
-            "credits cannot bypass a Plus 5h cap below 100")
-        var full = cap
-        full.fiveHourUsedLimit = 100
-        try expect(LocalProxyAdmission.quota(spent, now: now, creditFloor: 0, allowPaidCredits: true, policy: full) == nil,
-            "100 retains explicitly authorized credit fallback")
-        for value in [Double.nan, .infinity, -0.1, 100.1] {
-            try expect(!LocalProxyAccountPolicy(fiveHourUsedLimit: value).isValid && !reload.setPlusFiveHourUsedLimit(value),
-                "invalid 5h cap is rejected without mutation")
+        try expect(reload.quotaPolicyTargetCount == 6 && reload.uniformQuotaRemainingReserve == 20,
+            "production Store reloads the shared remaining percentage across both plan families")
+        for original in targets {
+            var candidate = original
+            let policy = reload.preferences.policy(for: candidate.id)
+            func setUsed(_ used: Double) {
+                if candidate.isProPlan { candidate.lastSnapshot?.sevenDay?.usedPercent = used }
+                else { candidate.lastSnapshot?.fiveHour?.usedPercent = used }
+            }
+            setUsed(79.99)
+            try expect(LocalProxyAdmission.quota(candidate, now: now, policy: policy) == nil,
+                "\(candidate.id) permits new subscription requests above remaining20")
+            for used in [80.0, 100] {
+                setUsed(used)
+                try expect(LocalProxyAdmission.quota(candidate, now: now, policy: policy) == .usageLimit
+                    && LocalProxyAdmission.quota(candidate, now: now, creditFloor: 0, allowPaidCredits: true, policy: policy) == .usageLimit,
+                    "\(candidate.id) stops at/below remaining20 and credits cannot bypass the reserve")
+            }
         }
-        try expect(try Data(contentsOf: file) == bytes && reload.uniformPlusFiveHourUsedLimit == 30, "invalid attempts preserve disk and both Plus caps")
-        try expect(reload.setPlusFiveHourUsedLimit(37.25) && LocalProxyQueueStore(usageStore: usage).uniformPlusFiveHourUsedLimit == 37.25,
-            "decimal Plus batch survives production reload")
-        var override = reload.preferences.policy(for: plus.id)
-        override.fiveHourUsedLimit = 70
-        try expect(reload.setAccountPolicy(id: plus.id, policy: override) && reload.uniformPlusFiveHourUsedLimit == nil
-            && reload.preferences.policy(for: otherPlus.id).fiveHourUsedLimit == 37.25,
-            "individual Plus override makes uniform field mixed without touching peers")
-        try expect(reload.setPlusFiveHourUsedLimit(30), "batch deliberately unifies an overridden Plus")
-        let noPlusUsage = UsageStore(skipped)
-        noPlusUsage.isPreview = false
-        let noPlus = LocalProxyQueueStore(usageStore: noPlusUsage)
-        try expect(noPlus.plusPolicyTargetCount == 0 && noPlus.uniformPlusFiveHourUsedLimit == nil && !noPlus.setPlusFiveHourUsedLimit(20)
-            && noPlus.plusPolicyMessage?.contains("No verified Plus accounts") == true,
-            "no known Plus disables batch and explicitly skips unknown/other plans")
+        let legacy = try JSONDecoder().decode(LocalProxyAccountPolicy.self, from: Data(#"{"fiveHourUsedLimit":80.1,"allowsCredits":true}"#.utf8))
+        try expect(legacy.fiveHourUsedLimit == 80.1 && legacy.sevenDayUsedLimit == nil
+            && legacy.remainingReserve(isProPlan: false) == 19.9 && legacy.remainingReserve(isProPlan: true) == 0,
+            "legacy policy JSON retains exact used cutoff and defaults weekly reserve to zero")
+        try expect(try JSONDecoder().decode(LocalProxyAccountPolicy.self, from: encoder.encode(legacy)) == legacy,
+            "legacy optional weekly nil survives a Codable round trip")
+        for value in [Double.nan, .infinity, -.infinity, -0.1, 100.1] {
+            try expect(!LocalProxyAccountPolicy(sevenDayUsedLimit: value).isValid && !reload.setQuotaRemainingReserve(value),
+                "invalid remaining input is rejected without clamping or partial mutation")
+        }
+        try expect(try Data(contentsOf: file) == bytes && reload.uniformQuotaRemainingReserve == 20,
+            "invalid batch attempts preserve the whole mixed batch on disk")
+        for remaining in [20.1, 0, 100] {
+            try expect(reload.setQuotaRemainingReserve(remaining) && reload.uniformQuotaRemainingReserve == remaining,
+                "shared remaining\(remaining) persists for all targets")
+            let fresh = LocalProxyQueueStore(usageStore: usage)
+            for original in targets {
+                var candidate = original
+                var policy = fresh.preferences.policy(for: candidate.id)
+                policy.allowsCredits = true
+                try expect(policy.remainingReserve(isProPlan: candidate.isProPlan) == remaining,
+                    "\(candidate.id) reloads its applicable remaining\(remaining) window")
+                if remaining == 0 {
+                    if candidate.isProPlan { candidate.lastSnapshot?.sevenDay?.usedPercent = 100 }
+                    else { candidate.lastSnapshot?.fiveHour?.usedPercent = 100 }
+                    try expect(LocalProxyAdmission.quota(candidate, now: now, policy: policy) == .quota
+                        && LocalProxyAdmission.quota(candidate, now: now, creditFloor: 0, allowPaidCredits: true, policy: policy) == nil,
+                        "\(candidate.id) remaining0 retains official exhaustion and authorized credit fallback")
+                } else if remaining == 100 {
+                    if candidate.isProPlan { candidate.lastSnapshot?.sevenDay?.usedPercent = 0 }
+                    else { candidate.lastSnapshot?.fiveHour?.usedPercent = 0 }
+                    try expect(LocalProxyAdmission.quota(candidate, now: now, policy: policy) == .usageLimit,
+                        "\(candidate.id) remaining100 admits no new requests even at used0")
+                }
+                candidate.lastSnapshot?.sevenDay = nil
+                try expect(LocalProxyAdmission.quota(candidate, now: now, policy: policy) == .quotaUnknown,
+                    "\(candidate.id) missing evidence stays unknown before the quota reserve")
+            }
+        }
+        try expect(reload.setQuotaRemainingReserve(37.25), "a decimal shared reserve saves once across plans")
+        var override = reload.preferences.policy(for: pro10.id)
+        override.sevenDayUsedLimit = 70
+        try expect(reload.setAccountPolicy(id: pro10.id, policy: override) && reload.uniformQuotaRemainingReserve == nil
+            && reload.preferences.policy(for: plus.id).fiveHourUsedLimit == 62.75,
+            "one Pro weekly override makes the top field mixed without changing its Plus peers")
+        let noTargetsUsage = UsageStore(skipped + [system])
+        noTargetsUsage.isPreview = false
+        let noTargets = LocalProxyQueueStore(usageStore: noTargetsUsage)
+        try expect(noTargets.quotaPolicyTargetCount == 0 && noTargets.uniformQuotaRemainingReserve == nil
+            && !noTargets.setQuotaRemainingReserve(20) && noTargets.quotaPolicyMessage?.contains("No verified Plus or Pro accounts") == true,
+            "names and multipliers cannot promote unknown/free/team/system into a target")
+        var hardLimitedPro = pro5
+        hardLimitedPro.lastSnapshot?.fiveHour = .init(usedPercent: 100, resetsAt: now.addingTimeInterval(3600))
+        try expect(LocalProxyAdmission.quota(hardLimitedPro, now: now, creditFloor: 0, allowPaidCredits: true,
+            policy: .init(sevenDayUsedLimit: 100)) == .quota, "weekly reserve zero cannot bypass an official extra hard limit")
 
+        try expect(reload.setQuotaRemainingReserve(70), "prepare persisted used30 mixed runtime admission fixture")
         let child = Process()
         child.executableURL = URL(fileURLWithPath: "/bin/sleep")
         child.arguments = ["45"]
@@ -124,49 +172,53 @@ extension LocalProxyHostFixtures {
         reload.phase = .running
         reload.runID = UUID().uuidString
         reload.controlKey = "batch-fixture-key"
-        reload.registeredPool = Dictionary(uniqueKeysWithValues: [plus, otherPlus, pro].map { ($0.id, LocalProxyQueueStore.PoolBinding(
+        reload.registeredPool = Dictionary(uniqueKeysWithValues: targets.map { ($0.id, LocalProxyQueueStore.PoolBinding(
             home: $0.codexHomeURL, account: $0.recordedAccountKey, accountID: $0.lastSnapshot!.accountID!)) })
-        reload.activeIDs = [plus.id, otherPlus.id, pro.id]
-        reload.preferences.enabledIDs = [plus.id, otherPlus.id, pro.id]
+        reload.activeIDs = Set(targets.map(\.id))
+        reload.preferences.enabledIDs = Set(targets.map(\.id))
         let registry = root.appendingPathComponent(DispatchActivityStore.stateName)
-        for profile in [plus, otherPlus] {
+        for candidate in targets {
             func request(_ command: String, id: String) -> LocalProxyRequest {
                 .init(schemaVersion: 1, runID: reload.runID!, key: reload.controlKey!, command: command, requestID: id,
-                      profileID: command == "order_end" ? "" : profile.id, leaseID: nil)
+                      profileID: command == "order_end" ? "" : candidate.id, leaseID: nil)
             }
             let evidence = await reload.handle(request("quota_recovery", id: UUID().uuidString))
-            try expect(evidence.error == "usage_limit" && evidence.quotaObservedAt == nil, "reloaded \(profile.id) recovery observes saved 5h cap")
+            try expect(evidence.error == "usage_limit" && evidence.quotaObservedAt == nil,
+                "\(candidate.id) running recovery observes its persisted quota-window reserve")
             let before = try? Data(contentsOf: registry), id = UUID().uuidString
             let ordered = await reload.handle(request("order", id: id))
-            try expect(ordered.ok, "saved 5h cap does not change order membership")
+            try expect(ordered.ok, "mixed reserve does not remove order membership")
             let result = await reload.handle(request("acquire", id: id))
             try expect(result.error == "usage_limit" && result.accessToken == nil && result.leaseID == nil
                 && reload.leases.isEmpty && (try? Data(contentsOf: registry)) == before,
-                "reloaded \(profile.id) acquire stops before credentials or reservation")
+                "\(candidate.id) running acquire denies before credentials or reservation")
             _ = await reload.handle(request("order_end", id: id))
         }
-        usage.profiles[2].lastSnapshot?.accountID = "changed-skipped-pro"
-        try expect(reload.setPlusFiveHourUsedLimit(30) && reload.preferences.policy(for: pro.id) == oldPro,
-            "a skipped Pro running binding cannot block or change the Plus-only batch")
-        usage.profiles[2] = pro
+        usage.profiles[targets.count].lastSnapshot?.accountID = "changed-skipped-unknown"
+        try expect(reload.setQuotaRemainingReserve(70), "a skipped unknown account binding cannot block the verified mixed batch")
+        usage.profiles[targets.count] = unknown
         let committed = try Data(contentsOf: file), committedPolicies = reload.preferences.accountPolicies
-        usage.profiles[1].lastSnapshot?.accountID = "changed-target-plus"
-        try expect(!reload.setPlusFiveHourUsedLimit(80) && reload.preferences.accountPolicies == committedPolicies
-            && Data(contentsOf: file) == committed && reload.plusPolicyMessage?.contains("No rules changed") == true,
-            "any stale target Plus running identity rejects the entire batch with no partial success")
-        usage.profiles[1] = otherPlus
+        for index in [0, 2, 4] {
+            let original = usage.profiles[index]
+            usage.profiles[index].lastSnapshot?.accountID = "changed-target"
+            try expect(!reload.setQuotaRemainingReserve(20) && reload.preferences.accountPolicies == committedPolicies
+                && Data(contentsOf: file) == committed && reload.quotaPolicyMessage?.contains("No rules changed") == true,
+                "stale target identity \(original.id) rejects the whole mixed batch without partial updates")
+            usage.profiles[index] = original
+        }
         let failed = LocalProxyQueueStore(usageStore: usage), failedRevision = failed.policyRevision
         let blocked = URL(fileURLWithPath: file.path + ".blocked")
         try FileManager.default.createDirectory(at: blocked, withIntermediateDirectories: false)
         defer { try? FileManager.default.removeItem(at: blocked) }
         LocalProxyFixtureRuntime.failPreferenceRename = true
-        let saved = failed.setPlusFiveHourUsedLimit(80)
+        let saved = failed.setQuotaRemainingReserve(20)
         LocalProxyFixtureRuntime.failPreferenceRename = false
         try expect(!saved && failed.policyRevision == failedRevision && failed.preferencesFailure == .save
             && failed.preferences.accountPolicies == committedPolicies && Data(contentsOf: file) == committed,
-            "atomic write refusal rolls back both Plus caps and preserves every committed non-Plus policy")
-        try expect(LocalProxyQueueStore(usageStore: usage).uniformPlusFiveHourUsedLimit == 30, "fresh Store sees no partial success after refusal")
-        print("PASS: \(checks) Plus-only 5h policy checks; production save/reload/recovery/acquire with isolated data")
+            "atomic write refusal rolls back every Plus/Pro window and preserves skipped policies")
+        try expect(LocalProxyQueueStore(usageStore: usage).uniformQuotaRemainingReserve == 70,
+            "fresh Store sees no partial mixed batch after save refusal")
+        print("PASS: \(checks) mixed Plus/Pro remaining-quota checks; production save/reload/recovery/acquire with isolated data")
     }
 
     @MainActor static func quotaAdmissionBudgetFixtures() async throws {

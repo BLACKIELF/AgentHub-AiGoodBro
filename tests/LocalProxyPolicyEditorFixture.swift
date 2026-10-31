@@ -105,13 +105,13 @@ private struct PolicyEditorFixtureRoot: View {
     var saved: [Double] = []
     func save(_ limit: Double) -> Bool {
         guard !failSave else { message = "No rules were saved"; return false }
-        saved.append(limit); savedLimit = limit; message = "Saved current Plus accounts"; return true
+        saved.append(limit); savedLimit = limit; message = "Saved current Plus / Pro accounts"; return true
     }
 }
 private struct UniformPolicyFixtureRoot: View {
     @ObservedObject var model: UniformPolicyFixtureModel
     var body: some View {
-        LocalProxyPlusLimitEditor(language: .en, accountCount: 2, savedLimit: model.savedLimit,
+        LocalProxyQuotaLimitEditor(language: .en, accountCount: 2, savedLimit: model.savedLimit,
             enabled: true, canApply: true, message: model.message, save: { model.save($0) })
             .padding(12).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .background(PolicyEditorFixtureBounds(name: "uniform-root"))
@@ -247,10 +247,10 @@ private enum LocalProxyPolicyEditorFixture {
             require(abs(host.bounds.width - width) < 1, "Native viewport did not resize to \(width)")
         }
         func checkSaved(_ value: Double, text: String) {
-            require(model.row.policy.fiveHourUsedLimit == value, "Published policy differs from \(value)")
-            require(model.persisted()?.fiveHourUsedLimit == value, "Persisted rule differs from \(value)")
+            require(model.row.policy.fiveHourUsedLimit == LocalProxyAccountPolicy.complementPercent(value), "Published policy differs from \(value)")
+            require(model.persisted()?.fiveHourUsedLimit == LocalProxyAccountPolicy.complementPercent(value), "Persisted rule differs from \(value)")
             require(fields().first?.stringValue == text, "A live input reverted after saving \(value)")
-            require(PolicyEditorFixtureProbe.summary.contains("5h used limit \(text)%"), "Rendered summary differs from \(value)")
+            require(PolicyEditorFixtureProbe.summary.contains("5h remaining quota \(text)%"), "Rendered summary differs from \(value)")
             require(!PolicyEditorFixtureProbe.dirty && !PolicyEditorFixtureProbe.saveFailed, "Successful save remained unsaved")
         }
 
@@ -284,7 +284,7 @@ private enum LocalProxyPolicyEditorFixture {
 
         model.failSave = true
         press("save")
-        require(model.persisted()?.fiveHourUsedLimit == 100 && model.row.policy.fiveHourUsedLimit == 100,
+        require(model.persisted()?.fiveHourUsedLimit == 0 && model.row.policy.fiveHourUsedLimit == 0,
                 "Rejected save changed the persisted policy")
         require(fields()[0].stringValue == "55.5" && PolicyEditorFixtureProbe.dirty && PolicyEditorFixtureProbe.saveFailed,
                 "Rejected save did not retain the draft and failure state")
@@ -346,7 +346,7 @@ private enum LocalProxyPolicyEditorFixture {
         press("credits")
         model.preferences.accountPolicies?[model.row.id]?.fiveHourUsedLimit = 25
         model.publishRow(); pump()
-        require(fields()[0].stringValue == "25", "Credits-only draft retained the old cap after a batch")
+        require(fields()[0].stringValue == "75", "Credits-only draft retained the old cap after a batch")
         press("save")
         require(model.persisted()?.fiveHourUsedLimit == 25 && model.persisted()?.allowsCredits == true,
                 "Saving credits-only draft widened the committed 5h cap")
@@ -355,7 +355,7 @@ private enum LocalProxyPolicyEditorFixture {
         edit("3000", at: 1)
         model.preferences.accountPolicies?[model.row.id]?.fiveHourUsedLimit = 30
         model.publishRow(); pump()
-        require(fields()[0].stringValue == "30" && fields()[1].stringValue == "3000", "Floor-only draft did not merge a batch cap by field")
+        require(fields()[0].stringValue == "70" && fields()[1].stringValue == "3000", "Floor-only draft did not merge a batch cap by field")
         press("save")
         require(model.persisted()?.fiveHourUsedLimit == 30 && model.persisted()?.creditPrimaryFloor == 3000,
                 "Saving floor-only draft widened the committed cap")
@@ -369,10 +369,45 @@ private enum LocalProxyPolicyEditorFixture {
         model.publishRow(); pump()
         require(fields().count == 1 && fields()[0].stringValue == "55.5", "Batch update discarded individual draft")
         press("save")
-        require(model.persisted()?.fiveHourUsedLimit == 55.5,
+        require(model.persisted()?.fiveHourUsedLimit == 44.5,
                 "Individual draft did not save its explicit 5h limit after a batch update")
-        require(PolicyEditorFixtureProbe.summary.contains("5h used limit 55.5%"), "Individual override did not show the unchanged 5h window")
+        require(PolicyEditorFixtureProbe.summary.contains("5h remaining quota 55.5%"), "Individual override did not show the unchanged 5h window")
         print("PASS batch update preserves individual draft and saves its explicit 5h value")
+
+        // Legacy decimal cutoffs display exactly without rewriting an untouched limit.
+        model.preferences.accountPolicies?[model.row.id]?.fiveHourUsedLimit = 80.1
+        model.publishRow(); pump()
+        require(fields()[0].stringValue == "19.9" && !PolicyEditorFixtureProbe.dirty, "Legacy decimal cutoff displayed inaccurately or became dirty")
+        press("credits"); press("save")
+        require(model.persisted()?.fiveHourUsedLimit == 80.1, "Credits-only save changed an untouched legacy decimal cutoff")
+        // A plan change must not interpret the previous window's draft as the new window's reserve.
+        model.row.isProPlan = true; pump()
+        require(fields()[0].stringValue == "0" && !PolicyEditorFixtureProbe.dirty && model.row.policy.sevenDayUsedLimit == nil,
+                "Plus to Pro change transferred the five-hour reserve into a default weekly policy")
+        require(PolicyEditorFixtureProbe.summary.contains("7d remaining quota 0%"), "Pro summary does not show the weekly reserve")
+        for text in ["20", "20.1", "0", "100"] {
+            edit(text); press("save")
+            let value = Double(text)!
+            require(model.persisted()?.effectiveSevenDayUsedLimit == LocalProxyAccountPolicy.complementPercent(value)
+                && model.persisted()?.fiveHourUsedLimit == 80.1 && fields()[0].stringValue == text && !PolicyEditorFixtureProbe.dirty,
+                "Pro weekly native input/save failed or modified the legacy short-window cutoff")
+            require(PolicyEditorFixtureProbe.summary.contains("7d remaining quota \(text)%"), "Pro weekly summary differs from the saved reserve")
+        }
+        edit("33.3"); model.failSave = true; press("save")
+        require(model.persisted()?.effectiveSevenDayUsedLimit == 0 && fields()[0].stringValue == "33.3"
+            && PolicyEditorFixtureProbe.dirty && PolicyEditorFixtureProbe.saveFailed, "Failed Pro save changed the weekly cutoff or lost its draft")
+        model.failSave = false; press("save")
+        require(model.persisted()?.effectiveSevenDayUsedLimit == 66.7 && !PolicyEditorFixtureProbe.dirty, "Pro draft retry did not persist")
+        press("credits")
+        let oldCredits = model.row.policy.allowsCredits
+        edit("45")
+        model.row.isProPlan = false; pump()
+        require(fields()[0].stringValue == "19.9" && PolicyEditorFixtureProbe.dirty,
+                "Pro to Plus change retained a weekly draft or lost the independent credit draft")
+        press("save")
+        require(model.persisted()?.fiveHourUsedLimit == 80.1 && model.persisted()?.effectiveSevenDayUsedLimit == 66.7
+            && model.persisted()?.allowsCredits == !oldCredits, "Plan change corrupted a quota window or lost credit draft")
+        print("PASS legacy decimal cutoffs, Pro weekly fields/save/retry and bidirectional plan changes preserve independent windows")
 
         let uniform = UniformPolicyFixtureModel()
         let uniformHost = UniformPolicyFixtureHostingView(rootView: UniformPolicyFixtureRoot(model: uniform))
@@ -398,9 +433,13 @@ private enum LocalProxyPolicyEditorFixture {
             while let event = app.nextEvent(matching: [.leftMouseDown, .leftMouseUp], until: Date(), inMode: .default, dequeue: true) { app.sendEvent(event) }
             pump()
         }
-        require(uniformFields().count == 1 && uniformFields()[0].stringValue.isEmpty, "Unset/mixed limit fabricated a default 100")
-        editUniform("37.25"); applyUniform()
-        require(uniform.saved == [37.25] && uniformFields()[0].stringValue == "37.25", "Native uniform click failed to retain saved decimal")
+        require(uniformFields().count == 1 && uniformFields()[0].stringValue.isEmpty, "Mixed Plus/Pro policy fabricated a shared value")
+        uniform.savedLimit = 0; pump()
+        require(uniformFields()[0].stringValue == "0", "Uniform default remaining0 did not render as zero")
+        uniform.savedLimit = nil; pump()
+        require(uniformFields()[0].stringValue.isEmpty, "Mixed Plus/Pro refresh did not clear a clean shared input")
+        editUniform("20"); applyUniform()
+        require(uniform.saved == [20] && uniformFields()[0].stringValue == "20", "Native shared control did not save the requested remaining20")
         editUniform("55.5")
         let uniformInputID = ObjectIdentifier(uniformFields()[0])
         uniform.savedLimit = 70; pump()
@@ -410,9 +449,9 @@ private enum LocalProxyPolicyEditorFixture {
                 && uniformFields()[0].stringValue == "55.5", "Uniform resize/refresh replaced the input or unsaved draft")
         }
         uniform.failSave = true; applyUniform()
-        require(uniform.saved == [37.25] && uniformFields()[0].stringValue == "55.5", "Rejected uniform save changed rules or lost the draft")
+        require(uniform.saved == [20] && uniformFields()[0].stringValue == "55.5", "Rejected uniform save changed rules or lost the draft")
         uniform.failSave = false; applyUniform()
-        require(uniform.saved == [37.25, 55.5] && uniformFields()[0].stringValue == "55.5", "Uniform draft retry did not save current input")
+        require(uniform.saved == [20, 55.5] && uniformFields()[0].stringValue == "55.5", "Uniform draft retry did not save current input")
         for invalid in ["", "nan", "-1", "101"] {
             editUniform(invalid); applyUniform()
             require(uniform.saved.count == 2 && uniformFields()[0].stringValue == invalid, "Invalid uniform draft was saved or replaced")

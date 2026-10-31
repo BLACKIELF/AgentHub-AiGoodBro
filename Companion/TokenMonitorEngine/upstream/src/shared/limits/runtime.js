@@ -515,19 +515,35 @@ function createLimitsRuntime(initialOptions = {}, deps = {}) {
     return (lane.accountRevisions.get(identityKey) || 0) === (dispatch.accountRevisions.get(identityKey) || 0);
   }
 
-  function applyAttempt(lane, identityKey, row, status, at) {
+  function applyAttempt(lane, identityKey, row, status, at, invalidatedWindowLabels) {
     const existing = lane.identities.get(identityKey) || {
       identityKey,
       lastGood: null,
       lastAttempt: null
     };
     if (status === 'ok') {
+      const retainedWindows = existing.lastGood && invalidatedWindowLabels?.size
+        ? existing.lastGood.windows.filter((window) => !invalidatedWindowLabels.has(window.label)
+          && !row.windows.some((current) => current.label === window.label))
+        : [];
+      if (retainedWindows.length) {
+        // The wire has one freshness status for the whole row. Retained values
+        // remain stale even when independent current windows were refreshed.
+        status = 'unavailable';
+        row = { ...row, status, updatedAt: existing.lastGood.updatedAt, windows: [...retainedWindows, ...row.windows] };
+      }
       existing.lastGood = row;
     } else if (!TRANSIENT_STATUSES.has(status)) {
       existing.lastGood = null;
+    } else if (existing.lastGood && invalidatedWindowLabels?.size) {
+      existing.lastGood = {
+        ...existing.lastGood,
+        windows: existing.lastGood.windows.filter((window) => !invalidatedWindowLabels.has(window.label))
+      };
     }
     existing.lastAttempt = { status, at, row };
     lane.identities.set(identityKey, existing);
+    return row;
   }
 
   function matchingIdentityKeys(lane, scope) {
@@ -556,24 +572,46 @@ function createLimitsRuntime(initialOptions = {}, deps = {}) {
     // data), so an explicit removal is the narrow way to delete that identity.
     // It is consumed here and never enters the normalized or synced wire shape.
     const removals = inputRows.filter((row) => row?.removed === true);
+    const cacheInvalidations = new Map();
     const normalizedRows = inputRows
       .filter((row) => row?.removed !== true)
-      .map((row) => normalizeLimitProvider({ ...row, provider: lane.provider }))
+      .map((input) => {
+        const row = normalizeLimitProvider({ ...input, provider: lane.provider });
+        // Cursor supplies account-keyed labels only after a successful summary
+        // identifies the cached seat interpretation as untrustworthy.
+        if (lane.provider === 'cursor' && row?.accountKey && Array.isArray(input.invalidateCachedWindowLabels)) {
+          cacheInvalidations.set(rowIdentityKey(row), new Set(input.invalidateCachedWindowLabels
+            .filter((label) => typeof label === 'string' && label)));
+        }
+        return row;
+      })
       .filter(Boolean);
     const expected = new Set(dispatch.expectedIdentityKeys);
     const represented = new Set();
+    const committedRows = [];
+    const scopedCursor = lane.provider === 'cursor' && dispatch.accountScoped;
+    const scopedKeys = scopedCursor
+      ? [...matchingIdentityKeys(lane, dispatch.scope)].filter((key) => lane.identities.has(key))
+      : [];
+    const scopedTargetKey = scopedKeys.length === 1 ? scopedKeys[0] : dispatch.identityKey;
+    let scopedCursorHandled = false;
+    let retryUsesCommittedRows = scopedCursor;
 
     if (attemptError) {
-      const status = attemptError.status || (attemptError.code === 'PROBE_TIMEOUT' ? 'timeout' : 'unavailable');
+      const errorStatus = attemptError.status || (attemptError.code === 'PROBE_TIMEOUT' ? 'timeout' : 'unavailable');
+      // An unkeyed terminal error cannot identify which of several matching
+      // accounts is unauthorized, so none of their cached values may be erased.
+      const status = scopedCursor && scopedKeys.length > 1 && !TRANSIENT_STATUSES.has(errorStatus)
+        ? 'unavailable' : errorStatus;
       const targets = dispatch.accountScoped
-        ? [dispatch.identityKey]
+        ? scopedCursor && scopedKeys.length ? scopedKeys : [dispatch.identityKey]
         : expected.size ? [...expected] : [`${lane.provider}:*`];
       for (const identityKey of targets) {
         if (!accountRevisionStillCurrent(lane, identityKey, dispatch)) continue;
-        applyAttempt(lane, identityKey, { provider: lane.provider }, status, attemptAt);
+        committedRows.push(applyAttempt(lane, identityKey, { provider: lane.provider, status }, status, attemptAt));
       }
       rebuildSnapshot();
-      return true;
+      return status !== errorStatus ? { retryRows: committedRows } : true;
     }
 
     const genericTerminal = normalizedRows.length === 1
@@ -592,25 +630,53 @@ function createLimitsRuntime(initialOptions = {}, deps = {}) {
     }
 
     for (const row of normalizedRows) {
-      let identityKey = rowIdentityKey(row);
-      if (identityKey === `${lane.provider}:*` && dispatch.accountScoped) identityKey = dispatch.identityKey;
+      const incomingIdentityKey = rowIdentityKey(row);
+      // Cursor probes may return several accounts even for a scoped refresh.
+      // Match a named scope or its already-known canonical key, never a peer.
+      const matchesScopedCursor = scopedCursor && (scopedKeys.length === 1
+        ? incomingIdentityKey === scopedKeys[0]
+        : scopedKeys.length === 0 && rowMatchesScope(row, dispatch.scope));
+      if (scopedCursor && (scopedKeys.length > 1
+        || (incomingIdentityKey !== `${lane.provider}:*` && !matchesScopedCursor)
+        || (incomingIdentityKey === `${lane.provider}:*` && !TRANSIENT_STATUSES.has(row.status)))) continue;
+      let identityKey = incomingIdentityKey;
+      if (identityKey === `${lane.provider}:*` && dispatch.accountScoped) identityKey = scopedCursor ? scopedTargetKey : dispatch.identityKey;
       if (!accountRevisionStillCurrent(lane, identityKey, dispatch)) continue;
-      if (dispatch.accountScoped && identityKey !== dispatch.identityKey) identityKey = dispatch.identityKey;
+      if (dispatch.accountScoped && identityKey !== dispatch.identityKey && !matchesScopedCursor
+        && !(scopedCursor && incomingIdentityKey === `${lane.provider}:*`)) identityKey = dispatch.identityKey;
 
       if (identityKey === `${lane.provider}:*` && TRANSIENT_STATUSES.has(row.status) && expected.size > 0) {
         for (const expectedKey of expected) {
           if (!accountRevisionStillCurrent(lane, expectedKey, dispatch)) continue;
           represented.add(expectedKey);
-          applyAttempt(lane, expectedKey, row, row.status, attemptAt);
+          committedRows.push(applyAttempt(lane, expectedKey, row, row.status, attemptAt));
         }
         continue;
       }
 
       represented.add(identityKey);
-      applyAttempt(lane, identityKey, row, row.status, attemptAt);
+      if (scopedCursor) scopedCursorHandled = true;
+      const invalidatedLabels = incomingIdentityKey === identityKey ? cacheInvalidations.get(incomingIdentityKey) : null;
+      if (invalidatedLabels?.size) retryUsesCommittedRows = true;
+      const committedRow = applyAttempt(lane, identityKey, row, row.status, attemptAt, invalidatedLabels);
+      committedRows.push(committedRow);
       // Marks the row as measurable by this runtime, so a persisted seed for a
       // provider that has not answered yet can never become a burn baseline.
-      if (row.status === 'ok') markLimitsProbeSuccess(burnState, row);
+      if (committedRow.status === 'ok') markLimitsProbeSuccess(burnState, committedRow);
+    }
+
+    if (scopedCursor && !scopedCursorHandled) {
+      for (const identityKey of scopedKeys.length ? scopedKeys : [dispatch.identityKey]) {
+        if (!accountRevisionStillCurrent(lane, identityKey, dispatch)) continue;
+        const previous = lane.identities.get(identityKey)?.lastGood;
+        const missing = normalizeLimitProvider({
+          ...previous, provider: lane.provider,
+          accountKey: previous?.accountKey || dispatch.scope?.accountKey || '',
+          accountEmail: previous?.accountEmail || dispatch.scope?.accountEmail || '',
+          status: 'unavailable', updatedAt: attemptAt, windows: []
+        });
+        committedRows.push(applyAttempt(lane, identityKey, missing, 'unavailable', attemptAt));
+      }
     }
 
     if (!dispatch.accountScoped && !genericTerminal) {
@@ -620,7 +686,8 @@ function createLimitsRuntime(initialOptions = {}, deps = {}) {
       }
     }
     rebuildSnapshot();
-    return true;
+    // Retry only rows accepted for a Cursor scope, or stale partial results.
+    return retryUsesCommittedRows ? { retryRows: committedRows } : true;
   }
 
   async function dispatchIntent(lane, intent) {
@@ -629,6 +696,7 @@ function createLimitsRuntime(initialOptions = {}, deps = {}) {
       runtimeEpoch,
       providerEpoch: lane.epoch,
       accountScoped: intent.accountScoped,
+      scope: cloneValue(intent.scope),
       identityKey: intent.identityKey,
       accountRevision: lane.accountRevisions.get(intent.identityKey) || 0,
       accountRevisions: new Map(lane.accountRevisions),
@@ -666,11 +734,11 @@ function createLimitsRuntime(initialOptions = {}, deps = {}) {
         { deadlineMs }
       );
       const committed = commitRows(lane, dispatch, rows);
-      if (committed) applyRetryPolicy(lane, intent, rows, null, reportedRetryAfterMs);
+      if (committed) applyRetryPolicy(lane, intent, committed.retryRows || rows, null, reportedRetryAfterMs);
       finishIntent(intent, { superseded: !committed, snapshot: getSnapshot() });
     } catch (error) {
       const committed = commitRows(lane, dispatch, [], error);
-      if (committed) applyRetryPolicy(lane, intent, [], error, reportedRetryAfterMs || error?.retryAfterMs);
+      if (committed) applyRetryPolicy(lane, intent, committed.retryRows || [], committed.retryRows ? null : error, reportedRetryAfterMs || error?.retryAfterMs);
       finishIntent(intent, { superseded: !committed, error, snapshot: getSnapshot() });
     } finally {
       if (lane.active?.intent === intent) lane.active = null;

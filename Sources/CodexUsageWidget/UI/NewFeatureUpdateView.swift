@@ -26,8 +26,8 @@ struct NewFeatureUpdateView: View {
                         .font(.system(size: 20, weight: .semibold))
                     Text(
                         language.text(
-                            "固定反代入口、网络自检与多账号管理。",
-                            "Stable proxy endpoints, network checks and multi-account management.")
+                            "统计显示修复、反代停止与确认强制退出。",
+                            "Statistics display fixes, responsive proxy stopping and confirmed force quit.")
                     )
                     .font(.system(size: 12)).foregroundStyle(.secondary)
                 }
@@ -76,7 +76,42 @@ struct NewFeatureSetupControls: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 12) {
-                featureHeading(language.text("本次更新 · 2.5.2（150）", "What's new · 2.5.2 (150)"), symbol: "arrow.triangle.2.circlepath")
+                featureHeading(language.text("本次更新", "What's new"), symbol: "arrow.triangle.2.circlepath")
+                Text(
+                    language.text(
+                        "修复主页历史统计被合法记录阻断、使用时长不显示的问题。同一数据来源正在更新时保留上次图表并标明状态；切换来源后清除旧图，继续以 Token Monitor 的实际数据为准。",
+                        "Fixes valid history records blocking home statistics and hiding usage duration. While the same data source updates, the previous chart remains with its status marked; switching sources clears the old chart. Token Monitor remains the source of truth."
+                    )
+                )
+                .font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Text(
+                    language.text(
+                        "反代停止与登记清理改为后台限时处理，减少界面被等待阻塞。退出时若你确认“强制退出”，应用会终止自己持有的辅助进程并在最多 5 秒内退出；正在回复的任务可能中断。取消确认不停止任务。",
+                        "Proxy stopping and registry cleanup now run in the background with bounded waits. If you confirm Force Quit, the app terminates its owned helpers and exits within 5 seconds; active replies may be interrupted. Canceling the confirmation leaves tasks running."
+                    )
+                )
+                .font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Text(
+                    language.text(
+                        "主页统计与 Token Monitor 共用数据：总 Token、费用、热图和趋势保持同一来源；图表按需更新，保留已有排版与设置。修复 Codex 压缩记录、结束事件和大型归档漏计，以及 Qwen 重复计数；Cursor 重叠快照按同一用量记录去重。",
+                        "Home statistics share Token Monitor's data for total tokens, costs, activity and trends. Charts update on demand while retaining your layout and preferences. Codex compaction, terminal-event and large-archive omissions, and Qwen duplicate counts are corrected. Overlapping Cursor snapshots are deduplicated by usage record."
+                    )
+                )
+                .font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Text(
+                    language.text(
+                        "反代会先缓冲流式响应的元数据，避免将尚未开始回答的请求误判为已输出；已开始的文字或工具调用不重放。Claude 限流时，收到有效服务端重试时间后显示并按账号等待；已有且仍属同一账号的额度快照会保留。",
+                        "The proxy buffers stream metadata before a reply starts, while never replaying emitted text or tool calls. For Claude rate limits, a valid server retry time is displayed and honored per account. An existing quota snapshot is retained only for the same account."
+                    )
+                )
+                .font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Text(
+                    language.text(
+                        "Cursor 未确认的套餐额度不再误显示为满额；团队池与按量数据按实际返回展示。Claude 回答达到输出上限时按截断结束，不再误报为输入过长，截断状态会随响应返回。",
+                        "Unconfirmed Cursor plan quotas no longer appear fully available; team-pool and on-demand data follow the actual response. Claude replies reaching the output limit return a truncation status instead of an input-length error."
+                    )
+                )
+                .font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 Text(
                     language.text(
                         "Codex 反代默认使用 18080 端口和持久访问密钥，沿用开启时的系统 Clash 连接。连接、网络和额度详情默认收起；自动恢复需手动开启，候选排除香港且仅当前节点失效时切换。自检分别核验连接与账号池。",
@@ -100,8 +135,8 @@ struct NewFeatureSetupControls: View {
                 .font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 Text(
                     language.text(
-                        "可恢复的短暂本地心跳断连会在原等待期限内重试；若无法确认请求状态，停止反代并保留故障记录。已发送的模型请求不会自动重发。",
-                        "Recoverable brief local-heartbeat disconnects retry within the original deadline. If request state cannot be confirmed, the proxy stops and keeps a failure record. Sent model requests are not automatically resubmitted."
+                        "反代面板新增“故障自动恢复”，手动开启后，内部故障会先安全停止并清理，再沿用固定端口与持久密钥重新开启，无需退出桌面端。10 分钟内最多尝试 3 次；手动停止会取消恢复，中断的模型请求不会自动重发。",
+                        "Enable Recover proxy failures automatically in the proxy panel to safely stop, clean up and restart after an internal failure, keeping the same fixed port and persistent key for Desktop. Up to 3 attempts in 10 minutes; manual stop cancels recovery and interrupted model requests are not replayed."
                     )
                 )
                 .font(.system(size: 12)).foregroundStyle(.secondary)

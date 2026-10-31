@@ -11,6 +11,7 @@ struct LocalProxyQueueRow: Identifiable, Equatable {
     var snapshotStale = false
     var isDesktopAccount = false
     var isProPlan = false
+    var requiresRunRegistration = false
     let isEnabled: Bool
     let isPriority: Bool
     let isCurrent: Bool
@@ -37,6 +38,8 @@ struct LocalProxyQuotaWindow: Identifiable, Equatable {
 struct LocalProxyPreferences: Codable {
     var schemaVersion = 1
     var isEnabled = false
+    // Existing installations stay opt-in; this does not start the proxy on launch.
+    var automaticRecoveryEnabled: Bool? = nil
     var order: [String] = []
     var enabledIDs: Set<String> = []
     var knownIDs: Set<String> = []
@@ -122,12 +125,25 @@ struct LocalProxyResetStopRule: Codable, Equatable {
 }
 
 struct LocalProxyAccountPolicy: Codable, Equatable {
+    // Keep the legacy used-percentage key so existing cutoffs do not change.
     var fiveHourUsedLimit: Double = 100
+    // Missing in older preferences means no additional weekly reserve.
+    var sevenDayUsedLimit: Double? = nil
+    var effectiveSevenDayUsedLimit: Double { sevenDayUsedLimit ?? 100 }
+    func remainingReserve(isProPlan: Bool) -> Double {
+        Self.complementPercent(isProPlan ? effectiveSevenDayUsedLimit : fiveHourUsedLimit)
+    }
+    static func complementPercent(_ value: Double) -> Double {
+        guard value.isFinite, let decimal = Decimal(string: String(value), locale: Locale(identifier: "en_US_POSIX")) else { return .nan }
+        return NSDecimalNumber(decimal: Decimal(100) - decimal).doubleValue
+    }
     var allowsCredits = true
     var creditPrimaryFloor: Int? = nil
     var creditSecondaryFloor: Int? = nil
     var isValid: Bool {
-        guard fiveHourUsedLimit.isFinite, (0...100).contains(fiveHourUsedLimit) else { return false }
+        guard fiveHourUsedLimit.isFinite, (0...100).contains(fiveHourUsedLimit),
+            effectiveSevenDayUsedLimit.isFinite, (0...100).contains(effectiveSevenDayUsedLimit)
+        else { return false }
         if creditPrimaryFloor == nil && creditSecondaryFloor == nil { return true }
         guard let primary = creditPrimaryFloor, let secondary = creditSecondaryFloor else { return false }
         return LocalProxyPreferences.validCreditFloors(primary: primary, secondary: secondary)
@@ -246,6 +262,9 @@ enum LocalProxyAdmission {
                 let hasFutureReset = window.resetsAt.map { $0 > now } == true
                 return validExhaustedPercent && hasFutureReset
             }
+        if isPro && policy.effectiveSevenDayUsedLimit < 100 && seven.usedPercent >= policy.effectiveSevenDayUsedLimit {
+            return .usageLimit
+        }
         if !isPro && policy.fiveHourUsedLimit < 100,
             let fiveHour = snapshot.fiveHour, fiveHour.usedPercent >= policy.fiveHourUsedLimit
         {

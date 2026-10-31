@@ -651,6 +651,10 @@ struct CodexProfile: Codable, Equatable, Identifiable {
     var proTierMultiplier: Int? = nil
     var executionPreference: CodexExecutionPreference? = nil
     var dispatchParticipationWindow: DispatchParticipationWindow? = nil
+    // Set only after the explicit add-account flow verifies a unique identity.
+    // A failed mapping transaction remains retryable without losing the login.
+    var dispatchRegistrationPending: Bool? = nil
+    var dispatchRegistrationIdentity: String? = nil
 
     var participatesInAutomaticSwitch: Bool {
         automaticSwitchParticipation != false
@@ -1689,11 +1693,23 @@ final class CodexProfileStore {
     /// External synchronization is an explicit UI action; ordinary persistence,
     /// startup backfills and snapshot reads never enter this path.
     func setDispatchParticipationFromUI(_ enabled: Bool, for id: String) throws {
-        try setDispatchSettingsFromUI(.participation(enabled), for: id)
+        try applyDispatchSettings(.participation(enabled), for: id)
     }
 
     func setDispatchPriorityFromUI(_ enabled: Bool, for id: String) throws {
-        try setDispatchSettingsFromUI(.priority(enabled), for: id)
+        try applyDispatchSettings(.priority(enabled), for: id)
+    }
+
+    @discardableResult
+    func registerPendingDispatchProfile(for id: String) throws -> Bool {
+        guard let profile = state.profiles.first(where: { $0.id == id }),
+            !profile.isSystemProfile, profile.dispatchRegistrationPending == true
+        else { return false }
+        guard let accountID = profile.lastSnapshot?.accountID,
+            profile.dispatchRegistrationIdentity == DispatchParticipationSync.registrationIdentityHash(accountID)
+        else { throw DispatchParticipationError.identityMismatch }
+        try applyDispatchSettings(.registration, for: id)
+        return true
     }
 
     func setDispatchParticipationWindow(_ window: DispatchParticipationWindow, for id: String) throws {
@@ -1708,7 +1724,7 @@ final class CodexProfileStore {
         }
     }
 
-    private func setDispatchSettingsFromUI(_ change: DispatchParticipationSync.Change, for id: String) throws {
+    private func applyDispatchSettings(_ change: DispatchParticipationSync.Change, for id: String) throws {
         guard !persistenceBlocked,
             let profile = state.profiles.first(where: { $0.id == id }),
             let system = state.profiles.first(where: \.isSystemProfile)
@@ -1720,6 +1736,7 @@ final class CodexProfileStore {
         let requiresFreshQuota: Bool
         switch change {
         case .participation(let enabled), .priority(let enabled): requiresFreshQuota = enabled
+        case .registration: requiresFreshQuota = true
         }
         let identity = try Self.validatedDispatchIdentity(
             for: profile,
@@ -1918,7 +1935,8 @@ final class CodexProfileStore {
         for profileID: String,
         allowAccountOnly: Bool = false,
         allowSystemAccountChange: Bool = false,
-        noticeChannels: [String]? = nil
+        noticeChannels: [String]? = nil,
+        requestDispatchRegistration: Bool = false
     ) throws -> CodexResetCreditReceipt? {
         guard CodexResetCreditReceipt.validNoticeChannels(noticeChannels) else {
             throw NSError(
@@ -2069,6 +2087,12 @@ final class CodexProfileStore {
                 }
             }
             self.state.profiles[index].lastSnapshot = record
+            if requestDispatchRegistration, !profile.isSystemProfile, hasBoundCredential,
+                let verifiedAccountID
+            {
+                self.state.profiles[index].dispatchRegistrationPending = true
+                self.state.profiles[index].dispatchRegistrationIdentity = DispatchParticipationSync.registrationIdentityHash(verifiedAccountID)
+            }
             if acceptsQuotaRead {
                 self.state.profiles[index].lastQuotaReadFailureAt = nil
                 self.state.profiles[index].lastQuotaReadFailureReason = nil

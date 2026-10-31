@@ -1,27 +1,65 @@
 {
+  "commit": "5d2db368d8313415763860d594de00e46a663418",
+  "engine": {
+    "agentVersion": "token-monitor-engine/0.1.0",
+    "entry": "bridge.cjs",
+    "handler": "lib/handler.cjs",
+    "name": "token-monitor-engine",
+    "protocolVersion": 1,
+    "version": "0.1.0"
+  },
+  "hostCorrection": {
+    "changes": [
+      "Remove private development runtime path",
+      "Describe flat production resource root",
+      "Record mandatory fork binary pin instead of claiming the development npm binary is equivalent"
+    ],
+    "version": "0913v2"
+  },
   "provenanceVersion": 1,
   "recordedAt": "2026-10-08T00:00:00+08:00",
+  "repository": "Javis603/token-monitor",
+  "runtime": {
+    "node": "v22.23.2",
+    "note": "Architecture-specific runtime and Javis tokscale override hashes must be verified during resource staging; no development machine path is packaged.",
+    "packagingAuthority": "SOURCE.json supplied by AiGoodBro packaging"
+  },
+  "tokscale": {
+    "baseVersion": "4.18.0",
+    "commit": "fa5f0c13324838d1a988fda317597f9b90da7ad0",
+    "commitTitle": "feat(report): link Codex subagent and guardian sessions to their parent",
+    "fork": "Javis603/tokscale",
+    "localBackport": {
+      "baseCommit": "fa5f0c13324838d1a988fda317597f9b90da7ad0",
+      "patchSHA256": "a5c09f55a7e70f167e4a48b793a169043fdc45c946773360b4e2739cdff5f52d",
+      "platforms": {
+        "darwin-arm64": {
+          "sha256": "5a5e66b0db6deea3234e4f2e793ad975b2e606c3c76f7c8c09f64eea24a6e7f8"
+        }
+      },
+      "pullRequests": [
+        1439,
+        1453,
+        1456,
+        1527,
+        1531,
+        1544,
+        1550
+      ],
+      "reviewEvidenceSHA256": "c4aba3b90ef03d3042477d0211b4968658d8da17e70a854239bfd7f79d774ee3",
+      "scope": "Retain selected Codex/Qwen 1026 fixes; add Qwen explicit-zero semantics and Cursor snapshot deduplication/cache migration. Existing fork full-history sync, pricing override policy and all other parsers are preserved.",
+      "sourceInventorySHA256": "5f9c2d938d7df0167cbe316f5bd3c9cba8991994283119f517faf029ef5e3054",
+      "version": "1027v1"
+    },
+    "manifest": "upstream/scripts/vendor/tokscale.json",
+    "mode": "override",
+    "note": "The staged native binary must match the Javis603/tokscale fork hash in upstream/scripts/vendor/tokscale.json; the npm binary is not accepted as an equivalent pin.",
+    "releaseTag": "token-monitor-fa5f0c13",
+    "upstream": "junhoyeo/tokscale"
+  },
   "upstream": {
-    "repository": "Javis603/token-monitor",
-    "commit": "5d2db368d8313415763860d594de00e46a663418",
-    "version": "0.68.0",
-    "license": "MIT",
-    "licenseFile": "upstream/LICENSE",
-    "licenseCopyright": "Copyright (c) 2026 Javis",
-    "packageName": "token-monitor",
-    "engines": {
-      "node": ">=22.15.0"
-    },
-    "hashes": {
-      "upstream/package.json": "1fe962279a0b6bdb3422cfa6be7f55ebfb7986a5b55b7cd4f4639b6fa8c53b9f",
-      "upstream/package-lock.json": "a852bf87ba2d8f31d0045b0e027a897d8b4d04ef6b8ad850cb87301f00b857d8",
-      "upstream/LICENSE": "250136de456c31d659e54c1804c43a27dadad175336b67226e9509d6310f923c"
-    },
-    "edits": "Official v0.68.0 fixed source; selected official v0.70.0 backports #957, #971, #1006 title relation, #1019 compressed archive/DSH/Codex/Cursor fixes and #1031 streamed SQLite archive reads; retained reviewed Antigravity OAuth denial and all existing capability overlays.",
-    "sourceTag": "v0.68.0",
     "backports": [
       {
-        "release": "v0.70.0",
         "commit": "ac4eeb2c4aea239dd94b67f074c73f69aafc46f8",
         "issues": [
           "#957",
@@ -30,44 +68,33 @@
           "#1019",
           "#1031"
         ],
+        "release": "v0.70.0",
         "scope": "Token Monitor statistics, archive reads and bounded session metadata only",
         "tagObject": "0d104c0b59c5739e4020eeb86bbc029b0b095345"
+      },
+      {
+        "commit": "e6ca86c5dc3c7acd338fea0fa29ce84a919e84a9",
+        "pullRequest": 1145,
+        "scope": "Selective truthful Cursor quota and scoped cache/retry adaptation; no new host endpoints or full unified plan support."
       }
-    ]
+    ],
+    "commit": "5d2db368d8313415763860d594de00e46a663418",
+    "edits": "Official v0.68.0 fixed source; selected official v0.70.0 backports #957, #971, #1006 title relation, #1019 compressed archive/DSH/Codex/Cursor fixes and #1031 streamed SQLite archive reads; retained reviewed Antigravity OAuth denial and all existing capability overlays.",
+    "engines": {
+      "node": ">=22.15.0"
+    },
+    "hashes": {
+      "upstream/LICENSE": "250136de456c31d659e54c1804c43a27dadad175336b67226e9509d6310f923c",
+      "upstream/package-lock.json": "a852bf87ba2d8f31d0045b0e027a897d8b4d04ef6b8ad850cb87301f00b857d8",
+      "upstream/package.json": "1fe962279a0b6bdb3422cfa6be7f55ebfb7986a5b55b7cd4f4639b6fa8c53b9f"
+    },
+    "license": "MIT",
+    "licenseCopyright": "Copyright (c) 2026 Javis",
+    "licenseFile": "upstream/LICENSE",
+    "packageName": "token-monitor",
+    "repository": "Javis603/token-monitor",
+    "sourceTag": "v0.68.0",
+    "version": "0.68.0"
   },
-  "tokscale": {
-    "mode": "override",
-    "upstream": "junhoyeo/tokscale",
-    "fork": "Javis603/tokscale",
-    "commit": "fa5f0c13324838d1a988fda317597f9b90da7ad0",
-    "commitTitle": "feat(report): link Codex subagent and guardian sessions to their parent",
-    "releaseTag": "token-monitor-fa5f0c13",
-    "baseVersion": "4.18.0",
-    "manifest": "upstream/scripts/vendor/tokscale.json",
-    "note": "The staged native binary must match the Javis603/tokscale fork hash in upstream/scripts/vendor/tokscale.json; the npm binary is not accepted as an equivalent pin."
-  },
-  "engine": {
-    "name": "token-monitor-engine",
-    "version": "0.1.0",
-    "agentVersion": "token-monitor-engine/0.1.0",
-    "entry": "bridge.cjs",
-    "handler": "lib/handler.cjs",
-    "protocolVersion": 1
-  },
-  "runtime": {
-    "node": "v22.23.2",
-    "packagingAuthority": "SOURCE.json supplied by AiGoodBro packaging",
-    "note": "Architecture-specific runtime and Javis tokscale override hashes must be verified during resource staging; no development machine path is packaged."
-  },
-  "repository": "Javis603/token-monitor",
-  "commit": "5d2db368d8313415763860d594de00e46a663418",
-  "version": "0.68.0",
-  "hostCorrection": {
-    "version": "0913v2",
-    "changes": [
-      "Remove private development runtime path",
-      "Describe flat production resource root",
-      "Record mandatory fork binary pin instead of claiming the development npm binary is equivalent"
-    ]
-  }
+  "version": "0.68.0"
 }
