@@ -1,14 +1,124 @@
 import copy
 import importlib.util
 import json
+import os
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
+from unittest import mock
 
 spec=importlib.util.spec_from_file_location('provider_prepare',Path(__file__).with_name('prepare.py'))
 p=importlib.util.module_from_spec(spec);spec.loader.exec_module(p)
 
 class ProviderResources(unittest.TestCase):
+    def space_fixture(self, root):
+        build, resources = root / 'build', root / 'resources'
+        build.mkdir()
+        env = {key: str(root / key) for key in ('TMPDIR', 'GOTMPDIR', 'GOMODCACHE', 'GOCACHE')}
+        return p.SpaceAudit(build, resources, env)
+    def location(self, path, free=80, volume='fixture-volume'):
+        return {'resolvedPath': str(path), 'existingAncestor': str(path.parent), 'volumeId': volume,
+                'volumeAnchor': path.anchor, 'totalBytes': 100 * 1024**3, 'freeBytes': free * 1024**3}
+    def test_shared_physical_volume_is_budgeted_once(self):
+        with tempfile.TemporaryDirectory() as root:
+            audit = self.space_fixture(Path(root).resolve())
+            with mock.patch.object(p, 'space_location', side_effect=self.location), mock.patch('builtins.print'):
+                audit.check('before-source-stage')
+            receipt = json.loads(audit.path.read_bytes())
+            volumes = receipt['checks'][0]['volumes']
+            self.assertEqual(len(volumes), 1)
+            self.assertEqual(next(iter(volumes.values()))['plannedIncrementalBudgetBytes'], 30 * 1024**3)
+            self.assertEqual(receipt['minimumFreeBytes'], 50 * 1024**3)
+            self.assertEqual(receipt['reserveBytes'], 20 * 1024**3)
+            self.assertEqual(len(next(iter(volumes.values()))['roles']), 7)
+    def test_low_cache_volume_is_retained_as_failed_evidence(self):
+        with tempfile.TemporaryDirectory() as root:
+            audit = self.space_fixture(Path(root).resolve())
+            def location(path):
+                cache = path.name == 'GOCACHE'
+                return self.location(path, 49 if cache else 80, 'cache-volume' if cache else 'build-volume')
+            with mock.patch.object(p, 'space_location', side_effect=location), mock.patch('builtins.print'):
+                with self.assertRaisesRegex(ValueError, 'provider_pool_insufficient_space'):
+                    audit.check('before-source-stage')
+            receipt = json.loads(audit.path.read_bytes())
+            self.assertEqual(receipt['checks'][0]['error'], 'provider_pool_insufficient_space')
+            self.assertEqual(receipt['checks'][0]['volumes']['cache-volume']['freeBytes'], 49 * 1024**3)
+    def test_readonly_source_does_not_require_write_headroom(self):
+        with tempfile.TemporaryDirectory() as root:
+            audit = self.space_fixture(Path(root).resolve())
+            def location(path):
+                return self.location(path, 1 if path == p.SOURCE else 80, 'source' if path == p.SOURCE else 'writes')
+            with mock.patch.object(p, 'space_location', side_effect=location), mock.patch('builtins.print'):
+                audit.check('before-source-stage')
+            self.assertEqual(audit.records[0]['volumes']['source']['plannedIncrementalBudgetBytes'], 0)
+    def test_phase_budget_and_volume_change_stop_further_work(self):
+        with tempfile.TemporaryDirectory() as root:
+            audit = self.space_fixture(Path(root).resolve())
+            with mock.patch.object(p, 'space_location', side_effect=self.location), mock.patch('builtins.print'):
+                audit.check('before-source-stage')
+            with mock.patch.object(p, 'space_location', side_effect=lambda path: self.location(path, 48)), mock.patch('builtins.print'):
+                with self.assertRaisesRegex(ValueError, 'provider_pool_space_budget_exceeded'):
+                    audit.check('after-source-stage')
+            self.assertEqual(audit.records[-1]['volumes']['fixture-volume']['observedNetUseBytes'], 32 * 1024**3)
+            with mock.patch.object(p, 'space_location', side_effect=lambda path: self.location(path, volume='replacement')), mock.patch('builtins.print'):
+                with self.assertRaisesRegex(ValueError, 'provider_pool_space_location_changed'):
+                    audit.check('before-build')
+    def test_go_and_python_temp_paths_are_explicit_and_reused(self):
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root).resolve(); build = root / 'build'; build.mkdir()
+            selected = {name: str(root / name) for name in ('GOMODCACHE', 'GOCACHE', 'GOPATH', 'GOTMPDIR')}
+            with mock.patch.dict(os.environ, selected, clear=True), mock.patch.object(p.subprocess, 'check_output') as run:
+                env = p.environment(build, False)
+                for name, value in selected.items(): self.assertEqual(env[name], value)
+                self.assertEqual(env['TMPDIR'], str(build / 'tmp'))
+                self.assertEqual(env['TEMP'], env['TMPDIR'])
+                self.assertEqual(env['TMP'], env['TMPDIR'])
+                self.assertEqual(env['GOTOOLCHAIN'], 'local')
+                self.assertEqual(env['GOPROXY'], 'off')
+                self.assertTrue(Path(env['GOTMPDIR']).is_dir())
+                run.assert_not_called()
+            selected.pop('GOTMPDIR')
+            with mock.patch.dict(os.environ, selected, clear=True):
+                self.assertEqual(p.environment(build, False)['GOTMPDIR'], str(build / 'tmp'))
+            with mock.patch.dict(os.environ, {**selected, 'GOTMPDIR': 'relative'}, clear=True):
+                with self.assertRaisesRegex(ValueError, 'provider_pool_go_temp_invalid'): p.environment(build, False)
+    def test_effective_go_paths_cannot_silently_fall_back(self):
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root).resolve()
+            env = {name: str(root / name) for name in ('GOMODCACHE', 'GOCACHE', 'GOTMPDIR')}
+            with mock.patch.object(p.subprocess, 'check_output', return_value=json.dumps(env)) as run:
+                p.verify_go_paths(env)
+                self.assertEqual(run.call_args.args[0], ['go', 'env', '-json', 'GOMODCACHE', 'GOCACHE', 'GOTMPDIR'])
+                self.assertEqual(run.call_args.kwargs['env'], env)
+            with mock.patch.object(p.subprocess, 'check_output', return_value=json.dumps({**env, 'GOCACHE': str(root / 'other')})):
+                with self.assertRaisesRegex(ValueError, 'provider_pool_go_path_changed'): p.verify_go_paths(env)
+    def test_low_space_admission_precedes_source_and_go_build(self):
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root).resolve()
+            args = SimpleNamespace(build_root=root/'build', resource_dir=root/'resource', verify_only=False,
+                                   run_native_tests=False, require_native=False, allow_dependency_download=False)
+            env = {name: str(root / name) for name in ('TMPDIR', 'GOTMPDIR', 'GOMODCACHE', 'GOCACHE')}
+            with mock.patch.object(p, 'source_inputs', return_value=({}, None, {}, set())), \
+                 mock.patch.object(p, 'environment', return_value=env), \
+                 mock.patch.object(p, 'space_location', side_effect=lambda path: self.location(path, 49)), \
+                 mock.patch.object(p, 'source_stage') as stage, \
+                 mock.patch.object(p, 'verify_go_paths') as go_env, mock.patch.object(p.subprocess, 'run') as build, \
+                 mock.patch('builtins.print'):
+                with self.assertRaisesRegex(ValueError, 'provider_pool_insufficient_space'): p.prepare(args)
+                stage.assert_not_called(); go_env.assert_not_called(); build.assert_not_called()
+            self.assertFalse((root/'build/WINDOWS-RESOURCES.json').exists())
+    def test_space_location_uses_actual_volume_and_rejects_links(self):
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root).resolve()
+            data = p.space_location(root/'missing')
+            self.assertEqual(data['volumeId'], str(root.stat().st_dev))
+            self.assertEqual(data['resolvedPath'], str(root/'missing'))
+            self.assertGreater(data['totalBytes'], 0)
+            with self.assertRaises(ValueError): p.space_location(Path('relative'))
+            if os.name != 'nt':
+                (root/'link').symlink_to(root, target_is_directory=True)
+                with self.assertRaises(ValueError): p.space_location(root/'link/output')
     def events(self, required, alter=None):
         rows=[]
         for name in sorted(required):

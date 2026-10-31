@@ -30,7 +30,7 @@ jobs:
         with:
           fetch-depth: 0
       - name: Test CI change selection
-        run: python3 -m unittest tests.test_ci_windows_changed
+        run: python3 -m unittest tests.test_ci_windows_changed tests.test_windows_go_cache_paths
       - id: scope
         name: Select platform checks from changed files
         run: python3 scripts/ci_windows_changed.py
@@ -198,11 +198,21 @@ jobs:
       GIT_CONFIG_VALUE_0: "false"
       GIT_CONFIG_KEY_1: core.eol
       GIT_CONFIG_VALUE_1: lf
+      # Keep all Go helpers on the checkout volume from their first invocation.
+      GOMODCACHE: ${{ github.workspace }}/.local-artifacts/go/mod
+      GOCACHE: ${{ github.workspace }}/.local-artifacts/go/build
+      GOTMPDIR: ${{ github.workspace }}/.local-artifacts/go/tmp
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Initialize task-owned Go directories
+        shell: pwsh
+        run: |
+          foreach ($path in @($env:GOMODCACHE, $env:GOCACHE, $env:GOTMPDIR)) {
+            New-Item -ItemType Directory -Force -Path $path | Out-Null
+          }
       - uses: actions/setup-go@v5
         with:
           go-version-file: Companion/LocalProxy/go.mod
@@ -283,6 +293,7 @@ jobs:
             windows/apps/codexu-tauri/src-tauri/resources/token-monitor/WINDOWS-RESOURCES.json
             ${{ runner.temp }}/aigoodbro-hub-validation/*.json*
             ${{ runner.temp }}/aigoodbro-hub-validation/*.log
+            ${{ runner.temp }}/aigoodbro-provider-pool-validation/SPACE-RECEIPT.json
           if-no-files-found: ignore
           retention-days: 7
 
@@ -346,11 +357,21 @@ jobs:
       GIT_CONFIG_VALUE_0: "false"
       GIT_CONFIG_KEY_1: core.eol
       GIT_CONFIG_VALUE_1: lf
+      # Keep all Go helpers on the checkout volume from their first invocation.
+      GOMODCACHE: ${{ github.workspace }}/.local-artifacts/go/mod
+      GOCACHE: ${{ github.workspace }}/.local-artifacts/go/build
+      GOTMPDIR: ${{ github.workspace }}/.local-artifacts/go/tmp
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Initialize task-owned Go directories
+        shell: pwsh
+        run: |
+          foreach ($path in @($env:GOMODCACHE, $env:GOCACHE, $env:GOTMPDIR)) {
+            New-Item -ItemType Directory -Force -Path $path | Out-Null
+          }
       - uses: actions/setup-go@v5
         with:
           go-version-file: Companion/LocalProxy/go.mod
@@ -434,6 +455,7 @@ jobs:
             ${{ runner.temp }}/aigoodbro-statistics-resources/scanner/*.log
             ${{ runner.temp }}/aigoodbro-statistics-resources/scanner/SCANNER-RECEIPT.json
             ${{ runner.temp }}/aigoodbro-statistics-resources/resource-pin.txt
+            ${{ runner.temp }}/aigoodbro-provider-pool-resources/SPACE-RECEIPT.json
             windows/apps/codexu-tauri/src-tauri/resources/token-monitor/WINDOWS-RESOURCES.json
           if-no-files-found: ignore
           retention-days: 7

@@ -21,6 +21,8 @@ SOURCE = REPO / 'Companion/AntigravityProxy'
 RESOURCE = REPO / 'windows/apps/codexu-tauri/src-tauri/resources/provider-pool'
 NAME = 'aigoodbro-antigravity-proxy.exe'
 PACKAGE = 'github.com/router-for-me/CLIProxyAPI/v8/aigoodbro-antigravity-proxy'
+MIN_FREE_BYTES = 50 * 1024**3
+RESERVE_BYTES = 20 * 1024**3
 
 
 def load(path, name):
@@ -117,9 +119,80 @@ def native_result(output, required):
     return sorted(passed)
 
 
+def space_location(path):
+    require(path.is_absolute() and '..' not in path.parts, 'provider_pool_space_path_invalid')
+    safe_path(path)
+    resolved = path.resolve()
+    safe_path(resolved)
+    existing = next(p for p in (resolved, *resolved.parents) if p.exists())
+    require(existing.is_dir(), 'provider_pool_space_not_directory')
+    usage = shutil.disk_usage(existing)
+    return {'resolvedPath': str(resolved), 'existingAncestor': str(existing),
+            'volumeId': str(existing.stat().st_dev), 'volumeAnchor': existing.anchor,
+            'totalBytes': usage.total, 'freeBytes': usage.free}
+
+
+class SpaceAudit:
+    """Phase-boundary admission, not a reservation or a measured peak forecast."""
+    def __init__(self, build, resources, env):
+        self.path = build / 'SPACE-RECEIPT.json'
+        self.paths = {'source': SOURCE, 'build': build, 'resourceOutput': resources,
+                      'pythonAndChildTemp': Path(env['TMPDIR']), 'goTemp': Path(env['GOTMPDIR']),
+                      'goModuleCache': Path(env['GOMODCACHE']), 'goBuildCache': Path(env['GOCACHE'])}
+        self.baselines, self.bindings, self.records = {}, {}, []
+
+    def check(self, phase, **measurements):
+        paths = {role: space_location(path) for role, path in self.paths.items()}
+        volumes = {}
+        error = None
+        for role, data in paths.items():
+            binding = (data['resolvedPath'], data['volumeId'])
+            if role in self.bindings and self.bindings[role] != binding:
+                error = 'provider_pool_space_location_changed'
+            self.bindings.setdefault(role, binding)
+            volume = volumes.setdefault(data['volumeId'], {'roles': [], 'totalBytes': data['totalBytes'],
+                                                          'freeBytes': data['freeBytes'], 'writable': False})
+            volume['roles'].append(role)
+            volume['freeBytes'] = min(volume['freeBytes'], data['freeBytes'])
+            volume['writable'] |= role != 'source'
+        for key, volume in volumes.items():
+            baseline = self.baselines.setdefault(key, volume['freeBytes'])
+            volume['observedNetUseBytes'] = max(0, baseline - volume['freeBytes'])
+            # Count one shared allowance per physical volume, not once for each
+            # cache/temp/output path on that volume. This is a policy allowance;
+            # the failed runner did not record an actual cold-build peak.
+            volume['plannedIncrementalBudgetBytes'] = MIN_FREE_BYTES - RESERVE_BYTES if volume['writable'] else 0
+            if volume['writable'] and volume['observedNetUseBytes'] > volume['plannedIncrementalBudgetBytes']:
+                error = error or 'provider_pool_space_budget_exceeded'
+            if volume['writable'] and volume['freeBytes'] < MIN_FREE_BYTES:
+                error = error or 'provider_pool_insufficient_space'
+        self.records.append({'phase': phase, 'paths': paths, 'volumes': volumes,
+                             'measurements': measurements, 'error': error})
+        receipt = {'schemaVersion': 1, 'minimumFreeBytes': MIN_FREE_BYTES, 'reserveBytes': RESERVE_BYTES,
+                   'budgetBasis': 'Unmeasured cold build; admission headroom minus retained reserve, aggregated once per physical volume.',
+                   'scope': 'Provider source staging, dependency cache growth, Go tests/build temporary files and final resource copies only.',
+                   'notEstimatedHere': ['later Rust builds', 'installer packaging', 'installer extraction', 'upgrade jobs'],
+                   'limits': 'Phase-boundary readings only; no reserved disk quota or within-child peak measurement. Net changes may include concurrent writers.',
+                   'checks': self.records}
+        # Keep the failure reading as small diagnostic evidence. It is separate
+        # from the resource receipt and cannot satisfy any native/build gate.
+        print('PROVIDER_POOL_SPACE_CHECK=' + json.dumps(self.records[-1], sort_keys=True), flush=True)
+        atomic_write(self.path, (json.dumps(receipt, indent=2, sort_keys=True) + '\n').encode())
+        require(error is None, error)
+
+
+def verify_go_paths(env):
+    names = ('GOMODCACHE', 'GOCACHE', 'GOTMPDIR')
+    actual = json.loads(subprocess.check_output(['go', 'env', '-json', *names], env=env, text=True, timeout=20))
+    for name in names:
+        require(isinstance(actual.get(name), str) and bool(actual[name]), 'provider_pool_go_path_missing')
+        require(space_location(Path(actual[name]))['resolvedPath'] == space_location(Path(env[name]))['resolvedPath'],
+                'provider_pool_go_path_changed')
+
+
 def environment(build, allow_download):
     allowed = ('PATH', 'SystemRoot', 'WINDIR', 'PATHEXT', 'COMSPEC', 'ProgramFiles',
-               'ProgramFiles(x86)', 'ProgramW6432', 'SystemDrive', 'GOMODCACHE', 'GOCACHE', 'GOPATH')
+               'ProgramFiles(x86)', 'ProgramW6432', 'SystemDrive', 'GOMODCACHE', 'GOCACHE', 'GOPATH', 'GOTMPDIR')
     env = {key: os.environ[key] for key in allowed if key in os.environ}
     # Locate existing public caches before isolating HOME. No new parallel cache.
     for name in ('GOMODCACHE', 'GOCACHE', 'GOPATH'):
@@ -128,10 +201,14 @@ def environment(build, allow_download):
                                                 text=True, timeout=20).strip()
         require(bool(env[name]), 'provider_pool_go_cache_missing')
     home, temp = build / 'isolated-home', build / 'tmp'
-    for path in (home, temp):
-        safe_path(path).mkdir(exist_ok=True)
+    go_temp = Path(env.get('GOTMPDIR') or str(temp))
+    require(go_temp.is_absolute() and '..' not in go_temp.parts, 'provider_pool_go_temp_invalid')
+    for path in (home, temp, go_temp):
+        safe_path(path).mkdir(parents=True, exist_ok=True)
+        safe_path(path)
     env.update(HOME=str(home), USERPROFILE=str(home), APPDATA=str(home / 'AppData/Roaming'),
                LOCALAPPDATA=str(home / 'AppData/Local'), TEMP=str(temp), TMP=str(temp), TMPDIR=str(temp),
+               GOTMPDIR=str(go_temp.resolve()),
                GOOS='windows', GOARCH='amd64', GOAMD64='v1', CGO_ENABLED='0',
                GOWORK='off', GOFLAGS='', GOENV='off', GOEXPERIMENT='', GO111MODULE='on', GOTOOLCHAIN='local')
     if not allow_download:
@@ -190,16 +267,12 @@ def prepare(args):
         binary = regular(build / NAME)
     else:
         build.mkdir(parents=True, exist_ok=True)
-        # Go caches may grow by more than one GiB on a fresh host. Respect the
-        # task's local storage policy before staging or invoking a build tool.
-        require(shutil.disk_usage(build).free >= 50 * 1024**3, 'provider_pool_insufficient_build_space')
         env = environment(build, args.allow_dependency_download)
-        for key in ('GOMODCACHE', 'GOCACHE'):
-            path = safe_path(Path(env[key]))
-            require(path.is_absolute(), 'provider_pool_cache_relative')
-            existing = next(p for p in (path, *path.parents) if p.exists())
-            require(shutil.disk_usage(existing).free >= 50 * 1024**3, 'provider_pool_insufficient_cache_space')
+        space = SpaceAudit(build, resources, env)
+        space.check('before-source-stage', sourceInputBytes=sum((SOURCE / name).stat().st_size for name in inputs))
+        verify_go_paths(env)
         adapter, staged = source_stage(build, inputs, support, env)
+        space.check('after-source-stage', stagedSourceBytes=sum((build / 'source' / name).stat().st_size for name in staged))
         native_tests, native_sha = [], None
         if args.run_native_tests:
             require(sys.platform == 'win32', 'provider_pool_native_windows_required')
@@ -207,13 +280,16 @@ def prepare(args):
                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=600)
             atomic_write(build / 'native-tests.jsonl', proc.stdout)
             atomic_write(build / 'native-tests.stderr.log', proc.stderr)
+            space.check('after-native-tests')
             require(proc.returncode == 0, 'provider_pool_native_test_failed')
             native_tests, native_sha = native_result(proc.stdout, required_tests), sha(proc.stdout)
         require(inventory(build / 'source') == staged, 'provider_pool_stage_changed')
         candidate = build / 'aigoodbro-antigravity-proxy.building.exe'
+        space.check('before-build')
         subprocess.run(['go', 'build', '-mod=readonly', '-trimpath', '-buildvcs=false', '-ldflags=-s -w', '-o', str(candidate), '.'],
                        cwd=adapter, env=env, check=True, timeout=600)
         binary = regular(candidate)
+        space.check('after-build', candidateBytes=len(binary))
         validate_pe(binary)
         require(inventory(build / 'source') == staged and source_inputs()[0] == inputs, 'provider_pool_source_changed_during_build')
         atomic_write(build / NAME, binary)
@@ -230,6 +306,7 @@ def prepare(args):
         require(receipt.get('files') == file_receipt, 'provider_pool_resource_changed')
     else:
         receipt['files'] = file_receipt
+        space.check('before-publish', resourceBytes=sum(len(data) for data in files.values()))
         atomic_write(receipt_path, (json.dumps(receipt, indent=2, sort_keys=True)+'\n').encode())
     require(source_inputs()[0] == inputs, 'provider_pool_source_changed_before_publish')
     if resources.exists():
@@ -238,6 +315,8 @@ def prepare(args):
         atomic_write(resources / name, data)
     atomic_write(resources / 'WINDOWS-RESOURCES.json', regular(receipt_path))
     hub.verify_stage(resources, {**files, 'WINDOWS-RESOURCES.json': regular(receipt_path)})
+    if not args.verify_only:
+        space.check('after-publish', resourceBytes=sum(len(data) for data in files.values()))
     print(json.dumps({'helperSHA256': sha(binary), 'sourceFiles': len(inputs), 'nativeTestsPassed': len(receipt['nativeTests'])}))
 
 

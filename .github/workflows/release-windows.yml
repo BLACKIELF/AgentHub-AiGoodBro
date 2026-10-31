@@ -36,6 +36,10 @@ jobs:
       GIT_CONFIG_VALUE_0: "false"
       GIT_CONFIG_KEY_1: core.eol
       GIT_CONFIG_VALUE_1: lf
+      # Keep all Go helpers on the checkout volume from their first invocation.
+      GOMODCACHE: ${{ github.workspace }}/.local-artifacts/go/mod
+      GOCACHE: ${{ github.workspace }}/.local-artifacts/go/build
+      GOTMPDIR: ${{ github.workspace }}/.local-artifacts/go/tmp
     steps:
       - uses: actions/checkout@v4
       - id: version
@@ -60,6 +64,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Initialize task-owned Go directories
+        shell: pwsh
+        run: |
+          foreach ($path in @($env:GOMODCACHE, $env:GOCACHE, $env:GOTMPDIR)) {
+            New-Item -ItemType Directory -Force -Path $path | Out-Null
+          }
       - uses: actions/setup-go@v5
         with:
           go-version-file: Companion/LocalProxy/go.mod
@@ -120,6 +130,7 @@ jobs:
             dist/windows-readiness/hub-build/*.log
             dist/windows-readiness/provider-pool-build/WINDOWS-RESOURCES.json
             dist/windows-readiness/provider-pool-build/STAGED-SOURCE.json
+            dist/windows-readiness/provider-pool-build/SPACE-RECEIPT.json
             dist/windows-readiness/provider-pool-build/native-tests.jsonl
             dist/windows-readiness/token-monitor-build/scanner/SCANNER-RECEIPT.json
             dist/windows-readiness/token-monitor-build/resource-pin.txt
