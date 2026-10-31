@@ -1,19 +1,22 @@
 import {test,expect} from '@playwright/test';
-import {readFileSync} from 'node:fs';
+import {readFileSync,writeFileSync} from 'node:fs';
 import {installTauriStub} from './tauri-stub.mjs';
 import {SYNTHETIC_DASHBOARD,SYNTHETIC_SETTINGS} from './synthetic-fixtures.mjs';
 const fixture=JSON.parse(readFileSync(new URL('../../../../../token-monitor/tests/fixtures/handler-snapshot.json',import.meta.url),'utf8'));
 const key='aigoodbro.statistics.custom.v1';
 const saved={version:1,revision:1,engine:'custom',entries:[{name:'Manual fixture',tokens:'9007199254740993'}]};
-async function setup(context,page,{initial=null}={}){
+async function setup(context,page,{initial=null,holdStartupTimezone=false}={}){
  let state={phase:'ready',revision:1,contextKey:'a'.repeat(64),timezone:'UTC',sources:[{id:'codex-synthetic',providerId:'codex',label:'Codex synthetic',enabled:true},{id:'claude-synthetic',providerId:'claude',label:'Claude synthetic',enabled:true}],snapshot:{...structuredClone(fixture),timezone:'UTC'},tokenRate:null,failureCode:null};
- const calls=[];let hold=null,release,entered=false;
- await context.exposeBinding('__customNative',async(_,command,args)=>{
-  calls.push({command,args:structuredClone(args??{})});
+ const calls=[];let hold=null,release,entered=false,startupEntered=false,releaseStartup;
+ await context.exposeBinding('__customNative',async(_,command,args,engine)=>{
+  calls.push({command,args:structuredClone(args??{}),engine});
   if(command==='set_token_monitor_timezone')state={...state,timezone:args.timezone,revision:state.revision+1,snapshot:null};
   if(command==='refresh_token_monitor_usage')state={...state,phase:'ready',revision:state.revision+1,contextKey:'a'.repeat(64),snapshot:{...structuredClone(fixture),timezone:state.timezone}};
   if(command==='cancel_token_monitor_usage')state={...state,phase:'stopped',revision:state.revision+1,contextKey:null,snapshot:null};
-  const result=structuredClone(state);if(command===hold){hold=null;entered=true;await new Promise(r=>{release=r;});}return result;
+  const result=structuredClone(state);
+  if(holdStartupTimezone&&command==='set_token_monitor_timezone'){
+   holdStartupTimezone=false;startupEntered=true;await new Promise(r=>{releaseStartup=r;});
+  }else if(command===hold){hold=null;entered=true;await new Promise(r=>{release=r;});}return result;
  });
  async function prepare(target,label='main'){
   const extra=new Function(`
@@ -21,11 +24,17 @@ async function setup(context,page,{initial=null}={}){
    if(${JSON.stringify(initial)}!==null&&!localStorage.getItem(${JSON.stringify(key)}))localStorage.setItem(${JSON.stringify(key)},JSON.stringify(${JSON.stringify(initial)}));
    const old=window.__TAURI_INTERNALS__.invoke;window.customListeners=[];
    window.customPush=(name,payload)=>{for(const event of window.customListeners)if(event.event===name)window['_'+event.handler]({event:name,payload,id:1});};
-   window.__TAURI_INTERNALS__.invoke=(command,args)=>{if(command==='plugin:event|listen')window.customListeners.push(args);if(['get_token_monitor_state','set_token_monitor_timezone','set_token_monitor_sources','refresh_token_monitor_usage','cancel_token_monitor_usage'].includes(command))return window.__customNative(command,args);return old(command,args);};
+   window.__TAURI_INTERNALS__.invoke=(command,args)=>{if(command==='plugin:event|listen')window.customListeners.push(args);if(['get_token_monitor_state','set_token_monitor_timezone','set_token_monitor_sources','refresh_token_monitor_usage','cancel_token_monitor_usage'].includes(command))return window.__customNative(command,args,JSON.parse(localStorage.getItem(${JSON.stringify(key)})||'{"engine":"upstream"}').engine);return old(command,args);};
   `);
   await installTauriStub(target,{settings:{...SYNTHETIC_SETTINGS,language:'en'},dashboard:SYNTHETIC_DASHBOARD,windowLabel:label},extra);await target.goto('/');
  }
- await prepare(page);return {calls,prepare,state:()=>structuredClone(state),hold:(command='refresh_token_monitor_usage')=>{hold=command;entered=false;},entered:()=>entered,release:()=>release?.()};
+ await prepare(page);return {calls,prepare,state:()=>structuredClone(state),hold:(command='refresh_token_monitor_usage')=>{hold=command;entered=false;},entered:()=>entered,release:()=>release?.(),startupEntered:()=>startupEntered,releaseStartup:()=>releaseStartup?.()};
+}
+async function waitForInitialCollection(page,f){
+ // The initial state already contains a snapshot. Its visible total does not
+ // mean that the separate startup collection has completed.
+ await expect.poll(()=>f.calls.filter(c=>c.command==='refresh_token_monitor_usage').length).toBe(1);
+ await expect(page.getByRole('button',{name:'Refresh',exact:true})).toBeEnabled();
 }
 async function add(page,name,tokens){const panel=page.getByRole('region',{name:'Custom recorded cumulative',exact:true});await panel.locator('summary').click();await panel.getByLabel('Source name',{exact:true}).fill(name);await panel.getByLabel('Lifetime tokens in 10,000s').fill(tokens);await panel.getByRole('button',{name:'Save custom source',exact:true}).click();await expect(panel.getByRole('status')).toHaveText('Custom source saved.');}
 test('saved custom starts without collector and every existing main/compact refresh remains local',async({context,page})=>{
@@ -76,6 +85,7 @@ test('a stale window checks the persisted mode before refresh even before its st
 
 for(const action of ['refresh','sources','timezone'])test(`a held ${action} prerequisite cannot restart collection after custom is persisted`,async({context,page})=>{
  const f=await setup(context,page);await expect(page.getByTestId('token-monitor-allTime')).toContainText('300');
+ await waitForInitialCollection(page,f);
  const before=f.calls.filter(c=>c.command==='refresh_token_monitor_usage').length;
  f.hold(action==='sources'?'set_token_monitor_sources':'set_token_monitor_timezone');
  const panel=page.getByRole('region',{name:'Token Monitor statistics',exact:true});
@@ -95,4 +105,29 @@ for(const action of ['refresh','sources','timezone'])test(`a held ${action} prer
  await page.evaluate(key=>window.dispatchEvent(new StorageEvent('storage',{key})),key);
  await expect(page.getByTestId('custom-statistics-total')).toHaveText('9,007,199,254,740,993');
  expect(f.calls.filter(c=>c.command==='refresh_token_monitor_usage')).toHaveLength(before);
+});
+
+test('a visible saved snapshot precedes startup collection; only the later explicit prerequisite is cancelled by custom',async({context,page},testInfo)=>{
+ const f=await setup(context,page,{holdStartupTimezone:true});
+ await expect(page.getByTestId('token-monitor-allTime')).toContainText('300');
+ await expect.poll(f.startupEntered).toBe(true);
+ const refresh=page.getByRole('button',{name:'Refresh',exact:true});
+ await expect(refresh).toBeDisabled();
+ const earlyCount=f.calls.filter(c=>c.command==='refresh_token_monitor_usage').length;
+ expect(earlyCount).toBe(0);
+ f.hold('set_token_monitor_timezone');
+ const clicked=refresh.click();f.releaseStartup();await clicked;
+ await expect.poll(f.entered).toBe(true);
+ const before=f.calls.filter(c=>c.command==='refresh_token_monitor_usage').length;
+ expect(before).toBe(1);
+ expect(f.calls.filter(c=>c.command==='refresh_token_monitor_usage').map(c=>c.engine)).toEqual(['upstream']);
+ await page.evaluate(async({key,saved})=>{await window.__TAURI_INTERNALS__.invoke('cancel_token_monitor_usage');localStorage.setItem(key,JSON.stringify(saved));},{key,saved});
+ f.release();await expect(refresh).toBeEnabled();
+ expect(f.calls.filter(c=>c.command==='refresh_token_monitor_usage')).toHaveLength(before);
+ await page.evaluate(key=>window.dispatchEvent(new StorageEvent('storage',{key})),key);
+ await expect(page.getByTestId('custom-statistics-total')).toHaveText('9,007,199,254,740,993');
+ expect(f.calls.filter(c=>c.command==='refresh_token_monitor_usage')).toHaveLength(before);
+ const evidence=testInfo.outputPath('startup-and-explicit-collection-order.json');
+ writeFileSync(evidence,JSON.stringify({earlyCount,before,calls:f.calls},null,2));
+ await testInfo.attach('startup-and-explicit-collection-order',{path:evidence,contentType:'application/json'});
 });
