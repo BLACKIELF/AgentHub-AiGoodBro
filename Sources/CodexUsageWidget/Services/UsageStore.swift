@@ -4923,7 +4923,8 @@ final class UsageStore: ObservableObject {
                         fiveHourRemaining: quota.fiveHourRemaining,
                         sevenDayRemaining: quota.sevenDayRemaining
                     ),
-                resetCreditComparison: suppressFeishuResetCreditComparison ? nil : resetCreditComparison,
+                resetCreditComparison: resetCreditComparison,
+                suppressResetCreditComparison: suppressFeishuResetCreditComparison,
                 messageOptions: feishuMessageOptions,
                 occurredAt: observedAt,
                 eventID: eventID

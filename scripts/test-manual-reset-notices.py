@@ -32,7 +32,9 @@ sender = declaration(feishu, '    func sendManualReset(') + '\n' + declaration(f
 # only the Feishu DTO receives the optional narrow suppression flag.
 routing = declaration(usage, '    private func sendFeishuNotification(')
 assert 'factsSnapshot: factsSnapshot, resetCreditComparison: resetCreditComparison, eventID:' in routing
-assert 'resetCreditComparison: suppressFeishuResetCreditComparison ? nil : resetCreditComparison' in routing
+assert 'resetCreditComparison: resetCreditComparison,' in routing
+assert 'suppressResetCreditComparison: suppressFeishuResetCreditComparison,' in routing
+assert 'suppressFeishuResetCreditComparison ? nil' not in routing
 observer = declaration(usage, '    private func observeOfficialQuotaChanges(')
 assert observer.count('resetNoticeDeliveryStore.hasSingleManualReset(') == 2
 assert 'duplicateManual ? channels.filter { $0 != .feishu } : channels' in observer

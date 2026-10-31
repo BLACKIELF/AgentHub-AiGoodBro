@@ -141,6 +141,7 @@ struct FeishuSwitchNotification {
     let sevenDayRemainingPercent: Double?
     let accountFacts: FeishuAccountFacts
     let resetCreditComparison: CodexResetCreditComparison?
+    let suppressResetCreditComparison: Bool
     let messageOptions: FeishuMessageOptions
     let occurredAt: Date
     let eventID: UUID
@@ -156,6 +157,7 @@ struct FeishuSwitchNotification {
         sevenDayRemainingPercent: Double?,
         accountFacts: FeishuAccountFacts? = nil,
         resetCreditComparison: CodexResetCreditComparison? = nil,
+        suppressResetCreditComparison: Bool = false,
         messageOptions: FeishuMessageOptions = .standard,
         occurredAt: Date = Date(),
         eventID: UUID = UUID()
@@ -199,6 +201,11 @@ struct FeishuSwitchNotification {
                 accountFacts?.availableResetCredits == resetCreditComparison.available
             else { throw FeishuWebhookError.invalidNotification }
         }
+        if suppressResetCreditComparison {
+            guard let resetCreditComparison, resetCreditComparison.delta == -1 else {
+                throw FeishuWebhookError.invalidNotification
+            }
+        }
         self.event = event
         self.sourceAccount = sourceAccount
         self.targetAccount = targetAccount
@@ -214,6 +221,7 @@ struct FeishuSwitchNotification {
                 sevenDayRemaining: sevenDayRemainingPercent
             )
         self.resetCreditComparison = resetCreditComparison
+        self.suppressResetCreditComparison = suppressResetCreditComparison
         self.messageOptions = messageOptions
         self.occurredAt = occurredAt
         self.eventID = eventID
@@ -996,6 +1004,7 @@ final class FeishuWebhookService {
                 fiveHourRemainingPercent: notification.fiveHourRemainingPercent,
                 sevenDayRemainingPercent: notification.sevenDayRemainingPercent,
                 accountFacts: notification.accountFacts, resetCreditComparison: notification.resetCreditComparison,
+                suppressResetCreditComparison: notification.suppressResetCreditComparison,
                 messageOptions: notification.messageOptions, occurredAt: notification.occurredAt), language: language)
     }
 
@@ -1046,6 +1055,7 @@ final class FeishuWebhookService {
                 fiveHourRemainingPercent: status.fiveHourRemainingPercent,
                 sevenDayRemainingPercent: status.sevenDayRemainingPercent,
                 accountFacts: facts, resetCreditComparison: status.resetCreditComparison,
+                suppressResetCreditComparison: false,
                 messageOptions: options, occurredAt: context?.observedAt ?? status.occurredAt), language: language)
     }
 
@@ -1108,6 +1118,7 @@ final class FeishuWebhookService {
         let sevenDayRemainingPercent: Double?
         let accountFacts: FeishuAccountFacts
         let resetCreditComparison: CodexResetCreditComparison?
+        let suppressResetCreditComparison: Bool
         let messageOptions: FeishuMessageOptions
         let occurredAt: Date
     }
@@ -1234,7 +1245,11 @@ final class FeishuWebhookService {
                 lines += resetTimeLines(for: notification.accountFacts, language: language, timeZone: MessageNoticeFormat.beijingTimeZone)
             }
             if options.includesResetCredits {
-                if let comparison = notification.resetCreditComparison {
+                if notification.suppressResetCreditComparison {
+                    // A confirmed manual event already explains this single-card decrease.
+                    // Keep the current balance without misrepresenting a present baseline as missing.
+                    appendBalance(evidence: [checked])
+                } else if let comparison = notification.resetCreditComparison {
                     let evidence = MessageNoticeFormat.comparisonLines(comparison, language: language)
                     appendBalance(evidence[0], evidence: Array(evidence.dropFirst()))
                 } else {

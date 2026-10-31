@@ -211,7 +211,8 @@ for event in ordinary {
 }
 func windowNotification(
     before: Int?, after: Int, options: FeishuMessageOptions = .standard,
-    fiveHour: Bool = true, sevenDay: Bool = false
+    fiveHour: Bool = true, sevenDay: Bool = false,
+    suppressRepeatedManualComparison: Bool = false
 ) throws -> FeishuSwitchNotification {
     let facts = try FeishuAccountFacts(
         fiveHour: .finite(remainingPercent: 100, resetsAt: now.addingTimeInterval(18000)),
@@ -222,7 +223,9 @@ func windowNotification(
     return try FeishuSwitchNotification(
         event: .quotaChange(.quotaReset(fiveHour: fiveHour, sevenDay: sevenDay)), sourceAccount: account,
         triggerThresholdPercent: 15, fiveHourRemainingPercent: 100, sevenDayRemainingPercent: 82,
-        accountFacts: facts, resetCreditComparison: comparison, messageOptions: options, occurredAt: now)
+        accountFacts: facts, resetCreditComparison: comparison,
+        suppressResetCreditComparison: suppressRepeatedManualComparison,
+        messageOptions: options, occurredAt: now)
 }
 for (before, after, expected) in [(3, 2, "减少 1 张"), (2, 2, "无变化"), (0, 1, "增加 1 张"), (1, 0, "减少 1 张"), (0, 0, "无变化")] {
     let data = try FeishuWebhookService.payloadData(for: windowNotification(before: before, after: after), language: .zh)
@@ -239,6 +242,45 @@ let noPrevious = try FeishuWebhookService.payloadData(for: windowNotification(be
 let noPreviousCard = try card(noPrevious)
 expect(noPreviousCard.body.contains("上次有效数量缺失，净变化未知"), "missing baseline invented a delta")
 previews["window-no-previous"] = noPrevious
+for language in [WidgetLanguage.zh, .en] {
+    let dto = try windowNotification(before: 1, after: 0, fiveHour: false, sevenDay: true,
+        suppressRepeatedManualComparison: true)
+    expect(dto.resetCreditComparison?.previousAvailable == 1 && dto.resetCreditComparison?.available == 0,
+        "manual follow-up erased the actual count evidence")
+    let data = try FeishuWebhookService.payloadData(for: dto, language: language)
+    let payload = try card(data)
+    expect(!payload.body.contains("上次有效数量缺失") && !payload.body.contains("net change unknown")
+        && !payload.body.contains("减少原因未确认") && !payload.body.lowercased().contains("unconfirmed")
+        && !payload.body.contains("1→0"), "confirmed manual follow-up rendered a duplicate or false unknown")
+    expect(payload.body.contains(language.text("0 张", "0")) && payload.body.contains("82%")
+        && payload.body.contains(MessageNoticeFormat.fullDate(now)) && hasOneFooter(payload.body),
+        "manual follow-up lost current balance, quota, check time or footer")
+    expect(!payload.body.contains("手动使用成功") && !payload.body.contains("Manual use succeeded"),
+        "quota follow-up duplicated manual operation success")
+    previews[language == .zh ? "manual-followup-zh" : "manual-followup-en"] = data
+}
+let partialFacts = try FeishuAccountFacts(fiveHour: .unknown,
+    sevenDay: .finite(remainingPercent: 100, resetsAt: now.addingTimeInterval(7 * 86400)),
+    availableResetCredits: 0, resetCreditExpiries: [])
+let partialFollowup = try FeishuSwitchNotification(
+    event: .quotaChange(.quotaReset(fiveHour: false, sevenDay: true)), sourceAccount: account,
+    triggerThresholdPercent: 15, fiveHourRemainingPercent: nil, sevenDayRemainingPercent: 100,
+    accountFacts: partialFacts,
+    resetCreditComparison: .init(previousAvailable: 1, available: 0, previousObservedAt: previousAt, observedAt: now),
+    suppressResetCreditComparison: true, occurredAt: now)
+let partialCard = try card(FeishuWebhookService.payloadData(for: partialFollowup, language: .zh))
+expect(partialCard.body.contains("**5h**：未知") && partialCard.body.contains("100%")
+    && !partialCard.body.contains("上次有效数量缺失"), "manual follow-up invented missing quota or count evidence")
+for (before, after) in [(nil as Int?, 0), (1, 1), (2, 0), (0, 1)] {
+    do {
+        _ = try windowNotification(before: before, after: after, suppressRepeatedManualComparison: true)
+        preconditionFailure("manual comparison suppression accepted missing or unrelated evidence")
+    } catch FeishuWebhookError.invalidNotification {}
+}
+let hiddenManualFollowup = try card(FeishuWebhookService.payloadData(
+    for: windowNotification(before: 1, after: 0, options: hidden, suppressRepeatedManualComparison: true), language: .zh))
+expect(!hiddenManualFollowup.body.contains("重置卡") && !hiddenManualFollowup.body.contains("1→0"),
+    "manual follow-up ignored reset-credit privacy")
 for (fiveHour, sevenDay, title) in [(false, true, "7天额度变化"), (true, true, "5小时 + 7天额度变化")] {
     let data = try FeishuWebhookService.payloadData(for: windowNotification(before: 2, after: 2, fiveHour: fiveHour, sevenDay: sevenDay), language: .zh)
     let payload = try card(data)
