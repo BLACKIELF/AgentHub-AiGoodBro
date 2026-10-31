@@ -5,6 +5,7 @@ param(
     [Parameter(Mandatory = $true)][ValidateSet('msi', 'nsis')][string]$InstallerKind,
     [Parameter(Mandatory = $true)][string]$OldPackageDirectory,
     [Parameter(Mandatory = $true)][string]$NewPackageDirectory,
+    [Parameter(Mandatory = $true)][string]$CurrentPackageDirectory,
     [Parameter(Mandatory = $true)][string]$Version,
     [Parameter(Mandatory = $true)][string]$OutputDirectory
 )
@@ -27,6 +28,7 @@ function Owned-Path([string]$Path) {
 }
 $oldRoot = Owned-Path $OldPackageDirectory
 $newRoot = Owned-Path $NewPackageDirectory
+$currentRoot = Owned-Path $CurrentPackageDirectory
 $output = Owned-Path $OutputDirectory
 if (Test-Path -LiteralPath $output) { throw 'Refuse to reuse an upgrade evidence directory.' }
 New-Item -ItemType Directory -Path $output | Out-Null
@@ -39,6 +41,9 @@ $newFile = Owned-Path (Join-Path $newRoot $newName)
 function Hash-File([string]$Path) { return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant() }
 if ((Hash-File $oldFile) -cne $oldHash) { throw 'Old installer is not the exact accepted 2905a422 artifact.' }
 $newHash = Hash-File $newFile
+$currentFile = Owned-Path (Join-Path $currentRoot $newName)
+$currentHash = if ($InstallerKind -eq 'msi') { '9c28a05afd8979068764be1e9185267db146074918c3cb1156f511327f2a8add' } else { '7d80e641ae8913f33acbffa5e941dd0e3376eed274ab8c396a04f7eb34319a18' }
+if ((Hash-File $currentFile) -cne $currentHash) { throw 'Current installer is not the exact accepted 86263b0c artifact.' }
 $checksum = (Get-Content -LiteralPath ($newFile + '.sha256') -Raw).Trim()
 if ($checksum -notmatch '^([0-9a-fA-F]{64})\s+\*?(.+)$' -or $Matches[1].ToLowerInvariant() -cne $newHash -or $Matches[2] -cne $newName) { throw 'New installer checksum/name mismatch.' }
 $manifest = Get-Content -LiteralPath (Join-Path $newRoot 'manifest.json') -Raw | ConvertFrom-Json
@@ -367,6 +372,58 @@ try {
     if ($InstallerKind -eq 'msi') { $receipt.shortcutMigration.foreign.fixtureCleanupVerified = $true }
     Assert-RunUnchanged $runBefore
     $receipt.phases += 'uninstall_cleanup_verified'
+    # Keep the complete legacy migration/rollback/foreign-link contract above.
+    # This separate pass proves the currently delivered same-version upgrade.
+    if (@(Registrations).Count -ne 0 -or @(Shortcuts).Count -ne 0) { throw 'Current-baseline pass requires clean product state.' }
+    $install = Owned-Path (Join-Path $runnerRoot ('aigoodbro-current-upgrade-' + $InstallerKind + '-' + [guid]::NewGuid().ToString('N')))
+    $reference = [ordered]@{ schema=1; runId=41136876049; head='86263b0ce75463970f8b2c3bc279c372a6098c30'; installerSha256=$currentHash; candidateSha256=$newHash; sourceCheckout=$env:GITHUB_SHA; installDirectory=$install; success=$false; phases=@(); applicationStarted=$false }
+    $receipt.referenceBaseline = $reference
+    if ($InstallerKind -eq 'msi') {
+        Execute-Installer 'msiexec.exe' @('/i', ('"' + $currentFile + '"'), '/qn', '/norestart', ('INSTALLDIR="' + $install + '"'), '/l*v', ('"' + (Join-Path $output 'current-install-msi.log') + '"')) 'Current accepted MSI install'
+    } else {
+        Execute-Installer $currentFile @('/S', ('/D=' + $install)) 'Current accepted NSIS install'
+    }
+    $reference.oldRegistration = Assert-Registration 'AiGoodBro'
+    if ($InstallerKind -eq 'msi' -and $reference.oldRegistration.key -ine '{D7D92F4D-899F-4357-A5AE-DD222414B9F4}') { throw 'Current accepted MSI ProductCode mismatch.' }
+    $reference.oldExecutableSha256 = Hash-File (Join-Path $install 'codexu-tauri.exe')
+    if ($reference.oldExecutableSha256 -cne 'ec9a20721bdc2c16d2fbcc84eb05fa2938407096b9a5474ae117fd5c3a12bfef') { throw 'Current accepted executable payload mismatch.' }
+    $reference.oldProductVersion = (Get-Item -LiteralPath (Join-Path $install 'codexu-tauri.exe')).VersionInfo.ProductVersion
+    if ($reference.oldProductVersion -notin @($Version, ($Version + '.0'))) { throw 'Current baseline is not the same internal version.' }
+    Assert-RunUnchanged $runBefore
+    $reference.phases += 'current_install_verified'
+    if ($InstallerKind -eq 'msi') {
+        Execute-Installer 'msiexec.exe' @('/i', ('"' + $newFile + '"'), '/qn', '/norestart', '/l*v', ('"' + (Join-Path $output 'current-upgrade-msi.log') + '"')) 'Current-to-new MSI upgrade'
+    } else {
+        Execute-Installer $newFile @('/S') 'Current-to-new NSIS upgrade'
+    }
+    $reference.newRegistration = Assert-Registration 'AiGoodBro'
+    $currentExe = Get-Item -LiteralPath (Join-Path $install 'codexu-tauri.exe')
+    $reference.newProductVersion = $currentExe.VersionInfo.ProductVersion
+    $reference.newExecutableSha256 = Hash-File $currentExe.FullName
+    if ($currentExe.VersionInfo.ProductName -cne 'AiGoodBro' -or $reference.newProductVersion -notin @($Version, ($Version + '.0')) -or $reference.newExecutableSha256 -ceq $reference.oldExecutableSha256) { throw 'Same-version upgrade did not replace the current payload.' }
+    $currentLinks = @(Shortcuts)
+    if ($currentLinks.Count -eq 0 -or @($currentLinks | Where-Object { $_.name -cne 'AiGoodBro' -or $_.target -ine $currentExe.FullName }).Count -ne 0 -or ($InstallerKind -eq 'msi' -and $currentLinks.Count -ne 2)) { throw 'Current-baseline upgrade shortcut ownership mismatch.' }
+    $reference.shortcuts = $currentLinks
+    $currentHelpers = @(Get-ChildItem -LiteralPath $install -Filter 'aigoodbro-local-proxy.exe' -Recurse -File)
+    if ($currentHelpers.Count -ne 1 -or (Hash-File $currentHelpers[0].FullName) -cne $receipt.helperSha256) { throw 'Current-baseline installed helper differs from the candidate.' }
+    $reference.helperSha256 = Hash-File $currentHelpers[0].FullName
+    if ($InstallerKind -eq 'msi') {
+        if ($reference.newRegistration.key -ine $receipt.msiEncoding.productCode) { throw 'Current-baseline upgraded MSI ProductCode mismatch.' }
+        $reference.installedResources = @(Assert-MsiUnicodeResources -Evidence $receipt.msiEncoding -InstallRoot $install)
+    }
+    Assert-RunUnchanged $runBefore
+    $reference.phases += 'same_version_upgrade_verified'
+    if ($InstallerKind -eq 'msi') {
+        Execute-Installer 'msiexec.exe' @('/x', $reference.newRegistration.key, '/qn', '/norestart', '/l*v', ('"' + (Join-Path $output 'current-uninstall-msi.log') + '"')) 'Current-baseline MSI uninstall'
+    } else {
+        $uninstaller = Join-Path $install 'uninstall.exe'
+        if (-not (Test-Path -LiteralPath $uninstaller -PathType Leaf)) { throw 'Current-baseline NSIS uninstaller missing.' }
+        Execute-Installer $uninstaller @('/S', ('_?=' + $install)) 'Current-baseline NSIS uninstall'
+    }
+    if (@(Registrations).Count -ne 0 -or @(Shortcuts).Count -ne 0 -or (Test-Path -LiteralPath $currentExe.FullName)) { throw 'Current-baseline uninstall left product state.' }
+    Assert-RunUnchanged $runBefore
+    $reference.phases += 'current_uninstall_verified'
+    $reference.success = $true
     $receipt.success = $true
 } finally {
     $receipt | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $output 'upgrade-receipt.json') -Encoding utf8

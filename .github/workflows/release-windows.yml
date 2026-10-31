@@ -145,6 +145,13 @@ jobs:
     needs: windows
     runs-on: windows-latest
     timeout-minutes: 15
+    env:
+      # Compare installed resource bytes with the same checkout bytes as packaging.
+      GIT_CONFIG_COUNT: "2"
+      GIT_CONFIG_KEY_0: core.autocrlf
+      GIT_CONFIG_VALUE_0: "false"
+      GIT_CONFIG_KEY_1: core.eol
+      GIT_CONFIG_VALUE_1: lf
     strategy:
       fail-fast: false
       matrix:
@@ -163,13 +170,20 @@ jobs:
           run-id: 40952488530
           name: aigoodbro-windows-3.0.0
           path: ${{ runner.temp }}/aigoodbro-upgrade-old
+      - name: Download exact currently delivered Windows installers
+        uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: 41136876049
+          name: aigoodbro-windows-3.0.0
+          path: ${{ runner.temp }}/aigoodbro-upgrade-current
       - name: Verify isolated install upgrade and uninstall without launching the app
         shell: pwsh
         env:
           RELEASE_VERSION: ${{ needs.windows.outputs.version }}
           INSTALLER_KIND: ${{ matrix.installer }}
         run: |
-          .\windows\scripts\Test-InstallerUpgrade.ps1 -InstallerKind $env:INSTALLER_KIND -OldPackageDirectory "$env:RUNNER_TEMP\aigoodbro-upgrade-old" -NewPackageDirectory "$env:RUNNER_TEMP\aigoodbro-upgrade-new" -Version $env:RELEASE_VERSION -OutputDirectory "$env:RUNNER_TEMP\aigoodbro-upgrade-evidence"
+          .\windows\scripts\Test-InstallerUpgrade.ps1 -InstallerKind $env:INSTALLER_KIND -OldPackageDirectory "$env:RUNNER_TEMP\aigoodbro-upgrade-old" -NewPackageDirectory "$env:RUNNER_TEMP\aigoodbro-upgrade-new" -CurrentPackageDirectory "$env:RUNNER_TEMP\aigoodbro-upgrade-current" -Version $env:RELEASE_VERSION -OutputDirectory "$env:RUNNER_TEMP\aigoodbro-upgrade-evidence"
       - name: Preserve installer upgrade evidence
         if: always()
         uses: actions/upload-artifact@v4

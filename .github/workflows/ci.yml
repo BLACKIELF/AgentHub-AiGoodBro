@@ -30,7 +30,7 @@ jobs:
         with:
           fetch-depth: 0
       - name: Test CI change selection
-        run: python3 -m unittest tests.test_ci_windows_changed tests.test_windows_go_cache_paths
+        run: python3 -m unittest tests.test_ci_windows_changed tests.test_windows_go_cache_paths tests.test_windows_upgrade_checkout
       - id: scope
         name: Select platform checks from changed files
         run: python3 scripts/ci_windows_changed.py
