@@ -46,6 +46,35 @@ struct Fixture {
     fail: Arc<AtomicBool>,
     manager: Arc<AccountManager>,
 }
+#[test]
+fn empty_catalog_projection_does_not_require_the_managed_vault_lock() {
+    let f = Fixture::new();
+    let catalog = crate::profiles::ProfileCatalog::default();
+    let _held = f.manager.store().unwrap();
+    assert!(f
+        .manager
+        .project_profile_metadata(&catalog)
+        .unwrap()
+        .is_empty());
+
+    // An actual Codex row still requires the managed authority; contention is
+    // not converted into an empty list or an unmanaged alias fallback.
+    let mut linked = crate::profiles::ProfileCatalog::default();
+    linked
+        .add(
+            crate::local_cli::LocalCliKind::Codex,
+            "Linked".into(),
+            f.paths.system_home.clone(),
+        )
+        .unwrap();
+    assert_eq!(
+        f.manager
+            .project_profile_metadata(&linked)
+            .unwrap_err()
+            .code,
+        "account_store_busy"
+    );
+}
 impl Fixture {
     fn new() -> Self {
         let temp = tempfile::tempdir().unwrap();

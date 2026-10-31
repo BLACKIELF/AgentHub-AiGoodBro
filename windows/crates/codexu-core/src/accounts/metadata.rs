@@ -45,6 +45,11 @@ impl AccountManager {
         catalog
             .validate()
             .map_err(|_| fail("account_catalog_invalid"))?;
+        // An empty linked catalog has no managed metadata to project. Do not
+        // make a fresh empty account list depend on an unrelated vault lock.
+        if catalog.entries.is_empty() {
+            return Ok(Vec::new());
+        }
         let managed = self.managed_metadata()?;
         let mut projected = Vec::new();
         let mut seen_managed = std::collections::HashSet::new();
