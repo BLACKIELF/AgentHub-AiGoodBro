@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 	"unsafe"
@@ -292,13 +293,29 @@ func TestWindowsBackendJobFixture(t *testing.T) {
 }
 
 func TestWindowsVerbatimDrivePathsPreserveLocalOnlyBoundary(t *testing.T) {
-	dir := t.TempDir()
+	dir := filepath.Clean(t.TempDir())
 	if err := windowsPath(`\\?\`+dir, false); err != nil {
-		t.Fatal("valid native canonical drive path rejected")
+		t.Fatalf("valid native canonical drive path rejected: %v", err)
 	}
 	for _, path := range []string{`\\server\share\state`, `\\?\UNC\server\share\state`} {
 		if err := windowsPath(path, false); err == nil {
 			t.Fatal("remote state path accepted")
 		}
 	}
+	t.Run("mixed-temp-root", func(t *testing.T) {
+		// Go preserves GOTMPDIR spelling. Exercise the runner's mixed
+		// separators while keeping the product's canonical-only boundary.
+		t.Setenv("GOTMPDIR", strings.Replace(dir, `\`, `/`, 1))
+		raw := t.TempDir()
+		canonical := filepath.Clean(raw)
+		if raw == canonical {
+			t.Fatal("mixed temporary root fixture was unexpectedly canonical")
+		}
+		if err := windowsPath(`\\?\`+raw, false); err == nil || err.Error() != "invalid_local_path" {
+			t.Fatal("noncanonical temporary path did not preserve the local-only boundary")
+		}
+		if err := windowsPath(`\\?\`+canonical, false); err != nil {
+			t.Fatalf("canonicalized mixed temporary path rejected: %v", err)
+		}
+	})
 }

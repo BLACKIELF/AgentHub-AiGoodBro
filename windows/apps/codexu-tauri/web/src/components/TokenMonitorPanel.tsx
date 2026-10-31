@@ -1,3 +1,4 @@
+import { StatisticsTimezoneSettings } from './StatisticsTimezoneSettings';
 import { useEffect, useMemo, useState } from 'react';
 import { Check, Info, RefreshCw, Save, Square } from 'lucide-react';
 import { useI18n } from '../i18n/I18nProvider';
@@ -9,6 +10,8 @@ type Text=(zh:string,en:string)=>string;
 function errorText(code:string,text:Text):string{
   const values:Record<string,[string,string]>={
     statistics_timezone_required:['尚未确认本地时区，刷新后重试。','The local time zone is unconfirmed. Refresh to retry.'],
+    statistics_timezone_save_failed:['时区未能保存，请重试。','Time zone could not be saved. Try again.'],
+    statistics_timezone_preferences_unavailable:['已保存时区无法读取，请重新选择。','The saved time zone could not be read. Select it again.'],
     invalid_statistics_timezone:['本地时区无效，请检查系统时区。','The local time zone is invalid. Check system time zone settings.'],
     statistics_resources_unavailable:['统计组件暂不可用，请检查当前安装包。','Statistics components are unavailable. Check the installed package.'],
     statistics_resources_untrusted:['当前安装包缺少已校验的统计组件。','This package does not contain verified statistics components.'],
@@ -48,6 +51,7 @@ export function TokenMonitorPanel({controller}:{controller:TokenMonitorControlle
       {([['today',text('今日 Token','Today tokens')],['month',text('本月 Token','This month tokens')],['allTime',text('总 Token','Total tokens')]] as const).map(([key,label])=>{const period=snapshot?.payload.aggregate[key];return <article key={key} data-testid={`token-monitor-${key}`}><span>{label}</span><strong>{number(hasEvidence?period?.totalTokens:null)}</strong><small>{cost(period)}</small></article>;})}
       <article data-testid="token-monitor-rate" className={rate?.idle?'is-idle':''}><span>TPM {rate?.idle&&<small>{text('上次采样','Last sample')}</small>}</span><strong>{number(rate?.burnPerMinute)}</strong><small>{rate?`${number(rate.speedPerSecond)} tok/s`:text('等待新增计时记录','Waiting for new timed records')}</small></article>
     </div>
+    <StatisticsTimezoneSettings controller={controller} />
     <div className="token-monitor-source-bar"><details><summary>{text('统计来源','Statistics sources')} <span>{state?.sources.filter(source=>source.enabled).length??0}</span></summary><form onSubmit={event=>{event.preventDefault();setSaved(false);void selectSources(draft).then(ok=>setSaved(ok));}}><fieldset disabled={busy}><legend>{text('选择本机已登记来源','Choose registered local sources')}</legend><div className="token-monitor-source-grid">{state?.sources.map(source=><label key={source.id}><input type="checkbox" checked={draft.includes(source.id)} onChange={event=>{setSaved(false);setDraft(previous=>event.target.checked?[...previous,source.id]:previous.filter(id=>id!==source.id));}}/><span>{source.label}</span><small>{source.providerId}</small></label>)}</div>{!state?.sources.length&&<p>{text('暂无可选来源','No registered sources')}</p>}<button type="submit" className="glass-button-solid" disabled={!dirty||busy}><Save size={13}/>{text('保存来源','Save sources')}</button>{saved&&<span role="status"><Check size={13}/>{text('来源已保存','Sources saved')}</span>}</fieldset></form></details><p>{text('统计更新','Statistics updated')} {timestamp(snapshot?.collectedAt)}{snapshot?.historyCollectedAt!=null&&<span> · {text('历史更新','History updated')} {timestamp(snapshot.historyCollectedAt)}</span>}</p></div>
     {chart?<TokenMonitorChart snapshot={chart} language={language==='en'?'en':'zh-Hans'} stale={stale}/>:<p className="token-monitor-empty">{text('统计就绪后将显示活动热图、趋势与工具 / 模型明细。','The activity heatmap, trends and tool / model breakdown appear when statistics are ready.')}</p>}
     <footer className={stale?'is-stale':''}><span>{text('活动时长','Active time')} {durationText(hasEvidence?snapshot?.payload.history?.summary.activeTimeMs:null,locale)}</span><span title={text('来自有时长记录的真实生成耗时；并发记录可能重叠。','Actual generation durations from timed records; concurrent records may overlap.')}>{text('生成耗时','Generation time')} {durationText(hasEvidence?snapshot?.payload.aggregate.today?.timedDurationMs:null,locale)}</span></footer>

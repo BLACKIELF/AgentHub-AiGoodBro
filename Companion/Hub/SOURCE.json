@@ -4,28 +4,56 @@
   "includesReviewedLocal0910v1Changes": true,
   "sourceFiles": [
     {
+      "path": "LICENSE",
+      "sha256": "d057ec045f3d922903d83bf595d664d9d0e42ddf5694341329431dcaef0b16ef"
+    },
+    {
+      "path": "LICENSE.x-sys",
+      "sha256": "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad"
+    },
+    {
       "path": "codex_board.go",
-      "sha256": "01993ba4080ec0e9446d633626c75199a2c069d26f85ab4197a372a5aed1e3d1"
+      "sha256": "cb2c5efc4b910188a36ee3e34e7076bc11cc61c42a381de022b6afab6f247184"
     },
     {
       "path": "codex_toolbar.go",
-      "sha256": "1146edbd3bf9ebfe3ff0cc8d216aa91875784b07dfdcd73734d75ffdb2e92a58"
+      "sha256": "759e8ac8592ee9d5eaeb1d0b2b61ff12a3430d1d7be60be374497269959538a7"
     },
     {
       "path": "codex_toolbar_test.go",
       "sha256": "6408ea546bf7247f5542aad13252615a311d92a95c738b8cba3456e3671fbfec"
     },
     {
+      "path": "desktop_binding.go",
+      "sha256": "a8255fb02edf5aeeb3b3d123ac7704db6cb1fe0ad85ffc4a9244cf59e8990752"
+    },
+    {
+      "path": "desktop_binding_test.go",
+      "sha256": "a218f5ce02153d2257477d62faa3b84a2f460a9fe50508dbb7852170d7e457fa"
+    },
+    {
       "path": "desktop_reliability_test.go",
       "sha256": "eff478c43c7828cf4c0f95246de5f4f5b041a5e8ea08db5a23b5d24bdaaffc96"
     },
     {
+      "path": "desktop_source_unix.go",
+      "sha256": "ccecf0c61b2e0c23077dbcc3f57d39f64f249d3c0e4c703cc5dc863f918e530a"
+    },
+    {
+      "path": "desktop_source_windows.go",
+      "sha256": "244cf2f190d4309f41b213c69472fa9bb04ddef556918b1b45540e6aaf0da980"
+    },
+    {
+      "path": "desktop_unix.go",
+      "sha256": "d7ce96e15d5c63a442e04ceb0661cae427bfd6b103180ec9402ced2cdad6fad0"
+    },
+    {
       "path": "dispatch_activity.go",
-      "sha256": "44c00b64c401d8d598f9faebcc9ff6d4309a2ec16e08f5895c3e569968fdbe86"
+      "sha256": "cd87bfff9856f9908d6715cf87e74e201b743256d6ded21e7782f3a8d9d98944"
     },
     {
       "path": "dispatch_activity_test.go",
-      "sha256": "a32c8d08b1a07182bf5f5290a08c86972a9fa6f9c4f1a44bb2d1f7eaab431ac7"
+      "sha256": "e1d8f4b812ebf113a66c129a536775c86c93280bc7ddd4a41d620c7e4f4047d3"
     },
     {
       "path": "dispatch_window.go",
@@ -36,8 +64,16 @@
       "sha256": "9fac94e901cd88c6f4f88bb526aed9d04ff08748733e07dc8f3ffecb2acc2c47"
     },
     {
+      "path": "go.mod",
+      "sha256": "ea8f6ba9f98aebc080fc729d26904477565c60ab4e3a629bbd95b249c91297e5"
+    },
+    {
+      "path": "go.sum",
+      "sha256": "20c0a4dec24ea6d1fb35015621df220d33d8bc06831c717e947dce6e763e4df9"
+    },
+    {
       "path": "hub.go",
-      "sha256": "2b7b9877abc6562e962850f0b84749deea800b9f16d8d586ba58bbbf1f20f919"
+      "sha256": "ab5d6987d83276e0305261f1a717309964276498b2160534bc91c54fa7f5a946"
     },
     {
       "path": "hub_test.go",
@@ -52,20 +88,48 @@
       "sha256": "e0a6fe8735207a6a4bbf7ada455479e40a0aef5f78188f97354299db025c4b83"
     },
     {
+      "path": "lifecycle_unix.go",
+      "sha256": "00fb0e23f1d24aaea7aac3c32d1cb95456879b64360e8be0a814f6976cb93220"
+    },
+    {
       "path": "main.go",
-      "sha256": "07f27939f9d1304277397ab9cbbea116a07268a41f53da51cde17519bfc4067f"
+      "sha256": "1b7a301b46c9e9c1381b32a5dc625a6bcd541ef9906fcc88aea2def2589306ca"
     },
     {
       "path": "manager_overview.go",
-      "sha256": "f0a3e7096a2cae5604338ba5ceebd9e0a162649fb0146dee44e6daa0130bed23"
+      "sha256": "b18db52e662142be050e9e6547d7d0a4ea6593da2284e6acdd69ac054d2eafc1"
+    },
+    {
+      "path": "platform_windows_test.go",
+      "sha256": "0686fb986733ebc046e9530c58976e6a7cf8be357b767110948e6b651691c62f"
     },
     {
       "path": "process_other.go",
-      "sha256": "58ee0fd24942e5d4ec49c2a7afcc041e240396272b3c9559239bb9905cec6301"
+      "sha256": "838a85c4c9b70cce59e8d9e5a15e9e73322b2a52c5c561729326b3e66cfb0334"
     },
     {
       "path": "process_unix.go",
       "sha256": "ecc1ddd27eb8c9dd67cb981d7eb30dab439c22c273671ca539faa651e47d59dd"
+    },
+    {
+      "path": "process_windows.go",
+      "sha256": "e4702f402e7db3744ea4c2a5222276edd97944f5b4b1ebc21b0d8d7e9bba9964"
+    },
+    {
+      "path": "ready_file.go",
+      "sha256": "68fb8af5172f001309e2219c4ad8041479532054c402949cc8cd39f082edcf23"
+    },
+    {
+      "path": "ready_file_test.go",
+      "sha256": "c04e1c161bf3cc93781271639aa083ac8ada1fa91c2c4ba6d06def3056e8ae61"
+    },
+    {
+      "path": "storage_unix.go",
+      "sha256": "f173d6058a33989d04f695c6d33c7bc1e910a2fef8e0d1ac04a1f14ef6ea662c"
+    },
+    {
+      "path": "storage_windows.go",
+      "sha256": "6731aded65e70b392ba379e07bbeecd6600f1772b95dbbf309a73558326835fb"
     },
     {
       "path": "task_messages.go",
@@ -76,24 +140,30 @@
       "sha256": "451ec96a396727c3dff1276de2b9c51d5134c6b78aae76a118b47aeee3151d55"
     },
     {
-      "path": "go.mod",
-      "sha256": "786ec99ebc9ee88c5044aeaec8d1f542a4604595312250df10d924e5a3479fe3"
+      "path": "web/desktop_content_logic_test.js",
+      "sha256": "95f588e9f573fceb70143eb216446d1235167962784f20dba6b8082323170796"
     },
     {
       "path": "web/index.html",
       "sha256": "287f59e409f949bdd02ad5794f7728ea29e48e6b718d2577c236d9f7fa649d6d"
     },
     {
-      "path": "web/desktop_content_logic_test.js",
-      "sha256": "95f588e9f573fceb70143eb216446d1235167962784f20dba6b8082323170796"
-    },
-    {
       "path": "web/task_live_logic_test.js",
       "sha256": "0d7080e59143c595a87600f3ac37b061d9109a3b4287372be7cb31976d2118dc"
+    },
+    {
+      "path": "workflow_policy.go",
+      "sha256": "f0ee6efa3fd88bfe3644c49eb843d14a83389810fcdf6c83ad12aee59d5853c8"
+    },
+    {
+      "path": "workflow_policy_test.go",
+      "sha256": "3a8dfe676017da79a72f4d3cc254969476a07f4cb0c4528720c765322796e7a4"
     }
   ],
   "distributionChanges": [
     "Runtime configuration may enable only the bundled Codex adapter; optional providers are not advertised without configuration.",
-    "Codex pool tasks freeze saved and derived effective execution preferences for standard, sol_luna, and luna_direct; any child-enabled custom slot requires a fresh CLI-and-role-bound local capability report and a task-private next_preset_worker role copy."
-  ]
+    "Codex pool tasks freeze saved and derived effective execution preferences for standard, sol_luna, and luna_direct; any child-enabled custom slot requires a fresh CLI-and-role-bound local capability report and a task-private next_preset_worker role copy.",
+    "Windows desktop bridge optionally reads its real workflow preferences again at create, approval and final spawn; disabled/closed/changed frozen model settings fail closed. Existing Mac configurations omit this adapter."
+  ],
+  "includesReviewedWindows1030v1Changes": true
 }

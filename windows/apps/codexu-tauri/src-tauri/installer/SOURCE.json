@@ -1,0 +1,106 @@
+{
+  "upstream": "https://github.com/tauri-apps/tauri",
+  "ref": "tauri-cli-v2.6.2",
+  "license": "MIT",
+  "paths": {
+    "nsis-installer.nsi": "crates/tauri-bundler/src/bundle/windows/nsis/installer.nsi",
+    "wix-main.wxs": "crates/tauri-bundler/src/bundle/windows/msi/main.wxs"
+  },
+  "purpose": "Preserve pre-branding upgrade registry identity while rendering AiGoodBro labels. Target-owned legacy MSI links are scheduled through standard RemoveFiles for native transaction rollback; other upstream gates are retained. Database codepage 936 preserves the shipped Chinese resource basenames; the en-US language and summary codepage 1252 remain unchanged.",
+  "files": {
+    "nsis-installer.nsi": {
+      "upstream_sha256": "9c6e92470d26e25d7c138b07c3000116c89ef0a32f29e5009a554ed5ca233ceb",
+      "replacements": [
+        {
+          "before": "!define UNINSTKEY \"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\${PRODUCTNAME}\"",
+          "after": "; Stable upgrade identity predates the AiGoodBro display name.\n!define LEGACYPRODUCTNAME \"Codex Account Manager Next\"\n!define LEGACYMANUFACTURER \"Codex Account Manager Next contributors\"\n!define UNINSTKEY \"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\${LEGACYPRODUCTNAME}\"",
+          "count": 1
+        },
+        {
+          "before": "!define MANUKEY \"Software\\${MANUFACTURER}\"",
+          "after": "!define MANUKEY \"Software\\${LEGACYMANUFACTURER}\"",
+          "count": 1
+        },
+        {
+          "before": "!define MANUPRODUCTKEY \"${MANUKEY}\\${PRODUCTNAME}\"",
+          "after": "!define MANUPRODUCTKEY \"${MANUKEY}\\${LEGACYPRODUCTNAME}\"",
+          "count": 1
+        },
+        {
+          "before": "    StrCmp \"$R0$R1\" \"${PRODUCTNAME}${MANUFACTURER}\" 0 wix_loop",
+          "after": "    StrCmp \"$R0$R1\" \"${PRODUCTNAME}${MANUFACTURER}\" wix_identity_match\n    StrCmp \"$R0$R1\" \"${LEGACYPRODUCTNAME}${LEGACYMANUFACTURER}\" 0 wix_loop\n    wix_identity_match:",
+          "count": 1
+        },
+        {
+          "before": "Function CreateOrUpdateStartMenuShortcut\n",
+          "after": "; Rename only our existing legacy shortcuts; never overwrite another shortcut.\n!macro MigrateLegacyBrandShortcut FOLDER\n  !insertmacro IsShortcutTarget \"${FOLDER}\\${LEGACYPRODUCTNAME}.lnk\" \"$INSTDIR\\${MAINBINARYNAME}.exe\"\n  Pop $0\n  ${If} $0 = 1\n  ${AndIfNot} ${FileExists} \"${FOLDER}\\${PRODUCTNAME}.lnk\"\n    Rename \"${FOLDER}\\${LEGACYPRODUCTNAME}.lnk\" \"${FOLDER}\\${PRODUCTNAME}.lnk\"\n  ${EndIf}\n!macroend\n\nFunction CreateOrUpdateStartMenuShortcut\n  !insertmacro MigrateLegacyBrandShortcut \"$SMPROGRAMS\\$AppStartMenuFolder\"\n  !insertmacro MigrateLegacyBrandShortcut \"$SMPROGRAMS\"\n",
+          "count": 1
+        },
+        {
+          "before": "Function CreateOrUpdateDesktopShortcut\n",
+          "after": "Function CreateOrUpdateDesktopShortcut\n  !insertmacro MigrateLegacyBrandShortcut \"$DESKTOP\"\n",
+          "count": 1
+        },
+        {
+          "before": "Function RestorePreviousInstallLocation\n  ReadRegStr $4 SHCTX \"${MANUPRODUCTKEY}\" \"\"\n  StrCmp $4 \"\" +2 0\n",
+          "after": "Function RestorePreviousInstallLocation\n  ReadRegStr $4 SHCTX \"${MANUPRODUCTKEY}\" \"\"\n  ${If} $4 == \"\"\n    ; WiX records the same owned installation path under a named value.\n    ReadRegStr $4 SHCTX \"${MANUPRODUCTKEY}\" \"InstallDir\"\n  ${EndIf}\n  StrCmp $4 \"\" +2 0\n",
+          "count": 1
+        }
+      ],
+      "local_sha256": "9a0a2e79d333d8ddac4b7b6ea56045abafc6d13f729b51a7b42a7daf7e5c9d1d",
+      "upstream_git_blob": "fb8e9bb406dc6862a939f71258c14a08c4aa5361"
+    },
+    "wix-main.wxs": {
+      "upstream_sha256": "c49ce8f2f138b70d492ce3135436504e0cdacebd810baa3b59dd6054d42f562b",
+      "replacements": [
+        {
+          "before": "Software\\\\{{manufacturer}}\\\\{{product_name}}",
+          "after": "Software\\Codex Account Manager Next contributors\\Codex Account Manager Next",
+          "count": 6
+        },
+        {
+          "before": "        <InstallExecuteSequence>\n            <RemoveShortcuts>Installed AND NOT UPGRADINGPRODUCTCODE</RemoveShortcuts>\n        </InstallExecuteSequence>\n\n",
+          "after": "        <InstallExecuteSequence>\n            <RemoveShortcuts>Installed AND NOT UPGRADINGPRODUCTCODE</RemoveShortcuts>\n            <Custom Action=\"PlanLegacyBrandShortcuts\" Before=\"RemoveFiles\">WIX_UPGRADE_DETECTED AND NOT Installed</Custom>\n        </InstallExecuteSequence>\n\n        <!-- Old MSI deliberately retains shortcuts during major upgrades. Plan only\n             exact owned links in RemoveFile so the MSI transaction owns rollback. -->\n        <CustomAction Id=\"PlanLegacyBrandShortcuts\" Script=\"jscript\" Execute=\"immediate\" Return=\"check\"><![CDATA[\nvar fs = new ActiveXObject(\"Scripting.FileSystemObject\");\nvar shell = new ActiveXObject(\"WScript.Shell\");\nfunction absolute(path) {\n    if (!/^(?:[A-Za-z]:[\\\\\\/]|\\\\\\\\[^\\\\]+\\\\[^\\\\]+\\\\)/.test(path)) {\n        throw new Error(\"Expected an absolute installer path\");\n    }\n    return fs.GetAbsolutePathName(path).replace(/\\//g, \"\\\\\").toLowerCase();\n}\nfunction plainPath(path) {\n    if ((fs.GetFile(path).Attributes & 1024) !== 0) return false;\n    var parent = fs.GetParentFolderName(path);\n    while (parent) {\n        if ((fs.GetFolder(parent).Attributes & 1024) !== 0) return false;\n        var next = fs.GetParentFolderName(parent);\n        if (next.toLowerCase() === parent.toLowerCase()) break;\n        parent = next;\n    }\n    return true;\n}\nvar expected = absolute(fs.BuildPath(absolute(Session.Property(\"INSTALLDIR\")), \"codexu-tauri.exe\"));\nvar candidates = [\n    [\"DesktopFolder\", \"ApplicationShortcutDesktop\", \"AiGoodBroLegacyDesktop\", \"AiGoodBroLegacyDesktopDirectory\", \"\"],\n    [\"ProgramMenuFolder\", \"ApplicationShortcut\", \"AiGoodBroLegacyPrograms\", \"AiGoodBroLegacyProgramsDirectory\", \"Codex Account Manager Next\"]\n];\nfor (var i = 0; i < candidates.length; i++) {\n    var row = candidates[i];\n    var folder = absolute(Session.Property(row[0]));\n    if (row[4]) folder = fs.BuildPath(folder, row[4]);\n    var path = fs.BuildPath(folder, \"Codex Account Manager Next.lnk\");\n    var target;\n    try {\n        if (!fs.FileExists(path) || !plainPath(path)) continue;\n        target = absolute(shell.CreateShortcut(path).TargetPath);\n    }\n    catch (error) { continue; } // Unknown or malformed links belong to the user.\n    if (target !== expected) continue;\n    Session.Property(row[3]) = folder;\n    // Every SQL value is a fixed identifier/name above, never a filesystem value.\n    var view = Session.Database.OpenView(\"INSERT INTO `RemoveFile` (`FileKey`, `Component_`, `FileName`, `DirProperty`, `InstallMode`) VALUES ('\" + row[2] + \"', '\" + row[1] + \"', 'Codex Account Manager Next.lnk', '\" + row[3] + \"', 1) TEMPORARY\");\n    view.Execute();\n    view.Close();\n}\n        ]]></CustomAction>\n\n",
+          "count": 1
+        },
+        {
+          "before": "            Language=\"!(loc.TauriLanguage)\"\n",
+          "after": "            Language=\"!(loc.TauriLanguage)\"\n            Codepage=\"936\"\n",
+          "count": 1
+        }
+      ],
+      "local_sha256": "fa8202e64424e2fd328de51f1ae67233eeb5b6f95c8aeadac456381860670b9b",
+      "upstream_git_blob": "a11b2ec4381cb05fb0d340b17ef5197ad951529c"
+    }
+  },
+  "encoding_contract": {
+    "databaseCodepage": 936,
+    "summaryCodepage": 1252,
+    "language": "en-US",
+    "languageId": 1033,
+    "localizationSources": [
+      {
+        "url": "https://raw.githubusercontent.com/wixtoolset/wix3/wix3141rtm/src/ext/UIExtension/wixlib/WixUI_en-us.wxl",
+        "sha256": "b0131df8e8dee16041d211200e79546c53866fe9854df50b734b9352ed0c4cb0",
+        "valueCount": 1686,
+        "allValuesAscii": true,
+        "nonAsciiCodepoints": []
+      },
+      {
+        "url": "https://raw.githubusercontent.com/wixtoolset/wix3/wix3141rtm/src/ext/UtilExtension/wixlib/en-us.wxl",
+        "sha256": "1f279883252cce68dfbf60e93eb60d1c247414ebc4b8492e5aa4c331ee5065c3",
+        "valueCount": 65,
+        "allValuesAscii": true,
+        "nonAsciiCodepoints": []
+      },
+      {
+        "url": "https://raw.githubusercontent.com/tauri-apps/tauri/tauri-cli-v2.6.2/crates/tauri-bundler/src/bundle/windows/msi/default-locale-strings.xml",
+        "sha256": "34df49db31a56913337132beaf54135a3f675a9085724b7781ec0a32fd523815",
+        "valueCount": 12,
+        "allValuesAscii": true,
+        "nonAsciiCodepoints": []
+      }
+    ],
+    "scope": "Complete pinned en-US localization values checked for strict roundtrip; release preflight checks current template/config/resource names and the generated WXS/WXL."
+  }
+}

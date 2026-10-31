@@ -1,4 +1,4 @@
-# Codex Account Manager Next for Windows
+# AiGoodBro for Windows
 
 发布版本：3.0.0 · Windows x86_64（MSI / NSIS）。
 
@@ -69,7 +69,7 @@ Dashboard 的正式 Windows 本机采集入口会构建真实 Tauri release 应�
 最大化、exact HWND 的采集运行。Overview 仅采集一个顶部 viewport；Tasks、AI Leadership、
 Usage 与 Skills 使用动态编号的 panel segments；Projects 仅采集一个最大化的首个 viewport。
 采集实例保持最大化，但以 non-activating background tool window 运行：不改变用户当前前台窗口，
-并从任务栏和 Alt-Tab 排除；正常启动 Codex Account Manager Next 的窗口行为不变。
+并从任务栏和 Alt-Tab 排除；正常启动 AiGoodBro 的窗口行为不变。
 截图、日志和 WebView2 临时数据只写入
 Git 忽略的 `.local-artifacts/`；不得提交、上传、复制进公开报告或从公开文档链接。
 公开证据必须使用全合成 fixture，具体边界见
@@ -168,3 +168,7 @@ windows/
 - 对默认蓝紫、一套冷色和一套暖色做 Light/Dark 原生视觉矩阵。
 - 补齐 Settings、空数据、错误状态和长中文标题的原生验收。
 - 补齐 Windows 安装包代码签名、更新器与真实机器发布验收。
+
+## Windows 品牌与升级兼容
+
+应用、窗口、安装器显示名称与发布文件统一为 AiGoodBro。内部 bundle identifier、codexu-tauri.exe、缓存目录与凭据/配置位置沿用旧版；MSI UpgradeCode 固定为 `6CD62AC1-9AD0-5E9E-A4E1-C78C6A73FD03`。WiX/NSIS 使用固定 Tauri 2.6.2 模板，仅将旧版安装记录身份与新显示名称分离，以继续发现既有安装和自定义安装位置。模板来源和精确变更在 `apps/codexu-tauri/src-tauri/installer/SOURCE.json`，旧名称只保留在这些兼容键及更新器旧资产兼容中。

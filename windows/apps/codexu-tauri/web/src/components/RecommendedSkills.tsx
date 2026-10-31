@@ -1,23 +1,31 @@
-import { useState } from 'react';
-import { useI18n } from '../i18n/I18nProvider';
+import {useEffect,useRef,useState} from 'react';
+import {invoke} from '@tauri-apps/api/core';
+import {listen} from '@tauri-apps/api/event';
+import {useI18n} from '../i18n/I18nProvider';
+import {parseRecommendations,parseRecommendationAction,visibleRecommendations,type Recommendations,type RecommendationId} from '../utils/recommendations';
 
-const skills = [
-  ['Oracle', '调用浏览器，请网页版 GPT 最好的模型复核或出方案', 'Ask the best available GPT in the browser for a second review', '请安装 AiGoodBro 仓库 Resources/SkillLibrary/oracle 中的 Skill，先检查重复项，并按使用说明运行。'],
-  ['Handoff · 任务交接', '保存进度、证据与下一步，换任务也能接着做', 'Save progress, evidence and next steps for another task', '请安装 AiGoodBro 仓库 Resources/SkillLibrary/handoff 中的 Skill，先检查重复项，并按使用说明运行。'],
-  ['TypeSafe AI', '把自然语言判断变成带概率的类型化结果', 'Turn narrow judgments into typed results with uncertainty', '请安装 AiGoodBro 仓库 Resources/SkillLibrary/typesafe-ai 中的 Skill，先检查重复项，并按使用说明运行。'],
-] as const;
-
-export function RecommendedSkills() {
-  const { language } = useI18n();
-  const [feedback, setFeedback] = useState('');
-  const zh = language === 'zh-Hans';
-  return <div className="space-y-2"><div className="grid gap-3 sm:grid-cols-3">
-    {skills.map(([name, cn, en, prompt]) => <article key={name} className="glass-panel p-4 flex flex-col gap-2 min-w-0">
-      <h3 className="text-sm font-semibold text-primary">{name}</h3><p className="text-xs text-secondary flex-1">{zh ? cn : en}</p>
-      <button type="button" className="glass-button px-2 py-1.5 text-xs self-start" onClick={async () => {
-        try { await navigator.clipboard.writeText(prompt + ' 仓库：https://github.com/BLACKIELF/AgentHub-AiGoodBro'); setFeedback(zh ? '已复制，粘贴到 Codex 即可。' : 'Copied. Paste into Codex.'); }
-        catch { setFeedback(zh ? '复制失败，请从仓库查看安装说明。' : 'Copy failed. Open the repository instructions.'); }
-      }}>{zh ? '复制安装指令' : 'Copy installation prompt'}</button>
-    </article>)}
-  </div><p role="status" className="text-xs text-secondary">{feedback || (zh ? '轻唤目前为 macOS 应用；Windows 可使用系统快捷键。Skill 安装不自动授权 API 费用。' : 'Quick Toggle is currently a macOS app. Windows can use system shortcuts. Installing a skill does not authorize API charges.')}</p></div>;
+export function RecommendedSkills(){
+ const{language}=useI18n(),zh=language==='zh-Hans',t=(cn:string,en:string)=>zh?cn:en;
+ const[state,setState]=useState<Recommendations|null>(null),[busy,setBusy]=useState(false),[error,setError]=useState(false),[feedback,setFeedback]=useState(''),[selected,setSelected]=useState<RecommendationId|null>(null),[filter,setFilter]=useState<'all'|'skill'|'app'>('all');
+ const live=useRef(false),operating=useRef(false),needsRead=useRef(false),epoch=useRef(0);
+ async function read(){if(operating.current){needsRead.current=true;return;}const own=++epoch.current;try{const next=parseRecommendations(await invoke('get_recommendations'));if(live.current&&epoch.current===own){setState(next);setError(false);}}catch{if(live.current&&epoch.current===own)setError(true);}}
+ useEffect(()=>{live.current=true;void read();let unlisten:(()=>void)|undefined;void listen('recommendations:changed',()=>void read()).then(fn=>{if(live.current)unlisten=fn;else fn();}).catch(()=>{});return()=>{live.current=false;epoch.current++;unlisten?.();};},[]);
+ async function change(command:string,args:Record<string,unknown>={},close=false){if(operating.current)return;operating.current=true;const own=++epoch.current;setBusy(true);setFeedback('');try{const result=await invoke(command,args);if(!live.current||own!==epoch.current)return;if(command==='recommendation_action'){const status=parseRecommendationAction(result);setFeedback(({copied:t('已复制，可粘贴到 Codex。','Copied. Paste into Codex.'),codexRequested:t('已请求打开 Codex，指令也已复制；请在 Codex 中查看并确认。','Requested Codex to open; instructions copied. Review and confirm in Codex.'),copiedCodexUnavailable:t('指令已复制，但未能打开 Codex；请手动粘贴。','Instructions copied, but Codex could not be opened. Paste them manually.'),packageShown:t('已请求在文件管理器显示安装包。','Requested the package in the file manager.'),projectRequested:t('已请求打开官方项目。','Requested the official project.')}as const)[status]);}else{setState(parseRecommendations(result));setError(false);if(close)setSelected(null);}}catch{if(live.current&&own===epoch.current)setError(true);}finally{if(live.current&&own===epoch.current){operating.current=false;setBusy(false);if(needsRead.current){needsRead.current=false;void read();}}}}
+ const entry=state?.items.find(x=>x.id===selected),visible=state?visibleRecommendations(state,filter):[];
+ return <section className="space-y-3" aria-label={t('推荐库','Recommendation library')}>
+  <div className="recommendation-toolbar flex flex-wrap gap-2 items-center"><label>{t('类别','Category')} <select aria-label={t('推荐类别','Recommendation category')} className="glass-input p-1" value={filter} onChange={e=>setFilter(e.target.value as typeof filter)}><option value="all">{t('全部','All')}</option><option value="skill">Skills</option><option value="app">{t('应用','Apps')}</option></select></label><span className="text-xs text-secondary">{visible.length} {t('项 · 按需使用','items · optional')}</span><button className="glass-button px-2 py-1" disabled={busy||!state} onClick={()=>void change('recheck_recommendations')}>{t('重新检查安装','Recheck installations')}</button><button className="glass-button px-2 py-1" disabled={busy||!state?.items.some(x=>x.hidden)} onClick={()=>void change('restore_recommendations')}>{t('恢复隐藏推荐','Restore hidden recommendations')}</button></div>
+  <p className="text-xs text-secondary">{t('安装检测仅检查本地 Skill 文件，不代表模型、MCP 或 API 可用。这里不会执行安装。','Installation checks inspect local skill files only; they do not prove model, MCP or API readiness. Nothing is installed here.')}</p>
+  {error&&<p role="alert">{t('推荐读取或操作未完成，未确认保存或安装。','Recommendation reading or action did not complete. No save or installation is confirmed.')} <button className="glass-button px-2" disabled={busy} onClick={()=>void read()}>{t('重新读取','Read again')}</button></p>}
+  {!state&&!error&&<p role="status">{t('正在读取推荐…','Reading recommendations…')}</p>}
+  {state&&visible.length===0&&<p>{t('暂无可显示推荐','No recommendations to show')}</p>}
+  <div className="grid gap-3 sm:grid-cols-2">{visible.map(item=><article key={item.id} className="glass-panel p-3 space-y-2"><h3 className="font-semibold">{zh?item.title.zh:item.title.en}</h3><p className="text-xs text-secondary">{zh?item.summary.zh:item.summary.en}</p>{item.id==='quicktoggle'&&<p className="text-xs text-secondary">{t('此应用为 macOS 专属；Windows 仅提供项目介绍。','This app is macOS-only; Windows provides project information.')}</p>}<button className="glass-button px-2 py-1 text-xs" disabled={busy||error} onClick={()=>{setSelected(item.id);setFeedback('');}}>{t('查看说明','View details')}</button><button className="glass-button px-2 py-1 ml-2 text-xs" disabled={busy||error} onClick={()=>void change('set_recommendation_hidden',{id:item.id,hidden:true})}>{t('不再显示','Hide recommendation')}</button></article>)}</div>
+  {entry&&<div role="dialog" aria-label={zh?entry.title.zh:entry.title.en} className="glass-panel p-4 space-y-3"><div className="flex justify-between gap-3"><h3>{zh?entry.title.zh:entry.title.en}</h3><button className="glass-button px-2" onClick={()=>setSelected(null)}>{t('关闭','Close')}</button></div><p>{zh?entry.summary.zh:entry.summary.en}</p><pre className="text-xs whitespace-pre-wrap break-words max-h-48 overflow-auto">{entry.instructions}</pre>
+   {entry.kind==='skill'&&!entry.packageAvailable&&<p>{t('内置安装包缺失或已改变；未执行任何安装。','The bundled package is missing or changed. Nothing was installed.')}</p>}
+   <div className="flex flex-wrap gap-2">{entry.canInstall&&<><button className="glass-button px-2 py-1" disabled={busy||error} onClick={()=>void change('recommendation_action',{id:entry.id,action:'copyInstructions'})}>{t('复制安装指令','Copy installation instructions')}</button><button className="glass-button px-2 py-1" disabled={busy||error} onClick={()=>void change('recommendation_action',{id:entry.id,action:'openCodex'})}>{t('前往 Codex 安装','Install with Codex')}</button></>}{entry.packageAvailable&&<button className="glass-button px-2 py-1" disabled={busy||error} onClick={()=>void change('recommendation_action',{id:entry.id,action:'showPackage'})}>{t('查看安装包','Show package')}</button>}<button className="glass-button px-2 py-1" disabled={busy||error} onClick={()=>void change('recommendation_action',{id:entry.id,action:'openProject'})}>{t('查看官方项目','View official project')}</button><button className="glass-button px-2 py-1" disabled={busy||error} onClick={()=>void change('set_recommendation_hidden',{id:entry.id,hidden:true},true)}>{t('不再显示此项','Hide this recommendation')}</button></div>
+  </div>}
+  {feedback&&<p role="status" className="text-xs text-secondary">{feedback}</p>}
+  <LegacyTypeSafe zh={zh}/>
+ </section>;
 }
+/** Keep the existing Windows recommendation; it is not part of the Mac six-item catalog or installation detection. */
+function LegacyTypeSafe({zh}:{zh:boolean}){const[feedback,setFeedback]=useState('');return <details className="text-xs text-secondary"><summary>TypeSafe AI · {zh?'既有推荐':'Existing recommendation'}</summary><p>{zh?'把自然语言判断变成带概率的类型化结果':'Turn narrow judgments into typed results with uncertainty'}</p><button className="glass-button px-2 py-1" onClick={async()=>{try{await navigator.clipboard.writeText('请安装 AiGoodBro 仓库 Resources/SkillLibrary/typesafe-ai 中的 Skill，先检查重复项，并按使用说明运行。 仓库：https://github.com/BLACKIELF/AgentHub-AiGoodBro');setFeedback(zh?'已复制，粘贴到 Codex 即可。':'Copied. Paste into Codex.');}catch{setFeedback(zh?'复制失败，请从仓库查看安装说明。':'Copy failed. Open the repository instructions.');}}}>{zh?'复制安装指令':'Copy installation prompt'}</button>{feedback&&<p role="status">{feedback}</p>}</details>;}

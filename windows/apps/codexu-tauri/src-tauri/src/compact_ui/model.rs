@@ -7,13 +7,17 @@ pub enum Surface {
     EdgePeek,
     EdgeRail,
     EdgeCard,
+    FloatingBubble,
+    BubbleEditor,
 }
 impl Surface {
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 6] = [
         Self::Popover,
         Self::EdgePeek,
         Self::EdgeRail,
         Self::EdgeCard,
+        Self::FloatingBubble,
+        Self::BubbleEditor,
     ];
     pub fn label(self) -> &'static str {
         match self {
@@ -21,6 +25,8 @@ impl Surface {
             Self::EdgePeek => "token-monitor-edge-peek",
             Self::EdgeRail => "token-monitor-edge-rail",
             Self::EdgeCard => "token-monitor-edge-card",
+            Self::FloatingBubble => "token-monitor-floating-bubble",
+            Self::BubbleEditor => "token-monitor-bubble-editor",
         }
     }
     pub fn from_label(value: &str) -> Option<Self> {
@@ -211,6 +217,8 @@ pub struct Preferences {
     pub running_indicator_enabled: bool,
     pub size: DockSize,
     pub custom_scale: f64,
+    #[serde(default)]
+    pub bubble: super::bubble::Preferences,
 }
 impl Default for Preferences {
     fn default() -> Self {
@@ -228,6 +236,7 @@ impl Default for Preferences {
             running_indicator_enabled: true,
             size: DockSize::Medium,
             custom_scale: 1.0,
+            bubble: super::bubble::Preferences::default(),
         }
     }
 }
@@ -241,6 +250,7 @@ impl Preferences {
         }
     }
     pub fn validate(&self) -> Result<(), &'static str> {
+        self.bubble.validate()?;
         if !self.offset.is_finite()
             || !(0. ..=1.).contains(&self.offset)
             || !self.custom_scale.is_finite()
@@ -401,9 +411,14 @@ pub fn validate_action(
     }
     let allowed = match action {
         "reveal" => matches!(surface, Surface::EdgePeek | Surface::EdgeRail),
-        "drag" | "select_item" | "page_next" | "page_previous" => surface == Surface::EdgeRail,
+        "drag" => matches!(surface, Surface::EdgeRail | Surface::FloatingBubble),
+        "select_item" | "page_next" | "page_previous" => surface == Surface::EdgeRail,
+        "edit_bubble" => surface == Surface::FloatingBubble,
         "pin" | "unpin" | "close" => surface != Surface::EdgePeek,
-        "collapse" => matches!(surface, Surface::Popover | Surface::EdgeRail),
+        "collapse" => matches!(
+            surface,
+            Surface::Popover | Surface::EdgeRail | Surface::FloatingBubble
+        ),
         "open_workspace" | "open_accounts" | "open_running_tasks" | "open_settings"
         | "open_proxy" => true,
         _ => false,

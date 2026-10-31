@@ -11,9 +11,13 @@ async function updateSettings(page, language = 'en') {
     let state = { phase: 'idle', info: { ...info, available_version: null, release_notes: '', asset_name: null, asset_size: null, can_download: false }, error_code: null };
     window.updateCalls = [];
     window.updateLifecycle = [];
+    window.updateListenWaiters = [];
     window.emitUpdate = next => { state = next; if (callback) window[`_${callback}`]({ event: 'app-update:changed', id: 171, payload: structuredClone(next) }); };
     window.__TAURI_INTERNALS__.invoke = async (command, args) => {
-      if (command === 'plugin:event|listen' && args.event === 'app-update:changed') { window.updateLifecycle.push('listen'); callback = args.handler; return 171; }
+      if (command === 'plugin:event|listen' && args.event === 'app-update:changed') {
+        window.updateLifecycle.push('listen'); callback = args.handler;
+        return new Promise(resolve => window.updateListenWaiters.push(() => resolve(171)));
+      }
       if (command === 'get_app_update_state') {
         window.updateLifecycle.push('read');
         if (window.holdInitialUpdate) return new Promise(resolve => { window.releaseInitialUpdate = () => resolve({ phase: 'idle' }); });
@@ -50,15 +54,26 @@ async function updateSettings(page, language = 'en') {
   });
   await page.goto('/');
   await expect(page.getByRole('region', { name: language === 'en' ? 'App updates' : '应用更新', exact: true })).toHaveAttribute('data-update-phase', 'idle');
+  await expect.poll(() => page.evaluate(() => window.updateListenWaiters.length)).toBeGreaterThan(0);
+  await page.evaluate(() => {
+    // AboutCredits reads the version independently. Require a fresh panel read
+    // after listener acknowledgement, not the first read across all Settings.
+    window.updateLifecycle.push('listeners-ready');
+    window.updateListenWaiters.splice(0).forEach(release => release());
+  });
 }
 
 test('check, download, verify and explicit installer opening stay separate; release notes remain plain text', async ({ page }) => {
   await updateSettings(page);
   const panel = page.getByRole('region', { name: 'App updates', exact: true });
-  await expect.poll(() => page.evaluate(() => window.updateLifecycle.includes('read'))).toBe(true);
+  await expect.poll(() => page.evaluate(() => {
+    const ready = window.updateLifecycle.indexOf('listeners-ready');
+    return ready >= 0 && window.updateLifecycle.slice(ready + 1).includes('read');
+  })).toBe(true);
   const lifecycle = await page.evaluate(() => window.updateLifecycle);
-  expect(lifecycle.indexOf('read')).toBeGreaterThan(0);
-  expect(lifecycle.slice(0, lifecycle.indexOf('read')).every(step => step === 'listen')).toBe(true);
+  const ready = lifecycle.indexOf('listeners-ready');
+  expect(lifecycle.slice(0, ready)).toContain('listen');
+  expect(lifecycle.indexOf('read', ready + 1)).toBeGreaterThan(ready);
   await panel.getByRole('button', { name: 'Check for updates' }).click();
   await expect(panel).toContainText('Available version 3.1.0');
   await panel.getByText('Release notes', { exact: true }).click();

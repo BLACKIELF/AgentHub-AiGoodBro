@@ -754,7 +754,7 @@ fn require_named_idle(names: &[&str]) -> AccountResult<()> {
 
 /// Bind the RPC transport to this exact owned CLI, not just an ephemeral port
 /// somebody else could win between reservation and listen.
-pub(super) fn owns_loopback_listener(pid: u32, port: u16) -> AccountResult<bool> {
+pub(in crate::accounts) fn owns_loopback_listener(pid: u32, port: u16) -> AccountResult<bool> {
     #[link(name = "iphlpapi")]
     unsafe extern "system" {
         fn GetExtendedTcpTable(
@@ -911,29 +911,148 @@ mod tests {
         assert!(String::from_utf8_lossy(&output).contains("SYNTHETIC_JOB_OUTPUT"));
     }
     #[test]
+    #[ignore = "child-only fixture invoked by the owned Job cancellation test"]
+    fn synthetic_job_tree_fixture() {
+        use std::io::{BufRead, Write};
+        use std::os::windows::io::AsRawHandle;
+        use std::process::{Command, Stdio};
+        if std::env::var("AIGOODBRO_NATIVE_JOB_FIXTURE_ROLE").as_deref() == Ok("descendant") {
+            println!("\nSYNTHETIC_DESCENDANT_READY");
+            std::io::stdout().flush().unwrap();
+            std::thread::sleep(Duration::from_secs(60));
+            return;
+        }
+        // Only the outer acceptance test creates this marker in its isolated
+        // working directory. A normal --ignored invocation starts no child.
+        let marker = std::env::current_dir()
+            .unwrap()
+            .join("synthetic-owned-job.fixture");
+        let marker = match std::fs::read(marker) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+            Err(error) => panic!("synthetic fixture marker unavailable: {error}"),
+        };
+        assert_eq!(marker, b"owned job fixture");
+        let mut descendant = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "accounts::native::process::tests::synthetic_job_tree_fixture",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("AIGOODBRO_NATIVE_JOB_FIXTURE_ROLE", "descendant")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .expect("spawn synthetic descendant");
+        let mut reader = std::io::BufReader::new(descendant.stdout.take().unwrap());
+        loop {
+            let mut line = String::new();
+            assert!(
+                reader.read_line(&mut line).unwrap() > 0,
+                "synthetic descendant exited before readiness"
+            );
+            if line.trim() == "SYNTHETIC_DESCENDANT_READY" {
+                break;
+            }
+        }
+        assert!(descendant.try_wait().unwrap().is_none());
+        println!(
+            "\nSYNTHETIC_CHILD_STARTED {} {}",
+            descendant.id(),
+            created(descendant.as_raw_handle()).unwrap()
+        );
+        std::io::stdout().flush().unwrap();
+        assert!(descendant.wait().unwrap().success());
+    }
+
+    #[test]
     fn cancelling_job_confirms_sleeping_descendants_are_gone_without_pid_kills() {
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn OpenProcess(access: u32, inherit: i32, pid: u32) -> Handle;
+        }
         let temp = tempfile::tempdir().unwrap();
-        let script="Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') -ArgumentList @('-NoProfile','-NonInteractive','-Command','Start-Sleep -Seconds 60') -WindowStyle Hidden; [Console]::WriteLine('SYNTHETIC_CHILD_STARTED'); Start-Sleep -Seconds 60";
+        std::fs::write(
+            temp.path().join("synthetic-owned-job.fixture"),
+            b"owned job fixture",
+        )
+        .unwrap();
         let mut child = Child::start(
-            &powershell(),
+            &std::env::current_exe().unwrap(),
             temp.path(),
             &[
-                "-NoProfile".into(),
-                "-NonInteractive".into(),
-                "-Command".into(),
-                script.into(),
+                "--exact".into(),
+                "accounts::native::process::tests::synthetic_job_tree_fixture".into(),
+                "--ignored".into(),
+                "--nocapture".into(),
             ],
         )
         .unwrap();
         let start = Instant::now();
         let mut output = Vec::new();
-        while !String::from_utf8_lossy(&output).contains("SYNTHETIC_CHILD_STARTED") {
+        let (pid, birth) = loop {
             output.extend(child.read_available().unwrap());
-            assert!(start.elapsed() < Duration::from_secs(15));
+            assert!(output.len() <= 16384, "unexpected synthetic fixture output");
+            if let Some(line) = output.split_inclusive(|b| *b == b'\n').find_map(|line| {
+                line.strip_suffix(b"\n")?
+                    .strip_prefix(b"SYNTHETIC_CHILD_STARTED ")
+            }) {
+                let fields: Vec<_> = std::str::from_utf8(line)
+                    .unwrap()
+                    .split_whitespace()
+                    .collect();
+                assert_eq!(fields.len(), 2, "invalid synthetic readiness receipt");
+                break (
+                    fields[0].parse::<u32>().unwrap(),
+                    fields[1].parse::<u64>().unwrap(),
+                );
+            }
+            assert!(
+                child.exit_code().unwrap().is_none(),
+                "fixture root exited before descendant readiness: {}",
+                String::from_utf8_lossy(&output)
+            );
+            assert!(
+                start.elapsed() < Duration::from_secs(15),
+                "synthetic descendant readiness timeout: {}",
+                String::from_utf8_lossy(&output)
+            );
             std::thread::sleep(Duration::from_millis(10));
-        }
+        };
+        assert_ne!(pid, child.pid());
+        // This read-only handle is pinned to the descendant's birth and the
+        // exact owned Job. No process is terminated by an observed PID.
+        let descendant = handle(unsafe { OpenProcess(0x0010_1000, 0, pid) }).unwrap();
+        assert_eq!(created(descendant.raw()).unwrap(), birth);
+        let mut member = 0;
+        assert_ne!(
+            unsafe { IsProcessInJob(descendant.raw(), child.job.raw(), &mut member) },
+            0
+        );
+        assert_eq!(member, 1);
+        assert_eq!(unsafe { WaitForSingleObject(descendant.raw(), 0) }, 258);
         child.stop_confirmed().unwrap();
         assert!(child.exit_code().unwrap().is_some());
+        let mut accounting = Accounting::default();
+        assert_ne!(
+            unsafe {
+                QueryInformationJobObject(
+                    child.job.raw(),
+                    1,
+                    &mut accounting as *mut _ as *mut c_void,
+                    std::mem::size_of::<Accounting>() as u32,
+                    std::ptr::null_mut(),
+                )
+            },
+            0
+        );
+        assert_eq!(accounting.active, 0);
+        assert_eq!(unsafe { WaitForSingleObject(descendant.raw(), 2000) }, 0);
         child.stop_confirmed().unwrap();
+        drop(descendant);
+        drop(child);
+        temp.close().unwrap();
     }
 }

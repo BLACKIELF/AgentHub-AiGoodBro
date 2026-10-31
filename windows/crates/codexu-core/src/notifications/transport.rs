@@ -49,11 +49,23 @@ pub struct TransportResponse {
     pub body: Vec<u8>,
 }
 pub trait NotificationTransport: Send + Sync {
+    fn system_permission(&self) -> super::SystemNotificationPermission {
+        super::SystemNotificationPermission::Unavailable
+    }
+    fn send_system(&self, _title: &str, _body: &str, _cancelled: &AtomicBool) -> Result<()> {
+        fail("system_notifications_unavailable")
+    }
     fn send(&self, request: &TransportRequest, cancelled: &AtomicBool)
         -> Result<TransportResponse>;
 }
 pub struct NativeNotificationTransport;
 impl NotificationTransport for NativeNotificationTransport {
+    fn system_permission(&self) -> super::SystemNotificationPermission {
+        super::system::permission()
+    }
+    fn send_system(&self, title: &str, body: &str, cancelled: &AtomicBool) -> Result<()> {
+        super::system::send(title, body, cancelled)
+    }
     fn send(&self, r: &TransportRequest, cancelled: &AtomicBool) -> Result<TransportResponse> {
         validate(r)?;
         if cancelled.load(Ordering::Acquire) {

@@ -189,7 +189,17 @@ fn recovery_owner_fixture() {
     std::fs::write(root.join("child-continue"), b"owned Job armed").unwrap();
     let until = Instant::now() + Duration::from_secs(8);
     if mode == "helper" || mode == "armed" {
-        while !root.join("grandchild-ready.json").exists() {
+        // Both children must have published complete birth records before the
+        // owner is exposed to the crash test. The grandchild can run first.
+        while !["child-ready.json", "grandchild-ready.json"]
+            .iter()
+            .all(|name| {
+                std::fs::read(root.join(name))
+                    .ok()
+                    .and_then(|bytes| serde_json::from_slice::<TestProcessBirth>(&bytes).ok())
+                    .is_some()
+            })
+        {
             assert!(Instant::now() < until);
             thread::sleep(Duration::from_millis(10));
         }

@@ -1,10 +1,10 @@
-//! Explicit, directory-scoped interactive terminals. Never submits a prompt.
+//! Directory-scoped interactive terminals and a fixed own-Codex setup task.
 use crate::app_state::AppState;
 use codexu_core::{
     profiles::normalize_root,
     workflow::{
-        interactive_arguments, resolve_selection, WorkflowModel, WorkflowPreference,
-        WorkflowPreferences,
+        interactive_arguments, resolve_selection, DispatchWindow, WorkflowModel,
+        WorkflowPreference, WorkflowPreferences,
     },
     workflow_reader::read_evidence,
 };
@@ -21,9 +21,13 @@ use tauri::State;
 use tokio::sync::Mutex;
 
 #[path = "cli_workflow_console.rs"]
-mod console;
+pub(super) mod console;
+#[path = "cli_workflow/dependency_actions.rs"]
+pub mod dependency_actions;
 #[path = "cli_workflow/local_actions.rs"]
 pub mod local_actions;
+#[path = "cli_workflow/provider_clients.rs"]
+pub mod provider_clients;
 
 #[derive(Clone, Copy, Default, serde::Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -71,11 +75,14 @@ impl Session {
 pub struct WorkflowState {
     sessions: Mutex<BTreeMap<u64, Session>>,
     local: local_actions::LocalState,
+    dependency: dependency_actions::DependencyState,
+    pool_clients: provider_clients::ClientState,
     quitting: AtomicBool,
 }
 impl WorkflowState {
     pub fn begin_force_quit(&self) {
         self.quitting.store(true, Ordering::Release);
+        self.pool_clients.begin_quit();
     }
 }
 
@@ -95,7 +102,7 @@ fn parse_id(id: &str) -> Result<u64, String> {
         .ok_or_else(|| "source_changed".into())
 }
 
-fn read_preferences(directory: &Path) -> anyhow::Result<WorkflowPreferences> {
+pub(super) fn read_preferences(directory: &Path) -> anyhow::Result<WorkflowPreferences> {
     let path = directory.join("workflow-preferences-v1.json");
     let result: WorkflowPreferences = match std::fs::symlink_metadata(&path) {
         Ok(meta) => {
@@ -119,7 +126,10 @@ fn read_preferences(directory: &Path) -> anyhow::Result<WorkflowPreferences> {
     Ok(result)
 }
 
-fn save_preferences(directory: &Path, preferences: &WorkflowPreferences) -> anyhow::Result<()> {
+pub(super) fn save_preferences(
+    directory: &Path,
+    preferences: &WorkflowPreferences,
+) -> anyhow::Result<()> {
     preferences.validate()?;
     codexu_core::atomic_settings::write_json(
         &directory.join("workflow-preferences-v1.json"),
@@ -129,6 +139,34 @@ fn save_preferences(directory: &Path, preferences: &WorkflowPreferences) -> anyh
             prior.validate()
         },
     )
+}
+
+/// Only a durable first-registration intent may initialize participation. An
+/// existing preference, including an explicit opt-out during recovery, wins.
+pub(crate) async fn ensure_registered_profile(
+    state: &Arc<AppState>,
+    workflow: &WorkflowState,
+    id: u64,
+    root: &Path,
+) -> anyhow::Result<()> {
+    let config = state.config.read().await;
+    let profile = config.profiles.get(id)?;
+    anyhow::ensure!(
+        profile.kind == codexu_core::local_cli::LocalCliKind::Codex
+            && codexu_core::profiles::same_root(&profile.root, root),
+        "Registration catalog changed"
+    );
+    let _sessions = workflow.sessions.lock().await;
+    anyhow::ensure!(
+        !workflow.quitting.load(Ordering::Acquire),
+        "App is stopping"
+    );
+    let mut preferences = read_preferences(&state.app_data_dir)?;
+    if preferences.profiles.contains_key(&id) {
+        return Ok(());
+    }
+    preferences.set_participating(id, true)?;
+    save_preferences(&state.app_data_dir, &preferences)
 }
 
 fn project(id: u64, preferences: &WorkflowPreferences, session: &mut Session) -> WorkflowDto {
@@ -171,88 +209,12 @@ fn auth_snapshot(root: &Path) -> anyhow::Result<Vec<u8>> {
     Ok(bytes)
 }
 
-async fn native_executable() -> anyhow::Result<(PathBuf, std::fs::File)> {
-    anyhow::ensure!(cfg!(windows), "Windows required");
-    let mut candidates = Vec::new();
-    let (package, triple) = if cfg!(target_arch = "aarch64") {
-        ("codex-win32-arm64", "aarch64-pc-windows-msvc")
-    } else {
-        ("codex-win32-x64", "x86_64-pc-windows-msvc")
-    };
-    if let Some(app_data) = std::env::var_os("APPDATA") {
-        candidates.push(
-            PathBuf::from(app_data)
-                .join("npm/node_modules/@openai/codex/node_modules/@openai")
-                .join(package)
-                .join("vendor")
-                .join(triple)
-                .join("bin/codex.exe"),
-        );
-    }
-    if let Some(local) = std::env::var_os("LOCALAPPDATA") {
-        candidates.push(PathBuf::from(local).join("Microsoft/WinGet/Links/codex.exe"));
-    }
-    if let Some(path) = std::env::var_os("PATH") {
-        candidates.extend(
-            std::env::split_paths(&path)
-                .filter(|path| path.is_absolute())
-                .map(|path| path.join("codex.exe")),
-        );
-    }
-    let mut checked = std::collections::HashSet::new();
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(6);
-    for path in candidates.into_iter().take(100) {
-        if tokio::time::Instant::now() >= deadline {
-            break;
-        }
-        let Ok(path) = path.canonicalize() else {
-            continue;
-        };
-        if !path.is_file()
-            || !path
-                .extension()
-                .and_then(|value| value.to_str())
-                .is_some_and(|value| value.eq_ignore_ascii_case("exe"))
-            || !checked.insert(path.clone())
-        {
-            continue;
-        }
-        let Ok(guard) = console::lock_executable(&path) else {
-            continue;
-        };
-        let mut command = tokio::process::Command::new(&path);
-        command
-            .arg("--version")
-            .stdin(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .kill_on_drop(true);
-        #[cfg(windows)]
-        command.creation_flags(0x0800_0000);
-        let remaining = deadline
-            .saturating_duration_since(tokio::time::Instant::now())
-            .min(std::time::Duration::from_secs(2));
-        let Ok(Ok(output)) = tokio::time::timeout(remaining, command.output()).await else {
-            continue;
-        };
-        if output.status.success()
-            && output.stdout.len() <= 256
-            && std::str::from_utf8(&output.stdout)
-                .ok()
-                .is_some_and(|text| {
-                    text.trim()
-                        .strip_prefix("codex-cli ")
-                        .is_some_and(|version| {
-                            !version.is_empty()
-                                && version
-                                    .bytes()
-                                    .all(|c| c.is_ascii_alphanumeric() || b".-+".contains(&c))
-                        })
-                })
-        {
-            return Ok((path, guard));
-        }
-    }
-    anyhow::bail!("Native official CLI unavailable")
+pub(super) async fn native_executable(app_data: &Path) -> anyhow::Result<(PathBuf, std::fs::File)> {
+    let selection = codexu_core::runtime_setup::SelectionStore::new(app_data)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        selection.resolve_cli().map_err(anyhow::Error::from)
+    })
+    .await?
 }
 
 #[tauri::command]
@@ -277,6 +239,9 @@ pub async fn get_account_workflow(
 #[derive(serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum WorkflowAction {
+    DispatchWindow {
+        window: DispatchWindow,
+    },
     Participation {
         value: bool,
     },
@@ -300,6 +265,7 @@ pub async fn set_account_workflow(
     let mut preferences =
         read_preferences(&state.app_data_dir).map_err(|_| "settings_unavailable")?;
     match action {
+        WorkflowAction::DispatchWindow { window } => preferences.set_dispatch_window(id, window),
         WorkflowAction::Participation { value } => preferences.set_participating(id, value),
         WorkflowAction::Selection { model, effort } => preferences.set_selection(id, model, effort),
     }
@@ -321,7 +287,9 @@ pub async fn read_workflow_models(
     let id = parse_id(&id)?;
     let root = linked_root(&state, id).await?;
     let auth = auth_snapshot(&root).map_err(|_| "login_unavailable")?;
-    let (executable, _guard) = native_executable().await.map_err(|_| "cli_unavailable")?;
+    let (executable, _guard) = native_executable(&state.app_data_dir)
+        .await
+        .map_err(|_| "cli_unavailable")?;
     let evidence = read_evidence(&executable, &root, &root)
         .await
         .map_err(|_| "models_unavailable")?;
@@ -350,7 +318,9 @@ pub async fn start_account_terminal(
     let workspace = workspace
         .canonicalize()
         .map_err(|_| "workspace_unavailable")?;
-    let (executable, guard) = native_executable().await.map_err(|_| "cli_unavailable")?;
+    let (executable, guard) = native_executable(&state.app_data_dir)
+        .await
+        .map_err(|_| "cli_unavailable")?;
     let auth = auth_snapshot(&root).map_err(|_| "login_unavailable")?;
     let mut activity = Some(services.reserve_terminal(&auth)?);
     let (generation, preference) = {
@@ -358,7 +328,7 @@ pub async fn start_account_terminal(
         let preferences =
             read_preferences(&state.app_data_dir).map_err(|_| "settings_unavailable")?;
         let preference = preferences.profiles.get(&id).cloned().unwrap_or_default();
-        if !preference.participating {
+        if !preference.allows_new_work_at_ms(chrono::Utc::now().timestamp_millis()) {
             return Err("launch_disabled".into());
         }
         let session = sessions.entry(id).or_default();
@@ -406,14 +376,26 @@ pub async fn start_account_terminal(
         {
             return Err("launch_cancelled");
         }
-        if !current.participating {
+        if !current.allows_new_work_at_ms(chrono::Utc::now().timestamp_millis()) {
             return Err("launch_disabled");
         }
         if current != preference {
             return Err("selection_changed");
         }
-        let process = console::OwnedConsole::start(&executable, &root, &workspace, &args, guard)
-            .map_err(|_| "launch_failed")?;
+        let environment = codexu_core::local_cli::launch::Environment::codex(&root)
+            .map_err(|_| "environment_invalid")?;
+        let process = console::OwnedConsole::start_registered(
+            &executable,
+            &workspace,
+            &args,
+            guard,
+            &environment,
+            "AiGoodBro - Codex",
+            Some(services.owned_domains.clone()),
+            None,
+            None,
+        )
+        .map_err(|_| "launch_failed")?;
         session.process = Some(process);
         session.dispatch_activity = activity.take();
         session.phase = Phase::Running;
@@ -495,7 +477,10 @@ pub async fn end_remove(workflow: &WorkflowState, id: u64) {
 /// Use from ExitRequested before allowing a normal app quit. A contended
 /// state is conservatively active, so a launch cannot race normal shutdown.
 pub fn should_block_exit(workflow: &WorkflowState) -> bool {
-    if local_actions::blocks_exit(workflow) {
+    if local_actions::blocks_exit(workflow)
+        || dependency_actions::blocks_exit(workflow)
+        || provider_clients::blocks_exit(workflow)
+    {
         return true;
     }
     let Ok(mut sessions) = workflow.sessions.try_lock() else {
@@ -513,6 +498,8 @@ pub fn should_block_exit(workflow: &WorkflowState) -> bool {
 pub fn force_stop_owned(workflow: &WorkflowState) {
     workflow.begin_force_quit();
     local_actions::force_stop(workflow);
+    dependency_actions::force_stop(workflow);
+    provider_clients::force_stop(workflow);
     let Ok(mut sessions) = workflow.sessions.try_lock() else {
         return;
     };

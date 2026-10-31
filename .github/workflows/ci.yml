@@ -30,13 +30,13 @@ jobs:
         with:
           fetch-depth: 0
       - name: Test CI change selection
-        run: python3 -m unittest tests.test_ci_windows_changed
+        run: python3 -m unittest tests.test_ci_windows_changed tests.test_windows_go_cache_paths tests.test_windows_upgrade_checkout
       - id: scope
         name: Select platform checks from changed files
         run: python3 scripts/ci_windows_changed.py
 
   macos:
-    runs-on: macos-14
+    runs-on: macos-15
     # Keep the complete native, renderer and proxy suite within one bounded job.
     timeout-minutes: 60
     steps:
@@ -50,7 +50,12 @@ jobs:
           go-version-file: Companion/LocalProxy/go.mod
           cache: false
       - name: Lint Swift sources
-        run: make lint
+        env:
+          DEVELOPER_DIR: /Applications/Xcode_26.0.1.app/Contents/Developer
+        run: |
+          xcrun --find swift-format
+          xcrun swift-format --version
+          make lint
       - name: Validate isolated provider client launchers
         run: python3 scripts/test-provider-client-launcher.py
       - name: Validate rendered local proxy policy editor
@@ -193,11 +198,21 @@ jobs:
       GIT_CONFIG_VALUE_0: "false"
       GIT_CONFIG_KEY_1: core.eol
       GIT_CONFIG_VALUE_1: lf
+      # Keep all Go helpers on the checkout volume from their first invocation.
+      GOMODCACHE: ${{ github.workspace }}/.local-artifacts/go/mod
+      GOCACHE: ${{ github.workspace }}/.local-artifacts/go/build
+      GOTMPDIR: ${{ github.workspace }}/.local-artifacts/go/tmp
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Initialize task-owned Go directories
+        shell: pwsh
+        run: |
+          foreach ($path in @($env:GOMODCACHE, $env:GOCACHE, $env:GOTMPDIR)) {
+            New-Item -ItemType Directory -Force -Path $path | Out-Null
+          }
       - uses: actions/setup-go@v5
         with:
           go-version-file: Companion/LocalProxy/go.mod
@@ -245,10 +260,29 @@ jobs:
         shell: pwsh
         run: .\windows\scripts\Prepare-ProxyResources.ps1 -BuildRoot (Join-Path $env:RUNNER_TEMP 'aigoodbro-proxy-validation') -RunNativeTests
 
+      - name: Build and exercise the isolated Windows provider pool
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: .\windows\scripts\Prepare-ProviderPool.ps1 -BuildRoot (Join-Path $env:RUNNER_TEMP 'aigoodbro-provider-pool-validation') -RunNativeTests -AllowDependencyDownload
+
+      - name: Build and exercise the Windows companion Hub
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: .\windows\scripts\Prepare-HubResources.ps1 -BuildRoot (Join-Path $env:RUNNER_TEMP 'aigoodbro-hub-validation') -RunNativeTests
+
       - name: Build and exercise Token Monitor with isolated logs
         if: ${{ !cancelled() }}
         shell: pwsh
         run: .\windows\scripts\Prepare-TokenMonitorResources.ps1 -BuildRoot (Join-Path $env:RUNNER_TEMP 'aigoodbro-statistics-validation') -RunNativeTests
+
+      - name: Prepare the pinned Windows Companion Skill resources
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          python -B windows/companion/prepare.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -B windows/companion/prepare.py --verify-only
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Test Windows Rust workspace
         if: ${{ !cancelled() }}
@@ -266,6 +300,9 @@ jobs:
             ${{ runner.temp }}/aigoodbro-statistics-validation/scanner/synthetic-regression/receipt.json
             ${{ runner.temp }}/aigoodbro-statistics-validation/resource-pin.txt
             windows/apps/codexu-tauri/src-tauri/resources/token-monitor/WINDOWS-RESOURCES.json
+            ${{ runner.temp }}/aigoodbro-hub-validation/*.json*
+            ${{ runner.temp }}/aigoodbro-hub-validation/*.log
+            ${{ runner.temp }}/aigoodbro-provider-pool-validation/SPACE-RECEIPT.json
           if-no-files-found: ignore
           retention-days: 7
 
@@ -293,10 +330,30 @@ jobs:
       - name: Render and verify Windows UI fixtures twice
         env:
           CODEXU_VISUAL_BROWSER: chromium
+          CODEXU_VISUAL_ARTIFACT_ROOT: ${{ github.workspace }}/.local-artifacts/web-visual/${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           npx playwright install chromium
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:CODEXU_VISUAL_SCRATCH_ROOT = Join-Path $env:CODEXU_VISUAL_ARTIFACT_ROOT 'baseline'
           npm run test:visual -- --update-snapshots
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:CODEXU_VISUAL_SCRATCH_ROOT = Join-Path $env:CODEXU_VISUAL_ARTIFACT_ROOT 'repeat'
           npm run test:visual
+      - name: Preserve synthetic visual failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: aigoodbro-web-narrow-failures-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            .local-artifacts/web-visual/${{ github.run_id }}-${{ github.run_attempt }}/**/profiles-quota-narrow*.png
+            .local-artifacts/web-visual/${{ github.run_id }}-${{ github.run_attempt }}/**/workspace-cards-medium*.png
+            .local-artifacts/web-visual/${{ github.run_id }}-${{ github.run_attempt }}/**/workspace-accounts-list-narrow*.png
+            .local-artifacts/web-visual/${{ github.run_id }}-${{ github.run_attempt }}/**/error-context.md
+            .local-artifacts/web-visual/${{ github.run_id }}-${{ github.run_attempt }}/**/*.redacted.json
+            .local-artifacts/web-visual/${{ github.run_id }}-${{ github.run_attempt }}/**/trace.zip
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7
 
 
   windows-native-visual:
@@ -310,11 +367,21 @@ jobs:
       GIT_CONFIG_VALUE_0: "false"
       GIT_CONFIG_KEY_1: core.eol
       GIT_CONFIG_VALUE_1: lf
+      # Keep all Go helpers on the checkout volume from their first invocation.
+      GOMODCACHE: ${{ github.workspace }}/.local-artifacts/go/mod
+      GOCACHE: ${{ github.workspace }}/.local-artifacts/go/build
+      GOTMPDIR: ${{ github.workspace }}/.local-artifacts/go/tmp
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Initialize task-owned Go directories
+        shell: pwsh
+        run: |
+          foreach ($path in @($env:GOMODCACHE, $env:GOCACHE, $env:GOTMPDIR)) {
+            New-Item -ItemType Directory -Force -Path $path | Out-Null
+          }
       - uses: actions/setup-go@v5
         with:
           go-version-file: Companion/LocalProxy/go.mod
@@ -345,6 +412,22 @@ jobs:
         if: ${{ !cancelled() }}
         shell: pwsh
         run: .\windows\scripts\Prepare-TokenMonitorResources.ps1 -BuildRoot (Join-Path $env:RUNNER_TEMP 'aigoodbro-statistics-resources')
+      - name: Prepare the verified provider-pool resources
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: .\windows\scripts\Prepare-ProviderPool.ps1 -BuildRoot (Join-Path $env:RUNNER_TEMP 'aigoodbro-provider-pool-resources') -AllowDependencyDownload
+      - name: Prepare the verified companion Hub resources
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: .\windows\scripts\Prepare-HubResources.ps1 -BuildRoot (Join-Path $env:RUNNER_TEMP 'aigoodbro-hub-resources')
+      - name: Prepare the pinned Windows Companion Skill resources
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          python -B windows/companion/prepare.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -B windows/companion/prepare.py --verify-only
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Build the native release application
         working-directory: windows
         run: cargo build --release --locked -p codexu-tauri --features custom-protocol
@@ -353,6 +436,34 @@ jobs:
         run: |
           .\windows\scripts\tests\Test-NativeVisualCaptureCoverage.ps1
           .\windows\scripts\tests\Test-NativeVisualCaptureCoverage.ps1
+      - name: Preserve task-owned native capture diagnostics
+        uses: actions/upload-artifact@v4
+        if: ${{ always() && !cancelled() }}
+        with:
+          name: windows-native-capture-diagnostics
+          path: |
+            .local-artifacts/windows-visual-captures/coverage-contract-${{ github.run_id }}-${{ github.run_attempt }}-*/manifest.json
+            .local-artifacts/windows-visual-captures/coverage-contract-${{ github.run_id }}-${{ github.run_attempt }}-*/logs/failure-uia.json
+            .local-artifacts/windows-visual-captures/coverage-contract-${{ github.run_id }}-${{ github.run_attempt }}-*/screenshots/fullscreen/failure.png
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Upload successful owned-window visual evidence
+        if: ${{ success() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-native-visual-evidence
+          include-hidden-files: true
+          retention-days: 7
+          if-no-files-found: error
+          path: |
+            .local-artifacts/windows-visual-captures/coverage-contract-${{ github.run_id }}-${{ github.run_attempt }}-*/manifest.json
+            .local-artifacts/windows-visual-captures/coverage-contract-${{ github.run_id }}-${{ github.run_attempt }}-*/screenshots/fullscreen/overview.png
+            .local-artifacts/windows-visual-captures/coverage-contract-${{ github.run_id }}-${{ github.run_attempt }}-*/screenshots/fullscreen/tasks-*.png
+            .local-artifacts/windows-visual-captures/coverage-contract-${{ github.run_id }}-${{ github.run_attempt }}-*/screenshots/fullscreen/ai-leadership-*.png
+            .local-artifacts/windows-visual-captures/coverage-contract-${{ github.run_id }}-${{ github.run_attempt }}-*/screenshots/fullscreen/usage-*.png
+            .local-artifacts/windows-visual-captures/coverage-contract-${{ github.run_id }}-${{ github.run_attempt }}-*/screenshots/fullscreen/projects-*.png
+            .local-artifacts/windows-visual-captures/coverage-contract-${{ github.run_id }}-${{ github.run_attempt }}-*/screenshots/fullscreen/skills-*.png
       - name: Preserve native statistics build receipts
         uses: actions/upload-artifact@v4
         if: ${{ always() && !cancelled() }}
@@ -362,6 +473,7 @@ jobs:
             ${{ runner.temp }}/aigoodbro-statistics-resources/scanner/*.log
             ${{ runner.temp }}/aigoodbro-statistics-resources/scanner/SCANNER-RECEIPT.json
             ${{ runner.temp }}/aigoodbro-statistics-resources/resource-pin.txt
+            ${{ runner.temp }}/aigoodbro-provider-pool-resources/SPACE-RECEIPT.json
             windows/apps/codexu-tauri/src-tauri/resources/token-monitor/WINDOWS-RESOURCES.json
           if-no-files-found: ignore
           retention-days: 7

@@ -59,9 +59,20 @@ impl AccountPaths {
 pub(crate) struct AccountRecord {
     pub id: String,
     pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remark: Option<String>,
     pub platform: String,
     pub revision: u64,
     pub credential: Option<StoredCredential>,
+    #[serde(default)]
+    pub created_at_ms: Option<i64>,
+    #[serde(default)]
+    pub browser: super::browser::BrowserPreference,
+}
+impl AccountRecord {
+    pub(crate) fn display_label(&self) -> &str {
+        self.remark.as_deref().unwrap_or(&self.label)
+    }
 }
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct ActiveProof {
@@ -73,12 +84,23 @@ pub(crate) struct ActiveProof {
     #[serde(default)]
     pub target_config_digest: Option<String>,
 }
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct RegistrationIntent {
+    pub identity_hash: String,
+    #[serde(default)]
+    pub planned_profile_id: Option<u64>,
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct Vault {
     pub schema_version: u32,
     pub revision: u64,
     pub accounts: Vec<AccountRecord>,
     pub active: Option<ActiveProof>,
+    /// Only first verified logins create an intent. Legacy accounts are not
+    /// silently adopted, and a failed catalog write must survive a restart.
+    #[serde(default)]
+    pub pending_registrations: std::collections::BTreeMap<String, RegistrationIntent>,
     #[serde(default)]
     pub secrets: std::collections::BTreeMap<String, String>,
 }
@@ -89,6 +111,7 @@ impl Default for Vault {
             revision: 0,
             accounts: Vec::new(),
             active: None,
+            pending_registrations: Default::default(),
             secrets: Default::default(),
         }
     }
@@ -103,7 +126,10 @@ impl Vault {
             if !valid_id(&record.id)
                 || !ids.insert(&record.id)
                 || record.platform != "codex"
+                || record.created_at_ms.is_some_and(|v| v <= 0)
+                || !record.browser.valid()
                 || crate::profiles::validate_label(&record.label).is_err()
+                || !super::service::metadata::valid_remark(record.remark.as_deref())
             {
                 return Err(fail("vault_invalid"));
             }
@@ -114,6 +140,19 @@ impl Vault {
                     return Err(fail("vault_invalid"));
                 }
             }
+        }
+        if self.pending_registrations.len() > 64
+            || self.pending_registrations.iter().any(|(id, intent)| {
+                !self.accounts.iter().any(|record| &record.id == id)
+                    || intent.identity_hash.len() != 64
+                    || intent.planned_profile_id == Some(0)
+                    || !intent
+                        .identity_hash
+                        .bytes()
+                        .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+            })
+        {
+            return Err(fail("vault_invalid"));
         }
         if self.secrets.len() > 2
             || self.secrets.iter().any(|(name, value)| {
@@ -353,6 +392,124 @@ pub(crate) fn read_optional(path: &Path, maximum: usize) -> AccountResult<Option
     }
     Ok(Some(data))
 }
+/// New bounded document/annotation readers retain one file handle and verify
+/// its identity before and after reading. Existing credential readers keep
+/// their prior behavior. `private_owner` is native-only, never an IPC option.
+pub(crate) fn read_bound_optional(
+    path: &Path,
+    maximum: usize,
+    private_owner: bool,
+) -> AccountResult<Option<Vec<u8>>> {
+    read_bound_optional_checked(path, maximum, private_owner, private_owner)
+}
+/// Bind owner checks to the same read handle without requiring private mode
+/// bits on existing, user-owned companion documents.
+pub(crate) fn read_bound_owned_optional(
+    path: &Path,
+    maximum: usize,
+) -> AccountResult<Option<Vec<u8>>> {
+    read_bound_optional_checked(path, maximum, false, true)
+}
+fn read_bound_optional_checked(
+    path: &Path,
+    maximum: usize,
+    private_owner: bool,
+    require_owner: bool,
+) -> AccountResult<Option<Vec<u8>>> {
+    ensure_no_links(path)?;
+    match std::fs::symlink_metadata(path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err(fail("account_storage_unavailable")),
+        Ok(m) if !m.is_file() || m.len() > maximum as u64 => {
+            return Err(fail("account_storage_invalid"))
+        }
+        Ok(_) => (),
+    }
+    fn identity(
+        file: &File,
+        private_owner: bool,
+        require_owner: bool,
+    ) -> AccountResult<(u64, u64, u64, Option<std::time::SystemTime>)> {
+        let meta = file
+            .metadata()
+            .map_err(|_| fail("account_storage_unavailable"))?;
+        if !meta.is_file() {
+            return Err(fail("account_storage_invalid"));
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            unsafe extern "C" {
+                fn geteuid() -> u32;
+            }
+            if meta.nlink() != 1
+                || (require_owner && meta.uid() != unsafe { geteuid() })
+                || (private_owner && meta.mode() & 0o077 != 0)
+            {
+                return Err(fail("account_storage_invalid"));
+            }
+            return Ok((meta.dev(), meta.ino(), meta.len(), meta.modified().ok()));
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsRawHandle;
+            use windows::Win32::{
+                Foundation::HANDLE,
+                Storage::FileSystem::{GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION},
+            };
+            let _ = private_owner;
+            if require_owner {
+                super::native::private::check_owner_file(file)?;
+            }
+            let mut info = BY_HANDLE_FILE_INFORMATION::default();
+            unsafe { GetFileInformationByHandle(HANDLE(file.as_raw_handle()), &mut info) }
+                .map_err(|_| fail("account_storage_unavailable"))?;
+            if info.nNumberOfLinks != 1 || info.dwFileAttributes & 0x400 != 0 {
+                return Err(fail("account_storage_invalid"));
+            }
+            return Ok((
+                info.dwVolumeSerialNumber as u64,
+                ((info.nFileIndexHigh as u64) << 32) | info.nFileIndexLow as u64,
+                meta.len(),
+                meta.modified().ok(),
+            ));
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = (private_owner, require_owner);
+            Err(fail("platform_unsupported"))
+        }
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.share_mode(1 | 2).custom_flags(0x0020_0000);
+    }
+    let mut file = options
+        .open(path)
+        .map_err(|_| fail("account_storage_unavailable"))?;
+    let before = identity(&file, private_owner, require_owner)?;
+    let mut bytes = Vec::new();
+    (&mut file)
+        .take(maximum as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| fail("account_storage_unavailable"))?;
+    ensure_no_links(path)?;
+    let current = options
+        .open(path)
+        .map_err(|_| fail("account_storage_unavailable"))?;
+    if bytes.len() > maximum
+        || before.2 != bytes.len() as u64
+        || identity(&file, private_owner, require_owner)? != before
+        || identity(&current, private_owner, require_owner)? != before
+    {
+        return Err(fail("account_storage_invalid"));
+    }
+    Ok(Some(bytes))
+}
+
 pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> AccountResult<()> {
     #[cfg(windows)]
     {
@@ -375,6 +532,37 @@ pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> AccountResult<()> {
             .map_err(|_| fail("account_save_failed"))?;
         Ok(())
     }
+}
+
+/// Ordinary app settings predate the private account store. Keep legacy
+/// foreign-owned settings on their existing writer, without taking ownership.
+/// Current-user-owned inputs use the same explicit-owner atomic writer as Hub
+/// inputs, including when Windows would otherwise choose a group owner.
+#[cfg(windows)]
+pub(crate) fn write_private_settings_if_owned(path: &Path, bytes: &[u8]) -> AccountResult<bool> {
+    ensure_no_links(path)?;
+    let parent = path.parent().ok_or_else(|| fail("account_paths_invalid"))?;
+    let mut missing = Vec::new();
+    let mut next = parent;
+    while !next.exists() {
+        missing.push(next);
+        next = next.parent().ok_or_else(|| fail("account_paths_invalid"))?;
+    }
+    for directory in missing.into_iter().rev() {
+        create_private_directory(directory)?;
+    }
+    for item in [parent, path] {
+        if item == path && !path.exists() {
+            continue;
+        }
+        match super::native::private::check_owner(item) {
+            Ok(()) => {}
+            Err(error) if error.code == "private_storage_owner_rejected" => return Ok(false),
+            Err(error) => return Err(error),
+        }
+    }
+    atomic_write(path, bytes)?;
+    Ok(true)
 }
 pub(crate) fn restore_owned(
     home: &Path,
@@ -423,6 +611,32 @@ pub(crate) fn ensure_no_links(path: &Path) -> AccountResult<()> {
     }
     Ok(())
 }
+/// Validate an existing user-owned entry without changing its permissions.
+/// Callers still bind any subsequent file read/write to the checked identity.
+pub(crate) fn check_existing_owned_path(path: &Path) -> AccountResult<()> {
+    ensure_no_links(path)?;
+    let metadata =
+        std::fs::symlink_metadata(path).map_err(|_| fail("account_storage_unavailable"))?;
+    if !metadata.is_file() && !metadata.is_dir() {
+        return Err(fail("account_storage_invalid"));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        unsafe extern "C" {
+            fn geteuid() -> u32;
+        }
+        if metadata.uid() != unsafe { geteuid() } || (metadata.is_file() && metadata.nlink() != 1) {
+            return Err(fail("private_storage_owner_rejected"));
+        }
+    }
+    #[cfg(windows)]
+    super::native::private::check_owner(path)?;
+    #[cfg(not(any(unix, windows)))]
+    return Err(fail("platform_unsupported"));
+    Ok(())
+}
+
 pub(crate) fn secure_directory(path: &Path) -> AccountResult<()> {
     ensure_no_links(path)?;
     #[cfg(not(windows))]

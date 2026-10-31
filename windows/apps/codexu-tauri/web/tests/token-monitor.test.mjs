@@ -31,6 +31,10 @@ test('masked session history preserves missing versus empty and rejects private 
  period.sessions={[key]:row};assert.deepEqual(plain(parseStatisticsState(value).snapshot.payload.aggregate.month.sessions[key]),row);
  for(const invalid of [{raw:row},{[key]:{...row,title:'private'}},{[key]:{...row,client:'private@example.invalid'}},{[key]:{...row,turnEnded:'false'}},{[key]:{...row,lastUsedAt:'2026-02-30T02:00:00Z'}},{[key]:{...row,totalTokens:-1}}]){period.sessions=invalid;assert.throws(()=>parseStatisticsState(value));}
 });
+test('history availability accepts legacy missing or null and only the exact Engine boolean field',()=>{
+ const value=state();for(const usage of [null,{historyAvailable:null},{historyAvailable:false},{historyAvailable:true}]){value.snapshot.payload.usage=usage;assert.doesNotThrow(()=>parseStatisticsState(value));}
+ for(const usage of [{historyAvailable:'true'},{historyAvailable:true,path:'private'},{}]){value.snapshot.payload.usage=usage;assert.throws(()=>parseStatisticsState(value));}
+});
 test('live rate must match the current scope and expire according to the actual sample',()=>{
  const value=state(),now=Date.now();value.tokenRate={mode:'burn',scope:'local',burnPerMinute:0,speedPerSecond:0,sampledAt:now,expiresAt:now+8000,idle:false,revision:1,contextKey:value.contextKey};
  const parsed=parseStatisticsState(value);assert.equal(visibleStatisticsRate(parsed,now).burnPerMinute,0);assert.equal(visibleStatisticsRate(parsed,now+8000),null);assert.equal(visibleStatisticsRate({...parsed,phase:'failed'},now),null);

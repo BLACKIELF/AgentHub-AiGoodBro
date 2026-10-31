@@ -499,6 +499,7 @@ dependencies = [
  "toml 0.8.2",
  "tracing",
  "uds_windows",
+ "unicode-segmentation",
  "url",
  "windows",
 ]
@@ -513,6 +514,7 @@ dependencies = [
  "dirs 5.0.1",
  "serde",
  "serde_json",
+ "sha2",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",

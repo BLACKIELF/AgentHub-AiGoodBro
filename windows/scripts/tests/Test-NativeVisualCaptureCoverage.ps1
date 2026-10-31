@@ -19,8 +19,12 @@ function Assert-Sequence {
 $repositoryRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\..'))
 $entry = Join-Path $repositoryRoot 'windows\scripts\Capture-NativeVisuals.ps1'
 $powershell = (Get-Command powershell.exe -ErrorAction Stop).Source
+$runScope = ''
+if ($env:GITHUB_RUN_ID -match '^\d+$' -and $env:GITHUB_RUN_ATTEMPT -match '^\d+$') {
+  $runScope = $env:GITHUB_RUN_ID + '-' + $env:GITHUB_RUN_ATTEMPT + '-'
+}
 $outputRoot = Join-Path $repositoryRoot (
-  '.local-artifacts\windows-visual-captures\coverage-contract-' +
+  '.local-artifacts\windows-visual-captures\coverage-contract-' + $runScope +
   [guid]::NewGuid().ToString('N')
 )
 $expectedSurfaces = @('Tasks', 'AI Leadership', 'Usage', 'Projects', 'Skills')
@@ -59,11 +63,27 @@ $fullscreenRun = $manifest.fullscreen_run
 Assert-True ($null -ne $fullscreenRun) 'Coverage capture did not record its fullscreen run.'
 Assert-True ($fullscreenRun.status -eq 'complete') 'Fullscreen Overview capture is not complete.'
 Assert-True (
+  $fullscreenRun.storage_before_onboarding.state_root -eq 'runtime/fullscreen/app-state' -and
+  [bool]$fullscreenRun.storage_before_onboarding.cache_isolated -and
+  [bool]$fullscreenRun.storage_before_onboarding.codex_isolated -and
+  $fullscreenRun.storage_before_onboarding.onboarding_status -eq 'pending' -and
+  $fullscreenRun.storage_after_onboarding.state_root -eq 'runtime/fullscreen/app-state' -and
+  [bool]$fullscreenRun.storage_after_onboarding.cache_isolated -and
+  [bool]$fullscreenRun.storage_after_onboarding.codex_isolated -and
+  $fullscreenRun.storage_after_onboarding.onboarding_status -eq 'deferred'
+) 'Each capture must independently save Pending then Deferred under its own state and cache root.'
+Assert-True (
+  [bool]$fullscreenRun.onboarding.observed -and
+  [bool]$fullscreenRun.onboarding.defer_invoked -and
+  [bool]$fullscreenRun.onboarding.dialog_dismissed
+) 'Fresh native capture must observe the first-launch guide and invoke its existing defer action.'
+Assert-True (
   [bool]$fullscreenRun.accessibility.document_present -and
   [bool]$fullscreenRun.accessibility.dashboard_tab_present -and
   [bool]$fullscreenRun.accessibility.renderer_present
 ) 'Native capture must verify a real UIA Document, Dashboard tab and renderer.'
 Assert-True ([bool]$fullscreenRun.window.maximized) 'Overview was not captured from a maximized window.'
+Assert-True ($fullscreenRun.window.title -ceq 'AiGoodBro') 'The rendered native main window still uses the legacy product title.'
 Assert-True (
   $fullscreenRun.window.activation_mode -eq 'non-activating' -and
   $fullscreenRun.window.foreground_policy -eq 'preserve active window' -and

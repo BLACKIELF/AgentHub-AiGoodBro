@@ -1,9 +1,7 @@
 //! Actual production automatic policy/service plus real AccountManager and
 //! ManagedProxyGate. Encryption/runtime/live evidence collaborators below are
 //! explicitly synthetic and are never registered by native composition.
-pub use codexu_core::{accounts, atomic_settings, managed_proxy, readers, updates};
-#[path = "../src/automatic_switch.rs"]
-mod automatic_switch;
+use codexu_core::{accounts, automatic_switch};
 #[path = "support/windows_creation.rs"]
 mod windows_creation;
 use accounts::*;

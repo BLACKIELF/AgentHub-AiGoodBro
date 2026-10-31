@@ -41,6 +41,8 @@ pub struct AppConfig {
     /// Interface language preference.
     #[serde(default)]
     pub language: InterfaceLanguage,
+    #[serde(default)]
+    pub installation_onboarding: crate::commands::setup_context::InstallationOnboarding,
 }
 
 impl Default for AppConfig {
@@ -57,6 +59,7 @@ impl Default for AppConfig {
             refresh_interval_secs: default_refresh_interval_secs(),
             tray_density: TrayDensity::Classic,
             language: InterfaceLanguage::Auto,
+            installation_onboarding: Default::default(),
         }
     }
 }
@@ -662,6 +665,7 @@ mod tests {
                     refresh_interval_secs: 60,
                     tray_density: TrayDensity::Classic,
                     language: InterfaceLanguage::Auto,
+                    installation_onboarding: Default::default(),
                 }),
                 source_generation: 0,
             });

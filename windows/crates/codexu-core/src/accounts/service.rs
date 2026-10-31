@@ -16,6 +16,18 @@ use std::{
         Arc, Mutex, RwLock,
     },
 };
+#[path = "browser.rs"]
+pub mod browser;
+#[path = "hub_snapshot.rs"]
+pub mod hub_snapshot;
+#[path = "maintenance.rs"]
+pub mod maintenance;
+#[path = "manual_accounts.rs"]
+pub mod manual_accounts;
+#[path = "metadata.rs"]
+pub mod metadata;
+#[path = "registration.rs"]
+pub mod registration;
 
 struct Attempt {
     dto: LoginAttemptDto,
@@ -57,6 +69,7 @@ pub struct AccountManager {
     login_spawner: Arc<dyn super::AccountLoginSpawner>,
     exiting: AtomicBool,
     cleanup_unconfirmed: AtomicBool,
+    first_verified_listener: RwLock<Option<Arc<dyn Fn(&str) + Send + Sync>>>,
 }
 
 impl AccountManager {
@@ -189,7 +202,9 @@ impl AccountManager {
                 home.join(".codex"),
             )?,
             Arc::new(DpapiProtector),
-            Arc::new(NativeAccountRuntime),
+            Arc::new(NativeAccountRuntime::with_selection(
+                crate::runtime_setup::SelectionStore::new(&app_data_dir)?,
+            )),
             None,
         )
     }
@@ -231,7 +246,24 @@ impl AccountManager {
             login_spawner,
             exiting: AtomicBool::new(false),
             cleanup_unconfirmed: AtomicBool::new(false),
+            first_verified_listener: RwLock::new(None),
         }))
+    }
+    /// Native composition hook; called once after the first credential commit,
+    /// with account/write locks released. Re-login does not reset participation.
+    pub fn install_first_verified_listener(
+        &self,
+        listener: Arc<dyn Fn(&str) + Send + Sync>,
+    ) -> AccountResult<()> {
+        let mut slot = self
+            .first_verified_listener
+            .write()
+            .map_err(|_| fail("account_state_unavailable"))?;
+        if slot.is_some() {
+            return Err(fail("account_busy"));
+        }
+        *slot = Some(listener);
+        Ok(())
     }
     pub fn install_occupancy_gate(&self, gate: Arc<dyn AccountOccupancyGate>) -> AccountResult<()> {
         let _operation = self.mutation.try_lock().map_err(|_| fail("account_busy"))?;
@@ -383,8 +415,12 @@ impl AccountManager {
                     "unknown"
                 };
                 ManagedAccountDto {
+                    registration_pending: store
+                        .vault
+                        .pending_registrations
+                        .contains_key(&record.id),
                     id: record.id.clone(),
-                    label: record.label.clone(),
+                    label: record.display_label().to_owned(),
                     platform: record.platform.clone(),
                     storage_kind: "managed",
                     login_state: if signing_in {
@@ -458,9 +494,12 @@ impl AccountManager {
             store.vault.accounts.push(AccountRecord {
                 id: id.clone(),
                 label,
+                remark: None,
                 platform,
                 revision: 1,
                 credential: None,
+                created_at_ms: Some(chrono::Utc::now().timestamp_millis()),
+                browser: Default::default(),
             });
             store.save()?;
         }
@@ -618,18 +657,33 @@ impl AccountManager {
                 .revision
                 .checked_add(1)
                 .ok_or_else(|| fail("vault_invalid"))?;
+            let first_verified = record.credential.is_none();
+            let registration_identity = verified.identity.identity_hash();
             record.credential = Some(verified.into_stored(super::nonce()?));
+            if first_verified {
+                store.vault.pending_registrations.insert(
+                    account_id.to_owned(),
+                    storage::RegistrationIntent {
+                        identity_hash: registration_identity,
+                        planned_profile_id: None,
+                    },
+                );
+            }
             self.require_accepting()?;
             writer.recheck()?;
             store.save()?;
-            Ok(())
+            Ok(first_verified)
         })();
+        let first_verified = matches!(result, Ok(true));
+        // Registration reads the committed credential through the shared gate;
+        // release this writer before invoking the native completion listener.
+        drop(writer);
         // Runtime has confirmed child cleanup before returning. TempDir is now gone.
         self.update_attempt(attempt_id, |dto| {
             dto.verification_url = None;
             dto.user_code = None;
             match result {
-                Ok(()) => {
+                Ok(_) => {
                     dto.phase = "verified";
                     dto.error_code = None;
                 }
@@ -643,6 +697,16 @@ impl AccountManager {
                 }
             }
         });
+        if first_verified {
+            let listener = self
+                .first_verified_listener
+                .read()
+                .ok()
+                .and_then(|slot| slot.clone());
+            if let Some(listener) = listener {
+                listener(account_id);
+            }
+        }
     }
     pub fn get_login_attempt(&self, id: &str) -> AccountResult<LoginAttemptDto> {
         self.attempts
@@ -1994,12 +2058,21 @@ impl AccountManager {
             ),
         )))
     }
+    pub fn runtime_selection(&self) -> AccountResult<crate::runtime_setup::SelectionStore> {
+        crate::runtime_setup::SelectionStore::new(
+            self.paths
+                .vault_root
+                .parent()
+                .ok_or_else(|| fail("runtime_storage_unavailable"))?,
+        )
+    }
     /// Native launcher composition only. The caller additionally verifies the
     /// publisher and retains the read-share guard through process creation.
     pub fn proxy_codex_executable(
+        &self,
         home: &std::path::Path,
     ) -> AccountResult<(PathBuf, std::fs::File)> {
-        super::native::proxy_codex_executable(home)
+        super::native::proxy_codex_executable(home, &self.runtime_selection()?)
     }
     /// Refresh expired evidence in a private, disposable home, never the active
     /// system home. The caller still must reserve under its shared registry.

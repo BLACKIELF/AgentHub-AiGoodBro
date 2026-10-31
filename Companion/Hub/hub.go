@@ -19,7 +19,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 )
 
@@ -74,6 +73,12 @@ type subagentExecution struct {
 }
 
 type Config struct {
+	WorkflowCatalogPath        string            `json:"workflowCatalogPath,omitempty"`
+	WorkflowPreferencesPath    string            `json:"workflowPreferencesPath,omitempty"`
+	WorkflowProfileID          uint64            `json:"workflowProfileId,omitempty"`
+	ManagerSnapshotPath        string            `json:"managerSnapshotPath,omitempty"`
+	ActivityDirectory          string            `json:"activityDirectory,omitempty"`
+	ReadyFile                  string            `json:"readyFile,omitempty"`
 	Listen                     string            `json:"listen"`
 	DataDir                    string            `json:"dataDir"`
 	TokenFile                  string            `json:"tokenFile"`
@@ -96,28 +101,30 @@ type AccountConfig struct {
 }
 
 type Task struct {
-	DispatchLeaseID              string               `json:"dispatchLeaseId,omitempty"`
-	ID                           string               `json:"id"`
-	Version                      uint64               `json:"version"`
-	Agent                        string               `json:"agent"`
-	Project                      string               `json:"project"`
-	AccountAlias                 string               `json:"accountAlias,omitempty"`
-	State                        TaskState            `json:"state"`
-	ActionHash                   string               `json:"actionHash"`
-	PromptHash                   string               `json:"promptHash"`
-	ResumeOf                     string               `json:"resumeOf,omitempty"`
-	SessionID                    string               `json:"sessionId,omitempty"`
-	SessionVerified              bool                 `json:"sessionVerified,omitempty"`
-	PID                          int                  `json:"pid,omitempty"`
-	ReasonCode                   string               `json:"reasonCode,omitempty"`
-	ResultNote                   string               `json:"resultNote,omitempty"`
-	ExecutionPreference          *executionPreference `json:"executionPreference,omitempty"`
-	EffectiveExecutionPreference *executionPreference `json:"effectiveExecutionPreference,omitempty"`
-	InputHashes                  *inputHashes         `json:"inputHashes,omitempty"`
-	SubagentExecution            *subagentExecution   `json:"subagentExecution,omitempty"`
-	CreatedAt                    time.Time            `json:"createdAt"`
-	UpdatedAt                    time.Time            `json:"updatedAt"`
-	ApprovalExpiresAt            time.Time            `json:"approvalExpiresAt"`
+	DesktopBinding               *desktopTaskBinding    `json:"windowsTaskBinding,omitempty"`
+	DesktopApproval              *desktopAccountBinding `json:"windowsApprovalBinding,omitempty"`
+	DispatchLeaseID              string                 `json:"dispatchLeaseId,omitempty"`
+	ID                           string                 `json:"id"`
+	Version                      uint64                 `json:"version"`
+	Agent                        string                 `json:"agent"`
+	Project                      string                 `json:"project"`
+	AccountAlias                 string                 `json:"accountAlias,omitempty"`
+	State                        TaskState              `json:"state"`
+	ActionHash                   string                 `json:"actionHash"`
+	PromptHash                   string                 `json:"promptHash"`
+	ResumeOf                     string                 `json:"resumeOf,omitempty"`
+	SessionID                    string                 `json:"sessionId,omitempty"`
+	SessionVerified              bool                   `json:"sessionVerified,omitempty"`
+	PID                          int                    `json:"pid,omitempty"`
+	ReasonCode                   string                 `json:"reasonCode,omitempty"`
+	ResultNote                   string                 `json:"resultNote,omitempty"`
+	ExecutionPreference          *executionPreference   `json:"executionPreference,omitempty"`
+	EffectiveExecutionPreference *executionPreference   `json:"effectiveExecutionPreference,omitempty"`
+	InputHashes                  *inputHashes           `json:"inputHashes,omitempty"`
+	SubagentExecution            *subagentExecution     `json:"subagentExecution,omitempty"`
+	CreatedAt                    time.Time              `json:"createdAt"`
+	UpdatedAt                    time.Time              `json:"updatedAt"`
+	ApprovalExpiresAt            time.Time              `json:"approvalExpiresAt"`
 }
 
 type TaskDTO struct {
@@ -305,12 +312,12 @@ func openStore(dataDir string) (*Store, error) {
 		return nil, err
 	}
 	path := filepath.Join(dataDir, "events.ndjson")
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o600)
+	file, err := openPrivateFile(path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("open_journal")
 	}
 	info, err := file.Stat()
-	if err != nil || info.Mode().Perm()&0o077 != 0 {
+	if err != nil || privateFilePermissions(file) != nil {
 		file.Close()
 		return nil, fmt.Errorf("journal_permissions")
 	}
@@ -400,20 +407,6 @@ func truncateIncompleteTail(file *os.File, size int64) error {
 	return nil
 }
 
-func ensurePrivateDir(path string) error {
-	info, err := os.Stat(path)
-	if errors.Is(err, os.ErrNotExist) {
-		if err := os.MkdirAll(path, 0o700); err != nil {
-			return fmt.Errorf("data_dir_create")
-		}
-		return nil
-	}
-	if err != nil || !info.IsDir() || info.Mode().Perm()&0o077 != 0 {
-		return fmt.Errorf("data_dir_permissions")
-	}
-	return nil
-}
-
 func (store *Store) append(entry journalEvent) (PublicEvent, error) {
 	if store.failed || store.file == nil {
 		return PublicEvent{}, fmt.Errorf("journal_unavailable")
@@ -466,6 +459,7 @@ func (store *Store) Close() error {
 }
 
 type processHandle struct {
+	owned        *ownedProcess
 	pid          int
 	process      *os.Process
 	done         chan struct{}
@@ -487,6 +481,7 @@ type Hub struct {
 	requests            map[string]requestRecord
 	pendingPrompts      map[string]string
 	handles             map[string]*processHandle
+	ownedTasks          map[string]bool // This Hub session only; never replayed as ownership.
 	leases              map[string]string
 	accountCursor       int
 	accountUsed         map[string]uint64
@@ -515,6 +510,7 @@ func newHub(config Config, sensitive ...string) (*Hub, error) {
 		requests:            make(map[string]requestRecord),
 		pendingPrompts:      make(map[string]string),
 		handles:             make(map[string]*processHandle),
+		ownedTasks:          make(map[string]bool),
 		leases:              make(map[string]string),
 		accountUsed:         make(map[string]uint64),
 		subscribers:         make(map[chan PublicEvent]struct{}),
@@ -711,6 +707,9 @@ func (hub *Hub) createFrom(request CreateRequest, resumeOf string) (TaskDTO, err
 		}
 		return task.dto(), err
 	}
+	if err := hub.desktopWorkflowAllowed(nil); err != nil {
+		return TaskDTO{}, err
+	}
 	selection, reason := hub.selectAccountForCreateLocked(request.AccountAlias, request.DispatchLeaseID)
 	if reason != "" {
 		if reason == errAccountBusy.Error() {
@@ -805,6 +804,9 @@ func (hub *Hub) createFrom(request CreateRequest, resumeOf string) (TaskDTO, err
 		if err != nil {
 			return TaskDTO{}, err
 		}
+	}
+	if err := hub.freezeDesktopTask(task); err != nil {
+		return TaskDTO{}, err
 	}
 	task.ActionHash = taskActionHash(task)
 	requestRecord := &requestRecord{RequestHash: hashText(request.RequestID), BodyHash: bodyHash, TaskID: task.ID}
@@ -972,6 +974,10 @@ func (hub *Hub) approveAt(taskID string, request ApproveRequest, now time.Time) 
 		hub.mu.Unlock()
 		return dto, err
 	}
+	if err := hub.approveDesktopTask(task); err != nil {
+		hub.mu.Unlock()
+		return TaskDTO{}, err
+	}
 	task.AccountAlias = selection.alias
 	hub.leases[task.Project] = task.ID
 	err = hub.transitionLocked(task, stateStarting, "approval_granted", "task.approved", requestRecord)
@@ -1118,12 +1124,47 @@ func (hub *Hub) resolve(taskID string, request ResolveRequest) (TaskDTO, error) 
 	if task.State != stateUncertain || task.Version != request.ExpectedVersion {
 		return TaskDTO{}, errConflict
 	}
+	if retainsUncertainOwnedProcess() && hub.ownedTasks[task.ID] && !ownedResolutionReady(hub.handles[task.ID]) {
+		return TaskDTO{}, errConflict
+	}
 	requestRecord := &requestRecord{RequestHash: hashText(request.RequestID), BodyHash: bodyHash, TaskID: task.ID}
 	if err := hub.transitionLocked(task, stateFailed, "operator_confirmed_stopped", "task.resolved", requestRecord); err != nil {
 		return TaskDTO{}, err
 	}
 	delete(hub.leases, task.Project)
+	if retainsUncertainOwnedProcess() && hub.ownedTasks[task.ID] {
+		handle := hub.handles[task.ID]
+		delete(hub.handles, task.ID)
+		// The same held Job was just proved empty; this is not a stop action.
+		releaseOwnedProcess(handle.owned)
+	}
 	return task.dto(), nil
+}
+
+func (hub *Hub) finishOwnedHandle(taskID string, handle *processHandle) {
+	hub.mu.Lock()
+	defer hub.mu.Unlock()
+	if retainsUncertainOwnedProcess() {
+		if task := hub.tasks[taskID]; hub.closed || task != nil && task.State == stateUncertain {
+			// Keep the original queryable Job and reservation until explicit
+			// resolution. Missing ownership must never count as stopped.
+			return
+		}
+	}
+	if hub.handles[taskID] == handle {
+		delete(hub.handles, taskID)
+	}
+	releaseOwnedProcess(handle.owned)
+}
+
+func (hub *Hub) releaseShutdownOwnedHandlesLocked() {
+	if !retainsUncertainOwnedProcess() {
+		return
+	}
+	for id, handle := range hub.handles {
+		releaseOwnedProcess(handle.owned)
+		delete(hub.handles, id)
+	}
 }
 
 func (hub *Hub) dedupeLocked(requestID, bodyHash string) (*Task, bool, error) {
@@ -1259,7 +1300,6 @@ func (hub *Hub) runTask(taskID string) {
 	defer stderr.Close()
 	cmd.Stdout = stdoutWriter
 	cmd.Stderr = stderrWriter
-	configureProcessGroup(cmd)
 	if err := hub.dispatchAllowedLocked(task.AccountAlias); err != nil {
 		_ = stdout.Close()
 		_ = stdoutWriter.Close()
@@ -1272,7 +1312,30 @@ func (hub *Hub) runTask(taskID string) {
 		hub.mu.Unlock()
 		return
 	}
-	if err := cmd.Start(); err != nil {
+	if err := hub.desktopWorkflowAllowed(task); err != nil {
+		_ = stdoutWriter.Close()
+		_ = stderrWriter.Close()
+		delete(hub.pendingPrompts, task.ID)
+		if hub.transitionLocked(task, stateBlockedConfiguration, err.Error(), "task.blocked", nil) == nil {
+			delete(hub.leases, task.Project)
+		}
+		hub.mu.Unlock()
+		return
+	}
+	releaseDesktop, err := hub.lockDesktopSpawn(task)
+	if err != nil {
+		_ = stdoutWriter.Close()
+		_ = stderrWriter.Close()
+		delete(hub.pendingPrompts, task.ID)
+		if hub.transitionLocked(task, stateBlockedConfiguration, err.Error(), "task.blocked", nil) == nil {
+			delete(hub.leases, task.Project)
+		}
+		hub.mu.Unlock()
+		return
+	}
+	owned, err := startOwnedCommand(cmd)
+	releaseDesktop()
+	if err != nil {
 		_ = stdout.Close()
 		_ = stdoutWriter.Close()
 		_ = stderr.Close()
@@ -1289,6 +1352,7 @@ func (hub *Hub) runTask(taskID string) {
 	delete(hub.pendingPrompts, task.ID)
 	task.PID = cmd.Process.Pid
 	handle := &processHandle{
+		owned:    owned,
 		pid:      cmd.Process.Pid,
 		process:  cmd.Process,
 		done:     make(chan struct{}),
@@ -1296,9 +1360,12 @@ func (hub *Hub) runTask(taskID string) {
 		stopDone: make(chan struct{}),
 	}
 	defer close(handle.done)
+	defer hub.finishOwnedHandle(task.ID, handle)
 	hub.handles[task.ID] = handle
+	if retainsUncertainOwnedProcess() {
+		hub.ownedTasks[task.ID] = true
+	}
 	if err := hub.transitionLocked(task, stateRunning, "process_started", "task.running", nil); err != nil {
-		delete(hub.handles, task.ID)
 		hub.mu.Unlock()
 		go terminateProcess(handle)
 		_ = cmd.Wait()
@@ -1342,7 +1409,6 @@ func (hub *Hub) runTask(taskID string) {
 
 	hub.mu.Lock()
 	defer hub.mu.Unlock()
-	delete(hub.handles, taskID)
 	if hub.storeClosed {
 		return
 	}
@@ -1385,6 +1451,9 @@ func (hub *Hub) runTask(taskID string) {
 }
 
 func (hub *Hub) commandFor(task *Task, prompt string) (*exec.Cmd, error) {
+	if err := hub.desktopWorkflowAllowed(task); err != nil {
+		return nil, err
+	}
 	configured := hub.config.Commands[task.Agent]
 	command, err := exec.LookPath(configured)
 	if err != nil {
@@ -1507,9 +1576,11 @@ func safeEnvironment(agent, accountHome string) []string {
 		"HOME": true, "PATH": true, "TMPDIR": true, "LANG": true, "LC_ALL": true,
 		"TERM": true, "USER": true, "SHELL": true, "CODEX_HOME": true, "CLAUDE_CONFIG_DIR": true,
 	}
+	addPlatformEnvironment(allowed)
 	result := make([]string, 0, len(allowed))
 	for _, item := range os.Environ() {
 		key, _, ok := strings.Cut(item, "=")
+		key = platformEnvironmentKey(key)
 		if agent == "kimi" && key == "CODEX_HOME" {
 			continue
 		}
@@ -1526,7 +1597,7 @@ func safeEnvironment(agent, accountHome string) []string {
 func upsertEnv(values []string, key, value string) []string {
 	prefix := key + "="
 	for index, item := range values {
-		if strings.HasPrefix(item, prefix) {
+		if platformEnvironmentKey(strings.SplitN(item, "=", 2)[0]) == platformEnvironmentKey(key) {
 			values[index] = prefix + value
 			return values
 		}
@@ -1576,6 +1647,9 @@ func (hub *Hub) dispatchDisabledAliasesLocked() (map[string]bool, error) {
 }
 
 func (hub *Hub) dispatchAllowedLocked(alias string) error {
+	if err := hub.desktopWorkflowAllowed(nil); err != nil {
+		return err
+	}
 	disabled, err := hub.dispatchDisabledAliasesLocked()
 	if err != nil {
 		return err
@@ -2098,66 +2172,6 @@ func suppressOutput(line string) bool {
 	return false
 }
 
-func stopHandle(handle *processHandle) bool {
-	handle.stopOnce.Do(func() {
-		exited := false
-	signals:
-		for _, step := range []struct {
-			signal  os.Signal
-			timeout time.Duration
-		}{{syscall.SIGINT, 2 * time.Second}, {syscall.SIGTERM, 2 * time.Second}, {syscall.SIGKILL, time.Second}} {
-			select {
-			case <-handle.exitDone:
-				exited = true
-				break signals
-			default:
-			}
-			_ = handle.process.Signal(step.signal)
-			timer := time.NewTimer(step.timeout)
-			select {
-			case <-handle.exitDone:
-				exited = true
-				if !timer.Stop() {
-					select {
-					case <-timer.C:
-					default:
-					}
-				}
-				break signals
-			case <-timer.C:
-			}
-		}
-		if exited {
-			handle.groupStopped = waitProcessGroupGone(handle.pid, 250*time.Millisecond)
-		}
-		close(handle.stopDone)
-	})
-	<-handle.stopDone
-	return handle.groupStopped
-}
-
-func markExitedAndVerify(handle *processHandle) bool {
-	handle.exitOnce.Do(func() { close(handle.exitDone) })
-	return waitProcessGroupGone(handle.pid, 250*time.Millisecond)
-}
-
-func terminateProcess(handle *processHandle) {
-	_ = stopHandle(handle)
-}
-
-func waitProcessGroupGone(pid int, timeout time.Duration) bool {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		alive, err := processGroupAlive(pid)
-		if err == nil && !alive {
-			return true
-		}
-		time.Sleep(25 * time.Millisecond)
-	}
-	alive, err := processGroupAlive(pid)
-	return err == nil && !alive
-}
-
 func (hub *Hub) subscribe(after uint64) ([]PublicEvent, <-chan PublicEvent, func()) {
 	hub.mu.Lock()
 	defer hub.mu.Unlock()
@@ -2253,27 +2267,31 @@ func (hub *Hub) shutdown(ctx context.Context) {
 		go terminateProcess(handle)
 	}
 	for _, handle := range handles {
-		select {
-		case <-handle.done:
-		case <-ctx.Done():
-			hub.mu.Lock()
-			for taskID, active := range hub.handles {
-				if active == handle {
-					task := hub.tasks[taskID]
-					if task != nil && task.State == stateCancelRequested {
-						_ = hub.transitionLocked(task, stateUncertain, "shutdown_timeout", "task.uncertain", nil)
+		for _, completion := range shutdownCompletions(handle) {
+			select {
+			case <-completion:
+			case <-ctx.Done():
+				hub.mu.Lock()
+				for taskID, active := range hub.handles {
+					if active == handle {
+						task := hub.tasks[taskID]
+						if task != nil && task.State == stateCancelRequested {
+							_ = hub.transitionLocked(task, stateUncertain, "shutdown_timeout", "task.uncertain", nil)
+						}
 					}
 				}
+				hub.storeClosed = true
+				hub.releaseShutdownOwnedHandlesLocked()
+				hub.mu.Unlock()
+				_ = hub.store.Close()
+				_ = hub.messageStore.Close()
+				return
 			}
-			hub.storeClosed = true
-			hub.mu.Unlock()
-			_ = hub.store.Close()
-			_ = hub.messageStore.Close()
-			return
 		}
 	}
 	hub.mu.Lock()
 	hub.storeClosed = true
+	hub.releaseShutdownOwnedHandlesLocked()
 	hub.mu.Unlock()
 	_ = hub.store.Close()
 	_ = hub.messageStore.Close()
@@ -2385,6 +2403,10 @@ func taskActionHash(task *Task) string {
 		task.ID, task.Agent, task.Project, task.AccountAlias, task.PromptHash, task.ResumeOf,
 		preference.Model, preference.ReasoningEffort, preference.ServiceTier,
 	)
+	if task.DesktopBinding != nil {
+		encoded, _ := json.Marshal(task.DesktopBinding)
+		result = hashParts(result, hashText(string(encoded)))
+	}
 	if preference.SubagentMode != "" || task.InputHashes != nil || task.SubagentExecution != nil {
 		result = hashParts(result, preference.SubagentMode)
 	}

@@ -8,7 +8,7 @@ use tracing::{info, warn};
 
 #[derive(Parser, Debug)]
 #[command(name = "codexu-probe")]
-#[command(about = "Codex Account Manager Next for Windows - data probe CLI")]
+#[command(about = "AiGoodBro for Windows - data probe CLI")]
 struct Args {
     /// Data provider to read from.
     #[arg(long, value_enum, default_value = "codex")]
@@ -22,7 +22,7 @@ struct Args {
     #[arg(long, value_name = "PATH")]
     claude_projects: Option<PathBuf>,
 
-    /// Cache directory for Codex Account Manager Next
+    /// Cache directory for AiGoodBro
     #[arg(long, value_name = "PATH")]
     cache_dir: Option<PathBuf>,
 

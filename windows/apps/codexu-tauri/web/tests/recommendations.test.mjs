@@ -1,0 +1,13 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
+import vm from 'node:vm';
+import ts from 'typescript';
+const sandbox=vm.createContext({exports:{}});
+vm.runInContext(ts.transpileModule(readFileSync(new URL('../src/utils/recommendations.ts',import.meta.url),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2020}}).outputText,sandbox);
+const {parseRecommendations,visibleRecommendations,parseRecommendationAction}=sandbox.exports;
+const catalog=JSON.parse(readFileSync(new URL('../../../../../Resources/SkillLibrary/catalog.json',import.meta.url),'utf8'));
+const sample=()=>({revision:0,checkedAtMs:null,items:catalog.items.map(x=>({id:x.id,kind:x.kind,title:x.title,purpose:x.purpose,summary:x.summary,sourceUrl:x.sourceURL,instructions:x.copyText,presence:'unknown',hidden:false,packageAvailable:x.kind==='skill',canInstall:x.kind==='skill'}))});
+test('the actual six-item editorial catalog parses without treating packages as installed',()=>{const s=parseRecommendations(sample());assert.equal(s.items.length,6);assert.equal(visibleRecommendations(s,'all').length,6);assert.equal(visibleRecommendations(s,'skill').length,4);assert.equal(visibleRecommendations(s,'app').length,2);assert.equal(s.items[0].presence,'unknown');});
+test('restoring manual hides leaves detected installations filtered and rejects untrusted DTO targets',()=>{const x=sample();x.items[0].presence='installed';x.items[1].hidden=true;assert.equal(visibleRecommendations(parseRecommendations(x),'all').length,4);x.items[1].hidden=false;assert.equal(visibleRecommendations(parseRecommendations(x),'all').length,5);for(const mutate of [x=>x.items[0].sourceUrl='file:///secret',x=>x.items[0].path='/secret',x=>x.items.pop(),x=>x.items[3].canInstall=true,x=>x.revision=Number.MAX_SAFE_INTEGER+1]){const value=sample();mutate(value);assert.throws(()=>parseRecommendations(value));}});
+test('action statuses preserve copy success with a failed handler and never imply installation',()=>{assert.equal(parseRecommendationAction({status:'copiedCodexUnavailable'}),'copiedCodexUnavailable');for(const bad of [{status:'installed'},{status:'copied',path:'/secret'},{status:'copied',command:'shell'}])assert.throws(()=>parseRecommendationAction(bad));});

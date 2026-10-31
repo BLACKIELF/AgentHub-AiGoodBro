@@ -8,6 +8,13 @@ function Assert-True {
 $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\..'))
 $entry = Join-Path $root 'windows\scripts\Invoke-ReleaseReadiness.ps1'
 $packageEntry = Join-Path $root 'scripts\build-windows-release.ps1'
+& python -B (Join-Path $root 'tests\test_windows_branding.py')
+if ($LASTEXITCODE -ne 0) { throw 'Windows branding or upgrade identity validation failed.' }
+$null = Get-Command pwsh -CommandType Application -ErrorAction Stop
+& python -B (Join-Path $root 'tests\test_windows_upgrade_fixture.py')
+if ($LASTEXITCODE -ne 0) { throw 'Windows installer rollback fixture contracts failed.' }
+& python -B (Join-Path $root 'tests\test_windows_msi_encoding.py')
+if ($LASTEXITCODE -ne 0) { throw 'Windows MSI encoding contracts failed.' }
 function Read-ScriptAst {
     param([string] $Path)
     $tokens = $null; $errors = $null
@@ -69,8 +76,23 @@ try {
     Assert-True ('-RunNativeTests' -in $plan[[array]::IndexOf($names, 'proxy-native-resources')].arguments) 'Release validation omitted the real helper fixture tests.'
     Assert-True ([array]::IndexOf($names, 'token-monitor-native-resources') -lt [array]::IndexOf($names, 'rust-tests')) 'The real statistics resources must precede workspace validation.'
     Assert-True ('-RunNativeTests' -in $plan[[array]::IndexOf($names, 'token-monitor-native-resources')].arguments) 'Release validation omitted native statistics process tests.'
+    Assert-True ([array]::IndexOf($names, 'provider-pool-native-resources') -lt [array]::IndexOf($names, 'rust-tests')) 'The pinned provider-pool resources must precede the real native Rust helper test.'
+    Assert-True ('-RunNativeTests' -in $plan[[array]::IndexOf($names, 'provider-pool-native-resources')].arguments) 'Release validation omitted synthetic native provider tests.'
+    Assert-True ([array]::IndexOf($names, 'hub-native-resources') -lt [array]::IndexOf($names, 'rust-tests')) 'The real Hub resources must precede workspace validation.'
+    Assert-True ('-RunNativeTests' -in $plan[[array]::IndexOf($names, 'hub-native-resources')].arguments) 'Release validation omitted native Hub execution.'
+    $companionPrepare = [array]::IndexOf($names, 'companion-setup-resources')
+    $companionVerify = [array]::IndexOf($names, 'companion-setup-verify')
+    Assert-True ($companionPrepare -ge 0 -and $companionPrepare -lt $companionVerify -and $companionVerify -lt [array]::IndexOf($names, 'rust-tests')) 'Pinned Companion payloads must be prepared and verified before Rust validation.'
+    Assert-True ($plan[$companionPrepare].executable -eq 'python' -and $plan[$companionPrepare].arguments[1] -eq (Join-Path $root 'windows\companion\prepare.py')) 'Companion preparation must use the fixed native payload source.'
+    Assert-True ('--verify-only' -in $plan[$companionVerify].arguments) 'Companion readback verification is required.'
     Assert-True ([array]::IndexOf($names, 'visual-baseline') -lt [array]::IndexOf($names, 'visual-repeat')) 'Visual verification must follow baseline creation.'
     Assert-True ($names[-1] -eq 'package') 'Packages must follow successful verification.'
+    $reuseIndex = [array]::IndexOf($plan[-1].arguments, '-VerifiedScannerBuildRoot')
+    Assert-True ($reuseIndex -ge 0 -and $plan[-1].arguments[$reuseIndex + 1] -eq (Join-Path $fixture 'token-monitor-build\scanner')) 'Packaging must reuse this run''s native-tested scanner, not rebuild a different binary.'
+    $poolReuseIndex = [array]::IndexOf($plan[-1].arguments, '-VerifiedProviderPoolBuildRoot')
+    Assert-True ($poolReuseIndex -ge 0 -and $plan[-1].arguments[$poolReuseIndex + 1] -eq (Join-Path $fixture 'provider-pool-build')) 'Packaging must reuse this run''s native-tested provider helper.'
+    $hubReuseIndex = [array]::IndexOf($plan[-1].arguments, '-VerifiedHubBuildRoot')
+    Assert-True ($hubReuseIndex -ge 0 -and $plan[-1].arguments[$hubReuseIndex + 1] -eq (Join-Path $fixture 'hub-build')) 'Packaging must reuse this run''s native-tested Hub.'
     Assert-True ('--update-snapshots' -notin $plan[[array]::IndexOf($names, 'visual-repeat')].arguments) 'The second visual run must compare the existing baseline.'
     $withoutPackage = @(Get-ReleaseReadinessPlan -Root $root -ReleaseVersion '9.6.9' -Output $fixture -Preflight 'synthetic.json' -PowerShell51 'powershell.exe' -PowerShell7 'pwsh.exe' -Package $false)
     Assert-True (@($withoutPackage | Where-Object { $_.name -eq 'package' }).Count -eq 0) 'SkipPackaging still ran packaging.'
@@ -102,16 +124,25 @@ try {
     Assert-True ($report.steps.Count -eq 1 -and $null -eq $report.steps[0].exit_code -and $report.steps[0].status -eq 'failed') 'Launch failure must not become a fabricated exit code or pass.'
 
     $version = '9.6.9'
-    $files = @("CodexAccountManagerNext-$version-windows-x86_64.msi", "CodexAccountManagerNext-$version-windows-x86_64-setup.exe")
+    $files = @("AiGoodBro-$version-windows-x86_64.msi", "AiGoodBro-$version-windows-x86_64-setup.exe")
     foreach ($name in $files) {
         $path = Join-Path $fixture $name
         [IO.File]::WriteAllText($path, 'synthetic installer fixture, not executable')
         $sha = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
         [IO.File]::WriteAllText(($path + '.sha256'), "$sha  $name`n")
     }
-    @{ version = $version; target = 'windows-x86_64'; installers = $files } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $fixture 'manifest.json') -Encoding UTF8
+    @{ product = 'AiGoodBro'; version = $version; target = 'windows-x86_64'; installers = $files } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $fixture 'manifest.json') -Encoding UTF8
     $evidence = @(Get-ReleasePackageEvidence -Directory $fixture -ReleaseVersion $version)
     Assert-True ($evidence.Count -eq 2 -and $evidence[0].sha256 -match '^[0-9a-f]{64}$') 'Installer evidence must include both hashes.'
+    $manifestPath = Join-Path $fixture 'manifest.json'
+    $brandedManifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8
+    $legacyManifest = $brandedManifest | ConvertFrom-Json
+    $legacyManifest.product = 'Codex Account Manager Next'
+    $legacyManifest | ConvertTo-Json | Set-Content -LiteralPath $manifestPath -Encoding UTF8
+    $rejected = $false
+    try { Get-ReleasePackageEvidence -Directory $fixture -ReleaseVersion $version | Out-Null } catch { $rejected = $true }
+    Assert-True $rejected 'Legacy internal product metadata was accepted under renamed AiGoodBro files.'
+    $brandedManifest | Set-Content -LiteralPath $manifestPath -Encoding UTF8
     [IO.File]::AppendAllText((Join-Path $fixture $files[0]), 'tampered')
     $rejected = $false
     try { Get-ReleasePackageEvidence -Directory $fixture -ReleaseVersion $version | Out-Null } catch { $rejected = $true }
@@ -125,6 +156,8 @@ try {
     $wrong = [pscustomobject]@{ Name = 'AiGoodBro_9.6.8_x64_en-US.msi'; LastWriteTimeUtc = $start.AddSeconds(2) }
     $arm = [pscustomobject]@{ Name = 'AiGoodBro_9.6.9_arm64_en-US.msi'; LastWriteTimeUtc = $start.AddSeconds(3) }
     $fresh = [pscustomobject]@{ Name = 'AiGoodBro_9.6.9_x64_en-US.msi'; LastWriteTimeUtc = $start.AddSeconds(1) }
+    $legacy = [pscustomobject]@{ Name = 'Codex Account Manager Next_9.6.9_x64_en-US.msi'; LastWriteTimeUtc = $start.AddSeconds(4) }
+    Assert-True ($null -eq (Select-FreshBundle -Files @($legacy) -ReleaseVersion $version -StartedUtc $start)) 'A legacy-branded bundle was accepted as AiGoodBro.'
     Assert-True ($null -eq (Select-FreshBundle -Files @($old, $wrong, $arm) -ReleaseVersion $version -StartedUtc $start)) 'Stale, wrong-version or wrong-architecture package was selected.'
     Assert-True ((Select-FreshBundle -Files @($old, $wrong, $arm, $fresh) -ReleaseVersion $version -StartedUtc $start).LastWriteTimeUtc -eq $fresh.LastWriteTimeUtc) 'The current matching bundle was not selected.'
 } finally {

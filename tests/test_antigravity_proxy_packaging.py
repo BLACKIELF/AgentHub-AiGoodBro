@@ -154,7 +154,7 @@ class ProviderPatchPackagingTests(unittest.TestCase):
             self.support.prepare_source(self.root / 'build', dict(os.environ, GOWORK='off'), fake)
 
     def test_build_output_is_not_lost_with_disposable_sources(self):
-        expected = str(self.root / 'helper')
+        expected = str((self.root / 'helper').resolve())
         self.assertEqual(self.support.resolve_output_flags('build', ['-o', 'helper', '.'], self.root),
                          ['-o', expected, '.'])
         self.assertEqual(self.support.resolve_output_flags('build', ['-o=helper', '.'], self.root),

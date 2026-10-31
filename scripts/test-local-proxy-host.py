@@ -221,6 +221,18 @@ with tempfile.TemporaryDirectory(prefix='aigoodbro-proxy-host-fixture-', dir=(st
                     content=content.replace(uncertain, '''        uncertainStore.childExited(uncertainChild)
         await uncertainStore.exitCleanupTask?.value
         expect(uncertainStore.canFinishTermination''')
+                    # The paid-admission fixture also exits a synthetic child.
+                    # Its bounded cleanup and serial journal must finish before
+                    # the next fixture directly reserves on the shared registry.
+                    credit_exit='        creditStore.childExited(creditChild)'
+                    assert content.count(credit_exit) == 1
+                    content=content.replace(credit_exit, credit_exit + '''
+        await creditStore.exitCleanupTask?.value
+        expect(creditStore.canFinishTermination, "credit fixture confirms bounded exit cleanup before the next registry case")
+        let creditIssuesDrained = DispatchSemaphore(value: 0)
+        LocalProxyQueueStore.issueQueue.async { creditIssuesDrained.signal() }
+        expect(creditIssuesDrained.wait(timeout: .now() + 3) == .success,
+            "credit fixture drains prior journal work before the next registry case")''')
                 # The legacy synthetic helper must report its fixed startup port.
                 content=content.replace('54876', '18080')
             if source.name == 'LocalProxyAutomaticRecoveryFixture.swift':

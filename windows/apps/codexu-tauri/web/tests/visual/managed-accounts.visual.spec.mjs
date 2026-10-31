@@ -171,10 +171,10 @@ test('official pairing opens only by attempt command; clipboard and failed open 
   await page.evaluate(() => { window.failManagedOpen = true; });
   await panel.getByRole('button', { name: 'Open official login page' }).click();
   await expect(panel).toContainText('This login page is no longer available.');
-  await expect(panel).not.toContainText('handed to the system browser');
+  await expect(panel).not.toContainText('opened with the account browser setting');
   await page.evaluate(() => { window.failManagedOpen = false; });
   await panel.getByRole('button', { name: 'Open official login page' }).click();
-  await expect(panel).toContainText('The official login page was handed to the system browser.');
+  await expect(panel).toContainText('The official login page was opened with the account browser setting.');
   const calls = await page.evaluate(() => window.managedCalls.filter(call => call.command === 'open_account_login_page'));
   expect(calls).toEqual([{ command: 'open_account_login_page', attemptId: 'synthetic_attempt_0123456789' }, { command: 'open_account_login_page', attemptId: 'synthetic_attempt_0123456789' }]);
   expect(await page.evaluate(() => JSON.stringify(localStorage))).not.toContain('SYNTHETIC-CODE');

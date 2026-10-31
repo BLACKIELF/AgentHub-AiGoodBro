@@ -11,6 +11,42 @@ use codexu_core::{
 };
 use tauri::{AppHandle, Emitter};
 
+pub(super) enum Executable {
+    Native(launch::VerifiedExecutable),
+    Package(Arc<local_cli::dependency::VerifiedRuntime>),
+}
+pub(super) async fn discover(
+    app: &AppHandle,
+    state: &Arc<AppState>,
+    workflow: &WorkflowState,
+    kind: LocalCliKind,
+) -> Result<Executable, String> {
+    if matches!(
+        kind,
+        LocalCliKind::Grok
+            | LocalCliKind::OpenCode
+            | LocalCliKind::Kimi
+            | LocalCliKind::Gemini
+            | LocalCliKind::WorkBuddy
+    ) {
+        let node = super::dependency_actions::trusted_node(app, workflow).await?;
+        let directory = state.app_data_dir.clone();
+        let runtime = tauri::async_runtime::spawn_blocking(move || {
+            local_cli::dependency::load_runtime(&directory, kind, node)
+        })
+        .await
+        .map_err(|_| "dependency_verification_failed")?;
+        return Ok(Executable::Package(Arc::new(reason(runtime)?)));
+    }
+    Ok(Executable::Native(reason(
+        tauri::async_runtime::spawn_blocking(move || {
+            launch::discover(kind, &PlatformDirectories::detect())
+        })
+        .await
+        .map_err(|_| "cli_unavailable")?,
+    )?))
+}
+
 #[derive(Clone, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum LocalCliTarget {
@@ -166,18 +202,16 @@ fn reason<T>(result: launch::Result<T>) -> Result<T, String> {
 
 #[tauri::command]
 pub async fn get_local_cli_actions(
+    app: AppHandle,
     state: State<'_, Arc<AppState>>,
+    workflow: State<'_, WorkflowState>,
     claude: State<'_, ClaudeSubscriptionState>,
     target: LocalCliTarget,
 ) -> Result<LocalCliActionsDto, String> {
     let target = resolve(&state, &claude, target).await?;
     let kind = target.kind;
-    let found = tauri::async_runtime::spawn_blocking(move || {
-        launch::discover(kind, &PlatformDirectories::detect())
-    })
-    .await
-    .map_err(|_| "cli_unavailable")?;
-    let code = found.err().map(|e| e.code.to_owned());
+    let found = discover(&app, &state, &workflow, kind).await;
+    let code = found.err();
     Ok(LocalCliActionsDto {
         platform: kind.id().into(),
         can_login: code.is_none()
@@ -193,19 +227,14 @@ pub async fn get_local_cli_actions(
 pub async fn create_local_cli_profile(
     app: AppHandle,
     state: State<'_, Arc<AppState>>,
+    workflow: State<'_, WorkflowState>,
     platform: String,
     label: String,
     edition: Option<Edition>,
 ) -> Result<LocalCliCreatedDto, String> {
     let kind = LocalCliKind::parse(&platform).ok_or("platform_not_supported")?;
     // Verify support/install before writing a candidate directory. No CLI runs.
-    reason(
-        tauri::async_runtime::spawn_blocking(move || {
-            launch::discover(kind, &PlatformDirectories::detect())
-        })
-        .await
-        .map_err(|_| "cli_unavailable")?,
-    )?;
+    discover(&app, &state, &workflow, kind).await?;
     let catalog = state.config.read().await.profiles.clone();
     let app_data = state.app_data_dir.clone();
     let label_for_create = label.clone();
@@ -249,6 +278,7 @@ pub async fn create_local_cli_profile(
 
 #[tauri::command]
 pub async fn start_local_cli(
+    app: AppHandle,
     state: State<'_, Arc<AppState>>,
     workflow: State<'_, WorkflowState>,
     claude: State<'_, ClaudeSubscriptionState>,
@@ -264,22 +294,34 @@ pub async fn start_local_cli(
     if target.kind == LocalCliKind::ClaudeCode && action == Action::Login {
         return Err("use_subscription_login".into());
     }
-    let args = reason(launch::arguments(target.kind, action))?;
+    let mut args = reason(launch::arguments(target.kind, action))?;
     let workspace = reason(launch::checked_directory(&workspace))?;
     let kind = target.kind;
-    let executable = reason(
-        tauri::async_runtime::spawn_blocking(move || {
-            launch::discover(kind, &PlatformDirectories::detect())
-        })
-        .await
-        .map_err(|_| "cli_unavailable")?,
-    )?;
+    let executable = discover(&app, &state, &workflow, kind).await?;
     let root = if target.default {
         reason(launch::create_default_directory(&target.root))?
     } else {
         reason(launch::checked_directory(&target.root))?
     };
-    let environment = reason(Environment::for_profile(target.kind, &root, target.default))?;
+    let mut environment = reason(Environment::for_profile(target.kind, &root, target.default))?;
+    let (path, guard, resources): (PathBuf, std::fs::File, Option<Arc<dyn Send + Sync>>) =
+        match executable {
+            Executable::Native(value) => {
+                let (path, guard) = value.into_parts();
+                (path, guard, None)
+            }
+            Executable::Package(runtime) => {
+                environment = reason(environment.with_verified_product(&runtime))?;
+                let mut prefixed = runtime.prefix().to_vec();
+                prefixed.extend(args);
+                args = prefixed;
+                (
+                    runtime.executable().to_owned(),
+                    reason(runtime.executable_guard())?,
+                    Some(runtime),
+                )
+            }
+        };
     let version = reason(launch::authentication_version(kind, &root))?;
     let identity = target
         .claude
@@ -327,14 +369,16 @@ pub async fn start_local_cli(
     let mut nonce = [0; 16];
     getrandom_nonce(&mut nonce)?;
     let id = nonce.iter().map(|b| format!("{b:02x}")).collect::<String>();
-    let (path, guard) = executable.into_parts();
-    let process = console::OwnedConsole::start_provider(
+    let process = console::OwnedConsole::start_registered(
         &path,
         &workspace,
         &args,
         guard,
         &environment,
         &format!("AiGoodBro - {}", kind.display_name()),
+        Some(services.owned_domains.clone()),
+        resources,
+        None,
     )
     .map_err(|_| "launch_failed")?;
     let mut session = LocalSession {

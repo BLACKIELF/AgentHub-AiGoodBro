@@ -9,7 +9,7 @@ mod storage;
 pub use cache::ClaudeQuotaDisplaySnapshot;
 pub use identity::{parse_claude_usage, ClaudeVerifiedCredential};
 pub use native::NativeClaudeRuntime;
-pub use service::{ClaudeOpenScope, ClaudeSubscriptionManager};
+pub use service::{ClaudeOpenScope, ClaudeSubscriptionManager, ClaudeSwapCandidate};
 pub use storage::ClaudeAccountPaths;
 
 use super::{AccountResult, ManagedAccountDto};

@@ -1,5 +1,6 @@
 //! Owned Windows compact presentation. It projects existing state only: no
 //! transcript scan, quota refresh, login, process control or statistics timer.
+mod bubble;
 pub mod cache;
 mod geometry;
 mod hotkey;
@@ -39,6 +40,8 @@ struct Inner {
     outside_started: Option<Instant>,
     dragging: bool,
     edge_hidden: bool,
+    bubble_expanded: Option<Rect>,
+    bubble_collapsed: Option<Rect>,
 }
 #[derive(Clone)]
 struct Layout {
@@ -221,6 +224,8 @@ pub fn install(app: &AppHandle, app_data_root: PathBuf) -> Result<(), String> {
             outside_started: None,
             dragging: false,
             edge_hidden: false,
+            bubble_expanded: None,
+            bubble_collapsed: None,
         }),
         operation: Mutex::new(()),
         store,
@@ -444,7 +449,11 @@ impl CompactService {
         let _operation = self.operation.lock().map_err(|_| "compact_unavailable")?;
         self.apply_locked()
     }
-    pub fn save(self: &Arc<Self>, patch: serde_json::Value) -> Result<CompactUiState, String> {
+    pub fn save(
+        self: &Arc<Self>,
+        patch: serde_json::Value,
+        expected_bubble: Option<serde_json::Value>,
+    ) -> Result<CompactUiState, String> {
         let _operation = self.operation.lock().map_err(|_| "compact_unavailable")?;
         if self.exiting.load(Ordering::Acquire) {
             return failure("compact_stopped");
@@ -458,6 +467,14 @@ impl CompactService {
         };
         let mut value = serde_json::to_value(&old).map_err(|_| "compact_invalid_preferences")?;
         let patches = patch.as_object().ok_or("compact_invalid_preferences")?;
+        // All window actions use this same operation lock. Check the editor's
+        // base before replacing the nested object so an old draft cannot undo
+        // another window's close or newer selection.
+        if patches.contains_key("bubble") {
+            old.bubble
+                .check_base(expected_bubble.as_ref())
+                .map_err(str::to_owned)?;
+        }
         for (key, field) in patches {
             if !value
                 .as_object()
@@ -692,8 +709,62 @@ impl CompactService {
                     screen.dpi,
                 );
                 rectangles.push((Surface::Popover, rect));
+                rectangles.push((
+                    Surface::BubbleEditor,
+                    bubble::clamp(
+                        Rect {
+                            x: screen.work.x + (screen.work.width - 760. * screen.dpi) / 2.,
+                            y: screen.work.y + (screen.work.height - 560. * screen.dpi) / 2.,
+                            width: 760. * screen.dpi,
+                            height: 560. * screen.dpi,
+                        },
+                        screen.work,
+                        8. * screen.dpi,
+                    ),
+                ));
             } else {
                 inner.window_mut(Surface::Popover).visible = false;
+            }
+            let bubble_screen = inner
+                .bubble_expanded
+                .and_then(|rect| {
+                    screens.iter().find(|screen| {
+                        screen
+                            .bounds
+                            .contains(rect.x + rect.width / 2., rect.y + rect.height / 2.)
+                    })
+                })
+                .or(follow);
+            if let Some(screen) = bubble_screen {
+                let expanded = bubble::clamp(
+                    inner.bubble_expanded.unwrap_or(Rect {
+                        x: screen.work.x + 80. * screen.dpi,
+                        y: screen.work.y + 120. * screen.dpi,
+                        width: 304. * screen.dpi,
+                        height: 260. * screen.dpi,
+                    }),
+                    screen.work,
+                    8. * screen.dpi,
+                );
+                inner.bubble_expanded = Some(expanded);
+                let rect = if inner.window(Surface::FloatingBubble).collapsed {
+                    let handle = bubble::collapsed(
+                        expanded,
+                        inner.bubble_collapsed,
+                        screen.bounds,
+                        screen.dpi,
+                    );
+                    inner.bubble_collapsed = Some(handle);
+                    handle
+                } else {
+                    expanded
+                };
+                inner.window_mut(Surface::FloatingBubble).visible =
+                    inner.public.preferences.bubble.enabled;
+                rectangles.push((Surface::FloatingBubble, rect));
+            } else {
+                inner.window_mut(Surface::FloatingBubble).visible = false;
+                inner.window_mut(Surface::BubbleEditor).visible = false;
             }
             (rectangles, inner.public.windows.clone())
         };
@@ -722,7 +793,8 @@ impl CompactService {
             {
                 windowing::place(&window, *rect).map_err(str::to_owned)?;
             }
-            let top = state.surface != Surface::Popover || state.pinned;
+            let top =
+                !matches!(state.surface, Surface::Popover | Surface::BubbleEditor) || state.pinned;
             window
                 .set_always_on_top(top)
                 .map_err(|_| "compact_window_unavailable")?;
@@ -746,7 +818,10 @@ impl CompactService {
                 .map_err(|_| "compact_unavailable")?
                 .window_mut(state.surface)
                 .visible = actual;
-            if state.surface == Surface::Popover && actual && !was_visible {
+            if matches!(state.surface, Surface::Popover | Surface::BubbleEditor)
+                && actual
+                && !was_visible
+            {
                 window
                     .set_focus()
                     .map_err(|_| "compact_window_unavailable")?;
@@ -778,6 +853,34 @@ impl CompactService {
             let Some(service) = weak.upgrade() else {
                 return;
             };
+            if surface == Surface::FloatingBubble && matches!(event, tauri::WindowEvent::Moved(_)) {
+                let current = service.clone();
+                tauri::async_runtime::spawn_blocking(move || {
+                    let Ok(_operation) = current.operation.lock() else {
+                        return;
+                    };
+                    let Some(window) = current.app.get_webview_window(surface.label()) else {
+                        return;
+                    };
+                    let (Ok(position), Ok(size)) = (window.outer_position(), window.outer_size())
+                    else {
+                        return;
+                    };
+                    let rect = Rect {
+                        x: position.x as f64,
+                        y: position.y as f64,
+                        width: size.width as f64,
+                        height: size.height as f64,
+                    };
+                    if let Ok(mut inner) = current.inner.lock() {
+                        if inner.window(surface).collapsed {
+                            inner.bubble_collapsed = Some(rect);
+                        } else {
+                            inner.bubble_expanded = Some(rect);
+                        }
+                    }
+                });
+            }
             let close = matches!(event, tauri::WindowEvent::CloseRequested { .. });
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
@@ -792,6 +895,10 @@ impl CompactService {
                             .get_webview_window(surface.label())
                             .is_some_and(|window| window.is_focused().unwrap_or(false))
                     {
+                        return;
+                    }
+                    if close && surface == Surface::FloatingBubble {
+                        let _ = service.action(surface, "close", None);
                         return;
                     }
                     let Ok(_operation) = service.operation.lock() else {
@@ -836,6 +943,16 @@ impl CompactService {
         }
         validate_action(surface, action, item_id).map_err(str::to_owned)?;
         let before = self.state()?;
+        if action == "close" && surface == Surface::FloatingBubble {
+            let mut prefs = before.preferences.clone();
+            prefs.bubble.enabled = false;
+            self.store.save(&prefs).map_err(str::to_owned)?;
+            self.inner
+                .lock()
+                .map_err(|_| "compact_unavailable")?
+                .public
+                .preferences = prefs;
+        }
         if action == "drag" {
             if !self
                 .inner
@@ -850,10 +967,12 @@ impl CompactService {
                 .app
                 .get_webview_window(surface.label())
                 .ok_or("compact_window_unavailable")?;
-            self.inner
-                .lock()
-                .map_err(|_| "compact_unavailable")?
-                .dragging = true;
+            if surface == Surface::EdgeRail {
+                self.inner
+                    .lock()
+                    .map_err(|_| "compact_unavailable")?
+                    .dragging = true;
+            }
             if window.start_dragging().is_err() {
                 self.inner
                     .lock()
@@ -877,7 +996,30 @@ impl CompactService {
                     inner.edge_started = None;
                 }
                 "collapse" => {
-                    if surface == Surface::Popover {
+                    if surface == Surface::FloatingBubble {
+                        let collapsed = inner.window(surface).collapsed;
+                        if collapsed {
+                            if let (Some(handle), Some(previous)) =
+                                (inner.bubble_collapsed, inner.bubble_expanded)
+                            {
+                                if let Ok(screens) = windowing::screens(&self.app) {
+                                    if let Some(screen) = screens.iter().min_by(|a, b| {
+                                        a.bounds.distance_squared(handle.x, handle.y).total_cmp(
+                                            &b.bounds.distance_squared(handle.x, handle.y),
+                                        )
+                                    }) {
+                                        inner.bubble_expanded = Some(bubble::expanded(
+                                            handle,
+                                            previous,
+                                            screen.work,
+                                            screen.dpi,
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                        inner.window_mut(surface).collapsed = !collapsed;
+                    } else if surface == Surface::Popover {
                         let window = inner.window_mut(surface);
                         window.collapsed = !window.collapsed;
                     } else {
@@ -949,6 +1091,7 @@ impl CompactService {
                     inner.hover_started = None;
                     inner.hovered = None;
                 }
+                "edit_bubble" => inner.window_mut(Surface::BubbleEditor).visible = true,
                 "open_workspace" => navigate = Some("home"),
                 "open_accounts" => navigate = Some("accounts"),
                 "open_running_tasks" => navigate = Some("tools"),
@@ -1299,6 +1442,8 @@ mod tests {
             outside_started: None,
             dragging: false,
             edge_hidden: false,
+            bubble_expanded: None,
+            bubble_collapsed: None,
         }
     }
     fn account(id: &str, provider: &str, available: bool) -> cache::Account {

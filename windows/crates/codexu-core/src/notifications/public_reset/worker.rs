@@ -327,7 +327,11 @@ impl NotificationService {
         let channels = self.storage.read(|v| {
             Ok(v.configs
                 .iter()
-                .filter(|(_, c)| c.enabled && c.secret.is_some() && !c.session_expired)
+                .filter(|(kind, c)| {
+                    c.enabled
+                        && (c.secret.is_some() || **kind == ChannelKind::System)
+                        && !c.session_expired
+                })
                 .map(|(k, c)| (*k, c.revision))
                 .collect::<BTreeMap<_, _>>())
         })?;

@@ -2,6 +2,6 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "compact",
   "description": "Owned local Token Monitor surfaces",
-  "windows": ["token-monitor-popover", "token-monitor-edge-peek", "token-monitor-edge-rail", "token-monitor-edge-card"],
+  "windows": ["token-monitor-popover", "token-monitor-edge-peek", "token-monitor-edge-rail", "token-monitor-edge-card", "token-monitor-floating-bubble", "token-monitor-bubble-editor"],
   "permissions": ["core:event:default"]
 }

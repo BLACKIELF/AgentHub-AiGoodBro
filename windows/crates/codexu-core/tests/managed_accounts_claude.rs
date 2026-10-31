@@ -1106,6 +1106,14 @@ fn claude_catalog_rename_preserves_current_login_and_same_label_does_not_write()
     let f = Fixture::new(true);
     let current = f.saved_source();
     let target = f.saved_target();
+    let baseline = f
+        .manager
+        .list_claude_subscriptions()
+        .unwrap()
+        .into_iter()
+        .find(|r| r.id == current)
+        .unwrap()
+        .label;
     f.manager.read_claude_subscription_quota(&current).unwrap();
     let result = f
         .manager
@@ -1135,14 +1143,18 @@ fn claude_catalog_rename_preserves_current_login_and_same_label_does_not_write()
             .code,
         "duplicate_label"
     );
-    assert_eq!(
-        f.manager
-            .rename_claude_subscription(&target, "".into())
-            .err()
-            .unwrap()
-            .code,
-        "invalid_label"
-    );
+    f.manager
+        .rename_claude_subscription(&current, "".into())
+        .unwrap();
+    let restored = f
+        .manager
+        .list_claude_subscriptions()
+        .unwrap()
+        .into_iter()
+        .find(|r| r.id == current)
+        .unwrap();
+    assert_eq!(restored.label, baseline);
+    assert_eq!(restored.active_state, "verified");
     f.unchanged();
 }
 

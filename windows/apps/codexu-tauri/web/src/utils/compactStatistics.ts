@@ -4,6 +4,7 @@ export type CompactPeriod='today'|'month'|'allTime';
 export type CompactMetric='tokens'|'cost';
 export interface CompactBreakdown {id:string;value:number}
 export interface CompactDay {date:string;tokens:number|null;cost:number|null}
+export type CompactUsagePeriod=CompactPeriod|'week'|'last7'|'last30';
 const number=(value:unknown):number|null=>typeof value==='number'&&Number.isFinite(value)&&value>=0?value:null;
 const object=(value:unknown):Record<string,unknown>=>value!==null&&typeof value==='object'&&!Array.isArray(value)?value as Record<string,unknown>:{};
 export function compactCalendarDate(timezone:string|null|undefined,now=Date.now()):string|null{
@@ -28,12 +29,38 @@ export function compactBreakdown(state:StatisticsState|null|undefined,period:Com
  const key=metric==='tokens'?(byModel?'models':'clients'):(byModel?'modelCosts':'clientCosts');
  return Object.entries(object(aggregate[key])).flatMap(([id,raw])=>{const value=number(raw);return value===null?[]:[{id,value}];}).sort((a,b)=>b.value-a.value||a.id.localeCompare(b.id,undefined,{sensitivity:'base'}));
 }
-/** Missing days remain unknown; rendering cannot turn absent records into zero. */
+function explicitDayGap(snapshot:StatisticsSnapshot,date:string,metric:CompactMetric):boolean{
+ const entries=snapshot.coverage.entries.map(object).filter(entry=>entry.date===date&&entry.metric===metric);
+ const days=snapshot.coverage.days.map(object).filter(day=>day.date===date);
+ return entries.some(entry=>entry.status!=='known')||metric==='tokens'&&days.some(day=>day.status!=='known');
+}
+/** Only the Engine's explicit History signal makes absent days known zero. */
 export function compactHistoryDays(state:StatisticsState|null|undefined,count:number,now=Date.now()):CompactDay[]{
  const today=compactCalendarDate(state?.timezone,now),snapshot=state?.snapshot;if(!today||!snapshot?.payload.history)return [];
  const length=Number.isFinite(count)?Math.max(1,Math.min(365,Math.trunc(count))):180;
  const end=Date.parse(today+'T00:00:00Z'),rows=new Map(snapshot.payload.history.daily.map(row=>[row.date,row]));
- return Array.from({length},(_,index)=>{const date=new Date(end-(length-index-1)*86400000).toISOString().slice(0,10),row=rows.get(date);return {date,tokens:row&&compactMetricKnown(snapshot,'tokens',date)?number(row.tokens):null,cost:row&&compactMetricKnown(snapshot,'cost',date)?number(row.cost):null};});
+ return Array.from({length},(_,index)=>{const date=new Date(end-(length-index-1)*86400000).toISOString().slice(0,10),row=rows.get(date);
+  const missingKnown=!row&&snapshot.payload.usage?.historyAvailable===true&&compactMetricKnown(snapshot,'tokens');
+  return {date,tokens:row?(compactMetricKnown(snapshot,'tokens',date)&&!explicitDayGap(snapshot,date,'tokens')?number(row.tokens):null):missingKnown&&!explicitDayGap(snapshot,date,'tokens')?0:null,cost:row?(compactMetricKnown(snapshot,'cost',date)&&!explicitDayGap(snapshot,date,'cost')?number(row.cost):null):missingKnown&&!explicitDayGap(snapshot,date,'cost')?0:null};});
+}
+export function compactDerivedPeriod(state:StatisticsState|null|undefined,period:'week'|'last7'|'last30',metric:CompactMetric,locale:string,now=Date.now()):{value:number|null;byTool:CompactBreakdown[];byModel:CompactBreakdown[]}{
+ const today=compactCalendarDate(state?.timezone,now),snapshot=state?.snapshot;
+ if(!today||!snapshot)return {value:null,byTool:[],byModel:[]};
+ const weekday=new Date(today+'T00:00:00Z').getUTCDay();
+ // The Mac Gregorian calendar uses the selected language's week boundary.
+ const count=period==='last7'?7:period==='last30'?30:(locale.startsWith('zh')?(weekday+6)%7:weekday)+1;
+ const days=compactHistoryDays(state,count,now);
+ if(days.length!==count||days.some(day=>day[metric]===null))return {value:null,byTool:[],byModel:[]};
+ const value=days.reduce((sum,day)=>sum+(day[metric]??0),0);
+ if(!Number.isFinite(value)||metric==='tokens'&&!Number.isSafeInteger(value))return {value:null,byTool:[],byModel:[]};
+ const chosen=new Set(days.map(day=>day.date)),maps=(byModel:boolean)=>{
+  const totals=new Map<string,number>();
+  for(const row of snapshot.payload.history?.daily??[]){if(!chosen.has(row.date))continue;for(const [id,raw] of Object.entries(byModel?row.perModel:row.perClient)){
+   const amount=number(object(raw)[metric]);if(amount===null)continue;const sum=(totals.get(id)??0)+amount;if(Number.isFinite(sum))totals.set(id,sum);
+  }}
+  return Array.from(totals,([id,value])=>({id,value})).sort((a,b)=>b.value-a.value||a.id.localeCompare(b.id));
+ };
+ return {value,byTool:maps(false),byModel:maps(true)};
 }
 export function compactSnapshotStale(state:StatisticsState|null|undefined):boolean{return !!state?.snapshot&&!['ready','partial'].includes(state.phase);}
 

@@ -293,6 +293,64 @@ fn current_order_freezes_and_pro_default_is_movable() {
     );
 }
 #[test]
+fn new_registration_rechecks_identity_run_and_preserves_old_membership() {
+    let (mut host, gate) = fixture();
+    host.handle(request("order", "A", REQUEST));
+    let mut new = evidence("new", "plus", 10.0);
+    new.identity_hash = "b".repeat(64);
+    new.quota.as_mut().unwrap().identity_hash = new.identity_hash.clone();
+    gate.evidence
+        .lock()
+        .unwrap()
+        .insert("new".into(), new.clone());
+    let candidate = host.registration_candidate("new").unwrap();
+    let mut next = host.preferences();
+    next.enabled_ids.insert("new".into());
+    assert_eq!(
+        host.update_preferences(next.clone()),
+        Err(ProxyFailure::InvalidSettings)
+    );
+    assert_eq!(
+        host.commit_registration("old-run", "new", &candidate.identity_hash),
+        Err(ProxyFailure::Stopping)
+    );
+    assert_eq!(
+        host.commit_registration("fixture-run", "new", &"c".repeat(64)),
+        Err(ProxyFailure::Identity)
+    );
+    host.commit_registration("fixture-run", "new", &candidate.identity_hash)
+        .unwrap();
+    host.update_preferences(next).unwrap();
+    assert!(!host
+        .handle(request("order", "A", REQUEST))
+        .order
+        .unwrap()
+        .contains(&"new".into()));
+    assert!(host
+        .handle(request("order", "A", REQUEST2))
+        .order
+        .unwrap()
+        .contains(&"new".into()));
+    assert_eq!(
+        host.handle(request("acquire", "new", REQUEST)).error,
+        Some("identity")
+    );
+    new.profile_id = "duplicate".into();
+    gate.evidence
+        .lock()
+        .unwrap()
+        .insert("duplicate".into(), new);
+    assert!(matches!(
+        host.registration_candidate("duplicate"),
+        Err(ProxyFailure::Identity)
+    ));
+    host.stopping();
+    assert_eq!(
+        host.commit_registration("fixture-run", "new", &candidate.identity_hash),
+        Err(ProxyFailure::Stopping)
+    );
+}
+#[test]
 fn removal_and_reenable_never_revives_old_admission() {
     let (mut h, g) = fixture();
     h.handle(request("order", "A", REQUEST));
@@ -376,6 +434,270 @@ fn used_percentage_and_official_pro_semantics() {
     );
 }
 #[test]
+fn legacy_policy_and_pro_remaining_reserve_preserve_cutoffs_and_fail_closed() {
+    let old = serde_json::json!({"fiveHourUsedLimit":20.0,"allowsCredits":true,"creditPrimaryFloor":null,"creditSecondaryFloor":null});
+    let legacy: AccountPolicy = serde_json::from_value(old.clone()).unwrap();
+    assert_eq!(legacy.five_hour_used_limit, 20.0);
+    assert_eq!(legacy.seven_day_used_limit, 100.0);
+    for invalid in [
+        serde_json::json!(-1),
+        serde_json::json!(101),
+        serde_json::Value::Null,
+    ] {
+        let mut value = old.clone();
+        value["sevenDayUsedLimit"] = invalid;
+        assert!(
+            serde_json::from_value::<AccountPolicy>(value)
+                .map(|p| p.valid())
+                .unwrap_or(false)
+                == false
+        );
+    }
+    let mut e = evidence("P", "pro", 0.0);
+    e.quota.as_mut().unwrap().five_hour = None;
+    let mut p = AccountPolicy {
+        seven_day_used_limit: 80.0,
+        ..Default::default()
+    };
+    let now = host::unix_now();
+    for used in [79.9, 80.0, 100.0] {
+        e.quota
+            .as_mut()
+            .unwrap()
+            .seven_day
+            .as_mut()
+            .unwrap()
+            .used_percent = used;
+        assert_eq!(
+            quota_admission(&e, &p, now, None, false),
+            if used < 80.0 {
+                Ok(())
+            } else {
+                Err(ProxyFailure::UsageLimit)
+            }
+        );
+        if used >= 80.0 {
+            assert_eq!(
+                quota_admission(&e, &p, now, Some(1500), true),
+                Err(ProxyFailure::UsageLimit)
+            );
+        }
+    }
+    p.seven_day_used_limit = 100.0;
+    assert_eq!(
+        quota_admission(&e, &p, now, None, false),
+        Err(ProxyFailure::Quota)
+    );
+    assert_eq!(quota_admission(&e, &p, now, Some(1500), true), Ok(()));
+    p.seven_day_used_limit = 0.0;
+    e.quota
+        .as_mut()
+        .unwrap()
+        .seven_day
+        .as_mut()
+        .unwrap()
+        .used_percent = 0.0;
+    assert_eq!(
+        quota_admission(&e, &p, now, None, false),
+        Err(ProxyFailure::UsageLimit)
+    );
+    e.quota.as_mut().unwrap().seven_day = None;
+    assert_eq!(
+        quota_admission(&e, &p, now, None, false),
+        Err(ProxyFailure::QuotaUnknown)
+    );
+}
+
+#[test]
+fn remaining_reserves_require_fresh_evidence_and_cannot_bypass_credit_gates() {
+    let now = host::unix_now();
+    for plan in ["plus", "pro", "prolite"] {
+        let mut e = evidence("A", plan, 0.0);
+        e.quota.as_mut().unwrap().observed_at = now;
+        let pro = plan != "plus";
+        if pro {
+            e.quota.as_mut().unwrap().five_hour = None;
+        }
+        let p = AccountPolicy {
+            five_hour_used_limit: 80.0,
+            seven_day_used_limit: 80.0,
+            ..Default::default()
+        };
+        for used in [79.9, 80.0, 100.0] {
+            let q = e.quota.as_mut().unwrap();
+            let window = if pro {
+                &mut q.seven_day
+            } else {
+                &mut q.five_hour
+            };
+            window.as_mut().unwrap().used_percent = used;
+            assert_eq!(
+                quota_admission(&e, &p, now, None, false),
+                if used < 80.0 {
+                    Ok(())
+                } else {
+                    Err(ProxyFailure::UsageLimit)
+                }
+            );
+            if used >= 80.0 {
+                assert_eq!(
+                    quota_admission(&e, &p, now, Some(1500), true),
+                    Err(ProxyFailure::UsageLimit)
+                );
+            }
+        }
+        for fault in [
+            "missing",
+            "nan",
+            "range",
+            "reset",
+            "stale",
+            "read",
+            "new_failure",
+        ] {
+            let mut broken = e.clone();
+            let q = broken.quota.as_mut().unwrap();
+            let window = if pro {
+                &mut q.seven_day
+            } else {
+                &mut q.five_hour
+            };
+            match fault {
+                "missing" => *window = None,
+                "nan" => window.as_mut().unwrap().used_percent = f64::NAN,
+                "range" => window.as_mut().unwrap().used_percent = 101.0,
+                "reset" => window.as_mut().unwrap().resets_at = now,
+                "stale" => q.observed_at = now - 121.0,
+                "read" => q.read_succeeded = false,
+                "new_failure" => q.last_failure_at = Some(q.observed_at + 1.0),
+                _ => unreachable!(),
+            }
+            assert_eq!(
+                quota_admission(&broken, &p, now, Some(1500), true),
+                Err(ProxyFailure::QuotaUnknown),
+                "{plan}: {fault}"
+            );
+        }
+        let q = e.quota.as_mut().unwrap();
+        let window = if pro {
+            &mut q.seven_day
+        } else {
+            &mut q.five_hour
+        };
+        window.as_mut().unwrap().used_percent = 0.0;
+        let stopped = AccountPolicy {
+            five_hour_used_limit: 0.0,
+            seven_day_used_limit: 0.0,
+            ..Default::default()
+        };
+        assert_eq!(
+            quota_admission(&e, &stopped, now, Some(1500), true),
+            Err(ProxyFailure::UsageLimit)
+        );
+        let q = e.quota.as_mut().unwrap();
+        let window = if pro {
+            &mut q.seven_day
+        } else {
+            &mut q.five_hour
+        };
+        window.as_mut().unwrap().used_percent = 100.0;
+        assert_eq!(
+            quota_admission(&e, &AccountPolicy::default(), now, None, false),
+            Err(ProxyFailure::Quota)
+        );
+        assert_eq!(
+            quota_admission(&e, &AccountPolicy::default(), now, Some(1500), true),
+            Ok(())
+        );
+    }
+    for monthly in [false, true] {
+        let mut e = evidence("P", "pro", 0.0);
+        let q = e.quota.as_mut().unwrap();
+        q.observed_at = now;
+        q.five_hour = None;
+        q.seven_day.as_mut().unwrap().used_percent = 100.0;
+        let extra = Some(QuotaWindowEvidence {
+            used_percent: 100.0,
+            resets_at: now + 3600.0,
+        });
+        if monthly {
+            q.monthly = extra;
+        } else {
+            q.five_hour = extra;
+        }
+        assert_eq!(
+            quota_admission(&e, &AccountPolicy::default(), now, Some(1500), true),
+            Err(ProxyFailure::Quota)
+        );
+    }
+    let (mut host, gate) = fixture();
+    let mut prefs = host.preferences();
+    prefs.credit_fallback = true;
+    prefs.account_policies.insert(
+        "P".into(),
+        AccountPolicy {
+            seven_day_used_limit: 0.0,
+            ..Default::default()
+        },
+    );
+    host.update_preferences(prefs).unwrap();
+    host.handle(request("order", "P", REQUEST));
+    assert_eq!(
+        host.handle(request("acquire_credit_primary", "P", REQUEST))
+            .error,
+        Some("subscription_pending")
+    );
+    for id in ["A", "B"] {
+        gate.evidence
+            .lock()
+            .unwrap()
+            .get_mut(id)
+            .unwrap()
+            .quota
+            .as_mut()
+            .unwrap()
+            .five_hour
+            .as_mut()
+            .unwrap()
+            .used_percent = 100.0;
+    }
+    assert_eq!(
+        host.handle(request("acquire_credit_primary", "P", REQUEST))
+            .error,
+        Some("usage_limit")
+    );
+    assert!(gate.leases.lock().unwrap().is_empty());
+}
+
+#[test]
+fn changing_pro_reserve_keeps_existing_lease_but_rejects_new_admission() {
+    let (mut host, gate) = fixture();
+    host.handle(request("order", "P", REQUEST));
+    let lease = host.handle(request("acquire", "P", REQUEST));
+    assert!(lease.ok);
+    let mut next = host.preferences();
+    next.account_policies.insert(
+        "P".into(),
+        AccountPolicy {
+            seven_day_used_limit: 0.0,
+            ..Default::default()
+        },
+    );
+    host.update_preferences(next).unwrap();
+    host.handle(request("order", "P", REQUEST2));
+    assert_eq!(
+        host.handle(request("acquire", "P", REQUEST2)).error,
+        Some("usage_limit")
+    );
+    let mut heartbeat = request("heartbeat", "P", REQUEST);
+    heartbeat.lease_id = lease.lease_id.clone();
+    assert!(host.handle(heartbeat).ok);
+    let mut release = request("release", "P", REQUEST);
+    release.lease_id = lease.lease_id;
+    assert!(host.handle(release).ok);
+    assert!(gate.leases.lock().unwrap().is_empty());
+}
+#[test]
 fn paid_floors_are_exact_and_require_whole_pool_exhaustion() {
     let mut e = evidence("A", "plus", 100.0);
     let p = AccountPolicy::default();
@@ -432,6 +754,98 @@ fn control_protocol_rejects_wrong_key_and_emits_exact_field_names() {
     assert!(json.get("deferredIDs").is_some());
     assert!(json.get("lastResortIDs").is_some());
     assert!(json.get("accessToken").is_none());
+}
+
+#[test]
+fn shared_quota_batch_targets_verified_plan_windows_and_preserves_other_settings() {
+    let gate = FixtureGate::new();
+    for (id, plan) in [("L", "prolite"), ("T", "team"), ("U", "unknown")] {
+        gate.evidence
+            .lock()
+            .unwrap()
+            .insert(id.into(), evidence(id, plan, 0.0));
+    }
+    let mut prefs = preferences();
+    prefs.known_ids.extend(["L".into(), "T".into(), "U".into()]);
+    prefs.priority_ids.insert("A".into());
+    prefs.last_overrides.insert("P".into(), false);
+    for id in ["A", "B", "P", "L", "T", "U"] {
+        prefs.account_policies.insert(
+            id.into(),
+            AccountPolicy {
+                five_hour_used_limit: 13.25,
+                seven_day_used_limit: 17.5,
+                allows_credits: false,
+                credit_primary_floor: Some(4000),
+                credit_secondary_floor: Some(3000),
+            },
+        );
+    }
+    let mut host = ProxyHost::new(prefs.clone(), gate.clone()).unwrap();
+    host.begin("fixture-run".into(), KEY.into()).unwrap();
+    let batch = host.shared_quota_policy(80.0).unwrap();
+    let mut expected = prefs.clone();
+    for id in ["A", "B"] {
+        expected
+            .account_policies
+            .get_mut(id)
+            .unwrap()
+            .five_hour_used_limit = 80.0;
+    }
+    for id in ["P", "L"] {
+        expected
+            .account_policies
+            .get_mut(id)
+            .unwrap()
+            .seven_day_used_limit = 80.0;
+    }
+    assert_eq!(batch, expected);
+    assert_eq!(host.preferences(), prefs);
+    gate.evidence
+        .lock()
+        .unwrap()
+        .get_mut("P")
+        .unwrap()
+        .identity_verified = false;
+    assert_eq!(host.shared_quota_policy(50.0), Err(ProxyFailure::Identity));
+    assert_eq!(host.preferences(), prefs);
+}
+
+#[test]
+fn shared_quota_save_is_atomic_and_failed_persistence_keeps_previous_policy() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("proxy.json");
+    let service = LocalProxyService::new(
+        path.clone(),
+        dir.path().join("state"),
+        dir.path().join("helper"),
+        vec!["fixture-model".into()],
+        FixtureGate::new(),
+        Arc::new(FixtureSecrets(Mutex::default())),
+    )
+    .unwrap();
+    service.save_preferences(preferences()).unwrap();
+    let saved = service.set_shared_quota_used_limit(80.0).unwrap();
+    assert_eq!(saved.policy("A").five_hour_used_limit, 80.0);
+    assert_eq!(saved.policy("P").seven_day_used_limit, 80.0);
+    assert_eq!(saved.policy("P").five_hour_used_limit, 100.0);
+    let bytes = std::fs::read(&path).unwrap();
+    assert_eq!(
+        serde_json::from_slice::<ProxyPreferences>(&bytes).unwrap(),
+        saved
+    );
+    std::fs::rename(&path, dir.path().join("saved-proxy.json")).unwrap();
+    std::fs::create_dir(&path).unwrap();
+    assert_eq!(
+        service.set_shared_quota_used_limit(50.0),
+        Err(ProxyFailure::SaveFailed)
+    );
+    assert_eq!(service.preferences().unwrap(), saved);
+    assert_eq!(
+        std::fs::read(dir.path().join("saved-proxy.json")).unwrap(),
+        bytes
+    );
+    assert!(path.is_dir());
 }
 
 #[test]

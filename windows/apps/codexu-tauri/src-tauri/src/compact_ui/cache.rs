@@ -44,7 +44,7 @@ pub struct CachedProjection {
 }
 fn label(value: &str) -> bool {
     !value.is_empty()
-        && value.len() <= 256
+        && (value.len() <= 256 || codexu_core::accounts::metadata::valid_display_label(value))
         && !value.chars().any(char::is_control)
         && !value.contains(['@', '\\'])
         && !value.starts_with('/')

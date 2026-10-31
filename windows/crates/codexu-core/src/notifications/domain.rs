@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum ChannelKind {
+    #[serde(rename = "system")]
+    System,
     #[serde(rename = "feishu")]
     Feishu,
     #[serde(rename = "telegram")]
@@ -13,7 +15,8 @@ pub enum ChannelKind {
     PersonalWeChat,
 }
 impl ChannelKind {
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 5] = [
+        Self::System,
         Self::Feishu,
         Self::Telegram,
         Self::WeCom,
@@ -21,6 +24,7 @@ impl ChannelKind {
     ];
     pub fn id(self) -> &'static str {
         match self {
+            Self::System => "system",
             Self::Feishu => "feishu",
             Self::Telegram => "telegram",
             Self::WeCom => "wechat",
@@ -132,7 +136,8 @@ impl SwitchFailure {
 }
 
 /// Constructed by native producers only. There is no Deserialize/IPC command
-/// accepting event bodies or arbitrary message text from the WebView.
+/// accepting event bodies from the WebView. Explicit personal text uses a
+/// separate confirmed command with its own binding and durable-send gates.
 #[derive(Clone)]
 pub struct NotificationEvent {
     pub(crate) key: String,
@@ -150,6 +155,11 @@ pub struct NotificationEvent {
 #[derive(Clone)]
 pub(crate) enum EventBody {
     Test,
+    ManualReset {
+        event_hash: String,
+        confirmed_at: i64,
+        available: Option<u32>,
+    },
     LowQuota {
         five: Option<f64>,
         seven: Option<f64>,
@@ -291,6 +301,7 @@ impl NotificationEvent {
     pub(crate) fn content(&self, options: &MessageOptions) -> (String, &'static str, Vec<String>) {
         let (title, color) = match self.body {
             EventBody::Test => ("AiGoodBro 消息通道测试", "blue"),
+            EventBody::ManualReset { .. } => ("重置卡 · 手动使用成功", "green"),
             EventBody::LowQuota { .. } => ("低额度提醒", "orange"),
             EventBody::QuotaReset { .. } => ("额度已重置", "green"),
             EventBody::CardsChanged {
@@ -326,6 +337,20 @@ impl NotificationEvent {
         }
         match &self.body {
             EventBody::Test => lines.push("API 接受仅表示接口接收，不代表送达或已读。".into()),
+            EventBody::ManualReset {
+                confirmed_at,
+                available,
+                ..
+            } => {
+                lines.push("手动使用 1 张重置卡".into());
+                lines.push("官方已确认重置成功".into());
+                lines.push(format!("确认时间（北京时间）：{}", beijing(*confirmed_at)));
+                if options.includes_reset_credits {
+                    if let Some(n) = available {
+                        lines.push(format!("可用重置卡：{n}"));
+                    }
+                }
+            }
             EventBody::LowQuota { five, seven } => {
                 if options.includes_quotas {
                     for (label, v) in [("5小时", five), ("7天", seven)] {

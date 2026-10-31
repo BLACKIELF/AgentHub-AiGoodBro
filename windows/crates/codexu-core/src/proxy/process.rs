@@ -1,14 +1,19 @@
 use super::{host::unix_now, *};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, PipeWriter, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
+
+#[path = "command_pipe.rs"]
+mod command_pipe;
+#[path = "registration.rs"]
+mod registration;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -69,6 +74,9 @@ pub struct ProxyEvent {
     pub request_id: Option<String>,
     #[serde(rename = "latencyMS")]
     pub latency_ms: Option<u32>,
+    #[serde(rename = "runID")]
+    pub run_id: Option<String>,
+    pub identity_hash: Option<String>,
 }
 
 pub struct LocalProxyService {
@@ -85,6 +93,7 @@ pub struct LocalProxyService {
     command_generation: AtomicUsize,
     recoverable_exit: AtomicBool,
     monitor_active: Arc<AtomicBool>,
+    registration: Arc<Mutex<Option<registration::PendingRegistration>>>,
 }
 struct ServiceInner {
     child: Option<OwnedHelper>,
@@ -92,7 +101,7 @@ struct ServiceInner {
 }
 struct OwnedHelper {
     child: Child,
-    stdin: Option<ChildStdin>,
+    stdin: Option<PipeWriter>,
     control_stop: Arc<AtomicBool>,
     control_thread: Option<JoinHandle<()>>,
     command_generation: usize,
@@ -253,6 +262,7 @@ impl LocalProxyService {
             command_generation: AtomicUsize::new(0),
             recoverable_exit: AtomicBool::new(false),
             monitor_active: Arc::new(AtomicBool::new(false)),
+            registration: Arc::new(Mutex::new(None)),
         })
     }
     pub fn preferences(&self) -> Result<ProxyPreferences, ProxyFailure> {
@@ -263,13 +273,49 @@ impl LocalProxyService {
         &self,
         next: ProxyPreferences,
     ) -> Result<ProxyPreferences, ProxyFailure> {
+        let _lifecycle = self
+            .lifecycle
+            .try_lock()
+            .map_err(|_| ProxyFailure::ControlBusy)?;
+        self.save_preferences_with_registration(next)
+    }
+    fn save_preferences_with_registration(
+        &self,
+        next: ProxyPreferences,
+    ) -> Result<ProxyPreferences, ProxyFailure> {
         next.validate()?;
+        let generation = self.command_generation.load(Ordering::Acquire);
+        {
+            let host = self.host.lock().map_err(|_| ProxyFailure::Unavailable)?;
+            let trusted = host.trusted_ids()?;
+            if next.enabled_ids.iter().any(|id| !trusted.contains(id)) {
+                return Err(ProxyFailure::Identity);
+            }
+            if host.running_id().is_some()
+                && (!next.is_enabled || !host.preferences().network_equal(&next))
+            {
+                return Err(ProxyFailure::InvalidSettings);
+            }
+        }
+        // Register only accounts the caller is actually enabling. This retains
+        // manual opt-outs and never restarts a running helper.
+        for id in &next.enabled_ids {
+            self.register_running_account(id)?;
+        }
         let mut host = self.host.lock().map_err(|_| ProxyFailure::Unavailable)?;
+        if self.command_generation.load(Ordering::Acquire) != generation {
+            return Err(ProxyFailure::Stopping);
+        }
         // Validate and persist while the admission mutex is held. A failed save
         // never publishes a half-applied rule or a synthetic success state.
         let next = host.normalize_preferences(next)?;
         persist_preferences(&self.preferences_path, &next)?;
         host.update_preferences(next.clone())?;
+        if let Ok(mut status) = self.status.lock() {
+            status.accounts.retain(|id, state| {
+                !(next.enabled_ids.contains(id) && state.state == "registration_failed")
+            });
+        }
         Ok(next)
     }
     pub fn set_plus_five_hour_used_limit(
@@ -278,6 +324,16 @@ impl LocalProxyService {
     ) -> Result<ProxyPreferences, ProxyFailure> {
         let mut host = self.host.lock().map_err(|_| ProxyFailure::Unavailable)?;
         let next = host.plus_policy(limit)?;
+        persist_preferences(&self.preferences_path, &next)?;
+        host.update_preferences(next.clone())?;
+        Ok(next)
+    }
+    pub fn set_shared_quota_used_limit(
+        &self,
+        limit: f64,
+    ) -> Result<ProxyPreferences, ProxyFailure> {
+        let mut host = self.host.lock().map_err(|_| ProxyFailure::Unavailable)?;
+        let next = host.shared_quota_policy(limit)?;
         persist_preferences(&self.preferences_path, &next)?;
         host.update_preferences(next.clone())?;
         Ok(next)
@@ -333,6 +389,16 @@ impl LocalProxyService {
                 .map_err(|_| ProxyFailure::Unavailable)?
                 .is_some()
             {
+                #[cfg(test)]
+                eprintln!(
+                    "proxy_startup_fixture child_exit={:?}",
+                    child
+                        .child
+                        .try_wait()
+                        .ok()
+                        .flatten()
+                        .and_then(|exit| exit.code())
+                );
                 self.host
                     .lock()
                     .map_err(|_| ProxyFailure::Unavailable)?
@@ -485,9 +551,19 @@ impl LocalProxyService {
             "port":prefs.listen_port,"stateDirectory":self.state_directory,"networkProxy":prefs.network_proxy,"desktopFallback":prefs.desktop_fallback,
             "accounts":accounts.iter().map(|(id,_)| serde_json::json!({"id":id})).collect::<Vec<_>>(),"models":self.models,
             "accountIdentityHashes":accounts.into_iter().collect::<BTreeMap<_,_>>(),"egress":{"enabled":prefs.egress.enabled,"mihomoAPI":prefs.egress.mihomo_api,"mihomoSecret":mihomo_secret,"group":prefs.egress.group,"whitelist":prefs.egress.whitelist}});
+        // std::io::pipe uses synchronous CreatePipe handles on Windows.
+        // ChildStdin from Stdio::piped() instead uses an overlapped handle,
+        // which cannot safely use our synchronous nonblocking frame writer.
+        let (input, mut stdin) = match command_pipe::owned_pipe() {
+            Ok(pipe) => pipe,
+            Err(_) => {
+                let _ = host.retire(true);
+                return Err(ProxyFailure::StartupFailed);
+            }
+        };
         let mut command = Command::new(&self.helper_path);
         command
-            .stdin(Stdio::piped())
+            .stdin(Stdio::from(input))
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
         // The helper receives no credential/key through argv or proxy env.
@@ -517,6 +593,9 @@ impl LocalProxyService {
                 return Err(ProxyFailure::HelperUnavailable);
             }
         };
+        // Command retains its configured Stdio after spawn. Close the extra
+        // parent reader so a dead helper cannot keep our pipe falsely alive.
+        drop(command);
         #[cfg(windows)]
         let job = match WindowsJob::assign(&child, &run_id, &owner_receipts) {
             Ok(j) => j,
@@ -526,29 +605,28 @@ impl LocalProxyService {
                 return Err(e);
             }
         };
-        let mut stdin = match child.stdin.take() {
-            Some(v) => v,
-            None => {
-                let confirmed = terminate_spawned(
-                    &mut child,
-                    #[cfg(windows)]
-                    Some(&job),
-                );
-                let _ = host.retire(confirmed);
-                return Err(ProxyFailure::StartupFailed);
-            }
-        };
-        if serde_json::to_writer(&mut stdin, &startup).is_err()
-            || stdin.write_all(b"\n").is_err()
-            || stdin.flush().is_err()
-        {
+        let startup_result = serde_json::to_vec(&startup)
+            .map_err(|_| ProxyFailure::StartupFailed)
+            .and_then(|mut bytes| {
+                bytes.push(b'\n');
+                write_startup(
+                    &mut stdin,
+                    &bytes,
+                    &self.command_generation,
+                    generation,
+                    cancel,
+                    Instant::now() + Duration::from_secs(10),
+                )
+            });
+        if let Err(error) = startup_result {
+            drop(stdin);
             let confirmed = terminate_spawned(
                 &mut child,
                 #[cfg(windows)]
                 Some(&job),
             );
             let _ = host.retire(confirmed);
-            return Err(ProxyFailure::StartupFailed);
+            return Err(error);
         }
         let stdout = match child.stdout.take() {
             Some(v) => v,
@@ -583,6 +661,7 @@ impl LocalProxyService {
             };
         let status = self.status.clone();
         let event_host = self.host.clone();
+        let registration = self.registration.clone();
         let generations = self.event_generation.clone();
         let event_generation = generations.fetch_add(1, Ordering::AcqRel) + 1;
         if thread::Builder::new()
@@ -595,6 +674,23 @@ impl LocalProxyService {
                         _ => break,
                     };
                     if let Ok(event) = serde_json::from_slice::<ProxyEvent>(&line) {
+                        #[cfg(test)]
+                        if event.event == "error" {
+                            eprintln!(
+                                "proxy_startup_fixture helper_error={}",
+                                event
+                                    .error_code
+                                    .as_deref()
+                                    .filter(|code| safe_error(code))
+                                    .unwrap_or("unclassified")
+                            );
+                        }
+                        if event.event == "account_registered" {
+                            if generations.load(Ordering::Acquire) == event_generation {
+                                registration::accept_event(&registration, &event);
+                            }
+                            continue;
+                        }
                         if event.error_code.as_deref().is_some_and(fatal_lease_error) {
                             if let Ok(mut host) = event_host.lock() {
                                 if generations.load(Ordering::Acquire) == event_generation {
@@ -651,6 +747,17 @@ impl LocalProxyService {
                 return Ok(status);
             }
             if status.phase == ProxyPhase::Failed || Instant::now() >= deadline {
+                #[cfg(test)]
+                eprintln!(
+                    "proxy_startup_fixture ready_wait phase={:?} safe_issue={} deadline={}",
+                    status.phase,
+                    status
+                        .issue
+                        .as_deref()
+                        .filter(|code| safe_error(code))
+                        .unwrap_or("none_or_unclassified"),
+                    Instant::now() >= deadline
+                );
                 let cleanup = self.stop_generation(Some(generation));
                 let recoverable = cleanup.is_ok()
                     && self.command_generation.load(Ordering::Acquire) == generation
@@ -805,20 +912,34 @@ impl LocalProxyService {
             return Err(ProxyFailure::InvalidSettings);
         }
         let mut inner = self.inner.lock().map_err(|_| ProxyFailure::Unavailable)?;
-        let stdin = inner
-            .child
-            .as_mut()
-            .and_then(|c| c.stdin.as_mut())
-            .ok_or(ProxyFailure::Unavailable)?;
-        serde_json::to_writer(
-            &mut *stdin,
-            &serde_json::json!({"command":command,"requestID":request_id}),
-        )
-        .map_err(|_| ProxyFailure::Unavailable)?;
-        stdin
-            .write_all(b"\n")
-            .and_then(|_| stdin.flush())
+        let child = inner.child.as_mut().ok_or(ProxyFailure::Unavailable)?;
+        let mut frame =
+            serde_json::to_vec(&serde_json::json!({"command":command,"requestID":request_id}))
+                .map_err(|_| ProxyFailure::Unavailable)?;
+        frame.push(b'\n');
+        self.send_owned_command(child, &frame)
             .map_err(|_| ProxyFailure::Unavailable)
+    }
+    fn send_owned_command(
+        &self,
+        child: &mut OwnedHelper,
+        frame: &[u8],
+    ) -> Result<(), ProxyFailure> {
+        if child.stdin.is_none() {
+            return Err(ProxyFailure::Unavailable);
+        }
+        if let Err(error) = command_pipe::send(&mut child.stdin, frame) {
+            if error == command_pipe::FrameFailure::Poisoned {
+                // The pipe owner already closed a partial frame. Revoke new
+                // admissions while normal stop retains process ownership.
+                self.host
+                    .lock()
+                    .map_err(|_| ProxyFailure::Unavailable)?
+                    .stopping();
+            }
+            return Err(ProxyFailure::RegistrationFailed);
+        }
+        Ok(())
     }
     /// Explicitly owned by the product lifecycle. A saved enabled preference
     /// does not autostart a proxy on launch; only a started run can recover.
@@ -1110,6 +1231,58 @@ fn bounded_line(reader: &mut impl BufRead, limit: u64) -> std::io::Result<Option
         return Err(std::io::ErrorKind::InvalidData.into());
     }
     Ok(Some(bytes))
+}
+fn write_startup(
+    stdin: &mut PipeWriter,
+    frame: &[u8],
+    commands: &AtomicUsize,
+    generation: usize,
+    cancel: Option<&AtomicBool>,
+    deadline: Instant,
+) -> Result<(), ProxyFailure> {
+    if frame.is_empty() || frame.len() > 1 << 20 {
+        return Err(ProxyFailure::StartupFailed);
+    }
+    for (_chunk_index, chunk) in frame.chunks(512).enumerate() {
+        loop {
+            if commands.load(Ordering::Acquire) != generation
+                || cancel.is_some_and(|c| c.load(Ordering::Acquire))
+            {
+                return Err(ProxyFailure::Stopping);
+            }
+            if Instant::now() >= deadline {
+                #[cfg(test)]
+                eprintln!(
+                    "proxy_startup_fixture write_deadline total_bytes={} accepted_bytes={} {}",
+                    frame.len(),
+                    _chunk_index * 512,
+                    command_pipe::diagnostics(stdin)
+                );
+                return Err(ProxyFailure::StartupFailed);
+            }
+            match command_pipe::send_chunk(stdin, chunk) {
+                Ok(()) => break,
+                Err(command_pipe::FrameFailure::Poisoned) => {
+                    #[cfg(test)]
+                    eprintln!(
+                        "proxy_startup_fixture write_poisoned total_bytes={} accepted_bytes={}",
+                        frame.len(),
+                        _chunk_index * 512
+                    );
+                    return Err(ProxyFailure::StartupFailed);
+                }
+                Err(command_pipe::FrameFailure::Unchanged) => {
+                    thread::sleep(Duration::from_millis(5))
+                }
+            }
+        }
+    }
+    #[cfg(test)]
+    eprintln!(
+        "proxy_startup_fixture write_complete total_bytes={}",
+        frame.len()
+    );
+    Ok(())
 }
 fn apply_event(status: &mut ProxyStatus, event: ProxyEvent) {
     status.last_event_at = Some(unix_now());
@@ -1409,6 +1582,7 @@ mod native_tests {
         let run = "7".repeat(32);
         crate::proxy::recovery::prepare_helper(&receipts, &run).unwrap();
         crate::proxy::recovery::launching(&receipts, "helper", &run).unwrap();
+        let (input, stdin) = command_pipe::owned_pipe().unwrap();
         let mut child = Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
@@ -1418,7 +1592,7 @@ mod native_tests {
             ])
             .env("AIGOODBRO_RECOVERY_TEST_ROLE", "hold")
             .env("AIGOODBRO_RECOVERY_TEST_ROOT", root)
-            .stdin(Stdio::piped())
+            .stdin(Stdio::from(input))
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
@@ -1426,7 +1600,7 @@ mod native_tests {
         let job = WindowsJob::assign(&child, &run, &receipts).unwrap();
         std::fs::write(root.join("child-continue"), b"owned").unwrap();
         let mut owned = OwnedHelper {
-            stdin: child.stdin.take(),
+            stdin: Some(stdin),
             child,
             control_stop: Arc::new(AtomicBool::new(false)),
             control_thread: None,
@@ -1459,5 +1633,31 @@ mod native_tests {
         assert!(owned.stop());
         assert!(start.elapsed() < Duration::from_secs(8));
         assert_eq!(owned._job.exited(), Ok(true));
+    }
+}
+
+// Crate-internal adapter for the other owned provider helper. The original
+// bounded pipe implementation and its native test paths remain unchanged.
+pub(crate) mod provider_wire {
+    use std::io::{PipeReader, PipeWriter};
+    #[derive(Debug, PartialEq, Eq)]
+    pub enum Failure {
+        Unchanged,
+        Poisoned,
+    }
+    fn map(error: super::command_pipe::FrameFailure) -> Failure {
+        match error {
+            super::command_pipe::FrameFailure::Unchanged => Failure::Unchanged,
+            super::command_pipe::FrameFailure::Poisoned => Failure::Poisoned,
+        }
+    }
+    pub fn pipe() -> std::io::Result<(PipeReader, PipeWriter)> {
+        super::command_pipe::owned_pipe()
+    }
+    pub fn chunk(writer: &mut PipeWriter, bytes: &[u8]) -> Result<(), Failure> {
+        super::command_pipe::send_chunk(writer, bytes).map_err(map)
+    }
+    pub fn frame(writer: &mut Option<PipeWriter>, bytes: &[u8]) -> Result<(), Failure> {
+        super::command_pipe::send(writer, bytes).map_err(map)
     }
 }

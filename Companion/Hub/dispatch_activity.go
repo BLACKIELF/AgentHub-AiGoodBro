@@ -4,46 +4,17 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"math"
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 )
 
 // The same lock is used by Next and the dispatch Skill. Acquire it before
 // hub.mu: reservers may query Hub while they hold the shared file lock.
-func (hub *Hub) lockDispatchActivity() (func(), error) {
-	if hub.activityDirectory == "" {
-		return func() {}, nil
-	}
-	if err := os.MkdirAll(hub.activityDirectory, 0700); err != nil {
-		return nil, errDispatchPolicyUnavailable
-	}
-	info, err := os.Lstat(hub.activityDirectory)
-	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm()&0077 != 0 {
-		return nil, errDispatchPolicyUnavailable
-	}
-	if st, ok := info.Sys().(*syscall.Stat_t); !ok || st.Uid != uint32(os.Geteuid()) {
-		return nil, errDispatchPolicyUnavailable
-	}
-	fd, err := syscall.Open(filepath.Join(hub.activityDirectory, ".dispatch-activity.lock"), syscall.O_RDWR|syscall.O_CREAT|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0600)
-	if err != nil {
-		return nil, errDispatchPolicyUnavailable
-	}
-	var st syscall.Stat_t
-	if syscall.Fstat(fd, &st) != nil || st.Mode&syscall.S_IFMT != syscall.S_IFREG || st.Uid != uint32(os.Geteuid()) || st.Nlink != 1 || st.Mode&0077 != 0 {
-		syscall.Close(fd)
-		return nil, errDispatchPolicyUnavailable
-	}
-	if syscall.Flock(fd, syscall.LOCK_EX|syscall.LOCK_NB) != nil {
-		syscall.Close(fd)
-		return nil, errBusy
-	}
-	return func() { syscall.Flock(fd, syscall.LOCK_UN); syscall.Close(fd) }, nil
-}
 
 type dispatchActivityLease struct {
 	LeaseID        string   `json:"leaseId"`
@@ -75,22 +46,14 @@ func (hub *Hub) readDispatchActivity() ([]dispatchActivityLease, error) {
 	if hub.activityDirectory == "" {
 		return nil, nil
 	}
-	fd, err := syscall.Open(filepath.Join(hub.activityDirectory, "dispatch-activity-v1.json"), syscall.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
-	if err == syscall.ENOENT {
+	f, err := openDispatchActivity(filepath.Join(hub.activityDirectory, "dispatch-activity-v1.json"))
+	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, errDispatchPolicyUnavailable
 	}
-	f := os.NewFile(uintptr(fd), "dispatch-activity")
 	defer f.Close()
-	info, err := f.Stat()
-	if err != nil || !info.Mode().IsRegular() || info.Size() > 2*1024*1024 {
-		return nil, errDispatchPolicyUnavailable
-	}
-	if st, ok := info.Sys().(*syscall.Stat_t); !ok || st.Uid != uint32(os.Geteuid()) || st.Nlink != 1 || info.Mode().Perm()&0077 != 0 {
-		return nil, errDispatchPolicyUnavailable
-	}
 	data, err := io.ReadAll(io.LimitReader(f, 2*1024*1024+1))
 	if err != nil || len(data) > 2*1024*1024 {
 		return nil, errDispatchPolicyUnavailable

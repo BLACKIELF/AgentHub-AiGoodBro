@@ -16,6 +16,7 @@ pub use native::{
     parse_authorization, validate_target_configuration, DpapiProtector, NativeAccountRuntime,
 };
 pub use service::AccountManager;
+pub use service::{browser, hub_snapshot, maintenance, manual_accounts, metadata, registration};
 pub use storage::{AccountPaths, SecretProtector};
 pub use verification::{
     OwnedVerificationProcess, VerificationProcessPermit, VerificationSpawnLease,
@@ -53,6 +54,7 @@ pub struct ManagedAccountDto {
     pub switch_block_reason: Option<&'static str>,
     pub revision: u64,
     pub recovery_required: bool,
+    pub registration_pending: bool,
 }
 
 /// Display provenance only. No auth document/token is exposed. This snapshot

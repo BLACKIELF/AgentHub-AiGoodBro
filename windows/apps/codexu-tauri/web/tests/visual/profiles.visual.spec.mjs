@@ -48,6 +48,7 @@ test.beforeEach(async ({ page }) => {
         if (window.localQuotaMode === 'fail') throw new Error('Synthetic private failure');
         return base;
       }
+      if (cmd === 'get_account_local_details') return { profileId: args.profileId, email: 'synthetic.account@example.invalid' };
       if (cmd === 'read_profile_quota') {
         window.quotaCalls.push(args.id);
         if (window.quotaMode === 'fail') throw new Error('Synthetic private failure');
@@ -172,9 +173,9 @@ test('stable order, one-step move, view selection and no paths', async ({ page }
   const region = panel(page);
   await expect(region).toContainText('does not switch Codex login');
   await expect(region).not.toContainText('C:\\');
-  await page.getByTestId('profile-1').locator('summary').click();
+  await page.getByTestId('profile-1').locator('details.account-more > summary').click();
   await expect(page.getByTestId('profile-1').getByRole('button', { name: 'Move up' })).toBeDisabled();
-  await page.getByTestId('profile-1').locator('summary').click();
+  await page.getByTestId('profile-1').locator('details.account-more > summary').click();
   await accountAction(page.getByTestId('profile-2'), 'Move up');
   await expect(region.locator('li').first()).toContainText('Synthetic B');
   await page.getByTestId('profile-2').getByRole('button', { name: 'View usage' }).click();
@@ -317,7 +318,8 @@ test('account metadata shows official units, details close and guide focuses cor
   const dialog = page.getByRole('dialog');
   await expect(dialog).toBeVisible();
   await expect(dialog).toHaveAccessibleName('Account details · Synthetic A');
-  await expect(dialog).not.toContainText('@');
+  await expect(dialog).toContainText('synthetic.account@example.invalid');
+  await expect(dialog).not.toContainText('address hidden');
   await expect(dialog.getByRole('button', { name: 'Close', exact: true })).toBeFocused();
   await expect(dialog).toHaveScreenshot('account-details.png');
   await page.keyboard.press('Escape');

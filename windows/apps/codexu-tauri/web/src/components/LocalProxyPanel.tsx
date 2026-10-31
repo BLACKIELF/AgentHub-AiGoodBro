@@ -4,13 +4,13 @@ import { ArrowDown, ArrowUp, Copy, Info, MoreHorizontal, Play, RefreshCw, Save, 
 import { useI18n } from '../i18n/I18nProvider';
 import { QuotaRing } from './QuotaRing';
 import { ProxyDesktopPanel } from './ProxyDesktopPanel';
-import { parseProxyAccounts, parseProxyPolicy, parseProxyPreferences, parseProxyStatus, proxyAccountPolicy, proxyConnectionText, proxyDisplayOrder, proxyParticipation, type ProxyAccount, type ProxyAccountPolicy, type ProxyPreferences, type ProxyStatus } from '../utils/localProxy';
+import { parseProxyAccounts, parseProxyPolicy, parseProxyPreferences, parseProxyStatus, proxyAccountPolicy, proxyConnectionText, proxyDisplayOrder, proxyParticipation, remainingQuotaPercent, usedQuotaLimit, sharedQuotaReserve, type ProxyAccount, type ProxyAccountPolicy, type ProxyPreferences, type ProxyStatus } from '../utils/localProxy';
 
 type Text = (zh: string, en: string) => string;
 type NetworkDraft = { listenPort: string; clientKeyMode: ProxyPreferences['clientKeyMode']; automaticRecoveryEnabled: boolean; desktopFallback: boolean; networkProxy: string; egressEnabled: boolean; mihomoApi: string; group: string; whitelist: string; creditFallback: boolean; creditPrimaryFloor: string; creditSecondaryFloor: string };
-type PolicyDraft = { limit: string; credits: boolean; primary: string; secondary: string };
+type PolicyDraft = { window: '5h' | '7d'; limit: string; credits: boolean; primary: string; secondary: string };
 const networkDraft = (p: ProxyPreferences): NetworkDraft => ({ listenPort: String(p.listenPort), clientKeyMode: p.clientKeyMode, automaticRecoveryEnabled: p.automaticRecoveryEnabled, desktopFallback: p.desktopFallback, networkProxy: p.networkProxy, egressEnabled: p.egress.enabled, mihomoApi: p.egress.mihomoApi, group: p.egress.group, whitelist: p.egress.whitelist.join('\n'), creditFallback: p.creditFallback, creditPrimaryFloor: String(p.creditPrimaryFloor), creditSecondaryFloor: String(p.creditSecondaryFloor) });
-const policyDraft = (p: ProxyAccountPolicy): PolicyDraft => ({ limit: String(p.fiveHourUsedLimit), credits: p.allowsCredits, primary: p.creditPrimaryFloor === null ? '' : String(p.creditPrimaryFloor), secondary: p.creditSecondaryFloor === null ? '' : String(p.creditSecondaryFloor) });
+const policyDraft = (p: ProxyAccountPolicy, pro: boolean): PolicyDraft => ({ window: pro ? '7d' : '5h', limit: String(remainingQuotaPercent(pro ? p.sevenDayUsedLimit : p.fiveHourUsedLimit)), credits: p.allowsCredits, primary: p.creditPrimaryFloor === null ? '' : String(p.creditPrimaryFloor), secondary: p.creditSecondaryFloor === null ? '' : String(p.creditSecondaryFloor) });
 const numeric = (raw: string): number => raw.trim() && /^\d+(?:\.\d+)?$/.test(raw) ? Number(raw) : Number.NaN;
 
 function failureText(error: unknown, text: Text): string {
@@ -26,10 +26,12 @@ function failureText(error: unknown, text: Text): string {
     control_busy: ['账号正在执行其他操作，请稍后重试。', 'Another account operation is in progress. Try again shortly.'],
     save_failed: ['保存失败，编辑内容已保留。', 'Saving failed. Your edits have been kept.'],
     startup_failed: ['反代未能启动，请检查账号与网络后重试。', 'The proxy could not start. Check accounts and network, then retry.'],
+    registration_failed: ['账号加入反代尚未确认，请重试参与操作。', 'Proxy enrollment is unconfirmed. Retry enabling this account.'],
+    stopping: ['反代正在停止，本次加入未生效。', 'The proxy is stopping. This enrollment was not applied.'],
     lease_cleanup_unconfirmed: ['停止结果尚未确认，请刷新状态。', 'Stopping is not yet confirmed. Refresh status.'],
     login_expired: ['登录已过期，请重新登录。', 'The login has expired. Sign in again.'],
     subscription_pending: ['套餐状态尚未确认，请刷新额度。', 'The subscription is unconfirmed. Refresh quota.'],
-    usage_limit: ['已达到已用额度上限。', 'The configured usage limit has been reached.'],
+    usage_limit: ['剩余额度已达到保留值。', 'The remaining quota has reached its reserve.'],
     listen_port_occupied: ['监听端口已被占用，请停止后修改端口。', 'The listen port is occupied. Stop the proxy before changing it.'],
     network_unavailable: ['网络暂不可用，请检查网络设置。', 'The network is unavailable. Check network settings.'],
   };
@@ -40,10 +42,11 @@ function failureText(error: unknown, text: Text): string {
 function stateText(state: string | undefined, text: Text): string {
   const states: Record<string, [string, string]> = {
     ready: ['就绪', 'Ready'], active: ['使用中', 'Active'], busy: ['忙碌', 'Busy'], credentials_busy: ['认证处理中', 'Credentials busy'],
-    quota: ['额度不足', 'Quota exhausted'], quota_unknown: ['额度待确认', 'Quota unconfirmed'], usage_limit: ['达到使用上限', 'Usage limit reached'],
+    quota: ['额度不足', 'Quota exhausted'], quota_unknown: ['额度待确认', 'Quota unconfirmed'], usage_limit: ['达到额度保留值', 'Quota reserve reached'],
     subscription_pending: ['套餐待确认', 'Subscription unconfirmed'], unauthorized: ['需登录', 'Sign-in required'], login_expired: ['登录过期', 'Login expired'],
     forbidden: ['访问受限', 'Access restricted'], temporary_error: ['暂时不可用', 'Temporarily unavailable'], cooldown: ['冷却中', 'Cooling down'],
     unavailable: ['不可用', 'Unavailable'], identity: ['身份待确认', 'Identity unconfirmed'], not_participating: ['未参与', 'Not participating'],
+    registration_failed: ['加入未确认', 'Enrollment unconfirmed'],
   };
   const value = state ? states[state] : undefined;
   return value ? text(...value) : text('未确认', 'Unconfirmed');
@@ -54,10 +57,17 @@ function ProxyAccountRow({ account, index, total, preferences, status, projectio
   save: (next: ProxyPreferences) => Promise<ProxyPreferences | null>; move: (id: string, offset: number) => void;
 }) {
   const committed = proxyAccountPolicy(preferences, account.id);
+  const pro = ['pro', 'prolite'].includes(account.planType ?? '');
   const [draft, setDraft] = useState<PolicyDraft | null>(null);
   const [error, setError] = useState('');
   const [saved, setSaved] = useState(false);
-  const form = draft ?? policyDraft(committed);
+  const currentDraft = policyDraft(committed, pro);
+  // A refreshed plan can change the edited quota window. Derive the safe form
+  // during rendering, so an old-window draft cannot be saved before the effect.
+  const form = draft ? draft.window === currentDraft.window ? draft : { ...draft, window: currentDraft.window, limit: currentDraft.limit } : currentDraft;
+  useEffect(() => {
+    setDraft(value => value && value.window !== currentDraft.window ? { ...value, window: currentDraft.window, limit: currentDraft.limit } : value);
+  }, [currentDraft.window, currentDraft.limit]);
   const enabled = preferences.enabledIds.includes(account.id);
   const priority = preferences.priorityIds.includes(account.id);
   const last = preferences.lastOverrides[account.id] ?? account.isLast;
@@ -72,13 +82,16 @@ function ProxyAccountRow({ account, index, total, preferences, status, projectio
   async function savePolicy() {
     setSaved(false); setError('');
     try {
-      const policy = parseProxyPolicy({ fiveHourUsedLimit: numeric(form.limit), allowsCredits: form.credits, creditPrimaryFloor: form.primary.trim() ? numeric(form.primary) : null, creditSecondaryFloor: form.secondary.trim() ? numeric(form.secondary) : null });
+      const priorLimit = pro ? committed.sevenDayUsedLimit : committed.fiveHourUsedLimit;
+      const remaining = numeric(form.limit);
+      const limit = remaining === remainingQuotaPercent(priorLimit) ? priorLimit : usedQuotaLimit(remaining);
+      const policy = parseProxyPolicy({ ...committed, ...(pro ? { sevenDayUsedLimit: limit } : { fiveHourUsedLimit: limit }), allowsCredits: form.credits, creditPrimaryFloor: form.primary.trim() ? numeric(form.primary) : null, creditSecondaryFloor: form.secondary.trim() ? numeric(form.secondary) : null });
       const result = await save({ ...preferences, accountPolicies: { ...preferences.accountPolicies, [account.id]: policy } });
       if (result) { setDraft(null); setSaved(true); }
       else setError(text('保存失败，草稿已保留。', 'Saving failed. The draft has been kept.'));
-    } catch { setError(text('请输入 0–100 的已用上限，点数两档需同时填写且第一档大于第二档。', 'Use a limit from 0–100. Enter both credit floors, with the first larger than the second.')); }
+    } catch { setError(text('请输入 0–100 的保留剩余额度，点数两档需同时填写且第一档大于第二档。', 'Use a remaining-quota reserve from 0–100. Enter both credit floors, with the first larger than the second.')); }
   }
-  const dirty = draft !== null && JSON.stringify(draft) !== JSON.stringify(policyDraft(committed));
+  const dirty = draft !== null && JSON.stringify(form) !== JSON.stringify(currentDraft);
   return <article className="proxy-account" data-testid={`proxy-account-${account.id}`} data-availability={fresh ? 'available' : 'unknown'}>
     <header className="proxy-account-header">
       <span className="account-directory-number">{String(index + 1).padStart(2, '0')}</span>
@@ -103,15 +116,15 @@ function ProxyAccountRow({ account, index, total, preferences, status, projectio
       <label><input type="checkbox" checked={priority} disabled={busy} onChange={event => void save(proxyParticipation(preferences, account.id, 'priority', event.target.checked))} />{text('优先使用', 'Priority')}</label>
       <label><input type="checkbox" checked={last} disabled={busy} onChange={event => void save(proxyParticipation(preferences, account.id, 'last', event.target.checked))} />{text('最后使用', 'Use last')}</label>
       <details className="proxy-info"><summary className="icon-action" aria-label={text('账号详情', 'Account details')} title={text('账号详情', 'Account details')}><Info size={14} /></summary><div className="proxy-info-body">
-        <p>{text('已用额度达到上限时停止分配；参与勾选不会改变显示顺序。', 'Allocation stops at the used-quota limit. Participation keeps the display order.')}</p>
+        <p>{text('剩余额度达到保留值时停止分配；参与勾选不会改变显示顺序。', 'Allocation stops at the remaining-quota reserve. Participation keeps the display order.')}</p>
         {quota && <p>{text('额度观察时间 ', 'Quota observed ')}{new Date(quota.observedAt * 1000).toLocaleString(language === 'zh-Hans' ? 'zh-CN' : 'en-GB', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false })}</p>}
         {fresh && quota?.creditBalancePoints !== null && quota?.creditBalancePoints !== undefined && <p>{text('点数 ', 'Credits ')}{quota.creditBalancePoints}</p>}
         {!fresh && <p>{text('额度尚未确认，请刷新额度后重试。', 'Quota is unconfirmed. Refresh quota and try again.')}</p>}
       </div></details>
     </div>
-    <details className="proxy-rule-editor"><summary>{text('账号规则', 'Account rules')}<span>{text('已保存上限 ', 'Saved limit ')}{committed.fiveHourUsedLimit}%</span></summary>
+    <details className="proxy-rule-editor"><summary>{text('账号规则', 'Account rules')}<span>{pro ? '7d ' : '5h '}{text('保留 ', 'Reserve ')}{remainingQuotaPercent(pro ? committed.sevenDayUsedLimit : committed.fiveHourUsedLimit)}%</span></summary>
       <div className="proxy-rule-fields">
-        <label>{text('5h 已用上限 %', '5h used limit %')}<input type="number" min="0" max="100" step="0.1" value={form.limit} disabled={busy} onChange={event => setField('limit', event.target.value)} /></label>
+        <label>{pro ? text('7 天保留剩余额度 %', '7d remaining quota %') : text('5 小时保留剩余额度 %', '5h remaining quota %')}<input type="number" min="0" max="100" step="0.1" value={form.limit} disabled={busy} onChange={event => setField('limit', event.target.value)} /></label>
         <label className="proxy-check"><input type="checkbox" checked={form.credits} disabled={busy} onChange={event => setField('credits', event.target.checked)} />{text('允许点数', 'Allow credits')}</label>
         <label>{text('点数第一档', 'First credit floor')}<input type="number" min="0" step="1" placeholder={String(preferences.creditPrimaryFloor)} value={form.primary} disabled={busy} onChange={event => setField('primary', event.target.value)} /></label>
         <label>{text('点数第二档', 'Second credit floor')}<input type="number" min="0" step="1" placeholder={String(preferences.creditSecondaryFloor)} value={form.secondary} disabled={busy} onChange={event => setField('secondary', event.target.value)} /></label>
@@ -132,7 +145,7 @@ export function LocalProxyPanel() {
   const [accounts, setAccounts] = useState<ProxyAccount[] | null>(null);
   const [accountsFresh, setAccountsFresh] = useState(false);
   const [draft, setDraft] = useState<NetworkDraft | null>(null);
-  const [plusLimit, setPlusLimit] = useState('');
+  const [quotaLimit, setQuotaLimit] = useState<string | null>(null);
   const [pending, setPending] = useState<string | null>(null);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
@@ -161,10 +174,11 @@ export function LocalProxyPanel() {
       if (disposed || operation.current || pollPending.current) return;
       pollPending.current = true;
       const current = generation.current;
-      const results = await Promise.allSettled([invoke('get_local_proxy_status'), invoke('get_local_proxy_accounts')]);
+      const results = await Promise.allSettled([invoke('get_local_proxy_status'), invoke('get_local_proxy_accounts'), invoke('get_local_proxy_preferences')]);
       if (!disposed && alive.current && current === generation.current) {
         try { if (results[0].status === 'rejected') throw results[0].reason; setStatus(parseProxyStatus(results[0].value)); setStatusFresh(true); } catch { setStatusFresh(false); }
         try { if (results[1].status === 'rejected') throw results[1].reason; setAccounts(parseProxyAccounts(results[1].value)); setAccountsFresh(true); } catch { setAccountsFresh(false); }
+        try { if (results[2].status === 'rejected') throw results[2].reason; setPreferences(parseProxyPreferences(results[2].value)); } catch { /* Keep the last saved participation until the native snapshot succeeds. */ }
       }
       pollPending.current = false;
     }, 2000);
@@ -248,15 +262,15 @@ export function LocalProxyPanel() {
       return true;
     });
   }
-  async function applyPlusLimit() {
-    await run('plus', async () => {
-      const limit = numeric(plusLimit);
-      if (!Number.isFinite(limit) || limit < 0 || limit > 100) throw Error('invalid_settings');
-      const saved = parseProxyPreferences(await invoke('set_local_proxy_plus_five_hour_used_limit', { limit }));
-      if (alive.current) { setPreferences(saved); setNotice(text('Plus 的 5h 已用上限已保存。', 'The Plus 5h used limit is saved.')); }
+  async function applySharedQuotaLimit() {
+    await run('shared-quota', async () => {
+      const limit = usedQuotaLimit(numeric(quotaLimit ?? ''));
+      const saved = parseProxyPreferences(await invoke('set_local_proxy_shared_quota_used_limit', { limit }));
+      if (alive.current) { setPreferences(saved); setQuotaLimit(null); setNotice(text('Plus 5 小时与 Pro 7 天保留剩余额度已统一保存。', 'The Plus 5h and Pro 7d quota reserves are saved.')); }
       return true;
     });
   }
+  const sharedQuota = preferences && accounts ? sharedQuotaReserve(preferences, accounts) : { count: 0, remaining: null, mixed: false };
   const sorted = preferences && accounts ? proxyDisplayOrder(accounts, preferences) : [];
   const move = (accountId: string, offset: number) => {
     if (!preferences) return;
@@ -293,8 +307,8 @@ export function LocalProxyPanel() {
     {selfCheckRequestId && !matchingSelfCheck && <p className="proxy-note" role="status">{text('等待本次自检结果。', 'Waiting for this self-check result.')}</p>}
     {egress && (!selfCheckRequestId || matchingSelfCheck) && <p className="proxy-feedback" role="status" data-egress-state={egress.state}>{matchingSelfCheck ? text('本次自检 · ', 'This self-check · ') : text('网络出口 · ', 'Network egress · ')}{egressStates[egress.state] ? text(...egressStates[egress.state]) : text('未确认', 'Unconfirmed')}{egress.latencyMs !== null && ` · ${egress.latencyMs} ms`}</p>}
     <section className="proxy-accounts" aria-label={text('反代账号', 'Proxy accounts')}><header><h3>{text('参与账号', 'Participating accounts')}{accounts && <span>{accounts.length}</span>}</h3><button type="button" className="glass-button proxy-action" disabled={busy || accounts === null} onClick={() => void refresh(true)}><RefreshCw size={13} className={pending === 'quota' ? 'animate-spin' : ''} />{text('刷新额度', 'Refresh quota')}</button></header>
+      {sharedQuota.count > 0 && <div className="proxy-plus-limit"><label htmlFor="proxy-plus-limit">{text('统一保留剩余额度 %（Plus 5 小时 / Pro 7 天）', 'Shared remaining quota % (Plus 5h / Pro 7d)')}</label><input id="proxy-plus-limit" type="number" min="0" max="100" step="0.1" placeholder={sharedQuota.mixed ? text('混合', 'Mixed') : '0–100'} value={quotaLimit ?? (sharedQuota.remaining === null ? '' : String(sharedQuota.remaining))} disabled={busy} onChange={event => setQuotaLimit(event.target.value)} /><button type="button" className="glass-button proxy-action" disabled={busy || quotaLimit === null || !quotaLimit.trim()} onClick={() => void applySharedQuotaLimit()}>{text('应用到 Plus 和 Pro', 'Apply to Plus and Pro')}</button></div>}
       {accounts === null ? <p className="proxy-note">{text('账号列表暂不可用，请刷新状态。', 'The account list is unavailable. Refresh status.')}</p> : !accounts.length ? <p className="proxy-note">{text('暂无可参与反代的托管 Codex 账号。', 'No managed Codex account is available for the proxy.')}</p> : <div className="proxy-account-grid">{preferences && sorted.map((account, index) => <ProxyAccountRow key={account.id} account={account} index={index} total={sorted.length} preferences={preferences} status={status} projectionFresh={accountsFresh} busy={busy} text={text} language={language} save={save} move={move} />)}</div>}
-      {accounts?.some(account => account.planType === 'plus') && <div className="proxy-plus-limit"><label htmlFor="proxy-plus-limit">{text('Plus 统一 5h 已用上限 %', 'Shared Plus 5h used limit %')}</label><input id="proxy-plus-limit" type="number" min="0" max="100" step="0.1" placeholder="0–100" value={plusLimit} disabled={busy} onChange={event => setPlusLimit(event.target.value)} /><button type="button" className="glass-button proxy-action" disabled={busy || !plusLimit.trim()} onClick={() => void applyPlusLimit()}>{text('应用到 Plus', 'Apply to Plus')}</button></div>}
     </section>
     {form && <details className="proxy-settings"><summary>{text('反代设置', 'Proxy settings')}</summary><p className="proxy-note">{text('更改端口、密钥方式或网络设置前需停止反代。端口 0 表示自动选择。', 'Stop the proxy before changing its port, key mode or network settings. Port 0 selects a port automatically.')}</p><fieldset disabled={networkLocked}>
       <div className="proxy-settings-grid"><label>{text('监听端口', 'Listen port')}<input type="number" min="0" max="65535" step="1" value={form.listenPort} onChange={event => setField('listenPort', event.target.value)} /></label><label>{text('客户端密钥', 'Client key')}<select value={form.clientKeyMode} onChange={event => setField('clientKeyMode', event.target.value as NetworkDraft['clientKeyMode'])}><option value="persistent">{text('固定密钥', 'Persistent key')}</option><option value="perRun">{text('每次启动更新', 'New key per run')}</option></select></label><label className="proxy-wide">{text('上游网络代理', 'Upstream network proxy')}<input type="text" placeholder="http://127.0.0.1:7890" value={form.networkProxy} onChange={event => setField('networkProxy', event.target.value)} /></label></div>

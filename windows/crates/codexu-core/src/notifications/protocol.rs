@@ -70,6 +70,7 @@ pub(crate) fn validate_credential(
     binding: Option<&PersonalBinding>,
 ) -> Result<()> {
     match kind {
+        ChannelKind::System => return fail("system_notification_has_no_credentials"),
         ChannelKind::Feishu => {
             feishu_url(secret)?;
         }
@@ -153,6 +154,7 @@ pub(crate) fn send_request(
         return fail("message_too_long");
     }
     let (url, body) = match kind {
+        ChannelKind::System => return fail("system_notification_has_no_remote_endpoint"),
         ChannelKind::Feishu => {
             let mut sections = lines;
             sections.push("aigoodbro.com".into());
@@ -287,6 +289,7 @@ pub(crate) fn parse_response(kind: ChannelKind, r: TransportResponse) -> Accepte
         return Accepted::Uncertain(Failure("invalid_response"));
     };
     match kind {
+        ChannelKind::System => Accepted::Uncertain(Failure("invalid_response")),
         ChannelKind::Telegram => match v["ok"].as_bool() {
             Some(true) if v["result"].is_object() => {
                 Accepted::Ok(v["result"]["message_id"].as_i64().map(|i| i.to_string()))

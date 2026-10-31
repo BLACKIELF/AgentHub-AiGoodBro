@@ -1,7 +1,7 @@
 import { useCallback,useEffect,useRef,useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { compactFailure,compactProjectionDeadline,expireCompactProjection,parseCompactState,type CompactAction,type CompactPreferences,type CompactState } from '../utils/compactUi';
+import { compactFailure,compactProjectionDeadline,expireCompactProjection,parseCompactState,type BubblePreferences,type CompactAction,type CompactPreferences,type CompactState } from '../utils/compactUi';
 export function useCompactUi(){
  const [state,setState]=useState<CompactState|null>(null),[error,setError]=useState<string|null>(null),[busy,setBusy]=useState(false);
  const alive=useRef(false),value=useRef<CompactState|null>(null),pending=useRef(false),invalidated=useRef(false),scope=useRef(0),readSerial=useRef(0),activeRead=useRef<number|null>(null),readAgain=useRef(false);
@@ -56,5 +56,5 @@ export function useCompactUi(){
   const timer=setTimeout(()=>{if(value.current){const next=expireCompactProjection(value.current);value.current=next;setState(next);}},Math.max(0,at-Date.now()));
   return()=>clearTimeout(timer);
  },[state]);
- return {state,error,busy,read,retryShortcut:()=>run('retry_compact_ui_shortcut',{}),save:(patch:Partial<CompactPreferences>)=>run('set_compact_ui_preferences',{patch}),action:(action:CompactAction,itemId?:string)=>run('compact_ui_action',{action,itemId:itemId??null})};
+ return {state,error,busy,read,retryShortcut:()=>run('retry_compact_ui_shortcut',{}),save:(patch:Partial<CompactPreferences>,expectedBubble?:BubblePreferences)=>run('set_compact_ui_preferences',{patch,...(expectedBubble?{expectedBubble}: {})}),action:(action:CompactAction,itemId?:string)=>run('compact_ui_action',{action,itemId:itemId??null})};
 }

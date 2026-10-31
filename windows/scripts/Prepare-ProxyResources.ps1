@@ -53,7 +53,23 @@ try {
         # Only synthetic account/credential fixtures are used. The packaged
         # helper must be the fresh, source-verified candidate from this run.
         $env:AIGOODBRO_TEST_PROXY_HELPER = Join-Path $root 'windows\apps\codexu-tauri\src-tauri\resources\proxy\aigoodbro-local-proxy.exe'
-        Invoke-ProxyBuildCommand 'cargo' @('+1.97.1-x86_64-pc-windows-msvc', 'test', '--manifest-path', 'windows/Cargo.toml', '--locked', '-p', 'codexu-core', '--lib', 'actual_helper', '--', '--ignored')
+        $helperArguments = @('+1.97.1-x86_64-pc-windows-msvc', 'test', '--manifest-path', 'windows/Cargo.toml', '--locked', '-p', 'codexu-core', '--lib', 'actual_helper', '--', '--ignored')
+        $helperOutput = @(& cargo @helperArguments 2>&1)
+        $helperExit = $LASTEXITCODE
+        $helperOutput | Out-Host
+        if ($helperExit -ne 0) { throw 'proxy_helper_contract_failed' }
+        $helperText = $helperOutput -join "`n"
+        foreach ($test in @(
+            'proxy::process::registration::tests::actual_helper_hot_registration_keeps_run_port_pid_and_manual_opt_out',
+            'proxy::process::command_pipe::tests::actual_helper_command_pipe_full_rejects_whole_frame_without_blocking_or_corruption',
+            'proxy::process::command_pipe::tests::actual_helper_command_pipe_injected_short_write_closes_before_next_frame',
+            'proxy::process::command_pipe::tests::actual_helper_startup_unread_pipe_is_cancellable_and_dead_reader_fails_bounded',
+            'proxy::process::command_pipe::tests::actual_helper_startup_pipe_reader_accepts_complete_large_frame'
+        )) {
+            if ($helperText -notmatch ('(?m)^test ' + [regex]::Escape($test) + ' \.\.\. ok\s*$')) {
+                throw ('proxy_helper_contract_not_executed:' + $test)
+            }
+        }
         $env:AIGOODBRO_TEST_GO_EVIDENCE_DRIVER = Join-Path $root 'windows\proxy\evidence-fixture.py'
         $env:AIGOODBRO_TEST_PYTHON = (Get-Command python).Source
         Invoke-ProxyBuildCommand 'cargo' @('+1.97.1-x86_64-pc-windows-msvc', 'test', '--manifest-path', 'windows/Cargo.toml', '--locked', '-p', 'codexu-core', '--test', 'managed_accounts', 'actual_go_desktop_evidence_is_accepted_by_real_account_manager', '--', '--ignored', '--exact')

@@ -234,7 +234,7 @@ pub async fn read_quota_from_transport<T: AppServerTransport>(
             "params": {
                 "clientInfo": {
                     "name": "codex-account-manager-next",
-                    "title": "Codex Account Manager Next",
+                    "title": "AiGoodBro",
                     "version": env!("CARGO_PKG_VERSION")
                 },
                 "capabilities": {

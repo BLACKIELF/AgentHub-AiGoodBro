@@ -105,6 +105,23 @@ test('native workspace navigation selects the actual tasks tab and ignores unkno
   await expect(page.locator('#dashboard-home-panel-tasks')).toHaveScreenshot('workspace-native-task-navigation.png');
 });
 
+for (const language of ['en', 'zh-Hans']) {
+  test(`native capture navigation reaches every lazy workspace panel in ${language}`, async ({ page }) => {
+    await workspace(page, { language });
+    await expect(page.locator('#workspace-nav-home')).toHaveAttribute('aria-current', 'page');
+    await expect(page.locator('#dashboard-home-tab-tasks')).toHaveCount(0);
+    await page.locator('#workspace-nav-tools').click();
+    await expect(page.locator('#workspace-nav-tools')).toHaveAttribute('aria-current', 'page');
+    await expect(page.locator('.dashboard-home-overview')).toBeVisible();
+    for (const tab of ['tasks', 'leadership', 'usage', 'projects', 'skills']) {
+      await page.locator(`#dashboard-home-tab-${tab}`).click();
+      await expect(page.locator(`#dashboard-home-tab-${tab}`)).toHaveAttribute('aria-selected', 'true');
+      await expect(page.locator(`#dashboard-home-panel-${tab}`)).toBeVisible();
+    }
+    expect(await page.evaluate(() => window.workspaceWrites)).toEqual([]);
+  });
+}
+
 test('card size, list and platform filter persist while preserving global numbering', async ({ page }) => {
   await workspace(page);
   const region = page.getByRole('region', { name: 'Account directories', exact: true });
@@ -114,7 +131,7 @@ test('card size, list and platform filter persist while preserving global number
   expect((await first.boundingBox()).width).toBeGreaterThan(small);
   await expect(region).toHaveScreenshot('workspace-cards-medium.png');
   await region.getByRole('button', { name: 'List', exact: true }).click();
-  await region.getByRole('combobox', { name: 'Filter platform' }).selectOption('claude_code');
+  await region.getByRole('combobox', { name: 'Filter platform' }).selectOption('claude');
   await expect(first).toBeHidden();
   await expect(page.getByTestId('profile-3').locator('.account-directory-number')).toHaveText('03');
   await region.getByRole('combobox', { name: 'Filter platform' }).selectOption('all');
@@ -122,8 +139,14 @@ test('card size, list and platform filter persist while preserving global number
   await expect(region.getByRole('combobox', { name: 'Card size', exact: true })).toHaveValue('medium');
   await expect(region.locator('.account-directory-grid')).toHaveClass(/is-list/);
   await expect(region).toHaveScreenshot('workspace-accounts-list.png');
-  await page.setViewportSize({ width: 480, height: 1000 });
+  // Keep all three cards inside the scrolling workspace when capturing the
+  // narrow list; a taller locator image alone cannot bypass ancestor clipping.
+  await page.setViewportSize({ width: 480, height: 1600 });
   expect(await region.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+  const last = page.getByTestId('profile-3');
+  await expect(last).toBeInViewport({ ratio: 1 });
+  const lastBounds = await last.boundingBox();
+  expect(lastBounds.y + lastBounds.height).toBeLessThanOrEqual(page.viewportSize().height);
   await expect(region).toHaveScreenshot('workspace-accounts-list-narrow.png');
 });
 
@@ -138,11 +161,11 @@ test('participation changes no display order and more menu keeps destructive act
   await expect(first.getByRole('switch')).toBeChecked();
   expect(await ids()).toEqual(before);
   expect(await page.evaluate(() => window.workspaceWrites.map(write => write.command))).toEqual(['set_account_workflow']);
-  await first.locator('summary').click();
+  await first.locator('details.account-more > summary').click();
   await expect(first.getByRole('button', { name: 'Move up', exact: true })).toBeDisabled();
   await expect(first.getByRole('button', { name: 'Rename', exact: true })).toBeVisible();
   await expect(first).toHaveScreenshot('workspace-account-more.png');
   await page.keyboard.press('Escape');
   await expect(first.locator('details.account-more')).not.toHaveAttribute('open');
-  await expect(first.locator('summary')).toBeFocused();
+  await expect(first.locator('details.account-more > summary')).toBeFocused();
 });

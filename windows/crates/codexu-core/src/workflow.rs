@@ -3,6 +3,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
+mod dispatch_window;
+pub use dispatch_window::{DispatchInterval, DispatchMode, DispatchWindow};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -10,13 +12,23 @@ pub struct WorkflowPreference {
     pub participating: bool,
     pub model: Option<String>,
     pub effort: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<crate::workflow_execution::ServiceTier>,
     pub revision: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dispatch_window: Option<DispatchWindow>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dispatch_code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub not_after_ms: Option<i64>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorkflowPreferences {
     pub profiles: BTreeMap<u64, WorkflowPreference>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub excluded_plan_types: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -105,7 +117,11 @@ pub fn valid_effort(value: &str) -> bool {
 impl WorkflowPreferences {
     pub fn validate(&self) -> anyhow::Result<()> {
         anyhow::ensure!(self.profiles.len() <= 1000, "Too many workflow records");
+        crate::workflow_execution::validate_extensions(self)?;
         for (id, value) in &self.profiles {
+            if let Some(window) = &value.dispatch_window {
+                window.validate()?;
+            }
             anyhow::ensure!(*id > 0, "Invalid profile ID");
             anyhow::ensure!(
                 value.model.as_deref().is_none_or(valid_model),
@@ -120,6 +136,20 @@ impl WorkflowPreferences {
                 "Select a model first"
             );
         }
+        Ok(())
+    }
+
+    pub fn set_dispatch_window(&mut self, id: u64, window: DispatchWindow) -> anyhow::Result<()> {
+        window.validate()?;
+        let mut next = self.clone();
+        let preference = next.profiles.entry(id).or_default();
+        preference.dispatch_window = Some(window);
+        preference.revision = preference
+            .revision
+            .checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("Preference revision exhausted"))?;
+        next.validate()?;
+        *self = next;
         Ok(())
     }
 
@@ -149,6 +179,16 @@ impl WorkflowPreferences {
             .checked_add(1)
             .ok_or_else(|| anyhow::anyhow!("Preference revision exhausted"))?;
         self.validate()
+    }
+}
+
+impl WorkflowPreference {
+    pub fn allows_new_work_at_ms(&self, now: i64) -> bool {
+        self.participating
+            && self
+                .dispatch_window
+                .as_ref()
+                .is_none_or(|window| window.allows_at_ms(now))
     }
 }
 
@@ -357,6 +397,51 @@ pub fn interactive_arguments(model: &str, effort: &str) -> anyhow::Result<Vec<St
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn dispatch_window_updates_are_transactional_and_rechecked_at_new_work_boundary() {
+        let mut preferences = WorkflowPreferences::default();
+        preferences.set_participating(1, true).unwrap();
+        let window = DispatchWindow {
+            mode: DispatchMode::OnlyWithin,
+            time_zone_identifier: "UTC".into(),
+            intervals: vec![DispatchInterval {
+                start_minute: 9 * 60,
+                end_minute: 10 * 60,
+                all_days: true,
+                weekdays: Default::default(),
+                all_day: false,
+            }],
+        };
+        preferences.set_dispatch_window(1, window.clone()).unwrap();
+        let before = serde_json::to_vec(&preferences).unwrap();
+        assert!(preferences.set_dispatch_window(0, window.clone()).is_err());
+        assert!(preferences
+            .set_dispatch_window(
+                1,
+                DispatchWindow {
+                    time_zone_identifier: "Local".into(),
+                    ..window
+                }
+            )
+            .is_err());
+        assert_eq!(serde_json::to_vec(&preferences).unwrap(), before);
+        let p = &preferences.profiles[&1];
+        let at = |time: &str| {
+            chrono::DateTime::parse_from_rfc3339(time)
+                .unwrap()
+                .timestamp_millis()
+        };
+        assert!(p.allows_new_work_at_ms(at("2026-10-30T09:59:00Z")));
+        assert!(!p.allows_new_work_at_ms(at("2026-10-30T10:00:00Z")));
+        assert!(!WorkflowPreference {
+            participating: false,
+            ..p.clone()
+        }
+        .allows_new_work_at_ms(at("2026-10-30T09:59:00Z")));
+        let restored: WorkflowPreferences = serde_json::from_slice(&before).unwrap();
+        assert_eq!(restored.profiles[&1].dispatch_window, p.dispatch_window);
+    }
+
     #[test]
     fn participation_can_be_disabled_without_any_cli_or_quota_state() {
         let mut store = WorkflowPreferences::default();

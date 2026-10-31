@@ -19,3 +19,5 @@ pub use recovery::{DesktopRecoveryKind, DesktopRecoveryProof, ProxyHelperRecover
 
 #[cfg(test)]
 mod tests;
+
+pub(crate) use process::provider_wire;

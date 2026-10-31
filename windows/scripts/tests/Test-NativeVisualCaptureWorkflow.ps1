@@ -64,6 +64,57 @@ function Import-EntryFunction {
 . Import-EntryFunction -Name 'Get-WindowsSdkRootCandidates'
 . Import-EntryFunction -Name 'Get-CaptureCompiler'
 . Import-EntryFunction -Name 'Get-CaptureCheckout'
+. Import-EntryFunction -Name 'Assert-CaptureStorage'
+
+$storageFixture = Join-Path $repositoryRoot (
+  '.local-artifacts\windows-visual-captures\storage-fixture-' + [guid]::NewGuid().ToString('N') +
+  '\runtime\fullscreen'
+)
+$storageState = Join-Path $storageFixture 'app-state'
+$storageCache = Join-Path $storageState 'cache'
+$storageSettings = Join-Path $storageState 'settings.json'
+New-Item -ItemType Directory -Path $storageCache -Force | Out-Null
+try {
+  $saved = @{ cache_dir = $storageCache; codex_root = (Join-Path $storageState 'codex'); installation_onboarding = @{ status = 'pending' } }
+  $saved | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $storageSettings -Encoding UTF8
+  $pending = Assert-CaptureStorage -RuntimeRoot $storageFixture -ExpectedStatus 'pending'
+  Assert-True ([bool]$pending.cache_isolated -and [bool]$pending.codex_isolated) 'Fresh capture cache/Codex isolation was not verified.'
+  $saved.cache_dir = '\\?\' + $storageCache
+  $saved | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $storageSettings -Encoding UTF8
+  $canonical = Assert-CaptureStorage -RuntimeRoot $storageFixture -ExpectedStatus 'pending'
+  Assert-True ([bool]$canonical.cache_isolated) 'Canonical Windows drive paths must resolve to the same owned cache.'
+  $saved.installation_onboarding.status = 'deferred'
+  $saved | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $storageSettings -Encoding UTF8
+  $deferred = Assert-CaptureStorage -RuntimeRoot $storageFixture -ExpectedStatus 'deferred'
+  Assert-True ($deferred.onboarding_status -eq 'deferred') 'Capture did not read back its saved defer state.'
+  try {
+    Assert-CaptureStorage -RuntimeRoot $storageFixture -ExpectedStatus 'pending' | Out-Null
+    throw 'A prior deferred state passed fresh capture validation.'
+  } catch {
+    Assert-True ($_.Exception.Message -eq 'capture_isolated_onboarding_state_mismatch') 'Prior capture state did not fail closed.'
+  }
+  $saved.cache_dir = Join-Path $storageFixture 'outside-cache'
+  $saved | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $storageSettings -Encoding UTF8
+  $before = Get-Content -LiteralPath $storageSettings -Raw
+  try {
+    Assert-CaptureStorage -RuntimeRoot $storageFixture -ExpectedStatus 'deferred' | Out-Null
+    throw 'An external cache passed capture isolation validation.'
+  } catch {
+    Assert-True ($_.Exception.Message -eq 'capture_cache_not_isolated') 'External cache did not fail closed.'
+  }
+  Assert-True ((Get-Content -LiteralPath $storageSettings -Raw) -eq $before) 'Storage validation modified settings.'
+  $saved.cache_dir = $storageCache
+  $saved.codex_root = Join-Path $storageFixture 'outside-codex'
+  $saved | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $storageSettings -Encoding UTF8
+  try {
+    Assert-CaptureStorage -RuntimeRoot $storageFixture -ExpectedStatus 'deferred' | Out-Null
+    throw 'An external Codex root passed capture isolation validation.'
+  } catch {
+    Assert-True ($_.Exception.Message -eq 'capture_codex_not_isolated') 'External Codex root did not fail closed.'
+  }
+} finally {
+  Remove-Item -LiteralPath (Split-Path -Parent (Split-Path -Parent $storageFixture)) -Recurse -Force
+}
 
 $gitFixtureRoot = Join-Path $repositoryRoot (
   '.local-artifacts\windows-visual-captures\git-fixture-' + [guid]::NewGuid().ToString('N')
@@ -159,6 +210,13 @@ Assert-True ($null -ne $mainWindow) 'The Tauri main window configuration is miss
 Assert-True (-not [bool]$mainWindow.visible) 'The main window must be hidden until startup explicitly shows it.'
 Assert-True (-not [bool]$mainWindow.focus) 'The main window must not request focus during native capture startup.'
 $mainSourceText = Get-Content -LiteralPath $mainSource -Raw -Encoding UTF8
+Assert-True (
+  $mainSourceText -match '(?s)capture_storage::initialize\(.*?native_services::install\(app, app_data_dir.clone\(\)\).*?AppState::new\(app_data_dir.clone\(\)\).*?compact_ui::install\(app.handle\(\), app_data_dir\)'
+) 'All native capture services must use the same explicitly isolated app state directory.'
+$entryText = Get-Content -LiteralPath $entry -Raw -Encoding UTF8
+Assert-True (
+  $entryText -match "EnvironmentVariables\['AIGOODBRO_NATIVE_CAPTURE_ROOT'\]\s*=\s*\`$sizeRuntime"
+) 'The capture driver must pass its owned runtime root to native startup.'
 Assert-True (
   $mainSourceText -match '(?s)if background_capture.*?prepare_background_capture_window\(\&window\).*?show_background_capture_window\(\&window\).*?else.*?window\.show\(\).*?window\.set_focus\(\)'
 ) 'Startup must use the native non-activating show path for capture, while only normal startup requests focus.'

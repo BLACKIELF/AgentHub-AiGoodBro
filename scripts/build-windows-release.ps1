@@ -4,12 +4,19 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$Version,
     [string]$OutputDirectory,
+    # Exact scanner already exercised by the enclosing readiness run.
+    [string]$VerifiedScannerBuildRoot,
+    [string]$VerifiedHubBuildRoot,
+    [string]$VerifiedProviderPoolBuildRoot,
     # The readiness entry point records these checks before invoking packaging.
     [switch]$SkipValidation
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+if (($VerifiedScannerBuildRoot -or $VerifiedHubBuildRoot -or $VerifiedProviderPoolBuildRoot) -and -not $SkipValidation) {
+    throw 'Verified helper reuse is only valid after the readiness validation plan.'
+}
 
 if ($Version.StartsWith("v")) {
     $Version = $Version.Substring(1)
@@ -61,9 +68,12 @@ function Invoke-Checked {
     }
 }
 
+& python -B (Join-Path $RepoRoot "tests\test_windows_branding.py")
+if ($LASTEXITCODE -ne 0) { throw "Windows branding or upgrade identity validation failed." }
+
 function Select-FreshBundle {
     param([object[]] $Files, [string] $ReleaseVersion, [DateTime] $StartedUtc)
-    $pattern = '_' + [regex]::Escape($ReleaseVersion) + '_x64(?:_|-)'
+    $pattern = '^AiGoodBro_' + [regex]::Escape($ReleaseVersion) + '_x64(?:_|-)'
     return $Files |
         Where-Object { $_.LastWriteTimeUtc -ge $StartedUtc -and $_.Name -match $pattern } |
         Sort-Object LastWriteTimeUtc -Descending |
@@ -97,9 +107,26 @@ Invoke-Checked 'pwsh.exe' $ProxyArguments
 $StatisticsBuildRoot = Join-Path $RepoRoot ('.local-artifacts\windows-statistics-build-' + [guid]::NewGuid().ToString('N'))
 $StatisticsArguments = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $RepoRoot 'windows\scripts\Prepare-TokenMonitorResources.ps1'), '-BuildRoot', $StatisticsBuildRoot)
 if (-not $SkipValidation) { $StatisticsArguments += '-RunNativeTests' }
+if ($VerifiedScannerBuildRoot) { $StatisticsArguments += @('-ScannerBuildRoot', $VerifiedScannerBuildRoot) }
 Invoke-Checked 'pwsh.exe' $StatisticsArguments
 $StatisticsManifest = Join-Path $AppRoot 'src-tauri\resources\token-monitor\WINDOWS-RESOURCES.json'
 $env:AIGOODBRO_TOKEN_MONITOR_RESOURCE_SHA256 = (Get-FileHash -LiteralPath $StatisticsManifest -Algorithm SHA256).Hash.ToLowerInvariant()
+$HubBuildRoot = if ($VerifiedHubBuildRoot) { $VerifiedHubBuildRoot } else { Join-Path $RepoRoot '.local-artifacts\windows-hub-build' }
+$HubArguments = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $RepoRoot 'windows\scripts\Prepare-HubResources.ps1'), '-BuildRoot', $HubBuildRoot)
+if ($VerifiedHubBuildRoot) { $HubArguments += '-VerifiedReuse' } else { $HubArguments += '-RunNativeTests' }
+Invoke-Checked 'pwsh.exe' $HubArguments
+$HubManifest = Join-Path $AppRoot 'src-tauri\resources\companion-hub\WINDOWS-RESOURCES.json'
+$HubManifestHash = (Get-FileHash -LiteralPath $HubManifest -Algorithm SHA256).Hash.ToLowerInvariant()
+$ProviderPoolBuildRoot = if ($VerifiedProviderPoolBuildRoot) { $VerifiedProviderPoolBuildRoot } else { Join-Path $RepoRoot '.local-artifacts\windows-provider-pool-build' }
+$ProviderPoolArguments = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $RepoRoot 'windows\scripts\Prepare-ProviderPool.ps1'), '-BuildRoot', $ProviderPoolBuildRoot)
+if ($VerifiedProviderPoolBuildRoot) { $ProviderPoolArguments += '-VerifiedReuse' } else { $ProviderPoolArguments += @('-RunNativeTests', '-AllowDependencyDownload') }
+Invoke-Checked 'pwsh.exe' $ProviderPoolArguments
+$ProviderPoolManifest = Join-Path $AppRoot 'src-tauri\resources\provider-pool\WINDOWS-RESOURCES.json'
+$ProviderPoolManifestHash = (Get-FileHash -LiteralPath $ProviderPoolManifest -Algorithm SHA256).Hash.ToLowerInvariant()
+Invoke-Checked 'python' @('-B', (Join-Path $RepoRoot 'windows\companion\prepare.py'))
+Invoke-Checked 'python' @('-B', (Join-Path $RepoRoot 'windows\companion\prepare.py'), '--verify-only')
+Invoke-Checked 'python' @('-B', (Join-Path $RepoRoot 'windows\scripts\check-msi-encoding.py'), '--root', $RepoRoot)
+
 
 if (-not $SkipValidation) {
     Push-Location $WindowsRoot
@@ -140,8 +167,12 @@ try {
         }
     }
 
+    $TauriVersion = (& cargo "+$Toolchain" tauri --version | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0 -or $TauriVersion -notmatch '^tauri-cli 2\.6\.2$') {
+        throw 'The reviewed Windows installer templates require tauri-cli 2.6.2.'
+    }
     Invoke-Checked "cargo" @(
-        "+$Toolchain", "tauri", "build",
+        "+$Toolchain", "tauri", "build", "--verbose",
         "--config", $TauriConfig,
         "--bundles", "msi,nsis"
     )
@@ -173,9 +204,13 @@ if (-not $Nsis) {
     throw "No fresh NSIS setup executable matching the requested version was produced."
 }
 
+# Check the actual rendered XML, including escaped/localized values.
+$WixOutput = Join-Path $Msi.Directory.Parent.Parent.FullName 'wix\x64'
+Invoke-Checked 'python' @('-B', (Join-Path $RepoRoot 'windows\scripts\check-msi-encoding.py'), '--root', $RepoRoot, '--generated', $WixOutput)
+
 $Artifacts = @(
-    @{ Source = $Msi.FullName; Name = "CodexAccountManagerNext-$Version-windows-x86_64.msi" },
-    @{ Source = $Nsis.FullName; Name = "CodexAccountManagerNext-$Version-windows-x86_64-setup.exe" }
+    @{ Source = $Msi.FullName; Name = "AiGoodBro-$Version-windows-x86_64.msi" },
+    @{ Source = $Nsis.FullName; Name = "AiGoodBro-$Version-windows-x86_64-setup.exe" }
 )
 $Utf8NoBom = [System.Text.UTF8Encoding]::new($false)
 
@@ -190,12 +225,14 @@ foreach ($Artifact in $Artifacts) {
 }
 
 $Manifest = [ordered]@{
-    product = "Codex Account Manager Next"
+    product = "AiGoodBro"
     version = $Version
     target = "windows-x86_64"
     installers = @($Artifacts.Name)
     generated_utc = [DateTime]::UtcNow.ToString("o")
     token_monitor_manifest_sha256 = $env:AIGOODBRO_TOKEN_MONITOR_RESOURCE_SHA256
+    companion_hub_manifest_sha256 = $HubManifestHash
+    provider_pool_manifest_sha256 = $ProviderPoolManifestHash
 }
 [System.IO.File]::WriteAllText(
     (Join-Path $OutputDirectory "manifest.json"),
@@ -203,7 +240,7 @@ $Manifest = [ordered]@{
     $Utf8NoBom
 )
 
-Write-Host "Windows release artifacts verified for Codex Account Manager Next $Version"
+Write-Host "Windows release artifacts verified for AiGoodBro $Version"
 } finally {
     [Environment]::SetEnvironmentVariable('AIGOODBRO_TOKEN_MONITOR_RESOURCE_SHA256', $PreviousStatisticsPin, 'Process')
 }

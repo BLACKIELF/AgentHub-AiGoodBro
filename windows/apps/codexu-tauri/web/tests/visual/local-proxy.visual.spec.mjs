@@ -7,7 +7,7 @@ async function proxyPage(page, { language = 'en', theme = 'dark' } = {}) {
   await installTauriStub(page, { settings: { ...SYNTHETIC_SETTINGS, language, theme }, dashboard: SYNTHETIC_DASHBOARD }, () => {
     const original = window.__TAURI_INTERNALS__.invoke;
     const now = Date.now() / 1000;
-    window.proxyPrefs = { schemaVersion: 1, isEnabled: false, automaticRecoveryEnabled: false, order: ['b', 'a', 'c'], enabledIds: ['a', 'b'], knownIds: ['a', 'b', 'c'], priorityIds: [], lastIds: [], lastOverrides: {}, creditFallback: false, creditPrimaryFloor: 2000, creditSecondaryFloor: 1500, accountPolicies: { a: { fiveHourUsedLimit: 80, allowsCredits: true, creditPrimaryFloor: null, creditSecondaryFloor: null } }, resetStopRules: { a: { identityHash: '0'.repeat(64), armedAt: now - 10, pausedAt: null, previousResetAt: null } }, listenPort: 18080, clientKeyMode: 'persistent', desktopFallback: false, networkProxy: '', egress: { enabled: false, mihomoApi: '', group: '', whitelist: [] } };
+    window.proxyPrefs = { schemaVersion: 1, isEnabled: false, automaticRecoveryEnabled: false, order: ['b', 'a', 'c'], enabledIds: ['a', 'b'], knownIds: ['a', 'b', 'c'], priorityIds: [], lastIds: [], lastOverrides: {}, creditFallback: false, creditPrimaryFloor: 2000, creditSecondaryFloor: 1500, accountPolicies: { a: { fiveHourUsedLimit: 80, sevenDayUsedLimit: 100, allowsCredits: true, creditPrimaryFloor: null, creditSecondaryFloor: null } }, resetStopRules: { a: { identityHash: '0'.repeat(64), armedAt: now - 10, pausedAt: null, previousResetAt: null } }, listenPort: 18080, clientKeyMode: 'persistent', desktopFallback: false, networkProxy: '', egress: { enabled: false, mihomoApi: '', group: '', whitelist: [] } };
     window.proxyState = { phase: 'stopped', port: null, issue: null, accounts: { a: { state: 'ready', cooldownUntil: null, cooldownKind: null, probeState: null }, b: { state: 'future_unknown_state', cooldownUntil: null, cooldownKind: null, probeState: null }, c: { state: 'quota_unknown', cooldownUntil: null, cooldownKind: null, probeState: null } }, lastEventAt: now, egress: null };
     window.proxyCatalog = [
       { id: 'a', label: 'Synthetic Plus A', planType: 'plus', quota: { fiveHourUsedPercent: 29, fiveHourResetsAt: now + 3600, sevenDayUsedPercent: 63, sevenDayResetsAt: now + 86400, monthlyUsedPercent: null, monthlyResetsAt: null, observedAt: now, creditBalancePoints: '2400' }, availability: 'available', reasonCode: null },
@@ -34,9 +34,13 @@ async function proxyPage(page, { language = 'en', theme = 'dark' } = {}) {
         if (window.holdProxySave) return new Promise(resolve => { window.finishProxySave = () => { window.proxyPrefs = structuredClone(args.preferences); resolve(structuredClone(window.proxyPrefs)); }; });
         window.proxyPrefs = structuredClone(args.preferences); return structuredClone(window.proxyPrefs);
       }
-      if (command === 'set_local_proxy_plus_five_hour_used_limit') {
+      if (command === 'set_local_proxy_shared_quota_used_limit') {
         window.proxyWrites.push({ command, limit: args.limit });
-        for (const a of window.proxyCatalog.filter(a => a.planType === 'plus')) window.proxyPrefs.accountPolicies[a.id] = { fiveHourUsedLimit: args.limit, allowsCredits: true, creditPrimaryFloor: null, creditSecondaryFloor: null };
+        if (window.failProxySave) throw 'save_failed';
+        for (const a of window.proxyCatalog.filter(a => ['plus', 'pro', 'prolite'].includes(a.planType))) {
+          const prior = window.proxyPrefs.accountPolicies[a.id] ?? { fiveHourUsedLimit: 100, sevenDayUsedLimit: 100, allowsCredits: true, creditPrimaryFloor: null, creditSecondaryFloor: null };
+          window.proxyPrefs.accountPolicies[a.id] = { ...prior, ...(a.planType === 'plus' ? { fiveHourUsedLimit: args.limit } : { sevenDayUsedLimit: args.limit }) };
+        }
         return structuredClone(window.proxyPrefs);
       }
       if (command === 'start_local_proxy' || command === 'stop_local_proxy') {
@@ -106,41 +110,133 @@ test('participation never reorders cards; Pro last-use is cancellable and exclud
   expect(await panel.locator('.proxy-account').evaluateAll(rows => rows.map(row => row.dataset.testid))).toEqual(['proxy-account-a', 'proxy-account-b', 'proxy-account-c']);
 });
 
+test('native hot enrollment refreshes participation without restarting and preserves other opt-outs', async ({ page }) => {
+  const panel = await proxyPage(page);
+  const c = panel.getByTestId('proxy-account-c');
+  await panel.getByRole('button', { name: 'Start', exact: true }).click();
+  await expect(panel).toHaveAttribute('data-proxy-phase', 'running');
+  await expect(c.getByRole('button', { name: 'Disabled', exact: true })).toBeVisible();
+  await page.evaluate(() => {
+    window.proxyPrefs.enabledIds = ['a', 'c'];
+    window.proxyState.accounts.c = { state: 'quota_unknown', cooldownUntil: null, cooldownKind: null, probeState: null };
+  });
+  await expect(c.getByRole('button', { name: 'Enabled', exact: true })).toBeVisible();
+  await expect(panel.getByTestId('proxy-account-b').getByRole('button', { name: 'Disabled', exact: true })).toBeVisible();
+  await expect(panel).toHaveAttribute('data-proxy-phase', 'running');
+  expect(await page.evaluate(() => window.proxyWrites.filter(v => v.command === 'stop_local_proxy').length)).toBe(0);
+  expect(await page.evaluate(() => window.proxyWrites.filter(v => v.command === 'start_local_proxy').length)).toBe(1);
+});
+
 test('a failed rule save keeps the draft; only a successful reply changes the committed limit', async ({ page }) => {
   const panel = await proxyPage(page);
   const a = panel.getByTestId('proxy-account-a');
   await a.locator('.proxy-rule-editor > summary').click();
-  await a.getByLabel('5h used limit %', { exact: true }).fill('25');
+  await a.getByLabel('5h remaining quota %', { exact: true }).fill('25');
   await page.evaluate(() => { window.failProxySave = true; });
   await a.getByRole('button', { name: 'Save rules', exact: true }).click();
   await expect(a).toContainText('Saving failed. The draft has been kept.');
-  await expect(a.locator('.proxy-rule-editor > summary')).toContainText('Saved limit 80%');
-  await expect(a.getByLabel('5h used limit %', { exact: true })).toHaveValue('25');
+  await expect(a.locator('.proxy-rule-editor > summary')).toContainText('Reserve 20%');
+  await expect(a.getByLabel('5h remaining quota %', { exact: true })).toHaveValue('25');
   await expect(a).not.toContainText('Rules saved.');
+  expect(await page.evaluate(() => window.proxyPrefs.accountPolicies.a.fiveHourUsedLimit)).toBe(80);
   await expect(a).toHaveScreenshot('local-proxy-rule-failed.png');
   await page.evaluate(() => { window.failProxySave = false; });
   await panel.getByTestId('proxy-account-c').getByRole('button', { name: 'Disabled', exact: true }).click();
-  await expect(a.getByLabel('5h used limit %', { exact: true })).toHaveValue('25');
-  await expect(a.locator('.proxy-rule-editor > summary')).toContainText('Saved limit 80%');
+  await expect(a.getByLabel('5h remaining quota %', { exact: true })).toHaveValue('25');
+  await expect(a.locator('.proxy-rule-editor > summary')).toContainText('Reserve 20%');
   await page.evaluate(() => { window.failProxySave = false; window.holdProxySave = true; });
   await a.getByRole('button', { name: 'Save rules', exact: true }).click();
-  await expect(a.getByLabel('5h used limit %', { exact: true })).toBeDisabled();
-  await expect(a.locator('.proxy-rule-editor > summary')).toContainText('Saved limit 80%');
+  await expect(a.getByLabel('5h remaining quota %', { exact: true })).toBeDisabled();
+  await expect(a.locator('.proxy-rule-editor > summary')).toContainText('Reserve 20%');
   await page.evaluate(() => window.finishProxySave());
-  await expect(a.locator('.proxy-rule-editor > summary')).toContainText('Saved limit 25%');
+  await expect(a.locator('.proxy-rule-editor > summary')).toContainText('Reserve 25%');
   await expect(a).toContainText('Rules saved.');
+  expect(await page.evaluate(() => window.proxyPrefs.accountPolicies.a.fiveHourUsedLimit)).toBe(75);
   expect(await page.evaluate(() => window.proxyPrefs.resetStopRules.a.identityHash)).toBe('0'.repeat(64));
 });
 
-test('Plus shared limit uses the native bulk command and leaves other plans unchanged', async ({ page }) => {
+test('shared reserve updates Plus and Pro target windows atomically and reports mixed values', async ({ page }) => {
   const panel = await proxyPage(page);
-  await panel.getByLabel('Shared Plus 5h used limit %', { exact: true }).fill('65');
-  await panel.getByRole('button', { name: 'Apply to Plus' }).click();
-  await expect(panel).toContainText('The Plus 5h used limit is saved.');
-  await expect(panel.getByTestId('proxy-account-a')).toContainText('Saved limit 65%');
-  await expect(panel.getByTestId('proxy-account-c')).toContainText('Saved limit 65%');
-  await expect(panel.getByTestId('proxy-account-b')).toContainText('Saved limit 100%');
-  expect(await page.evaluate(() => window.proxyWrites)).toEqual([{ command: 'set_local_proxy_plus_five_hour_used_limit', limit: 65 }]);
+  const input = panel.getByLabel('Shared remaining quota % (Plus 5h / Pro 7d)', { exact: true });
+  await expect(input).toHaveValue('');
+  await expect(input).toHaveAttribute('placeholder', 'Mixed');
+  await page.evaluate(() => {
+    window.proxyPrefs.accountPolicies.b = { fiveHourUsedLimit: 13.25, sevenDayUsedLimit: 100, allowsCredits: false, creditPrimaryFloor: 4000, creditSecondaryFloor: 3000 };
+    window.proxyCatalog.push({ ...window.proxyCatalog[1], id: 'unknown', label: 'Synthetic unknown plan', planType: null });
+    window.proxyPrefs.accountPolicies.unknown = { fiveHourUsedLimit: 11, sevenDayUsedLimit: 22, allowsCredits: false, creditPrimaryFloor: null, creditSecondaryFloor: null };
+  });
+  await panel.getByRole('button', { name: 'Refresh proxy status', exact: true }).click();
+  const before = await page.evaluate(() => structuredClone(window.proxyPrefs));
+  await input.fill('20');
+  await page.evaluate(() => { window.failProxySave = true; });
+  await panel.getByRole('button', { name: 'Apply to Plus and Pro' }).click();
+  await expect(panel).toContainText('Saving failed.');
+  expect(await page.evaluate(() => window.proxyPrefs)).toEqual(before);
+  await expect(input).toHaveValue('20');
+  await page.evaluate(() => { window.failProxySave = false; });
+  await panel.getByRole('button', { name: 'Apply to Plus and Pro' }).click();
+  await expect(panel).toContainText('The Plus 5h and Pro 7d quota reserves are saved.');
+  await expect(input).toHaveValue('20');
+  await expect(input).toHaveAttribute('placeholder', '0–100');
+  await expect(panel.getByTestId('proxy-account-a')).toContainText('5h Reserve 20%');
+  await expect(panel.getByTestId('proxy-account-b')).toContainText('7d Reserve 20%');
+  const after = await page.evaluate(() => window.proxyPrefs);
+  expect(after.accountPolicies.a).toEqual({ ...before.accountPolicies.a, fiveHourUsedLimit: 80 });
+  expect(after.accountPolicies.b).toEqual({ ...before.accountPolicies.b, sevenDayUsedLimit: 80 });
+  expect(after.accountPolicies.unknown).toEqual(before.accountPolicies.unknown);
+  expect({ ...after, accountPolicies: before.accountPolicies }).toEqual(before);
+  expect(await page.evaluate(() => window.proxyWrites.map(write => ({ command: write.command, limit: write.limit })))).toEqual([{ command: 'set_local_proxy_shared_quota_used_limit', limit: 80 }, { command: 'set_local_proxy_shared_quota_used_limit', limit: 80 }]);
+});
+
+test('Pro seven-day remaining reserve converts once and preserves the five-hour setting', async ({ page }) => {
+  const panel = await proxyPage(page);
+  const b = panel.getByTestId('proxy-account-b');
+  await page.evaluate(() => { window.proxyPrefs.accountPolicies.b = { fiveHourUsedLimit: 37.5, sevenDayUsedLimit: 100, allowsCredits: true, creditPrimaryFloor: null, creditSecondaryFloor: null }; });
+  await panel.getByRole('button', { name: 'Refresh proxy status', exact: true }).click();
+  await b.locator('.proxy-rule-editor > summary').click();
+  await expect(b.getByLabel('7d remaining quota %', { exact: true })).toHaveValue('0');
+  await expect(b.getByLabel('5h remaining quota %', { exact: true })).toHaveCount(0);
+  await b.getByLabel('7d remaining quota %', { exact: true }).fill('20');
+  await b.getByRole('button', { name: 'Save rules', exact: true }).click();
+  await expect(b.locator('.proxy-rule-editor > summary')).toContainText('7d Reserve 20%');
+  expect(await page.evaluate(() => window.proxyPrefs.accountPolicies.b)).toEqual({ fiveHourUsedLimit: 37.5, sevenDayUsedLimit: 80, allowsCredits: true, creditPrimaryFloor: null, creditSecondaryFloor: null });
+});
+
+test('legacy decimal cutoff stays exact when only credits change', async ({ page }) => {
+  const panel = await proxyPage(page);
+  const a = panel.getByTestId('proxy-account-a');
+  for (const prior of [0.1, 80.1, 37.1234567890123]) {
+    await page.evaluate(prior => { window.proxyPrefs.accountPolicies.a = { fiveHourUsedLimit: prior, sevenDayUsedLimit: 73.25, allowsCredits: true, creditPrimaryFloor: null, creditSecondaryFloor: null }; }, prior);
+    await panel.getByRole('button', { name: 'Refresh proxy status', exact: true }).click();
+    await a.locator('.proxy-rule-editor').evaluate(node => { node.open = true; });
+    await expect(a.getByRole('button', { name: 'Save rules', exact: true })).toBeDisabled();
+    await a.getByRole('checkbox', { name: 'Allow credits', exact: true }).uncheck();
+    await a.getByRole('button', { name: 'Save rules', exact: true }).click();
+    await expect(a).toContainText('Rules saved.');
+    expect(await page.evaluate(() => window.proxyPrefs.accountPolicies.a.fiveHourUsedLimit)).toBe(prior);
+    expect(await page.evaluate(() => window.proxyPrefs.accountPolicies.a.sevenDayUsedLimit)).toBe(73.25);
+  }
+});
+
+test('plan refresh discards the old quota-window draft while preserving credit edits', async ({ page }) => {
+  const panel = await proxyPage(page);
+  const a = panel.getByTestId('proxy-account-a');
+  await a.locator('.proxy-rule-editor > summary').click();
+  await a.getByLabel('5h remaining quota %', { exact: true }).fill('55');
+  await a.getByRole('checkbox', { name: 'Allow credits', exact: true }).uncheck();
+  await page.evaluate(() => { window.proxyCatalog[0].planType = 'pro'; });
+  await panel.getByRole('button', { name: 'Refresh proxy status', exact: true }).click();
+  await expect(a.getByLabel('7d remaining quota %', { exact: true })).toHaveValue('0');
+  await expect(a.getByRole('checkbox', { name: 'Allow credits', exact: true })).not.toBeChecked();
+  await a.getByRole('button', { name: 'Save rules', exact: true }).click();
+  expect(await page.evaluate(() => window.proxyPrefs.accountPolicies.a)).toEqual({ fiveHourUsedLimit: 80, sevenDayUsedLimit: 100, allowsCredits: false, creditPrimaryFloor: null, creditSecondaryFloor: null });
+  await a.getByLabel('7d remaining quota %', { exact: true }).fill('70');
+  await a.getByRole('checkbox', { name: 'Allow credits', exact: true }).check();
+  await page.evaluate(() => { window.proxyCatalog[0].planType = 'plus'; });
+  await panel.getByRole('button', { name: 'Refresh proxy status', exact: true }).click();
+  await expect(a.getByLabel('5h remaining quota %', { exact: true })).toHaveValue('20');
+  await a.getByRole('button', { name: 'Save rules', exact: true }).click();
+  expect(await page.evaluate(() => window.proxyPrefs.accountPolicies.a)).toEqual({ fiveHourUsedLimit: 80, sevenDayUsedLimit: 100, allowsCredits: true, creditPrimaryFloor: null, creditSecondaryFloor: null });
 });
 
 test('start, explicit copy, submitted self-check and stop follow real command results without exposing credentials', async ({ page }) => {

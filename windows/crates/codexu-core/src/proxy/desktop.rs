@@ -200,7 +200,9 @@ impl Accounts for ManagedAccounts {
         }
         #[cfg(not(windows))]
         let _ = app;
-        let (path, guard) = AccountManager::proxy_codex_executable(home)
+        let (path, guard) = self
+            .0
+            .proxy_codex_executable(home)
             .map_err(|_| ProxyFailure::DesktopUnavailable)?;
         require_official_publisher(&path)?;
         Ok(PinnedExecutable {

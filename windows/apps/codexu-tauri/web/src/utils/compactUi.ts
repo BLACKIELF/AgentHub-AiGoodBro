@@ -1,10 +1,12 @@
-export const compactSurfaces=['popover','edge_peek','edge_rail','edge_card'] as const;
+import {validAccountDisplayLabel} from './accountMetadata';
+export const compactSurfaces=['popover','edge_peek','edge_rail','edge_card','floating_bubble','bubble_editor'] as const;
 export type CompactSurface=typeof compactSurfaces[number];
 export type CompactShortcutStatus='unregistered'|'registered'|'occupied'|'failed'|'unavailable';
-export type CompactAction='reveal'|'collapse'|'pin'|'unpin'|'close'|'select_item'|'open_workspace'|'open_accounts'|'open_running_tasks'|'open_settings'|'open_proxy'|'drag'|'page_next'|'page_previous';
+export type CompactAction='reveal'|'collapse'|'pin'|'unpin'|'close'|'select_item'|'open_workspace'|'open_accounts'|'open_running_tasks'|'open_settings'|'open_proxy'|'drag'|'page_next'|'page_previous'|'edit_bubble';
 export type DockMetric='today'|'week'|'last7'|'last30'|'month'|'allTime'|'liveRate'|'sessions';
 export interface DockItem{id:string;type:'limit'|'stat'|'proxy';providerId:string|null;accountId:string|null;metric:DockMetric|null;hiddenAccountIds:string[];showUsage:boolean;showSessions:boolean;accountMode:'active'|'lowest';runningOnly:boolean;groupBy:'none'|'client';cellDetail:'clients'|'rate'}
-export interface CompactPreferences{enabled:boolean;mode:'autoHide'|'always';side:'left'|'right';offset:number;displayId:string|null;items:DockItem[]|null;hapticEnabled:boolean;warnColors:boolean;quotaStyle:'ring'|'fish';refreshEnabled:boolean;runningIndicatorEnabled:boolean;size:'small'|'medium'|'large'|'custom';customScale:number}
+export interface BubblePreferences{enabled:boolean;showIcon:boolean;showQuotaBar:boolean;showPercent:boolean;showResetTime:boolean;showCost:boolean;customText:string;fontStyle:'menubar'|'normal'|'condensed'|'compactMono';selectedProviderId:string|null;selectedProfileId:string|null;selectedMetricId:string|null;valueMode:'remaining'|'used'}
+export interface CompactPreferences{bubble:BubblePreferences;enabled:boolean;mode:'autoHide'|'always';side:'left'|'right';offset:number;displayId:string|null;items:DockItem[]|null;hapticEnabled:boolean;warnColors:boolean;quotaStyle:'ring'|'fish';refreshEnabled:boolean;runningIndicatorEnabled:boolean;size:'small'|'medium'|'large'|'custom';customScale:number}
 export interface CompactQuotaWindow{id:string;label:string;usedPercent:number|null;resetsAt:number|null}
 export interface CompactAccount{id:string;providerId:string;label:string;loggedIn:boolean;active:boolean|null;observedAt:number|null;available:boolean;reasonCode:string|null;planType:string|null;windows:CompactQuotaWindow[];creditsUsd:number|null;creditPoints:string|null;resetCards:number|null}
 export interface CompactState{revision:number;windows:Array<{surface:CompactSurface;visible:boolean;pinned:boolean;collapsed:boolean}>;selectedItemId:string|null;resolvedItems:DockItem[];pageIndex:number;pageCount:number;displayAvailable:boolean;side:'left'|'right';scale:number;viewportHeight:number;preferences:CompactPreferences;displays:Array<{id:string;label:string;isPrimary:boolean;available:boolean}>;failureCode:string|null;shortcutStatus:CompactShortcutStatus;cachedProjection:{accounts:CompactAccount[];proxy:{phase:string;egressState:string|null;activeRequests:number|null;observedAt:number|null}|null;sessionCount:number|null}}
@@ -30,14 +32,14 @@ function item(raw:unknown):DockItem{
 }
 function items(raw:unknown):DockItem[]{const values=array(raw,24).map(item);if(new Set(values.map(value=>value.id)).size!==values.length)bad();return values;}
 export function parseCompactPreferences(raw:unknown):CompactPreferences{
- const v=object(raw);fields(v,['enabled','mode','side','offset','displayId','items','hapticEnabled','warnColors','quotaStyle','refreshEnabled','runningIndicatorEnabled','size','customScale']);bool(v.enabled);choice(v.mode,['autoHide','always']);choice(v.side,['left','right']);if(finite(v.offset)>1)bad();optionalId(v.displayId);if(v.items!==null)items(v.items);for(const key of ['hapticEnabled','warnColors','refreshEnabled','runningIndicatorEnabled'])bool(v[key]);choice(v.quotaStyle,['ring','fish']);choice(v.size,['small','medium','large','custom']);const scale=finite(v.customScale);if(scale<.75||scale>1.5||Math.abs(scale*20-Math.round(scale*20))>.000001)bad();return v as unknown as CompactPreferences;
+ const v=object(raw);fields(v,['bubble','enabled','mode','side','offset','displayId','items','hapticEnabled','warnColors','quotaStyle','refreshEnabled','runningIndicatorEnabled','size','customScale']);parseBubblePreferences(v.bubble);bool(v.enabled);choice(v.mode,['autoHide','always']);choice(v.side,['left','right']);if(finite(v.offset)>1)bad();optionalId(v.displayId);if(v.items!==null)items(v.items);for(const key of ['hapticEnabled','warnColors','refreshEnabled','runningIndicatorEnabled'])bool(v[key]);choice(v.quotaStyle,['ring','fish']);choice(v.size,['small','medium','large','custom']);const scale=finite(v.customScale);if(scale<.75||scale>1.5||Math.abs(scale*20-Math.round(scale*20))>.000001)bad();return v as unknown as CompactPreferences;
 }
 export function parseCompactState(raw:unknown):CompactState{
- const v=object(raw);fields(v,['revision','windows','selectedItemId','resolvedItems','pageIndex','pageCount','displayAvailable','side','scale','viewportHeight','preferences','displays','failureCode','shortcutStatus','cachedProjection']);count(v.revision);choice(v.shortcutStatus,['unregistered','registered','occupied','failed','unavailable']);const windows=array(v.windows,4);if(windows.length!==4||new Set(windows.map(raw=>object(raw).surface)).size!==4)bad();for(const raw of windows){const w=object(raw);fields(w,['surface','visible','pinned','collapsed']);choice(w.surface,compactSurfaces);bool(w.visible);bool(w.pinned);bool(w.collapsed);}
+ const v=object(raw);fields(v,['revision','windows','selectedItemId','resolvedItems','pageIndex','pageCount','displayAvailable','side','scale','viewportHeight','preferences','displays','failureCode','shortcutStatus','cachedProjection']);count(v.revision);choice(v.shortcutStatus,['unregistered','registered','occupied','failed','unavailable']);const windows=array(v.windows,6);if(windows.length!==6||new Set(windows.map(raw=>object(raw).surface)).size!==6)bad();for(const raw of windows){const w=object(raw);fields(w,['surface','visible','pinned','collapsed']);choice(w.surface,compactSurfaces);bool(w.visible);bool(w.pinned);bool(w.collapsed);}
  optionalId(v.selectedItemId);items(v.resolvedItems);count(v.pageIndex);if(count(v.pageCount)<1||(v.pageIndex as number)>=(v.pageCount as number))bad();bool(v.displayAvailable);choice(v.side,['left','right']);const scale=finite(v.scale);if(scale<.75||scale>1.5)bad();finite(v.viewportHeight);parseCompactPreferences(v.preferences);code(v.failureCode);
  for(const raw of array(v.displays,64)){const d=object(raw);fields(d,['id','label','isPrimary','available']);id(d.id);string(d.label);bool(d.isPrimary);bool(d.available);}
  const projection=object(v.cachedProjection);fields(projection,['accounts','proxy','sessionCount']);const accounts=array(projection.accounts,256);if(new Set(accounts.map(raw=>object(raw).id)).size!==accounts.length)bad();
- for(const raw of accounts){const a=object(raw);fields(a,['id','providerId','label','loggedIn','active','observedAt','available','reasonCode','planType','windows','creditsUsd','creditPoints','resetCards']);id(a.id);id(a.providerId);string(a.label);bool(a.loggedIn);if(a.active!==null)bool(a.active);optionalNumber(a.observedAt);bool(a.available);code(a.reasonCode);if(a.planType!==null)string(a.planType);optionalNumber(a.creditsUsd);if(a.creditPoints!==null&&!/^[0-9.]{1,64}$/.test(string(a.creditPoints,64)))bad();if(a.resetCards!==null)count(a.resetCards);for(const raw of array(a.windows,64)){const w=object(raw);fields(w,['id','label','usedPercent','resetsAt']);string(w.id);string(w.label);if(w.usedPercent!==null&&finite(w.usedPercent)>100)bad();optionalNumber(w.resetsAt);}}
+ for(const raw of accounts){const a=object(raw);fields(a,['id','providerId','label','loggedIn','active','observedAt','available','reasonCode','planType','windows','creditsUsd','creditPoints','resetCards']);id(a.id);id(a.providerId);if(!validAccountDisplayLabel(a.label))string(a.label);bool(a.loggedIn);if(a.active!==null)bool(a.active);optionalNumber(a.observedAt);bool(a.available);code(a.reasonCode);if(a.planType!==null)string(a.planType);optionalNumber(a.creditsUsd);if(a.creditPoints!==null&&!/^[0-9.]{1,64}$/.test(string(a.creditPoints,64)))bad();if(a.resetCards!==null)count(a.resetCards);for(const raw of array(a.windows,64)){const w=object(raw);fields(w,['id','label','usedPercent','resetsAt']);string(w.id);string(w.label);if(w.usedPercent!==null&&finite(w.usedPercent)>100)bad();optionalNumber(w.resetsAt);}}
  if(projection.proxy!==null){const p=object(projection.proxy);fields(p,['phase','egressState','activeRequests','observedAt']);if(code(p.phase)===null)bad();code(p.egressState);if(p.activeRequests!==null)count(p.activeRequests);optionalNumber(p.observedAt);}if(projection.sessionCount!==null)count(projection.sessionCount);
  return v as unknown as CompactState;
 }
@@ -74,4 +76,35 @@ export function expireCompactProjection(state:CompactState,now=Date.now()):Compa
 export function compactProjectionDeadline(state:CompactState,now=Date.now()):number|null{
  const deadlines=state.cachedProjection.accounts.filter(account=>account.available&&account.observedAt!==null).map(account=>{const times=account.windows.flatMap(window=>window.resetsAt===null?[]:[window.resetsAt]);return Math.min(account.observedAt!+DISPLAY_FRESH_MS,...(times.length?[Math.max(...times)]:[]));}).filter(at=>at>now);
  return deadlines.length?Math.min(...deadlines):null;
+}
+
+export function parseBubblePreferences(raw:unknown):BubblePreferences{
+ const v=object(raw);fields(v,['enabled','showIcon','showQuotaBar','showPercent','showResetTime','showCost','customText','fontStyle','selectedProviderId','selectedProfileId','selectedMetricId','valueMode']);
+ for(const key of ['enabled','showIcon','showQuotaBar','showPercent','showResetTime','showCost'])bool(v[key]);
+ if(typeof v.customText!=='string'||[...v.customText].length>80||/[\x00-\x1f\x7f-\x9f]/.test(v.customText))bad();
+ choice(v.fontStyle,['menubar','normal','condensed','compactMono']);choice(v.valueMode,['remaining','used']);
+ for(const key of ['selectedProviderId','selectedProfileId','selectedMetricId'])optionalId(v[key]);return v as unknown as BubblePreferences;
+}
+export function bubbleMetrics(account:CompactAccount):CompactQuotaWindow[]{
+ const pro=canonicalCompactProvider(account.providerId)==='codex'&&['pro','prolite'].includes(account.planType?.toLowerCase().replace(/[-_]/g,'')??'');
+ const windows=pro?account.windows.filter(window=>['seven-day','seven_day','sevenDay'].includes(window.id)):account.windows;
+ return account.creditsUsd===null?windows:[...windows,{id:'balance',label:'USD',usedPercent:null,resetsAt:null}];
+}
+export function resolveBubble(preferences:BubblePreferences,accounts:CompactAccount[],now=Date.now()){
+ const matches=accounts.filter(account=>account.loggedIn&&canonicalCompactProvider(account.providerId)===canonicalCompactProvider(preferences.selectedProviderId??'')&&account.id===preferences.selectedProfileId);
+ const account=matches.length===1?matches[0]:undefined;
+ const pro=account&&canonicalCompactProvider(account.providerId)==='codex'&&['pro','prolite'].includes(account.planType?.toLowerCase().replace(/[-_]/g,'')??'');
+ const metrics=account?bubbleMetrics(account):[],legacy=pro&&['five-hour','five_hour','fiveHour'].includes(preferences.selectedMetricId??'');
+ const windows=metrics.filter(window=>legacy?['seven-day','seven_day','sevenDay'].includes(window.id):window.id===preferences.selectedMetricId),metric=windows.length===1?windows[0]:undefined;
+ const expired=metric?.resetsAt!==null&&metric?.resetsAt!==undefined&&metric.resetsAt<=now;
+ const unavailable=expired&&account&&canonicalCompactProvider(account.providerId)==='grok';
+ const percent=unavailable||metric?.usedPercent===null||metric?.usedPercent===undefined?null:preferences.valueMode==='used'?metric.usedPercent:100-metric.usedPercent;
+ const valueLabel=metric?.id==='balance'&&account?.creditsUsd!==null&&account?.creditsUsd!==undefined?account.creditsUsd.toFixed(2)+' USD':null;
+ return {account,metric,percent,valueLabel,stale:!!account&&(!account.available||expired)};
+}
+
+/** Merge only explicit edits after the user resolves a cross-window conflict. */
+export function mergeBubbleDraft(base:BubblePreferences,draft:BubblePreferences,latest:BubblePreferences):BubblePreferences{
+ const changes=Object.fromEntries(Object.entries(draft).filter(([key,value])=>value!==base[key as keyof BubblePreferences]));
+ return parseBubblePreferences({...latest,...changes});
 }

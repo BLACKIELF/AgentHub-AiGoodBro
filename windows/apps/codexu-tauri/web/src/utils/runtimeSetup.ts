@@ -1,0 +1,6 @@
+export interface RuntimeComponent {state:'ready'|'missing'|'unavailable';version:string|null;selected:boolean;issueCode:string|null}
+export interface RuntimeSetup {codex:RuntimeComponent;hubVerified:boolean}
+function fail():never{throw Error('runtime_response_invalid');}
+function obj(raw:unknown):Record<string,unknown>{if(!raw||typeof raw!=='object'||Array.isArray(raw))fail();return raw as Record<string,unknown>;}
+export function parseRuntimeComponent(raw:unknown):RuntimeComponent {const v=obj(raw);if(Object.keys(v).sort().join(',')!=='issueCode,selected,state,version'||!['ready','missing','unavailable'].includes(String(v.state))||typeof v.selected!=='boolean'||!(v.version===null||typeof v.version==='string'&&/^[A-Za-z0-9.+-]{1,64}$/.test(v.version))||!(v.issueCode===null||typeof v.issueCode==='string'&&/^[a-z][a-z0-9_]{0,63}$/.test(v.issueCode)))fail();if(v.state==='ready'&&(v.version===null||v.issueCode!==null)||v.state!=='ready'&&(v.version!==null||v.issueCode===null))fail();return v as unknown as RuntimeComponent;}
+export function parseRuntimeSetup(raw:unknown):RuntimeSetup{const v=obj(raw);if(Object.keys(v).sort().join(',')!=='codex,hubVerified'||typeof v.hubVerified!=='boolean')fail();return{codex:parseRuntimeComponent(v.codex),hubVerified:v.hubVerified};}

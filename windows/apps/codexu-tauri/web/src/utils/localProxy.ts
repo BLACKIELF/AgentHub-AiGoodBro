@@ -1,5 +1,6 @@
 export interface ProxyAccountPolicy {
   fiveHourUsedLimit: number;
+  sevenDayUsedLimit: number;
   allowsCredits: boolean;
   creditPrimaryFloor: number | null;
   creditSecondaryFloor: number | null;
@@ -83,10 +84,13 @@ const keyed = <T>(value: unknown, parse: (entry: unknown) => T): Record<string, 
 export function parseProxyPolicy(raw: unknown): ProxyAccountPolicy {
   const value = object(raw);
   const limit = finite(value.fiveHourUsedLimit);
+  // Missing in pre-1030 preferences: no new reserve, same actual cutoff.
+  const sevenDayLimit = value.sevenDayUsedLimit === undefined ? 100 : finite(value.sevenDayUsedLimit);
   const primary = value.creditPrimaryFloor === null ? null : integer(value.creditPrimaryFloor);
   const secondary = value.creditSecondaryFloor === null ? null : integer(value.creditSecondaryFloor);
   if (limit < 0 || limit > 100 || (primary === null) !== (secondary === null) || (primary !== null && secondary !== null && primary <= secondary)) return fail();
-  return { fiveHourUsedLimit: limit, allowsCredits: bool(value.allowsCredits), creditPrimaryFloor: primary, creditSecondaryFloor: secondary };
+  if (sevenDayLimit < 0 || sevenDayLimit > 100) return fail();
+  return { fiveHourUsedLimit: limit, sevenDayUsedLimit: sevenDayLimit, allowsCredits: bool(value.allowsCredits), creditPrimaryFloor: primary, creditSecondaryFloor: secondary };
 }
 
 export function validNetworkProxy(value: string): boolean {
@@ -178,7 +182,24 @@ export function parseProxyAccounts(raw: unknown): ProxyAccount[] {
 }
 
 export function proxyAccountPolicy(preferences: ProxyPreferences, accountId: string): ProxyAccountPolicy {
-  return preferences.accountPolicies[accountId] ?? { fiveHourUsedLimit: 100, allowsCredits: true, creditPrimaryFloor: null, creditSecondaryFloor: null };
+  return preferences.accountPolicies[accountId] ?? { fiveHourUsedLimit: 100, sevenDayUsedLimit: 100, allowsCredits: true, creditPrimaryFloor: null, creditSecondaryFloor: null };
+}
+export function remainingQuotaPercent(usedLimit: number): number {
+  return Number((100 - usedLimit).toFixed(10));
+}
+export function usedQuotaLimit(remainingPercent: number): number {
+  if (!Number.isFinite(remainingPercent) || remainingPercent < 0 || remainingPercent > 100) return fail();
+  return Number((100 - remainingPercent).toFixed(10));
+}
+export function sharedQuotaReserve(preferences: ProxyPreferences, accounts: ProxyAccount[]): { count: number; remaining: number | null; mixed: boolean } {
+  const limits = accounts.flatMap(account => {
+    const policy = proxyAccountPolicy(preferences, account.id);
+    if (account.planType === 'plus') return [policy.fiveHourUsedLimit];
+    if (account.planType === 'pro' || account.planType === 'prolite') return [policy.sevenDayUsedLimit];
+    return [];
+  });
+  const mixed = limits.some(limit => limit !== limits[0]);
+  return { count: limits.length, remaining: !limits.length || mixed ? null : remainingQuotaPercent(limits[0]), mixed };
 }
 
 // Membership never changes display order. Last-use overrides also let Pro opt out.

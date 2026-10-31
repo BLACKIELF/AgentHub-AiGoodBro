@@ -23,6 +23,30 @@ Assert-True ($null -ne $driver) 'Production native driver is missing.'
 Invoke-Expression $driver.Extent.Text
 Initialize-NativeVisualDriver
 
+# UIA screen bounds must stay fully inside the owned renderer. Negative screen
+# coordinates are valid on a secondary monitor; non-finite/outside bounds are not.
+$point = [NativeVisualCaptureDriver]::GetBoundedControlClickPoint(-200, 50, 100, 50, -300, 0, 600, 400)
+Assert-True ($point[0] -eq -150 -and $point[1] -eq 75) 'Owned control center was mapped incorrectly.'
+$invalidBounds = @(
+  @{ left = [double]::NaN; top = 50; width = 100; height = 50 },
+  @{ left = -200; top = [double]::PositiveInfinity; width = 100; height = 50 },
+  @{ left = -200; top = 50; width = 0; height = 50 },
+  @{ left = -200; top = 50; width = 100; height = -1 },
+  @{ left = -301; top = 50; width = 100; height = 50 },
+  @{ left = -200; top = -1; width = 100; height = 50 },
+  @{ left = 250; top = 50; width = 100; height = 50 },
+  @{ left = -200; top = 390; width = 100; height = 50 }
+)
+foreach ($bounds in $invalidBounds) {
+  $rejected = $false
+  try {
+    [NativeVisualCaptureDriver]::GetBoundedControlClickPoint(
+      $bounds.left, $bounds.top, $bounds.width, $bounds.height, -300, 0, 600, 400
+    ) | Out-Null
+  } catch { $rejected = $_.Exception.ToString().Contains('Control bounds must') }
+  Assert-True $rejected 'Unsafe UIA bounds must fail before any renderer input.'
+}
+
 function Test-Candidate {
   param([uint32] $ProcessId, [bool] $Visible, [IntPtr] $Owner, [string] $ClassName)
   return [NativeVisualCaptureDriver]::IsTaskMainWindowCandidate(
