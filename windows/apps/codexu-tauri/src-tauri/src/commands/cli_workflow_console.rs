@@ -630,7 +630,10 @@ mod native {
         use std::{
             fs, io,
             path::{Path, PathBuf},
-            sync::{Arc, Mutex},
+            sync::{
+                atomic::{AtomicBool, Ordering},
+                Arc, Mutex,
+            },
             time::{Duration, Instant},
         };
 
@@ -659,6 +662,13 @@ mod native {
             guard_held_after_stop: bool,
         }
 
+        struct ResourceDropSignal(Arc<AtomicBool>);
+        impl Drop for ResourceDropSignal {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Release);
+            }
+        }
+
         struct ProbeOwner {
             inner: OwnedConsole,
             child: Option<OwnedHandle>,
@@ -670,7 +680,13 @@ mod native {
         }
 
         fn writable_open_succeeds(path: &Path) -> bool {
-            fs::OpenOptions::new().write(true).open(path).is_ok()
+            writable_open(path).is_ok()
+        }
+
+        fn writable_open(path: &Path) -> io::Result<()> {
+            let file = fs::OpenOptions::new().write(true).open(path)?;
+            drop(file);
+            Ok(())
         }
 
         fn retain_unconfirmed_owner(owner: Box<dyn OwnedProcess>) {
@@ -859,16 +875,26 @@ mod native {
         #[tokio::test]
         async fn reader_uses_registered_no_window_job_and_retains_guard_until_empty(
         ) -> anyhow::Result<()> {
-            let executable = std::env::var_os("AIGB_WINDOWS_FAKECLI_PATH")
+            let source_executable = std::env::var_os("AIGB_WINDOWS_FAKECLI_PATH")
                 .map(PathBuf::from)
                 .ok_or_else(|| anyhow::anyhow!("AIGB_WINDOWS_FAKECLI_PATH is required"))?
                 .canonicalize()?;
-            anyhow::ensure!(executable.is_file(), "fake CLI executable does not exist");
             anyhow::ensure!(
-                writable_open_succeeds(&executable),
-                "test needs a writable build artifact for guard lock verification"
+                source_executable.is_file(),
+                "fake CLI executable does not exist"
             );
             let root = tempfile::tempdir()?;
+            let executable = root.path().join("windows_fake_cli.exe");
+            let source_bytes = fs::read(&source_executable)?;
+            let copied_bytes = fs::copy(&source_executable, &executable)?;
+            anyhow::ensure!(
+                copied_bytes == source_bytes.len() as u64 && fs::read(&executable)? == source_bytes,
+                "temporary fake CLI copy did not match its source bytes"
+            );
+            anyhow::ensure!(
+                writable_open_succeeds(&executable),
+                "test needs a writable temporary fake CLI copy for guard lock verification"
+            );
             let home = root.path().join("home");
             let workspace = root.path().join("workspace");
             let control_dir = root.path().join("control");
@@ -885,6 +911,8 @@ mod native {
             let launch_child_pid = child_pid_file.clone();
             let launch_domains = domains.clone();
             let launch_observations = observations.clone();
+            let resources_released = Arc::new(AtomicBool::new(false));
+            let launch_resources_released = resources_released.clone();
 
             let read = codexu_core::workflow_reader::read_evidence_with_owned_process(
                 &workspace,
@@ -905,7 +933,8 @@ mod native {
                         "--fixture-control-dir".into(),
                         launch_control.to_string_lossy().into_owned(),
                     ]);
-                    let resources: Arc<dyn Send + Sync> = Arc::new(());
+                    let resources: Arc<dyn Send + Sync> =
+                        Arc::new(ResourceDropSignal(launch_resources_released));
                     let inner = match OwnedConsole::start_registered_owned_with_window(
                         &launch_executable,
                         &launch_workspace,
@@ -982,6 +1011,10 @@ mod native {
                     return Err(error.into());
                 }
             };
+            anyhow::ensure!(
+                resources_released.load(Ordering::Acquire),
+                "owned executable resource Arc remained after the empty owner was dropped"
+            );
             anyhow::ensure!(evidence.models.len() == 1);
             anyhow::ensure!(evidence.models[0].id == "windows-fake-model");
             anyhow::ensure!(evidence.official_plan_type() == Some("fixture-plan"));
@@ -998,10 +1031,12 @@ mod native {
             anyhow::ensure!(observed.job_empty_after_stop);
             anyhow::ensure!(observed.guard_held_after_stop);
             drop(observed);
-            anyhow::ensure!(
-                writable_open_succeeds(&executable),
-                "executable guard remained held after the empty owner was dropped"
-            );
+            if let Err(error) = writable_open(&executable) {
+                return Err(anyhow::anyhow!(
+                    "executable guard remained held after the empty owner was dropped (raw OS error {:?}): {error}",
+                    error.raw_os_error()
+                ));
+            }
             Ok(())
         }
     }

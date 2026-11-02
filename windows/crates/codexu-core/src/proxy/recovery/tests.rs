@@ -24,11 +24,21 @@ struct TestProcessBirth {
 fn wait_file(path: &Path, child: &mut Child) {
     let until = Instant::now() + Duration::from_secs(8);
     while !path.exists() {
-        assert!(
-            child.try_wait().unwrap().is_none(),
-            "fixture owner exited before ready"
-        );
-        assert!(Instant::now() < until, "fixture owner readiness timeout");
+        let status = child.try_wait().unwrap();
+        let timed_out = Instant::now() >= until;
+        if status.is_some() || timed_out {
+            use std::io::Read;
+            let mut output = Vec::new();
+            if let Ok(file) = std::fs::File::open(path.with_file_name("fixture-output.log")) {
+                let _ = file.take(8192).read_to_end(&mut output);
+            }
+            eprintln!(
+                "recovery fixture readiness: exit={status:?} timeout={timed_out} output_prefix={}",
+                String::from_utf8_lossy(&output)
+            );
+        }
+        assert!(status.is_none(), "fixture owner exited before ready");
+        assert!(!timed_out, "fixture owner readiness timeout");
         thread::sleep(Duration::from_millis(20));
     }
 }
@@ -40,7 +50,7 @@ impl FixtureOwner {
     fn spawn(root: &Path, mode: &str) -> Self {
         std::fs::create_dir_all(root).unwrap();
         let log = std::fs::File::create(root.join("fixture-output.log")).unwrap();
-        let mut child = Command::new(std::env::current_exe().unwrap())
+        let child = Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
                 "proxy::recovery::tests::recovery_owner_fixture",
@@ -55,11 +65,14 @@ impl FixtureOwner {
             .stderr(Stdio::from(log))
             .spawn()
             .unwrap();
-        wait_file(&root.join("owner-ready"), &mut child);
-        Self {
+        // Own the spawned child before the readiness assertion can unwind.
+        let mut owner = Self {
             child,
             root: root.into(),
-        }
+        };
+        let ready = owner.root.join("owner-ready");
+        wait_file(&ready, &mut owner.child);
+        owner
     }
     fn exit(&mut self) {
         std::fs::write(self.root.join("owner-exit"), b"exit owned fixture").unwrap();

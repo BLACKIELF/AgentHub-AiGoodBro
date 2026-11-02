@@ -318,8 +318,9 @@ fn trust() -> win::Trust {
     win::Trust::Fixture { image, sha256 }
 }
 async fn connect(name: &str) -> DesktopOwnerClient {
+    let fixture_trust = trust();
     let budget = Budget::new(TIME, &Cancellation::default()).unwrap();
-    let c = win::connect_to(name, trust(), &budget).await.unwrap();
+    let c = win::connect_to(name, fixture_trust, &budget).await.unwrap();
     DesktopOwnerClient::initialize(c, &budget).await.unwrap()
 }
 

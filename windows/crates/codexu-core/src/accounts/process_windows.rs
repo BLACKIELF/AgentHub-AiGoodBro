@@ -269,8 +269,24 @@ impl Drop for OwnedHandle {
         }
     }
 }
+#[track_caller]
+fn trace_native_failure(_stage: &'static str) {
+    // Debug-only fixed metadata: never log executable paths, arguments or env.
+    #[cfg(debug_assertions)]
+    {
+        let error = unsafe { GetLastError() };
+        eprintln!(
+            "AIGOODBRO_NATIVE_PROCESS_FAILURE stage={} source_line={} win32={}",
+            _stage,
+            std::panic::Location::caller().line(),
+            error
+        );
+    }
+}
+#[track_caller]
 fn handle(raw: Handle) -> AccountResult<OwnedHandle> {
     if raw.is_null() || raw as isize == -1 {
+        trace_native_failure("invalid_handle");
         return Err(fail("native_process_unavailable"));
     }
     Ok(OwnedHandle(raw as usize))
@@ -286,11 +302,13 @@ impl Attributes {
             InitializeProcThreadAttributeList(std::ptr::null_mut(), 1, 0, &mut length);
         }
         if length == 0 || length > 1024 * 1024 {
+            trace_native_failure("attribute_list_size");
             return Err(fail("native_process_unavailable"));
         }
         let mut memory = vec![0usize; length.div_ceil(std::mem::size_of::<usize>())];
         let pointer = memory.as_mut_ptr() as *mut c_void;
         if unsafe { InitializeProcThreadAttributeList(pointer, 1, 0, &mut length) } == 0 {
+            trace_native_failure("initialize_attribute_list");
             return Err(fail("native_process_unavailable"));
         }
         let value = Self {
@@ -309,6 +327,7 @@ impl Attributes {
             )
         } == 0
         {
+            trace_native_failure("update_handle_list");
             return Err(fail("native_process_unavailable"));
         }
         Ok(value)
@@ -484,6 +503,7 @@ impl Child {
             )
         } == 0
         {
+            trace_native_failure("set_job_limits");
             return Err(fail("native_process_unavailable"));
         }
         let attributes = SecurityAttributes {
@@ -494,11 +514,13 @@ impl Child {
         let mut read = std::ptr::null_mut();
         let mut write = std::ptr::null_mut();
         if unsafe { CreatePipe(&mut read, &mut write, &attributes, 0) } == 0 {
+            trace_native_failure("create_output_pipe");
             return Err(fail("native_process_unavailable"));
         }
         let pipe = handle(read)?;
         let output = handle(write)?;
         if unsafe { SetHandleInformation(pipe.raw(), 1, 0) } == 0 {
+            trace_native_failure("set_pipe_inheritance");
             return Err(fail("native_process_unavailable"));
         }
         let nul = wide(OsStr::new("NUL"))?;
@@ -551,11 +573,13 @@ impl Child {
             )
         } == 0
         {
+            trace_native_failure("create_process");
             return Err(fail("native_process_unavailable"));
         }
         let process = handle(information.process)?;
         let thread = handle(information.thread)?;
         if unsafe { AssignProcessToJobObject(job.raw(), process.raw()) } == 0 {
+            trace_native_failure("assign_process_to_job");
             unsafe {
                 TerminateProcess(process.raw(), 1);
             }
@@ -589,6 +613,7 @@ impl Child {
             child.verification = Some((receipt, permit));
         }
         if unsafe { ResumeThread(thread.raw()) } != 1 {
+            trace_native_failure("resume_thread");
             child.stop_confirmed()?;
             return Err(fail("native_process_unavailable"));
         }
@@ -640,12 +665,16 @@ impl Child {
             0 => {
                 let mut code = 0;
                 if unsafe { GetExitCodeProcess(self.process.raw(), &mut code) } == 0 {
+                    trace_native_failure("get_exit_code");
                     return Err(fail("native_process_unavailable"));
                 }
                 Ok(Some(code))
             }
             258 => Ok(None),
-            _ => Err(fail("native_process_unavailable")),
+            _ => {
+                trace_native_failure("wait_process");
+                Err(fail("native_process_unavailable"))
+            }
         }
     }
     pub(in crate::accounts) fn stop_confirmed(&mut self) -> AccountResult<()> {

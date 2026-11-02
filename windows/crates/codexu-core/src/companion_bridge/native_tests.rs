@@ -153,6 +153,7 @@ async fn request(pipe: &str, id: &str, method: Method) -> serde_json::Value {
     );
     value
 }
+#[track_caller]
 fn no_background(receiver: &mut Receiver) {
     receiver.stop().unwrap();
     assert!(!receiver.active());
@@ -404,6 +405,16 @@ pub(crate) fn cases() {
         );
         assert!(storage::StoreLock::acquire(&blocked.join("receiver-owner")).is_err());
         drop(client);
+        // Drive this client runtime so its cancelled overlapped read can
+        // complete before the receiver's bounded cleanup check.
+        let cleanup_deadline = Instant::now() + Duration::from_secs(3);
+        while blocked_receiver.active() && Instant::now() < cleanup_deadline {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(
+            !blocked_receiver.active(),
+            "blocked fixture worker did not stop within its second cleanup budget"
+        );
     });
     no_background(&mut blocked_receiver);
 }
