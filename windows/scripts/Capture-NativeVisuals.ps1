@@ -1817,6 +1817,7 @@ function Invoke-WorkspaceScreenshotSmokeTest {
 
   $bitmap = $null
   try {
+    Add-Type -AssemblyName System.Drawing
     $bitmap = [System.Drawing.Bitmap]::FromFile($OutputPath)
     $width = [int]$bitmap.Width
     $height = [int]$bitmap.Height

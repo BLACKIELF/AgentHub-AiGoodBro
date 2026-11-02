@@ -453,6 +453,9 @@ jobs:
           path: |
             .local-artifacts/windows-visual-captures/coverage-contract-${{ github.run_id }}-${{ github.run_attempt }}-*/manifest.json
             .local-artifacts/windows-visual-captures/coverage-contract-${{ github.run_id }}-${{ github.run_attempt }}-*/logs/failure-uia.json
+            .local-artifacts/windows-visual-captures/coverage-contract-${{ github.run_id }}-${{ github.run_attempt }}-*/logs/workspace-screenshot-poll.json
+            .local-artifacts/windows-visual-captures/coverage-contract-${{ github.run_id }}-${{ github.run_attempt }}-*/runtime/fullscreen/workspace-full.png
+            .local-artifacts/windows-visual-captures/coverage-contract-${{ github.run_id }}-${{ github.run_attempt }}-*/runtime/fullscreen/workspace-order.txt
             .local-artifacts/windows-visual-captures/coverage-contract-${{ github.run_id }}-${{ github.run_attempt }}-*/screenshots/fullscreen/failure.png
           include-hidden-files: true
           if-no-files-found: ignore

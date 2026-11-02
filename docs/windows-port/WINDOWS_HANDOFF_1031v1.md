@@ -1,4 +1,4 @@
-# Windows 接手与封装交接 — 1102v2
+# Windows 接手与封装交接 — 1103v1
 
 当前继续完善 Windows，沿用本页稳定路径。**候选源码已推进，最终同源 Windows 原生验收和 MSI / EXE 交付尚未完成。** 本页约需 5 分钟阅读。`WINDOWS_HANDOFF_SOURCE_1031v1.json` 是 1031 的历史 101 文件快照，不是当前源码清单；当前来源以本页所在提交、CI 实际 checkout 和最终发布 manifest 为准。
 
@@ -21,18 +21,19 @@
 | N02 微信原聊天关联 | 显式绑定/授权版本；新消息时间门禁与持久去重；在实际 owner 写入前重核取消；只回传精确新 turn 的 final answer；未知不重试 | 本地核心、文字和 UI 用例通过；未扫码、发送真实消息或调用模型。Windows native owner 链路仍需验收 |
 | P04 账号/反代同步 | 两入口共用 persisted preferences；原子单账号参与/优先/最后使用/排序；显式 Pro false 保留；删除前要求退出反代 | 已过 scoped core/Node 与组件测试；窄屏新增相机入口的预期位移经人工核图后无更新复跑通过 |
 | M06 1% 暂停与原任务续做 | 完整当前任务批次先落盘；同一原生 maintenance lease 下逐 turn 中断并确认；完整新鲜 idle roster 后切换；用户显式继续原任务；未知结果保留且不重发；清除记录保留原聊天与运行任务 | 本地策略 15 项、journal 9 项、提交 hook/竞态 4 项、实际 Manager+lease 轮换绑定 1 项、完整 roster 1 项及 UI 2 项通过。自动恢复当前窗口选项仍不可用，不由显式续做测试冒充 |
-| U03 主界面长截图 | 实际 WebView2 全高 PNG；单次捕获锁、尺寸/解码界限、DOM/滚动恢复、原生保存、原子写入与读回；固定 isolated native capture witness | 本地 PNG/状态 7 项、前端截图 3 项通过；Windows-only CDP 编译、实际全高输出与恢复顺序必须由新增原生 harness 验证 |
+| U03 主界面长截图 | 实际 WebView2 全高 PNG；单次捕获锁、尺寸/解码界限、DOM/滚动恢复、原生保存、原子写入与读回；固定 isolated native capture witness | 本地 PNG/状态 7 项、前端截图 3 项通过；Windows release 编译和保存状态读取已实际越过，PNG 尺寸/像素检查因缺程序集失败。完整双冷启动验收仍待完成 |
 
 本批前端整体合同测试 157/157、TypeScript/Vite 构建已通过。本地 locator 截图按变更逐张审阅并无更新复跑；这些结果不表示最终 Windows 安装版本或真实账号已验收。
 
 ## 当前流水线与历史交付
 
-本批五项功能与受限令牌启动修正已提交为 `f4b68a303df9c8b0e037d6c3838de6bf5647e303`。该提交对应的流水线均已结束：
+当前候选以本页所在提交为准；最终结果读回同一源码的 CI、package 和 PR 回执。上一已运行提交为 `e4c9a1ddac543f4b2c0be04d916b44579a1577b6`，流水线均已结束：
 
-- [CI 41449705007](https://github.com/BLACKIELF/AgentHub-AiGoodBro/actions/runs/41449705007)：macOS 全部通过；Windows 首轮视觉 288 项通过、2 项失败，后续复跑未执行。Windows PowerShell 5.1/7 校验在隔离目录初始化顺序的旧断言处失败，导致 proxy 资源准备跳过；Rust 构建随后缺资源，focused Companion E2E 没有执行。原生 release 构建另有长截图回调消费一次性 sender 的 E0507，冷启动和截图验收跳过。
-- [package 41449704916](https://github.com/BLACKIELF/AgentHub-AiGoodBro/actions/runs/41449704916)：在同一 PowerShell 断言失败，仅上传 readiness artifact，没有 MSI/EXE。
-- 本次修复对齐实际初始化顺序，仍要求所有服务共用隔离目录；长截图回调使用受锁保护的一次性 sender；通知测试桥支持多个监听器。视觉测试改为单独构建测试入口的生产预览，产物与安装器使用的生产 `dist` 分开，保留真实组件和原有断言。Companion 文档与源码摘要同步，并将全部 setup 资源纳入 readiness 上传与离线验包。
-- 上一基线 `2f284de7f75c7a047613738dd19be0fc6e811e8d` 的 focused E2E 曾实际运行 1 项并因 Access is denied 失败；当前启动修正尚未获得 Windows 实跑结果。后续提交必须用自己的 exact-head CI、实际 checkout tree、安装器及回执验证，不能沿用旧 head 的绿灯或把未运行算作通过。
+- [CI 41476316465](https://github.com/BLACKIELF/AgentHub-AiGoodBro/actions/runs/41476316465)：Windows 界面两轮各 290/290 通过；PowerShell 5.1/7、rustfmt、代理、账号池、Hub、Token Monitor 与 Rust-to-Go 检查通过。macOS 排队 15 分钟后取消，未分配 runner，测试没有启动；原因未返回，不能沿用上一提交的 macOS 通过结果。
+- Windows release 编译通过。第一次冷启动已读到保存成功、检查按钮恢复及 `restored|saved` 标记，随后因 PowerShell 未加载 `System.Drawing.Bitmap` 而停止；完整 PNG 尺寸/像素与第二次冷启动未验收。
+- focused Companion E2E 在 CI 与 [package 41476316546](https://github.com/BLACKIELF/AgentHub-AiGoodBro/actions/runs/41476316546) 都实际运行 1 项并失败。诊断确认父子令牌都是 primary，调用方具有 SeImpersonate 和 SeIncreaseQuota，当前可执行文件 DACL 允许读取/执行；`CreateProcessWithTokenW` 仍返回错误 5。这些结果不证明桌面 ACL、MIC 或具体 Windows 内部失败原因。package 只有 readiness artifact，没有 MSI/EXE，升级步骤跳过。
+- 本候选改用微软为调用方受限主令牌明确提供的 `CreateProcessAsUserW`。保留 Medium、相同 SID/session、独立环境、挂起创建和 Job；获得句柄后先由 RAII 接管，再校验实际子进程令牌，通过后才加入 Job 并恢复执行。未改变权限、桌面或 ACL。此修改仍需 Windows 实跑。
+- 截图脚本在 Bitmap 使用前加载 System.Drawing；CI 同时保留该次 capture 的 poll JSON、全高 PNG 和保存顺序文件供独立检查。focused 与其余独立 workspace 测试分别保留退出码，任一失败仍使总门禁失败；其余套件显式排除 focused，避免重复执行。
 
 [win1031v1 历史草稿](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/tag/untagged-5b31e62e90da54e887c4) 对应较早 `86263b0c`，保留作为历史交付；[Mac166 草稿](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/tag/untagged-240c20af6823a6d3893d) 是另一个平台的交付。均不证明本候选已完成，不重复覆盖或把旧包改名当新包。
 

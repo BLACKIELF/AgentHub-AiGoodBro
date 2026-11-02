@@ -1501,11 +1501,13 @@ unsafe extern "system" {
         restrict: *const c_void,
         result: *mut NativeHandle,
     ) -> i32;
-    fn CreateProcessWithTokenW(
+    fn CreateProcessAsUserW(
         token: NativeHandle,
-        logon: u32,
         application: *const u16,
         command: *mut u16,
+        process_attributes: *const c_void,
+        thread_attributes: *const c_void,
+        inherit_handles: i32,
         flags: u32,
         environment: *const c_void,
         directory: *const u16,
@@ -1732,17 +1734,19 @@ fn launch_native_e2e_child(fake_cli: &Path, python: &Path, proof_directory: temp
     }
     let creation_flags = 0x0000_0004 | 0x0000_0400 | 0x0800_0000; // suspended, Unicode environment, no window
     let launch_api = if elevated {
-        "CreateProcessWithTokenW"
+        "CreateProcessAsUserW"
     } else {
         "CreateProcessW"
     };
     let created = if elevated {
         unsafe {
-            CreateProcessWithTokenW(
+            CreateProcessAsUserW(
                 token.0,
-                0,
                 application.as_ptr(),
                 command.as_mut_ptr(),
+                ptr::null(),
+                ptr::null(),
+                0,
                 creation_flags,
                 environment.as_ptr().cast(),
                 ptr::null(),
@@ -1779,6 +1783,15 @@ fn launch_native_e2e_child(fake_cli: &Path, python: &Path, proof_directory: temp
     );
     owned.process = info.process;
     owned.thread = info.thread;
+    let mut actual_child_token = ptr::null_mut();
+    assert_ne!(
+        unsafe { OpenProcessToken(owned.process, 0x0008, &mut actual_child_token) },
+        0,
+        "open native test child token: {}",
+        io::Error::last_os_error()
+    );
+    let actual_child_token = NativeHandleOwner(actual_child_token);
+    native_validate_child_token(original_token.0, actual_child_token.0);
     assert_ne!(
         unsafe { AssignProcessToJobObject(owned.job, owned.process) },
         0,
