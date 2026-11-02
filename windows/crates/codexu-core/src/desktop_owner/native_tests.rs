@@ -552,6 +552,7 @@ fn windows_original_owner_pipe_contract_and_no_replay() {
         "AIGOODBRO_OWNER_PIPE_FIXTURE_PROOF",
         "owner-pipe-proof.txt",
         b"synthetic-owner-native-pass\n",
+        Duration::from_secs(30),
     ) {
         tokio::runtime::Builder::new_multi_thread()
             .enable_all()
@@ -746,12 +747,19 @@ impl Drop for Child {
 /// Run a named native fixture under this user's restricted token and an owned
 /// Job, using the exact process-lifetime proof shared by native pipe tests.
 /// Returns false only when the current process is already non-elevated.
+/// The caller selects only the bounded 30s or 60s parent wait budget; fixture
+/// operations keep their own existing deadlines.
 pub(crate) fn run_restricted_native_fixture(
     test_name: &str,
     proof_environment: &str,
     proof_filename: &str,
     proof_contents: &[u8],
+    fixture_timeout: Duration,
 ) -> bool {
+    assert!(
+        matches!(fixture_timeout.as_secs(), 30 | 60) && fixture_timeout.subsec_nanos() == 0,
+        "native fixture timeout must be one of the approved bounded budgets (30s or 60s)"
+    );
     assert!(
         !test_name.is_empty()
             && test_name
@@ -911,10 +919,12 @@ pub(crate) fn run_restricted_native_fixture(
     );
     child.assigned = true;
     assert_ne!(unsafe { ResumeThread(child.thread.0) }, u32::MAX);
+    let fixture_timeout_ms = fixture_timeout.as_millis() as u32;
     assert_eq!(
-        unsafe { WaitForSingleObject(child.process.0, 30000) },
+        unsafe { WaitForSingleObject(child.process.0, fixture_timeout_ms) },
         0,
-        "synthetic fixture must exit in its original 30s budget"
+        "synthetic fixture must exit within its requested {:?} budget",
+        fixture_timeout
     );
     let mut code = 1;
     assert_ne!(unsafe { GetExitCodeProcess(child.process.0, &mut code) }, 0);

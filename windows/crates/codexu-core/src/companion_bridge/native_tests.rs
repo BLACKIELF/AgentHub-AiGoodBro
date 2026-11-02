@@ -2,6 +2,7 @@
 //! these through Desktop Owner's restricted-token/owned-Job proof when needed.
 //! No production pipe, real App, account, browser or model request is used.
 use super::*;
+use std::time::Instant;
 use tokio::net::windows::named_pipe::ClientOptions;
 
 struct FixtureRoot(Option<tempfile::TempDir>);
@@ -158,7 +159,15 @@ fn no_background(receiver: &mut Receiver) {
     receiver.stop().unwrap();
     assert!(!receiver.active());
 }
+fn report_phase(started_at: Instant, phase: &'static str) {
+    eprintln!(
+        "AIGOODBRO_COMPANION_FIXTURE_PHASE phase={phase} elapsed_ms={}",
+        started_at.elapsed().as_millis()
+    );
+}
 pub(crate) fn cases() {
+    let started_at = Instant::now();
+    report_phase(started_at, "fixture_started");
     identity(unsafe { GetCurrentProcess() }, unsafe {
         GetCurrentProcessId()
     })
@@ -205,6 +214,7 @@ pub(crate) fn cases() {
         assert_eq!(status["result"]["state"], "missing");
     });
     assert!(!backend.mutations.load(Ordering::SeqCst));
+    report_phase(started_at, "preflight_and_status_complete");
 
     // A separate private root does not bypass the real first-instance fence.
     let other = root(tmp.path(), "collision");
@@ -227,6 +237,7 @@ pub(crate) fn cases() {
         );
     });
     no_background(&mut receiver);
+    report_phase(started_at, "collision_and_first_receiver_stop_complete");
 
     // Source and runtime locator schemas are not interchangeable, and unknown
     // source hashes are never learned from a discovered pipe.
@@ -257,6 +268,7 @@ pub(crate) fn cases() {
         "companion_peer_untrusted"
     );
     bind_current_app(&first).unwrap();
+    report_phase(started_at, "source_and_role_rejections_complete");
 
     // Exact interpreter matching: a test client is not a separately selected
     // fixture PE, even with identical bytes. Never depend on System32 files
@@ -302,6 +314,7 @@ pub(crate) fn cases() {
         assert!(result.is_err() || matches!(result, Ok(0)));
     });
     no_background(&mut rejected);
+    report_phase(started_at, "wrong_interpreter_peer_rejection_complete");
 
     // Malformed/short frames never reach Backend; disconnect releases only the
     // test connection and the original server remains usable afterwards.
@@ -328,12 +341,15 @@ pub(crate) fn cases() {
         );
     });
     assert!(!backend.mutations.load(Ordering::SeqCst));
+    report_phase(started_at, "partial_frame_reconnect_complete");
     no_background(&mut framing_receiver);
+    report_phase(started_at, "framing_receiver_stop_complete");
     // The same unique fixture pipe and owner fence are available only after a
     // successful stop/join; reopening never terminates or adopts another server.
     let (host, _) = bridge(&framing, &stamp);
     let mut reopened = Receiver::start_inner(framing, pin_self(), host, Some(frame_pipe)).unwrap();
     no_background(&mut reopened);
+    report_phase(started_at, "receiver_reopen_and_stop_complete");
 
     // The receiver's policy is stricter than the unrelated Desktop owner
     // transport: even an outsider read ACE is not a private Companion pipe.
@@ -377,9 +393,11 @@ pub(crate) fn cases() {
             "companion_peer_untrusted"
         );
     });
+    report_phase(started_at, "hostile_acl_rejection_complete");
 
     // A connected partial sender makes stop uncertain until its own bounded
     // receive completes. The receiver owner fence must remain held meanwhile.
+    report_phase(started_at, "blocked_partial_fixture_begin");
     let blocked = root(tmp.path(), "blocked");
     let (host, _) = bridge(&blocked, &stamp);
     let blocked_pipe = name();
@@ -390,6 +408,7 @@ pub(crate) fn cases() {
         Some(blocked_pipe.clone()),
     )
     .unwrap();
+    report_phase(started_at, "blocked_partial_receiver_ready");
     rt.block_on(async {
         let mut client = ClientOptions::new().open(&blocked_pipe).unwrap();
         client.write_all(&[1]).await.unwrap();
@@ -417,6 +436,7 @@ pub(crate) fn cases() {
         );
     });
     no_background(&mut blocked_receiver);
+    report_phase(started_at, "blocked_partial_fixture_end");
 }
 
 #[test]
@@ -426,6 +446,7 @@ fn windows_companion_receiver_contract() {
         "AIGOODBRO_COMPANION_PIPE_FIXTURE_PROOF",
         "companion-pipe-proof.txt",
         b"synthetic-companion-native-pass\n",
+        Duration::from_secs(60),
     ) {
         cases();
     }

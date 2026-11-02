@@ -658,6 +658,7 @@ mod native {
             guard_held_with_both: bool,
             root_exited_while_child_active: bool,
             guard_held_after_root_exit: bool,
+            child_signaled_after_stop: bool,
             job_empty_after_stop: bool,
             guard_held_after_stop: bool,
         }
@@ -850,6 +851,15 @@ mod native {
                 self.inner.stop()?;
                 let empty = self.inner.has_exited()?;
                 let count = self.inner.job.active_processes()?;
+                let child = self
+                    .child
+                    .as_ref()
+                    .ok_or_else(|| io::Error::other("fake CLI child handle is missing"))?;
+                let child_signaled = match unsafe { WaitForSingleObject(child.raw(), 0) } {
+                    0 => true,
+                    258 => false,
+                    _ => return Err(io::Error::last_os_error()),
+                };
                 let guard_held = !writable_open_succeeds(&self.executable);
                 {
                     let mut observed = self
@@ -857,11 +867,12 @@ mod native {
                         .lock()
                         .map_err(|_| io::Error::other("test observation lock poisoned"))?;
                     observed.job_empty_after_stop = empty && count == 0;
+                    observed.child_signaled_after_stop = child_signaled;
                     observed.guard_held_after_stop = guard_held;
                 }
-                if !guard_held_before || !empty || count != 0 || !guard_held {
+                if !guard_held_before || !empty || count != 0 || !child_signaled || !guard_held {
                     return Err(io::Error::other(
-                        "stop did not confirm an empty Job or preserve the executable guard",
+                        "stop did not confirm an empty Job, a signaled known child, or preserve the executable guard",
                     ));
                 }
                 Ok(())
@@ -1028,14 +1039,38 @@ mod native {
             anyhow::ensure!(observed.guard_held_with_both);
             anyhow::ensure!(observed.root_exited_while_child_active);
             anyhow::ensure!(observed.guard_held_after_root_exit);
+            anyhow::ensure!(observed.child_signaled_after_stop);
             anyhow::ensure!(observed.job_empty_after_stop);
             anyhow::ensure!(observed.guard_held_after_stop);
             drop(observed);
-            if let Err(error) = writable_open(&executable) {
-                return Err(anyhow::anyhow!(
-                    "executable guard remained held after the empty owner was dropped (raw OS error {:?}): {error}",
-                    error.raw_os_error()
-                ));
+            let release_deadline = Instant::now() + Duration::from_secs(2);
+            let release_started = Instant::now();
+            let mut release_attempts = 0u32;
+            loop {
+                release_attempts += 1;
+                match writable_open(&executable) {
+                    Ok(()) => break,
+                    Err(error) if error.raw_os_error() == Some(32) => {
+                        let now = Instant::now();
+                        if now >= release_deadline {
+                            return Err(anyhow::anyhow!(
+                                "executable guard remained held after the empty owner was dropped for {:?} ({} attempts; raw OS error {:?}): {error}",
+                                release_started.elapsed(),
+                                release_attempts,
+                                error.raw_os_error()
+                            ));
+                        }
+                        tokio::time::sleep(Duration::from_millis(10).min(release_deadline - now))
+                            .await;
+                    }
+                    Err(error) => {
+                        return Err(anyhow::anyhow!(
+                            "writable open of the unique fake CLI copy failed after the empty owner was dropped ({} attempts; raw OS error {:?}): {error}",
+                            release_attempts,
+                            error.raw_os_error()
+                        ));
+                    }
+                }
             }
             Ok(())
         }

@@ -942,6 +942,50 @@ struct NativeGenericMapping {
     generic_all: u32,
 }
 
+#[repr(C)]
+struct NativeTokenDefaultDacl {
+    default_dacl: *mut c_void,
+}
+
+#[repr(C)]
+struct NativeTokenPrimaryGroup {
+    primary_group: *mut c_void,
+}
+
+#[repr(C)]
+struct NativeAclHeader {
+    revision: u8,
+    sbz1: u8,
+    size: u16,
+    ace_count: u16,
+    sbz2: u16,
+}
+
+#[repr(C)]
+struct NativeAclSizeInformation {
+    ace_count: u32,
+    acl_bytes_in_use: u32,
+    acl_bytes_free: u32,
+}
+
+#[repr(C)]
+struct NativeAceHeader {
+    ace_type: u8,
+    ace_flags: u8,
+    ace_size: u16,
+}
+
+#[repr(C)]
+struct NativeSecurityDescriptor {
+    revision: u8,
+    sbz1: u8,
+    control: u16,
+    owner: *mut c_void,
+    group: *mut c_void,
+    sacl: *mut c_void,
+    dacl: *mut c_void,
+}
+
 struct NativePrivilegeStatus {
     present: bool,
     enabled: bool,
@@ -1102,6 +1146,442 @@ fn native_validate_child_token(parent: NativeHandle, child: NativeHandle) {
     native_assert_medium_integrity(child);
 }
 
+fn native_token_default_dacl(token: NativeHandle) -> (Vec<u8>, NativeHandle) {
+    let information = native_token_information(token, 6);
+    assert!(information.len() >= std::mem::size_of::<NativeTokenDefaultDacl>());
+    let token_dacl =
+        unsafe { ptr::read_unaligned(information.as_ptr().cast::<NativeTokenDefaultDacl>()) };
+    let acl = token_dacl.default_dacl;
+    if !acl.is_null() {
+        let start = information.as_ptr() as usize;
+        let end = start
+            .checked_add(information.len())
+            .expect("native token default DACL buffer end overflowed");
+        let address = acl as usize;
+        let acl_minimum = start
+            .checked_add(std::mem::size_of::<NativeTokenDefaultDacl>())
+            .expect("native token default DACL offset overflowed");
+        assert!(
+            address >= acl_minimum && address < end,
+            "native token default DACL points outside its returned buffer"
+        );
+        let mut acl_size = NativeAclSizeInformation {
+            ace_count: 0,
+            acl_bytes_in_use: 0,
+            acl_bytes_free: 0,
+        };
+        assert_ne!(
+            unsafe {
+                GetAclInformation(
+                    acl,
+                    (&mut acl_size as *mut NativeAclSizeInformation).cast(),
+                    std::mem::size_of::<NativeAclSizeInformation>() as u32,
+                    2,
+                )
+            },
+            0,
+            "read native token default DACL size"
+        );
+        let acl_total = acl_size
+            .acl_bytes_in_use
+            .checked_add(acl_size.acl_bytes_free)
+            .expect("native token default DACL total size overflowed");
+        let header = unsafe { ptr::read_unaligned(acl.cast::<NativeAclHeader>()) };
+        assert_eq!(header.size as u32, acl_total);
+        let acl_end = address
+            .checked_add(acl_total as usize)
+            .expect("native token default DACL end overflowed");
+        assert!(acl_size.acl_bytes_in_use >= 8);
+        assert!(acl_end <= end, "native token default DACL is truncated");
+    }
+    (information, acl)
+}
+
+fn native_restricted_sid_count(token: NativeHandle) -> u32 {
+    let information = native_token_information(token, 11);
+    assert!(information.len() >= std::mem::size_of::<u32>());
+    let count = unsafe { ptr::read_unaligned(information.as_ptr().cast::<u32>()) } as usize;
+    assert!(
+        count <= u32::MAX as usize,
+        "native restricted SID count is invalid"
+    );
+    let attributes_offset = std::mem::size_of::<u32>()
+        .div_ceil(std::mem::align_of::<NativeSidAndAttributes>())
+        * std::mem::align_of::<NativeSidAndAttributes>();
+    let entries_size = count
+        .checked_mul(std::mem::size_of::<NativeSidAndAttributes>())
+        .and_then(|size| attributes_offset.checked_add(size))
+        .expect("native restricted SID list size overflowed");
+    if count > 0 {
+        assert!(
+            entries_size <= information.len(),
+            "native restricted SID list is truncated"
+        );
+    }
+    count as u32
+}
+
+fn native_mapped_dacl_copy(dacl: NativeHandle) -> (Vec<usize>, NativeHandle) {
+    if dacl.is_null() {
+        return (Vec::new(), ptr::null_mut());
+    }
+    let mut size = NativeAclSizeInformation {
+        ace_count: 0,
+        acl_bytes_in_use: 0,
+        acl_bytes_free: 0,
+    };
+    assert_ne!(
+        unsafe {
+            GetAclInformation(
+                dacl,
+                (&mut size as *mut NativeAclSizeInformation).cast(),
+                std::mem::size_of::<NativeAclSizeInformation>() as u32,
+                2,
+            )
+        },
+        0,
+        "read native fixture DACL size for access check"
+    );
+    let total = size
+        .acl_bytes_in_use
+        .checked_add(size.acl_bytes_free)
+        .expect("native fixture DACL size overflowed");
+    assert!((8..=u16::MAX as u32).contains(&total));
+    assert!((8..=total).contains(&size.acl_bytes_in_use));
+    let mut storage = vec![0usize; (total as usize).div_ceil(std::mem::size_of::<usize>())];
+    let mapped = storage.as_mut_ptr().cast::<c_void>();
+    unsafe {
+        ptr::copy_nonoverlapping(dacl.cast::<u8>(), mapped.cast::<u8>(), total as usize);
+    }
+    let header = unsafe { ptr::read_unaligned(mapped.cast::<NativeAclHeader>()) };
+    assert_eq!(header.size as u32, total);
+    assert_eq!(header.ace_count as u32, size.ace_count);
+    let mapping = NativeGenericMapping {
+        generic_read: 0x0012_0089,
+        generic_write: 0x0012_0116,
+        generic_execute: 0x0012_00a0,
+        generic_all: 0x001f_01ff,
+    };
+    let start = mapped as usize;
+    let end = start
+        .checked_add(total as usize)
+        .expect("native fixture DACL copy end overflowed");
+    let used_end = start
+        .checked_add(size.acl_bytes_in_use as usize)
+        .expect("native fixture DACL used end overflowed");
+    let first_ace_minimum = start
+        .checked_add(std::mem::size_of::<NativeAclHeader>())
+        .expect("native fixture first ACE offset overflowed");
+    for index in 0..size.ace_count {
+        let mut ace = ptr::null_mut();
+        assert_ne!(
+            unsafe { GetAce(mapped, index, &mut ace) },
+            0,
+            "read native fixture DACL ACE for access check"
+        );
+        let ace_start = ace as usize;
+        let ace_header_end = ace_start
+            .checked_add(std::mem::size_of::<NativeAceHeader>())
+            .expect("native fixture ACE header end overflowed");
+        assert!(
+            ace_start >= first_ace_minimum && ace_header_end <= used_end,
+            "native fixture ACE header is outside the DACL copy"
+        );
+        let header = unsafe { ptr::read_unaligned(ace.cast::<NativeAceHeader>()) };
+        let ace_end = ace_start
+            .checked_add(header.ace_size as usize)
+            .expect("native fixture ACE end overflowed");
+        assert!(
+            header.ace_size as usize >= std::mem::size_of::<NativeAceHeader>() + 4 + 8
+                && ace_end <= used_end
+                && ace_end <= end,
+            "native fixture ACE is truncated or outside the DACL copy"
+        );
+        assert!(
+            matches!(header.ace_type, 0 | 1),
+            "native fixture DACL contains an unsupported ACE type"
+        );
+        let mask_address = ace_header_end;
+        let sid_address = mask_address
+            .checked_add(std::mem::size_of::<u32>())
+            .expect("native fixture ACE SID offset overflowed");
+        let sid_length = unsafe { GetLengthSid(sid_address as NativeHandle) };
+        assert_ne!(sid_length, 0, "read native fixture ACE SID length");
+        assert_eq!(
+            header.ace_size as usize,
+            std::mem::size_of::<NativeAceHeader>()
+                + std::mem::size_of::<u32>()
+                + sid_length as usize,
+            "native fixture ACE SID length does not match ACE size"
+        );
+        let mut mask = unsafe { ptr::read_unaligned(mask_address as *const u32) };
+        unsafe { MapGenericMask(&mut mask, &mapping) };
+        unsafe { ptr::write_unaligned(mask_address as *mut u32, mask) };
+    }
+    (storage, mapped)
+}
+
+fn native_access_check_for_pipe_rights(dacl: NativeHandle, token: NativeHandle) -> (bool, bool) {
+    let owner_information = native_token_information(token, 4);
+    assert!(owner_information.len() >= std::mem::size_of::<NativeHandle>());
+    let owner = unsafe { ptr::read_unaligned(owner_information.as_ptr().cast::<NativeHandle>()) };
+    assert!(
+        !owner.is_null(),
+        "native fixture token has no default owner SID"
+    );
+    let group_information = native_token_information(token, 5);
+    assert!(group_information.len() >= std::mem::size_of::<NativeTokenPrimaryGroup>());
+    let primary_group = unsafe {
+        ptr::read_unaligned(group_information.as_ptr().cast::<NativeTokenPrimaryGroup>())
+            .primary_group
+    };
+    assert!(
+        !primary_group.is_null(),
+        "native fixture token has no primary group SID"
+    );
+    let (mapped_dacl_storage, mapped_dacl) = native_mapped_dacl_copy(dacl);
+    let mut descriptor = NativeSecurityDescriptor {
+        revision: 1,
+        sbz1: 0,
+        control: 0x0004, // SE_DACL_PRESENT
+        owner,
+        group: primary_group,
+        sacl: ptr::null_mut(),
+        dacl: mapped_dacl,
+    };
+    let mut impersonation = ptr::null_mut();
+    assert_ne!(
+        unsafe { DuplicateTokenEx(token, 0x0008, ptr::null(), 2, 2, &mut impersonation) },
+        0,
+        "duplicate native fixture token for pipe access check"
+    );
+    let impersonation = NativeHandleOwner(impersonation);
+    let mapping = NativeGenericMapping {
+        generic_read: 0x0012_0089,
+        generic_write: 0x0012_0116,
+        generic_execute: 0x0012_00a0,
+        generic_all: 0x001f_01ff,
+    };
+    let mut check = |generic_access: u32| {
+        let mut desired_access = generic_access;
+        unsafe { MapGenericMask(&mut desired_access, &mapping) };
+        let mut privileges = [0u64; 128];
+        let mut privileges_length = std::mem::size_of_val(&privileges) as u32;
+        let mut granted = 0u32;
+        let mut access_status = 0i32;
+        let checked = unsafe {
+            AccessCheck(
+                (&mut descriptor as *mut NativeSecurityDescriptor).cast(),
+                impersonation.0,
+                desired_access,
+                &mapping,
+                privileges.as_mut_ptr().cast(),
+                &mut privileges_length,
+                &mut granted,
+                &mut access_status,
+            )
+        };
+        if checked == 0 {
+            let error = unsafe { GetLastError() };
+            panic!("check native fixture anonymous-pipe access failed (code=0x{error:08x})");
+        }
+        access_status != 0
+    };
+    let allowed = (check(0x8000_0000), check(0x4000_0000)); // GENERIC_READ and GENERIC_WRITE
+    drop(mapped_dacl_storage);
+    allowed
+}
+
+fn native_assert_private_default_dacl(
+    acl: NativeHandle,
+    user_sid: NativeHandle,
+    system_sid: NativeHandle,
+) {
+    assert!(!acl.is_null(), "native fixture token has no default DACL");
+    let mut acl_size = NativeAclSizeInformation {
+        ace_count: 0,
+        acl_bytes_in_use: 0,
+        acl_bytes_free: 0,
+    };
+    assert_ne!(
+        unsafe {
+            GetAclInformation(
+                acl,
+                (&mut acl_size as *mut NativeAclSizeInformation).cast(),
+                std::mem::size_of::<NativeAclSizeInformation>() as u32,
+                2,
+            )
+        },
+        0,
+        "read normalized native fixture DACL"
+    );
+    assert_eq!(
+        acl_size.ace_count, 2,
+        "native fixture DACL must have two ACEs"
+    );
+    let mut user_found = false;
+    let mut system_found = false;
+    let mut expected_size = 8usize;
+    for index in 0..acl_size.ace_count {
+        let mut ace = ptr::null_mut();
+        assert_ne!(
+            unsafe { GetAce(acl, index, &mut ace) },
+            0,
+            "read normalized native fixture DACL ACE"
+        );
+        assert!(!ace.is_null());
+        let header = unsafe { ptr::read_unaligned(ace.cast::<NativeAceHeader>()) };
+        assert_eq!(
+            header.ace_type, 0,
+            "native fixture DACL contains a non-allow ACE"
+        );
+        assert_eq!(header.ace_flags, 0, "native fixture DACL ACE has flags");
+        let minimum_size = std::mem::size_of::<NativeAceHeader>() + std::mem::size_of::<u32>() + 8;
+        assert!(header.ace_size as usize >= minimum_size);
+        let mask = unsafe {
+            ptr::read_unaligned(
+                (ace as *const u8)
+                    .add(std::mem::size_of::<NativeAceHeader>())
+                    .cast::<u32>(),
+            )
+        };
+        assert_eq!(
+            mask, 0x1000_0000,
+            "native fixture DACL ACE is not GENERIC_ALL"
+        );
+        let sid = unsafe {
+            (ace as *mut u8)
+                .add(std::mem::size_of::<NativeAceHeader>() + std::mem::size_of::<u32>())
+                .cast::<c_void>()
+        };
+        let sid_size = unsafe { GetLengthSid(sid) };
+        assert_ne!(
+            sid_size, 0,
+            "read normalized native fixture DACL SID length"
+        );
+        assert_eq!(
+            header.ace_size as usize,
+            std::mem::size_of::<NativeAceHeader>() + std::mem::size_of::<u32>() + sid_size as usize,
+            "native fixture DACL ACE has trailing or truncated data"
+        );
+        expected_size = expected_size
+            .checked_add(header.ace_size as usize)
+            .expect("native fixture DACL size overflowed");
+        let is_user = unsafe { EqualSid(sid, user_sid) } != 0;
+        let is_system = unsafe { EqualSid(sid, system_sid) } != 0;
+        assert_ne!(
+            is_user, is_system,
+            "native fixture DACL contains an unexpected SID"
+        );
+        if is_user {
+            assert!(!user_found, "native fixture DACL repeats the user ACE");
+            user_found = true;
+        } else {
+            assert!(!system_found, "native fixture DACL repeats the SYSTEM ACE");
+            system_found = true;
+        }
+    }
+    assert!(
+        user_found && system_found,
+        "native fixture DACL is missing a required ACE"
+    );
+    assert_eq!(
+        acl_size.acl_bytes_in_use as usize, expected_size,
+        "native fixture DACL contains unused or unverified bytes"
+    );
+}
+
+fn native_set_private_default_dacl(token: NativeHandle) {
+    let user_information = native_token_information(token, 1);
+    assert!(user_information.len() >= std::mem::size_of::<NativeSidAndAttributes>());
+    let user =
+        unsafe { ptr::read_unaligned(user_information.as_ptr().cast::<NativeSidAndAttributes>()) };
+    assert!(!user.sid.is_null(), "native fixture token has no user SID");
+    let user_sid_size = unsafe { GetLengthSid(user.sid) };
+    assert_ne!(user_sid_size, 0, "read native fixture user SID length");
+
+    let mut system_sid_storage = [0u64; 9];
+    let mut system_sid_size = 68u32;
+    assert_ne!(
+        unsafe {
+            CreateWellKnownSid(
+                22, // WinLocalSystemSid
+                ptr::null_mut(),
+                system_sid_storage.as_mut_ptr().cast(),
+                &mut system_sid_size,
+            )
+        },
+        0,
+        "create fixture SYSTEM SID"
+    );
+    let system_sid = system_sid_storage.as_mut_ptr().cast::<c_void>();
+    let acl_header_size = 8usize;
+    let ace_prefix_size = std::mem::size_of::<NativeAceHeader>() + std::mem::size_of::<u32>();
+    let system_sid_length = unsafe { GetLengthSid(system_sid) };
+    assert_ne!(system_sid_length, 0, "read fixture SYSTEM SID length");
+    assert_eq!(system_sid_length, system_sid_size);
+    let acl_length = acl_header_size
+        .checked_add(ace_prefix_size + user_sid_size as usize)
+        .and_then(|length| length.checked_add(ace_prefix_size + system_sid_length as usize))
+        .expect("private native fixture DACL size overflowed");
+    assert!(
+        acl_length <= u16::MAX as usize,
+        "private native fixture DACL is too large"
+    );
+    let mut acl_storage = vec![0usize; acl_length.div_ceil(std::mem::size_of::<usize>())];
+    let acl = acl_storage.as_mut_ptr().cast::<c_void>();
+    assert_ne!(
+        unsafe { InitializeAcl(acl, acl_length as u32, 2) },
+        0,
+        "initialize private native fixture DACL"
+    );
+    assert_ne!(
+        unsafe { AddAccessAllowedAce(acl, 2, 0x1000_0000, user.sid) },
+        0,
+        "add fixture user to private default DACL"
+    );
+    assert_ne!(
+        unsafe { AddAccessAllowedAce(acl, 2, 0x1000_0000, system_sid) },
+        0,
+        "add SYSTEM to private default DACL"
+    );
+    let default_dacl = NativeTokenDefaultDacl { default_dacl: acl };
+    assert_ne!(
+        unsafe {
+            SetTokenInformation(
+                token,
+                6, // TokenDefaultDacl
+                (&default_dacl as *const NativeTokenDefaultDacl).cast(),
+                std::mem::size_of::<NativeTokenDefaultDacl>() as u32,
+            )
+        },
+        0,
+        "set private native fixture token default DACL"
+    );
+
+    let (_readback, readback_acl) = native_token_default_dacl(token);
+    native_assert_private_default_dacl(readback_acl, user.sid, system_sid);
+    let (read_allowed, write_allowed) = native_access_check_for_pipe_rights(readback_acl, token);
+    assert!(
+        read_allowed && write_allowed,
+        "normalized native fixture token cannot access both anonymous-pipe ends"
+    );
+    eprintln!(
+        "native E2E normalized token DACL: pipe_read={read_allowed} pipe_write={write_allowed} ace_count=2"
+    );
+}
+
+fn native_diagnose_and_normalize_token_dacl(token: NativeHandle) {
+    let (_original_information, original_acl) = native_token_default_dacl(token);
+    let restricted_sid_count = native_restricted_sid_count(token);
+    let (original_read, original_write) = native_access_check_for_pipe_rights(original_acl, token);
+    eprintln!(
+        "native E2E restricted token default DACL: present={} pipe_read={original_read} pipe_write={original_write} restricted_sid_count={restricted_sid_count}",
+        !original_acl.is_null()
+    );
+    native_set_private_default_dacl(token);
+}
+
 fn native_non_elevated_child_token(original: NativeHandle) -> NativeHandleOwner {
     let mut restricted = ptr::null_mut();
     assert_ne!(
@@ -1123,6 +1603,7 @@ fn native_non_elevated_child_token(original: NativeHandle) -> NativeHandleOwner 
         io::Error::last_os_error()
     );
     let token = NativeHandleOwner(restricted);
+    native_diagnose_and_normalize_token_dacl(token.0);
     let mut integrity = NativeTokenMandatoryLabelBuffer {
         label: NativeSidAndAttributes {
             sid: ptr::null_mut(),
@@ -1524,6 +2005,22 @@ unsafe extern "system" {
         granted_access: *mut u32,
         access_status: *mut i32,
     ) -> i32;
+    fn CreateWellKnownSid(
+        sid_type: u32,
+        domain_sid: NativeHandle,
+        sid: NativeHandle,
+        sid_size: *mut u32,
+    ) -> i32;
+    fn GetAclInformation(
+        acl: NativeHandle,
+        information: *mut c_void,
+        information_length: u32,
+        information_class: u32,
+    ) -> i32;
+    fn InitializeAcl(acl: NativeHandle, length: u32, revision: u32) -> i32;
+    fn AddAccessAllowedAce(acl: NativeHandle, revision: u32, mask: u32, sid: NativeHandle) -> i32;
+    fn GetAce(acl: NativeHandle, index: u32, ace: *mut NativeHandle) -> i32;
+    fn GetLengthSid(sid: NativeHandle) -> u32;
     fn SetTokenInformation(
         token: NativeHandle,
         class: u32,
