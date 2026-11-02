@@ -141,6 +141,7 @@ jobs:
             windows/apps/codexu-tauri/src-tauri/resources/token-monitor/WINDOWS-RESOURCES.json
             windows/apps/codexu-tauri/src-tauri/resources/companion-hub/WINDOWS-RESOURCES.json
             windows/apps/codexu-tauri/src-tauri/resources/provider-pool/WINDOWS-RESOURCES.json
+            windows/apps/codexu-tauri/src-tauri/resources/companion-setup/**
           if-no-files-found: ignore
 
   installer-upgrade:

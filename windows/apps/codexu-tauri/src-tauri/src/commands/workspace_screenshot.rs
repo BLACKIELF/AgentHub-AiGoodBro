@@ -414,9 +414,14 @@ mod windows_capture {
 
     async fn eval_script(window: &WebviewWindow, script: &str) -> Result<Value, String> {
         let (sender, receiver) = oneshot::channel();
+        let sender = Mutex::new(Some(sender));
         window
             .eval_with_callback(script.to_owned(), move |result| {
-                let _ = sender.send(result);
+                if let Ok(mut sender) = sender.lock() {
+                    if let Some(sender) = sender.take() {
+                        let _ = sender.send(result);
+                    }
+                }
             })
             .map_err(|_| "screenshot_webview_script_failed".to_owned())?;
         let raw = tokio::time::timeout(CAPTURE_DEADLINE, receiver)

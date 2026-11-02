@@ -211,7 +211,7 @@ Assert-True (-not [bool]$mainWindow.visible) 'The main window must be hidden unt
 Assert-True (-not [bool]$mainWindow.focus) 'The main window must not request focus during native capture startup.'
 $mainSourceText = Get-Content -LiteralPath $mainSource -Raw -Encoding UTF8
 Assert-True (
-  $mainSourceText -match '(?s)capture_storage::initialize\(.*?native_services::install\(app, app_data_dir.clone\(\)\).*?AppState::new\(app_data_dir.clone\(\)\).*?compact_ui::install\(app.handle\(\), app_data_dir\)'
+  $mainSourceText -match '(?s)capture_storage::initialize\(.*?AppState::new\(app_data_dir.clone\(\)\).*?app\.manage\(state.clone\(\)\);.*?native_services::install\(app, app_data_dir.clone\(\)\)\?;.*?compact_ui::install\(app.handle\(\), app_data_dir\)'
 ) 'All native capture services must use the same explicitly isolated app state directory.'
 $entryText = Get-Content -LiteralPath $entry -Raw -Encoding UTF8
 Assert-True (

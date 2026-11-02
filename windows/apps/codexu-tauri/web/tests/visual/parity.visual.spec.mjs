@@ -1,6 +1,14 @@
 import { test, expect } from '@playwright/test';
+import { readFileSync } from 'node:fs';
+import ts from 'typescript';
 import { SYNTHETIC_DASHBOARD, SYNTHETIC_SETTINGS } from './synthetic-fixtures.mjs';
 import { installTauriStub } from './tauri-stub.mjs';
+
+const publicFeedsSource = readFileSync(new URL('../../src/utils/publicFeeds.ts', import.meta.url), 'utf8');
+const publicFeedsJavaScript = ts.transpileModule(publicFeedsSource, {
+  compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2020 },
+}).outputText;
+const publicFeedsModuleUrl = `data:text/javascript;base64,${Buffer.from(publicFeedsJavaScript, 'utf8').toString('base64')}`;
 
 test.beforeEach(async ({ page }) => {
   // install starts ticking: pause before navigation so a slow first render cannot
@@ -64,8 +72,8 @@ test('home categories collapse independently and persist after reload', async ({
 
 test('forecast parser rejects changed markup and ambiguous source; known empty state clears cache', async ({ page }) => {
   await page.goto('/');
-  const result = await page.evaluate(async () => {
-    const { parseForecast } = await import('/src/utils/publicFeeds.ts');
+  const result = await page.evaluate(async moduleUrl => {
+    const { parseForecast } = await import(moduleUrl);
     const now = Date.now();
     const results = [];
     for (const html of ['<html>codex-resets hero-figure changed</html>', '<html>codex-resets hero-figure<div data-role="scheduled-reset" data-scheduled-for="invalid"></div></html>']) {
@@ -73,7 +81,7 @@ test('forecast parser rejects changed markup and ambiguous source; known empty s
     }
     results.push(parseForecast('<html>codex-resets hero-figure<div data-role="pending-reset"></div></html>', now) === null);
     return results;
-  });
+  }, publicFeedsModuleUrl);
   expect(result).toEqual([true, true, true]);
 });
 

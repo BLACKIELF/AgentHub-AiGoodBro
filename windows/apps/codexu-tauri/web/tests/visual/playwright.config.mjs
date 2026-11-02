@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const webRoot = path.resolve(here, '..', '..');
+const visualViteConfig = path.relative(webRoot, path.join(here, 'visual-preview.config.mjs')).replace(/\\/g, '/');
 // <repo>/windows/apps/codexu-tauri/web/tests/visual -> <repo>
 const repoRoot = path.resolve(here, '..', '..', '..', '..', '..', '..');
 
@@ -84,7 +85,7 @@ export default defineConfig({
   projects: [{ name: 'dashboard-1440x900' }],
 
   webServer: {
-    command: `npm run dev -- --port ${PORT} --strictPort`,
+    command: `npm run build -- --config ${visualViteConfig} && npm run preview -- --config ${visualViteConfig} --host 127.0.0.1 --port ${PORT} --strictPort`,
     cwd: webRoot,
     url: `http://127.0.0.1:${PORT}`,
     reuseExistingServer: false,

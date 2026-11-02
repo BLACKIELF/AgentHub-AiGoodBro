@@ -19,12 +19,14 @@ async function settings(page, { language = 'en', theme = 'dark', open = true } =
     window.notificationHeld = {};
     window.notificationFailures = {};
     window.notificationHold = {};
-    let listener;
-    window.notificationEmit = () => { if (listener) window[`_${listener}`]({ event: 'notification-channels:changed', id: 777, payload: null }); };
+    const listeners = new Map();
+    let nextListener = 777;
+    window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener(event, id) { if (event === 'notification-channels:changed') listeners.delete(id); } };
+    window.notificationEmit = () => { for (const [id, handler] of [...listeners]) window[`_${handler}`]({ event: 'notification-channels:changed', id, payload: null }); };
     window.notificationConfigure = (kind, patch) => { Object.assign(window.notificationRows.find(row => row.channel === kind), patch); };
     const response = (command, value) => window.notificationHold[command] ? new Promise((resolve, reject) => { (window.notificationHeld[command] ||= []).push({ resolve: () => resolve(clone(value)), reject: () => reject(Error('transport_failed')) }); }) : clone(value);
     window.__TAURI_INTERNALS__.invoke = async (command, args) => {
-      if (command === 'plugin:event|listen' && args.event === 'notification-channels:changed') { listener = args.handler; return 777; }
+      if (command === 'plugin:event|listen' && args.event === 'notification-channels:changed') { const id = nextListener++; listeners.set(id, args.handler); return id; }
       if (command === 'get_notification_channels' || command === 'restore_notification_channels') {
         window.notificationReads++;
         if (window.notificationFailures[command]) throw Error(window.notificationFailures[command]);

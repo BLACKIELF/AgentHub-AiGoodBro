@@ -1,4 +1,4 @@
-# Windows 接手与封装交接 — 1102v1
+# Windows 接手与封装交接 — 1102v2
 
 当前继续完善 Windows，沿用本页稳定路径。**候选源码已推进，最终同源 Windows 原生验收和 MSI / EXE 交付尚未完成。** 本页约需 5 分钟阅读。`WINDOWS_HANDOFF_SOURCE_1031v1.json` 是 1031 的历史 101 文件快照，不是当前源码清单；当前来源以本页所在提交、CI 实际 checkout 和最终发布 manifest 为准。
 
@@ -27,11 +27,12 @@
 
 ## 当前流水线与历史交付
 
-本批五项功能收尾前，已推送的编译修复基线为 `2f284de7f75c7a047613738dd19be0fc6e811e8d`：
+本批五项功能与受限令牌启动修正已提交为 `f4b68a303df9c8b0e037d6c3838de6bf5647e303`。该提交对应的流水线均已结束：
 
-- [CI 41443907093](https://github.com/BLACKIELF/AgentHub-AiGoodBro/actions/runs/41443907093)：Windows web 双轮及 native-visual 两次独立冷启动/清理成功；focused Companion E2E 实际运行 1 项，但启动隔离子进程时报 Access is denied，0 passed / 1 failed。记录时 macOS 尚未结束。
-- [package 41443907094](https://github.com/BLACKIELF/AgentHub-AiGoodBro/actions/runs/41443907094)：同样在 focused E2E 启动处失败，readiness 标记 rust-tests 失败；仅上传 readiness artifact，没有 MSI/EXE。
-- 当前候选增加受限令牌启动路径修正和确切 API/错误诊断，保持 Medium、同 SID/session、隔离环境与 Job 门禁；尚未获得 Windows 实跑修复证据。当前候选的新功能不在上述编译修复基线内。后续提交必须用自己的 exact-head CI、实际 checkout tree、安装器及回执验证，不能沿用旧 head 的绿灯。
+- [CI 41449705007](https://github.com/BLACKIELF/AgentHub-AiGoodBro/actions/runs/41449705007)：macOS 全部通过；Windows 首轮视觉 288 项通过、2 项失败，后续复跑未执行。Windows PowerShell 5.1/7 校验在隔离目录初始化顺序的旧断言处失败，导致 proxy 资源准备跳过；Rust 构建随后缺资源，focused Companion E2E 没有执行。原生 release 构建另有长截图回调消费一次性 sender 的 E0507，冷启动和截图验收跳过。
+- [package 41449704916](https://github.com/BLACKIELF/AgentHub-AiGoodBro/actions/runs/41449704916)：在同一 PowerShell 断言失败，仅上传 readiness artifact，没有 MSI/EXE。
+- 本次修复对齐实际初始化顺序，仍要求所有服务共用隔离目录；长截图回调使用受锁保护的一次性 sender；通知测试桥支持多个监听器。视觉测试改为单独构建测试入口的生产预览，产物与安装器使用的生产 `dist` 分开，保留真实组件和原有断言。Companion 文档与源码摘要同步，并将全部 setup 资源纳入 readiness 上传与离线验包。
+- 上一基线 `2f284de7f75c7a047613738dd19be0fc6e811e8d` 的 focused E2E 曾实际运行 1 项并因 Access is denied 失败；当前启动修正尚未获得 Windows 实跑结果。后续提交必须用自己的 exact-head CI、实际 checkout tree、安装器及回执验证，不能沿用旧 head 的绿灯或把未运行算作通过。
 
 [win1031v1 历史草稿](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/tag/untagged-5b31e62e90da54e887c4) 对应较早 `86263b0c`，保留作为历史交付；[Mac166 草稿](https://github.com/BLACKIELF/AgentHub-AiGoodBro/releases/tag/untagged-240c20af6823a6d3893d) 是另一个平台的交付。均不证明本候选已完成，不重复覆盖或把旧包改名当新包。
 
