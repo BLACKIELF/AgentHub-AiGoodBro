@@ -1758,7 +1758,7 @@ fn launch_native_e2e_child(fake_cli: &Path, python: &Path, proof_directory: temp
         .as_ref()
         .expect("isolated native test desktop was not retained")
         .lp_desktop();
-    let creation_flags = 0x0000_0004 | 0x0000_0400 | 0x0800_0000; // suspended, Unicode environment, no window
+    let creation_flags = 0x0000_0004 | 0x0000_0400; // Match the core fixture; the private desktop provides isolation.
     let launch_api = if elevated {
         "CreateProcessAsUserW"
     } else {

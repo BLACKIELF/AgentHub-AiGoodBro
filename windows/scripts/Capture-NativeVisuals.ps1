@@ -1799,9 +1799,11 @@ function Invoke-WorkspaceScreenshotSmokeTest {
     [IntPtr] $ExpectedForeground,
     [string] $OutputPath,
     [string] $ClientSize,
-    [string] $LogPath
+    [string] $LogPath,
+    [System.Collections.IDictionary] $RunRecord
   )
 
+  Start-CaptureStage -Name 'workspace-screenshot-prepare-and-wait-for-saved-feedback' -Record $RunRecord
   if (Test-Path -LiteralPath $OutputPath) {
     throw 'Native workspace screenshot output already exists.'
   }
@@ -1830,11 +1832,16 @@ function Invoke-WorkspaceScreenshotSmokeTest {
     -OutputPath $OutputPath -OrderPath $orderPath -LogPath $LogPath `
     -Names @($englishSaved, $chineseSaved, $englishFailed, $chineseFailed) `
     -TimeoutMilliseconds 45000
+  Complete-CaptureStage -Record $RunRecord
 
+  Start-CaptureStage -Name 'workspace-screenshot-reacquire-action-button' -Record $RunRecord
   $button = Wait-ForElement -Window $Window -AutomationId 'workspace-screenshot'
   if (-not [bool]$button.Current.IsEnabled) {
     throw 'Native workspace screenshot action remained busy after save.'
   }
+  Complete-CaptureStage -Record $RunRecord
+
+  Start-CaptureStage -Name 'workspace-screenshot-confirm-fixture-removal' -Record $RunRecord
   $fixtureDeadline = (Get-Date).AddSeconds(5)
   do {
     $fixture = Find-ElementByAutomationId -Window $Window -AutomationId 'native-workspace-screenshot-fixture'
@@ -1844,6 +1851,9 @@ function Invoke-WorkspaceScreenshotSmokeTest {
   if ($null -ne $fixture) {
     throw 'Native workspace screenshot fixture remained after DOM restoration.'
   }
+  Complete-CaptureStage -Record $RunRecord
+
+  Start-CaptureStage -Name 'workspace-screenshot-read-restore-save-marker' -Record $RunRecord
   if (-not (Test-Path -LiteralPath $orderPath -PathType Leaf)) {
     throw 'Native workspace screenshot did not write its fixed restore/save order marker.'
   }
@@ -1851,10 +1861,15 @@ function Invoke-WorkspaceScreenshotSmokeTest {
   if ($order -cne 'restored|saved') {
     throw 'Native workspace screenshot did not prove DOM restoration before PNG save.'
   }
+  Complete-CaptureStage -Record $RunRecord
+
+  Start-CaptureStage -Name 'workspace-screenshot-confirm-png-output' -Record $RunRecord
   if (-not (Test-Path -LiteralPath $OutputPath -PathType Leaf)) {
     throw 'Native workspace screenshot action reported success without writing its fixed private PNG.'
   }
+  Complete-CaptureStage -Record $RunRecord
 
+  Start-CaptureStage -Name 'workspace-screenshot-check-png-dimensions-and-fixture-pixel' -Record $RunRecord
   $bitmap = $null
   try {
     Add-Type -AssemblyName System.Drawing
@@ -1878,8 +1893,11 @@ function Invoke-WorkspaceScreenshotSmokeTest {
   } finally {
     if ($null -ne $bitmap) { $bitmap.Dispose() }
   }
+  Complete-CaptureStage -Record $RunRecord
 
+  Start-CaptureStage -Name 'workspace-screenshot-record-png-file-metadata' -Record $RunRecord
   $file = Get-Item -LiteralPath $OutputPath
+  Complete-CaptureStage -Record $RunRecord
   return [ordered]@{
     status = 'saved'
     file = 'runtime/fullscreen/workspace-full.png'
@@ -2661,7 +2679,7 @@ function Invoke-MaximizedCapture {
     # behind Workspace. Keep capturing those surfaces, not the new Home page.
     Open-DashboardWorkspace -Window $window -ProcessId $process.Id -ExpectedForeground $foregroundBefore
     Complete-CaptureStage -Record $sizeRecord
-    Start-CaptureStage -Name 'renderer-and-optional-workspace-screenshot' -Record $sizeRecord
+    Start-CaptureStage -Name 'identify-renderer' -Record $sizeRecord
     $renderer = [NativeVisualCaptureDriver]::FindRenderer($window)
     if ($renderer -eq [IntPtr]::Zero) {
       throw 'Could not identify the task application renderer child HWND.'
@@ -2672,6 +2690,7 @@ function Invoke-MaximizedCapture {
       dashboard_tab_present = $true
       renderer_present = $true
     }
+    Complete-CaptureStage -Record $sizeRecord
     if ($ExerciseWorkspaceScreenshot) {
       $workspaceScreenshotPath = Join-Path $sizeRuntime 'workspace-full.png'
       $screenshotResult = Invoke-WorkspaceScreenshotSmokeTest `
@@ -2680,15 +2699,17 @@ function Invoke-MaximizedCapture {
         -ExpectedForeground $foregroundBefore `
         -OutputPath $workspaceScreenshotPath `
         -ClientSize $sizeRecord.window.verified_client `
-        -LogPath (Join-Path $LogsRoot 'workspace-screenshot-poll.json')
+        -LogPath (Join-Path $LogsRoot 'workspace-screenshot-poll.json') `
+        -RunRecord $sizeRecord
+      Start-CaptureStage -Name 'workspace-screenshot-confirm-foreground-preserved' -Record $sizeRecord
       Assert-ForegroundPreserved `
         -ExpectedForeground $foregroundBefore `
         -TaskWindow $window `
         -Stage 'workspace screenshot capture'
+      Complete-CaptureStage -Record $sizeRecord
       $sizeRecord.workspace_screenshot = $screenshotResult
       $script:workflowManifest.workspace_screenshot = $screenshotResult
     }
-    Complete-CaptureStage -Record $sizeRecord
     Start-CaptureStage -Name 'capture-requested-surfaces' -Record $sizeRecord
     Update-TaskProcessRecords -RootProcessId $process.Id -Records $records
 

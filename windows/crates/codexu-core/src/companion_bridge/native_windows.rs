@@ -848,7 +848,15 @@ impl Receiver {
                         }
                         #[cfg(test)]
                         entered.store(true, Ordering::Release);
-                        let _ = one(&mut pipe, &python_stamp, &bridge, &cancel).await;
+                        let request_result = one(&mut pipe, &python_stamp, &bridge, &cancel).await;
+                        #[cfg(test)]
+                        if let Err(error) = &request_result {
+                            eprintln!(
+                                "AIGOODBRO_COMPANION_TEST_RECEIVER_ERROR code={}",
+                                error.code
+                            );
+                        }
+                        let _ = request_result;
                         #[cfg(test)]
                         entered.store(false, Ordering::Release);
                         // Disconnect only our pipe instance. Adopted task guards

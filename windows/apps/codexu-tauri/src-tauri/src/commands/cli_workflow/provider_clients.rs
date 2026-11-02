@@ -870,7 +870,8 @@ mod tests {
     #[test]
     fn agy_identity_probe_environment_drops_all_inherited_provider_credentials() {
         let dir = tempfile::tempdir().unwrap();
-        let home = dir.path().canonicalize().unwrap();
+        // dependency_probe creates this fresh home with its private owner/DACL.
+        let home = dir.path().join("agy-home");
         let environment = agy_identity_probe_environment(&home).unwrap();
         let applied = environment
             .apply([

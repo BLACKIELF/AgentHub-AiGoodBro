@@ -793,12 +793,7 @@ fn quota_resume_binds_verified_rotation_only_with_the_exact_held_switch_scope() 
             .unwrap(),
         ),
     ] {
-        let path = f
-            ._temp
-            .path()
-            .canonicalize()
-            .unwrap()
-            .join(format!("wrong-{name}.json"));
+        let path = journal_root.join(format!("wrong-{name}.json"));
         let denied = QuotaResumeJournal::new(path.clone()).unwrap();
         let token = denied
             .stage_batch(

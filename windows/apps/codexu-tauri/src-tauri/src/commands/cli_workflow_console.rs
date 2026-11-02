@@ -777,23 +777,50 @@ mod native {
                         }
                         std::thread::sleep(Duration::from_millis(10));
                     }
-                    let count = self.inner.job.active_processes()?;
-                    let child_member = self.child_is_still_in_job()?;
-                    let whole_job_empty = self.inner.has_exited()?;
-                    let guard_held = !writable_open_succeeds(&self.executable);
-                    {
-                        let mut observed = self
-                            .observations
-                            .lock()
-                            .map_err(|_| io::Error::other("test observation lock poisoned"))?;
-                        observed.root_exited_while_child_active =
-                            count == 1 && child_member && !whole_job_empty;
-                        observed.guard_held_after_root_exit = guard_held;
-                    }
-                    if count != 1 || !child_member || whole_job_empty || !guard_held {
-                        return Err(io::Error::other(
-                            "root exit released the owner before the child Job member ended",
-                        ));
+                    // Wait briefly for the exact child-only Job state after root exit.
+                    let child_only_deadline = Instant::now() + Duration::from_secs(2);
+                    loop {
+                        let count = self.inner.job.active_processes()?;
+                        let child_member = self.child_is_still_in_job()?;
+                        let child_running = {
+                            let child = self.child.as_ref().ok_or_else(|| {
+                                io::Error::other("fake CLI child handle is missing")
+                            })?;
+                            match unsafe { WaitForSingleObject(child.raw(), 0) } {
+                                0 => false,
+                                258 => true,
+                                _ => return Err(io::Error::last_os_error()),
+                            }
+                        };
+                        let whole_job_empty = self.inner.has_exited()?;
+                        let guard_held = !writable_open_succeeds(&self.executable);
+                        let child_only =
+                            count == 1 && child_member && child_running && !whole_job_empty;
+                        {
+                            let mut observed = self
+                                .observations
+                                .lock()
+                                .map_err(|_| io::Error::other("test observation lock poisoned"))?;
+                            observed.root_exited_while_child_active = child_only;
+                            observed.guard_held_after_root_exit = guard_held;
+                        }
+                        if child_only && guard_held {
+                            break;
+                        }
+                        if !child_member
+                            || !child_running
+                            || whole_job_empty
+                            || !guard_held
+                            || Instant::now() >= child_only_deadline
+                        {
+                            eprintln!(
+                                "fake CLI owned Job child-only check failed: active_processes={count} child_member={child_member} child_running={child_running} whole_job_empty={whole_job_empty} guard_held={guard_held}"
+                            );
+                            return Err(io::Error::other(format!(
+                                "root exit did not reach child-only Job state; guard held={guard_held}"
+                            )));
+                        }
+                        std::thread::sleep(Duration::from_millis(10));
                     }
                 }
                 self.inner.has_exited()

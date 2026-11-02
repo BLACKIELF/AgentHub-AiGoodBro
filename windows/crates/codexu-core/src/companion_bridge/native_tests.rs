@@ -93,6 +93,9 @@ fn bridge(root: &Path, stamp: &Stamp) -> (Arc<Bridge<ReadOnlyBackend>>, Arc<Read
         b,
     )
 }
+fn fixture_request_io<T>(id: &str, phase: &str, result: std::io::Result<T>) -> T {
+    result.unwrap_or_else(|error| panic!("fixture request id={id} phase={phase} failed: {error}"))
+}
 async fn request(pipe: &str, id: &str, method: Method) -> serde_json::Value {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     let mut client = loop {
@@ -101,7 +104,7 @@ async fn request(pipe: &str, id: &str, method: Method) -> serde_json::Value {
             Err(e) if e.raw_os_error() == Some(231) && tokio::time::Instant::now() < deadline => {
                 tokio::time::sleep(Duration::from_millis(10)).await
             }
-            Err(e) => panic!("fixture pipe open failed: {e}"),
+            Err(e) => panic!("fixture request id={id} phase=pipe_open failed: {e}"),
         }
     };
     let data = Request {
@@ -110,26 +113,44 @@ async fn request(pipe: &str, id: &str, method: Method) -> serde_json::Value {
         method,
     }
     .encode()
-    .unwrap();
-    tokio::time::timeout_at(deadline, client.write_all(&data))
+    .unwrap_or_else(|error| panic!("fixture request id={id} phase=request_encode failed: {error}"));
+    let write = tokio::time::timeout_at(deadline, client.write_all(&data))
         .await
-        .unwrap()
-        .unwrap();
+        .unwrap_or_else(|error| {
+            panic!("fixture request id={id} phase=frame_write timed out: {error}")
+        });
+    fixture_request_io(id, "frame_write", write);
     let mut n = [0; 4];
-    tokio::time::timeout_at(deadline, client.read_exact(&mut n))
+    let read_length = tokio::time::timeout_at(deadline, client.read_exact(&mut n))
         .await
-        .unwrap()
-        .unwrap();
+        .unwrap_or_else(|error| {
+            panic!("fixture request id={id} phase=response_length_read timed out: {error}")
+        });
+    fixture_request_io(id, "response_length_read", read_length);
     let n = u32::from_le_bytes(n) as usize;
-    assert!((1..=MAX_FRAME).contains(&n));
+    assert!(
+        (1..=MAX_FRAME).contains(&n),
+        "fixture request id={id} phase=response_length_validate failed"
+    );
     let mut bytes = vec![0; n];
-    tokio::time::timeout_at(deadline, client.read_exact(&mut bytes))
+    let read_body = tokio::time::timeout_at(deadline, client.read_exact(&mut bytes))
         .await
-        .unwrap()
-        .unwrap();
-    let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(value["abi"], ABI);
-    assert_eq!(value["requestId"], hash(id.as_bytes()));
+        .unwrap_or_else(|error| {
+            panic!("fixture request id={id} phase=response_body_read timed out: {error}")
+        });
+    fixture_request_io(id, "response_body_read", read_body);
+    let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap_or_else(|error| {
+        panic!("fixture request id={id} phase=response_decode failed: {error}")
+    });
+    assert_eq!(
+        value["abi"], ABI,
+        "fixture request id={id} phase=response_abi_validate failed"
+    );
+    assert_eq!(
+        value["requestId"],
+        hash(id.as_bytes()),
+        "fixture request id={id} phase=response_id_validate failed"
+    );
     value
 }
 fn no_background(receiver: &mut Receiver) {
