@@ -1500,13 +1500,266 @@ function Click-OwnedControl {
   )
 }
 
+function Get-WorkspaceScreenshotFeedbackResult {
+  param([string] $Name, [string[]] $Names)
+  if ($Name -ceq $Names[0] -or $Name -ceq $Names[1]) { return 'saved' }
+  if ($Name -ceq $Names[2] -or $Name -ceq $Names[3]) { return 'error' }
+  return 'pending'
+}
+
+function Find-WorkspaceScreenshotFeedbackByName {
+  param(
+    [IntPtr] $Window,
+    [int] $ProcessId,
+    [string[]] $Names,
+    [System.Diagnostics.Stopwatch] $Timer,
+    [long] $DeadlineMilliseconds
+  )
+  $result = [pscustomobject]@{ found = $false; result = 'none'; route = 'none'; control_type = $null; elapsed_ms = [long]$Timer.ElapsedMilliseconds }
+  if ($Timer.ElapsedMilliseconds -ge $DeadlineMilliseconds) { return $result }
+  $root = [System.Windows.Automation.AutomationElement]::FromHandle($Window)
+  if ($root.Current.ProcessId -ne $ProcessId) { throw 'native_screenshot_feedback_window_owner_mismatch' }
+  $nameConditions = @()
+  foreach ($name in $Names) {
+    $nameConditions += [System.Windows.Automation.PropertyCondition]::new(
+      [System.Windows.Automation.AutomationElement]::NameProperty, $name
+    )
+  }
+  $nameCondition = $nameConditions[0]
+  for ($index = 1; $index -lt $nameConditions.Count; $index++) {
+    $nameCondition = [System.Windows.Automation.OrCondition]::new($nameCondition, $nameConditions[$index])
+  }
+  $visible = [System.Windows.Automation.PropertyCondition]::new(
+    [System.Windows.Automation.AutomationElement]::IsOffscreenProperty, $false
+  )
+  $text = [System.Windows.Automation.PropertyCondition]::new(
+    [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+    [System.Windows.Automation.ControlType]::Text
+  )
+  $statusBar = [System.Windows.Automation.PropertyCondition]::new(
+    [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+    [System.Windows.Automation.ControlType]::StatusBar
+  )
+  $preferred = [System.Windows.Automation.AndCondition]::new(
+    $visible, [System.Windows.Automation.AndCondition]::new(
+      [System.Windows.Automation.OrCondition]::new($text, $statusBar), $nameCondition
+    )
+  )
+  $queries = @(
+    [pscustomobject]@{ condition = $preferred; route = 'visible_text_or_status_name' },
+    [pscustomobject]@{ condition = [System.Windows.Automation.AndCondition]::new($visible, $nameCondition); route = 'visible_exact_name' }
+  )
+  foreach ($query in $queries) {
+    if ($Timer.ElapsedMilliseconds -ge $DeadlineMilliseconds) { break }
+    $element = $root.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $query.condition)
+    if ($null -eq $element) { continue }
+    $name = [string]$element.Current.Name
+    $controlType = [string]$element.Current.ControlType.ProgrammaticName
+    $kind = Get-WorkspaceScreenshotFeedbackResult -Name $name -Names $Names
+    $elapsed = [long]$Timer.ElapsedMilliseconds
+    if ($elapsed -ge $DeadlineMilliseconds) { $kind = "late_$kind" }
+    return [pscustomobject]@{
+      found = $true
+      result = $kind
+      route = $query.route
+      control_type = $controlType
+      elapsed_ms = $elapsed
+    }
+  }
+  $result.elapsed_ms = [long]$Timer.ElapsedMilliseconds
+  if ($result.elapsed_ms -ge $DeadlineMilliseconds) { $result.result = 'late' }
+  return $result
+}
+
+function Get-WorkspaceScreenshotFileObservation {
+  param([string] $Path)
+  try {
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf -ErrorAction Stop)) {
+      return [pscustomobject]@{ exists = $false; last_write_utc = $null }
+    }
+    $file = Get-Item -LiteralPath $Path -ErrorAction Stop
+    return [pscustomobject]@{ exists = $true; last_write_utc = $file.LastWriteTimeUtc.ToString('o') }
+  } catch {
+    return [pscustomobject]@{ exists = $null; last_write_utc = $null }
+  }
+}
+
+function Wait-WorkspaceScreenshotFeedback {
+  param(
+    [IntPtr] $Window,
+    [int] $ProcessId,
+    [string] $OutputPath,
+    [string] $OrderPath,
+    [string] $LogPath,
+    [string[]] $Names,
+    [int] $TimeoutMilliseconds
+  )
+  $timer = [System.Diagnostics.Stopwatch]::StartNew()
+  $first = [ordered]@{
+    automation_id_element_elapsed_ms = $null
+    automation_id_feedback_elapsed_ms = $null
+    name_fallback_elapsed_ms = $null
+    workspace_png_elapsed_ms = $null
+    workspace_png_last_write_utc = $null
+    order_marker_elapsed_ms = $null
+    order_marker_last_write_utc = $null
+  }
+  $log = [ordered]@{
+    schema_version = 1
+    scope = 'exact task-owned HWND only; isolated capture profile'
+    started_at_utc = [DateTime]::UtcNow.ToString('o')
+    timeout_ms = $TimeoutMilliseconds
+    result = 'running'
+    failure_code = $null
+    automation_id_queries = 0
+    name_fallback_queries = 0
+    first_observed = $first
+    last_poll = $null
+  }
+  $primaryError = $null
+  $failureCode = 'action_failed'
+  $root = $null
+  $idCondition = $null
+  try {
+    $root = [System.Windows.Automation.AutomationElement]::FromHandle($Window)
+    if ($root.Current.ProcessId -ne $ProcessId) { throw 'native_screenshot_feedback_window_owner_mismatch' }
+    $idCondition = [System.Windows.Automation.PropertyCondition]::new(
+      [System.Windows.Automation.AutomationElement]::AutomationIdProperty,
+      'workspace-screenshot-status'
+    )
+    $feedback = 'none'
+    do {
+      if ($timer.ElapsedMilliseconds -ge $TimeoutMilliseconds) { break }
+      if ($root.Current.ProcessId -ne $ProcessId) { throw 'native_screenshot_feedback_window_owner_mismatch' }
+      if ($timer.ElapsedMilliseconds -ge $TimeoutMilliseconds) { break }
+      $log.automation_id_queries++
+      $status = $root.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $idCondition)
+      $idFound = $null -ne $status
+      $idResult = if ($idFound) { 'pending' } else { 'none' }
+      if ($idFound) {
+        if ($null -eq $first.automation_id_element_elapsed_ms) {
+          $first.automation_id_element_elapsed_ms = [long]$timer.ElapsedMilliseconds
+        }
+        $statusName = [string]$status.Current.Name
+        $statusOffscreen = [bool]$status.Current.IsOffscreen
+        $kind = Get-WorkspaceScreenshotFeedbackResult -Name $statusName -Names $Names
+        $idElapsed = [long]$timer.ElapsedMilliseconds
+        if (-not $statusOffscreen -and $kind -ne 'pending') {
+          if ($null -eq $first.automation_id_feedback_elapsed_ms) {
+            $first.automation_id_feedback_elapsed_ms = $idElapsed
+          }
+          $idResult = if ($idElapsed -lt $TimeoutMilliseconds) { $kind } else { "late_$kind" }
+          if ($idElapsed -lt $TimeoutMilliseconds) { $feedback = $kind }
+        }
+      } else {
+        $idElapsed = [long]$timer.ElapsedMilliseconds
+      }
+
+      $nameFound = $false
+      $nameResult = 'not_needed'
+      $nameRoute = 'not_needed'
+      $nameControlType = $null
+      $nameElapsed = [long]$timer.ElapsedMilliseconds
+      if ($feedback -eq 'none' -and $nameElapsed -lt $TimeoutMilliseconds) {
+        $log.name_fallback_queries++
+        $fallback = Find-WorkspaceScreenshotFeedbackByName `
+          -Window $Window -ProcessId $ProcessId -Names $Names `
+          -Timer $timer -DeadlineMilliseconds $TimeoutMilliseconds
+        $nameFound = [bool]$fallback.found
+        $nameResult = [string]$fallback.result
+        $nameRoute = [string]$fallback.route
+        $nameControlType = $fallback.control_type
+        $nameElapsed = [long]$fallback.elapsed_ms
+        if ($nameFound -and $nameResult -in @('saved', 'error', 'late_saved', 'late_error')) {
+          if ($null -eq $first.name_fallback_elapsed_ms) { $first.name_fallback_elapsed_ms = $nameElapsed }
+          if ($nameElapsed -lt $TimeoutMilliseconds -and $nameResult -in @('saved', 'error')) {
+            $feedback = $nameResult
+          }
+        }
+      }
+
+      $png = Get-WorkspaceScreenshotFileObservation -Path $OutputPath
+      $order = Get-WorkspaceScreenshotFileObservation -Path $OrderPath
+      if ($png.exists -eq $true -and $null -eq $first.workspace_png_elapsed_ms) {
+        $first.workspace_png_elapsed_ms = [long]$timer.ElapsedMilliseconds
+        $first.workspace_png_last_write_utc = $png.last_write_utc
+      }
+      if ($order.exists -eq $true -and $null -eq $first.order_marker_elapsed_ms) {
+        $first.order_marker_elapsed_ms = [long]$timer.ElapsedMilliseconds
+        $first.order_marker_last_write_utc = $order.last_write_utc
+      }
+      $log.last_poll = [ordered]@{
+        elapsed_ms = [long]$timer.ElapsedMilliseconds
+        automation_id_found = $idFound
+        automation_id_result = $idResult
+        automation_id_query_elapsed_ms = $idElapsed
+        name_fallback_found = $nameFound
+        name_fallback_result = $nameResult
+        name_fallback_route = $nameRoute
+        name_fallback_control_type = $nameControlType
+        name_fallback_elapsed_ms = $nameElapsed
+        workspace_png_exists = $png.exists
+        workspace_png_last_write_utc = $png.last_write_utc
+        order_marker_exists = $order.exists
+        order_marker_last_write_utc = $order.last_write_utc
+      }
+      if ($feedback -ne 'none') { break }
+      $remaining = $TimeoutMilliseconds - [long]$timer.ElapsedMilliseconds
+      if ($remaining -gt 0) { Start-Sleep -Milliseconds ([int][math]::Min(150, $remaining)) }
+    } while ($timer.ElapsedMilliseconds -lt $TimeoutMilliseconds)
+
+    if ($feedback -eq 'error') {
+      $failureCode = 'save_feedback_error'
+      throw 'Native workspace screenshot action reported a save failure.'
+    }
+    if ($feedback -ne 'saved') {
+      $failureCode = 'saved_feedback_not_observed_within_45_seconds'
+      throw 'Native workspace screenshot action did not report a saved result.'
+    }
+  } catch {
+    $primaryError = $_
+    $log.result = 'failed'
+    $log.failure_code = $failureCode
+    throw
+  } finally {
+    $elapsed = [long]$timer.ElapsedMilliseconds
+    $png = Get-WorkspaceScreenshotFileObservation -Path $OutputPath
+    $order = Get-WorkspaceScreenshotFileObservation -Path $OrderPath
+    if ($png.exists -eq $true -and $null -eq $first.workspace_png_elapsed_ms) {
+      $first.workspace_png_elapsed_ms = $elapsed
+      $first.workspace_png_last_write_utc = $png.last_write_utc
+    }
+    if ($order.exists -eq $true -and $null -eq $first.order_marker_elapsed_ms) {
+      $first.order_marker_elapsed_ms = $elapsed
+      $first.order_marker_last_write_utc = $order.last_write_utc
+    }
+    $log.elapsed_ms = $elapsed
+    $log.first_observed = $first
+    if ($null -eq $primaryError) { $log.result = 'saved_feedback_observed' }
+    $log.completion_snapshot = [ordered]@{
+      workspace_png_exists = $png.exists
+      workspace_png_last_write_utc = $png.last_write_utc
+      order_marker_exists = $order.exists
+      order_marker_last_write_utc = $order.last_write_utc
+    }
+    try {
+      [System.IO.File]::WriteAllText(
+        $LogPath, ($log | ConvertTo-Json -Depth 6), [System.Text.UTF8Encoding]::new($false)
+      )
+    } catch {
+      if ($null -eq $primaryError) { throw 'Native workspace screenshot polling diagnostic could not be written.' }
+    }
+  }
+}
+
 function Invoke-WorkspaceScreenshotSmokeTest {
   param(
     [IntPtr] $Window,
     [int] $ProcessId,
     [IntPtr] $ExpectedForeground,
     [string] $OutputPath,
-    [string] $ClientSize
+    [string] $ClientSize,
+    [string] $LogPath
   )
 
   if (Test-Path -LiteralPath $OutputPath) {
@@ -1527,28 +1780,16 @@ function Invoke-WorkspaceScreenshotSmokeTest {
   Click-OwnedControl -Window $Window -ProcessId $ProcessId -Element $button `
     -ExpectedForeground $ExpectedForeground -Stage 'workspace screenshot action'
 
-  $deadline = (Get-Date).AddSeconds(45)
-  $status = $null
-  $statusText = ''
+  $orderPath = Join-Path (Split-Path -Parent $OutputPath) 'workspace-order.txt'
   $englishSaved = 'Workspace screenshot saved.'
   $chineseSaved = -join [char[]]@(0x4e3b, 0x754c, 0x9762, 0x957f, 0x622a, 0x56fe, 0x5df2, 0x4fdd, 0x5b58, 0x3002)
-  do {
-    $status = Find-ElementByAutomationId -Window $Window -AutomationId 'workspace-screenshot-status'
-    if ($null -ne $status) {
-      $statusText = [string]$status.Current.Name
-      if ($statusText -ceq $englishSaved -or $statusText -ceq $chineseSaved) { break }
-      if ($statusText -match '(?i)could not save|未能保存') {
-        throw 'Native workspace screenshot action reported a save failure.'
-      }
-    }
-    Start-Sleep -Milliseconds 150
-  } while ((Get-Date) -lt $deadline)
-  if (
-    $null -eq $status -or
-    ($statusText -cne $englishSaved -and $statusText -cne $chineseSaved)
-  ) {
-    throw 'Native workspace screenshot action did not report a saved result.'
-  }
+  $englishFailed = 'Could not save the screenshot. Try again.'
+  $chineseFailed = -join [char[]]@(0x672a, 0x80fd, 0x4fdd, 0x5b58, 0x622a, 0x56fe, 0xff0c, 0x8bf7, 0x91cd, 0x8bd5, 0x3002)
+  Wait-WorkspaceScreenshotFeedback `
+    -Window $Window -ProcessId $ProcessId `
+    -OutputPath $OutputPath -OrderPath $orderPath -LogPath $LogPath `
+    -Names @($englishSaved, $chineseSaved, $englishFailed, $chineseFailed) `
+    -TimeoutMilliseconds 45000
 
   $button = Wait-ForElement -Window $Window -AutomationId 'workspace-screenshot'
   if (-not [bool]$button.Current.IsEnabled) {
@@ -1563,7 +1804,6 @@ function Invoke-WorkspaceScreenshotSmokeTest {
   if ($null -ne $fixture) {
     throw 'Native workspace screenshot fixture remained after DOM restoration.'
   }
-  $orderPath = Join-Path (Split-Path -Parent $OutputPath) 'workspace-order.txt'
   if (-not (Test-Path -LiteralPath $orderPath -PathType Leaf)) {
     throw 'Native workspace screenshot did not write its fixed restore/save order marker.'
   }
@@ -1756,6 +1996,8 @@ function Save-OwnedWindowUiaDiagnostic {
   $nodes = [System.Collections.ArrayList]::new()
   $deadline = (Get-Date).AddSeconds(8)
   $limit = 256
+  $depthLimit = 20
+  $depthLimitReached = $false
   while ($queue.Count -gt 0 -and $nodes.Count -lt $limit -and (Get-Date) -lt $deadline) {
     $item = $queue.Dequeue()
     try {
@@ -1780,12 +2022,14 @@ function Save-OwnedWindowUiaDiagnostic {
         offscreen = $current.IsOffscreen
         bounds = @($bounds.X, $bounds.Y, $bounds.Width, $bounds.Height)
       })
-      if ($item.depth -lt 12) {
+      if ($item.depth -lt $depthLimit) {
         $child = $walker.GetFirstChild($item.element)
         while ($null -ne $child -and ($queue.Count + $nodes.Count) -lt $limit -and (Get-Date) -lt $deadline) {
           $queue.Enqueue([pscustomobject]@{ element = $child; depth = $item.depth + 1 })
           $child = $walker.GetNextSibling($child)
         }
+      } elseif ($null -ne $walker.GetFirstChild($item.element)) {
+        $depthLimitReached = $true
       }
     } catch {
       if ($nodes.Count -lt $limit) {
@@ -1797,9 +2041,9 @@ function Save-OwnedWindowUiaDiagnostic {
     scope = 'exact task-owned HWND only; isolated capture profile'
     owner_verified = $true
     node_limit = $limit
-    depth_limit = 12
+    depth_limit = $depthLimit
     traversal_deadline_seconds = 8
-    truncated = ($queue.Count -gt 0 -or $nodes.Count -ge $limit)
+    truncated = ($queue.Count -gt 0 -or $nodes.Count -ge $limit -or $depthLimitReached)
     nodes = @($nodes)
   }
   [System.IO.File]::WriteAllText($OutputPath, ($diagnostic | ConvertTo-Json -Depth 8), [System.Text.UTF8Encoding]::new($false))
@@ -2295,7 +2539,8 @@ function Invoke-MaximizedCapture {
         -ProcessId $process.Id `
         -ExpectedForeground $foregroundBefore `
         -OutputPath $workspaceScreenshotPath `
-        -ClientSize $sizeRecord.window.verified_client
+        -ClientSize $sizeRecord.window.verified_client `
+        -LogPath (Join-Path $LogsRoot 'workspace-screenshot-poll.json')
       Assert-ForegroundPreserved `
         -ExpectedForeground $foregroundBefore `
         -TaskWindow $window `

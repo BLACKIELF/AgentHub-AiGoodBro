@@ -26,7 +26,7 @@ use std::{
     collections::BTreeMap,
     ffi::c_void,
     fs::{self, File, OpenOptions},
-    io,
+    io::{self, Write},
     net::SocketAddr,
     os::windows::ffi::OsStrExt,
     path::{Path, PathBuf},
@@ -886,6 +886,26 @@ struct NativeTokenMandatoryLabelBuffer {
     sid: NativeSid,
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct NativeLuid {
+    low_part: u32,
+    high_part: i32,
+}
+
+#[repr(C)]
+struct NativeGenericMapping {
+    generic_read: u32,
+    generic_write: u32,
+    generic_execute: u32,
+    generic_all: u32,
+}
+
+struct NativePrivilegeStatus {
+    present: bool,
+    enabled: bool,
+}
+
 fn native_test_environment(proof: &Path, fake_cli: &Path, python: &Path) -> Vec<u16> {
     let mut entries = vec![
         (
@@ -1103,6 +1123,257 @@ impl Drop for NativeHandleOwner {
     }
 }
 
+fn native_token_type_name(token: NativeHandle) -> Result<&'static str, u32> {
+    let mut token_type = 0u32;
+    let mut returned = 0u32;
+    if unsafe {
+        GetTokenInformation(
+            token,
+            8,
+            (&mut token_type as *mut u32).cast(),
+            std::mem::size_of::<u32>() as u32,
+            &mut returned,
+        )
+    } == 0
+    {
+        return Err(unsafe { GetLastError() });
+    }
+    if returned < std::mem::size_of::<u32>() as u32 {
+        return Err(13);
+    }
+    Ok(match token_type {
+        1 => "primary",
+        2 => "impersonation",
+        _ => "other",
+    })
+}
+
+fn native_token_privilege_status(
+    token: NativeHandle,
+    privilege_name: &str,
+) -> Result<NativePrivilegeStatus, u32> {
+    let privilege_name: Vec<u16> = privilege_name.encode_utf16().chain(Some(0)).collect();
+    let mut requested_luid = NativeLuid {
+        low_part: 0,
+        high_part: 0,
+    };
+    if unsafe { LookupPrivilegeValueW(ptr::null(), privilege_name.as_ptr(), &mut requested_luid) }
+        == 0
+    {
+        return Err(unsafe { GetLastError() });
+    }
+
+    let mut needed = 0u32;
+    let initial = unsafe { GetTokenInformation(token, 3, ptr::null_mut(), 0, &mut needed) };
+    if initial == 0 {
+        let error = unsafe { GetLastError() };
+        if error != 122 {
+            return Err(error);
+        }
+    }
+    if needed < std::mem::size_of::<u32>() as u32 {
+        return Err(13);
+    }
+
+    let unit_size = std::mem::size_of::<u64>();
+    let Some(storage_units) = (needed as usize)
+        .checked_add(unit_size - 1)
+        .map(|size| size / unit_size)
+    else {
+        return Err(8);
+    };
+    let mut storage = vec![0u64; storage_units];
+    let mut returned = 0u32;
+    if unsafe { GetTokenInformation(token, 3, storage.as_mut_ptr().cast(), needed, &mut returned) }
+        == 0
+    {
+        return Err(unsafe { GetLastError() });
+    }
+
+    let capacity = storage.len() * unit_size;
+    if returned < 4 || returned as usize > capacity {
+        return Err(13);
+    }
+    let bytes =
+        unsafe { std::slice::from_raw_parts(storage.as_ptr().cast::<u8>(), returned as usize) };
+    let count = u32::from_ne_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize;
+    if count > (bytes.len() - 4) / 12 {
+        return Err(13);
+    }
+
+    for index in 0..count {
+        let offset = 4 + index * 12;
+        let luid = NativeLuid {
+            low_part: u32::from_ne_bytes([
+                bytes[offset],
+                bytes[offset + 1],
+                bytes[offset + 2],
+                bytes[offset + 3],
+            ]),
+            high_part: i32::from_ne_bytes([
+                bytes[offset + 4],
+                bytes[offset + 5],
+                bytes[offset + 6],
+                bytes[offset + 7],
+            ]),
+        };
+        if luid == requested_luid {
+            let attributes = u32::from_ne_bytes([
+                bytes[offset + 8],
+                bytes[offset + 9],
+                bytes[offset + 10],
+                bytes[offset + 11],
+            ]);
+            return Ok(NativePrivilegeStatus {
+                present: true,
+                enabled: attributes & 0x2 != 0,
+            });
+        }
+    }
+
+    Ok(NativePrivilegeStatus {
+        present: false,
+        enabled: false,
+    })
+}
+
+fn native_executable_access_check(token: NativeHandle, executable: &Path) -> Result<bool, u32> {
+    let mut impersonation_token = ptr::null_mut();
+    if unsafe { DuplicateTokenEx(token, 0x0008, ptr::null(), 2, 2, &mut impersonation_token) } == 0
+    {
+        return Err(unsafe { GetLastError() });
+    }
+    // AccessCheck needs an impersonation token; this duplicate is never applied to the thread.
+    let impersonation_token = NativeHandleOwner(impersonation_token);
+
+    let file_name: Vec<u16> = executable
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
+    let security_information = 0x0000_0001 | 0x0000_0002 | 0x0000_0004; // OWNER | GROUP | DACL
+    let mut needed = 0u32;
+    let initial = unsafe {
+        GetFileSecurityW(
+            file_name.as_ptr(),
+            security_information,
+            ptr::null_mut(),
+            0,
+            &mut needed,
+        )
+    };
+    if initial == 0 {
+        let error = unsafe { GetLastError() };
+        if error != 122 {
+            return Err(error);
+        }
+    }
+    if needed == 0 {
+        return Err(13);
+    }
+
+    let unit_size = std::mem::size_of::<u64>();
+    let Some(descriptor_units) = (needed as usize)
+        .checked_add(unit_size - 1)
+        .map(|size| size / unit_size)
+    else {
+        return Err(8);
+    };
+    let mut descriptor = vec![0u64; descriptor_units];
+    let descriptor_capacity = descriptor.len() * unit_size;
+    let mut descriptor_size = 0u32;
+    if unsafe {
+        GetFileSecurityW(
+            file_name.as_ptr(),
+            security_information,
+            descriptor.as_mut_ptr().cast(),
+            needed,
+            &mut descriptor_size,
+        )
+    } == 0
+    {
+        return Err(unsafe { GetLastError() });
+    }
+    if descriptor_size as usize > descriptor_capacity {
+        return Err(122);
+    }
+
+    let mapping = NativeGenericMapping {
+        generic_read: 0x0012_0089,
+        generic_write: 0x0012_0116,
+        generic_execute: 0x0012_00a0,
+        generic_all: 0x001f_01ff,
+    };
+    let mut desired_access = 0x8000_0000 | 0x2000_0000;
+    unsafe { MapGenericMask(&mut desired_access, &mapping) };
+
+    let mut privilege_set = [0u64; 128];
+    let mut privilege_set_length = std::mem::size_of_val(&privilege_set) as u32;
+    let mut granted_access = 0u32;
+    let mut access_status = 0i32;
+    if unsafe {
+        AccessCheck(
+            descriptor.as_mut_ptr().cast(),
+            impersonation_token.0,
+            desired_access,
+            &mapping,
+            privilege_set.as_mut_ptr().cast(),
+            &mut privilege_set_length,
+            &mut granted_access,
+            &mut access_status,
+        )
+    } == 0
+    {
+        return Err(unsafe { GetLastError() });
+    }
+    Ok(access_status != 0)
+}
+
+fn native_format_token_type(result: Result<&'static str, u32>) -> String {
+    match result {
+        Ok(token_type) => token_type.to_owned(),
+        Err(error) => format!("error:{error}"),
+    }
+}
+
+fn native_format_privilege_status(result: Result<NativePrivilegeStatus, u32>) -> String {
+    match result {
+        Ok(status) => format!("present={} enabled={}", status.present, status.enabled),
+        Err(error) => format!("error:{error}"),
+    }
+}
+
+fn native_format_access_status(result: Result<bool, u32>) -> String {
+    match result {
+        Ok(true) => "allowed".to_owned(),
+        Ok(false) => "denied".to_owned(),
+        Err(error) => format!("error:{error}"),
+    }
+}
+
+fn report_native_launch_diagnostics(
+    original_token: NativeHandle,
+    child_token: NativeHandle,
+    executable: &Path,
+) {
+    let original_type = native_format_token_type(native_token_type_name(original_token));
+    let child_type = native_format_token_type(native_token_type_name(child_token));
+    let impersonate = native_format_privilege_status(native_token_privilege_status(
+        original_token,
+        "SeImpersonatePrivilege",
+    ));
+    let increase_quota = native_format_privilege_status(native_token_privilege_status(
+        original_token,
+        "SeIncreaseQuotaPrivilege",
+    ));
+    let executable_access =
+        native_format_access_status(native_executable_access_check(child_token, executable));
+    let _ = writeln!(
+        io::stderr(),
+        "native E2E launch diagnostics: original_token_type={original_type} child_token_type={child_type} se_impersonate={impersonate} se_increase_quota={increase_quota} executable_dacl_read_execute={executable_access}"
+    );
+}
+
 #[repr(C)]
 struct NativeStartupInfo {
     size: u32,
@@ -1180,6 +1451,37 @@ unsafe extern "system" {
         buffer: *mut c_void,
         size: u32,
         needed: *mut u32,
+    ) -> i32;
+    fn LookupPrivilegeValueW(
+        system_name: *const u16,
+        name: *const u16,
+        luid: *mut NativeLuid,
+    ) -> i32;
+    fn DuplicateTokenEx(
+        existing: NativeHandle,
+        desired_access: u32,
+        attributes: *const c_void,
+        impersonation_level: u32,
+        token_type: u32,
+        duplicate: *mut NativeHandle,
+    ) -> i32;
+    fn GetFileSecurityW(
+        file_name: *const u16,
+        requested_information: u32,
+        descriptor: *mut c_void,
+        length: u32,
+        needed: *mut u32,
+    ) -> i32;
+    fn MapGenericMask(access: *mut u32, mapping: *const NativeGenericMapping);
+    fn AccessCheck(
+        descriptor: *const c_void,
+        client_token: NativeHandle,
+        desired_access: u32,
+        mapping: *const NativeGenericMapping,
+        privilege_set: *mut c_void,
+        privilege_set_length: *mut u32,
+        granted_access: *mut u32,
+        access_status: *mut i32,
     ) -> i32;
     fn SetTokenInformation(
         token: NativeHandle,
@@ -1424,6 +1726,10 @@ fn launch_native_e2e_child(fake_cli: &Path, python: &Path, proof_directory: temp
         native_validate_child_token(original_token.0, original_token.0);
         NativeHandleOwner(ptr::null_mut())
     };
+    if elevated {
+        // Diagnostics are fail-open and never gate the real, Job-isolated child launch.
+        report_native_launch_diagnostics(original_token.0, token.0, &executable);
+    }
     let creation_flags = 0x0000_0004 | 0x0000_0400 | 0x0800_0000; // suspended, Unicode environment, no window
     let launch_api = if elevated {
         "CreateProcessWithTokenW"
