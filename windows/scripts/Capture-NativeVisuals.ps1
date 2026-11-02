@@ -1519,7 +1519,11 @@ function Save-WorkspaceScreenshotPollLog {
       [System.Text.UTF8Encoding]::new($false)
     )
     if ([System.IO.File]::Exists($Path)) {
-      [System.IO.File]::Replace($temporaryPath, $Path, $null)
+      [System.IO.File]::Replace(
+        $temporaryPath,
+        $Path,
+        [System.Management.Automation.Language.NullString]::Value
+      )
     } else {
       [System.IO.File]::Move($temporaryPath, $Path)
     }
@@ -2465,7 +2469,11 @@ function Save-WorkflowManifest {
         [System.Text.UTF8Encoding]::new($false)
       )
       if ([System.IO.File]::Exists($script:manifestPath)) {
-        [System.IO.File]::Replace($temporaryPath, $script:manifestPath, $null)
+        [System.IO.File]::Replace(
+          $temporaryPath,
+          $script:manifestPath,
+          [System.Management.Automation.Language.NullString]::Value
+        )
       } else {
         [System.IO.File]::Move($temporaryPath, $script:manifestPath)
       }

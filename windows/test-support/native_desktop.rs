@@ -497,26 +497,43 @@ enum Preflight {
     Absent,
 }
 
+#[derive(Clone, Copy)]
+enum TokenInformationSize {
+    Exact(usize),
+    AtLeast(usize),
+}
+
 fn token_identity(token: Handle) -> Result<TokenIdentity, NativeDesktopError> {
     let user_information = token_information(
         token,
         TOKEN_USER_CLASS,
         "token_user",
-        std::mem::size_of::<SidAndAttributes>(),
+        TokenInformationSize::AtLeast(std::mem::size_of::<SidAndAttributes>()),
     )?;
     let user = unsafe { ptr::read_unaligned(user_information.as_ptr().cast::<SidAndAttributes>()) };
     if user.sid.is_null() || unsafe { IsValidSid(user.sid) } == 0 {
         return Err(NativeDesktopError::new("token_user_sid", None));
     }
     let user_sid = sid_to_string(user.sid)?;
-    let session = token_information(token, TOKEN_SESSION_ID_CLASS, "token_session", 4)?;
-    let elevation = token_information(token, TOKEN_ELEVATION_CLASS, "token_elevation", 4)?;
+    let dword_size = std::mem::size_of::<u32>();
+    let session = token_information(
+        token,
+        TOKEN_SESSION_ID_CLASS,
+        "token_session",
+        TokenInformationSize::Exact(dword_size),
+    )?;
+    let elevation = token_information(
+        token,
+        TOKEN_ELEVATION_CLASS,
+        "token_elevation",
+        TokenInformationSize::Exact(dword_size),
+    )?;
     let elevated = unsafe { ptr::read_unaligned(elevation.as_ptr().cast::<u32>()) != 0 };
     let integrity_information = token_information(
         token,
         TOKEN_INTEGRITY_LEVEL_CLASS,
         "token_integrity",
-        std::mem::size_of::<SidAndAttributes>(),
+        TokenInformationSize::AtLeast(std::mem::size_of::<SidAndAttributes>()),
     )?;
     let integrity =
         unsafe { ptr::read_unaligned(integrity_information.as_ptr().cast::<SidAndAttributes>()) };
@@ -539,20 +556,57 @@ fn token_information(
     token: Handle,
     class: u32,
     stage: &'static str,
-    minimum_size: usize,
+    size_rule: TokenInformationSize,
 ) -> Result<Vec<u64>, NativeDesktopError> {
+    if let TokenInformationSize::Exact(expected) = size_rule {
+        if expected != std::mem::size_of::<u32>() {
+            return Err(NativeDesktopError::new(stage, None));
+        }
+        let mut value = 0u32;
+        let mut returned = 0u32;
+        let read = unsafe {
+            GetTokenInformation(
+                token,
+                class,
+                (&mut value as *mut u32).cast(),
+                expected as u32,
+                &mut returned,
+            )
+        };
+        if read == 0 {
+            let error = unsafe { GetLastError() };
+            return Err(NativeDesktopError::new(stage, Some(error)));
+        }
+        if returned as usize != expected {
+            return Err(NativeDesktopError::new(stage, None));
+        }
+
+        let mut buffer = vec![0u64; 1];
+        unsafe { ptr::write_unaligned(buffer.as_mut_ptr().cast::<u32>(), value) };
+        return Ok(buffer);
+    }
+
+    let TokenInformationSize::AtLeast(minimum_size) = size_rule else {
+        unreachable!("exact token-information size returned above");
+    };
     let mut needed = 0u32;
     let first = unsafe { GetTokenInformation(token, class, ptr::null_mut(), 0, &mut needed) };
-    if first != 0 || unsafe { GetLastError() } != ERROR_INSUFFICIENT_BUFFER {
-        return Err(last_error(stage));
+    if first != 0 {
+        return Err(NativeDesktopError::new(stage, None));
+    }
+    let probe_error = unsafe { GetLastError() };
+    if probe_error != ERROR_INSUFFICIENT_BUFFER {
+        return Err(NativeDesktopError::new(stage, Some(probe_error)));
     }
     if (needed as usize) < minimum_size || needed > 1024 * 1024 {
         return Err(NativeDesktopError::new(stage, None));
     }
     let units = (needed as usize).div_ceil(std::mem::size_of::<u64>());
+    // The token data contains pointers and SIDs; u64 storage gives the returned
+    // buffer stable alignment while the API still receives the exact byte size.
     let mut buffer = vec![0u64; units];
     let mut returned = 0u32;
-    if unsafe {
+    let read = unsafe {
         GetTokenInformation(
             token,
             class,
@@ -560,11 +614,18 @@ fn token_information(
             needed,
             &mut returned,
         )
-    } == 0
-        || (returned as usize) < minimum_size
+    };
+    if read == 0 {
+        let error = unsafe { GetLastError() };
+        return Err(NativeDesktopError::new(stage, Some(error)));
+    }
+    if (returned as usize) < minimum_size
+        || returned != needed
         || returned as usize > buffer.len() * std::mem::size_of::<u64>()
     {
-        return Err(last_error(stage));
+        // A successful API call with an inconsistent length is a local
+        // validation failure; GetLastError would only return a stale code.
+        return Err(NativeDesktopError::new(stage, None));
     }
     Ok(buffer)
 }
@@ -1026,6 +1087,7 @@ mod native_desktop_smoke {
 
     const TOKEN_SMOKE_ACCESS: u32 = 0x008b;
     const CREATE_RESTRICTED_TOKEN_FLAGS: u32 = 5;
+    const TOKEN_TYPE_CLASS: u32 = 8;
 
     #[repr(C)]
     struct TokenMandatoryLabel {
@@ -1137,8 +1199,13 @@ mod native_desktop_smoke {
             "open desktop smoke primary token failed (code=0x{open_error:08x})"
         );
         let parent = OwnedHandle(raw_parent);
-        let token_type =
-            token_information(parent.0, 8, "token_type", 4).expect("read desktop smoke token type");
+        let token_type = token_information(
+            parent.0,
+            TOKEN_TYPE_CLASS,
+            "token_type",
+            TokenInformationSize::Exact(std::mem::size_of::<u32>()),
+        )
+        .expect("read desktop smoke token type");
         assert_eq!(
             unsafe { ptr::read_unaligned(token_type.as_ptr().cast::<u32>()) },
             1,
