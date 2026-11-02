@@ -1413,6 +1413,8 @@ body {
 .account-more-content button { display: flex; align-items: center; gap: 8px; width: 100%; padding: 8px; text-align: left; font-size: 12px; border-radius: 5px; }
 .account-more-content button:hover:not(:disabled) { background: var(--surface-inset); }
 .account-more-content button:disabled { opacity: .4; }
+.managed-account-card .account-more-content { background: var(--surface); }
+.account-more-heading { padding: 5px 8px 2px; font-size: 11px; color: var(--text-secondary); }
 .workspace-shell .account-quota { min-width: 0; font-size: 10px; }
 .workspace-shell .account-quota-windows { display: flex; flex-wrap: wrap; justify-content: flex-start; gap: 8px; }
 .workspace-shell .account-quota-window { min-width: 0; flex: 1 1 60px; max-width: 150px; padding: 7px 4px; background: var(--surface-inset); border: 1px solid var(--border); border-radius: 8px; text-align: center; }
@@ -1712,6 +1714,10 @@ body {
 .notification-card-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
 .notification-options > fieldset { margin-top: 9px; min-width: 0; }
 .notification-options legend { font-size: 10px; color: var(--text-secondary); }
+.notification-conversation-select { display: grid; gap: 4px; margin-top: 9px; color: var(--text-secondary); font-size: 10px; }
+.notification-conversation-select select { min-width: 0; width: 100%; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-inset); color: var(--text-primary); }
+.notification-conversation-consent { display: flex; align-items: flex-start; gap: 6px; margin-top: 8px; color: var(--text-secondary); font-size: 10px; }
+.notification-conversation-consent input { margin-top: 2px; flex: 0 0 auto; }
 .notification-presets { display: flex; gap: 5px; margin: 7px 0; }
 .notification-presets > button { padding: 4px 8px; border-radius: 6px; font-size: 10px; }
 .notification-option-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 7px; margin-bottom: 9px; }

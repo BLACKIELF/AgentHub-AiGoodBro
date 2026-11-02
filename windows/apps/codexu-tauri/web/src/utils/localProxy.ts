@@ -203,12 +203,46 @@ export function sharedQuotaReserve(preferences: ProxyPreferences, accounts: Prox
 }
 
 // Membership never changes display order. Last-use overrides also let Pro opt out.
+export type ProxyPreferenceField = 'enabled' | 'priority' | 'last';
+export type ProxyAccountRouting = { enabled: boolean; priority: boolean; last: boolean };
+
+export function proxyAccountRouting(preferences: ProxyPreferences, accountId: string, planType: string | null): ProxyAccountRouting {
+  id(accountId);
+  return {
+    enabled: preferences.enabledIds.includes(accountId),
+    priority: preferences.priorityIds.includes(accountId),
+    last: Object.prototype.hasOwnProperty.call(preferences.lastOverrides, accountId)
+      ? preferences.lastOverrides[accountId]
+      : preferences.lastIds.includes(accountId) || ['pro', 'prolite'].includes(planType ?? ''),
+  };
+}
+
 export function proxyParticipation(preferences: ProxyPreferences, accountId: string, field: 'enabled' | 'priority' | 'last', enabled: boolean): ProxyPreferences {
   id(accountId);
   const set = (values: string[], on: boolean) => on ? [...new Set([...values, accountId])] : values.filter(value => value !== accountId);
   if (field === 'enabled') return { ...preferences, enabledIds: set(preferences.enabledIds, enabled) };
   if (field === 'priority') return { ...preferences, priorityIds: set(preferences.priorityIds, enabled), ...(enabled ? { lastIds: set(preferences.lastIds, false), lastOverrides: { ...preferences.lastOverrides, [accountId]: false } } : {}) };
   return { ...preferences, lastIds: set(preferences.lastIds, enabled), lastOverrides: { ...preferences.lastOverrides, [accountId]: enabled }, ...(enabled ? { priorityIds: set(preferences.priorityIds, false) } : {}) };
+}
+
+export function moveProxyAccount<T extends { id: string; planType?: string | null }>(preferences: ProxyPreferences, accounts: T[], accountId: string, targetId: string): ProxyPreferences {
+  id(accountId); id(targetId);
+  const current = accounts.find(account => account.id === accountId), target = accounts.find(account => account.id === targetId);
+  if (!current || !target || accountId === targetId) return preferences;
+  const order = [...preferences.order, ...accounts.map(account => account.id).filter(value => !preferences.order.includes(value))];
+  const from = order.indexOf(accountId), to = order.indexOf(targetId);
+  if (from < 0 || to < 0) return preferences;
+  [order[from], order[to]] = [order[to], order[from]];
+  let next = { ...preferences, order };
+  const sourceRouting = proxyAccountRouting(preferences, accountId, current.planType ?? null);
+  const targetRouting = proxyAccountRouting(preferences, targetId, target.planType ?? null);
+  if (sourceRouting.priority !== targetRouting.priority || sourceRouting.last !== targetRouting.last) {
+    // The helper groups priority and last-use ahead of manual order. Adopt the
+    // adjacent row's group when crossing it so the saved move changes routing.
+    next = proxyParticipation(next, accountId, 'priority', targetRouting.priority);
+    next = proxyParticipation(next, accountId, 'last', targetRouting.last);
+  }
+  return next;
 }
 
 export function proxyDisplayOrder<T extends { id: string }>(accounts: T[], preferences: ProxyPreferences): T[] {

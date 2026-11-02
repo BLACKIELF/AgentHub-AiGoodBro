@@ -1,6 +1,9 @@
 import { test, expect } from '@playwright/test';
+import { fileURLToPath } from 'node:url';
 import { FIXED_NOW_ISO, SYNTHETIC_DASHBOARD, SYNTHETIC_SETTINGS } from './synthetic-fixtures.mjs';
 import { installTauriStub } from './tauri-stub.mjs';
+
+const workspaceScreenshotScript = fileURLToPath(new URL('../../src/utils/workspaceScreenshotCapture.js', import.meta.url));
 
 async function workspace(page, { language = 'en', theme = 'dark' } = {}) {
   await page.clock.setFixedTime(new Date(FIXED_NOW_ISO));
@@ -15,9 +18,14 @@ async function workspace(page, { language = 'en', theme = 'dark' } = {}) {
     ];
     const preferences = new Map();
     window.workspaceWrites = [];
+    window.workspaceScreenshotCalls = 0;
     window.workspaceNavigationListeners = [];
     window.emitWorkspaceNavigation = payload => window.workspaceNavigationListeners.forEach(handler => window[`_${handler}`]({ event: 'workspace:navigate', id: 451, payload }));
     window.__TAURI_INTERNALS__.invoke = async (command, args) => {
+      if (command === 'save_workspace_screenshot') {
+        window.workspaceScreenshotCalls += 1;
+        return { status: 'saved' };
+      }
       if (command === 'plugin:event|listen' && args.event === 'workspace:navigate') window.workspaceNavigationListeners.push(args.handler);
       if (command === 'list_profiles') return structuredClone(profiles);
       if (command === 'get_account_workflow' || command === 'set_account_workflow') {
@@ -168,4 +176,110 @@ test('participation changes no display order and more menu keeps destructive act
   await page.keyboard.press('Escape');
   await expect(first.locator('details.account-more')).not.toHaveAttribute('open');
   await expect(first.locator('details.account-more > summary')).toBeFocused();
+});
+
+test('workspace screenshot action is visible, invokes native save, and reports readback state', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 760 });
+  await workspace(page);
+  const button = page.getByRole('button', { name: 'Save full workspace screenshot (PNG)', exact: true });
+  await expect(button).toBeVisible();
+  await expect(button).toBeEnabled();
+  await expect(button).toHaveScreenshot('workspace-screenshot-button.png');
+  const png = await button.screenshot();
+  expect([...png.subarray(0, 8)]).toEqual([137, 80, 78, 71, 13, 10, 26, 10]);
+  expect(png.readUInt32BE(16)).toBeGreaterThan(0);
+  expect(png.readUInt32BE(20)).toBeGreaterThan(0);
+
+  await button.click();
+  await expect(page.getByText('Workspace screenshot saved.', { exact: true })).toBeVisible();
+  expect(await page.evaluate(() => window.workspaceScreenshotCalls)).toBe(1);
+  expect(await page.evaluate(() => window.workspaceWrites)).toEqual([]);
+});
+
+test('workspace screenshot capture expands full height, preserves hidden pages, restores layout and scroll, and fails closed on dialogs', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 420 });
+  await workspace(page);
+  await page.locator('#workspace-nav-accounts').click();
+  const before = await page.evaluate(() => {
+    const main = document.getElementById('windows-home');
+    const viewport = document.querySelector('.home-resizable-viewport');
+    const fixtureSpacer = document.createElement('div');
+    fixtureSpacer.dataset.testid = 'screenshot-layout-spacer';
+    fixtureSpacer.setAttribute('aria-hidden', 'true');
+    fixtureSpacer.style.height = '900px';
+    viewport.firstElementChild.append(fixtureSpacer);
+    const mainSpacer = document.createElement('div');
+    mainSpacer.dataset.testid = 'screenshot-main-layout-spacer';
+    mainSpacer.setAttribute('aria-hidden', 'true');
+    mainSpacer.style.height = '900px';
+    main.append(mainSpacer);
+    main.style.height = '180px';
+    main.style.flex = '1 1 auto';
+    main.style.overflow = 'auto';
+    main.scrollTop = 80;
+    viewport.style.maxHeight = '120px';
+    viewport.style.overflow = 'auto';
+    viewport.scrollTop = 35;
+    window.scrollTo(0, 12);
+    return {
+      shellStyle: document.querySelector('.workspace-shell').getAttribute('style') || null,
+      mainStyle: main.getAttribute('style'),
+      viewportStyle: viewport.getAttribute('style'),
+      mainScroll: main.scrollTop,
+      viewportScroll: viewport.scrollTop,
+      windowScroll: [window.scrollX, window.scrollY],
+    };
+  });
+  expect(before.mainScroll).toBeGreaterThan(0);
+  expect(before.viewportScroll).toBeGreaterThan(0);
+
+  await page.addScriptTag({ path: workspaceScreenshotScript });
+  await page.evaluate(() => { window.__AIGOODBRO_NATIVE_WORKSPACE_SCREENSHOT_FIXTURE__ = true; });
+  const prepared = await page.evaluate(() => window.__aigoodbroWorkspaceScreenshotCapture.prepare());
+  expect(prepared.ok).toBe(true);
+  expect(prepared.width).toBe(1280);
+  expect(prepared.height).toBeGreaterThan(420);
+  await expect(page.getByRole('note', { name: 'Native workspace screenshot capture fixture' })).toBeVisible();
+  expect(await page.locator('#windows-usage').evaluate(element => element.hidden)).toBe(true);
+  expect(await page.locator('#windows-home').evaluate(element => getComputedStyle(element).overflowY)).toBe('visible');
+  expect(await page.locator('.home-resizable-viewport').evaluate(element => getComputedStyle(element).overflowY)).toBe('visible');
+
+  await page.evaluate(() => window.__aigoodbroWorkspaceScreenshotCapture.restore());
+  await expect(page.getByRole('note', { name: 'Native workspace screenshot capture fixture' })).toHaveCount(0);
+  expect(await page.evaluate(() => window.__AIGOODBRO_NATIVE_WORKSPACE_SCREENSHOT_FIXTURE__)).toBeUndefined();
+  await expect.poll(() => page.evaluate(() => {
+    const main = document.getElementById('windows-home');
+    const viewport = document.querySelector('.home-resizable-viewport');
+    return {
+      shellStyle: document.querySelector('.workspace-shell').getAttribute('style') || null,
+      mainStyle: main.getAttribute('style'),
+      viewportStyle: viewport.getAttribute('style'),
+      mainScroll: main.scrollTop,
+      viewportScroll: viewport.scrollTop,
+      windowScroll: [window.scrollX, window.scrollY],
+    };
+  })).toEqual(before);
+
+  await page.evaluate(() => {
+    const dialog = document.createElement('div');
+    dialog.setAttribute('role', 'dialog');
+    document.body.append(dialog);
+  });
+  const rejected = await page.evaluate(() => window.__aigoodbroWorkspaceScreenshotCapture.prepare());
+  expect(rejected).toEqual({ ok: false, error: 'dialog_open' });
+  expect(await page.evaluate(() => window.__aigoodbroWorkspaceScreenshotCapture.state)).toBeNull();
+});
+
+test('cancelling the native screenshot save does not report a saved file or leave capture busy', async ({ page }) => {
+  await workspace(page);
+  await page.evaluate(() => {
+    const original = window.__TAURI_INTERNALS__.invoke;
+    window.__TAURI_INTERNALS__.invoke = async (command, args) => command === 'save_workspace_screenshot'
+      ? { status: 'cancelled' }
+      : original(command, args);
+  });
+  const button = page.getByRole('button', { name: 'Save full workspace screenshot (PNG)', exact: true });
+  await button.click();
+  await expect(button).toBeEnabled();
+  await expect(page.locator('.workspace-header-actions > [role="status"]')).toHaveCount(0);
 });

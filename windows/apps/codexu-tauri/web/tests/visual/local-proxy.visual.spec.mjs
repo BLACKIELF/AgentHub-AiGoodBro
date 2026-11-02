@@ -16,8 +16,11 @@ async function proxyPage(page, { language = 'en', theme = 'dark' } = {}) {
     ];
     window.proxyWrites = [];
     window.proxyReads = [];
+    window.proxyRoutingWrites = [];
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async value => { window.proxyCopied = value; } } });
     const accounts = () => window.proxyCatalog.map(a => ({ ...a, isEnabled: window.proxyPrefs.enabledIds.includes(a.id), isPriority: window.proxyPrefs.priorityIds.includes(a.id), isLast: window.proxyPrefs.lastOverrides[a.id] ?? (window.proxyPrefs.lastIds.includes(a.id) || ['pro', 'prolite'].includes(a.planType)) }));
+    const setMembership = (key, id, enabled) => { window.proxyPrefs[key] = enabled ? [...new Set([...window.proxyPrefs[key], id])] : window.proxyPrefs[key].filter(value => value !== id); };
+    const setLast = (id, last) => { window.proxyPrefs.lastOverrides[id] = last; setMembership('lastIds', id, last); setMembership('priorityIds', id, false); };
     window.__TAURI_INTERNALS__.invoke = async (command, args) => {
       if (['get_local_proxy_status', 'get_local_proxy_preferences', 'get_local_proxy_accounts', 'refresh_local_proxy_accounts', 'get_local_proxy_connection'].includes(command)) window.proxyReads.push(command);
       if (command === 'get_local_proxy_status') {
@@ -33,6 +36,29 @@ async function proxyPage(page, { language = 'en', theme = 'dark' } = {}) {
         if (window.failProxySave) throw 'save_failed';
         if (window.holdProxySave) return new Promise(resolve => { window.finishProxySave = () => { window.proxyPrefs = structuredClone(args.preferences); resolve(structuredClone(window.proxyPrefs)); }; });
         window.proxyPrefs = structuredClone(args.preferences); return structuredClone(window.proxyPrefs);
+      }
+      if (command === 'set_local_proxy_account_preference') {
+        window.proxyRoutingWrites.push({ command, ...args });
+        if (window.failProxySave) throw 'save_failed';
+        if (args.field === 'enabled') setMembership('enabledIds', args.accountId, args.enabled);
+        else if (args.field === 'priority') { if (args.enabled) setLast(args.accountId, false); setMembership('priorityIds', args.accountId, args.enabled); }
+        else setLast(args.accountId, args.enabled);
+        return structuredClone(window.proxyPrefs);
+      }
+      if (command === 'move_local_proxy_account') {
+        window.proxyRoutingWrites.push({ command, ...args });
+        if (window.failProxySave) throw 'save_failed';
+        const order = [...window.proxyPrefs.order, ...window.proxyCatalog.map(account => account.id).filter(id => !window.proxyPrefs.order.includes(id))];
+        const from = order.indexOf(args.accountId), to = order.indexOf(args.targetId);
+        if (from < 0 || to < 0) throw 'identity';
+        [order[from], order[to]] = [order[to], order[from]];
+        const last = id => Object.prototype.hasOwnProperty.call(window.proxyPrefs.lastOverrides, id) ? window.proxyPrefs.lastOverrides[id] : window.proxyPrefs.lastIds.includes(id) || ['pro', 'prolite'].includes(window.proxyCatalog.find(account => account.id === id)?.planType);
+        const priority = id => window.proxyPrefs.priorityIds.includes(id);
+        if (last(args.accountId) !== last(args.targetId) || priority(args.accountId) !== priority(args.targetId)) {
+          setLast(args.accountId, last(args.targetId)); setMembership('priorityIds', args.accountId, priority(args.targetId));
+        }
+        window.proxyPrefs.order = order;
+        return structuredClone(window.proxyPrefs);
       }
       if (command === 'set_local_proxy_shared_quota_used_limit') {
         window.proxyWrites.push({ command, limit: args.limit });
@@ -108,6 +134,22 @@ test('participation never reorders cards; Pro last-use is cancellable and exclud
   await b.locator('.account-more > summary').click();
   await b.getByRole('button', { name: 'Move down' }).click();
   expect(await panel.locator('.proxy-account').evaluateAll(rows => rows.map(row => row.dataset.testid))).toEqual(['proxy-account-a', 'proxy-account-b', 'proxy-account-c']);
+  expect(await page.evaluate(() => window.proxyPrefs.lastOverrides.b)).toBe(false);
+  expect(await page.evaluate(() => window.proxyRoutingWrites.map(write => write.command))).toEqual([
+    'set_local_proxy_account_preference', 'set_local_proxy_account_preference',
+    'set_local_proxy_account_preference', 'set_local_proxy_account_preference',
+    'move_local_proxy_account',
+  ]);
+});
+
+test('a failed participation save keeps the existing control state', async ({ page }) => {
+  const panel = await proxyPage(page), c = panel.getByTestId('proxy-account-c');
+  await page.evaluate(() => { window.failProxySave = true; });
+  await c.getByRole('button', { name: 'Disabled', exact: true }).click();
+  await expect(panel.getByRole('alert')).toContainText('Saving failed. Your edits have been kept.');
+  await expect(c.getByRole('button', { name: 'Disabled', exact: true })).toBeVisible();
+  expect(await page.evaluate(() => window.proxyPrefs.enabledIds)).toEqual(['a', 'b']);
+  expect(await page.evaluate(() => window.proxyRoutingWrites.at(-1))).toEqual({ command: 'set_local_proxy_account_preference', accountId: 'c', field: 'enabled', enabled: true });
 });
 
 test('native hot enrollment refreshes participation without restarting and preserves other opt-outs', async ({ page }) => {

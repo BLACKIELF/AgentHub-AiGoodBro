@@ -1125,8 +1125,11 @@ impl AccountManager {
             });
             self.require_accepting()?;
             ticket.write_lease.recheck()?;
-            policy()?;
+            guard
+                .claim_commit_point()
+                .map_err(|_| fail("switch_cancelled"))?;
             store.save()?;
+            guard.commit_succeeded();
             Ok(())
         })();
         if let Err(error) = result {
@@ -2270,4 +2273,300 @@ fn validate_desktop_claim(id: &str, claim: &crate::proxy::DesktopWriterClaim) ->
         return Err(fail("identity_mismatch"));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod switch_commit_hook_tests {
+    use super::*;
+    use crate::accounts::{
+        AccountIdentity, AccountRuntime, CredentialWritePurpose, LoginAuthorization,
+        SwitchCommitGuard, SwitchMaintenanceLease, VerifiedCredential,
+    };
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+    use serde_json::json;
+    use std::{
+        path::Path,
+        sync::atomic::{AtomicUsize, Ordering},
+    };
+
+    struct Protector;
+    impl SecretProtector for Protector {
+        fn seal(&self, context: &str, bytes: &[u8]) -> AccountResult<Vec<u8>> {
+            let mut sealed = context.as_bytes().to_vec();
+            sealed.push(0);
+            sealed.extend(bytes.iter().map(|byte| byte ^ 0x37));
+            Ok(sealed)
+        }
+
+        fn unseal(&self, context: &str, bytes: &[u8]) -> AccountResult<Vec<u8>> {
+            let mut prefix = context.as_bytes().to_vec();
+            prefix.push(0);
+            if !bytes.starts_with(&prefix) {
+                return Err(super::fail("synthetic_unseal_failed"));
+            }
+            Ok(bytes[prefix.len()..]
+                .iter()
+                .map(|byte| byte ^ 0x37)
+                .collect())
+        }
+    }
+
+    fn auth(name: &str) -> Vec<u8> {
+        let jwt = format!(
+            "synthetic.{}.fixture",
+            URL_SAFE_NO_PAD.encode(
+                serde_json::to_vec(&json!({
+                    "email": format!("{name}@fixture.invalid"),
+                    "account_id": format!("workspace-{name}"),
+                    "exp": 4_102_444_800i64
+                }))
+                .unwrap()
+            )
+        );
+        serde_json::to_vec(&json!({
+            "tokens": {
+                "access_token": jwt,
+                "id_token": jwt,
+                "refresh_token": "synthetic-not-real",
+                "account_id": format!("workspace-{name}")
+            }
+        }))
+        .unwrap()
+    }
+
+    fn verified(bytes: Vec<u8>) -> AccountResult<VerifiedCredential> {
+        let identity = AccountIdentity::from_auth(&bytes)?;
+        VerifiedCredential::from_official_read(
+            bytes,
+            &json!({
+                "account": {"type": "chatgpt", "email": identity.email}
+            }),
+            json!({
+                "rateLimits": {
+                    "planType": "plus",
+                    "primary": {
+                        "usedPercent": 20,
+                        "windowDurationMins": 300,
+                        "resetsAt": 4_102_444_800i64
+                    }
+                }
+            }),
+        )
+    }
+
+    struct Runtime;
+    impl AccountRuntime for Runtime {
+        fn available(&self) -> bool {
+            true
+        }
+
+        fn login(
+            &self,
+            _home: &Path,
+            _cancelled: &AtomicBool,
+            _report: &mut dyn FnMut(LoginAuthorization),
+        ) -> AccountResult<VerifiedCredential> {
+            Err(super::fail("synthetic_login_forbidden"))
+        }
+
+        fn verify(
+            &self,
+            home: &Path,
+            expected: &AccountIdentity,
+        ) -> AccountResult<VerifiedCredential> {
+            let bytes = storage::read_optional(
+                &home.join("auth.json"),
+                crate::accounts::identity::MAX_AUTH_BYTES,
+            )?
+            .ok_or_else(|| super::fail("credentials_missing"))?;
+            let result = verified(bytes)?;
+            if &result.identity != expected {
+                return Err(super::fail("identity_mismatch"));
+            }
+            Ok(result)
+        }
+
+        fn require_system_idle(&self) -> AccountResult<()> {
+            Ok(())
+        }
+
+        fn validate_target_configuration(&self, _home: &Path) -> AccountResult<()> {
+            Ok(())
+        }
+    }
+
+    struct Lease;
+    impl SwitchMaintenanceLease for Lease {
+        fn recheck(&self) -> AccountResult<()> {
+            Ok(())
+        }
+    }
+    impl CredentialWriteLease for Lease {
+        fn recheck(&self) -> AccountResult<()> {
+            Ok(())
+        }
+    }
+
+    struct Gate;
+    impl AccountOccupancyGate for Gate {
+        fn acquire_switch_maintenance(
+            &self,
+            _account_id: &str,
+            _operation_id: &str,
+        ) -> AccountResult<Box<dyn SwitchMaintenanceLease>> {
+            Ok(Box::new(Lease))
+        }
+
+        fn acquire_credential_write(
+            &self,
+            _profile_id: &str,
+            _purpose: CredentialWritePurpose,
+        ) -> AccountResult<Box<dyn CredentialWriteLease>> {
+            Ok(Box::new(Lease))
+        }
+    }
+
+    struct HookGuard {
+        allow_claim: bool,
+        claims: AtomicUsize,
+        successes: AtomicUsize,
+    }
+    impl SwitchCommitGuard for HookGuard {
+        fn recheck(&self) -> AccountResult<()> {
+            Ok(())
+        }
+
+        fn claim_commit_point(&self) -> AccountResult<()> {
+            self.claims.fetch_add(1, Ordering::AcqRel);
+            if self.allow_claim {
+                Ok(())
+            } else {
+                Err(super::fail("switch_cancelled"))
+            }
+        }
+
+        fn commit_succeeded(&self) {
+            self.successes.fetch_add(1, Ordering::AcqRel);
+        }
+    }
+
+    struct Fixture {
+        _temp: tempfile::TempDir,
+        manager: Arc<AccountManager>,
+        target: String,
+    }
+    impl Fixture {
+        fn new() -> Self {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path().canonicalize().unwrap();
+            let home = root.join("synthetic-system-home");
+            storage::secure_directory(&home).unwrap();
+            storage::atomic_write(
+                &home.join("config.toml"),
+                b"cli_auth_credentials_store = 'file'\n",
+            )
+            .unwrap();
+            storage::atomic_write(&home.join("auth.json"), &auth("source")).unwrap();
+            let manager = AccountManager::with_components(
+                AccountPaths::isolated(root.join("synthetic-vault"), home).unwrap(),
+                Arc::new(Protector),
+                Arc::new(Runtime),
+                Some(Arc::new(Gate)),
+            )
+            .unwrap();
+            let source = crate::accounts::nonce().unwrap();
+            let target = crate::accounts::nonce().unwrap();
+            {
+                let mut store = manager.store().unwrap();
+                for (id, name) in [(&source, "source"), (&target, "target")] {
+                    store.vault.accounts.push(AccountRecord {
+                        id: id.clone(),
+                        label: name.into(),
+                        remark: None,
+                        platform: "codex".into(),
+                        revision: 1,
+                        created_at_ms: None,
+                        browser: Default::default(),
+                        credential: Some(
+                            verified(auth(name))
+                                .unwrap()
+                                .into_stored(crate::accounts::nonce().unwrap()),
+                        ),
+                    });
+                }
+                store.save().unwrap();
+            }
+            Self {
+                _temp: temp,
+                manager,
+                target,
+            }
+        }
+
+        fn prepare_target(&self) -> String {
+            let prepared = self
+                .manager
+                .prepare_account_switch(self.target.clone())
+                .unwrap();
+            assert_eq!(prepared.phase, "ready");
+            prepared.ticket.unwrap()
+        }
+    }
+
+    fn guard(allow_claim: bool) -> HookGuard {
+        HookGuard {
+            allow_claim,
+            claims: AtomicUsize::new(0),
+            successes: AtomicUsize::new(0),
+        }
+    }
+
+    #[test]
+    fn denied_commit_point_claim_rolls_back_target_and_does_not_save_vault() {
+        let fixture = Fixture::new();
+        let ticket = fixture.prepare_target();
+        let before_target = TargetSnapshot::read(&fixture.manager.paths.system_home).unwrap();
+        let vault_path = fixture.manager.paths.vault_root.join("accounts.dpapi");
+        let before_vault = std::fs::read(&vault_path).unwrap();
+        let guard = guard(false);
+
+        let error = fixture
+            .manager
+            .commit_account_switch_guarded(&ticket, &guard)
+            .unwrap_err();
+
+        assert_eq!(error.code, "switch_cancelled");
+        assert_eq!(guard.claims.load(Ordering::Acquire), 1);
+        assert_eq!(guard.successes.load(Ordering::Acquire), 0);
+        assert!(TargetSnapshot::read(&fixture.manager.paths.system_home).unwrap() == before_target);
+        assert_eq!(std::fs::read(&vault_path).unwrap(), before_vault);
+        assert!(!fixture.manager.paths.journal().exists());
+        assert_eq!(
+            fixture
+                .manager
+                .verified_active_system_scope()
+                .err()
+                .unwrap()
+                .code,
+            "active_scope_unverified"
+        );
+    }
+
+    #[test]
+    fn successful_commit_calls_success_hook_after_persisting_active_scope() {
+        let fixture = Fixture::new();
+        let ticket = fixture.prepare_target();
+        let guard = guard(true);
+
+        let result = fixture
+            .manager
+            .commit_account_switch_guarded(&ticket, &guard)
+            .unwrap();
+
+        assert_eq!(result.phase, "committed");
+        assert_eq!(guard.claims.load(Ordering::Acquire), 1);
+        assert_eq!(guard.successes.load(Ordering::Acquire), 1);
+        let scope = fixture.manager.verified_active_system_scope().unwrap();
+        assert_eq!(scope.profile_id(), fixture.target);
+    }
 }

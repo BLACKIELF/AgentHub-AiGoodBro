@@ -1,6 +1,7 @@
 //! Explicit opt-in only. No card, token, raw identity or native path arguments.
 use codexu_core::accounts::maintenance::{
     AccountMaintenancePreferences, AccountMaintenanceService, AccountMaintenanceStatus,
+    QuotaRefreshFrequency,
 };
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, State};
@@ -48,6 +49,19 @@ pub async fn set_reset_credit_auto_options(
     lead_minutes: u16,
 ) -> Result<AccountMaintenancePreferences, String> {
     let value = run(state.service()?, move |s| s.set_reset_options(lead_minutes)).await?;
+    let _ = app.emit("account-maintenance:changed", ());
+    Ok(value)
+}
+#[tauri::command]
+pub async fn set_quota_refresh_frequency(
+    app: AppHandle,
+    state: State<'_, AccountMaintenanceState>,
+    frequency: QuotaRefreshFrequency,
+) -> Result<AccountMaintenancePreferences, String> {
+    let value = run(state.service()?, move |s| {
+        s.set_quota_refresh_frequency(frequency)
+    })
+    .await?;
     let _ = app.emit("account-maintenance:changed", ());
     Ok(value)
 }

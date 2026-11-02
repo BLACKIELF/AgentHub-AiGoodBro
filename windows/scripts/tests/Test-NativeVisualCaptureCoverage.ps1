@@ -28,6 +28,44 @@ $outputRoot = Join-Path $repositoryRoot (
   [guid]::NewGuid().ToString('N')
 )
 $expectedSurfaces = @('Tasks', 'AI Leadership', 'Usage', 'Projects', 'Skills')
+$workspaceScreenshotSourcePath = Join-Path $repositoryRoot 'windows\apps\codexu-tauri\src-tauri\src\commands\workspace_screenshot.rs'
+$workspaceScreenshotSource = Get-Content -LiteralPath $workspaceScreenshotSourcePath -Raw -Encoding UTF8
+$restoreStart = $workspaceScreenshotSource.IndexOf('let restore_result = restore_guard.restore().await;', [System.StringComparison]::Ordinal)
+$restoreCheck = -1
+$restoreRecord = -1
+$saveStart = -1
+$saveGate = -1
+$pngWrite = -1
+$saveRecord = -1
+if ($restoreStart -ge 0) {
+  $restoreCheck = $workspaceScreenshotSource.IndexOf('restore_result?;', $restoreStart, [System.StringComparison]::Ordinal)
+}
+if ($restoreCheck -ge 0) {
+  $restoreRecord = $workspaceScreenshotSource.IndexOf('order.record_restore_complete()?;', $restoreCheck, [System.StringComparison]::Ordinal)
+}
+if ($restoreRecord -ge 0) {
+  $saveStart = $workspaceScreenshotSource.IndexOf('let path = choose_save_path(', $restoreRecord, [System.StringComparison]::Ordinal)
+}
+if ($saveStart -ge 0) {
+  $saveGate = $workspaceScreenshotSource.IndexOf('order.require_restore_before_save(path)?;', $saveStart, [System.StringComparison]::Ordinal)
+}
+if ($saveGate -ge 0) {
+  $pngWrite = $workspaceScreenshotSource.IndexOf('.persist(path)', $saveGate, [System.StringComparison]::Ordinal)
+}
+if ($pngWrite -ge 0) {
+  $saveRecord = $workspaceScreenshotSource.IndexOf('order.record_save_complete()?;', $pngWrite, [System.StringComparison]::Ordinal)
+}
+Assert-True (
+  $restoreStart -ge 0 -and $restoreCheck -gt $restoreStart -and
+  $restoreRecord -gt $restoreCheck -and $saveStart -gt $restoreRecord -and
+  $saveGate -gt $saveStart -and $pngWrite -gt $saveGate -and $saveRecord -gt $pngWrite
+) 'Native screenshot source does not order restore completion, guarded PNG write and save evidence.'
+Assert-True (
+  $workspaceScreenshotSource.Contains('argument == "--codexu-native-capture-background"') -and
+  $workspaceScreenshotSource.Contains('std::env::var_os(NATIVE_WORKSPACE_SCREENSHOT_TEST_ENV)') -and
+  $workspaceScreenshotSource.Contains('capture_root.join("workspace-full.png")') -and
+  $workspaceScreenshotSource.Contains('image_path.with_file_name("workspace-order.txt")')
+) 'Native screenshot test fixture or order marker escaped its fixed isolated activation.'
 
 $priorErrorPreference = $ErrorActionPreference
 try {
@@ -37,6 +75,7 @@ try {
   $output = @(
     & $powershell -NoProfile -ExecutionPolicy Bypass -File $entry `
       -SkipBuild `
+      -ExerciseWorkspaceScreenshot `
       -OutputRoot $outputRoot 2>&1
   )
   $exitCode = $LASTEXITCODE
@@ -62,6 +101,30 @@ Assert-True (@($manifest.size_runs).Count -eq 0) 'Coverage capture retained obso
 $fullscreenRun = $manifest.fullscreen_run
 Assert-True ($null -ne $fullscreenRun) 'Coverage capture did not record its fullscreen run.'
 Assert-True ($fullscreenRun.status -eq 'complete') 'Fullscreen Overview capture is not complete.'
+Assert-True (
+  [bool]$manifest.workspace_screenshot_test_enabled -and
+  $manifest.workspace_screenshot.status -eq 'saved' -and
+  [bool]$manifest.workspace_screenshot.saved_feedback_observed -and
+  [bool]$manifest.workspace_screenshot.restore_completed_before_save -and
+  [bool]$manifest.workspace_screenshot.fixture_removed_after_restore -and
+  [bool]$manifest.workspace_screenshot.fixture_pixel_matched -and
+  [int]$manifest.workspace_screenshot.height -ge
+    ([int]$manifest.workspace_screenshot.client_height + 700) -and
+  [int64]$manifest.workspace_screenshot.bytes -gt 0
+) 'Production workspace screenshot command did not capture bounded full-height content and restore the DOM before saving.'
+$workspaceScreenshotPath = Join-Path $outputRoot $manifest.workspace_screenshot.file
+Assert-True (
+  (Test-Path -LiteralPath $workspaceScreenshotPath -PathType Leaf) -and
+  (Get-Item -LiteralPath $workspaceScreenshotPath).Length -eq
+    [int64]$manifest.workspace_screenshot.bytes
+) 'Production workspace screenshot did not write the expected private task-local PNG.'
+$workspaceScreenshotOrderPath = Join-Path $outputRoot $manifest.workspace_screenshot.order_file
+Assert-True (
+  $manifest.workspace_screenshot.order_file -eq 'runtime/fullscreen/workspace-order.txt' -and
+  (Test-Path -LiteralPath $workspaceScreenshotOrderPath -PathType Leaf) -and
+  (Get-Content -LiteralPath $workspaceScreenshotOrderPath -Raw -Encoding ASCII) -ceq 'restored|saved' -and
+  $manifest.workspace_screenshot.restore_save_order -ceq 'restored|saved'
+) 'Production workspace screenshot did not record restore completion before the shared PNG save path.'
 Assert-True (
   $fullscreenRun.storage_before_onboarding.state_root -eq 'runtime/fullscreen/app-state' -and
   [bool]$fullscreenRun.storage_before_onboarding.cache_isolated -and

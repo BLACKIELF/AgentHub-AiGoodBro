@@ -110,7 +110,7 @@ pub(crate) async fn capture_owner_context(
     .map_err(|_| "owner_scope_unverified".to_owned())?
 }
 
-async fn capture_owner_context_with_guard(
+pub(crate) async fn capture_owner_context_with_guard(
     state: Arc<AppState>,
     manager: Arc<AccountManager>,
     gate: Arc<ManagedProxyGate>,
@@ -249,13 +249,15 @@ async fn prepare_owner_action(
         return Err("owner_window_closed".into());
     }
     let preview = if interrupt {
-        actions.prepare_current_interrupt(context, guard).await?
+        actions
+            .prepare_current_interrupt(context, guard.into())
+            .await?
     } else {
         actions
             .prepare(
                 context,
                 action.ok_or_else(|| "owner_invalid_request".to_string())?,
-                guard,
+                guard.into(),
             )
             .await?
     };

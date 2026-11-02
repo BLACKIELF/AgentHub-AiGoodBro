@@ -57,6 +57,21 @@ pub trait NotificationTransport: Send + Sync {
     }
     fn send(&self, request: &TransportRequest, cancelled: &AtomicBool)
         -> Result<TransportResponse>;
+
+    /// A controllable send boundary for consent-scoped work. Native transports
+    /// recheck admission immediately before the protocol write; fixtures may
+    /// keep the default preflight behavior.
+    fn send_controlled(
+        &self,
+        request: &TransportRequest,
+        cancelled: &AtomicBool,
+        should_continue: &dyn Fn() -> bool,
+    ) -> Result<TransportResponse> {
+        if cancelled.load(Ordering::Acquire) || !should_continue() {
+            return fail("cancelled");
+        }
+        self.send(request, cancelled)
+    }
 }
 pub struct NativeNotificationTransport;
 impl NotificationTransport for NativeNotificationTransport {
@@ -79,6 +94,27 @@ impl NotificationTransport for NativeNotificationTransport {
         #[cfg(windows)]
         {
             windows_send(r, cancelled, 65536).map(|r| r.response)
+        }
+    }
+    fn send_controlled(
+        &self,
+        r: &TransportRequest,
+        cancelled: &AtomicBool,
+        should_continue: &dyn Fn() -> bool,
+    ) -> Result<TransportResponse> {
+        validate(r)?;
+        if cancelled.load(Ordering::Acquire) || !should_continue() {
+            return fail("cancelled");
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = r;
+            fail("windows_required")
+        }
+        #[cfg(windows)]
+        {
+            windows_send_controlled(r, cancelled, 65536, should_continue)
+                .map(|response| response.response)
         }
     }
 }
@@ -139,6 +175,16 @@ pub(crate) fn windows_send(
     r: &TransportRequest,
     cancelled: &AtomicBool,
     limit: usize,
+) -> Result<NativeResponse> {
+    windows_send_controlled(r, cancelled, limit, &|| true)
+}
+
+#[cfg(windows)]
+pub(crate) fn windows_send_controlled(
+    r: &TransportRequest,
+    cancelled: &AtomicBool,
+    limit: usize,
+    should_continue: &dyn Fn() -> bool,
 ) -> Result<NativeResponse> {
     use std::{
         ffi::c_void,
@@ -203,7 +249,7 @@ pub(crate) fn windows_send(
     let wide = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<_>>();
     let deadline = Instant::now() + Duration::from_secs(u64::from(r.timeout_secs) + 15);
     let check = || {
-        if cancelled.load(Ordering::Acquire) {
+        if cancelled.load(Ordering::Acquire) || !should_continue() {
             fail("cancelled")
         } else if Instant::now() > deadline {
             fail("transport_timeout")
@@ -270,6 +316,9 @@ pub(crate) fn windows_send(
             .collect::<String>(),
     );
     check()?;
+    if cancelled.load(Ordering::Acquire) || !should_continue() {
+        return fail("cancelled");
+    }
     if unsafe {
         WinHttpSendRequest(
             request.0,

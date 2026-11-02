@@ -122,6 +122,8 @@ pub(crate) struct Vault {
     pub manual_resets: BTreeMap<String, super::manual_reset::ManualResetRecord>,
     #[serde(default)]
     pub public_reset: super::public_reset::PublicData,
+    #[serde(default)]
+    pub personal_conversation: Option<super::personal_conversation::PersonalConversationJournal>,
 }
 impl Vault {
     fn empty() -> Self {
@@ -139,6 +141,10 @@ impl Vault {
             || self.manual_resets.len() > 4096
             || self.manual_resets.iter().any(|(key, r)| !r.valid(key))
             || !self.public_reset.valid(super::now() * 1000)
+            || self
+                .personal_conversation
+                .as_ref()
+                .is_some_and(|journal| !journal.valid())
             || self
                 .card_changes
                 .iter()

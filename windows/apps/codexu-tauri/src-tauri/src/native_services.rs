@@ -47,6 +47,7 @@ pub struct NativeServices {
     notification_monitor: Mutex<Option<NotificationMonitor>>,
     live_tasks: Result<Arc<crate::live_tasks::LiveTasks>, &'static str>,
     automatic_switch: Result<Arc<AutomaticSwitchService>, &'static str>,
+    quota_resume: Result<Arc<crate::commands::quota_resume::QuotaResumeAdapter>, &'static str>,
     automatic_monitor: Mutex<Option<AutomaticSwitchMonitor>>,
     account_maintenance: Result<Arc<AccountMaintenanceService>, &'static str>,
     maintenance_monitor: Mutex<Option<AccountMaintenanceMonitor>>,
@@ -54,6 +55,11 @@ pub struct NativeServices {
     manual_monitor: Mutex<Option<ManualAccountMonitor>>,
 }
 impl NativeServices {
+    pub fn set_foreground(&self, foreground: bool) {
+        if let Ok(service) = &self.account_maintenance {
+            service.set_foreground(foreground);
+        }
+    }
     pub fn statistics_accounts(&self) -> Result<Arc<AccountManager>, String> {
         self.accounts.as_ref().cloned().map_err(|e| (*e).to_owned())
     }
@@ -79,6 +85,10 @@ impl NativeServices {
                 .as_ref()
                 .is_ok_and(|service| service.has_inflight_operation())
             || self
+                .quota_resume
+                .as_ref()
+                .is_ok_and(|service| service.has_inflight_operation())
+            || self
                 .account_maintenance
                 .as_ref()
                 .is_ok_and(|service| service.has_inflight_operation())
@@ -101,6 +111,9 @@ impl NativeServices {
     }
     /// Synchronous no-I/O fence applied in the confirmation callback itself.
     pub fn seal_accounts_for_exit(&self) {
+        if let Ok(service) = &self.quota_resume {
+            service.cancel_for_exit();
+        }
         if let Ok(service) = &self.provider_pool {
             service.request_exit();
         }
@@ -137,6 +150,9 @@ impl NativeServices {
     /// Background statistics do not count as an interactive task. A normal
     /// exit still closes their owned process tree without an extra prompt.
     pub fn stop_passive_services(&self) {
+        if let Ok(service) = &self.quota_resume {
+            service.cancel_for_exit();
+        }
         if let Ok(service) = &self.provider_pool {
             service.request_exit();
         }
@@ -298,18 +314,6 @@ pub fn install(app: &mut App, root: PathBuf) -> Result<(), Box<dyn std::error::E
     app.manage(ProviderPoolState(provider_pool.clone()));
     let owned_domains = codexu_core::automatic_switch::live::OwnedProcessDomains::new();
     let notifications = NotificationService::native(root.clone()).map_err(|e| e.code());
-    let (notifications, notification_monitor) = match notifications {
-        Ok(service) => {
-            let handle = app.handle().clone();
-            match service.start_monitor_with_listener(Arc::new(move || {
-                let _ = handle.emit("notification-channels:changed", ());
-            })) {
-                Ok(monitor) => (Ok(service), Some(monitor)),
-                Err(error) => (Err(error.code()), None),
-            }
-        }
-        Err(error) => (Err(error), None),
-    };
     let accounts = AccountManager::native(root.clone()).map_err(|e| e.code);
     let gate = accounts.as_ref().map_err(|e| *e).and_then(|accounts| {
         let gate = ManagedProxyGate::new(root.join("dispatch"), accounts).map_err(|e| e.code())?;
@@ -318,6 +322,31 @@ pub fn install(app: &mut App, root: PathBuf) -> Result<(), Box<dyn std::error::E
             .map_err(|e| e.code)?;
         Ok(gate)
     });
+    let (notifications, notification_monitor) = match notifications {
+        Ok(service) => {
+            // Install the native boundary before the sole monitor can receive
+            // events. A missing account/gate leaves automatic replies unavailable.
+            let owner_ready = match (&accounts, &gate) {
+                (Ok(accounts), Ok(gate)) => service.set_personal_conversation_owner(Arc::new(
+                    crate::commands::personal_conversation_owner::PersonalConversationOwnerAdapter::new(
+                        app.state::<Arc<crate::app_state::AppState>>().inner().clone(),
+                        accounts.clone(), gate.clone(),
+                    ),
+                )),
+                _ => Ok(()),
+            };
+            let handle = app.handle().clone();
+            match owner_ready.and_then(|()| {
+                service.start_monitor_with_listener(Arc::new(move || {
+                    let _ = handle.emit("notification-channels:changed", ());
+                }))
+            }) {
+                Ok(monitor) => (Ok(service), Some(monitor)),
+                Err(error) => (Err(error.code()), None),
+            }
+        }
+        Err(error) => (Err(error), None),
+    };
     let claude = ClaudeSubscriptionManager::native(root.clone())
         .map_err(|e| e.code)
         .and_then(|claude| {
@@ -461,8 +490,23 @@ pub fn install(app: &mut App, root: PathBuf) -> Result<(), Box<dyn std::error::E
         )
     });
     app.manage(crate::live_tasks::LiveTaskAppState(live_tasks.clone()));
+    let quota_resume = accounts.as_ref().map_err(|e| *e).and_then(|accounts| {
+        crate::commands::quota_resume::QuotaResumeAdapter::new(
+            app.state::<Arc<crate::app_state::AppState>>()
+                .inner()
+                .clone(),
+            accounts.clone(),
+            gate.as_ref().map_err(|e| *e)?.clone(),
+            live_tasks.as_ref().map_err(|e| *e)?.clone(),
+            root.join("quota-resume-v1").join("journal.json"),
+        )
+        .map_err(|e| e.code())
+    });
+    app.manage(crate::commands::quota_resume::QuotaResumeState(
+        quota_resume.clone(),
+    ));
     let automatic_switch = accounts.as_ref().map_err(|e| *e).and_then(|accounts| {
-        AutomaticSwitchService::new_with_native_controller(
+        let service = AutomaticSwitchService::new_with_native_controller(
             root.join("automatic-switch-v1.json"),
             accounts.clone(),
             gate.as_ref().map_err(|e| *e)?.clone(),
@@ -472,7 +516,13 @@ pub fn install(app: &mut App, root: PathBuf) -> Result<(), Box<dyn std::error::E
                 notifications: notifications.as_ref().ok().cloned(),
             })),
         )
-        .map_err(|e| e.code())
+        .map_err(|e| e.code())?;
+        if let Ok(adapter) = &quota_resume {
+            service
+                .set_quota_pause_controller(adapter.clone())
+                .map_err(|e| e.code())?;
+        }
+        Ok(service)
     });
     let (automatic_switch, automatic_monitor) = match automatic_switch {
         Ok(service) => match service.start_monitor() {
@@ -492,6 +542,10 @@ pub fn install(app: &mut App, root: PathBuf) -> Result<(), Box<dyn std::error::E
     });
     let (account_maintenance, maintenance_monitor) = match account_maintenance {
         Ok(service) => {
+            service.set_foreground(
+                app.get_webview_window("main")
+                    .is_some_and(|window| window.is_focused().unwrap_or(false)),
+            );
             let handle = app.handle().clone();
             let registration_accounts = accounts.as_ref().ok().map(Arc::downgrade);
             match service.start_monitor_with_listener(Arc::new(move || {
@@ -560,6 +614,7 @@ pub fn install(app: &mut App, root: PathBuf) -> Result<(), Box<dyn std::error::E
         notifications,
         live_tasks,
         automatic_switch,
+        quota_resume,
         automatic_monitor: Mutex::new(automatic_monitor),
         account_maintenance,
         manual_accounts,

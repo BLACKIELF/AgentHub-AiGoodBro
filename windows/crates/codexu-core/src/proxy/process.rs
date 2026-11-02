@@ -279,6 +279,185 @@ impl LocalProxyService {
             .map_err(|_| ProxyFailure::ControlBusy)?;
         self.save_preferences_with_registration(next)
     }
+    /// Save non-routing settings from a WebView snapshot without allowing an
+    /// older window to restore stale account participation or ordering. Those
+    /// fields have dedicated atomic account-routing commands.
+    pub fn save_preferences_preserving_routing(
+        &self,
+        mut next: ProxyPreferences,
+    ) -> Result<ProxyPreferences, ProxyFailure> {
+        let _lifecycle = self
+            .lifecycle
+            .try_lock()
+            .map_err(|_| ProxyFailure::ControlBusy)?;
+        {
+            let host = self.host.lock().map_err(|_| ProxyFailure::Unavailable)?;
+            let latest = host.preferences();
+            next.order = latest.order;
+            next.enabled_ids = latest.enabled_ids;
+            next.priority_ids = latest.priority_ids;
+            next.last_ids = latest.last_ids;
+            next.last_overrides = latest.last_overrides;
+        }
+        self.save_preferences_with_registration(next)
+    }
+    /// Mutate one account's routing state from the latest native snapshot.
+    /// The lifecycle lock serializes updates from every WebView in this app,
+    /// avoiding a stale read/whole-snapshot write that could restore an opt-in.
+    pub fn update_account_preference(
+        &self,
+        account_id: &str,
+        field: &str,
+        enabled: bool,
+    ) -> Result<ProxyPreferences, ProxyFailure> {
+        if !policy::valid_id(account_id) || !matches!(field, "enabled" | "priority" | "last") {
+            return Err(ProxyFailure::InvalidSettings);
+        }
+        let _lifecycle = self
+            .lifecycle
+            .try_lock()
+            .map_err(|_| ProxyFailure::ControlBusy)?;
+        let (was_enabled, generation) = {
+            let host = self.host.lock().map_err(|_| ProxyFailure::Unavailable)?;
+            if !host.trusted_ids()?.contains(account_id) {
+                return Err(ProxyFailure::Identity);
+            }
+            (
+                host.preferences().enabled_ids.contains(account_id),
+                self.command_generation.load(Ordering::Acquire),
+            )
+        };
+        // Enrollment can wait for a helper ACK. Never hold the host admission
+        // mutex while waiting; the lifecycle lock keeps the preference update
+        // atomic against other UI writes.
+        if field == "enabled" && enabled && !was_enabled {
+            self.register_running_account(account_id)?;
+        }
+        let mut host = self.host.lock().map_err(|_| ProxyFailure::Unavailable)?;
+        if self.command_generation.load(Ordering::Acquire) != generation {
+            return Err(ProxyFailure::Stopping);
+        }
+        let mut next = host.preferences();
+        match field {
+            "enabled" => set_membership(&mut next.enabled_ids, account_id, enabled),
+            "priority" => {
+                if enabled {
+                    set_last_preference(&mut next, account_id, false);
+                }
+                set_membership(&mut next.priority_ids, account_id, enabled);
+            }
+            "last" => set_last_preference(&mut next, account_id, enabled),
+            _ => return Err(ProxyFailure::InvalidSettings),
+        }
+        let next = host.normalize_preferences(next)?;
+        persist_preferences(&self.preferences_path, &next)?;
+        host.update_preferences(next.clone())?;
+        if let Ok(mut status) = self.status.lock() {
+            status.accounts.retain(|id, state| {
+                !(next.enabled_ids.contains(id) && state.state == "registration_failed")
+            });
+        }
+        Ok(next)
+    }
+
+    /// Move one account beside another using the current native order and
+    /// current plan evidence. The move adopts the target's routing group when
+    /// crossing one, so the host's priority/last sort cannot undo the move.
+    pub fn move_account_routing(
+        &self,
+        account_id: &str,
+        target_id: &str,
+    ) -> Result<ProxyPreferences, ProxyFailure> {
+        if !policy::valid_id(account_id) || !policy::valid_id(target_id) || account_id == target_id
+        {
+            return Err(ProxyFailure::InvalidSettings);
+        }
+        let _lifecycle = self
+            .lifecycle
+            .try_lock()
+            .map_err(|_| ProxyFailure::ControlBusy)?;
+        let (gate, trusted, mut next, generation) = {
+            let host = self.host.lock().map_err(|_| ProxyFailure::Unavailable)?;
+            let trusted = host.trusted_ids()?;
+            if !trusted.contains(account_id) || !trusted.contains(target_id) {
+                return Err(ProxyFailure::Identity);
+            }
+            (
+                host.gate.clone(),
+                trusted,
+                host.preferences(),
+                self.command_generation.load(Ordering::Acquire),
+            )
+        };
+        let source = gate.evidence(account_id)?;
+        let target = gate.evidence(target_id)?;
+        if source.profile_id != account_id || target.profile_id != target_id {
+            return Err(ProxyFailure::Identity);
+        }
+        let source_last = next.is_last(account_id, source.plan.as_deref());
+        let target_last = next.is_last(target_id, target.plan.as_deref());
+        let source_priority = next.priority_ids.contains(account_id);
+        let target_priority = next.priority_ids.contains(target_id);
+        let mut order = next.order.clone();
+        for id in &trusted {
+            if !order.contains(id) {
+                order.push(id.clone());
+            }
+        }
+        let from = order
+            .iter()
+            .position(|id| id == account_id)
+            .ok_or(ProxyFailure::Identity)?;
+        let to = order
+            .iter()
+            .position(|id| id == target_id)
+            .ok_or(ProxyFailure::Identity)?;
+        order.swap(from, to);
+        next.order = order;
+        if source_last != target_last || source_priority != target_priority {
+            set_last_preference(&mut next, account_id, target_last);
+            set_membership(&mut next.priority_ids, account_id, target_priority);
+        }
+        let mut host = self.host.lock().map_err(|_| ProxyFailure::Unavailable)?;
+        if self.command_generation.load(Ordering::Acquire) != generation {
+            return Err(ProxyFailure::Stopping);
+        }
+        // Rebase the computed source/target move on the freshest preference
+        // value while the lifecycle mutex prevents other UI preference writes.
+        let mut current = host.preferences();
+        current.order = next.order;
+        if source_last != target_last || source_priority != target_priority {
+            set_last_preference(&mut current, account_id, target_last);
+            set_membership(&mut current.priority_ids, account_id, target_priority);
+        }
+        let current = host.normalize_preferences(current)?;
+        persist_preferences(&self.preferences_path, &current)?;
+        host.update_preferences(current.clone())?;
+        Ok(current)
+    }
+
+    /// Keep account removal serialized with routing changes. The callback runs
+    /// without the host mutex, but while the lifecycle mutex prevents a new
+    /// opt-in from racing the catalog deletion.
+    pub fn with_account_removal_guard<T>(
+        &self,
+        account_id: &str,
+        action: impl FnOnce() -> T,
+    ) -> Result<T, &'static str> {
+        let _lifecycle = self
+            .lifecycle
+            .try_lock()
+            .map_err(|_| ProxyFailure::ControlBusy.code())?;
+        let host = self
+            .host
+            .lock()
+            .map_err(|_| ProxyFailure::Unavailable.code())?;
+        if host.preferences().enabled_ids.contains(account_id) {
+            return Err("proxy_account_opt_out_required");
+        }
+        drop(host);
+        Ok(action())
+    }
     fn save_preferences_with_registration(
         &self,
         next: ProxyPreferences,
@@ -1387,6 +1566,18 @@ fn safe_error(s: &str) -> bool {
             | "network_unavailable"
             | "egress_unavailable"
     )
+}
+fn set_membership(values: &mut std::collections::BTreeSet<String>, id: &str, enabled: bool) {
+    if enabled {
+        values.insert(id.to_owned());
+    } else {
+        values.remove(id);
+    }
+}
+fn set_last_preference(preferences: &mut ProxyPreferences, id: &str, last: bool) {
+    preferences.last_overrides.insert(id.to_owned(), last);
+    set_membership(&mut preferences.last_ids, id, last);
+    preferences.priority_ids.remove(id);
 }
 fn persist_preferences(path: &Path, value: &ProxyPreferences) -> Result<(), ProxyFailure> {
     let parent = path.parent().ok_or(ProxyFailure::SaveFailed)?;

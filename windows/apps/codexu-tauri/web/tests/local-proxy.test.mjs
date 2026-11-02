@@ -7,7 +7,7 @@ import ts from 'typescript';
 const source = readFileSync(new URL('../src/utils/localProxy.ts', import.meta.url), 'utf8');
 const context = vm.createContext({ exports: {} });
 vm.runInContext(ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 } }).outputText, context);
-const { parseProxyPreferences, parseProxyPolicy, parseProxyStatus, parseProxyAccounts, proxyParticipation, proxyDisplayOrder, proxyConnectionText, remainingQuotaPercent, usedQuotaLimit, sharedQuotaReserve } = context.exports;
+const { parseProxyPreferences, parseProxyPolicy, parseProxyStatus, parseProxyAccounts, proxyParticipation, proxyAccountRouting, moveProxyAccount, proxyDisplayOrder, proxyConnectionText, remainingQuotaPercent, usedQuotaLimit, sharedQuotaReserve } = context.exports;
 const preferences = () => ({ schemaVersion: 1, isEnabled: false, automaticRecoveryEnabled: false, order: ['b', 'a'], enabledIds: ['a'], knownIds: ['a', 'b'], priorityIds: [], lastIds: ['b'], lastOverrides: {}, creditFallback: false, creditPrimaryFloor: 2000, creditSecondaryFloor: 1500, accountPolicies: { a: { fiveHourUsedLimit: 80, allowsCredits: true, creditPrimaryFloor: null, creditSecondaryFloor: null } }, resetStopRules: { a: { identityHash: '0'.repeat(64), armedAt: 100, pausedAt: null, previousResetAt: null } }, listenPort: 18080, clientKeyMode: 'persistent', desktopFallback: false, networkProxy: '', egress: { enabled: false, mihomoApi: '', group: '', whitelist: [] } });
 const plain = value => JSON.parse(JSON.stringify(value));
 
@@ -50,6 +50,23 @@ test('participation preserves manual order; priority and use-last exclude each o
   assert.equal(last.lastOverrides.b, true);
   assert.equal(proxyParticipation(last, 'b', 'last', false).lastOverrides.b, false);
   assert.deepEqual(plain(proxyDisplayOrder([{ id: 'a' }, { id: 'b' }, { id: 'c' }], enabled)), [{ id: 'b' }, { id: 'a' }, { id: 'c' }]);
+});
+
+test('Pro last-use override and cross-group manual moves persist the routing group', () => {
+  const accounts = [{ id: 'a', planType: 'plus' }, { id: 'b', planType: 'pro' }];
+  const original = parseProxyPreferences({ ...preferences(), order: ['a', 'b'], enabledIds: ['a', 'b'] });
+  assert.equal(proxyAccountRouting(original, 'b', 'pro').last, true);
+  const optedOut = proxyParticipation(original, 'b', 'last', false);
+  assert.equal(proxyAccountRouting(optedOut, 'b', 'pro').last, false);
+  assert.equal(parseProxyPreferences(plain(optedOut)).lastOverrides.b, false);
+
+  const priority = proxyParticipation(original, 'a', 'priority', true);
+  const moved = moveProxyAccount(priority, accounts, 'a', 'b');
+  assert.deepEqual(plain(moved.order), ['b', 'a']);
+  assert.equal(proxyAccountRouting(moved, 'a', 'plus').priority, false);
+  assert.equal(proxyAccountRouting(moved, 'a', 'plus').last, true);
+  assert.deepEqual(plain(moved.enabledIds), ['a', 'b']);
+  assert.deepEqual(plain(moveProxyAccount(moved, accounts, 'missing', 'b')), plain(moved));
 });
 
 test('only reported state and valid account quota enter the surface; connection credentials require a loopback endpoint', () => {

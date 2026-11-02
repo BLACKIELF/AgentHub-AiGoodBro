@@ -5,6 +5,11 @@ mod policy;
 pub use policy::*;
 #[path = "automatic_switch/live/mod.rs"]
 pub mod live;
+#[path = "automatic_switch/quota_pause.rs"]
+mod quota_pause;
+pub use quota_pause::*;
+#[path = "automatic_switch/quota_resume.rs"]
+pub mod quota_resume;
 #[path = "automatic_switch/service.rs"]
 mod service;
 use crate::accounts::{AccountError, AccountManager, SwitchCommitGuard};

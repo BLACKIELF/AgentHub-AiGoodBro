@@ -1,4 +1,4 @@
-import { RefreshCw, Settings, Sun, Moon, Monitor, House, Users, ChartNoAxesCombined, PanelsTopLeft, Network } from 'lucide-react';
+import { RefreshCw, Settings, Sun, Moon, Monitor, House, Users, ChartNoAxesCombined, PanelsTopLeft, Network, Camera } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { isTauriRuntimeAvailable } from '../utils/tauri';
 import type { ThemeMode } from '../types/settings';
@@ -18,6 +18,9 @@ interface HeaderProps {
   mode: WorkspaceMode;
   onNavigate: (page: WorkspacePage) => void;
   onModeChange: (mode: WorkspaceMode) => void;
+  onSaveScreenshot: () => void;
+  screenshotBusy: boolean;
+  screenshotFeedback: string | null;
 }
 
 export function Header({
@@ -32,6 +35,9 @@ export function Header({
   mode,
   onNavigate,
   onModeChange,
+  onSaveScreenshot,
+  screenshotBusy,
+  screenshotFeedback,
 }: HeaderProps) {
   const { t, language } = useI18n();
   const text = (zh: string, en: string) => language === 'zh-Hans' ? zh : en;
@@ -124,6 +130,19 @@ export function Header({
         </div>
 
         <button
+          type="button"
+          id="workspace-screenshot"
+          data-testid="workspace-screenshot"
+          onClick={onSaveScreenshot}
+          disabled={screenshotBusy}
+          className="p-2 rounded-full glass-button text-secondary hover:text-primary transition-colors disabled:opacity-50"
+          title={text('保存主界面长截图（PNG）', 'Save full workspace screenshot (PNG)')}
+          aria-label={text('保存主界面长截图（PNG）', 'Save full workspace screenshot (PNG)')}
+        >
+          <Camera size={16} className={screenshotBusy ? 'animate-pulse' : ''} />
+        </button>
+
+        <button
           onClick={onRefresh}
           disabled={refreshing}
           className="p-2 rounded-full glass-button text-secondary hover:text-primary transition-colors disabled:opacity-50"
@@ -139,6 +158,7 @@ export function Header({
         >
           <Settings size={16} />
         </button>
+        {screenshotFeedback && <span id="workspace-screenshot-status" role="status" aria-live="polite" className="max-w-[220px] text-xs text-secondary">{screenshotFeedback}</span>}
       </div>
     </header>
   );

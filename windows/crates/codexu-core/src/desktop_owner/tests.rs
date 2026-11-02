@@ -12,6 +12,56 @@ const OWNER: &str = "00000000-0000-4000-8000-000000000003";
 const TURN: &str = "00000000-0000-4000-8000-000000000004";
 const OP: &str = "00000000-0000-4000-8000-000000000005";
 const TIME: Duration = Duration::from_millis(300);
+
+#[tokio::test]
+async fn admission_revoked_during_fresh_discovery_sends_no_mutation() {
+    let (mut client, socket, _) = setup().await;
+    let (ticket, mut socket) = ticket(&mut client, socket).await;
+    let allowed = Arc::new(AtomicBool::new(true));
+    let predicate = allowed.clone();
+    let cancel = Cancellation::while_allowed(Arc::new(move || predicate.load(Ordering::SeqCst)));
+    let server = tokio::spawn(async move {
+        let request = protocol::read(&mut socket).await.unwrap();
+        assert_eq!(request["method"], protocol::DISCOVER);
+        assert_eq!(request["targetClientId"], OWNER);
+        allowed.store(false, Ordering::SeqCst);
+        reply(
+            &mut socket,
+            &ok(&request, OWNER, json!({"supportsUntrustedAppInput":true})),
+        )
+        .await;
+        // The client must close without writing a start frame after revocation.
+        assert!(protocol::read(&mut socket).await.is_err());
+    });
+    assert_eq!(
+        client
+            .start_text(&ticket, OP, "isolated synthetic input", TIME, &cancel)
+            .await,
+        ActionOutcome::NotSent(OwnerError::Cancelled)
+    );
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn revoked_admission_is_checked_before_the_write_future_is_polled() {
+    let allowed = Arc::new(AtomicBool::new(true));
+    let predicate = allowed.clone();
+    let cancel = Cancellation::while_allowed(Arc::new(move || predicate.load(Ordering::SeqCst)));
+    let budget = Budget::new(TIME, &cancel).unwrap();
+    let polls = AtomicUsize::new(0);
+    allowed.store(false, Ordering::SeqCst);
+    assert_eq!(
+        budget
+            .wait(async {
+                polls.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            })
+            .await,
+        Err(OwnerError::Cancelled)
+    );
+    assert_eq!(polls.load(Ordering::SeqCst), 0);
+}
+
 struct TestPeer(Arc<AtomicBool>);
 impl Peer for TestPeer {
     fn recheck(&self) -> OwnerResult<()> {

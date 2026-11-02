@@ -284,6 +284,19 @@ impl NotificationService {
     /// Incoming conversation text is intentionally neither returned nor stored
     /// by this notification backend; it cannot issue account/model commands.
     pub fn refresh_personal_wechat_context(self: &Arc<Self>) -> Result<ChannelState> {
+        if self.personal_conversation_auto_enabled()? {
+            if !self
+                .monitor_active
+                .load(std::sync::atomic::Ordering::Acquire)
+            {
+                return fail("notification_monitor_unavailable");
+            }
+            // The monitor owns the cursor while consent is active. Wake its
+            // sole poller instead of consuming a message through the manual
+            // context-only path.
+            self.wake.1.notify_all();
+            return self.channel_state(ChannelKind::PersonalWeChat);
+        }
         self.refresh_personal_wechat_context_owned(
             &std::sync::atomic::AtomicBool::new(false),
             &std::sync::Mutex::new(None),

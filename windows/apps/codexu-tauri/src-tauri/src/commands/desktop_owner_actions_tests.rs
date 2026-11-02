@@ -18,6 +18,238 @@ const OP: &str = "00000000-0000-4000-8000-000000000003";
 const FOREIGN: &str = "00000000-0000-4000-8000-000000000004";
 const TEXT: &str = "synthetic caller text, never sent to a real peer";
 
+fn canonical_snapshot() -> OwnerSnapshot {
+    let mut s = snapshot(4, None);
+    s.state.insert("turnHistory".into(), json!({"kind":"canonical","history":{
+        "generation":1,"isComplete":true,
+        "entitiesByKey":{
+            "z-older":{"turnId":FOREIGN,"status":"completed"},
+            "a-latest":{"turnId":TURN,"status":"interrupted"}
+        },
+        "islands":[{"id":"tail:1","entries":[{"key":"z-older","value":"z-older"},{"key":"a-latest","value":"a-latest"}],
+            "olderBoundary":{"status":"exhausted"},"newerBoundary":{"status":"exhausted"}}]
+    }}));
+    s
+}
+
+#[test]
+fn canonical_history_takes_precedence_over_empty_legacy_turns_and_uses_proven_order() {
+    let mut s = canonical_snapshot();
+    assert_eq!(turn_status(&s, TURN), Some("interrupted"));
+    assert_eq!(turn_id(latest_turn(&s).unwrap()), Some(TURN));
+    assert!(may_contain_turn(&s, TURN));
+    s.state["turnHistory"]["history"]["islands"][0]["newerBoundary"]["status"] = json!("available");
+    assert!(latest_turn(&s).is_none());
+    assert_eq!(turn_status(&s, TURN), Some("interrupted"));
+}
+
+#[test]
+fn canonical_reply_and_active_turn_are_not_lost_to_empty_legacy_array() {
+    let mut s = canonical_snapshot();
+    s.state["turnHistory"]["history"]["entitiesByKey"]["a-latest"]["status"] = json!("inProgress");
+    s.state["threadRuntimeStatus"] = json!({"type":"running"});
+    assert_eq!(active_turn_id(&s).as_deref(), Some(TURN));
+    s.state["turnHistory"]["history"]["entitiesByKey"]["a-latest"]["status"] = json!("completed");
+    s.state["turnHistory"]["history"]["entitiesByKey"]["a-latest"]["items"] = json!([
+        {"type":"agentMessage","phase":"final_answer","text":"Synthetic final answer"}
+    ]);
+    assert_eq!(
+        final_text(&s, TURN).as_deref(),
+        Some("Synthetic final answer")
+    );
+}
+
+#[tokio::test]
+async fn quota_resume_preview_requires_exact_latest_interrupted_turn() {
+    let f = Fixture::new(Mode::Accepted);
+    let mut caller = f.caller();
+    f.push(canonical_snapshot());
+    assert!(caller
+        .prepare_resume(context(), TURN, f.guard())
+        .await
+        .is_ok());
+    f.push(canonical_snapshot());
+    assert_eq!(
+        caller
+            .prepare_resume(context(), FOREIGN, f.guard())
+            .await
+            .err()
+            .as_deref(),
+        Some("owner_resume_changed")
+    );
+    let mut incomplete = canonical_snapshot();
+    incomplete.state["turnHistory"]["history"]["islands"][0]["newerBoundary"]["status"] =
+        json!("available");
+    f.push(incomplete);
+    assert_eq!(
+        caller
+            .prepare_resume(context(), TURN, f.guard())
+            .await
+            .err()
+            .as_deref(),
+        Some("owner_history_incomplete")
+    );
+}
+
+#[tokio::test]
+async fn start_ack_for_an_existing_turn_without_status_remains_unknown() {
+    let f = Fixture::new(Mode::Accepted);
+    let mut caller = f.caller();
+    let mut original = snapshot(1, None);
+    original.state["turns"] = json!([{ "turnId": TURN }]);
+    let confirm_snapshot = OwnerSnapshot {
+        revision: original.revision,
+        state: original.state.clone(),
+    };
+    f.push(original);
+    let preview = caller
+        .prepare(context(), OwnerAction::StartText(TEXT.into()), f.guard())
+        .await
+        .unwrap();
+    f.push(confirm_snapshot);
+    let result = caller
+        .confirm(&preview.preview_id, OP, &preview.action_hash, || async {
+            Ok(context())
+        })
+        .await
+        .unwrap();
+    assert_eq!(result.state, "unknown");
+    assert!(caller.blocks_normal_exit());
+    assert_eq!(
+        caller
+            .poll_reply(OP, || async { Ok(context()) })
+            .await
+            .unwrap(),
+        OwnerReplyPoll::Uncertain
+    );
+    assert_eq!(f.fake.0.lock().unwrap().submits, 1);
+}
+
+#[tokio::test]
+async fn conversation_reply_only_exposes_the_exact_accepted_turn_final_answer() {
+    let f = Fixture::new(Mode::Accepted);
+    let mut caller = f.caller();
+    assert_eq!(f.submitted(&mut caller).await.state, "accepted");
+    let mut done = snapshot(2, Some((TURN, "completed")));
+    done.state["turns"][0]["items"] = json!([
+        {"type":"reasoning", "text":"private reasoning"},
+        {"type":"toolResult", "text":"private tool output"},
+        {"type":"agentMessage", "phase":"commentary", "text":"partial answer"},
+        {"type":"agentMessage", "phase":"final_answer", "text":"public one"},
+        {"type":"agentMessage", "phase":"final_answer", "text":"public two"}
+    ]);
+    done.state["turns"].as_array_mut().unwrap().push(json!({
+        "turnId":FOREIGN, "status":"completed", "items":[
+            {"type":"agentMessage", "phase":"final_answer", "text":"another turn"}
+        ]
+    }));
+    f.push(done);
+    assert_eq!(
+        caller
+            .poll_reply(OP, || async { Ok(context()) })
+            .await
+            .unwrap(),
+        OwnerReplyPoll::Reply {
+            turn_id: TURN.into(),
+            text: "public one\n\npublic two".into()
+        }
+    );
+    assert_eq!(f.released.load(Ordering::SeqCst), 1);
+    assert!(!caller.blocks_normal_exit());
+    assert_eq!(
+        caller
+            .poll_reply(OP, || async { Ok(context()) })
+            .await
+            .unwrap(),
+        OwnerReplyPoll::Uncertain
+    );
+    let bytes = String::from_utf8(f.bytes()).unwrap();
+    for body in [
+        TEXT,
+        "public one",
+        "private reasoning",
+        "private tool output",
+        "another turn",
+    ] {
+        assert!(!bytes.contains(body));
+    }
+    assert_eq!(f.fake.0.lock().unwrap().submits, 1);
+}
+
+#[tokio::test]
+async fn conversation_waiting_for_human_retains_guard_and_does_not_return_partial_text() {
+    let f = Fixture::new(Mode::Accepted);
+    let mut caller = f.caller();
+    f.submitted(&mut caller).await;
+    let mut waiting = active_snapshot(2, &[(TURN, "inProgress")]);
+    waiting.state["threadRuntimeStatus"]["activeFlags"] = json!(["waitingOnUserInput"]);
+    f.push(waiting);
+    assert_eq!(
+        caller
+            .poll_reply(OP, || async { Ok(context()) })
+            .await
+            .unwrap(),
+        OwnerReplyPoll::AwaitingHuman
+    );
+    assert!(caller.blocks_normal_exit());
+    assert_eq!(f.released.load(Ordering::SeqCst), 0);
+    f.push(snapshot(3, Some((TURN, "completed"))));
+    assert_eq!(
+        caller
+            .poll_reply(OP, || async { Ok(context()) })
+            .await
+            .unwrap(),
+        OwnerReplyPoll::Unavailable
+    );
+    assert_eq!(f.released.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn final_reply_rejects_ambiguous_turns_partial_items_and_overlong_content() {
+    let mut s = snapshot(2, Some((TURN, "completed")));
+    s.state["turns"][0]["items"] =
+        json!([{ "type":"agentMessage", "phase":"commentary", "text":"partial" }]);
+    assert!(final_text(&s, TURN).is_none());
+    s.state["turns"][0]["items"] =
+        json!([{ "type":"agentMessage", "phase":"final_answer", "text":"x".repeat(4097) }]);
+    assert!(final_text(&s, TURN).is_none());
+    s.state["turns"][0]["items"] =
+        json!([{ "type":"agentMessage", "phase":"final_answer", "text":"answer" }]);
+    let duplicate = s.state["turns"][0].clone();
+    s.state["turns"].as_array_mut().unwrap().push(duplicate);
+    assert!(final_text(&s, TURN).is_none());
+}
+
+#[tokio::test]
+async fn conversation_cancellation_after_fresh_capture_prevents_submission() {
+    let f = Fixture::new(Mode::Accepted);
+    let mut caller = f.caller();
+    let preview = f.prepared(&mut caller).await;
+    f.push(snapshot(1, None));
+    let allowed = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let predicate = allowed.clone();
+    let cancel = Cancellation::while_allowed(Arc::new(move || predicate.load(Ordering::SeqCst)));
+    let captures = AtomicUsize::new(0);
+    let result = caller
+        .confirm_controlled(
+            &preview.preview_id,
+            OP,
+            &preview.action_hash,
+            || {
+                if captures.fetch_add(1, Ordering::SeqCst) == 1 {
+                    allowed.store(false, Ordering::SeqCst);
+                }
+                async { Ok(context()) }
+            },
+            &cancel,
+        )
+        .await;
+    assert_eq!(result.unwrap_err(), "owner_cancelled");
+    assert_eq!(f.fake.0.lock().unwrap().submits, 0);
+    assert_eq!(f.released.load(Ordering::SeqCst), 1);
+    assert!(caller.status(OP).unwrap().is_none());
+}
+
 fn context() -> NativeOwnerContext {
     NativeOwnerContext {
         active: None,

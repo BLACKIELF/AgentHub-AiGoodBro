@@ -39,6 +39,9 @@ export function Dashboard() {
   const [proxyVisited, setProxyVisited] = useState(page === 'proxy');
   const [toolsVisited, setToolsVisited] = useState(page === 'tools');
   const [requestedToolTab, setRequestedToolTab] = useState<{ tab: 'tasks'; sequence: number }>();
+  const [screenshotBusy, setScreenshotBusy] = useState(false);
+  const [screenshotFeedback, setScreenshotFeedback] = useState<string | null>(null);
+  const screenshotInFlight = useRef(false);
   const main = useRef<HTMLElement>(null);
   const navigate = useCallback((next: WorkspacePage) => { if (next === 'accounts' || next === 'home') setManagedVisited(true); if (next === 'proxy') setProxyVisited(true); if (next === 'tools') setToolsVisited(true); setPage(next); saveChoice('aigoodbro.workspace.page', next); main.current?.scrollTo({ top: 0 }); }, []);
   const changeMode = (next: WorkspaceMode) => { setMode(next); saveChoice('aigoodbro.workspace.mode', next); };
@@ -95,6 +98,25 @@ export function Dashboard() {
       applyAppTheme(settings?.config.theme ?? 'dark', palette);
     } catch { applyAppTheme(settings?.config.theme ?? 'dark', settings?.config.palette_id ?? DEFAULT_PALETTE_ID); }
   };
+  const handleSaveScreenshot = async () => {
+    if (screenshotInFlight.current) return;
+    screenshotInFlight.current = true;
+    setScreenshotBusy(true);
+    setScreenshotFeedback(null);
+    try {
+      const result = await invoke<{ status: 'saved' | 'cancelled' }>('save_workspace_screenshot');
+      if (result?.status === 'saved') {
+        setScreenshotFeedback(language === 'zh-Hans' ? '主界面长截图已保存。' : 'Workspace screenshot saved.');
+      } else if (result?.status !== 'cancelled') {
+        throw new Error('Unexpected screenshot result');
+      }
+    } catch {
+      setScreenshotFeedback(language === 'zh-Hans' ? '未能保存截图，请重试。' : 'Could not save the screenshot. Try again.');
+    } finally {
+      screenshotInFlight.current = false;
+      setScreenshotBusy(false);
+    }
+  };
   const noticeTitle = language === 'zh-Hans' ? '推荐 Skills 与官方公告' : 'Recommended Skills and official notices';
   const notices = <HomeSection id="notices" title={noticeTitle} initialOpen={false}>
     <div className="space-y-3 pt-1"><PublicResetPanel /><PublisherMessagePanel /><HomeSection id="recommendations" title={language === 'zh-Hans' ? '推荐 Skills 与应用' : 'Recommended Skills and apps'}><RecommendedSkills /></HomeSection></div>
@@ -115,6 +137,7 @@ export function Dashboard() {
         onRefresh={()=>{void refresh();if(page==='home'||page==='usage'){if(upstreamStatistics)void statistics.refresh();else customStatistics.read();}}}
         refreshing={loading||(upstreamStatistics?statistics.busy:customStatistics.busy)}
         page={page} mode={mode} onNavigate={navigate} onModeChange={changeMode}
+        onSaveScreenshot={handleSaveScreenshot} screenshotBusy={screenshotBusy} screenshotFeedback={screenshotFeedback}
       />
 
       <InstallationGuide onAccounts={() => navigate('accounts')} onOpenSection={async section=>{if(section==='settings')await invoke('open_settings_window');else navigate(section);}} />

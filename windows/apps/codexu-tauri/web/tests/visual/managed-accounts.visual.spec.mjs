@@ -6,9 +6,11 @@ async function managedPage(page, { language = 'en', theme = 'dark' } = {}) {
   await page.clock.setFixedTime(new Date(FIXED_NOW_ISO));
   await installTauriStub(page, { settings: { ...SYNTHETIC_SETTINGS, language, theme }, dashboard: SYNTHETIC_DASHBOARD }, () => {
     const original = window.__TAURI_INTERNALS__.invoke;
-    const account = (id, label, loggedIn) => ({ id, label, platform: 'codex', storage_kind: 'managed', login_state: loggedIn ? 'verified' : 'signed_out', active_state: 'unknown', masked_identity: loggedIn ? 's***@synthetic.invalid' : null, can_login: true, can_switch: loggedIn, switch_block_reason: loggedIn ? null : 'login_required', revision: 1, recovery_required: false });
+    const account = (id, label, loggedIn) => ({ id, label, platform: 'codex', plan_type: id === 'managed_b' ? 'pro' : 'plus', storage_kind: 'managed', login_state: loggedIn ? 'verified' : 'signed_out', active_state: 'unknown', masked_identity: loggedIn ? 's***@synthetic.invalid' : null, can_login: true, can_switch: loggedIn, switch_block_reason: loggedIn ? null : 'login_required', revision: 1, recovery_required: false });
     window.managedRows = [account('managed_a', 'Synthetic Managed A', true), account('managed_b', 'Synthetic Managed B', false), { ...account('managed_blocked', 'Synthetic Gate Blocked', true), can_switch: false, switch_block_reason: 'occupancy_unknown' }];
     window.managedCalls = [];
+    window.proxyPrefs = { schemaVersion: 1, isEnabled: false, automaticRecoveryEnabled: false, order: ['managed_a', 'managed_b', 'managed_blocked'], enabledIds: [], knownIds: ['managed_a', 'managed_b', 'managed_blocked'], priorityIds: [], lastIds: [], lastOverrides: {}, creditFallback: false, creditPrimaryFloor: 2000, creditSecondaryFloor: 1500, accountPolicies: {}, resetStopRules: {}, listenPort: 18080, clientKeyMode: 'persistent', desktopFallback: false, networkProxy: '', egress: { enabled: false, mihomoApi: '', group: '', whitelist: [] } };
+    window.proxyPrefsReads = 0;
     const callbacks = [];
     window.emitManagedChange = () => callbacks.forEach(callback => window[`_${callback}`]({ event: 'managed-accounts:changed', id: 291, payload: null }));
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async value => { if (window.failManagedClipboard) throw Error('synthetic clipboard denied'); window.managedClipboard = value; } } });
@@ -33,6 +35,16 @@ async function managedPage(page, { language = 'en', theme = 'dark' } = {}) {
         if (window.holdManagedRead) { window.holdManagedRead = false; const old = structuredClone(window.managedRows); return new Promise(resolve => { window.releaseManagedRead = () => resolve(old); }); }
         return structuredClone(window.managedRows);
       }
+      if (command === 'get_local_proxy_preferences') { window.proxyPrefsReads++; return structuredClone(window.proxyPrefs); }
+      if (command === 'set_local_proxy_account_preference') {
+        window.managedCalls.push({ command, ...args });
+        if (window.failProxySave) throw 'save_failed';
+        const set = (key, enabled) => { window.proxyPrefs[key] = enabled ? [...new Set([...window.proxyPrefs[key], args.accountId])] : window.proxyPrefs[key].filter(id => id !== args.accountId); };
+        if (args.field === 'enabled') set('enabledIds', args.enabled);
+        else if (args.field === 'priority') { if (args.enabled) { window.proxyPrefs.lastOverrides[args.accountId] = false; set('lastIds', false); } set('priorityIds', args.enabled); }
+        else { window.proxyPrefs.lastOverrides[args.accountId] = args.enabled; set('lastIds', args.enabled); set('priorityIds', false); }
+        return structuredClone(window.proxyPrefs);
+      }
       if (command === 'create_managed_account') {
         window.managedCalls.push({ command, ...args });
         if (window.failManagedCreate) throw 'duplicate_label';
@@ -41,6 +53,7 @@ async function managedPage(page, { language = 'en', theme = 'dark' } = {}) {
       if (command === 'rename_managed_account' || command === 'remove_managed_account') {
         window.managedCalls.push({ command, ...args });
         if (window.failManagedEdit) throw window.failManagedEdit;
+        if (command === 'remove_managed_account' && window.proxyPrefs.enabledIds.includes(args.accountId)) throw 'proxy_account_opt_out_required';
         if (command === 'rename_managed_account') window.managedRows.find(row => row.id === args.accountId).label = args.label;
         else window.managedRows = window.managedRows.filter(row => row.id !== args.accountId);
         window.emitManagedChange(); return { account_id: args.accountId, phase: command === 'rename_managed_account' ? 'renamed' : 'removed', error_code: null };
@@ -125,6 +138,39 @@ test('failed creation preserves alias without inventing an account', async ({ pa
   await expect(panel.getByLabel('Codex account alias', { exact: true })).toHaveValue('Synthetic Duplicate');
   await expect(panel).toContainText('That alias already exists.');
   await expect(panel.locator('.managed-account-card')).toHaveCount(3);
+});
+
+test('managed account proxy switches use the atomic updater, retain state on failure, and reread catalog preferences', async ({ page }) => {
+  const panel = await managedPage(page), row = panel.getByTestId('managed-account-managed_a');
+  await row.getByLabel('More actions for Synthetic Managed A', { exact: true }).click();
+  const enabled = row.getByRole('button', { name: 'Use for local proxy', exact: true });
+  await expect(enabled).toHaveAttribute('aria-pressed', 'false');
+  await enabled.click();
+  await expect(enabled).toHaveAttribute('aria-pressed', 'true');
+  await expect(row.locator('.account-more-content')).toHaveScreenshot('managed-account-proxy-menu-enabled.png');
+  expect(await page.evaluate(() => window.managedCalls.filter(call => call.command === 'set_local_proxy_account_preference'))).toEqual([
+    { command: 'set_local_proxy_account_preference', accountId: 'managed_a', field: 'enabled', enabled: true },
+  ]);
+
+  await page.evaluate(() => { window.failProxySave = true; });
+  await enabled.click();
+  await expect(panel.getByRole('alert')).toContainText('The previous setting is retained.');
+  await expect(enabled).toHaveAttribute('aria-pressed', 'true');
+  await page.evaluate(() => { window.failProxySave = false; });
+  await enabled.click();
+  await expect(enabled).toHaveAttribute('aria-pressed', 'false');
+
+  const reads = await page.evaluate(() => window.proxyPrefsReads);
+  await page.evaluate(() => { window.proxyPrefs.enabledIds = ['managed_a']; window.emitManagedChange(); });
+  await expect(enabled).toHaveAttribute('aria-pressed', 'true');
+  expect(await page.evaluate(() => window.proxyPrefsReads)).toBeGreaterThan(reads);
+
+  await row.getByRole('button', { name: 'Remove saved account', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Remove saved account', exact: true });
+  await dialog.getByRole('button', { name: 'Remove account', exact: true }).click();
+  await expect(dialog.getByRole('alert')).toContainText('Turn off this account’s proxy participation before removing it.');
+  await expect(dialog.getByRole('alert')).toHaveScreenshot('managed-account-proxy-remove-denied-alert.png');
+  await expect(row).toBeVisible();
 });
 
 test('saved account menu renames only after acknowledgement and retains a denied removal', async ({ page }) => {

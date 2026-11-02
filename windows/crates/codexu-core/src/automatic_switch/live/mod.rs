@@ -131,6 +131,39 @@ pub struct LiveTaskSnapshot {
     current_revision: Arc<AtomicU64>,
 }
 impl LiveTaskSnapshot {
+    pub fn matches_scope(&self, scope: &crate::accounts::ActiveSystemScope) -> bool {
+        self.scope.canonical_home == scope.canonical_home()
+            && self.scope.profile_id == scope.profile_id()
+            && self.scope.identity_hash == scope.identity_hash()
+            && self.scope.credential_generation == scope.credential_generation()
+            && self.scope.auth_digest == scope.auth_digest()
+            && self.scope.established_at_unix_ms == scope.established_at_unix_ms()
+    }
+    /// Permit only state changes of the exact original loaded threads/turns.
+    /// A new, missing or replaced turn invalidates the pause transaction even
+    /// if that new work already finished between two observations.
+    pub fn matches_pause_roster(&self, original: &Self, require_idle: bool) -> bool {
+        self.is_current()
+            && self.scope == original.scope
+            && self.connection_generation == original.connection_generation
+            && self.records.len() == original.records.len()
+            && self.records.iter().all(|row| {
+                original
+                    .records
+                    .iter()
+                    .find(|prior| prior.thread_id == row.thread_id)
+                    .is_some_and(|prior| {
+                        prior.turn_id == row.turn_id
+                            && match row.state {
+                                TaskState::Idle => row.turn_state != Some(TaskState::Running),
+                                TaskState::Running if !require_idle => {
+                                    row.turn_state == Some(TaskState::Running)
+                                }
+                                _ => false,
+                            }
+                    })
+            })
+    }
     pub fn profile_id(&self) -> &str {
         &self.scope.profile_id
     }

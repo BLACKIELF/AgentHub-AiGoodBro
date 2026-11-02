@@ -532,7 +532,11 @@ fn defaults_and_unsupported_live_connector_never_enable_a_fake_feature() {
     assert_eq!(f.service.evaluate_once().unwrap().phase, "disabled");
     assert_eq!(f.runtime.calls.load(Ordering::Acquire), before);
     let unavailable = AutomaticSwitchService::new(
-        f._temp.path().join("unavailable.json"),
+        f._temp
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("unavailable.json"),
         f.manager.clone(),
         Arc::new(UnavailableSafetySource),
     )

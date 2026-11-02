@@ -78,12 +78,20 @@ pub async fn rename_managed_account(
 pub async fn remove_managed_account(
     app: AppHandle,
     state: State<'_, ManagedAccountState>,
+    proxy: State<'_, super::local_proxy::LocalProxyState>,
     account_id: String,
 ) -> Result<AccountOperationDto, String> {
-    let result = blocking(state.manager()?, move |manager| {
-        manager.remove_managed_account(&account_id)
+    let manager = state.manager()?;
+    let proxy = proxy.service()?;
+    let guarded = tauri::async_runtime::spawn_blocking(move || {
+        proxy
+            .with_account_removal_guard(&account_id, || manager.remove_managed_account(&account_id))
     })
-    .await?;
+    .await
+    .map_err(|_| "account_service_unavailable".to_owned())?;
+    let result = guarded
+        .map_err(str::to_owned)?
+        .map_err(|error| error.code.to_owned())?;
     let _ = app.emit("managed-accounts:changed", ());
     Ok(result)
 }

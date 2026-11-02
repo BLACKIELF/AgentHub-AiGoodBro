@@ -35,13 +35,26 @@ pub enum OwnerError {
 pub type OwnerResult<T> = Result<T, OwnerError>;
 
 #[derive(Clone, Default)]
-pub struct Cancellation(Arc<AtomicBool>);
+pub struct Cancellation {
+    cancelled: Arc<AtomicBool>,
+    admission: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
+}
 impl Cancellation {
+    /// Native-only admission fence. The transport checks this predicate at
+    /// each budget boundary, including immediately before polling a write.
+    /// It must be synchronous and must not acquire the owner's async mutex.
+    pub fn while_allowed(admission: Arc<dyn Fn() -> bool + Send + Sync>) -> Self {
+        Self {
+            cancelled: Arc::new(AtomicBool::new(false)),
+            admission: Some(admission),
+        }
+    }
     pub fn cancel(&self) {
-        self.0.store(true, Ordering::Release);
+        self.cancelled.store(true, Ordering::Release);
     }
     pub fn is_cancelled(&self) -> bool {
-        self.0.load(Ordering::Acquire)
+        self.cancelled.load(Ordering::Acquire)
+            || self.admission.as_ref().is_some_and(|allowed| !allowed())
     }
 }
 

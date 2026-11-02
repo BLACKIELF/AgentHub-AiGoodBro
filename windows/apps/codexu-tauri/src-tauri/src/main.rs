@@ -134,7 +134,6 @@ fn main() {
             // Keep user-specific storage locations out of runtime logs.
             info!("Next app data directory initialized");
 
-            native_services::install(app, app_data_dir.clone())?;
             let state = Arc::new(AppState::new(app_data_dir.clone()));
             let initial_language = state
                 .config
@@ -142,6 +141,7 @@ fn main() {
                 .map(|config| config.language.resolved(app_state::ResolvedLanguage::En))
                 .unwrap_or(app_state::ResolvedLanguage::En);
             app.manage(state.clone());
+            native_services::install(app, app_data_dir.clone())?;
             app.manage(commands::companion_setup::CompanionState::new(
                 state.clone(),
                 &app.state::<native_services::NativeServices>(),
@@ -170,7 +170,17 @@ fn main() {
                 let window_clone = window.clone();
                 let owner_state = state.clone();
                 window.on_window_event(move |event| {
+                    if let tauri::WindowEvent::Focused(focused) = event {
+                        window_clone
+                            .app_handle()
+                            .state::<native_services::NativeServices>()
+                            .set_foreground(*focused);
+                    }
                     if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                        window_clone
+                            .app_handle()
+                            .state::<native_services::NativeServices>()
+                            .set_foreground(false);
                         // Invalidate every in-flight prepare before waiting for
                         // the owner mutex. A late response cannot register a
                         // preview after this window-close boundary.
@@ -192,6 +202,8 @@ fn main() {
                         api.prevent_close();
                     }
                 });
+                app.state::<native_services::NativeServices>()
+                    .set_foreground(window.is_focused().unwrap_or(false));
             }
 
             tray::setup_tray(app.handle(), initial_language)?;
@@ -203,6 +215,10 @@ fn main() {
             commands::automatic_switch::get_automatic_switch_preferences,
             commands::automatic_switch::set_automatic_switch_preferences,
             commands::automatic_switch::get_automatic_switch_status,
+            commands::quota_resume::get_quota_resume_state,
+            commands::quota_resume::resume_quota_tasks,
+            commands::quota_resume::clear_quota_resume,
+            commands::quota_resume::cancel_quota_resume,
             commands::automatic_switch::evaluate_automatic_switch,
             commands::automatic_switch::cancel_automatic_switch,
             commands::cli_workflow::local_actions::get_local_cli_actions,
@@ -230,6 +246,7 @@ fn main() {
             commands::account_lifecycle::list_managed_accounts,
             managed_registration::register_managed_account,
             commands::account_maintenance::get_account_maintenance_preferences,
+            commands::account_maintenance::set_quota_refresh_frequency,
             commands::account_maintenance::set_account_warmup_selection,
             commands::account_maintenance::set_reset_credit_auto_options,
             commands::account_maintenance::set_reset_credit_auto_authorization,
@@ -283,8 +300,11 @@ fn main() {
             commands::python_runtime::select_python_runtime,
             commands::python_runtime::open_python_installation_guide,
             commands::local_proxy::get_local_proxy_status,
+            commands::workspace_screenshot::save_workspace_screenshot,
             commands::local_proxy::get_local_proxy_preferences,
             commands::local_proxy::set_local_proxy_preferences,
+            commands::local_proxy::set_local_proxy_account_preference,
+            commands::local_proxy::move_local_proxy_account,
             commands::local_proxy::start_local_proxy,
             commands::local_proxy::stop_local_proxy,
             commands::local_proxy::get_local_proxy_connection,
@@ -319,6 +339,10 @@ fn main() {
             commands::notifications::get_personal_wechat_login,
             commands::notifications::poll_personal_wechat_login,
             commands::notifications::refresh_personal_wechat_context,
+            commands::personal_wechat_conversation::get_personal_wechat_conversation_state,
+            commands::personal_wechat_conversation::bind_personal_wechat_conversation,
+            commands::personal_wechat_conversation::set_personal_wechat_conversation_enabled,
+            commands::personal_wechat_conversation::unbind_personal_wechat_conversation,
             commands::notifications::get_public_reset_delivery_state,
             commands::notifications::set_public_reset_delivery_enabled,
             commands::notifications::request_public_reset_check,

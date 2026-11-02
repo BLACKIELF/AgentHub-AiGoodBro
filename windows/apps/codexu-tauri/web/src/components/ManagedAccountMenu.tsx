@@ -1,11 +1,13 @@
 import {normalizeAccountRemark, validAccountRemark} from '../utils/accountMetadata';
 import { useEffect, useId, useRef, useState } from 'react';
-import { MoreHorizontal, Pencil, Trash2, ListPlus } from 'lucide-react';
+import { Check, MoreHorizontal, Pencil, Trash2, ListPlus } from 'lucide-react';
 import { useI18n } from '../i18n/I18nProvider';
+import type { ProxyAccountRouting, ProxyPreferenceField } from '../utils/localProxy';
 
-export function ManagedAccountMenu({ label, disabled, error, onRename, onRemove, onRegister, registrationPending = false, showRename = false }: {
+export function ManagedAccountMenu({ label, disabled, error, onRename, onRemove, onRegister, registrationPending = false, showRename = false, proxy, proxyDisabled = false, onProxyChange }: {
   showRename?: boolean;
   onRegister?: () => Promise<boolean>; registrationPending?: boolean;
+  proxy?: ProxyAccountRouting | null; proxyDisabled?: boolean; onProxyChange?: (field: ProxyPreferenceField, enabled: boolean) => void;
   label: string; disabled: boolean; error: string | null;
   onRename: (label: string) => Promise<boolean>; onRemove: () => Promise<boolean>;
 }) {
@@ -32,7 +34,16 @@ export function ManagedAccountMenu({ label, disabled, error, onRename, onRemove,
     {showRename && <button type="button" className="glass-button proxy-action" disabled={disabled} onClick={() => open('rename')}><Pencil size={13} />{text('自定义名称', 'Customize name')}</button>}
     <details ref={menu} className="account-more" onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); if (menu.current) menu.current.open = false; summary.current?.focus(); } }}>
       <summary ref={summary} className="icon-action" aria-label={text(`${label} 更多操作`, `More actions for ${label}`)} aria-disabled={disabled} onClick={event => { if (disabled) event.preventDefault(); }}><MoreHorizontal size={15} /></summary>
-      <div className="account-more-content">{onRegister && <button type="button" disabled={disabled} onClick={() => { if (menu.current) menu.current.open = false; void onRegister(); }}><ListPlus size={13} />{registrationPending ? text('重试登记到主页与任务', 'Retry Home and Tasks registration') : text('登记到主页与任务', 'Register for Home and Tasks')}</button>}<button type="button" disabled={disabled} onClick={() => open('rename')}><Pencil size={13} />{text('重命名', 'Rename')}</button><button type="button" disabled={disabled} className="text-status-error" onClick={() => open('remove')}><Trash2 size={13} />{text('移除保存的账号', 'Remove saved account')}</button></div>
+      <div className="account-more-content">{onRegister && <button type="button" disabled={disabled} onClick={() => { if (menu.current) menu.current.open = false; void onRegister(); }}><ListPlus size={13} />{registrationPending ? text('重试登记到主页与任务', 'Retry Home and Tasks registration') : text('登记到主页与任务', 'Register for Home and Tasks')}</button>}
+        {proxy && onProxyChange && <>
+          <span className="account-more-heading">{text('本地反代', 'Local proxy')}</span>
+          {([
+            ['enabled', proxy.enabled, text('参与反代', 'Use for local proxy')],
+            ['priority', proxy.priority, text('反代优先', 'Proxy priority')],
+            ['last', proxy.last, text('反代最后使用', 'Proxy use last')],
+          ] as const).map(([field, value, label]) => <button key={field} type="button" aria-label={label} aria-pressed={value} disabled={disabled || proxyDisabled} title={label} onClick={() => onProxyChange(field, !value)}>{value && <Check size={13} />}{label}</button>)}
+        </>}
+        <button type="button" disabled={disabled} onClick={() => open('rename')}><Pencil size={13} />{text('重命名', 'Rename')}</button><button type="button" disabled={disabled} className="text-status-error" onClick={() => open('remove')}><Trash2 size={13} />{text('移除保存的账号', 'Remove saved account')}</button></div>
     </details>
     {mode && <dialog ref={dialog} className="managed-switch-dialog managed-account-editor" aria-label={mode === 'rename' ? text('重命名账号', 'Rename account') : text('移除保存的账号', 'Remove saved account')} onCancel={event => { event.preventDefault(); if (!pending.current) setMode(null); }}>
       <form onSubmit={event => { event.preventDefault(); void submit(); }}>

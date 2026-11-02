@@ -154,6 +154,13 @@ pub trait AccountRuntime: Send + Sync {
 /// reenter this manager/vault while commit holds its OS lock.
 pub trait SwitchCommitGuard: Send + Sync {
     fn recheck(&self) -> AccountResult<()>;
+    /// Atomically arbitrates the final automatic-policy cancellation against
+    /// the durable account commit. Implementations must use cached state only.
+    fn claim_commit_point(&self) -> AccountResult<()> {
+        self.recheck()
+    }
+    /// Called only after the verified account proof is durably saved.
+    fn commit_succeeded(&self) {}
     fn verification_process_permit(&self) -> Option<std::sync::Arc<dyn VerificationProcessPermit>> {
         None
     }

@@ -1,6 +1,93 @@
 use super::*;
 use std::{io::Read, time::Instant};
 
+const COMMIT_IDLE: u64 = 0;
+const COMMIT_ACTIVE: u64 = 1;
+const COMMIT_CANCELLED: u64 = 2;
+const COMMIT_CLAIMED: u64 = 3;
+const COMMIT_DURABLE: u64 = 4;
+const COMMIT_FINISHED: u64 = 5;
+
+struct CommitPoint(AtomicU64);
+
+impl Default for CommitPoint {
+    fn default() -> Self {
+        Self(AtomicU64::new(COMMIT_IDLE))
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CancelTransition {
+    Cancelled,
+    AlreadyCancelled,
+    TooLate,
+    Inactive,
+}
+
+impl CommitPoint {
+    fn begin(&self) {
+        self.0.store(COMMIT_ACTIVE, Ordering::Release);
+    }
+
+    fn cancel(&self) -> CancelTransition {
+        loop {
+            match self.0.load(Ordering::Acquire) {
+                COMMIT_ACTIVE => {
+                    if self
+                        .0
+                        .compare_exchange(
+                            COMMIT_ACTIVE,
+                            COMMIT_CANCELLED,
+                            Ordering::AcqRel,
+                            Ordering::Acquire,
+                        )
+                        .is_ok()
+                    {
+                        return CancelTransition::Cancelled;
+                    }
+                }
+                COMMIT_CANCELLED => return CancelTransition::AlreadyCancelled,
+                COMMIT_CLAIMED | COMMIT_DURABLE => return CancelTransition::TooLate,
+                _ => return CancelTransition::Inactive,
+            }
+        }
+    }
+
+    fn claim(&self) -> bool {
+        self.0
+            .compare_exchange(
+                COMMIT_ACTIVE,
+                COMMIT_CLAIMED,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+    }
+
+    fn mark_durable(&self) {
+        let _ = self.0.compare_exchange(
+            COMMIT_CLAIMED,
+            COMMIT_DURABLE,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.0.load(Ordering::Acquire) == COMMIT_CANCELLED
+    }
+
+    fn is_durable(&self) -> bool {
+        self.0.load(Ordering::Acquire) == COMMIT_DURABLE
+    }
+
+    fn finish(&self) {
+        if !self.is_durable() {
+            self.0.store(COMMIT_FINISHED, Ordering::Release);
+        }
+    }
+}
+
 struct State {
     saved: Stored,
     phase: &'static str,
@@ -20,9 +107,11 @@ pub struct AutomaticSwitchService {
     state: Mutex<State>,
     operation: Mutex<()>,
     epoch: AtomicU64,
+    commit_point: CommitPoint,
     exiting: AtomicBool,
     monitor_active: AtomicBool,
     native_controller: Option<NativeController>,
+    pause_controller: Mutex<Option<Arc<dyn QuotaPauseController>>>,
 }
 struct NativeController {
     gate: Arc<crate::managed_proxy::ManagedProxyGate>,
@@ -112,10 +201,37 @@ impl AutomaticSwitchService {
             }),
             operation: Mutex::new(()),
             epoch: AtomicU64::new(0),
+            commit_point: CommitPoint::default(),
             exiting: AtomicBool::new(false),
             monitor_active: AtomicBool::new(false),
             native_controller,
+            pause_controller: Mutex::new(None),
         }))
+    }
+    /// Inject the real original-owner adapter once, before the monitor starts.
+    pub fn set_quota_pause_controller(
+        &self,
+        controller: Arc<dyn QuotaPauseController>,
+    ) -> Result<()> {
+        if !cfg!(windows) || self.monitor_active.load(Ordering::Acquire) {
+            return Err(Failure::Unavailable);
+        }
+        let mut slot = self
+            .pause_controller
+            .lock()
+            .map_err(|_| Failure::Unavailable)?;
+        if slot.is_some() {
+            return Err(Failure::Unavailable);
+        }
+        *slot = Some(controller);
+        Ok(())
+    }
+    fn pause_controller(&self) -> Result<Option<Arc<dyn QuotaPauseController>>> {
+        Ok(self
+            .pause_controller
+            .lock()
+            .map_err(|_| Failure::Unavailable)?
+            .clone())
     }
     pub fn preferences(&self) -> Result<AutomaticSwitchPreferences> {
         Ok(self
@@ -127,6 +243,8 @@ impl AutomaticSwitchService {
             .clone())
     }
     pub fn status(&self) -> Result<AutomaticSwitchStatus> {
+        let pause_available =
+            self.native_controller.is_some() && self.pause_controller()?.is_some();
         let state = self.state.lock().map_err(|_| Failure::Unavailable)?;
         let unavailable = state.saved.preferences.enabled && !self.safety.live_available();
         Ok(AutomaticSwitchStatus {
@@ -149,9 +267,7 @@ impl AutomaticSwitchService {
                 state.saved.last_succeeded_at_ms,
             ),
             live_tasks_available: self.safety.live_available(),
-            // A live observer cannot stand in for the unimplemented GUI
-            // owner/pause/history/restore/resume transaction.
-            pause_resume_available: false,
+            pause_resume_available: pause_available,
             resume_after_switch_available: false,
             last_switch_restored: state.saved.last_succeeded_at_ms.map(|_| false),
         })
@@ -174,9 +290,10 @@ impl AutomaticSwitchService {
         {
             return Err(Failure::LiveTasksUnavailable);
         }
-        // The critical Desktop chain also needs pause receipts, history proof
-        // and safe resume. A capability flag alone cannot substitute for it.
-        if preferences.enabled && preferences.pause_at_one_percent {
+        if preferences.enabled
+            && preferences.pause_at_one_percent
+            && self.pause_controller()?.is_none()
+        {
             return Err(Failure::PauseResumeUnavailable);
         }
         if preferences.enabled {
@@ -197,11 +314,14 @@ impl AutomaticSwitchService {
                 return Err(Failure::InvalidSettings);
             }
         }
-        // Disable must not reopen a vault held by the very commit it revokes.
-        // Exclusions only revoke membership; native identity checks still run
-        // before any later enabled evaluation can select a real account.
-        self.epoch.fetch_add(1, Ordering::AcqRel);
         let mut state = self.state.lock().map_err(|_| Failure::Unavailable)?;
+        // A preference update wins the same short atomic race as the final
+        // commit point. Once that point is claimed, this only updates the next
+        // run's settings; the in-flight commit is no longer cancellable.
+        let transition = self.commit_point.cancel();
+        if transition == CancelTransition::Inactive {
+            self.epoch.fetch_add(1, Ordering::AcqRel);
+        }
         let mut next = state.saved.clone();
         next.preferences = preferences.clone();
         if let Err(error) = persist(&self.path, &next) {
@@ -223,9 +343,21 @@ impl AutomaticSwitchService {
         Ok(preferences)
     }
     /// Cancels only this automatic attempt; manual login/switch state is never
-    /// globally cancelled. A consumed commit is revoked by its native guard.
+    /// globally cancelled. Once the native commit point is claimed, report the
+    /// in-flight commit instead of claiming cancellation succeeded.
     pub fn cancel(&self) -> Result<AutomaticSwitchStatus> {
-        self.epoch.fetch_add(1, Ordering::AcqRel);
+        let transition = self.commit_point.cancel();
+        if transition == CancelTransition::TooLate {
+            if !self.commit_point.is_durable() {
+                let mut state = self.state.lock().map_err(|_| Failure::Unavailable)?;
+                state.phase = "committing";
+                state.issue = None;
+            }
+            return self.status();
+        }
+        if transition == CancelTransition::Inactive {
+            self.epoch.fetch_add(1, Ordering::AcqRel);
+        }
         let ticket = {
             let mut state = self.state.lock().map_err(|_| Failure::Unavailable)?;
             state.phase = "cancelled";
@@ -246,7 +378,9 @@ impl AutomaticSwitchService {
     }
     pub fn cancel_for_exit(&self) {
         self.exiting.store(true, Ordering::Release);
-        self.epoch.fetch_add(1, Ordering::AcqRel);
+        if self.commit_point.cancel() == CancelTransition::Inactive {
+            self.epoch.fetch_add(1, Ordering::AcqRel);
+        }
     }
     pub fn evaluate_once(self: &Arc<Self>) -> Result<AutomaticSwitchStatus> {
         let _operation = self
@@ -273,7 +407,7 @@ impl AutomaticSwitchService {
                 s.issue = Some(Failure::LiveTasksUnavailable);
                 return Err(Failure::LiveTasksUnavailable);
             }
-            if s.saved.preferences.pause_at_one_percent {
+            if s.saved.preferences.pause_at_one_percent && self.pause_controller()?.is_none() {
                 s.phase = "unsupported";
                 s.issue = Some(Failure::PauseResumeUnavailable);
                 return Err(Failure::PauseResumeUnavailable);
@@ -290,11 +424,15 @@ impl AutomaticSwitchService {
             s.issue = None;
             s.source = None;
             s.target = None;
+            self.commit_point.begin();
             s.inflight_epoch = Some(epoch);
             s.saved.preferences.clone()
         };
         let result = self.evaluate(epoch, &prefs, Instant::now() + Duration::from_secs(120));
         let mut state = self.state.lock().map_err(|_| Failure::Unavailable)?;
+        if self.commit_point.is_cancelled() {
+            self.epoch.fetch_add(1, Ordering::AcqRel);
+        }
         if state.inflight_epoch == Some(epoch) {
             state.inflight_epoch = None;
             state.ticket = None;
@@ -318,6 +456,7 @@ impl AutomaticSwitchService {
                 state.issue = Some(error);
             }
         }
+        self.commit_point.finish();
         drop(state);
         result?;
         self.status()
@@ -328,7 +467,10 @@ impl AutomaticSwitchService {
         prefs: &AutomaticSwitchPreferences,
         deadline: Instant,
     ) -> Result<()> {
-        if self.exiting.load(Ordering::Acquire) || self.epoch.load(Ordering::Acquire) != epoch {
+        if self.exiting.load(Ordering::Acquire)
+            || self.epoch.load(Ordering::Acquire) != epoch
+            || self.commit_point.is_cancelled()
+        {
             return Err(Failure::Cancelled);
         }
         if Instant::now() >= deadline {
@@ -339,6 +481,33 @@ impl AutomaticSwitchService {
             return Err(Failure::Cancelled);
         }
         Ok(())
+    }
+    fn record_committed_switch(&self) -> Result<()> {
+        let mut state = self.state.lock().map_err(|_| Failure::Unavailable)?;
+        let next = committed_state(&state.saved, now_ms());
+        if persist(&self.path, &next).is_err() {
+            // The account transaction is already durable. Keep the fact in
+            // memory, suspend further policy writes, and surface recovery.
+            state.saved = next;
+            state.suspended = true;
+            state.phase = "blocked";
+            state.issue = Some(Failure::RecoveryRequired);
+            return Err(Failure::RecoveryRequired);
+        }
+        state.saved = next;
+        state.phase = "switched";
+        state.issue = state
+            .saved
+            .preferences
+            .resume_after_switch
+            .then_some(Failure::PauseResumeUnavailable);
+        Ok(())
+    }
+    fn mark_committed_recovery_required(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            state.phase = "blocked";
+            state.issue = Some(Failure::RecoveryRequired);
+        }
     }
     fn catalog(&self) -> Result<Vec<Account>> {
         let records = self
@@ -422,6 +591,11 @@ impl AutomaticSwitchService {
         deadline: Instant,
     ) -> Result<()> {
         self.current(epoch, prefs, deadline)?;
+        if let Some(controller) = self.pause_controller()? {
+            if controller.has_unresolved()? {
+                return Err(Failure::RecoveryRequired);
+            }
+        }
         let mut catalog = self.catalog()?;
         let source = catalog
             .iter()
@@ -445,7 +619,7 @@ impl AutomaticSwitchService {
             return Ok(());
         }
         let safety = self.safety.snapshot()?;
-        safety.validate_idle(&source_identity, &original.generation, None, now_ms())?;
+        self.validate_activity(&safety, prefs, &source_identity, &original.generation, None)?;
         let stale: Vec<_> = catalog
             .iter()
             .filter(|a| {
@@ -472,11 +646,12 @@ impl AutomaticSwitchService {
                 self.stage(epoch, "checking_candidates", Some(&source_id), None)?;
                 for id in &stale {
                     self.current(epoch, prefs, deadline)?;
-                    self.safety.snapshot()?.validate_idle(
+                    self.validate_activity(
+                        &self.safety.snapshot()?,
+                        prefs,
                         &source_identity,
                         &original.generation,
                         Some(&safety.connection_generation),
-                        now_ms(),
                     )?;
                     // This is the existing official quota-only verification;
                     // it sends no inference prompt and owns its own bounded CLI.
@@ -554,6 +729,8 @@ impl AutomaticSwitchService {
         // path. Its concrete lease is held continuously before close, through
         // preparation and the guarded commit/rollback below.
         #[cfg(windows)]
+        let mut pause_receipt: Option<(Arc<dyn QuotaPauseController>, QuotaPauseReceipt)> = None;
+        #[cfg(windows)]
         let native_authority = if self.safety.requires_native_quiescence() {
             let controller = self
                 .native_controller
@@ -573,7 +750,7 @@ impl AutomaticSwitchService {
                 .gate
                 .reserve_automatic_maintenance(&scope, &target_id)
                 .map_err(account_failure)?;
-            let policy = CommitGuard {
+            let policy = Arc::new(PolicyOnlyGuard(CommitGuard {
                 service: Arc::downgrade(self),
                 epoch,
                 preferences: prefs.clone(),
@@ -583,10 +760,39 @@ impl AutomaticSwitchService {
                 target: selected_target.clone().ok_or(Failure::QuotaUnknown)?,
                 deadline,
                 quiesced: None,
-            };
+            }));
+            if prefs.pause_at_one_percent {
+                let controller_adapter = self
+                    .pause_controller()?
+                    .ok_or(Failure::PauseResumeUnavailable)?;
+                let snapshot = controller.source.latest().map_err(live_failure)?;
+                if !snapshot.matches_scope(&scope) || !snapshot.is_current() {
+                    return Err(Failure::IdentityChanged);
+                }
+                let target = selected_target.as_ref().ok_or(Failure::QuotaUnknown)?;
+                let admission_policy = policy.clone();
+                let receipt = controller_adapter.pause(QuotaPauseRequest {
+                    snapshot,
+                    source: scope.clone(),
+                    target_profile_id: target_id.clone(),
+                    target_identity_hash: target.identity.clone(),
+                    target_credential_generation: target.generation.clone(),
+                    lease: lease.clone(),
+                    admission: Arc::new(move || admission_policy.recheck().is_ok()),
+                })?;
+                if let Some(receipt) = receipt {
+                    pause_receipt = Some((controller_adapter, receipt));
+                }
+                self.safety.snapshot()?.validate_idle(
+                    &source_identity,
+                    &original.generation,
+                    Some(&safety.connection_generation),
+                    now_ms(),
+                )?;
+            }
             let proof = controller
                 .source
-                .quiesce_for_switch(lease.clone(), epoch, Arc::new(PolicyOnlyGuard(policy)))
+                .quiesce_for_switch(lease.clone(), epoch, policy)
                 .map_err(live_failure)?;
             Some((lease, proof))
         } else {
@@ -668,41 +874,65 @@ impl AutomaticSwitchService {
                 proof.claim_for_commit().map_err(live_failure)?;
             }
             self.stage(epoch, "committing", Some(&source_id), Some(&target_id))?;
-            let outcome = self
-                .manager
-                .commit_account_switch_guarded(&ticket, &guard)
-                .map_err(account_failure)?;
-            if outcome.phase != "committed" {
+            let outcome = self.manager.commit_account_switch_guarded(&ticket, &guard);
+            if !self.commit_point.is_durable() {
+                let outcome = outcome.map_err(account_failure)?;
+                if outcome.phase != "committed" {
+                    return Err(Failure::TransactionFailed);
+                }
                 return Err(Failure::TransactionFailed);
             }
-            self.current(epoch, prefs, deadline)?;
-            let mut state = self.state.lock().map_err(|_| Failure::Unavailable)?;
-            let mut next = state.saved.clone();
-            next.last_succeeded_at_ms = Some(now_ms());
-            next.last_attempt_at_ms = None;
-            if let Err(e) = persist(&self.path, &next) {
-                state.suspended = true;
-                return Err(e);
+
+            // Do not recheck the old settings epoch after the durable commit:
+            // a concurrent disable/cancel is ordered after this point and must
+            // not relabel the committed account switch as an uncommitted one.
+            let mut recovery_required = self.record_committed_switch().is_err();
+            if outcome.is_err()
+                || outcome
+                    .as_ref()
+                    .is_ok_and(|operation| operation.phase != "committed")
+            {
+                // The vault save succeeded but transaction-journal cleanup did
+                // not. Keep the staged quota journal and require recovery.
+                recovery_required = true;
+            } else {
+                #[cfg(windows)]
+                if let Some((controller, receipt)) = &pause_receipt {
+                    let armed = (|| {
+                        let target = self
+                            .manager
+                            .verified_active_system_scope()
+                            .map_err(account_failure)?;
+                        let (lease, _) =
+                            native_authority.as_ref().ok_or(Failure::RecoveryRequired)?;
+                        controller.switch_verified(receipt, &target, lease)
+                    })();
+                    if armed.is_err() {
+                        recovery_required = true;
+                    }
+                }
             }
-            state.saved = next;
-            state.phase = "switched";
-            state.issue = prefs
-                .resume_after_switch
-                .then_some(Failure::PauseResumeUnavailable);
-            drop(state);
-            self.emit(
-                epoch,
-                AutomaticSwitchEvent::Succeeded {
-                    source_id: source_id.clone(),
-                    target_id: target_id.clone(),
-                    at_ms: now_ms(),
-                },
-            );
+            if recovery_required {
+                self.mark_committed_recovery_required();
+                return Err(Failure::RecoveryRequired);
+            }
             Ok(())
         })();
         // Before commit this drops only the exact prepared reservation. Once
         // consumed, cancellation/rollback belongs to the guarded transaction.
-        if let Err(error) = result {
+        if self.commit_point.is_durable() {
+            if result.is_err() {
+                self.mark_committed_recovery_required();
+            }
+            self.emit(
+                epoch,
+                AutomaticSwitchEvent::Succeeded {
+                    source_id,
+                    target_id,
+                    at_ms: now_ms(),
+                },
+            );
+        } else if let Err(error) = result {
             let _ = self.manager.cancel_account_switch(&ticket);
             self.emit(
                 epoch,
@@ -716,8 +946,25 @@ impl AutomaticSwitchService {
         }
         result
     }
+    fn validate_activity(
+        &self,
+        safety: &SafetySnapshot,
+        prefs: &AutomaticSwitchPreferences,
+        identity: &str,
+        generation: &str,
+        connection: Option<&str>,
+    ) -> Result<()> {
+        if prefs.pause_at_one_percent {
+            safety.validate_pause(identity, generation, connection, now_ms())
+        } else {
+            safety.validate_idle(identity, generation, connection, now_ms())
+        }
+    }
     fn emit(&self, epoch: u64, event: AutomaticSwitchEvent) {
-        if !self.exiting.load(Ordering::Acquire) && self.epoch.load(Ordering::Acquire) == epoch {
+        if !self.exiting.load(Ordering::Acquire)
+            && !self.commit_point.is_cancelled()
+            && self.epoch.load(Ordering::Acquire) == epoch
+        {
             if let Some(observer) = &self.observer {
                 observer.record(event)
             }
@@ -879,6 +1126,26 @@ impl SwitchCommitGuard for CommitGuard {
             code: "switch_cancelled",
         })
     }
+    fn claim_commit_point(&self) -> crate::accounts::AccountResult<()> {
+        self.check().map_err(|_| AccountError {
+            code: "switch_cancelled",
+        })?;
+        let service = self.service.upgrade().ok_or(AccountError {
+            code: "switch_cancelled",
+        })?;
+        if service.commit_point.claim() {
+            Ok(())
+        } else {
+            Err(AccountError {
+                code: "switch_cancelled",
+            })
+        }
+    }
+    fn commit_succeeded(&self) {
+        if let Some(service) = self.service.upgrade() {
+            service.commit_point.mark_durable();
+        }
+    }
     fn verification_process_permit(
         &self,
     ) -> Option<Arc<dyn crate::accounts::VerificationProcessPermit>> {
@@ -908,7 +1175,9 @@ impl AutomaticSwitchMonitor {
     pub fn cancel(&self) {
         self.stop.store(true, Ordering::Release);
         if let Some(service) = self.service.upgrade() {
-            service.epoch.fetch_add(1, Ordering::AcqRel);
+            if service.commit_point.cancel() == CancelTransition::Inactive {
+                service.epoch.fetch_add(1, Ordering::AcqRel);
+            }
         }
     }
 }
@@ -971,4 +1240,65 @@ fn persist(path: &Path, saved: &Stored) -> Result<()> {
         Ok(())
     })
     .map_err(|_| Failure::SaveFailed)
+}
+
+fn committed_state(saved: &Stored, at_ms: u64) -> Stored {
+    let mut next = saved.clone();
+    next.last_succeeded_at_ms = Some(at_ms);
+    next.last_attempt_at_ms = None;
+    next
+}
+
+#[cfg(test)]
+mod commit_point_tests {
+    use super::*;
+    use std::sync::Barrier;
+
+    #[test]
+    fn cancellation_and_commit_point_have_one_linearization_winner() {
+        let point = Arc::new(CommitPoint::default());
+        point.begin();
+        let start = Arc::new(Barrier::new(3));
+        let cancel_point = point.clone();
+        let cancel_start = start.clone();
+        let cancel = std::thread::spawn(move || {
+            cancel_start.wait();
+            cancel_point.cancel()
+        });
+        let claim_point = point.clone();
+        let claim_start = start.clone();
+        let claim = std::thread::spawn(move || {
+            claim_start.wait();
+            claim_point.claim()
+        });
+        start.wait();
+
+        match (cancel.join().unwrap(), claim.join().unwrap()) {
+            (CancelTransition::Cancelled, false) => {
+                assert!(!point.is_durable());
+            }
+            (CancelTransition::TooLate, true) => {
+                point.mark_durable();
+                assert!(point.is_durable());
+            }
+            other => panic!("invalid commit/cancel ordering: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn durable_commit_ignores_later_cancel_and_success_keeps_new_preferences() {
+        let point = CommitPoint::default();
+        point.begin();
+        assert!(point.claim());
+        point.mark_durable();
+        assert_eq!(point.cancel(), CancelTransition::TooLate);
+
+        let mut saved = Stored::default();
+        saved.preferences.enabled = false;
+        saved.preferences.five_hour_remaining_threshold = 12;
+        let committed = committed_state(&saved, 1234);
+        assert_eq!(committed.preferences, saved.preferences);
+        assert_eq!(committed.last_succeeded_at_ms, Some(1234));
+        assert_eq!(committed.last_attempt_at_ms, None);
+    }
 }

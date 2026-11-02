@@ -1,4 +1,4 @@
-//! Explicit, default-off quota-window maintenance. No UI credential/card input.
+//! Automatic quota reads plus explicit, default-off warm-up and reset actions.
 use super::*;
 use crate::accounts::AccountError;
 use serde::{Deserialize, Serialize};
@@ -13,7 +13,10 @@ use std::{
 mod native;
 #[path = "maintenance/policy.rs"]
 mod policy;
+#[path = "maintenance/quota_refresh.rs"]
+pub mod quota_refresh;
 use policy::*;
+pub use quota_refresh::QuotaRefreshFrequency;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Failure {
@@ -98,6 +101,7 @@ pub struct AccountMaintenancePreferences {
     pub seven_day_warmup: bool,
     pub reset_lead_minutes: u16,
     pub reset_authorizations: Vec<ResetAuthorization>,
+    pub quota_refresh_frequency: QuotaRefreshFrequency,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -106,6 +110,8 @@ struct Settings {
     seven_day_warmup: bool,
     reset_lead_minutes: u16,
     reset_authorizations: BTreeMap<String, String>,
+    #[serde(default)]
+    quota_refresh_frequency: QuotaRefreshFrequency,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -114,6 +120,7 @@ impl Default for Settings {
             seven_day_warmup: false,
             reset_lead_minutes: 30,
             reset_authorizations: BTreeMap::new(),
+            quota_refresh_frequency: QuotaRefreshFrequency::Automatic,
         }
     }
 }
@@ -130,9 +137,6 @@ impl Settings {
         } else {
             Ok(())
         }
-    }
-    fn enabled(&self) -> bool {
-        self.five_hour_warmup || self.seven_day_warmup || !self.reset_authorizations.is_empty()
     }
 }
 #[derive(Clone, Serialize, Deserialize)]
@@ -210,7 +214,7 @@ impl Stored {
                 !opaque(&e.profile_id)
                     || !hash(&e.identity)
                     || !opaque(&e.generation)
-                    || !matches!(e.kind.as_str(), "warmup" | "reset_credit")
+                    || !matches!(e.kind.as_str(), "warmup" | "reset_credit" | "quota_refresh")
                     || !matches!(
                         e.phase.as_str(),
                         "running"
@@ -307,6 +311,9 @@ pub struct AccountMaintenanceService {
     epoch: AtomicU64,
     exiting: AtomicBool,
     monitor_active: AtomicBool,
+    foreground: AtomicBool,
+    #[cfg(test)]
+    before_quota_refresh: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 impl AccountMaintenanceService {
     pub fn new(path: PathBuf, manager: Arc<AccountManager>) -> Result<Arc<Self>> {
@@ -333,6 +340,9 @@ impl AccountMaintenanceService {
             epoch: AtomicU64::new(0),
             exiting: AtomicBool::new(false),
             monitor_active: AtomicBool::new(false),
+            foreground: AtomicBool::new(true),
+            #[cfg(test)]
+            before_quota_refresh: Mutex::new(None),
         }))
     }
     /// Manual actions share only identity-specific reset reconciliation, never
@@ -378,6 +388,7 @@ impl AccountMaintenanceService {
             seven_day_warmup: settings.seven_day_warmup,
             reset_lead_minutes: settings.reset_lead_minutes,
             reset_authorizations,
+            quota_refresh_frequency: settings.quota_refresh_frequency,
         })
     }
     fn edit(&self, change: impl FnOnce(&mut Settings)) -> Result<AccountMaintenancePreferences> {
@@ -417,6 +428,15 @@ impl AccountMaintenanceService {
             return Err(Failure::InvalidSettings);
         }
         self.edit(|s| s.reset_lead_minutes = lead_minutes)
+    }
+    pub fn set_quota_refresh_frequency(
+        &self,
+        frequency: QuotaRefreshFrequency,
+    ) -> Result<AccountMaintenancePreferences> {
+        self.edit(|settings| settings.quota_refresh_frequency = frequency)
+    }
+    pub fn set_foreground(&self, foreground: bool) {
+        self.foreground.store(foreground, Ordering::Release);
     }
     pub fn authorize_reset(
         &self,
@@ -468,10 +488,8 @@ impl AccountMaintenanceService {
                 "running"
             } else if s.suspended {
                 "blocked"
-            } else if s.saved.settings.enabled() {
-                "idle"
             } else {
-                "disabled"
+                "idle"
             },
             issue_code: s.issue.map(Failure::code),
             running_profile_id: s.running.clone(),
@@ -513,18 +531,151 @@ impl AccountMaintenanceService {
             .saved
             .settings
             .clone();
-        if !settings.enabled() {
-            return self.status();
-        }
-        if !self.runtime.available() {
-            return Err(Failure::Unavailable);
-        }
         let catalog = self
             .manager
             .list_managed_accounts()
             .map_err(account_error)?;
         for profile in catalog.into_iter().filter(|p| p.platform == "codex") {
             self.current(epoch)?;
+            if profile.login_state != "verified" {
+                continue;
+            }
+            let identity = self
+                .manager
+                .managed_identity_hash(&profile.id)
+                .map_err(account_error)?;
+            let Some(identity) = identity else {
+                continue;
+            };
+            let prior_refresh = self
+                .state
+                .lock()
+                .map_err(|_| Failure::Unavailable)?
+                .saved
+                .entries
+                .iter()
+                .rev()
+                .find(|entry| entry.profile_id == profile.id && entry.kind == "quota_refresh")
+                .filter(|entry| entry.identity == identity)
+                .cloned();
+            let foreground = self.foreground.load(Ordering::Acquire);
+            let started_at = now();
+            let due = prior_refresh
+                .as_ref()
+                .is_none_or(|entry| entry.phase == "running")
+                || settings.quota_refresh_frequency.due(
+                    foreground,
+                    prior_refresh
+                        .as_ref()
+                        .and_then(|entry| entry.last_attempt_at_ms),
+                    started_at,
+                );
+            if due {
+                let generation = {
+                    let store = self.manager.store().map_err(account_error)?;
+                    let record = store.vault.account(&profile.id).map_err(account_error)?;
+                    let credential = record.credential.as_ref().ok_or(Failure::Unauthorized)?;
+                    if credential.identity.identity_hash() != identity {
+                        return Err(Failure::IdentityChanged);
+                    }
+                    credential.generation.clone()
+                };
+                self.current(epoch)?;
+                let entry = MaintenanceEntry {
+                    profile_id: profile.id.clone(),
+                    kind: "quota_refresh".into(),
+                    phase: "running".into(),
+                    issue_code: None,
+                    last_attempt_at_ms: Some(started_at),
+                    last_succeeded_at_ms: prior_refresh
+                        .as_ref()
+                        .and_then(|previous| previous.last_succeeded_at_ms),
+                    next_eligible_at_ms: Some(
+                        settings
+                            .quota_refresh_frequency
+                            .next_eligible_at_ms(foreground, started_at),
+                    ),
+                    identity: identity.clone(),
+                    generation,
+                    window_baseline: Vec::new(),
+                    card_hash: None,
+                    idempotency_key: None,
+                    quota_fingerprint: None,
+                };
+                self.record(entry.clone())?;
+                #[cfg(test)]
+                if let Ok(hook) = self.before_quota_refresh.lock() {
+                    if let Some(hook) = hook.clone() {
+                        hook();
+                    }
+                }
+                self.state.lock().map_err(|_| Failure::Unavailable)?.running =
+                    Some(profile.id.clone());
+                if let Err(error) = self.current(epoch) {
+                    let mut cancelled = entry.clone();
+                    cancelled.phase = if error == Failure::Cancelled {
+                        "cancelled"
+                    } else {
+                        "blocked"
+                    }
+                    .into();
+                    cancelled.issue_code = Some(error.code().into());
+                    self.record(cancelled)?;
+                    return Err(error);
+                }
+                let refreshed = self.manager.refresh_managed_credential(&profile.id);
+                let (mut completed, issue) = match refreshed {
+                    Ok(snapshot) => {
+                        let mut completed = entry;
+                        completed.identity = snapshot.identity_hash;
+                        completed.generation = snapshot.token_generation;
+                        completed.phase = "succeeded".into();
+                        completed.last_succeeded_at_ms =
+                            Some(snapshot.observed_at.saturating_mul(1000));
+                        completed.issue_code = None;
+                        (completed, None)
+                    }
+                    Err(error) => {
+                        let failure = account_error(error);
+                        let mut completed = entry;
+                        completed.phase = if failure == Failure::Cancelled {
+                            "cancelled"
+                        } else {
+                            "blocked"
+                        }
+                        .into();
+                        completed.issue_code = Some(failure.code().into());
+                        (completed, Some(failure))
+                    }
+                };
+                completed.next_eligible_at_ms = Some(
+                    settings
+                        .quota_refresh_frequency
+                        .next_eligible_at_ms(foreground, started_at),
+                );
+                self.record(completed)?;
+                {
+                    let mut state = self.state.lock().map_err(|_| Failure::Unavailable)?;
+                    state.running = None;
+                    if issue.is_some() {
+                        state.issue = issue;
+                    }
+                }
+                if self.epoch.load(Ordering::Acquire) != epoch
+                    || self.exiting.load(Ordering::Acquire)
+                {
+                    return Err(Failure::Cancelled);
+                }
+                if issue.is_some() {
+                    continue;
+                }
+            }
+            if !settings.five_hour_warmup
+                && !settings.seven_day_warmup
+                && !settings.reset_authorizations.contains_key(&profile.id)
+            {
+                continue;
+            }
             let credential = match self.credential(&profile.id) {
                 Ok(c) => c,
                 Err(error) => {
@@ -532,13 +683,15 @@ impl AccountMaintenanceService {
                     continue;
                 }
             };
-            if settings.five_hour_warmup || settings.seven_day_warmup {
+            if (settings.five_hour_warmup || settings.seven_day_warmup) && self.runtime.available()
+            {
                 if let Err(error) = self.run_one(epoch, &settings, &credential, false) {
                     self.state.lock().map_err(|_| Failure::Unavailable)?.issue = Some(error);
                 }
             }
             if settings.reset_authorizations.get(&profile.id)
                 == Some(&credential.value.identity.identity_hash())
+                && self.runtime.available()
             {
                 if let Err(error) = self.run_one(epoch, &settings, &credential, true) {
                     self.state.lock().map_err(|_| Failure::Unavailable)?.issue = Some(error);
@@ -852,8 +1005,13 @@ impl AccountMaintenanceService {
     fn record(&self, entry: MaintenanceEntry) -> Result<()> {
         let mut state = self.state.lock().map_err(|_| Failure::Unavailable)?;
         let mut next = state.saved.clone();
-        next.entries
-            .retain(|e| e.identity != entry.identity || e.kind != entry.kind);
+        if entry.kind == "quota_refresh" {
+            next.entries
+                .retain(|e| e.profile_id != entry.profile_id || e.kind != entry.kind);
+        } else {
+            next.entries
+                .retain(|e| e.identity != entry.identity || e.kind != entry.kind);
+        }
         next.entries.push(entry);
         if next.entries.len() > 512 {
             return Err(Failure::RecoveryRequired);

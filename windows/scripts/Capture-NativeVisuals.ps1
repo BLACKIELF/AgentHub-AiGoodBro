@@ -7,6 +7,7 @@ param(
   [string] $WindowsSdkRoot,
   [switch] $PreflightOnly,
   [switch] $SkipBuild,
+  [switch] $ExerciseWorkspaceScreenshot,
   [Alias('Surface')]
   [ValidateSet('All', 'Overview', 'Tasks', 'AI Leadership', 'Usage', 'Projects', 'Skills')]
   [string] $RequestedSurface = 'All'
@@ -907,6 +908,7 @@ function Get-PreflightManifest {
     capture_runs = @($captureRuns)
     client_sizes = @()
     surfaces = @($requestedSurfaces)
+    workspace_screenshot_test_enabled = [bool]$ExerciseWorkspaceScreenshot
     window_mode = 'maximized exact HWND'
     overview_file = if ($captureOverview) { 'fullscreen/overview.png' } else { $null }
     surface_capture_mode = if ($singlePanelCapture) {
@@ -1496,6 +1498,122 @@ function Click-OwnedControl {
   [NativeVisualCaptureDriver]::ClickOwnedControl(
     $Window, $ProcessId, $bounds.Left, $bounds.Top, $bounds.Width, $bounds.Height
   )
+}
+
+function Invoke-WorkspaceScreenshotSmokeTest {
+  param(
+    [IntPtr] $Window,
+    [int] $ProcessId,
+    [IntPtr] $ExpectedForeground,
+    [string] $OutputPath,
+    [string] $ClientSize
+  )
+
+  if (Test-Path -LiteralPath $OutputPath) {
+    throw 'Native workspace screenshot output already exists.'
+  }
+  if ($ClientSize -notmatch '^\d+x(?<height>\d+)$') {
+    throw 'Native workspace screenshot client size is unavailable.'
+  }
+  $clientHeight = [int]$Matches.height
+  $button = Wait-ForElement -Window $Window -AutomationId 'workspace-screenshot'
+  if (
+    $button.Current.ControlType -ne [System.Windows.Automation.ControlType]::Button -or
+    $button.Current.Name -cne 'Save full workspace screenshot (PNG)' -or
+    -not [bool]$button.Current.IsEnabled
+  ) {
+    throw 'Native workspace screenshot action is not ready.'
+  }
+  Click-OwnedControl -Window $Window -ProcessId $ProcessId -Element $button `
+    -ExpectedForeground $ExpectedForeground -Stage 'workspace screenshot action'
+
+  $deadline = (Get-Date).AddSeconds(45)
+  $status = $null
+  $statusText = ''
+  $englishSaved = 'Workspace screenshot saved.'
+  $chineseSaved = -join [char[]]@(0x4e3b, 0x754c, 0x9762, 0x957f, 0x622a, 0x56fe, 0x5df2, 0x4fdd, 0x5b58, 0x3002)
+  do {
+    $status = Find-ElementByAutomationId -Window $Window -AutomationId 'workspace-screenshot-status'
+    if ($null -ne $status) {
+      $statusText = [string]$status.Current.Name
+      if ($statusText -ceq $englishSaved -or $statusText -ceq $chineseSaved) { break }
+      if ($statusText -match '(?i)could not save|未能保存') {
+        throw 'Native workspace screenshot action reported a save failure.'
+      }
+    }
+    Start-Sleep -Milliseconds 150
+  } while ((Get-Date) -lt $deadline)
+  if (
+    $null -eq $status -or
+    ($statusText -cne $englishSaved -and $statusText -cne $chineseSaved)
+  ) {
+    throw 'Native workspace screenshot action did not report a saved result.'
+  }
+
+  $button = Wait-ForElement -Window $Window -AutomationId 'workspace-screenshot'
+  if (-not [bool]$button.Current.IsEnabled) {
+    throw 'Native workspace screenshot action remained busy after save.'
+  }
+  $fixtureDeadline = (Get-Date).AddSeconds(5)
+  do {
+    $fixture = Find-ElementByAutomationId -Window $Window -AutomationId 'native-workspace-screenshot-fixture'
+    if ($null -eq $fixture) { break }
+    Start-Sleep -Milliseconds 100
+  } while ((Get-Date) -lt $fixtureDeadline)
+  if ($null -ne $fixture) {
+    throw 'Native workspace screenshot fixture remained after DOM restoration.'
+  }
+  $orderPath = Join-Path (Split-Path -Parent $OutputPath) 'workspace-order.txt'
+  if (-not (Test-Path -LiteralPath $orderPath -PathType Leaf)) {
+    throw 'Native workspace screenshot did not write its fixed restore/save order marker.'
+  }
+  $order = Get-Content -LiteralPath $orderPath -Raw -Encoding ASCII
+  if ($order -cne 'restored|saved') {
+    throw 'Native workspace screenshot did not prove DOM restoration before PNG save.'
+  }
+  if (-not (Test-Path -LiteralPath $OutputPath -PathType Leaf)) {
+    throw 'Native workspace screenshot action reported success without writing its fixed private PNG.'
+  }
+
+  $bitmap = $null
+  try {
+    $bitmap = [System.Drawing.Bitmap]::FromFile($OutputPath)
+    $width = [int]$bitmap.Width
+    $height = [int]$bitmap.Height
+    if (
+      $width -le 0 -or $height -le ($clientHeight + 700) -or
+      $width -gt 32768 -or $height -gt 32768 -or
+      ([int64]$width * [int64]$height * 4) -gt 128000000
+    ) {
+      throw 'Native workspace screenshot dimensions do not prove a bounded full-height capture.'
+    }
+    $fixturePixel = $bitmap.GetPixel([int][math]::Floor($width / 2), $height - 80)
+    $fixturePixelMatched = (
+      $fixturePixel.R -eq 255 -and $fixturePixel.G -eq 45 -and $fixturePixel.B -eq 111
+    )
+    if (-not $fixturePixelMatched) {
+      throw 'Native workspace screenshot did not include the full-height fixture color.'
+    }
+  } finally {
+    if ($null -ne $bitmap) { $bitmap.Dispose() }
+  }
+
+  $file = Get-Item -LiteralPath $OutputPath
+  return [ordered]@{
+    status = 'saved'
+    file = 'runtime/fullscreen/workspace-full.png'
+    order_file = 'runtime/fullscreen/workspace-order.txt'
+    restore_save_order = $order
+    bytes = [int64]$file.Length
+    width = $width
+    height = $height
+    client_height = $clientHeight
+    height_exceeds_client_by = $height - $clientHeight
+    fixture_pixel_matched = $fixturePixelMatched
+    fixture_removed_after_restore = $true
+    saved_feedback_observed = $true
+    restore_completed_before_save = ($order -ceq 'restored|saved')
+  }
 }
 
 function Find-InstallationGuide {
@@ -2115,6 +2233,9 @@ function Invoke-MaximizedCapture {
     $startInfo.EnvironmentVariables['LOCALAPPDATA'] = $localAppData
     $startInfo.EnvironmentVariables['WEBVIEW2_USER_DATA_FOLDER'] = $webViewData
     $startInfo.EnvironmentVariables['AIGOODBRO_NATIVE_CAPTURE_ROOT'] = $sizeRuntime
+    if ($ExerciseWorkspaceScreenshot) {
+      $startInfo.EnvironmentVariables['AIGOODBRO_NATIVE_WORKSPACE_SCREENSHOT_TEST'] = '1'
+    }
 
     $process = [System.Diagnostics.Process]::new()
     $process.StartInfo = $startInfo
@@ -2166,6 +2287,21 @@ function Invoke-MaximizedCapture {
       workspace_navigation_present = $true
       dashboard_tab_present = $true
       renderer_present = $true
+    }
+    if ($ExerciseWorkspaceScreenshot) {
+      $workspaceScreenshotPath = Join-Path $sizeRuntime 'workspace-full.png'
+      $screenshotResult = Invoke-WorkspaceScreenshotSmokeTest `
+        -Window $window `
+        -ProcessId $process.Id `
+        -ExpectedForeground $foregroundBefore `
+        -OutputPath $workspaceScreenshotPath `
+        -ClientSize $sizeRecord.window.verified_client
+      Assert-ForegroundPreserved `
+        -ExpectedForeground $foregroundBefore `
+        -TaskWindow $window `
+        -Stage 'workspace screenshot capture'
+      $sizeRecord.workspace_screenshot = $screenshotResult
+      $script:workflowManifest.workspace_screenshot = $screenshotResult
     }
     Save-WorkflowManifest
     Update-TaskProcessRecords -RootProcessId $process.Id -Records $records
@@ -2340,6 +2476,8 @@ $script:workflowManifest = [ordered]@{
   z_order_policy = 'background'
   startup_window_mode = 'hidden until explicitly shown; background activation forbidden'
   capture_argument = '--codexu-native-capture-background'
+  workspace_screenshot_test_enabled = [bool]$ExerciseWorkspaceScreenshot
+  workspace_screenshot = $null
   taskbar_policy = 'excluded'
   alt_tab_policy = 'excluded'
   real_local_codex_input = 'not-read; empty task-owned Codex root'

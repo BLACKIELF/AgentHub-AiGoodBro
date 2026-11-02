@@ -12,7 +12,7 @@ use std::{
     collections::{BTreeMap, VecDeque},
     path::PathBuf,
     sync::{
-        atomic::{AtomicBool, AtomicU8, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicU8, AtomicUsize, Ordering},
         Arc, Mutex,
     },
 };
@@ -27,11 +27,17 @@ pub struct NotificationService {
     pub(crate) state: Mutex<RuntimeState>,
     pub(crate) exiting: AtomicBool,
     pub(crate) public_runtime: super::public_reset::Runtime,
-    monitor_active: Arc<AtomicBool>,
+    pub(crate) monitor_active: Arc<AtomicBool>,
+    personal_runtime: Mutex<Option<Arc<tokio::runtime::Runtime>>>,
     pending: Mutex<Pending>,
     pub(crate) wake: Arc<(Mutex<()>, std::sync::Condvar)>,
     queue_failure: AtomicU8,
     pub(crate) personal_text_active: AtomicBool,
+    pub(crate) personal_conversation_owner:
+        Mutex<Option<Arc<dyn super::PersonalConversationOwner>>>,
+    pub(crate) personal_conversation_generation: AtomicU64,
+    pub(crate) personal_conversation_tasks: AtomicUsize,
+    pub(crate) personal_conversation_active: AtomicBool,
 }
 #[derive(Default)]
 struct Pending {
@@ -218,7 +224,7 @@ mod tests {
 }
 #[derive(Default)]
 pub(crate) struct RuntimeState {
-    operations: BTreeMap<ChannelKind, Vec<(Arc<AtomicBool>, Arc<AtomicBool>)>>,
+    pub(crate) operations: BTreeMap<ChannelKind, Vec<(Arc<AtomicBool>, Arc<AtomicBool>)>>,
     verified: BTreeMap<ChannelKind, (u64, i64)>,
     pub login: Option<LoginAttempt>,
     failure: Option<&'static str>,
@@ -305,6 +311,30 @@ impl NotificationService {
         {
             return fail("notification_monitor_active");
         }
+        let runtime = match self.personal_runtime.lock() {
+            Ok(mut current) => match current.as_ref() {
+                Some(runtime) => runtime.clone(),
+                None => {
+                    let runtime = match tokio::runtime::Builder::new_multi_thread()
+                        .worker_threads(1)
+                        .enable_all()
+                        .build()
+                    {
+                        Ok(runtime) => Arc::new(runtime),
+                        Err(_) => {
+                            self.monitor_active.store(false, Ordering::Release);
+                            return fail("notification_monitor_unavailable");
+                        }
+                    };
+                    *current = Some(runtime.clone());
+                    runtime
+                }
+            },
+            Err(_) => {
+                self.monitor_active.store(false, Ordering::Release);
+                return fail("notification_busy");
+            }
+        };
         let stop = Arc::new(AtomicBool::new(false));
         let active = Arc::new(Mutex::new(None));
         let wake = self.wake.clone();
@@ -389,8 +419,9 @@ impl NotificationService {
                             }))
                     });
                     let delay = if matches!(bound, Ok(true)) {
-                        let result =
-                            service.refresh_personal_wechat_context_owned(&cancelled, &poll);
+                        let result = runtime.block_on(
+                            service.poll_personal_conversation_updates_owned(&cancelled, &poll),
+                        );
                         changed();
                         if let Ok(mut current) = poll.lock() {
                             *current = None;
@@ -456,10 +487,15 @@ impl NotificationService {
             exiting: AtomicBool::new(false),
             public_runtime: Default::default(),
             monitor_active: Arc::new(AtomicBool::new(false)),
+            personal_runtime: Mutex::new(None),
             pending: Mutex::new(Pending::default()),
             wake: Arc::new((Mutex::new(()), std::sync::Condvar::new())),
             queue_failure: AtomicU8::new(0),
             personal_text_active: AtomicBool::new(false),
+            personal_conversation_owner: Mutex::new(None),
+            personal_conversation_generation: AtomicU64::new(0),
+            personal_conversation_tasks: AtomicUsize::new(0),
+            personal_conversation_active: AtomicBool::new(false),
         }))
     }
     pub fn states(&self) -> Result<Vec<ChannelState>> {
@@ -586,6 +622,10 @@ impl NotificationService {
                 .state
                 .lock()
                 .map_err(|_| Failure("notification_busy"))?;
+            // Fence automatic replies before the shared WeChat revision is
+            // persisted. The state lock is already held, so the epoch bump is
+            // the synchronous cancellation signal for owner tasks.
+            self.revoke_personal_conversation_work();
             self.storage.change(|v| {
                 for shared in [ChannelKind::WeCom, ChannelKind::PersonalWeChat] {
                     let c = v.configs.entry(shared).or_default();
@@ -642,6 +682,9 @@ impl NotificationService {
                 .get_mut(&kind)
                 .filter(|c| c.enabled && c.revision == revision)
                 .ok_or(Failure("configuration_changed"))?;
+            // The revision match is checked under the store lock first, so a
+            // stale session-expired response cannot cancel a newer pairing.
+            self.revoke_personal_conversation_work();
             c.session_expired = true;
             c.revision = c
                 .revision
@@ -657,6 +700,7 @@ impl NotificationService {
         }
         state.verified.remove(&kind);
         state.login = None;
+        drop(state);
         Ok(())
     }
     fn mutate_config(
@@ -680,16 +724,34 @@ impl NotificationService {
         state.failures.remove(&kind);
         if kind == ChannelKind::PersonalWeChat {
             state.login = None;
+            // Cancel owner work before attempting the vault write, including
+            // when the cross-process store lock makes that write fail.
+            self.revoke_personal_conversation_work();
         }
-        self.storage.change(|v| {
+        let result = self.storage.change(|v| {
             let c = v.configs.entry(kind).or_default();
             f(c)?;
+            let conversation_channel_enabled = c.enabled;
+            let conversation_pair_present = c.secret.is_some() && c.binding.is_some();
             c.revision = c
                 .revision
                 .checked_add(1)
                 .ok_or(Failure("notification_store_invalid"))?;
+            if kind == ChannelKind::PersonalWeChat {
+                if let Some(journal) = v.personal_conversation.as_mut() {
+                    if !conversation_pair_present {
+                        journal.binding = None;
+                    } else if !conversation_channel_enabled {
+                        if let Some(binding) = journal.binding.as_mut() {
+                            binding.enabled = false;
+                        }
+                    }
+                }
+            }
             Ok(())
-        })
+        });
+        drop(state);
+        result
     }
     pub fn cancel_channel(&self, kind: ChannelKind) -> Result<ChannelState> {
         let mut state = self
@@ -718,6 +780,8 @@ impl NotificationService {
     pub fn cancel_inflight_for_exit(&self) {
         self.exiting.store(true, Ordering::Release);
         self.public_runtime.cancel();
+        self.revoke_personal_conversation_work();
+        self.wake.1.notify_all();
         if let Ok(mut state) = self.state.try_lock() {
             for ops in state.operations.values() {
                 for (cancel, _) in ops {
@@ -733,6 +797,7 @@ impl NotificationService {
     }
     pub fn has_inflight_operation(&self) -> bool {
         self.public_runtime.checking.load(Ordering::Acquire)
+            || self.personal_conversation_tasks.load(Ordering::Acquire) > 0
             || self
                 .state
                 .try_lock()

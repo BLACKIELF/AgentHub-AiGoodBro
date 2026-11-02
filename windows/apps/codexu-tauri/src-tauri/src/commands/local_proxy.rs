@@ -3,6 +3,7 @@ use codexu_core::proxy::{
     ProxyPreferences, ProxyStatus,
 };
 use std::sync::Arc;
+use tauri::{AppHandle, Emitter};
 
 pub struct LocalProxyState(pub Result<Arc<LocalProxyService>, &'static str>);
 impl LocalProxyState {
@@ -39,17 +40,61 @@ pub async fn get_local_proxy_preferences(
 }
 #[tauri::command]
 pub async fn set_local_proxy_preferences(
+    app: AppHandle,
     service: tauri::State<'_, LocalProxyState>,
     preferences: ProxyPreferences,
 ) -> Result<ProxyPreferences, String> {
     let service = service.service()?;
-    tauri::async_runtime::spawn_blocking(move || {
+    let saved = tauri::async_runtime::spawn_blocking(move || {
         service
-            .save_preferences(preferences)
-            .map_err(|e| e.code().into())
+            .save_preferences_preserving_routing(preferences)
+            .map_err(|error| error.code().to_owned())
     })
     .await
-    .map_err(|_| "unavailable".to_string())?
+    .map_err(|_| "unavailable".to_string())??;
+    emit_preferences_changed(&app);
+    Ok(saved)
+}
+#[tauri::command]
+pub async fn set_local_proxy_account_preference(
+    app: AppHandle,
+    service: tauri::State<'_, LocalProxyState>,
+    account_id: String,
+    field: String,
+    enabled: bool,
+) -> Result<ProxyPreferences, String> {
+    let service = service.service()?;
+    let saved = tauri::async_runtime::spawn_blocking(move || {
+        service
+            .update_account_preference(&account_id, &field, enabled)
+            .map_err(|error| error.code().to_owned())
+    })
+    .await
+    .map_err(|_| "unavailable".to_string())??;
+    emit_preferences_changed(&app);
+    Ok(saved)
+}
+#[tauri::command]
+pub async fn move_local_proxy_account(
+    app: AppHandle,
+    service: tauri::State<'_, LocalProxyState>,
+    account_id: String,
+    target_id: String,
+) -> Result<ProxyPreferences, String> {
+    let service = service.service()?;
+    let saved = tauri::async_runtime::spawn_blocking(move || {
+        service
+            .move_account_routing(&account_id, &target_id)
+            .map_err(|error| error.code().to_owned())
+    })
+    .await
+    .map_err(|_| "unavailable".to_string())??;
+    emit_preferences_changed(&app);
+    Ok(saved)
+}
+fn emit_preferences_changed(app: &AppHandle) {
+    let _ = app.emit("local-proxy:changed", ());
+    let _ = app.emit("managed-accounts:changed", ());
 }
 #[tauri::command]
 pub async fn start_local_proxy(

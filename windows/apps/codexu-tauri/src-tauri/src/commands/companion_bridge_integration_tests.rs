@@ -886,11 +886,6 @@ struct NativeTokenMandatoryLabelBuffer {
     sid: NativeSid,
 }
 
-#[repr(C)]
-struct NativeLinkedToken {
-    token: NativeHandle,
-}
-
 fn native_test_environment(proof: &Path, fake_cli: &Path, python: &Path) -> Vec<u16> {
     let mut entries = vec![
         (
@@ -972,15 +967,6 @@ fn native_token_information(token: NativeHandle, class: u32) -> Vec<u8> {
     })
 }
 
-fn native_linked_token(token: NativeHandle) -> Option<NativeHandleOwner> {
-    let information = try_native_token_information(token, 19)?;
-    if information.len() < std::mem::size_of::<NativeLinkedToken>() {
-        return None;
-    }
-    let linked = unsafe { ptr::read_unaligned(information.as_ptr().cast::<NativeLinkedToken>()) };
-    (!linked.token.is_null()).then(|| NativeHandleOwner(linked.token))
-}
-
 fn native_tokens_share_user_sid(left: NativeHandle, right: NativeHandle) -> bool {
     let left_information = native_token_information(left, 1);
     let right_information = native_token_information(right, 1);
@@ -1056,13 +1042,6 @@ fn native_validate_child_token(parent: NativeHandle, child: NativeHandle) {
 }
 
 fn native_non_elevated_child_token(original: NativeHandle) -> NativeHandleOwner {
-    if let Some(linked) = native_linked_token(original) {
-        if let Some(token) = native_duplicate_primary_token(linked.0) {
-            native_validate_child_token(original, token.0);
-            return token;
-        }
-    }
-
     let mut restricted = ptr::null_mut();
     assert_ne!(
         unsafe {
@@ -1107,17 +1086,11 @@ fn native_non_elevated_child_token(original: NativeHandle) -> NativeHandleOwner 
             )
         },
         0,
-        "set fallback native test token integrity to Medium: {}",
+        "set restricted native test token integrity to Medium: {}",
         io::Error::last_os_error()
     );
     native_validate_child_token(original, token.0);
     token
-}
-
-fn native_duplicate_primary_token(token: NativeHandle) -> Option<NativeHandleOwner> {
-    let mut duplicate = ptr::null_mut();
-    let ok = unsafe { DuplicateTokenEx(token, 0x000b, ptr::null(), 2, 1, &mut duplicate) };
-    (ok != 0 && !duplicate.is_null()).then(|| NativeHandleOwner(duplicate))
 }
 
 struct NativeHandleOwner(NativeHandle);
@@ -1215,14 +1188,6 @@ unsafe extern "system" {
         size: u32,
     ) -> i32;
     fn EqualSid(left: NativeHandle, right: NativeHandle) -> i32;
-    fn DuplicateTokenEx(
-        token: NativeHandle,
-        access: u32,
-        attributes: *const c_void,
-        impersonation_level: u32,
-        token_type: u32,
-        new_token: *mut NativeHandle,
-    ) -> i32;
     fn CreateRestrictedToken(
         token: NativeHandle,
         flags: u32,
@@ -1250,6 +1215,7 @@ unsafe extern "system" {
 #[link(name = "kernel32")]
 unsafe extern "system" {
     fn GetCurrentProcess() -> NativeHandle;
+    fn GetLastError() -> u32;
     fn CloseHandle(handle: NativeHandle) -> i32;
     fn CreateJobObjectW(attributes: *const c_void, name: *const u16) -> NativeHandle;
     fn SetInformationJobObject(
@@ -1459,6 +1425,11 @@ fn launch_native_e2e_child(fake_cli: &Path, python: &Path, proof_directory: temp
         NativeHandleOwner(ptr::null_mut())
     };
     let creation_flags = 0x0000_0004 | 0x0000_0400 | 0x0800_0000; // suspended, Unicode environment, no window
+    let launch_api = if elevated {
+        "CreateProcessWithTokenW"
+    } else {
+        "CreateProcessW"
+    };
     let created = if elevated {
         unsafe {
             CreateProcessWithTokenW(
@@ -1489,11 +1460,16 @@ fn launch_native_e2e_child(fake_cli: &Path, python: &Path, proof_directory: temp
             )
         }
     };
+    let launch_error = if created == 0 {
+        unsafe { GetLastError() }
+    } else {
+        0
+    };
     assert_ne!(
         created,
         0,
-        "launch isolated native test child: {}",
-        io::Error::last_os_error()
+        "launch isolated native test child via {launch_api} (elevated_parent={elevated}): {}",
+        io::Error::from_raw_os_error(launch_error as i32)
     );
     owned.process = info.process;
     owned.thread = info.thread;

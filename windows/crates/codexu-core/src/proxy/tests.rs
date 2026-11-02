@@ -936,6 +936,150 @@ fn saved_policy_roundtrips_and_failed_save_leaves_previous_rule() {
 }
 
 #[test]
+fn account_routing_updates_rebase_latest_state_and_keep_pro_false_override() {
+    let dir = tempfile::tempdir().unwrap();
+    let service = LocalProxyService::new(
+        dir.path().join("proxy.json"),
+        dir.path().join("state"),
+        dir.path().join("helper"),
+        vec!["fixture-model".into()],
+        FixtureGate::new(),
+        Arc::new(FixtureSecrets(Mutex::default())),
+    )
+    .unwrap();
+    service.save_preferences(preferences()).unwrap();
+
+    let first = service
+        .update_account_preference("A", "enabled", false)
+        .unwrap();
+    assert!(!first.enabled_ids.contains("A"));
+    let second = service
+        .update_account_preference("P", "last", false)
+        .unwrap();
+    assert!(!second.enabled_ids.contains("A"));
+    assert_eq!(second.last_overrides.get("P"), Some(&false));
+    assert!(!second.is_last("P", Some("pro")));
+
+    let prioritized = service
+        .update_account_preference("A", "priority", true)
+        .unwrap();
+    assert!(prioritized.priority_ids.contains("A"));
+    assert_eq!(prioritized.last_overrides.get("A"), Some(&false));
+    assert_eq!(prioritized.last_overrides.get("P"), Some(&false));
+    let unprioritized = service
+        .update_account_preference("A", "priority", false)
+        .unwrap();
+    assert!(!unprioritized.priority_ids.contains("A"));
+    assert_eq!(unprioritized.last_overrides.get("A"), Some(&false));
+
+    let stored: ProxyPreferences =
+        serde_json::from_slice(&std::fs::read(dir.path().join("proxy.json")).unwrap()).unwrap();
+    assert_eq!(stored, unprioritized);
+    let retained = service.preferences().unwrap();
+    std::fs::rename(
+        dir.path().join("proxy.json"),
+        dir.path().join("saved-proxy.json"),
+    )
+    .unwrap();
+    std::fs::create_dir(dir.path().join("proxy.json")).unwrap();
+    assert_eq!(
+        service.update_account_preference("B", "enabled", false),
+        Err(ProxyFailure::SaveFailed)
+    );
+    assert_eq!(service.preferences().unwrap(), retained);
+}
+
+#[test]
+fn stale_full_preferences_cannot_restore_a_concurrent_account_opt_in() {
+    let dir = tempfile::tempdir().unwrap();
+    let service = LocalProxyService::new(
+        dir.path().join("proxy.json"),
+        dir.path().join("state"),
+        dir.path().join("helper"),
+        vec!["fixture-model".into()],
+        FixtureGate::new(),
+        Arc::new(FixtureSecrets(Mutex::default())),
+    )
+    .unwrap();
+    service.save_preferences(preferences()).unwrap();
+    let mut stale = service.preferences().unwrap();
+    assert!(stale.enabled_ids.contains("A"));
+
+    service
+        .update_account_preference("A", "enabled", false)
+        .unwrap();
+    stale.credit_fallback = true;
+    let saved = service.save_preferences_preserving_routing(stale).unwrap();
+    assert!(!saved.enabled_ids.contains("A"));
+    assert!(saved.credit_fallback);
+}
+
+#[test]
+fn cross_group_move_adopts_target_group_and_preserves_participation() {
+    let dir = tempfile::tempdir().unwrap();
+    let service = LocalProxyService::new(
+        dir.path().join("proxy.json"),
+        dir.path().join("state"),
+        dir.path().join("helper"),
+        vec!["fixture-model".into()],
+        FixtureGate::new(),
+        Arc::new(FixtureSecrets(Mutex::default())),
+    )
+    .unwrap();
+    let mut initial = preferences();
+    initial.priority_ids.insert("A".into());
+    service.save_preferences(initial).unwrap();
+
+    let moved = service.move_account_routing("A", "P").unwrap();
+    assert_eq!(moved.order, vec!["P", "A", "B"]);
+    assert!(moved.last_ids.contains("A"));
+    assert_eq!(moved.last_overrides.get("A"), Some(&true));
+    assert!(!moved.priority_ids.contains("A"));
+    assert_eq!(
+        moved.enabled_ids,
+        ["A".into(), "B".into(), "P".into()].into()
+    );
+    assert_eq!(
+        serde_json::from_slice::<ProxyPreferences>(
+            &std::fs::read(dir.path().join("proxy.json")).unwrap()
+        )
+        .unwrap(),
+        moved
+    );
+}
+
+#[test]
+fn removal_guard_requires_opt_out_and_serializes_new_opt_in() {
+    let dir = tempfile::tempdir().unwrap();
+    let service = LocalProxyService::new(
+        dir.path().join("proxy.json"),
+        dir.path().join("state"),
+        dir.path().join("helper"),
+        vec!["fixture-model".into()],
+        FixtureGate::new(),
+        Arc::new(FixtureSecrets(Mutex::default())),
+    )
+    .unwrap();
+    service.save_preferences(preferences()).unwrap();
+    assert_eq!(
+        service.with_account_removal_guard("A", || true),
+        Err("proxy_account_opt_out_required")
+    );
+    service
+        .update_account_preference("A", "enabled", false)
+        .unwrap();
+    let update_was_blocked = service
+        .with_account_removal_guard("A", || {
+            service
+                .update_account_preference("A", "enabled", true)
+                .unwrap_err()
+        })
+        .unwrap();
+    assert_eq!(update_was_blocked, ProxyFailure::ControlBusy);
+    assert!(!service.preferences().unwrap().enabled_ids.contains("A"));
+}
+
+#[test]
 #[ignore = "requires the freshly built helper in AIGOODBRO_TEST_PROXY_HELPER; no real credentials or inference"]
 fn actual_helper_authentication_and_owned_eof_shutdown() {
     use std::io::{Read, Write};

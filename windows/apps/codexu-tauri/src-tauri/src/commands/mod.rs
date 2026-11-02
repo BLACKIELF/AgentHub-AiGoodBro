@@ -14,13 +14,17 @@ pub mod profile_quota;
 pub mod profiles;
 pub mod proxy_accounts;
 pub mod public_feed;
+pub mod quota_resume;
 pub mod settings;
 pub mod setup_context;
 pub mod token_monitor;
 pub mod usage;
+pub mod workspace_screenshot;
 
 pub mod task_hub;
 
+pub(crate) mod personal_conversation_owner;
+pub mod personal_wechat_conversation;
 pub mod personal_wechat_text;
 pub mod task_workbench;
 

@@ -1,4 +1,5 @@
 import { PersonalWeChatText } from './PersonalWeChatText';
+import { PersonalWeChatConversation } from './PersonalWeChatConversation';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Check, Info, MoreHorizontal, QrCode, RefreshCw, Save, Send, Square, Trash2 } from 'lucide-react';
 import { useI18n } from '../i18n/I18nProvider';
@@ -51,6 +52,7 @@ function NotificationChannelCard({channel,index,controller,text}:{channel:Notifi
   <div className="notification-card-actions"><button type="button" className="glass-button notification-small-button" disabled={!fresh||!!busy||!notificationCanTest(channel)||personalActive} onClick={()=>void controller.test(kind)}><Send size={13}/>{text('发送测试消息','Send test message')}</button>{!!busy&&!personal&&<button type="button" className="glass-button notification-small-button" onClick={()=>void controller.cancel(kind)}><Square size={12}/>{text('取消操作','Cancel operation')}</button>}</div>
   {receipt&&<p role="status" className={`notification-receipt is-${receipt.state}`}>{receiptText(receipt,text)} <time dateTime={new Date(receipt.checkedAt*1000).toISOString()}>{new Date(receipt.checkedAt*1000).toLocaleTimeString(language==='zh-Hans'?'zh-CN':'en-GB',{hour12:false})}</time>{receipt.failureCode&&<span> {notificationFailureText(receipt.failureCode,text)}</span>}</p>}
   {personal&&<PersonalWeChatText channel={channel} disabled={!fresh||!!busy||personalActive} onChanged={async()=>{await controller.read();}}/>}
+  {personal&&<PersonalWeChatConversation channel={channel} disabled={!fresh||!!busy||personalActive}/>}
   {kind==='feishu'&&<MessageOptionsEditor id="feishu" title={text('消息内容与提醒','Message content and alerts')} options={channel.options} disabled={!fresh||!!busy} onSave={options=>controller.saveOptions(kind,options)} text={text}/>}
   <dialog ref={dialog} className="notification-confirm" aria-labelledby={`remove-${kind}`} onCancel={event=>{if(busy)event.preventDefault();else setConfirm(false);}}><h3 id={`remove-${kind}`}>{text(personal?'移除微信绑定？':'移除已存凭据？',personal?'Remove WeChat pairing?':'Remove saved credential?')}</h3><p>{text('本机保存的渠道凭据会移除，通知也会关闭。','This removes the locally saved channel credential and disables notifications.')}</p><div><button type="button" className="glass-button notification-small-button" disabled={!!busy} onClick={()=>setConfirm(false)}>{text('保留配置','Keep configuration')}</button><button type="button" className="glass-button notification-small-button is-danger" disabled={!!busy} onClick={()=>void controller.forget(kind).then(ok=>{if(ok){setConfirm(false);setSecret('');setTarget('');}})}>{text('确认移除','Remove')}</button></div></dialog>
  </article>;

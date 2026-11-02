@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { ArrowDown, ArrowUp, Copy, Info, MoreHorizontal, Play, RefreshCw, Save, ShieldCheck, Square } from 'lucide-react';
 import { useI18n } from '../i18n/I18nProvider';
 import { QuotaRing } from './QuotaRing';
 import { ProxyDesktopPanel } from './ProxyDesktopPanel';
-import { parseProxyAccounts, parseProxyPolicy, parseProxyPreferences, parseProxyStatus, proxyAccountPolicy, proxyConnectionText, proxyDisplayOrder, proxyParticipation, remainingQuotaPercent, usedQuotaLimit, sharedQuotaReserve, type ProxyAccount, type ProxyAccountPolicy, type ProxyPreferences, type ProxyStatus } from '../utils/localProxy';
+import { parseProxyAccounts, parseProxyPolicy, parseProxyPreferences, parseProxyStatus, proxyAccountPolicy, proxyConnectionText, proxyDisplayOrder, remainingQuotaPercent, usedQuotaLimit, sharedQuotaReserve, type ProxyAccount, type ProxyAccountPolicy, type ProxyPreferenceField, type ProxyPreferences, type ProxyStatus } from '../utils/localProxy';
 
 type Text = (zh: string, en: string) => string;
 type NetworkDraft = { listenPort: string; clientKeyMode: ProxyPreferences['clientKeyMode']; automaticRecoveryEnabled: boolean; desktopFallback: boolean; networkProxy: string; egressEnabled: boolean; mihomoApi: string; group: string; whitelist: string; creditFallback: boolean; creditPrimaryFloor: string; creditSecondaryFloor: string };
@@ -52,9 +53,9 @@ function stateText(state: string | undefined, text: Text): string {
   return value ? text(...value) : text('未确认', 'Unconfirmed');
 }
 
-function ProxyAccountRow({ account, index, total, preferences, status, projectionFresh, busy, text, language, save, move }: {
+function ProxyAccountRow({ account, index, total, preferences, status, projectionFresh, busy, text, language, save, updatePreference, move }: {
   account: ProxyAccount; index: number; total: number; preferences: ProxyPreferences; status: ProxyStatus | null; projectionFresh: boolean; busy: boolean; text: Text; language: string;
-  save: (next: ProxyPreferences) => Promise<ProxyPreferences | null>; move: (id: string, offset: number) => void;
+  save: (next: ProxyPreferences) => Promise<ProxyPreferences | null>; updatePreference: (id: string, field: ProxyPreferenceField, enabled: boolean) => Promise<ProxyPreferences | null>; move: (id: string, offset: number) => void;
 }) {
   const committed = proxyAccountPolicy(preferences, account.id);
   const pro = ['pro', 'prolite'].includes(account.planType ?? '');
@@ -96,7 +97,7 @@ function ProxyAccountRow({ account, index, total, preferences, status, projectio
     <header className="proxy-account-header">
       <span className="account-directory-number">{String(index + 1).padStart(2, '0')}</span>
       <div className="proxy-account-name"><h3 title={account.label}>{account.label}</h3><span>{account.planType ?? text('套餐待确认', 'Plan unconfirmed')} · {stateText(status?.accounts[account.id]?.state, text)}</span></div>
-      <button type="button" className={`proxy-enabled ${enabled ? 'is-enabled' : ''}`} aria-pressed={enabled} disabled={busy} onClick={() => void save(proxyParticipation(preferences, account.id, 'enabled', !enabled))}>{enabled ? text('已参与', 'Enabled') : text('未参与', 'Disabled')}</button>
+      <button type="button" className={`proxy-enabled ${enabled ? 'is-enabled' : ''}`} aria-pressed={enabled} disabled={busy} onClick={() => void updatePreference(account.id, 'enabled', !enabled)}>{enabled ? text('已参与', 'Enabled') : text('未参与', 'Disabled')}</button>
       <details className="account-more"><summary className="icon-action" aria-label={text('更多操作', 'More actions')} title={text('更多操作', 'More actions')}><MoreHorizontal size={16} /></summary><div className="account-more-content">
         <button type="button" disabled={busy || index === 0} onClick={event => { event.currentTarget.closest('details')?.removeAttribute('open'); move(account.id, -1); }}><ArrowUp size={13} />{text('上移', 'Move up')}</button>
         <button type="button" disabled={busy || index === total - 1} onClick={event => { event.currentTarget.closest('details')?.removeAttribute('open'); move(account.id, 1); }}><ArrowDown size={13} />{text('下移', 'Move down')}</button>
@@ -113,8 +114,8 @@ function ProxyAccountRow({ account, index, total, preferences, status, projectio
     </div>
     {quota && !fresh && <p className="proxy-note">{text('上次快照 · 请刷新核实可用额度。', 'Last snapshot · Refresh to confirm available quota.')}</p>}
     <div className="proxy-account-options">
-      <label><input type="checkbox" checked={priority} disabled={busy} onChange={event => void save(proxyParticipation(preferences, account.id, 'priority', event.target.checked))} />{text('优先使用', 'Priority')}</label>
-      <label><input type="checkbox" checked={last} disabled={busy} onChange={event => void save(proxyParticipation(preferences, account.id, 'last', event.target.checked))} />{text('最后使用', 'Use last')}</label>
+      <label><input type="checkbox" checked={priority} disabled={busy} onChange={event => void updatePreference(account.id, 'priority', event.target.checked)} />{text('优先使用', 'Priority')}</label>
+      <label><input type="checkbox" checked={last} disabled={busy} onChange={event => void updatePreference(account.id, 'last', event.target.checked)} />{text('最后使用', 'Use last')}</label>
       <details className="proxy-info"><summary className="icon-action" aria-label={text('账号详情', 'Account details')} title={text('账号详情', 'Account details')}><Info size={14} /></summary><div className="proxy-info-body">
         <p>{text('剩余额度达到保留值时停止分配；参与勾选不会改变显示顺序。', 'Allocation stops at the remaining-quota reserve. Participation keeps the display order.')}</p>
         {quota && <p>{text('额度观察时间 ', 'Quota observed ')}{new Date(quota.observedAt * 1000).toLocaleString(language === 'zh-Hans' ? 'zh-CN' : 'en-GB', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false })}</p>}
@@ -155,6 +156,12 @@ export function LocalProxyPanel() {
   useEffect(() => {
     alive.current = true;
     let disposed = false;
+    const releases: Array<() => void> = [];
+    for (const name of ['local-proxy:changed', 'managed-accounts:changed']) {
+      void listen(name, () => { if (!disposed && !operation.current) void refresh(); }).then(release => {
+        if (disposed) release(); else releases.push(release);
+      }).catch(() => { /* Polling and explicit refresh remain available. */ });
+    }
     const epoch = ++generation.current;
     async function initialize() {
       const results = await Promise.allSettled([invoke('get_local_proxy_preferences'), invoke('get_local_proxy_status'), invoke('get_local_proxy_accounts')]);
@@ -182,7 +189,7 @@ export function LocalProxyPanel() {
       }
       pollPending.current = false;
     }, 2000);
-    return () => { disposed = true; alive.current = false; generation.current++; clearInterval(timer); };
+    return () => { disposed = true; alive.current = false; generation.current++; clearInterval(timer); releases.forEach(release => release()); };
     // Localized display strings are read during rendering; changing language
     // does not restart a native operation or silently refresh official quota.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -210,6 +217,13 @@ export function LocalProxyPanel() {
   async function save(next: ProxyPreferences): Promise<ProxyPreferences | null> {
     return run('save', async () => {
       const saved = parseProxyPreferences(await invoke('set_local_proxy_preferences', { preferences: parseProxyPreferences(next) }));
+      if (alive.current) setPreferences(saved);
+      return saved;
+    });
+  }
+  async function updatePreference(accountId: string, field: ProxyPreferenceField, enabled: boolean): Promise<ProxyPreferences | null> {
+    return run('routing-preference', async () => {
+      const saved = parseProxyPreferences(await invoke('set_local_proxy_account_preference', { accountId, field, enabled }));
       if (alive.current) setPreferences(saved);
       return saved;
     });
@@ -276,10 +290,11 @@ export function LocalProxyPanel() {
     if (!preferences) return;
     const target = sorted[sorted.findIndex(account => account.id === accountId) + offset];
     if (!target) return;
-    const order = [...preferences.order, ...sorted.map(account => account.id).filter(account => !preferences.order.includes(account))];
-    const from = order.indexOf(accountId), to = order.indexOf(target.id);
-    [order[from], order[to]] = [order[to], order[from]];
-    void save({ ...preferences, order });
+    void run('move-account', async () => {
+      const saved = parseProxyPreferences(await invoke('move_local_proxy_account', { accountId, targetId: target.id }));
+      if (alive.current) setPreferences(saved);
+      return true;
+    });
   };
   const busy = pending !== null;
   const active = status && ['starting', 'running', 'stopping'].includes(status.phase);
@@ -308,7 +323,7 @@ export function LocalProxyPanel() {
     {egress && (!selfCheckRequestId || matchingSelfCheck) && <p className="proxy-feedback" role="status" data-egress-state={egress.state}>{matchingSelfCheck ? text('本次自检 · ', 'This self-check · ') : text('网络出口 · ', 'Network egress · ')}{egressStates[egress.state] ? text(...egressStates[egress.state]) : text('未确认', 'Unconfirmed')}{egress.latencyMs !== null && ` · ${egress.latencyMs} ms`}</p>}
     <section className="proxy-accounts" aria-label={text('反代账号', 'Proxy accounts')}><header><h3>{text('参与账号', 'Participating accounts')}{accounts && <span>{accounts.length}</span>}</h3><button type="button" className="glass-button proxy-action" disabled={busy || accounts === null} onClick={() => void refresh(true)}><RefreshCw size={13} className={pending === 'quota' ? 'animate-spin' : ''} />{text('刷新额度', 'Refresh quota')}</button></header>
       {sharedQuota.count > 0 && <div className="proxy-plus-limit"><label htmlFor="proxy-plus-limit">{text('统一保留剩余额度 %（Plus 5 小时 / Pro 7 天）', 'Shared remaining quota % (Plus 5h / Pro 7d)')}</label><input id="proxy-plus-limit" type="number" min="0" max="100" step="0.1" placeholder={sharedQuota.mixed ? text('混合', 'Mixed') : '0–100'} value={quotaLimit ?? (sharedQuota.remaining === null ? '' : String(sharedQuota.remaining))} disabled={busy} onChange={event => setQuotaLimit(event.target.value)} /><button type="button" className="glass-button proxy-action" disabled={busy || quotaLimit === null || !quotaLimit.trim()} onClick={() => void applySharedQuotaLimit()}>{text('应用到 Plus 和 Pro', 'Apply to Plus and Pro')}</button></div>}
-      {accounts === null ? <p className="proxy-note">{text('账号列表暂不可用，请刷新状态。', 'The account list is unavailable. Refresh status.')}</p> : !accounts.length ? <p className="proxy-note">{text('暂无可参与反代的托管 Codex 账号。', 'No managed Codex account is available for the proxy.')}</p> : <div className="proxy-account-grid">{preferences && sorted.map((account, index) => <ProxyAccountRow key={account.id} account={account} index={index} total={sorted.length} preferences={preferences} status={status} projectionFresh={accountsFresh} busy={busy} text={text} language={language} save={save} move={move} />)}</div>}
+      {accounts === null ? <p className="proxy-note">{text('账号列表暂不可用，请刷新状态。', 'The account list is unavailable. Refresh status.')}</p> : !accounts.length ? <p className="proxy-note">{text('暂无可参与反代的托管 Codex 账号。', 'No managed Codex account is available for the proxy.')}</p> : <div className="proxy-account-grid">{preferences && sorted.map((account, index) => <ProxyAccountRow key={account.id} account={account} index={index} total={sorted.length} preferences={preferences} status={status} projectionFresh={accountsFresh} busy={busy} text={text} language={language} save={save} updatePreference={updatePreference} move={move} />)}</div>}
     </section>
     {form && <details className="proxy-settings"><summary>{text('反代设置', 'Proxy settings')}</summary><p className="proxy-note">{text('更改端口、密钥方式或网络设置前需停止反代。端口 0 表示自动选择。', 'Stop the proxy before changing its port, key mode or network settings. Port 0 selects a port automatically.')}</p><fieldset disabled={networkLocked}>
       <div className="proxy-settings-grid"><label>{text('监听端口', 'Listen port')}<input type="number" min="0" max="65535" step="1" value={form.listenPort} onChange={event => setField('listenPort', event.target.value)} /></label><label>{text('客户端密钥', 'Client key')}<select value={form.clientKeyMode} onChange={event => setField('clientKeyMode', event.target.value as NetworkDraft['clientKeyMode'])}><option value="persistent">{text('固定密钥', 'Persistent key')}</option><option value="perRun">{text('每次启动更新', 'New key per run')}</option></select></label><label className="proxy-wide">{text('上游网络代理', 'Upstream network proxy')}<input type="text" placeholder="http://127.0.0.1:7890" value={form.networkProxy} onChange={event => setField('networkProxy', event.target.value)} /></label></div>
