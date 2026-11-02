@@ -246,8 +246,9 @@ mod tests {
     #[test]
     fn gateway_environment_uses_private_home_and_scrubs_ambient_provider_secrets() {
         let dir = tempfile::tempdir().unwrap();
-        let home = dir.path().canonicalize().unwrap().join("private Agy home");
-        std::fs::create_dir_all(&home).unwrap();
+        let fixture_root = dir.path().canonicalize().unwrap().join("agy-fixture-root");
+        crate::accounts::storage::create_private_directory(&fixture_root).unwrap();
+        let home = fixture_root.join("private Agy home");
         let connection = NativeConnection {
             endpoint: "http://127.0.0.1:18081/providers/antigravity".into(),
             client_key: "synthetic_gateway_key_abcdefghijklmnopqrstuvwxyz",

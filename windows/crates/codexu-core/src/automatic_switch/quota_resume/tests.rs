@@ -30,7 +30,13 @@ fn turn(n: usize) -> TurnRef {
 
 fn fixture() -> (TempDir, PathBuf, QuotaResumeJournal, ResumeScope) {
     let temp = tempfile::tempdir().unwrap();
-    let root = std::fs::canonicalize(temp.path()).unwrap();
+    let root = temp
+        .path()
+        .canonicalize()
+        .unwrap()
+        .join("synthetic-resume-journal");
+    storage::create_private_directory(&root).unwrap();
+    let root = std::fs::canonicalize(root).unwrap();
     let path = root.join("quota-resume-v1.json");
     let journal = QuotaResumeJournal::new(path.clone()).unwrap();
     (temp, path, journal, scope())

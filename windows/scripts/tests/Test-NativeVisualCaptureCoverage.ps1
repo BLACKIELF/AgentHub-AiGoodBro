@@ -16,6 +16,627 @@ function Assert-Sequence {
   }
 }
 
+function Protect-WrapperLog {
+  param([string] $Path, [string[]] $KnownPaths)
+
+  $contents = [System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8)
+  foreach ($knownPath in $KnownPaths) {
+    if (-not [string]::IsNullOrWhiteSpace($knownPath)) {
+      $contents = [System.Text.RegularExpressions.Regex]::Replace(
+        $contents,
+        [System.Text.RegularExpressions.Regex]::Escape($knownPath),
+        '<task-path>',
+        [System.Text.RegularExpressions.RegexOptions]::IgnoreCase
+      )
+    }
+  }
+  [System.IO.File]::WriteAllText($Path, $contents, [System.Text.UTF8Encoding]::new($false))
+}
+
+if (-not ('NativeVisualCaptureJobRunner' -as [type])) {
+Add-Type -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Text;
+using System.Threading;
+using System.Diagnostics;
+
+public sealed class NativeVisualCaptureJobResult
+{
+    public int ProcessId { get; set; }
+    public int ExitCode { get; set; }
+    public bool TimedOut { get; set; }
+    public bool ActiveProcessCountConfirmed { get; set; }
+    public uint ActiveProcesses { get; set; }
+    public bool UnexpectedDescendantsTerminated { get; set; }
+    public long ElapsedMilliseconds { get; set; }
+}
+
+public static class NativeVisualCaptureJobRunner
+{
+    private const uint CREATE_SUSPENDED = 0x00000004;
+    private const uint CREATE_NO_WINDOW = 0x08000000;
+    private const uint EXTENDED_STARTUPINFO_PRESENT = 0x00080000;
+    private const uint STARTF_USESHOWWINDOW = 0x00000001;
+    private const uint STARTF_USESTDHANDLES = 0x00000100;
+    private const ushort SW_HIDE = 0;
+    private const int PROC_THREAD_ATTRIBUTE_HANDLE_LIST = 0x00020002;
+    private const int JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9;
+    private const int JOB_OBJECT_BASIC_ACCOUNTING_INFORMATION = 1;
+    private const uint JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000;
+    private const uint WAIT_OBJECT_0 = 0x00000000;
+    private const uint WAIT_TIMEOUT = 0x00000102;
+    private const uint WAIT_FAILED = 0xFFFFFFFF;
+    private const uint GENERIC_READ = 0x80000000;
+    private const uint GENERIC_WRITE = 0x40000000;
+    private const uint FILE_SHARE_READ = 0x00000001;
+    private const uint FILE_SHARE_WRITE = 0x00000002;
+    private const uint CREATE_NEW = 1;
+    private const uint OPEN_EXISTING = 3;
+    private const uint FILE_ATTRIBUTE_NORMAL = 0x00000080;
+
+    private static readonly object RetainedLock = new object();
+    private static readonly List<IntPtr[]> RetainedHandles = new List<IntPtr[]>();
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct SECURITY_ATTRIBUTES
+    {
+        public int nLength;
+        public IntPtr lpSecurityDescriptor;
+        [MarshalAs(UnmanagedType.Bool)] public bool bInheritHandle;
+    }
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct STARTUPINFO
+    {
+        public uint cb;
+        public IntPtr lpReserved;
+        public IntPtr lpDesktop;
+        public IntPtr lpTitle;
+        public uint dwX;
+        public uint dwY;
+        public uint dwXSize;
+        public uint dwYSize;
+        public uint dwXCountChars;
+        public uint dwYCountChars;
+        public uint dwFillAttribute;
+        public uint dwFlags;
+        public ushort wShowWindow;
+        public ushort cbReserved2;
+        public IntPtr lpReserved2;
+        public IntPtr hStdInput;
+        public IntPtr hStdOutput;
+        public IntPtr hStdError;
+    }
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct STARTUPINFOEX
+    {
+        public STARTUPINFO StartupInfo;
+        public IntPtr lpAttributeList;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct PROCESS_INFORMATION
+    {
+        public IntPtr hProcess;
+        public IntPtr hThread;
+        public uint dwProcessId;
+        public uint dwThreadId;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct IO_COUNTERS
+    {
+        public ulong ReadOperationCount;
+        public ulong WriteOperationCount;
+        public ulong OtherOperationCount;
+        public ulong ReadTransferCount;
+        public ulong WriteTransferCount;
+        public ulong OtherTransferCount;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct JOBOBJECT_BASIC_LIMIT_INFORMATION
+    {
+        public long PerProcessUserTimeLimit;
+        public long PerJobUserTimeLimit;
+        public uint LimitFlags;
+        public UIntPtr MinimumWorkingSetSize;
+        public UIntPtr MaximumWorkingSetSize;
+        public uint ActiveProcessLimit;
+        public UIntPtr Affinity;
+        public uint PriorityClass;
+        public uint SchedulingClass;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct JOBOBJECT_EXTENDED_LIMIT_INFORMATION
+    {
+        public JOBOBJECT_BASIC_LIMIT_INFORMATION BasicLimitInformation;
+        public IO_COUNTERS IoInfo;
+        public UIntPtr ProcessMemoryLimit;
+        public UIntPtr JobMemoryLimit;
+        public UIntPtr PeakProcessMemoryUsed;
+        public UIntPtr PeakJobMemoryUsed;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct JOBOBJECT_BASIC_ACCOUNTING_INFORMATION
+    {
+        public long TotalUserTime;
+        public long TotalKernelTime;
+        public long ThisPeriodTotalUserTime;
+        public long ThisPeriodTotalKernelTime;
+        public uint TotalPageFaultCount;
+        public uint TotalProcesses;
+        public uint ActiveProcesses;
+        public uint TotalTerminatedProcesses;
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern IntPtr CreateFileW(
+        string lpFileName, uint dwDesiredAccess, uint dwShareMode,
+        ref SECURITY_ATTRIBUTES lpSecurityAttributes, uint dwCreationDisposition,
+        uint dwFlagsAndAttributes, IntPtr hTemplateFile);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr CreateJobObjectW(IntPtr lpJobAttributes, string lpName);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool SetInformationJobObject(
+        IntPtr hJob, int JobObjectInfoClass,
+        ref JOBOBJECT_EXTENDED_LIMIT_INFORMATION lpJobObjectInformation,
+        uint cbJobObjectInformationLength);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool QueryInformationJobObject(
+        IntPtr hJob, int JobObjectInfoClass,
+        out JOBOBJECT_BASIC_ACCOUNTING_INFORMATION lpJobObjectInformation,
+        uint cbJobObjectInformationLength, IntPtr lpReturnLength);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool TerminateJobObject(IntPtr hJob, uint uExitCode);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool InitializeProcThreadAttributeList(
+        IntPtr lpAttributeList, int dwAttributeCount, uint dwFlags, ref IntPtr lpSize);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool UpdateProcThreadAttribute(
+        IntPtr lpAttributeList, uint dwFlags, IntPtr Attribute,
+        IntPtr lpValue, UIntPtr cbSize, IntPtr lpPreviousValue, IntPtr lpReturnSize);
+
+    [DllImport("kernel32.dll")]
+    private static extern void DeleteProcThreadAttributeList(IntPtr lpAttributeList);
+
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool CreateProcessW(
+        string lpApplicationName, StringBuilder lpCommandLine,
+        IntPtr lpProcessAttributes, IntPtr lpThreadAttributes,
+        [MarshalAs(UnmanagedType.Bool)] bool bInheritHandles,
+        uint dwCreationFlags, IntPtr lpEnvironment, string lpCurrentDirectory,
+        ref STARTUPINFOEX lpStartupInfo, out PROCESS_INFORMATION lpProcessInformation);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern uint ResumeThread(IntPtr hThread);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern uint WaitForSingleObject(IntPtr hHandle, uint dwMilliseconds);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetExitCodeProcess(IntPtr hProcess, out uint lpExitCode);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool TerminateProcess(IntPtr hProcess, uint uExitCode);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool CloseHandle(IntPtr hObject);
+
+    private static IntPtr CreateInheritableLog(string path)
+    {
+        SECURITY_ATTRIBUTES security = new SECURITY_ATTRIBUTES();
+        security.nLength = Marshal.SizeOf(typeof(SECURITY_ATTRIBUTES));
+        security.bInheritHandle = true;
+        IntPtr handle = CreateFileW(
+            path, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
+            ref security, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, IntPtr.Zero);
+        if (handle == new IntPtr(-1))
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "Could not create an owned wrapper log.");
+        return handle;
+    }
+
+    private static IntPtr CreateInheritableNullInput()
+    {
+        SECURITY_ATTRIBUTES security = new SECURITY_ATTRIBUTES();
+        security.nLength = Marshal.SizeOf(typeof(SECURITY_ATTRIBUTES));
+        security.bInheritHandle = true;
+        IntPtr handle = CreateFileW(
+            "NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+            ref security, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, IntPtr.Zero);
+        if (handle == new IntPtr(-1))
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "Could not open the null standard-input handle.");
+        return handle;
+    }
+
+    private static string JsonString(string value)
+    {
+        if (value == null) return "null";
+        return "\"" + value.Replace("\\", "\\\\").Replace("\"", "\\\"")
+            .Replace("\r", "\\r").Replace("\n", "\\n") + "\"";
+    }
+
+    private static void WriteReceipt(
+        string path, string state, string startedUtc, int processId,
+        int timeoutMilliseconds, uint? activeProcesses, bool activeConfirmed,
+        int? exitCode, string stdoutPath, string stderrPath)
+    {
+        string temporaryPath = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        string json = "{\r\n" +
+            "  \"schema_version\": 1,\r\n" +
+            "  \"state\": " + JsonString(state) + ",\r\n" +
+            "  \"started_utc\": " + JsonString(startedUtc) + ",\r\n" +
+            "  \"updated_utc\": " + JsonString(DateTime.UtcNow.ToString("o")) + ",\r\n" +
+            "  \"job_scope\": \"owned_anonymous\",\r\n" +
+            "  \"process_id\": " + (processId > 0 ? processId.ToString() : "null") + ",\r\n" +
+            "  \"timeout_ms\": " + timeoutMilliseconds.ToString() + ",\r\n" +
+            "  \"active_processes\": " + (activeProcesses.HasValue ? activeProcesses.Value.ToString() : "null") + ",\r\n" +
+            "  \"active_processes_confirmed\": " + (activeConfirmed ? "true" : "false") + ",\r\n" +
+            "  \"exit_code\": " + (exitCode.HasValue ? exitCode.Value.ToString() : "null") + ",\r\n" +
+            "  \"stdout_log\": " + JsonString(Path.GetFileName(stdoutPath)) + ",\r\n" +
+            "  \"stderr_log\": " + JsonString(Path.GetFileName(stderrPath)) + "\r\n" +
+            "}\r\n";
+        try
+        {
+            File.WriteAllText(temporaryPath, json, new UTF8Encoding(false));
+            if (File.Exists(path)) File.Replace(temporaryPath, path, null);
+            else File.Move(temporaryPath, path);
+        }
+        finally
+        {
+            if (File.Exists(temporaryPath)) File.Delete(temporaryPath);
+        }
+    }
+
+    private static bool TryGetActiveProcesses(IntPtr job, out uint active, out int error)
+    {
+        JOBOBJECT_BASIC_ACCOUNTING_INFORMATION accounting = new JOBOBJECT_BASIC_ACCOUNTING_INFORMATION();
+        if (!QueryInformationJobObject(
+            job, JOB_OBJECT_BASIC_ACCOUNTING_INFORMATION, out accounting,
+            (uint)Marshal.SizeOf(typeof(JOBOBJECT_BASIC_ACCOUNTING_INFORMATION)), IntPtr.Zero))
+        {
+            active = 0;
+            error = Marshal.GetLastWin32Error();
+            return false;
+        }
+        active = accounting.ActiveProcesses;
+        error = 0;
+        return true;
+    }
+
+    private static bool WaitForJobEmpty(
+        IntPtr job, int timeoutMilliseconds, out uint active, out int queryError)
+    {
+        Stopwatch timer = Stopwatch.StartNew();
+        do
+        {
+            if (!TryGetActiveProcesses(job, out active, out queryError)) return false;
+            if (active == 0) return true;
+            int remaining = timeoutMilliseconds - (int)timer.ElapsedMilliseconds;
+            if (remaining <= 0) return false;
+            Thread.Sleep(Math.Min(100, remaining));
+        } while (timer.ElapsedMilliseconds < timeoutMilliseconds);
+        active = 0;
+        queryError = 0;
+        return false;
+    }
+
+    private static bool WaitForProcessExit(IntPtr process, int timeoutMilliseconds)
+    {
+        uint wait = WaitForSingleObject(process, (uint)timeoutMilliseconds);
+        if (wait == WAIT_FAILED)
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "Could not wait for the capture PowerShell process.");
+        return wait == WAIT_OBJECT_0;
+    }
+
+    private static void CloseIfValid(ref IntPtr handle)
+    {
+        if (handle != IntPtr.Zero && handle != new IntPtr(-1))
+        {
+            CloseHandle(handle);
+            handle = IntPtr.Zero;
+        }
+    }
+
+    private static void RetainForInspection(params IntPtr[] handles)
+    {
+        lock (RetainedLock) RetainedHandles.Add(handles);
+    }
+
+    public static NativeVisualCaptureJobResult Run(
+        string executable, string commandLine, string workingDirectory,
+        string stdoutPath, string stderrPath, string receiptPath,
+        int timeoutMilliseconds)
+    {
+        if (timeoutMilliseconds < 1 || timeoutMilliseconds > 240000)
+            throw new ArgumentOutOfRangeException("timeoutMilliseconds");
+
+        string startedUtc = DateTime.UtcNow.ToString("o");
+        IntPtr job = IntPtr.Zero;
+        IntPtr process = IntPtr.Zero;
+        IntPtr thread = IntPtr.Zero;
+        IntPtr stdout = IntPtr.Zero;
+        IntPtr stderr = IntPtr.Zero;
+        IntPtr stdin = IntPtr.Zero;
+        IntPtr attributeList = IntPtr.Zero;
+        IntPtr handleList = IntPtr.Zero;
+        bool attributesInitialized = false;
+        bool processAssigned = false;
+        bool retainHandles = false;
+        int processId = 0;
+        int exitCode = -1;
+        int queryError = 0;
+        uint rawExitCode = 0;
+        uint activeProcesses = 0;
+        bool activeConfirmed = false;
+        Stopwatch elapsed = Stopwatch.StartNew();
+
+        WriteReceipt(receiptPath, "prepared", startedUtc, 0, timeoutMilliseconds,
+            null, false, null, stdoutPath, stderrPath);
+        try
+        {
+            stdout = CreateInheritableLog(stdoutPath);
+            stderr = CreateInheritableLog(stderrPath);
+            stdin = CreateInheritableNullInput();
+
+            job = CreateJobObjectW(IntPtr.Zero, null);
+            if (job == IntPtr.Zero)
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "Could not create the owned job object.");
+            JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits = new JOBOBJECT_EXTENDED_LIMIT_INFORMATION();
+            limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            if (!SetInformationJobObject(
+                job, JOB_OBJECT_EXTENDED_LIMIT_INFORMATION, ref limits,
+                (uint)Marshal.SizeOf(typeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION))))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "Could not set KILL_ON_JOB_CLOSE.");
+
+            IntPtr attributeBytes = IntPtr.Zero;
+            InitializeProcThreadAttributeList(IntPtr.Zero, 1, 0, ref attributeBytes);
+            if (attributeBytes == IntPtr.Zero)
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "Could not size the child handle whitelist.");
+            attributeList = Marshal.AllocHGlobal(attributeBytes);
+            if (!InitializeProcThreadAttributeList(attributeList, 1, 0, ref attributeBytes))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "Could not initialize the child handle whitelist.");
+            attributesInitialized = true;
+
+            handleList = Marshal.AllocHGlobal(IntPtr.Size * 3);
+            Marshal.WriteIntPtr(handleList, 0, stdin);
+            Marshal.WriteIntPtr(handleList, IntPtr.Size, stdout);
+            Marshal.WriteIntPtr(handleList, IntPtr.Size * 2, stderr);
+            if (!UpdateProcThreadAttribute(
+                attributeList, 0, new IntPtr(PROC_THREAD_ATTRIBUTE_HANDLE_LIST),
+                handleList, new UIntPtr((uint)(IntPtr.Size * 3)), IntPtr.Zero, IntPtr.Zero))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "Could not apply the explicit child handle whitelist.");
+
+            STARTUPINFOEX startup = new STARTUPINFOEX();
+            startup.StartupInfo.cb = (uint)Marshal.SizeOf(typeof(STARTUPINFOEX));
+            startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
+            startup.StartupInfo.wShowWindow = SW_HIDE;
+            startup.StartupInfo.hStdInput = stdin;
+            startup.StartupInfo.hStdOutput = stdout;
+            startup.StartupInfo.hStdError = stderr;
+            startup.lpAttributeList = attributeList;
+            PROCESS_INFORMATION information;
+            if (!CreateProcessW(
+                executable, new StringBuilder(commandLine), IntPtr.Zero, IntPtr.Zero,
+                true, CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT | CREATE_NO_WINDOW,
+                IntPtr.Zero, workingDirectory, ref startup, out information))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "Could not create the suspended capture PowerShell process.");
+
+            process = information.hProcess;
+            thread = information.hThread;
+            processId = (int)information.dwProcessId;
+            WriteReceipt(receiptPath, "created_suspended", startedUtc, processId,
+                timeoutMilliseconds, null, false, null, stdoutPath, stderrPath);
+
+            if (!AssignProcessToJobObject(job, process))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "Could not assign the suspended capture process to its job.");
+            processAssigned = true;
+            WriteReceipt(receiptPath, "assigned", startedUtc, processId,
+                timeoutMilliseconds, null, false, null, stdoutPath, stderrPath);
+
+            uint previousSuspendCount = ResumeThread(thread);
+            if (previousSuspendCount == WAIT_FAILED)
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "Could not resume the assigned capture process.");
+            CloseIfValid(ref thread);
+            WriteReceipt(receiptPath, "running", startedUtc, processId,
+                timeoutMilliseconds, null, false, null, stdoutPath, stderrPath);
+
+            CloseIfValid(ref stdout);
+            CloseIfValid(ref stderr);
+            CloseIfValid(ref stdin);
+            if (attributesInitialized)
+            {
+                DeleteProcThreadAttributeList(attributeList);
+                attributesInitialized = false;
+            }
+            if (attributeList != IntPtr.Zero)
+            {
+                Marshal.FreeHGlobal(attributeList);
+                attributeList = IntPtr.Zero;
+            }
+            if (handleList != IntPtr.Zero)
+            {
+                Marshal.FreeHGlobal(handleList);
+                handleList = IntPtr.Zero;
+            }
+
+            long remainingBudgetMilliseconds = timeoutMilliseconds - elapsed.ElapsedMilliseconds;
+            int remainingWaitMilliseconds = (int)Math.Max(0L, remainingBudgetMilliseconds);
+            uint waitResult = WaitForSingleObject(process, (uint)remainingWaitMilliseconds);
+            // Setup and child execution share one work budget. Job termination and
+            // ActiveProcesses confirmation below use their own bounded cleanup allowance.
+            bool timedOut = waitResult == WAIT_TIMEOUT ||
+                (waitResult == WAIT_OBJECT_0 && elapsed.ElapsedMilliseconds > timeoutMilliseconds);
+            if (waitResult == WAIT_FAILED)
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "Could not wait for the bounded capture process.");
+            if (waitResult != WAIT_OBJECT_0 && !timedOut)
+                throw new InvalidOperationException("The bounded capture wait returned an unknown result.");
+
+            if (timedOut)
+            {
+                WriteReceipt(receiptPath, "timed_out_terminating", startedUtc, processId,
+                    timeoutMilliseconds, null, false, null, stdoutPath, stderrPath);
+                if (!TerminateJobObject(job, 124))
+                    throw new Win32Exception(Marshal.GetLastWin32Error(), "Timed out and could not terminate the owned job.");
+                bool processExited = WaitForProcessExit(process, 10000);
+                activeConfirmed = WaitForJobEmpty(job, 10000, out activeProcesses, out queryError);
+                if (!processExited || !activeConfirmed || activeProcesses != 0)
+                    throw new InvalidOperationException(
+                        "Timed out but could not confirm an empty job; active_processes=" +
+                        (activeConfirmed ? activeProcesses.ToString() : "unknown") +
+                        "; query_error=" + queryError.ToString() + ".");
+                WriteReceipt(receiptPath, "timed_out_confirmed", startedUtc, processId,
+                    timeoutMilliseconds, activeProcesses, true, 124, stdoutPath, stderrPath);
+            }
+            else
+            {
+                if (!GetExitCodeProcess(process, out rawExitCode))
+                    throw new Win32Exception(Marshal.GetLastWin32Error(), "Could not read the capture process exit code.");
+                exitCode = unchecked((int)rawExitCode);
+                activeConfirmed = WaitForJobEmpty(job, 10000, out activeProcesses, out queryError);
+                bool unexpectedDescendantsTerminated = false;
+                if (!activeConfirmed || activeProcesses != 0)
+                {
+                    if (!TerminateJobObject(job, 125))
+                        throw new Win32Exception(Marshal.GetLastWin32Error(), "Capture exited with active job processes and termination failed.");
+                    bool processExited = WaitForProcessExit(process, 10000);
+                    activeConfirmed = WaitForJobEmpty(job, 10000, out activeProcesses, out queryError);
+                    if (!processExited || !activeConfirmed || activeProcesses != 0)
+                        throw new InvalidOperationException(
+                            "Capture exited but job cleanup could not be confirmed; active_processes=" +
+                            (activeConfirmed ? activeProcesses.ToString() : "unknown") +
+                            "; query_error=" + queryError.ToString() + ".");
+                    unexpectedDescendantsTerminated = true;
+                }
+                WriteReceipt(receiptPath,
+                    unexpectedDescendantsTerminated ? "cleanup_failure" : "completed",
+                    startedUtc, processId,
+                    timeoutMilliseconds, activeProcesses, activeConfirmed, exitCode,
+                    stdoutPath, stderrPath);
+                NativeVisualCaptureJobResult completed = new NativeVisualCaptureJobResult();
+                completed.ProcessId = processId;
+                completed.ExitCode = exitCode;
+                completed.TimedOut = false;
+                completed.ActiveProcessCountConfirmed = activeConfirmed;
+                completed.ActiveProcesses = activeProcesses;
+                completed.UnexpectedDescendantsTerminated = unexpectedDescendantsTerminated;
+                completed.ElapsedMilliseconds = elapsed.ElapsedMilliseconds;
+                return completed;
+            }
+
+            NativeVisualCaptureJobResult timedOutResult = new NativeVisualCaptureJobResult();
+            timedOutResult.ProcessId = processId;
+            timedOutResult.ExitCode = 124;
+            timedOutResult.TimedOut = true;
+            timedOutResult.ActiveProcessCountConfirmed = activeConfirmed;
+            timedOutResult.ActiveProcesses = activeProcesses;
+            timedOutResult.UnexpectedDescendantsTerminated = false;
+            timedOutResult.ElapsedMilliseconds = elapsed.ElapsedMilliseconds;
+            return timedOutResult;
+        }
+        catch (Exception error)
+        {
+            bool stoppedAndConfirmed = process == IntPtr.Zero;
+            int cleanupError = 0;
+            if (process != IntPtr.Zero)
+            {
+                try
+                {
+                    if (processAssigned)
+                    {
+                        bool processExited = WaitForSingleObject(process, 0) == WAIT_OBJECT_0;
+                        bool empty = TryGetActiveProcesses(job, out activeProcesses, out cleanupError) && activeProcesses == 0;
+                        if (!processExited || !empty)
+                        {
+                            bool terminateSucceeded = TerminateJobObject(job, 126);
+                            processExited = WaitForProcessExit(process, 10000);
+                            empty = WaitForJobEmpty(job, 10000, out activeProcesses, out cleanupError) && activeProcesses == 0;
+                            stoppedAndConfirmed = terminateSucceeded && processExited && empty;
+                        }
+                        else stoppedAndConfirmed = true;
+                    }
+                    else
+                    {
+                        bool processExited = WaitForSingleObject(process, 0) == WAIT_OBJECT_0;
+                        if (!processExited)
+                        {
+                            TerminateProcess(process, 126);
+                            processExited = WaitForProcessExit(process, 10000);
+                        }
+                        stoppedAndConfirmed = processExited;
+                    }
+                }
+                catch
+                {
+                    stoppedAndConfirmed = false;
+                }
+            }
+
+            try
+            {
+                WriteReceipt(receiptPath, stoppedAndConfirmed ? "failed" : "unconfirmed_retained",
+                    startedUtc, processId, timeoutMilliseconds,
+                    stoppedAndConfirmed && processAssigned ? (uint?)activeProcesses : null,
+                    stoppedAndConfirmed && processAssigned && activeProcesses == 0,
+                    null, stdoutPath, stderrPath);
+            }
+            catch
+            {
+                stoppedAndConfirmed = false;
+            }
+
+            if (!stoppedAndConfirmed)
+            {
+                retainHandles = true;
+                RetainForInspection(job, process, thread, stdout, stderr, stdin);
+            }
+            string failure = "Native capture job wrapper failed; process_id=" +
+                (processId > 0 ? processId.ToString() : "unknown") +
+                "; stdout_log=" + Path.GetFileName(stdoutPath) +
+                "; stderr_log=" + Path.GetFileName(stderrPath) +
+                "; guard_receipt=" + Path.GetFileName(receiptPath) +
+                (stoppedAndConfirmed ? "." : "; empty job could not be confirmed, so handles and artifacts were retained.") +
+                " Cause: " + error.Message;
+            throw new InvalidOperationException(failure, error);
+        }
+        finally
+        {
+            if (attributesInitialized && attributeList != IntPtr.Zero)
+                DeleteProcThreadAttributeList(attributeList);
+            if (!retainHandles)
+            {
+                CloseIfValid(ref thread);
+                CloseIfValid(ref process);
+                CloseIfValid(ref job);
+                CloseIfValid(ref stdout);
+                CloseIfValid(ref stderr);
+                CloseIfValid(ref stdin);
+            }
+            if (attributeList != IntPtr.Zero) Marshal.FreeHGlobal(attributeList);
+            if (handleList != IntPtr.Zero) Marshal.FreeHGlobal(handleList);
+        }
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool AssignProcessToJobObject(IntPtr hJob, IntPtr hProcess);
+}
+'@
+}
+
 $repositoryRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\..'))
 $entry = Join-Path $repositoryRoot 'windows\scripts\Capture-NativeVisuals.ps1'
 $powershell = (Get-Command powershell.exe -ErrorAction Stop).Source
@@ -23,10 +644,19 @@ $runScope = ''
 if ($env:GITHUB_RUN_ID -match '^\d+$' -and $env:GITHUB_RUN_ATTEMPT -match '^\d+$') {
   $runScope = $env:GITHUB_RUN_ID + '-' + $env:GITHUB_RUN_ATTEMPT + '-'
 }
-$outputRoot = Join-Path $repositoryRoot (
-  '.local-artifacts\windows-visual-captures\coverage-contract-' + $runScope +
-  [guid]::NewGuid().ToString('N')
-)
+$outputLeaf = 'coverage-contract-' + $runScope + [guid]::NewGuid().ToString('N')
+$outputRoot = Join-Path $repositoryRoot ('.local-artifacts\windows-visual-captures\' + $outputLeaf)
+$wrapperLogRoot = Split-Path -Parent $outputRoot
+$stdoutLogPath = Join-Path $wrapperLogRoot ($outputLeaf + '.wrapper.stdout.log')
+$stderrLogPath = Join-Path $wrapperLogRoot ($outputLeaf + '.wrapper.stderr.log')
+$guardReceiptPath = Join-Path $wrapperLogRoot ($outputLeaf + '.job-guard.json')
+Assert-True (-not (Test-Path -LiteralPath $outputRoot)) 'Coverage OutputRoot must be new and must not be pre-created for wrapper logs.'
+foreach ($sidecarPath in @($stdoutLogPath, $stderrLogPath, $guardReceiptPath)) {
+  Assert-True (-not (Test-Path -LiteralPath $sidecarPath)) 'Coverage wrapper sidecar path already exists.'
+}
+if (-not (Test-Path -LiteralPath $wrapperLogRoot -PathType Container)) {
+  New-Item -ItemType Directory -Path $wrapperLogRoot -Force | Out-Null
+}
 $expectedSurfaces = @('Tasks', 'AI Leadership', 'Usage', 'Projects', 'Skills')
 $workspaceScreenshotSourcePath = Join-Path $repositoryRoot 'windows\apps\codexu-tauri\src-tauri\src\commands\workspace_screenshot.rs'
 $workspaceScreenshotSource = Get-Content -LiteralPath $workspaceScreenshotSourcePath -Raw -Encoding UTF8
@@ -67,30 +697,97 @@ Assert-True (
   $workspaceScreenshotSource.Contains('image_path.with_file_name("workspace-order.txt")')
 ) 'Native screenshot test fixture or order marker escaped its fixed isolated activation.'
 
-$priorErrorPreference = $ErrorActionPreference
+$entryLiteral = "'" + $entry.Replace("'", "''") + "'"
+$repositoryRootLiteral = "'" + $repositoryRoot.Replace("'", "''") + "'"
+$outputRootLiteral = "'" + $outputRoot.Replace("'", "''") + "'"
+$childScript = @"
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new(`$false)
+`$ErrorActionPreference = 'Continue'
+`$projectRootForRedaction = $repositoryRootLiteral
+`$outputRootForRedaction = $outputRootLiteral
 try {
-  # PowerShell 5.1 otherwise aborts on the first native stderr line, hiding
-  # the capture error and preventing the exit-code assertion below.
-  $ErrorActionPreference = 'Continue'
-  $output = @(
-    & $powershell -NoProfile -ExecutionPolicy Bypass -File $entry `
-      -SkipBuild `
-      -ExerciseWorkspaceScreenshot `
-      -OutputRoot $outputRoot 2>&1
+  & $entryLiteral -SkipBuild -ExerciseWorkspaceScreenshot -OutputRoot `$outputRootForRedaction |
+    ForEach-Object {
+      `$line = [string]`$_
+      `$line = [System.Text.RegularExpressions.Regex]::Replace(
+        `$line, [System.Text.RegularExpressions.Regex]::Escape(`$projectRootForRedaction),
+        '<project-root>', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase
+      )
+      `$line = [System.Text.RegularExpressions.Regex]::Replace(
+        `$line, [System.Text.RegularExpressions.Regex]::Escape(`$outputRootForRedaction),
+        '<task-output-root>', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase
+      )
+      [Console]::Out.WriteLine(`$line)
+    }
+  exit 0
+} catch {
+  `$details = `$_.Exception.ToString()
+  `$details = [System.Text.RegularExpressions.Regex]::Replace(
+    `$details, [System.Text.RegularExpressions.Regex]::Escape(`$projectRootForRedaction),
+    '<project-root>', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase
   )
-  $exitCode = $LASTEXITCODE
-} finally {
-  $ErrorActionPreference = $priorErrorPreference
+  `$details = [System.Text.RegularExpressions.Regex]::Replace(
+    `$details, [System.Text.RegularExpressions.Regex]::Escape(`$outputRootForRedaction),
+    '<task-output-root>', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase
+  )
+  [Console]::Error.WriteLine(`$details)
+  exit 1
 }
-if ($exitCode -ne 0) {
-  $output | ForEach-Object { "$_" } | Write-Output
+"@
+$encodedChildScript = [Convert]::ToBase64String(
+  [System.Text.Encoding]::Unicode.GetBytes($childScript)
+)
+$childCommandLine = 'powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ' +
+  $encodedChildScript
+$nativeRun = [NativeVisualCaptureJobRunner]::Run(
+  $powershell,
+  $childCommandLine,
+  $repositoryRoot,
+  $stdoutLogPath,
+  $stderrLogPath,
+  $guardReceiptPath,
+  180000
+)
+Protect-WrapperLog -Path $stdoutLogPath -KnownPaths @($repositoryRoot, $outputRoot, $entry, $powershell)
+Protect-WrapperLog -Path $stderrLogPath -KnownPaths @($repositoryRoot, $outputRoot, $entry, $powershell)
+$stdoutText = Get-Content -LiteralPath $stdoutLogPath -Raw -Encoding UTF8
+$stderrText = Get-Content -LiteralPath $stderrLogPath -Raw -Encoding UTF8
+$output = @($stdoutText -split '\r?\n') + @($stderrText -split '\r?\n')
+$exitCode = [int]$nativeRun.ExitCode
+if (
+  $nativeRun.TimedOut -or $exitCode -ne 0 -or
+  -not $nativeRun.ActiveProcessCountConfirmed -or
+  [uint32]$nativeRun.ActiveProcesses -ne 0 -or
+  $nativeRun.UnexpectedDescendantsTerminated
+) {
+  Write-Output "Native wrapper stdout log: $stdoutLogPath"
+  Write-Output "Native wrapper stderr log: $stderrLogPath"
+  $output | Select-Object -Last 80 | ForEach-Object { "$_" } | Write-Output
 }
-Assert-True ($exitCode -eq 0) "Native coverage capture failed with exit code $exitCode."
+Assert-True (-not $nativeRun.TimedOut) "Native coverage capture exceeded its 180-second work budget. Logs: $stdoutLogPath ; $stderrLogPath"
+Assert-True (
+  $nativeRun.ActiveProcessCountConfirmed -and [uint32]$nativeRun.ActiveProcesses -eq 0
+) 'Native coverage Job Object did not confirm ActiveProcesses == 0.'
+Assert-True (-not $nativeRun.UnexpectedDescendantsTerminated) 'Capture exited with task descendants still in its Job Object.'
+Assert-True ($exitCode -eq 0) "Native coverage capture failed with exit code $exitCode. Logs: $stdoutLogPath ; $stderrLogPath"
+Assert-True (
+  (Test-Path -LiteralPath $stdoutLogPath -PathType Leaf) -and
+  (Test-Path -LiteralPath $stderrLogPath -PathType Leaf) -and
+  (Test-Path -LiteralPath $guardReceiptPath -PathType Leaf)
+) 'Native wrapper did not retain its stdout, stderr and Job Object receipt sidecars.'
+$guardReceipt = Get-Content -LiteralPath $guardReceiptPath -Raw -Encoding UTF8 | ConvertFrom-Json
+Assert-True (
+  $guardReceipt.state -eq 'completed' -and
+  $guardReceipt.job_scope -eq 'owned_anonymous' -and
+  [int]$guardReceipt.timeout_ms -eq 180000 -and
+  [bool]$guardReceipt.active_processes_confirmed -and
+  [int]$guardReceipt.active_processes -eq 0
+) 'Native wrapper guard receipt did not prove bounded completion and an empty owned job.'
 
 $summaryLine = @(
-  $output | Where-Object { "$_".StartsWith('NATIVE_VISUAL_CAPTURE_COMPLETE=') }
+  $stdoutText -split '\r?\n' | Where-Object { "$_".StartsWith('NATIVE_VISUAL_CAPTURE_COMPLETE=') }
 )
-Assert-True ($summaryLine.Count -eq 1) 'Coverage capture did not emit exactly one completion summary.'
+Assert-True ($summaryLine.Count -eq 1) "Coverage capture did not emit exactly one completion summary. See $stdoutLogPath and $stderrLogPath."
 
 $manifestPath = Join-Path $outputRoot 'manifest.json'
 Assert-True (Test-Path -LiteralPath $manifestPath -PathType Leaf) 'Coverage capture did not write its manifest.'

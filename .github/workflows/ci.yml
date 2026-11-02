@@ -248,6 +248,16 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -B windows/companion/prepare.py --verify-only
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Validate the isolated native desktop before resource builds
+        if: ${{ !cancelled() }}
+        timeout-minutes: 2
+        shell: pwsh
+        run: |
+          $smoke = Join-Path $env:RUNNER_TEMP 'aigoodbro-native-desktop-smoke.exe'
+          rustc +1.97.1-x86_64-pc-windows-msvc --test --edition=2021 windows/test-support/native_desktop.rs -o $smoke
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $smoke --nocapture
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Test native visual script contracts with Windows PowerShell 5.1
         if: ${{ !cancelled() }}
         shell: powershell
@@ -441,6 +451,7 @@ jobs:
         working-directory: windows
         run: cargo build --release --locked -p codexu-tauri --features custom-protocol
       - name: Verify two independent cold-start captures and cleanup
+        timeout-minutes: 8
         shell: powershell
         run: |
           .\windows\scripts\tests\Test-NativeVisualCaptureCoverage.ps1
@@ -451,6 +462,9 @@ jobs:
         with:
           name: windows-native-capture-diagnostics
           path: |
+            .local-artifacts/windows-visual-captures/coverage-contract-${{ github.run_id }}-${{ github.run_attempt }}-*.wrapper.stdout.log
+            .local-artifacts/windows-visual-captures/coverage-contract-${{ github.run_id }}-${{ github.run_attempt }}-*.wrapper.stderr.log
+            .local-artifacts/windows-visual-captures/coverage-contract-${{ github.run_id }}-${{ github.run_attempt }}-*.job-guard.json
             .local-artifacts/windows-visual-captures/coverage-contract-${{ github.run_id }}-${{ github.run_attempt }}-*/manifest.json
             .local-artifacts/windows-visual-captures/coverage-contract-${{ github.run_id }}-${{ github.run_attempt }}-*/logs/failure-uia.json
             .local-artifacts/windows-visual-captures/coverage-contract-${{ github.run_id }}-${{ github.run_attempt }}-*/logs/workspace-screenshot-poll.json

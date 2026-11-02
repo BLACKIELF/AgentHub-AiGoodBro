@@ -44,7 +44,7 @@ try {
     $companionBridgeExitCode = $LASTEXITCODE
 
     # The remaining isolated tests are independent; preserve both results before failing the gate.
-    & cargo "+$Toolchain" test --workspace --locked -- --skip $companionBridgeFilter
+    & cargo "+$Toolchain" test --workspace --no-fail-fast --locked -- --skip $companionBridgeFilter
     $workspaceExitCode = $LASTEXITCODE
     $failures = @()
     if ($companionBridgeExitCode -ne 0) { $failures += ('Windows Companion bridge E2E failed with exit code ' + $companionBridgeExitCode) }

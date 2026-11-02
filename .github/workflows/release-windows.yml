@@ -80,6 +80,15 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.97.1
         with:
           components: rustfmt
+      - name: Validate the isolated native desktop before resource builds
+        timeout-minutes: 2
+        shell: pwsh
+        run: |
+          $smoke = Join-Path $env:RUNNER_TEMP 'aigoodbro-native-desktop-smoke.exe'
+          rustc +1.97.1-x86_64-pc-windows-msvc --test --edition=2021 windows/test-support/native_desktop.rs -o $smoke
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $smoke --nocapture
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - uses: actions/cache@v4
         with:
           path: |
@@ -109,10 +118,29 @@ jobs:
           New-Item -ItemType Directory -Force dist/windows-readiness | Out-Null
           $diagnostics | ConvertTo-Json -Depth 4 | Set-Content dist/windows-readiness/source-diagnostics.json -Encoding utf8
       - name: Verify two independent native cold starts and cleanup
+        timeout-minutes: 8
         shell: powershell
         run: |
           .\windows\scripts\tests\Test-NativeVisualCaptureCoverage.ps1
           .\windows\scripts\tests\Test-NativeVisualCaptureCoverage.ps1
+      - name: Preserve task-owned native capture diagnostics
+        if: ${{ always() && !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-native-capture-diagnostics
+          path: |
+            .local-artifacts/windows-visual-captures/coverage-contract-${{ github.run_id }}-${{ github.run_attempt }}-*.wrapper.stdout.log
+            .local-artifacts/windows-visual-captures/coverage-contract-${{ github.run_id }}-${{ github.run_attempt }}-*.wrapper.stderr.log
+            .local-artifacts/windows-visual-captures/coverage-contract-${{ github.run_id }}-${{ github.run_attempt }}-*.job-guard.json
+            .local-artifacts/windows-visual-captures/coverage-contract-${{ github.run_id }}-${{ github.run_attempt }}-*/manifest.json
+            .local-artifacts/windows-visual-captures/coverage-contract-${{ github.run_id }}-${{ github.run_attempt }}-*/logs/failure-uia.json
+            .local-artifacts/windows-visual-captures/coverage-contract-${{ github.run_id }}-${{ github.run_attempt }}-*/logs/workspace-screenshot-poll.json
+            .local-artifacts/windows-visual-captures/coverage-contract-${{ github.run_id }}-${{ github.run_attempt }}-*/runtime/fullscreen/workspace-full.png
+            .local-artifacts/windows-visual-captures/coverage-contract-${{ github.run_id }}-${{ github.run_attempt }}-*/runtime/fullscreen/workspace-order.txt
+            .local-artifacts/windows-visual-captures/coverage-contract-${{ github.run_id }}-${{ github.run_attempt }}-*/screenshots/fullscreen/failure.png
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7
       - name: Upload verified Windows installers and checksums
         uses: actions/upload-artifact@v4
         with:

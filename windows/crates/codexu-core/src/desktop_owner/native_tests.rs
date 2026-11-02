@@ -1,11 +1,15 @@
 //! Real Windows pipes only under unpredictable fixture names. No production
 //! endpoint, official App, account environment or model operation is touched.
+#[path = "../../../../test-support/native_desktop.rs"]
+mod native_desktop;
+
 use super::{
     native::win,
     protocol,
     tests::{discovery, handshake, ok, reply},
     *,
 };
+use native_desktop::NativeDesktop;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::{
@@ -13,6 +17,7 @@ use std::{
     os::windows::{ffi::OsStrExt, io::AsRawHandle},
     path::PathBuf,
     ptr,
+    sync::{Mutex, OnceLock},
 };
 use tokio::{
     io::AsyncWriteExt,
@@ -24,6 +29,10 @@ const OWNER: &str = "00000000-0000-4000-8000-000000000003";
 const TURN: &str = "00000000-0000-4000-8000-000000000004";
 const OP: &str = "00000000-0000-4000-8000-000000000005";
 const TIME: Duration = Duration::from_secs(3);
+const TOKEN_ASSIGN_PRIMARY: u32 = 0x0001;
+const TOKEN_DUPLICATE: u32 = 0x0002;
+const TOKEN_QUERY: u32 = 0x0008;
+const TOKEN_ADJUST_DEFAULT: u32 = 0x0080;
 type Handle = *mut c_void;
 #[repr(C)]
 struct SA {
@@ -41,6 +50,8 @@ unsafe extern "system" {
         size: u32,
         needed: *mut u32,
     ) -> i32;
+    fn SetTokenInformation(h: Handle, class: u32, information: *const c_void, size: u32) -> i32;
+    fn EqualSid(left: Handle, right: Handle) -> i32;
     fn ConvertSidToStringSidW(sid: *const c_void, text: *mut *mut u16) -> i32;
     fn ConvertStringSecurityDescriptorToSecurityDescriptorW(
         text: *const u16,
@@ -59,11 +70,13 @@ unsafe extern "system" {
         restrict: *const c_void,
         result: *mut Handle,
     ) -> i32;
-    fn CreateProcessWithTokenW(
+    fn CreateProcessAsUserW(
         token: Handle,
-        logon: u32,
         application: *const u16,
         command: *mut u16,
+        process_attributes: *const c_void,
+        thread_attributes: *const c_void,
+        inherit_handles: i32,
         flags: u32,
         environment: *const c_void,
         directory: *const u16,
@@ -82,6 +95,7 @@ unsafe extern "system" {
     fn CreateJobObjectW(sa: *const c_void, name: *const u16) -> Handle;
     fn SetInformationJobObject(h: Handle, class: i32, data: *const c_void, size: u32) -> i32;
     fn AssignProcessToJobObject(job: Handle, process: Handle) -> i32;
+    fn TerminateJobObject(job: Handle, code: u32) -> i32;
     fn QueryInformationJobObject(
         job: Handle,
         class: i32,
@@ -94,8 +108,10 @@ unsafe extern "system" {
 struct Owned(Handle);
 impl Drop for Owned {
     fn drop(&mut self) {
-        unsafe {
-            CloseHandle(self.0);
+        if !self.0.is_null() {
+            unsafe {
+                CloseHandle(self.0);
+            }
         }
     }
 }
@@ -109,6 +125,22 @@ fn token() -> Owned {
     );
     Owned(h)
 }
+fn primary_token_for_child() -> Owned {
+    let mut h = ptr::null_mut();
+    assert_ne!(
+        unsafe {
+            OpenProcessToken(
+                GetCurrentProcess(),
+                TOKEN_ASSIGN_PRIMARY | TOKEN_DUPLICATE | TOKEN_QUERY | TOKEN_ADJUST_DEFAULT,
+                &mut h,
+            )
+        },
+        0,
+        "open fixture primary token: {}",
+        std::io::Error::last_os_error()
+    );
+    Owned(h)
+}
 fn elevated(h: Handle) -> bool {
     let (mut v, mut n) = (1u32, 0);
     assert_ne!(
@@ -116,6 +148,110 @@ fn elevated(h: Handle) -> bool {
         0
     );
     v != 0
+}
+#[repr(C)]
+struct SidAndAttributes {
+    sid: Handle,
+    attributes: u32,
+}
+#[repr(C)]
+struct Sid {
+    revision: u8,
+    sub_authority_count: u8,
+    identifier_authority: [u8; 6],
+    medium_integrity_rid: u32,
+}
+#[repr(C)]
+struct MediumIntegrityLabel {
+    label: SidAndAttributes,
+    sid: Sid,
+}
+fn token_information(h: Handle, class: u32) -> Vec<u64> {
+    let mut needed = 0u32;
+    unsafe {
+        GetTokenInformation(h, class, ptr::null_mut(), 0, &mut needed);
+    }
+    assert!(
+        (std::mem::size_of::<SidAndAttributes>() as u32..65536).contains(&needed),
+        "token information class {class} has an invalid size"
+    );
+    let mut buffer = vec![0u64; (needed as usize).div_ceil(8)];
+    let mut returned = 0u32;
+    assert_ne!(
+        unsafe { GetTokenInformation(h, class, buffer.as_mut_ptr().cast(), needed, &mut returned) },
+        0,
+        "read token information class {class}: {}",
+        std::io::Error::last_os_error()
+    );
+    assert!(returned as usize <= buffer.len() * 8);
+    buffer
+}
+fn token_session_id(h: Handle) -> u32 {
+    let mut value = 0u32;
+    let mut returned = 0u32;
+    assert_ne!(
+        unsafe {
+            GetTokenInformation(
+                h,
+                12,
+                (&mut value as *mut u32).cast(),
+                std::mem::size_of::<u32>() as u32,
+                &mut returned,
+            )
+        },
+        0,
+        "read token session ID: {}",
+        std::io::Error::last_os_error()
+    );
+    assert_eq!(returned as usize, std::mem::size_of::<u32>());
+    value
+}
+fn tokens_share_user_sid(left: Handle, right: Handle) -> bool {
+    let left_information = token_information(left, 1);
+    let right_information = token_information(right, 1);
+    assert!(left_information.len() * 8 >= std::mem::size_of::<SidAndAttributes>());
+    assert!(right_information.len() * 8 >= std::mem::size_of::<SidAndAttributes>());
+    let left_user =
+        unsafe { ptr::read_unaligned(left_information.as_ptr().cast::<SidAndAttributes>()) };
+    let right_user =
+        unsafe { ptr::read_unaligned(right_information.as_ptr().cast::<SidAndAttributes>()) };
+    assert!(!left_user.sid.is_null() && !right_user.sid.is_null());
+    unsafe { EqualSid(left_user.sid, right_user.sid) != 0 }
+}
+fn assert_medium_integrity(h: Handle) {
+    let information = token_information(h, 25);
+    assert!(information.len() * 8 >= std::mem::size_of::<SidAndAttributes>());
+    let label = unsafe { ptr::read_unaligned(information.as_ptr().cast::<SidAndAttributes>()) };
+    assert!(!label.sid.is_null());
+    assert_ne!(
+        label.attributes & 0x20,
+        0,
+        "token integrity SID is not enabled"
+    );
+    let medium_sid = Sid {
+        revision: 1,
+        sub_authority_count: 1,
+        identifier_authority: [0, 0, 0, 0, 0, 16],
+        medium_integrity_rid: 0x2000,
+    };
+    assert_ne!(
+        unsafe { EqualSid(label.sid, (&medium_sid as *const Sid).cast_mut().cast()) },
+        0,
+        "fixture token integrity is not Medium"
+    );
+}
+fn validate_child_token(parent: Handle, child: Handle) {
+    assert!(
+        tokens_share_user_sid(parent, child),
+        "fixture child token user SID differs from its parent"
+    );
+    assert_eq!(
+        token_session_id(child),
+        token_session_id(parent),
+        "fixture child token is in a different session"
+    );
+    assert!(!elevated(child), "fixture child token is still elevated");
+    assert_medium_integrity(child);
 }
 fn sid_string() -> String {
     let t = token();
@@ -505,16 +641,104 @@ struct Accounting {
 }
 struct Child {
     process: Owned,
-    _thread: Owned,
-    _job: Owned,
+    thread: Owned,
+    job: Owned,
+    assigned: bool,
+    confirmed_empty: bool,
+    proof_directory: Option<tempfile::TempDir>,
+    desktop: Option<NativeDesktop>,
 }
+static UNCONFIRMED_CHILDREN: OnceLock<Mutex<Vec<Vec<usize>>>> = OnceLock::new();
+
+fn retain_unconfirmed_child(handles: impl IntoIterator<Item = Handle>) {
+    let handles: Vec<usize> = handles
+        .into_iter()
+        .filter(|handle| !handle.is_null())
+        .map(|handle| handle as usize)
+        .collect();
+    UNCONFIRMED_CHILDREN
+        .get_or_init(|| Mutex::new(Vec::new()))
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .push(handles);
+}
+
+fn job_active_processes(job: Handle) -> Option<u32> {
+    let mut accounting = Accounting::default();
+    let result = unsafe {
+        QueryInformationJobObject(
+            job,
+            1,
+            (&mut accounting as *mut Accounting).cast(),
+            std::mem::size_of::<Accounting>() as u32,
+            ptr::null_mut(),
+        )
+    };
+    (result != 0).then_some(accounting.active)
+}
+
+fn wait_job_empty(job: Handle, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if job_active_processes(job) == Some(0) {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+impl Child {
+    fn confirm_empty(&mut self, timeout: Duration) -> bool {
+        if wait_job_empty(self.job.0, timeout) {
+            self.confirmed_empty = true;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn terminate_and_confirm_empty(&mut self) -> bool {
+        let _ = unsafe { TerminateJobObject(self.job.0, 1) };
+        self.confirm_empty(Duration::from_secs(3))
+    }
+
+    fn retain_unknown(&mut self) {
+        let mut handles = vec![self.job.0, self.process.0, self.thread.0];
+        if let Some(desktop) = self.desktop.take() {
+            handles.push(desktop.into_raw_handle() as Handle);
+        }
+        retain_unconfirmed_child(handles);
+        self.job.0 = ptr::null_mut();
+        self.process.0 = ptr::null_mut();
+        self.thread.0 = ptr::null_mut();
+        if let Some(directory) = self.proof_directory.take() {
+            let _ = directory.keep();
+        }
+    }
+}
+
 impl Drop for Child {
     fn drop(&mut self) {
-        if unsafe { WaitForSingleObject(self.process.0, 0) } == 258 {
-            unsafe {
-                TerminateProcess(self.process.0, 1);
-                WaitForSingleObject(self.process.0, 3000);
+        if self.job.0.is_null() {
+            return;
+        }
+        let empty = if self.assigned {
+            self.confirmed_empty || wait_job_empty(self.job.0, Duration::ZERO)
+        } else {
+            if !self.process.0.is_null() && unsafe { WaitForSingleObject(self.process.0, 0) } != 0 {
+                let _ = unsafe { TerminateProcess(self.process.0, 1) };
+                if unsafe { WaitForSingleObject(self.process.0, 3000) } != 0 {
+                    self.retain_unknown();
+                    return;
+                }
             }
+            wait_job_empty(self.job.0, Duration::ZERO)
+        };
+        if !empty && !self.terminate_and_confirm_empty() {
+            self.retain_unknown();
         }
     }
 }
@@ -546,7 +770,7 @@ pub(crate) fn run_restricted_native_fixture(
         Some(std::ffi::OsStr::new(proof_filename)),
         "native proof must use a leaf filename"
     );
-    let original = token();
+    let original = primary_token_for_child();
     if !elevated(original.0) {
         return false;
     }
@@ -570,7 +794,33 @@ pub(crate) fn run_restricted_native_fixture(
         std::io::Error::last_os_error()
     );
     let restricted = Owned(h);
-    assert!(!elevated(restricted.0));
+    let mut integrity = MediumIntegrityLabel {
+        label: SidAndAttributes {
+            sid: ptr::null_mut(),
+            attributes: 0x20,
+        },
+        sid: Sid {
+            revision: 1,
+            sub_authority_count: 1,
+            identifier_authority: [0, 0, 0, 0, 0, 16],
+            medium_integrity_rid: 0x2000,
+        },
+    };
+    integrity.label.sid = (&mut integrity.sid as *mut Sid).cast();
+    assert_ne!(
+        unsafe {
+            SetTokenInformation(
+                restricted.0,
+                25,
+                (&integrity as *const MediumIntegrityLabel).cast(),
+                (std::mem::size_of::<SidAndAttributes>() + std::mem::size_of::<Sid>()) as u32,
+            )
+        },
+        0,
+        "set fixture token integrity to Medium: {}",
+        std::io::Error::last_os_error()
+    );
+    validate_child_token(original.0, restricted.0);
     let dir = tempfile::tempdir().unwrap();
     let proof = dir.path().join(proof_filename);
     let exe = std::env::current_exe().unwrap();
@@ -612,14 +862,19 @@ pub(crate) fn run_restricted_native_fixture(
     );
     let mut startup: Startup = unsafe { std::mem::zeroed() };
     startup.size = std::mem::size_of::<Startup>() as u32;
+    let desktop = NativeDesktop::create(original.0, restricted.0)
+        .unwrap_or_else(|error| panic!("create isolated fixture desktop: {error}"));
+    startup.desktop = desktop.lp_desktop();
     let mut info: ProcessInfo = unsafe { std::mem::zeroed() };
     assert_ne!(
         unsafe {
-            CreateProcessWithTokenW(
+            CreateProcessAsUserW(
                 restricted.0,
-                0,
                 app.as_ptr(),
                 cmd.as_mut_ptr(),
+                ptr::null(),
+                ptr::null(),
+                0,
                 4 | 0x400,
                 env.as_ptr().cast(),
                 ptr::null(),
@@ -628,19 +883,33 @@ pub(crate) fn run_restricted_native_fixture(
             )
         },
         0,
-        "fixture restricted spawn: {}",
+        "fixture restricted CreateProcessAsUserW: {}",
         std::io::Error::last_os_error()
     );
-    let child = Child {
+    let mut child = Child {
         process: Owned(info.process),
-        _thread: Owned(info.thread),
-        _job: job,
+        thread: Owned(info.thread),
+        job,
+        assigned: false,
+        confirmed_empty: false,
+        proof_directory: Some(dir),
+        desktop: Some(desktop),
     };
+    let mut child_token = ptr::null_mut();
     assert_ne!(
-        unsafe { AssignProcessToJobObject(child._job.0, child.process.0) },
+        unsafe { OpenProcessToken(child.process.0, TOKEN_QUERY, &mut child_token) },
+        0,
+        "open fixture child token: {}",
+        std::io::Error::last_os_error()
+    );
+    let child_token = Owned(child_token);
+    validate_child_token(original.0, child_token.0);
+    assert_ne!(
+        unsafe { AssignProcessToJobObject(child.job.0, child.process.0) },
         0
     );
-    assert_ne!(unsafe { ResumeThread(child._thread.0) }, u32::MAX);
+    child.assigned = true;
+    assert_ne!(unsafe { ResumeThread(child.thread.0) }, u32::MAX);
     assert_eq!(
         unsafe { WaitForSingleObject(child.process.0, 30000) },
         0,
@@ -656,7 +925,7 @@ pub(crate) fn run_restricted_native_fixture(
         assert_ne!(
             unsafe {
                 QueryInformationJobObject(
-                    child._job.0,
+                    child.job.0,
                     1,
                     (&mut a as *mut Accounting).cast(),
                     std::mem::size_of::<Accounting>() as u32,
@@ -671,5 +940,12 @@ pub(crate) fn run_restricted_native_fixture(
         assert!(Instant::now() < end);
         std::thread::sleep(Duration::from_millis(5));
     }
+    child.confirmed_empty = true;
+    child
+        .desktop
+        .take()
+        .expect("isolated fixture desktop was not retained through Job cleanup")
+        .close()
+        .unwrap_or_else(|error| panic!("close isolated fixture desktop: {error}"));
     true
 }

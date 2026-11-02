@@ -2,6 +2,9 @@
 //! native Receiver, Tauri AppBackend, and owned Hub sessions. All accounts,
 //! Hub responses, and app-server evidence are local fixtures; no model or
 //! external account is contacted.
+#[path = "../../../../../test-support/native_desktop.rs"]
+mod native_desktop;
+
 use super::*;
 use crate::commands::cli_workflow::console::LaunchWindow;
 use codexu_core::{
@@ -20,6 +23,7 @@ use codexu_core::{
     workflow::{WorkflowPreference, WorkflowPreferences},
     workflow_reader::WorkflowProbeOwner,
 };
+use native_desktop::NativeDesktop;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
@@ -1561,17 +1565,23 @@ struct NativeTestJob {
     thread: NativeHandle,
     assigned: bool,
     confirmed_empty: bool,
+    desktop: Option<NativeDesktop>,
     proof_directory: Option<tempfile::TempDir>,
 }
 
-static UNCONFIRMED_NATIVE_TEST_JOBS: OnceLock<Mutex<Vec<[usize; 3]>>> = OnceLock::new();
+static UNCONFIRMED_NATIVE_TEST_JOBS: OnceLock<Mutex<Vec<[usize; 4]>>> = OnceLock::new();
 
-fn retain_native_test_job(job: NativeHandle, process: NativeHandle, thread: NativeHandle) {
+fn retain_native_test_job(
+    job: NativeHandle,
+    process: NativeHandle,
+    thread: NativeHandle,
+    desktop: usize,
+) {
     UNCONFIRMED_NATIVE_TEST_JOBS
         .get_or_init(|| Mutex::new(Vec::new()))
         .lock()
         .unwrap_or_else(|error| error.into_inner())
-        .push([job as usize, process as usize, thread as usize]);
+        .push([job as usize, process as usize, thread as usize, desktop]);
 }
 
 fn native_job_active_processes(job: NativeHandle) -> Option<u32> {
@@ -1603,7 +1613,12 @@ fn wait_native_job_empty(job: NativeHandle, timeout: Duration) -> bool {
 
 impl NativeTestJob {
     fn retain_unknown(&mut self) {
-        retain_native_test_job(self.job, self.process, self.thread);
+        let desktop = self
+            .desktop
+            .take()
+            .map(NativeDesktop::into_raw_handle)
+            .unwrap_or_default();
+        retain_native_test_job(self.job, self.process, self.thread, desktop);
         self.job = ptr::null_mut();
         self.process = ptr::null_mut();
         self.thread = ptr::null_mut();
@@ -1695,6 +1710,7 @@ fn launch_native_e2e_child(fake_cli: &Path, python: &Path, proof_directory: temp
         thread: ptr::null_mut(),
         assigned: false,
         confirmed_empty: false,
+        desktop: None,
         proof_directory: Some(proof_directory),
     };
     let mut limits = NativeExtendedLimits::default();
@@ -1732,6 +1748,16 @@ fn launch_native_e2e_child(fake_cli: &Path, python: &Path, proof_directory: temp
         // Diagnostics are fail-open and never gate the real, Job-isolated child launch.
         report_native_launch_diagnostics(original_token.0, token.0, &executable);
     }
+    let child_token = if elevated { token.0 } else { original_token.0 };
+    owned.desktop = Some(
+        NativeDesktop::create(original_token.0, child_token)
+            .unwrap_or_else(|error| panic!("create isolated native test desktop: {error}")),
+    );
+    startup.desktop = owned
+        .desktop
+        .as_ref()
+        .expect("isolated native test desktop was not retained")
+        .lp_desktop();
     let creation_flags = 0x0000_0004 | 0x0000_0400 | 0x0800_0000; // suspended, Unicode environment, no window
     let launch_api = if elevated {
         "CreateProcessAsUserW"
@@ -1825,7 +1851,7 @@ fn launch_native_e2e_child(fake_cli: &Path, python: &Path, proof_directory: temp
     if !empty_before_cleanup {
         if !owned.terminate_and_confirm_empty() {
             owned.retain_unknown();
-            panic!("native E2E child left processes; its Job and proof directory were retained");
+            panic!("native E2E child left processes; its Job, desktop, and proof directory were retained");
         }
         panic!("native E2E child exited while its owned Job still contained processes");
     }
@@ -1836,6 +1862,12 @@ fn launch_native_e2e_child(fake_cli: &Path, python: &Path, proof_directory: temp
         "native E2E child did not finish the test body and write its proof"
     );
     owned.confirmed_empty = true;
+    owned
+        .desktop
+        .take()
+        .expect("isolated native test desktop was not retained through Job cleanup")
+        .close()
+        .unwrap_or_else(|error| panic!("close isolated native test desktop: {error}"));
 }
 
 #[test]

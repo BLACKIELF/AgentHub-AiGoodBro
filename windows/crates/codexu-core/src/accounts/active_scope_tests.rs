@@ -694,9 +694,14 @@ fn quota_resume_binds_verified_rotation_only_with_the_exact_held_switch_scope() 
     let home_hash = "1".repeat(64);
     let scope =
         ResumeScope::new(original_source.clone(), original_target.clone(), &home_hash).unwrap();
-    let journal_path = f
+    let journal_root = f
         ._temp
         .path()
+        .canonicalize()
+        .unwrap()
+        .join("synthetic-resume-journal");
+    storage::create_private_directory(&journal_root).unwrap();
+    let journal_path = journal_root
         .canonicalize()
         .unwrap()
         .join("synthetic-resume.json");

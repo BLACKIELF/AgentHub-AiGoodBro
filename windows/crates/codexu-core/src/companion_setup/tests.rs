@@ -52,7 +52,8 @@ impl Fixture {
             .prefix("companion-synthetic-")
             .tempdir_in(std::env::temp_dir().canonicalize().unwrap())
             .unwrap();
-        let root = tmp.path().to_path_buf();
+        let root = tmp.path().canonicalize().unwrap().join("fixture-root");
+        storage::create_private_directory(&root).unwrap();
         let bundle = root.join("bundle");
         storage::create_private_directory(&bundle).unwrap();
         let app = root.join("app");

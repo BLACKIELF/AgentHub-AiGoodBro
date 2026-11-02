@@ -1507,6 +1507,29 @@ function Get-WorkspaceScreenshotFeedbackResult {
   return 'pending'
 }
 
+function Save-WorkspaceScreenshotPollLog {
+  param([string] $Path, [System.Collections.IDictionary] $Log)
+
+  $Log.updated_utc = [DateTime]::UtcNow.ToString('o')
+  $temporaryPath = $Path + '.' + [guid]::NewGuid().ToString('N') + '.tmp'
+  try {
+    [System.IO.File]::WriteAllText(
+      $temporaryPath,
+      ($Log | ConvertTo-Json -Depth 6),
+      [System.Text.UTF8Encoding]::new($false)
+    )
+    if ([System.IO.File]::Exists($Path)) {
+      [System.IO.File]::Replace($temporaryPath, $Path, $null)
+    } else {
+      [System.IO.File]::Move($temporaryPath, $Path)
+    }
+  } finally {
+    if ([System.IO.File]::Exists($temporaryPath)) {
+      [System.IO.File]::Delete($temporaryPath)
+    }
+  }
+}
+
 function Find-WorkspaceScreenshotFeedbackByName {
   param(
     [IntPtr] $Window,
@@ -1615,7 +1638,15 @@ function Wait-WorkspaceScreenshotFeedback {
     name_fallback_queries = 0
     first_observed = $first
     last_poll = $null
+    poll_count = 0
+    update_count = 0
+    updated_utc = $null
   }
+  if (Test-Path -LiteralPath $LogPath) {
+    throw 'Native workspace screenshot polling log already exists.'
+  }
+  Save-WorkspaceScreenshotPollLog -Path $LogPath -Log $log
+  $lastLogWriteMilliseconds = 0
   $primaryError = $null
   $failureCode = 'action_failed'
   $root = $null
@@ -1703,6 +1734,12 @@ function Wait-WorkspaceScreenshotFeedback {
         order_marker_exists = $order.exists
         order_marker_last_write_utc = $order.last_write_utc
       }
+      $log.poll_count++
+      if (($timer.ElapsedMilliseconds - $lastLogWriteMilliseconds) -ge 5000) {
+        $log.update_count++
+        Save-WorkspaceScreenshotPollLog -Path $LogPath -Log $log
+        $lastLogWriteMilliseconds = [long]$timer.ElapsedMilliseconds
+      }
       if ($feedback -ne 'none') { break }
       $remaining = $TimeoutMilliseconds - [long]$timer.ElapsedMilliseconds
       if ($remaining -gt 0) { Start-Sleep -Milliseconds ([int][math]::Min(150, $remaining)) }
@@ -1743,9 +1780,8 @@ function Wait-WorkspaceScreenshotFeedback {
       order_marker_last_write_utc = $order.last_write_utc
     }
     try {
-      [System.IO.File]::WriteAllText(
-        $LogPath, ($log | ConvertTo-Json -Depth 6), [System.Text.UTF8Encoding]::new($false)
-      )
+      $log.update_count++
+      Save-WorkspaceScreenshotPollLog -Path $LogPath -Log $log
     } catch {
       if ($null -eq $primaryError) { throw 'Native workspace screenshot polling diagnostic could not be written.' }
     }
@@ -2421,12 +2457,88 @@ function Invoke-GraphicsCapture {
 function Save-WorkflowManifest {
   if ($null -ne $script:workflowManifest -and $null -ne $script:manifestPath) {
     $json = $script:workflowManifest | ConvertTo-Json -Depth 12
-    [System.IO.File]::WriteAllText(
-      $script:manifestPath,
-      $json,
-      [System.Text.UTF8Encoding]::new($false)
-    )
+    $temporaryPath = $script:manifestPath + '.' + [guid]::NewGuid().ToString('N') + '.tmp'
+    try {
+      [System.IO.File]::WriteAllText(
+        $temporaryPath,
+        $json,
+        [System.Text.UTF8Encoding]::new($false)
+      )
+      if ([System.IO.File]::Exists($script:manifestPath)) {
+        [System.IO.File]::Replace($temporaryPath, $script:manifestPath, $null)
+      } else {
+        [System.IO.File]::Move($temporaryPath, $script:manifestPath)
+      }
+    } finally {
+      if ([System.IO.File]::Exists($temporaryPath)) {
+        [System.IO.File]::Delete($temporaryPath)
+      }
+    }
   }
+}
+
+function Start-CaptureStage {
+  param(
+    [string] $Name,
+    [System.Collections.IDictionary] $Record
+  )
+
+  if ($null -eq $Record) { $Record = $script:workflowManifest }
+  if ($null -eq $Record) { return }
+  $stage = [ordered]@{
+    name = $Name
+    status = 'running'
+    started_utc = [DateTime]::UtcNow.ToString('o')
+    completed_utc = $null
+    elapsed_ms = $null
+  }
+  $Record.current_stage = $stage
+  $Record.stage_history += @($stage)
+  Save-WorkflowManifest
+}
+
+function Complete-CaptureStage {
+  param(
+    [string] $Name,
+    [System.Collections.IDictionary] $Record
+  )
+
+  if ($null -eq $Record) { $Record = $script:workflowManifest }
+  if ($null -eq $Record -or $null -eq $Record.current_stage) {
+    return
+  }
+  if (-not [string]::IsNullOrWhiteSpace($Name) -and $Record.current_stage.name -cne $Name) { return }
+  $stage = $Record.current_stage
+  $completed = [DateTime]::UtcNow
+  $started = [DateTime]::Parse(
+    [string]$stage.started_utc,
+    [Globalization.CultureInfo]::InvariantCulture,
+    [Globalization.DateTimeStyles]::RoundtripKind
+  ).ToUniversalTime()
+  $stage.completed_utc = $completed.ToString('o')
+  $stage.elapsed_ms = [long]($completed - $started).TotalMilliseconds
+  $stage.status = 'complete'
+  Save-WorkflowManifest
+}
+
+function Fail-CaptureStage {
+  param([System.Collections.IDictionary] $Record)
+
+  if ($null -eq $Record) { $Record = $script:workflowManifest }
+  if ($null -eq $Record -or $null -eq $Record.current_stage -or $Record.current_stage.status -ne 'running') {
+    return
+  }
+  $stage = $Record.current_stage
+  $completed = [DateTime]::UtcNow
+  $started = [DateTime]::Parse(
+    [string]$stage.started_utc,
+    [Globalization.CultureInfo]::InvariantCulture,
+    [Globalization.DateTimeStyles]::RoundtripKind
+  ).ToUniversalTime()
+  $stage.completed_utc = $completed.ToString('o')
+  $stage.elapsed_ms = [long]($completed - $started).TotalMilliseconds
+  $stage.status = 'failed'
+  Save-WorkflowManifest
 }
 
 function Invoke-MaximizedCapture {
@@ -2449,6 +2561,8 @@ function Invoke-MaximizedCapture {
     captures = @()
     process_records = @()
     cleanup = $null
+    current_stage = $null
+    stage_history = @()
   }
   $script:workflowManifest.fullscreen_run = $sizeRecord
   Save-WorkflowManifest
@@ -2457,9 +2571,11 @@ function Invoke-MaximizedCapture {
   $window = [IntPtr]::Zero
   $stdoutTask = $null
   $stderrTask = $null
+  $captureFailure = $null
   $records = [System.Collections.ArrayList]::new()
   $foregroundBefore = [NativeVisualCaptureDriver]::GetForegroundWindowHandle()
   try {
+    Start-CaptureStage -Name 'prepare-isolated-runtime' -Record $sizeRecord
     $appData = Join-Path $sizeRuntime 'appdata'
     $localAppData = Join-Path $sizeRuntime 'localappdata'
     $webViewData = Join-Path $sizeRuntime 'webview2'
@@ -2484,9 +2600,18 @@ function Invoke-MaximizedCapture {
 
     $process = [System.Diagnostics.Process]::new()
     $process.StartInfo = $startInfo
+    Complete-CaptureStage -Record $sizeRecord
+    Start-CaptureStage -Name 'launch-app-and-record-process-identity' -Record $sizeRecord
     if (-not $process.Start()) {
       throw 'Could not start the task application.'
     }
+    $sizeRecord.process_id = [int]$process.Id
+    $sizeRecord.process_identity = Get-ProcessIdentity -ProcessId $process.Id
+    if ($null -eq $sizeRecord.process_identity) {
+      throw 'Could not record the task application identity immediately after launch.'
+    }
+    Complete-CaptureStage -Record $sizeRecord
+    Start-CaptureStage -Name 'wait-task-window' -Record $sizeRecord
     $stdoutTask = $process.StandardOutput.ReadToEndAsync()
     $stderrTask = $process.StandardError.ReadToEndAsync()
     Update-TaskProcessRecords -RootProcessId $process.Id -Records $records
@@ -2494,6 +2619,8 @@ function Invoke-MaximizedCapture {
     $window = Wait-TaskWindow `
       -Process $process `
       -ExpectedForeground $foregroundBefore
+    Complete-CaptureStage -Record $sizeRecord
+    Start-CaptureStage -Name 'configure-window-and-wait-webview-document' -Record $sizeRecord
     Assert-ForegroundPreserved `
       -ExpectedForeground $foregroundBefore `
       -Stage 'startup before window preparation'
@@ -2501,6 +2628,8 @@ function Invoke-MaximizedCapture {
       -Window $window `
       -ExpectedForeground $foregroundBefore
     Wait-WebViewDocument -Window $window
+    Complete-CaptureStage -Record $sizeRecord
+    Start-CaptureStage -Name 'first-launch-onboarding-and-workspace-navigation' -Record $sizeRecord
     $sizeRecord.storage_before_onboarding = Assert-CaptureStorage `
       -RuntimeRoot $sizeRuntime -ExpectedStatus 'pending'
     $sizeRecord.before_onboarding = [ordered]@{
@@ -2523,6 +2652,8 @@ function Invoke-MaximizedCapture {
     # The existing Overview and five task/tool panels are now lazy-mounted
     # behind Workspace. Keep capturing those surfaces, not the new Home page.
     Open-DashboardWorkspace -Window $window -ProcessId $process.Id -ExpectedForeground $foregroundBefore
+    Complete-CaptureStage -Record $sizeRecord
+    Start-CaptureStage -Name 'renderer-and-optional-workspace-screenshot' -Record $sizeRecord
     $renderer = [NativeVisualCaptureDriver]::FindRenderer($window)
     if ($renderer -eq [IntPtr]::Zero) {
       throw 'Could not identify the task application renderer child HWND.'
@@ -2549,10 +2680,13 @@ function Invoke-MaximizedCapture {
       $sizeRecord.workspace_screenshot = $screenshotResult
       $script:workflowManifest.workspace_screenshot = $screenshotResult
     }
-    Save-WorkflowManifest
+    Complete-CaptureStage -Record $sizeRecord
+    Start-CaptureStage -Name 'capture-requested-surfaces' -Record $sizeRecord
     Update-TaskProcessRecords -RootProcessId $process.Id -Records $records
 
+    Complete-CaptureStage -Record $sizeRecord
     if ($captureOverview) {
+      Start-CaptureStage -Name 'overview-window-render-and-save' -Record $sizeRecord
       Move-DashboardScrollToTop -Renderer $renderer
       Move-RendererToLeft -Renderer $renderer
       Start-Sleep -Milliseconds 700
@@ -2572,16 +2706,20 @@ function Invoke-MaximizedCapture {
         bytes = $overviewCapture.bytes
       }
       Save-WorkflowManifest
+      Complete-CaptureStage -Record $sizeRecord
     }
 
     foreach ($surface in $selectedPanelSurfaces) {
+      Start-CaptureStage -Name ($surface.slug + '-select-and-wait') -Record $sizeRecord
       Select-DashboardTab `
         -Window $window `
         -ProcessId $process.Id `
         -ExpectedForeground $foregroundBefore `
         -TabId $surface.tab `
         -PanelId $surface.panel
+      Complete-CaptureStage -Record $sizeRecord
       Assert-ForegroundPreserved -ExpectedForeground $foregroundBefore -TaskWindow $window -Stage ($surface.name + ' selection')
+      Start-CaptureStage -Name ($surface.slug + '-scroll-capture-and-save') -Record $sizeRecord
       Move-DashboardScrollToTop -Renderer $renderer
       Move-RendererToLeft -Renderer $renderer
       [void](Capture-DashboardSurfaceSegments `
@@ -2595,12 +2733,16 @@ function Invoke-MaximizedCapture {
       Assert-ForegroundPreserved -ExpectedForeground $foregroundBefore -TaskWindow $window -Stage ($surface.name + ' capture')
       Update-TaskProcessRecords -RootProcessId $process.Id -Records $records
       Save-WorkflowManifest
+      Complete-CaptureStage -Record $sizeRecord
     }
     $sizeRecord.status = 'captured'
   } catch {
+    $captureFailure = $_
     $sizeRecord.status = 'failed'
     $sizeRecord.error = $_.Exception.Message
-    $captureFailure = $_
+    try { Fail-CaptureStage -Record $sizeRecord } catch {
+      $sizeRecord.stage_persistence_error = 'failed-stage-write-unavailable'
+    }
     # Preserve evidence before task-owned cleanup, never the desktop or another
     # process. Diagnostic failure must not replace the original capture error.
     if ($window -ne [IntPtr]::Zero -and $null -ne $process -and -not $process.HasExited) {
@@ -2616,6 +2758,17 @@ function Invoke-MaximizedCapture {
     throw $captureFailure
   } finally {
     if ($null -ne $process) {
+      $sizeRecord.cleanup_stage = [ordered]@{
+        name = 'normal-owned-process-cleanup'
+        status = 'running'
+        started_utc = [DateTime]::UtcNow.ToString('o')
+        completed_utc = $null
+      }
+      try {
+        Save-WorkflowManifest
+      } catch {
+        $sizeRecord.cleanup_stage.manifest_write_error = 'cleanup-start-write-unavailable'
+      }
       $sizeRecord.cleanup = Stop-RecordedTaskProcesses `
         -RootProcessId $process.Id `
         -Records $records
@@ -2648,8 +2801,18 @@ function Invoke-MaximizedCapture {
       if ($sizeRecord.status -eq 'captured') {
         $sizeRecord.status = 'complete'
       }
+      $sizeRecord.cleanup_stage.status = if (
+        $sizeRecord.cleanup.remaining_matching_process_ids.Count -eq 0
+      ) { 'complete' } else { 'failed' }
+      $sizeRecord.cleanup_stage.completed_utc = [DateTime]::UtcNow.ToString('o')
     }
-    Save-WorkflowManifest
+    try {
+      Save-WorkflowManifest
+    } catch {
+      if ($null -eq $captureFailure) {
+        throw 'Capture manifest could not be saved after owned process cleanup.'
+      }
+    }
   }
 }
 
@@ -2660,14 +2823,89 @@ if ($null -ne $resolvedPreflightResultPath -and -not $PreflightOnly) {
 }
 $preflightRunId = [guid]::NewGuid().ToString('N')
 $resolvedOutputRoot = Get-NormalizedOutputRoot -RequestedPath $OutputRoot
-$compiler = Get-CaptureCompiler -ExplicitWindowsSdkRoot $WindowsSdkRoot
-$preflight = Get-PreflightManifest `
-  -ResolvedOutputRoot $resolvedOutputRoot `
-  -ResolvedPreflightResultPath $resolvedPreflightResultPath `
-  -Compiler $compiler
+$captureOutputReady = $false
+if (-not $PreflightOnly) {
+  if (Test-Path -LiteralPath $resolvedOutputRoot) {
+    throw 'Refusing to overwrite an existing native visual output directory.'
+  }
+  Test-OutputRootIgnored -ResolvedOutputRoot $resolvedOutputRoot
+
+  $screenshotsRoot = Join-Path $resolvedOutputRoot 'screenshots'
+  $logsRoot = Join-Path $resolvedOutputRoot 'logs'
+  $runtimeRoot = Join-Path $resolvedOutputRoot 'runtime'
+  $toolsRoot = Join-Path $resolvedOutputRoot 'tools'
+  New-Item -ItemType Directory -Path (
+    $resolvedOutputRoot,
+    $screenshotsRoot,
+    $logsRoot,
+    $runtimeRoot,
+    $toolsRoot
+  ) | Out-Null
+
+  $script:manifestPath = Join-Path $resolvedOutputRoot 'manifest.json'
+  $script:workflowManifest = [ordered]@{
+    status = 'running'
+    started_utc = [DateTime]::UtcNow.ToString('o')
+    completed_utc = $null
+    checkout = $null
+    capture_engine = 'PrintWindow (tool window); Windows.Graphics.Capture (normal window)'
+    targeting = 'exact HWND'
+    activation_mode = 'non-activating'
+    foreground_policy = 'preserve active window'
+    z_order_policy = 'background'
+    startup_window_mode = 'hidden until explicitly shown; background activation forbidden'
+    capture_argument = '--codexu-native-capture-background'
+    workspace_screenshot_test_enabled = [bool]$ExerciseWorkspaceScreenshot
+    workspace_screenshot = $null
+    taskbar_policy = 'excluded'
+    alt_tab_policy = 'excluded'
+    real_local_codex_input = 'not-read; empty task-owned Codex root'
+    app_runtime_storage = 'task-local under .local-artifacts'
+    preflight = $null
+    current_stage = $null
+    stage_history = @()
+    build = [ordered]@{
+      command = "cargo +$requiredRustToolchain tauri build --no-bundle"
+      skipped = [bool]$SkipBuild
+      result = 'pending'
+    }
+    fullscreen_run = $null
+    size_runs = @()
+    screenshot_count = 0
+    final_process_cleanup = 'pending'
+    error = $null
+  }
+  Save-WorkflowManifest
+  Start-CaptureStage -Name 'preflight-and-runtime-discovery'
+  $captureOutputReady = $true
+}
+
+$compiler = $null
+$preflight = $null
 try {
+  $compiler = Get-CaptureCompiler -ExplicitWindowsSdkRoot $WindowsSdkRoot
+  $preflight = Get-PreflightManifest `
+    -ResolvedOutputRoot $resolvedOutputRoot `
+    -ResolvedPreflightResultPath $resolvedPreflightResultPath `
+    -Compiler $compiler
+  if ($captureOutputReady) {
+    $script:workflowManifest.preflight = $preflight
+    $script:workflowManifest.checkout = Get-CaptureCheckout -Root $repositoryRoot
+  }
   Assert-PreflightReady -Preflight $preflight
+  if ($captureOutputReady) {
+    Complete-CaptureStage -Name 'preflight-and-runtime-discovery'
+    Save-WorkflowManifest
+  }
 } catch {
+  if ($captureOutputReady) {
+    $script:workflowManifest.preflight_error = $_.Exception.Message
+    Fail-CaptureStage
+    $script:workflowManifest.status = 'failed'
+    $script:workflowManifest.error = $_.Exception.Message
+    $script:workflowManifest.completed_utc = [DateTime]::UtcNow.ToString('o')
+    Save-WorkflowManifest
+  }
   Write-PreflightResult `
     -Path $resolvedPreflightResultPath `
     -RunId $preflightRunId `
@@ -2676,7 +2914,6 @@ try {
     -ErrorMessage $_.Exception.Message
   throw
 }
-
 if ($PreflightOnly) {
   Write-PreflightResult `
     -Path $resolvedPreflightResultPath `
@@ -2691,74 +2928,31 @@ if ($PreflightOnly) {
   return
 }
 
-if (Test-Path -LiteralPath $resolvedOutputRoot) {
-  throw "Refusing to overwrite an existing native visual output directory."
-}
-Test-OutputRootIgnored -ResolvedOutputRoot $resolvedOutputRoot
-
-$screenshotsRoot = Join-Path $resolvedOutputRoot 'screenshots'
-$logsRoot = Join-Path $resolvedOutputRoot 'logs'
-$runtimeRoot = Join-Path $resolvedOutputRoot 'runtime'
-$toolsRoot = Join-Path $resolvedOutputRoot 'tools'
-New-Item -ItemType Directory -Path (
-  $resolvedOutputRoot,
-  $screenshotsRoot,
-  $logsRoot,
-  $runtimeRoot,
-  $toolsRoot
-) | Out-Null
-
-$script:manifestPath = Join-Path $resolvedOutputRoot 'manifest.json'
-$checkout = Get-CaptureCheckout -Root $repositoryRoot
-$script:workflowManifest = [ordered]@{
-  status = 'running'
-  started_utc = (Get-Date).ToUniversalTime().ToString('o')
-  completed_utc = $null
-  checkout = $checkout
-  capture_engine = 'PrintWindow (tool window); Windows.Graphics.Capture (normal window)'
-  targeting = 'exact HWND'
-  activation_mode = 'non-activating'
-  foreground_policy = 'preserve active window'
-  z_order_policy = 'background'
-  startup_window_mode = 'hidden until explicitly shown; background activation forbidden'
-  capture_argument = '--codexu-native-capture-background'
-  workspace_screenshot_test_enabled = [bool]$ExerciseWorkspaceScreenshot
-  workspace_screenshot = $null
-  taskbar_policy = 'excluded'
-  alt_tab_policy = 'excluded'
-  real_local_codex_input = 'not-read; empty task-owned Codex root'
-  app_runtime_storage = 'task-local under .local-artifacts'
-  build = [ordered]@{
-    command = $preflight.build_command
-    skipped = [bool]$SkipBuild
-    result = 'pending'
-  }
-  fullscreen_run = $null
-  size_runs = @()
-  screenshot_count = 0
-  final_process_cleanup = 'pending'
-  error = $null
-}
-Save-WorkflowManifest
-
 try {
+  Start-CaptureStage -Name 'refuse-preexisting-target-process'
   $existingBeforeBuild = @(Get-ExactExecutableProcesses -ExecutablePath $appPath)
   if ($existingBeforeBuild.Count -gt 0) {
     throw 'The exact target release executable is already running; refusing to manage it.'
   }
+  Complete-CaptureStage -Name 'refuse-preexisting-target-process'
 
   $captureTool = Join-Path $toolsRoot 'GraphicsCaptureSnapshot.exe'
+  Start-CaptureStage -Name 'compile-capture-helper'
   Build-CaptureHelper `
     -Compiler $compiler `
     -OutputPath $captureTool `
     -LogPath (Join-Path $logsRoot 'capture-helper-build.log')
+  Complete-CaptureStage -Name 'compile-capture-helper'
 
   if ($SkipBuild) {
+    Start-CaptureStage -Name 'verify-existing-release-build'
     if (-not (Test-Path -LiteralPath $appPath -PathType Leaf)) {
       throw 'SkipBuild was requested but the release executable does not exist.'
     }
     $script:workflowManifest.build.result = 'skipped by explicit switch'
+    Complete-CaptureStage -Name 'verify-existing-release-build'
   } else {
+    Start-CaptureStage -Name 'build-release-executable'
     $cargo = Get-Command cargo.exe -ErrorAction SilentlyContinue
     if ($null -eq $cargo) {
       $cargo = Get-Command cargo -ErrorAction Stop
@@ -2774,23 +2968,31 @@ try {
       -WorkingDirectory $windowsRoot `
       -LogPath (Join-Path $logsRoot 'tauri-release-build.log')
     $script:workflowManifest.build.result = 'passed'
+    Complete-CaptureStage -Name 'build-release-executable'
   }
+  Start-CaptureStage -Name 'verify-release-executable'
   if (-not (Test-Path -LiteralPath $appPath -PathType Leaf)) {
     throw 'The Tauri release build did not create the expected executable.'
   }
+  Complete-CaptureStage -Name 'verify-release-executable'
   Save-WorkflowManifest
 
+  Start-CaptureStage -Name 'refuse-preexisting-launch-process'
   $existingBeforeLaunch = @(Get-ExactExecutableProcesses -ExecutablePath $appPath)
   if ($existingBeforeLaunch.Count -gt 0) {
     throw 'The exact target release executable became active before capture; refusing to manage it.'
   }
+  Complete-CaptureStage -Name 'refuse-preexisting-launch-process'
 
+  Start-CaptureStage -Name 'capture-maximized-native-workflow'
   Invoke-MaximizedCapture `
     -CaptureTool $captureTool `
     -ScreenshotsRoot $screenshotsRoot `
     -RuntimeRoot $runtimeRoot `
     -LogsRoot $logsRoot
+  Complete-CaptureStage -Name 'capture-maximized-native-workflow'
 
+  Start-CaptureStage -Name 'validate-capture-artifacts-and-cleanup'
   $pngFiles = @(
     Get-ChildItem -LiteralPath $screenshotsRoot -Filter '*.png' -File -Recurse
   )
@@ -2876,7 +3078,9 @@ try {
 
   $script:workflowManifest.final_process_cleanup = 'confirmed'
   $script:workflowManifest.status = 'complete'
+  Complete-CaptureStage -Name 'validate-capture-artifacts-and-cleanup'
 } catch {
+  Fail-CaptureStage
   $script:workflowManifest.status = 'failed'
   $script:workflowManifest.error = $_.Exception.Message
   throw
