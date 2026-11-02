@@ -45,6 +45,7 @@ var (
 	errAccountQuotaReserve       = errors.New("account_quota_reserve")
 	errDispatchDisabled          = errors.New("account_dispatch_disabled")
 	errDispatchPolicyUnavailable = errors.New("dispatch_policy_unavailable")
+	errWindowsExecutionStale     = errors.New("execution_evidence_stale")
 )
 
 const (
@@ -101,30 +102,35 @@ type AccountConfig struct {
 }
 
 type Task struct {
-	DesktopBinding               *desktopTaskBinding    `json:"windowsTaskBinding,omitempty"`
-	DesktopApproval              *desktopAccountBinding `json:"windowsApprovalBinding,omitempty"`
-	DispatchLeaseID              string                 `json:"dispatchLeaseId,omitempty"`
-	ID                           string                 `json:"id"`
-	Version                      uint64                 `json:"version"`
-	Agent                        string                 `json:"agent"`
-	Project                      string                 `json:"project"`
-	AccountAlias                 string                 `json:"accountAlias,omitempty"`
-	State                        TaskState              `json:"state"`
-	ActionHash                   string                 `json:"actionHash"`
-	PromptHash                   string                 `json:"promptHash"`
-	ResumeOf                     string                 `json:"resumeOf,omitempty"`
-	SessionID                    string                 `json:"sessionId,omitempty"`
-	SessionVerified              bool                   `json:"sessionVerified,omitempty"`
-	PID                          int                    `json:"pid,omitempty"`
-	ReasonCode                   string                 `json:"reasonCode,omitempty"`
-	ResultNote                   string                 `json:"resultNote,omitempty"`
-	ExecutionPreference          *executionPreference   `json:"executionPreference,omitempty"`
-	EffectiveExecutionPreference *executionPreference   `json:"effectiveExecutionPreference,omitempty"`
-	InputHashes                  *inputHashes           `json:"inputHashes,omitempty"`
-	SubagentExecution            *subagentExecution     `json:"subagentExecution,omitempty"`
-	CreatedAt                    time.Time              `json:"createdAt"`
-	UpdatedAt                    time.Time              `json:"updatedAt"`
-	ApprovalExpiresAt            time.Time              `json:"approvalExpiresAt"`
+	WindowsExecution                  *windowsExecutionRequest   `json:"windowsExecution,omitempty"`
+	windowsExecutionAuthority         *windowsExecutionAuthority `json:"-"`
+	windowsEffectiveExecution         *windowsEffectiveExecution `json:"-"`
+	windowsExecutionAuthorityAt       time.Time                  `json:"-"`
+	windowsExecutionAuthorityConsumed bool                       `json:"-"`
+	DesktopBinding                    *desktopTaskBinding        `json:"windowsTaskBinding,omitempty"`
+	DesktopApproval                   *desktopAccountBinding     `json:"windowsApprovalBinding,omitempty"`
+	DispatchLeaseID                   string                     `json:"dispatchLeaseId,omitempty"`
+	ID                                string                     `json:"id"`
+	Version                           uint64                     `json:"version"`
+	Agent                             string                     `json:"agent"`
+	Project                           string                     `json:"project"`
+	AccountAlias                      string                     `json:"accountAlias,omitempty"`
+	State                             TaskState                  `json:"state"`
+	ActionHash                        string                     `json:"actionHash"`
+	PromptHash                        string                     `json:"promptHash"`
+	ResumeOf                          string                     `json:"resumeOf,omitempty"`
+	SessionID                         string                     `json:"sessionId,omitempty"`
+	SessionVerified                   bool                       `json:"sessionVerified,omitempty"`
+	PID                               int                        `json:"pid,omitempty"`
+	ReasonCode                        string                     `json:"reasonCode,omitempty"`
+	ResultNote                        string                     `json:"resultNote,omitempty"`
+	ExecutionPreference               *executionPreference       `json:"executionPreference,omitempty"`
+	EffectiveExecutionPreference      *executionPreference       `json:"effectiveExecutionPreference,omitempty"`
+	InputHashes                       *inputHashes               `json:"inputHashes,omitempty"`
+	SubagentExecution                 *subagentExecution         `json:"subagentExecution,omitempty"`
+	CreatedAt                         time.Time                  `json:"createdAt"`
+	UpdatedAt                         time.Time                  `json:"updatedAt"`
+	ApprovalExpiresAt                 time.Time                  `json:"approvalExpiresAt"`
 }
 
 type TaskDTO struct {
@@ -656,19 +662,28 @@ func (hub *Hub) conflictingProjectOwnerLocked(project, excludingTaskID string) s
 }
 
 type CreateRequest struct {
-	DispatchLeaseID string `json:"dispatchLeaseId,omitempty"`
-	RequestID       string `json:"requestId"`
-	Agent           string `json:"agent"`
-	Project         string `json:"project"`
-	AccountAlias    string `json:"accountAlias,omitempty"`
-	Prompt          string `json:"prompt"`
+	DispatchLeaseID             string                     `json:"dispatchLeaseId,omitempty"`
+	WindowsExecution            *windowsExecutionRequest   `json:"windowsExecution,omitempty"`
+	WindowsExecutionAuthority   *windowsExecutionAuthority `json:"windowsExecutionAuthority,omitempty"`
+	windowsExecutionAuthorityAt time.Time                  `json:"-"`
+	RequestID                   string                     `json:"requestId"`
+	Agent                       string                     `json:"agent"`
+	Project                     string                     `json:"project"`
+	AccountAlias                string                     `json:"accountAlias,omitempty"`
+	Prompt                      string                     `json:"prompt"`
 }
 
 func (hub *Hub) create(request CreateRequest) (TaskDTO, error) {
+	if request.WindowsExecutionAuthority != nil && request.windowsExecutionAuthorityAt.IsZero() {
+		request.windowsExecutionAuthorityAt = time.Now()
+	}
 	return hub.createFrom(request, "")
 }
 
 func (hub *Hub) createFrom(request CreateRequest, resumeOf string) (TaskDTO, error) {
+	if request.WindowsExecutionAuthority != nil && request.windowsExecutionAuthorityAt.IsZero() {
+		request.windowsExecutionAuthorityAt = time.Now()
+	}
 	if err := validateRequestID(request.RequestID); err != nil || request.Prompt == "" || len(request.Prompt) > maxTaskPromptBytes {
 		return TaskDTO{}, errInvalid
 	}
@@ -701,6 +716,13 @@ func (hub *Hub) createFrom(request CreateRequest, resumeOf string) (TaskDTO, err
 	if request.DispatchLeaseID != "" {
 		bodyHash = hashParts(bodyHash, request.DispatchLeaseID)
 	}
+	if (request.WindowsExecution == nil) != (request.WindowsExecutionAuthority == nil) {
+		return TaskDTO{}, errInvalid
+	}
+	bodyHash, err = windowsExecutionBodyHash(bodyHash, request.WindowsExecution)
+	if err != nil {
+		return TaskDTO{}, err
+	}
 	if task, found, err := hub.dedupeLocked(request.RequestID, bodyHash); found || err != nil {
 		if task == nil {
 			return TaskDTO{}, err
@@ -730,8 +752,18 @@ func (hub *Hub) createFrom(request CreateRequest, resumeOf string) (TaskDTO, err
 	if err := hub.dispatchActivityAllowed(accountAlias, request.Project, request.DispatchLeaseID, "", time.Now().UTC()); err != nil {
 		return TaskDTO{}, err
 	}
+	if request.WindowsExecution != nil {
+		if request.Agent != "codex" || request.AccountAlias == "" || accountAlias == "system" ||
+			!hub.desktopBindingEnabled() || request.WindowsExecutionAuthority.ProfileID != hub.config.WorkflowProfileID ||
+			!windowsExecutionAuthorityFresh(request.windowsExecutionAuthorityAt) {
+			return TaskDTO{}, errDispatchPolicyUnavailable
+		}
+		if _, err := resolveWindowsExecution(*request.WindowsExecution, *request.WindowsExecutionAuthority, time.Now().UTC()); err != nil {
+			return TaskDTO{}, err
+		}
+	}
 	var preference *executionPreference
-	if request.Agent == "codex" && accountAlias != "system" {
+	if request.WindowsExecution == nil && request.Agent == "codex" && accountAlias != "system" {
 		frozen, err := readManagerExecutionPreference(hub.managerSnapshotPath, hub.config.Accounts, accountAlias)
 		if err != nil {
 			return TaskDTO{}, errInvalid
@@ -776,6 +808,7 @@ func (hub *Hub) createFrom(request CreateRequest, resumeOf string) (TaskDTO, err
 	}
 	task := &Task{
 		DispatchLeaseID:              request.DispatchLeaseID,
+		WindowsExecution:             cloneWindowsExecutionRequest(request.WindowsExecution),
 		ID:                           taskID,
 		Version:                      1,
 		Agent:                        request.Agent,
@@ -805,9 +838,17 @@ func (hub *Hub) createFrom(request CreateRequest, resumeOf string) (TaskDTO, err
 			return TaskDTO{}, err
 		}
 	}
+	if request.WindowsExecution != nil {
+		task.windowsExecutionAuthority = cloneWindowsExecutionAuthority(request.WindowsExecutionAuthority)
+		task.windowsExecutionAuthorityAt = request.windowsExecutionAuthorityAt
+	}
 	if err := hub.freezeDesktopTask(task); err != nil {
 		return TaskDTO{}, err
 	}
+	// The workflow/model authority validates the frozen task but must never be
+	// copied into the durable journal or a public task response.
+	task.windowsExecutionAuthority = nil
+	task.windowsExecutionAuthorityAt = time.Time{}
 	task.ActionHash = taskActionHash(task)
 	requestRecord := &requestRecord{RequestHash: hashText(request.RequestID), BodyHash: bodyHash, TaskID: task.ID}
 	dto := task.dto()
@@ -846,6 +887,10 @@ func (hub *Hub) resume(parentID string, request CreateRequest) (TaskDTO, error) 
 		hub.mu.Unlock()
 		return TaskDTO{}, errNotFound
 	}
+	if parent.WindowsExecution != nil && request.WindowsExecution == nil {
+		hub.mu.Unlock()
+		return TaskDTO{}, errConflict
+	}
 	request.Agent = parent.Agent
 	request.Project = parent.Project
 	request.AccountAlias = parent.AccountAlias
@@ -854,11 +899,16 @@ func (hub *Hub) resume(parentID string, request CreateRequest) (TaskDTO, error) 
 }
 
 type ApproveRequest struct {
-	RequestID  string `json:"requestId"`
-	ActionHash string `json:"actionHash"`
+	RequestID                   string                     `json:"requestId"`
+	ActionHash                  string                     `json:"actionHash"`
+	WindowsExecutionAuthority   *windowsExecutionAuthority `json:"windowsExecutionAuthority,omitempty"`
+	windowsExecutionAuthorityAt time.Time                  `json:"-"`
 }
 
 func (hub *Hub) approve(taskID string, request ApproveRequest) (TaskDTO, error) {
+	if request.WindowsExecutionAuthority != nil && request.windowsExecutionAuthorityAt.IsZero() {
+		request.windowsExecutionAuthorityAt = time.Now()
+	}
 	return hub.approveAt(taskID, request, time.Now().UTC())
 }
 
@@ -897,7 +947,22 @@ func (hub *Hub) approveAt(taskID string, request ApproveRequest, now time.Time) 
 		hub.mu.Unlock()
 		return TaskDTO{}, errConflict
 	}
-	if task.Agent == "codex" && task.AccountAlias != "system" {
+	if task.WindowsExecution != nil {
+		if request.WindowsExecutionAuthority == nil || task.Agent != "codex" || task.AccountAlias == "system" ||
+			!hub.desktopBindingEnabled() || request.WindowsExecutionAuthority.ProfileID != hub.config.WorkflowProfileID ||
+			!windowsExecutionAuthorityFresh(request.windowsExecutionAuthorityAt) {
+			hub.mu.Unlock()
+			return TaskDTO{}, errDispatchPolicyUnavailable
+		}
+		if _, err := resolveWindowsExecution(*task.WindowsExecution, *request.WindowsExecutionAuthority, now); err != nil {
+			hub.mu.Unlock()
+			return TaskDTO{}, err
+		}
+	} else if request.WindowsExecutionAuthority != nil {
+		hub.mu.Unlock()
+		return TaskDTO{}, errInvalid
+	}
+	if task.WindowsExecution == nil && task.Agent == "codex" && task.AccountAlias != "system" {
 		preference, err := normalizedExecutionPreference(task.ExecutionPreference)
 		if err != nil {
 			hub.mu.Unlock()
@@ -974,7 +1039,13 @@ func (hub *Hub) approveAt(taskID string, request ApproveRequest, now time.Time) 
 		hub.mu.Unlock()
 		return dto, err
 	}
+	if task.WindowsExecution != nil {
+		task.windowsExecutionAuthority = cloneWindowsExecutionAuthority(request.WindowsExecutionAuthority)
+		task.windowsExecutionAuthorityAt = request.windowsExecutionAuthorityAt
+	}
 	if err := hub.approveDesktopTask(task); err != nil {
+		task.windowsExecutionAuthority = nil
+		task.windowsExecutionAuthorityAt = time.Time{}
 		hub.mu.Unlock()
 		return TaskDTO{}, err
 	}
@@ -983,6 +1054,8 @@ func (hub *Hub) approveAt(taskID string, request ApproveRequest, now time.Time) 
 	err = hub.transitionLocked(task, stateStarting, "approval_granted", "task.approved", requestRecord)
 	if err != nil {
 		delete(hub.leases, task.Project)
+		task.windowsExecutionAuthority = nil
+		task.windowsExecutionAuthorityAt = time.Time{}
 		hub.mu.Unlock()
 		return TaskDTO{}, err
 	}
@@ -1256,6 +1329,16 @@ func (hub *Hub) runTask(taskID string) {
 		if hub.transitionLocked(task, stateCancelled, "cancelled_before_spawn", "task.cancelled", nil) == nil {
 			delete(hub.leases, task.Project)
 		}
+		clearWindowsExecutionAuthority(task)
+		hub.mu.Unlock()
+		return
+	}
+	if task.WindowsExecution != nil && (!windowsExecutionAuthorityFresh(task.windowsExecutionAuthorityAt) || task.windowsExecutionAuthority == nil) {
+		delete(hub.pendingPrompts, task.ID)
+		if hub.transitionLocked(task, stateBlockedConfiguration, "execution_evidence_stale", "task.blocked", nil) == nil {
+			delete(hub.leases, task.Project)
+		}
+		clearWindowsExecutionAuthority(task)
 		hub.mu.Unlock()
 		return
 	}
@@ -1264,15 +1347,21 @@ func (hub *Hub) runTask(taskID string) {
 		if hub.transitionLocked(task, stateBlockedConfiguration, "prompt_unavailable", "task.blocked", nil) == nil {
 			delete(hub.leases, task.Project)
 		}
+		clearWindowsExecutionAuthority(task)
 		hub.mu.Unlock()
 		return
 	}
 	cmd, err := hub.commandFor(task, prompt)
 	if err != nil {
 		delete(hub.pendingPrompts, task.ID)
-		if hub.transitionLocked(task, stateBlockedConfiguration, "agent_unavailable", "task.blocked", nil) == nil {
+		reason := "agent_unavailable"
+		if errors.Is(err, errWindowsExecutionStale) {
+			reason = errWindowsExecutionStale.Error()
+		}
+		if hub.transitionLocked(task, stateBlockedConfiguration, reason, "task.blocked", nil) == nil {
 			delete(hub.leases, task.Project)
 		}
+		clearWindowsExecutionAuthority(task)
 		hub.mu.Unlock()
 		return
 	}
@@ -1282,6 +1371,7 @@ func (hub *Hub) runTask(taskID string) {
 		if hub.transitionLocked(task, stateBlockedConfiguration, "stdout_unavailable", "task.blocked", nil) == nil {
 			delete(hub.leases, task.Project)
 		}
+		clearWindowsExecutionAuthority(task)
 		hub.mu.Unlock()
 		return
 	}
@@ -1293,6 +1383,7 @@ func (hub *Hub) runTask(taskID string) {
 		if hub.transitionLocked(task, stateBlockedConfiguration, "stderr_unavailable", "task.blocked", nil) == nil {
 			delete(hub.leases, task.Project)
 		}
+		clearWindowsExecutionAuthority(task)
 		hub.mu.Unlock()
 		return
 	}
@@ -1309,6 +1400,7 @@ func (hub *Hub) runTask(taskID string) {
 		if hub.transitionLocked(task, stateBlockedConfiguration, err.Error(), "task.blocked", nil) == nil {
 			delete(hub.leases, task.Project)
 		}
+		clearWindowsExecutionAuthority(task)
 		hub.mu.Unlock()
 		return
 	}
@@ -1319,6 +1411,7 @@ func (hub *Hub) runTask(taskID string) {
 		if hub.transitionLocked(task, stateBlockedConfiguration, err.Error(), "task.blocked", nil) == nil {
 			delete(hub.leases, task.Project)
 		}
+		clearWindowsExecutionAuthority(task)
 		hub.mu.Unlock()
 		return
 	}
@@ -1330,11 +1423,29 @@ func (hub *Hub) runTask(taskID string) {
 		if hub.transitionLocked(task, stateBlockedConfiguration, err.Error(), "task.blocked", nil) == nil {
 			delete(hub.leases, task.Project)
 		}
+		clearWindowsExecutionAuthority(task)
 		hub.mu.Unlock()
 		return
 	}
+	if task.WindowsExecution != nil {
+		if err := validateWindowsExecutionAtSpawn(task, time.Now().UTC()); err != nil {
+			releaseDesktop()
+			_ = stdout.Close()
+			_ = stdoutWriter.Close()
+			_ = stderr.Close()
+			_ = stderrWriter.Close()
+			delete(hub.pendingPrompts, task.ID)
+			if hub.transitionLocked(task, stateBlockedConfiguration, err.Error(), "task.blocked", nil) == nil {
+				delete(hub.leases, task.Project)
+			}
+			clearWindowsExecutionAuthority(task)
+			hub.mu.Unlock()
+			return
+		}
+	}
 	owned, err := startOwnedCommand(cmd)
 	releaseDesktop()
+	clearWindowsExecutionAuthority(task)
 	if err != nil {
 		_ = stdout.Close()
 		_ = stdoutWriter.Close()
@@ -1451,6 +1562,15 @@ func (hub *Hub) runTask(taskID string) {
 }
 
 func (hub *Hub) commandFor(task *Task, prompt string) (*exec.Cmd, error) {
+	if task.WindowsExecution != nil {
+		if !windowsExecutionAuthorityFresh(task.windowsExecutionAuthorityAt) {
+			return nil, errWindowsExecutionStale
+		}
+		if task.Agent != "codex" || task.AccountAlias == "system" || task.windowsExecutionAuthority == nil ||
+			task.windowsExecutionAuthorityConsumed || task.windowsExecutionAuthority.ProfileID != hub.config.WorkflowProfileID {
+			return nil, errDispatchPolicyUnavailable
+		}
+	}
 	if err := hub.desktopWorkflowAllowed(task); err != nil {
 		return nil, err
 	}
@@ -1469,7 +1589,15 @@ func (hub *Hub) commandFor(task *Task, prompt string) (*exec.Cmd, error) {
 	switch task.Agent {
 	case "codex":
 		args = []string{"-C", project, "-s", hub.config.Mode, "-a", "never", "exec", "--ignore-user-config", "--ignore-rules"}
-		if task.AccountAlias != "system" {
+		if task.WindowsExecution != nil {
+			effective, err := resolveWindowsExecution(*task.WindowsExecution, *task.windowsExecutionAuthority, time.Now().UTC())
+			if err != nil {
+				return nil, err
+			}
+			task.windowsEffectiveExecution = &effective
+			task.windowsExecutionAuthorityConsumed = true
+			args = append(effective.codexArguments(), args...)
+		} else if task.AccountAlias != "system" {
 			preference, err := normalizedExecutionPreference(task.ExecutionPreference)
 			if err != nil {
 				return nil, err
@@ -2403,6 +2531,10 @@ func taskActionHash(task *Task) string {
 		task.ID, task.Agent, task.Project, task.AccountAlias, task.PromptHash, task.ResumeOf,
 		preference.Model, preference.ReasoningEffort, preference.ServiceTier,
 	)
+	if task.WindowsExecution != nil {
+		encoded, _ := json.Marshal(task.WindowsExecution)
+		result = hashParts(result, "windows-execution-v1", hashText(string(encoded)))
+	}
 	if task.DesktopBinding != nil {
 		encoded, _ := json.Marshal(task.DesktopBinding)
 		result = hashParts(result, hashText(string(encoded)))

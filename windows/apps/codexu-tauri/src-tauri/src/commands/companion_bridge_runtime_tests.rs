@@ -139,6 +139,7 @@ fn normal_exit_busy_or_cancel_does_not_seal_hub_but_confirmed_force_does() {
         manager,
         gate,
         &hub,
+        codexu_core::automatic_switch::live::OwnedProcessDomains::new(),
     );
     let lock = runtime.state.lock().unwrap();
     assert_eq!(

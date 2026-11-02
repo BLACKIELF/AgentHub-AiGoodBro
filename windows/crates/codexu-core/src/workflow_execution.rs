@@ -245,6 +245,7 @@ pub fn resolve_execution(
         preference,
         &preferences.excluded_plan_types,
         official_plan,
+        models,
         overrides,
         &model,
         &effort,
@@ -286,7 +287,8 @@ pub fn revalidate_execution(
 // Cross-language recipe: each UTF-8 field is prefixed with its byte length as
 // u64 big endian, numbers are decimal and bools are true/false. Option adds a
 // none/some field. Lists add their decimal count, preserving stored order;
-// weekdays use BTreeSet ascending order. No JSON/float/map-order dependence.
+// model inventory includes only execution capabilities, not display labels.
+// No JSON/float/map-order dependence.
 struct Binding(Sha256);
 impl Binding {
     fn field(&mut self, value: &str) {
@@ -306,13 +308,14 @@ fn binding(
     p: &WorkflowPreference,
     plans: &[String],
     official_plan: &str,
+    models: &[WorkflowModel],
     overrides: &ExecutionOverrides,
     model: &str,
     effort: &str,
     tier: ServiceTier,
 ) -> String {
     let mut h = Binding(Sha256::new());
-    h.field("aigoodbro.workflow-execution.v1");
+    h.field("aigoodbro.workflow-execution.v2");
     h.field(&id.to_string());
     h.field(&p.revision.to_string());
     h.field(if p.participating { "true" } else { "false" });
@@ -350,6 +353,20 @@ fn binding(
         h.field(plan);
     }
     h.field(official_plan);
+    h.field(&models.len().to_string());
+    for capability in models {
+        h.field(&capability.id);
+        h.field(&capability.default_effort);
+        h.field(if capability.is_default {
+            "true"
+        } else {
+            "false"
+        });
+        h.field(&capability.efforts.len().to_string());
+        for effort in &capability.efforts {
+            h.field(effort);
+        }
+    }
     h.optional(overrides.model.as_deref());
     h.optional(overrides.effort.as_deref());
     h.optional(overrides.service_tier.map(ServiceTier::as_str));

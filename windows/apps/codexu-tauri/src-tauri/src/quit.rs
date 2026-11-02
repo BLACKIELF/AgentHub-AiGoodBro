@@ -95,7 +95,12 @@ pub fn ask(app: &AppHandle) {
             "取消",
         )
     } else {
-        ("Quit AiGoodBro?", "The proxy or a task opened by AiGoodBro is still running. Force Quit interrupts current replies and may lose unsaved work.", "Force Quit", "Cancel")
+        (
+            "Quit AiGoodBro?",
+            "The proxy or a task opened by AiGoodBro is still running. Force Quit interrupts current replies and may lose unsaved work.",
+            "Force Quit",
+            "Cancel",
+        )
     };
     let handle = app.clone();
     app.dialog()

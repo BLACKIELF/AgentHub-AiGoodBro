@@ -146,7 +146,7 @@ class WinTransport:
     pipe, App hash, or alternate source binding. Synthetic native tests use a
     private copied Skill layout with the same fixed runtime-config schema.
     """
-    def __init__(self, runtime_config, request_id, seconds=15):
+    def __init__(self, runtime_config, request_id, seconds=83):
         if os.name != "nt":
             fail("companion_windows_required")
         self.end = time.monotonic() + seconds
@@ -463,6 +463,18 @@ class WinTransport:
 def build_request(args, stdin):
     if not digest(args.request_id):
         fail("companion_invalid_request")
+    model = getattr(args, "model", None)
+    effort = getattr(args, "effort", None)
+    tier = getattr(args, "tier", None)
+    if model is not None and (not isinstance(model, str) or not 0 < len(model) <= 80 or any(
+        not ("a" <= char <= "z" or "A" <= char <= "Z" or "0" <= char <= "9" or char in "-_.")
+        for char in model
+    )):
+        fail("companion_invalid_execution_override")
+    if effort is not None and effort not in ("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"):
+        fail("companion_invalid_execution_override")
+    if tier is not None and tier not in ("default", "fast"):
+        fail("companion_invalid_execution_override")
     if args.command in ("preflight", "refresh", "reserve", "run"):
         if args.profile_id is None or args.profile_id <= 0 or not args.project or len(args.project) > 4096 or any(c in args.project for c in "\0\r\n"):
             fail("companion_invalid_scope")
@@ -479,7 +491,10 @@ def build_request(args, stdin):
             fail("companion_invalid_prompt")
         if not prompt.strip() or "\0" in prompt:
             fail("companion_invalid_prompt")
-        method = {"kind": args.command, "intent": {"selector": selector, "prompt": prompt, "model": None, "effort": None, "tier": None}}
+        method = {"kind": args.command, "intent": {
+            "selector": selector, "prompt": prompt,
+            "model": model, "effort": effort, "tier": tier,
+        }}
         if args.command == "run":
             if not digest(args.lease_id):
                 fail("companion_invalid_lease")
@@ -503,6 +518,9 @@ def main():
     parser.add_argument("--project")
     parser.add_argument("--lease-id")
     parser.add_argument("--operation-id")
+    parser.add_argument("--model")
+    parser.add_argument("--effort", choices=("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"))
+    parser.add_argument("--tier", choices=("default", "fast"))
     args = parser.parse_args()
     transport = None
     try:

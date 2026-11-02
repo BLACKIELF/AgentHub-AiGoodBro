@@ -16,6 +16,7 @@ use std::{
 pub enum ClientKind {
     Codex,
     Native,
+    Agy,
 }
 
 /// No Serialize/Debug: this contains native-only environment material and the
@@ -60,6 +61,37 @@ pub fn confirm_model(
     if !valid_model(model) {
         return Err(fail("provider_pool_models_unavailable"));
     }
+    if !fetch_catalog(connection, provider)?
+        .iter()
+        .any(|known| known == model)
+    {
+        return Err(fail("provider_pool_models_unavailable"));
+    }
+    Ok(())
+}
+
+/// Agy follows the Mac consumer's admission rule: the fresh provider catalog
+/// must contain at least one Gemini model, then Agy chooses its own default.
+pub fn confirm_agy_available(connection: &NativeConnection<'_>) -> Result<()> {
+    validate_connection(connection, Provider::Antigravity)?;
+    if !has_gemini_model(&fetch_catalog(connection, Provider::Antigravity)?) {
+        return Err(fail("provider_pool_models_unavailable"));
+    }
+    Ok(())
+}
+
+fn has_gemini_model(models: &[String]) -> bool {
+    models.iter().any(|name| name.starts_with("gemini-"))
+}
+
+fn confirm_agy_catalog(bytes: &[u8]) -> Result<()> {
+    if !has_gemini_model(&catalog_models(bytes)?) {
+        return Err(fail("provider_pool_models_unavailable"));
+    }
+    Ok(())
+}
+
+fn fetch_catalog(connection: &NativeConnection<'_>, provider: Provider) -> Result<Vec<String>> {
     let deadline = Instant::now() + Duration::from_secs(5);
     let address = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 18081));
     let mut stream = TcpStream::connect_timeout(&address, Duration::from_secs(2))
@@ -92,10 +124,7 @@ pub fn confirm_model(
         }
         bytes.extend_from_slice(&chunk[..n]);
     }
-    if !catalog_models(&bytes)?.iter().any(|known| known == model) {
-        return Err(fail("provider_pool_models_unavailable"));
-    }
-    Ok(())
+    catalog_models(&bytes)
 }
 
 fn catalog_models(bytes: &[u8]) -> Result<Vec<String>> {
@@ -160,16 +189,19 @@ pub fn prepare(
     model: &str,
 ) -> Result<ClientPlan> {
     validate_connection(connection, provider)?;
-    if !valid_model(model) || (kind == ClientKind::Native && provider == Provider::Antigravity) {
+    if (kind == ClientKind::Agy && (!model.is_empty() || provider != Provider::Antigravity))
+        || (kind == ClientKind::Native && provider == Provider::Antigravity)
+        || (kind != ClientKind::Agy && !valid_model(model))
+    {
         return Err(fail("provider_pool_client_unavailable"));
     }
     let root = app_data.join("provider-clients-v1");
     let home = root.join(format!(
         "{}-{}",
-        if kind == ClientKind::Codex {
-            "codex"
-        } else {
-            "native"
+        match kind {
+            ClientKind::Codex => "codex",
+            ClientKind::Native => "native",
+            ClientKind::Agy => "agy",
         },
         provider.id()
     ));
@@ -184,16 +216,21 @@ pub fn prepare(
     storage::secure_directory(&home).map_err(|_| fail("provider_pool_storage_unavailable"))?;
     let lease =
         storage::StoreLock::acquire(&home).map_err(|_| fail("provider_pool_client_busy"))?;
-    let environment = Environment::provider_pool(&home, connection, provider, kind, model)
-        .map_err(|_| fail("provider_pool_client_invalid"))?;
-    let arguments = if kind == ClientKind::Codex {
-        vec!["-m".into(), model.into(), "-c".into(), "model_provider=\"aigoodbro_local\"".into(),
+    let (arguments, environment) = if kind == ClientKind::Agy {
+        super::agy::prepare(&home, connection, provider)?
+    } else {
+        let environment = Environment::provider_pool(&home, connection, provider, kind, model)
+            .map_err(|_| fail("provider_pool_client_invalid"))?;
+        let arguments = if kind == ClientKind::Codex {
+            vec!["-m".into(), model.into(), "-c".into(), "model_provider=\"aigoodbro_local\"".into(),
             "-c".into(), format!("model_providers.aigoodbro_local={{name=\"AiGoodBro\",base_url=\"{}/v1\",env_key=\"AIGOODBRO_PROXY_KEY\",wire_api=\"responses\",requires_openai_auth=false,supports_websockets=false}}", connection.endpoint),
             "-c".into(), "features.enable_request_compression=false".into()]
-    } else if provider == Provider::Kimi {
-        vec![]
-    } else {
-        vec!["--model".into(), model.into()]
+        } else if provider == Provider::Kimi {
+            vec![]
+        } else {
+            vec!["--model".into(), model.into()]
+        };
+        (arguments, environment)
     };
     Ok(ClientPlan {
         arguments,

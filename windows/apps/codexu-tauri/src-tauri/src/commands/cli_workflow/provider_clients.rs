@@ -5,7 +5,7 @@ use super::{console, local_actions, native_executable, AppState, WorkflowState};
 use crate::commands::provider_pool::ProviderPoolState;
 use crate::native_services::NativeServices;
 use codexu_core::{
-    local_cli::{dependency::VerifiedRuntime, launch, LocalCliKind},
+    local_cli::{dependency::VerifiedRuntime, launch, LocalCliKind, PlatformDirectories},
     provider_pool::{
         self,
         client::{self, ClientKind, ClientPlan},
@@ -14,6 +14,8 @@ use codexu_core::{
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+#[cfg(windows)]
+use std::io::{Read, Seek, SeekFrom};
 use std::{
     collections::BTreeMap,
     fs::File,
@@ -49,25 +51,89 @@ pub struct ClientDto {
 struct Session {
     dto: ClientDto,
     digest: [u8; 32],
-    process: Option<console::OwnedConsole>,
+    process: Option<Box<dyn console::OwnedProcess>>,
     // A failed spawn does not prove cleanup. Retain the home/runtime lease
     // conservatively; never reuse it or tell the caller that cleanup succeeded.
-    uncertain_resources: Option<Arc<LaunchResources>>,
+    uncertain_resources: Option<Arc<dyn Send + Sync>>,
+    failure_after_cleanup: Option<&'static str>,
+    probe_output: Option<ProbeOutput>,
 }
 impl Session {
     fn refresh(&mut self) {
         if let Some(p) = self.process.as_mut() {
             match p.has_exited() {
                 Ok(true) => {
-                    self.process = None;
-                    self.dto.state = "exited";
-                    self.dto.issue_code = None;
+                    if let Some(issue) = self.failure_after_cleanup.take() {
+                        self.clear_process("failed", Some(issue));
+                        return;
+                    }
+                    match if self.dto.kind == "agy" {
+                        p.exit_success()
+                    } else {
+                        Ok(true)
+                    } {
+                        Ok(true) => {
+                            (self.dto.state, self.dto.issue_code) =
+                                exit_outcome(self.dto.kind, true);
+                            self.clear_process(self.dto.state, self.dto.issue_code);
+                        }
+                        Ok(false) => {
+                            (self.dto.state, self.dto.issue_code) =
+                                exit_outcome(self.dto.kind, false);
+                            self.clear_process(self.dto.state, self.dto.issue_code);
+                        }
+                        Err(_) => {
+                            self.dto.state = "cleanupUnconfirmed";
+                            self.dto.issue_code = Some("provider_pool_client_cleanup_unconfirmed");
+                        }
+                    }
                 }
                 Ok(false) => {}
                 Err(_) => {
                     self.dto.state = "cleanupUnconfirmed";
                     self.dto.issue_code = Some("provider_pool_client_cleanup_unconfirmed");
                 }
+            }
+        }
+    }
+    fn retain_uncertain_process(
+        &mut self,
+        process: Box<dyn console::OwnedProcess>,
+        resources: Arc<dyn Send + Sync>,
+        output: Option<ProbeOutput>,
+        issue_after_cleanup: &'static str,
+    ) {
+        self.process = Some(process);
+        self.uncertain_resources = Some(resources);
+        self.probe_output = output;
+        self.failure_after_cleanup = Some(issue_after_cleanup);
+        self.dto.state = "cleanupUnconfirmed";
+        self.dto.issue_code = Some("provider_pool_client_cleanup_unconfirmed");
+    }
+    fn clear_process(&mut self, state: &'static str, issue: Option<&'static str>) {
+        self.process = None;
+        self.uncertain_resources = None;
+        self.probe_output = None;
+        self.failure_after_cleanup = None;
+        self.dto.state = state;
+        self.dto.issue_code = issue;
+    }
+    fn stop_owned(&mut self) {
+        self.refresh();
+        let Some(process) = self.process.as_mut() else {
+            return;
+        };
+        match process.stop() {
+            Ok(()) => {
+                if let Some(issue) = self.failure_after_cleanup.take() {
+                    self.clear_process("failed", Some(issue));
+                } else {
+                    self.clear_process("stopped", None);
+                }
+            }
+            Err(_) => {
+                self.dto.state = "cleanupUnconfirmed";
+                self.dto.issue_code = Some("provider_pool_client_cleanup_unconfirmed");
             }
         }
     }
@@ -95,11 +161,256 @@ struct LaunchResources {
     plan: ClientPlan,
     _runtime: Option<Arc<VerifiedRuntime>>,
 }
+struct ProbeOutput {
+    path: PathBuf,
+    file: File,
+}
+impl Drop for ProbeOutput {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+struct ProbeFailure {
+    issue: &'static str,
+    process: Option<Box<dyn console::OwnedProcess>>,
+    output: Option<ProbeOutput>,
+}
+impl ProbeFailure {
+    fn clean(issue: &'static str) -> Self {
+        Self {
+            issue,
+            process: None,
+            output: None,
+        }
+    }
+    fn uncertain(
+        issue: &'static str,
+        process: Box<dyn console::OwnedProcess>,
+        output: ProbeOutput,
+    ) -> Self {
+        Self {
+            issue,
+            process: Some(process),
+            output: Some(output),
+        }
+    }
+}
+fn agy_identity_probe_arguments(home: &std::path::Path) -> Vec<String> {
+    vec![
+        format!("--gemini_dir={}", home.to_string_lossy()),
+        "--help".into(),
+    ]
+}
+fn agy_help_identifies_cli(bytes: &[u8]) -> bool {
+    if bytes.is_empty() || bytes.len() > 64 * 1024 {
+        return false;
+    }
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        return false;
+    };
+    let text = text.to_ascii_lowercase();
+    text.contains("antigravity") && text.contains("usage")
+        || text.contains("usage: agy")
+        || text.contains("agy cli")
+}
+fn provider_error(code: &'static str) -> provider_pool::Error {
+    provider_pool::Error { code }
+}
+fn finish_start_failure(
+    session: &mut Session,
+    failure: console::StartFailure,
+    resources: Arc<dyn Send + Sync>,
+    output: Option<ProbeOutput>,
+    issue_after_cleanup: &'static str,
+) -> provider_pool::Error {
+    let (_, owner) = failure.into_parts();
+    if let Some(mut owner) = owner {
+        if owner.stop().is_err() {
+            session.retain_uncertain_process(owner, resources, output, issue_after_cleanup);
+            return provider_error("provider_pool_client_cleanup_unconfirmed");
+        }
+    }
+    provider_error(issue_after_cleanup)
+}
+fn agy_identity_probe_environment(
+    home: &std::path::Path,
+) -> Result<launch::Environment, provider_pool::Error> {
+    // This is an identity/self-check only. The help handler may ignore unknown
+    // options; Windows native evidence must still confirm --gemini_dir use.
+    // It runs with the dependency-probe allowlist, never inherited credentials.
+    launch::Environment::dependency_probe(home)
+        .map_err(|_| provider_error("provider_pool_client_cli_contract_unverified"))
+}
+#[cfg(windows)]
+fn probe_agy_cli_identity(
+    executable: &Executable,
+    home: &std::path::Path,
+    quitting: &AtomicBool,
+    resources: Arc<LaunchResources>,
+    domains: Arc<codexu_core::automatic_switch::live::OwnedProcessDomains>,
+) -> Result<(), ProbeFailure> {
+    const CONTRACT_UNVERIFIED: &str = "provider_pool_client_cli_contract_unverified";
+    const LAUNCH_CANCELLED: &str = "launch_cancelled";
+    const OUTPUT_LIMIT: u64 = 64 * 1024;
+    let home =
+        launch::checked_directory(home).map_err(|_| ProbeFailure::clean(CONTRACT_UNVERIFIED))?;
+    let nonce = launch::session_nonce().map_err(|_| ProbeFailure::clean(CONTRACT_UNVERIFIED))?;
+    let suffix: String = nonce.iter().map(|b| format!("{b:02x}")).collect();
+    let path = home.join(format!(".agy-contract-{suffix}.out"));
+    let file = std::fs::OpenOptions::new()
+        .create_new(true)
+        .read(true)
+        .write(true)
+        .open(&path)
+        .map_err(|_| ProbeFailure::clean(CONTRACT_UNVERIFIED))?;
+    let output = ProbeOutput { path, file };
+    let environment = agy_identity_probe_environment(&home)
+        .map_err(|_| ProbeFailure::clean(CONTRACT_UNVERIFIED))?;
+    let arguments = agy_identity_probe_arguments(&home);
+    let guard = executable
+        .guard
+        .try_clone()
+        .map_err(|_| ProbeFailure::clean(CONTRACT_UNVERIFIED))?;
+    let mut probe = match console::OwnedConsole::start_registered_owned(
+        &executable.path,
+        &home,
+        &arguments,
+        guard,
+        &environment,
+        "AiGoodBro - Agy CLI check",
+        Some(domains),
+        Some(resources),
+        Some(&output.file),
+    ) {
+        Ok(probe) => probe,
+        Err(failure) => {
+            let (_, owner) = failure.into_parts();
+            if let Some(mut owner) = owner {
+                if owner.stop().is_err() {
+                    return Err(ProbeFailure::uncertain(CONTRACT_UNVERIFIED, owner, output));
+                }
+            }
+            return Err(ProbeFailure::clean(CONTRACT_UNVERIFIED));
+        }
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let successful = loop {
+        if quitting.load(Ordering::Acquire) {
+            if probe.stop().is_err() {
+                return Err(ProbeFailure::uncertain(
+                    LAUNCH_CANCELLED,
+                    Box::new(probe),
+                    output,
+                ));
+            }
+            return Err(ProbeFailure::clean(LAUNCH_CANCELLED));
+        }
+        let output_length = match output.file.metadata() {
+            Ok(metadata) => metadata.len(),
+            Err(_) => {
+                if probe.stop().is_err() {
+                    return Err(ProbeFailure::uncertain(
+                        CONTRACT_UNVERIFIED,
+                        Box::new(probe),
+                        output,
+                    ));
+                }
+                return Err(ProbeFailure::clean(CONTRACT_UNVERIFIED));
+            }
+        };
+        if output_length > OUTPUT_LIMIT {
+            if probe.stop().is_err() {
+                return Err(ProbeFailure::uncertain(
+                    CONTRACT_UNVERIFIED,
+                    Box::new(probe),
+                    output,
+                ));
+            }
+            return Err(ProbeFailure::clean(CONTRACT_UNVERIFIED));
+        }
+        match probe.has_exited() {
+            Ok(true) => {
+                break match probe.exit_success() {
+                    Ok(success) => success,
+                    // `has_exited` already observed both the root and whole
+                    // Job empty; an exit-code query failure does not require
+                    // retaining an otherwise confirmed-empty process.
+                    Err(_) => return Err(ProbeFailure::clean(CONTRACT_UNVERIFIED)),
+                };
+            }
+            Ok(false) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Ok(false) => {
+                if probe.stop().is_err() {
+                    return Err(ProbeFailure::uncertain(
+                        CONTRACT_UNVERIFIED,
+                        Box::new(probe),
+                        output,
+                    ));
+                }
+                return Err(ProbeFailure::clean(CONTRACT_UNVERIFIED));
+            }
+            Err(_) => {
+                if probe.stop().is_err() {
+                    return Err(ProbeFailure::uncertain(
+                        CONTRACT_UNVERIFIED,
+                        Box::new(probe),
+                        output,
+                    ));
+                }
+                return Err(ProbeFailure::clean(CONTRACT_UNVERIFIED));
+            }
+        }
+    };
+    drop(probe); // Releasing the Job is safe only after has_exited saw it empty.
+    if !successful {
+        return Err(ProbeFailure::clean(CONTRACT_UNVERIFIED));
+    }
+    let length = output
+        .file
+        .metadata()
+        .map_err(|_| ProbeFailure::clean(CONTRACT_UNVERIFIED))?
+        .len();
+    if length > OUTPUT_LIMIT {
+        return Err(ProbeFailure::clean(CONTRACT_UNVERIFIED));
+    }
+    let mut file = &output.file;
+    file.seek(SeekFrom::Start(0))
+        .map_err(|_| ProbeFailure::clean(CONTRACT_UNVERIFIED))?;
+    let mut bytes = Vec::with_capacity(length as usize);
+    file.take(OUTPUT_LIMIT + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| ProbeFailure::clean(CONTRACT_UNVERIFIED))?;
+    if !agy_help_identifies_cli(&bytes) {
+        return Err(ProbeFailure::clean(CONTRACT_UNVERIFIED));
+    }
+    Ok(())
+}
+#[cfg(not(windows))]
+fn probe_agy_cli_identity(
+    _: &Executable,
+    _: &std::path::Path,
+    _: &AtomicBool,
+    _: Arc<LaunchResources>,
+    _: Arc<codexu_core::automatic_switch::live::OwnedProcessDomains>,
+) -> Result<(), ProbeFailure> {
+    Err(ProbeFailure::clean(
+        "provider_pool_client_cli_contract_unverified",
+    ))
+}
 fn kind_name(kind: ClientKind) -> &'static str {
-    if kind == ClientKind::Codex {
-        "codex"
+    match kind {
+        ClientKind::Codex => "codex",
+        ClientKind::Native => "native",
+        ClientKind::Agy => "agy",
+    }
+}
+fn exit_outcome(kind: &str, success: bool) -> (&'static str, Option<&'static str>) {
+    if kind == "agy" && !success {
+        ("failed", Some("provider_pool_client_cli_failed"))
     } else {
-        "native"
+        ("exited", None)
     }
 }
 fn request_digest(r: &StartRequest) -> Result<[u8; 32], String> {
@@ -113,12 +424,17 @@ fn request_digest(r: &StartRequest) -> Result<[u8; 32], String> {
             .run_id
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
-        || r.model.is_empty()
-        || r.model.len() > 128
-        || !r
-            .model
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+        || match r.kind {
+            ClientKind::Agy => r.provider != Provider::Antigravity || !r.model.is_empty(),
+            ClientKind::Codex | ClientKind::Native => {
+                r.model.is_empty()
+                    || r.model.len() > 128
+                    || !r
+                        .model
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+            }
+        }
     {
         return Err("provider_pool_client_request_invalid".into());
     }
@@ -156,6 +472,20 @@ async fn executable(
         let (path, guard) = native_executable(&state.app_data_dir)
             .await
             .map_err(|_| "provider_pool_client_runtime_unavailable")?;
+        return Ok(Executable {
+            path,
+            guard,
+            prefix: vec![],
+            runtime: None,
+        });
+    }
+    if r.kind == ClientKind::Agy {
+        if r.provider != Provider::Antigravity {
+            return Err("provider_pool_client_unavailable".into());
+        }
+        let (path, guard) = launch::discover_agy(&PlatformDirectories::detect())
+            .map_err(|_| "provider_pool_client_runtime_unavailable")?
+            .into_parts();
         return Ok(Executable {
             path,
             guard,
@@ -251,6 +581,8 @@ pub async fn start_provider_pool_client(
                 digest,
                 process: None,
                 uncertain_resources: None,
+                failure_after_cleanup: None,
+                probe_output: None,
             },
         );
     }
@@ -274,7 +606,11 @@ pub async fn start_provider_pool_client(
                         code: "launch_cancelled",
                     });
                 }
-                client::confirm_model(&connection, request.provider, &request.model)?;
+                if request.kind == ClientKind::Agy {
+                    client::confirm_agy_available(&connection)?;
+                } else {
+                    client::confirm_model(&connection, request.provider, &request.model)?;
+                }
                 let mut plan = client::prepare(
                     &directory,
                     &connection,
@@ -290,12 +626,32 @@ pub async fn start_provider_pool_client(
                                 code: "provider_pool_client_runtime_unavailable",
                             })?;
                 }
-                let mut args = executable.prefix;
-                args.extend(plan.arguments.clone());
                 let resources = Arc::new(LaunchResources {
                     plan,
-                    _runtime: executable.runtime,
+                    _runtime: executable.runtime.clone(),
                 });
+                if request.kind == ClientKind::Agy {
+                    if let Err(failure) = probe_agy_cli_identity(
+                        &executable,
+                        &resources.plan.home,
+                        &clients.quitting,
+                        resources.clone(),
+                        domains.clone(),
+                    ) {
+                        if let Some(process) = failure.process {
+                            session.retain_uncertain_process(
+                                process,
+                                resources.clone(),
+                                failure.output,
+                                failure.issue,
+                            );
+                            return Err(provider_error("provider_pool_client_cleanup_unconfirmed"));
+                        }
+                        return Err(provider_error(failure.issue));
+                    }
+                }
+                let mut args = executable.prefix;
+                args.extend(resources.plan.arguments.clone());
                 if clients.quitting.load(Ordering::Acquire)
                     || launch::checked_directory(&request.workspace).ok().as_ref()
                         != Some(&request.workspace)
@@ -304,30 +660,54 @@ pub async fn start_provider_pool_client(
                         code: "launch_cancelled",
                     });
                 }
-                match console::OwnedConsole::start_registered(
-                    &executable.path,
-                    &request.workspace,
-                    &args,
-                    executable.guard,
-                    &resources.plan.environment,
-                    "AiGoodBro - Provider client",
-                    Some(domains),
-                    Some(resources.clone()),
-                    None,
-                ) {
-                    Ok(process) => Ok(process),
-                    Err(_) => {
-                        session.uncertain_resources = Some(resources);
-                        Err(provider_pool::Error {
-                            code: "provider_pool_client_cleanup_unconfirmed",
-                        })
+                if request.kind == ClientKind::Agy {
+                    match console::OwnedConsole::start_registered_owned(
+                        &executable.path,
+                        &request.workspace,
+                        &args,
+                        executable.guard,
+                        &resources.plan.environment,
+                        "AiGoodBro - Provider client",
+                        Some(domains),
+                        Some(resources.clone()),
+                        None,
+                    ) {
+                        Ok(process) => Ok(process),
+                        Err(failure) => Err(finish_start_failure(
+                            session,
+                            failure,
+                            resources.clone(),
+                            None,
+                            "provider_pool_client_runtime_unavailable",
+                        )),
+                    }
+                } else {
+                    match console::OwnedConsole::start_registered_owned(
+                        &executable.path,
+                        &request.workspace,
+                        &args,
+                        executable.guard,
+                        &resources.plan.environment,
+                        "AiGoodBro - Provider client",
+                        Some(domains),
+                        Some(resources.clone()),
+                        None,
+                    ) {
+                        Ok(process) => Ok(process),
+                        Err(failure) => Err(finish_start_failure(
+                            session,
+                            failure,
+                            resources.clone(),
+                            None,
+                            "provider_pool_client_runtime_unavailable",
+                        )),
                     }
                 }
             },
         );
         match result {
             Ok(process) => {
-                session.process = Some(process);
+                session.process = Some(Box::new(process));
                 session.dto.state = "running";
                 session.refresh();
             }
@@ -388,20 +768,7 @@ pub async fn stop_provider_pool_client(
         let s = sessions
             .get_mut(&request_id)
             .ok_or("provider_pool_client_unknown")?;
-        s.refresh();
-        if let Some(p) = s.process.as_mut() {
-            match p.stop() {
-                Ok(()) => {
-                    s.process = None;
-                    s.dto.state = "stopped";
-                    s.dto.issue_code = None;
-                }
-                Err(_) => {
-                    s.dto.state = "cleanupUnconfirmed";
-                    s.dto.issue_code = Some("provider_pool_client_cleanup_unconfirmed");
-                }
-            }
-        }
+        s.stop_owned();
         let dto = s.dto.clone();
         drop(sessions);
         let _ = app.emit("provider-pool-clients:changed", ());
@@ -425,11 +792,7 @@ pub(super) fn force_stop(workflow: &WorkflowState) {
         return;
     };
     for s in sessions.values_mut() {
-        if s.process.as_mut().is_some_and(|p| p.stop().is_ok()) {
-            s.process = None;
-            s.dto.state = "stopped";
-            s.dto.issue_code = None;
-        }
+        s.stop_owned();
     }
 }
 
@@ -468,6 +831,76 @@ mod tests {
         assert!(serde_json::from_value::<StartRequest>(serde_json::json!({"requestId":"a".repeat(32),"runId":"b".repeat(32),"provider":"claude","kind":"codex","model":"m","workspace":"/synthetic","environment":{}})).is_err());
     }
     #[test]
+    fn agy_request_has_no_guessed_model_and_is_antigravity_only() {
+        let mut r = request();
+        r.provider = Provider::Antigravity;
+        r.kind = ClientKind::Agy;
+        r.model.clear();
+        assert!(request_digest(&r).is_ok());
+
+        r.model = "gemini-3.1-pro".into();
+        assert!(request_digest(&r).is_err());
+        r.model.clear();
+        r.provider = Provider::Claude;
+        assert!(request_digest(&r).is_err());
+    }
+    #[test]
+    fn agy_nonzero_exit_is_reported_as_failure_after_owned_job_cleanup() {
+        assert_eq!(
+            exit_outcome("agy", false),
+            ("failed", Some("provider_pool_client_cli_failed"))
+        );
+        assert_eq!(exit_outcome("agy", true), ("exited", None));
+        assert_eq!(exit_outcome("native", false), ("exited", None));
+    }
+    #[test]
+    fn agy_identity_probe_uses_expected_arguments_and_rejects_other_cli_output() {
+        assert_eq!(
+            agy_identity_probe_arguments(std::path::Path::new(r"C:\private Agy home")),
+            [r"--gemini_dir=C:\private Agy home", "--help"]
+        );
+        assert!(agy_help_identifies_cli(
+            b"Antigravity CLI\nUsage: agy [options]\n"
+        ));
+        assert!(!agy_help_identifies_cli(
+            b"Google Chrome\nUsage: chrome.exe [options]\n"
+        ));
+        assert!(!agy_help_identifies_cli(&vec![b'a'; 64 * 1024 + 1]));
+    }
+    #[test]
+    fn agy_identity_probe_environment_drops_all_inherited_provider_credentials() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().canonicalize().unwrap();
+        let environment = agy_identity_probe_environment(&home).unwrap();
+        let applied = environment
+            .apply([
+                ("GEMINI_API_KEY".into(), "ambient-gemini".into()),
+                ("GOOGLE_API_KEY".into(), "ambient-google".into()),
+                (
+                    "GOOGLE_GEMINI_BASE_URL".into(),
+                    "https://ambient.invalid".into(),
+                ),
+                ("ANTHROPIC_API_KEY".into(), "ambient-anthropic".into()),
+                ("ANTHROPIC_AUTH_TOKEN".into(), "ambient-auth".into()),
+                ("OPENAI_API_KEY".into(), "ambient-openai".into()),
+            ])
+            .unwrap();
+        let names: Vec<_> = applied
+            .iter()
+            .map(|(key, _)| key.to_string_lossy().to_ascii_uppercase())
+            .collect();
+        for forbidden in [
+            "GEMINI_API_KEY",
+            "GOOGLE_API_KEY",
+            "GOOGLE_GEMINI_BASE_URL",
+            "ANTHROPIC_API_KEY",
+            "ANTHROPIC_AUTH_TOKEN",
+            "OPENAI_API_KEY",
+        ] {
+            assert!(!names.iter().any(|name| name == forbidden), "{forbidden}");
+        }
+    }
+    #[test]
     fn repeated_requests_return_retained_result_and_changed_body_is_rejected() {
         let r = request();
         let digest = request_digest(&r).unwrap();
@@ -487,6 +920,8 @@ mod tests {
                 digest,
                 process: None,
                 uncertain_resources: None,
+                failure_after_cleanup: None,
+                probe_output: None,
             },
         );
         assert_eq!(
@@ -510,5 +945,244 @@ mod tests {
         drop(guard);
         workflow.begin_force_quit();
         assert!(workflow.pool_clients.quitting.load(Ordering::Acquire));
+    }
+
+    #[derive(Default)]
+    struct FakeJob {
+        root_exited: bool,
+        job_members: u32,
+        query_error: bool,
+        stop_error: bool,
+        exit_success: bool,
+        stop_calls: usize,
+    }
+    struct DropOnce(Arc<std::sync::atomic::AtomicUsize>);
+    impl Drop for DropOnce {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    struct FakeOwnedProcess {
+        state: Arc<Mutex<FakeJob>>,
+        _resource: Arc<DropOnce>,
+    }
+    impl console::OwnedProcess for FakeOwnedProcess {
+        fn has_exited(&mut self) -> std::io::Result<bool> {
+            let state = self.state.lock().unwrap();
+            if state.query_error {
+                return Err(std::io::Error::other("synthetic wait/query unknown"));
+            }
+            Ok(state.root_exited && state.job_members == 0)
+        }
+        fn stop(&mut self) -> std::io::Result<()> {
+            let mut state = self.state.lock().unwrap();
+            state.stop_calls += 1;
+            if state.stop_error {
+                return Err(std::io::Error::other("synthetic Job stop unknown"));
+            }
+            state.root_exited = true;
+            state.job_members = 0;
+            Ok(())
+        }
+        fn exit_success(&mut self) -> std::io::Result<bool> {
+            Ok(self.state.lock().unwrap().exit_success)
+        }
+    }
+    fn agy_session() -> Session {
+        Session {
+            dto: ClientDto {
+                request_id: "a".repeat(32),
+                run_id: "b".repeat(32),
+                provider: Provider::Antigravity,
+                kind: "agy",
+                model: String::new(),
+                state: "checking",
+                issue_code: None,
+            },
+            digest: [0; 32],
+            process: None,
+            uncertain_resources: None,
+            failure_after_cleanup: None,
+            probe_output: None,
+        }
+    }
+    fn resource(counter: &Arc<std::sync::atomic::AtomicUsize>) -> Arc<DropOnce> {
+        Arc::new(DropOnce(counter.clone()))
+    }
+    fn probe_output(directory: &std::path::Path) -> ProbeOutput {
+        let path = directory.join("probe.out");
+        let file = std::fs::OpenOptions::new()
+            .create_new(true)
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        ProbeOutput { path, file }
+    }
+
+    #[test]
+    fn unknown_probe_cleanup_retains_job_home_and_capture_until_whole_job_empty() {
+        let directory = tempfile::tempdir().unwrap();
+        let output_path = directory.path().join("probe.out");
+        let output = probe_output(directory.path());
+        let drops = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let held = resource(&drops);
+        let weak = Arc::downgrade(&held);
+        let state = Arc::new(Mutex::new(FakeJob {
+            job_members: 1,
+            query_error: true,
+            stop_error: true,
+            ..Default::default()
+        }));
+        let mut session = agy_session();
+        let resources: Arc<dyn Send + Sync> = held.clone();
+        session.retain_uncertain_process(
+            Box::new(FakeOwnedProcess {
+                state: state.clone(),
+                _resource: held.clone(),
+            }),
+            resources,
+            Some(output),
+            "provider_pool_client_cli_contract_unverified",
+        );
+
+        session.stop_owned();
+        assert_eq!(session.dto.state, "cleanupUnconfirmed");
+        assert!(session.active());
+        assert!(weak.upgrade().is_some());
+        assert!(output_path.exists());
+        assert_eq!(state.lock().unwrap().stop_calls, 1);
+
+        {
+            let mut job = state.lock().unwrap();
+            job.query_error = false;
+            job.root_exited = true;
+            // A signaled root is not enough while a descendant remains.
+            job.job_members = 1;
+        }
+        session.stop_owned();
+        assert_eq!(session.dto.state, "cleanupUnconfirmed");
+        assert!(session.active());
+        assert!(weak.upgrade().is_some());
+        assert!(output_path.exists());
+        assert_eq!(state.lock().unwrap().stop_calls, 2);
+
+        session.refresh();
+        assert_eq!(session.dto.state, "cleanupUnconfirmed");
+        assert!(session.active());
+        assert!(output_path.exists());
+
+        state.lock().unwrap().job_members = 0;
+        session.refresh();
+        assert_eq!(session.dto.state, "failed");
+        assert_eq!(
+            session.dto.issue_code,
+            Some("provider_pool_client_cli_contract_unverified")
+        );
+        assert!(!session.active());
+        assert!(!output_path.exists());
+        drop(held);
+        assert!(weak.upgrade().is_none());
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn post_create_registration_failure_transfers_owner_until_job_is_confirmed_empty() {
+        let directory = tempfile::tempdir().unwrap();
+        let output_path = directory.path().join("probe.out");
+        let output = probe_output(directory.path());
+        let drops = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let held = resource(&drops);
+        let weak = Arc::downgrade(&held);
+        let state = Arc::new(Mutex::new(FakeJob {
+            job_members: 1,
+            query_error: true,
+            stop_error: true,
+            ..Default::default()
+        }));
+        // This mirrors a native post-CreateProcess registration/resume error:
+        // StartFailure must transfer the partial owner to the session.
+        let failure = console::StartFailure::after_create(
+            std::io::Error::other("synthetic registration failed"),
+            Box::new(FakeOwnedProcess {
+                state: state.clone(),
+                _resource: held.clone(),
+            }),
+        );
+        let mut session = agy_session();
+        let resources: Arc<dyn Send + Sync> = held.clone();
+        let error = finish_start_failure(
+            &mut session,
+            failure,
+            resources,
+            Some(output),
+            "provider_pool_client_runtime_unavailable",
+        );
+        assert_eq!(error.code, "provider_pool_client_cleanup_unconfirmed");
+        assert_eq!(session.dto.state, "cleanupUnconfirmed");
+        assert!(session.active());
+        assert!(output_path.exists());
+        assert_eq!(state.lock().unwrap().stop_calls, 1);
+
+        {
+            let mut job = state.lock().unwrap();
+            job.query_error = false;
+            job.root_exited = true;
+            job.job_members = 1;
+        }
+        session.refresh();
+        assert!(session.active());
+        {
+            let mut job = state.lock().unwrap();
+            job.stop_error = false;
+            job.job_members = 0;
+        }
+        session.stop_owned();
+        assert_eq!(session.dto.state, "failed");
+        assert_eq!(
+            session.dto.issue_code,
+            Some("provider_pool_client_runtime_unavailable")
+        );
+        assert!(!output_path.exists());
+        assert!(!session.active());
+        drop(held);
+        assert!(weak.upgrade().is_none());
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn normal_launch_waits_for_root_and_all_job_members_before_releasing_lease() {
+        let drops = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let held = resource(&drops);
+        let weak = Arc::downgrade(&held);
+        let state = Arc::new(Mutex::new(FakeJob {
+            job_members: 1,
+            exit_success: false,
+            ..Default::default()
+        }));
+        let mut session = agy_session();
+        session.dto.state = "running";
+        session.process = Some(Box::new(FakeOwnedProcess {
+            state: state.clone(),
+            _resource: held.clone(),
+        }));
+
+        state.lock().unwrap().root_exited = true;
+        session.refresh();
+        assert_eq!(session.dto.state, "running");
+        assert!(session.active());
+        assert!(weak.upgrade().is_some());
+
+        state.lock().unwrap().job_members = 0;
+        session.refresh();
+        assert_eq!(session.dto.state, "failed");
+        assert_eq!(
+            session.dto.issue_code,
+            Some("provider_pool_client_cli_failed")
+        );
+        assert!(!session.active());
+        drop(held);
+        assert!(weak.upgrade().is_none());
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
     }
 }

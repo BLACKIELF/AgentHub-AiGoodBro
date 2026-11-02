@@ -16,6 +16,8 @@ pub(super) struct Binding {
     pub lease: String,
     pub create_id: String,
     pub create_body: String,
+    #[serde(default)]
+    pub windows_execution: Option<WindowsExecution>,
     pub approve_id: String,
 }
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -61,6 +63,9 @@ impl Entry {
         ]
         .iter()
         .all(|s| digest(s))
+            && b.windows_execution
+                .as_ref()
+                .is_none_or(|execution| execution.valid())
             && match &self.phase {
                 Phase::PendingCreate => true,
                 Phase::Created { task } => task.valid() && task.scope_sha256 == b.scope,

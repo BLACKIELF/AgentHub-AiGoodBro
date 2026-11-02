@@ -8,6 +8,8 @@ function Assert-True {
 $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\..'))
 $entry = Join-Path $root 'windows\scripts\Invoke-ReleaseReadiness.ps1'
 $packageEntry = Join-Path $root 'scripts\build-windows-release.ps1'
+$workspaceTestsEntry = Join-Path $root 'windows\scripts\Invoke-RustWorkspaceTests.ps1'
+$ciWorkflow = Join-Path $root '.github\workflows\ci.yml'
 & python -B (Join-Path $root 'tests\test_windows_branding.py')
 if ($LASTEXITCODE -ne 0) { throw 'Windows branding or upgrade identity validation failed.' }
 $null = Get-Command pwsh -CommandType Application -ErrorAction Stop
@@ -24,7 +26,13 @@ function Read-ScriptAst {
 }
 $entryAst = Read-ScriptAst $entry
 $packageAst = Read-ScriptAst $packageEntry
+$workspaceTestsAst = Read-ScriptAst $workspaceTestsEntry
 $null = Read-ScriptAst (Join-Path $root 'windows\scripts\Prepare-TokenMonitorResources.ps1')
+$workspaceTestsSource = Get-Content -LiteralPath $workspaceTestsEntry -Raw -Encoding UTF8
+$packageSource = Get-Content -LiteralPath $packageEntry -Raw -Encoding UTF8
+$ciSource = Get-Content -LiteralPath $ciWorkflow -Raw -Encoding UTF8
+Assert-True ($workspaceTestsSource.Contains('AIGB_WINDOWS_FAKECLI_PATH') -and $workspaceTestsSource.Contains('windows_fake_cli.exe') -and $workspaceTestsSource.Contains('build --locked -p codexu-core --example windows_fake_cli') -and $workspaceTestsSource.Contains('test --workspace --locked')) 'The native workspace gate must build the Windows fake CLI, set its explicit executable path, and run the full locked workspace.'
+Assert-True ($packageSource.Contains('Invoke-RustWorkspaceTests.ps1') -and $ciSource.Contains('Invoke-RustWorkspaceTests.ps1')) 'CI and standalone Windows package validation must use the same native workspace gate.'
 function Import-TestedFunction {
     param($Ast, [string] $Name)
     $definition = $Ast.Find({ param($node)
@@ -82,7 +90,15 @@ try {
     Assert-True ('-RunNativeTests' -in $plan[[array]::IndexOf($names, 'hub-native-resources')].arguments) 'Release validation omitted native Hub execution.'
     $companionPrepare = [array]::IndexOf($names, 'companion-setup-resources')
     $companionVerify = [array]::IndexOf($names, 'companion-setup-verify')
-    Assert-True ($companionPrepare -ge 0 -and $companionPrepare -lt $companionVerify -and $companionVerify -lt [array]::IndexOf($names, 'rust-tests')) 'Pinned Companion payloads must be prepared and verified before Rust validation.'
+    $executionInterop = [array]::IndexOf($names, 'rust-go-execution-interop')
+    $rustTests = [array]::IndexOf($names, 'rust-tests')
+    $ps51ReadinessTest = [array]::IndexOf($names, 'ps51:Test-ReleaseReadiness.ps1')
+    $ps7ReadinessTest = [array]::IndexOf($names, 'ps7:Test-ReleaseReadiness.ps1')
+    Assert-True ($companionPrepare -ge 0 -and $companionPrepare -lt $companionVerify -and $companionVerify -lt $ps51ReadinessTest -and $companionVerify -lt $ps7ReadinessTest) 'Pinned Companion payloads must be prepared and verified before readiness tests enumerate packaged resources.'
+    Assert-True ($companionVerify -lt $executionInterop -and $executionInterop -lt $rustTests) 'Rust-to-Go execution interop must run after Companion resource preparation and before workspace validation.'
+    Assert-True ($plan[$executionInterop].executable -eq 'python' -and $plan[$executionInterop].arguments[1] -eq (Join-Path $root 'windows\scripts\test_windows_execution_interop.py')) 'The tagged Go test must use the explicit Rust-generated fixture script.'
+    Assert-True ($companionVerify -lt $rustTests) 'Pinned Companion payloads must be verified before Rust validation.'
+    Assert-True ($plan[$rustTests].executable -eq 'pwsh.exe' -and $plan[$rustTests].arguments[5] -eq $workspaceTestsEntry -and $plan[$rustTests].arguments[7] -eq '1.97.1-x86_64-pc-windows-msvc') 'Release readiness must run the shared Windows fake CLI gate with the pinned toolchain.'
     Assert-True ($plan[$companionPrepare].executable -eq 'python' -and $plan[$companionPrepare].arguments[1] -eq (Join-Path $root 'windows\companion\prepare.py')) 'Companion preparation must use the fixed native payload source.'
     Assert-True ('--verify-only' -in $plan[$companionVerify].arguments) 'Companion readback verification is required.'
     Assert-True ([array]::IndexOf($names, 'visual-baseline') -lt [array]::IndexOf($names, 'visual-repeat')) 'Visual verification must follow baseline creation.'

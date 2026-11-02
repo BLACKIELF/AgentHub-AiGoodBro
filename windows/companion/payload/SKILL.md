@@ -15,6 +15,6 @@ description: 使用已运行 AiGoodBro 的原生账号与任务范围，通过 W
 4. 写入后断线、超时或响应不匹配一律按 `unknown` 处理，只用 `status` 查询原 operation ID，不能重发 `run`、换 request ID 或重建任务来试探。
 5. `accepted` 只表示原请求已获确认，不是工作完成。`awaitingAcceptance` 还需实际检查产物；`uncertain` 继续占用。`cancel-reservation` 仅撤销尚未提交的预约，不能据此称任务已停止。
 
-数字 profile 必须与 App 已连接账号一致。当前客户端不接受字母编号、账号别名或本次 model/effort/tier 覆盖；不支持的参数必须报告，不能忽略后偷偷执行。配套资源完整也不证明 Windows 原生能力已通过验收。
+数字 profile 必须与 App 已连接账号一致。客户端不接受字母编号或账号别名；可用的单次 model/effort/tier 覆盖见运行环境，并且预约和运行必须一致。未知模型与不兼容组合失败关闭，不回退到别的账号、模型或 tier。配套资源完整也不证明 Windows 原生能力已通过验收。
 
 不读取或改写全局认证、浏览器 Cookie、真实聊天；不自动使用重置卡、邀请好友、发送飞书/微信或调用其他服务商。权限、费用、人工审批和用户停止指令继续有效。其他工具能力见[连接清单](references/onboarding-login.md)，不得把这个客户端当成原聊天 owner 控制器。

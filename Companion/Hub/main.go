@@ -496,6 +496,9 @@ func (api *API) handleCreate(response http.ResponseWriter, request *http.Request
 		writeError(response, http.StatusBadRequest, "invalid_request")
 		return
 	}
+	if body.WindowsExecutionAuthority != nil {
+		body.windowsExecutionAuthorityAt = time.Now()
+	}
 	task, err := api.hub.create(body)
 	writeTaskResult(response, task, err, http.StatusCreated)
 }
@@ -526,6 +529,9 @@ func (api *API) handleTaskAction(response http.ResponseWriter, request *http.Req
 		if decodeJSON(response, request, &body) != nil {
 			writeError(response, http.StatusBadRequest, "invalid_request")
 			return
+		}
+		if body.WindowsExecutionAuthority != nil {
+			body.windowsExecutionAuthorityAt = time.Now()
 		}
 		task, err := api.hub.approve(taskID, body)
 		writeTaskResult(response, task, err, http.StatusOK)

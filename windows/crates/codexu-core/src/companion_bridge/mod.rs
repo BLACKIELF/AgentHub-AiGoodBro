@@ -8,10 +8,18 @@ mod protocol;
 #[cfg(test)]
 mod tests;
 
+use crate::{
+    workflow::{WorkflowModel, WorkflowPreference},
+    workflow_execution::ExecutionOverrides,
+};
 pub use host::Bridge;
 pub use protocol::{Intent, Method, Reply, Request, Selector, ABI, MAX_FRAME};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::{
+    sync::{Arc, Mutex},
+    time::Instant,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 #[error("{code}")]
@@ -27,6 +35,52 @@ fn hash(bytes: &[u8]) -> String {
 }
 fn hash_parts(parts: &[&str]) -> String {
     hash(parts.join("\0").as_bytes())
+}
+
+/// Fresh authority captured by the native App backend; never supplied by IPC.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecutionAuthority {
+    pub profile_id: u64,
+    pub preference: WorkflowPreference,
+    pub excluded_plan_types: Vec<String>,
+    pub official_plan: String,
+    pub models: Vec<WorkflowModel>,
+}
+
+/// Small task-persistent extension. Authority/model evidence is refreshed by
+/// the backend for each mutation and is not copied into the journal.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WindowsExecution {
+    pub workflow_revision: u64,
+    pub binding_sha256: String,
+    pub overrides: ExecutionOverrides,
+}
+impl WindowsExecution {
+    fn valid(&self) -> bool {
+        digest(&self.binding_sha256) && self.overrides.validate().is_ok()
+    }
+}
+
+pub fn windows_execution_body_hash(
+    old_hash: &str,
+    extension: Option<&WindowsExecution>,
+) -> Result<String> {
+    if !digest(old_hash) {
+        return Err(fail("companion_invalid_request"));
+    }
+    let Some(extension) = extension else {
+        return Ok(old_hash.to_owned());
+    };
+    if !extension.valid() {
+        return Err(fail("companion_invalid_request"));
+    }
+    Ok(hash_parts(&[
+        old_hash,
+        "windows-execution-v1",
+        &extension.binding_sha256,
+    ]))
 }
 fn digest(s: &str) -> bool {
     s.len() == 64
@@ -70,10 +124,11 @@ impl Scope {
 pub trait PeerGuard: Send {
     fn check(&self) -> Result<()>;
 }
+#[derive(Clone)]
 pub struct Peer {
     actor: String,
     runtime: String,
-    guard: Box<dyn PeerGuard>,
+    guard: Arc<Mutex<Box<dyn PeerGuard>>>,
 }
 impl Peer {
     pub(crate) fn from_native(
@@ -88,11 +143,14 @@ impl Peer {
         Ok(Self {
             actor,
             runtime,
-            guard,
+            guard: Arc::new(Mutex::new(guard)),
         })
     }
-    fn check(&self) -> Result<()> {
-        self.guard.check()
+    pub fn check(&self) -> Result<()> {
+        self.guard
+            .lock()
+            .map_err(|_| fail("companion_peer_untrusted"))?
+            .check()
     }
 }
 
@@ -144,9 +202,33 @@ pub enum LookupAction {
 /// worker, not a connection future that cancellation may drop mid-operation.
 pub trait Backend: Send + Sync + 'static {
     type Permit: Send + 'static;
+    /// Synchronous receiver budget for all backend subcalls in one IPC request.
+    /// Native adapters may use this to cap probes and HTTP operations.
+    fn set_request_deadline(&self, _deadline: Option<Instant>) {}
+    /// Authenticated native peer for this synchronous request. Backends may
+    /// recheck it at their own side-effect boundary after bounded read-only I/O.
+    fn set_request_peer(&self, _peer: Option<Peer>) {}
     fn now_ms(&self) -> u64;
     /// Refresh is explicit and must occur BEFORE reserve takes the writer gate.
     fn capture(&self, selector: &Selector, refresh: bool) -> Result<Scope>;
+    /// Native Windows authority requires a fresh resolver result even for a
+    /// UI readiness check; unsupported adapters never advertise model readiness.
+    fn execution_required(&self) -> bool {
+        false
+    }
+    /// Capture the same scope plus current preference/model evidence for a
+    /// Windows execution. Legacy backends stay valid only for no overrides.
+    fn capture_execution(
+        &self,
+        selector: &Selector,
+        refresh: bool,
+        overrides: &ExecutionOverrides,
+    ) -> Result<(Scope, Option<ExecutionAuthority>)> {
+        if overrides != &ExecutionOverrides::default() {
+            return Err(fail("companion_execution_unavailable"));
+        }
+        Ok((self.capture(selector, refresh)?, None))
+    }
     fn reserve(&self, scope: &Scope) -> Result<Self::Permit>;
     /// No task I/O. Success transfers this SAME permit into the App Session.
     /// Errors must mean no adoption/task I/O; after success, IPC disconnects or
@@ -159,6 +241,20 @@ pub trait Backend: Send + Sync + 'static {
         request_id: &str,
         prompt: &str,
     ) -> Result<Acknowledgement>;
+    fn create_with_execution(
+        &self,
+        lease_id: &str,
+        scope: &Scope,
+        request_id: &str,
+        prompt: &str,
+        execution: Option<&WindowsExecution>,
+        authority: Option<&ExecutionAuthority>,
+    ) -> Result<Acknowledgement> {
+        if execution.is_some() || authority.is_some() {
+            return Err(fail("companion_execution_unavailable"));
+        }
+        self.create(lease_id, scope, request_id, prompt)
+    }
     fn approve(
         &self,
         lease_id: &str,
@@ -166,6 +262,20 @@ pub trait Backend: Send + Sync + 'static {
         request_id: &str,
         task: &TaskBinding,
     ) -> Result<Acknowledgement>;
+    fn approve_with_execution(
+        &self,
+        lease_id: &str,
+        scope: &Scope,
+        request_id: &str,
+        task: &TaskBinding,
+        execution: Option<&WindowsExecution>,
+        authority: Option<&ExecutionAuthority>,
+    ) -> Result<Acknowledgement> {
+        if execution.is_some() || authority.is_some() {
+            return Err(fail("companion_execution_unavailable"));
+        }
+        self.approve(lease_id, scope, request_id, task)
+    }
     /// Read only. Verify action-domain body hash, scope and actual task binding;
     /// never call the old UI pending POST replay or infer a match from prompt.
     fn lookup(

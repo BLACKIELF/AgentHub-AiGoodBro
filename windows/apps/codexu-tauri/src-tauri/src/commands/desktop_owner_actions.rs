@@ -258,8 +258,49 @@ fn turn_status<'a>(s: &'a OwnerSnapshot, id: &str) -> Option<&'a str> {
     }
     found[0].get("status")?.as_str()
 }
+fn active_turn_id(s: &OwnerSnapshot) -> Option<String> {
+    // Interrupts are derived from the just-read owner snapshot. The UI never
+    // supplies a turn ID from a cached/history list.
+    let runtime = s.state.get("threadRuntimeStatus")?.get("type")?.as_str()?;
+    if runtime.is_empty() || runtime == "idle" {
+        return None;
+    }
+    let turns: Vec<&Value> = if let Some(a) = s.state.get("turns").and_then(Value::as_array) {
+        if a.len() > 4096 {
+            return None;
+        }
+        a.iter().collect()
+    } else {
+        let entities = s
+            .state
+            .get("turnHistory")?
+            .get("history")?
+            .get("entitiesByKey")?
+            .as_object()?;
+        if entities.len() > 4096 {
+            return None;
+        }
+        entities.values().collect()
+    };
+    let active: Vec<_> = turns
+        .into_iter()
+        .filter(|t| t.get("status").and_then(Value::as_str) == Some("inProgress"))
+        .collect();
+    if active.len() != 1 {
+        return None;
+    }
+    let id = active[0]
+        .get("turnId")
+        .and_then(Value::as_str)
+        .or_else(|| active[0].get("id").and_then(Value::as_str))?;
+    if uuid(id) && id == id.to_ascii_lowercase() {
+        Some(id.to_owned())
+    } else {
+        None
+    }
+}
 
-trait OwnerSession {
+pub(crate) trait OwnerSession: Send {
     async fn snapshot(&mut self, refresh_ticket: bool) -> Result<OwnerSnapshot>;
     async fn submit(
         &mut self,
@@ -269,12 +310,12 @@ trait OwnerSession {
         action: &OwnerAction,
     ) -> Result<OperationRecord>;
 }
-trait Factory {
-    type Session: OwnerSession;
+pub(crate) trait Factory: Send {
+    type Session: OwnerSession + Send;
     async fn open(&mut self, thread: &str) -> Result<Self::Session>;
 }
 pub(crate) struct OfficialFactory;
-struct OfficialSession {
+pub(crate) struct OfficialSession {
     client: DesktopOwnerClient,
     ticket: OwnerTicket,
     thread: String,
@@ -371,7 +412,7 @@ struct Attempt<S, G> {
 }
 /// Parent State retains this object through app lifetime. Pending attempts block
 /// normal exit; replacing/dropping the State is never a cleanup operation.
-pub(crate) struct OwnerActions<F: Factory = OfficialFactory, G = ManagedActivityGuard> {
+pub(crate) struct OwnerActions<F: Factory = OfficialFactory, G: Send = ManagedActivityGuard> {
     journal: OwnerJournal,
     factory: F,
     previews: BTreeMap<String, Preview<F::Session, G>>,
@@ -382,7 +423,7 @@ impl OwnerActions {
         Self::build(native_private_root, OfficialFactory)
     }
 }
-impl<F: Factory, G> OwnerActions<F, G> {
+impl<F: Factory, G: Send> OwnerActions<F, G> {
     fn build(root: PathBuf, factory: F) -> Result<Self> {
         Ok(Self {
             journal: OwnerJournal::new(root).map_err(|_| fail("journal_unavailable"))?,
@@ -399,6 +440,13 @@ impl<F: Factory, G> OwnerActions<F, G> {
     pub(crate) fn discard_preview(&mut self, preview_id: &str) -> bool {
         self.previews.remove(preview_id).is_some()
     }
+    /// Window close drops every unsubmitted preview and its guard. Submitted
+    /// attempts, including Unknown, remain retained and continue blocking exit.
+    pub(crate) fn close_previews(&mut self) -> usize {
+        let count = self.previews.len();
+        self.previews.clear();
+        count
+    }
     pub(crate) async fn prepare(
         &mut self,
         context: NativeOwnerContext,
@@ -413,6 +461,44 @@ impl<F: Factory, G> OwnerActions<F, G> {
         }
         let mut session = self.factory.open(&context.thread).await?;
         let snapshot = session.snapshot(false).await?;
+        self.save_preview(context, action, guard, session, snapshot)
+    }
+    /// Prepare an interrupt using the unique active turn in a fresh full
+    /// snapshot from the verified original owner.
+    pub(crate) async fn prepare_current_interrupt(
+        &mut self,
+        context: NativeOwnerContext,
+        guard: G,
+    ) -> Result<OwnerPreview> {
+        context.check()?;
+        self.previews.retain(|_, p| Instant::now() < p.expires);
+        if self.previews.len() + self.attempts.len() >= MAX_PENDING {
+            return Err(fail("busy"));
+        }
+        let mut session = self.factory.open(&context.thread).await?;
+        let snapshot = session.snapshot(false).await?;
+        if !snapshot_identity(&snapshot, &context.thread) {
+            return Err(fail("scope_changed"));
+        }
+        let expected_turn_id = active_turn_id(&snapshot).ok_or_else(|| fail("not_admissible"))?;
+        self.save_preview(
+            context,
+            OwnerAction::Interrupt { expected_turn_id },
+            guard,
+            session,
+            snapshot,
+        )
+    }
+    fn save_preview(
+        &mut self,
+        context: NativeOwnerContext,
+        action: OwnerAction,
+        guard: G,
+        session: F::Session,
+        snapshot: OwnerSnapshot,
+    ) -> Result<OwnerPreview> {
+        context.check()?;
+        action.validate()?;
         context.check()?;
         if !snapshot_identity(&snapshot, &context.thread) {
             return Err(fail("scope_changed"));

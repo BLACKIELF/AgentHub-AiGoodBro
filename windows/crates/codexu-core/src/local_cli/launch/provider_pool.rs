@@ -11,6 +11,9 @@ impl Environment {
         client: ClientKind,
         model: &str,
     ) -> Result<Self> {
+        if client == ClientKind::Agy {
+            return Self::agy_provider_pool(home, connection, provider);
+        }
         check_path(home)?;
         if connection.endpoint != format!("http://127.0.0.1:18081/providers/{}", provider.id())
             || !(32..=256).contains(&connection.client_key.len())

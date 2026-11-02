@@ -229,6 +229,15 @@ impl DesktopOwnerClient {
             Some(x) => x,
             None => return ActionOutcome::NotSent(OwnerError::Disconnected),
         };
+        // Keep the asynchronous preflight independent of shared references to
+        // the client. The socket and peer are owned by `c`; only immutable
+        // request bindings need to cross its awaits.
+        let client_id = self.client_id.clone();
+        let client_epoch = self.epoch.clone();
+        let owner_id = t.owner.clone();
+        let conversation_id = t.conversation.clone();
+        let ticket_epoch = t.epoch.clone();
+        let ticket_expires = t.expires;
         // Fresh targeted owner/capability check immediately before admission.
         // Failure here is local non-submission of the mutation, not a remote
         // mutation error guessed to be safe from its text.
@@ -236,27 +245,29 @@ impl DesktopOwnerClient {
             let check_id = random_id()?;
             let reply = exchange(
                 &mut c,
-                &self.client_id,
+                &client_id,
                 &check_id,
                 protocol::DISCOVER,
-                json!({"hostId":"local","conversationId":t.conversation}),
-                Some(&t.owner),
+                json!({"hostId":"local","conversationId":conversation_id}),
+                Some(&owner_id),
                 &budget,
             )
             .await?;
-            let r = protocol::success(&reply, &check_id, protocol::DISCOVER, Some(&t.owner))?;
+            let r = protocol::success(&reply, &check_id, protocol::DISCOVER, Some(&owner_id))?;
             if r["supportsUntrustedAppInput"] != true {
                 return Err(OwnerError::OwnerUnavailable);
             }
-            self.ticket(t)?;
+            if client_epoch != ticket_epoch || Instant::now() >= ticket_expires {
+                return Err(OwnerError::StaleTicket);
+            }
             c.peer.recheck()?;
             budget.check()?;
             protocol::frame(&protocol::request(
-                &self.client_id,
+                &client_id,
                 id,
                 method,
                 params,
-                Some(&t.owner),
+                Some(&owner_id),
                 budget.millis()?,
             ))
         }

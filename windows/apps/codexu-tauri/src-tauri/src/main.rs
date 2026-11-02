@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 use tracing::info;
 
 mod app_state;
@@ -168,8 +168,26 @@ fn main() {
                     let _ = window.set_focus();
                 }
                 let window_clone = window.clone();
+                let owner_state = state.clone();
                 window.on_window_event(move |event| {
                     if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                        // Invalidate every in-flight prepare before waiting for
+                        // the owner mutex. A late response cannot register a
+                        // preview after this window-close boundary.
+                        let closed_previews = owner_state.close_owner_window();
+                        let _ = window_clone.emit("task-workbench:owner-previews-closed", ());
+                        let owner_state = owner_state.clone();
+                        tauri::async_runtime::spawn(async move {
+                            let mut actions = owner_state.owner_actions.lock().await;
+                            if let Some(actions) = actions.as_mut() {
+                                commands::task_workbench::discard_closed_preview_ids(
+                                    &closed_previews,
+                                    |preview_id| {
+                                        actions.discard_preview(preview_id);
+                                    },
+                                );
+                            }
+                        });
                         tray::hide_to_tray(&window_clone);
                         api.prevent_close();
                     }
@@ -337,6 +355,12 @@ fn main() {
             commands::task_workbench::import_task_workbench_inventory,
             commands::task_workbench::set_task_workbench_decision,
             commands::task_workbench::open_task_workbench_artifact,
+            commands::task_workbench::prepare_original_owner_start,
+            commands::task_workbench::prepare_original_owner_interrupt,
+            commands::task_workbench::confirm_original_owner_action,
+            commands::task_workbench::get_original_owner_action_status,
+            commands::task_workbench::poll_original_owner_action,
+            commands::task_workbench::discard_original_owner_preview,
             commands::personal_wechat_text::send_personal_wechat_text,
             commands::companion_setup::inspect_companion_setup,
             commands::companion_setup::prepare_companion_setup,
@@ -365,8 +389,11 @@ fn main() {
                             ) || commands::task_hub::should_block_exit(
                                 &app.state::<commands::task_hub::HubState>(),
                             ) || app
-                                .state::<native_services::NativeServices>()
-                                .proxy_blocks_normal_exit()
+                                .state::<Arc<AppState>>()
+                                .owner_actions_block_normal_exit()
+                                || app
+                                    .state::<native_services::NativeServices>()
+                                    .proxy_blocks_normal_exit()
                                 || app
                                     .state::<commands::companion_setup::CompanionState>()
                                     .cleanup_unconfirmed()

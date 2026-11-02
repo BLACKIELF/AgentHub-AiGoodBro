@@ -12,13 +12,14 @@ use codexu_core::{
     },
     managed_proxy::ManagedActivityGuard,
     workflow::WorkflowPreference,
+    workflow_reader::WorkflowProbeOwner,
 };
 use serde_json::{json, Value};
 use std::{
     collections::BTreeMap,
     io::{Read, Write},
     net::{SocketAddr, TcpStream},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
@@ -36,6 +37,94 @@ pub(crate) use companion_bridge_backend::runtime::CompanionRuntime;
 pub struct HubState {
     quitting: Arc<AtomicBool>,
     inner: Arc<Mutex<Inner>>,
+    retained_probes: Arc<ProbeOwnerStore>,
+}
+struct RetainedProbeOwner {
+    profile_id: u64,
+    home: PathBuf,
+    owner: Box<dyn WorkflowProbeOwner>,
+}
+#[derive(Default)]
+pub(super) struct ProbeOwnerStore {
+    owners: Mutex<Vec<RetainedProbeOwner>>,
+}
+impl ProbeOwnerStore {
+    pub(super) fn retain<P: WorkflowProbeOwner + 'static>(
+        &self,
+        profile_id: u64,
+        home: PathBuf,
+        owner: P,
+    ) {
+        self.owners
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .push(RetainedProbeOwner {
+                profile_id,
+                home,
+                owner: Box::new(owner),
+            });
+    }
+
+    pub(super) fn ensure_clear(&self, profile_id: u64, home: &Path) -> bool {
+        let mut owners = self
+            .owners
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        owners.retain_mut(|entry| {
+            if entry.profile_id != profile_id
+                || !(entry.home == home || same_directory(&entry.home, home))
+            {
+                return true;
+            }
+            if entry.owner.has_exited().is_ok_and(|exited| exited) {
+                return false;
+            }
+            entry.owner.stop().is_err() || !entry.owner.has_exited().is_ok_and(|exited| exited)
+        });
+        !owners.iter().any(|entry| {
+            entry.profile_id == profile_id
+                && (entry.home == home || same_directory(&entry.home, home))
+        })
+    }
+
+    pub(super) fn blocks_exit(&self) -> bool {
+        let mut owners = match self.owners.try_lock() {
+            Ok(owners) => owners,
+            Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => return true,
+        };
+        owners.retain_mut(|entry| !entry.owner.has_exited().is_ok_and(|exited| exited));
+        !owners.is_empty()
+    }
+
+    pub(super) fn stop_profile(&self, profile_id: u64, home: &Path) -> bool {
+        let mut owners = self
+            .owners
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        owners.retain_mut(|entry| {
+            if entry.profile_id != profile_id
+                || !(entry.home == home || same_directory(&entry.home, home))
+            {
+                return true;
+            }
+            entry.owner.stop().is_err() || !entry.owner.has_exited().is_ok_and(|exited| exited)
+        });
+        !owners.iter().any(|entry| {
+            entry.profile_id == profile_id
+                && (entry.home == home || same_directory(&entry.home, home))
+        })
+    }
+
+    pub(super) fn stop_all(&self) {
+        let mut owners = self
+            .owners
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        owners.retain_mut(|entry| {
+            entry.owner.stop().is_err() || !entry.owner.has_exited().is_ok_and(|exited| exited)
+        });
+    }
 }
 #[derive(Default)]
 struct Inner {
@@ -45,7 +134,7 @@ struct Inner {
 struct Session {
     quitting: Arc<AtomicBool>,
     process: OwnedConsole,
-    files: HubFiles,
+    files: Arc<HubFiles>,
     endpoint: SocketAddr,
     token: String,
     needs_exit: bool,
@@ -83,6 +172,20 @@ fn definite_rejection(code: &str) -> bool {
 impl HubState {
     pub fn begin_force_quit(&self) {
         self.quitting.store(true, Ordering::Release);
+    }
+    pub(super) fn ensure_probe_clear(&self, profile_id: u64, home: &Path) -> bool {
+        self.retained_probes.ensure_clear(profile_id, home)
+    }
+    pub(super) fn retain_probe_owner<P: WorkflowProbeOwner + 'static>(
+        &self,
+        profile_id: u64,
+        home: PathBuf,
+        owner: P,
+    ) {
+        self.retained_probes.retain(profile_id, home, owner);
+    }
+    pub(super) fn probe_owner_store(&self) -> Arc<ProbeOwnerStore> {
+        self.retained_probes.clone()
     }
 }
 fn fail(code: &str) -> String {
@@ -169,6 +272,83 @@ fn decode_http(bytes: &[u8]) -> Result<Value, String> {
     Ok(value)
 }
 fn request(session: &mut Session, path: &str, body: Option<&Value>) -> Result<Value, String> {
+    request_until(session, path, body, None)
+}
+fn request_timeout(deadline: Option<Instant>, limit: Duration) -> Result<Duration, String> {
+    let Some(deadline) = deadline else {
+        return Ok(limit);
+    };
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        Err(fail("hub_request_unconfirmed"))
+    } else {
+        Ok(remaining.min(limit))
+    }
+}
+fn write_all_until(stream: &mut TcpStream, data: &[u8], deadline: Instant) -> std::io::Result<()> {
+    let mut offset = 0;
+    while offset < data.len() {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "request deadline elapsed",
+            ));
+        }
+        stream.set_write_timeout(Some(remaining.min(Duration::from_secs(5))))?;
+        let written = stream.write(&data[offset..])?;
+        if written == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::WriteZero,
+                "request write ended",
+            ));
+        }
+        offset += written;
+    }
+    Ok(())
+}
+fn read_to_end_until(
+    stream: &mut TcpStream,
+    response: &mut Vec<u8>,
+    deadline: Instant,
+    max_bytes: usize,
+) -> Result<(), String> {
+    let mut buffer = [0u8; 16 * 1024];
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(fail("hub_request_unconfirmed"));
+        }
+        stream
+            .set_read_timeout(Some(remaining.min(Duration::from_secs(12))))
+            .map_err(|_| fail("hub_request_unconfirmed"))?;
+        let count = stream
+            .read(&mut buffer)
+            .map_err(|_| fail("hub_request_unconfirmed"))?;
+        if count == 0 {
+            return Ok(());
+        }
+        if response.len().saturating_add(count) > max_bytes {
+            return Err(fail("hub_request_unconfirmed"));
+        }
+        response.extend_from_slice(&buffer[..count]);
+    }
+}
+fn request_until(
+    session: &mut Session,
+    path: &str,
+    body: Option<&Value>,
+    deadline: Option<Instant>,
+) -> Result<Value, String> {
+    request_until_before_write(session, path, body, deadline, || Ok(()))
+}
+fn request_until_before_write(
+    session: &mut Session,
+    path: &str,
+    body: Option<&Value>,
+    deadline: Option<Instant>,
+    before_write: impl FnOnce() -> Result<(), String>,
+) -> Result<Value, String> {
     if session.quitting.load(Ordering::Acquire) {
         return Err(fail("app_quitting"));
     }
@@ -179,14 +359,35 @@ fn request(session: &mut Session, path: &str, body: Option<&Value>) -> Result<Va
     {
         return Err(fail("hub_stopped"));
     }
-    let mut stream = TcpStream::connect_timeout(&session.endpoint, Duration::from_secs(2))
-        .map_err(|_| fail("hub_request_unconfirmed"))?;
-    stream
-        .set_read_timeout(Some(Duration::from_secs(12)))
-        .map_err(|_| fail("hub_request_unconfirmed"))?;
-    stream
-        .set_write_timeout(Some(Duration::from_secs(5)))
-        .map_err(|_| fail("hub_request_unconfirmed"))?;
+    request_http_until_before_write(
+        &session.endpoint,
+        &session.token,
+        path,
+        body,
+        deadline,
+        before_write,
+    )
+}
+fn request_http_until(
+    endpoint: &SocketAddr,
+    token: &str,
+    path: &str,
+    body: Option<&Value>,
+    deadline: Option<Instant>,
+) -> Result<Value, String> {
+    request_http_until_before_write(endpoint, token, path, body, deadline, || Ok(()))
+}
+fn request_http_until_before_write(
+    endpoint: &SocketAddr,
+    token: &str,
+    path: &str,
+    body: Option<&Value>,
+    deadline: Option<Instant>,
+    before_write: impl FnOnce() -> Result<(), String>,
+) -> Result<Value, String> {
+    let mut stream =
+        TcpStream::connect_timeout(endpoint, request_timeout(deadline, Duration::from_secs(2))?)
+            .map_err(|_| fail("hub_request_unconfirmed"))?;
     let payload = body
         .map(serde_json::to_vec)
         .transpose()
@@ -195,23 +396,47 @@ fn request(session: &mut Session, path: &str, body: Option<&Value>) -> Result<Va
     if payload.len() > 70 * 1024 {
         return Err(fail("hub_invalid_request"));
     }
-    let header=format!("{} {} HTTP/1.0\r\nHost: {}\r\nAuthorization: Bearer {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",if body.is_some(){"POST"}else{"GET"},path,session.endpoint,session.token,payload.len());
-    stream
-        .write_all(header.as_bytes())
-        .and_then(|_| stream.write_all(&payload))
-        .map_err(|_| fail("hub_request_unconfirmed"))?;
+    let header = format!(
+        "{} {} HTTP/1.0\r\nHost: {}\r\nAuthorization: Bearer {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        if body.is_some() { "POST" } else { "GET" },
+        path,
+        endpoint,
+        token,
+        payload.len()
+    );
     let mut response = Vec::new();
-    stream
-        .take(2 * 1024 * 1024 + 1)
-        .read_to_end(&mut response)
-        .map_err(|_| fail("hub_request_unconfirmed"))?;
+    before_write()?;
+    if let Some(deadline) = deadline {
+        write_all_until(&mut stream, header.as_bytes(), deadline)
+            .and_then(|_| write_all_until(&mut stream, &payload, deadline))
+            .map_err(|_| fail("hub_request_unconfirmed"))?;
+        read_to_end_until(&mut stream, &mut response, deadline, 2 * 1024 * 1024 + 1)?;
+    } else {
+        stream
+            .set_read_timeout(Some(Duration::from_secs(12)))
+            .map_err(|_| fail("hub_request_unconfirmed"))?;
+        stream
+            .set_write_timeout(Some(Duration::from_secs(5)))
+            .map_err(|_| fail("hub_request_unconfirmed"))?;
+        stream
+            .write_all(header.as_bytes())
+            .and_then(|_| stream.write_all(&payload))
+            .map_err(|_| fail("hub_request_unconfirmed"))?;
+        stream
+            .take(2 * 1024 * 1024 + 1)
+            .read_to_end(&mut response)
+            .map_err(|_| fail("hub_request_unconfirmed"))?;
+    }
     if response.len() > 2 * 1024 * 1024 {
         return Err(fail("hub_request_unconfirmed"));
     }
     decode_http(&response)
 }
 fn overview(session: &mut Session) -> Result<Value, String> {
-    let value = request(session, "/api/overview", None)?;
+    overview_until(session, None)
+}
+fn overview_until(session: &mut Session, deadline: Option<Instant>) -> Result<Value, String> {
+    let value = request_until(session, "/api/overview", None, deadline)?;
     let tasks = value["tasks"]
         .as_array()
         .filter(|t| t.len() <= 10000)
@@ -382,6 +607,7 @@ pub async fn connect_task_hub(
     let data = state.app_data_dir.clone();
     let domains = services.owned_domains.clone();
     let quitting = hub.quitting.clone();
+    let retained_probes = hub.retained_probes.clone();
     let work = move |inner: &mut Inner| {
         if inner.session.is_some() {
             return Err(fail("hub_already_connected"));
@@ -390,6 +616,9 @@ pub async fn connect_task_hub(
             .workspace
             .clone()
             .ok_or_else(|| fail("hub_directory_required"))?;
+        if !retained_probes.ensure_clear(id, &root) {
+            return Err(fail("hub_start_unconfirmed"));
+        }
         // Explicit Connect is allowed to refresh official quota in an isolated
         // verification home; no model request and no account switch is made.
         manager
@@ -400,7 +629,8 @@ pub async fn connect_task_hub(
         if !same_directory(&account.home, &root) {
             return Err(fail("source_changed"));
         }
-        let files = HubFiles::open(&data, &workspace, &managed).map_err(|e| e.code.to_owned())?;
+        let files =
+            Arc::new(HubFiles::open(&data, &workspace, &managed).map_err(|e| e.code.to_owned())?);
         let token = format!("{}{}", nonce()?, nonce()?);
         let config = json!({"listen":"127.0.0.1:0","requireToken":true,"tokenFile":files.token_file(),"dataDir":files.data(),"readyFile":files.ready(),"managerSnapshotPath":files.manager(),"activityDirectory":files.activity(),"workflowPreferencesPath":data.join("workflow-preferences-v1.json"),"workflowCatalogPath":data.join("settings.json"),"workflowProfileId":id,"approvalTTLSeconds":300,"approvalQuotaMaxAgeSeconds":60,"mode":"workspace-write","claudeMaxBudgetUSD":1,"accountStrategy":"system","accounts":[{"alias":alias,"home":account.home}],"commands":{"codex":cli},"projects":{"workspace":workspace}});
         files
@@ -415,7 +645,9 @@ pub async fn connect_task_hub(
         if quitting.load(Ordering::Acquire) {
             return Err(fail("app_quitting"));
         }
-        let mut process = OwnedConsole::start_registered(
+        let companion = companion_bridge_backend::CompanionSession::new()?;
+        let resources: Arc<dyn Send + Sync> = Arc::new((Arc::new(cli_guard), files.clone()));
+        let mut process = match OwnedConsole::start_registered_owned(
             &helper,
             &workspace,
             &[
@@ -426,10 +658,19 @@ pub async fn connect_task_hub(
             &environment,
             "AiGoodBro Hub",
             Some(domains),
-            Some(Arc::new(cli_guard)),
+            Some(resources),
             Some(&sink),
-        )
-        .map_err(|_| fail("hub_start_failed"))?;
+        ) {
+            Ok(process) => process,
+            Err(failure) => {
+                let (_, owner) = failure.into_parts();
+                if let Some(owner) = owner {
+                    retained_probes.retain(id, account.home.clone(), owner);
+                    return Err(fail("hub_start_unconfirmed"));
+                }
+                return Err(fail("hub_start_failed"));
+            }
+        };
         let deadline = Instant::now() + Duration::from_secs(5);
         let ready = (|| loop {
             if process.has_exited().map_err(|_| fail("hub_start_failed"))? {
@@ -446,7 +687,10 @@ pub async fn connect_task_hub(
         let endpoint = match ready {
             Ok(v) => v,
             Err(e) => {
-                let _ = process.stop();
+                if process.stop().is_err() || !process.has_exited().is_ok_and(|exited| exited) {
+                    retained_probes.retain(id, account.home.clone(), process);
+                    return Err(fail("hub_stop_unconfirmed"));
+                }
                 return Err(e);
             }
         };
@@ -464,7 +708,7 @@ pub async fn connect_task_hub(
             home: account.home,
             leases: BTreeMap::new(),
             pending: BTreeMap::new(),
-            companion: companion_bridge_backend::CompanionSession::new()?,
+            companion,
         });
         view(inner)
     };
@@ -780,7 +1024,8 @@ pub async fn get_task_hub_messages(
 }
 #[tauri::command]
 pub async fn disconnect_task_hub(hub: State<'_, HubState>) -> Result<HubView, String> {
-    run(&hub, |inner| {
+    let retained_probes = hub.retained_probes.clone();
+    run(&hub, move |inner| {
         if let Some(session) = inner.session.as_mut() {
             let v = overview(session)?;
             if session.companion.has_unresolved()
@@ -790,6 +1035,9 @@ pub async fn disconnect_task_hub(hub: State<'_, HubState>) -> Result<HubView, St
                 })
             {
                 return Err(fail("hub_active_tasks"));
+            }
+            if !retained_probes.stop_profile(session.profile_id, &session.home) {
+                return Err(fail("hub_stop_unconfirmed"));
             }
             session
                 .process
@@ -802,17 +1050,20 @@ pub async fn disconnect_task_hub(hub: State<'_, HubState>) -> Result<HubView, St
     .await
 }
 pub fn should_block_exit(hub: &HubState) -> bool {
-    hub.inner
-        .try_lock()
-        .map(|i| {
-            i.session
-                .as_ref()
-                .is_some_and(|s| s.needs_exit || s.companion.has_unresolved())
-        })
-        .unwrap_or(true)
+    hub.retained_probes.blocks_exit()
+        || hub
+            .inner
+            .try_lock()
+            .map(|i| {
+                i.session
+                    .as_ref()
+                    .is_some_and(|s| s.needs_exit || s.companion.has_unresolved())
+            })
+            .unwrap_or(true)
 }
 pub fn force_stop_owned(hub: &HubState) {
     hub.begin_force_quit();
+    hub.retained_probes.stop_all();
     if let Ok(mut inner) = hub.inner.try_lock() {
         if let Some(s) = inner.session.as_mut() {
             if s.process.stop().is_err() {
@@ -827,6 +1078,53 @@ pub fn force_stop_owned(hub: &HubState) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn retained_probe_owner_blocks_same_scope_and_exit_until_job_empty() {
+        use std::sync::atomic::AtomicUsize;
+
+        struct FakeOwner {
+            exited: Arc<AtomicBool>,
+            stop_calls: Arc<AtomicUsize>,
+        }
+        impl WorkflowProbeOwner for FakeOwner {
+            fn has_exited(&mut self) -> std::io::Result<bool> {
+                Ok(self.exited.load(Ordering::Acquire))
+            }
+            fn stop(&mut self) -> std::io::Result<()> {
+                self.stop_calls.fetch_add(1, Ordering::AcqRel);
+                Ok(())
+            }
+            fn exit_success(&mut self) -> std::io::Result<bool> {
+                Ok(false)
+            }
+        }
+
+        let store = ProbeOwnerStore::default();
+        let home = PathBuf::from("synthetic-profile-home");
+        let unrelated_home = PathBuf::from("another-profile-home");
+        let exited = Arc::new(AtomicBool::new(false));
+        let stop_calls = Arc::new(AtomicUsize::new(0));
+        store.retain(
+            7,
+            home.clone(),
+            FakeOwner {
+                exited: exited.clone(),
+                stop_calls: stop_calls.clone(),
+            },
+        );
+
+        assert!(store.blocks_exit());
+        assert!(store.ensure_clear(8, &unrelated_home));
+        assert_eq!(stop_calls.load(Ordering::Acquire), 0);
+        assert!(!store.ensure_clear(7, &home));
+        assert_eq!(stop_calls.load(Ordering::Acquire), 1);
+        assert!(store.blocks_exit());
+
+        exited.store(true, Ordering::Release);
+        assert!(!store.blocks_exit());
+        assert!(store.ensure_clear(7, &home));
+    }
+
     #[test]
     #[cfg_attr(
         not(windows),
@@ -854,7 +1152,7 @@ mod tests {
         let home = root.join("synthetic-home");
         let workspace = root.join("workspace");
         std::fs::create_dir(&workspace).unwrap();
-        let files = HubFiles::open(&data, &workspace, "synthetic-managed-id").unwrap();
+        let files = Arc::new(HubFiles::open(&data, &workspace, "synthetic-managed-id").unwrap());
         let auth = br#"{"fixture":"synthetic-credential-not-for-login"}"#;
         codexu_core::atomic_settings::write_json(&home.join("auth.json"), auth, |_| Ok(()))
             .unwrap();
@@ -912,7 +1210,8 @@ mod tests {
         files.write_inputs(&config, &manager, &token).unwrap();
         let environment = codexu_core::local_cli::launch::Environment::codex(&home).unwrap();
         let sink = std::fs::OpenOptions::new().write(true).open("NUL").unwrap();
-        let process = OwnedConsole::start_registered(
+        let resources: Arc<dyn Send + Sync> = Arc::new(files.clone());
+        let process = match OwnedConsole::start_registered_owned(
             &helper,
             &workspace,
             &[
@@ -923,10 +1222,19 @@ mod tests {
             &environment,
             "AiGoodBro isolated Hub fixture",
             None,
-            None,
+            Some(resources),
             Some(&sink),
-        )
-        .unwrap();
+        ) {
+            Ok(process) => process,
+            Err(failure) => {
+                let (error, owner) = failure.into_parts();
+                if let Some(mut owner) = owner {
+                    let _ = owner.stop();
+                    assert!(owner.has_exited().unwrap_or(false));
+                }
+                panic!("could not start isolated Hub fixture: {error}");
+            }
+        };
         let mut running = RunningHub(Session {
             quitting: Arc::new(AtomicBool::new(false)),
             process,
@@ -1062,6 +1370,119 @@ mod tests {
         ] {
             assert!(decode_http(b).is_err());
         }
+    }
+    #[test]
+    fn slow_http_after_post_deadline_returns_unconfirmed_without_retry() {
+        use std::{io::Read, net::TcpListener, sync::mpsc, thread};
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let endpoint = listener.local_addr().unwrap();
+        let (request_tx, request_rx) = mpsc::channel();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(1)))
+                .unwrap();
+            let mut bytes = Vec::new();
+            Read::by_ref(&mut stream)
+                .take(72 * 1024)
+                .read_to_end(&mut bytes)
+                .unwrap();
+            request_tx.send(String::from_utf8(bytes).unwrap()).unwrap();
+            thread::sleep(Duration::from_millis(250));
+            let _ = stream
+                .write_all(b"HTTP/1.0 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}");
+        });
+
+        let deadline = Instant::now() + Duration::from_millis(100);
+        let result = request_http_until(
+            &endpoint,
+            "synthetic-token",
+            "/api/tasks",
+            Some(&json!({"requestId":"synthetic-request","prompt":"fixture"})),
+            Some(deadline),
+        );
+        assert_eq!(result.unwrap_err(), "hub_request_unconfirmed");
+        let request = request_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert!(request.starts_with("POST /api/tasks HTTP/1.0"));
+        assert!(request.contains("synthetic-request"));
+        assert_eq!(request.matches("POST ").count(), 1);
+        server.join().unwrap();
+    }
+    #[test]
+    fn post_rechecks_peer_after_overview_and_sends_nothing_when_peer_is_lost() {
+        use std::{
+            io::{BufRead, BufReader, Read},
+            net::TcpListener,
+            sync::{
+                atomic::{AtomicBool, Ordering},
+                mpsc, Arc,
+            },
+            thread,
+        };
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let endpoint = listener.local_addr().unwrap();
+        let (post_tx, post_rx) = mpsc::channel();
+        let server = thread::spawn(move || {
+            let (overview, _) = listener.accept().unwrap();
+            let mut overview = BufReader::new(overview);
+            let mut line = String::new();
+            loop {
+                line.clear();
+                overview.read_line(&mut line).unwrap();
+                if line == "\r\n" {
+                    break;
+                }
+            }
+            overview
+                .get_mut()
+                .write_all(b"HTTP/1.0 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}")
+                .unwrap();
+            drop(overview);
+
+            let (mut post, _) = listener.accept().unwrap();
+            post.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+            let mut bytes = Vec::new();
+            post.read_to_end(&mut bytes).unwrap();
+            post_tx.send(bytes).unwrap();
+        });
+
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let overview = request_http_until(
+            &endpoint,
+            "synthetic-token",
+            "/api/overview",
+            None,
+            Some(deadline),
+        )
+        .unwrap();
+        assert_eq!(overview, json!({}));
+        let peer_live = Arc::new(AtomicBool::new(true));
+        // The native peer was valid before the read-only overview and was lost
+        // while that request was in flight.
+        peer_live.store(false, Ordering::SeqCst);
+        let before_write_peer = peer_live.clone();
+        let result = request_http_until_before_write(
+            &endpoint,
+            "synthetic-token",
+            "/api/tasks",
+            Some(&json!({"requestId":"synthetic-request","prompt":"fixture"})),
+            Some(deadline),
+            || {
+                if before_write_peer.load(Ordering::SeqCst) {
+                    Ok(())
+                } else {
+                    Err("companion_peer_untrusted".into())
+                }
+            },
+        );
+        assert_eq!(result.unwrap_err(), "companion_peer_untrusted");
+        assert!(post_rx
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap()
+            .is_empty());
+        server.join().unwrap();
     }
     #[test]
     fn native_boundary_never_accepts_routes_or_unknown_actions() {

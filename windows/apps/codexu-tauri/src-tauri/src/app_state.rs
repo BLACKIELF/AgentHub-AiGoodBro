@@ -178,9 +178,15 @@ pub struct AppState {
     pub snapshot: RwLock<Option<CachedSnapshot>>,
     pub refresh_lock: Mutex<()>,
     /// Manual row reads are bounded, never queued for all linked accounts.
-    pub profile_quota_slots: Semaphore,
+    pub profile_quota_slots: Arc<Semaphore>,
     pub(crate) quota_display: std::sync::Mutex<crate::quota_display::LinkedQuotaDisplayCache>,
     pub(crate) compact_refresh_lock: Mutex<()>,
+    /// Durable caller state for original-window operations. A missing journal
+    /// disables only these explicit actions; it does not affect the dashboard.
+    pub(crate) owner_actions: Mutex<Option<crate::commands::desktop_owner_actions::OwnerActions>>,
+    /// Synchronous close fence checked across async capture/prepare steps.
+    pub(crate) owner_window_epoch: AtomicU64,
+    pub(crate) owner_preview_epochs: std::sync::Mutex<std::collections::BTreeMap<String, u64>>,
     pub app_data_dir: PathBuf,
     source_generation: AtomicU64,
     #[cfg(test)]
@@ -194,14 +200,21 @@ impl AppState {
     pub fn new(app_data_dir: PathBuf) -> Self {
         let config = AppConfig::load(&app_data_dir);
         let runtime_language = config.language.resolved(ResolvedLanguage::En);
+        let owner_actions = crate::commands::desktop_owner_actions::OwnerActions::new(
+            app_data_dir.join("owner-operations-v1"),
+        )
+        .ok();
         Self {
             config: RwLock::new(config),
             runtime_language: RwLock::new(runtime_language),
             snapshot: RwLock::new(None),
             refresh_lock: Mutex::new(()),
-            profile_quota_slots: Semaphore::new(2),
+            profile_quota_slots: Arc::new(Semaphore::new(2)),
             quota_display: Default::default(),
             compact_refresh_lock: Mutex::new(()),
+            owner_actions: Mutex::new(owner_actions),
+            owner_window_epoch: AtomicU64::new(0),
+            owner_preview_epochs: std::sync::Mutex::new(std::collections::BTreeMap::new()),
             app_data_dir,
             source_generation: AtomicU64::new(0),
             #[cfg(test)]
@@ -394,6 +407,33 @@ impl AppState {
         }
         *config = candidate.clone();
         Ok(candidate)
+    }
+
+    pub(crate) fn owner_actions_block_normal_exit(&self) -> bool {
+        match self.owner_actions.try_lock() {
+            Ok(actions) => actions
+                .as_ref()
+                .is_some_and(|actions| actions.blocks_normal_exit()),
+            Err(_) => true,
+        }
+    }
+
+    pub(crate) fn close_owner_window(&self) -> Vec<String> {
+        // Serialize the epoch change with preview registration. A prepare that
+        // checked the old epoch before blocking on this lock must recheck after
+        // it acquires the lock and will then reject.
+        let mut epochs = self
+            .owner_preview_epochs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let closing_epoch = self.owner_window_epoch.fetch_add(1, Ordering::AcqRel);
+        let closing_previews = epochs
+            .iter()
+            .filter(|(_, epoch)| **epoch <= closing_epoch)
+            .map(|(preview_id, _)| preview_id.clone())
+            .collect::<Vec<_>>();
+        epochs.retain(|_, epoch| *epoch > closing_epoch);
+        closing_previews
     }
 }
 

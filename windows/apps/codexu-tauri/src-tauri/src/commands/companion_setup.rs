@@ -23,6 +23,7 @@ impl CompanionState {
                 manager,
                 gate,
                 hub,
+                services.owned_domains.clone(),
             )))
         })();
         Self(runtime)

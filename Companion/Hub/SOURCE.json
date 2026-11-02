@@ -25,7 +25,7 @@
     },
     {
       "path": "desktop_binding.go",
-      "sha256": "a8255fb02edf5aeeb3b3d123ac7704db6cb1fe0ad85ffc4a9244cf59e8990752"
+      "sha256": "db4c229fc44779c4c0c5c385e6c35642c7289a440b064b7c6ee365711eaac955"
     },
     {
       "path": "desktop_binding_test.go",
@@ -73,7 +73,7 @@
     },
     {
       "path": "hub.go",
-      "sha256": "ab5d6987d83276e0305261f1a717309964276498b2160534bc91c54fa7f5a946"
+      "sha256": "79afd610f1b5a5b344e3f736533595bd092763a581e566ee58b7a195a6a5f0c7"
     },
     {
       "path": "hub_test.go",
@@ -93,7 +93,7 @@
     },
     {
       "path": "main.go",
-      "sha256": "1b7a301b46c9e9c1381b32a5dc625a6bcd541ef9906fcc88aea2def2589306ca"
+      "sha256": "e8f760ec6a0e6aa2d169408e3fd37755babb62b541c53c9b4759c68cae8dd8f5"
     },
     {
       "path": "manager_overview.go",
@@ -124,6 +124,14 @@
       "sha256": "c04e1c161bf3cc93781271639aa083ac8ada1fa91c2c4ba6d06def3056e8ae61"
     },
     {
+      "path": "request_lookup.go",
+      "sha256": "dd821b0c7c8822c0e5d8d12bb86a014618bb3215f5d31bc25165f979d015428d"
+    },
+    {
+      "path": "request_lookup_test.go",
+      "sha256": "c142bced0c703028414afe2367dc0d9adfd2f901dbeecb92d741948da044b21b"
+    },
+    {
       "path": "storage_unix.go",
       "sha256": "f173d6058a33989d04f695c6d33c7bc1e910a2fef8e0d1ac04a1f14ef6ea662c"
     },
@@ -152,8 +160,20 @@
       "sha256": "0d7080e59143c595a87600f3ac37b061d9109a3b4287372be7cb31976d2118dc"
     },
     {
+      "path": "windows_execution.go",
+      "sha256": "a444827fd74e9be7490190b35d1d4f0c4c1519ce5d0f84bd5eb035fb031c4f3f"
+    },
+    {
+      "path": "windows_execution_interop_test.go",
+      "sha256": "33be5d7ff2d395eccecbe22dcfcf53ad1964c428e458dd8948c39ace6a3341a1"
+    },
+    {
+      "path": "windows_execution_test.go",
+      "sha256": "3ac8abc1a220357e0f4875d27689d4aaeff9535fd3ff8537c29bd95366a86f18"
+    },
+    {
       "path": "workflow_policy.go",
-      "sha256": "f0ee6efa3fd88bfe3644c49eb843d14a83389810fcdf6c83ad12aee59d5853c8"
+      "sha256": "a51f212b50ea35c5938828f3565df084d45a359fe0de478405dbda3bbafa3845"
     },
     {
       "path": "workflow_policy_test.go",
@@ -163,7 +183,8 @@
   "distributionChanges": [
     "Runtime configuration may enable only the bundled Codex adapter; optional providers are not advertised without configuration.",
     "Codex pool tasks freeze saved and derived effective execution preferences for standard, sol_luna, and luna_direct; any child-enabled custom slot requires a fresh CLI-and-role-bound local capability report and a task-private next_preset_worker role copy.",
-    "Windows desktop bridge optionally reads its real workflow preferences again at create, approval and final spawn; disabled/closed/changed frozen model settings fail closed. Existing Mac configurations omit this adapter."
+    "Windows desktop bridge optionally reads its real workflow preferences again at create, approval and final spawn; disabled/closed/changed frozen model settings fail closed. Existing Mac configurations omit this adapter.",
+    "Windows AppBackend tasks persist only a binding for one-call execution overrides; Hub resolves the approved native snapshot at spawn, enforces a 10-second approval-to-start bound, and rechecks current workflow, identity, official-plan and quota bindings without persisting authority."
   ],
   "includesReviewedWindows1030v1Changes": true
 }

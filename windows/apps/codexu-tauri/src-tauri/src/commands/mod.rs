@@ -27,8 +27,8 @@ pub mod task_workbench;
 pub mod account_metadata;
 
 pub mod provider_pool;
-pub mod runtime_setup;
 pub mod python_runtime;
+pub mod runtime_setup;
 
 pub(super) mod native_clipboard;
 

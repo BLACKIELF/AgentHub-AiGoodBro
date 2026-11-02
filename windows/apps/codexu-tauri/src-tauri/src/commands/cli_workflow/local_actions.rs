@@ -100,12 +100,27 @@ struct LocalSession {
     kind: LocalCliKind,
     root: PathBuf,
     version: String,
-    process: Option<console::OwnedConsole>,
+    process: Option<Box<dyn console::OwnedProcess>>,
+    failure_after_cleanup: Option<&'static str>,
     activity: Option<codexu_core::managed_proxy::ManagedActivityGuard>,
 }
 impl LocalSession {
     fn refresh(&mut self) {
-        if let Some(process) = &mut self.process {
+        if let Some(issue) = self.failure_after_cleanup {
+            if matches!(
+                self.process.as_mut().map(|p| p.has_exited()),
+                Some(Ok(true))
+            ) {
+                self.process = None;
+                self.activity = None;
+                self.failure_after_cleanup = None;
+                self.dto.phase = "failed";
+                self.dto.reason_code = Some(issue);
+            } else {
+                self.dto.phase = "cleanupUnconfirmed";
+                self.dto.reason_code = Some("cleanup_unconfirmed");
+            }
+        } else if let Some(process) = &mut self.process {
             if process.has_exited().unwrap_or(false) {
                 self.process = None;
                 self.activity = None;
@@ -121,6 +136,24 @@ impl LocalSession {
     fn active(&self) -> bool {
         self.dto.phase == "checking" || self.process.is_some()
     }
+}
+fn retain_failed_start(
+    session: &mut LocalSession,
+    failure: console::StartFailure,
+    issue: &'static str,
+) -> Result<(), &'static str> {
+    let (_, owner) = failure.into_parts();
+    let Some(mut owner) = owner else {
+        return Err(issue);
+    };
+    if owner.stop().is_ok() {
+        return Err(issue);
+    }
+    session.process = Some(owner);
+    session.failure_after_cleanup = Some(issue);
+    session.dto.phase = "cleanupUnconfirmed";
+    session.dto.reason_code = Some("cleanup_unconfirmed");
+    Ok(())
 }
 #[derive(Default)]
 pub(super) struct LocalState {
@@ -369,7 +402,24 @@ pub async fn start_local_cli(
     let mut nonce = [0; 16];
     getrandom_nonce(&mut nonce)?;
     let id = nonce.iter().map(|b| format!("{b:02x}")).collect::<String>();
-    let process = console::OwnedConsole::start_registered(
+    let mut session = LocalSession {
+        dto: LocalCliSessionDto {
+            session_id: id.clone(),
+            platform: kind.id().into(),
+            phase: "checking",
+            authentication_state: "unknown",
+            reason_code: None,
+        },
+        key: target.key,
+        profile: target.profile,
+        kind,
+        root,
+        version,
+        process: None,
+        failure_after_cleanup: None,
+        activity: Some(activity),
+    };
+    let process = console::OwnedConsole::start_registered_owned(
         &path,
         &workspace,
         &args,
@@ -379,33 +429,30 @@ pub async fn start_local_cli(
         Some(services.owned_domains.clone()),
         resources,
         None,
-    )
-    .map_err(|_| "launch_failed")?;
-    let mut session = LocalSession {
-        dto: LocalCliSessionDto {
-            session_id: id.clone(),
-            platform: kind.id().into(),
-            phase: "running",
-            authentication_state: "unknown",
-            reason_code: None,
-        },
-        key: target.key,
-        profile: target.profile,
-        kind,
-        root,
-        version,
-        process: Some(process),
-        activity: Some(activity),
-    };
-    if let Some((manager, scope)) = &target.claude {
-        if manager.recheck_open_scope(scope).is_err() {
-            session.dto.reason_code = Some("account_identity_unverified");
-            if session.process.as_mut().unwrap().stop().is_ok() {
-                session.process = None;
-                session.activity = None;
-                session.dto.phase = "failed";
-            } else {
-                session.dto.reason_code = Some("cleanup_unconfirmed");
+    );
+    match process {
+        Ok(process) => {
+            session.process = Some(Box::new(process));
+            session.dto.phase = "running";
+        }
+        Err(failure) => {
+            if let Err(issue) = retain_failed_start(&mut session, failure, "launch_failed") {
+                return Err(issue.into());
+            }
+        }
+    }
+    if session.failure_after_cleanup.is_none() {
+        if let Some((manager, scope)) = &target.claude {
+            if manager.recheck_open_scope(scope).is_err() {
+                session.dto.reason_code = Some("account_identity_unverified");
+                if session.process.as_mut().unwrap().stop().is_ok() {
+                    session.process = None;
+                    session.activity = None;
+                    session.dto.phase = "failed";
+                } else {
+                    session.dto.phase = "cleanupUnconfirmed";
+                    session.dto.reason_code = Some("cleanup_unconfirmed");
+                }
             }
         }
     }
@@ -438,11 +485,21 @@ pub async fn stop_local_cli_session(
     let mut sessions = workflow.local.sessions.lock().await;
     let session = sessions.get_mut(&session_id).ok_or("session_unavailable")?;
     if let Some(process) = &mut session.process {
-        process.stop().map_err(|_| "cleanup_unconfirmed")?;
+        if process.stop().is_err() {
+            session.dto.phase = "cleanupUnconfirmed";
+            session.dto.reason_code = Some("cleanup_unconfirmed");
+            return Err("cleanup_unconfirmed".into());
+        }
     }
     session.process = None;
     session.activity = None;
-    session.dto.phase = "stopped";
+    if let Some(issue) = session.failure_after_cleanup.take() {
+        session.dto.phase = "failed";
+        session.dto.reason_code = Some(issue);
+    } else {
+        session.dto.phase = "stopped";
+        session.dto.reason_code = None;
+    }
     Ok(session.dto.clone())
 }
 pub(super) async fn profile_active(workflow: &WorkflowState, id: u64) -> bool {
@@ -466,10 +523,152 @@ pub(super) fn force_stop(workflow: &WorkflowState) {
         return;
     };
     for session in sessions.values_mut() {
-        if session.process.as_mut().is_some_and(|p| p.stop().is_ok()) {
-            session.process = None;
-            session.activity = None;
-            session.dto.phase = "stopped";
+        if let Some(process) = session.process.as_mut() {
+            if process.stop().is_err() {
+                session.dto.phase = "cleanupUnconfirmed";
+                session.dto.reason_code = Some("cleanup_unconfirmed");
+                continue;
+            }
         }
+        session.process = None;
+        session.activity = None;
+        if let Some(issue) = session.failure_after_cleanup.take() {
+            session.dto.phase = "failed";
+            session.dto.reason_code = Some(issue);
+        } else {
+            session.dto.phase = "stopped";
+            session.dto.reason_code = None;
+        }
+    }
+}
+
+#[cfg(test)]
+mod owned_start_tests {
+    use super::*;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, Mutex,
+    };
+
+    #[derive(Default)]
+    struct FakeJob {
+        root_exited: bool,
+        members: usize,
+        query_error: bool,
+        stop_error: bool,
+    }
+    struct Lease(Arc<AtomicUsize>);
+    impl Drop for Lease {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    struct FakeOwner {
+        state: Arc<Mutex<FakeJob>>,
+        _lease: Arc<Lease>,
+    }
+    impl console::OwnedProcess for FakeOwner {
+        fn has_exited(&mut self) -> std::io::Result<bool> {
+            let state = self.state.lock().unwrap();
+            if state.query_error {
+                return Err(std::io::Error::other("synthetic wait/query unknown"));
+            }
+            Ok(state.root_exited && state.members == 0)
+        }
+        fn stop(&mut self) -> std::io::Result<()> {
+            let mut state = self.state.lock().unwrap();
+            if state.stop_error {
+                return Err(std::io::Error::other("synthetic stop unknown"));
+            }
+            state.root_exited = true;
+            state.members = 0;
+            Ok(())
+        }
+        fn exit_success(&mut self) -> std::io::Result<bool> {
+            Ok(false)
+        }
+    }
+    fn session(root: &std::path::Path) -> LocalSession {
+        LocalSession {
+            dto: LocalCliSessionDto {
+                session_id: "a".repeat(32),
+                platform: "codex".into(),
+                phase: "checking",
+                authentication_state: "unknown",
+                reason_code: None,
+            },
+            key: "default-codex".into(),
+            profile: None,
+            kind: LocalCliKind::Codex,
+            root: root.to_path_buf(),
+            version: String::new(),
+            process: None,
+            failure_after_cleanup: None,
+            activity: None,
+        }
+    }
+
+    #[test]
+    fn pre_create_failure_has_no_owner_to_retain() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut session = session(directory.path());
+        let failure = console::StartFailure::from(std::io::Error::other("before create"));
+        assert_eq!(
+            retain_failed_start(&mut session, failure, "launch_failed"),
+            Err("launch_failed")
+        );
+        assert!(session.process.is_none());
+        assert!(session.failure_after_cleanup.is_none());
+    }
+
+    #[test]
+    fn post_create_unknown_cleanup_keeps_session_active_until_whole_job_empty() {
+        let directory = tempfile::tempdir().unwrap();
+        let drops = Arc::new(AtomicUsize::new(0));
+        let held = Arc::new(Lease(drops.clone()));
+        let weak = Arc::downgrade(&held);
+        let state = Arc::new(Mutex::new(FakeJob {
+            members: 1,
+            query_error: true,
+            stop_error: true,
+            ..Default::default()
+        }));
+        let mut session = session(directory.path());
+        let failure = console::StartFailure::after_create(
+            std::io::Error::other("synthetic post-create registration failure"),
+            Box::new(FakeOwner {
+                state: state.clone(),
+                _lease: held.clone(),
+            }),
+        );
+        assert_eq!(
+            retain_failed_start(&mut session, failure, "launch_failed"),
+            Ok(())
+        );
+        drop(held);
+        assert_eq!(session.dto.phase, "cleanupUnconfirmed");
+        assert_eq!(session.dto.reason_code, Some("cleanup_unconfirmed"));
+        assert!(session.active());
+        assert!(weak.upgrade().is_some());
+
+        session.refresh();
+        assert!(session.active());
+        {
+            let mut job = state.lock().unwrap();
+            job.query_error = false;
+            job.root_exited = true;
+            job.members = 1;
+        }
+        session.refresh();
+        assert!(session.active());
+
+        state.lock().unwrap().members = 0;
+        session.refresh();
+        assert!(!session.active());
+        assert!(session.process.is_none());
+        assert_eq!(session.dto.phase, "failed");
+        assert_eq!(session.dto.reason_code, Some("launch_failed"));
+        assert!(weak.upgrade().is_none());
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
     }
 }

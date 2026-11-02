@@ -22,7 +22,7 @@
     "使用说明.md": "22101a0dea5b4161ab7511aa1073df9d78b0a418ba977d5782ae01cbe3755f04"
   },
   "sourceFiles": {
-    "payload/SKILL.md": "4b17cb6b1619ee346e5d4f2f87ccb691a3cf2e2b6a6374fa6321c15485ad7275",
+    "payload/SKILL.md": "7bfbcec2bff063b36c0fb487e7e89cd2762fc8310b95c602a880063b950cec51",
     "payload/references/cli-validation.md": "4c8c8201e63d83ac2053b3c5498be2606268b4d17ae40988fa1a5d2151bfd10a",
     "payload/references/coordination.md": "9194c0b3e7e8013009834c780490bb1207155007e4d023c831148cca6e7ff0da",
     "payload/references/dispatch-brief.md": "4d7998514444fd0efbfbf4a123001e89f753e00e71c2c22db0b8a9ca0d7d69a9",
@@ -31,13 +31,13 @@
     "payload/references/local-runtime.md": "b25706a11ccd8f3f80079e8b2b0d28566f2b9b287f1f164be7284ceff7a85a04",
     "payload/references/luna-presets.md": "30e649fac9bda0e81937901d4950b27ee19a97e038a9ec532900627cb60ed427",
     "payload/references/onboarding-login.md": "bb713b94e7f0ccf0f83aca867aeac11116b3922cd6ce7db669195625de8ab93b",
-    "payload/references/runtime-setup.md": "1c3f35c6636af27deb865c1e1e882a253f68f1ef2c6c2f0a0ba590029ea5866b",
+    "payload/references/runtime-setup.md": "1298d5076fb6f661fbfa71c4d18f4cc290a2768f22424c3a3c34daa02e1b5e5b",
     "payload/references/update-0927v1.md": "f23f0fb8bda32e12229990655362da5810109286c10d74a7bfb5a069ffd9204d",
     "payload/scripts/next_dispatch_activity.py": "368f026edd0ec55863af2f54bd247eec7c6f286c1d471dd45266d6300726df80",
     "payload/scripts/next_dispatch_invocation.py": "7e090ec7c365901d40ec1ea1ab4237424bb7c28496112f12a17e1db9d6e91b2d",
     "payload/scripts/next_dispatch_preflight.py": "3549c53bfdd8ae0cfc75086ba525ac9967611d887c80bb4206b62f5d79193610",
     "payload/使用说明.md": "086084c083fce932dd38905c39113fb9d37d52c9cd5eea271d4438c82e52179d",
-    "next-dispatch.py": "520fd738a26f7d529f4a707634318949266eef456ff9670cf3fee1f94b4bdabe"
+    "next-dispatch.py": "98c3a5397f01ae4e2cdf0aa3d923f8580320f1ca95a672cd810c238627a379b8"
   },
   "layout": "windows-native-16-v1"
 }

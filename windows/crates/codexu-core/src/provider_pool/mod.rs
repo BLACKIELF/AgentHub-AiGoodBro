@@ -1,7 +1,8 @@
 //! Explicit, isolated host for the pinned multi-provider OAuth helper.
 //! This module never imports a CLI/browser credential or discovers other processes.
-mod domain;
+mod agy;
 pub mod client;
+mod domain;
 mod host;
 mod process;
 mod storage;

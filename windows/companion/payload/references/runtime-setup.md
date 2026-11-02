@@ -6,12 +6,14 @@
 
 入口参数：
 
-- `preflight --request-id <64位小写hex> --profile-id <数字ID> --project <同一绝对项目目录>`：读取当前 scope，成功只表示该检查时刻可准备。
+- `preflight --request-id <64位小写hex> --profile-id <数字ID> --project <同一绝对项目目录>`：读取当前 scope、模型和计划证据；成功只表示该检查时刻可准备。
 - `refresh` 使用同样参数，显式读取官方身份/额度；不是纯离线操作，须在用户授权范围内执行。
 - `reserve` 使用同样参数，并从标准输入读取任务正文；保存返回的 leaseId。
 - `run` 增加 `--lease-id <原lease>`，原样重用 selector 与正文，使用新的 request ID。
 - `status --request-id <新ID> --operation-id <原run的request ID>`：只查原持久请求，不重新提交。
 - `cancel-reservation --request-id <新ID> --lease-id <未提交lease>`：只取消本 actor 的准备预约。
+
+`reserve` 与 `run` 可各自附加 `--model <当前模型ID>`、`--effort <当前支持的effort>`、`--tier default|fast` 作为单次覆盖。省略参数继承已保存值；显式 `--tier default` 会覆盖已保存的 `fast`。预约和运行必须使用相同参数，未知模型或不兼容组合会失败关闭。
 
 所有参数传给 `bin/next-dispatch.py`，前置 `python -I -B`。request ID 不能复用于不同动作。正文通过 UTF-8 标准输入传递，不在命令行拼接。写后 unknown 保持防重，退出码 3 不代表未发生提交；退出码 0 也不代表成果已验收。
 

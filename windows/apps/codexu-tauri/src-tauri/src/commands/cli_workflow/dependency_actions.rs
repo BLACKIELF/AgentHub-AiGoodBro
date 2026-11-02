@@ -39,7 +39,8 @@ struct Task {
     dto: DependencyStatusDto,
     step: Step,
     epoch: u64,
-    process: Option<console::OwnedConsole>,
+    process: Option<Box<dyn console::OwnedProcess>>,
+    failure_after_cleanup: Option<&'static str>,
     activity: Option<codexu_core::managed_proxy::ManagedActivityGuard>,
     node: Option<Arc<VerifiedNodeRuntime>>,
     runtime: Option<Arc<setup::VerifiedRuntime>>,
@@ -56,7 +57,52 @@ impl Task {
         self.dto.reason_code = Some(code);
         self.step = Step::Done;
         self.activity = None;
+        self.failure_after_cleanup = None;
+        self.node = None;
+        self.runtime = None;
+        self.output = None;
     }
+    fn reconcile_failed_start(&mut self) -> bool {
+        let Some(issue) = self.failure_after_cleanup else {
+            return false;
+        };
+        let empty = matches!(
+            self.process.as_mut().map(|p| p.has_exited()),
+            Some(Ok(true))
+        );
+        if empty {
+            self.process = None;
+            self.fail(issue);
+        } else {
+            self.dto.phase = "cleanupUnconfirmed";
+            self.dto.verification_state = "unknown";
+            self.dto.reason_code = Some("cleanup_unconfirmed");
+        }
+        true
+    }
+}
+fn retain_failed_start(
+    task: &mut Task,
+    failure: console::StartFailure,
+    step: Step,
+    output: Option<File>,
+    issue: &'static str,
+) -> Result<(), &'static str> {
+    let (_, owner) = failure.into_parts();
+    let Some(mut owner) = owner else {
+        return Err(issue);
+    };
+    if owner.stop().is_ok() {
+        return Err(issue);
+    }
+    task.process = Some(owner);
+    task.failure_after_cleanup = Some(issue);
+    task.step = step;
+    task.output = output;
+    task.dto.phase = "cleanupUnconfirmed";
+    task.dto.verification_state = "unknown";
+    task.dto.reason_code = Some("cleanup_unconfirmed");
+    Ok(())
 }
 #[derive(Default)]
 pub(super) struct DependencyState {
@@ -108,6 +154,9 @@ pub async fn prepare_local_cli_dependency(
     }
     let kind = LocalCliKind::parse(&platform).ok_or("platform_not_supported")?;
     let mut tasks = workflow.dependency.tasks.lock().await;
+    for task in tasks.values_mut() {
+        task.reconcile_failed_start();
+    }
     if tasks
         .values()
         .any(|t| t.prepared.platform == kind && t.active())
@@ -148,6 +197,7 @@ pub async fn prepare_local_cli_dependency(
             step: Step::Prepared,
             epoch: 0,
             process: None,
+            failure_after_cleanup: None,
             activity: None,
             node: None,
             runtime: None,
@@ -176,6 +226,9 @@ pub async fn begin_local_cli_dependency(
     if workflow.quitting.load(Ordering::Acquire) {
         return Err("launch_cancelled".into());
     }
+    for task in tasks.values_mut() {
+        task.reconcile_failed_start();
+    }
     if tasks.values().any(|t| t.active()) {
         return Err("already_running".into());
     }
@@ -192,7 +245,7 @@ pub async fn begin_local_cli_dependency(
         .map_err(|e| (*e).to_owned())?
         .reserve_terminal(&identity)
         .map_err(|e| e.code().to_owned())?;
-    let process = console::OwnedConsole::start_registered(
+    let process = console::OwnedConsole::start_registered_owned(
         &executable,
         &task.prepared.directory,
         &[task.prepared.prompt.clone()],
@@ -202,8 +255,22 @@ pub async fn begin_local_cli_dependency(
         Some(services.owned_domains.clone()),
         None,
         None,
-    )
-    .map_err(|_| "launch_failed")?;
+    );
+    let process = match process {
+        Ok(process) => Box::new(process) as Box<dyn console::OwnedProcess>,
+        Err(failure) => {
+            if let Err(issue) =
+                retain_failed_start(task, failure, Step::Codex, None, "launch_failed")
+            {
+                return Err(issue.into());
+            }
+            task.activity = Some(activity);
+            task.started = Instant::now();
+            let dto = task.dto.clone();
+            let _ = app.emit("local-cli-dependency:changed", ());
+            return Ok(dto);
+        }
+    };
     task.process = Some(process);
     task.activity = Some(activity);
     task.step = Step::Codex;
@@ -263,6 +330,9 @@ pub async fn get_local_cli_dependency(
         let task = tasks
             .get_mut(&task_id)
             .ok_or("dependency_task_unavailable")?;
+        if task.reconcile_failed_start() {
+            return Ok(task.dto.clone());
+        }
         if !matches!(task.step, Step::Codex | Step::Registry | Step::Version) {
             return Ok(task.dto.clone());
         }
@@ -407,7 +477,7 @@ pub async fn get_local_cli_dependency(
                     semver.to_string_lossy().into(),
                 ];
                 let held: Arc<dyn Send + Sync> = Arc::new((node.clone(), script_guard));
-                let process = console::OwnedConsole::start_registered(
+                let process = console::OwnedConsole::start_registered_owned_with_window(
                     node.path(),
                     &task.prepared.directory,
                     &args,
@@ -418,12 +488,25 @@ pub async fn get_local_cli_dependency(
                     Some(services.owned_domains.clone()),
                     Some(held),
                     Some(&output),
-                )
-                .map_err(|_| "dependency_verification_failed")?;
-                task.process = Some(process);
-                task.node = Some(node);
-                task.output = Some(output);
-                task.step = Step::Registry;
+                    console::LaunchWindow::NoWindow,
+                );
+                match process {
+                    Ok(process) => {
+                        task.process = Some(Box::new(process));
+                        task.node = Some(node);
+                        task.output = Some(output);
+                        task.step = Step::Registry;
+                    }
+                    Err(failure) => {
+                        retain_failed_start(
+                            task,
+                            failure,
+                            Step::Registry,
+                            Some(output),
+                            "dependency_verification_failed",
+                        )?;
+                    }
+                }
             }
             ResultWork::Version {
                 runtime,
@@ -432,7 +515,7 @@ pub async fn get_local_cli_dependency(
             } => {
                 let mut args = runtime.prefix().to_vec();
                 args.push("--version".into());
-                let process = console::OwnedConsole::start_registered(
+                let process = console::OwnedConsole::start_registered_owned_with_window(
                     runtime.executable(),
                     &task.prepared.directory,
                     &args,
@@ -442,12 +525,25 @@ pub async fn get_local_cli_dependency(
                     Some(services.owned_domains.clone()),
                     Some(runtime.clone()),
                     Some(&output),
-                )
-                .map_err(|_| "dependency_verification_failed")?;
-                task.process = Some(process);
-                task.runtime = Some(runtime);
-                task.output = Some(output);
-                task.step = Step::Version;
+                    console::LaunchWindow::NoWindow,
+                );
+                match process {
+                    Ok(process) => {
+                        task.process = Some(Box::new(process));
+                        task.runtime = Some(runtime);
+                        task.output = Some(output);
+                        task.step = Step::Version;
+                    }
+                    Err(failure) => {
+                        retain_failed_start(
+                            task,
+                            failure,
+                            Step::Version,
+                            Some(output),
+                            "dependency_verification_failed",
+                        )?;
+                    }
+                }
             }
             ResultWork::Ready { runtime } => {
                 runtime.persist(&state.app_data_dir).map_err(|e| e.code)?;
@@ -491,12 +587,19 @@ pub async fn cancel_local_cli_dependency(
     }
     task.epoch = task.epoch.saturating_add(1);
     if let Some(process) = &mut task.process {
-        process.stop().map_err(|_| "cleanup_unconfirmed")?;
+        if process.stop().is_err() {
+            task.dto.phase = "cleanupUnconfirmed";
+            task.dto.verification_state = "unknown";
+            task.dto.reason_code = Some("cleanup_unconfirmed");
+            return Err("cleanup_unconfirmed".into());
+        }
     }
     task.process = None;
+    task.failure_after_cleanup = None;
     task.activity = None;
     task.runtime = None;
     task.node = None;
+    task.output = None;
     task.step = Step::Done;
     task.dto.phase = "cancelled";
     task.dto.verification_state = "unknown";
@@ -506,12 +609,13 @@ pub async fn cancel_local_cli_dependency(
     Ok(dto)
 }
 pub(super) fn blocks_exit(workflow: &WorkflowState) -> bool {
-    workflow
-        .dependency
-        .tasks
-        .try_lock()
-        .map(|tasks| tasks.values().any(Task::active))
-        .unwrap_or(true)
+    let Ok(mut tasks) = workflow.dependency.tasks.try_lock() else {
+        return true;
+    };
+    tasks.values_mut().any(|task| {
+        task.reconcile_failed_start();
+        task.active()
+    })
 }
 pub(super) fn force_stop(workflow: &WorkflowState) {
     let Ok(mut tasks) = workflow.dependency.tasks.try_lock() else {
@@ -519,12 +623,180 @@ pub(super) fn force_stop(workflow: &WorkflowState) {
     };
     for task in tasks.values_mut() {
         task.epoch = task.epoch.saturating_add(1);
-        if task.process.as_mut().is_some_and(|p| p.stop().is_err()) {
-            continue;
+        if let Some(process) = task.process.as_mut() {
+            if process.stop().is_err() {
+                task.dto.phase = "cleanupUnconfirmed";
+                task.dto.verification_state = "unknown";
+                task.dto.reason_code = Some("cleanup_unconfirmed");
+                continue;
+            }
         }
         task.process = None;
+        if let Some(issue) = task.failure_after_cleanup.take() {
+            task.fail(issue);
+            continue;
+        }
         task.activity = None;
+        task.node = None;
+        task.runtime = None;
+        task.output = None;
         task.step = Step::Done;
         task.dto.phase = "cancelled";
+        task.dto.verification_state = "unknown";
+        task.dto.reason_code = None;
+    }
+}
+
+#[cfg(test)]
+mod owned_start_tests {
+    use super::*;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, Mutex,
+    };
+
+    #[derive(Default)]
+    struct FakeJob {
+        root_exited: bool,
+        members: usize,
+        query_error: bool,
+        stop_error: bool,
+    }
+    struct Lease(Arc<AtomicUsize>);
+    impl Drop for Lease {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    struct FakeOwner {
+        state: Arc<Mutex<FakeJob>>,
+        _lease: Arc<Lease>,
+    }
+    impl console::OwnedProcess for FakeOwner {
+        fn has_exited(&mut self) -> std::io::Result<bool> {
+            let state = self.state.lock().unwrap();
+            if state.query_error {
+                return Err(std::io::Error::other("synthetic wait/query unknown"));
+            }
+            Ok(state.root_exited && state.members == 0)
+        }
+        fn stop(&mut self) -> std::io::Result<()> {
+            let mut state = self.state.lock().unwrap();
+            if state.stop_error {
+                return Err(std::io::Error::other("synthetic stop unknown"));
+            }
+            state.root_exited = true;
+            state.members = 0;
+            Ok(())
+        }
+        fn exit_success(&mut self) -> std::io::Result<bool> {
+            Ok(false)
+        }
+    }
+    fn task(directory: &std::path::Path) -> Task {
+        let id = "a".repeat(32);
+        Task {
+            prepared: setup::PreparedTask {
+                id: id.clone(),
+                platform: LocalCliKind::Codex,
+                directory: directory.to_path_buf(),
+                prompt: String::new(),
+            },
+            dto: DependencyStatusDto {
+                task_id: id,
+                platform: "codex".into(),
+                phase: "prepared",
+                verification_state: "unknown",
+                version: None,
+                reason_code: None,
+            },
+            step: Step::Prepared,
+            epoch: 0,
+            process: None,
+            failure_after_cleanup: None,
+            activity: None,
+            node: None,
+            runtime: None,
+            output: None,
+            started: Instant::now(),
+        }
+    }
+
+    #[test]
+    fn pre_create_failure_has_no_owner_and_does_not_reserve_task() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut task = task(directory.path());
+        let failure = console::StartFailure::from(std::io::Error::other("before create"));
+        assert_eq!(
+            retain_failed_start(&mut task, failure, Step::Codex, None, "launch_failed"),
+            Err("launch_failed")
+        );
+        assert!(!task.active());
+        assert!(task.step == Step::Prepared);
+        assert_eq!(task.dto.phase, "prepared");
+    }
+
+    #[test]
+    fn post_create_unknown_cleanup_retains_owner_output_and_activity_until_job_empty() {
+        let directory = tempfile::tempdir().unwrap();
+        let output_path = directory.path().join("verification.json");
+        let output = File::create(&output_path).unwrap();
+        let drops = Arc::new(AtomicUsize::new(0));
+        let held = Arc::new(Lease(drops.clone()));
+        let weak = Arc::downgrade(&held);
+        let state = Arc::new(Mutex::new(FakeJob {
+            members: 1,
+            query_error: true,
+            stop_error: true,
+            ..Default::default()
+        }));
+        let mut task = task(directory.path());
+        let failure = console::StartFailure::after_create(
+            std::io::Error::other("synthetic post-create registration failure"),
+            Box::new(FakeOwner {
+                state: state.clone(),
+                _lease: held.clone(),
+            }),
+        );
+        assert_eq!(
+            retain_failed_start(
+                &mut task,
+                failure,
+                Step::Registry,
+                Some(output),
+                "dependency_verification_failed",
+            ),
+            Ok(())
+        );
+        drop(held);
+        assert_eq!(task.dto.phase, "cleanupUnconfirmed");
+        assert_eq!(task.dto.verification_state, "unknown");
+        assert!(task.active());
+        assert!(task.output.is_some());
+        assert!(weak.upgrade().is_some());
+
+        assert!(task.reconcile_failed_start());
+        assert!(task.active());
+        assert!(task.output.is_some());
+        {
+            let mut job = state.lock().unwrap();
+            job.query_error = false;
+            job.root_exited = true;
+            job.members = 1;
+        }
+        assert!(task.reconcile_failed_start());
+        assert!(task.active());
+        assert!(task.output.is_some());
+
+        state.lock().unwrap().members = 0;
+        assert!(task.reconcile_failed_start());
+        assert!(!task.active());
+        assert!(task.process.is_none());
+        assert!(task.output.is_none());
+        assert_eq!(task.dto.phase, "failed");
+        assert_eq!(task.dto.reason_code, Some("dependency_verification_failed"));
+        assert!(weak.upgrade().is_none());
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+        assert!(output_path.exists());
     }
 }

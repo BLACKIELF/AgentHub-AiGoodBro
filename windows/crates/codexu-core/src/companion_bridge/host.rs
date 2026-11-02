@@ -16,14 +16,24 @@ struct Reservation<P> {
     runtime: String,
     scope: Scope,
     intent: String,
+    execution: Option<WindowsExecution>,
     deadline: Instant,
     permit: P,
+}
+pub(super) const REQUEST_BUDGET: Duration = Duration::from_secs(75);
+struct BackendRequestGuard<'a, B: Backend>(&'a B);
+impl<B: Backend> Drop for BackendRequestGuard<'_, B> {
+    fn drop(&mut self) {
+        self.0.set_request_peer(None);
+        self.0.set_request_deadline(None);
+    }
 }
 /// One App-owned instance. The native receiver must dispatch this synchronous
 /// method on its own worker; dropping a connection is not cancellation of work.
 pub struct Bridge<B: Backend> {
     backend: Arc<B>,
     pub(super) journal: Journal,
+    pub(super) request_context: Mutex<()>,
     reservations: Mutex<BTreeMap<String, Reservation<B::Permit>>>,
 }
 impl<B: Backend> Bridge<B> {
@@ -31,6 +41,7 @@ impl<B: Backend> Bridge<B> {
         Ok(Self {
             backend,
             journal: Journal::new(private_root)?,
+            request_context: Mutex::new(()),
             reservations: Mutex::new(BTreeMap::new()),
         })
     }
@@ -68,45 +79,169 @@ impl<B: Backend> Bridge<B> {
         }
         Ok(scope)
     }
+    fn execution_scope(
+        &self,
+        peer: &Peer,
+        intent: &Intent,
+        refresh: bool,
+    ) -> Result<(Scope, Option<WindowsExecution>, Option<ExecutionAuthority>)> {
+        let overrides = intent.execution_overrides()?;
+        self.capture_execution_scope(peer, &intent.selector, refresh, &overrides)
+    }
+    fn capture_execution_scope(
+        &self,
+        peer: &Peer,
+        selector: &Selector,
+        refresh: bool,
+        overrides: &ExecutionOverrides,
+    ) -> Result<(Scope, Option<WindowsExecution>, Option<ExecutionAuthority>)> {
+        selector.validate()?;
+        peer.check()?;
+        let (scope, authority) = self
+            .backend
+            .capture_execution(selector, refresh, overrides)?;
+        peer.check()?;
+        if !scope.valid(self.backend.now_ms()) || scope.runtime_sha256 != peer.runtime {
+            return Err(fail("companion_scope_changed"));
+        }
+        let Some(authority) = authority else {
+            if overrides != &ExecutionOverrides::default() {
+                return Err(fail("companion_execution_unavailable"));
+            }
+            return Ok((scope, None, None));
+        };
+        if authority.profile_id != selector.profile_id {
+            return Err(fail("companion_scope_changed"));
+        }
+        let now_ms = i64::try_from(self.backend.now_ms())
+            .map_err(|_| fail("companion_execution_unavailable"))?;
+        let preferences = crate::workflow::WorkflowPreferences {
+            profiles: [(authority.profile_id, authority.preference.clone())]
+                .into_iter()
+                .collect(),
+            excluded_plan_types: authority.excluded_plan_types.clone(),
+        };
+        let resolved = crate::workflow_execution::resolve_execution(
+            authority.profile_id,
+            &preferences,
+            &authority.models,
+            &authority.official_plan,
+            now_ms,
+            overrides,
+        )
+        .map_err(|_| fail("companion_execution_unavailable"))?;
+        let execution = WindowsExecution {
+            workflow_revision: resolved.workflow_revision,
+            binding_sha256: resolved.binding_sha256,
+            overrides: overrides.clone(),
+        };
+        if !execution.valid() {
+            return Err(fail("companion_execution_unavailable"));
+        }
+        Ok((scope, Some(execution), Some(authority)))
+    }
     pub fn handle(&self, peer: &Peer, request: Request) -> Result<Reply> {
+        self.handle_until(peer, request, Instant::now() + REQUEST_BUDGET)
+    }
+    pub(super) fn handle_until(
+        &self,
+        peer: &Peer,
+        request: Request,
+        deadline: Instant,
+    ) -> Result<Reply> {
+        self.handle_until_with_clock(peer, request, deadline, Instant::now)
+    }
+    pub(super) fn handle_until_with_clock(
+        &self,
+        peer: &Peer,
+        request: Request,
+        deadline: Instant,
+        now: impl Fn() -> Instant,
+    ) -> Result<Reply> {
+        if now() >= deadline {
+            return Err(fail("companion_ipc_timeout"));
+        }
         request.validate()?;
         peer.check()?;
-        match request.method {
-            Method::Preflight { selector } => {
-                let scope = self.scope(peer, &selector, false)?;
-                Ok(Reply::Ready {
-                    scope_sha256: scope.fingerprint,
-                    valid_until_ms: scope.valid_until_ms,
-                })
-            }
-            Method::Refresh { selector } => {
-                let scope = self.scope(peer, &selector, true)?;
-                Ok(Reply::Ready {
-                    scope_sha256: scope.fingerprint,
-                    valid_until_ms: scope.valid_until_ms,
-                })
-            }
-            Method::Reserve { intent } => self.reserve(peer, &request.request_id, &intent),
-            Method::Run { lease_id, intent } => {
-                self.run(peer, &request.request_id, &lease_id, &intent)
-            }
-            Method::Status { operation_id } => self.status(peer, &operation_id),
-            Method::CancelReservation { lease_id } => {
-                let mut leases = self
-                    .reservations
-                    .try_lock()
-                    .map_err(|_| fail("companion_bridge_busy"))?;
-                if let Some(lease) = leases.get(&lease_id) {
-                    if lease.actor != peer.actor || lease.runtime != peer.runtime {
-                        return Err(fail("companion_peer_untrusted"));
+        let _request_context = self
+            .request_context
+            .try_lock()
+            .map_err(|_| fail("companion_bridge_busy"))?;
+        if now() >= deadline {
+            return Err(fail("companion_ipc_timeout"));
+        }
+        peer.check()?;
+        self.backend.set_request_peer(Some(peer.clone()));
+        self.backend.set_request_deadline(Some(deadline));
+        let _request = BackendRequestGuard(self.backend.as_ref());
+        let result = (|| -> Result<Reply> {
+            match request.method {
+                Method::Preflight { selector } => {
+                    let scope = if self.backend.execution_required() {
+                        let (scope, execution, authority) = self.capture_execution_scope(
+                            peer,
+                            &selector,
+                            false,
+                            &ExecutionOverrides::default(),
+                        )?;
+                        if execution.is_none() || authority.is_none() {
+                            return Err(fail("companion_execution_unavailable"));
+                        }
+                        scope
+                    } else {
+                        self.scope(peer, &selector, false)?
+                    };
+                    Ok(Reply::Ready {
+                        scope_sha256: scope.fingerprint,
+                        valid_until_ms: scope.valid_until_ms,
+                    })
+                }
+                Method::Refresh { selector } => {
+                    let scope = if self.backend.execution_required() {
+                        let (scope, execution, authority) = self.capture_execution_scope(
+                            peer,
+                            &selector,
+                            true,
+                            &ExecutionOverrides::default(),
+                        )?;
+                        if execution.is_none() || authority.is_none() {
+                            return Err(fail("companion_execution_unavailable"));
+                        }
+                        scope
+                    } else {
+                        self.scope(peer, &selector, true)?
+                    };
+                    Ok(Reply::Ready {
+                        scope_sha256: scope.fingerprint,
+                        valid_until_ms: scope.valid_until_ms,
+                    })
+                }
+                Method::Reserve { intent } => self.reserve(peer, &request.request_id, &intent),
+                Method::Run { lease_id, intent } => {
+                    self.run(peer, &request.request_id, &lease_id, &intent)
+                }
+                Method::Status { operation_id } => self.status(peer, &operation_id),
+                Method::CancelReservation { lease_id } => {
+                    let mut leases = self
+                        .reservations
+                        .try_lock()
+                        .map_err(|_| fail("companion_bridge_busy"))?;
+                    if let Some(lease) = leases.get(&lease_id) {
+                        if lease.actor != peer.actor || lease.runtime != peer.runtime {
+                            return Err(fail("companion_peer_untrusted"));
+                        }
+                        leases.remove(&lease_id);
+                        Ok(Reply::Cancelled)
+                    } else {
+                        Err(fail("companion_lease_unavailable"))
                     }
-                    leases.remove(&lease_id);
-                    Ok(Reply::Cancelled)
-                } else {
-                    Err(fail("companion_lease_unavailable"))
                 }
             }
+        })();
+        if now() >= deadline && result.is_err() {
+            return Err(fail("companion_ipc_timeout"));
         }
+        result
     }
     fn reserve(&self, peer: &Peer, id: &str, intent: &Intent) -> Result<Reply> {
         let fingerprint = intent.fingerprint()?;
@@ -120,8 +255,8 @@ impl<B: Backend> Bridge<B> {
             if v.actor != peer.actor || v.runtime != peer.runtime || v.intent != fingerprint {
                 return Err(fail("companion_request_changed"));
             }
-            let scope = self.scope(peer, &intent.selector, false)?;
-            if !same_scope(&scope, &v.scope) {
+            let (scope, execution, _) = self.execution_scope(peer, intent, false)?;
+            if !same_scope(&scope, &v.scope) || execution != v.execution {
                 return Err(fail("companion_scope_changed"));
             }
             return Ok(Reply::Reserved {
@@ -134,10 +269,10 @@ impl<B: Backend> Bridge<B> {
             return Err(fail("companion_reservation_limit"));
         }
         // Capture/controlled freshness precedes acquisition of the existing gate.
-        let scope = self.scope(peer, &intent.selector, true)?;
+        let (scope, execution, _) = self.execution_scope(peer, intent, true)?;
         let permit = self.backend.reserve(&scope)?;
-        let after = self.scope(peer, &intent.selector, false)?;
-        if !same_scope(&scope, &after) {
+        let (after, after_execution, _) = self.execution_scope(peer, intent, false)?;
+        if !same_scope(&scope, &after) || execution != after_execution {
             return Err(fail("companion_scope_changed"));
         }
         let remaining = scope
@@ -162,6 +297,7 @@ impl<B: Backend> Bridge<B> {
                 runtime: peer.runtime.clone(),
                 scope,
                 intent: fingerprint,
+                execution,
                 deadline: Instant::now() + Duration::from_millis(remaining),
                 permit,
             },
@@ -194,10 +330,18 @@ impl<B: Backend> Bridge<B> {
         if v.deadline <= Instant::now() || !v.scope.valid(self.backend.now_ms()) {
             return Err(fail("companion_lease_expired"));
         }
-        let current = self.scope(peer, &intent.selector, false)?;
-        if !same_scope(&current, &v.scope) {
+        let (current, execution, authority) = self.execution_scope(peer, intent, false)?;
+        if !same_scope(&current, &v.scope) || execution != v.execution {
             return Err(fail("companion_scope_changed"));
         }
+        let create_body = hash_parts(&[
+            "create",
+            "codex",
+            "workspace",
+            &v.scope.alias,
+            &hash(intent.prompt.as_bytes()),
+            "",
+        ]);
         let entry = Entry {
             binding: Binding {
                 actor: peer.actor.clone(),
@@ -207,14 +351,8 @@ impl<B: Backend> Bridge<B> {
                 intent: fingerprint,
                 lease: lease_id.into(),
                 create_id: hash_parts(&["companion-create", id]),
-                create_body: hash_parts(&[
-                    "create",
-                    "codex",
-                    "workspace",
-                    &v.scope.alias,
-                    &hash(intent.prompt.as_bytes()),
-                    "",
-                ]),
+                create_body: windows_execution_body_hash(&create_body, execution.as_ref())?,
+                windows_execution: execution.clone(),
                 approve_id: hash_parts(&["companion-approve", id]),
             },
             phase: Phase::PendingCreate,
@@ -236,11 +374,13 @@ impl<B: Backend> Bridge<B> {
         if peer.check().is_err() {
             return Ok(Reply::Unknown);
         }
-        let created = match self.backend.create(
+        let created = match self.backend.create_with_execution(
             lease_id,
             &owned.scope,
             &entry.binding.create_id,
             &intent.prompt,
+            owned.execution.as_ref(),
+            authority.as_ref(),
         ) {
             Ok(v)
                 if valid_ack(
@@ -267,17 +407,27 @@ impl<B: Backend> Bridge<B> {
         };
         // Re-read after create. The native backend also repeats its actual
         // action hash, identity, policy, quota and final-spawn checks.
-        match self.scope(peer, &intent.selector, false) {
-            Ok(scope)
+        let fresh_authority = match self.execution_scope(peer, intent, false) {
+            Ok((scope, fresh_execution, authority))
                 if same_scope(&scope, &owned.scope)
+                    && fresh_execution == owned.execution
                     && owned.scope.valid(self.backend.now_ms())
-                    && owned.deadline > Instant::now() => {}
+                    && owned.deadline > Instant::now() =>
+            {
+                authority
+            }
             _ => {
                 return Ok(Reply::Created {
                     task: created.task,
                     task_state: TaskState::AwaitingApproval,
-                })
+                });
             }
+        };
+        if owned.execution.is_some() && fresh_authority.is_none() {
+            return Ok(Reply::Created {
+                task: created.task,
+                task_state: TaskState::AwaitingApproval,
+            });
         }
         let body = hash_parts(&["approve", &created.task.task_id, &created.task.action_hash]);
         let entry = match self.journal.advance(
@@ -294,11 +444,13 @@ impl<B: Backend> Bridge<B> {
         if peer.check().is_err() {
             return Ok(Reply::Unknown);
         }
-        let acknowledged = match self.backend.approve(
+        let acknowledged = match self.backend.approve_with_execution(
             lease_id,
             &owned.scope,
             &entry.binding.approve_id,
             &created.task,
+            owned.execution.as_ref(),
+            fresh_authority.as_ref(),
         ) {
             Ok(v)
                 if valid_ack(

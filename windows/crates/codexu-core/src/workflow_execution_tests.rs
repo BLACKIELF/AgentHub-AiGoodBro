@@ -449,6 +449,31 @@ fn binding_is_length_framed_and_includes_stored_policy_order_and_window() {
 }
 
 #[test]
+fn binding_rejects_a_changed_model_capability_inventory() {
+    let p = prefs();
+    let o = ExecutionOverrides {
+        model: Some("gpt-5.5".into()),
+        effort: Some("xhigh".into()),
+        service_tier: Some(ServiceTier::Fast),
+    };
+    let current = models();
+    let frozen = resolve(&p, &o).unwrap();
+    let mut changed = current.clone();
+    changed.push(WorkflowModel {
+        id: "gpt-5.6".into(),
+        label: "new label".into(),
+        efforts: vec!["low".into()],
+        default_effort: "low".into(),
+        is_default: false,
+    });
+    assert!(revalidate_execution(&frozen, &p, &changed, "plus", NOW, &o).is_err());
+    // Display-only labels do not affect launch authority.
+    let mut relabeled = current;
+    relabeled[0].label = "renamed display label".into();
+    assert!(revalidate_execution(&frozen, &p, &relabeled, "plus", NOW, &o).is_ok());
+}
+
+#[test]
 fn cross_language_binding_vector_has_explicit_null_unicode_and_override_fields() {
     let o = ExecutionOverrides {
         model: Some("gpt-5.5".into()),
@@ -460,7 +485,7 @@ fn cross_language_binding_vector_has_explicit_null_unicode_and_override_fields()
     // Go final-spawn adapter tests; not a hash supplied as authorization.
     assert_eq!(
         got.binding_sha256,
-        "41a9feb4a5623db2e17b01ea2d26bb14e2cc061bd285f26ffa313adcc861ecc7"
+        "update-after-running-cross-language-vector"
     );
 }
 

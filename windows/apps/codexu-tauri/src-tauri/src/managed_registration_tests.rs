@@ -31,7 +31,7 @@ impl AccountRuntime for Runtime {
         _: &AtomicBool,
         _: &mut dyn FnMut(LoginAuthorization),
     ) -> AccountResult<VerifiedCredential> {
-        let jwt="synthetic.eyJlbWFpbCI6ImZpeHR1cmVAZml4dHVyZS5pbnZhbGlkIiwiYWNjb3VudF9pZCI6ImZpeHR1cmUiLCJleHAiOjQxMDI0NDQ4MDB9.fixture";
+        let jwt = "synthetic.eyJlbWFpbCI6ImZpeHR1cmVAZml4dHVyZS5pbnZhbGlkIiwiYWNjb3VudF9pZCI6ImZpeHR1cmUiLCJleHAiOjQxMDI0NDQ4MDB9.fixture";
         let auth=serde_json::to_vec(&serde_json::json!({"tokens":{"access_token":jwt,"id_token":jwt,"refresh_token":"synthetic-not-real","account_id":"fixture"}})).unwrap();
         VerifiedCredential::from_official_read(
             auth,

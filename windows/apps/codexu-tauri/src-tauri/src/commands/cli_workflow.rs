@@ -1,21 +1,25 @@
 //! Directory-scoped interactive terminals and a fixed own-Codex setup task.
 use crate::app_state::AppState;
+#[cfg(not(windows))]
+use codexu_core::workflow_reader::read_evidence;
 use codexu_core::{
     profiles::normalize_root,
     workflow::{
-        interactive_arguments, resolve_selection, DispatchWindow, WorkflowModel,
-        WorkflowPreference, WorkflowPreferences,
+        interactive_arguments, official_arguments, resolve_selection, DispatchWindow,
+        WorkflowModel, WorkflowPreference, WorkflowPreferences,
     },
-    workflow_reader::read_evidence,
+    workflow_reader::{WorkflowEvidence, WorkflowProbeLaunchFailure},
 };
 use std::{
     collections::BTreeMap,
+    fs::File,
     io::Read,
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
     },
+    time::Duration,
 };
 use tauri::State;
 use tokio::sync::Mutex;
@@ -47,7 +51,7 @@ struct Session {
     phase: Phase,
     started_at: Option<i64>,
     process: Option<console::OwnedConsole>,
-    dispatch_activity: Option<codexu_core::managed_proxy::ManagedActivityGuard>,
+    dispatch_activity: Option<Arc<codexu_core::managed_proxy::ManagedActivityGuard>>,
     removing: bool,
 }
 
@@ -217,6 +221,80 @@ pub(super) async fn native_executable(app_data: &Path) -> anyhow::Result<(PathBu
     .await?
 }
 
+async fn read_owned_workflow_evidence(
+    state: &AppState,
+    hub: &super::task_hub::HubState,
+    profile_id: u64,
+    executable: &Path,
+    guard: File,
+    home: &Path,
+    workspace: &Path,
+    domains: Arc<codexu_core::automatic_switch::live::OwnedProcessDomains>,
+    max_duration: Duration,
+) -> Result<WorkflowEvidence, &'static str> {
+    if !hub.ensure_probe_clear(profile_id, home) {
+        return Err("read_busy");
+    }
+    let permit = state
+        .profile_quota_slots
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| "read_busy")?;
+    let resources: Arc<dyn Send + Sync> = Arc::new(permit);
+    let executable = executable.to_owned();
+    let probe_executable = executable.clone();
+    let home = home.to_owned();
+    let retained_home = home.clone();
+    let workspace = workspace.to_owned();
+    let probe_workspace = workspace.clone();
+    let evidence = codexu_core::workflow_reader::read_evidence_with_owned_process(
+        &workspace,
+        max_duration,
+        move |endpoint| {
+            let environment = codexu_core::local_cli::launch::Environment::codex(&home)
+                .map_err(WorkflowProbeLaunchFailure::before_spawn)?;
+            let mut args = official_arguments();
+            args.extend([
+                "app-server".to_owned(),
+                "--listen".to_owned(),
+                endpoint.to_owned(),
+            ]);
+            match console::OwnedConsole::start_registered_owned_with_window(
+                &probe_executable,
+                &probe_workspace,
+                &args,
+                guard,
+                &environment,
+                "AiGoodBro - Codex workflow evidence",
+                Some(domains),
+                Some(resources),
+                None,
+                console::LaunchWindow::NoWindow,
+            ) {
+                Ok(process) => Ok(Box::new(process) as Box<dyn console::OwnedProcess>),
+                Err(failure) => {
+                    let (error, owner) = failure.into_parts();
+                    Err(match owner {
+                        Some(owner) => WorkflowProbeLaunchFailure::after_spawn(error, owner),
+                        None => WorkflowProbeLaunchFailure::before_spawn(error),
+                    })
+                }
+            }
+        },
+    )
+    .await;
+    match evidence {
+        Ok(evidence) => Ok(evidence),
+        Err(failure) => {
+            let (_, owner) = failure.into_parts();
+            if let Some(owner) = owner {
+                hub.retain_probe_owner(profile_id, retained_home, owner);
+            }
+            Err("models_unavailable")
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn get_account_workflow(
     state: State<'_, Arc<AppState>>,
@@ -278,21 +356,41 @@ pub async fn set_account_workflow(
 #[tauri::command]
 pub async fn read_workflow_models(
     state: State<'_, Arc<AppState>>,
+    hub: State<'_, super::task_hub::HubState>,
+    services: State<'_, crate::native_services::NativeServices>,
     id: String,
 ) -> Result<Vec<WorkflowModel>, String> {
-    let _permit = state
-        .profile_quota_slots
-        .try_acquire()
-        .map_err(|_| "read_busy")?;
     let id = parse_id(&id)?;
     let root = linked_root(&state, id).await?;
     let auth = auth_snapshot(&root).map_err(|_| "login_unavailable")?;
     let (executable, _guard) = native_executable(&state.app_data_dir)
         .await
         .map_err(|_| "cli_unavailable")?;
-    let evidence = read_evidence(&executable, &root, &root)
-        .await
-        .map_err(|_| "models_unavailable")?;
+    #[cfg(windows)]
+    let evidence = read_owned_workflow_evidence(
+        &state,
+        &hub,
+        id,
+        &executable,
+        _guard,
+        &root,
+        &root,
+        services.owned_domains.clone(),
+        Duration::from_secs(20),
+    )
+    .await
+    .map_err(str::to_owned)?;
+    #[cfg(not(windows))]
+    let evidence = {
+        let _permit = state
+            .profile_quota_slots
+            .try_acquire()
+            .map_err(|_| "read_busy")?;
+        let _ = (hub, services, _guard);
+        read_evidence(&executable, &root, &root)
+            .await
+            .map_err(|_| "models_unavailable")?
+    };
     if linked_root(&state, id).await? != root || auth_snapshot(&root).ok().as_ref() != Some(&auth) {
         return Err("source_changed".into());
     }
@@ -303,6 +401,7 @@ pub async fn read_workflow_models(
 pub async fn start_account_terminal(
     state: State<'_, Arc<AppState>>,
     workflow: State<'_, WorkflowState>,
+    hub: State<'_, super::task_hub::HubState>,
     services: State<'_, crate::native_services::NativeServices>,
     id: String,
     workspace: PathBuf,
@@ -322,7 +421,7 @@ pub async fn start_account_terminal(
         .await
         .map_err(|_| "cli_unavailable")?;
     let auth = auth_snapshot(&root).map_err(|_| "login_unavailable")?;
-    let mut activity = Some(services.reserve_terminal(&auth)?);
+    let mut activity = Some(Arc::new(services.reserve_terminal(&auth)?));
     let (generation, preference) = {
         let mut sessions = workflow.sessions.lock().await;
         let preferences =
@@ -344,13 +443,31 @@ pub async fn start_account_terminal(
         (session.generation, preference)
     };
     let result = async {
-        let _permit = state
-            .profile_quota_slots
-            .try_acquire()
-            .map_err(|_| "read_busy")?;
-        let evidence = read_evidence(&executable, &root, &workspace)
-            .await
-            .map_err(|_| "preflight_unavailable")?;
+        #[cfg(windows)]
+        let evidence = read_owned_workflow_evidence(
+            &state,
+            &hub,
+            id,
+            &executable,
+            guard.try_clone().map_err(|_| "preflight_unavailable")?,
+            &root,
+            &workspace,
+            services.owned_domains.clone(),
+            Duration::from_secs(20),
+        )
+        .await
+        .map_err(|_| "preflight_unavailable")?;
+        #[cfg(not(windows))]
+        let evidence = {
+            let _permit = state
+                .profile_quota_slots
+                .try_acquire()
+                .map_err(|_| "read_busy")?;
+            let _ = &hub;
+            read_evidence(&executable, &root, &workspace)
+                .await
+                .map_err(|_| "preflight_unavailable")?
+        };
         evidence
             .validate_startup()
             .map_err(|_| "quota_or_identity_unavailable")?;
@@ -384,7 +501,11 @@ pub async fn start_account_terminal(
         }
         let environment = codexu_core::local_cli::launch::Environment::codex(&root)
             .map_err(|_| "environment_invalid")?;
-        let process = console::OwnedConsole::start_registered(
+        let process_resources: Arc<dyn Send + Sync> = activity
+            .as_ref()
+            .expect("activity reservation retained until terminal launch")
+            .clone();
+        let process = match console::OwnedConsole::start_registered_owned(
             &executable,
             &workspace,
             &args,
@@ -392,10 +513,19 @@ pub async fn start_account_terminal(
             &environment,
             "AiGoodBro - Codex",
             Some(services.owned_domains.clone()),
+            Some(process_resources),
             None,
-            None,
-        )
-        .map_err(|_| "launch_failed")?;
+        ) {
+            Ok(process) => process,
+            Err(failure) => {
+                let (_, owner) = failure.into_parts();
+                if let Some(owner) = owner {
+                    hub.retain_probe_owner(id, root.clone(), owner);
+                    return Err("launch_unconfirmed");
+                }
+                return Err("launch_failed");
+            }
+        };
         session.process = Some(process);
         session.dispatch_activity = activity.take();
         session.phase = Phase::Running;

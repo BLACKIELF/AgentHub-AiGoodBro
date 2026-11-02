@@ -284,10 +284,17 @@ jobs:
           python -B windows/companion/prepare.py --verify-only
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Test Windows Rust workspace
+      - name: Verify Rust to Go execution payload
         if: ${{ !cancelled() }}
-        working-directory: windows
-        run: cargo test --workspace --locked
+        shell: pwsh
+        run: |
+          python -B windows/scripts/test_windows_execution_interop.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Test Windows Rust workspace and native CLI protocol
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: .\windows\scripts\Invoke-RustWorkspaceTests.ps1
 
       - name: Preserve native statistics validation receipts
         uses: actions/upload-artifact@v4

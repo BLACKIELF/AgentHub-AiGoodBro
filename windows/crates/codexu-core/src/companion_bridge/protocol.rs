@@ -1,4 +1,5 @@
 use super::*;
+use crate::workflow_execution::ServiceTier;
 pub const ABI: u32 = 1;
 pub const MAX_FRAME: usize = 96 * 1024;
 
@@ -18,6 +19,23 @@ pub struct Intent {
     pub tier: Option<String>,
 }
 impl Intent {
+    pub(super) fn execution_overrides(&self) -> Result<ExecutionOverrides> {
+        let service_tier = match self.tier.as_deref() {
+            None => None,
+            Some("default") => Some(ServiceTier::Default),
+            Some("fast") => Some(ServiceTier::Fast),
+            Some(_) => return Err(fail("companion_invalid_execution_override")),
+        };
+        let overrides = ExecutionOverrides {
+            model: self.model.clone(),
+            effort: self.effort.clone(),
+            service_tier,
+        };
+        overrides
+            .validate()
+            .map_err(|_| fail("companion_invalid_execution_override"))?;
+        Ok(overrides)
+    }
     pub(super) fn validate(&self) -> Result<()> {
         self.selector.validate()?;
         if self.prompt.trim().is_empty()
@@ -26,11 +44,7 @@ impl Intent {
         {
             return Err(fail("companion_invalid_prompt"));
         }
-        // Current Hub consumes frozen saved preferences. Never silently ignore
-        // an explicit Mac option that has not yet been ported to this backend.
-        if self.model.is_some() || self.effort.is_some() || self.tier.is_some() {
-            return Err(fail("companion_override_unsupported"));
-        }
+        self.execution_overrides()?;
         Ok(())
     }
     pub(super) fn fingerprint(&self) -> Result<String> {

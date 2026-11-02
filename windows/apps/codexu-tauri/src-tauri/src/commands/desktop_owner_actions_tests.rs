@@ -46,6 +46,15 @@ fn snapshot(revision: u64, turn: Option<(&str, &str)>) -> OwnerSnapshot {
         .clone(),
     }
 }
+fn active_snapshot(revision: u64, turns: &[(&str, &str)]) -> OwnerSnapshot {
+    let mut s = snapshot(revision, None);
+    s.state["threadRuntimeStatus"] = json!({"type":"running"});
+    s.state["turns"] = json!(turns
+        .iter()
+        .map(|(id, status)| json!({"turnId":id,"status":status}))
+        .collect::<Vec<_>>());
+    s
+}
 struct Guard(Arc<AtomicUsize>);
 impl Drop for Guard {
     fn drop(&mut self) {
@@ -602,4 +611,106 @@ async fn explicit_cancel_releases_only_unsent_preview_never_an_unknown_attempt()
     assert_eq!(f.released.load(Ordering::SeqCst), 1);
     assert!(c.blocks_normal_exit());
     assert_eq!(c.status(OP).unwrap().unwrap().state, "unknown");
+}
+
+#[tokio::test]
+async fn interrupt_preview_uses_unique_active_turn_from_fresh_owner_snapshot() {
+    let f = Fixture::new(Mode::Accepted);
+    f.push(active_snapshot(7, &[(TURN, "inProgress")]));
+    let mut c = f.caller();
+    let p = c
+        .prepare_current_interrupt(context(), f.guard())
+        .await
+        .unwrap();
+    let prepared = c.previews.get(&p.preview_id).unwrap();
+    assert!(matches!(
+        &prepared.action,
+        OwnerAction::Interrupt { expected_turn_id } if expected_turn_id == TURN
+    ));
+    assert_eq!(prepared.snapshot.revision, 7);
+    assert_eq!(f.fake.0.lock().unwrap().submits, 0);
+
+    f.push(active_snapshot(7, &[(TURN, "inProgress")]));
+    assert_eq!(
+        c.confirm(&p.preview_id, OP, &p.action_hash, || async {
+            Ok(context())
+        })
+        .await
+        .unwrap()
+        .state,
+        "accepted"
+    );
+    assert_eq!(f.fake.0.lock().unwrap().submits, 1);
+
+    for current in [
+        snapshot(7, Some((TURN, "inProgress"))),
+        active_snapshot(8, &[(TURN, "completed")]),
+        active_snapshot(8, &[(TURN, "inProgress"), (FOREIGN, "inProgress")]),
+        active_snapshot(8, &[("not-a-uuid", "inProgress")]),
+    ] {
+        let f = Fixture::new(Mode::Accepted);
+        f.push(current);
+        let mut c = f.caller();
+        assert!(c
+            .prepare_current_interrupt(context(), f.guard())
+            .await
+            .is_err());
+        assert_eq!(f.fake.0.lock().unwrap().submits, 0);
+    }
+}
+
+#[tokio::test]
+async fn interrupt_preview_rejects_a_replaced_turn_before_submission() {
+    let f = Fixture::new(Mode::Accepted);
+    f.push(active_snapshot(7, &[(TURN, "inProgress")]));
+    let mut c = f.caller();
+    let preview = c
+        .prepare_current_interrupt(context(), f.guard())
+        .await
+        .unwrap();
+
+    f.push(active_snapshot(8, &[(FOREIGN, "inProgress")]));
+    assert!(c
+        .confirm(&preview.preview_id, OP, &preview.action_hash, || async {
+            Ok(context())
+        })
+        .await
+        .is_err());
+    assert_eq!(f.fake.0.lock().unwrap().submits, 0);
+    assert_eq!(f.released.load(Ordering::SeqCst), 1);
+    assert!(!c.blocks_normal_exit());
+}
+
+#[tokio::test]
+async fn close_previews_releases_only_unsubmitted_guard_and_keeps_unknown_attempt() {
+    let f = Fixture::new(Mode::LostReply);
+    let mut c = f.caller();
+    let preview = f.prepared(&mut c).await;
+    assert_eq!(c.close_previews(), 1);
+    assert_eq!(f.released.load(Ordering::SeqCst), 1);
+    assert!(!c.blocks_normal_exit());
+    assert!(c
+        .confirm(&preview.preview_id, OP, &preview.action_hash, || async {
+            Ok(context())
+        })
+        .await
+        .is_err());
+
+    let f = Fixture::new(Mode::LostReply);
+    let mut c = f.caller();
+    let preview = f.prepared(&mut c).await;
+    f.push(snapshot(1, None));
+    assert_eq!(
+        c.confirm(&preview.preview_id, OP, &preview.action_hash, || async {
+            Ok(context())
+        })
+        .await
+        .unwrap()
+        .state,
+        "unknown"
+    );
+    assert_eq!(c.close_previews(), 0);
+    assert_eq!(c.status(OP).unwrap().unwrap().state, "unknown");
+    assert_eq!(f.released.load(Ordering::SeqCst), 0);
+    assert!(c.blocks_normal_exit());
 }

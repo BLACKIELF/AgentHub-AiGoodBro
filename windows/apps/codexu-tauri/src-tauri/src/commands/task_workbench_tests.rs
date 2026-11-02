@@ -79,6 +79,87 @@ fn fixture() -> (tempfile::TempDir, AppState) {
     state.config.blocking_write().codex_root = source;
     (temp, state)
 }
+
+#[test]
+fn close_epoch_recheck_catches_prepare_paused_after_old_epoch_check() {
+    use std::{
+        sync::{mpsc, Arc},
+        thread,
+        time::Duration,
+    };
+
+    let (_temp, state) = fixture();
+    let state = Arc::new(state);
+    let preview_id = "11111111-1111-1111-1111-111111111111".to_owned();
+    let (checked_tx, checked_rx) = mpsc::channel();
+    let (continue_tx, continue_rx) = mpsc::channel();
+    let (registered_tx, registered_rx) = mpsc::channel();
+    let (closed_tx, closed_rx) = mpsc::channel();
+    let register_state = state.clone();
+    let register = thread::spawn(move || {
+        let result =
+            remember_owner_preview_after_epoch_check(&register_state, &preview_id, 0, || {
+                checked_tx.send(()).unwrap();
+                let _ = continue_rx.recv_timeout(Duration::from_secs(2));
+            });
+        registered_tx.send(result).unwrap();
+    });
+    let checked = checked_rx.recv_timeout(Duration::from_secs(1));
+    let close_state = state.clone();
+    let close = thread::spawn(move || {
+        closed_tx.send(close_state.close_owner_window()).unwrap();
+    });
+    let close_early = closed_rx.recv_timeout(Duration::from_millis(100));
+    let _ = continue_tx.send(());
+    let closed_previews = match close_early {
+        Ok(ids) => Ok(ids),
+        Err(mpsc::RecvTimeoutError::Timeout) => closed_rx.recv_timeout(Duration::from_secs(2)),
+        Err(error) => Err(error),
+    };
+    let registered = registered_rx.recv_timeout(Duration::from_secs(2));
+    let closed_previews = closed_previews.expect("close did not complete within the bounded wait");
+    let registered =
+        registered.expect("late registration did not complete within the bounded wait");
+    register.join().unwrap();
+    close.join().unwrap();
+
+    assert!(
+        checked.is_ok(),
+        "prepare did not reach the pre-lock barrier"
+    );
+    assert!(closed_previews.is_empty());
+    assert_eq!(registered.unwrap_err(), "owner_window_closed");
+    assert!(state.owner_preview_epochs.lock().unwrap().is_empty());
+}
+
+#[test]
+fn late_close_cleanup_discards_only_old_epoch_previews() {
+    use std::collections::BTreeSet;
+
+    let (_temp, state) = fixture();
+    let old_id = "11111111-1111-1111-1111-111111111111";
+    let new_id = "22222222-2222-2222-2222-222222222222";
+    remember_owner_preview(&state, old_id, 0).unwrap();
+
+    let closed_previews = state.close_owner_window();
+    assert_eq!(closed_previews, [old_id.to_owned()]);
+    let new_epoch = state
+        .owner_window_epoch
+        .load(std::sync::atomic::Ordering::Acquire);
+    remember_owner_preview(&state, new_id, new_epoch).unwrap();
+
+    // Model the asynchronous OwnerActions cleanup after the window is reopened.
+    let mut service_previews = BTreeSet::from([old_id.to_owned(), new_id.to_owned()]);
+    discard_closed_preview_ids(&closed_previews, |preview_id| {
+        service_previews.remove(preview_id);
+    });
+    assert_eq!(service_previews, BTreeSet::from([new_id.to_owned()]));
+    assert_eq!(
+        state.owner_preview_epochs.lock().unwrap().get(new_id),
+        Some(&new_epoch)
+    );
+}
+
 #[test]
 fn workbench_scope_is_bound_before_any_local_mutation() {
     let (_temp, state) = fixture();

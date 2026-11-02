@@ -2,16 +2,21 @@
 //! task_hub, not a WebView command or a second task runner.
 #[path = "companion_bridge_runtime.rs"]
 pub(super) mod runtime;
+use super::super::cli_workflow::console::{LaunchWindow, OwnedProcess};
 use super::*;
 use codexu_core::{
     companion_bridge::{
-        Acknowledgement, Backend, Error, LookupAction, Scope, Selector, TaskBinding, TaskState,
+        windows_execution_body_hash, Acknowledgement, Backend, Error, ExecutionAuthority,
+        LookupAction, Peer, Scope, Selector, TaskBinding, TaskState, WindowsExecution,
     },
     managed_proxy::ManagedProxyGate,
     runtime_setup::{PinnedExecutable, SelectionStore},
+    workflow::{WorkflowPreference, WorkflowPreferences},
+    workflow_execution::{resolve_execution, ExecutionOverrides},
+    workflow_reader::{WorkflowEvidence, WorkflowProbeLaunchFailure},
 };
 use sha2::{Digest, Sha256};
-use std::{fs::File, path::Path};
+use std::{fs::File, path::Path, time::Instant};
 
 type BridgeResult<T> = Result<T, Error>;
 fn bridge_error(code: &'static str) -> Error {
@@ -206,15 +211,41 @@ pub(crate) struct Permit {
     guard: ManagedActivityGuard,
     scope: Scope,
 }
+struct ScopedCapture {
+    scope: Scope,
+    profile_id: u64,
+    workspace: PathBuf,
+    home: PathBuf,
+    identity: String,
+    preference: WorkflowPreference,
+    excluded_plan_types: Vec<String>,
+    official_plan: Option<String>,
+}
+impl ScopedCapture {
+    fn same_authority_source(&self, other: &Self) -> bool {
+        self.scope == other.scope
+            && self.profile_id == other.profile_id
+            && self.workspace == other.workspace
+            && self.home == other.home
+            && self.identity == other.identity
+            && self.preference == other.preference
+            && self.excluded_plan_types == other.excluded_plan_types
+            && self.official_plan == other.official_plan
+    }
+}
 pub(crate) struct AppBackend {
     application: Arc<AppState>,
     manager: Arc<AccountManager>,
     gate: Arc<ManagedProxyGate>,
     inner: Arc<Mutex<Inner>>,
     quitting: Arc<AtomicBool>,
+    retained_probes: Arc<ProbeOwnerStore>,
+    owned_domains: Arc<codexu_core::automatic_switch::live::OwnedProcessDomains>,
     python: PinnedExecutable,
     python_sha256: String,
     selected_python: Option<(PathBuf, String)>,
+    request_deadline: std::sync::Mutex<Option<Instant>>,
+    request_peer: std::sync::Mutex<Option<Peer>>,
 }
 impl AppBackend {
     pub(crate) fn new(
@@ -222,6 +253,7 @@ impl AppBackend {
         manager: Arc<AccountManager>,
         gate: Arc<ManagedProxyGate>,
         hub: &HubState,
+        owned_domains: Arc<codexu_core::automatic_switch::live::OwnedProcessDomains>,
         python: PinnedExecutable,
     ) -> Result<Self, String> {
         let python_sha256 = file_digest(&python.guard).map_err(|e| e.code.to_owned())?;
@@ -239,9 +271,13 @@ impl AppBackend {
             gate,
             inner: hub.inner.clone(),
             quitting: hub.quitting.clone(),
+            retained_probes: hub.probe_owner_store(),
+            owned_domains,
             python,
             python_sha256,
             selected_python,
+            request_deadline: std::sync::Mutex::new(None),
+            request_peer: std::sync::Mutex::new(None),
         })
     }
     fn lock(&self) -> BridgeResult<std::sync::MutexGuard<'_, Inner>> {
@@ -262,6 +298,31 @@ impl AppBackend {
         }
         Ok(())
     }
+    fn current_deadline(&self) -> BridgeResult<Instant> {
+        self.request_deadline
+            .lock()
+            .map_err(|_| bridge_error("companion_backend_busy"))?
+            .as_ref()
+            .copied()
+            .ok_or_else(|| bridge_error("companion_ipc_timeout"))
+    }
+    fn remaining(&self, deadline: Instant) -> BridgeResult<std::time::Duration> {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            Err(bridge_error("companion_ipc_timeout"))
+        } else {
+            Ok(remaining)
+        }
+    }
+    fn check_request_peer(&self) -> BridgeResult<()> {
+        let peer = self
+            .request_peer
+            .lock()
+            .map_err(|_| bridge_error("companion_backend_busy"))?
+            .clone()
+            .ok_or_else(|| bridge_error("companion_peer_untrusted"))?;
+        peer.check()
+    }
     fn capture_locked(
         &self,
         session: &mut Session,
@@ -269,6 +330,16 @@ impl AppBackend {
         selector: &Selector,
         refresh: bool,
     ) -> BridgeResult<Scope> {
+        self.capture_context_locked(session, workspace, selector, refresh)
+            .map(|capture| capture.scope)
+    }
+    fn capture_context_locked(
+        &self,
+        session: &mut Session,
+        workspace: &Path,
+        selector: &Selector,
+        refresh: bool,
+    ) -> BridgeResult<ScopedCapture> {
         ensure_live(session)?;
         if selector.profile_id != session.profile_id
             || !project_matches(Path::new(&selector.project), workspace)
@@ -294,8 +365,8 @@ impl AppBackend {
         {
             return Err(bridge_error("companion_scope_changed"));
         }
-        let preference = read_preferences(&self.application.app_data_dir)
-            .map_err(unavailable)?
+        let preferences = read_preferences(&self.application.app_data_dir).map_err(unavailable)?;
+        let preference = preferences
             .profiles
             .get(&session.profile_id)
             .cloned()
@@ -316,7 +387,7 @@ impl AppBackend {
             // Go's approval/final-spawn gate sees the identical evidence.
             session.files.write_manager(&manager).map_err(unavailable)?;
         }
-        scope_from_snapshot(
+        let scope = scope_from_snapshot(
             session.profile_id,
             workspace,
             &session.home,
@@ -325,7 +396,196 @@ impl AppBackend {
             &self.python_sha256,
             &manager,
             self.now_ms(),
+        )?;
+        Ok(ScopedCapture {
+            scope,
+            profile_id: session.profile_id,
+            workspace: workspace.to_path_buf(),
+            home: session.home.clone(),
+            identity: session.identity.clone(),
+            preference,
+            excluded_plan_types: preferences.excluded_plan_types,
+            official_plan: manager["profiles"][0]["lastSnapshot"]["planType"]
+                .as_str()
+                .map(str::to_owned),
+        })
+    }
+    fn capture_context(&self, selector: &Selector, refresh: bool) -> BridgeResult<ScopedCapture> {
+        let deadline = self.current_deadline()?;
+        self.remaining(deadline)?;
+        let mut inner = self.lock()?;
+        let workspace = inner
+            .workspace
+            .clone()
+            .ok_or_else(|| bridge_error("companion_scope_required"))?;
+        let session = inner
+            .session
+            .as_mut()
+            .ok_or_else(|| bridge_error("companion_scope_required"))?;
+        let capture = self.capture_context_locked(session, &workspace, selector, refresh)?;
+        self.remaining(deadline)?;
+        Ok(capture)
+    }
+    fn fresh_execution_evidence(&self, capture: &ScopedCapture) -> BridgeResult<WorkflowEvidence> {
+        let deadline = self.current_deadline()?;
+        if !self
+            .retained_probes
+            .ensure_clear(capture.profile_id, &capture.home)
+        {
+            return Err(bridge_error("companion_backend_busy"));
+        }
+        let permit = self
+            .application
+            .profile_quota_slots
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| bridge_error("companion_backend_busy"))?;
+        let selection = SelectionStore::new(&self.application.app_data_dir).map_err(unavailable)?;
+        if self.remaining(deadline)? <= std::time::Duration::from_secs(8) {
+            return Err(bridge_error("companion_ipc_timeout"));
+        }
+        let (executable, guard) = selection.resolve_cli().map_err(unavailable)?;
+        let original_sha256 = file_digest(&guard)?;
+        let guard_check = guard.try_clone().map_err(unavailable)?;
+        let remaining = self.remaining(deadline)?;
+        let evidence_budget = remaining.saturating_sub(std::time::Duration::from_secs(8));
+        let evidence_budget = evidence_budget.min(std::time::Duration::from_secs(20));
+        if evidence_budget.is_zero() {
+            return Err(bridge_error("companion_ipc_timeout"));
+        }
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(unavailable)?;
+        let resources: Arc<dyn Send + Sync> = Arc::new(permit);
+        let workspace = capture.workspace.clone();
+        let probe_workspace = workspace.clone();
+        let probe_executable = executable.clone();
+        let home = capture.home.clone();
+        let domains = self.owned_domains.clone();
+        let probe = runtime.block_on(
+            codexu_core::workflow_reader::read_evidence_with_owned_process(
+                &workspace,
+                evidence_budget,
+                move |endpoint| {
+                    let environment = codexu_core::local_cli::launch::Environment::codex(&home)
+                        .map_err(|error| {
+                            WorkflowProbeLaunchFailure::before_spawn(anyhow::anyhow!(error))
+                        })?;
+                    let mut args = codexu_core::workflow::official_arguments();
+                    args.extend([
+                        "app-server".to_owned(),
+                        "--listen".to_owned(),
+                        endpoint.to_owned(),
+                    ]);
+                    match OwnedConsole::start_registered_owned_with_window(
+                        &probe_executable,
+                        &probe_workspace,
+                        &args,
+                        guard,
+                        &environment,
+                        "AiGoodBro - Codex evidence",
+                        Some(domains),
+                        Some(resources),
+                        None,
+                        LaunchWindow::NoWindow,
+                    ) {
+                        Ok(process) => Ok(Box::new(process) as Box<dyn OwnedProcess>),
+                        Err(failure) => {
+                            let (error, owner) = failure.into_parts();
+                            Err(match owner {
+                                Some(owner) => {
+                                    WorkflowProbeLaunchFailure::after_spawn(error, owner)
+                                }
+                                None => WorkflowProbeLaunchFailure::before_spawn(error),
+                            })
+                        }
+                    }
+                },
+            ),
+        );
+        let evidence = match probe {
+            Ok(evidence) => evidence,
+            Err(failure) => {
+                let (_, owner) = failure.into_parts();
+                if let Some(owner) = owner {
+                    self.retained_probes
+                        .retain(capture.profile_id, capture.home.clone(), owner);
+                }
+                return Err(bridge_error("companion_execution_unavailable"));
+            }
+        };
+        self.remaining(deadline)?;
+        if file_digest(&guard_check)? != original_sha256 {
+            return Err(bridge_error("companion_runtime_changed"));
+        }
+        let (selected, selected_guard) = selection.resolve_cli().map_err(unavailable)?;
+        if selected != executable || file_digest(&selected_guard)? != original_sha256 {
+            return Err(bridge_error("companion_runtime_changed"));
+        }
+        self.remaining(deadline)?;
+        Ok(evidence)
+    }
+    fn validate_execution(
+        &self,
+        execution: &WindowsExecution,
+        authority: &ExecutionAuthority,
+    ) -> BridgeResult<()> {
+        let preferences = WorkflowPreferences {
+            profiles: [(authority.profile_id, authority.preference.clone())]
+                .into_iter()
+                .collect(),
+            excluded_plan_types: authority.excluded_plan_types.clone(),
+        };
+        let now_ms = i64::try_from(self.now_ms())
+            .map_err(|_| bridge_error("companion_execution_unavailable"))?;
+        let resolved = resolve_execution(
+            authority.profile_id,
+            &preferences,
+            &authority.models,
+            &authority.official_plan,
+            now_ms,
+            &execution.overrides,
         )
+        .map_err(|_| bridge_error("companion_execution_unavailable"))?;
+        if execution.workflow_revision != resolved.workflow_revision
+            || execution.binding_sha256 != resolved.binding_sha256
+        {
+            return Err(bridge_error("companion_execution_unavailable"));
+        }
+        Ok(())
+    }
+    fn validate_current_authority(
+        &self,
+        inner: &mut Inner,
+        scope: &Scope,
+        authority: &ExecutionAuthority,
+    ) -> BridgeResult<()> {
+        let deadline = self.current_deadline()?;
+        self.remaining(deadline)?;
+        let workspace = inner
+            .workspace
+            .clone()
+            .ok_or_else(|| bridge_error("companion_scope_required"))?;
+        let session = inner
+            .session
+            .as_mut()
+            .ok_or_else(|| bridge_error("companion_scope_required"))?;
+        let selector = Selector {
+            profile_id: session.profile_id,
+            project: workspace.to_string_lossy().into_owned(),
+        };
+        let current = self.capture_context_locked(session, &workspace, &selector, false)?;
+        if current.scope != *scope
+            || current.profile_id != authority.profile_id
+            || current.preference != authority.preference
+            || current.excluded_plan_types != authority.excluded_plan_types
+            || current.official_plan.as_deref() != Some(authority.official_plan.as_str())
+        {
+            return Err(bridge_error("companion_scope_changed"));
+        }
+        self.remaining(deadline)?;
+        Ok(())
     }
     fn recheck(&self, inner: &mut Inner, expected: &Scope) -> BridgeResult<()> {
         let workspace = inner
@@ -456,8 +716,21 @@ fn read_ack(
     request_id: &str,
     expected: &Submitted,
 ) -> BridgeResult<Option<Acknowledgement>> {
+    read_ack_until(session, request_id, expected, None)
+}
+fn read_ack_until(
+    session: &mut Session,
+    request_id: &str,
+    expected: &Submitted,
+    deadline: Option<Instant>,
+) -> BridgeResult<Option<Acknowledgement>> {
     let request_hash = digest(request_id.as_bytes());
-    let response = match request(session, &format!("/api/requests/{request_hash}"), None) {
+    let response = match super::request_until(
+        session,
+        &format!("/api/requests/{request_hash}"),
+        None,
+        deadline,
+    ) {
         Ok(value) => value,
         Err(code) if code == "hub_not_found" => return Ok(None),
         Err(_) => return Err(bridge_error("companion_response_unconfirmed")),
@@ -497,20 +770,77 @@ fn decode_lookup(
 
 impl Backend for AppBackend {
     type Permit = Permit;
+    fn set_request_deadline(&self, deadline: Option<Instant>) {
+        if let Ok(mut current) = self.request_deadline.lock() {
+            *current = deadline;
+        }
+    }
+    fn set_request_peer(&self, peer: Option<Peer>) {
+        if let Ok(mut current) = self.request_peer.lock() {
+            *current = peer;
+        }
+    }
     fn now_ms(&self) -> u64 {
         chrono::Utc::now().timestamp_millis().max(0) as u64
     }
+    fn execution_required(&self) -> bool {
+        true
+    }
     fn capture(&self, selector: &Selector, refresh: bool) -> BridgeResult<Scope> {
-        let mut inner = self.lock()?;
-        let workspace = inner
-            .workspace
-            .clone()
-            .ok_or_else(|| bridge_error("companion_scope_required"))?;
-        let session = inner
-            .session
-            .as_mut()
-            .ok_or_else(|| bridge_error("companion_scope_required"))?;
-        self.capture_locked(session, &workspace, selector, refresh)
+        self.capture_context(selector, refresh)
+            .map(|capture| capture.scope)
+    }
+    fn capture_execution(
+        &self,
+        selector: &Selector,
+        refresh: bool,
+        overrides: &ExecutionOverrides,
+    ) -> BridgeResult<(Scope, Option<ExecutionAuthority>)> {
+        let deadline = self.current_deadline()?;
+        let captured = self.capture_context(selector, refresh)?;
+        self.remaining(deadline)?;
+        let evidence = self.fresh_execution_evidence(&captured)?;
+        self.remaining(deadline)?;
+        let official_plan = evidence
+            .official_plan_type()
+            .filter(|plan| !plan.is_empty())
+            .ok_or_else(|| bridge_error("companion_execution_unavailable"))?
+            .to_owned();
+        if captured.official_plan.as_deref() != Some(official_plan.as_str()) {
+            return Err(bridge_error("companion_scope_changed"));
+        }
+        let authority = ExecutionAuthority {
+            profile_id: captured.profile_id,
+            preference: captured.preference.clone(),
+            excluded_plan_types: captured.excluded_plan_types.clone(),
+            official_plan,
+            models: evidence.models,
+        };
+        let preferences = WorkflowPreferences {
+            profiles: [(authority.profile_id, authority.preference.clone())]
+                .into_iter()
+                .collect(),
+            excluded_plan_types: authority.excluded_plan_types.clone(),
+        };
+        let now_ms = i64::try_from(self.now_ms())
+            .map_err(|_| bridge_error("companion_execution_unavailable"))?;
+        resolve_execution(
+            authority.profile_id,
+            &preferences,
+            &authority.models,
+            &authority.official_plan,
+            now_ms,
+            overrides,
+        )
+        .map_err(|_| bridge_error("companion_execution_unavailable"))?;
+        let current = self.capture_context(selector, false)?;
+        if !captured.same_authority_source(&current) {
+            return Err(bridge_error("companion_scope_changed"));
+        }
+        self.remaining(deadline)?;
+        // The Bridge derives the persistent extension from this authority and
+        // the one-call overrides; keep the authoritative inputs native-only.
+        Ok((captured.scope, Some(authority)))
     }
     fn reserve(&self, scope: &Scope) -> BridgeResult<Permit> {
         let mut inner = self.lock()?;
@@ -587,6 +917,75 @@ impl Backend for AppBackend {
         }
         Ok(ack)
     }
+    fn create_with_execution(
+        &self,
+        lease: &str,
+        scope: &Scope,
+        request_id: &str,
+        prompt: &str,
+        execution: Option<&WindowsExecution>,
+        authority: Option<&ExecutionAuthority>,
+    ) -> BridgeResult<Acknowledgement> {
+        validate_prompt(prompt).map_err(unavailable)?;
+        let deadline = self.current_deadline()?;
+        let (execution, authority) = execution
+            .zip(authority)
+            .ok_or_else(|| bridge_error("companion_execution_unavailable"))?;
+        self.validate_execution(execution, authority)?;
+        let mut inner = self.lock()?;
+        self.recheck(&mut inner, scope)?;
+        self.validate_current_authority(&mut inner, scope, authority)?;
+        self.remaining(deadline)?;
+        let session = inner.session.as_mut().unwrap();
+        let adopted = session
+            .companion
+            .adopted
+            .get(lease)
+            .filter(|entry| same_scope(&entry.scope, scope) && entry.task.is_none())
+            .ok_or_else(|| bridge_error("companion_lease_unavailable"))?;
+        if adopted.guard.is_none() {
+            return Err(bridge_error("companion_lease_unavailable"));
+        }
+        let old_body = parts(&[
+            "create",
+            "codex",
+            "workspace",
+            &scope.alias,
+            &digest(prompt.as_bytes()),
+            "",
+        ]);
+        let submitted = Submitted {
+            lease: lease.into(),
+            action: "create",
+            body: windows_execution_body_hash(&old_body, Some(execution))?,
+            scope: scope.fingerprint.clone(),
+            task: None,
+        };
+        session.companion.submit(request_id, submitted.clone())?;
+        let response = super::request_until_before_write(
+            session,
+            "/api/tasks",
+            Some(&json!({
+                "requestId":request_id,
+                "agent":"codex",
+                "project":"workspace",
+                "accountAlias":scope.alias,
+                "prompt":prompt,
+                "windowsExecution":execution,
+                "windowsExecutionAuthority":authority
+            })),
+            Some(deadline),
+            || self.check_request_peer().map_err(|error| error.to_string()),
+        )
+        .map_err(|_| bridge_error("companion_response_unconfirmed"))?;
+        let (direct, _) = task_binding(&response, &scope.fingerprint, &scope.alias)?;
+        let ack = read_ack_until(session, request_id, &submitted, Some(deadline))?
+            .ok_or_else(|| bridge_error("companion_response_unconfirmed"))?;
+        if ack.task != direct {
+            return Err(bridge_error("companion_response_unconfirmed"));
+        }
+        Ok(ack)
+    }
     fn approve(
         &self,
         lease: &str,
@@ -642,6 +1041,77 @@ impl Backend for AppBackend {
         read_ack(session, request_id, &submitted)?
             .ok_or_else(|| bridge_error("companion_response_unconfirmed"))
     }
+    fn approve_with_execution(
+        &self,
+        lease: &str,
+        scope: &Scope,
+        request_id: &str,
+        task: &TaskBinding,
+        execution: Option<&WindowsExecution>,
+        authority: Option<&ExecutionAuthority>,
+    ) -> BridgeResult<Acknowledgement> {
+        let deadline = self.current_deadline()?;
+        let (execution, authority) = execution
+            .zip(authority)
+            .ok_or_else(|| bridge_error("companion_execution_unavailable"))?;
+        self.validate_execution(execution, authority)?;
+        let mut inner = self.lock()?;
+        self.recheck(&mut inner, scope)?;
+        self.validate_current_authority(&mut inner, scope, authority)?;
+        self.remaining(deadline)?;
+        let session = inner.session.as_mut().unwrap();
+        let adopted = session
+            .companion
+            .adopted
+            .get(lease)
+            .filter(|entry| same_scope(&entry.scope, scope) && entry.task.as_ref() == Some(task))
+            .ok_or_else(|| bridge_error("companion_lease_unavailable"))?;
+        if adopted.guard.is_some() || !session.leases.contains_key(&task.task_id) {
+            return Err(bridge_error("companion_lease_unavailable"));
+        }
+        let prior = super::overview_until(session, Some(deadline)).map_err(unavailable)?;
+        let row = prior["tasks"]
+            .as_array()
+            .and_then(|rows| {
+                rows.iter()
+                    .find(|row| row["id"].as_str() == Some(&task.task_id))
+            })
+            .ok_or_else(|| bridge_error("companion_task_changed"))?;
+        let (current, state) = task_binding(row, &scope.fingerprint, &scope.alias)?;
+        if current != *task
+            || state != TaskState::AwaitingApproval
+            || row["approvalExpired"] != false
+        {
+            return Err(bridge_error("companion_task_changed"));
+        }
+        // The overview can consume the remaining freshness budget. Re-read
+        // account and preference state immediately before the only approval POST.
+        self.validate_current_authority(&mut inner, scope, authority)?;
+        self.remaining(deadline)?;
+        let session = inner.session.as_mut().unwrap();
+        let submitted = Submitted {
+            lease: lease.into(),
+            action: "approve",
+            body: parts(&["approve", &task.task_id, &task.action_hash]),
+            scope: scope.fingerprint.clone(),
+            task: Some(task.clone()),
+        };
+        session.companion.submit(request_id, submitted.clone())?;
+        super::request_until_before_write(
+            session,
+            &format!("/api/tasks/{}/approve", task.task_id),
+            Some(&json!({
+                "requestId":request_id,
+                "actionHash":task.action_hash,
+                "windowsExecutionAuthority":authority
+            })),
+            Some(deadline),
+            || self.check_request_peer().map_err(|error| error.to_string()),
+        )
+        .map_err(|_| bridge_error("companion_response_unconfirmed"))?;
+        read_ack_until(session, request_id, &submitted, Some(deadline))?
+            .ok_or_else(|| bridge_error("companion_response_unconfirmed"))
+    }
     fn lookup(
         &self,
         action: LookupAction,
@@ -650,6 +1120,7 @@ impl Backend for AppBackend {
         scope: &str,
         epoch: &str,
     ) -> BridgeResult<Option<Acknowledgement>> {
+        let deadline = self.current_deadline()?;
         let mut inner = self.lock()?;
         let session = inner
             .session
@@ -672,7 +1143,7 @@ impl Backend for AppBackend {
             })
             .ok_or_else(|| bridge_error("companion_request_changed"))?;
         // No refresh, credential gate or POST on a status operation.
-        read_ack(session, request_id, &expected)
+        read_ack_until(session, request_id, &expected, Some(deadline))
     }
 }
 

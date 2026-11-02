@@ -39,6 +39,11 @@ struct Fake {
     records: Mutex<BTreeMap<String, Acknowledgement>>,
     mode: AtomicUsize,
     lookup_corrupt: AtomicBool,
+    execution_authority: Mutex<Option<ExecutionAuthority>>,
+    created_execution: Mutex<Vec<Option<WindowsExecution>>>,
+    approved_execution: Mutex<Vec<Option<WindowsExecution>>>,
+    request_deadlines: Mutex<Vec<Option<Instant>>>,
+    request_peers: Mutex<Vec<Option<Peer>>>,
     audit_root: Mutex<Option<PathBuf>>,
     audit_order: Mutex<Vec<&'static str>>,
 }
@@ -62,6 +67,11 @@ impl Fake {
             records: Mutex::new(BTreeMap::new()),
             mode: AtomicUsize::new(0),
             lookup_corrupt: AtomicBool::new(false),
+            execution_authority: Mutex::new(None),
+            created_execution: Mutex::new(vec![]),
+            approved_execution: Mutex::new(vec![]),
+            request_deadlines: Mutex::new(vec![]),
+            request_peers: Mutex::new(vec![]),
             audit_root: Mutex::new(None),
             audit_order: Mutex::new(vec![]),
         })
@@ -71,6 +81,33 @@ impl Fake {
             task_id: "synthetic-task-1".into(),
             action_hash: h("action"),
             scope_sha256: self.scope.lock().unwrap().fingerprint.clone(),
+        }
+    }
+    fn set_execution_authority(&self, authority: Option<ExecutionAuthority>) {
+        *self.execution_authority.lock().unwrap() = authority;
+    }
+    fn create_with_body(&self, id: &str, body_sha256: String) -> Result<Acknowledgement> {
+        self.audit_durable_phase("create");
+        self.creates.fetch_add(1, Ordering::SeqCst);
+        let ack = Acknowledgement {
+            request_id: id.into(),
+            body_sha256,
+            task: self.task(),
+            state: TaskState::AwaitingApproval,
+        };
+        self.records.lock().unwrap().insert(id.into(), ack.clone());
+        match self.mode.load(Ordering::SeqCst) {
+            1 => Err(fail("synthetic_lost_response")),
+            2 => {
+                let mut bad = ack;
+                bad.body_sha256 = h("wrong");
+                Ok(bad)
+            }
+            4 => {
+                self.scope.lock().unwrap().fingerprint = h("changed-scope");
+                Ok(ack)
+            }
+            _ => Ok(ack),
         }
     }
     fn audit_durable_phase(&self, stage: &'static str) {
@@ -93,8 +130,46 @@ impl Fake {
         }
     }
 }
+
+fn execution_authority() -> ExecutionAuthority {
+    ExecutionAuthority {
+        profile_id: 1,
+        preference: crate::workflow::WorkflowPreference {
+            participating: true,
+            model: Some("gpt-6-astra".into()),
+            effort: Some("high".into()),
+            service_tier: Some(crate::workflow_execution::ServiceTier::Fast),
+            revision: 7,
+            ..Default::default()
+        },
+        excluded_plan_types: vec!["pro".into()],
+        official_plan: "plus".into(),
+        models: vec![
+            crate::workflow::WorkflowModel {
+                id: "gpt-6-astra".into(),
+                label: "Astra".into(),
+                efforts: vec!["low".into(), "high".into(), "ultra".into()],
+                default_effort: "low".into(),
+                is_default: true,
+            },
+            crate::workflow::WorkflowModel {
+                id: "gpt-5.5".into(),
+                label: "5.5".into(),
+                efforts: vec!["low".into(), "high".into(), "xhigh".into()],
+                default_effort: "low".into(),
+                is_default: false,
+            },
+        ],
+    }
+}
 impl Backend for Fake {
     type Permit = Permit;
+    fn set_request_deadline(&self, deadline: Option<Instant>) {
+        self.request_deadlines.lock().unwrap().push(deadline);
+    }
+    fn set_request_peer(&self, peer: Option<Peer>) {
+        self.request_peers.lock().unwrap().push(peer);
+    }
     fn now_ms(&self) -> u64 {
         self.now.load(Ordering::SeqCst)
     }
@@ -103,6 +178,18 @@ impl Backend for Fake {
             self.refreshes.fetch_add(1, Ordering::SeqCst);
         }
         Ok(self.scope.lock().unwrap().clone())
+    }
+    fn execution_required(&self) -> bool {
+        self.execution_authority.lock().unwrap().is_some()
+    }
+    fn capture_execution(
+        &self,
+        selector: &Selector,
+        refresh: bool,
+        _: &ExecutionOverrides,
+    ) -> Result<(Scope, Option<ExecutionAuthority>)> {
+        let scope = self.capture(selector, refresh)?;
+        Ok((scope, self.execution_authority.lock().unwrap().clone()))
     }
     fn reserve(&self, _: &Scope) -> Result<Permit> {
         self.reservations.fetch_add(1, Ordering::SeqCst);
@@ -115,11 +202,9 @@ impl Backend for Fake {
         Ok(())
     }
     fn create(&self, _: &str, s: &Scope, id: &str, prompt: &str) -> Result<Acknowledgement> {
-        self.audit_durable_phase("create");
-        self.creates.fetch_add(1, Ordering::SeqCst);
-        let ack = Acknowledgement {
-            request_id: id.into(),
-            body_sha256: hash_parts(&[
+        self.create_with_body(
+            id,
+            hash_parts(&[
                 "create",
                 "codex",
                 "workspace",
@@ -127,23 +212,36 @@ impl Backend for Fake {
                 &hash(prompt.as_bytes()),
                 "",
             ]),
-            task: self.task(),
-            state: TaskState::AwaitingApproval,
-        };
-        self.records.lock().unwrap().insert(id.into(), ack.clone());
-        match self.mode.load(Ordering::SeqCst) {
-            1 => Err(fail("synthetic_lost_response")),
-            2 => {
-                let mut bad = ack;
-                bad.body_sha256 = h("wrong");
-                Ok(bad)
-            }
-            4 => {
-                self.scope.lock().unwrap().fingerprint = h("changed-scope");
-                Ok(ack)
-            }
-            _ => Ok(ack),
+        )
+    }
+    fn create_with_execution(
+        &self,
+        _: &str,
+        s: &Scope,
+        id: &str,
+        prompt: &str,
+        execution: Option<&WindowsExecution>,
+        authority: Option<&ExecutionAuthority>,
+    ) -> Result<Acknowledgement> {
+        self.created_execution
+            .lock()
+            .unwrap()
+            .push(execution.cloned());
+        if execution.is_some() != authority.is_some() {
+            return Err(fail("companion_execution_unavailable"));
         }
+        let mut body = hash_parts(&[
+            "create",
+            "codex",
+            "workspace",
+            &s.alias,
+            &hash(prompt.as_bytes()),
+            "",
+        ]);
+        if let Some(execution) = execution {
+            body = windows_execution_body_hash(&body, Some(execution))?;
+        }
+        self.create_with_body(id, body)
     }
     fn approve(&self, _: &str, _: &Scope, id: &str, task: &TaskBinding) -> Result<Acknowledgement> {
         self.audit_durable_phase("approve");
@@ -160,6 +258,24 @@ impl Backend for Fake {
         } else {
             Ok(ack)
         }
+    }
+    fn approve_with_execution(
+        &self,
+        lease_id: &str,
+        scope: &Scope,
+        id: &str,
+        task: &TaskBinding,
+        execution: Option<&WindowsExecution>,
+        authority: Option<&ExecutionAuthority>,
+    ) -> Result<Acknowledgement> {
+        self.approved_execution
+            .lock()
+            .unwrap()
+            .push(execution.cloned());
+        if execution.is_some() != authority.is_some() {
+            return Err(fail("companion_execution_unavailable"));
+        }
+        self.approve(lease_id, scope, id, task)
     }
     fn lookup(
         &self,
@@ -286,12 +402,341 @@ fn wire_exact_abi_length_and_unknown_fields() {
     oversized.prompt = "x".repeat(65_537);
     assert!(oversized.validate().is_err());
     let mut unsupported = f.intent();
-    unsupported.model = Some("self-claimed-model".into());
+    unsupported.model = Some("self/claimed-model".into());
     assert_eq!(
         unsupported.validate().unwrap_err().code,
-        "companion_override_unsupported"
+        "companion_invalid_execution_override"
     );
     assert_eq!(f.calls(), (0, 0));
+}
+
+#[test]
+fn native_request_deadline_is_forwarded_without_resetting_and_expired_auth_cannot_restart_it() {
+    let f = Fixture::new();
+    let selector = f.intent().selector;
+    let request = || Request {
+        abi: ABI,
+        request_id: h("native-deadline"),
+        method: Method::Preflight {
+            selector: selector.clone(),
+        },
+    };
+    let deadline = Instant::now() + std::time::Duration::from_secs(30);
+    assert!(matches!(
+        f.bridge.handle_until(&f.peer, request(), deadline).unwrap(),
+        Reply::Ready { .. }
+    ));
+    assert_eq!(
+        f.fake.request_deadlines.lock().unwrap().as_slice(),
+        &[Some(deadline), None]
+    );
+    let peers = f.fake.request_peers.lock().unwrap();
+    assert_eq!(peers.len(), 2);
+    assert!(peers[0].is_some());
+    assert!(peers[1].is_none());
+    assert!(peers[0].as_ref().unwrap().check().is_ok());
+    drop(peers);
+    f.live.store(false, Ordering::SeqCst);
+    assert_eq!(
+        f.fake.request_peers.lock().unwrap()[0]
+            .as_ref()
+            .unwrap()
+            .check()
+            .unwrap_err()
+            .code,
+        "companion_peer_untrusted"
+    );
+
+    let expired = Instant::now() - std::time::Duration::from_millis(1);
+    assert_eq!(
+        f.bridge
+            .handle_until(&f.peer, request(), expired)
+            .unwrap_err()
+            .code,
+        "companion_ipc_timeout"
+    );
+    assert_eq!(f.fake.refreshes.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        f.fake.request_deadlines.lock().unwrap().as_slice(),
+        &[Some(deadline), None]
+    );
+}
+
+#[test]
+fn concurrent_request_cannot_replace_another_request_peer_context() {
+    let f = Fixture::new();
+    let _active_request = f.bridge.request_context.try_lock().unwrap();
+    f.fake.set_request_peer(Some(f.peer.clone()));
+    let first_count = f.fake.request_peers.lock().unwrap().len();
+    let other_live = Arc::new(AtomicBool::new(true));
+    let other_peer = Peer::from_native(
+        h("other-actor"),
+        h("other-runtime"),
+        Box::new(Live(other_live)),
+    )
+    .unwrap();
+    let error = f
+        .bridge
+        .handle_until(
+            &other_peer,
+            Request {
+                abi: ABI,
+                request_id: h("concurrent-peer"),
+                method: Method::Preflight {
+                    selector: f.intent().selector,
+                },
+            },
+            Instant::now() + std::time::Duration::from_secs(1),
+        )
+        .unwrap_err();
+    assert_eq!(error.code, "companion_bridge_busy");
+    let peers = f.fake.request_peers.lock().unwrap();
+    assert_eq!(peers.len(), first_count);
+    assert!(peers[0].as_ref().unwrap().check().is_ok());
+}
+
+#[test]
+fn late_receipt_keeps_unknown_or_confirmed_success_and_never_replays_create() {
+    let confirmed = Fixture::new();
+    let confirmed_lease = confirmed.reserve();
+    let confirmed_id = h("late-confirmed");
+    let started = Instant::now();
+    let deadline = started + std::time::Duration::from_secs(30);
+    let now_calls = AtomicUsize::new(0);
+    let confirmed_result = confirmed
+        .bridge
+        .handle_until_with_clock(
+            &confirmed.peer,
+            Request {
+                abi: ABI,
+                request_id: confirmed_id.clone(),
+                method: Method::Run {
+                    lease_id: confirmed_lease,
+                    intent: confirmed.intent(),
+                },
+            },
+            deadline,
+            || {
+                if now_calls.fetch_add(1, Ordering::SeqCst) < 2 {
+                    started
+                } else {
+                    deadline + std::time::Duration::from_millis(1)
+                }
+            },
+        )
+        .unwrap();
+    assert!(matches!(confirmed_result, Reply::Accepted { .. }));
+    let confirmed_entry = confirmed
+        .bridge
+        .journal
+        .get(&confirmed_id)
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        confirmed_entry.phase,
+        journal::Phase::Accepted { .. }
+    ));
+    assert_eq!(confirmed.calls(), (1, 1));
+
+    let uncertain = Fixture::new();
+    uncertain.fake.mode.store(1, Ordering::SeqCst);
+    let uncertain_lease = uncertain.reserve();
+    let uncertain_id = h("late-uncertain");
+    let started = Instant::now();
+    let deadline = started + std::time::Duration::from_secs(30);
+    let now_calls = AtomicUsize::new(0);
+    let uncertain_result = uncertain
+        .bridge
+        .handle_until_with_clock(
+            &uncertain.peer,
+            Request {
+                abi: ABI,
+                request_id: uncertain_id.clone(),
+                method: Method::Run {
+                    lease_id: uncertain_lease.clone(),
+                    intent: uncertain.intent(),
+                },
+            },
+            deadline,
+            || {
+                if now_calls.fetch_add(1, Ordering::SeqCst) < 2 {
+                    started
+                } else {
+                    deadline + std::time::Duration::from_millis(1)
+                }
+            },
+        )
+        .unwrap();
+    assert_eq!(uncertain_result, Reply::Unknown);
+    let uncertain_entry = uncertain
+        .bridge
+        .journal
+        .get(&uncertain_id)
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        uncertain_entry.phase,
+        journal::Phase::PendingCreate
+    ));
+    assert_eq!(uncertain.calls(), (1, 0));
+
+    assert!(matches!(
+        uncertain
+            .request(
+                "late-uncertain",
+                Method::Run {
+                    lease_id: uncertain_lease,
+                    intent: uncertain.intent(),
+                },
+            )
+            .unwrap(),
+        Reply::Created { .. }
+    ));
+    assert_eq!(uncertain.calls(), (1, 0));
+}
+
+#[test]
+fn execution_extension_is_persisted_and_used_for_create_and_approval() {
+    let f = Fixture::new();
+    f.fake.set_execution_authority(Some(execution_authority()));
+    let mut intent = f.intent();
+    intent.model = Some("gpt-5.5".into());
+    intent.effort = Some("high".into());
+    intent.tier = Some("default".into());
+    let lease = match f
+        .request(
+            "reserve-execution",
+            Method::Reserve {
+                intent: intent.clone(),
+            },
+        )
+        .unwrap()
+    {
+        Reply::Reserved { lease_id, .. } => lease_id,
+        _ => panic!("unexpected reserve result"),
+    };
+    let result = f
+        .request(
+            "run-execution",
+            Method::Run {
+                lease_id: lease,
+                intent: intent.clone(),
+            },
+        )
+        .unwrap();
+    assert!(matches!(result, Reply::Accepted { .. }));
+
+    let entry = journal::Journal::new(f.root.clone())
+        .unwrap()
+        .get(&h("run-execution"))
+        .unwrap()
+        .unwrap();
+    let execution = entry.binding.windows_execution.clone().unwrap();
+    assert_eq!(execution.workflow_revision, 7);
+    assert_eq!(execution.overrides.model.as_deref(), Some("gpt-5.5"));
+    assert_eq!(execution.overrides.effort.as_deref(), Some("high"));
+    assert_eq!(
+        execution.overrides.service_tier,
+        Some(crate::workflow_execution::ServiceTier::Default)
+    );
+    let old_body = hash_parts(&[
+        "create",
+        "codex",
+        "workspace",
+        "fixture",
+        &hash(intent.prompt.as_bytes()),
+        "",
+    ]);
+    assert_eq!(
+        entry.binding.create_body,
+        windows_execution_body_hash(&old_body, Some(&execution)).unwrap()
+    );
+    assert_eq!(
+        f.fake.created_execution.lock().unwrap().as_slice(),
+        &[Some(execution.clone())]
+    );
+    assert_eq!(
+        f.fake.approved_execution.lock().unwrap().as_slice(),
+        &[Some(execution)]
+    );
+    let serialized = serde_json::to_value(&entry.binding.windows_execution).unwrap();
+    assert_eq!(
+        serialized
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>(),
+        vec![
+            "bindingSha256".to_owned(),
+            "overrides".to_owned(),
+            "workflowRevision".to_owned(),
+        ]
+    );
+}
+
+#[test]
+fn fresh_reservation_rejects_changed_preference_or_model_inventory() {
+    for change in ["preference", "models"] {
+        let f = Fixture::new();
+        let mut original = execution_authority();
+        f.fake.set_execution_authority(Some(original.clone()));
+        let mut intent = f.intent();
+        intent.model = Some("gpt-5.5".into());
+        let lease = match f
+            .request(
+                "reserve-stale-execution",
+                Method::Reserve {
+                    intent: intent.clone(),
+                },
+            )
+            .unwrap()
+        {
+            Reply::Reserved { lease_id, .. } => lease_id,
+            _ => panic!("unexpected reserve result"),
+        };
+        match change {
+            "preference" => original.preference.model = Some("gpt-5.5".into()),
+            "models" => original.models.push(crate::workflow::WorkflowModel {
+                id: "gpt-5.6".into(),
+                label: "new model".into(),
+                efforts: vec!["low".into()],
+                default_effort: "low".into(),
+                is_default: false,
+            }),
+            _ => unreachable!(),
+        }
+        f.fake.set_execution_authority(Some(original));
+        let error = f
+            .request(
+                "run-stale-execution",
+                Method::Run {
+                    lease_id: lease,
+                    intent,
+                },
+            )
+            .unwrap_err();
+        assert_eq!(error.code, "companion_scope_changed", "{change}");
+        assert_eq!(f.calls(), (0, 0), "{change}");
+        assert!(f.fake.created_execution.lock().unwrap().is_empty());
+    }
+}
+
+#[test]
+fn invalid_execution_evidence_does_not_advertise_ready() {
+    let f = Fixture::new();
+    let mut authority = execution_authority();
+    authority.excluded_plan_types = vec!["plus".into()];
+    f.fake.set_execution_authority(Some(authority));
+    let error = f
+        .request(
+            "preflight-invalid-plan",
+            Method::Preflight {
+                selector: f.intent().selector,
+            },
+        )
+        .unwrap_err();
+    assert_eq!(error.code, "companion_execution_unavailable");
 }
 #[test]
 fn explicit_refresh_only_and_single_reservation_duplicate() {

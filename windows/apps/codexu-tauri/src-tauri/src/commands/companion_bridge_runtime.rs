@@ -117,6 +117,7 @@ pub(crate) struct CompanionRuntime {
     application: Arc<AppState>,
     manager: Arc<AccountManager>,
     gate: Arc<ManagedProxyGate>,
+    owned_domains: Arc<codexu_core::automatic_switch::live::OwnedProcessDomains>,
     hub: HubState,
     state: Mutex<RuntimeState>,
 }
@@ -249,14 +250,17 @@ impl CompanionRuntime {
         manager: Arc<AccountManager>,
         gate: Arc<ManagedProxyGate>,
         hub: &HubState,
+        owned_domains: Arc<codexu_core::automatic_switch::live::OwnedProcessDomains>,
     ) -> Self {
         Self {
             application,
             manager,
             gate,
+            owned_domains,
             hub: HubState {
                 inner: hub.inner.clone(),
                 quitting: hub.quitting.clone(),
+                retained_probes: hub.retained_probes.clone(),
             },
             state: Mutex::new(RuntimeState::default()),
         }
@@ -310,6 +314,7 @@ impl CompanionRuntime {
             self.manager.clone(),
             self.gate.clone(),
             &self.hub,
+            self.owned_domains.clone(),
             python,
         )?);
         let epoch = {

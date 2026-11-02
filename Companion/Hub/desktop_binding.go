@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -84,9 +85,18 @@ func (hub *Hub) readDesktopBinding(task *Task) (*desktopTaskBinding, *desktopAcc
 	if err != nil {
 		return fail()
 	}
-	if err = workflow.allows(task, time.Now()); err != nil {
+	if err = workflow.Profile.allows(task, time.Now()); err != nil {
 		release()
 		return nil, nil, nil, err
+	}
+	if task.WindowsExecution != nil {
+		if !windowsExecutionAuthorityFresh(task.windowsExecutionAuthorityAt) {
+			release()
+			return nil, nil, nil, errWindowsExecutionStale
+		}
+		if workflow.matchesWindowsExecution(task, task.windowsExecutionAuthority) != nil {
+			return fail()
+		}
 	}
 	home, err := hub.accountHome(task.AccountAlias)
 	if err != nil || task.AccountAlias == "system" {
@@ -142,9 +152,12 @@ func (hub *Hub) readDesktopBinding(task *Task) (*desktopTaskBinding, *desktopAcc
 	if profile == nil || profile.IsSystemProfile || !sameDesktopDirectory(profile.CodexHomePath, home) || profile.WindowsBinding == nil || profile.LastSnapshot == nil {
 		return fail()
 	}
+	if task.WindowsExecution != nil && (task.windowsExecutionAuthority == nil || !strings.EqualFold(profile.LastSnapshot.PlanType, task.windowsExecutionAuthority.OfficialPlan)) {
+		return fail()
+	}
 	binding := *profile.WindowsBinding
 	now := time.Now().UnixMilli()
-	if !lowerSHA(binding.AuthSHA256) || !lowerSHA(binding.IdentityHash) || binding.CredentialExpiresAtMs <= now+30000 || binding.QuotaObservedAtMs > now+5000 || binding.QuotaObservedAtMs < now-45000 || binding.WorkflowRevision != *workflow.Revision {
+	if !lowerSHA(binding.AuthSHA256) || !lowerSHA(binding.IdentityHash) || binding.CredentialExpiresAtMs <= now+30000 || binding.QuotaObservedAtMs > now+5000 || binding.QuotaObservedAtMs < now-45000 || binding.WorkflowRevision != *workflow.Profile.Revision {
 		return fail()
 	}
 	observed := appleReferenceTime(profile.LastSnapshot.FetchedAt)

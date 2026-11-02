@@ -20,6 +20,11 @@ function Get-ReleaseReadinessPlan {
     # every child host must be launched with an explicit process-scoped policy or the
     # release entry point cannot run its own scripts on a freshly installed machine.
     $plan.Add(@{ name = 'native-preflight'; executable = $PowerShell51; directory = $Root; arguments = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $Root 'windows\scripts\Capture-NativeVisuals.ps1'), '-PreflightOnly', '-PreflightResultPath', $Preflight) })
+    # The release-readiness contract test enumerates the actual Tauri resource
+    # inputs, including this generated, pinned payload. Stage and verify it first.
+    $plan.Add(@{ name = 'companion-setup-resources'; executable = 'python'; directory = $Root; arguments = @('-B', (Join-Path $Root 'windows\companion\prepare.py')) })
+    $plan.Add(@{ name = 'companion-setup-verify'; executable = 'python'; directory = $Root; arguments = @('-B', (Join-Path $Root 'windows\companion\prepare.py'), '--verify-only') })
+    $plan.Add(@{ name = 'rust-go-execution-interop'; executable = 'python'; directory = $Root; arguments = @('-B', (Join-Path $Root 'windows\scripts\test_windows_execution_interop.py')) })
     foreach ($hostEntry in @(@{ name = 'ps51'; executable = $PowerShell51 }, @{ name = 'ps7'; executable = $PowerShell7 })) {
         foreach ($test in @('Test-PublicFeedSyntax.ps1', 'Test-NativeWindowSelection.ps1', 'Test-NativeVisualCaptureWorkflow.ps1', 'Test-ReleaseReadiness.ps1', 'Test-AppUpdateTransport.ps1')) {
             $plan.Add(@{ name = ($hostEntry.name + ':' + $test); executable = $hostEntry.executable; directory = $Root; arguments = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $Root ('windows\scripts\tests\' + $test))) })
@@ -30,9 +35,7 @@ function Get-ReleaseReadinessPlan {
     $plan.Add(@{ name = 'provider-pool-native-resources'; executable = $PowerShell7; directory = $Root; arguments = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $Root 'windows\scripts\Prepare-ProviderPool.ps1'), '-BuildRoot', (Join-Path $Output 'provider-pool-build'), '-RunNativeTests', '-AllowDependencyDownload') })
     $plan.Add(@{ name = 'hub-native-resources'; executable = $PowerShell7; directory = $Root; arguments = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $Root 'windows\scripts\Prepare-HubResources.ps1'), '-BuildRoot', (Join-Path $Output 'hub-build'), '-RunNativeTests') })
     $plan.Add(@{ name = 'token-monitor-native-resources'; executable = $PowerShell7; directory = $Root; arguments = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $Root 'windows\scripts\Prepare-TokenMonitorResources.ps1'), '-BuildRoot', (Join-Path $Output 'token-monitor-build'), '-RunNativeTests') })
-    $plan.Add(@{ name = 'companion-setup-resources'; executable = 'python'; directory = $Root; arguments = @('-B', (Join-Path $Root 'windows\companion\prepare.py')) })
-    $plan.Add(@{ name = 'companion-setup-verify'; executable = 'python'; directory = $Root; arguments = @('-B', (Join-Path $Root 'windows\companion\prepare.py'), '--verify-only') })
-    $plan.Add(@{ name = 'rust-tests'; executable = 'cargo'; directory = $windows; arguments = @('+1.97.1-x86_64-pc-windows-msvc', 'test', '--workspace', '--locked') })
+    $plan.Add(@{ name = 'rust-tests'; executable = $PowerShell7; directory = $Root; arguments = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $Root 'windows\scripts\Invoke-RustWorkspaceTests.ps1'), '-Toolchain', '1.97.1-x86_64-pc-windows-msvc') })
     $plan.Add(@{ name = 'web-dependencies'; executable = 'npm.cmd'; directory = $web; arguments = @('ci', '--no-audit', '--no-fund') })
     $plan.Add(@{ name = 'web-tests'; executable = 'npm.cmd'; directory = $web; arguments = @('test') })
     $plan.Add(@{ name = 'web-build'; executable = 'npm.cmd'; directory = $web; arguments = @('run', 'build') })

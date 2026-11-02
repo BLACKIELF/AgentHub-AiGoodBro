@@ -222,7 +222,14 @@ mod tests {
     use super::*;
     #[test]
     fn clipboard_payload_follows_fixed_mac_provider_contract_without_serialized_key() {
-        assert_eq!(connection_text(Provider::Antigravity, "http://127.0.0.1:18081/providers/antigravity", "synthetic"), "GOOGLE_GEMINI_BASE_URL=http://127.0.0.1:18081/providers/antigravity\nGEMINI_API_KEY=synthetic");
+        assert_eq!(
+            connection_text(
+                Provider::Antigravity,
+                "http://127.0.0.1:18081/providers/antigravity",
+                "synthetic"
+            ),
+            "GOOGLE_GEMINI_BASE_URL=http://127.0.0.1:18081/providers/antigravity\nGEMINI_API_KEY=synthetic"
+        );
         for provider in [Provider::Claude, Provider::Kimi, Provider::Xai] {
             let endpoint = format!("http://127.0.0.1:18081/providers/{}", provider.id());
             assert_eq!(

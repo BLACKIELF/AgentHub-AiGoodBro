@@ -160,6 +160,19 @@ class ClientTests(unittest.TestCase):
         with self.assertRaises(client.ClientError):
             client.build_request(args(lease_id="self-claimed"), io.BytesIO(b"x"))
 
+    def test_single_call_execution_overrides_preserve_none_vs_explicit_default(self):
+        request = client.build_request(args(model="gpt-5.5", effort="xhigh"), io.BytesIO(b"prompt"))
+        self.assertEqual(request["method"]["intent"]["model"], "gpt-5.5")
+        self.assertEqual(request["method"]["intent"]["effort"], "xhigh")
+        self.assertIsNone(request["method"]["intent"]["tier"])
+        explicit = client.build_request(args(tier="default"), io.BytesIO(b"prompt"))
+        self.assertEqual(explicit["method"]["intent"]["tier"], "default")
+
+    def test_invalid_execution_override_rejected_before_transport(self):
+        for changes in ({"model": "gpt/5.5"}, {"model": "x" * 81}, {"effort": "super"}, {"tier": "turbo"}):
+            with self.subTest(changes=changes), self.assertRaises(client.ClientError):
+                client.build_request(args(**changes), io.BytesIO(b"prompt"))
+
     def test_status_only_query_carries_no_prompt_or_lease(self):
         request = client.build_request(args("status"), io.BytesIO(b"unused secret"))
         self.assertEqual(request["method"], {"kind": "status", "operationId": HASH})

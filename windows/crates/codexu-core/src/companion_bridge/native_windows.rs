@@ -24,6 +24,8 @@ use tokio::{
 type Handle = *mut c_void;
 const SOURCE_FILE: &str = "app-source-v1.json";
 const LOCATOR_FILE: &str = "receiver-v1.json";
+const FRAME_RECEIVE_BUDGET: Duration = Duration::from_secs(10);
+const RESPONSE_WRITE_GRACE: Duration = Duration::from_secs(3);
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 struct FileTime {
@@ -534,10 +536,12 @@ struct ProcessPin {
 }
 impl PeerGuard for ProcessPin {
     fn check(&self) -> Result<()> {
+        if Instant::now() >= self.deadline {
+            return Err(fail("companion_ipc_timeout"));
+        }
         private_pipe(self.pipe as Handle)?;
         let mut pid = 0;
-        if Instant::now() >= self.deadline
-            || unsafe { WaitForSingleObject(self.process.raw(), 0) } != 258
+        if unsafe { WaitForSingleObject(self.process.raw(), 0) } != 258
             || birth(self.process.raw())? != self.born
             || unsafe { GetNamedPipeClientProcessId(self.pipe as Handle, &mut pid) } == 0
             || pid != self.pid
@@ -657,9 +661,11 @@ async fn one<B: Backend>(
     bridge: &Bridge<B>,
     stop: &AtomicBool,
 ) -> Result<()> {
-    let end = tokio::time::Instant::now() + Duration::from_secs(10);
+    let request_started = tokio::time::Instant::now();
+    let request_deadline = request_started + super::host::REQUEST_BUDGET;
+    let frame_deadline = std::cmp::min(request_started + FRAME_RECEIVE_BUDGET, request_deadline);
     let mut length = [0u8; 4];
-    tokio::time::timeout_at(end, pipe.read_exact(&mut length))
+    tokio::time::timeout_at(frame_deadline, pipe.read_exact(&mut length))
         .await
         .map_err(|_| unavailable())?
         .map_err(|_| unavailable())?;
@@ -670,20 +676,24 @@ async fn one<B: Backend>(
     let mut frame = Vec::with_capacity(n + 4);
     frame.extend(length);
     frame.resize(n + 4, 0);
-    tokio::time::timeout_at(end, pipe.read_exact(&mut frame[4..]))
+    tokio::time::timeout_at(frame_deadline, pipe.read_exact(&mut frame[4..]))
         .await
         .map_err(|_| unavailable())?
         .map_err(|_| unavailable())?;
     let request = Request::decode(&frame)?;
     let id = request.request_id.clone();
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let response_deadline = request_deadline + RESPONSE_WRITE_GRACE;
+    let deadline = request_deadline.into_std();
     let peer = authenticate(pipe.as_raw_handle().cast(), python, deadline)?;
-    if stop.load(Ordering::Acquire) || Instant::now() >= deadline {
+    if stop.load(Ordering::Acquire) {
         return Err(unavailable());
+    }
+    if Instant::now() >= deadline {
+        return Err(fail("companion_ipc_timeout"));
     }
     // Synchronous on the receiver's OWN worker. A client disconnect or dropped
     // Tokio I/O future cannot cancel a partially submitted backend operation.
-    let result = bridge.handle(&peer, request);
+    let result = bridge.handle_until(&peer, request, deadline);
     let response = match result {
         Ok(v) => Response {
             abi: ABI,
@@ -704,7 +714,7 @@ async fn one<B: Backend>(
     }
     let mut frame = (bytes.len() as u32).to_le_bytes().to_vec();
     frame.extend(bytes);
-    tokio::time::timeout(Duration::from_secs(3), pipe.write_all(&frame))
+    tokio::time::timeout_at(response_deadline, pipe.write_all(&frame))
         .await
         .map_err(|_| unavailable())?
         .map_err(|_| unavailable())?;

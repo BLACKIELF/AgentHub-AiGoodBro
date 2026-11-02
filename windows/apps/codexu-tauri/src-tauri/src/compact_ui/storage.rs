@@ -28,7 +28,7 @@ impl Store {
         let metadata = match fs::symlink_metadata(&self.file) {
             Ok(value) => value,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(Preferences::default())
+                return Ok(Preferences::default());
             }
             Err(_) => return Err("compact_preferences_unavailable"),
         };

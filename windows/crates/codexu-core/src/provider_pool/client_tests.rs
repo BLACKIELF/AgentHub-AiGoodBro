@@ -18,6 +18,21 @@ fn response(body: &str) -> Vec<u8> {
 }
 
 #[test]
+fn agy_admission_uses_an_isolated_fake_catalog_and_requires_a_gemini_model() {
+    assert!(confirm_agy_catalog(&response(
+        r#"{"object":"list","data":[{"id":"claude-4"},{"id":"gemini-3.1-pro"}]}"#
+    ))
+    .is_ok());
+    for bytes in [
+        response(r#"{"object":"list","data":[{"id":"claude-4"}]}"#),
+        response(r#"{"object":"list","data":[{"id":"Gemini-3.1-pro"}]}"#),
+        b"HTTP/1.0 302 Found\r\nLocation: https://example.invalid\r\n\r\n".to_vec(),
+    ] {
+        assert!(confirm_agy_catalog(&bytes).is_err());
+    }
+}
+
+#[test]
 fn each_client_uses_private_home_and_key_only_in_clean_environment() {
     let dir = tempfile::tempdir().unwrap();
     let app = dir.path().canonicalize().unwrap();
@@ -27,12 +42,19 @@ fn each_client_uses_private_home_and_key_only_in_clean_environment() {
         Provider::Kimi,
         Provider::Xai,
     ] {
-        for kind in [ClientKind::Codex, ClientKind::Native] {
-            if kind == ClientKind::Native && provider == Provider::Antigravity {
+        for kind in [ClientKind::Codex, ClientKind::Native, ClientKind::Agy] {
+            if (kind == ClientKind::Native && provider == Provider::Antigravity)
+                || (kind == ClientKind::Agy && provider != Provider::Antigravity)
+            {
                 continue;
             }
             let c = connection(provider);
-            let p = prepare(&app, &c, provider, kind, "synthetic-model").unwrap();
+            let model = if kind == ClientKind::Agy {
+                ""
+            } else {
+                "synthetic-model"
+            };
+            let p = prepare(&app, &c, provider, kind, model).unwrap();
             assert!(p.home.starts_with(app.join("provider-clients-v1")));
             assert!(p.arguments.iter().all(|a| !a.contains(KEY)));
             let environment: BTreeMap<_, _> = p
@@ -129,6 +151,14 @@ fn wrong_endpoint_key_model_or_unsupported_agy_never_prepares_a_home() {
         &c,
         Provider::Antigravity,
         ClientKind::Native,
+        "gemini-synthetic"
+    )
+    .is_err());
+    assert!(prepare(
+        &app,
+        &c,
+        Provider::Antigravity,
+        ClientKind::Agy,
         "gemini-synthetic"
     )
     .is_err());

@@ -14,7 +14,9 @@ impl PublicFeed {
         match self {
             Self::Forecast => "https://codex-resets.com/zh-CN",
             Self::History => "https://codex-resets.com/api/v1/resets?limit=100&order=desc",
-            Self::Messages => "https://raw.githubusercontent.com/BLACKIELF/AgentHub-AiGoodBro/main/Resources/AppMessages/messages-v1.json",
+            Self::Messages => {
+                "https://raw.githubusercontent.com/BLACKIELF/AgentHub-AiGoodBro/main/Resources/AppMessages/messages-v1.json"
+            }
         }
     }
 }

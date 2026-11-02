@@ -3,6 +3,11 @@ export type WorkbenchDecision='none'|'paused'|'cancelled'|'completed';
 export interface WorkbenchInventory {threadID:string;project:string;outcome:WorkbenchOutcome;remaining:string[];nextStep:string;artifacts:{title:string;reference:string}[];evidence:string;checkedAtMs:number;sourceTurnID:string|null}
 export interface WorkbenchItem {threadId:string;title:string;project:string;updatedAtMs:number|null;archived:boolean;executionState:'recorded';outcome:WorkbenchOutcome;decision:WorkbenchDecision;decisionAtMs:number|null;inventoryIsStale:boolean;needsAttention:boolean;inventory:WorkbenchInventory|null}
 export interface WorkbenchSnapshot {scopeId:string;checkedAtMs:number;sourceAvailable:boolean;truncated:boolean;items:WorkbenchItem[]}
+export interface OwnerActionPreview {previewId:string;actionHash:string;snapshotRevision:number}
+export interface OwnerOperationBinding {operationId:string;scopeId:string;threadId:string}
+export const OWNER_OPERATION_STORAGE_KEY='aigoodbro.original-owner-operation-v1';
+export type OwnerActionState='unknown'|'notSent'|'accepted'|'completed'|'failed'|'interrupted';
+export interface OwnerActionStatus {operationId:string;state:OwnerActionState;turnId:string|null}
 const outcomes=['unknown','incomplete','candidate','awaitingAcceptance','complete'],decisions=['none','paused','cancelled','completed'];
 function fail():never {throw new Error('workbench_invalid');}
 function record(v:unknown):Record<string,unknown>{return v!==null&&typeof v==='object'&&!Array.isArray(v)?v as Record<string,unknown>:fail();}
@@ -22,3 +27,7 @@ export function parseWorkbench(raw:unknown):WorkbenchSnapshot {
  });
  return {scopeId,checkedAtMs:time(r.checkedAtMs),sourceAvailable:flag(r.sourceAvailable),truncated:flag(r.truncated),items};
 }
+export function parseOwnerActionPreview(raw:unknown):OwnerActionPreview {const r=record(raw),previewId=id(r.previewId),actionHash=string(r.actionHash,64),snapshotRevision=r.snapshotRevision;if(!/^[a-f0-9]{64}$/.test(actionHash)||typeof snapshotRevision!=='number'||!Number.isSafeInteger(snapshotRevision)||snapshotRevision<0)fail();return {previewId,actionHash,snapshotRevision};}
+export function parseOwnerActionStatus(raw:unknown):OwnerActionStatus|null {if(raw===null)return null;const r=record(raw),operationId=id(r.operationId),states=['unknown','notSent','accepted','completed','failed','interrupted'];if(typeof r.state!=='string'||!states.includes(r.state))fail();return {operationId,state:r.state as OwnerActionState,turnId:r.turnId===null?null:id(r.turnId)};}
+export function parseOwnerOperationBinding(raw:unknown):OwnerOperationBinding {const r=record(raw);if(Object.keys(r).sort().join('|')!==['operationId','scopeId','threadId'].sort().join('|'))fail();const operationId=id(r.operationId).toLowerCase(),scopeId=string(r.scopeId,64),threadId=id(r.threadId);if(!/^[a-f0-9]{64}$/.test(scopeId))fail();return {operationId,scopeId,threadId};}
+export function ownerActionIsTerminal(status:OwnerActionStatus|null):boolean {return !!status&&['notSent','completed','failed','interrupted'].includes(status.state);}

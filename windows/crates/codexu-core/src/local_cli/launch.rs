@@ -1,10 +1,12 @@
 //! Explicit local launch plans. No model prompt, shell, installation or account
 //! mutation is performed by discovery or plan construction.
+mod agy;
 mod catalog;
 mod native;
 mod provider_pool;
 
 use super::{LocalCliKind, PlatformDirectories};
+pub use agy::{discover_agy, VerifiedAgyExecutable};
 pub use catalog::PreparedProfile;
 pub use native::{discover, VerifiedExecutable};
 use serde::{Deserialize, Serialize};

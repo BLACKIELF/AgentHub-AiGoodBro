@@ -132,7 +132,11 @@ if (-not $SkipValidation) {
     Push-Location $WindowsRoot
     try {
         Invoke-Checked "cargo" @("+$Toolchain", "fmt", "--all", "--", "--check")
-        Invoke-Checked "cargo" @("+$Toolchain", "test", "--workspace", "--locked")
+        Invoke-Checked "pwsh.exe" @(
+            "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+            "-File", (Join-Path $RepoRoot "windows\scripts\Invoke-RustWorkspaceTests.ps1"),
+            "-Toolchain", $Toolchain
+        )
     }
     finally {
         Pop-Location
