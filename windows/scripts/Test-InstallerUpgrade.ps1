@@ -345,7 +345,7 @@ try {
     if ($InstallerKind -eq 'msi') { $receipt.shortcutMigration.foreign.unchangedAfterUpgrade = $true }
     if ($InstallerKind -eq 'msi') {
         $receipt.msiEncoding | Add-Member -NotePropertyName installedResources -NotePropertyValue @(Assert-MsiUnicodeResources -Evidence $receipt.msiEncoding -InstallRoot $install)
-        Write-Output 'PASS: MSI database CP936, summary CP1252, seven Unicode FileNames and installed resource bytes'
+        Write-Output 'PASS: MSI database CP936, summary CP1252, eight Unicode FileNames and installed resource bytes'
     }
     Assert-RunUnchanged $runBefore
     $receipt.phases += 'upgrade_identity_brand_path_shortcuts_resources_verified'

@@ -1,4 +1,4 @@
-# Read-only native verification; callers own installation and evidence paths.
+﻿# Read-only native verification; callers own installation and evidence paths.
 function Get-MsiUnicodeResourcePaths {
     return @(
         'skill-library/jev-cu/来源-1013v1.json',
@@ -7,7 +7,8 @@ function Get-MsiUnicodeResourcePaths {
         'skill-library/reverse-engineer-anything/来源-1013v1.json',
         'skill-library/reverse-engineer-anything/安装说明.md',
         'skill-library/oracle/安装说明.md',
-        'skill-library/typesafe-ai/安装说明.md'
+        'skill-library/typesafe-ai/安装说明.md',
+        'companion-setup/使用说明.md'
     )
 }
 function Read-MsiCodepageExport([string]$Text) {
@@ -69,16 +70,20 @@ function Get-MsiEncodingEvidence([string]$MsiPath, [string]$SourceRoot, [string]
         $expected = @(Get-MsiUnicodeResourcePaths); $resources = @()
         foreach ($row in @(Read-MsiRows $db 'SELECT `File`, `Component_`, `FileName`, `FileSize` FROM `File`' 4)) {
             $name = ($row.values[2].Split('|') | Select-Object -Last 1)
-            if ($name -notin @('来源-1013v1.json', '安装说明.md')) { continue }
+            if ($name -notin @('来源-1013v1.json', '安装说明.md', '使用说明.md')) { continue }
             if (-not $components.ContainsKey($row.values[1])) { throw 'MSI file has no component.' }
             $relative = (Resolve-MsiTargetDirectory $components[$row.values[1]] $directories) + '/' + $name
             if ($relative -cnotin $expected) { throw 'Unexpected MSI Unicode resource mapping.' }
-            $source = Join-Path (Join-Path $SourceRoot 'Resources/SkillLibrary') $relative.Substring('skill-library/'.Length)
+            if ($relative.StartsWith('skill-library/', [StringComparison]::Ordinal)) {
+                $source = Join-Path (Join-Path $SourceRoot 'Resources/SkillLibrary') $relative.Substring('skill-library/'.Length)
+            } else {
+                $source = Join-Path (Join-Path $SourceRoot 'windows/apps/codexu-tauri/src-tauri/resources') $relative
+            }
             $info = Get-Item -LiteralPath $source
             if ($info.Attributes -band [IO.FileAttributes]::ReparsePoint -or $info.Length -ne [long]$row.values[3]) { throw 'MSI Unicode resource size/source mismatch.' }
             $resources += [pscustomobject]@{ relativePath=$relative; fileKey=$row.values[0]; fileName=$row.values[2]; sourceSize=$info.Length; sourceSha256=(Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash.ToLowerInvariant() }
         }
-        if ($resources.Count -ne 7 -or (@($resources.relativePath | Sort-Object -Unique).Count -ne 7) -or
+        if ($resources.Count -ne 8 -or (@($resources.relativePath | Sort-Object -Unique).Count -ne 8) -or
             (Compare-Object -CaseSensitive $expected @($resources.relativePath))) { throw 'MSI Unicode resources missing or duplicated.' }
         return [pscustomobject]@{ schema=1; msiSha256=$before; databaseCodepage=$databaseCodepage; summaryCodepage=$summaryCodepage; productLanguage=$properties['ProductLanguage']; productCode=$properties['ProductCode']; productVersion=$properties['ProductVersion']; upgradeCode=$properties['UpgradeCode']; resources=$resources }
     } finally {
@@ -101,6 +106,6 @@ function Assert-MsiUnicodeResources($Evidence, [string]$InstallRoot) {
         if ($file.Length -ne $resource.sourceSize -or $hash -cne $resource.sourceSha256) { throw 'Installed Unicode resource bytes differ from the source.' }
         $rows += [pscustomobject]@{ relativePath=$resource.relativePath; size=$file.Length; sha256=$hash }
     }
-    if ($rows.Count -ne 7) { throw 'Installed Unicode resource coverage incomplete.' }
+    if ($rows.Count -ne 8) { throw 'Installed Unicode resource coverage incomplete.' }
     return $rows
 }

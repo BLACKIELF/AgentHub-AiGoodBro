@@ -19,7 +19,17 @@ class MsiEncodingTests(unittest.TestCase):
         result = encoding.check_inputs(ROOT, source_only=True)
         self.assertEqual(result["databaseCodepage"], 936)
         self.assertEqual(result["summaryCodepage"], 1252)
-        self.assertEqual(len(result["nonCp1252Resources"]), 7)
+        expected_non_cp1252_resources = {
+            "companion-setup/使用说明.md",
+            "skill-library/handoff/安装说明.md",
+            "skill-library/jev-cu/安装说明.md",
+            "skill-library/jev-cu/来源-1013v1.json",
+            "skill-library/oracle/安装说明.md",
+            "skill-library/reverse-engineer-anything/安装说明.md",
+            "skill-library/reverse-engineer-anything/来源-1013v1.json",
+            "skill-library/typesafe-ai/安装说明.md",
+        }
+        self.assertCountEqual(result["nonCp1252Resources"], expected_non_cp1252_resources)
         for path in result["nonCp1252Resources"]:
             with self.assertRaises(UnicodeEncodeError):
                 path.encode("cp1252")
@@ -43,11 +53,16 @@ class MsiEncodingTests(unittest.TestCase):
             shutil.copytree(ROOT / "Resources/SkillLibrary", root / "Resources/SkillLibrary")
             with self.assertRaisesRegex(ValueError, "directory missing"):
                 encoding.check_inputs(root)
+            companion_setup = original / "resources" / "companion-setup"
+            shutil.copytree(companion_setup, tauri / "resources" / "companion-setup")
             for name in ("proxy", "token-monitor", "companion-hub", "provider-pool"):
                 folder = tauri / "resources" / name
                 folder.mkdir(parents=True)
                 (folder / "synthetic.txt").write_text("not a native payload")
-            self.assertEqual(encoding.check_inputs(root)["resourceFiles"], 28)
+            expected_resource_files = 28 + sum(
+                path.is_file() for path in companion_setup.rglob("*")
+            )
+            self.assertEqual(encoding.check_inputs(root)["resourceFiles"], expected_resource_files)
             (folder / "unsupported-😀.txt").write_text("fixture")
             with self.assertRaisesRegex(ValueError, "CP936 string rejected"):
                 encoding.check_inputs(root)
@@ -109,11 +124,22 @@ try {
     $index = 0; $install = Join-Path $Root 'installed'
     foreach ($relative in @(Get-MsiUnicodeResourcePaths)) {
         $parts = $relative.Split('/'); $index++
-        Sql ("INSERT INTO ``Directory`` (``Directory``, ``Directory_Parent``, ``DefaultDir``) VALUES ('D$index', 'Skills', '" + $parts[1] + "')")
-        Sql "INSERT INTO ``Component`` (``Component``, ``Directory_``) VALUES ('C$index', 'D$index')"
-        $source = Join-Path (Join-Path $Repo 'Resources/SkillLibrary') ($parts[1] + '/' + $parts[2])
+        $folderParts = @($parts[0..($parts.Count - 2)])
+        if ($folderParts[0] -ceq 'skill-library') { $parent = 'Skills'; $folderStart = 1 }
+        else { $parent = 'INSTALLDIR'; $folderStart = 0 }
+        for ($folderIndex = $folderStart; $folderIndex -lt $folderParts.Count; $folderIndex++) {
+            $directory = "D${index}_$folderIndex"
+            Sql ("INSERT INTO ``Directory`` (``Directory``, ``Directory_Parent``, ``DefaultDir``) VALUES ('" + $directory + "', '" + $parent + "', '" + $folderParts[$folderIndex] + "')")
+            $parent = $directory
+        }
+        Sql ("INSERT INTO ``Component`` (``Component``, ``Directory_``) VALUES ('C$index', '" + $parent + "')")
+        if ($relative.StartsWith('skill-library/', [StringComparison]::Ordinal)) {
+            $source = Join-Path (Join-Path $Repo 'Resources/SkillLibrary') $relative.Substring('skill-library/'.Length)
+        } else {
+            $source = Join-Path (Join-Path $Repo 'windows/apps/codexu-tauri/src-tauri/resources') $relative
+        }
         $length = (Get-Item -LiteralPath $source).Length
-        Sql ("INSERT INTO ``File`` (``File``, ``Component_``, ``FileName``, ``FileSize``) VALUES ('F$index', 'C$index', 'SHORT$index|" + $parts[2] + "', $length)")
+        Sql ("INSERT INTO ``File`` (``File``, ``Component_``, ``FileName``, ``FileSize``) VALUES ('F$index', 'C$index', 'SHORT$index|" + $parts[-1] + "', $length)")
         $destination = Join-Path $install $relative
         [void][IO.Directory]::CreateDirectory((Split-Path -Parent $destination))
         [IO.File]::Copy($source, $destination)
@@ -127,9 +153,9 @@ try {
     foreach ($com in @($summary, $db, $engine)) { if ($null -ne $com) { [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($com) } }
 }
 $evidence = @(Get-MsiEncodingEvidence -MsiPath $msi -SourceRoot $Repo -EvidenceDirectory $Root)
-if ($evidence.Count -ne 1 -or $evidence[0].resources.Count -ne 7) { throw 'COM output/mapping coverage mismatch.' }
+if ($evidence.Count -ne 1 -or $evidence[0].resources.Count -ne 8) { throw 'COM output/mapping coverage mismatch.' }
 $rows = @(Assert-MsiUnicodeResources -Evidence $evidence[0] -InstallRoot $install)
-if ($rows.Count -ne 7) { throw 'Native resource readback coverage mismatch.' }
+if ($rows.Count -ne 8) { throw 'Native resource readback coverage mismatch.' }
 [IO.File]::AppendAllText((Join-Path $install $rows[0].relativePath), 'changed')
 $rejected = $false
 try { $null = Assert-MsiUnicodeResources -Evidence $evidence[0] -InstallRoot $install } catch { $rejected = $true }
@@ -139,7 +165,7 @@ foreach ($bad in @('936', "936`t_ForceCodepage", "`n`n936`tOther`n")) {
     try { $null = Read-MsiCodepageExport $bad } catch { $rejected = $true }
     if (-not $rejected) { throw 'Invalid codepage export accepted.' }
 }
-Write-Output 'PASS: actual MSI COM CP936/summary1252, seven target mappings, byte mismatch refusal'
+Write-Output 'PASS: actual MSI COM CP936/summary1252, eight target mappings, byte mismatch refusal'
 '''
         with tempfile.TemporaryDirectory(prefix="agb-msi-encoding-") as temporary:
             script = Path(temporary) / "contract.ps1"
