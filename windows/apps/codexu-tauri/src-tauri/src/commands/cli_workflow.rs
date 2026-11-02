@@ -173,6 +173,44 @@ pub(crate) async fn ensure_registered_profile(
     save_preferences(&state.app_data_dir, &preferences)
 }
 
+/// The explicit Task Hub Connect action is the only lazy registration point
+/// for Companion's A–Z selector. Reads and preflights never write preferences.
+pub(crate) async fn assign_dispatch_code_for_connect(
+    state: &Arc<AppState>,
+    workflow: &WorkflowState,
+    id: u64,
+) -> Result<String, String> {
+    {
+        let config = state.config.read().await;
+        let profile = config
+            .profiles
+            .get(id)
+            .map_err(|_| "source_changed".to_string())?;
+        if profile.kind != codexu_core::local_cli::LocalCliKind::Codex {
+            return Err("hub_codex_required".into());
+        }
+    }
+    let _sessions = workflow.sessions.lock().await;
+    if workflow.quitting.load(Ordering::Acquire) {
+        return Err("app_quitting".into());
+    }
+    let mut preferences =
+        read_preferences(&state.app_data_dir).map_err(|_| "settings_unavailable".to_string())?;
+    let has_code = preferences
+        .profiles
+        .get(&id)
+        .and_then(|preference| preference.dispatch_code.as_ref())
+        .is_some();
+    let code = preferences
+        .assign_dispatch_code(id)
+        .map_err(|_| "hub_dispatch_code_unavailable".to_string())?;
+    if !has_code {
+        save_preferences(&state.app_data_dir, &preferences)
+            .map_err(|_| "save_failed".to_string())?;
+    }
+    Ok(code)
+}
+
 fn project(id: u64, preferences: &WorkflowPreferences, session: &mut Session) -> WorkflowDto {
     session.refresh();
     WorkflowDto {

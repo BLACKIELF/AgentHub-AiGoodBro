@@ -2,6 +2,7 @@ import importlib.util
 import io
 import json
 from pathlib import Path
+import re
 import runpy
 import shutil
 import sys
@@ -22,6 +23,20 @@ class Resources(unittest.TestCase):
 
     def tearDown(self):
         self.temp.cleanup()
+
+    def test_tauri_build_pins_match_source_and_generated_manifest(self):
+        output, receipt = prepare.bundle()
+        build = (prepare.REPO / 'windows/apps/codexu-tauri/src-tauri/build.rs').read_text(encoding='utf-8')
+        function = re.search(r'(?ms)^fn pin_companion_setup\(\) \{(?P<body>.*?)(?=^fn |\Z)', build)
+        self.assertIsNotNone(function, 'Companion build-pin function is missing')
+        body = function.group('body')
+        source = re.search(r'(?m)^\s*const SOURCE: &str = "([0-9a-f]{64})";$', body)
+        manifest = re.search(r'(?m)^\s*const MANIFEST: &str = "([0-9a-f]{64})";$', body)
+        self.assertIsNotNone(source, 'Companion source pin is missing')
+        self.assertIsNotNone(manifest, 'Companion manifest pin is missing')
+        self.assertEqual(source.group(1), receipt['sourceSHA256'])
+        self.assertEqual(manifest.group(1), prepare.sha(output['manifest.json']))
+        self.assertEqual(manifest.group(1), receipt['manifestSHA256'])
 
     def test_actual_payload_hash_stage_readback_and_stable_manifest(self):
         first = prepare.stage(self.output)
@@ -118,7 +133,7 @@ class Resources(unittest.TestCase):
         result = subprocess.run([sys.executable, '-I', '-B', str(launcher), '--help'], capture_output=True, timeout=5)
         self.assertEqual(result.returncode, 0)
         self.assertIn(b'cancel-reservation', result.stdout)
-        result = subprocess.run([sys.executable, '-I', '-B', str(launcher), 'run', '--request-id', 'a'*64, '--model', 'unsupported'], capture_output=True, timeout=5)
+        result = subprocess.run([sys.executable, '-I', '-B', str(launcher), 'run', '--request-id', 'a'*64, '--unlisted-option'], capture_output=True, timeout=5)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn(b'unrecognized arguments', result.stderr)
         self.assertFalse((self.output / 'config').exists())

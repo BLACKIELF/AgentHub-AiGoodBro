@@ -1,5 +1,5 @@
-//! Windows-only synthetic cases. The shared test runner must execute `cases`
-//! under the same user's non-elevated token, with its original owned Job proof.
+//! Windows-only synthetic cases. `windows_companion_receiver_contract` runs
+//! these through Desktop Owner's restricted-token/owned-Job proof when needed.
 //! No production pipe, real App, account, browser or model request is used.
 use super::*;
 use tokio::net::windows::named_pipe::ClientOptions;
@@ -136,9 +136,6 @@ fn no_background(receiver: &mut Receiver) {
     receiver.stop().unwrap();
     assert!(!receiver.active());
 }
-/// Shared cfg(test) LUA runner calls this exact production receiver path. This
-/// function intentionally is not a native-pass claim until that runner is wired
-/// into a non-ignored test and the required CI log gate.
 pub(crate) fn cases() {
     identity(unsafe { GetCurrentProcess() }, unsafe {
         GetCurrentProcessId()
@@ -166,7 +163,8 @@ pub(crate) fn cases() {
             "preflight",
             Method::Preflight {
                 selector: Selector {
-                    profile_id: 1,
+                    profile_id: Some(1),
+                    dispatch_code: None,
                     project: r"C:\synthetic\never-read".into(),
                 },
             },
@@ -387,4 +385,28 @@ pub(crate) fn cases() {
         drop(client);
     });
     no_background(&mut blocked_receiver);
+}
+
+#[test]
+fn windows_companion_receiver_contract() {
+    if !crate::desktop_owner::native_tests::run_restricted_native_fixture(
+        "companion_bridge::native_windows::native_tests::restricted_companion_fixture_entry",
+        "AIGOODBRO_COMPANION_PIPE_FIXTURE_PROOF",
+        "companion-pipe-proof.txt",
+        b"synthetic-companion-native-pass\n",
+    ) {
+        cases();
+    }
+}
+
+#[test]
+fn restricted_companion_fixture_entry() {
+    let Some(path) = std::env::var_os("AIGOODBRO_COMPANION_PIPE_FIXTURE_PROOF") else {
+        return;
+    };
+    let path = PathBuf::from(path);
+    assert!(path.is_absolute() && !path.exists());
+    assert_eq!(path.file_name().unwrap(), "companion-pipe-proof.txt");
+    cases();
+    std::fs::write(path, b"synthetic-companion-native-pass\n").unwrap();
 }

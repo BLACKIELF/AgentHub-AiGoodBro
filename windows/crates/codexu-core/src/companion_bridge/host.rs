@@ -110,7 +110,14 @@ impl<B: Backend> Bridge<B> {
             }
             return Ok((scope, None, None));
         };
-        if authority.profile_id != selector.profile_id {
+        let profile_mismatch = selector
+            .profile_id
+            .is_some_and(|profile_id| authority.profile_id != profile_id);
+        let dispatch_code_mismatch = selector
+            .dispatch_code
+            .as_deref()
+            .is_some_and(|code| authority.preference.dispatch_code.as_deref() != Some(code));
+        if profile_mismatch || dispatch_code_mismatch {
             return Err(fail("companion_scope_changed"));
         }
         let now_ms = i64::try_from(self.backend.now_ms())

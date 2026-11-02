@@ -249,3 +249,70 @@ fn changed_original_binding_during_cancel_keeps_stopped_owner_and_never_rebinds(
     slot.stop().unwrap();
     assert_eq!(drops.load(Ordering::SeqCst), 1);
 }
+
+#[cfg(windows)]
+#[test]
+fn candidate_stays_on_original_session_after_active_switch_and_rejects_replacement() {
+    struct LiveProcess;
+    impl OwnedProcess for LiveProcess {
+        fn has_exited(&mut self) -> std::io::Result<bool> {
+            Ok(false)
+        }
+        fn stop(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+        fn exit_success(&mut self) -> std::io::Result<bool> {
+            Ok(false)
+        }
+    }
+
+    let temp = tempfile::tempdir().unwrap();
+    let home_a = temp.path().join("home-a");
+    let workspace_a = temp.path().join("workspace-a");
+    let home_b = temp.path().join("home-b");
+    let workspace_b = temp.path().join("workspace-b");
+    for path in [&home_a, &workspace_a, &home_b, &workspace_b] {
+        std::fs::create_dir_all(path).unwrap();
+    }
+    let hub = HubState::default();
+    let add = |profile_id, dispatch_code: &str, home: &Path, workspace: &Path| {
+        let files =
+            HubFiles::open(temp.path(), workspace, &format!("managed-{profile_id}")).unwrap();
+        hub.insert_session_for_test(
+            TestSessionInput {
+                profile_id,
+                dispatch_code: dispatch_code.into(),
+                managed_id: format!("managed-{profile_id}"),
+                alias: format!("account-{profile_id}"),
+                identity: format!("synthetic-identity-{profile_id}"),
+                home: home.to_path_buf(),
+                workspace: workspace.to_path_buf(),
+                files: Arc::new(files),
+                endpoint: "127.0.0.1:1".parse::<SocketAddr>().unwrap(),
+                token: "synthetic-token".into(),
+                process: Box::new(LiveProcess),
+            },
+            profile_id == 2,
+        )
+        .unwrap()
+    };
+    let session_a = add(1, "A", &home_a, &workspace_a);
+    let session_b = add(2, "B", &home_b, &workspace_b);
+    let mut inner = hub.inner.lock().unwrap();
+    assert_eq!(inner.active_session_id.as_deref(), Some(session_b.as_str()));
+    let key_a = session_key_by_id(&inner, &session_a).unwrap();
+    let epoch_a = inner.sessions.get(&key_a).unwrap().companion.epoch.clone();
+    assert_eq!(
+        candidate_session_key(&inner, &session_a, &epoch_a).unwrap(),
+        key_a
+    );
+    assert_eq!(
+        candidate_session_key(&inner, &session_a, "replaced-epoch").unwrap_err(),
+        "companion_scope_changed"
+    );
+    inner.sessions.remove(&key_a);
+    assert_eq!(
+        candidate_session_key(&inner, &session_a, &epoch_a).unwrap_err(),
+        "companion_scope_required"
+    );
+}

@@ -410,9 +410,12 @@ async fn cases() {
 
 #[test]
 fn windows_original_owner_pipe_contract_and_no_replay() {
-    if elevated(token().0) {
-        run_restricted_fixture();
-    } else {
+    if !run_restricted_native_fixture(
+        "desktop_owner::native_tests::restricted_owner_fixture_entry",
+        "AIGOODBRO_OWNER_PIPE_FIXTURE_PROOF",
+        "owner-pipe-proof.txt",
+        b"synthetic-owner-native-pass\n",
+    ) {
         tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
@@ -515,8 +518,38 @@ impl Drop for Child {
         }
     }
 }
-fn run_restricted_fixture() {
+/// Run a named native fixture under this user's restricted token and an owned
+/// Job, using the exact process-lifetime proof shared by native pipe tests.
+/// Returns false only when the current process is already non-elevated.
+pub(crate) fn run_restricted_native_fixture(
+    test_name: &str,
+    proof_environment: &str,
+    proof_filename: &str,
+    proof_contents: &[u8],
+) -> bool {
+    assert!(
+        !test_name.is_empty()
+            && test_name
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"_:".contains(&b)),
+        "native fixture filter must be a test path"
+    );
+    assert!(
+        !proof_environment.is_empty()
+            && proof_environment
+                .bytes()
+                .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_'),
+        "native proof environment must be a fixed uppercase name"
+    );
+    assert_eq!(
+        PathBuf::from(proof_filename).file_name(),
+        Some(std::ffi::OsStr::new(proof_filename)),
+        "native proof must use a leaf filename"
+    );
     let original = token();
+    if !elevated(original.0) {
+        return false;
+    }
     let mut h = ptr::null_mut();
     assert_ne!(
         unsafe {
@@ -539,21 +572,15 @@ fn run_restricted_fixture() {
     let restricted = Owned(h);
     assert!(!elevated(restricted.0));
     let dir = tempfile::tempdir().unwrap();
-    let proof = dir.path().join("owner-pipe-proof.txt");
+    let proof = dir.path().join(proof_filename);
     let exe = std::env::current_exe().unwrap();
     let app: Vec<u16> = exe.as_os_str().encode_wide().chain(Some(0)).collect();
-    let mut cmd: Vec<u16> = format!(
-        "\"{}\" --exact desktop_owner::native_tests::restricted_owner_fixture_entry --nocapture",
-        exe.display()
-    )
-    .encode_utf16()
-    .chain(Some(0))
-    .collect();
+    let mut cmd: Vec<u16> = format!("\"{}\" --exact {test_name} --nocapture", exe.display())
+        .encode_utf16()
+        .chain(Some(0))
+        .collect();
     // Explicit OS-only environment; no account/model/auth variables inherited.
-    let mut entries = vec![(
-        "AIGOODBRO_OWNER_PIPE_FIXTURE_PROOF".to_owned(),
-        proof.as_os_str().to_owned(),
-    )];
+    let mut entries = vec![(proof_environment.to_owned(), proof.as_os_str().to_owned())];
     for key in ["SystemRoot", "WINDIR", "TEMP", "TMP"] {
         if let Some(v) = std::env::var_os(key) {
             entries.push((key.into(), v));
@@ -622,10 +649,7 @@ fn run_restricted_fixture() {
     let mut code = 1;
     assert_ne!(unsafe { GetExitCodeProcess(child.process.0, &mut code) }, 0);
     assert_eq!(code, 0);
-    assert_eq!(
-        std::fs::read(&proof).unwrap(),
-        b"synthetic-owner-native-pass\n"
-    );
+    assert_eq!(std::fs::read(&proof).unwrap(), proof_contents);
     let end = Instant::now() + Duration::from_secs(3);
     loop {
         let mut a = Accounting::default();
@@ -647,4 +671,5 @@ fn run_restricted_fixture() {
         assert!(Instant::now() < end);
         std::thread::sleep(Duration::from_millis(5));
     }
+    true
 }

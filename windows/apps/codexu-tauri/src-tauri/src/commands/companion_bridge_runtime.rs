@@ -133,8 +133,23 @@ struct Candidate {
     backend: Arc<AppBackend>,
     app_source: CurrentAppBinding,
     root: PathBuf,
+    // Pinned at prepare; later UI selection changes never move this binding.
+    session_id: String,
     epoch: String,
     bundle: String,
+}
+#[cfg(windows)]
+fn candidate_session_key(
+    inner: &Inner,
+    session_id: &str,
+    epoch: &str,
+) -> Result<SessionKey, String> {
+    let key = session_key_by_id(inner, session_id).ok_or("companion_scope_required")?;
+    let session = inner.sessions.get(&key).ok_or("companion_scope_required")?;
+    if session.companion.epoch != epoch {
+        return Err("companion_scope_changed".into());
+    }
+    Ok(key)
 }
 #[cfg(windows)]
 impl Candidate {
@@ -144,11 +159,15 @@ impl Candidate {
             .check_runtime()
             .map_err(|e| e.code.to_owned())?;
         let mut inner = self.backend.lock().map_err(|e| e.code.to_owned())?;
-        let session = inner.session.as_mut().ok_or("companion_scope_required")?;
+        let key = candidate_session_key(&inner, &self.session_id, &self.epoch)?;
+        let session = inner
+            .sessions
+            .get_mut(&key)
+            .ok_or("companion_scope_required")?;
         ensure_live(session).map_err(|e| e.code.to_owned())?;
-        if session.companion.epoch != self.epoch {
-            return Err("companion_scope_changed".into());
-        }
+        self.backend
+            .validate_session_identity(session)
+            .map_err(|e| e.code.to_owned())?;
         Ok(())
     }
     fn fingerprint(&self) -> String {
@@ -161,7 +180,8 @@ impl Candidate {
         )
     }
     fn same(&self, other: &Self) -> bool {
-        self.fingerprint() == other.fingerprint()
+        self.session_id == other.session_id
+            && self.fingerprint() == other.fingerprint()
             && self.root == other.root
             && self.backend.python.path == other.backend.python.path
     }
@@ -317,11 +337,19 @@ impl CompanionRuntime {
             self.owned_domains.clone(),
             python,
         )?);
-        let epoch = {
+        let (session_id, epoch) = {
             let mut inner = backend.lock().map_err(|e| e.code.to_owned())?;
-            let session = inner.session.as_mut().ok_or("companion_scope_required")?;
+            let session_id = inner
+                .active_session_id
+                .clone()
+                .ok_or("companion_scope_required")?;
+            let key = session_key_by_id(&inner, &session_id).ok_or("companion_scope_required")?;
+            let session = inner
+                .sessions
+                .get_mut(&key)
+                .ok_or("companion_scope_required")?;
             ensure_live(session).map_err(|e| e.code.to_owned())?;
-            session.companion.epoch.clone()
+            (session_id, session.companion.epoch.clone())
         };
         // The only preparation write is under fixed, native App data. It is
         // not an App source binding and never writes the user's Skill target.
@@ -331,6 +359,7 @@ impl CompanionRuntime {
             backend,
             app_source,
             root,
+            session_id,
             epoch,
             bundle: pin.sha256().into(),
         })

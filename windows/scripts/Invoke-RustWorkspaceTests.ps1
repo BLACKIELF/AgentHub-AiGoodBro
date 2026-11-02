@@ -39,7 +39,11 @@ try {
     }
 
     [Environment]::SetEnvironmentVariable('AIGB_WINDOWS_FAKECLI_PATH', $fakeCliPath, 'Process')
-    & cargo "+$Toolchain" test --workspace --locked
+    $companionBridgeFilter = 'windows_python_receiver_app_backend_routes_two_sessions_and_status_after_disconnect_does_not_repost'
+    & cargo "+$Toolchain" test --locked -p codexu-tauri $companionBridgeFilter -- --nocapture
+    if ($LASTEXITCODE -ne 0) { throw ('Windows Companion bridge E2E failed with exit code ' + $LASTEXITCODE) }
+
+    & cargo "+$Toolchain" test --workspace --locked -- --skip $companionBridgeFilter
     if ($LASTEXITCODE -ne 0) { throw ('Windows Rust workspace tests failed with exit code ' + $LASTEXITCODE) }
 } finally {
     [Environment]::SetEnvironmentVariable('AIGB_WINDOWS_FAKECLI_PATH', $previousFakeCliPath, 'Process')

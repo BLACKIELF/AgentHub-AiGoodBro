@@ -6,7 +6,10 @@ pub const MAX_FRAME: usize = 96 * 1024;
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Selector {
-    pub profile_id: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile_id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dispatch_code: Option<String>,
     pub project: String,
 }
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -56,7 +59,14 @@ impl Intent {
 }
 impl Selector {
     pub(super) fn validate(&self) -> Result<()> {
-        if self.profile_id == 0
+        let has_profile_id = self.profile_id.is_some_and(|id| id > 0);
+        let has_dispatch_code = self
+            .dispatch_code
+            .as_deref()
+            .is_some_and(crate::workflow_execution::valid_dispatch_code);
+        if has_profile_id == has_dispatch_code
+            || self.profile_id.is_some_and(|id| id == 0)
+            || self.dispatch_code.is_some() && !has_dispatch_code
             || self.project.is_empty()
             || self.project.len() > 4096
             || self.project.contains(['\0', '\n', '\r'])

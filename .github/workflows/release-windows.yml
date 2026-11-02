@@ -64,6 +64,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Prepare the pinned Companion test Python
+        shell: pwsh
+        run: .\windows\scripts\Prepare-CompanionTestPython.ps1
       - name: Initialize task-owned Go directories
         shell: pwsh
         run: |

@@ -12,7 +12,7 @@ export function parseDispatchWindow(raw: unknown): DispatchWindow {
   }
   return w;
 }
-export type WorkflowPreference = { participating: boolean; model: string | null; effort: string | null; revision: number; dispatch_window?: DispatchWindow | null };
+export type WorkflowPreference = { participating: boolean; model: string | null; effort: string | null; revision: number; dispatch_code?: string | null; dispatch_window?: DispatchWindow | null };
 export type WorkflowPhase = 'idle' | 'checking' | 'running' | 'exited' | 'stopped' | 'failed';
 export type AccountWorkflowState = { profile_id: string; preference: WorkflowPreference; phase: WorkflowPhase; started_at: number | null; supported: boolean };
 export type WorkflowModel = { id: string; label: string; efforts: string[]; default_effort: string; is_default: boolean };
@@ -26,6 +26,7 @@ export function parseWorkflowState(raw: unknown, id: string): AccountWorkflowSta
   if (value.profile_id !== id || typeof value.supported !== 'boolean' || !['idle', 'checking', 'running', 'exited', 'stopped', 'failed'].includes(value.phase)
     || !p || typeof p.participating !== 'boolean' || !Number.isSafeInteger(p.revision) || p.revision < 0
     || !(p.model === null || validModel(p.model)) || !(p.effort === null || validEffort(p.effort)) || (p.model === null && p.effort !== null)
+    || !(p.dispatch_code == null || typeof p.dispatch_code === 'string' && /^[A-Z]$/.test(p.dispatch_code))
     || !(value.started_at === null || Number.isSafeInteger(value.started_at))) throw new Error('Invalid workflow');
   if (p.dispatch_window != null) parseDispatchWindow(p.dispatch_window);
   return value;

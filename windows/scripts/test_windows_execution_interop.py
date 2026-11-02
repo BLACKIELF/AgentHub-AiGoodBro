@@ -34,8 +34,8 @@ def main() -> None:
             )
 
         cases = json.loads(fixture.read_text(encoding="utf-8"))["cases"]
-        if len(cases) != 3:
-            raise RuntimeError(f"Rust emitted {len(cases)} cases; expected 3")
+        if len(cases) != 4:
+            raise RuntimeError(f"Rust emitted {len(cases)} cases; expected 4")
         env["AIGB_WINDOWS_EXECUTION_FIXTURE"] = str(fixture)
         subprocess.run(
             [

@@ -9,7 +9,10 @@ $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\..'))
 $entry = Join-Path $root 'windows\scripts\Invoke-ReleaseReadiness.ps1'
 $packageEntry = Join-Path $root 'scripts\build-windows-release.ps1'
 $workspaceTestsEntry = Join-Path $root 'windows\scripts\Invoke-RustWorkspaceTests.ps1'
+$companionTestPythonEntry = Join-Path $root 'windows\scripts\Prepare-CompanionTestPython.ps1'
 $ciWorkflow = Join-Path $root '.github\workflows\ci.yml'
+$releaseWindowsWorkflow = Join-Path $root '.github\workflows\release-windows.yml'
+$releasePackagesWorkflow = Join-Path $root '.github\workflows\release-packages.yml'
 & python -B (Join-Path $root 'tests\test_windows_branding.py')
 if ($LASTEXITCODE -ne 0) { throw 'Windows branding or upgrade identity validation failed.' }
 $null = Get-Command pwsh -CommandType Application -ErrorAction Stop
@@ -27,12 +30,48 @@ function Read-ScriptAst {
 $entryAst = Read-ScriptAst $entry
 $packageAst = Read-ScriptAst $packageEntry
 $workspaceTestsAst = Read-ScriptAst $workspaceTestsEntry
+$null = Read-ScriptAst $companionTestPythonEntry
 $null = Read-ScriptAst (Join-Path $root 'windows\scripts\Prepare-TokenMonitorResources.ps1')
 $workspaceTestsSource = Get-Content -LiteralPath $workspaceTestsEntry -Raw -Encoding UTF8
+$companionTestPythonSource = Get-Content -LiteralPath $companionTestPythonEntry -Raw -Encoding UTF8
 $packageSource = Get-Content -LiteralPath $packageEntry -Raw -Encoding UTF8
 $ciSource = Get-Content -LiteralPath $ciWorkflow -Raw -Encoding UTF8
-Assert-True ($workspaceTestsSource.Contains('AIGB_WINDOWS_FAKECLI_PATH') -and $workspaceTestsSource.Contains('windows_fake_cli.exe') -and $workspaceTestsSource.Contains('build --locked -p codexu-core --example windows_fake_cli') -and $workspaceTestsSource.Contains('test --workspace --locked')) 'The native workspace gate must build the Windows fake CLI, set its explicit executable path, and run the full locked workspace.'
+$releaseWindowsSource = Get-Content -LiteralPath $releaseWindowsWorkflow -Raw -Encoding UTF8
+$releasePackagesSource = Get-Content -LiteralPath $releasePackagesWorkflow -Raw -Encoding UTF8
+Assert-True ($workspaceTestsSource.Contains('AIGB_WINDOWS_FAKECLI_PATH') -and $workspaceTestsSource.Contains('windows_fake_cli.exe') -and $workspaceTestsSource.Contains('build --locked -p codexu-core --example windows_fake_cli') -and $workspaceTestsSource.Contains('test --locked -p codexu-tauri $companionBridgeFilter -- --nocapture') -and $workspaceTestsSource.Contains('test --workspace --locked -- --skip $companionBridgeFilter')) 'The native workspace gate must build the Windows fake CLI, explicitly run the Companion bridge E2E once, and then run the remaining locked workspace.'
 Assert-True ($packageSource.Contains('Invoke-RustWorkspaceTests.ps1') -and $ciSource.Contains('Invoke-RustWorkspaceTests.ps1')) 'CI and standalone Windows package validation must use the same native workspace gate.'
+$expectedCompanionWheelName = '(''tzdata-'' + $tzdataVersion + ''-py2.py3-none-any.whl'')'
+Assert-True ($companionTestPythonSource.Contains($expectedCompanionWheelName) -and $companionTestPythonSource.Contains('$tempDirectory = Join-Path $env:RUNNER_TEMP') -and $companionTestPythonSource.Contains('New-Item -ItemType Directory -Path $tempDirectory -ErrorAction Stop') -and $companionTestPythonSource.Contains('Remove-Item -LiteralPath $tempDirectory -Recurse -Force') -and $companionTestPythonSource.Contains('0a10eec6e13ef16b627fabed9a5f2ba61a62b1c67f327305f4e7e412a70b4aec') -and $companionTestPythonSource.Contains('AIGB_WINDOWS_COMPANION_TEST_PYTHON') -and $companionTestPythonSource.Contains('ZoneInfo(''Asia/Shanghai'')')) 'The Companion test interpreter must use the fixed, hash-verified tzdata wheel with a pip-compatible filename in a private temporary directory that is cleaned, then pass the verified absolute Python path.'
+Assert-True (-not $workspaceTestsSource.Contains('pip install') -and -not $workspaceTestsSource.Contains('Prepare-CompanionTestPython.ps1')) 'The ordinary workspace-test script must not install dependencies or access the network.'
+$windowsRustJob = [regex]::Match($ciSource, '(?ms)^  windows-rust-format:\r?\n(?<body>.*?)(?=^  [A-Za-z0-9_-]+:\s*$|\z)')
+Assert-True $windowsRustJob.Success 'The Windows Rust CI job must exist for source preparation ordering checks.'
+$windowsRustJobSource = $windowsRustJob.Groups['body'].Value
+$releaseWindowsJob = [regex]::Match($releaseWindowsSource, '(?ms)^  windows:\r?\n(?<body>.*?)(?=^  [A-Za-z0-9_-]+:\s*$|\z)')
+$releasePackagesJob = [regex]::Match($releasePackagesSource, '(?ms)^  windows:\r?\n(?<body>.*?)(?=^  [A-Za-z0-9_-]+:\s*$|\z)')
+Assert-True ($releaseWindowsJob.Success -and $releasePackagesJob.Success) 'Both Windows release workflows must expose their native jobs for test Python prerequisite checks.'
+function Assert-CompanionTestPythonOrder {
+    param([string] $Source, [string] $Gate, [string] $Name)
+    $setup = $Source.IndexOf('actions/setup-python@v5', [StringComparison]::Ordinal)
+    $version = $Source.IndexOf('python-version: "3.12"', [StringComparison]::Ordinal)
+    $prepare = $Source.IndexOf('Prepare-CompanionTestPython.ps1', [StringComparison]::Ordinal)
+    $gateIndex = $Source.IndexOf($Gate, [StringComparison]::Ordinal)
+    Assert-True ($setup -ge 0 -and $version -gt $setup -and $prepare -gt $version -and $gateIndex -gt $prepare) ($Name + ' must prepare the pinned Python after setup-python and before its native gate.')
+}
+Assert-CompanionTestPythonOrder $windowsRustJobSource 'Invoke-RustWorkspaceTests.ps1' 'windows-rust-format'
+Assert-CompanionTestPythonOrder $releaseWindowsJob.Groups['body'].Value 'Invoke-ReleaseReadiness.ps1' 'release-windows'
+Assert-CompanionTestPythonOrder $releasePackagesJob.Groups['body'].Value 'build-windows-release.ps1' 'release-packages'
+$companionBridgeFilter = 'windows_python_receiver_app_backend_routes_two_sessions_and_status_after_disconnect_does_not_repost'
+$focusedBridgeGate = $workspaceTestsSource.IndexOf('test --locked -p codexu-tauri $companionBridgeFilter -- --nocapture', [StringComparison]::Ordinal)
+$fullWorkspaceGate = $workspaceTestsSource.IndexOf('test --workspace --locked -- --skip $companionBridgeFilter', [StringComparison]::Ordinal)
+Assert-True ($focusedBridgeGate -ge 0 -and $fullWorkspaceGate -gt $focusedBridgeGate -and $workspaceTestsSource.Contains($companionBridgeFilter)) 'The Windows Companion bridge E2E must use its frozen exact filter before the remaining workspace suite.'
+$companionPrepareSteps = [regex]::Matches($windowsRustJobSource, '(?m)^      - name: Prepare the pinned Windows Companion Skill resources\s*$')
+$ps51ContractStep = [regex]::Match($windowsRustJobSource, '(?m)^      - name: Test native visual script contracts with Windows PowerShell 5\.1\s*$')
+$ps7ContractStep = [regex]::Match($windowsRustJobSource, '(?m)^      - name: Test native visual script contracts with PowerShell 7\s*$')
+Assert-True ($companionPrepareSteps.Count -eq 1) 'The Windows Rust job must generate and verify its Companion payload only once.'
+Assert-True ($ps51ContractStep.Success -and $ps7ContractStep.Success -and $companionPrepareSteps[0].Index -lt $ps51ContractStep.Index -and $companionPrepareSteps[0].Index -lt $ps7ContractStep.Index) 'Pinned Companion payloads must be prepared and verified before both PowerShell contract suites enumerate packaged resources.'
+$companionGenerateCommands = [regex]::Matches($windowsRustJobSource, '(?m)^          python -B windows/companion/prepare\.py\s*$')
+$companionVerifyCommands = [regex]::Matches($windowsRustJobSource, '(?m)^          python -B windows/companion/prepare\.py --verify-only\s*$')
+Assert-True ($companionGenerateCommands.Count -eq 1 -and $companionVerifyCommands.Count -eq 1) 'The Windows Rust job must generate Companion resources once and verify that same payload.'
 function Import-TestedFunction {
     param($Ast, [string] $Name)
     $definition = $Ast.Find({ param($node)

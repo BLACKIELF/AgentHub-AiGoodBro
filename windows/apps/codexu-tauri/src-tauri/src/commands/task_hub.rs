@@ -1,7 +1,7 @@
 //! A narrow native client for the existing Companion/Hub state machine.
 //! No bearer token, command, URL or raw account identity crosses this IPC.
 use super::cli_workflow::{
-    console::{lock_executable, OwnedConsole},
+    console::{lock_executable, OwnedConsole, OwnedProcess},
     read_preferences,
 };
 use crate::{app_state::AppState, native_services::NativeServices};
@@ -28,6 +28,8 @@ use std::{
 };
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::DialogExt;
+
+const MAX_HUB_SESSIONS: usize = 26;
 
 #[path = "companion_bridge_backend.rs"]
 pub(super) mod companion_bridge_backend;
@@ -129,31 +131,92 @@ impl ProbeOwnerStore {
 #[derive(Default)]
 struct Inner {
     workspace: Option<PathBuf>,
-    session: Option<Session>,
+    sessions: BTreeMap<SessionKey, Session>,
+    active_session_id: Option<String>,
+}
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct SessionKey {
+    profile_id: u64,
+    home: PathBuf,
+    workspace: PathBuf,
+}
+impl SessionKey {
+    fn new(profile_id: u64, home: &Path, workspace: &Path) -> Result<Self, String> {
+        if profile_id == 0 {
+            return Err(fail("hub_invalid_account"));
+        }
+        Ok(Self {
+            profile_id,
+            home: home
+                .canonicalize()
+                .map_err(|_| fail("hub_directory_unavailable"))?,
+            workspace: workspace
+                .canonicalize()
+                .map_err(|_| fail("hub_directory_unavailable"))?,
+        })
+    }
 }
 struct Session {
+    session_id: String,
     quitting: Arc<AtomicBool>,
-    process: OwnedConsole,
+    process: Box<dyn OwnedProcess>,
     files: Arc<HubFiles>,
     endpoint: SocketAddr,
     token: String,
     needs_exit: bool,
     profile_id: u64,
+    dispatch_code: String,
     managed_id: String,
     alias: String,
     identity: String,
     home: PathBuf,
+    workspace: PathBuf,
     leases: BTreeMap<String, ManagedActivityGuard>,
     pending: BTreeMap<String, (Value, String, Value)>,
     companion: companion_bridge_backend::CompanionSession,
+}
+impl Session {
+    fn key(&self) -> SessionKey {
+        SessionKey {
+            profile_id: self.profile_id,
+            home: self.home.clone(),
+            workspace: self.workspace.clone(),
+        }
+    }
+    fn has_unresolved_ownership(&self) -> bool {
+        self.needs_exit
+            || self.companion.has_unresolved()
+            || !self.leases.is_empty()
+            || !self.pending.is_empty()
+    }
+    fn blocks_disconnect(&self, overview: &Value) -> bool {
+        self.has_unresolved_ownership()
+            || overview["tasks"].as_array().is_none_or(|tasks| {
+                tasks
+                    .iter()
+                    .any(|task| !task["state"].as_str().is_some_and(terminal))
+            })
+    }
+}
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HubSessionView {
+    session_id: String,
+    profile_id: String,
+    dispatch_code: String,
+    workspace: Option<String>,
 }
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HubView {
     supported: bool,
     connected: bool,
+    session_id: Option<String>,
     workspace: Option<String>,
+    selected_workspace: Option<String>,
     profile_id: Option<String>,
+    dispatch_code: Option<String>,
+    sessions: Vec<HubSessionView>,
     overview: Option<Value>,
 }
 fn definite_rejection(code: &str) -> bool {
@@ -187,6 +250,63 @@ impl HubState {
     pub(super) fn probe_owner_store(&self) -> Arc<ProbeOwnerStore> {
         self.retained_probes.clone()
     }
+
+    #[cfg(test)]
+    pub(crate) fn insert_session_for_test(
+        &self,
+        input: TestSessionInput,
+        active: bool,
+    ) -> Result<String, String> {
+        if !codexu_core::workflow_execution::valid_dispatch_code(&input.dispatch_code) {
+            return Err(fail("hub_invalid_account"));
+        }
+        let key = SessionKey::new(input.profile_id, &input.home, &input.workspace)?;
+        let session_id = nonce()?;
+        let session = Session {
+            session_id: session_id.clone(),
+            quitting: self.quitting.clone(),
+            process: input.process,
+            files: input.files,
+            endpoint: input.endpoint,
+            token: input.token,
+            needs_exit: false,
+            profile_id: input.profile_id,
+            dispatch_code: input.dispatch_code,
+            managed_id: input.managed_id,
+            alias: input.alias,
+            identity: input.identity,
+            home: key.home.clone(),
+            workspace: key.workspace.clone(),
+            leases: BTreeMap::new(),
+            pending: BTreeMap::new(),
+            companion: companion_bridge_backend::CompanionSession::new()?,
+        };
+        let mut inner = self.inner.lock().map_err(|_| fail("hub_busy"))?;
+        if inner.sessions.contains_key(&key) {
+            return Err(fail("hub_session_conflict"));
+        }
+        ensure_session_capacity(&inner)?;
+        inner.sessions.insert(key, session);
+        if active {
+            inner.active_session_id = Some(session_id.clone());
+        }
+        Ok(session_id)
+    }
+}
+
+#[cfg(test)]
+pub(crate) struct TestSessionInput {
+    pub profile_id: u64,
+    pub dispatch_code: String,
+    pub managed_id: String,
+    pub alias: String,
+    pub identity: String,
+    pub home: PathBuf,
+    pub workspace: PathBuf,
+    pub files: Arc<HubFiles>,
+    pub endpoint: SocketAddr,
+    pub token: String,
+    pub process: Box<dyn OwnedProcess>,
 }
 fn fail(code: &str) -> String {
     code.to_owned()
@@ -216,6 +336,12 @@ fn valid_id(value: &str) -> bool {
         && value
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
+}
+fn is_digest(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 fn endpoint(value: &Value, pid: u32) -> Result<SocketAddr, String> {
     if value["schemaVersion"] != 1 || value["pid"].as_u64() != Some(pid as u64) {
@@ -458,26 +584,136 @@ fn overview_until(session: &mut Session, deadline: Option<Instant>) -> Result<Va
     session.needs_exit |= session.companion.has_unresolved();
     Ok(value)
 }
+
+fn session_key_by_id(inner: &Inner, session_id: &str) -> Option<SessionKey> {
+    inner
+        .sessions
+        .iter()
+        .find(|(_, session)| session.session_id == session_id)
+        .map(|(key, _)| key.clone())
+}
+
+fn session_by_id_mut<'a>(
+    inner: &'a mut Inner,
+    session_id: &str,
+) -> Result<&'a mut Session, String> {
+    if !is_digest(session_id) {
+        return Err(fail("hub_session_unavailable"));
+    }
+    inner
+        .sessions
+        .values_mut()
+        .find(|session| session.session_id == session_id)
+        .ok_or_else(|| fail("hub_session_unavailable"))
+}
+
+fn ensure_session_capacity(inner: &Inner) -> Result<(), String> {
+    if inner.sessions.len() >= MAX_HUB_SESSIONS {
+        Err(fail("hub_session_limit"))
+    } else {
+        Ok(())
+    }
+}
+
+fn reap_confirmed_exited_sessions(inner: &mut Inner) {
+    let exited: Vec<_> = inner
+        .sessions
+        .iter_mut()
+        .filter_map(|(key, session)| {
+            (session
+                .process
+                .has_exited()
+                .is_ok_and(|has_exited| has_exited)
+                && !session.has_unresolved_ownership())
+            .then(|| key.clone())
+        })
+        .collect();
+    for key in exited {
+        inner.sessions.remove(&key);
+    }
+    if inner
+        .active_session_id
+        .as_deref()
+        .is_some_and(|id| session_key_by_id(inner, id).is_none())
+    {
+        inner.active_session_id = None;
+    }
+}
+
 fn view(inner: &mut Inner) -> Result<HubView, String> {
-    if let Some(session) = inner.session.as_mut() {
-        if session
-            .process
-            .has_exited()
-            .map_err(|_| fail("hub_process_unknown"))?
-        {
-            inner.session = None;
+    reap_confirmed_exited_sessions(inner);
+    let mut active_id = inner.active_session_id.clone();
+    let active_key = active_id
+        .as_deref()
+        .and_then(|session_id| session_key_by_id(inner, session_id));
+    if active_id.is_some() && active_key.is_none() {
+        inner.active_session_id = None;
+        active_id = None;
+    }
+    if let Some(key) = active_key.as_ref() {
+        let remove_exited = {
+            let session = inner
+                .sessions
+                .get_mut(key)
+                .ok_or_else(|| fail("hub_session_unavailable"))?;
+            if !session
+                .process
+                .has_exited()
+                .map_err(|_| fail("hub_process_unknown"))?
+            {
+                false
+            } else if session.has_unresolved_ownership() {
+                return Err(fail("hub_process_unknown"));
+            } else {
+                true
+            }
+        };
+        if remove_exited {
+            inner.sessions.remove(key);
+            inner.active_session_id = None;
+            active_id = None;
         }
     }
-    let data = inner.session.as_mut().map(overview).transpose()?;
+    let data = if let Some(session_id) = active_id.as_deref() {
+        Some(overview(session_by_id_mut(inner, session_id)?)?)
+    } else {
+        None
+    };
+    let active = active_id.as_deref().and_then(|session_id| {
+        inner
+            .sessions
+            .values()
+            .find(|session| session.session_id == session_id)
+    });
+    let sessions = inner
+        .sessions
+        .values()
+        .map(|session| HubSessionView {
+            session_id: session.session_id.clone(),
+            profile_id: session.profile_id.to_string(),
+            dispatch_code: session.dispatch_code.clone(),
+            workspace: session
+                .workspace
+                .file_name()
+                .map(|name| name.to_string_lossy().to_string()),
+        })
+        .collect();
     Ok(HubView {
         supported: cfg!(windows),
-        connected: inner.session.is_some(),
-        workspace: inner
+        connected: active.is_some(),
+        session_id: active.map(|session| session.session_id.clone()),
+        workspace: active
+            .and_then(|session| session.workspace.file_name())
+            .or_else(|| inner.workspace.as_ref().and_then(|path| path.file_name()))
+            .map(|name| name.to_string_lossy().to_string()),
+        selected_workspace: inner
             .workspace
             .as_ref()
-            .and_then(|p| p.file_name())
-            .map(|s| s.to_string_lossy().to_string()),
-        profile_id: inner.session.as_ref().map(|s| s.profile_id.to_string()),
+            .and_then(|path| path.file_name())
+            .map(|name| name.to_string_lossy().to_string()),
+        profile_id: active.map(|session| session.profile_id.to_string()),
+        dispatch_code: active.map(|session| session.dispatch_code.clone()),
+        sessions,
         overview: data,
     })
 }
@@ -534,8 +770,20 @@ fn snapshot(
     Ok((account, value))
 }
 #[tauri::command]
-pub async fn get_task_hub(hub: State<'_, HubState>) -> Result<HubView, String> {
-    run(&hub, view).await
+pub async fn get_task_hub(
+    hub: State<'_, HubState>,
+    session_id: Option<String>,
+) -> Result<HubView, String> {
+    run(&hub, move |inner| {
+        if let Some(session_id) = session_id {
+            if session_key_by_id(inner, &session_id).is_none() {
+                return Err(fail("hub_session_unavailable"));
+            }
+            inner.active_session_id = Some(session_id);
+        }
+        view(inner)
+    })
+    .await
 }
 #[tauri::command]
 pub async fn select_task_hub_workspace(
@@ -555,9 +803,6 @@ pub async fn select_task_hub_workspace(
     let path = codexu_core::local_cli::launch::checked_directory(&path)
         .map_err(|_| fail("hub_directory_unavailable"))?;
     run(&hub, move |inner| {
-        if inner.session.is_some() {
-            return Err(fail("hub_disconnect_required"));
-        }
         inner.workspace = Some(path);
         view(inner)
     })
@@ -569,6 +814,7 @@ pub async fn connect_task_hub(
     state: State<'_, Arc<AppState>>,
     services: State<'_, NativeServices>,
     hub: State<'_, HubState>,
+    workflow: State<'_, super::cli_workflow::WorkflowState>,
     profile_id: String,
 ) -> Result<HubView, String> {
     if !cfg!(windows) {
@@ -577,7 +823,12 @@ pub async fn connect_task_hub(
     let id = profile_id
         .parse::<u64>()
         .map_err(|_| fail("hub_invalid_account"))?;
+    let dispatch_code =
+        super::cli_workflow::assign_dispatch_code_for_connect(&state, &workflow, id).await?;
     let (_, root, pref) = profile(&state, id).await?;
+    if pref.dispatch_code.as_deref() != Some(dispatch_code.as_str()) {
+        return Err(fail("hub_dispatch_code_unavailable"));
+    }
     let manager = services.statistics_accounts()?;
     let roots = manager
         .managed_history_roots()
@@ -609,13 +860,28 @@ pub async fn connect_task_hub(
     let quitting = hub.quitting.clone();
     let retained_probes = hub.retained_probes.clone();
     let work = move |inner: &mut Inner| {
-        if inner.session.is_some() {
-            return Err(fail("hub_already_connected"));
-        }
         let workspace = inner
             .workspace
             .clone()
             .ok_or_else(|| fail("hub_directory_required"))?;
+        let key = SessionKey::new(id, &root, &workspace)?;
+        if let Some(session) = inner.sessions.get_mut(&key) {
+            match session.process.has_exited() {
+                Ok(false) => {
+                    let session_id = session.session_id.clone();
+                    inner.active_session_id = Some(session_id);
+                    return view(inner);
+                }
+                Ok(true) if session.has_unresolved_ownership() => {
+                    return Err(fail("hub_process_unknown"));
+                }
+                Err(_) => return Err(fail("hub_process_unknown")),
+                Ok(true) => {}
+            }
+            inner.sessions.remove(&key);
+        }
+        reap_confirmed_exited_sessions(inner);
+        ensure_session_capacity(inner)?;
         if !retained_probes.ensure_clear(id, &root) {
             return Err(fail("hub_start_unconfirmed"));
         }
@@ -646,6 +912,7 @@ pub async fn connect_task_hub(
             return Err(fail("app_quitting"));
         }
         let companion = companion_bridge_backend::CompanionSession::new()?;
+        let session_id = nonce()?;
         let resources: Arc<dyn Send + Sync> = Arc::new((Arc::new(cli_guard), files.clone()));
         let mut process = match OwnedConsole::start_registered_owned(
             &helper,
@@ -694,22 +961,29 @@ pub async fn connect_task_hub(
                 return Err(e);
             }
         };
-        inner.session = Some(Session {
-            quitting,
-            process,
-            files,
-            endpoint,
-            token,
-            needs_exit: false,
-            profile_id: id,
-            managed_id: managed,
-            alias,
-            identity: account.identity_hash,
-            home: account.home,
-            leases: BTreeMap::new(),
-            pending: BTreeMap::new(),
-            companion,
-        });
+        inner.sessions.insert(
+            key.clone(),
+            Session {
+                session_id: session_id.clone(),
+                quitting,
+                process: Box::new(process),
+                files,
+                endpoint,
+                token,
+                needs_exit: false,
+                profile_id: id,
+                dispatch_code,
+                managed_id: managed,
+                alias,
+                identity: account.identity_hash,
+                home: key.home.clone(),
+                workspace: key.workspace.clone(),
+                leases: BTreeMap::new(),
+                pending: BTreeMap::new(),
+                companion,
+            },
+        );
+        inner.active_session_id = Some(session_id);
         view(inner)
     };
     run(&hub, work).await
@@ -748,14 +1022,19 @@ pub async fn task_hub_action(
     state: State<'_, Arc<AppState>>,
     services: State<'_, NativeServices>,
     hub: State<'_, HubState>,
+    session_id: String,
     action: HubAction,
 ) -> Result<HubView, String> {
+    if !is_digest(&session_id) {
+        return Err(fail("hub_session_unavailable"));
+    }
     let id = {
         let inner = hub.inner.try_lock().map_err(|_| fail("hub_busy"))?;
         inner
-            .session
-            .as_ref()
-            .ok_or_else(|| fail("hub_not_connected"))?
+            .sessions
+            .values()
+            .find(|session| session.session_id == session_id)
+            .ok_or_else(|| fail("hub_session_unavailable"))?
             .profile_id
     };
     // Cancellation and a confirmed-stopped resolution remain available even
@@ -781,17 +1060,21 @@ pub async fn task_hub_action(
     };
     let application = state.inner().clone();
     let work = move |inner: &mut Inner| {
+        let key =
+            session_key_by_id(inner, &session_id).ok_or_else(|| fail("hub_session_unavailable"))?;
         let session = inner
-            .session
-            .as_mut()
-            .ok_or_else(|| fail("hub_not_connected"))?;
+            .sessions
+            .get_mut(&key)
+            .ok_or_else(|| fail("hub_session_unavailable"))?;
         if session.profile_id != id
-            || selected
-                .as_ref()
-                .is_some_and(|(_, root, _)| !same_directory(root, &session.home))
+            || selected.as_ref().is_some_and(|(_, root, preference)| {
+                !same_directory(root, &session.home)
+                    || preference.dispatch_code.as_deref() != Some(&session.dispatch_code)
+            })
         {
             return Err(fail("source_changed"));
         }
+        inner.active_session_id = Some(session_id.clone());
         let wire = serde_json::to_value(&action).map_err(|_| fail("hub_invalid_request"))?;
         let action_id = wire["request_id"]
             .as_str()
@@ -809,8 +1092,8 @@ pub async fn task_hub_action(
             result?;
             let view_result = view(inner);
             if view_result.is_ok() {
-                if let Some(s) = inner.session.as_mut() {
-                    s.pending.remove(&action_id);
+                if let Ok(session) = session_by_id_mut(inner, &session_id) {
+                    session.pending.remove(&action_id);
                 }
             }
             return view_result;
@@ -976,8 +1259,8 @@ pub async fn task_hub_action(
         result?;
         let view_result = view(inner);
         if view_result.is_ok() {
-            if let Some(s) = inner.session.as_mut() {
-                s.pending.remove(&action_id);
+            if let Ok(session) = session_by_id_mut(inner, &session_id) {
+                session.pending.remove(&action_id);
             }
         }
         view_result
@@ -1008,32 +1291,37 @@ fn validate_prompt(prompt: &str) -> Result<(), String> {
 #[tauri::command]
 pub async fn get_task_hub_messages(
     hub: State<'_, HubState>,
+    session_id: String,
     task_id: String,
 ) -> Result<Value, String> {
-    if !valid_id(&task_id) {
+    if !is_digest(&session_id) || !valid_id(&task_id) {
         return Err(fail("hub_invalid_request"));
     }
     run(&hub, move |inner| {
-        let session = inner
-            .session
-            .as_mut()
-            .ok_or_else(|| fail("hub_not_connected"))?;
+        let session = session_by_id_mut(inner, &session_id)?;
         request(session, &format!("/api/tasks/{task_id}/messages"), None)
     })
     .await
 }
 #[tauri::command]
-pub async fn disconnect_task_hub(hub: State<'_, HubState>) -> Result<HubView, String> {
+pub async fn disconnect_task_hub(
+    hub: State<'_, HubState>,
+    session_id: String,
+) -> Result<HubView, String> {
+    if !is_digest(&session_id) {
+        return Err(fail("hub_session_unavailable"));
+    }
     let retained_probes = hub.retained_probes.clone();
     run(&hub, move |inner| {
-        if let Some(session) = inner.session.as_mut() {
+        let key =
+            session_key_by_id(inner, &session_id).ok_or_else(|| fail("hub_session_unavailable"))?;
+        {
+            let session = inner
+                .sessions
+                .get_mut(&key)
+                .ok_or_else(|| fail("hub_session_unavailable"))?;
             let v = overview(session)?;
-            if session.companion.has_unresolved()
-                || v["tasks"].as_array().is_none_or(|ts| {
-                    ts.iter()
-                        .any(|t| !t["state"].as_str().is_some_and(terminal))
-                })
-            {
+            if session.blocks_disconnect(&v) {
                 return Err(fail("hub_active_tasks"));
             }
             if !retained_probes.stop_profile(session.profile_id, &session.home) {
@@ -1043,8 +1331,14 @@ pub async fn disconnect_task_hub(hub: State<'_, HubState>) -> Result<HubView, St
                 .process
                 .stop()
                 .map_err(|_| fail("hub_stop_unconfirmed"))?;
+            if !session.process.has_exited().is_ok_and(|exited| exited) {
+                return Err(fail("hub_stop_unconfirmed"));
+            }
         }
-        inner.session = None;
+        inner.sessions.remove(&key);
+        if inner.active_session_id.as_deref() == Some(&session_id) {
+            inner.active_session_id = None;
+        }
         view(inner)
     })
     .await
@@ -1054,30 +1348,101 @@ pub fn should_block_exit(hub: &HubState) -> bool {
         || hub
             .inner
             .try_lock()
-            .map(|i| {
-                i.session
-                    .as_ref()
-                    .is_some_and(|s| s.needs_exit || s.companion.has_unresolved())
-            })
+            .map(|i| i.sessions.values().any(Session::has_unresolved_ownership))
             .unwrap_or(true)
 }
 pub fn force_stop_owned(hub: &HubState) {
     hub.begin_force_quit();
     hub.retained_probes.stop_all();
     if let Ok(mut inner) = hub.inner.try_lock() {
-        if let Some(s) = inner.session.as_mut() {
-            if s.process.stop().is_err() {
-                // Keep adopted reservations until this owned Job is confirmed
-                // empty. A requested force-exit is not a cleanup receipt.
-                return;
-            }
+        let stopped: Vec<_> = inner
+            .sessions
+            .iter_mut()
+            .filter_map(|(key, session)| {
+                let _ = session.process.stop();
+                session
+                    .process
+                    .has_exited()
+                    .is_ok_and(|exited| exited)
+                    .then(|| key.clone())
+            })
+            .collect();
+        for key in stopped {
+            inner.sessions.remove(&key);
         }
-        inner.session = None;
+        if inner
+            .active_session_id
+            .as_deref()
+            .is_some_and(|id| session_key_by_id(&inner, id).is_none())
+        {
+            inner.active_session_id = None;
+        }
     }
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn disconnect_keeps_empty_overview_session_with_unconfirmed_post_receipt() {
+        struct LiveOwner;
+        impl OwnedProcess for LiveOwner {
+            fn has_exited(&mut self) -> std::io::Result<bool> {
+                Ok(false)
+            }
+            fn stop(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+            fn exit_success(&mut self) -> std::io::Result<bool> {
+                Ok(false)
+            }
+        }
+
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let home = root.join("profile-home");
+        let workspace = root.join("workspace");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&workspace).unwrap();
+        let files = Arc::new(HubFiles::open(&root, &workspace, "managed-1").unwrap());
+        let mut session = Session {
+            session_id: "a".repeat(64),
+            quitting: Arc::new(AtomicBool::new(false)),
+            process: Box::new(LiveOwner),
+            files,
+            endpoint: "127.0.0.1:1".parse().unwrap(),
+            token: "synthetic-token".into(),
+            needs_exit: false,
+            profile_id: 1,
+            dispatch_code: "A".into(),
+            managed_id: "managed-1".into(),
+            alias: "account-1".into(),
+            identity: "synthetic-identity".into(),
+            home,
+            workspace,
+            leases: BTreeMap::new(),
+            pending: BTreeMap::new(),
+            companion: companion_bridge_backend::CompanionSession::new().unwrap(),
+        };
+        session.pending.insert(
+            "request-1".into(),
+            (
+                json!({"kind":"create","requestId":"request-1"}),
+                "/api/tasks".into(),
+                json!({"requestId":"request-1"}),
+            ),
+        );
+        let empty_overview = json!({"tasks":[]});
+        assert!(
+            session.blocks_disconnect(&empty_overview),
+            "an empty overview cannot erase a POST whose receipt is unknown"
+        );
+        session.pending.clear();
+        assert!(
+            !session.blocks_disconnect(&empty_overview),
+            "the empty session becomes disconnectable after its pending request resolves"
+        );
+    }
+
     #[test]
     fn retained_probe_owner_blocks_same_scope_and_exit_until_job_empty() {
         use std::sync::atomic::AtomicUsize;
@@ -1138,7 +1503,7 @@ mod tests {
         // Exercise the real Rust writers and the staged, hash-pinned Go reader.
         // Every identity, credential and quota is synthetic. Draft/cancel only:
         // this test never approves a task or starts a model command.
-        struct RunningHub(Session);
+        struct RunningHub(Session, u32);
         impl Drop for RunningHub {
             fn drop(&mut self) {
                 if !self.0.process.has_exited().unwrap_or(false) {
@@ -1179,6 +1544,7 @@ mod tests {
                 effort: Some("high".into()),
                 revision: 1,
                 dispatch_window: None,
+                dispatch_code: Some("A".into()),
                 ..Default::default()
             },
         );
@@ -1235,22 +1601,29 @@ mod tests {
                 panic!("could not start isolated Hub fixture: {error}");
             }
         };
-        let mut running = RunningHub(Session {
-            quitting: Arc::new(AtomicBool::new(false)),
-            process,
-            files,
-            endpoint: "127.0.0.1:1".parse().unwrap(),
-            token,
-            needs_exit: false,
-            profile_id: 1,
-            managed_id: "synthetic-managed-id".into(),
-            alias: "account-1".into(),
-            identity,
-            home: home.clone(),
-            leases: BTreeMap::new(),
-            pending: BTreeMap::new(),
-            companion: companion_bridge_backend::CompanionSession::new().unwrap(),
-        });
+        let process_id = process.pid();
+        let mut running = RunningHub(
+            Session {
+                session_id: nonce().unwrap(),
+                quitting: Arc::new(AtomicBool::new(false)),
+                process: Box::new(process),
+                files,
+                endpoint: "127.0.0.1:1".parse().unwrap(),
+                token,
+                needs_exit: false,
+                profile_id: 1,
+                dispatch_code: "A".into(),
+                managed_id: "synthetic-managed-id".into(),
+                alias: "account-1".into(),
+                identity,
+                home: home.clone(),
+                workspace: workspace.clone(),
+                leases: BTreeMap::new(),
+                pending: BTreeMap::new(),
+                companion: companion_bridge_backend::CompanionSession::new().unwrap(),
+            },
+            process_id,
+        );
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
             assert!(
@@ -1258,7 +1631,7 @@ mod tests {
                 "isolated Hub exited before ready"
             );
             if let Some(value) = running.0.files.read_ready().unwrap() {
-                running.0.endpoint = endpoint(&value, running.0.process.pid()).unwrap();
+                running.0.endpoint = endpoint(&value, running.1).unwrap();
                 break;
             }
             assert!(Instant::now() < deadline, "isolated Hub ready deadline");
@@ -1532,3 +1905,7 @@ mod tests {
         assert!(terminal("failed"));
     }
 }
+
+#[cfg(all(test, windows))]
+#[path = "companion_bridge_integration_tests.rs"]
+mod companion_bridge_integration_tests;

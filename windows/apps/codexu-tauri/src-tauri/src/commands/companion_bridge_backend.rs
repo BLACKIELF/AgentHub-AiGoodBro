@@ -10,9 +10,10 @@ use codexu_core::{
         LookupAction, Peer, Scope, Selector, TaskBinding, TaskState, WindowsExecution,
     },
     managed_proxy::ManagedProxyGate,
+    profiles::ProfileCatalog,
     runtime_setup::{PinnedExecutable, SelectionStore},
     workflow::{WorkflowPreference, WorkflowPreferences},
-    workflow_execution::{resolve_execution, ExecutionOverrides},
+    workflow_execution::{resolve_dispatch_code, resolve_execution, ExecutionOverrides},
     workflow_reader::{WorkflowEvidence, WorkflowProbeLaunchFailure},
 };
 use sha2::{Digest, Sha256};
@@ -341,8 +342,15 @@ impl AppBackend {
         refresh: bool,
     ) -> BridgeResult<ScopedCapture> {
         ensure_live(session)?;
-        if selector.profile_id != session.profile_id
-            || !project_matches(Path::new(&selector.project), workspace)
+        if selector
+            .profile_id
+            .is_some_and(|id| id != session.profile_id)
+            || selector
+                .dispatch_code
+                .as_deref()
+                .is_some_and(|code| code != session.dispatch_code)
+            || !project_matches(Path::new(&selector.project), &session.workspace)
+            || !project_matches(workspace, &session.workspace)
         {
             return Err(bridge_error("companion_scope_changed"));
         }
@@ -355,17 +363,7 @@ impl AppBackend {
                 .refresh_managed_credential(&session.managed_id)
                 .map_err(|_| bridge_error("companion_refresh_failed"))?;
         }
-        let config = self.application.config.blocking_read();
-        let profile = config
-            .profiles
-            .get(session.profile_id)
-            .map_err(|_| bridge_error("companion_scope_changed"))?;
-        if profile.kind != codexu_core::local_cli::LocalCliKind::Codex
-            || !same_directory(&profile.root, &session.home)
-        {
-            return Err(bridge_error("companion_scope_changed"));
-        }
-        let preferences = read_preferences(&self.application.app_data_dir).map_err(unavailable)?;
+        let preferences = self.current_profile_preferences(session)?;
         let preference = preferences
             .profiles
             .get(&session.profile_id)
@@ -389,7 +387,7 @@ impl AppBackend {
         }
         let scope = scope_from_snapshot(
             session.profile_id,
-            workspace,
+            &session.workspace,
             &session.home,
             &session.companion.epoch,
             &session.alias,
@@ -400,7 +398,7 @@ impl AppBackend {
         Ok(ScopedCapture {
             scope,
             profile_id: session.profile_id,
-            workspace: workspace.to_path_buf(),
+            workspace: session.workspace.clone(),
             home: session.home.clone(),
             identity: session.identity.clone(),
             preference,
@@ -410,17 +408,71 @@ impl AppBackend {
                 .map(str::to_owned),
         })
     }
+    fn current_profile_preferences(&self, session: &Session) -> BridgeResult<WorkflowPreferences> {
+        let config = self.application.config.blocking_read();
+        let profile = config
+            .profiles
+            .get(session.profile_id)
+            .map_err(|_| bridge_error("companion_scope_changed"))?;
+        if profile.kind != codexu_core::local_cli::LocalCliKind::Codex
+            || !same_directory(&profile.root, &session.home)
+        {
+            return Err(bridge_error("companion_scope_changed"));
+        }
+        let preferences = read_preferences(&self.application.app_data_dir).map_err(unavailable)?;
+        if preferences
+            .profiles
+            .get(&session.profile_id)
+            .and_then(|preference| preference.dispatch_code.as_deref())
+            != Some(session.dispatch_code.as_str())
+        {
+            return Err(bridge_error("companion_scope_changed"));
+        }
+        Ok(preferences)
+    }
+    pub(super) fn validate_session_identity(&self, session: &Session) -> BridgeResult<()> {
+        let _ = self.current_profile_preferences(session)?;
+        let account = self
+            .manager
+            .hub_account_snapshot(&session.managed_id)
+            .map_err(|_| bridge_error("companion_scope_changed"))?;
+        if account.identity_hash != session.identity
+            || !same_directory(&account.home, &session.home)
+        {
+            return Err(bridge_error("companion_scope_changed"));
+        }
+        Ok(())
+    }
     fn capture_context(&self, selector: &Selector, refresh: bool) -> BridgeResult<ScopedCapture> {
         let deadline = self.current_deadline()?;
         self.remaining(deadline)?;
         let mut inner = self.lock()?;
-        let workspace = inner
-            .workspace
-            .clone()
+        let preferences = read_preferences(&self.application.app_data_dir).map_err(unavailable)?;
+        let config = self.application.config.blocking_read();
+        let catalog = config.profiles.clone();
+        let profile_id = resolve_selector_profile(selector, &catalog, &preferences)?;
+        let home = catalog
+            .get(profile_id)
+            .map_err(|_| bridge_error("companion_scope_changed"))?
+            .root
+            .clone();
+        let workspace =
+            codexu_core::local_cli::launch::checked_directory(Path::new(&selector.project))
+                .map_err(unavailable)?;
+        let key = inner
+            .sessions
+            .iter()
+            .find(|(key, session)| {
+                key.profile_id == profile_id
+                    && same_directory(&key.home, &home)
+                    && same_directory(&key.workspace, &workspace)
+                    && session.profile_id == profile_id
+            })
+            .map(|(key, _)| key.clone())
             .ok_or_else(|| bridge_error("companion_scope_required"))?;
         let session = inner
-            .session
-            .as_mut()
+            .sessions
+            .get_mut(&key)
             .ok_or_else(|| bridge_error("companion_scope_required"))?;
         let capture = self.capture_context_locked(session, &workspace, selector, refresh)?;
         self.remaining(deadline)?;
@@ -563,16 +615,11 @@ impl AppBackend {
     ) -> BridgeResult<()> {
         let deadline = self.current_deadline()?;
         self.remaining(deadline)?;
-        let workspace = inner
-            .workspace
-            .clone()
-            .ok_or_else(|| bridge_error("companion_scope_required"))?;
-        let session = inner
-            .session
-            .as_mut()
-            .ok_or_else(|| bridge_error("companion_scope_required"))?;
+        let session = session_by_epoch_mut(inner, &scope.epoch)?;
+        let workspace = session.workspace.clone();
         let selector = Selector {
-            profile_id: session.profile_id,
+            profile_id: Some(session.profile_id),
+            dispatch_code: None,
             project: workspace.to_string_lossy().into_owned(),
         };
         let current = self.capture_context_locked(session, &workspace, &selector, false)?;
@@ -588,16 +635,11 @@ impl AppBackend {
         Ok(())
     }
     fn recheck(&self, inner: &mut Inner, expected: &Scope) -> BridgeResult<()> {
-        let workspace = inner
-            .workspace
-            .clone()
-            .ok_or_else(|| bridge_error("companion_scope_required"))?;
-        let session = inner
-            .session
-            .as_mut()
-            .ok_or_else(|| bridge_error("companion_scope_required"))?;
+        let session = session_by_epoch_mut(inner, &expected.epoch)?;
+        let workspace = session.workspace.clone();
         let selector = Selector {
-            profile_id: session.profile_id,
+            profile_id: Some(session.profile_id),
+            dispatch_code: None,
             project: workspace.to_string_lossy().into_owned(),
         };
         let actual = self.capture_locked(session, &workspace, &selector, false)?;
@@ -616,6 +658,39 @@ fn selected_python(data: &Path) -> BridgeResult<Option<(PathBuf, String)>> {
         .map(|pin| Ok((pin.path, file_digest(&pin.guard)?)))
         .transpose()
 }
+fn resolve_selector_profile(
+    selector: &Selector,
+    catalog: &ProfileCatalog,
+    preferences: &WorkflowPreferences,
+) -> BridgeResult<u64> {
+    let profile_id = match (selector.profile_id, selector.dispatch_code.as_deref()) {
+        (Some(id), None) => id,
+        (None, Some(code)) => resolve_dispatch_code(code, catalog, preferences)
+            .map_err(|_| bridge_error("companion_scope_changed"))?,
+        _ => return Err(bridge_error("companion_invalid_request")),
+    };
+    catalog
+        .validate()
+        .map_err(|_| bridge_error("companion_scope_changed"))?;
+    if catalog
+        .get(profile_id)
+        .map_err(|_| bridge_error("companion_scope_changed"))?
+        .kind
+        != codexu_core::local_cli::LocalCliKind::Codex
+    {
+        return Err(bridge_error("companion_scope_changed"));
+    }
+    Ok(profile_id)
+}
+
+fn session_by_epoch_mut<'a>(inner: &'a mut Inner, epoch: &str) -> BridgeResult<&'a mut Session> {
+    inner
+        .sessions
+        .values_mut()
+        .find(|session| session.companion.epoch == epoch)
+        .ok_or_else(|| bridge_error("companion_scope_required"))
+}
+
 fn project_matches(requested: &Path, configured: &Path) -> bool {
     requested.is_absolute()
         && !requested
@@ -845,7 +920,7 @@ impl Backend for AppBackend {
     fn reserve(&self, scope: &Scope) -> BridgeResult<Permit> {
         let mut inner = self.lock()?;
         self.recheck(&mut inner, scope)?;
-        let session = inner.session.as_mut().unwrap();
+        let session = session_by_epoch_mut(&mut inner, &scope.epoch)?;
         let guard = self
             .gate
             .reserve_terminal(&session.identity)
@@ -862,7 +937,7 @@ impl Backend for AppBackend {
         }
         let mut inner = self.lock()?;
         self.recheck(&mut inner, scope)?;
-        let session = inner.session.as_mut().unwrap();
+        let session = session_by_epoch_mut(&mut inner, &scope.epoch)?;
         session.companion.adopt(lease, scope, permit.guard)?;
         session.needs_exit = true;
         Ok(())
@@ -877,7 +952,7 @@ impl Backend for AppBackend {
         validate_prompt(prompt).map_err(unavailable)?;
         let mut inner = self.lock()?;
         self.recheck(&mut inner, scope)?;
-        let session = inner.session.as_mut().unwrap();
+        let session = session_by_epoch_mut(&mut inner, &scope.epoch)?;
         let adopted = session
             .companion
             .adopted
@@ -936,7 +1011,7 @@ impl Backend for AppBackend {
         self.recheck(&mut inner, scope)?;
         self.validate_current_authority(&mut inner, scope, authority)?;
         self.remaining(deadline)?;
-        let session = inner.session.as_mut().unwrap();
+        let session = session_by_epoch_mut(&mut inner, &scope.epoch)?;
         let adopted = session
             .companion
             .adopted
@@ -995,7 +1070,7 @@ impl Backend for AppBackend {
     ) -> BridgeResult<Acknowledgement> {
         let mut inner = self.lock()?;
         self.recheck(&mut inner, scope)?;
-        let session = inner.session.as_mut().unwrap();
+        let session = session_by_epoch_mut(&mut inner, &scope.epoch)?;
         let adopted = session
             .companion
             .adopted
@@ -1023,7 +1098,7 @@ impl Backend for AppBackend {
         // The overview request may consume the remaining freshness budget.
         // Re-read immediately before the only approval POST, without refresh.
         self.recheck(&mut inner, scope)?;
-        let session = inner.session.as_mut().unwrap();
+        let session = session_by_epoch_mut(&mut inner, &scope.epoch)?;
         let submitted = Submitted {
             lease: lease.into(),
             action: "approve",
@@ -1059,7 +1134,7 @@ impl Backend for AppBackend {
         self.recheck(&mut inner, scope)?;
         self.validate_current_authority(&mut inner, scope, authority)?;
         self.remaining(deadline)?;
-        let session = inner.session.as_mut().unwrap();
+        let session = session_by_epoch_mut(&mut inner, &scope.epoch)?;
         let adopted = session
             .companion
             .adopted
@@ -1088,7 +1163,7 @@ impl Backend for AppBackend {
         // account and preference state immediately before the only approval POST.
         self.validate_current_authority(&mut inner, scope, authority)?;
         self.remaining(deadline)?;
-        let session = inner.session.as_mut().unwrap();
+        let session = session_by_epoch_mut(&mut inner, &scope.epoch)?;
         let submitted = Submitted {
             lease: lease.into(),
             action: "approve",
@@ -1122,11 +1197,8 @@ impl Backend for AppBackend {
     ) -> BridgeResult<Option<Acknowledgement>> {
         let deadline = self.current_deadline()?;
         let mut inner = self.lock()?;
-        let session = inner
-            .session
-            .as_mut()
-            .filter(|session| session.companion.epoch == epoch)
-            .ok_or_else(|| bridge_error("companion_scope_changed"))?;
+        let session = session_by_epoch_mut(&mut inner, epoch)
+            .map_err(|_| bridge_error("companion_scope_changed"))?;
         let expected = session
             .companion
             .requests

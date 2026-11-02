@@ -476,9 +476,20 @@ def build_request(args, stdin):
     if tier is not None and tier not in ("default", "fast"):
         fail("companion_invalid_execution_override")
     if args.command in ("preflight", "refresh", "reserve", "run"):
-        if args.profile_id is None or args.profile_id <= 0 or not args.project or len(args.project) > 4096 or any(c in args.project for c in "\0\r\n"):
+        profile_id = getattr(args, "profile_id", None)
+        dispatch_code = getattr(args, "dispatch_code", None)
+        has_profile_id = type(profile_id) is int and profile_id > 0
+        has_dispatch_code = isinstance(dispatch_code, str) and len(dispatch_code) == 1 and "A" <= dispatch_code <= "Z"
+        if (has_profile_id == has_dispatch_code
+                or profile_id is not None and not has_profile_id
+                or dispatch_code is not None and not has_dispatch_code
+                or not args.project or len(args.project) > 4096 or any(c in args.project for c in "\0\r\n")):
             fail("companion_invalid_scope")
-        selector = {"profileId": args.profile_id, "project": args.project}
+        selector = {"project": args.project}
+        if has_profile_id:
+            selector["profileId"] = profile_id
+        else:
+            selector["dispatchCode"] = dispatch_code
     if args.command in ("preflight", "refresh"):
         method = {"kind": args.command, "selector": selector}
     elif args.command in ("reserve", "run"):
@@ -514,7 +525,9 @@ def main():
     parser = argparse.ArgumentParser(description="Explicit existing-App Companion IPC; prompts use stdin. No App/model is started by this client.")
     parser.add_argument("command", choices=("preflight", "refresh", "reserve", "run", "status", "cancel-reservation"))
     parser.add_argument("--request-id", required=True)
-    parser.add_argument("--profile-id", type=int)
+    selector = parser.add_mutually_exclusive_group()
+    selector.add_argument("--profile-id", type=int)
+    selector.add_argument("--dispatch-code")
     parser.add_argument("--project")
     parser.add_argument("--lease-id")
     parser.add_argument("--operation-id")

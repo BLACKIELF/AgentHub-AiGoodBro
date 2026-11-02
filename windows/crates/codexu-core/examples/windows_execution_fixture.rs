@@ -181,6 +181,81 @@ fn case(
     })
 }
 
+fn exact_unicode_override_vector() -> Result<Case, Box<dyn Error>> {
+    const PROFILE_ID: u64 = 11;
+    const NOW_MS: i64 = 1_800_000_000_000;
+    let preference = WorkflowPreference {
+        participating: true,
+        model: Some("gpt-6-astra".into()),
+        effort: Some("high".into()),
+        revision: 7,
+        dispatch_code: Some("C".into()),
+        not_after_ms: Some(NOW_MS + 100_000),
+        ..Default::default()
+    };
+    let preferences = WorkflowPreferences {
+        profiles: BTreeMap::from([(PROFILE_ID, preference.clone())]),
+        excluded_plan_types: vec!["PRO".into(), "企业".into()],
+    };
+    let models = vec![
+        WorkflowModel {
+            id: "gpt-6-astra".into(),
+            label: "Astra".into(),
+            efforts: vec!["low".into(), "high".into(), "ultra".into()],
+            default_effort: "low".into(),
+            is_default: true,
+        },
+        WorkflowModel {
+            id: "gpt-5.5".into(),
+            label: "5.5".into(),
+            efforts: vec!["low".into(), "high".into(), "xhigh".into()],
+            default_effort: "low".into(),
+            is_default: false,
+        },
+        WorkflowModel {
+            id: "gpt-5.2".into(),
+            label: "5.2".into(),
+            efforts: vec!["low".into(), "high".into()],
+            default_effort: "low".into(),
+            is_default: false,
+        },
+    ];
+    let overrides = ExecutionOverrides {
+        model: Some("gpt-5.5".into()),
+        effort: Some("xhigh".into()),
+        service_tier: Some(ServiceTier::Fast),
+    };
+    let resolved = resolve_execution(
+        PROFILE_ID,
+        &preferences,
+        &models,
+        "plus",
+        NOW_MS,
+        &overrides,
+    )?;
+    let expected_args = codex_arguments(&resolved);
+    let request = ExecutionRequest {
+        workflow_revision: resolved.workflow_revision,
+        binding_sha256: resolved.binding_sha256.clone(),
+        overrides,
+    };
+    Ok(Case {
+        name: "exact_unicode_override_vector",
+        request,
+        authority: ExecutionAuthority {
+            profile_id: PROFILE_ID,
+            preference,
+            excluded_plan_types: preferences.excluded_plan_types,
+            official_plan: "plus".into(),
+            models,
+        },
+        now_ms: NOW_MS,
+        expected: Some(effective(&resolved)),
+        expected_args,
+        reject: false,
+    })
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     let expires_at = NOW_MS + 100_000;
     let cases = vec![
@@ -227,6 +302,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             expires_at,
             true,
         )?,
+        exact_unicode_override_vector()?,
     ];
     serde_json::to_writer(
         std::io::stdout().lock(),

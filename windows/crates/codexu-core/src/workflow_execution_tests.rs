@@ -86,6 +86,29 @@ fn allocation_never_reuses_holes_or_deleted_account_code() {
 }
 
 #[test]
+fn explicit_dispatch_registration_persists_next_code_once_and_keeps_removed_codes() {
+    let (_temp, mut c) = catalog();
+    let mut p = prefs();
+    p.profiles.insert(1, preference(Some("A")));
+    let first = p.assign_dispatch_code(12).unwrap();
+    assert_eq!(first, "D"); // B is a hole; max retained + 1 is authoritative.
+    assert_eq!(p.profiles[&12].dispatch_code.as_deref(), Some("D"));
+    assert_eq!(p.profiles[&12].revision, 1);
+    let saved = serde_json::to_vec(&p).unwrap();
+    assert_eq!(p.assign_dispatch_code(12).unwrap(), "D");
+    assert_eq!(p.profiles[&12].revision, 1);
+    assert_eq!(serde_json::to_vec(&p).unwrap(), saved);
+
+    c.remove(11).unwrap();
+    assert!(resolve_dispatch_code("C", &c, &p).is_err());
+    assert_eq!(p.assign_dispatch_code(13).unwrap(), "E");
+    let reopened: WorkflowPreferences =
+        serde_json::from_slice(&serde_json::to_vec(&p).unwrap()).unwrap();
+    assert_eq!(reopened.profiles[&11].dispatch_code.as_deref(), Some("C"));
+    assert_eq!(next_dispatch_code(14, &reopened).unwrap(), "F");
+}
+
+#[test]
 fn malformed_duplicate_or_foreign_provider_codes_cannot_resolve() {
     let (_temp, mut c) = catalog();
     for invalid in ["", "a", "AA", "1", "Ａ", " C", "C\n"] {
@@ -485,7 +508,7 @@ fn cross_language_binding_vector_has_explicit_null_unicode_and_override_fields()
     // Go final-spawn adapter tests; not a hash supplied as authorization.
     assert_eq!(
         got.binding_sha256,
-        "update-after-running-cross-language-vector"
+        "0e586fde194b059ded8b16f0bb183cc2d9871ffb5b7cfe219ffe238af7f437e1"
     );
 }
 

@@ -99,6 +99,10 @@ function AccountWorkflowContent({ profileId, initiallyExpanded = true }: { profi
           </label>
           <span className="text-xs text-secondary">{saving ? text('正在保存…', 'Saving…') : text('关闭后停止接收新启动；已打开的终端可单独结束。', 'Off prevents new launches; open terminals can be stopped separately.')}</span>
         </div>
+        <div className="flex items-center gap-2 text-xs text-secondary" data-testid={`workflow-dispatch-code-${profileId}`}>
+          <span>{text('派单代码', 'Dispatch code')}</span>
+          <code className="rounded border border-theme px-1.5 py-0.5 text-primary">{preference?.dispatch_code ?? text('连接派单服务时分配', 'Assigned when dispatch is connected')}</code>
+        </div>
         <div className="flex flex-wrap items-end gap-2">
           <label className="min-w-0 flex-1 basis-48 text-xs text-secondary">{text('模型', 'Model')}
             <select className="mt-1 block w-full rounded-lg border border-theme bg-surface-inset px-2 py-2 text-sm text-primary" aria-label={text('模型', 'Model')} value={preference?.model ?? ''} disabled={saving || readingModels || models.length === 0} onChange={event => {

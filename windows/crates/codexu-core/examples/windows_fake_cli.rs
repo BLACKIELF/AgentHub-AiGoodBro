@@ -24,6 +24,20 @@ const CHILD_LIFETIME: Duration = Duration::from_secs(60);
 const ACCEPT_TIMEOUT: Duration = Duration::from_secs(15);
 const FRAME_TIMEOUT: Duration = Duration::from_secs(15);
 const EXIT_MARKER_TIMEOUT: Duration = Duration::from_secs(15);
+const FAKE_CLI_VERSION: &str = "codex-cli 1.97.1\n";
+const FAKE_EXEC_HELP: &str =
+    "Synthetic fixture only. Supported flags: --output-last-message --sandbox --model\n";
+
+/// Match only the two fixed, read-only executable probes used by the existing
+/// native runtime selector. These responses are fixture metadata, not a claim
+/// that this example implements or validates the real Codex CLI.
+fn probe_response(args: &[String]) -> Option<&'static str> {
+    match args {
+        [version] if version == "--version" => Some(FAKE_CLI_VERSION),
+        [exec, help] if exec == "exec" && help == "--help" => Some(FAKE_EXEC_HELP),
+        _ => None,
+    }
+}
 
 #[derive(Debug)]
 struct Options {
@@ -248,6 +262,10 @@ async fn protocol_smoke() -> Result<()> {
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = env::args().skip(1).collect::<Vec<_>>();
+    if let Some(response) = probe_response(&args) {
+        print!("{response}");
+        return Ok(());
+    }
     if args.first().map(String::as_str) == Some("--protocol-smoke") {
         return protocol_smoke().await;
     }
@@ -256,4 +274,24 @@ async fn main() -> Result<()> {
         return child_sleeper(PathBuf::from(pid_file)).await;
     }
     run_app_server(options(&args)?).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn selection_probe_modes_are_exact_fixed_and_offline() {
+        assert_eq!(
+            probe_response(&["--version".into()]),
+            Some(FAKE_CLI_VERSION)
+        );
+        assert_eq!(
+            probe_response(&["exec".into(), "--help".into()]),
+            Some(FAKE_EXEC_HELP)
+        );
+        assert!(probe_response(&["--version".into(), "--extra".into()]).is_none());
+        assert!(probe_response(&["exec".into(), "--help".into(), "--extra".into()]).is_none());
+        assert!(probe_response(&["exec".into(), "--model".into()]).is_none());
+    }
 }

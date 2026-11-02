@@ -11,6 +11,62 @@ use std::{
 fn h(s: &str) -> String {
     hash(s.as_bytes())
 }
+
+#[test]
+fn selector_adds_dispatch_codes_without_changing_numeric_abi_shape() {
+    let project = "C:\\synthetic\\workspace";
+    let legacy: Selector = serde_json::from_value(serde_json::json!({
+        "profileId": 7,
+        "project": project
+    }))
+    .unwrap();
+    assert_eq!(legacy.profile_id, Some(7));
+    assert_eq!(legacy.dispatch_code, None);
+    assert_eq!(
+        serde_json::to_value(&legacy).unwrap(),
+        serde_json::json!({"profileId":7,"project":project})
+    );
+
+    let by_code = Selector {
+        profile_id: None,
+        dispatch_code: Some("A".into()),
+        project: project.into(),
+    };
+    assert_eq!(
+        serde_json::to_value(&by_code).unwrap(),
+        serde_json::json!({"dispatchCode":"A","project":project})
+    );
+    let both = Selector {
+        profile_id: Some(7),
+        dispatch_code: Some("A".into()),
+        project: project.into(),
+    };
+    assert_eq!(both.validate().unwrap_err().code, "companion_invalid_scope");
+}
+
+#[test]
+fn old_durable_preflight_request_still_decodes_under_abi_one() {
+    let raw = serde_json::to_vec(&serde_json::json!({
+        "abi": ABI,
+        "requestId": h("old-request"),
+        "method": {
+            "kind": "preflight",
+            "selector": {"profileId": 7, "project": "C:\\synthetic\\workspace"}
+        }
+    }))
+    .unwrap();
+    let mut frame = (raw.len() as u32).to_le_bytes().to_vec();
+    frame.extend(raw);
+    let decoded = Request::decode(&frame).unwrap();
+    let encoded = decoded.encode().unwrap();
+    let roundtrip: serde_json::Value = serde_json::from_slice(&encoded[4..]).unwrap();
+    assert_eq!(roundtrip["abi"], ABI);
+    assert_eq!(roundtrip["method"]["selector"]["profileId"], 7);
+    assert!(roundtrip["method"]["selector"]
+        .get("dispatchCode")
+        .is_none());
+}
+
 struct Live(Arc<AtomicBool>);
 impl PeerGuard for Live {
     fn check(&self) -> Result<()> {
@@ -327,7 +383,8 @@ impl Fixture {
     fn intent(&self) -> Intent {
         Intent {
             selector: Selector {
-                profile_id: 1,
+                profile_id: Some(1),
+                dispatch_code: None,
                 project: "C:\\synthetic\\workspace".into(),
             },
             prompt: "synthetic prompt never persist this".into(),
@@ -738,6 +795,34 @@ fn invalid_execution_evidence_does_not_advertise_ready() {
         .unwrap_err();
     assert_eq!(error.code, "companion_execution_unavailable");
 }
+
+#[test]
+fn dispatch_code_must_match_fresh_execution_authority() {
+    let f = Fixture::new();
+    let mut authority = execution_authority();
+    authority.preference.dispatch_code = Some("A".into());
+    f.fake.set_execution_authority(Some(authority));
+
+    let mut selector = f.intent().selector;
+    selector.profile_id = None;
+    selector.dispatch_code = Some("A".into());
+    assert!(matches!(
+        f.request("preflight-code-a", Method::Preflight { selector }),
+        Ok(Reply::Ready { .. })
+    ));
+
+    let mut selector = f.intent().selector;
+    selector.profile_id = None;
+    selector.dispatch_code = Some("B".into());
+    assert_eq!(
+        f.request("preflight-code-b", Method::Preflight { selector })
+            .unwrap_err()
+            .code,
+        "companion_scope_changed"
+    );
+    assert_eq!(f.calls(), (0, 0));
+}
+
 #[test]
 fn explicit_refresh_only_and_single_reservation_duplicate() {
     let f = Fixture::new();

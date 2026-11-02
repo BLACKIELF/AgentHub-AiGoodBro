@@ -180,6 +180,33 @@ impl WorkflowPreferences {
             .ok_or_else(|| anyhow::anyhow!("Preference revision exhausted"))?;
         self.validate()
     }
+
+    /// Assign the stable A–Z identifier when an account is explicitly
+    /// registered for dispatch. Removed profile records stay in this map as
+    /// tombstones, so their codes are never re-used.
+    pub fn assign_dispatch_code(&mut self, id: u64) -> anyhow::Result<String> {
+        self.validate()?;
+        anyhow::ensure!(id > 0, "Invalid profile ID");
+        let code = crate::workflow_execution::next_dispatch_code(id, self)?;
+        if self
+            .profiles
+            .get(&id)
+            .and_then(|preference| preference.dispatch_code.as_ref())
+            .is_some()
+        {
+            return Ok(code);
+        }
+        let mut next = self.clone();
+        let preference = next.profiles.entry(id).or_default();
+        preference.dispatch_code = Some(code.clone());
+        preference.revision = preference
+            .revision
+            .checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("Preference revision exhausted"))?;
+        next.validate()?;
+        *self = next;
+        Ok(code)
+    }
 }
 
 impl WorkflowPreference {

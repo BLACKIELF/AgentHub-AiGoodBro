@@ -170,6 +170,6 @@ fn random_id() -> OwnerResult<String> {
 }
 
 #[cfg(all(test, windows))]
-mod native_tests;
+pub(crate) mod native_tests;
 #[cfg(test)]
 mod tests;

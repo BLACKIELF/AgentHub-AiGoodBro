@@ -46,6 +46,15 @@ test.beforeEach(async ({ page }) => {
   await page.getByTestId('account-workflow-1').getByRole('button', { name: /Model and scheduling/ }).click();
 });
 
+test('shows the persisted dispatch code as read-only account metadata', async ({ page }) => {
+  await page.evaluate(() => localStorage.setItem('synthetic-workflow', JSON.stringify({ profile_id: '1', preference: { participating: true, model: null, effort: null, revision: 3, dispatch_code: 'C' }, phase: 'idle', started_at: null, supported: true })));
+  await page.reload();
+  const section = page.getByTestId('account-workflow-1');
+  await section.getByRole('button', { name: /Model and scheduling/ }).click();
+  await expect(section.getByTestId('workflow-dispatch-code-1')).toContainText('C');
+  await expect(section).toHaveScreenshot('workflow-dispatch-code.png');
+});
+
 test('compact card reveals scheduling, saves opt-out without quota and retains it after reload', async ({ page }) => {
   const section = page.getByTestId('account-workflow-1');
   await expect(section.getByRole('button', { name: /Model and scheduling/ })).toHaveAttribute('aria-expanded', 'true');

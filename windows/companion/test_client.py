@@ -49,7 +49,7 @@ class FakeTransport:
 
 
 def args(command="run", **changes):
-    values = dict(command=command, request_id=ID, profile_id=1, project="C:\\synthetic", lease_id=HASH, operation_id=HASH)
+    values = dict(command=command, request_id=ID, profile_id=1, dispatch_code=None, project="C:\\synthetic", lease_id=HASH, operation_id=HASH)
     values.update(changes)
     return argparse.Namespace(**values)
 
@@ -159,6 +159,28 @@ class ClientTests(unittest.TestCase):
             client.build_request(args(profile_id=0), io.BytesIO(b"x"))
         with self.assertRaises(client.ClientError):
             client.build_request(args(lease_id="self-claimed"), io.BytesIO(b"x"))
+
+    def test_dispatch_code_selector_is_additive_and_mutually_exclusive_with_numeric_id(self):
+        by_code = client.build_request(
+            args(profile_id=None, dispatch_code="A", command="preflight"), io.BytesIO()
+        )
+        self.assertEqual(
+            by_code["method"]["selector"],
+            {"dispatchCode": "A", "project": "C:\\synthetic"},
+        )
+        old = client.build_request(args(command="preflight"), io.BytesIO())
+        self.assertEqual(
+            old["method"]["selector"],
+            {"profileId": 1, "project": "C:\\synthetic"},
+        )
+        for changes in (
+            {"profile_id": None, "dispatch_code": None},
+            {"profile_id": 1, "dispatch_code": "A"},
+            {"profile_id": None, "dispatch_code": "a"},
+            {"profile_id": None, "dispatch_code": "AA"},
+        ):
+            with self.subTest(changes=changes), self.assertRaises(client.ClientError):
+                client.build_request(args(command="preflight", **changes), io.BytesIO())
 
     def test_single_call_execution_overrides_preserve_none_vs_explicit_default(self):
         request = client.build_request(args(model="gpt-5.5", effort="xhigh"), io.BytesIO(b"prompt"))
