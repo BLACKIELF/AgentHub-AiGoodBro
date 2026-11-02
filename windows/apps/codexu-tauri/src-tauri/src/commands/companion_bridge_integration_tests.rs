@@ -408,7 +408,7 @@ impl SyntheticHub {
         let owner_resource = Arc::new(SyntheticHubOwnerResource);
         let owner_resource_weak = Arc::downgrade(&owner_resource);
         let resources: Arc<dyn Send + Sync> = owner_resource;
-        let owner = start_owned_console(
+        let mut owner = start_owned_console(
             &python.path,
             workspace,
             &args,
