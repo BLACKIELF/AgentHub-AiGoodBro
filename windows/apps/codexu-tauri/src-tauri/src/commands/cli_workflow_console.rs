@@ -452,7 +452,8 @@ mod native {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
                     "Command exceeds Windows limit",
-                ));
+                )
+                .into());
             }
             let mut title = wide(OsStr::new(title))?;
             let mut startup: StartupInfoEx = unsafe { std::mem::zeroed() };

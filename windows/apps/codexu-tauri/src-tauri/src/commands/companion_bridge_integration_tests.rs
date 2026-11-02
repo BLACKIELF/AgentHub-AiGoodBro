@@ -3,6 +3,7 @@
 //! Hub responses, and app-server evidence are local fixtures; no model or
 //! external account is contacted.
 use super::*;
+use crate::commands::cli_workflow::console::LaunchWindow;
 use codexu_core::{
     accounts::{
         hub_snapshot::HubFiles, AccountError, AccountIdentity, AccountLoginSpawner, AccountPaths,
@@ -147,7 +148,7 @@ impl SecretProtector for FixtureProtector {
     fn unseal(&self, context: &str, bytes: &[u8]) -> AccountResult<Vec<u8>> {
         let prefix = [context.as_bytes(), &[0]].concat();
         bytes
-            .strip_prefix(&prefix)
+            .strip_prefix(prefix.as_slice())
             .map(|value| value.to_vec())
             .ok_or(AccountError {
                 code: "fixture_context",
@@ -199,14 +200,12 @@ impl AccountRuntime for FixtureRuntime {
                 })
             }
         };
-        let credential = fixture_credential(name);
         let identity = AccountIdentity::from_auth(&fixture_auth(name))?;
         self.names
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .insert(identity.identity_hash(), name.to_owned());
-        let _ = credential;
-        fixture_credential(name)
+        Ok(fixture_credential(name))
     }
     fn verify(&self, _: &Path, expected: &AccountIdentity) -> AccountResult<VerifiedCredential> {
         let name = self
@@ -218,7 +217,7 @@ impl AccountRuntime for FixtureRuntime {
             .ok_or(AccountError {
                 code: "fixture_identity_missing",
             })?;
-        fixture_credential(&name)
+        Ok(fixture_credential(&name))
     }
     fn require_system_idle(&self) -> AccountResult<()> {
         panic!("synthetic Companion fixture must not inspect or switch the system account")
@@ -322,10 +321,18 @@ fn register_fixture_profile(
     assert!(manager
         .register_pending_account(&account.id, |root, label, progress| {
             let mut config = crate::app_state::AppConfig::load(app_data);
-            let id = config
+            config
                 .profiles
                 .add(LocalCliKind::Codex, label.to_owned(), root.to_owned())
                 .map_err(|_| AccountError {
+                    code: "fixture_catalog_failed",
+                })?;
+            let id = config
+                .profiles
+                .entries
+                .last()
+                .map(|profile| profile.id)
+                .ok_or(AccountError {
                     code: "fixture_catalog_failed",
                 })?;
             progress.plan_profile(id)?;
@@ -560,6 +567,7 @@ fn start_owned_console(
 
 struct ClientProcess {
     owner: Option<OwnedConsole>,
+    owner_resource: std::sync::Weak<()>,
     output_path: PathBuf,
     output: Option<File>,
 }
@@ -573,6 +581,10 @@ impl ClientProcess {
         );
         self.owner.take();
         self.output.take();
+        assert!(
+            self.owner_resource.upgrade().is_none(),
+            "client OwnedConsole registration remained after confirmed exit"
+        );
         serde_json::from_slice(&fs::read(&self.output_path).unwrap()).unwrap()
     }
     fn cancel_and_confirm(&mut self) {
@@ -584,6 +596,10 @@ impl ClientProcess {
         );
         self.owner.take();
         self.output.take();
+        assert!(
+            self.owner_resource.upgrade().is_none(),
+            "cancelled client OwnedConsole registration remained after confirmed cleanup"
+        );
     }
 }
 impl Drop for ClientProcess {
@@ -649,6 +665,8 @@ fn client_process(
         .open(&output_path)
         .unwrap();
     let environment = codexu_core::local_cli::launch::Environment::codex(home).unwrap();
+    let owner_resource = Arc::new(());
+    let owner_resource_weak = Arc::downgrade(&owner_resource);
     let args = vec![
         "-I".into(),
         "-B".into(),
@@ -664,12 +682,13 @@ fn client_process(
         &environment,
         "Synthetic Companion one-shot client",
         Some(domains),
-        Some(Arc::new(())),
+        Some(owner_resource),
         Some(&output),
         LaunchWindow::NoWindow,
     );
     ClientProcess {
         owner: Some(owner),
+        owner_resource: owner_resource_weak,
         output_path,
         output: Some(output),
     }
@@ -1947,10 +1966,11 @@ fn run_windows_python_receiver_e2e() {
         gate.reserve_terminal(&profile_a.identity).is_ok(),
         "profile A activity guard was not released after the owned Hub Job emptied"
     );
-    assert!(synthetic_a.owner_resource.upgrade().is_none());
-    assert!(synthetic_b.owner_resource.upgrade().is_none());
+    // Each domain receipt pins its owner's resource until confirmed cleanup;
+    // client receipts are checked individually in ClientProcess as they exit.
     assert!(
-        domains.is_empty(),
+        synthetic_a.owner_resource.upgrade().is_none()
+            && synthetic_b.owner_resource.upgrade().is_none(),
         "test OwnedConsole registrations remain after confirmed cleanup"
     );
 }
