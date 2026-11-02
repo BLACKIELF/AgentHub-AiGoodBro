@@ -26,6 +26,12 @@ const SOURCE_FILE: &str = "app-source-v1.json";
 const LOCATOR_FILE: &str = "receiver-v1.json";
 const FRAME_RECEIVE_BUDGET: Duration = Duration::from_secs(10);
 const RESPONSE_WRITE_GRACE: Duration = Duration::from_secs(3);
+const PIPE_INSTANCE_HANDOFF_BUDGET: Duration = Duration::from_secs(3);
+const CLIENT_CLOSE_POLL: Duration = Duration::from_millis(100);
+const ERROR_BROKEN_PIPE: i32 = 109;
+const ERROR_NO_DATA: i32 = 232;
+const ERROR_PIPE_NOT_CONNECTED: i32 = 233;
+const ERROR_PIPE_BUSY: i32 = 231;
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 struct FileTime {
@@ -612,7 +618,7 @@ fn authenticate(pipe: Handle, expected: &Stamp, deadline: Instant) -> Result<Pee
         }),
     )
 }
-fn create_pipe(name: &str, sid: &str) -> Result<NamedPipeServer> {
+fn create_pipe(name: &str, sid: &str, first_instance: bool) -> Result<NamedPipeServer> {
     let text = format!("O:{sid}D:P(A;;GA;;;SY)(A;;GA;;;{sid})\0")
         .encode_utf16()
         .collect::<Vec<_>>();
@@ -636,16 +642,77 @@ fn create_pipe(name: &str, sid: &str) -> Result<NamedPipeServer> {
     };
     let pipe = unsafe {
         ServerOptions::new()
-            .first_pipe_instance(true)
+            .first_pipe_instance(first_instance)
             .reject_remote_clients(true)
-            .max_instances(1)
+            .max_instances(2)
             .in_buffer_size(MAX_FRAME as u32 + 4)
             .out_buffer_size(MAX_FRAME as u32 + 4)
             .create_with_security_attributes_raw(name, (&mut attrs as *mut Attributes).cast())
     }
-    .map_err(|_| fail("companion_receiver_busy"))?;
+    .map_err(|error| {
+        if first_instance || error.raw_os_error() == Some(ERROR_PIPE_BUSY) {
+            fail("companion_receiver_busy")
+        } else {
+            unavailable()
+        }
+    })?;
     private_pipe(pipe.as_raw_handle().cast())?;
     Ok(pipe)
+}
+async fn create_next_pipe(name: &str, sid: &str, stop: &AtomicBool) -> Result<NamedPipeServer> {
+    let deadline = tokio::time::Instant::now() + PIPE_INSTANCE_HANDOFF_BUDGET;
+    loop {
+        if stop.load(Ordering::Acquire) {
+            return Err(unavailable());
+        }
+        match create_pipe(name, sid, false) {
+            Ok(pipe) => return Ok(pipe),
+            Err(error) if error.code == "companion_receiver_busy" => {
+                if tokio::time::Instant::now() >= deadline {
+                    return Err(error);
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+async fn wait_for_client_close(
+    pipe: &mut NamedPipeServer,
+    deadline: tokio::time::Instant,
+    stop: &AtomicBool,
+) -> Result<bool> {
+    // A completed reply must not occupy the serial receiver for the unused
+    // request budget while a client keeps its pipe open.
+    let deadline = std::cmp::min(deadline, tokio::time::Instant::now() + RESPONSE_WRITE_GRACE);
+    let mut extra = [0u8; 1];
+    loop {
+        if stop.load(Ordering::Acquire) {
+            return Ok(false);
+        }
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
+            return Err(fail("companion_ipc_timeout"));
+        }
+        let poll_deadline = std::cmp::min(deadline, now + CLIENT_CLOSE_POLL);
+        match tokio::time::timeout_at(poll_deadline, pipe.read(&mut extra)).await {
+            Ok(Ok(0)) => return Ok(true),
+            Ok(Ok(_)) => return Err(fail("companion_invalid_frame")),
+            Ok(Err(error))
+                if matches!(
+                    error.raw_os_error(),
+                    Some(ERROR_BROKEN_PIPE) | Some(ERROR_NO_DATA) | Some(ERROR_PIPE_NOT_CONNECTED)
+                ) =>
+            {
+                return Ok(true);
+            }
+            Ok(Err(_)) => return Err(unavailable()),
+            Err(_) if tokio::time::Instant::now() >= deadline => {
+                return Err(fail("companion_ipc_timeout"));
+            }
+            Err(_) => {}
+        }
+    }
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -660,7 +727,7 @@ async fn one<B: Backend>(
     python: &Stamp,
     bridge: &Bridge<B>,
     stop: &AtomicBool,
-) -> Result<()> {
+) -> Result<tokio::time::Instant> {
     let request_started = tokio::time::Instant::now();
     let request_deadline = request_started + super::host::REQUEST_BUDGET;
     let frame_deadline = std::cmp::min(request_started + FRAME_RECEIVE_BUDGET, request_deadline);
@@ -718,7 +785,7 @@ async fn one<B: Backend>(
         .await
         .map_err(|_| unavailable())?
         .map_err(|_| unavailable())?;
-    Ok(())
+    Ok(response_deadline)
 }
 pub struct Receiver {
     stop: Arc<AtomicBool>,
@@ -821,7 +888,7 @@ impl Receiver {
                     .build()
                     .map_err(|_| unavailable())?;
                 runtime.block_on(async {
-                    let mut pipe = create_pipe(&name, &sid)?;
+                    let mut pipe = create_pipe(&name, &sid, true)?;
                     let locator = Locator {
                         schema: 1,
                         role: "runtimeLocator".into(),
@@ -846,6 +913,13 @@ impl Receiver {
                             Ok(Err(_)) => return Err(unavailable()),
                             Ok(Ok(())) => {}
                         }
+                        let next_pipe = match create_next_pipe(&name, &sid, &cancel).await {
+                            Ok(pipe) => pipe,
+                            Err(error) => {
+                                let _ = pipe.disconnect();
+                                return Err(error);
+                            }
+                        };
                         #[cfg(test)]
                         entered.store(true, Ordering::Release);
                         let request_result = one(&mut pipe, &python_stamp, &bridge, &cancel).await;
@@ -856,12 +930,42 @@ impl Receiver {
                                 error.code
                             );
                         }
-                        let _ = request_result;
+                        let mut retire_connection = false;
+                        let mut stop_after_connection = cancel.load(Ordering::Acquire);
+                        match request_result {
+                            Ok(response_deadline) => {
+                                match wait_for_client_close(&mut pipe, response_deadline, &cancel)
+                                    .await
+                                {
+                                    Ok(true) => {}
+                                    Ok(false) => stop_after_connection = true,
+                                    Err(_error) => {
+                                        #[cfg(test)]
+                                        eprintln!(
+                                            "AIGOODBRO_COMPANION_TEST_RECEIVER_CLOSE_ERROR code={}",
+                                            _error.code
+                                        );
+                                        retire_connection = true;
+                                    }
+                                }
+                            }
+                            Err(_) => retire_connection = true,
+                        }
                         #[cfg(test)]
                         entered.store(false, Ordering::Release);
-                        // Disconnect only our pipe instance. Adopted task guards
-                        // live in the App Hub and are unaffected by this handle.
-                        pipe.disconnect().map_err(|_| unavailable())?;
+                        if stop_after_connection || cancel.load(Ordering::Acquire) {
+                            let _ = pipe.disconnect();
+                            drop(next_pipe);
+                            return Ok(());
+                        }
+                        if retire_connection {
+                            let _ = pipe.disconnect();
+                        }
+                        // Never reconnect this Tokio/Mio object: its overlapped
+                        // read state belongs to this one client instance.
+                        let old_pipe = pipe;
+                        pipe = next_pipe;
+                        drop(old_pipe);
                     }
                     Ok(())
                 })

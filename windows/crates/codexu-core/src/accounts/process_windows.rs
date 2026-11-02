@@ -885,14 +885,19 @@ mod tests {
     #[test]
     fn owned_process_captures_output_and_confirms_entire_job_exit() {
         let temp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            temp.path().join("synthetic-owned-job.fixture"),
+            b"owned job output fixture",
+        )
+        .unwrap();
         let mut child = Child::start(
-            &powershell(),
+            &std::env::current_exe().unwrap(),
             temp.path(),
             &[
-                "-NoProfile".into(),
-                "-NonInteractive".into(),
-                "-Command".into(),
-                "[Console]::WriteLine('SYNTHETIC_JOB_OUTPUT')".into(),
+                "--exact".into(),
+                "accounts::native::process::tests::synthetic_job_tree_fixture".into(),
+                "--ignored".into(),
+                "--nocapture".into(),
             ],
         )
         .unwrap();
@@ -900,7 +905,8 @@ mod tests {
         let mut output = Vec::new();
         loop {
             output.extend(child.read_available().unwrap());
-            if child.exit_code().unwrap().is_some() {
+            if let Some(code) = child.exit_code().unwrap() {
+                assert_eq!(code, 0, "synthetic output fixture failed");
                 output.extend(child.read_available().unwrap());
                 break;
             }
@@ -911,7 +917,7 @@ mod tests {
         assert!(String::from_utf8_lossy(&output).contains("SYNTHETIC_JOB_OUTPUT"));
     }
     #[test]
-    #[ignore = "child-only fixture invoked by the owned Job cancellation test"]
+    #[ignore = "child-only fixture invoked by the owned Job tests"]
     fn synthetic_job_tree_fixture() {
         use std::io::{BufRead, Write};
         use std::os::windows::io::AsRawHandle;
@@ -932,6 +938,11 @@ mod tests {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
             Err(error) => panic!("synthetic fixture marker unavailable: {error}"),
         };
+        if marker == b"owned job output fixture" {
+            println!("\nSYNTHETIC_JOB_OUTPUT");
+            std::io::stdout().flush().unwrap();
+            return;
+        }
         assert_eq!(marker, b"owned job fixture");
         let mut descendant = Command::new(std::env::current_exe().unwrap())
             .args([

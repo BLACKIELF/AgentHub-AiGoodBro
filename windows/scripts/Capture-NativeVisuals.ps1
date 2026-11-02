@@ -1857,7 +1857,7 @@ function Invoke-WorkspaceScreenshotSmokeTest {
   if (-not (Test-Path -LiteralPath $orderPath -PathType Leaf)) {
     throw 'Native workspace screenshot did not write its fixed restore/save order marker.'
   }
-  $order = Get-Content -LiteralPath $orderPath -Raw -Encoding ASCII
+  $order = [System.IO.File]::ReadAllText($orderPath, [System.Text.Encoding]::ASCII)
   if ($order -cne 'restored|saved') {
     throw 'Native workspace screenshot did not prove DOM restoration before PNG save.'
   }

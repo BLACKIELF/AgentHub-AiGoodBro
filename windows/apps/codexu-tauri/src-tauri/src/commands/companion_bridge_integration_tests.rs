@@ -9,8 +9,10 @@ use super::*;
 use crate::commands::cli_workflow::console::LaunchWindow;
 use codexu_core::{
     accounts::{
-        hub_snapshot::HubFiles, AccountError, AccountIdentity, AccountLoginSpawner, AccountPaths,
-        AccountResult, AccountRuntime, LoginAuthorization, SecretProtector, VerifiedCredential,
+        hub_snapshot::HubFiles, AccountError, AccountIdentity, AccountLoginSpawner,
+        AccountOccupancyGate, AccountPaths, AccountResult, AccountRuntime, CredentialWriteLease,
+        CredentialWritePurpose, LoginAuthorization, SecretProtector, SwitchMaintenanceLease,
+        VerifiedCredential,
     },
     automatic_switch::live::OwnedProcessDomains,
     companion_bridge::{
@@ -177,6 +179,41 @@ impl DeferredLogin {
             .take()
             .expect("synthetic login worker was not queued");
         worker();
+    }
+}
+
+struct FixtureOccupancyLease;
+impl CredentialWriteLease for FixtureOccupancyLease {
+    fn recheck(&self) -> AccountResult<()> {
+        Ok(())
+    }
+}
+
+/// Allows managed fixture credential writes only; all other maintenance stays fail-closed.
+struct FixtureOccupancyGate;
+impl AccountOccupancyGate for FixtureOccupancyGate {
+    fn acquire_switch_maintenance(
+        &self,
+        _: &str,
+        _: &str,
+    ) -> AccountResult<Box<dyn SwitchMaintenanceLease>> {
+        Err(AccountError {
+            code: "fixture_occupancy_purpose_unsupported",
+        })
+    }
+
+    fn acquire_credential_write(
+        &self,
+        _: &str,
+        purpose: CredentialWritePurpose,
+    ) -> AccountResult<Box<dyn CredentialWriteLease>> {
+        if matches!(purpose, CredentialWritePurpose::Managed) {
+            Ok(Box::new(FixtureOccupancyLease))
+        } else {
+            Err(AccountError {
+                code: "fixture_occupancy_purpose_unsupported",
+            })
+        }
     }
 }
 
@@ -1918,7 +1955,7 @@ fn run_windows_python_receiver_e2e() {
         paths,
         Arc::new(FixtureProtector),
         Arc::new(FixtureRuntime::default()),
-        None,
+        Some(Arc::new(FixtureOccupancyGate)),
         login.clone(),
     )
     .unwrap();
