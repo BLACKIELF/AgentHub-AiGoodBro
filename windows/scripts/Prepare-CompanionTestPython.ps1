@@ -15,8 +15,14 @@ $wheelUrl = 'https://files.pythonhosted.org/packages/0a/66/9a06c2227fedfd4919f0e
 $wheelSha256 = '0a10eec6e13ef16b627fabed9a5f2ba61a62b1c67f327305f4e7e412a70b4aec'
 $tempDirectory = Join-Path $env:RUNNER_TEMP ('aigb-companion-tzdata-' + [guid]::NewGuid().ToString('N'))
 $wheelPath = Join-Path $tempDirectory ('tzdata-' + $tzdataVersion + '-py2.py3-none-any.whl')
-$pythonCommand = Get-Command python -CommandType Application -ErrorAction Stop
-$pythonPath = [IO.Path]::GetFullPath($pythonCommand.Source)
+if ([string]::IsNullOrWhiteSpace($env:pythonLocation)) {
+    throw 'actions/setup-python did not provide its selected interpreter directory.'
+}
+$pythonPath = Join-Path $env:pythonLocation 'python.exe'
+if (-not (Test-Path -LiteralPath $pythonPath -PathType Leaf)) {
+    throw 'actions/setup-python selected interpreter is missing.'
+}
+$pythonPath = [IO.Path]::GetFullPath($pythonPath)
 
 try {
     New-Item -ItemType Directory -Path $tempDirectory -ErrorAction Stop | Out-Null
