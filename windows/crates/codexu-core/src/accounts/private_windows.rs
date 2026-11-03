@@ -1,7 +1,8 @@
 //! Owner-private creation. An elevated process's default TokenOwner may be the
 //! Administrators group; only its actual TokenUser is our storage identity.
 //! Existing foreign-owned objects are rejected, never adopted or repaired.
-use super::{fail, AccountError, AccountResult};
+use super::{fail, AccountResult};
+use crate::accounts::AccountError;
 use std::{
     ffi::c_void,
     fs::File,
