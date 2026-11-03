@@ -32,7 +32,7 @@ use std::{
     collections::BTreeMap,
     ffi::c_void,
     fs::{self, File, OpenOptions},
-    io::{self, Write},
+    io::{self, Read, Write},
     net::SocketAddr,
     os::windows::ffi::OsStrExt,
     path::{Path, PathBuf},
@@ -45,7 +45,31 @@ use std::{
     time::{Duration, Instant},
 };
 
-const CLIENT_WRAPPER: &str = "import io,json,runpy,sys\nc=json.load(open(sys.argv[1],encoding='utf-8'))\nsys.argv=c['argv']\nsys.stdin=io.TextIOWrapper(io.BytesIO(c['stdin'].encode('utf-8')))\nrunpy.run_path(sys.argv[0],run_name='__main__')\n";
+const CLIENT_WRAPPER: &str = r#"import io,json,os,runpy,sys
+c=json.load(open(sys.argv[1],encoding='utf-8'))
+sys.argv=c['argv']
+sys.stdin=io.TextIOWrapper(io.BytesIO(c['stdin'].encode('utf-8')))
+diagnostic_path=c.get('failure_diagnostic')
+previous_trace=sys.gettrace()
+if diagnostic_path:
+    launcher_path=os.path.abspath(sys.argv[0])
+    def observe(frame,event,arg):
+        if event=='call' and frame.f_code.co_name=='fail' and os.path.abspath(frame.f_code.co_filename)==launcher_path:
+            code=frame.f_locals.get('code')
+            if isinstance(code,str) and code.startswith('companion_') and len(code)<=96 and all(ch in 'abcdefghijklmnopqrstuvwxyz0123456789_' for ch in code):
+                try:
+                    with open(diagnostic_path,'w',encoding='ascii') as f:
+                        f.write(json.dumps({'code':code},separators=(',',':')))
+                except OSError:
+                    pass
+        return None
+    sys.settrace(observe)
+try:
+    runpy.run_path(sys.argv[0],run_name='__main__')
+finally:
+    if diagnostic_path:
+        sys.settrace(previous_trace)
+"#;
 const SYNTHETIC_HUB: &str = r#"
 import hashlib, json, os, sys, time
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -74,6 +98,10 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('Connection', 'close')
         self.end_headers()
         self.wfile.write(data)
+        try:
+            self.record('response', status=status)
+        except OSError:
+            pass
     def authorized(self):
         return self.headers.get('Authorization') == 'Bearer ' + token
     def do_GET(self):
@@ -463,7 +491,14 @@ impl SyntheticHub {
             None,
             LaunchWindow::NoWindow,
         );
-        wait_for_file(&ready, Duration::from_secs(10));
+        let ready_stage = if block_first_create {
+            "hub-a-ready"
+        } else {
+            "hub-b-ready"
+        };
+        wait_for_file(&ready, Duration::from_secs(10), ready_stage, || {
+            owned_process_diagnostic("hub", &mut owner)
+        });
         assert!(
             !owner.has_exited().unwrap(),
             "synthetic Hub exited before ready"
@@ -487,8 +522,63 @@ impl SyntheticHub {
             .filter_map(|line| serde_json::from_str(line).ok())
             .collect()
     }
-    fn wait_for_post(&self) {
-        wait_for_file(&self.post_seen, Duration::from_secs(20));
+    fn wait_for_post(
+        &self,
+        client: &mut ClientProcess,
+        hub_state: &HubState,
+        hub_session_id: &str,
+    ) {
+        wait_for_file(
+            &self.post_seen,
+            Duration::from_secs(20),
+            "first-create-post-seen",
+            || {
+                format!(
+                    "{}; {}; {}; {}; {}",
+                    hub_owner_diagnostic(hub_state, hub_session_id),
+                    client.owner_diagnostic(),
+                    client_output_diagnostic(&client.output_path),
+                    client_failure_code_diagnostic(client.failure_code_path.as_deref()),
+                    self.event_diagnostic(),
+                )
+            },
+        );
+    }
+    fn event_diagnostic(&self) -> String {
+        let mut kinds = [0usize; 5];
+        let mut statuses = BTreeMap::<u64, usize>::new();
+        let snapshot = read_diagnostic_snapshot(&self.log)
+            .map(|snapshot| snapshot.bytes)
+            .unwrap_or_default();
+        for line in snapshot.split(|byte| *byte == b'\n') {
+            let Ok(record) = serde_json::from_slice::<Value>(line) else {
+                continue;
+            };
+            match record.get("kind").and_then(Value::as_str) {
+                Some("overview") => kinds[0] += 1,
+                Some("lookup") => kinds[1] += 1,
+                Some("create") => kinds[2] += 1,
+                Some("approve") => kinds[3] += 1,
+                Some("response") => kinds[4] += 1,
+                _ => {}
+            }
+            if let Some(status) = record.get("status").and_then(Value::as_u64) {
+                *statuses.entry(status).or_default() += 1;
+            }
+        }
+        let status_counts = if statuses.is_empty() {
+            "none".to_owned()
+        } else {
+            statuses
+                .iter()
+                .map(|(status, count)| format!("{status}:{count}"))
+                .collect::<Vec<_>>()
+                .join(",")
+        };
+        format!(
+            "hub_kind_counts=overview:{},lookup:{},create:{},approve:{},response:{} hub_status_counts={status_counts}",
+            kinds[0], kinds[1], kinds[2], kinds[3], kinds[4]
+        )
     }
     fn release_post_response(&self) {
         fs::write(&self.release, b"release").unwrap();
@@ -520,7 +610,13 @@ impl Drop for SyntheticHub {
     }
 }
 
-fn wait_for_file(path: &Path, duration: Duration) {
+#[track_caller]
+fn wait_for_file(
+    path: &Path,
+    duration: Duration,
+    stage: &'static str,
+    timeout_diagnostic: impl FnOnce() -> String,
+) {
     let deadline = Instant::now() + duration;
     while Instant::now() < deadline {
         if path.is_file() {
@@ -528,7 +624,154 @@ fn wait_for_file(path: &Path, duration: Duration) {
         }
         thread::sleep(Duration::from_millis(10));
     }
-    panic!("synthetic test fixture file did not appear");
+    let caller = std::panic::Location::caller();
+    panic!(
+        "synthetic marker stage={stage} did not appear (line={}); {}",
+        caller.line(),
+        timeout_diagnostic()
+    );
+}
+
+fn owned_process_diagnostic(label: &str, owner: &mut dyn OwnedProcess) -> String {
+    match owner.has_exited() {
+        Ok(true) => format!(
+            "{label}_owner_has_exited=true {label}_owner_exit_success={}",
+            owner
+                .exit_success()
+                .map(|success| success.to_string())
+                .unwrap_or_else(|_| "unknown".to_owned())
+        ),
+        Ok(false) => format!("{label}_owner_has_exited=false"),
+        Err(_) => format!("{label}_owner_has_exited=unknown"),
+    }
+}
+
+fn hub_owner_diagnostic(hub_state: &HubState, session_id: &str) -> String {
+    let mut inner = match hub_state.inner.try_lock() {
+        Ok(inner) => inner,
+        Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
+        Err(std::sync::TryLockError::WouldBlock) => {
+            return "hub_owner_has_exited=unknown".to_owned()
+        }
+    };
+    let Some(session) = inner
+        .sessions
+        .values_mut()
+        .find(|session| session.session_id == session_id)
+    else {
+        return "hub_owner_has_exited=unknown".to_owned();
+    };
+    owned_process_diagnostic("hub", session.process.as_mut())
+}
+
+const MAX_DIAGNOSTIC_SNAPSHOT_BYTES: usize = 64 * 1024;
+
+struct DiagnosticSnapshot {
+    bytes: Vec<u8>,
+    file_bytes: Option<u64>,
+    truncated: bool,
+}
+
+fn read_diagnostic_snapshot(path: &Path) -> io::Result<DiagnosticSnapshot> {
+    let file = File::open(path)?;
+    let file_bytes = file.metadata().ok().map(|metadata| metadata.len());
+    let mut limited = Read::take(file, MAX_DIAGNOSTIC_SNAPSHOT_BYTES as u64);
+    let mut snapshot = Vec::with_capacity(MAX_DIAGNOSTIC_SNAPSHOT_BYTES);
+    let mut buffer = [0u8; 4096];
+    loop {
+        match limited.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(read) => snapshot.extend_from_slice(&buffer[..read]),
+            Err(error) => return Err(error),
+        }
+    }
+    let truncated = snapshot.len() == MAX_DIAGNOSTIC_SNAPSHOT_BYTES
+        || file_bytes.is_some_and(|bytes| bytes > MAX_DIAGNOSTIC_SNAPSHOT_BYTES as u64);
+    Ok(DiagnosticSnapshot {
+        bytes: snapshot,
+        file_bytes,
+        truncated,
+    })
+}
+
+fn client_output_diagnostic(path: &Path) -> String {
+    let snapshot = match read_diagnostic_snapshot(path) {
+        Ok(snapshot) => snapshot,
+        Err(_) => return "client_output_bytes=unknown client_output_json=unavailable".to_owned(),
+    };
+    let file_bytes = snapshot
+        .file_bytes
+        .map(|bytes| bytes.to_string())
+        .unwrap_or_else(|| "unknown".to_owned());
+    let parsed = if snapshot.truncated {
+        None
+    } else {
+        serde_json::from_slice::<Value>(&snapshot.bytes).ok()
+    };
+    let parseability = if snapshot.truncated {
+        "truncated"
+    } else if snapshot.bytes.is_empty() {
+        "empty"
+    } else if parsed.is_some() {
+        "valid"
+    } else {
+        "invalid"
+    };
+    let issue = diagnostic_issue_code(parsed.as_ref().and_then(|value| value.get("issueCode")));
+    let state = diagnostic_state(
+        parsed
+            .as_ref()
+            .and_then(|value| value.get("result"))
+            .and_then(|result| result.get("state")),
+    );
+    format!(
+        "client_output_bytes={file_bytes} client_output_json={parseability} client_issue_code={issue} client_state={state}"
+    )
+}
+
+fn diagnostic_issue_code(value: Option<&Value>) -> String {
+    let Some(value) = value.and_then(Value::as_str) else {
+        return "none".to_owned();
+    };
+    if value.starts_with("companion_")
+        && value.len() <= 96
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+    {
+        value.to_owned()
+    } else {
+        "other".to_owned()
+    }
+}
+
+fn client_failure_code_diagnostic(path: Option<&Path>) -> String {
+    let Some(path) = path else {
+        return "client_fail_code=disabled".to_owned();
+    };
+    let snapshot = match read_diagnostic_snapshot(path) {
+        Ok(snapshot) if !snapshot.truncated => snapshot,
+        Ok(_) => return "client_fail_code=unknown".to_owned(),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return "client_fail_code=none".to_owned()
+        }
+        Err(_) => return "client_fail_code=unknown".to_owned(),
+    };
+    let parsed = serde_json::from_slice::<Value>(&snapshot.bytes).ok();
+    let code = diagnostic_issue_code(parsed.as_ref().and_then(|value| value.get("code")));
+    format!("client_fail_code={code}")
+}
+
+fn diagnostic_state(value: Option<&Value>) -> String {
+    let Some(state) = value.and_then(Value::as_str) else {
+        return "none".to_owned();
+    };
+    match state {
+        "unknown" | "missing" | "cancelled" | "ready" | "reserved" | "created" | "accepted" => {
+            state.to_owned()
+        }
+        _ => "other".to_owned(),
+    }
 }
 
 fn wait_for_created_journal(path: &Path, operation_id: &str, duration: Duration) {
@@ -612,9 +855,16 @@ struct ClientProcess {
     owner: Option<OwnedConsole>,
     owner_resource: std::sync::Weak<()>,
     output_path: PathBuf,
+    failure_code_path: Option<PathBuf>,
     output: Option<File>,
 }
 impl ClientProcess {
+    fn owner_diagnostic(&mut self) -> String {
+        match self.owner.as_mut() {
+            Some(owner) => owned_process_diagnostic("client", owner),
+            None => "client_owner_has_exited=unknown".to_owned(),
+        }
+    }
     fn wait_output(mut self) -> Value {
         let owner = self.owner.as_mut().expect("client owner missing");
         wait_for_owner(owner, Duration::from_secs(35));
@@ -682,6 +932,8 @@ fn client_process(
 ) -> ClientProcess {
     let config_path = root.join(format!("client-{call_name}.json"));
     let output_path = root.join(format!("client-{call_name}.stdout"));
+    let failure_code_path =
+        (command == "run").then(|| root.join(format!("client-{call_name}.failure.json")));
     let mut argv = vec![
         launcher.to_string_lossy().into_owned(),
         command.into(),
@@ -697,11 +949,11 @@ fn client_process(
     for (flag, value) in extra {
         argv.extend([(*flag).into(), value.clone()]);
     }
-    fs::write(
-        &config_path,
-        serde_json::to_vec(&json!({"argv":argv,"stdin":stdin})).unwrap(),
-    )
-    .unwrap();
+    let mut config = json!({"argv":argv,"stdin":stdin});
+    if let Some(path) = &failure_code_path {
+        config["failure_diagnostic"] = json!(path.to_string_lossy().into_owned());
+    }
+    fs::write(&config_path, serde_json::to_vec(&config).unwrap()).unwrap();
     let output = OpenOptions::new()
         .create_new(true)
         .write(true)
@@ -733,6 +985,7 @@ fn client_process(
         owner: Some(owner),
         owner_resource: owner_resource_weak,
         output_path,
+        failure_code_path,
         output: Some(output),
     }
 }
@@ -2729,7 +2982,13 @@ fn run_windows_python_receiver_e2e() {
         &[("--lease-id", lease)],
         prompt,
     );
-    synthetic_a.wait_for_post();
+    synthetic_a.wait_for_post(
+        &mut disconnected,
+        hub_state,
+        session_ids
+            .get(&profile_a.profile_id)
+            .expect("profile A Hub session missing"),
+    );
     disconnected.cancel_and_confirm();
     synthetic_a.release_post_response();
     synthetic_a.wait_for_lookups(1);
