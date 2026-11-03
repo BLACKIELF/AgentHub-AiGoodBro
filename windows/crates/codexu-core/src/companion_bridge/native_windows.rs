@@ -725,7 +725,7 @@ struct Response {
 async fn one<B: Backend>(
     pipe: &mut NamedPipeServer,
     python: &Stamp,
-    bridge: &Bridge<B>,
+    bridge: Arc<Bridge<B>>,
     stop: &AtomicBool,
 ) -> Result<tokio::time::Instant> {
     let request_started = tokio::time::Instant::now();
@@ -758,9 +758,11 @@ async fn one<B: Backend>(
     if Instant::now() >= deadline {
         return Err(fail("companion_ipc_timeout"));
     }
-    // Synchronous on the receiver's OWN worker. A client disconnect or dropped
-    // Tokio I/O future cannot cancel a partially submitted backend operation.
-    let result = bridge.handle_until(&peer, request, deadline);
+    // Keep the synchronous backend off this current-thread I/O runtime. Await
+    // without cancellation so disconnect cannot abandon a submitted operation.
+    let result = tokio::task::spawn_blocking(move || bridge.handle_until(&peer, request, deadline))
+        .await
+        .map_err(|_| unavailable())?;
     let response = match result {
         Ok(v) => Response {
             abi: ABI,
@@ -922,7 +924,8 @@ impl Receiver {
                         };
                         #[cfg(test)]
                         entered.store(true, Ordering::Release);
-                        let request_result = one(&mut pipe, &python_stamp, &bridge, &cancel).await;
+                        let request_result =
+                            one(&mut pipe, &python_stamp, bridge.clone(), &cancel).await;
                         #[cfg(test)]
                         if let Err(error) = &request_result {
                             eprintln!(

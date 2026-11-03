@@ -24,6 +24,7 @@ impl Drop for FixtureRoot {
 struct ReadOnlyBackend {
     runtime: String,
     mutations: AtomicBool,
+    blocking_probe: tokio::sync::RwLock<()>,
 }
 impl Backend for ReadOnlyBackend {
     type Permit = ();
@@ -32,6 +33,7 @@ impl Backend for ReadOnlyBackend {
     }
     fn capture(&self, _: &Selector, refresh: bool) -> Result<Scope> {
         assert!(!refresh, "native smoke must not verify a real account");
+        let _read = self.blocking_probe.blocking_read();
         Ok(Scope {
             fingerprint: hash(b"fixture-scope"),
             epoch: hash(b"fixture-session"),
@@ -88,6 +90,7 @@ fn bridge(root: &Path, stamp: &Stamp) -> (Arc<Bridge<ReadOnlyBackend>>, Arc<Read
     let b = Arc::new(ReadOnlyBackend {
         runtime: stamp.sha256.clone(),
         mutations: AtomicBool::new(false),
+        blocking_probe: tokio::sync::RwLock::new(()),
     });
     (
         Arc::new(Bridge::new(root.join("journal"), b.clone()).unwrap()),
