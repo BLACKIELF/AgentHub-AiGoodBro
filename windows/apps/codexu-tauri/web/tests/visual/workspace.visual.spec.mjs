@@ -81,7 +81,9 @@ for (const scenario of [
 test('navigation and simple mode persist without losing tools or directory semantics', async ({ page }) => {
   await workspace(page);
   const nav = page.getByRole('navigation', { name: 'Home navigation' });
+  await page.locator('.workspace-sidebar-more > summary').click();
   await page.getByRole('button', { name: 'Simple', exact: true }).click();
+  await page.locator('.workspace-sidebar-more > summary').click();
   await expect(page.locator('.workspace-shell')).toHaveAttribute('data-workspace-mode', 'simple');
   await expect(page.getByRole('tab')).toHaveCount(0);
   await nav.getByRole('button', { name: 'Workspace', exact: true }).click();
@@ -95,7 +97,9 @@ test('navigation and simple mode persist without losing tools or directory seman
   await expect(page.getByRole('region', { name: 'Account directories', exact: true })).toContainText('does not switch Codex login');
   await page.reload();
   await expect(nav.getByRole('button', { name: 'Accounts', exact: true })).toHaveAttribute('aria-current', 'page');
+  await page.locator('.workspace-sidebar-more > summary').click();
   await expect(page.getByRole('button', { name: 'Simple', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await page.locator('.workspace-sidebar-more > summary').click();
   await expect(page.locator('.workspace-main')).toHaveScreenshot('workspace-accounts-simple.png');
 });
 
@@ -152,6 +156,7 @@ test('card size, list and platform filter persist while preserving global number
   await page.setViewportSize({ width: 480, height: 1600 });
   expect(await region.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
   const last = page.getByTestId('profile-3');
+  await expect.poll(() => page.locator('.workspace-main').evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
   await expect(last).toBeInViewport({ ratio: 1 });
   const lastBounds = await last.boundingBox();
   expect(lastBounds.y + lastBounds.height).toBeLessThanOrEqual(page.viewportSize().height);
@@ -281,5 +286,5 @@ test('cancelling the native screenshot save does not report a saved file or leav
   const button = page.getByRole('button', { name: 'Save full workspace screenshot (PNG)', exact: true });
   await button.click();
   await expect(button).toBeEnabled();
-  await expect(page.locator('.workspace-header-actions > [role="status"]')).toHaveCount(0);
+  await expect(page.locator('#workspace-screenshot-status')).toHaveCount(0);
 });

@@ -1440,6 +1440,1223 @@ body {
 .workspace-shell .account-directory-grid.is-list .quota-ring-graphic { width: 40px; height: 40px; }
 .workspace-mode-simple .dashboard-home-overview { gap: 10px; }
 .workspace-mode-simple .dashboard-home-primary-card { padding: 12px; }
+
+/* The workspace follows the native Mac shell: icon rail, brand breadcrumb,
+   and one full-width scrolling canvas. */
+.workspace-shell[data-layout="mac"] {
+  --workspace-rail-width: 64px;
+  display: grid;
+  grid-template-columns: var(--workspace-rail-width) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.workspace-shell[data-layout="mac"] .workspace-sidebar {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  grid-column: 1;
+  grid-row: 1;
+  padding: 10px 8px;
+  overflow: visible;
+  border-right: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface-elevated) 76%, transparent);
+  backdrop-filter: saturate(135%) blur(18px);
+}
+
+.workspace-shell[data-layout="mac"] .workspace-sidebar-routes,
+.workspace-shell[data-layout="mac"] .workspace-sidebar-providers .home-provider-rail,
+.workspace-shell[data-layout="mac"] .workspace-sidebar-footer {
+  display: flex;
+  width: 100%;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.workspace-shell[data-layout="mac"] .workspace-sidebar-routes {
+  display: contents;
+}
+
+.workspace-shell[data-layout="mac"] :is(
+  .workspace-sidebar-home-route,
+  .workspace-sidebar-secondary-routes,
+  .workspace-sidebar-proxy-route
+) {
+  display: contents;
+}
+
+.workspace-shell[data-layout="mac"] .workspace-sidebar-link-home {
+  order: 0;
+}
+
+.workspace-shell[data-layout="mac"] .workspace-sidebar-link-accounts,
+.workspace-shell[data-layout="mac"] .workspace-sidebar-link-usage,
+.workspace-shell[data-layout="mac"] .workspace-sidebar-link-tools {
+  order: 2;
+}
+
+.workspace-shell[data-layout="mac"] .workspace-sidebar-link-accounts {
+  margin-top: 4px;
+  border-top-color: var(--border);
+}
+
+.workspace-shell[data-layout="mac"] .workspace-sidebar-providers {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+  order: 1;
+  flex-direction: column;
+  align-items: center;
+  padding: 4px 0 8px;
+  overflow: hidden;
+  border-bottom: 0;
+}
+
+.workspace-shell[data-layout="mac"] .workspace-sidebar-providers .home-provider-rail {
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 2px 0;
+  scrollbar-width: none;
+}
+
+.workspace-shell[data-layout="mac"] .workspace-sidebar-providers .home-provider-rail::-webkit-scrollbar {
+  display: none;
+}
+
+.workspace-shell[data-layout="mac"] .workspace-sidebar-footer {
+  order: 4;
+  margin-top: 0;
+  padding-top: 4px;
+  border-top: 0;
+}
+
+.workspace-shell[data-layout="mac"] .workspace-sidebar-link-proxy {
+  order: 3;
+}
+
+.workspace-shell[data-layout="mac"] :is(
+  .workspace-sidebar-link,
+  .workspace-provider-link,
+  .workspace-sidebar-action,
+  .workspace-sidebar-guide,
+  .workspace-sidebar-more-trigger
+) {
+  position: relative;
+  display: grid;
+  width: 44px;
+  min-width: 44px;
+  height: 40px;
+  min-height: 40px;
+  place-items: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  color: var(--text-secondary);
+  background: transparent;
+  font-size: 0;
+  line-height: 0;
+  transition: color 140ms ease, background-color 140ms ease, border-color 140ms ease;
+}
+
+.workspace-shell[data-layout="mac"] :is(
+  .workspace-sidebar-link,
+  .workspace-provider-link,
+  .workspace-sidebar-action,
+  .workspace-sidebar-guide,
+  .workspace-sidebar-more-trigger
+) > svg {
+  width: 20px;
+  height: 20px;
+}
+
+.workspace-shell[data-layout="mac"] :is(
+  .workspace-sidebar-link,
+  .workspace-provider-link,
+  .workspace-sidebar-action,
+  .workspace-sidebar-guide,
+  .workspace-sidebar-more-trigger
+):hover:not(:disabled) {
+  color: var(--text-primary);
+  border-color: color-mix(in srgb, var(--border) 72%, transparent);
+  background: color-mix(in srgb, var(--text-primary) 7%, transparent);
+}
+
+.workspace-shell[data-layout="mac"] :is(
+  .workspace-sidebar-link,
+  .workspace-provider-link,
+  .workspace-sidebar-action,
+  .workspace-sidebar-guide,
+  .workspace-sidebar-more-trigger
+):is(.is-active, [aria-current="page"], [aria-pressed="true"]) {
+  color: var(--text-primary);
+  border-color: var(--selection-stroke);
+  background: var(--selection-fill);
+}
+
+.workspace-shell[data-layout="mac"] :is(
+  .workspace-sidebar-link,
+  .workspace-provider-link,
+  .workspace-sidebar-action,
+  .workspace-sidebar-guide,
+  .workspace-sidebar-more-trigger
+):is(.is-active, [aria-current="page"], [aria-pressed="true"])::before {
+  position: absolute;
+  top: 50%;
+  left: -5px;
+  width: 3px;
+  height: 16px;
+  border-radius: 999px;
+  background: var(--accent);
+  content: "";
+  transform: translateY(-50%);
+}
+
+.workspace-shell[data-layout="mac"] .workspace-sidebar button:focus-visible,
+.workspace-shell[data-layout="mac"] .workspace-sidebar summary:focus-visible {
+  outline: 2px solid var(--selection-focus-ring);
+  outline-offset: 2px;
+}
+
+.workspace-shell[data-layout="mac"] .workspace-sidebar-more {
+  position: relative;
+}
+
+.workspace-shell[data-layout="mac"] .workspace-sidebar-more > summary {
+  list-style: none;
+  cursor: pointer;
+}
+
+.workspace-shell[data-layout="mac"] .workspace-sidebar-more > summary::-webkit-details-marker {
+  display: none;
+}
+
+.workspace-shell[data-layout="mac"] .workspace-sidebar-more-menu {
+  position: fixed;
+  z-index: 100;
+  bottom: 10px;
+  left: calc(var(--workspace-rail-width) + 8px);
+  display: grid;
+  width: min(280px, calc(100vw - var(--workspace-rail-width) - 24px));
+  max-height: calc(100vh - 20px);
+  gap: 10px;
+  padding: 12px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  color: var(--text-primary);
+  background: var(--surface-elevated-strong);
+  box-shadow: var(--shadow-soft);
+  backdrop-filter: saturate(135%) blur(18px);
+}
+
+.workspace-shell[data-layout="mac"] .workspace-sidebar-more:not([open]) .workspace-sidebar-more-menu {
+  display: none;
+}
+
+.workspace-shell[data-layout="mac"] .workspace-sidebar-more[open] .workspace-sidebar-more-menu {
+  display: grid;
+}
+
+.workspace-shell[data-layout="mac"] .workspace-sidebar-providers > p[role="alert"] {
+  position: fixed;
+  z-index: 101;
+  top: 50%;
+  left: calc(var(--workspace-rail-width) + 8px);
+  width: min(280px, calc(100vw - var(--workspace-rail-width) - 24px));
+  margin: 0;
+  padding: 8px 10px;
+  transform: translateY(-50%);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--status-warn);
+  background: var(--surface-elevated-strong);
+  box-shadow: var(--shadow-soft);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.workspace-shell[data-layout="mac"] .workspace-sidebar-more-menu .workspace-mode-picker {
+  width: 100%;
+}
+
+.workspace-shell[data-layout="mac"] .workspace-sidebar-more-menu .workspace-mode-picker button {
+  flex: 1 1 0;
+}
+
+.workspace-shell[data-layout="mac"] .workspace-sidebar-more-menu .theme-palette-picker {
+  width: 100%;
+  max-width: none;
+  min-height: 34px;
+  border-radius: 9px;
+}
+
+.workspace-shell[data-layout="mac"] .workspace-theme-controls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.workspace-shell[data-layout="mac"] .workspace-theme-controls button {
+  display: grid;
+  width: 34px;
+  height: 32px;
+  place-items: center;
+  padding: 0;
+  border-radius: 9px;
+}
+
+.workspace-shell[data-layout="mac"] .workspace-sidebar-menu-control {
+  display: flex;
+  min-height: 34px;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  color: var(--text-primary);
+  background: color-mix(in srgb, var(--text-primary) 4%, transparent);
+  font-size: 12px;
+  line-height: 1.2;
+  text-align: left;
+}
+
+.workspace-shell[data-layout="mac"] .workspace-sidebar-menu-control:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--text-primary) 8%, transparent);
+}
+
+.workspace-shell[data-layout="mac"] .workspace-sidebar-menu-control:disabled {
+  opacity: 0.45;
+}
+
+.workspace-shell[data-layout="mac"] .workspace-canvas {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  grid-column: 2;
+  grid-row: 1;
+  overflow: hidden;
+}
+
+.workspace-shell[data-layout="mac"] .workspace-header {
+  display: flex;
+  min-height: 46px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 10px;
+  margin: 0;
+  padding: 8px 16px;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  background: color-mix(in srgb, var(--surface-elevated) 76%, transparent);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--text-primary) 8%, transparent);
+  backdrop-filter: saturate(135%) blur(18px);
+}
+
+.workspace-shell[data-layout="mac"] .workspace-header-brand {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+}
+
+.workspace-shell[data-layout="mac"] .workspace-header-icon {
+  display: block;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 30px;
+  object-fit: contain;
+}
+
+.workspace-shell[data-layout="mac"] .workspace-header-brand h1 {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 1.15;
+}
+
+.workspace-shell[data-layout="mac"] .workspace-header-brand > svg {
+  width: 9px;
+  height: 9px;
+  flex: 0 0 9px;
+  color: var(--text-tertiary);
+}
+
+.workspace-shell[data-layout="mac"] .workspace-breadcrumb {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-shell[data-layout="mac"] .workspace-header-feedback {
+  flex: 0 0 auto;
+  padding: 6px 16px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.workspace-shell[data-layout="mac"] .workspace-main {
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+  padding: 10px 16px 12px;
+  overflow: auto;
+  scroll-behavior: auto;
+}
+
+.workspace-shell[data-layout="mac"] .workspace-content {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  width: 100%;
+  max-width: none;
+  min-width: 0;
+  gap: 6px;
+  align-content: start;
+  margin: 0;
+}
+
+.workspace-shell[data-layout="mac"] .workspace-content > :not([hidden]) ~ :not([hidden]) {
+  margin-top: 0;
+}
+
+.workspace-shell[data-layout="mac"] [hidden] {
+  display: none !important;
+}
+
+.workspace-shell[data-layout="mac"] .home-notice-strip .space-y-3,
+.workspace-shell[data-layout="mac"] .account-directory-panel.space-y-3 {
+  display: grid;
+  gap: 6px;
+}
+
+.workspace-shell[data-layout="mac"] .home-notice-strip .space-y-3 > :not([hidden]) ~ :not([hidden]),
+.workspace-shell[data-layout="mac"] .account-directory-panel.space-y-3 > :not([hidden]) ~ :not([hidden]) {
+  margin-top: 0;
+}
+
+.workspace-shell[data-layout="mac"] .dashboard-home.space-y-4 {
+  display: grid;
+  gap: 10px;
+}
+
+.workspace-shell[data-layout="mac"] .dashboard-home.space-y-4 > :not([hidden]) ~ :not([hidden]) {
+  margin-top: 0;
+}
+
+.workspace-shell[data-layout="mac"] [data-home-section].space-y-3 {
+  display: grid;
+  gap: 6px;
+}
+
+.workspace-shell[data-layout="mac"] [data-home-section].space-y-3 > :not([hidden]) ~ :not([hidden]) {
+  margin-top: 0;
+}
+
+.workspace-shell[data-layout="mac"] [data-home-section] > :is(button, h2) {
+  display: flex;
+  width: 100%;
+  min-height: 32px;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text-primary);
+  background: color-mix(in srgb, var(--surface-elevated) 76%, var(--palette-surface-tint) var(--palette-tint-strength));
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--text-primary) 6%, transparent);
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.2;
+  text-align: left;
+}
+
+.workspace-shell[data-layout="mac"] [data-home-section] > button:hover {
+  border-color: color-mix(in srgb, var(--border) 70%, var(--text-primary));
+  background: color-mix(in srgb, var(--surface-elevated) 68%, var(--palette-surface-tint) var(--palette-tint-strength));
+}
+
+.workspace-shell[data-layout="mac"] [data-home-section] > div:not([hidden]) {
+  min-width: 0;
+}
+
+.workspace-shell[data-layout="mac"] .dashboard-home-overview {
+  gap: 10px;
+}
+
+.workspace-shell[data-layout="mac"] .dashboard-home-overview[data-local-statistics="false"] {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-areas: "command" "quota";
+  align-items: stretch;
+}
+
+.workspace-shell[data-layout="mac"] .dashboard-home .glass-panel,
+.workspace-shell[data-layout="mac"] .account-directory-card {
+  border-radius: 16px;
+}
+
+.workspace-shell[data-layout="mac"] .dashboard-home .glass-panel {
+  box-shadow: 0 8px 24px -20px color-mix(in srgb, var(--text-primary) 38%, transparent);
+}
+
+.workspace-shell[data-layout="mac"] .quota-overview-state {
+  min-height: 0;
+  gap: 10px;
+  margin-top: 0;
+  padding: 12px;
+  border-radius: 12px;
+}
+
+.workspace-shell[data-layout="mac"] .quota-overview-state-copy > svg {
+  width: 42px;
+  height: 42px;
+  padding: 10px;
+}
+
+.workspace-shell[data-layout="mac"] .workspace-content > [role="status"].glass-panel {
+  margin-bottom: 0;
+  padding: 16px;
+}
+
+.workspace-shell[data-layout="mac"] .workspace-error {
+  gap: 10px;
+  margin-bottom: 0;
+  padding: 8px 12px;
+  border-radius: 12px;
+  font-size: 11px;
+}
+
+.workspace-shell[data-layout="mac"] .account-directory-panel {
+  display: grid;
+  gap: 6px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+.workspace-shell[data-layout="mac"] .account-directory-panel > header {
+  min-height: 32px;
+  gap: 6px;
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--surface-elevated) 76%, var(--palette-surface-tint) var(--palette-tint-strength));
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--text-primary) 6%, transparent);
+}
+
+.workspace-shell[data-layout="mac"] .account-directory-panel > header .glass-button {
+  min-height: 24px;
+  padding: 4px 7px;
+  border-radius: 8px;
+  font-size: 10px;
+  line-height: 1.2;
+}
+
+.workspace-shell[data-layout="mac"] .account-directory-panel > header .profile-platform-filter select,
+.workspace-shell[data-layout="mac"] .account-directory-panel > header .profile-size-picker select {
+  min-height: 24px;
+  padding-top: 3px;
+  padding-bottom: 3px;
+  font-size: 10px;
+}
+
+.workspace-shell[data-layout="mac"] .account-directory-panel > header .profile-size-picker {
+  gap: 4px;
+  font-size: 10px;
+}
+
+.workspace-shell[data-layout="mac"] .account-directory-panel > header .account-layout-switch button {
+  min-width: 26px;
+  padding: 3px 5px;
+}
+
+.workspace-shell[data-layout="mac"] .account-directory-panel > header h2 {
+  display: flex;
+  min-height: 24px;
+  align-items: center;
+  gap: 7px;
+  margin: 0 auto 0 0;
+  font-size: 15px;
+  line-height: 1.2;
+}
+
+.workspace-shell[data-layout="mac"] .account-directory-section-title {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+}
+
+.workspace-shell[data-layout="mac"] .account-directory-collapse-toggle {
+  display: flex;
+  min-height: 24px;
+  align-items: center;
+  gap: 7px;
+  padding: 0;
+  border: 0;
+  color: inherit;
+  background: transparent;
+  font: inherit;
+  text-align: left;
+}
+
+.workspace-shell[data-layout="mac"] .account-directory-collapse-toggle:focus-visible {
+  outline: 2px solid var(--selection-focus-ring);
+  outline-offset: 2px;
+  border-radius: 5px;
+}
+
+.workspace-shell[data-layout="mac"] .account-directory-collapse-toggle > svg {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+}
+
+.workspace-shell[data-layout="mac"] .account-directory-body {
+  display: grid;
+  min-width: 0;
+  gap: 8px;
+}
+
+.workspace-shell[data-layout="mac"] .workspace-account-management {
+  display: contents;
+}
+
+.workspace-shell[data-layout="mac"] .workspace-account-management__managed,
+.workspace-shell[data-layout="mac"] .workspace-account-management__claude {
+  min-width: 0;
+}
+
+.workspace-shell[data-layout="mac"] .account-directory-grid {
+  gap: 8px;
+}
+
+.workspace-shell[data-layout="mac"] .account-directory-grid.is-cards.is-size-small {
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 285px), 1fr));
+}
+
+.workspace-shell[data-layout="mac"] .account-directory-grid.is-cards.is-size-medium {
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 350px), 1fr));
+}
+
+.workspace-shell[data-layout="mac"] .account-directory-grid.is-cards.is-size-large {
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 450px), 1fr));
+}
+
+.workspace-shell[data-layout="mac"] .managed-account-grid.is-cards.is-size-small {
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 285px), 1fr));
+}
+
+.workspace-shell[data-layout="mac"] .managed-account-grid.is-cards.is-size-medium {
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 350px), 1fr));
+}
+
+.workspace-shell[data-layout="mac"] .managed-account-grid.is-cards.is-size-large {
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 450px), 1fr));
+}
+
+.workspace-shell[data-layout="mac"] .account-directory-card {
+  display: grid;
+  gap: 4px;
+  padding: 10px;
+  font-size: 13px;
+  background: color-mix(in srgb, var(--surface-elevated) 94%, var(--palette-surface-tint) var(--palette-tint-strength));
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--text-primary) 5%, transparent);
+}
+
+.workspace-shell[data-layout="mac"] .account-directory-card.is-selected {
+  border-color: var(--selection-stroke);
+  background: color-mix(in srgb, var(--surface-elevated) 78%, var(--selection-fill));
+}
+
+.workspace-shell[data-layout="mac"] .account-directory-heading .truncate {
+  font-size: 15px;
+  line-height: 1.2;
+}
+
+.workspace-shell[data-layout="mac"] .account-directory-heading {
+  display: flex;
+  min-width: 0;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.workspace-shell[data-layout="mac"] .account-directory-heading-tools {
+  display: flex;
+  min-width: 0;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto;
+}
+
+.workspace-shell[data-layout="mac"] .account-directory-inline-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 1px;
+  margin-left: 0;
+}
+
+.workspace-shell[data-layout="mac"] .account-directory-inline-action {
+  width: 24px;
+  height: 24px;
+}
+
+.workspace-shell[data-layout="mac"] .account-directory-heading-tools .account-more {
+  margin-left: 0;
+}
+
+.workspace-shell[data-layout="mac"] .account-directory-subheading,
+.workspace-shell[data-layout="mac"] .account-directory-number,
+.workspace-shell[data-layout="mac"] .account-current-mark,
+.workspace-shell[data-layout="mac"] .account-platform-badge {
+  font-size: 11px;
+}
+
+.workspace-shell[data-layout="mac"] .account-directory-subheading {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.workspace-shell[data-layout="mac"] .account-quota {
+  display: grid;
+  gap: 4px;
+  font-size: 11px;
+}
+
+.workspace-shell[data-layout="mac"] .account-quota.space-y-2 > :not([hidden]) ~ :not([hidden]) {
+  margin-top: 0;
+}
+
+.workspace-shell[data-layout="mac"] .account-quota-summary {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+}
+
+.workspace-shell[data-layout="mac"] .account-quota-plan-and-balance {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 3px 8px;
+  font-size: 10px;
+}
+
+.workspace-shell[data-layout="mac"] .account-quota-controls {
+  display: flex;
+  min-width: 0;
+  flex: 0 0 auto;
+  gap: 2px;
+  margin-left: auto;
+}
+
+.workspace-shell[data-layout="mac"] .account-quota-controls .account-manual-actions {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 2px;
+}
+
+.workspace-shell[data-layout="mac"] .account-quota-controls .account-manual-actions .proxy-action {
+  min-height: 28px;
+  gap: 4px;
+  padding: 5px 7px;
+  border-radius: 8px;
+  font-size: 10px;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.workspace-shell[data-layout="mac"] .account-quota-controls .account-manual-actions .proxy-action > svg {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
+}
+
+.workspace-shell[data-layout="mac"] .account-quota-controls .icon-action {
+  width: 24px;
+  height: 24px;
+}
+
+.workspace-shell[data-layout="mac"] .account-quota-reading-status {
+  min-width: 0;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  line-height: 1.25;
+}
+
+.workspace-shell[data-layout="mac"] .account-quota-reading-status .quota-read-status {
+  line-height: inherit;
+}
+
+.workspace-shell[data-layout="mac"] .account-quota-reading-status .quota-read-time {
+  display: inline;
+  margin-left: 5px;
+  font-size: 10px;
+}
+
+.workspace-shell[data-layout="mac"] .account-quota-windows {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.workspace-shell[data-layout="mac"] .account-quota-window {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: 36px minmax(0, 1fr);
+  align-items: center;
+  column-gap: 6px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  text-align: left;
+}
+
+.workspace-shell[data-layout="mac"] .account-quota-window > .quota-ring {
+  display: grid;
+  min-width: 0;
+  grid-column: 1 / -1;
+  grid-template-columns: 36px minmax(0, 1fr);
+  align-items: center;
+  gap: 6px;
+}
+
+.workspace-shell[data-layout="mac"] .account-quota-window > .quota-ring .quota-ring-graphic {
+  width: 36px;
+  height: 36px;
+  grid-column: 1;
+  grid-row: 1 / span 2;
+}
+
+.workspace-shell[data-layout="mac"] .account-quota-window > .quota-ring .quota-ring-name {
+  min-width: 0;
+  grid-column: 2;
+  grid-row: 1;
+  font-size: 10px;
+  line-height: 1.2;
+}
+
+.workspace-shell[data-layout="mac"] .account-quota-window > .quota-ring .quota-ring-name:empty {
+  display: none;
+}
+
+.workspace-shell[data-layout="mac"] .account-quota-window:has(> .account-quota-window-copy) > .quota-ring {
+  grid-column: 1;
+  grid-template-columns: 36px;
+  grid-row: 1;
+}
+
+.workspace-shell[data-layout="mac"] .account-quota-window:has(> .account-quota-window-copy) > .quota-ring .quota-ring-graphic {
+  grid-row: 1;
+}
+
+.workspace-shell[data-layout="mac"] .account-quota-window-copy {
+  display: grid;
+  min-width: 0;
+  grid-column: 2;
+  grid-row: 1;
+  gap: 3px;
+  align-content: center;
+  font-size: 10px;
+  line-height: 1.2;
+}
+
+.workspace-shell[data-layout="mac"] .account-quota-window-label {
+  color: var(--text-secondary);
+}
+
+.workspace-shell[data-layout="mac"] .account-quota-window-reset {
+  min-width: 0;
+  margin: 0;
+  color: var(--text-tertiary);
+  font-size: 9px;
+  line-height: 1.2;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+
+.workspace-shell[data-layout="mac"] .account-quota-window p {
+  overflow-wrap: anywhere;
+}
+
+.workspace-shell[data-layout="mac"] .glass-button {
+  border-color: color-mix(in srgb, var(--border) 68%, transparent);
+  border-radius: 10px;
+  color: var(--text-secondary);
+  background: color-mix(in srgb, var(--text-primary) 4%, transparent);
+  box-shadow: none;
+  backdrop-filter: none;
+  transition: color 140ms ease, background-color 140ms ease, border-color 140ms ease;
+}
+
+.workspace-shell[data-layout="mac"] .glass-button:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--border) 92%, transparent);
+  color: var(--text-primary);
+  background: color-mix(in srgb, var(--text-primary) 8%, transparent);
+}
+
+.workspace-shell[data-layout="mac"] .glass-button:active:not(:disabled) {
+  background: color-mix(in srgb, var(--text-primary) 13%, transparent);
+}
+
+.workspace-shell[data-layout="mac"] .home-notice-strip {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+.workspace-shell[data-layout="mac"] .account-directory-note {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.workspace-shell[data-layout="mac"] .account-directory-actions {
+  display: flex;
+  min-width: 0;
+  gap: 5px;
+  margin-top: 0;
+  padding-top: 5px;
+  border-top: 1px solid var(--border);
+}
+
+.workspace-shell[data-layout="mac"] .account-directory-actions button {
+  min-height: 26px;
+  padding: 4px 7px;
+  border-radius: 8px;
+  font-size: 10px;
+  line-height: 1.2;
+}
+
+.workspace-shell[data-layout="mac"] .account-directory-subheading {
+  margin: -3px 0 0 28px;
+  line-height: 1.2;
+}
+
+.workspace-shell[data-layout="mac"] .account-directory-subheading .account-platform-badge {
+  font-size: 10px;
+}
+
+.workspace-shell[data-layout="mac"] [role="tablist"] {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-inset);
+}
+
+.workspace-shell[data-layout="mac"] [role="tablist"] > [role="tab"] {
+  min-width: 0;
+  min-height: 30px;
+  flex: 1 1 auto;
+  padding: 6px 10px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  color: var(--text-secondary);
+  background: transparent;
+  font-size: 11.5px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.workspace-shell[data-layout="mac"] [role="tablist"] > [role="tab"][aria-selected="true"] {
+  border-color: var(--selection-stroke);
+  color: var(--text-primary);
+  background: var(--selection-fill);
+  box-shadow: none;
+}
+
+.workspace-shell[data-layout="mac"] [role="tablist"] > [role="tab"]:focus-visible {
+  outline: 2px solid var(--selection-focus-ring);
+  outline-offset: 2px;
+}
+
+.workspace-shell[data-layout="mac"] table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.workspace-shell[data-layout="mac"] :is(th, td) {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  line-height: 1.35;
+  text-align: left;
+  vertical-align: middle;
+}
+
+.workspace-shell[data-layout="mac"] th {
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.workspace-shell[data-layout="mac"] .installation-guide {
+  width: min(520px, calc(100vw - var(--workspace-rail-width) - 48px));
+  max-width: 520px;
+  padding: 20px;
+  border-radius: 16px;
+}
+
+.workspace-shell[data-layout="mac"] .installation-guide h1,
+.workspace-shell[data-layout="mac"] .installation-guide h2 {
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.workspace-shell[data-layout="mac"] .installation-guide p,
+.workspace-shell[data-layout="mac"] .installation-guide label {
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.workspace-shell[data-layout="mac"] .installation-guide footer {
+  gap: 8px;
+  margin-top: 18px;
+}
+
+.workspace-shell[data-layout="mac"] .local-proxy-panel {
+  gap: 8px;
+}
+
+.workspace-shell[data-layout="mac"] .proxy-panel-header h2 {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.workspace-shell[data-layout="mac"] :is(.proxy-service-card, .proxy-settings, .proxy-accounts) {
+  padding: 12px;
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--surface-elevated) 86%, var(--palette-surface-tint) var(--palette-tint-strength));
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--text-primary) 5%, transparent);
+  backdrop-filter: saturate(130%) blur(14px);
+}
+
+.workspace-shell[data-layout="mac"] .proxy-accounts > header {
+  min-height: 30px;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.workspace-shell[data-layout="mac"] .proxy-accounts > header h3 {
+  font-size: 14px;
+}
+
+.workspace-shell[data-layout="mac"] .proxy-account-grid {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+}
+
+.workspace-shell[data-layout="mac"] .proxy-account {
+  padding: 10px;
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--surface-elevated) 94%, var(--palette-surface-tint) var(--palette-tint-strength));
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--text-primary) 5%, transparent);
+}
+
+.workspace-shell[data-layout="mac"] .proxy-account-name h3 {
+  font-size: 13px;
+}
+
+.workspace-shell[data-layout="mac"] .proxy-enabled {
+  min-height: 24px;
+  padding: 4px 7px;
+  border-radius: 8px;
+}
+
+.workspace-shell[data-layout="mac"] .proxy-enabled.is-enabled {
+  border-color: var(--selection-stroke);
+  color: var(--selection-foreground);
+  background: var(--selection-fill);
+}
+
+.workspace-shell[data-layout="mac"] .proxy-account-quota {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
+  gap: 6px;
+  padding: 6px 0;
+}
+
+.workspace-shell[data-layout="mac"] .proxy-account-quota > div {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: 36px minmax(0, 1fr);
+  align-items: center;
+  column-gap: 6px;
+  text-align: left;
+}
+
+.workspace-shell[data-layout="mac"] .proxy-account-quota > div > .quota-ring {
+  display: grid;
+  min-width: 0;
+  grid-column: 1 / -1;
+  grid-template-columns: 36px minmax(0, 1fr);
+  align-items: center;
+  gap: 6px;
+}
+
+.workspace-shell[data-layout="mac"] .proxy-account-quota .quota-ring-graphic,
+.workspace-shell[data-layout="mac"] .proxy-no-window > span {
+  width: 36px;
+  height: 36px;
+  grid-column: 1;
+  grid-row: 1 / span 2;
+}
+
+.workspace-shell[data-layout="mac"] .proxy-account-quota .quota-ring-name {
+  min-width: 0;
+  grid-column: 2;
+  grid-row: 1;
+  font-size: 10px;
+}
+
+.workspace-shell[data-layout="mac"] .proxy-reset-time {
+  min-width: 0;
+  grid-column: 2;
+  margin: 0;
+  font-size: 9px;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+
+.workspace-shell[data-layout="mac"] .proxy-no-window {
+  display: grid;
+  min-width: 0;
+  grid-column: 1 / -1;
+  grid-template-columns: 36px minmax(0, 1fr);
+  align-items: center;
+  column-gap: 6px;
+  text-align: left;
+}
+
+.workspace-shell[data-layout="mac"] .proxy-no-window > small {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+.workspace-shell[data-layout="mac"] .proxy-account-options {
+  gap: 8px;
+  padding-top: 6px;
+}
+
+.workspace-shell[data-layout="mac"] .proxy-account-options label {
+  font-size: 10px;
+}
+
+.workspace-shell[data-layout="mac"] .proxy-rule-editor > summary {
+  min-height: 30px;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--text-primary) 4%, transparent);
+  font-size: 11px;
+}
+
+@media (min-width: 720px) {
+  .workspace-shell[data-layout="mac"] .dashboard-home-overview[data-local-statistics="false"] {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-areas: "command quota";
+  }
+}
+
+@media (max-width: 719px) {
+  .workspace-shell[data-layout="mac"] .workspace-main {
+    padding-right: 10px;
+    padding-left: 10px;
+  }
+
+  .workspace-shell[data-layout="mac"] .workspace-header {
+    padding-right: 10px;
+    padding-left: 10px;
+  }
+}
+
+@media (max-height: 520px) {
+  .workspace-shell[data-layout="mac"] .workspace-sidebar {
+    gap: 3px;
+    padding-top: 6px;
+    padding-bottom: 6px;
+  }
+
+  .workspace-shell[data-layout="mac"] .workspace-sidebar-providers {
+    padding-top: 2px;
+    padding-bottom: 4px;
+  }
+
+  .workspace-shell[data-layout="mac"] .workspace-sidebar-providers .home-provider-rail {
+    gap: 2px;
+    padding: 0;
+  }
+
+  .workspace-shell[data-layout="mac"] :is(
+    .workspace-sidebar-link,
+    .workspace-provider-link,
+    .workspace-sidebar-action,
+    .workspace-sidebar-guide,
+    .workspace-sidebar-more-trigger
+  ) {
+    width: 40px;
+    min-width: 40px;
+    height: 32px;
+    min-height: 32px;
+    border-radius: 8px;
+  }
+
+  .workspace-shell[data-layout="mac"] :is(
+    .workspace-sidebar-link,
+    .workspace-provider-link,
+    .workspace-sidebar-action,
+    .workspace-sidebar-guide,
+    .workspace-sidebar-more-trigger
+  ) > svg {
+    width: 18px;
+    height: 18px;
+  }
+
+  .workspace-shell[data-layout="mac"] .workspace-sidebar-footer {
+    gap: 2px;
+    padding-top: 2px;
+  }
+}
+
 @media (max-width: 720px) {
   .workspace-header { margin: 8px 8px 0; padding: 10px; }
   .workspace-header-actions { gap: 4px; }

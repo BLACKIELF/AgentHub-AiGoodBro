@@ -5,7 +5,6 @@ import test from 'node:test';
 const homePath = new URL('../src/components/DashboardHome.tsx', import.meta.url);
 const modelsPath = new URL('../src/types/models.ts', import.meta.url);
 const panelPath = new URL('../src/components/SkillsPanel.tsx', import.meta.url);
-const dashboardPath = new URL('../src/windows/Dashboard.tsx', import.meta.url);
 
 test('activates the Dashboard Skills tab with safe local-read metadata only', async () => {
   const [home, models, panel] = await Promise.all([
@@ -33,8 +32,5 @@ test('activates the Dashboard Skills tab with safe local-read metadata only', as
   assert.doesNotMatch(skillUsage, /static_token_estimate|static_byte_count/);
 });
 
-test('keeps long Skills panels inside the Dashboard scroll container', async () => {
-  const dashboard = await readFile(dashboardPath, 'utf8');
-
-  assert.match(dashboard, /<main[^>]*className="[^"]*flex-1 min-h-0 overflow-auto[^"]*"/);
-});
+// The scrolling layout is verified against the rendered workspace in
+// visual/mac-layout.visual.spec.mjs; it does not depend on utility class names.

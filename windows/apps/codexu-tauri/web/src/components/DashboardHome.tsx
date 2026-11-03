@@ -87,7 +87,7 @@ export function DashboardHome({ snapshot, quotaSourceLabel, leadershipSignal, on
   return (
     <div className="space-y-4 dashboard-home">
       {showOverview && <HomeSection id="overview" title={language === 'zh-Hans' ? '用量与额度概览' : 'Usage and quota overview'}>
-      <div className="dashboard-home-overview">
+      <div className="dashboard-home-overview" data-local-statistics={showLocalStatistics ? 'true' : 'false'}>
         <LeadershipOverviewCard
           signal={signal}
           hasUsage={hasUsage}

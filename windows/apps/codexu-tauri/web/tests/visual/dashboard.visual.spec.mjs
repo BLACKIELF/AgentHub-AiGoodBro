@@ -19,6 +19,7 @@ test('new settings without a palette use liquid keycap', async ({ page }) => {
   await installTauriStub(page, { settings, dashboard: SYNTHETIC_DASHBOARD });
   await page.goto('/');
   await expect(page.locator('html')).toHaveAttribute('data-palette', 'codexu.liquid-keycap');
+  await page.locator('.workspace-sidebar-more > summary').click();
   await expect(page.getByRole('combobox', { name: 'Theme palette' })).toHaveValue('codexu.liquid-keycap');
 });
 
@@ -27,6 +28,7 @@ test('unavailable saved palette uses the classic safe fallback with a notice', a
   await installTauriStub(page, { settings: { ...SYNTHETIC_SETTINGS, palette_id: 'missing.palette' }, dashboard: SYNTHETIC_DASHBOARD });
   await page.goto('/');
   await expect(page.locator('html')).toHaveAttribute('data-palette', 'codexu.default');
+  await page.locator('.workspace-sidebar-more > summary').click();
   await expect(page.getByRole('combobox', { name: 'Theme palette' })).toHaveValue('codexu.default');
   await expect(page.getByText('Saved palette is unavailable; the classic default is in use.')).toBeVisible();
 });
@@ -102,6 +104,7 @@ test.describe('Windows dashboard rendering (synthetic fixtures)', () => {
         return original(cmd, args);
       };
     }, SYNTHETIC_SETTINGS);
+    await page.locator('.workspace-sidebar-more > summary').click();
     const picker = page.getByRole('combobox', { name: 'Theme palette' });
     await expect(picker.locator('option')).toHaveCount(7);
     await picker.selectOption('codexu.liquid-keycap');
@@ -116,6 +119,7 @@ test.describe('Windows dashboard rendering (synthetic fixtures)', () => {
       const original = window.__TAURI_INTERNALS__.invoke;
       window.__TAURI_INTERNALS__.invoke = (cmd, args) => cmd === 'set_settings' ? Promise.reject(new Error('Synthetic save failure')) : original(cmd, args);
     });
+    await page.locator('.workspace-sidebar-more > summary').click();
     await page.getByRole('combobox', { name: 'Theme palette' }).selectOption('codexu.liquid-keycap');
     await expect(page.getByRole('alert')).toContainText('Appearance settings are unavailable');
     await expect(page.locator('html')).toHaveAttribute('data-palette', 'codexu.default');

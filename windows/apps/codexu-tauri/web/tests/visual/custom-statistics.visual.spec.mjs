@@ -28,6 +28,7 @@ async function setup(context,page,{initial=null,holdStartupTimezone=false}={}){
    window.__TAURI_INTERNALS__.invoke=(command,args)=>{if(command==='plugin:event|listen')window.customListeners.push(args);if(['get_token_monitor_state','set_token_monitor_timezone','set_token_monitor_sources','refresh_token_monitor_usage','cancel_token_monitor_usage'].includes(command))return window.__customNative(command,args,JSON.parse(localStorage.getItem(${JSON.stringify(key)})||'{"engine":"upstream"}').engine);return old(command,args);};
   `);
   await installTauriStub(target,{settings:{...SYNTHETIC_SETTINGS,language:'en'},dashboard:SYNTHETIC_DASHBOARD,windowLabel:label},extra);await target.goto('/');
+  if(label==='main')await target.locator('.workspace-sidebar-more > summary').click();
  }
  await prepare(page);
  const f={calls,prepare,state:()=>structuredClone(state),hold:(command='refresh_token_monitor_usage')=>{hold=command;entered=false;},entered:()=>entered,release:()=>release?.(),startupEntered:()=>startupEntered,releaseStartup:()=>releaseStartup?.()};

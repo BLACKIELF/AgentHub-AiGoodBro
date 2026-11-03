@@ -779,7 +779,8 @@ fn wait_for_created_journal(path: &Path, operation_id: &str, duration: Duration)
     while Instant::now() < deadline {
         if let Ok(bytes) = fs::read(path) {
             if let Ok(journal) = serde_json::from_slice::<Value>(&bytes) {
-                if journal["schema"] == 1 && journal["entries"][operation_id]["phase"] == "created"
+                if journal["schema"] == 1
+                    && journal["entries"][operation_id]["phase"]["phase"] == "created"
                 {
                     return;
                 }
@@ -790,14 +791,17 @@ fn wait_for_created_journal(path: &Path, operation_id: &str, duration: Duration)
     panic!("synthetic Companion create receipt was not persisted");
 }
 
-fn rewrite_journal_as_legacy_v1(path: &Path, operation_id: &str) {
+// Exercise the optional execution field's absence. The persisted create hash
+// and existing Hub receipt remain from this run, so this is not a historical
+// pre-execution-policy journal migration fixture.
+fn rewrite_journal_without_windows_execution(path: &Path, operation_id: &str) {
     let mut journal: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
     assert_eq!(journal["schema"], 1, "Companion journal schema changed");
     let entry = journal["entries"]
         .get_mut(operation_id)
         .expect("numeric operation claim was not in the durable journal");
     assert_eq!(
-        entry["phase"], "created",
+        entry["phase"]["phase"], "created",
         "operation was not durably created"
     );
     let binding = entry["binding"]
@@ -3002,7 +3006,7 @@ fn run_windows_python_receiver_e2e() {
     synthetic_a.wait_for_lookups(1);
     let journal_path = private_root.join("companion-requests-v1.json");
     wait_for_created_journal(&journal_path, &run_id, Duration::from_secs(15));
-    rewrite_journal_as_legacy_v1(&journal_path, &run_id);
+    rewrite_journal_without_windows_execution(&journal_path, &run_id);
     assert!(
         should_block_exit(hub_state),
         "the created synthetic task lost its owned Session fence"
@@ -3053,7 +3057,7 @@ fn run_windows_python_receiver_e2e() {
     .wait_output();
     assert_eq!(
         status["result"]["state"], "created",
-        "legacy numeric claim/journal did not read back its created receipt: {status}"
+        "numeric claim without the optional execution field did not read back its created receipt: {status}"
     );
     {
         let inner = hub_state.inner.lock().unwrap_or_else(|e| e.into_inner());
@@ -3079,13 +3083,13 @@ fn run_windows_python_receiver_e2e() {
         synthetic_b.records().is_empty(),
         "profile A call reached the synthetic B Hub"
     );
-    let legacy_after_status: Value =
+    let journal_after_status: Value =
         serde_json::from_slice(&fs::read(&journal_path).unwrap()).unwrap();
     assert!(
-        legacy_after_status["entries"][run_id.as_str()]["binding"]
+        journal_after_status["entries"][run_id.as_str()]["binding"]
             .get("windowsExecution")
             .is_none(),
-        "status rewrote the legacy journal shape"
+        "status rewrote the journal's absent optional execution field"
     );
 
     receiver.stop_confirmed();

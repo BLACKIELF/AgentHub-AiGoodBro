@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { MoreHorizontal, RotateCcw } from 'lucide-react';
 import { ProviderMark, providerName } from './ProviderMark';
 import { useI18n } from '../i18n/I18nProvider';
 import { defaultNavigation, moveNavigation, PROVIDER_NAVIGATION_EVENT, PROVIDER_NAVIGATION_KEY, readNavigation, saveNavigation, type NavigationSnapshot } from '../utils/providerNavigation';
@@ -31,12 +32,11 @@ export function ProviderNavigation({ providers, selected, onSelect }: { provider
   };
   const stale = base !== null && base.raw !== snapshot.raw;
   const move = (id: string, to: number) => { if (draft?.includes(id) && !stale && to >= 0 && to < draft.length) setDraft(moveNavigation(draft, id, to)); };
-  return <div>
+  return <div className="workspace-sidebar-providers">
     <nav className="home-provider-rail" aria-label={text('账号平台', 'Account providers')}>
-      <button type="button" aria-pressed={selected === 'all'} onClick={() => onSelect('all')}>{text('全部', 'All')}</button>
-      {snapshot.ids.filter(id => available.includes(id)).map(id => <button key={id} type="button" aria-pressed={selected === id} onClick={() => onSelect(id)}><ProviderMark provider={id} size={20}/>{providerName(id)}</button>)}
-      <button type="button" onClick={open}>{text('管理导航', 'Manage navigation')}</button>
-      {undo && <button type="button" disabled={snapshot.raw !== undo.after.raw} onClick={() => commit(undo.after, undo.before, true)}>{text('撤销导航调整', 'Undo navigation change')}</button>}
+      {snapshot.ids.filter(id => available.includes(id)).map(id => <button className="workspace-provider-link" key={id} type="button" aria-label={providerName(id)} title={providerName(id)} aria-pressed={selected === id} onClick={() => onSelect(id)}><ProviderMark provider={id} size={20}/><span className="sr-only">{providerName(id)}</span></button>)}
+      <button className="workspace-provider-link" type="button" aria-label={text('管理导航', 'Manage navigation')} title={text('管理导航', 'Manage navigation')} onClick={open}><MoreHorizontal size={20} aria-hidden="true"/><span className="sr-only">{text('管理导航', 'Manage navigation')}</span></button>
+      {undo && <button className="workspace-provider-link" type="button" aria-label={text('撤销导航调整', 'Undo navigation change')} title={text('撤销导航调整', 'Undo navigation change')} disabled={snapshot.raw !== undo.after.raw} onClick={() => commit(undo.after, undo.before, true)}><RotateCcw size={18} aria-hidden="true"/><span className="sr-only">{text('撤销导航调整', 'Undo navigation change')}</span></button>}
     </nav>
     {error && <p role="alert">{text('导航未保存，或已在其他窗口更新。重新打开后再试。', 'Navigation was not saved or changed in another window. Reopen and retry.')}</p>}
     {draft && <dialog ref={dialog} className="installation-guide glass-panel" aria-label={text('管理导航', 'Manage navigation')} onCancel={event => { event.preventDefault(); close(); }}>

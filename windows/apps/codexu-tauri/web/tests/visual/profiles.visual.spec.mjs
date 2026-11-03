@@ -116,7 +116,9 @@ test('late response from previous source cannot overwrite the selected source', 
   await page.getByRole('navigation').getByRole('button', { name: 'Workspace', exact: true }).click();
   await expect(page.getByText('Synthetic source A', { exact: false })).toBeVisible();
   await page.evaluate(() => { window.holdNextUsage = true; });
-  await page.locator('header').first().getByRole('button', { name: 'Refresh', exact: true }).click();
+  await page.locator('.workspace-sidebar-more > summary').click();
+  await page.getByRole('group', { name: 'Display and refresh', exact: true }).getByRole('button', { name: 'Refresh', exact: true }).click();
+  await page.locator('.workspace-sidebar-more > summary').click();
   await expect.poll(() => page.evaluate(() => typeof window.releaseOldUsage)).toBe('function');
   await page.getByRole('navigation').getByRole('button', { name: 'Accounts', exact: true }).click();
   await page.getByTestId('profile-2').getByRole('button', { name: 'View usage' }).click();
@@ -284,7 +286,9 @@ test('mismatched quota identity is rejected rather than displayed on the wrong r
 
 test('quota remains accessible with no local usage snapshot', async ({ page }) => {
   await page.evaluate(() => { window.noLocalUsage = true; });
-  await page.locator('header').first().getByRole('button', { name: 'Refresh', exact: true }).click();
+  await page.locator('.workspace-sidebar-more > summary').click();
+  await page.getByRole('group', { name: 'Display and refresh', exact: true }).getByRole('button', { name: 'Refresh', exact: true }).click();
+  await page.locator('.workspace-sidebar-more > summary').click();
   await expect(page.getByText('Synthetic source A', { exact: false })).toHaveCount(0);
   const first = page.getByTestId('profile-1');
   await first.getByRole('button', { name: 'Read quota', exact: true }).click();

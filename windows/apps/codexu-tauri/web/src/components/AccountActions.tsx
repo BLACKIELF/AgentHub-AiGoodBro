@@ -34,7 +34,7 @@ function ActionDialog({ title, busy, onClose, children }: { title: string; busy:
     <header className="flex items-center justify-between gap-3"><h2>{title}</h2><button type="button" className="glass-button proxy-action" disabled={busy} onClick={onClose}>{language === 'zh-Hans' ? '关闭' : 'Close'}</button></header>{children}
   </dialog>;
 }
-function ResetAction({ profileId, profileLabel, onChanged }: { profileId: string; profileLabel: string; onChanged?: () => void }) {
+function ResetAction({ profileId, profileLabel, onChanged, compact = false }: { profileId: string; profileLabel: string; onChanged?: () => void; compact?: boolean }) {
   const { language } = useI18n(), text: Text = (zh, en) => language === 'zh-Hans' ? zh : en;
   const [review, setReview] = useState<ResetReview | null>(null), [step, setStep] = useState<1 | 2>(1), [busy, setBusy] = useState(false), [error, setError] = useState(''), [outcome, setOutcome] = useState<ResetOutcome | null>(null), [now, setNow] = useState(Date.now);
   const [outcomeIssue, setOutcomeIssue] = useState<'notification_receipt_save_failed' | null>(null);
@@ -65,7 +65,8 @@ function ResetAction({ profileId, profileLabel, onChanged }: { profileId: string
   }
   const notices: Record<ResetOutcome, string> = { reset: text('重置已确认 · 手动使用 1 张重置卡。', 'Reset confirmed · Manually used 1 reset card.'), nothingToReset: text('当前额度无需重置。', 'The current allowance does not need a reset.'), noCredit: text('没有可用的重置卡。', 'No reset card is available.'), alreadyRedeemed: text('这张重置卡已使用。', 'This reset card was already used.'), unknown: text('使用结果待确认，请先刷新官方记录；不会自动重复使用。', 'The result is unconfirmed. Refresh official records; no automatic repeat will occur.') };
   const expired = !!review && review.expiresAtMs <= now;
-  return <div ref={surface} className="space-y-2"><button type="button" className="glass-button proxy-action" disabled={busy || !!review || outcome === 'unknown' || outcomeIssue !== null} onClick={() => void perform('begin')}><RotateCcw size={14} />{text('使用重置卡', 'Use reset card')}</button>
+  const actionLabel = text('使用重置卡', 'Use reset card');
+  return <div ref={surface} className="space-y-2"><button type="button" className="glass-button proxy-action" aria-label={actionLabel} title={actionLabel} disabled={busy || !!review || outcome === 'unknown' || outcomeIssue !== null} onClick={() => void perform('begin')}><RotateCcw size={14} />{compact ? text('重置卡', 'Reset card') : actionLabel}</button>
     {!review && error && <p role="alert" className="proxy-feedback is-error">{error}</p>}{outcome && <p role="status" className="proxy-feedback">{outcomeIssue ? text('重置成功，通知记录保存失败。', 'Reset succeeded; the notification record could not be saved.') : notices[outcome]}</p>}
     {review && <ActionDialog title={step === 1 ? text('第一次确认：核对账号与重置卡', 'Confirmation 1: verify account and reset card') : text('第二次确认：使用一张重置卡', 'Confirmation 2: consume one reset card')} busy={busy} onClose={() => void perform('cancel')}>
       <p><strong>{profileLabel}</strong></p><p>{text('卡片：1 张可用的 Codex 额度重置卡', 'Card: 1 available Codex rate-limit reset card')}</p><p>{text('到期：', 'Expiry: ')}{review.cardExpiresAtMs === null ? text('无到期时间', 'No expiry') : new Date(review.cardExpiresAtMs).toLocaleString(language === 'zh-Hans' ? 'zh-CN' : 'en-GB')}</p>
@@ -75,7 +76,7 @@ function ResetAction({ profileId, profileLabel, onChanged }: { profileId: string
     </ActionDialog>}
   </div>;
 }
-function ReferralAction({ profileId, profileLabel }: { profileId: string; profileLabel: string }) {
+function ReferralAction({ profileId, profileLabel, compact = false }: { profileId: string; profileLabel: string; compact?: boolean }) {
   const { language } = useI18n(), text: Text = (zh, en) => language === 'zh-Hans' ? zh : en;
   const [open, setOpen] = useState(false), [busy, setBusy] = useState(false), [review, setReview] = useState<ReferralReview | null>(null), [input, setInput] = useState(''), [consent, setConsent] = useState(false), [error, setError] = useState(''), [batch, setBatch] = useState<ReferralBatch | null>(null), [submitted, setSubmitted] = useState<string[]>([]), [history, setHistory] = useState<ReferralPage | null>(null), [period, setPeriod] = useState<ReferralPeriod>('past_90_days');
   const alive = useRef(false), pending = useRef(false), cursors = useRef(new Set<string>());
@@ -109,7 +110,8 @@ function ReferralAction({ profileId, profileLabel }: { profileId: string; profil
   }
   const canSend = !!review?.shouldShow && review.expiresAtMs > Date.now() && recipients.emails.length > 0 && recipients.emails.length <= review.invitationCapacity && !recipients.tooLong && recipients.invalid === 0 && (!review.requiresExplicitConfirmation || consent) && !uncertain;
   const status = { pending: text('待接受', 'Pending'), redeemed: text('已接受', 'Accepted'), expired: text('已过期', 'Expired'), unknown: text('状态待确认', 'Status pending') };
-  return <div><button type="button" className="glass-button proxy-action" onClick={() => { setOpen(true); if (!review && !uncertain) void perform('offer'); }}><UserPlus size={14} />{text('邀请好友', 'Invite friends')}</button>
+  const actionLabel = text('邀请好友', 'Invite friends');
+  return <div><button type="button" className="glass-button proxy-action" aria-label={actionLabel} title={actionLabel} onClick={() => { setOpen(true); if (!review && !uncertain) void perform('offer'); }}><UserPlus size={14} />{compact ? text('邀请', 'Invite') : actionLabel}</button>
     {open && <ActionDialog title={text('邀请好友', 'Invite friends')} busy={busy} onClose={() => setOpen(false)}>
       <p><strong>{profileLabel}</strong></p><div className="flex flex-wrap gap-2"><button type="button" className="glass-button proxy-action" disabled={busy || uncertain} onClick={() => void perform('offer')}>{text('刷新邀请资格', 'Refresh eligibility')}</button><button type="button" className="glass-button proxy-action" disabled={busy} onClick={() => void perform('history')}>{text('查看邀请记录', 'View invitations')}</button></div>
       {busy && <p role="status">{text('正在读取或处理…', 'Reading or working…')}</p>}{error && <p role="alert" className="proxy-feedback is-error">{error}</p>}
@@ -126,6 +128,6 @@ function ReferralAction({ profileId, profileLabel }: { profileId: string; profil
   </div>;
 }
 /** Row-local commands intentionally do not inherit proxy or unrelated task busy state. */
-export function AccountActions(props: { profileId: string; profileLabel: string; onChanged?: () => void }) {
-  return <div className="account-manual-actions flex flex-wrap gap-2" data-testid={`account-actions-${props.profileId}`}><ResetAction key={`reset-${props.profileId}`} {...props} /><ReferralAction key={`referral-${props.profileId}`} {...props} /></div>;
+export function AccountActions(props: { profileId: string; profileLabel: string; onChanged?: () => void; compact?: boolean }) {
+  return <div className="account-manual-actions flex flex-wrap gap-2" data-testid={`account-actions-${props.profileId}`} data-compact={props.compact ? 'true' : undefined}><ResetAction key={`reset-${props.profileId}`} {...props} /><ReferralAction key={`referral-${props.profileId}`} {...props} /></div>;
 }

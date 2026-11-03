@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { CircleHelp } from 'lucide-react';
 import { useI18n } from '../i18n/I18nProvider';
 import { RuntimeSetupPanel } from './RuntimeSetupPanel';
 import { PythonRuntimeSetupPanel } from './PythonRuntimeSetupPanel';
@@ -24,7 +25,7 @@ export function WorkspaceGuide({ onOpen }: { onOpen: (section: GuideDestination)
   };
   const index = steps.indexOf(step);
   return <>
-    <button type="button" className="glass-button m-2 self-start" onClick={() => { setStep('accounts'); setError(false); setOpened(true); }}>{text('使用引导', 'Getting started')}</button>
+    <button type="button" className="workspace-sidebar-guide" aria-label={text('使用引导', 'Getting started')} title={text('使用引导', 'Getting started')} onClick={() => { setStep('accounts'); setError(false); setOpened(true); }}><CircleHelp size={20} aria-hidden="true"/><span className="sr-only">{text('使用引导', 'Getting started')}</span></button>
     {opened && <dialog ref={dialog} className="installation-guide glass-panel" aria-label={text('使用引导', 'Getting started')} onCancel={event => { event.preventDefault(); if (!pending.current) setOpened(false); }}>
       <h2>{text('使用引导', 'Getting started')}</h2>
       <nav aria-label={text('引导步骤', 'Guide steps')}>{steps.map(id => <button key={id} type="button" aria-current={id === step ? 'step' : undefined} disabled={busy} onClick={() => { setStep(id); setError(false); }}>{titles[id]}</button>)}</nav>

@@ -1482,6 +1482,21 @@ function Open-DashboardWorkspace {
   Assert-ForegroundPreserved -ExpectedForeground $ExpectedForeground -TaskWindow $Window -Stage 'Workspace navigation result'
 }
 
+function Open-DashboardHome {
+  param([IntPtr] $Window, [int] $ProcessId, [IntPtr] $ExpectedForeground)
+  [void](Wait-ForElement -Window $Window -AutomationId 'workspace-nav-home')
+  $root = [System.Windows.Automation.AutomationElement]::FromHandle($Window)
+  $condition = [System.Windows.Automation.PropertyCondition]::new(
+    [System.Windows.Automation.AutomationElement]::AutomationIdProperty, 'workspace-nav-home'
+  )
+  $matches = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition)
+  if ($matches.Count -ne 1) { throw 'home_navigation_not_unique' }
+  Click-OwnedControl -Window $Window -ProcessId $ProcessId -Element $matches[0] `
+    -ExpectedForeground $ExpectedForeground -Stage 'Home navigation'
+  [void](Wait-ForElement -Window $Window -AutomationId 'workspace-nav-home')
+  Assert-ForegroundPreserved -ExpectedForeground $ExpectedForeground -TaskWindow $Window -Stage 'Home navigation result'
+}
+
 function Click-OwnedControl {
   param(
     [IntPtr] $Window, [int] $ProcessId,
@@ -2675,8 +2690,39 @@ function Invoke-MaximizedCapture {
       -TaskWindow $window `
       -Stage 'first-launch guide defer'
     [void](Wait-ForElement -Window $window -AutomationId 'workspace-nav-home')
-    # The existing Overview and five task/tool panels are now lazy-mounted
-    # behind Workspace. Keep capturing those surfaces, not the new Home page.
+    Complete-CaptureStage -Record $sizeRecord
+    Start-CaptureStage -Name 'home-window-render-and-save' -Record $sizeRecord
+    Open-DashboardHome -Window $window -ProcessId $process.Id -ExpectedForeground $foregroundBefore
+    Start-Sleep -Milliseconds 700
+    $homeScreenshotPath = Join-Path $sizeRuntime 'home.png'
+    if (Test-Path -LiteralPath $homeScreenshotPath) {
+      throw 'Native Home screenshot output already exists.'
+    }
+    $homeCapture = Invoke-GraphicsCapture `
+      -CaptureTool $CaptureTool `
+      -Window $window `
+      -OutputPath $homeScreenshotPath `
+      -LogPath (Join-Path $LogsRoot 'home-graphics-capture.log')
+    Assert-ForegroundPreserved -ExpectedForeground $foregroundBefore -TaskWindow $window -Stage 'Home capture'
+    $homeScreenshotFile = Get-Item -LiteralPath $homeScreenshotPath
+    $homeScreenshot = [ordered]@{
+      page = 'home'
+      status = 'saved'
+      file = 'runtime/fullscreen/home.png'
+      physical_frame = $homeCapture.physical_frame
+      engine = $homeCapture.engine
+      bytes = [int64]$homeScreenshotFile.Length
+      sha256 = (Get-FileHash -LiteralPath $homeScreenshotPath -Algorithm SHA256).Hash.ToLowerInvariant()
+      captured_before_tools = $true
+      account_records_seeded_by_capture = 0
+      account_data_scope = 'isolated task-local native runtime'
+    }
+    $script:workflowManifest.home_screenshot = $homeScreenshot
+    Save-WorkflowManifest
+    Complete-CaptureStage -Record $sizeRecord
+
+    Start-CaptureStage -Name 'navigate-to-workspace-tools' -Record $sizeRecord
+    # Overview and the five task/tool panels remain on the existing Workspace route.
     Open-DashboardWorkspace -Window $window -ProcessId $process.Id -ExpectedForeground $foregroundBefore
     Complete-CaptureStage -Record $sizeRecord
     Start-CaptureStage -Name 'identify-renderer' -Record $sizeRecord
@@ -2885,6 +2931,7 @@ if (-not $PreflightOnly) {
     startup_window_mode = 'hidden until explicitly shown; background activation forbidden'
     capture_argument = '--codexu-native-capture-background'
     workspace_screenshot_test_enabled = [bool]$ExerciseWorkspaceScreenshot
+    home_screenshot = $null
     workspace_screenshot = $null
     taskbar_policy = 'excluded'
     alt_tab_policy = 'excluded'

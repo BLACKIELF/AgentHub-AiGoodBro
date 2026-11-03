@@ -104,8 +104,8 @@ test('real cached fields render stable manual order, used-to-remaining quota and
   await expect(c.locator('.quota-ring[data-known="false"]')).toHaveCount(2);
   await expect(c).not.toContainText('No window');
   await expect(c).not.toContainText('∞');
-  expect(await b.getByRole('button', { name: 'Enabled', exact: true }).evaluate(node => getComputedStyle(node).backgroundColor)).toBe('rgb(37, 99, 235)');
-  expect(await c.getByRole('button', { name: 'Disabled', exact: true }).evaluate(node => getComputedStyle(node).backgroundColor)).not.toBe('rgb(37, 99, 235)');
+  expect(await b.getByRole('button', { name: 'Enabled', exact: true }).evaluate(node => getComputedStyle(node).backgroundColor)).toBe('rgba(40, 102, 247, 0.12)');
+  expect(await c.getByRole('button', { name: 'Disabled', exact: true }).evaluate(node => getComputedStyle(node).backgroundColor)).not.toBe('rgba(40, 102, 247, 0.12)');
   expect(await page.evaluate(() => window.proxyReads.includes('refresh_local_proxy_accounts'))).toBe(false);
   await expect(panel).toHaveScreenshot('local-proxy-dark-en.png');
 });

@@ -697,6 +697,52 @@ Assert-True (
   $workspaceScreenshotSource.Contains('image_path.with_file_name("workspace-order.txt")')
 ) 'Native screenshot test fixture or order marker escaped its fixed isolated activation.'
 
+$captureScriptPath = Join-Path $repositoryRoot 'windows\scripts\Capture-NativeVisuals.ps1'
+$captureScriptSource = Get-Content -LiteralPath $captureScriptPath -Raw -Encoding UTF8
+$captureRunStart = $captureScriptSource.IndexOf('function Invoke-MaximizedCapture', [System.StringComparison]::Ordinal)
+$homeNavigationCall = -1
+$homeCaptureCall = -1
+$workspaceNavigationCall = -1
+if ($captureRunStart -ge 0) {
+  $homeNavigationCall = $captureScriptSource.IndexOf(
+    'Open-DashboardHome -Window $window -ProcessId $process.Id -ExpectedForeground $foregroundBefore',
+    $captureRunStart,
+    [System.StringComparison]::Ordinal
+  )
+}
+if ($homeNavigationCall -ge 0) {
+  $homeCaptureCall = $captureScriptSource.IndexOf(
+    '$homeCapture = Invoke-GraphicsCapture',
+    $homeNavigationCall,
+    [System.StringComparison]::Ordinal
+  )
+}
+if ($homeCaptureCall -ge 0) {
+  $workspaceNavigationCall = $captureScriptSource.IndexOf(
+    'Open-DashboardWorkspace -Window $window -ProcessId $process.Id -ExpectedForeground $foregroundBefore',
+    $homeCaptureCall,
+    [System.StringComparison]::Ordinal
+  )
+}
+$homeCaptureBlock = ''
+if ($homeNavigationCall -ge 0 -and $workspaceNavigationCall -gt $homeNavigationCall) {
+  $homeCaptureBlock = $captureScriptSource.Substring(
+    $homeNavigationCall,
+    $workspaceNavigationCall - $homeNavigationCall
+  )
+}
+Assert-True (
+  $captureRunStart -ge 0 -and $homeNavigationCall -gt $captureRunStart -and
+  $homeCaptureCall -gt $homeNavigationCall -and $workspaceNavigationCall -gt $homeCaptureCall -and
+  $homeCaptureBlock.Contains('Invoke-GraphicsCapture') -and
+  -not $homeCaptureBlock.Contains('Invoke-WorkspaceScreenshotSmokeTest') -and
+  -not $homeCaptureBlock.Contains('native_workspace_screenshot_capture_fixture') -and
+  $captureScriptSource.Contains('$homeScreenshotPath = Join-Path $sizeRuntime ''home.png''') -and
+  $captureScriptSource.Contains("file = 'runtime/fullscreen/home.png'") -and
+  $captureScriptSource.Contains('captured_before_tools = $true') -and
+  $captureScriptSource.Contains('account_records_seeded_by_capture = 0')
+) 'Native Home capture must use the task window before Tools and record a distinct unseeded Home image.'
+
 $entryLiteral = "'" + $entry.Replace("'", "''") + "'"
 $repositoryRootLiteral = "'" + $repositoryRoot.Replace("'", "''") + "'"
 $outputRootLiteral = "'" + $outputRoot.Replace("'", "''") + "'"
@@ -822,6 +868,37 @@ Assert-True (
   (Get-Content -LiteralPath $workspaceScreenshotOrderPath -Raw -Encoding ASCII) -ceq 'restored|saved' -and
   $manifest.workspace_screenshot.restore_save_order -ceq 'restored|saved'
 ) 'Production workspace screenshot did not record restore completion before the shared PNG save path.'
+$homeScreenshot = $manifest.home_screenshot
+Assert-True (
+  $homeScreenshot.page -eq 'home' -and
+  $homeScreenshot.status -eq 'saved' -and
+  $homeScreenshot.file -eq 'runtime/fullscreen/home.png' -and
+  [bool]$homeScreenshot.captured_before_tools -and
+  [int]$homeScreenshot.account_records_seeded_by_capture -eq 0 -and
+  $homeScreenshot.engine -in @('PrintWindow', 'Windows.Graphics.Capture') -and
+  $homeScreenshot.physical_frame -match '^\d+x\d+$' -and
+  [int64]$homeScreenshot.bytes -gt 0 -and
+  $homeScreenshot.sha256 -match '^[0-9a-f]{64}$'
+) 'Native capture did not record a real Home window image before Tools without seeding account records.'
+$homeScreenshotPath = Join-Path $outputRoot $homeScreenshot.file
+Assert-True (Test-Path -LiteralPath $homeScreenshotPath -PathType Leaf) 'Native Home screenshot path is missing.'
+$homeScreenshotBitmap = $null
+try {
+  Add-Type -AssemblyName System.Drawing
+  $homeScreenshotBitmap = [System.Drawing.Bitmap]::FromFile($homeScreenshotPath)
+  $homeActualFrame = '{0}x{1}' -f $homeScreenshotBitmap.Width, $homeScreenshotBitmap.Height
+} finally {
+  if ($null -ne $homeScreenshotBitmap) { $homeScreenshotBitmap.Dispose() }
+}
+$homeScreenshotHash = (Get-FileHash -LiteralPath $homeScreenshotPath -Algorithm SHA256).Hash.ToLowerInvariant()
+Assert-True (
+  (Test-Path -LiteralPath $homeScreenshotPath -PathType Leaf) -and
+  $homeScreenshot.file -ne $manifest.workspace_screenshot.file -and
+  $homeScreenshot.account_data_scope -eq 'isolated task-local native runtime' -and
+  (Get-Item -LiteralPath $homeScreenshotPath).Length -eq [int64]$homeScreenshot.bytes -and
+  $homeScreenshot.physical_frame -ceq $homeActualFrame -and
+  $homeScreenshot.sha256 -ceq $homeScreenshotHash
+) 'Native Home PNG bytes, decoded dimensions, or SHA-256 did not match its manifest.'
 Assert-True (
   $fullscreenRun.storage_before_onboarding.state_root -eq 'runtime/fullscreen/app-state' -and
   [bool]$fullscreenRun.storage_before_onboarding.cache_isolated -and
