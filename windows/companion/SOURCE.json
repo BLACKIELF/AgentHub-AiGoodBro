@@ -37,7 +37,7 @@
     "payload/scripts/next_dispatch_invocation.py": "7e090ec7c365901d40ec1ea1ab4237424bb7c28496112f12a17e1db9d6e91b2d",
     "payload/scripts/next_dispatch_preflight.py": "3549c53bfdd8ae0cfc75086ba525ac9967611d887c80bb4206b62f5d79193610",
     "payload/使用说明.md": "086084c083fce932dd38905c39113fb9d37d52c9cd5eea271d4438c82e52179d",
-    "next-dispatch.py": "3b37e5edd2ac9f94b38a11f0d18e5a04c564fb3c7d71b81c83020393e0e80b51"
+    "next-dispatch.py": "3761cddc494581c39cad88cf0487e3f0a153f27c99e9584ab9b3809fd40a0152"
   },
   "layout": "windows-native-16-v1"
 }

@@ -281,26 +281,50 @@ class WinTransport:
             fail("companion_local_path_required")
         return value
 
-    def _open_file(self, path, directory=False):
+    def _open_file(self, path, directory=False, writable_root=None):
         if not isinstance(path, (str, Path)) or "\0" in str(path):
             fail("companion_local_path_required")
         value = str(path)
         plain = value[4:] if value.startswith("\\\\?\\") else value
         if not re.match(r"[A-Za-z]:[\\/]", plain) or ".." in re.split(r"[\\/]", plain):
             fail("companion_local_path_required")
-        # Hold ancestors without write/delete sharing, refusing reparse points.
+        # Keep ancestors read-only except the explicit private root; never share delete.
         for parent in reversed(Path(value).parents):
-            h = self._owned(self.k.CreateFileW(str(parent), 0x80000000, 1, None, 3, 0x02200000, None))
+            share = (
+                1 | 2
+                if writable_root is not None and parent == writable_root
+                else 1
+            )
+            h = self._owned(
+                self.k.CreateFileW(
+                    str(parent), 0x80000000, share, None, 3, 0x02200000, None
+                )
+            )
             if not self._info(h)["attributes"] & 0x10:
                 fail("companion_peer_untrusted")
-        handle = self._owned(self.k.CreateFileW(value, 0x80000000, 1, None, 3, 0x00200000 | (0x02000000 if directory else 0), None))
+        share = (
+            1 | 2
+            if directory and writable_root is not None and Path(value) == writable_root
+            else 1
+        )
+        handle = self._owned(
+            self.k.CreateFileW(
+                value,
+                0x80000000,
+                share,
+                None,
+                3,
+                0x00200000 | (0x02000000 if directory else 0),
+                None,
+            )
+        )
         info = self._info(handle)
         if bool(info["attributes"] & 0x10) != directory or (not directory and info["links"] != 1):
             fail("companion_peer_untrusted")
         return handle
 
-    def _read_file(self, path, limit, private=True):
-        handle = self._open_file(path)
+    def _read_file(self, path, limit, private=True, writable_root=None):
+        handle = self._open_file(path, writable_root=writable_root)
         self._private(handle, 1, private)
         before = self._info(handle)
         if before["length"] > limit:
@@ -323,11 +347,11 @@ class WinTransport:
             fail("companion_peer_untrusted")
         return value.value
 
-    def _process_image(self, process):
+    def _process_image(self, process, writable_root=None):
         data, size = ctypes.create_unicode_buffer(32768), self.u(32768)
         if not self.k.QueryFullProcessImageNameW(process, 0, data, ctypes.byref(size)) or not 0 < size.value < 32768:
             fail("companion_peer_untrusted")
-        handle = self._open_file(data.value)
+        handle = self._open_file(data.value, writable_root=writable_root)
         return handle, self._path(handle)
 
     def authenticate(self):
@@ -338,14 +362,16 @@ class WinTransport:
         keys(config, ("schemaVersion", "python", "adapterABI", "bridgeRoot"))
         if type(config["schemaVersion"]) is not int or type(config["adapterABI"]) is not int or config["schemaVersion"] != 1 or config["adapterABI"] != ABI:
             fail("companion_invalid_runtime_config")
-        selected = self._open_file(config["python"])
-        current_image, current_path = self._process_image(self.k.GetCurrentProcess())
+        root = Path(config["bridgeRoot"])
+        selected = self._open_file(config["python"], writable_root=root)
+        current_image, current_path = self._process_image(
+            self.k.GetCurrentProcess(), writable_root=root
+        )
         if self._info(selected) != self._info(current_image) or self._path(selected) != current_path:
             fail("companion_interpreter_changed")
-        root = Path(config["bridgeRoot"])
-        root_handle = self._open_file(root, True)
+        root_handle = self._open_file(root, True, writable_root=root)
         self._private(root_handle, 1)
-        source_raw = self._read_file(root / "app-source-v1.json", 16384)
+        source_raw = self._read_file(root / "app-source-v1.json", 16384, writable_root=root)
         source = decode(source_raw, 16384)
         keys(source, ("schema", "role", "abi", "image"))
         if type(source["schema"]) is not int or type(source["abi"]) is not int or source["schema"] != 1 or source["role"] != "appSource" or source["abi"] != ABI:
@@ -354,7 +380,9 @@ class WinTransport:
         keys(image, ("path", "volume", "index", "length", "written", "sha256"))
         if not digest(image["sha256"]) or any(type(image[k]) is not int for k in ("volume", "index", "length", "written")):
             fail("companion_peer_untrusted")
-        locator = decode(self._read_file(root / "receiver-v1.json", 16384), 16384)
+        locator = decode(
+            self._read_file(root / "receiver-v1.json", 16384, writable_root=root), 16384
+        )
         keys(locator, ("schema", "role", "abi", "pid", "birth", "session", "pipe", "sourceSha256", "epoch"))
         if type(locator["schema"]) is not int or type(locator["abi"]) is not int or locator["schema"] != 1 or locator["role"] != "runtimeLocator" or locator["abi"] != ABI or locator["sourceSha256"] != hashlib.sha256(source_raw).hexdigest() or not digest(locator["epoch"]):
             fail("companion_peer_untrusted")
@@ -377,7 +405,9 @@ class WinTransport:
         if not self.a.EqualSid(self.current_sid, other_sid) or self._session(self.pid) != self._session(self.k.GetCurrentProcessId()) or self._session(self.pid) != locator["session"]:
             fail("companion_peer_untrusted")
         self.born, self.session = locator["birth"], locator["session"]
-        self.image_handle, self.image_path = self._process_image(self.process)
+        self.image_handle, self.image_path = self._process_image(
+            self.process, writable_root=root
+        )
         self.image_info = self._info(self.image_handle)
         if self.image_path != image["path"] or any(self.image_info[k] != image[k] for k in ("volume", "index", "length", "written")) or not 64 <= image["length"] <= 512 * 1024 * 1024:
             fail("companion_peer_untrusted")

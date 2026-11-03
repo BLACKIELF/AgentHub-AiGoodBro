@@ -3,7 +3,7 @@ import argparse
 import importlib.util
 import io
 import json
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import struct
 import sys
 import tempfile
@@ -91,6 +91,110 @@ def verify_installed_layout(launcher):
 class ClientTests(unittest.TestCase):
     def request(self):
         return client.build_request(args(), io.BytesIO(b"fixture prompt"))
+
+    def test_bridge_root_pins_request_write_sharing_without_delete(self):
+        root = PureWindowsPath(r"C:\synthetic\AppData\Local\Codex\companion-bridge-v1")
+        config = PureWindowsPath(
+            r"C:\synthetic\home\.codex\skills\multi-agent-management\config\runtime-paths.json"
+        )
+        source = root / "app-source-v1.json"
+        locator = root / "receiver-v1.json"
+        python = PureWindowsPath(r"C:\synthetic\Python\python.exe")
+        nested_python = root / "client" / "runtime" / "python.exe"
+        payloads = {
+            config: b"{}",
+            source: b"synthetic-source",
+            locator: b"synthetic-locator",
+            python: b"synthetic-interpreter",
+            nested_python: b"synthetic-nested-interpreter",
+        }
+
+        class FakeKernel:
+            def __init__(self):
+                self.opens = []
+                self.paths = {}
+                self.next_handle = 100
+                self.process_images = {1: python, 2: nested_python}
+
+            def CreateFileW(self, path, access, share, *_):
+                handle = self.next_handle
+                self.next_handle += 1
+                value = PureWindowsPath(path)
+                self.opens.append((value, access, share))
+                self.paths[handle] = value
+                return handle
+
+            def CloseHandle(self, _handle):
+                return 1
+
+            def ReadFile(self, handle, buffer, _capacity, count, _overlapped):
+                value = payloads[self.paths[handle]]
+                client.ctypes.memmove(buffer, value, len(value))
+                client.ctypes.cast(count, client.ctypes.POINTER(client.ctypes.c_uint32))[0] = len(value)
+                return 1
+
+            def QueryFullProcessImageNameW(self, process, _flags, buffer, size):
+                value = str(self.process_images[process])
+                buffer.value = value
+                client.ctypes.cast(size, client.ctypes.POINTER(client.ctypes.c_uint32))[0] = len(value)
+                return 1
+
+        # Model authenticate's handle sequence without opening Windows handles;
+        # the assertions cover every held bridge-root open request.
+        with mock.patch.object(client, "Path", PureWindowsPath):
+            transport = object.__new__(client.WinTransport)
+            transport.stack = client.contextlib.ExitStack()
+            transport.k = FakeKernel()
+            transport.u = client.ctypes.c_uint32
+            transport._info = lambda handle: {
+                "attributes": 0 if transport.k.paths[handle] in payloads else 0x10,
+                "length": len(payloads.get(transport.k.paths[handle], b"")),
+                "links": 1,
+                "volume": 1,
+                "index": 1,
+                "written": 1,
+            }
+            transport._private = lambda *_args: None
+            transport._path = lambda handle: str(transport.k.paths[handle])
+
+            self.assertEqual(transport._read_file(config, 16384, False), b"{}")
+            transport._open_file(python, writable_root=root)  # Selected interpreter.
+            transport._process_image(1, writable_root=root)  # Current-process image.
+            transport._open_file(nested_python, writable_root=root)
+            transport._process_image(2, writable_root=root)  # Image beneath the bridge root.
+            transport._process_image(2, writable_root=root)  # Peer image beneath the root.
+            root_handle = transport._open_file(root, True, writable_root=root)
+            transport._private(root_handle, 1)
+            self.assertEqual(
+                transport._read_file(source, 16384, writable_root=root), b"synthetic-source"
+            )
+            self.assertEqual(
+                transport._read_file(locator, 16384, writable_root=root), b"synthetic-locator"
+            )
+
+            root_opens = [entry for entry in transport.k.opens if entry[0] == root]
+            self.assertGreaterEqual(len(root_opens), 6)
+
+            def permits_atomic_child_create(existing, new_share):
+                # The atomic writer opens RootDirectory requesting FILE_ADD_FILE;
+                # its handle must also continue sharing the existing read handles.
+                return all(
+                    old_access & 0x80000000
+                    and old_share & 2
+                    and new_share & 1
+                    for _, old_access, old_share in existing
+                )
+
+            old_root_opens = [(path, access, 1) for path, access, _ in root_opens]
+            self.assertFalse(permits_atomic_child_create(old_root_opens, 1))
+            self.assertTrue(permits_atomic_child_create(root_opens, 1 | 2))
+            self.assertTrue(all(share == (1 | 2) for _, _, share in root_opens))
+            self.assertTrue(all(share == 1 for path, _, share in transport.k.opens if path != root))
+            self.assertTrue(all(share & 4 == 0 for _, _, share in transport.k.opens))
+            self.assertTrue(all(access == 0x80000000 for _, access, _ in transport.k.opens))
+            file_opens = [entry for entry in transport.k.opens if entry[0] in payloads]
+            self.assertTrue(all(share == 1 for _, _, share in file_opens))
+            transport.stack.close()
 
     def test_actual_installed_main_reads_only_native_generated_config_name(self):
         with tempfile.TemporaryDirectory(prefix="companion-layout-") as temporary:

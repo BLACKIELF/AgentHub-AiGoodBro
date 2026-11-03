@@ -134,8 +134,8 @@ fn main() {
 
 fn pin_companion_setup() {
     // Reviewed Windows-native payload; update these only with its source receipt.
-    const MANIFEST: &str = "2b8272f7ec01f95e39b3987fbfb3bedb708c82b9d77536d5a94cd0e6fb84153a";
-    const SOURCE: &str = "f4de47191911d3d3f52e289192430faa89bb5d437ff095819630e769caaf7ed1";
+    const MANIFEST: &str = "bc14e63d710682de4ad3d4470c0054fe1e2e2ff4182eeb02146a318bdfc15548";
+    const SOURCE: &str = "2a0ece8d76784c76c9dbb25441fbacd84be2173e68bf7d454a12fddf18d3ca9b";
     let root = Path::new("resources/companion-setup");
     println!("cargo:rerun-if-changed=resources/companion-setup");
     println!("cargo:rerun-if-changed=../../../companion/SOURCE.json");

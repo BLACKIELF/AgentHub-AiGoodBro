@@ -2789,7 +2789,15 @@ fn run_windows_python_receiver_e2e() {
         .join("windows/companion/next-dispatch.py")
         .canonicalize()
         .unwrap();
-    let install = private_root.join("client");
+    let install = root
+        .join("synthetic-home")
+        .join(".codex")
+        .join("skills")
+        .join("multi-agent-management");
+    assert!(
+        !install.starts_with(&private_root),
+        "synthetic installed client must remain outside the bridge root"
+    );
     fs::create_dir_all(install.join("bin")).unwrap();
     fs::create_dir_all(install.join("config")).unwrap();
     let launcher = install.join("bin/next-dispatch.py");
