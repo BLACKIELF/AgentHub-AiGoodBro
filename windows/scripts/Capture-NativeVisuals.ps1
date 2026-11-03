@@ -7,6 +7,7 @@ param(
   [string] $WindowsSdkRoot,
   [switch] $PreflightOnly,
   [switch] $SkipBuild,
+  [switch] $ExerciseWorkspaceScreenshot,
   [Alias('Surface')]
   [ValidateSet('All', 'Overview', 'Tasks', 'AI Leadership', 'Usage', 'Projects', 'Skills')]
   [string] $RequestedSurface = 'All'
@@ -381,6 +382,15 @@ public static class NativeVisualCaptureDriver
     [DllImport("user32.dll", SetLastError = true)]
     private static extern bool ClientToScreen(IntPtr hwnd, ref POINT point);
 
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool ScreenToClient(IntPtr hwnd, ref POINT point);
+
+    [DllImport("user32.dll")]
+    private static extern bool IsChild(IntPtr parent, IntPtr child);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetAncestor(IntPtr hwnd, uint flags);
+
     [DllImport("user32.dll")]
     private static extern bool ShowWindow(IntPtr hwnd, int command);
 
@@ -451,7 +461,7 @@ public static class NativeVisualCaptureDriver
         int maxCount
     );
 
-    [DllImport("user32.dll")]
+    [DllImport("user32.dll", SetLastError = true)]
     private static extern bool PostMessage(
         IntPtr hwnd,
         uint message,
@@ -484,11 +494,24 @@ public static class NativeVisualCaptureDriver
         return GetForegroundWindow();
     }
 
+    public static uint GetWindowProcessId(IntPtr hwnd)
+    {
+        uint processId;
+        GetWindowThreadProcessId(hwnd, out processId);
+        return processId;
+    }
+
+    public static long GetWindowExtendedStyle(IntPtr hwnd)
+    {
+        return GetWindowLongPtr(hwnd, -20).ToInt64();
+    }
+
     public static bool ApplyCaptureWindowStyle(IntPtr hwnd)
     {
         const int GWL_EXSTYLE = -20;
         const long WS_EX_TOOLWINDOW = 0x00000080L;
         const long WS_EX_APPWINDOW = 0x00040000L;
+        const long WS_EX_NOACTIVATE = 0x08000000L;
         const uint SWP_NOSIZE = 0x0001;
         const uint SWP_NOMOVE = 0x0002;
         const uint SWP_NOZORDER = 0x0004;
@@ -496,7 +519,7 @@ public static class NativeVisualCaptureDriver
         const uint SWP_FRAMECHANGED = 0x0020;
 
         long current = GetWindowLongPtr(hwnd, GWL_EXSTYLE).ToInt64();
-        long updated = (current | WS_EX_TOOLWINDOW) & ~WS_EX_APPWINDOW;
+        long updated = (current | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE) & ~WS_EX_APPWINDOW;
         SetWindowLongPtr(hwnd, GWL_EXSTYLE, new IntPtr(updated));
         long applied = GetWindowLongPtr(hwnd, GWL_EXSTYLE).ToInt64();
         if (applied != updated)
@@ -521,6 +544,7 @@ public static class NativeVisualCaptureDriver
         }
         return (
             (updated & WS_EX_TOOLWINDOW) != 0 &&
+            (updated & WS_EX_NOACTIVATE) != 0 &&
             (updated & WS_EX_APPWINDOW) == 0
         );
     }
@@ -580,6 +604,76 @@ public static class NativeVisualCaptureDriver
             IntPtr.Zero
         );
         return result;
+    }
+
+    public static int[] GetBoundedControlClickPoint(
+        double left, double top, double width, double height,
+        int clientLeft, int clientTop, int clientWidth, int clientHeight)
+    {
+        double[] values = { left, top, width, height };
+        foreach (double value in values)
+            if (Double.IsNaN(value) || Double.IsInfinity(value))
+                throw new ArgumentException("Control bounds must be finite.");
+        if (width <= 0 || height <= 0 || clientWidth <= 0 || clientHeight <= 0 ||
+            left < clientLeft || top < clientTop ||
+            left + width > (double)clientLeft + clientWidth ||
+            top + height > (double)clientTop + clientHeight)
+            throw new ArgumentException("Control bounds must remain inside the owned renderer client.");
+        return new int[] {
+            checked((int)Math.Floor(left + width / 2)),
+            checked((int)Math.Floor(top + height / 2))
+        };
+    }
+
+    public static void ClickOwnedControl(
+        IntPtr window, int expectedProcessId,
+        double left, double top, double width, double height)
+    {
+        if (expectedProcessId <= 0 || GetWindowProcessId(window) != (uint)expectedProcessId)
+            throw new InvalidOperationException("Control click window owner mismatch.");
+        IntPtr renderer = FindRenderer(window);
+        if (renderer == IntPtr.Zero || !IsChild(window, renderer) || GetAncestor(renderer, 2) != window)
+            throw new InvalidOperationException("Control click renderer is not in the owned window family.");
+        IntPtr previousDpiContext = SetThreadDpiAwarenessContext(new IntPtr(-4));
+        try
+        {
+            RECT client = ReadClientRect(renderer);
+            POINT origin = new POINT { X = client.Left, Y = client.Top };
+            if (!ClientToScreen(renderer, ref origin))
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            int clientWidth = client.Right - client.Left;
+            int clientHeight = client.Bottom - client.Top;
+            int[] center = GetBoundedControlClickPoint(
+                left, top, width, height, origin.X, origin.Y, clientWidth, clientHeight);
+            POINT point = new POINT { X = center[0], Y = center[1] };
+            if (!ScreenToClient(renderer, ref point))
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            if (point.X < 0 || point.Y < 0 || point.X >= clientWidth || point.Y >= clientHeight ||
+                point.X > Int16.MaxValue || point.Y > Int16.MaxValue)
+                throw new InvalidOperationException("Control click client coordinates are out of range.");
+            IntPtr coordinates = new IntPtr(((long)(point.Y & 0xffff) << 16) | (uint)(point.X & 0xffff));
+            if (!PostMessage(renderer, 0x0200, IntPtr.Zero, coordinates))
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            bool downPosted = false;
+            try
+            {
+                if (!PostMessage(renderer, 0x0201, new IntPtr(1), coordinates))
+                    throw new Win32Exception(Marshal.GetLastWin32Error());
+                downPosted = true;
+            }
+            finally
+            {
+                // Always release this targeted button message; no global input,
+                // cursor movement, focus activation, or foreground restoration.
+                if (downPosted && !PostMessage(renderer, 0x0202, IntPtr.Zero, coordinates))
+                    throw new Win32Exception(Marshal.GetLastWin32Error());
+            }
+        }
+        finally
+        {
+            if (previousDpiContext != IntPtr.Zero)
+                SetThreadDpiAwarenessContext(previousDpiContext);
+        }
     }
 
     public static bool ScrollRenderer(IntPtr renderer, int wheelDelta, int count)
@@ -814,6 +908,7 @@ function Get-PreflightManifest {
     capture_runs = @($captureRuns)
     client_sizes = @()
     surfaces = @($requestedSurfaces)
+    workspace_screenshot_test_enabled = [bool]$ExerciseWorkspaceScreenshot
     window_mode = 'maximized exact HWND'
     overview_file = if ($captureOverview) { 'fullscreen/overview.png' } else { $null }
     surface_capture_mode = if ($singlePanelCapture) {
@@ -1231,13 +1326,28 @@ function Wait-TaskWindow {
 function Assert-ForegroundPreserved {
   param(
     [IntPtr] $ExpectedForeground,
-    [string] $Stage
+    [string] $Stage,
+    [IntPtr] $TaskWindow = [IntPtr]::Zero
   )
   if ($ExpectedForeground -eq [IntPtr]::Zero) {
     return
   }
   $actualForeground = [NativeVisualCaptureDriver]::GetForegroundWindowHandle()
   if ($actualForeground -ne $ExpectedForeground) {
+    # Numeric ownership/style metadata only; never inspect another window's
+    # title, content, accessibility tree or screenshot, and never restore focus.
+    $script:workflowManifest.foreground_failure = [ordered]@{
+      stage = $Stage
+      expected_hwnd = $ExpectedForeground.ToInt64()
+      expected_process_id = [NativeVisualCaptureDriver]::GetWindowProcessId($ExpectedForeground)
+      actual_hwnd = $actualForeground.ToInt64()
+      actual_process_id = [NativeVisualCaptureDriver]::GetWindowProcessId($actualForeground)
+      task_hwnd = $TaskWindow.ToInt64()
+      task_process_id = [NativeVisualCaptureDriver]::GetWindowProcessId($TaskWindow)
+      actual_is_task_window = $actualForeground -eq $TaskWindow
+      task_noactivate = $TaskWindow -ne [IntPtr]::Zero -and
+        (([NativeVisualCaptureDriver]::GetWindowExtendedStyle($TaskWindow) -band 0x08000000) -ne 0)
+    }
     throw "Background capture changed the active foreground window during $Stage."
   }
 }
@@ -1302,13 +1412,736 @@ function Wait-ForElement {
 }
 
 function Select-DashboardTab {
-  param([IntPtr] $Window, [string] $TabId, [string] $PanelId)
-  $tab = Wait-ForElement -Window $Window -AutomationId $TabId
-  $pattern = $tab.GetCurrentPattern(
-    [System.Windows.Automation.SelectionItemPattern]::Pattern
+  param(
+    [IntPtr] $Window, [int] $ProcessId, [IntPtr] $ExpectedForeground,
+    [string] $TabId, [string] $PanelId
   )
-  $pattern.Select()
+  [void](Wait-ForElement -Window $Window -AutomationId $TabId)
+  $condition = [System.Windows.Automation.PropertyCondition]::new(
+    [System.Windows.Automation.AutomationElement]::AutomationIdProperty, $TabId
+  )
+  if ($ProcessId -le 0 -or [NativeVisualCaptureDriver]::GetWindowProcessId($Window) -ne $ProcessId) {
+    throw 'dashboard_tab_window_owner_mismatch'
+  }
+  $renderer = [NativeVisualCaptureDriver]::FindRenderer($Window)
+  if ($renderer -eq [IntPtr]::Zero) { throw 'dashboard_tab_renderer_missing' }
+  # A SelectionItem action scrolls offscreen tabs but can activate WebView2.
+  # Scroll only our renderer, then click the actual fully visible tab bounds.
+  Move-DashboardScrollToTop -Renderer $renderer
+  Move-RendererToLeft -Renderer $renderer
+  $tab = $null
+  for ($step = 0; $step -le 18; $step++) {
+    Assert-ForegroundPreserved -ExpectedForeground $ExpectedForeground -TaskWindow $Window -Stage ('align ' + $TabId)
+    $root = [System.Windows.Automation.AutomationElement]::FromHandle($Window)
+    $matches = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition)
+    if ($matches.Count -gt 1) { throw 'dashboard_tab_not_unique' }
+    $workspace = Find-ElementByAutomationId -Window $Window -AutomationId 'windows-home'
+    if ($matches.Count -eq 1 -and $null -ne $workspace) {
+      $candidate = $matches[0]
+      $bounds = $candidate.Current.BoundingRectangle
+      $viewport = $workspace.Current.BoundingRectangle
+      $client = Get-ClientScreenBounds -Window $Window
+      if (-not $candidate.Current.IsOffscreen -and $bounds.Width -gt 0 -and $bounds.Height -gt 0 -and
+          $bounds.Left -ge [math]::Max($client.left, $viewport.Left) -and
+          $bounds.Top -ge [math]::Max($client.top, $viewport.Top) -and
+          $bounds.Right -le [math]::Min($client.right, $viewport.Right) -and
+          $bounds.Bottom -le [math]::Min($client.bottom, $viewport.Bottom)) {
+        $tab = $candidate
+        break
+      }
+    }
+    if ($step -lt 18) {
+      if (-not [NativeVisualCaptureDriver]::ScrollRendererPage($renderer, -120, 1)) {
+        throw 'dashboard_tab_scroll_not_delivered'
+      }
+      Start-Sleep -Milliseconds 650
+    }
+  }
+  if ($null -eq $tab) { throw 'dashboard_tab_not_fully_visible' }
+  Click-OwnedControl -Window $Window -ProcessId $ProcessId -Element $tab `
+    -ExpectedControlType ([System.Windows.Automation.ControlType]::TabItem) `
+    -ExpectedForeground $ExpectedForeground -Stage $TabId
   [void](Wait-ForElement -Window $Window -AutomationId $PanelId -TimeoutSeconds 20)
+  $selectedTab = Wait-ForElement -Window $Window -AutomationId $TabId
+  $selection = $selectedTab.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern)
+  if (-not $selection.Current.IsSelected) { throw 'dashboard_tab_click_not_selected' }
+}
+
+function Open-DashboardWorkspace {
+  param([IntPtr] $Window, [int] $ProcessId, [IntPtr] $ExpectedForeground)
+  [void](Wait-ForElement -Window $Window -AutomationId 'workspace-nav-tools')
+  $root = [System.Windows.Automation.AutomationElement]::FromHandle($Window)
+  $condition = [System.Windows.Automation.PropertyCondition]::new(
+    [System.Windows.Automation.AutomationElement]::AutomationIdProperty, 'workspace-nav-tools'
+  )
+  $matches = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition)
+  if ($matches.Count -ne 1) { throw 'workspace_navigation_not_unique' }
+  Click-OwnedControl -Window $Window -ProcessId $ProcessId -Element $matches[0] `
+    -ExpectedForeground $ExpectedForeground -Stage 'Workspace navigation'
+  [void](Wait-ForElement -Window $Window -AutomationId 'dashboard-home-tab-tasks' -TimeoutSeconds 20)
+  Assert-ForegroundPreserved -ExpectedForeground $ExpectedForeground -TaskWindow $Window -Stage 'Workspace navigation result'
+}
+
+function Open-DashboardHome {
+  param([IntPtr] $Window, [int] $ProcessId, [IntPtr] $ExpectedForeground)
+  [void](Wait-ForElement -Window $Window -AutomationId 'workspace-nav-home')
+  $root = [System.Windows.Automation.AutomationElement]::FromHandle($Window)
+  $condition = [System.Windows.Automation.PropertyCondition]::new(
+    [System.Windows.Automation.AutomationElement]::AutomationIdProperty, 'workspace-nav-home'
+  )
+  $matches = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition)
+  if ($matches.Count -ne 1) { throw 'home_navigation_not_unique' }
+  Click-OwnedControl -Window $Window -ProcessId $ProcessId -Element $matches[0] `
+    -ExpectedForeground $ExpectedForeground -Stage 'Home navigation'
+  [void](Wait-ForElement -Window $Window -AutomationId 'workspace-nav-home')
+  Assert-ForegroundPreserved -ExpectedForeground $ExpectedForeground -TaskWindow $Window -Stage 'Home navigation result'
+}
+
+function Click-OwnedControl {
+  param(
+    [IntPtr] $Window, [int] $ProcessId,
+    [System.Windows.Automation.AutomationElement] $Element,
+    [System.Windows.Automation.ControlType] $ExpectedControlType = [System.Windows.Automation.ControlType]::Button,
+    [IntPtr] $ExpectedForeground, [string] $Stage
+  )
+  if ($Element.Current.ControlType -ne $ExpectedControlType -or
+      -not $Element.Current.IsEnabled -or $Element.Current.IsOffscreen) {
+    throw 'owned_control_click_unavailable'
+  }
+  $bounds = $Element.Current.BoundingRectangle
+  Assert-ForegroundPreserved -ExpectedForeground $ExpectedForeground -TaskWindow $Window -Stage ('before ' + $Stage)
+  [NativeVisualCaptureDriver]::ClickOwnedControl(
+    $Window, $ProcessId, $bounds.Left, $bounds.Top, $bounds.Width, $bounds.Height
+  )
+}
+
+function Get-WorkspaceScreenshotFeedbackResult {
+  param([string] $Name, [string[]] $Names)
+  if ($Name -ceq $Names[0] -or $Name -ceq $Names[1]) { return 'saved' }
+  if ($Name -ceq $Names[2] -or $Name -ceq $Names[3]) { return 'error' }
+  return 'pending'
+}
+
+function Save-WorkspaceScreenshotPollLog {
+  param([string] $Path, [System.Collections.IDictionary] $Log)
+
+  $Log.updated_utc = [DateTime]::UtcNow.ToString('o')
+  $temporaryPath = $Path + '.' + [guid]::NewGuid().ToString('N') + '.tmp'
+  try {
+    [System.IO.File]::WriteAllText(
+      $temporaryPath,
+      ($Log | ConvertTo-Json -Depth 6),
+      [System.Text.UTF8Encoding]::new($false)
+    )
+    if ([System.IO.File]::Exists($Path)) {
+      [System.IO.File]::Replace(
+        $temporaryPath,
+        $Path,
+        [System.Management.Automation.Language.NullString]::Value
+      )
+    } else {
+      [System.IO.File]::Move($temporaryPath, $Path)
+    }
+  } finally {
+    if ([System.IO.File]::Exists($temporaryPath)) {
+      [System.IO.File]::Delete($temporaryPath)
+    }
+  }
+}
+
+function Find-WorkspaceScreenshotFeedbackByName {
+  param(
+    [IntPtr] $Window,
+    [int] $ProcessId,
+    [string[]] $Names,
+    [System.Diagnostics.Stopwatch] $Timer,
+    [long] $DeadlineMilliseconds
+  )
+  $result = [pscustomobject]@{ found = $false; result = 'none'; route = 'none'; control_type = $null; elapsed_ms = [long]$Timer.ElapsedMilliseconds }
+  if ($Timer.ElapsedMilliseconds -ge $DeadlineMilliseconds) { return $result }
+  $root = [System.Windows.Automation.AutomationElement]::FromHandle($Window)
+  if ($root.Current.ProcessId -ne $ProcessId) { throw 'native_screenshot_feedback_window_owner_mismatch' }
+  $nameConditions = @()
+  foreach ($name in $Names) {
+    $nameConditions += [System.Windows.Automation.PropertyCondition]::new(
+      [System.Windows.Automation.AutomationElement]::NameProperty, $name
+    )
+  }
+  $nameCondition = $nameConditions[0]
+  for ($index = 1; $index -lt $nameConditions.Count; $index++) {
+    $nameCondition = [System.Windows.Automation.OrCondition]::new($nameCondition, $nameConditions[$index])
+  }
+  $visible = [System.Windows.Automation.PropertyCondition]::new(
+    [System.Windows.Automation.AutomationElement]::IsOffscreenProperty, $false
+  )
+  $text = [System.Windows.Automation.PropertyCondition]::new(
+    [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+    [System.Windows.Automation.ControlType]::Text
+  )
+  $statusBar = [System.Windows.Automation.PropertyCondition]::new(
+    [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+    [System.Windows.Automation.ControlType]::StatusBar
+  )
+  $preferred = [System.Windows.Automation.AndCondition]::new(
+    $visible, [System.Windows.Automation.AndCondition]::new(
+      [System.Windows.Automation.OrCondition]::new($text, $statusBar), $nameCondition
+    )
+  )
+  $queries = @(
+    [pscustomobject]@{ condition = $preferred; route = 'visible_text_or_status_name' },
+    [pscustomobject]@{ condition = [System.Windows.Automation.AndCondition]::new($visible, $nameCondition); route = 'visible_exact_name' }
+  )
+  foreach ($query in $queries) {
+    if ($Timer.ElapsedMilliseconds -ge $DeadlineMilliseconds) { break }
+    $element = $root.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $query.condition)
+    if ($null -eq $element) { continue }
+    $name = [string]$element.Current.Name
+    $controlType = [string]$element.Current.ControlType.ProgrammaticName
+    $kind = Get-WorkspaceScreenshotFeedbackResult -Name $name -Names $Names
+    $elapsed = [long]$Timer.ElapsedMilliseconds
+    if ($elapsed -ge $DeadlineMilliseconds) { $kind = "late_$kind" }
+    return [pscustomobject]@{
+      found = $true
+      result = $kind
+      route = $query.route
+      control_type = $controlType
+      elapsed_ms = $elapsed
+    }
+  }
+  $result.elapsed_ms = [long]$Timer.ElapsedMilliseconds
+  if ($result.elapsed_ms -ge $DeadlineMilliseconds) { $result.result = 'late' }
+  return $result
+}
+
+function Get-WorkspaceScreenshotFileObservation {
+  param([string] $Path)
+  try {
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf -ErrorAction Stop)) {
+      return [pscustomobject]@{ exists = $false; last_write_utc = $null }
+    }
+    $file = Get-Item -LiteralPath $Path -ErrorAction Stop
+    return [pscustomobject]@{ exists = $true; last_write_utc = $file.LastWriteTimeUtc.ToString('o') }
+  } catch {
+    return [pscustomobject]@{ exists = $null; last_write_utc = $null }
+  }
+}
+
+function Wait-WorkspaceScreenshotFeedback {
+  param(
+    [IntPtr] $Window,
+    [int] $ProcessId,
+    [string] $OutputPath,
+    [string] $OrderPath,
+    [string] $LogPath,
+    [string[]] $Names,
+    [int] $TimeoutMilliseconds
+  )
+  $timer = [System.Diagnostics.Stopwatch]::StartNew()
+  $first = [ordered]@{
+    automation_id_element_elapsed_ms = $null
+    automation_id_feedback_elapsed_ms = $null
+    name_fallback_elapsed_ms = $null
+    workspace_png_elapsed_ms = $null
+    workspace_png_last_write_utc = $null
+    order_marker_elapsed_ms = $null
+    order_marker_last_write_utc = $null
+  }
+  $log = [ordered]@{
+    schema_version = 1
+    scope = 'exact task-owned HWND only; isolated capture profile'
+    started_at_utc = [DateTime]::UtcNow.ToString('o')
+    timeout_ms = $TimeoutMilliseconds
+    result = 'running'
+    failure_code = $null
+    automation_id_queries = 0
+    name_fallback_queries = 0
+    first_observed = $first
+    last_poll = $null
+    poll_count = 0
+    update_count = 0
+    updated_utc = $null
+  }
+  if (Test-Path -LiteralPath $LogPath) {
+    throw 'Native workspace screenshot polling log already exists.'
+  }
+  Save-WorkspaceScreenshotPollLog -Path $LogPath -Log $log
+  $lastLogWriteMilliseconds = 0
+  $primaryError = $null
+  $failureCode = 'action_failed'
+  $root = $null
+  $idCondition = $null
+  try {
+    $root = [System.Windows.Automation.AutomationElement]::FromHandle($Window)
+    if ($root.Current.ProcessId -ne $ProcessId) { throw 'native_screenshot_feedback_window_owner_mismatch' }
+    $idCondition = [System.Windows.Automation.PropertyCondition]::new(
+      [System.Windows.Automation.AutomationElement]::AutomationIdProperty,
+      'workspace-screenshot-status'
+    )
+    $feedback = 'none'
+    do {
+      if ($timer.ElapsedMilliseconds -ge $TimeoutMilliseconds) { break }
+      if ($root.Current.ProcessId -ne $ProcessId) { throw 'native_screenshot_feedback_window_owner_mismatch' }
+      if ($timer.ElapsedMilliseconds -ge $TimeoutMilliseconds) { break }
+      $log.automation_id_queries++
+      $status = $root.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $idCondition)
+      $idFound = $null -ne $status
+      $idResult = if ($idFound) { 'pending' } else { 'none' }
+      if ($idFound) {
+        if ($null -eq $first.automation_id_element_elapsed_ms) {
+          $first.automation_id_element_elapsed_ms = [long]$timer.ElapsedMilliseconds
+        }
+        $statusName = [string]$status.Current.Name
+        $statusOffscreen = [bool]$status.Current.IsOffscreen
+        $kind = Get-WorkspaceScreenshotFeedbackResult -Name $statusName -Names $Names
+        $idElapsed = [long]$timer.ElapsedMilliseconds
+        if (-not $statusOffscreen -and $kind -ne 'pending') {
+          if ($null -eq $first.automation_id_feedback_elapsed_ms) {
+            $first.automation_id_feedback_elapsed_ms = $idElapsed
+          }
+          $idResult = if ($idElapsed -lt $TimeoutMilliseconds) { $kind } else { "late_$kind" }
+          if ($idElapsed -lt $TimeoutMilliseconds) { $feedback = $kind }
+        }
+      } else {
+        $idElapsed = [long]$timer.ElapsedMilliseconds
+      }
+
+      $nameFound = $false
+      $nameResult = 'not_needed'
+      $nameRoute = 'not_needed'
+      $nameControlType = $null
+      $nameElapsed = [long]$timer.ElapsedMilliseconds
+      if ($feedback -eq 'none' -and $nameElapsed -lt $TimeoutMilliseconds) {
+        $log.name_fallback_queries++
+        $fallback = Find-WorkspaceScreenshotFeedbackByName `
+          -Window $Window -ProcessId $ProcessId -Names $Names `
+          -Timer $timer -DeadlineMilliseconds $TimeoutMilliseconds
+        $nameFound = [bool]$fallback.found
+        $nameResult = [string]$fallback.result
+        $nameRoute = [string]$fallback.route
+        $nameControlType = $fallback.control_type
+        $nameElapsed = [long]$fallback.elapsed_ms
+        if ($nameFound -and $nameResult -in @('saved', 'error', 'late_saved', 'late_error')) {
+          if ($null -eq $first.name_fallback_elapsed_ms) { $first.name_fallback_elapsed_ms = $nameElapsed }
+          if ($nameElapsed -lt $TimeoutMilliseconds -and $nameResult -in @('saved', 'error')) {
+            $feedback = $nameResult
+          }
+        }
+      }
+
+      $png = Get-WorkspaceScreenshotFileObservation -Path $OutputPath
+      $order = Get-WorkspaceScreenshotFileObservation -Path $OrderPath
+      if ($png.exists -eq $true -and $null -eq $first.workspace_png_elapsed_ms) {
+        $first.workspace_png_elapsed_ms = [long]$timer.ElapsedMilliseconds
+        $first.workspace_png_last_write_utc = $png.last_write_utc
+      }
+      if ($order.exists -eq $true -and $null -eq $first.order_marker_elapsed_ms) {
+        $first.order_marker_elapsed_ms = [long]$timer.ElapsedMilliseconds
+        $first.order_marker_last_write_utc = $order.last_write_utc
+      }
+      $log.last_poll = [ordered]@{
+        elapsed_ms = [long]$timer.ElapsedMilliseconds
+        automation_id_found = $idFound
+        automation_id_result = $idResult
+        automation_id_query_elapsed_ms = $idElapsed
+        name_fallback_found = $nameFound
+        name_fallback_result = $nameResult
+        name_fallback_route = $nameRoute
+        name_fallback_control_type = $nameControlType
+        name_fallback_elapsed_ms = $nameElapsed
+        workspace_png_exists = $png.exists
+        workspace_png_last_write_utc = $png.last_write_utc
+        order_marker_exists = $order.exists
+        order_marker_last_write_utc = $order.last_write_utc
+      }
+      $log.poll_count++
+      if (($timer.ElapsedMilliseconds - $lastLogWriteMilliseconds) -ge 5000) {
+        $log.update_count++
+        Save-WorkspaceScreenshotPollLog -Path $LogPath -Log $log
+        $lastLogWriteMilliseconds = [long]$timer.ElapsedMilliseconds
+      }
+      if ($feedback -ne 'none') { break }
+      $remaining = $TimeoutMilliseconds - [long]$timer.ElapsedMilliseconds
+      if ($remaining -gt 0) { Start-Sleep -Milliseconds ([int][math]::Min(150, $remaining)) }
+    } while ($timer.ElapsedMilliseconds -lt $TimeoutMilliseconds)
+
+    if ($feedback -eq 'error') {
+      $failureCode = 'save_feedback_error'
+      throw 'Native workspace screenshot action reported a save failure.'
+    }
+    if ($feedback -ne 'saved') {
+      $failureCode = 'saved_feedback_not_observed_within_45_seconds'
+      throw 'Native workspace screenshot action did not report a saved result.'
+    }
+  } catch {
+    $primaryError = $_
+    $log.result = 'failed'
+    $log.failure_code = $failureCode
+    throw
+  } finally {
+    $elapsed = [long]$timer.ElapsedMilliseconds
+    $png = Get-WorkspaceScreenshotFileObservation -Path $OutputPath
+    $order = Get-WorkspaceScreenshotFileObservation -Path $OrderPath
+    if ($png.exists -eq $true -and $null -eq $first.workspace_png_elapsed_ms) {
+      $first.workspace_png_elapsed_ms = $elapsed
+      $first.workspace_png_last_write_utc = $png.last_write_utc
+    }
+    if ($order.exists -eq $true -and $null -eq $first.order_marker_elapsed_ms) {
+      $first.order_marker_elapsed_ms = $elapsed
+      $first.order_marker_last_write_utc = $order.last_write_utc
+    }
+    $log.elapsed_ms = $elapsed
+    $log.first_observed = $first
+    if ($null -eq $primaryError) { $log.result = 'saved_feedback_observed' }
+    $log.completion_snapshot = [ordered]@{
+      workspace_png_exists = $png.exists
+      workspace_png_last_write_utc = $png.last_write_utc
+      order_marker_exists = $order.exists
+      order_marker_last_write_utc = $order.last_write_utc
+    }
+    try {
+      $log.update_count++
+      Save-WorkspaceScreenshotPollLog -Path $LogPath -Log $log
+    } catch {
+      if ($null -eq $primaryError) { throw 'Native workspace screenshot polling diagnostic could not be written.' }
+    }
+  }
+}
+
+function Invoke-WorkspaceScreenshotSmokeTest {
+  param(
+    [IntPtr] $Window,
+    [int] $ProcessId,
+    [IntPtr] $ExpectedForeground,
+    [string] $OutputPath,
+    [string] $ClientSize,
+    [string] $LogPath,
+    [System.Collections.IDictionary] $RunRecord
+  )
+
+  Start-CaptureStage -Name 'workspace-screenshot-prepare-and-wait-for-saved-feedback' -Record $RunRecord
+  if (Test-Path -LiteralPath $OutputPath) {
+    throw 'Native workspace screenshot output already exists.'
+  }
+  if ($ClientSize -notmatch '^\d+x(?<height>\d+)$') {
+    throw 'Native workspace screenshot client size is unavailable.'
+  }
+  $clientHeight = [int]$Matches.height
+  $button = Wait-ForElement -Window $Window -AutomationId 'workspace-screenshot'
+  if (
+    $button.Current.ControlType -ne [System.Windows.Automation.ControlType]::Button -or
+    $button.Current.Name -cne 'Save full workspace screenshot (PNG)' -or
+    -not [bool]$button.Current.IsEnabled
+  ) {
+    throw 'Native workspace screenshot action is not ready.'
+  }
+  Click-OwnedControl -Window $Window -ProcessId $ProcessId -Element $button `
+    -ExpectedForeground $ExpectedForeground -Stage 'workspace screenshot action'
+
+  $orderPath = Join-Path (Split-Path -Parent $OutputPath) 'workspace-order.txt'
+  $englishSaved = 'Workspace screenshot saved.'
+  $chineseSaved = -join [char[]]@(0x4e3b, 0x754c, 0x9762, 0x957f, 0x622a, 0x56fe, 0x5df2, 0x4fdd, 0x5b58, 0x3002)
+  $englishFailed = 'Could not save the screenshot. Try again.'
+  $chineseFailed = -join [char[]]@(0x672a, 0x80fd, 0x4fdd, 0x5b58, 0x622a, 0x56fe, 0xff0c, 0x8bf7, 0x91cd, 0x8bd5, 0x3002)
+  Wait-WorkspaceScreenshotFeedback `
+    -Window $Window -ProcessId $ProcessId `
+    -OutputPath $OutputPath -OrderPath $orderPath -LogPath $LogPath `
+    -Names @($englishSaved, $chineseSaved, $englishFailed, $chineseFailed) `
+    -TimeoutMilliseconds 45000
+  Complete-CaptureStage -Record $RunRecord
+
+  Start-CaptureStage -Name 'workspace-screenshot-reacquire-action-button' -Record $RunRecord
+  $button = Wait-ForElement -Window $Window -AutomationId 'workspace-screenshot'
+  if (-not [bool]$button.Current.IsEnabled) {
+    throw 'Native workspace screenshot action remained busy after save.'
+  }
+  Complete-CaptureStage -Record $RunRecord
+
+  Start-CaptureStage -Name 'workspace-screenshot-confirm-fixture-removal' -Record $RunRecord
+  $fixtureDeadline = (Get-Date).AddSeconds(5)
+  do {
+    $fixture = Find-ElementByAutomationId -Window $Window -AutomationId 'native-workspace-screenshot-fixture'
+    if ($null -eq $fixture) { break }
+    Start-Sleep -Milliseconds 100
+  } while ((Get-Date) -lt $fixtureDeadline)
+  if ($null -ne $fixture) {
+    throw 'Native workspace screenshot fixture remained after DOM restoration.'
+  }
+  Complete-CaptureStage -Record $RunRecord
+
+  Start-CaptureStage -Name 'workspace-screenshot-read-restore-save-marker' -Record $RunRecord
+  if (-not (Test-Path -LiteralPath $orderPath -PathType Leaf)) {
+    throw 'Native workspace screenshot did not write its fixed restore/save order marker.'
+  }
+  $order = [System.IO.File]::ReadAllText($orderPath, [System.Text.Encoding]::ASCII)
+  if ($order -cne 'restored|saved') {
+    throw 'Native workspace screenshot did not prove DOM restoration before PNG save.'
+  }
+  Complete-CaptureStage -Record $RunRecord
+
+  Start-CaptureStage -Name 'workspace-screenshot-confirm-png-output' -Record $RunRecord
+  if (-not (Test-Path -LiteralPath $OutputPath -PathType Leaf)) {
+    throw 'Native workspace screenshot action reported success without writing its fixed private PNG.'
+  }
+  Complete-CaptureStage -Record $RunRecord
+
+  Start-CaptureStage -Name 'workspace-screenshot-check-png-dimensions-and-fixture-pixel' -Record $RunRecord
+  $bitmap = $null
+  try {
+    Add-Type -AssemblyName System.Drawing
+    $bitmap = [System.Drawing.Bitmap]::FromFile($OutputPath)
+    $width = [int]$bitmap.Width
+    $height = [int]$bitmap.Height
+    if (
+      $width -le 0 -or $height -le ($clientHeight + 700) -or
+      $width -gt 32768 -or $height -gt 32768 -or
+      ([int64]$width * [int64]$height * 4) -gt 128000000
+    ) {
+      throw 'Native workspace screenshot dimensions do not prove a bounded full-height capture.'
+    }
+    $fixturePixel = $bitmap.GetPixel([int][math]::Floor($width / 2), $height - 80)
+    $fixturePixelMatched = (
+      $fixturePixel.R -eq 255 -and $fixturePixel.G -eq 45 -and $fixturePixel.B -eq 111
+    )
+    if (-not $fixturePixelMatched) {
+      throw 'Native workspace screenshot did not include the full-height fixture color.'
+    }
+  } finally {
+    if ($null -ne $bitmap) { $bitmap.Dispose() }
+  }
+  Complete-CaptureStage -Record $RunRecord
+
+  Start-CaptureStage -Name 'workspace-screenshot-record-png-file-metadata' -Record $RunRecord
+  $file = Get-Item -LiteralPath $OutputPath
+  Complete-CaptureStage -Record $RunRecord
+  return [ordered]@{
+    status = 'saved'
+    file = 'runtime/fullscreen/workspace-full.png'
+    order_file = 'runtime/fullscreen/workspace-order.txt'
+    restore_save_order = $order
+    bytes = [int64]$file.Length
+    width = $width
+    height = $height
+    client_height = $clientHeight
+    height_exceeds_client_by = $height - $clientHeight
+    fixture_pixel_matched = $fixturePixelMatched
+    fixture_removed_after_restore = $true
+    saved_feedback_observed = $true
+    restore_completed_before_save = ($order -ceq 'restored|saved')
+  }
+}
+
+function Find-InstallationGuide {
+  param([IntPtr] $Window, [int] $ProcessId)
+  $root = [System.Windows.Automation.AutomationElement]::FromHandle($Window)
+  if ($root.Current.ProcessId -ne $ProcessId) {
+    throw 'installation_guide_window_owner_mismatch'
+  }
+  $english = [System.Windows.Automation.PropertyCondition]::new(
+    [System.Windows.Automation.AutomationElement]::NameProperty, 'Welcome to AiGoodBro'
+  )
+  # Keep this BOM-free script ASCII for Windows PowerShell 5.1 decoding.
+  $chineseName = (-join [char[]]@(0x6b22, 0x8fce, 0x4f7f, 0x7528)) + ' AiGoodBro'
+  $chinese = [System.Windows.Automation.PropertyCondition]::new(
+    [System.Windows.Automation.AutomationElement]::NameProperty, $chineseName
+  )
+  $names = [System.Windows.Automation.OrCondition]::new($english, $chinese)
+  $windowType = [System.Windows.Automation.PropertyCondition]::new(
+    [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+    [System.Windows.Automation.ControlType]::Window
+  )
+  $condition = [System.Windows.Automation.AndCondition]::new($windowType, $names)
+  $matches = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition)
+  if ($matches.Count -gt 1) { throw 'installation_guide_not_unique' }
+  if ($matches.Count -eq 1) { return $matches[0] }
+  return $null
+}
+
+function Assert-CaptureStorage {
+  param([string] $RuntimeRoot, [ValidateSet('pending', 'deferred')] [string] $ExpectedStatus)
+  $stateRoot = Join-Path $RuntimeRoot 'app-state'
+  $settings = Join-Path $stateRoot 'settings.json'
+  if (-not (Test-Path -LiteralPath $settings -PathType Leaf)) {
+    throw 'capture_isolated_settings_missing'
+  }
+  $saved = Get-Content -LiteralPath $settings -Raw -Encoding UTF8 | ConvertFrom-Json
+  $cache = [string]$saved.cache_dir
+  # Rust canonical Windows paths use the local-drive extended prefix.
+  if ($cache.StartsWith('\\?\')) { $cache = $cache.Substring(4) }
+  $cache = [System.IO.Path]::GetFullPath($cache)
+  $expectedCache = [System.IO.Path]::GetFullPath((Join-Path $stateRoot 'cache'))
+  if (-not $cache.Equals($expectedCache, [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw 'capture_cache_not_isolated'
+  }
+  $codex = [string]$saved.codex_root
+  if ($codex.StartsWith('\\?\')) { $codex = $codex.Substring(4) }
+  $codex = [System.IO.Path]::GetFullPath($codex)
+  $expectedCodex = [System.IO.Path]::GetFullPath((Join-Path $stateRoot 'codex'))
+  if (-not $codex.Equals($expectedCodex, [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw 'capture_codex_not_isolated'
+  }
+  if ($saved.installation_onboarding.status -ne $ExpectedStatus) {
+    throw 'capture_isolated_onboarding_state_mismatch'
+  }
+  return [ordered]@{
+    state_root = 'runtime/fullscreen/app-state'
+    cache_isolated = $true
+    codex_isolated = $true
+    onboarding_status = $ExpectedStatus
+  }
+}
+
+function Defer-FirstLaunchGuide {
+  param([IntPtr] $Window, [int] $ProcessId, [IntPtr] $ExpectedForeground)
+  # Every capture starts with a fresh task-local profile. Observe its real
+  # first-launch modal before navigating; Home can appear before the async read.
+  $deadline = (Get-Date).AddSeconds(30)
+  do {
+    $guide = Find-InstallationGuide -Window $Window -ProcessId $ProcessId
+    if ($null -ne $guide) { break }
+    Start-Sleep -Milliseconds 150
+  } while ((Get-Date) -lt $deadline)
+  if ($null -eq $guide) { throw 'fresh_capture_installation_guide_missing' }
+  $deferName = if ($guide.Current.Name -eq 'Welcome to AiGoodBro') {
+    'Set up later'
+  } else {
+    -join [char[]]@(0x7a0d, 0x540e, 0x8bbe, 0x7f6e)
+  }
+  $name = [System.Windows.Automation.PropertyCondition]::new(
+    [System.Windows.Automation.AutomationElement]::NameProperty, $deferName
+  )
+  $buttonType = [System.Windows.Automation.PropertyCondition]::new(
+    [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+    [System.Windows.Automation.ControlType]::Button
+  )
+  $condition = [System.Windows.Automation.AndCondition]::new($buttonType, $name)
+  $buttons = $guide.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition)
+  if ($buttons.Count -ne 1) { throw 'installation_guide_defer_not_unique' }
+  if (-not $buttons[0].Current.IsEnabled -or $buttons[0].Current.IsOffscreen) {
+    throw 'installation_guide_defer_unavailable'
+  }
+  $focusBefore = [NativeVisualCaptureDriver]::GetForegroundWindowHandle()
+  $script:workflowManifest.fullscreen_run.onboarding_focus = [ordered]@{
+    before_hwnd = $focusBefore.ToInt64()
+    before_process_id = [NativeVisualCaptureDriver]::GetWindowProcessId($focusBefore)
+    before_is_task_window = $focusBefore -eq $Window
+    noactivate_before_reapply = ([NativeVisualCaptureDriver]::GetWindowExtendedStyle($Window) -band 0x08000000) -ne 0
+  }
+  # Reapply and verify the owned HWND's non-activation style immediately before
+  # targeted client input. This does not restore foreground or excuse activation.
+  if (-not [NativeVisualCaptureDriver]::ApplyCaptureWindowStyle($Window)) {
+    throw 'installation_guide_noactivate_style_not_applied'
+  }
+  $script:workflowManifest.fullscreen_run.onboarding_focus.noactivate_before_click =
+    ([NativeVisualCaptureDriver]::GetWindowExtendedStyle($Window) -band 0x08000000) -ne 0
+  if (-not $script:workflowManifest.fullscreen_run.onboarding_focus.noactivate_before_click) {
+    throw 'installation_guide_noactivate_style_not_retained'
+  }
+  $script:workflowManifest.fullscreen_run.onboarding_focus.input_method = 'owned renderer client mouse messages'
+  Click-OwnedControl -Window $Window -ProcessId $ProcessId -Element $buttons[0] `
+    -ExpectedForeground $ExpectedForeground -Stage 'first-launch guide click'
+  $deadline = (Get-Date).AddSeconds(30)
+  do {
+    if ($null -eq (Find-InstallationGuide -Window $Window -ProcessId $ProcessId)) {
+      # PostMessage is asynchronous: sample the result only after the real
+      # dialog has disappeared, not immediately after queuing input.
+      $focusAfter = [NativeVisualCaptureDriver]::GetForegroundWindowHandle()
+      $script:workflowManifest.fullscreen_run.onboarding_focus.result_after_hwnd = $focusAfter.ToInt64()
+      $script:workflowManifest.fullscreen_run.onboarding_focus.result_after_process_id =
+        [NativeVisualCaptureDriver]::GetWindowProcessId($focusAfter)
+      $script:workflowManifest.fullscreen_run.onboarding_focus.result_after_is_task_window = $focusAfter -eq $Window
+      $script:workflowManifest.fullscreen_run.onboarding_focus.noactivate_after_result =
+        ([NativeVisualCaptureDriver]::GetWindowExtendedStyle($Window) -band 0x08000000) -ne 0
+      return [ordered]@{ observed = $true; defer_invoked = $true; dialog_dismissed = $true }
+    }
+    Start-Sleep -Milliseconds 150
+  } while ((Get-Date) -lt $deadline)
+  throw 'installation_guide_defer_did_not_close_modal'
+}
+
+function Save-OwnedWindowUiaDiagnostic {
+  param([IntPtr] $Window, [int] $ProcessId, [string] $OutputPath)
+  $root = [System.Windows.Automation.AutomationElement]::FromHandle($Window)
+  if ($root.Current.ProcessId -ne $ProcessId) {
+    throw 'diagnostic_window_owner_mismatch'
+  }
+  $walker = [System.Windows.Automation.TreeWalker]::ControlViewWalker
+  $queue = [System.Collections.Queue]::new()
+  $queue.Enqueue([pscustomobject]@{ element = $root; depth = 0 })
+  $nodes = [System.Collections.ArrayList]::new()
+  $deadline = (Get-Date).AddSeconds(8)
+  $limit = 256
+  $depthLimit = 20
+  $depthLimitReached = $false
+  while ($queue.Count -gt 0 -and $nodes.Count -lt $limit -and (Get-Date) -lt $deadline) {
+    $item = $queue.Dequeue()
+    try {
+      $current = $item.element.Current
+      $name = [string]$current.Name
+      $name = [regex]::Replace($name, '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}', '[email]')
+      $name = [regex]::Replace($name, '(?i)([a-z]:\\|/Users/)\S+', '[path]')
+      $name = [regex]::Replace($name, '\b(?:sk-|eyJ)[A-Za-z0-9._-]{16,}\b', '[credential]')
+      if ($name.Length -gt 160) { $name = $name.Substring(0, 160) }
+      $id = [string]$current.AutomationId
+      $id = [regex]::Replace($id, '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}', '[email]')
+      $id = [regex]::Replace($id, '(?i)([a-z]:\\|/Users/)\S+', '[path]')
+      $id = [regex]::Replace($id, '\b(?:sk-|eyJ)[A-Za-z0-9._-]{16,}\b', '[credential]')
+      if ($id.Length -gt 160) { $id = '[long-id]' }
+      $bounds = $current.BoundingRectangle
+      [void]$nodes.Add([ordered]@{
+        depth = $item.depth
+        name = $name
+        automation_id = $id
+        control_type = $current.ControlType.ProgrammaticName
+        patterns = @($item.element.GetSupportedPatterns() | ForEach-Object { $_.ProgrammaticName })
+        offscreen = $current.IsOffscreen
+        bounds = @($bounds.X, $bounds.Y, $bounds.Width, $bounds.Height)
+      })
+      if ($item.depth -lt $depthLimit) {
+        $child = $walker.GetFirstChild($item.element)
+        while ($null -ne $child -and ($queue.Count + $nodes.Count) -lt $limit -and (Get-Date) -lt $deadline) {
+          $queue.Enqueue([pscustomobject]@{ element = $child; depth = $item.depth + 1 })
+          $child = $walker.GetNextSibling($child)
+        }
+      } elseif ($null -ne $walker.GetFirstChild($item.element)) {
+        $depthLimitReached = $true
+      }
+    } catch {
+      if ($nodes.Count -lt $limit) {
+        [void]$nodes.Add([ordered]@{ depth = $item.depth; unavailable = $true })
+      }
+    }
+  }
+  $diagnostic = [ordered]@{
+    scope = 'exact task-owned HWND only; isolated capture profile'
+    owner_verified = $true
+    node_limit = $limit
+    depth_limit = $depthLimit
+    traversal_deadline_seconds = 8
+    truncated = ($queue.Count -gt 0 -or $nodes.Count -ge $limit -or $depthLimitReached)
+    nodes = @($nodes)
+  }
+  [System.IO.File]::WriteAllText($OutputPath, ($diagnostic | ConvertTo-Json -Depth 8), [System.Text.UTF8Encoding]::new($false))
+}
+
+function Save-OwnedWindowFailureImage {
+  param([IntPtr] $Window, [int] $ProcessId, [string] $CaptureTool, [string] $OutputPath)
+  if ([System.Windows.Automation.AutomationElement]::FromHandle($Window).Current.ProcessId -ne $ProcessId) {
+    throw 'diagnostic_window_owner_mismatch'
+  }
+  $capture = [System.Diagnostics.Process]::new()
+  $capture.StartInfo.FileName = $CaptureTool
+  $capture.StartInfo.Arguments = ('{0} "{1}"' -f ([long]$Window), $OutputPath)
+  $capture.StartInfo.UseShellExecute = $false
+  $capture.StartInfo.CreateNoWindow = $true
+  try {
+    if (-not $capture.Start()) { throw 'diagnostic_capture_start_failed' }
+    if (-not $capture.WaitForExit(10000)) { throw 'diagnostic_capture_timeout' }
+    if ($capture.ExitCode -ne 0) { throw 'diagnostic_capture_failed' }
+  } finally {
+    try {
+      if (-not $capture.HasExited) { $capture.Kill(); [void]$capture.WaitForExit(2000) }
+    } finally { $capture.Dispose() }
+  }
 }
 
 function Move-DashboardScrollToTop {
@@ -1600,7 +2433,10 @@ function Set-MaximizedWindow {
   if ($description -notmatch '^maximized=(?<maximized>true);foregroundPreserved=(?<foregroundPreserved>true|false);toolWindow=(?<toolWindow>true|false);client=(?<width>\d+)x(?<height>\d+);clientPhysical=(?<physicalWidth>\d+)x(?<physicalHeight>\d+);outer=(?<outerWidth>\d+)x(?<outerHeight>\d+);dpi=(?<dpi>\d+)$') {
     throw "Could not parse maximized window dimensions: $description"
   }
+  $title = [System.Windows.Automation.AutomationElement]::FromHandle($Window).Current.Name
+  if ($title -cne 'AiGoodBro') { throw 'The native main window title must be AiGoodBro.' }
   return [ordered]@{
+    title = $title
     maximized = $true
     activation_mode = 'non-activating'
     foreground_policy = 'preserve active window'
@@ -1658,12 +2494,92 @@ function Invoke-GraphicsCapture {
 function Save-WorkflowManifest {
   if ($null -ne $script:workflowManifest -and $null -ne $script:manifestPath) {
     $json = $script:workflowManifest | ConvertTo-Json -Depth 12
-    [System.IO.File]::WriteAllText(
-      $script:manifestPath,
-      $json,
-      [System.Text.UTF8Encoding]::new($false)
-    )
+    $temporaryPath = $script:manifestPath + '.' + [guid]::NewGuid().ToString('N') + '.tmp'
+    try {
+      [System.IO.File]::WriteAllText(
+        $temporaryPath,
+        $json,
+        [System.Text.UTF8Encoding]::new($false)
+      )
+      if ([System.IO.File]::Exists($script:manifestPath)) {
+        [System.IO.File]::Replace(
+          $temporaryPath,
+          $script:manifestPath,
+          [System.Management.Automation.Language.NullString]::Value
+        )
+      } else {
+        [System.IO.File]::Move($temporaryPath, $script:manifestPath)
+      }
+    } finally {
+      if ([System.IO.File]::Exists($temporaryPath)) {
+        [System.IO.File]::Delete($temporaryPath)
+      }
+    }
   }
+}
+
+function Start-CaptureStage {
+  param(
+    [string] $Name,
+    [System.Collections.IDictionary] $Record
+  )
+
+  if ($null -eq $Record) { $Record = $script:workflowManifest }
+  if ($null -eq $Record) { return }
+  $stage = [ordered]@{
+    name = $Name
+    status = 'running'
+    started_utc = [DateTime]::UtcNow.ToString('o')
+    completed_utc = $null
+    elapsed_ms = $null
+  }
+  $Record.current_stage = $stage
+  $Record.stage_history += @($stage)
+  Save-WorkflowManifest
+}
+
+function Complete-CaptureStage {
+  param(
+    [string] $Name,
+    [System.Collections.IDictionary] $Record
+  )
+
+  if ($null -eq $Record) { $Record = $script:workflowManifest }
+  if ($null -eq $Record -or $null -eq $Record.current_stage) {
+    return
+  }
+  if (-not [string]::IsNullOrWhiteSpace($Name) -and $Record.current_stage.name -cne $Name) { return }
+  $stage = $Record.current_stage
+  $completed = [DateTime]::UtcNow
+  $started = [DateTime]::Parse(
+    [string]$stage.started_utc,
+    [Globalization.CultureInfo]::InvariantCulture,
+    [Globalization.DateTimeStyles]::RoundtripKind
+  ).ToUniversalTime()
+  $stage.completed_utc = $completed.ToString('o')
+  $stage.elapsed_ms = [long]($completed - $started).TotalMilliseconds
+  $stage.status = 'complete'
+  Save-WorkflowManifest
+}
+
+function Fail-CaptureStage {
+  param([System.Collections.IDictionary] $Record)
+
+  if ($null -eq $Record) { $Record = $script:workflowManifest }
+  if ($null -eq $Record -or $null -eq $Record.current_stage -or $Record.current_stage.status -ne 'running') {
+    return
+  }
+  $stage = $Record.current_stage
+  $completed = [DateTime]::UtcNow
+  $started = [DateTime]::Parse(
+    [string]$stage.started_utc,
+    [Globalization.CultureInfo]::InvariantCulture,
+    [Globalization.DateTimeStyles]::RoundtripKind
+  ).ToUniversalTime()
+  $stage.completed_utc = $completed.ToString('o')
+  $stage.elapsed_ms = [long]($completed - $started).TotalMilliseconds
+  $stage.status = 'failed'
+  Save-WorkflowManifest
 }
 
 function Invoke-MaximizedCapture {
@@ -1686,16 +2602,21 @@ function Invoke-MaximizedCapture {
     captures = @()
     process_records = @()
     cleanup = $null
+    current_stage = $null
+    stage_history = @()
   }
   $script:workflowManifest.fullscreen_run = $sizeRecord
   Save-WorkflowManifest
 
   $process = $null
+  $window = [IntPtr]::Zero
   $stdoutTask = $null
   $stderrTask = $null
+  $captureFailure = $null
   $records = [System.Collections.ArrayList]::new()
   $foregroundBefore = [NativeVisualCaptureDriver]::GetForegroundWindowHandle()
   try {
+    Start-CaptureStage -Name 'prepare-isolated-runtime' -Record $sizeRecord
     $appData = Join-Path $sizeRuntime 'appdata'
     $localAppData = Join-Path $sizeRuntime 'localappdata'
     $webViewData = Join-Path $sizeRuntime 'webview2'
@@ -1713,12 +2634,25 @@ function Invoke-MaximizedCapture {
     $startInfo.EnvironmentVariables['APPDATA'] = $appData
     $startInfo.EnvironmentVariables['LOCALAPPDATA'] = $localAppData
     $startInfo.EnvironmentVariables['WEBVIEW2_USER_DATA_FOLDER'] = $webViewData
+    $startInfo.EnvironmentVariables['AIGOODBRO_NATIVE_CAPTURE_ROOT'] = $sizeRuntime
+    if ($ExerciseWorkspaceScreenshot) {
+      $startInfo.EnvironmentVariables['AIGOODBRO_NATIVE_WORKSPACE_SCREENSHOT_TEST'] = '1'
+    }
 
     $process = [System.Diagnostics.Process]::new()
     $process.StartInfo = $startInfo
+    Complete-CaptureStage -Record $sizeRecord
+    Start-CaptureStage -Name 'launch-app-and-record-process-identity' -Record $sizeRecord
     if (-not $process.Start()) {
       throw 'Could not start the task application.'
     }
+    $sizeRecord.process_id = [int]$process.Id
+    $sizeRecord.process_identity = Get-ProcessIdentity -ProcessId $process.Id
+    if ($null -eq $sizeRecord.process_identity) {
+      throw 'Could not record the task application identity immediately after launch.'
+    }
+    Complete-CaptureStage -Record $sizeRecord
+    Start-CaptureStage -Name 'wait-task-window' -Record $sizeRecord
     $stdoutTask = $process.StandardOutput.ReadToEndAsync()
     $stderrTask = $process.StandardError.ReadToEndAsync()
     Update-TaskProcessRecords -RootProcessId $process.Id -Records $records
@@ -1726,6 +2660,8 @@ function Invoke-MaximizedCapture {
     $window = Wait-TaskWindow `
       -Process $process `
       -ExpectedForeground $foregroundBefore
+    Complete-CaptureStage -Record $sizeRecord
+    Start-CaptureStage -Name 'configure-window-and-wait-webview-document' -Record $sizeRecord
     Assert-ForegroundPreserved `
       -ExpectedForeground $foregroundBefore `
       -Stage 'startup before window preparation'
@@ -1733,20 +2669,99 @@ function Invoke-MaximizedCapture {
       -Window $window `
       -ExpectedForeground $foregroundBefore
     Wait-WebViewDocument -Window $window
-    [void](Wait-ForElement -Window $window -AutomationId 'dashboard-home-tab-tasks')
+    Complete-CaptureStage -Record $sizeRecord
+    Start-CaptureStage -Name 'first-launch-onboarding-and-workspace-navigation' -Record $sizeRecord
+    $sizeRecord.storage_before_onboarding = Assert-CaptureStorage `
+      -RuntimeRoot $sizeRuntime -ExpectedStatus 'pending'
+    $sizeRecord.before_onboarding = [ordered]@{
+      task_noactivate = ([NativeVisualCaptureDriver]::GetWindowExtendedStyle($window) -band 0x08000000) -ne 0
+      foreground_is_expected = [NativeVisualCaptureDriver]::GetForegroundWindowHandle() -eq $foregroundBefore
+    }
+    Assert-ForegroundPreserved `
+      -ExpectedForeground $foregroundBefore `
+      -TaskWindow $window `
+      -Stage 'before first-launch guide defer'
+    $sizeRecord.onboarding = Defer-FirstLaunchGuide `
+      -Window $window -ProcessId $process.Id -ExpectedForeground $foregroundBefore
+    $sizeRecord.storage_after_onboarding = Assert-CaptureStorage `
+      -RuntimeRoot $sizeRuntime -ExpectedStatus 'deferred'
+    Assert-ForegroundPreserved `
+      -ExpectedForeground $foregroundBefore `
+      -TaskWindow $window `
+      -Stage 'first-launch guide defer'
+    [void](Wait-ForElement -Window $window -AutomationId 'workspace-nav-home')
+    Complete-CaptureStage -Record $sizeRecord
+    Start-CaptureStage -Name 'home-window-render-and-save' -Record $sizeRecord
+    Open-DashboardHome -Window $window -ProcessId $process.Id -ExpectedForeground $foregroundBefore
+    Start-Sleep -Milliseconds 700
+    $homeScreenshotPath = Join-Path $sizeRuntime 'home.png'
+    if (Test-Path -LiteralPath $homeScreenshotPath) {
+      throw 'Native Home screenshot output already exists.'
+    }
+    $homeCapture = Invoke-GraphicsCapture `
+      -CaptureTool $CaptureTool `
+      -Window $window `
+      -OutputPath $homeScreenshotPath `
+      -LogPath (Join-Path $LogsRoot 'home-graphics-capture.log')
+    Assert-ForegroundPreserved -ExpectedForeground $foregroundBefore -TaskWindow $window -Stage 'Home capture'
+    $homeScreenshotFile = Get-Item -LiteralPath $homeScreenshotPath
+    $homeScreenshot = [ordered]@{
+      page = 'home'
+      status = 'saved'
+      file = 'runtime/fullscreen/home.png'
+      physical_frame = $homeCapture.physical_frame
+      engine = $homeCapture.engine
+      bytes = [int64]$homeScreenshotFile.Length
+      sha256 = (Get-FileHash -LiteralPath $homeScreenshotPath -Algorithm SHA256).Hash.ToLowerInvariant()
+      captured_before_tools = $true
+      account_records_seeded_by_capture = 0
+      account_data_scope = 'isolated task-local native runtime'
+    }
+    $script:workflowManifest.home_screenshot = $homeScreenshot
+    Save-WorkflowManifest
+    Complete-CaptureStage -Record $sizeRecord
+
+    Start-CaptureStage -Name 'navigate-to-workspace-tools' -Record $sizeRecord
+    # Overview and the five task/tool panels remain on the existing Workspace route.
+    Open-DashboardWorkspace -Window $window -ProcessId $process.Id -ExpectedForeground $foregroundBefore
+    Complete-CaptureStage -Record $sizeRecord
+    Start-CaptureStage -Name 'identify-renderer' -Record $sizeRecord
     $renderer = [NativeVisualCaptureDriver]::FindRenderer($window)
     if ($renderer -eq [IntPtr]::Zero) {
       throw 'Could not identify the task application renderer child HWND.'
     }
     $sizeRecord.accessibility = [ordered]@{
       document_present = $true
+      workspace_navigation_present = $true
       dashboard_tab_present = $true
       renderer_present = $true
     }
-    Save-WorkflowManifest
+    Complete-CaptureStage -Record $sizeRecord
+    if ($ExerciseWorkspaceScreenshot) {
+      $workspaceScreenshotPath = Join-Path $sizeRuntime 'workspace-full.png'
+      $screenshotResult = Invoke-WorkspaceScreenshotSmokeTest `
+        -Window $window `
+        -ProcessId $process.Id `
+        -ExpectedForeground $foregroundBefore `
+        -OutputPath $workspaceScreenshotPath `
+        -ClientSize $sizeRecord.window.verified_client `
+        -LogPath (Join-Path $LogsRoot 'workspace-screenshot-poll.json') `
+        -RunRecord $sizeRecord
+      Start-CaptureStage -Name 'workspace-screenshot-confirm-foreground-preserved' -Record $sizeRecord
+      Assert-ForegroundPreserved `
+        -ExpectedForeground $foregroundBefore `
+        -TaskWindow $window `
+        -Stage 'workspace screenshot capture'
+      Complete-CaptureStage -Record $sizeRecord
+      $sizeRecord.workspace_screenshot = $screenshotResult
+      $script:workflowManifest.workspace_screenshot = $screenshotResult
+    }
+    Start-CaptureStage -Name 'capture-requested-surfaces' -Record $sizeRecord
     Update-TaskProcessRecords -RootProcessId $process.Id -Records $records
 
+    Complete-CaptureStage -Record $sizeRecord
     if ($captureOverview) {
+      Start-CaptureStage -Name 'overview-window-render-and-save' -Record $sizeRecord
       Move-DashboardScrollToTop -Renderer $renderer
       Move-RendererToLeft -Renderer $renderer
       Start-Sleep -Milliseconds 700
@@ -1756,22 +2771,30 @@ function Invoke-MaximizedCapture {
         -Window $window `
         -OutputPath $overviewPath `
         -LogPath (Join-Path $LogsRoot 'graphics-capture.log')
+      Assert-ForegroundPreserved -ExpectedForeground $foregroundBefore -TaskWindow $window -Stage 'Overview capture'
       $sizeRecord.captures += [ordered]@{
         surface = 'Overview'
-        framing = 'page top in maximized window'
+        framing = 'Workspace overview at page top in maximized window'
         file = $overviewPath
         physical_frame = $overviewCapture.physical_frame
         capture_engine = $overviewCapture.engine
         bytes = $overviewCapture.bytes
       }
       Save-WorkflowManifest
+      Complete-CaptureStage -Record $sizeRecord
     }
 
     foreach ($surface in $selectedPanelSurfaces) {
+      Start-CaptureStage -Name ($surface.slug + '-select-and-wait') -Record $sizeRecord
       Select-DashboardTab `
         -Window $window `
+        -ProcessId $process.Id `
+        -ExpectedForeground $foregroundBefore `
         -TabId $surface.tab `
         -PanelId $surface.panel
+      Complete-CaptureStage -Record $sizeRecord
+      Assert-ForegroundPreserved -ExpectedForeground $foregroundBefore -TaskWindow $window -Stage ($surface.name + ' selection')
+      Start-CaptureStage -Name ($surface.slug + '-scroll-capture-and-save') -Record $sizeRecord
       Move-DashboardScrollToTop -Renderer $renderer
       Move-RendererToLeft -Renderer $renderer
       [void](Capture-DashboardSurfaceSegments `
@@ -1782,16 +2805,45 @@ function Invoke-MaximizedCapture {
         -OutputDirectory $sizeScreenshots `
         -LogPath (Join-Path $LogsRoot 'graphics-capture.log') `
         -SizeRecord $sizeRecord)
+      Assert-ForegroundPreserved -ExpectedForeground $foregroundBefore -TaskWindow $window -Stage ($surface.name + ' capture')
       Update-TaskProcessRecords -RootProcessId $process.Id -Records $records
       Save-WorkflowManifest
+      Complete-CaptureStage -Record $sizeRecord
     }
     $sizeRecord.status = 'captured'
   } catch {
+    $captureFailure = $_
     $sizeRecord.status = 'failed'
     $sizeRecord.error = $_.Exception.Message
-    throw
+    try { Fail-CaptureStage -Record $sizeRecord } catch {
+      $sizeRecord.stage_persistence_error = 'failed-stage-write-unavailable'
+    }
+    # Preserve evidence before task-owned cleanup, never the desktop or another
+    # process. Diagnostic failure must not replace the original capture error.
+    if ($window -ne [IntPtr]::Zero -and $null -ne $process -and -not $process.HasExited) {
+      try {
+        Save-OwnedWindowUiaDiagnostic -Window $window -ProcessId $process.Id `
+          -OutputPath (Join-Path $LogsRoot 'failure-uia.json')
+        Save-OwnedWindowFailureImage -CaptureTool $CaptureTool -Window $window -ProcessId $process.Id `
+          -OutputPath (Join-Path $sizeScreenshots 'failure.png')
+      } catch {
+        $sizeRecord.failure_diagnostic_error = 'owned_window_diagnostic_unavailable'
+      }
+    }
+    throw $captureFailure
   } finally {
     if ($null -ne $process) {
+      $sizeRecord.cleanup_stage = [ordered]@{
+        name = 'normal-owned-process-cleanup'
+        status = 'running'
+        started_utc = [DateTime]::UtcNow.ToString('o')
+        completed_utc = $null
+      }
+      try {
+        Save-WorkflowManifest
+      } catch {
+        $sizeRecord.cleanup_stage.manifest_write_error = 'cleanup-start-write-unavailable'
+      }
       $sizeRecord.cleanup = Stop-RecordedTaskProcesses `
         -RootProcessId $process.Id `
         -Records $records
@@ -1824,8 +2876,18 @@ function Invoke-MaximizedCapture {
       if ($sizeRecord.status -eq 'captured') {
         $sizeRecord.status = 'complete'
       }
+      $sizeRecord.cleanup_stage.status = if (
+        $sizeRecord.cleanup.remaining_matching_process_ids.Count -eq 0
+      ) { 'complete' } else { 'failed' }
+      $sizeRecord.cleanup_stage.completed_utc = [DateTime]::UtcNow.ToString('o')
     }
-    Save-WorkflowManifest
+    try {
+      Save-WorkflowManifest
+    } catch {
+      if ($null -eq $captureFailure) {
+        throw 'Capture manifest could not be saved after owned process cleanup.'
+      }
+    }
   }
 }
 
@@ -1836,14 +2898,90 @@ if ($null -ne $resolvedPreflightResultPath -and -not $PreflightOnly) {
 }
 $preflightRunId = [guid]::NewGuid().ToString('N')
 $resolvedOutputRoot = Get-NormalizedOutputRoot -RequestedPath $OutputRoot
-$compiler = Get-CaptureCompiler -ExplicitWindowsSdkRoot $WindowsSdkRoot
-$preflight = Get-PreflightManifest `
-  -ResolvedOutputRoot $resolvedOutputRoot `
-  -ResolvedPreflightResultPath $resolvedPreflightResultPath `
-  -Compiler $compiler
+$captureOutputReady = $false
+if (-not $PreflightOnly) {
+  if (Test-Path -LiteralPath $resolvedOutputRoot) {
+    throw 'Refusing to overwrite an existing native visual output directory.'
+  }
+  Test-OutputRootIgnored -ResolvedOutputRoot $resolvedOutputRoot
+
+  $screenshotsRoot = Join-Path $resolvedOutputRoot 'screenshots'
+  $logsRoot = Join-Path $resolvedOutputRoot 'logs'
+  $runtimeRoot = Join-Path $resolvedOutputRoot 'runtime'
+  $toolsRoot = Join-Path $resolvedOutputRoot 'tools'
+  New-Item -ItemType Directory -Path (
+    $resolvedOutputRoot,
+    $screenshotsRoot,
+    $logsRoot,
+    $runtimeRoot,
+    $toolsRoot
+  ) | Out-Null
+
+  $script:manifestPath = Join-Path $resolvedOutputRoot 'manifest.json'
+  $script:workflowManifest = [ordered]@{
+    status = 'running'
+    started_utc = [DateTime]::UtcNow.ToString('o')
+    completed_utc = $null
+    checkout = $null
+    capture_engine = 'PrintWindow (tool window); Windows.Graphics.Capture (normal window)'
+    targeting = 'exact HWND'
+    activation_mode = 'non-activating'
+    foreground_policy = 'preserve active window'
+    z_order_policy = 'background'
+    startup_window_mode = 'hidden until explicitly shown; background activation forbidden'
+    capture_argument = '--codexu-native-capture-background'
+    workspace_screenshot_test_enabled = [bool]$ExerciseWorkspaceScreenshot
+    home_screenshot = $null
+    workspace_screenshot = $null
+    taskbar_policy = 'excluded'
+    alt_tab_policy = 'excluded'
+    real_local_codex_input = 'not-read; empty task-owned Codex root'
+    app_runtime_storage = 'task-local under .local-artifacts'
+    preflight = $null
+    current_stage = $null
+    stage_history = @()
+    build = [ordered]@{
+      command = "cargo +$requiredRustToolchain tauri build --no-bundle"
+      skipped = [bool]$SkipBuild
+      result = 'pending'
+    }
+    fullscreen_run = $null
+    size_runs = @()
+    screenshot_count = 0
+    final_process_cleanup = 'pending'
+    error = $null
+  }
+  Save-WorkflowManifest
+  Start-CaptureStage -Name 'preflight-and-runtime-discovery'
+  $captureOutputReady = $true
+}
+
+$compiler = $null
+$preflight = $null
 try {
+  $compiler = Get-CaptureCompiler -ExplicitWindowsSdkRoot $WindowsSdkRoot
+  $preflight = Get-PreflightManifest `
+    -ResolvedOutputRoot $resolvedOutputRoot `
+    -ResolvedPreflightResultPath $resolvedPreflightResultPath `
+    -Compiler $compiler
+  if ($captureOutputReady) {
+    $script:workflowManifest.preflight = $preflight
+    $script:workflowManifest.checkout = Get-CaptureCheckout -Root $repositoryRoot
+  }
   Assert-PreflightReady -Preflight $preflight
+  if ($captureOutputReady) {
+    Complete-CaptureStage -Name 'preflight-and-runtime-discovery'
+    Save-WorkflowManifest
+  }
 } catch {
+  if ($captureOutputReady) {
+    $script:workflowManifest.preflight_error = $_.Exception.Message
+    Fail-CaptureStage
+    $script:workflowManifest.status = 'failed'
+    $script:workflowManifest.error = $_.Exception.Message
+    $script:workflowManifest.completed_utc = [DateTime]::UtcNow.ToString('o')
+    Save-WorkflowManifest
+  }
   Write-PreflightResult `
     -Path $resolvedPreflightResultPath `
     -RunId $preflightRunId `
@@ -1852,7 +2990,6 @@ try {
     -ErrorMessage $_.Exception.Message
   throw
 }
-
 if ($PreflightOnly) {
   Write-PreflightResult `
     -Path $resolvedPreflightResultPath `
@@ -1867,72 +3004,31 @@ if ($PreflightOnly) {
   return
 }
 
-if (Test-Path -LiteralPath $resolvedOutputRoot) {
-  throw "Refusing to overwrite an existing native visual output directory."
-}
-Test-OutputRootIgnored -ResolvedOutputRoot $resolvedOutputRoot
-
-$screenshotsRoot = Join-Path $resolvedOutputRoot 'screenshots'
-$logsRoot = Join-Path $resolvedOutputRoot 'logs'
-$runtimeRoot = Join-Path $resolvedOutputRoot 'runtime'
-$toolsRoot = Join-Path $resolvedOutputRoot 'tools'
-New-Item -ItemType Directory -Path (
-  $resolvedOutputRoot,
-  $screenshotsRoot,
-  $logsRoot,
-  $runtimeRoot,
-  $toolsRoot
-) | Out-Null
-
-$script:manifestPath = Join-Path $resolvedOutputRoot 'manifest.json'
-$checkout = Get-CaptureCheckout -Root $repositoryRoot
-$script:workflowManifest = [ordered]@{
-  status = 'running'
-  started_utc = (Get-Date).ToUniversalTime().ToString('o')
-  completed_utc = $null
-  checkout = $checkout
-  capture_engine = 'PrintWindow (tool window); Windows.Graphics.Capture (normal window)'
-  targeting = 'exact HWND'
-  activation_mode = 'non-activating'
-  foreground_policy = 'preserve active window'
-  z_order_policy = 'background'
-  startup_window_mode = 'hidden until explicitly shown; background activation forbidden'
-  capture_argument = '--codexu-native-capture-background'
-  taskbar_policy = 'excluded'
-  alt_tab_policy = 'excluded'
-  real_local_codex_input = 'read-only'
-  app_runtime_storage = 'task-local under .local-artifacts'
-  build = [ordered]@{
-    command = $preflight.build_command
-    skipped = [bool]$SkipBuild
-    result = 'pending'
-  }
-  fullscreen_run = $null
-  size_runs = @()
-  screenshot_count = 0
-  final_process_cleanup = 'pending'
-  error = $null
-}
-Save-WorkflowManifest
-
 try {
+  Start-CaptureStage -Name 'refuse-preexisting-target-process'
   $existingBeforeBuild = @(Get-ExactExecutableProcesses -ExecutablePath $appPath)
   if ($existingBeforeBuild.Count -gt 0) {
     throw 'The exact target release executable is already running; refusing to manage it.'
   }
+  Complete-CaptureStage -Name 'refuse-preexisting-target-process'
 
   $captureTool = Join-Path $toolsRoot 'GraphicsCaptureSnapshot.exe'
+  Start-CaptureStage -Name 'compile-capture-helper'
   Build-CaptureHelper `
     -Compiler $compiler `
     -OutputPath $captureTool `
     -LogPath (Join-Path $logsRoot 'capture-helper-build.log')
+  Complete-CaptureStage -Name 'compile-capture-helper'
 
   if ($SkipBuild) {
+    Start-CaptureStage -Name 'verify-existing-release-build'
     if (-not (Test-Path -LiteralPath $appPath -PathType Leaf)) {
       throw 'SkipBuild was requested but the release executable does not exist.'
     }
     $script:workflowManifest.build.result = 'skipped by explicit switch'
+    Complete-CaptureStage -Name 'verify-existing-release-build'
   } else {
+    Start-CaptureStage -Name 'build-release-executable'
     $cargo = Get-Command cargo.exe -ErrorAction SilentlyContinue
     if ($null -eq $cargo) {
       $cargo = Get-Command cargo -ErrorAction Stop
@@ -1948,23 +3044,31 @@ try {
       -WorkingDirectory $windowsRoot `
       -LogPath (Join-Path $logsRoot 'tauri-release-build.log')
     $script:workflowManifest.build.result = 'passed'
+    Complete-CaptureStage -Name 'build-release-executable'
   }
+  Start-CaptureStage -Name 'verify-release-executable'
   if (-not (Test-Path -LiteralPath $appPath -PathType Leaf)) {
     throw 'The Tauri release build did not create the expected executable.'
   }
+  Complete-CaptureStage -Name 'verify-release-executable'
   Save-WorkflowManifest
 
+  Start-CaptureStage -Name 'refuse-preexisting-launch-process'
   $existingBeforeLaunch = @(Get-ExactExecutableProcesses -ExecutablePath $appPath)
   if ($existingBeforeLaunch.Count -gt 0) {
     throw 'The exact target release executable became active before capture; refusing to manage it.'
   }
+  Complete-CaptureStage -Name 'refuse-preexisting-launch-process'
 
+  Start-CaptureStage -Name 'capture-maximized-native-workflow'
   Invoke-MaximizedCapture `
     -CaptureTool $captureTool `
     -ScreenshotsRoot $screenshotsRoot `
     -RuntimeRoot $runtimeRoot `
     -LogsRoot $logsRoot
+  Complete-CaptureStage -Name 'capture-maximized-native-workflow'
 
+  Start-CaptureStage -Name 'validate-capture-artifacts-and-cleanup'
   $pngFiles = @(
     Get-ChildItem -LiteralPath $screenshotsRoot -Filter '*.png' -File -Recurse
   )
@@ -2050,7 +3154,9 @@ try {
 
   $script:workflowManifest.final_process_cleanup = 'confirmed'
   $script:workflowManifest.status = 'complete'
+  Complete-CaptureStage -Name 'validate-capture-artifacts-and-cleanup'
 } catch {
+  Fail-CaptureStage
   $script:workflowManifest.status = 'failed'
   $script:workflowManifest.error = $_.Exception.Message
   throw

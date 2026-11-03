@@ -1,0 +1,2 @@
+import React from 'react';import {createRoot} from 'react-dom/client';import {I18nProvider} from '../../src/i18n/I18nProvider';import {RuntimeSetupPanel} from '../../src/components/RuntimeSetupPanel';
+export function mountRuntimeSetup(element:HTMLElement){const root=createRoot(element);root.render(<I18nProvider><RuntimeSetupPanel onOpenTasks={()=>{(window as any).runtimeCalls.push('tasks');}}/></I18nProvider>);return()=>root.unmount();}

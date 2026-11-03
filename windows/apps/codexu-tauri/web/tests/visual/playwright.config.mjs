@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const webRoot = path.resolve(here, '..', '..');
+const visualViteConfig = path.relative(webRoot, path.join(here, 'visual-preview.config.mjs')).replace(/\\/g, '/');
 // <repo>/windows/apps/codexu-tauri/web/tests/visual -> <repo>
 const repoRoot = path.resolve(here, '..', '..', '..', '..', '..', '..');
 
@@ -44,7 +45,7 @@ export default defineConfig({
   fullyParallel: false,
   workers: 1,
   forbidOnly: true,
-  reporter: [['list']],
+  reporter: [['list'], [path.join(here, 'failure-reporter.mjs')]],
 
   snapshotPathTemplate: `${artifactRoot}/snapshots/{projectName}/{arg}{ext}`,
 
@@ -74,7 +75,9 @@ export default defineConfig({
     locale: 'en-US',
     timezoneId: 'UTC',
     colorScheme: 'dark',
-    trace: 'off',
+    // Actions belong to the synthetic fixtures. Do not capture DOM snapshots,
+    // screenshots, source files or network resource bodies in the trace.
+    trace: { mode: 'retain-on-failure', screenshots: false, snapshots: false, sources: false },
     screenshot: 'off',
     video: 'off',
   },
@@ -82,7 +85,7 @@ export default defineConfig({
   projects: [{ name: 'dashboard-1440x900' }],
 
   webServer: {
-    command: `npm run dev -- --port ${PORT} --strictPort`,
+    command: `npm run build -- --config ${visualViteConfig} && npm run preview -- --config ${visualViteConfig} --host 127.0.0.1 --port ${PORT} --strictPort`,
     cwd: webRoot,
     url: `http://127.0.0.1:${PORT}`,
     reuseExistingServer: false,

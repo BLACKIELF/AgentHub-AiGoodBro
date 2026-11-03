@@ -25,6 +25,7 @@ PLATFORM_BOUNDARIES = {
     "desktop.go": "020f3bdf7f94764fc144b29dde3c946e2eec64de4bc35da00784458743ed1ad2",
     "desktop_bridge.go": "5d183f815b95cc45be1c91887ba6a28c1f5d73400e90daadb08e0ddec5b47019",
     "desktop_gateway.go": "e94b862f1233ab7b449ca9e293c0f15698e27cd0b6cb0ce57ad4baac78a7ac6f",
+    "hot_registration.go": "57246eeb1965e8377be3c4707a7fa7ae1141ec007bfc1f0f34a63cbe27113452",
 }
 
 
@@ -68,6 +69,10 @@ def stage(destination):
                 text = replace_once(text, imp, '')
             text = text.replace('s.root.OpenFile(', 'platformCooldownOpen(s.root, ')
             text = text.replace('|syscall.O_NOFOLLOW', '')
+        if path.name == "hot_registration.go":
+            text = replace_once(text, '\n\t"syscall"', '')
+            text = replace_once(text, 's.root.OpenFile("cooldown.json", os.O_RDONLY|syscall.O_NOFOLLOW, 0)',
+                                'platformCooldownOpen(s.root, "cooldown.json", os.O_RDONLY, 0)')
         if path.name == "desktop_gateway.go":
             text = replace_once(text, '\n\t"os"', '')
             text = replace_once(text, 'fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_NOFOLLOW, 0)',

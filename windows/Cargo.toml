@@ -5,9 +5,9 @@ resolver = "2"
 [workspace.package]
 version = "3.0.0"
 edition = "2021"
-authors = ["Codex Account Manager Next contributors"]
+authors = ["AiGoodBro contributors"]
 license = "MIT"
-repository = "https://github.com/BLACKIELF/codex-account-manager-next"
+repository = "https://github.com/BLACKIELF/AgentHub-AiGoodBro"
 
 [workspace.dependencies]
 serde = { version = "1.0", features = ["derive"] }

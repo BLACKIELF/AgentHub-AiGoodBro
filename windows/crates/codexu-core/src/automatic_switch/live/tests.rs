@@ -18,7 +18,11 @@ fn reducer() -> Reducer {
     Reducer::new(scope(), "e".repeat(32), super::super::now_ms()).unwrap()
 }
 fn row(state: &str) -> Value {
-    json!({"thread":{"id":THREAD,"status":{"type":state}}})
+    if state == "active" {
+        json!({"thread":{"id":THREAD,"status":{"type":state,"activeFlags":[]}}})
+    } else {
+        json!({"thread":{"id":THREAD,"status":{"type":state}}})
+    }
 }
 fn current_turn(status: &str, now: u64) -> Value {
     json!({"data":[{"id":TURN,"status":status,"itemsView":"notLoaded","items":[],"startedAt":(now-1_000)/1_000,"completedAt":if status=="completed" {Some(now/1_000)} else {None}}],"nextCursor":"older-history-is-not-loaded-roster"})
@@ -46,6 +50,25 @@ fn official_live_complete_roster_and_same_turn_metadata_are_memory_only() {
     r.invalidate();
     assert!(!snapshot.is_current());
     assert!(r.snapshot(now).is_err());
+}
+
+#[test]
+fn quota_pause_roster_accepts_only_original_turns_and_requires_fresh_full_idle_proof() {
+    let now = super::super::now_ms();
+    let mut r = reducer();
+    complete(&mut r, 1, "active", "inProgress", now);
+    let original = r.snapshot(now).unwrap();
+    assert!(original.matches_pause_roster(&original, false));
+    assert!(!original.matches_pause_roster(&original, true));
+    complete(&mut r, 2, "idle", "interrupted", now);
+    let stopped = r.snapshot(now).unwrap();
+    assert!(stopped.matches_pause_roster(&original, true));
+    r.notification("turn/started", &json!({"threadId":THREAD,"turn":{"id":NEXT_TURN,"status":"inProgress","startedAt":now/1000}}), now).unwrap();
+    assert!(!r
+        .snapshot(now)
+        .unwrap()
+        .matches_pause_roster(&original, false));
+    assert!(!stopped.matches_pause_roster(&original, true));
 }
 #[test]
 fn official_live_cursor_duplicate_unknown_and_missing_loaded_status_never_prove_idle() {

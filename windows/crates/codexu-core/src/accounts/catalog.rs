@@ -3,7 +3,7 @@
 use super::*;
 
 impl AccountManager {
-    fn catalog_ready(&self) -> AccountResult<()> {
+    pub(super) fn catalog_ready(&self) -> AccountResult<()> {
         self.require_recovered()?;
         self.require_no_login()?;
         self.expire_tickets()?;
@@ -34,23 +34,25 @@ impl AccountManager {
     ) -> AccountResult<AccountOperationDto> {
         let _operation = self.mutation.try_lock().map_err(|_| fail("account_busy"))?;
         self.catalog_ready()?;
-        crate::profiles::validate_label(&label).map_err(|_| fail("invalid_label"))?;
+        let remark = metadata::normalize_remark(&label)?;
         let mut store = self.store()?;
+        let base = store.vault.account(account_id)?.label.clone();
+        let display = remark.as_deref().unwrap_or(&base);
         if store
             .vault
             .accounts
             .iter()
-            .any(|record| record.id != account_id && record.label.eq_ignore_ascii_case(&label))
+            .any(|r| r.id != account_id && r.display_label().eq_ignore_ascii_case(display))
         {
             return Err(fail("duplicate_label"));
         }
         let record = store.vault.account_mut(account_id)?;
-        if record.label != label {
+        if record.remark != remark {
             record.revision = record
                 .revision
                 .checked_add(1)
                 .ok_or_else(|| fail("vault_invalid"))?;
-            record.label = label;
+            record.remark = remark;
             self.require_accepting()?;
             store.save()?;
         }
@@ -106,6 +108,7 @@ impl AccountManager {
             .vault
             .accounts
             .retain(|record| record.id != account_id);
+        store.vault.pending_registrations.remove(account_id);
         store.save()?;
         drop(store);
         if let Ok(mut attempts) = self.attempts.lock() {

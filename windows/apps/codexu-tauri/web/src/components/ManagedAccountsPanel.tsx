@@ -1,10 +1,17 @@
+import {ManagedAccountOrder} from './ManagedAccountOrder';
+import { AccountBrowserSettings } from './AccountBrowserSettings';
+import { AccountActions } from './AccountActions';
+import { AccountDetails } from './AccountDetails';
+import { Info } from 'lucide-react';
+import { LocalAccountAvatar } from './LocalAccountAvatar';
 import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { ArrowRightLeft, Check, Copy, ExternalLink, LayoutGrid, List, LogIn, Plus, RefreshCw, X } from 'lucide-react';
 import { useI18n } from '../i18n/I18nProvider';
-import { isLoginPending, parseAccountOperation, parseLoginAttempt, parseManagedAccount, parseManagedAccounts, parsePreparedSwitch, type LoginAttempt, type ManagedAccount } from '../utils/managedAccounts';
+import { isLoginPending, parseAccountOperation, parseLoginAttempt, parseManagedAccount, parseManagedAccounts, parseManagedRegistration, parsePreparedSwitch, type LoginAttempt, type ManagedAccount } from '../utils/managedAccounts';
 import { readChoice, saveChoice, type AccountCardSize } from '../utils/workspacePreferences';
+import { parseProxyPreferences, proxyAccountRouting, type ProxyPreferenceField, type ProxyPreferences } from '../utils/localProxy';
 import { ManagedAccountMenu } from './ManagedAccountMenu';
 
 type Text = (zh: string, en: string) => string;
@@ -20,6 +27,8 @@ function failureText(code: string, text: Text): string {
     occupancy_unknown: ['任务占用尚未确认，暂不能切换。', 'Task occupancy is unconfirmed. Switching is unavailable.'], account_busy: ['账号正在执行其他操作，请稍后重试。', 'Another account operation is in progress. Try again shortly.'],
     login_in_progress: ['另一个登录仍在进行，请完成或取消。', 'Another login is in progress. Complete or cancel it first.'], switch_in_progress: ['另一个切换仍在确认，请先完成或取消。', 'Another switch awaits confirmation. Complete or cancel it first.'],
     login_required: ['请先登录并完成身份验证。', 'Sign in and verify the account first.'], login_page_unavailable: ['登录页已失效，请重新开始登录。', 'This login page is no longer available. Start a new login.'], login_attempt_not_found: ['登录进度已失效，请重新开始。', 'This login attempt is no longer available. Start again.'],
+    proxy_account_opt_out_required: ['请先在反代设置中关闭此账号的参与，再移除。', 'Turn off this account’s proxy participation before removing it.'],
+    save_failed: ['反代设置未保存，原状态仍保留。', 'Proxy settings were not saved. The previous setting is retained.'],
     identity_mismatch: ['身份与原账号不一致，操作未完成。', 'The identity differs from the original account. The operation did not complete.'], account_changed: ['账号已发生变化，请重新检查后再试。', 'The account changed. Check it again before retrying.'], target_changed: ['当前 Codex 身份或配置已变化，请重新检查。', 'The current Codex identity or settings changed. Check again.'],
     switch_ticket_expired: ['切换确认已过期，请重新检查。', 'The switch confirmation expired. Check again.'], switch_ticket_invalid: ['切换确认已失效，请重新检查。', 'The switch confirmation is no longer valid. Check again.'],
     recovery_required: ['账号状态需要恢复，暂不可操作。', 'The account state needs recovery. Actions are unavailable.'], account_already_exists: ['此身份已保存在其他托管账号中。', 'This identity is already saved in another managed account.'],
@@ -35,8 +44,11 @@ function failureText(code: string, text: Text): string {
 export function ManagedAccountsPanel() {
   const { language } = useI18n();
   const text: Text = (zh, en) => language === 'zh-Hans' ? zh : en;
+  const [detailAccount, setDetailAccount] = useState<ManagedAccount | null>(null);
   const [accounts, setAccounts] = useState<ManagedAccount[] | null>(null);
   const [fresh, setFresh] = useState(false);
+  const [proxyPreferences, setProxyPreferences] = useState<ProxyPreferences | null>(null);
+  const [proxyPreferencesFresh, setProxyPreferencesFresh] = useState(false);
   const [label, setLabel] = useState('');
   const [pending, setPending] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -57,14 +69,18 @@ export function ManagedAccountsPanel() {
 
   async function loadAccounts(): Promise<boolean> {
     const epoch = ++listEpoch.current;
+    const [accountsResult, preferencesResult] = await Promise.allSettled([invoke('list_managed_accounts'), invoke('get_local_proxy_preferences')]);
+    if (!alive.current || epoch !== listEpoch.current) return false;
+    let accountRead = false;
     try {
-      const result = parseManagedAccounts(await invoke('list_managed_accounts'));
-      if (alive.current && epoch === listEpoch.current) { setAccounts(result); setFresh(true); setReadError(false); }
-      return true;
-    } catch {
-      if (alive.current && epoch === listEpoch.current) { setFresh(false); setReadError(true); }
-      return false;
-    }
+      if (accountsResult.status === 'rejected') throw accountsResult.reason;
+      setAccounts(parseManagedAccounts(accountsResult.value)); setFresh(true); setReadError(false); accountRead = true;
+    } catch { setFresh(false); setReadError(true); }
+    try {
+      if (preferencesResult.status === 'rejected') throw preferencesResult.reason;
+      setProxyPreferences(parseProxyPreferences(preferencesResult.value)); setProxyPreferencesFresh(true);
+    } catch { setProxyPreferencesFresh(false); }
+    return accountRead;
   }
   function applyAttempt(next: LoginAttempt) {
     currentAttempt.current = next; setAttempt(next);
@@ -77,7 +93,7 @@ export function ManagedAccountsPanel() {
     let disposed = false, unlisten: (() => void) | undefined;
     async function initialize() {
       try {
-        const release = await listen('managed-accounts:changed', () => { if (!disposed) void loadAccounts(); });
+        const release = await listen('managed-accounts:changed', () => { if (!disposed && !operation.current) void loadAccounts(); });
         if (disposed) { release(); return; }
         unlisten = release;
       } catch { /* Explicit reads and commands remain available. */ }
@@ -151,9 +167,32 @@ export function ManagedAccountsPanel() {
     return run(action, async () => {
       parseAccountOperation(await invoke(action === 'rename' ? 'rename_managed_account' : 'remove_managed_account', { accountId: account.id, ...(action === 'rename' ? { label: alias } : {}) }), account.id, action === 'rename' ? 'renamed' : 'removed');
       if (!alive.current) return;
-      setAccounts(previous => action === 'remove' ? previous?.filter(row => row.id !== account.id) ?? null : previous?.map(row => row.id === account.id ? { ...row, label: alias! } : row) ?? null);
+      if (action === 'remove') setAccounts(previous => previous?.filter(row => row.id !== account.id) ?? null);
       setNotice(action === 'remove' ? text('已移除此应用保存的账号。', 'The saved account was removed.') : text('账号昵称已保存。', 'The account alias was saved.'));
       await loadAccounts();
+    });
+  }
+  async function registerAccount(account: ManagedAccount) {
+    if (!fresh || account.platform !== 'codex' || account.login_state !== 'verified') return false;
+    return run('register', async () => {
+      parseManagedRegistration(await invoke('register_managed_account', { accountId: account.id }), account.id);
+      if (!alive.current) return;
+      setNotice(text('已登记到主页与任务，现有参与设置保持。', 'Registered for Home and Tasks. Existing participation settings are retained.'));
+      await loadAccounts();
+    });
+  }
+  async function setProxyPreference(account: ManagedAccount, field: ProxyPreferenceField, enabled: boolean) {
+    if (operation.current || !fresh || !proxyPreferencesFresh || account.platform !== 'codex') return false;
+    const currentRouting = proxyPreferences ? proxyAccountRouting(proxyPreferences, account.id, account.plan_type) : null;
+    if (account.login_state !== 'verified' && !currentRouting?.enabled) return false;
+    ++listEpoch.current;
+    return run('proxy-preferences', async () => {
+      const saved = parseProxyPreferences(await invoke('set_local_proxy_account_preference', { accountId: account.id, field, enabled }));
+      if (alive.current) {
+        setProxyPreferences(saved); setProxyPreferencesFresh(true);
+        setNotice(text('反代账号设置已保存。', 'Proxy account settings saved.'));
+        await loadAccounts();
+      }
     });
   }
   async function create() {
@@ -194,7 +233,7 @@ export function ManagedAccountsPanel() {
     await run(`authorization-${kind}`, async () => {
       if (kind === 'open') await invoke('open_account_login_page', { attemptId: current.attempt_id });
       else await navigator.clipboard.writeText(kind === 'url' ? current.verification_url! : current.user_code!);
-      if (alive.current && epoch === loginEpoch.current && currentAttempt.current?.phase === 'waiting') setNotice(kind === 'open' ? text('已交给系统浏览器打开官方登录页。', 'The official login page was handed to the system browser.') : kind === 'url' ? text('登录地址已复制。', 'Login URL copied.') : text('配对码已复制。', 'Pairing code copied.'));
+      if (alive.current && epoch === loginEpoch.current && currentAttempt.current?.phase === 'waiting') setNotice(kind === 'open' ? text('已按账号浏览器设置打开官方登录页。', 'The official login page was opened with the account browser setting.') : kind === 'url' ? text('登录地址已复制。', 'Login URL copied.') : text('配对码已复制。', 'Pairing code copied.'));
     });
   }
   async function prepareSwitch(account: ManagedAccount, invoker: HTMLButtonElement) {
@@ -254,10 +293,17 @@ export function ManagedAccountsPanel() {
   const loginLabels = { starting: text('正在准备登录…', 'Preparing login…'), waiting: text('等待在官方页面完成登录。', 'Complete the login on the official page.'), verifying: text('正在验证登录身份…', 'Verifying the login identity…'), cancelling: text('正在取消并等待清理完成…', 'Cancelling and waiting for cleanup…'), verified: text('登录验证已完成。', 'Login verification completed.'), cancelled: text('登录已取消。', 'Login cancelled.'), failed: text('登录未完成。', 'Login did not complete.') };
   const secondsLeft = confirmation ? Math.max(0, Math.ceil((confirmation.expiresAt * 1000 - now) / 1000)) : 0;
   const loginAccount = accounts?.find(account => account.id === attempt?.account_id);
+  const proxyFor = (account: ManagedAccount) => {
+    if (!proxyPreferences || account.platform !== 'codex') return null;
+    const routing = proxyAccountRouting(proxyPreferences, account.id, account.plan_type);
+    return account.login_state === 'verified' || routing.enabled ? routing : null;
+  };
   return <section ref={panel} className="managed-accounts-panel" aria-label={text('托管账号', 'Managed accounts')}>
     <header><div><h2>{text('托管账号', 'Managed accounts')}</h2><p>{text('独立保存登录身份；下方账号目录仍用于查看用量。', 'Keep login identities separately. Account directories below remain available for viewing usage.')}</p></div><button type="button" className="icon-action" disabled={pending !== null} aria-label={text('刷新托管账号', 'Refresh managed accounts')} title={text('刷新托管账号', 'Refresh managed accounts')} onClick={() => void loadAccounts()}><RefreshCw size={15} /></button></header>
+    {accounts && <ManagedAccountOrder accounts={accounts} disabled={blocked || !fresh} onChanged={async () => {await loadAccounts();}}/>}
     <form className="managed-create" onSubmit={event => { event.preventDefault(); if (!blocked && fresh) void create(); }}><label htmlFor="managed-account-label">{text('Codex 账号昵称', 'Codex account alias')}</label><input id="managed-account-label" value={label} maxLength={64} disabled={blocked || !fresh} placeholder={text('简短昵称', 'Short alias')} onChange={event => setLabel(event.target.value)} /><button type="submit" className="glass-button-solid proxy-action" disabled={blocked || !fresh || !label.trim()}><Plus size={14} />{text('新建账号', 'Create account')}</button></form>
     {readError && <p className="proxy-feedback is-error" role="alert">{text('托管账号暂不可读取，请刷新后重试。', 'Managed accounts are unavailable. Refresh and retry.')}</p>}
+    {accounts && !proxyPreferencesFresh && <p className="proxy-note" role="status">{text('反代账号设置暂不可读取；刷新前无法修改。', 'Local proxy preferences are unavailable. Editing is locked until they can be read.')}</p>}
     {error && <p className="proxy-feedback is-error" role="alert">{failureText(error, text)}</p>}{notice && <p className="proxy-feedback" role="status">{notice}</p>}
     {attempt && <section className="managed-login" aria-label={text('登录进度', 'Login progress')} data-login-phase={attempt.phase}><header><h3>{loginAccount?.label ?? text('账号登录', 'Account login')}</h3><span role="status">{pending === 'cancel-login' ? text('正在请求取消…', 'Requesting cancellation…') : loginLabels[attempt.phase]}</span></header>
       {attempt.phase === 'waiting' && !promptRevoked && attempt.verification_url && attempt.user_code && <div className="managed-pairing"><code>{attempt.verification_url}</code><strong>{attempt.user_code}</strong><div className="managed-pairing-actions"><button type="button" className="glass-button-solid proxy-action" disabled={pending !== null} onClick={() => void authorizationAction('open')}><ExternalLink size={13} />{text('打开官方登录页', 'Open official login page')}</button><button type="button" className="glass-button proxy-action" disabled={pending !== null} onClick={() => void authorizationAction('code')}><Copy size={13} />{text('复制配对码', 'Copy pairing code')}</button><button type="button" className="glass-button proxy-action" disabled={pending !== null} onClick={() => void authorizationAction('url')}><Copy size={13} />{text('复制登录地址', 'Copy login URL')}</button></div></div>}
@@ -266,7 +312,8 @@ export function ManagedAccountsPanel() {
     {accounts && accounts.length > 0 && <div className="managed-view-options"><div className="account-layout-switch" role="group" aria-label={text('托管账号布局', 'Managed account layout')}><button type="button" aria-pressed={layout === 'cards'} aria-label={text('托管账号卡片', 'Managed cards')} title={text('卡片', 'Cards')} onClick={() => { setLayout('cards'); saveChoice('aigoodbro.managed.accounts.layout', 'cards'); }}><LayoutGrid size={14} /></button><button type="button" aria-pressed={layout === 'list'} aria-label={text('托管账号列表', 'Managed list')} title={text('列表', 'List')} onClick={() => { setLayout('list'); saveChoice('aigoodbro.managed.accounts.layout', 'list'); }}><List size={14} /></button></div><label className="profile-size-picker">{text('托管卡片大小', 'Managed card size')}<select value={size} onChange={event => { const value = event.target.value as AccountCardSize; setSize(value); saveChoice('aigoodbro.managed.accounts.size', value); }}><option value="small">{text('小', 'Small')}</option><option value="medium">{text('中', 'Medium')}</option><option value="large">{text('大', 'Large')}</option></select></label></div>}
     {accounts === null && !readError && <p className="proxy-note" role="status">{text('正在读取托管账号…', 'Reading managed accounts…')}</p>}
     {accounts?.length === 0 && <p className="proxy-note">{text('暂无托管账号。创建后可在官方页面登录。', 'No managed accounts yet. Create one to sign in on the official page.')}</p>}
-    <div className={`managed-account-grid is-${layout} is-size-${size}`}>{accounts?.map((account, index) => <article className="managed-account-card" key={account.id} data-testid={`managed-account-${account.id}`}><header><span className="account-directory-number">{String(index + 1).padStart(2, '0')}</span><h3 title={account.label}>{account.label}</h3>{fresh && account.active_state === 'verified' && <span className="managed-active"><Check size={11} />{text('当前身份已核实', 'Current identity verified')}</span>}<ManagedAccountMenu label={account.label} disabled={blocked || !fresh} error={error ? failureText(error, text) : null} onRename={alias => editAccount(account, 'rename', alias)} onRemove={() => editAccount(account, 'remove')} /></header><div className="managed-account-identity"><span>{account.platform === 'codex' ? 'Codex' : account.platform}</span><p>{account.masked_identity ?? text('尚无已验证身份', 'No verified identity yet')}</p>{account.plan_type && <span title={text('上次验证的套餐，不代表当前可用额度。', 'Last verified plan; this does not confirm current quota.')}>{account.plan_type}</span>}</div><p className="managed-account-state">{account.login_state === 'verified' ? text('已登录', 'Signed in') : account.login_state === 'signing_in' ? text('登录中', 'Signing in') : account.login_state === 'needs_reauth' ? text('需要重新登录', 'Sign in again') : text('未登录', 'Signed out')}{(!fresh || account.active_state !== 'verified') && <span> · {account.active_state === 'stale' && fresh ? text('当前身份已变化', 'Current identity changed') : text('当前使用状态未确认', 'Current use unconfirmed')}</span>}</p>{account.recovery_required && <p className="proxy-note">{failureText('recovery_required', text)}</p>}<div className="managed-account-actions"><button type="button" className="glass-button proxy-action" disabled={blocked || !fresh || !account.can_login || account.platform !== 'codex'} onClick={() => void beginLogin(account)}><LogIn size={13} />{text('登录', 'Sign in')}</button><button type="button" className="glass-button proxy-action" disabled={blocked || !fresh || !account.can_switch || account.platform !== 'codex'} title={account.switch_block_reason ? failureText(account.switch_block_reason, text) : undefined} onClick={event => void prepareSwitch(account, event.currentTarget)}><ArrowRightLeft size={13} />{text('切换当前 Codex', 'Switch current Codex')}</button></div>{!account.can_switch && account.switch_block_reason && <p className="proxy-note">{failureText(account.switch_block_reason, text)}</p>}</article>)}</div>
+    <div className={`managed-account-grid is-${layout} is-size-${size}`}>{accounts?.map((account, index) => <article className="managed-account-card" key={account.id} data-testid={`managed-account-${account.id}`}><header><LocalAccountAvatar id={account.id} provider={account.platform} label={account.label}/><span className="account-directory-number">{String(index + 1).padStart(2, '0')}</span><h3 title={account.label}>{account.label}</h3>{fresh && account.active_state === 'verified' && <span className="managed-active"><Check size={11} />{text('当前身份已核实', 'Current identity verified')}</span>}<ManagedAccountMenu showRename proxy={proxyFor(account)} proxyDisabled={!proxyPreferencesFresh} onProxyChange={(field, enabled) => { void setProxyPreference(account, field, enabled); }} onRegister={account.platform === 'codex' && account.login_state === 'verified' ? () => registerAccount(account) : undefined} registrationPending={account.registration_pending} label={account.label} disabled={blocked || !fresh} error={error ? failureText(error, text) : null} onRename={alias => editAccount(account, 'rename', alias)} onRemove={() => editAccount(account, 'remove')} /></header><div className="managed-account-identity"><span>{account.platform === 'codex' ? 'Codex' : account.platform}</span><p>{account.masked_identity ?? text('尚无已验证身份', 'No verified identity yet')}</p>{account.plan_type && <span title={text('上次验证的套餐，不代表当前可用额度。', 'Last verified plan; this does not confirm current quota.')}>{account.plan_type}</span>}</div><p className="managed-account-state">{account.login_state === 'verified' ? text('已登录', 'Signed in') : account.login_state === 'signing_in' ? text('登录中', 'Signing in') : account.login_state === 'needs_reauth' ? text('需要重新登录', 'Sign in again') : text('未登录', 'Signed out')}{(!fresh || account.active_state !== 'verified') && <span> · {account.active_state === 'stale' && fresh ? text('当前身份已变化', 'Current identity changed') : text('当前使用状态未确认', 'Current use unconfirmed')}</span>}</p>{account.registration_pending && <p className="proxy-note">{text('主页与任务登记待完成，可在更多操作中重试。', 'Home and Tasks registration is pending. Retry from More actions.')}</p>}{account.recovery_required && <p className="proxy-note">{failureText('recovery_required', text)}</p>}<div className="managed-account-actions">{account.platform === 'codex' && <AccountBrowserSettings profileId={account.id} profileLabel={account.label} />}<button type="button" className="icon-action" aria-label={text('账号详情', 'Account details')} title={text('账号详情', 'Account details')} onClick={() => setDetailAccount(account)}><Info size={14} /></button><button type="button" className="glass-button proxy-action" disabled={blocked || !fresh || !account.can_login || account.platform !== 'codex'} onClick={() => void beginLogin(account)}><LogIn size={13} />{text('登录', 'Sign in')}</button><button type="button" className="glass-button proxy-action" disabled={blocked || !fresh || !account.can_switch || account.platform !== 'codex'} title={account.switch_block_reason ? failureText(account.switch_block_reason, text) : undefined} onClick={event => void prepareSwitch(account, event.currentTarget)}><ArrowRightLeft size={13} />{text('切换当前 Codex', 'Switch current Codex')}</button></div>{account.platform === 'codex' && account.login_state === 'verified' && <AccountActions profileId={account.id} profileLabel={account.label} onChanged={() => void loadAccounts()} />}{!account.can_switch && account.switch_block_reason && <p className="proxy-note">{failureText(account.switch_block_reason, text)}</p>}</article>)}</div>
+    {detailAccount && <AccountDetails profileId={detailAccount.id} profileLabel={detailAccount.label} current={fresh} details={{ account: { account_type: 'chatgpt', plan_type: detailAccount.plan_type, email_present: detailAccount.masked_identity !== null }, credits: { usd: null, points: null, reset_cards: null }, checked_at: Date.now() }} onClose={() => setDetailAccount(null)} />}
     {confirmation && <dialog ref={dialog} className="managed-switch-dialog" aria-label={text('确认账号切换', 'Confirm account switch')} onCancel={event => { event.preventDefault(); if (!operation.current) void cancelSwitch(); }}><h2>{text('切换到 ', 'Switch to ')}{confirmation.label}</h2>{confirmation.identity && <p>{confirmation.identity}</p>}<p>{text('确认后将更新当前 Codex 登录身份。', 'Confirming updates the current Codex login identity.')}</p>{confirmation.mode === 'ready' ? <p className="managed-confirm-countdown" role="status">{text(`请在 ${secondsLeft} 秒内确认。`, `Confirm within ${secondsLeft} seconds.`)}</p> : <p className="proxy-feedback is-error" role="alert">{confirmation.mode === 'expired' ? failureText('switch_ticket_expired', text) : confirmation.mode === 'cancel_unconfirmed' ? text('取消尚未确认，请重试或等待确认到期。', 'Cancellation is unconfirmed. Retry or wait for expiry.') : failureText(confirmation.errorCode ?? 'operation_failed', text)}</p>}<div><button type="button" className="glass-button proxy-action" disabled={pending !== null} onClick={() => void cancelSwitch()}>{ticket.current ? text('取消切换', 'Cancel switch') : text('关闭', 'Close')}</button>{confirmation.mode === 'ready' && <button type="button" className="glass-button-solid proxy-action" disabled={pending !== null || secondsLeft <= 0} onClick={() => void commitSwitch()}>{pending === 'commit-switch' ? text('正在切换…', 'Switching…') : text('确认切换', 'Confirm switch')}</button>}</div></dialog>}
   </section>;
 }

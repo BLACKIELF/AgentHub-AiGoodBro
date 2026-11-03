@@ -48,6 +48,30 @@ fn hash(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
+/// The bundled Node executable, authenticated by the compiled resource pin.
+/// Keep this value alive for the entire child Job lifetime so its resources
+/// cannot be replaced between verification and use. No statistics scan starts.
+pub struct VerifiedNodeRuntime {
+    path: PathBuf,
+    _resources: process::HeldResources,
+}
+impl VerifiedNodeRuntime {
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+pub fn verify_node_runtime(resources: &Path) -> Result<VerifiedNodeRuntime> {
+    let held = process::verify_resources(resources)?;
+    let path = resources
+        .join("runtime/node.exe")
+        .canonicalize()
+        .map_err(|_| Failure("statistics_resources_invalid"))?;
+    Ok(VerifiedNodeRuntime {
+        path,
+        _resources: held,
+    })
+}
+
 /// Constructed only by the native host from approved source roots. Never an IPC
 /// argument; the WebView may choose only IDs from this registered catalogue.
 #[derive(Clone, PartialEq, Eq)]
@@ -159,6 +183,7 @@ impl Drop for PublishState<'_> {
 pub struct TokenMonitorService {
     resources: PathBuf,
     data: PathBuf,
+    owned_domains: Option<Arc<crate::automatic_switch::live::OwnedProcessDomains>>,
     timezone: Mutex<String>,
     sources: Mutex<Vec<TokenMonitorSource>>,
     enabled: Mutex<BTreeSet<String>>,
@@ -178,14 +203,23 @@ impl TokenMonitorService {
         sources: Vec<TokenMonitorSource>,
         timezone: String,
     ) -> Result<Arc<Self>> {
+        Self::native_with_owned_domains(resources, data, sources, timezone, None)
+    }
+    pub fn native_with_owned_domains(
+        resources: PathBuf,
+        data: PathBuf,
+        sources: Vec<TokenMonitorSource>,
+        timezone: String,
+        owned_domains: Option<Arc<crate::automatic_switch::live::OwnedProcessDomains>>,
+    ) -> Result<Arc<Self>> {
         #[cfg(not(windows))]
         {
-            let _ = (resources, data, sources, timezone);
+            let _ = (resources, data, sources, timezone, owned_domains);
             fail("windows_required")
         }
         #[cfg(windows)]
         {
-            Self::create(resources, data, sources, timezone)
+            Self::create(resources, data, sources, timezone, owned_domains)
         }
     }
     fn create(
@@ -193,6 +227,7 @@ impl TokenMonitorService {
         data: PathBuf,
         sources: Vec<TokenMonitorSource>,
         timezone: String,
+        owned_domains: Option<Arc<crate::automatic_switch::live::OwnedProcessDomains>>,
     ) -> Result<Arc<Self>> {
         if !resources.is_absolute()
             || !data.is_absolute()
@@ -223,6 +258,7 @@ impl TokenMonitorService {
         Ok(Arc::new(Self {
             resources,
             data,
+            owned_domains,
             timezone: Mutex::new(timezone),
             sources: Mutex::new(sources),
             enabled: Mutex::new(enabled),
@@ -407,7 +443,11 @@ impl TokenMonitorService {
             &serde_json::to_vec(&request).map_err(|_| Failure("invalid_statistics_settings"))?,
         );
         let epoch = self.epoch.fetch_add(1, Ordering::AcqRel) + 1;
-        let mut child = process::OwnedRuntime::spawn(&self.resources, &self.data)?;
+        let mut child = process::OwnedRuntime::spawn_with_domains(
+            &self.resources,
+            &self.data,
+            self.owned_domains.clone(),
+        )?;
         {
             let mut cancellation = self
                 .cancel_handle
@@ -1100,9 +1140,16 @@ fn validate_snapshot(value: &Value, sources: &[TokenMonitorSource]) -> Result<()
         .ok_or(Failure("statistics_invalid_response"))?;
     if payload
         .keys()
-        .any(|k| !["aggregate", "history", "costEstimates"].contains(&k.as_str()))
+        .any(|k| !["aggregate", "history", "costEstimates", "usage"].contains(&k.as_str()))
     {
         return fail("statistics_invalid_response");
+    }
+    let usage = &value["payload"]["usage"];
+    if !usage.is_null() {
+        only(usage, &["historyAvailable"])?;
+        if !usage["historyAvailable"].is_null() && !usage["historyAvailable"].is_boolean() {
+            return fail("statistics_invalid_response");
+        }
     }
     only(&value["engine"], &["repository", "commit", "version"])?;
     only(

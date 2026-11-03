@@ -39,6 +39,7 @@ fn verified(bytes: Vec<u8>) -> AccountResult<VerifiedCredential> {
 struct Runtime {
     verifications: AtomicUsize,
     change_during_validation: AtomicBool,
+    rotate_next_verify: AtomicBool,
 }
 impl AccountRuntime for Runtime {
     fn available(&self) -> bool {
@@ -54,11 +55,17 @@ impl AccountRuntime for Runtime {
     }
     fn verify(&self, home: &Path, expected: &AccountIdentity) -> AccountResult<VerifiedCredential> {
         self.verifications.fetch_add(1, Ordering::AcqRel);
-        let bytes = storage::read_optional(
+        let mut bytes = storage::read_optional(
             &home.join("auth.json"),
             crate::accounts::identity::MAX_AUTH_BYTES,
         )?
         .ok_or_else(|| fail("credentials_missing"))?;
+        if self.rotate_next_verify.swap(false, Ordering::AcqRel) {
+            let mut rotated: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            rotated["tokens"]["refresh_token"] = json!("synthetic-verified-successor");
+            bytes = serde_json::to_vec(&rotated).unwrap();
+            storage::atomic_write(&home.join("auth.json"), &bytes)?;
+        }
         let v = verified(bytes)?;
         if &v.identity != expected {
             return Err(fail("identity_mismatch"));
@@ -141,6 +148,7 @@ impl Fixture {
         let runtime = Arc::new(Runtime {
             verifications: AtomicUsize::new(0),
             change_during_validation: AtomicBool::new(false),
+            rotate_next_verify: AtomicBool::new(false),
         });
         let manager = AccountManager::with_components(
             AccountPaths::isolated(root.join("synthetic-vault"), home).unwrap(),
@@ -157,8 +165,11 @@ impl Fixture {
                 store.vault.accounts.push(AccountRecord {
                     id: id.clone(),
                     label: name.into(),
+                    remark: None,
                     platform: "codex".into(),
                     revision: 1,
+                    created_at_ms: None,
+                    browser: Default::default(),
                     credential: Some(
                         verified(auth(name))
                             .unwrap()
@@ -423,6 +434,14 @@ fn active_system_scope_same_identity_token_rotation_never_adopts_old_system_or_v
 fn managed_catalog_rename_current_preserves_identity_scope_and_same_name_is_a_noop() {
     let f = Fixture::new();
     let scope = f.switched();
+    let baseline = f
+        .manager
+        .list_managed_accounts()
+        .unwrap()
+        .into_iter()
+        .find(|r| r.id == f.target)
+        .unwrap()
+        .label;
     let before = TargetSnapshot::read(&f.manager.paths.system_home).unwrap();
     let result = f
         .manager
@@ -447,14 +466,19 @@ fn managed_catalog_rename_current_preserves_identity_scope_and_same_name_is_a_no
             .code,
         "duplicate_label"
     );
-    assert_eq!(
-        f.manager
-            .rename_managed_account(&f.source, "".into())
-            .err()
-            .unwrap()
-            .code,
-        "invalid_label"
-    );
+    f.manager
+        .rename_managed_account(&f.target, "".into())
+        .unwrap();
+    let restored = f
+        .manager
+        .list_managed_accounts()
+        .unwrap()
+        .into_iter()
+        .find(|r| r.id == f.target)
+        .unwrap();
+    assert_eq!(restored.label, baseline);
+    f.manager.recheck_active_system_scope(&scope).unwrap();
+    assert!(TargetSnapshot::read(&f.manager.paths.system_home).unwrap() == before);
 }
 
 #[test]
@@ -579,8 +603,8 @@ impl crate::accounts::SwitchCommitGuard for AutomaticGuard {
     }
 }
 fn actual_gate(f: &Fixture, name: &str) -> Arc<crate::managed_proxy::ManagedProxyGate> {
-    let gate =
-        crate::managed_proxy::ManagedProxyGate::new(f._temp.path().join(name), &f.manager).unwrap();
+    let root = f._temp.path().canonicalize().unwrap();
+    let gate = crate::managed_proxy::ManagedProxyGate::new(root.join(name), &f.manager).unwrap();
     f.manager.install_occupancy_gate(gate.clone()).unwrap();
     gate
 }
@@ -626,6 +650,173 @@ fn automatic_account_lease_spans_real_prepare_commit_and_retains_source_target_s
     assert!(gate.reserve_terminal(source.identity_hash()).is_err());
     drop(lease);
     assert!(gate.reserve_terminal(source.identity_hash()).is_ok());
+}
+
+#[test]
+fn quota_resume_binds_verified_rotation_only_with_the_exact_held_switch_scope() {
+    use crate::automatic_switch::{
+        quota_resume::{
+            AccountIdentity as ResumeIdentity, ExactTurnTerminalSnapshot, QuotaResumeJournal,
+            ResumeScope, TerminalTurnStatus, TurnRef,
+        },
+        Failure,
+    };
+
+    let f = Fixture::new();
+    let source = f.switched();
+    let gate = actual_gate(&f, "synthetic-auto-resume-registry");
+    let lease = gate
+        .reserve_automatic_maintenance(&source, &f.source)
+        .unwrap();
+    let guard = AutomaticGuard(lease.clone());
+    let original_target = {
+        let store = f.manager.store().unwrap();
+        let credential = store
+            .vault
+            .account(&f.source)
+            .unwrap()
+            .credential
+            .as_ref()
+            .unwrap();
+        ResumeIdentity::new(
+            &f.source,
+            lease.target_identity_hash(),
+            &credential.generation,
+        )
+        .unwrap()
+    };
+    let original_source = ResumeIdentity::new(
+        source.profile_id(),
+        source.identity_hash(),
+        source.credential_generation(),
+    )
+    .unwrap();
+    let home_hash = "1".repeat(64);
+    let scope =
+        ResumeScope::new(original_source.clone(), original_target.clone(), &home_hash).unwrap();
+    let journal_root = f
+        ._temp
+        .path()
+        .canonicalize()
+        .unwrap()
+        .join("synthetic-resume-journal");
+    storage::create_private_directory(&journal_root).unwrap();
+    let journal_path = journal_root
+        .canonicalize()
+        .unwrap()
+        .join("synthetic-resume.json");
+    let journal = QuotaResumeJournal::new(journal_path.clone()).unwrap();
+    let turn = TurnRef::new("original-thread", "original-turn").unwrap();
+    let token = journal
+        .stage_batch(scope.clone(), vec![turn.clone()])
+        .unwrap();
+    journal.claim_interrupt(&token, &turn).unwrap();
+    journal
+        .record_interrupted(
+            &token,
+            &ExactTurnTerminalSnapshot::new(turn.clone(), TerminalTurnStatus::Interrupted).unwrap(),
+        )
+        .unwrap();
+
+    let prepared = f
+        .manager
+        .prepare_account_switch_in_operation(&f.source, &lease, &guard)
+        .unwrap();
+    assert_eq!(prepared.phase, "ready");
+    f.runtime.rotate_next_verify.store(true, Ordering::Release);
+    assert_eq!(
+        f.manager
+            .commit_account_switch_guarded(prepared.ticket.as_ref().unwrap(), &guard)
+            .unwrap()
+            .phase,
+        "committed"
+    );
+    let target = f.manager.verified_active_system_scope().unwrap();
+    let rotated_target = ResumeIdentity::new(
+        target.profile_id(),
+        target.identity_hash(),
+        target.credential_generation(),
+    )
+    .unwrap();
+    assert_ne!(original_target, rotated_target);
+    // Ordinary readiness never accepts a changed generation. The special
+    // commit path still rejects a wrong Home before binding the verified one.
+    let before = std::fs::read(&journal_path).unwrap();
+    assert_eq!(
+        journal.mark_resume_ready(&token, &rotated_target, &home_hash),
+        Err(Failure::IdentityChanged)
+    );
+    assert_eq!(
+        journal.mark_resume_ready_after_guarded_switch(&token, &target, &lease, &"2".repeat(64)),
+        Err(Failure::IdentityChanged)
+    );
+    assert_eq!(std::fs::read(&journal_path).unwrap(), before);
+    journal
+        .mark_resume_ready_after_guarded_switch(&token, &target, &lease, &home_hash)
+        .unwrap();
+    let reopened = QuotaResumeJournal::new(journal_path).unwrap();
+    let batch = reopened.current_batch().unwrap().unwrap();
+    assert!(batch.ready());
+    assert_eq!(batch.scope().source(), &original_source);
+    assert_eq!(batch.scope().target(), &rotated_target);
+    reopened.claim_resume(&token, &turn).unwrap();
+    assert_eq!(
+        reopened.claim_resume(&token, &turn),
+        Err(Failure::RecoveryRequired)
+    );
+
+    for (name, staged_source, staged_target) in [
+        (
+            "source-generation",
+            ResumeIdentity::new(source.profile_id(), source.identity_hash(), "e".repeat(32))
+                .unwrap(),
+            original_target.clone(),
+        ),
+        (
+            "target-profile",
+            original_source.clone(),
+            ResumeIdentity::new(
+                "a".repeat(32),
+                target.identity_hash(),
+                target.credential_generation(),
+            )
+            .unwrap(),
+        ),
+        (
+            "target-identity",
+            original_source.clone(),
+            ResumeIdentity::new(
+                target.profile_id(),
+                "b".repeat(64),
+                target.credential_generation(),
+            )
+            .unwrap(),
+        ),
+    ] {
+        let path = journal_root.join(format!("wrong-{name}.json"));
+        let denied = QuotaResumeJournal::new(path.clone()).unwrap();
+        let token = denied
+            .stage_batch(
+                ResumeScope::new(staged_source, staged_target, &home_hash).unwrap(),
+                vec![turn.clone()],
+            )
+            .unwrap();
+        denied.claim_interrupt(&token, &turn).unwrap();
+        denied
+            .record_interrupted(
+                &token,
+                &ExactTurnTerminalSnapshot::new(turn.clone(), TerminalTurnStatus::Interrupted)
+                    .unwrap(),
+            )
+            .unwrap();
+        let before = std::fs::read(path.clone()).unwrap();
+        assert_eq!(
+            denied.mark_resume_ready_after_guarded_switch(&token, &target, &lease, &home_hash),
+            Err(Failure::IdentityChanged)
+        );
+        assert_eq!(std::fs::read(path).unwrap(), before);
+        assert!(!denied.current_batch().unwrap().unwrap().ready());
+    }
 }
 
 #[test]

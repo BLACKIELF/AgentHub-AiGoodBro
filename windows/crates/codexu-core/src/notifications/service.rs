@@ -12,10 +12,14 @@ use std::{
     collections::{BTreeMap, VecDeque},
     path::PathBuf,
     sync::{
-        atomic::{AtomicBool, AtomicU8, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicU8, AtomicUsize, Ordering},
         Arc, Mutex,
     },
 };
+
+#[path = "manual_text.rs"]
+mod manual_text;
+pub use manual_text::PersonalTextReceipt;
 
 pub struct NotificationService {
     pub(crate) storage: Storage,
@@ -23,10 +27,17 @@ pub struct NotificationService {
     pub(crate) state: Mutex<RuntimeState>,
     pub(crate) exiting: AtomicBool,
     pub(crate) public_runtime: super::public_reset::Runtime,
-    monitor_active: Arc<AtomicBool>,
+    pub(crate) monitor_active: Arc<AtomicBool>,
+    personal_runtime: Mutex<Option<Arc<tokio::runtime::Runtime>>>,
     pending: Mutex<Pending>,
     pub(crate) wake: Arc<(Mutex<()>, std::sync::Condvar)>,
     queue_failure: AtomicU8,
+    pub(crate) personal_text_active: AtomicBool,
+    pub(crate) personal_conversation_owner:
+        Mutex<Option<Arc<dyn super::PersonalConversationOwner>>>,
+    pub(crate) personal_conversation_generation: AtomicU64,
+    pub(crate) personal_conversation_tasks: AtomicUsize,
+    pub(crate) personal_conversation_active: AtomicBool,
 }
 #[derive(Default)]
 struct Pending {
@@ -42,6 +53,34 @@ enum Queued {
 mod tests {
     use super::*;
     struct SyntheticProtector;
+    struct SystemTransport {
+        allowed: AtomicBool,
+        uncertain: bool,
+        calls: std::sync::atomic::AtomicUsize,
+    }
+    impl NotificationTransport for SystemTransport {
+        fn system_permission(&self) -> super::super::SystemNotificationPermission {
+            if self.allowed.load(Ordering::Acquire) {
+                super::super::SystemNotificationPermission::Enabled
+            } else {
+                super::super::SystemNotificationPermission::DisabledUser
+            }
+        }
+        fn send_system(&self, _: &str, _: &str, cancelled: &AtomicBool) -> Result<()> {
+            if cancelled.load(Ordering::Acquire) {
+                return fail("cancelled");
+            }
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            if self.uncertain {
+                fail("system_notification_submission_failed")
+            } else {
+                Ok(())
+            }
+        }
+        fn send(&self, _: &TransportRequest, _: &AtomicBool) -> Result<TransportResponse> {
+            panic!("a local system notification must never reach HTTP")
+        }
+    }
     impl SecretProtector for SyntheticProtector {
         fn seal(&self, _: &str, b: &[u8]) -> crate::accounts::AccountResult<Vec<u8>> {
             Ok(b.iter().map(|v| v ^ 0x73).collect())
@@ -49,6 +88,90 @@ mod tests {
         fn unseal(&self, _: &str, b: &[u8]) -> crate::accounts::AccountResult<Vec<u8>> {
             Ok(b.iter().map(|v| v ^ 0x73).collect())
         }
+    }
+    #[test]
+    fn system_notifications_require_opt_in_and_actual_permission_and_share_deduplication() {
+        let dir = tempfile::tempdir().unwrap();
+        let transport = Arc::new(SystemTransport {
+            allowed: AtomicBool::new(false),
+            uncertain: false,
+            calls: Default::default(),
+        });
+        let service = NotificationService::with_components(
+            dir.path().canonicalize().unwrap().join("notifications"),
+            Arc::new(SyntheticProtector),
+            transport.clone(),
+        )
+        .unwrap();
+        assert!(!service.channel_state(ChannelKind::System).unwrap().enabled);
+        assert!(service.send_test(ChannelKind::System).is_err());
+        service.set_enabled(ChannelKind::System, true).unwrap();
+        assert!(service.send_test(ChannelKind::System).is_err());
+        assert_eq!(transport.calls.load(Ordering::SeqCst), 0);
+        transport.allowed.store(true, Ordering::Release);
+        let event = NotificationEvent::new(
+            "synthetic-system-test",
+            None,
+            EventBody::Test,
+            super::super::now(),
+        )
+        .unwrap();
+        assert_eq!(
+            service
+                .send_event_to(ChannelKind::System, &event)
+                .unwrap()
+                .state,
+            "accepted"
+        );
+        assert_eq!(
+            service
+                .send_event_to(ChannelKind::System, &event)
+                .unwrap()
+                .state,
+            "duplicate_skipped"
+        );
+        assert_eq!(transport.calls.load(Ordering::SeqCst), 1);
+        assert!(service
+            .save_channel(ChannelKind::System, "invalid".into(), None)
+            .is_err());
+    }
+    #[test]
+    fn uncertain_system_submission_never_retries_the_same_event() {
+        let dir = tempfile::tempdir().unwrap();
+        let transport = Arc::new(SystemTransport {
+            allowed: AtomicBool::new(true),
+            uncertain: true,
+            calls: Default::default(),
+        });
+        let service = NotificationService::with_components(
+            dir.path().canonicalize().unwrap().join("notifications"),
+            Arc::new(SyntheticProtector),
+            transport.clone(),
+        )
+        .unwrap();
+        service.set_enabled(ChannelKind::System, true).unwrap();
+        let event = NotificationEvent::new(
+            "synthetic-system-uncertain",
+            None,
+            EventBody::Test,
+            super::super::now(),
+        )
+        .unwrap();
+        assert_eq!(
+            service
+                .send_event_to(ChannelKind::System, &event)
+                .unwrap()
+                .state,
+            "uncertain"
+        );
+        assert_eq!(
+            service
+                .send_event_to(ChannelKind::System, &event)
+                .unwrap()
+                .state,
+            "duplicate_skipped"
+        );
+        assert_eq!(transport.calls.load(Ordering::SeqCst), 1);
     }
     #[test]
     fn operation_drop_during_state_lock_cannot_leak_inflight_or_capacity() {
@@ -101,7 +224,7 @@ mod tests {
 }
 #[derive(Default)]
 pub(crate) struct RuntimeState {
-    operations: BTreeMap<ChannelKind, Vec<(Arc<AtomicBool>, Arc<AtomicBool>)>>,
+    pub(crate) operations: BTreeMap<ChannelKind, Vec<(Arc<AtomicBool>, Arc<AtomicBool>)>>,
     verified: BTreeMap<ChannelKind, (u64, i64)>,
     pub login: Option<LoginAttempt>,
     failure: Option<&'static str>,
@@ -188,6 +311,30 @@ impl NotificationService {
         {
             return fail("notification_monitor_active");
         }
+        let runtime = match self.personal_runtime.lock() {
+            Ok(mut current) => match current.as_ref() {
+                Some(runtime) => runtime.clone(),
+                None => {
+                    let runtime = match tokio::runtime::Builder::new_multi_thread()
+                        .worker_threads(1)
+                        .enable_all()
+                        .build()
+                    {
+                        Ok(runtime) => Arc::new(runtime),
+                        Err(_) => {
+                            self.monitor_active.store(false, Ordering::Release);
+                            return fail("notification_monitor_unavailable");
+                        }
+                    };
+                    *current = Some(runtime.clone());
+                    runtime
+                }
+            },
+            Err(_) => {
+                self.monitor_active.store(false, Ordering::Release);
+                return fail("notification_busy");
+            }
+        };
         let stop = Arc::new(AtomicBool::new(false));
         let active = Arc::new(Mutex::new(None));
         let wake = self.wake.clone();
@@ -211,6 +358,11 @@ impl NotificationService {
                             .map(Queued::Event)
                             .or_else(|| q.quotas.pop_first().map(|(_, o)| Queued::Quota(o)))
                     });
+                    match service.drain_manual_resets_controlled(Some((&cancelled, &poll))) {
+                        Ok(receipts) if !receipts.is_empty() => changed(),
+                        Err(e) => service.record_failure(e.0),
+                        _ => (),
+                    }
                     if let Some(queued) = queued {
                         let events = match queued {
                             Queued::Event(e) => Ok(vec![e]),
@@ -267,8 +419,9 @@ impl NotificationService {
                             }))
                     });
                     let delay = if matches!(bound, Ok(true)) {
-                        let result =
-                            service.refresh_personal_wechat_context_owned(&cancelled, &poll);
+                        let result = runtime.block_on(
+                            service.poll_personal_conversation_updates_owned(&cancelled, &poll),
+                        );
                         changed();
                         if let Ok(mut current) = poll.lock() {
                             *current = None;
@@ -334,9 +487,15 @@ impl NotificationService {
             exiting: AtomicBool::new(false),
             public_runtime: Default::default(),
             monitor_active: Arc::new(AtomicBool::new(false)),
+            personal_runtime: Mutex::new(None),
             pending: Mutex::new(Pending::default()),
             wake: Arc::new((Mutex::new(()), std::sync::Condvar::new())),
             queue_failure: AtomicU8::new(0),
+            personal_text_active: AtomicBool::new(false),
+            personal_conversation_owner: Mutex::new(None),
+            personal_conversation_generation: AtomicU64::new(0),
+            personal_conversation_tasks: AtomicUsize::new(0),
+            personal_conversation_active: AtomicBool::new(false),
         }))
     }
     pub fn states(&self) -> Result<Vec<ChannelState>> {
@@ -344,6 +503,9 @@ impl NotificationService {
             .into_iter()
             .map(|k| self.channel_state(k))
             .collect()
+    }
+    pub fn system_permission(&self) -> super::SystemNotificationPermission {
+        self.transport.system_permission()
     }
     pub fn with_components_and_public_source(
         root: PathBuf,
@@ -382,7 +544,7 @@ impl NotificationService {
                 "disabled"
             } else if c.session_expired {
                 "session_expired"
-            } else if c.secret.is_none() {
+            } else if c.secret.is_none() && kind != ChannelKind::System {
                 "needs_setup"
             } else if kind == ChannelKind::PersonalWeChat
                 && c.binding.as_ref().is_none_or(|b| b.context_token.is_none())
@@ -434,6 +596,9 @@ impl NotificationService {
         secret: String,
         target: Option<String>,
     ) -> Result<ChannelState> {
+        if kind == ChannelKind::System {
+            return fail("system_notification_has_no_credentials");
+        }
         if kind == ChannelKind::PersonalWeChat {
             return fail("wechat_qr_login_required");
         }
@@ -457,6 +622,10 @@ impl NotificationService {
                 .state
                 .lock()
                 .map_err(|_| Failure("notification_busy"))?;
+            // Fence automatic replies before the shared WeChat revision is
+            // persisted. The state lock is already held, so the epoch bump is
+            // the synchronous cancellation signal for owner tasks.
+            self.revoke_personal_conversation_work();
             self.storage.change(|v| {
                 for shared in [ChannelKind::WeCom, ChannelKind::PersonalWeChat] {
                     let c = v.configs.entry(shared).or_default();
@@ -513,6 +682,9 @@ impl NotificationService {
                 .get_mut(&kind)
                 .filter(|c| c.enabled && c.revision == revision)
                 .ok_or(Failure("configuration_changed"))?;
+            // The revision match is checked under the store lock first, so a
+            // stale session-expired response cannot cancel a newer pairing.
+            self.revoke_personal_conversation_work();
             c.session_expired = true;
             c.revision = c
                 .revision
@@ -528,6 +700,7 @@ impl NotificationService {
         }
         state.verified.remove(&kind);
         state.login = None;
+        drop(state);
         Ok(())
     }
     fn mutate_config(
@@ -551,16 +724,34 @@ impl NotificationService {
         state.failures.remove(&kind);
         if kind == ChannelKind::PersonalWeChat {
             state.login = None;
+            // Cancel owner work before attempting the vault write, including
+            // when the cross-process store lock makes that write fail.
+            self.revoke_personal_conversation_work();
         }
-        self.storage.change(|v| {
+        let result = self.storage.change(|v| {
             let c = v.configs.entry(kind).or_default();
             f(c)?;
+            let conversation_channel_enabled = c.enabled;
+            let conversation_pair_present = c.secret.is_some() && c.binding.is_some();
             c.revision = c
                 .revision
                 .checked_add(1)
                 .ok_or(Failure("notification_store_invalid"))?;
+            if kind == ChannelKind::PersonalWeChat {
+                if let Some(journal) = v.personal_conversation.as_mut() {
+                    if !conversation_pair_present {
+                        journal.binding = None;
+                    } else if !conversation_channel_enabled {
+                        if let Some(binding) = journal.binding.as_mut() {
+                            binding.enabled = false;
+                        }
+                    }
+                }
+            }
             Ok(())
-        })
+        });
+        drop(state);
+        result
     }
     pub fn cancel_channel(&self, kind: ChannelKind) -> Result<ChannelState> {
         let mut state = self
@@ -589,6 +780,8 @@ impl NotificationService {
     pub fn cancel_inflight_for_exit(&self) {
         self.exiting.store(true, Ordering::Release);
         self.public_runtime.cancel();
+        self.revoke_personal_conversation_work();
+        self.wake.1.notify_all();
         if let Ok(mut state) = self.state.try_lock() {
             for ops in state.operations.values() {
                 for (cancel, _) in ops {
@@ -604,6 +797,7 @@ impl NotificationService {
     }
     pub fn has_inflight_operation(&self) -> bool {
         self.public_runtime.checking.load(Ordering::Acquire)
+            || self.personal_conversation_tasks.load(Ordering::Acquire) > 0
             || self
                 .state
                 .try_lock()
@@ -672,6 +866,8 @@ impl NotificationService {
                 .iter()
                 .filter(|(kind, c)| {
                     c.enabled
+                        && (!matches!(event.body, EventBody::ManualReset { .. })
+                            || **kind == ChannelKind::Feishu)
                         && (!matches!(event.body, EventBody::CardsChanged { .. })
                             || v.card_changes.contains_key(&super::hash(
                                 format!("{}:{}", kind.id(), event.key).as_bytes(),
@@ -864,6 +1060,7 @@ impl NotificationService {
     }
     fn event_current(v: &Vault, event: &NotificationEvent, now: i64) -> bool {
         event.current(now)
+            && super::manual_reset::current(v, event)
             && event
                 .public_revision
                 .is_none_or(|rev| v.public_reset.enabled && v.public_reset.revision == rev)
@@ -886,6 +1083,9 @@ impl NotificationService {
         event: &NotificationEvent,
         control: Option<(&AtomicBool, &Mutex<Option<Arc<AtomicBool>>>)>,
     ) -> Result<DeliveryReceipt> {
+        if matches!(event.body, EventBody::ManualReset { .. }) && kind != ChannelKind::Feishu {
+            return fail("notification_filtered");
+        }
         let (op, c) = self.operation(kind)?;
         if event
             .expected_channel_revision
@@ -970,7 +1170,22 @@ impl NotificationService {
                 return fail("notification_filtered");
             }
         }
-        let request = protocol::send_request(kind, &c, event)?;
+        let request = if kind == ChannelKind::System {
+            // Mac local notifications cover quota/reset facts. Channel setup
+            // never broadens this to unrelated conversation or switch alerts.
+            if matches!(
+                event.body,
+                EventBody::Task { .. } | EventBody::Switch { .. }
+            ) {
+                return fail("notification_filtered");
+            }
+            if self.system_permission() != super::SystemNotificationPermission::Enabled {
+                return fail("system_notifications_disabled");
+            }
+            None
+        } else {
+            Some(protocol::send_request(kind, &c, event)?)
+        };
         op.current()?;
         let keys = event
             .keys
@@ -978,6 +1193,28 @@ impl NotificationService {
             .map(|k| super::hash(format!("{}:{k}", kind.id()).as_bytes()))
             .collect::<Vec<_>>();
         let reserved = self.storage.change(|v| {
+            if let EventBody::CardsChanged {
+                previous,
+                available,
+                previous_at,
+                observed_at,
+            } = event.body
+            {
+                if kind == ChannelKind::Feishu
+                    && event.proof.as_ref().is_some_and(|(account, _)| {
+                        super::manual_reset::explains_decrease(
+                            v,
+                            account,
+                            previous,
+                            available,
+                            previous_at,
+                            observed_at,
+                        )
+                    })
+                {
+                    return fail("notification_filtered");
+                }
+            }
             if !Self::event_current(v, event, super::now())
                 || v.configs
                     .get(&kind)
@@ -996,6 +1233,9 @@ impl NotificationService {
                 return fail("notification_store_capacity");
             }
             for key in &keys {
+                if let EventBody::ManualReset { ref event_hash, .. } = event.body {
+                    super::manual_reset::mark_attempt(v, event_hash, super::now())?;
+                }
                 if let Some(pending) = v.card_changes.get_mut(key) {
                     pending.last_attempt_at = Some(super::now());
                 }
@@ -1034,10 +1274,19 @@ impl NotificationService {
             self.finish(&keys, &op, Phase::Pending, event.public_revision)?;
             return fail("stale_notification");
         }
-        let result = self.transport.send(&request, &op.cancelled);
-        let parsed = match result {
-            Ok(r) => protocol::parse_response(kind, r),
-            Err(e) => Accepted::Uncertain(e),
+        let parsed = match request {
+            Some(request) => match self.transport.send(&request, &op.cancelled) {
+                Ok(r) => protocol::parse_response(kind, r),
+                Err(e) => Accepted::Uncertain(e),
+            },
+            None => {
+                let (title, _, lines) = event.content(&c.options);
+                let body = format!("{}\n\naigoodbro.com", lines.join("\n"));
+                match self.transport.send_system(&title, &body, &op.cancelled) {
+                    Ok(()) => Accepted::Ok(None),
+                    Err(e) => Accepted::Uncertain(e),
+                }
+            }
         };
         let parsed = if op.current().is_err()
             || !self

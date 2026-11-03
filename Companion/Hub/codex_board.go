@@ -15,10 +15,8 @@ import (
 	"log"
 	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -264,14 +262,17 @@ func loadThreadRefs(dataDir string) (map[string]threadRefRecord, bool, error) {
 	if errors.Is(err, os.ErrNotExist) {
 		return make(map[string]threadRefRecord), false, nil
 	}
-	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm()&0o077 != 0 || info.Size() > 2*1024*1024 {
+	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || privateDirectoryPermissions(dataDir) != nil || info.Size() > 2*1024*1024 {
 		return nil, false, fmt.Errorf("thread_refs_permissions")
 	}
-	file, err := os.Open(path)
+	file, err := openPrivateFile(path, os.O_RDONLY, 0)
 	if err != nil {
 		return nil, false, fmt.Errorf("thread_refs_read")
 	}
 	defer file.Close()
+	if privateFilePermissions(file) != nil {
+		return nil, false, fmt.Errorf("thread_refs_permissions")
+	}
 	decoder := json.NewDecoder(io.LimitReader(file, 2*1024*1024+1))
 	decoder.DisallowUnknownFields()
 	var stored threadRefFile
@@ -289,7 +290,7 @@ func loadThreadRefs(dataDir string) (map[string]threadRefRecord, bool, error) {
 }
 
 func saveThreadRefs(dataDir string, refs map[string]threadRefRecord) error {
-	file, err := os.CreateTemp(dataDir, "thread-refs-*.tmp")
+	file, err := createPrivateTemp(dataDir)
 	if err != nil {
 		return fmt.Errorf("thread_refs_write")
 	}
@@ -315,16 +316,11 @@ func saveThreadRefs(dataDir string, refs map[string]threadRefRecord) error {
 		_ = os.Remove(temporary)
 		return fmt.Errorf("thread_refs_write")
 	}
-	if err := os.Rename(temporary, filepath.Join(dataDir, "thread-refs.json")); err != nil {
+	if err := replacePrivateFile(temporary, filepath.Join(dataDir, "thread-refs.json")); err != nil {
 		_ = os.Remove(temporary)
 		return fmt.Errorf("thread_refs_write")
 	}
-	directory, err := os.Open(dataDir)
-	if err != nil {
-		return fmt.Errorf("thread_refs_sync")
-	}
-	defer directory.Close()
-	if directory.Sync() != nil {
+	if syncPrivateDirectory(dataDir) != nil {
 		return fmt.Errorf("thread_refs_sync")
 	}
 	return nil
@@ -741,13 +737,6 @@ func (board *CodexBoard) open(publicRef string) error {
 	}
 	log.Printf("codex thread open requested ref=%s", publicRef)
 	return nil
-}
-
-func openCodexDesktopThread(threadID string) error {
-	if runtime.GOOS != "darwin" || !canonicalThreadIDPattern.MatchString(threadID) {
-		return errInvalid
-	}
-	return exec.Command("/usr/bin/open", "-b", "com.openai.codex", "codex://threads/"+threadID).Run()
 }
 
 func (board *CodexBoard) broadcastUpdate() {

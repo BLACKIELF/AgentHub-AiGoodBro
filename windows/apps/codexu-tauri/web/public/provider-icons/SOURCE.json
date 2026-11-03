@@ -1,0 +1,71 @@
+{
+  "source": "Existing signed Engine provider artwork, reused as in Mac UpstreamProviderArtwork; originals unchanged",
+  "files": [
+    {
+      "file": "codex.svg",
+      "source": "Companion/TokenMonitorEngine/upstream/assets/icons/codex.svg",
+      "sha256": "a595df6b423920c67a7f8f73c063e4bfb72d415948097b6cac063a2366bb5186",
+      "monochrome": true
+    },
+    {
+      "file": "claude.svg",
+      "source": "Companion/TokenMonitorEngine/upstream/assets/icons/claude.svg",
+      "sha256": "365a70a7eb3956d9b9a96086058ebe04e1dbd8e291a756ad964e8a283fbd6d38",
+      "monochrome": true
+    },
+    {
+      "file": "grok.svg",
+      "source": "Companion/TokenMonitorEngine/upstream/assets/icons/grok.svg",
+      "sha256": "9175fc90c22655160231976c849f25a03b888d7cc0e04c5f1b987b659bb07c95",
+      "monochrome": true
+    },
+    {
+      "file": "opencode.svg",
+      "source": "Companion/TokenMonitorEngine/upstream/assets/icons/opencode.svg",
+      "sha256": "7cfa6e9d6726f7c9fa26c7d9aef0dfec52d20a137380454340f30f12ccbfd302",
+      "monochrome": true
+    },
+    {
+      "file": "gemini.svg",
+      "source": "Companion/TokenMonitorEngine/upstream/assets/icons/gemini.svg",
+      "sha256": "87d5b3c4be75a66f54c1936482a263df68185545b741129badd1b7c2449c18d3",
+      "monochrome": true
+    },
+    {
+      "file": "kimi.svg",
+      "source": "Companion/TokenMonitorEngine/upstream/assets/icons/kimi.svg",
+      "sha256": "74a7292aeb0220445d14c5d397d75760e2e8c6ed6a9e5fe4f3023471bf62a9ff",
+      "monochrome": false
+    },
+    {
+      "file": "workbuddy.svg",
+      "source": "Companion/TokenMonitorEngine/upstream/assets/icons/workbuddy.svg",
+      "sha256": "dffe0ba60e3bf99dc296c7f862cfe7dc38a1f32f6b7c79251e4091987d84b2db",
+      "monochrome": true
+    },
+    {
+      "file": "zai.svg",
+      "source": "Companion/TokenMonitorEngine/upstream/assets/icons/zai.svg",
+      "sha256": "e748cb5108ce37b116d7a5ba97d37e0ae97eadf6849b0de11afb248e244a01e1",
+      "monochrome": true
+    },
+    {
+      "file": "trae.svg",
+      "source": "Companion/TokenMonitorEngine/upstream/assets/icons/trae.svg",
+      "sha256": "c8027404ca835aa1653a77c7066c07107ce4e0f0c0f469906ab0a4ff23d93982",
+      "monochrome": false
+    },
+    {
+      "file": "antigravity.svg",
+      "source": "Companion/TokenMonitorEngine/upstream/assets/icons/antigravity.svg",
+      "sha256": "652128cf55a28bb958563ee372d0bd00208d9e6fd446f523f77aafd811eef8ca",
+      "monochrome": false
+    },
+    {
+      "file": "xiaomi.svg",
+      "source": "Companion/TokenMonitorEngine/upstream/assets/icons/xiaomi.svg",
+      "sha256": "20fb26a3565ed90895c0f29ad006301a5dd9cede687b3ff4a27a0758ad0f9ede",
+      "monochrome": false
+    }
+  ]
+}

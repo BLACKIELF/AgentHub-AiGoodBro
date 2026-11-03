@@ -267,7 +267,7 @@ func ensurePrivateAttachmentDir(path string) error {
 		}
 		return nil
 	}
-	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() || info.Mode().Perm()&0o077 != 0 {
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() || privateDirectoryPermissions(path) != nil {
 		return errAttachmentStorage
 	}
 	return nil

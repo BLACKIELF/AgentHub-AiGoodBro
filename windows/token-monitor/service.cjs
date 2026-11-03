@@ -41,8 +41,11 @@ function sessions(value) {
   return Object.fromEntries(Object.entries(value).map(([key, raw]) => {
     if (!/^opaque-[a-f0-9]{24}$/.test(key) || !raw || typeof raw !== 'object' || Array.isArray(raw)) throw Error('invalid_response');
     const row = {};
-    for (const name of ['client', 'sessionKind']) if (raw[name] != null) row[name] = safeName(raw[name]);
-    for (const name of ['lastUsedAt', 'startedAt']) if (raw[name] != null) row[name] = sessionTime(raw[name]);
+    if (raw.client != null) row.client = safeName(raw.client);
+    // The pinned upstream uses empty strings for unknown optional metadata.
+    // Omit those fields while retaining validation of every nonempty value.
+    if (raw.sessionKind != null && raw.sessionKind !== '') row.sessionKind = safeName(raw.sessionKind);
+    for (const name of ['lastUsedAt', 'startedAt']) if (raw[name] != null && raw[name] !== '') row[name] = sessionTime(raw[name]);
     for (const name of ['totalTokens', 'costUsd']) if (Object.hasOwn(raw, name)) row[name] = metric(raw[name]);
     for (const name of ['turnEnded', 'archived', 'deleted', 'sourceDeleted']) if (raw[name] != null) {
       if (typeof raw[name] !== 'boolean') throw Error('invalid_response');
@@ -80,7 +83,27 @@ function publicSnapshot(response, historyAt) {
   return { schemaVersion: 1, requestId: response.requestId, engine: response.engine, collectedAt: response.collectedAt, timezone: response.timezone, status: response.status,
     sources: response.sources, coverage: response.coverage, errors: response.errors,
     historyCollectedAt: historyAt,
-    payload: { aggregate: { today: period(aggregate?.today), month: period(aggregate?.month), allTime: period(aggregate?.allTime) }, history: history(response.payload?.history), costEstimates: response.payload?.costEstimates ?? null } };
+    payload: { aggregate: { today: period(aggregate?.today), month: period(aggregate?.month), allTime: period(aggregate?.allTime) }, history: history(response.payload?.history), costEstimates: response.payload?.costEstimates ?? null,
+      usage: { historyAvailable: typeof response.payload?.usage?.historyAvailable === 'boolean' ? response.payload.usage.historyAvailable : null } } };
+}
+
+const windowsScopes = new WeakSet();
+function retainWindowsEnvironment(sourceScope, environment) {
+  if (windowsScopes.has(sourceScope)) return;
+  const originalEnvironment = sourceScope.scopedEnvironment, originalTarget = sourceScope.withTarget;
+  const plumbing = Object.fromEntries(['SystemRoot', 'TEMP', 'TMP'].filter(key => typeof environment[key] === 'string' && environment[key]).map(key => [key, environment[key]]));
+  if (plumbing.SystemRoot) plumbing.WINDIR = plumbing.SystemRoot;
+  const extra = home => ({ APPDATA: path.join(home, 'AppData/Roaming'), LOCALAPPDATA: path.join(home, 'AppData/Local'), ...plumbing });
+  sourceScope.scopedEnvironment = (home, ...args) => ({ ...originalEnvironment(home, ...args), ...extra(home) });
+  // withTarget closes over its own scopedEnvironment, so patching the export
+  // alone misses real scans. Its finally still restores the outer environment.
+  sourceScope.withTarget = (target, timezone, fn) => originalTarget(target, timezone, scoped => {
+    const retained = extra(scoped.homeDir);
+    Object.assign(scoped.env, retained);
+    Object.assign(process.env, retained);
+    return fn(scoped);
+  });
+  windowsScopes.add(sourceScope);
 }
 
 function createRuntime(engineRoot, { now = Date.now, emit = () => {}, loader: injectedLoader, handleRequest: injectedHandler, createScope: injectedScope, timer = setTimeout, clear = clearTimeout } = {}) {
@@ -88,14 +111,7 @@ function createRuntime(engineRoot, { now = Date.now, emit = () => {}, loader: in
   // Retain only Windows OS plumbing, never ambient account/proxy variables.
   const scopePath = path.join(engineRoot, 'lib/runtime/source-scope.cjs');
   const sourceScope = require(scopePath);
-  if (!injectedHandler && process.platform === 'win32') {
-    const original = sourceScope.scopedEnvironment;
-    const systemRoot = process.env.SystemRoot;
-    const temp = process.env.TEMP, tmp = process.env.TMP;
-    sourceScope.scopedEnvironment = (home, codexHome, timezone) => ({ ...original(home, codexHome, timezone),
-      APPDATA: path.join(home, 'AppData/Roaming'), LOCALAPPDATA: path.join(home, 'AppData/Local'), TEMP: temp, TMP: tmp,
-      SystemRoot: systemRoot, WINDIR: systemRoot });
-  }
+  if (!injectedHandler && process.platform === 'win32') retainWindowsEnvironment(sourceScope, process.env);
   const descendants = require(path.join(engineRoot, 'lib/runtime/descendants.cjs'));
   descendants.install();
   const loader = injectedLoader || require(path.join(engineRoot, 'lib/upstream/loader.cjs'));
@@ -217,4 +233,4 @@ async function main() {
   process.stdin.on('error',()=>{process.exitCode=2;close();});
 }
 if (require.main === module) main().catch(() => process.exit(1));
-module.exports = { createRuntime, publicSnapshot, period, history, sessions, safeName, constrainModules };
+module.exports = { createRuntime, publicSnapshot, period, history, sessions, safeName, constrainModules, retainWindowsEnvironment };

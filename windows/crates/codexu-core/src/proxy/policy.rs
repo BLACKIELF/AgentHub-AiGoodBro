@@ -32,6 +32,7 @@ pub enum ProxyFailure {
     DesktopStateUnknown,
     DesktopPreparationExpired,
     DesktopLaunchFailed,
+    RegistrationFailed,
 }
 impl ProxyFailure {
     pub fn code(self) -> &'static str {
@@ -64,6 +65,7 @@ impl ProxyFailure {
             Self::DesktopStateUnknown => "desktop_state_unknown",
             Self::DesktopPreparationExpired => "desktop_preparation_expired",
             Self::DesktopLaunchFailed => "desktop_launch_failed",
+            Self::RegistrationFailed => "registration_failed",
         }
     }
 }
@@ -78,6 +80,7 @@ impl std::error::Error for ProxyFailure {}
 #[serde(rename_all = "camelCase", default, deny_unknown_fields)]
 pub struct AccountPolicy {
     pub five_hour_used_limit: f64,
+    pub seven_day_used_limit: f64,
     pub allows_credits: bool,
     pub credit_primary_floor: Option<u64>,
     pub credit_secondary_floor: Option<u64>,
@@ -86,6 +89,7 @@ impl Default for AccountPolicy {
     fn default() -> Self {
         Self {
             five_hour_used_limit: 100.0,
+            seven_day_used_limit: 100.0,
             allows_credits: true,
             credit_primary_floor: None,
             credit_secondary_floor: None,
@@ -96,6 +100,8 @@ impl AccountPolicy {
     pub fn valid(&self) -> bool {
         self.five_hour_used_limit.is_finite()
             && (0.0..=100.0).contains(&self.five_hour_used_limit)
+            && self.seven_day_used_limit.is_finite()
+            && (0.0..=100.0).contains(&self.seven_day_used_limit)
             && match (self.credit_primary_floor, self.credit_secondary_floor) {
                 (None, None) => true,
                 (Some(a), Some(b)) => a > b,
@@ -383,6 +389,12 @@ pub fn quota_admission(
         && q.five_hour
             .as_ref()
             .is_some_and(|w| w.used_percent >= policy.five_hour_used_limit)
+    {
+        return Err(ProxyFailure::UsageLimit);
+    }
+    if pro
+        && policy.seven_day_used_limit < 100.0
+        && seven.used_percent >= policy.seven_day_used_limit
     {
         return Err(ProxyFailure::UsageLimit);
     }

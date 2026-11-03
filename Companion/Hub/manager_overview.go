@@ -22,6 +22,7 @@ type managerSnapshotFile struct {
 }
 
 type managerProfile struct {
+	WindowsBinding *desktopAccountBinding `json:"windowsBinding,omitempty"`
 	DispatchParticipationWindow  *managerDispatchWindow  `json:"dispatchParticipationWindow,omitempty"`
 	Name                         string                  `json:"name"`
 	CodexHomePath                string                  `json:"codexHomePath"`

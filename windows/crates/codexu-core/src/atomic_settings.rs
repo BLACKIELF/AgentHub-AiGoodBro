@@ -29,6 +29,12 @@ pub fn write_json(
     let parent = path
         .parent()
         .ok_or_else(|| anyhow::anyhow!("Missing settings directory"))?;
+    #[cfg(windows)]
+    if crate::accounts::storage::write_private_settings_if_owned(path, bytes)? {
+        return Ok(());
+    }
+    // Existing foreign-owned settings retain the legacy save behavior. Hub
+    // still rejects them at its independent owner gate; saving is not admission.
     std::fs::create_dir_all(parent)?;
     let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
     temporary.write_all(bytes)?;

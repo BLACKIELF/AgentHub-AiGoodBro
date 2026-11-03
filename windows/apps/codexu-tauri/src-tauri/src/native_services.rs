@@ -1,19 +1,28 @@
 //! Windows-only composition. Failure in a new service must not disable existing
 //! usage, profile or settings views; no fallback account/lease is synthesized.
 use crate::commands::{
+    account_actions::ManualAccountState,
     account_lifecycle::{ClaudeSubscriptionState, ManagedAccountState},
+    account_maintenance::AccountMaintenanceState,
     local_proxy::{LocalProxyDesktopState, LocalProxyState},
     notifications::NotificationState,
+    provider_pool::{NativeAuthorizationBrowser, ProviderPoolState},
     token_monitor::TokenMonitorAppState,
 };
 use codexu_core::{
-    accounts::{claude::ClaudeSubscriptionManager, AccountManager},
+    accounts::{
+        claude::ClaudeSubscriptionManager,
+        maintenance::{AccountMaintenanceMonitor, AccountMaintenanceService},
+        manual_accounts::{ManualAccountMonitor, ManualAccountService},
+        AccountManager,
+    },
     automatic_switch::{
         AutomaticSwitchEvent, AutomaticSwitchMonitor, AutomaticSwitchObserver,
         AutomaticSwitchService,
     },
     managed_proxy::{ManagedActivityGuard, ManagedProxyGate, ManagedProxySecrets},
     notifications::{NotificationMonitor, NotificationService},
+    provider_pool::{HelperResource, ProviderPool},
     proxy::{LocalProxyService, ProxyDesktopConnector, ProxyDesktopMonitor, ProxyRecoveryMonitor},
     token_monitor::TokenMonitorService,
 };
@@ -25,9 +34,11 @@ use tauri::{App, Emitter, Manager};
 
 pub struct NativeServices {
     pub gate: Result<Arc<ManagedProxyGate>, &'static str>,
+    pub owned_domains: Arc<codexu_core::automatic_switch::live::OwnedProcessDomains>,
     accounts: Result<Arc<AccountManager>, &'static str>,
     claude: Result<Arc<ClaudeSubscriptionManager>, &'static str>,
     proxy: Result<Arc<LocalProxyService>, &'static str>,
+    provider_pool: Result<Arc<ProviderPool>, &'static str>,
     desktop: Result<Arc<ProxyDesktopConnector>, &'static str>,
     statistics: Result<Arc<TokenMonitorService>, &'static str>,
     notifications: Result<Arc<NotificationService>, &'static str>,
@@ -36,9 +47,19 @@ pub struct NativeServices {
     notification_monitor: Mutex<Option<NotificationMonitor>>,
     live_tasks: Result<Arc<crate::live_tasks::LiveTasks>, &'static str>,
     automatic_switch: Result<Arc<AutomaticSwitchService>, &'static str>,
+    quota_resume: Result<Arc<crate::commands::quota_resume::QuotaResumeAdapter>, &'static str>,
     automatic_monitor: Mutex<Option<AutomaticSwitchMonitor>>,
+    account_maintenance: Result<Arc<AccountMaintenanceService>, &'static str>,
+    maintenance_monitor: Mutex<Option<AccountMaintenanceMonitor>>,
+    manual_accounts: Result<Arc<ManualAccountService>, &'static str>,
+    manual_monitor: Mutex<Option<ManualAccountMonitor>>,
 }
 impl NativeServices {
+    pub fn set_foreground(&self, foreground: bool) {
+        if let Ok(service) = &self.account_maintenance {
+            service.set_foreground(foreground);
+        }
+    }
     pub fn statistics_accounts(&self) -> Result<Arc<AccountManager>, String> {
         self.accounts.as_ref().cloned().map_err(|e| (*e).to_owned())
     }
@@ -52,9 +73,25 @@ impl NativeServices {
             .map_err(|e| e.code().to_owned())
     }
     pub fn proxy_blocks_normal_exit(&self) -> bool {
-        self.automatic_switch
+        self.provider_pool
             .as_ref()
-            .is_ok_and(|service| service.has_inflight_operation())
+            .is_ok_and(|service| service.requires_exit_confirmation())
+            || self
+                .manual_accounts
+                .as_ref()
+                .is_ok_and(|s| s.has_inflight_operation())
+            || self
+                .automatic_switch
+                .as_ref()
+                .is_ok_and(|service| service.has_inflight_operation())
+            || self
+                .quota_resume
+                .as_ref()
+                .is_ok_and(|service| service.has_inflight_operation())
+            || self
+                .account_maintenance
+                .as_ref()
+                .is_ok_and(|service| service.has_inflight_operation())
             || self
                 .accounts
                 .as_ref()
@@ -74,7 +111,19 @@ impl NativeServices {
     }
     /// Synchronous no-I/O fence applied in the confirmation callback itself.
     pub fn seal_accounts_for_exit(&self) {
+        if let Ok(service) = &self.quota_resume {
+            service.cancel_for_exit();
+        }
+        if let Ok(service) = &self.provider_pool {
+            service.request_exit();
+        }
+        if let Ok(service) = &self.manual_accounts {
+            service.cancel_for_exit();
+        }
         if let Ok(service) = &self.automatic_switch {
+            service.cancel_for_exit();
+        }
+        if let Ok(service) = &self.account_maintenance {
             service.cancel_for_exit();
         }
         if let Ok(accounts) = &self.accounts {
@@ -101,6 +150,28 @@ impl NativeServices {
     /// Background statistics do not count as an interactive task. A normal
     /// exit still closes their owned process tree without an extra prompt.
     pub fn stop_passive_services(&self) {
+        if let Ok(service) = &self.quota_resume {
+            service.cancel_for_exit();
+        }
+        if let Ok(service) = &self.provider_pool {
+            service.request_exit();
+        }
+        if let Ok(service) = &self.manual_accounts {
+            service.cancel_for_exit();
+        }
+        if let Ok(monitor) = self.manual_monitor.try_lock() {
+            if let Some(monitor) = &*monitor {
+                monitor.cancel();
+            }
+        }
+        if let Ok(service) = &self.account_maintenance {
+            service.cancel_for_exit();
+        }
+        if let Ok(monitor) = self.maintenance_monitor.try_lock() {
+            if let Some(monitor) = &*monitor {
+                monitor.cancel();
+            }
+        }
         if let Ok(service) = &self.automatic_switch {
             service.cancel_for_exit();
         }
@@ -214,20 +285,35 @@ fn make_proxy(
     .map_err(|e| e.code())?;
     Ok(Arc::new(service))
 }
+fn make_provider_pool(root: &Path, resources: &Path) -> Result<Arc<ProviderPool>, &'static str> {
+    let binary = option_env!("AIGOODBRO_PROVIDER_POOL_BINARY_SHA256")
+        .ok_or("provider_pool_resource_missing")?;
+    let source = option_env!("AIGOODBRO_PROVIDER_POOL_SOURCE_SHA256")
+        .ok_or("provider_pool_resource_missing")?;
+    let helper = HelperResource::new(
+        resources.join("provider-pool/aigoodbro-antigravity-proxy.exe"),
+        binary.into(),
+        source.into(),
+    )
+    .map_err(|e| e.code)?;
+    ProviderPool::new(
+        root.join("provider-pool-v1"),
+        helper,
+        Arc::new(NativeAuthorizationBrowser),
+    )
+    .map_err(|e| e.code)
+}
 pub fn install(app: &mut App, root: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+    // Construct only masked storage and a pinned resource descriptor. Starting
+    // the helper and opening authorization are explicit commands later.
+    let provider_pool = app
+        .path()
+        .resource_dir()
+        .map_err(|_| "provider_pool_resource_missing")
+        .and_then(|resources| make_provider_pool(&root, &resources));
+    app.manage(ProviderPoolState(provider_pool.clone()));
+    let owned_domains = codexu_core::automatic_switch::live::OwnedProcessDomains::new();
     let notifications = NotificationService::native(root.clone()).map_err(|e| e.code());
-    let (notifications, notification_monitor) = match notifications {
-        Ok(service) => {
-            let handle = app.handle().clone();
-            match service.start_monitor_with_listener(Arc::new(move || {
-                let _ = handle.emit("notification-channels:changed", ());
-            })) {
-                Ok(monitor) => (Ok(service), Some(monitor)),
-                Err(error) => (Err(error.code()), None),
-            }
-        }
-        Err(error) => (Err(error), None),
-    };
     let accounts = AccountManager::native(root.clone()).map_err(|e| e.code);
     let gate = accounts.as_ref().map_err(|e| *e).and_then(|accounts| {
         let gate = ManagedProxyGate::new(root.join("dispatch"), accounts).map_err(|e| e.code())?;
@@ -236,6 +322,31 @@ pub fn install(app: &mut App, root: PathBuf) -> Result<(), Box<dyn std::error::E
             .map_err(|e| e.code)?;
         Ok(gate)
     });
+    let (notifications, notification_monitor) = match notifications {
+        Ok(service) => {
+            // Install the native boundary before the sole monitor can receive
+            // events. A missing account/gate leaves automatic replies unavailable.
+            let owner_ready = match (&accounts, &gate) {
+                (Ok(accounts), Ok(gate)) => service.set_personal_conversation_owner(Arc::new(
+                    crate::commands::personal_conversation_owner::PersonalConversationOwnerAdapter::new(
+                        app.state::<Arc<crate::app_state::AppState>>().inner().clone(),
+                        accounts.clone(), gate.clone(),
+                    ),
+                )),
+                _ => Ok(()),
+            };
+            let handle = app.handle().clone();
+            match owner_ready.and_then(|()| {
+                service.start_monitor_with_listener(Arc::new(move || {
+                    let _ = handle.emit("notification-channels:changed", ());
+                }))
+            }) {
+                Ok(monitor) => (Ok(service), Some(monitor)),
+                Err(error) => (Err(error.code()), None),
+            }
+        }
+        Err(error) => (Err(error), None),
+    };
     let claude = ClaudeSubscriptionManager::native(root.clone())
         .map_err(|e| e.code)
         .and_then(|claude| {
@@ -264,6 +375,25 @@ pub fn install(app: &mut App, root: PathBuf) -> Result<(), Box<dyn std::error::E
         },
         Err(error) => (Err(error), None),
     };
+    if let Ok(accounts) = &accounts {
+        let registration_accounts = Arc::downgrade(accounts);
+        let proxy = proxy.as_ref().ok().map(Arc::downgrade);
+        let handle = app.handle().clone();
+        accounts
+            .install_first_verified_listener(Arc::new(move |id| {
+                if let Some(accounts) = registration_accounts.upgrade() {
+                    crate::managed_registration::retry_pending(&handle, &accounts);
+                }
+                if let Some(proxy) = proxy.as_ref().and_then(|p| p.upgrade()) {
+                    // The service exposes any failed enrollment as account state;
+                    // a successful login must not be reported as a proxy success.
+                    let _ = proxy.enroll_new_verified_account(id);
+                }
+                let _ = handle.emit("managed-accounts:changed", ());
+                let _ = handle.emit("local-proxy:changed", ());
+            }))
+            .map_err(|e| e.code)?;
+    }
     let desktop = accounts.as_ref().map_err(|e| *e).and_then(|accounts| {
         let proxy = proxy.as_ref().map_err(|e| *e)?;
         ProxyDesktopConnector::native(proxy, accounts.clone(), root.join("desktop-receipts"))
@@ -284,11 +414,12 @@ pub fn install(app: &mut App, root: PathBuf) -> Result<(), Box<dyn std::error::E
             .path()
             .resource_dir()
             .map_err(|_| "statistics_resources_unavailable")?;
-        TokenMonitorService::native(
+        TokenMonitorService::native_with_owned_domains(
             resources.join("token-monitor"),
             root.join("token-monitor-v1"),
             sources,
             String::new(),
+            Some(owned_domains.clone()),
         )
         .map_err(|e| e.code())
         .and_then(|statistics| {
@@ -355,11 +486,27 @@ pub fn install(app: &mut App, root: PathBuf) -> Result<(), Box<dyn std::error::E
             accounts.clone(),
             gate.as_ref().map_err(|e| *e)?.clone(),
             notifications.as_ref().ok(),
+            owned_domains.clone(),
         )
     });
     app.manage(crate::live_tasks::LiveTaskAppState(live_tasks.clone()));
+    let quota_resume = accounts.as_ref().map_err(|e| *e).and_then(|accounts| {
+        crate::commands::quota_resume::QuotaResumeAdapter::new(
+            app.state::<Arc<crate::app_state::AppState>>()
+                .inner()
+                .clone(),
+            accounts.clone(),
+            gate.as_ref().map_err(|e| *e)?.clone(),
+            live_tasks.as_ref().map_err(|e| *e)?.clone(),
+            root.join("quota-resume-v1").join("journal.json"),
+        )
+        .map_err(|e| e.code())
+    });
+    app.manage(crate::commands::quota_resume::QuotaResumeState(
+        quota_resume.clone(),
+    ));
     let automatic_switch = accounts.as_ref().map_err(|e| *e).and_then(|accounts| {
-        AutomaticSwitchService::new_with_native_controller(
+        let service = AutomaticSwitchService::new_with_native_controller(
             root.join("automatic-switch-v1.json"),
             accounts.clone(),
             gate.as_ref().map_err(|e| *e)?.clone(),
@@ -369,7 +516,13 @@ pub fn install(app: &mut App, root: PathBuf) -> Result<(), Box<dyn std::error::E
                 notifications: notifications.as_ref().ok().cloned(),
             })),
         )
-        .map_err(|e| e.code())
+        .map_err(|e| e.code())?;
+        if let Ok(adapter) = &quota_resume {
+            service
+                .set_quota_pause_controller(adapter.clone())
+                .map_err(|e| e.code())?;
+        }
+        Ok(service)
     });
     let (automatic_switch, automatic_monitor) = match automatic_switch {
         Ok(service) => match service.start_monitor() {
@@ -381,17 +534,92 @@ pub fn install(app: &mut App, root: PathBuf) -> Result<(), Box<dyn std::error::E
     app.manage(crate::commands::automatic_switch::AutomaticSwitchState(
         automatic_switch.clone(),
     ));
+    let account_maintenance = accounts.as_ref().map_err(|e| *e).and_then(|accounts| {
+        // An installed account occupancy gate is required before any opt-in work.
+        gate.as_ref().map_err(|e| *e)?;
+        AccountMaintenanceService::new(root.join("account-maintenance-v1.json"), accounts.clone())
+            .map_err(|e| e.code())
+    });
+    let (account_maintenance, maintenance_monitor) = match account_maintenance {
+        Ok(service) => {
+            service.set_foreground(
+                app.get_webview_window("main")
+                    .is_some_and(|window| window.is_focused().unwrap_or(false)),
+            );
+            let handle = app.handle().clone();
+            let registration_accounts = accounts.as_ref().ok().map(Arc::downgrade);
+            match service.start_monitor_with_listener(Arc::new(move || {
+                if let Some(accounts) = registration_accounts.as_ref().and_then(|a| a.upgrade()) {
+                    crate::managed_registration::retry_pending(&handle, &accounts);
+                }
+                let _ = handle.emit("account-maintenance:changed", ());
+            })) {
+                Ok(monitor) => (Ok(service), Some(monitor)),
+                Err(error) => (Err(error.code()), None),
+            }
+        }
+        Err(error) => (Err(error), None),
+    };
+    app.manage(AccountMaintenanceState(account_maintenance.clone()));
+    let manual_accounts = accounts.as_ref().map_err(|e| *e).and_then(|manager| {
+        let notice_service = notifications.as_ref().ok().cloned();
+        ManualAccountService::new(
+            manager.clone(),
+            account_maintenance.as_ref().map_err(|e| *e)?.clone(),
+            Arc::new(move || {
+                notice_service
+                    .as_ref()
+                    .and_then(|s| s.manual_reset_authorization().ok())
+                    .unwrap_or_default()
+            }),
+        )
+        .map_err(|e| e.code)
+    });
+    let manual_monitor = match (&manual_accounts, &notifications) {
+        (Ok(service), Ok(notifications)) => {
+            let notifications = notifications.clone();
+            service
+                .start_confirmation_monitor(Arc::new(move |e| {
+                    let notice = codexu_core::notifications::ManualResetNotice::new(
+                        &e.event_id,
+                        &e.account_key,
+                        &e.masked_label,
+                        e.confirmed_at_ms / 1000,
+                        e.available_cards,
+                    )
+                    .map_err(|_| codexu_core::accounts::AccountError {
+                        code: "manual_notice_unavailable",
+                    })?;
+                    notifications
+                        .record_manual_reset_authorized(notice, e.authorization.clone())
+                        .map_err(|_| codexu_core::accounts::AccountError {
+                            code: "manual_notice_unavailable",
+                        })
+                }))
+                .ok()
+        }
+        _ => None,
+    };
+    app.manage(ManualAccountState(manual_accounts.clone()));
+
     app.manage(NativeServices {
         gate,
+        owned_domains,
         accounts,
         claude,
         proxy,
+        provider_pool,
         desktop,
         statistics,
         notifications,
         live_tasks,
         automatic_switch,
+        quota_resume,
         automatic_monitor: Mutex::new(automatic_monitor),
+        account_maintenance,
+        manual_accounts,
+        manual_monitor: Mutex::new(manual_monitor),
+        maintenance_monitor: Mutex::new(maintenance_monitor),
         monitor: Mutex::new(monitor),
         desktop_monitor: Mutex::new(desktop_monitor),
         notification_monitor: Mutex::new(notification_monitor),

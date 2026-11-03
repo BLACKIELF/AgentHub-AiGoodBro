@@ -1,0 +1,12 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import {readFileSync}from'node:fs';
+import vm from'node:vm';
+import ts from'typescript';
+const context=vm.createContext({exports:{}});vm.runInContext(ts.transpileModule(readFileSync(new URL('../src/utils/providerPool.ts',import.meta.url),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2020}}).outputText,context);const{parseProviderPool}=context.exports;
+const run='r'.repeat(43),generation='g'.repeat(43),id='kimi-'+'a'.repeat(32);
+const row={id,provider:'kimi',maskedIdentity:'a***@e***',generation,enabled:true,concurrencyLimit:1,inFlight:0,state:'ready',cooldownUntil:null,lastError:null,models:['model-k']};
+const state={phase:'running',runId:run,port:18081,accounts:[row],providers:['kimi'],providerModels:{kimi:['model-k']},authorization:null,issueCode:null};
+test('accept only bounded masked account state with observed provider models',()=>{const parsed=parseProviderPool(state);assert.equal(parsed.accounts[0].id,id);assert.equal(parsed.providerModels.kimi[0],'model-k');assert.equal(parseProviderPool({...state,phase:'stopped',port:null,providerModels:{}}).phase,'stopped');});
+test('secrets, wrong provider ids, malformed runs and unbounded counters fail closed',()=>{for(const bad of[{...state,clientKey:'secret'},{...state,runId:'old'},{...state,port:18080},{...state,accounts:[{...row,accessToken:'secret'}]},{...state,accounts:[{...row,provider:'claude'}]},{...state,accounts:[{...row,inFlight:9}]},{...state,accounts:[row,row]},{...state,providerModels:{xai:['model-k']}},{...state,issueCode:'secret/path'}])assert.throws(()=>parseProviderPool(bad));});
+test('authorization exposes only matching safe code metadata, never URLs or tokens',()=>{const auth={attemptId:'s'.repeat(43),provider:'kimi',cancelling:false,userCode:'ABCD-1234'};assert.equal(parseProviderPool({...state,authorization:auth}).authorization.userCode,'ABCD-1234');for(const authorization of[{...auth,url:'https://provider.invalid'},{...auth,userCode:'code?token=secret'},{...auth,provider:'claude'},{...auth,attemptId:'bad'}])assert.throws(()=>parseProviderPool({...state,authorization}));});

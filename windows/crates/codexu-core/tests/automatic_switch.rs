@@ -1,9 +1,7 @@
 //! Actual production automatic policy/service plus real AccountManager and
 //! ManagedProxyGate. Encryption/runtime/live evidence collaborators below are
 //! explicitly synthetic and are never registered by native composition.
-pub use codexu_core::{accounts, atomic_settings, managed_proxy, readers, updates};
-#[path = "../src/automatic_switch.rs"]
-mod automatic_switch;
+use codexu_core::{accounts, automatic_switch};
 #[path = "support/windows_creation.rs"]
 mod windows_creation;
 use accounts::*;
@@ -534,7 +532,11 @@ fn defaults_and_unsupported_live_connector_never_enable_a_fake_feature() {
     assert_eq!(f.service.evaluate_once().unwrap().phase, "disabled");
     assert_eq!(f.runtime.calls.load(Ordering::Acquire), before);
     let unavailable = AutomaticSwitchService::new(
-        f._temp.path().join("unavailable.json"),
+        f._temp
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("unavailable.json"),
         f.manager.clone(),
         Arc::new(UnavailableSafetySource),
     )

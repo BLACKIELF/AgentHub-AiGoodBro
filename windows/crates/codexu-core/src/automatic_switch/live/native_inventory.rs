@@ -10,53 +10,94 @@ use std::{
     time::Instant,
 };
 
-struct IndependentImage {
+struct ImageMatch {
     _image: File,
     path: PathBuf,
+    matches: bool,
 }
-#[derive(Clone, Default)]
-pub(super) struct Inventory(Arc<Mutex<BTreeMap<(u32, u64), IndependentImage>>>);
-impl Inventory {
-    fn independent(&self, pid: u32, birth: u64, path: &Path) -> LiveResult<bool> {
-        let mut cache = self.0.lock().map_err(|_| LiveIssue::Incomplete)?;
-        if let Some(known) = cache.get(&(pid, birth)) {
-            return Ok(known.path == path);
+#[derive(Clone)]
+pub(super) struct Inventory {
+    images: Arc<Mutex<BTreeMap<(u32, u64), ImageMatch>>>,
+    peer_bytes: u64,
+    peer_digest: String,
+    domains: Arc<OwnedProcessDomains>,
+}
+fn image_digest(file: &mut File, maximum: u64) -> LiveResult<String> {
+    use sha2::{Digest, Sha256};
+    use std::io::{Read, Seek};
+    if maximum == 0 || maximum > 256 * 1024 * 1024 {
+        return Err(LiveIssue::Incomplete);
+    }
+    file.rewind().map_err(|_| LiveIssue::Incomplete)?;
+    let mut digest = Sha256::new();
+    let mut bytes = 0u64;
+    let mut buffer = [0u8; 65536];
+    loop {
+        let count = file.read(&mut buffer).map_err(|_| LiveIssue::Incomplete)?;
+        if count == 0 {
+            break;
         }
-        if cache.len() >= 1_024
-            || !crate::updates::safe_download_directory(path.parent().ok_or(LiveIssue::Incomplete)?)
-        {
+        bytes = bytes.checked_add(count as u64).ok_or(LiveIssue::Overflow)?;
+        if bytes > maximum {
             return Err(LiveIssue::Incomplete);
         }
-        let image = OpenOptions::new()
+        digest.update(&buffer[..count]);
+    }
+    if bytes != maximum {
+        return Err(LiveIssue::Incomplete);
+    }
+    Ok(format!("{:x}", digest.finalize()))
+}
+impl Inventory {
+    pub fn new(peer: &File, domains: Arc<OwnedProcessDomains>) -> LiveResult<Self> {
+        let peer_bytes = peer.metadata().map_err(|_| LiveIssue::PeerUntrusted)?.len();
+        let digest = image_digest(
+            &mut peer.try_clone().map_err(|_| LiveIssue::PeerUntrusted)?,
+            peer_bytes,
+        )?;
+        Ok(Self {
+            images: Arc::new(Mutex::new(BTreeMap::new())),
+            peer_bytes,
+            peer_digest: digest,
+            domains,
+        })
+    }
+    fn same_peer_image(&self, pid: u32, birth: u64, path: &Path) -> LiveResult<bool> {
+        let mut cache = self.images.lock().map_err(|_| LiveIssue::Incomplete)?;
+        if let Some(known) = cache.get(&(pid, birth)) {
+            if known.path != path {
+                return Err(LiveIssue::Incomplete);
+            }
+            return Ok(known.matches);
+        }
+        let mut image = match OpenOptions::new()
             .read(true)
             .share_mode(1)
             .custom_flags(0x0020_0000)
             .open(path)
-            .map_err(|_| LiveIssue::Incomplete)?;
+        {
+            Ok(file) => file,
+            Err(_) => return Ok(false),
+        };
         let metadata = image.metadata().map_err(|_| LiveIssue::Incomplete)?;
         if !metadata.is_file() || metadata.file_attributes() & 0x400 != 0 {
-            return Err(LiveIssue::Incomplete);
-        }
-        let publisher = crate::readers::local_cli_quota::antigravity::publisher_of(path)
-            .ok_or(LiveIssue::Incomplete)?;
-        let publisher = publisher
-            .chars()
-            .filter(|c| c.is_ascii_alphanumeric())
-            .flat_map(char::to_lowercase)
-            .collect::<String>();
-        if publisher.is_empty()
-            || matches!(publisher.as_str(), "openai" | "openaillc" | "openaiinc")
-        {
             return Ok(false);
         }
-        cache.insert(
-            (pid, birth),
-            IndependentImage {
-                _image: image,
-                path: path.to_owned(),
-            },
-        );
-        Ok(true)
+        if metadata.len() != self.peer_bytes {
+            return Ok(false);
+        }
+        let matches = image_digest(&mut image, self.peer_bytes)? == self.peer_digest;
+        if cache.len() < 1_024 {
+            cache.insert(
+                (pid, birth),
+                ImageMatch {
+                    _image: image,
+                    path: path.to_owned(),
+                    matches,
+                },
+            );
+        }
+        Ok(matches)
     }
 }
 
@@ -194,31 +235,60 @@ fn scan(
         }
         let named_owner = activity::potential_codex(&entry.name)
             || activity::legacy_manager(&entry.name)
-            || activity::script_host(&entry.name);
-        // Inspect every process in our native session, plus potential Codex or
-        // script owners in other sessions. Access/session failures remain unknown.
-        if session(entry.pid)? != current_session && !named_owner {
+            || entry.pid == peer_pid;
+        // Enumerate the whole snapshot, then inspect the supported Codex domain.
+        // Unrelated third-party publishers are not product admission criteria.
+        if session(entry.pid).ok() != Some(current_session) && !named_owner {
             continue;
         }
         let raw = unsafe { OpenProcess(0x0010_1000, 0, entry.pid) };
         if raw.is_null() {
-            return Err(LiveIssue::Incomplete);
-        }
-        let process = OwnedHandle(raw as usize);
-        let created = process_created(process.raw())?;
-        if !same_user(process.raw(), &current_user)? {
+            if named_owner {
+                return Err(LiveIssue::Incomplete);
+            }
             continue;
         }
-        recheck_process(process.raw(), created)?;
-        let path = process_image(process.raw())?;
+        let process = OwnedHandle(raw as usize);
+        let path = match process_image(process.raw()) {
+            Ok(path) => path,
+            Err(error) => {
+                if named_owner {
+                    return Err(error);
+                }
+                continue;
+            }
+        };
+        let related_path = activity::potential_codex(&path.to_string_lossy());
+        let created = match process_created(process.raw()) {
+            Ok(created) => created,
+            Err(error) => {
+                if named_owner || related_path {
+                    return Err(error);
+                }
+                continue;
+            }
+        };
+        match same_user(process.raw(), &current_user) {
+            Ok(true) => {}
+            Ok(false) => continue,
+            Err(error) => {
+                if named_owner || related_path {
+                    return Err(error);
+                }
+                continue;
+            }
+        }
         let actual_name = path
             .file_name()
             .and_then(|s| s.to_str())
             .ok_or(LiveIssue::Incomplete)?;
-        if !actual_name.eq_ignore_ascii_case(&entry.name) {
+        if !actual_name.eq_ignore_ascii_case(&entry.name) && (named_owner || related_path) {
             return Err(LiveIssue::Incomplete);
         }
         let mut allowed = false;
+        allowed |= inventory
+            .domains
+            .contains(process.raw() as usize, created)?;
         for receipt in permitted {
             if receipt
                 .contains_process(process.raw() as usize, created)
@@ -234,13 +304,18 @@ fn scan(
             ProcessClass::OfficialPeer
         } else if activity::legacy_manager(&entry.name) {
             ProcessClass::LegacyManager
-        } else if named_owner || activity::potential_codex(&path.to_string_lossy()) {
+        } else if activity::related_codex(
+            &entry.name,
+            &path.to_string_lossy(),
+            inventory.same_peer_image(entry.pid, created, &path)?,
+        ) {
             ProcessClass::Unknown
-        } else if inventory.independent(entry.pid, created, &path)? {
-            ProcessClass::Independent
         } else {
-            ProcessClass::Unknown
+            // Absence of a Codex relation does not certify that this unrelated
+            // program is idle. It simply lies outside the supported Codex domain.
+            continue;
         };
+        recheck_process(process.raw(), created)?;
         rows.push(ProcessObservation {
             identity: ProcessIdentity {
                 pid: entry.pid,

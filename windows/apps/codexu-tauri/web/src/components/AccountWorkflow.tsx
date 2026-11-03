@@ -2,11 +2,12 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
+import { DispatchWindowEditor } from './DispatchWindowEditor';
 import { RefreshCw } from 'lucide-react';
 import { useI18n } from '../i18n/I18nProvider';
 import { acceptWorkflowState, parseWorkflowModels, parseWorkflowState, workflowError, type AccountWorkflowState, type WorkflowModel } from '../utils/accountWorkflow';
 
-export function AccountWorkflow({ profileId, initiallyExpanded = true }: { profileId: string; initiallyExpanded?: boolean }) {
+function AccountWorkflowContent({ profileId, initiallyExpanded = true }: { profileId: string; initiallyExpanded?: boolean }) {
   const { language } = useI18n();
   const chinese = language === 'zh-Hans';
   const text = (zh: string, en: string) => chinese ? zh : en;
@@ -98,6 +99,10 @@ export function AccountWorkflow({ profileId, initiallyExpanded = true }: { profi
           </label>
           <span className="text-xs text-secondary">{saving ? text('正在保存…', 'Saving…') : text('关闭后停止接收新启动；已打开的终端可单独结束。', 'Off prevents new launches; open terminals can be stopped separately.')}</span>
         </div>
+        <div className="flex items-center gap-2 text-xs text-secondary" data-testid={`workflow-dispatch-code-${profileId}`}>
+          <span>{text('派单代码', 'Dispatch code')}</span>
+          <code className="rounded border border-theme px-1.5 py-0.5 text-primary">{preference?.dispatch_code ?? text('连接派单服务时分配', 'Assigned when dispatch is connected')}</code>
+        </div>
         <div className="flex flex-wrap items-end gap-2">
           <label className="min-w-0 flex-1 basis-48 text-xs text-secondary">{text('模型', 'Model')}
             <select className="mt-1 block w-full rounded-lg border border-theme bg-surface-inset px-2 py-2 text-sm text-primary" aria-label={text('模型', 'Model')} value={preference?.model ?? ''} disabled={saving || readingModels || models.length === 0} onChange={event => {
@@ -117,6 +122,7 @@ export function AccountWorkflow({ profileId, initiallyExpanded = true }: { profi
           </label>
           <button type="button" className="glass-button px-3 py-2 text-xs" disabled={readingModels || !state.supported} onClick={() => void readModels()}>{readingModels ? text('读取中…', 'Reading…') : text('读取可用模型', 'Read available models')}</button>
         </div>
+        <DispatchWindowEditor value={preference?.dispatch_window} revision={preference?.revision ?? 0} saving={saving} chinese={chinese} onSave={window => save({ kind: 'dispatch_window', window })} />
         <div className="flex flex-wrap items-center gap-2">
           <button type="button" className="glass-button-solid px-3 py-2 text-xs" disabled={!state.supported || !preference?.participating || active || starting || saving} onClick={() => void start()}>{starting ? text('正在准备…', 'Preparing…') : text('选择工作目录并打开 Codex', 'Choose workspace and open Codex')}</button>
           {(active || starting) && <button type="button" className="glass-button px-3 py-2 text-xs" disabled={stopping} onClick={() => setConfirmStop(true)}>{text('结束此终端', 'Stop this terminal')}</button>}
@@ -133,4 +139,8 @@ export function AccountWorkflow({ profileId, initiallyExpanded = true }: { profi
       {error !== null && <p role="alert" className="text-xs text-status-error">{workflowError(error, chinese)}</p>}
     </div>}
   </section>;
+}
+
+export function AccountWorkflow(props: { profileId: string; initiallyExpanded?: boolean }) {
+  return <AccountWorkflowContent key={props.profileId} {...props} />;
 }

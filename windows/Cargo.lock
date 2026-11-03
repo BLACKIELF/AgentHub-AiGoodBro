@@ -499,6 +499,7 @@ dependencies = [
  "toml 0.8.2",
  "tracing",
  "uds_windows",
+ "unicode-segmentation",
  "url",
  "windows",
 ]
@@ -508,11 +509,14 @@ name = "codexu-tauri"
 version = "3.0.0"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "chrono",
  "codexu-core",
  "dirs 5.0.1",
+ "png 0.18.1",
  "serde",
  "serde_json",
+ "sha2",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
@@ -521,6 +525,8 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "webview2-com",
+ "windows",
 ]
 
 [[package]]

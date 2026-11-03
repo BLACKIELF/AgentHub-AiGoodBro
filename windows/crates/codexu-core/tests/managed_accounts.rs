@@ -377,6 +377,31 @@ impl Fixture {
 }
 
 #[test]
+fn first_verified_callback_runs_after_writer_release_and_not_after_relogin() {
+    let f = Fixture::new(true);
+    let id = f.create("New account");
+    let (send, receive) = std::sync::mpsc::channel();
+    let manager = Arc::downgrade(&f.manager);
+    let gate = f.gate.clone();
+    f.manager
+        .install_first_verified_listener(Arc::new(move |id| {
+            assert!(!gate.writer_busy.load(Ordering::Acquire));
+            let manager = manager.upgrade().unwrap();
+            assert!(manager
+                .list_managed_accounts()
+                .unwrap()
+                .iter()
+                .any(|account| account.id == id));
+            send.send(id.to_owned()).unwrap();
+        }))
+        .unwrap();
+    assert_eq!(f.login(&id).phase, "verified");
+    assert_eq!(receive.recv_timeout(Duration::from_secs(2)).unwrap(), id);
+    assert_eq!(f.login(&id).phase, "verified");
+    assert!(receive.recv_timeout(Duration::from_millis(100)).is_err());
+}
+
+#[test]
 fn encrypted_store_survives_reopen_without_exposing_credentials_or_link_semantics() {
     let f = Fixture::new(true);
     let id = f.create("Primary");

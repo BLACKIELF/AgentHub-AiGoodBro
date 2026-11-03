@@ -26,7 +26,7 @@ const en = {
   },
   header: {
     updated: 'Updated {time}',
-    codexIcon: 'Codex Account Manager Next icon',
+    codexIcon: 'AiGoodBro icon',
   },
   dashboard: {
     tabs: {
@@ -306,7 +306,7 @@ const zhHans: MessageShape<typeof en> = {
     notAvailable: '不可用',
     all: '全部',
   },
-  header: { updated: '更新于 {time}', codexIcon: 'Codex Account Manager Next 图标' },
+  header: { updated: '更新于 {time}', codexIcon: 'AiGoodBro 图标' },
   dashboard: {
     tabs: { tasks: '任务', leadership: 'AI 领导力', usage: '用量', projects: '项目', skills: 'Skills' },
     aria: { lowerTabs: '仪表盘下方标签', localTokenMetrics: '本地 Token 指标' },

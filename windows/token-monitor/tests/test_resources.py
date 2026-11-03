@@ -9,6 +9,8 @@ import sys
 import tarfile
 import tempfile
 import unittest
+from unittest import mock
+from types import SimpleNamespace
 
 SCRIPTS=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(SCRIPTS))
@@ -17,6 +19,63 @@ import scanner_source
 import build_scanner
 
 class ResourceBoundaries(unittest.TestCase):
+    def test_reused_scanner_requires_its_exact_tested_bytes_and_receipts(self):
+        # Stop at the first fixed-asset fetch: this exercises the real reuse
+        # validation without network access or claiming a synthetic PE runs.
+        with tempfile.TemporaryDirectory(prefix='tm-reused-scanner-') as temporary:
+            root = Path(temporary)
+            scanner = root / 'scanner'
+            scanner.mkdir()
+            binary = bytearray(128)
+            binary[:2] = b'MZ'
+            struct.pack_into('<I', binary, 60, 64)
+            binary[64:68] = b'PE\0\0'
+            struct.pack_into('<H', binary, 68, 0x8664)
+            binary = bytes(binary)
+            (scanner / 'tokscale.exe').write_bytes(binary)
+            regression = {'binarySHA256': prepare.digest(binary), 'syntheticOnly': True,
+                          'realAccountsRead': False, 'realHistoryScanned': False,
+                          'cases': [{'sourceUnchanged': True}] * 15}
+            regression_dir = scanner / 'synthetic-regression'
+            regression_dir.mkdir()
+            regression_bytes = prepare.canonical(regression)
+            (regression_dir / 'receipt.json').write_bytes(regression_bytes)
+            receipt = {'schemaVersion': 1, 'baseCommit': prepare.BASE,
+                       'patchSHA256': prepare.PATCH, 'sourceInventorySHA256': prepare.INVENTORY,
+                       'sourceArchiveSHA256': '5f7fcc2872b40d61319ef88a847c9ef4bb0ef240cfd16139a4fa65de03f47503',
+                       'target': 'x86_64-pc-windows-msvc', 'binarySHA256': prepare.digest(binary),
+                       'syntheticRegressionPassed': True, 'syntheticCases': 15,
+                       'unitTests': [{'passed': 1}] * 4,
+                       'syntheticRegressionReceiptSHA256': prepare.digest(regression_bytes)}
+            receipt_path = scanner / 'SCANNER-RECEIPT.json'
+            receipt_path.write_bytes(prepare.canonical(receipt))
+            args = SimpleNamespace(output=root / 'resources', cache=root / 'cache',
+                                   scanner=scanner / 'tokscale.exe', scanner_receipt=receipt_path,
+                                   arch='x64', download=False)
+            with mock.patch.object(prepare, 'fetch', side_effect=RuntimeError('asset_boundary')) as fetch:
+                with self.assertRaisesRegex(RuntimeError, 'asset_boundary'):
+                    prepare.stage(args)
+                self.assertEqual(fetch.call_count, 1)
+            self.assertEqual(args.scanner.read_bytes(), binary)
+            self.assertFalse(args.output.exists())
+            for broken in ('bytes', 'receipt', 'regression', 'missing'):
+                args.scanner.write_bytes(binary)
+                receipt_path.write_bytes(prepare.canonical(receipt))
+                (regression_dir / 'receipt.json').write_bytes(regression_bytes)
+                if broken == 'bytes':
+                    args.scanner.write_bytes(binary + b'tampered')
+                elif broken == 'receipt':
+                    receipt_path.write_bytes(prepare.canonical({**receipt, 'binarySHA256': '0' * 64}))
+                elif broken == 'regression':
+                    (regression_dir / 'receipt.json').write_bytes(b'{}')
+                else:
+                    receipt_path.unlink()
+                with mock.patch.object(prepare, 'fetch') as fetch:
+                    with self.assertRaises((ValueError, FileNotFoundError)):
+                        prepare.stage(args)
+                    fetch.assert_not_called()
+                self.assertFalse(args.output.exists())
+
     def test_toolchain_homes_are_resolved_before_fixture_userprofile(self):
         with tempfile.TemporaryDirectory(prefix='tm-tool-homes-')as temporary:
             home=Path(temporary);(home/'.cargo').mkdir();(home/'.rustup').mkdir()

@@ -97,6 +97,9 @@ class StagingIntegrity(unittest.TestCase):
             self.assertIn("dialControl(ctx, b.socket)", (staged / "bridge.go").read_text(encoding="utf-8"))
             self.assertTrue((staged / "desktop.go").read_text(encoding="utf-8").startswith("//go:build !windows"))
             self.assertNotIn("syscall.O_NOFOLLOW", (staged / "cooldown.go").read_text(encoding="utf-8"))
+            hot_registration = (staged / "hot_registration.go").read_text(encoding="utf-8")
+            self.assertNotIn("syscall.O_NOFOLLOW", hot_registration)
+            self.assertIn('platformCooldownOpen(s.root, "cooldown.json", os.O_RDONLY, 0)', hot_registration)
             self.assertEqual((staged / "upstream-patches/manifest.json").read_bytes(), (build.SHARED / "upstream-patches/manifest.json").read_bytes())
 
     def test_platform_drift_aborts_before_a_success_receipt(self):

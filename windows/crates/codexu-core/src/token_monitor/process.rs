@@ -216,9 +216,17 @@ pub(super) struct OwnedRuntime {
     _resources: Arc<HeldResources>,
     #[cfg(windows)]
     job: Arc<Job>,
+    _domain: Option<crate::automatic_switch::live::OwnedDomainRegistration>,
 }
 impl OwnedRuntime {
     pub fn spawn(resources: &Path, data: &Path) -> Result<Self> {
+        Self::spawn_with_domains(resources, data, None)
+    }
+    pub fn spawn_with_domains(
+        resources: &Path,
+        data: &Path,
+        domains: Option<Arc<crate::automatic_switch::live::OwnedProcessDomains>>,
+    ) -> Result<Self> {
         cleanup_unassigned(Duration::from_secs(2))?;
         let resources_held = Arc::new(verify_resources(resources)?);
         let home = data.join("runtime-home");
@@ -289,14 +297,39 @@ impl OwnedRuntime {
         };
         let stdin = child.stdin.take();
         let stdout = child.stdout.take();
-        Ok(Self {
+        let mut runtime = Self {
             child,
             stdin,
             stdout,
             _resources: resources_held,
             #[cfg(windows)]
             job,
-        })
+            _domain: None,
+        };
+        #[cfg(windows)]
+        if let Some(domains) = domains {
+            use std::os::windows::io::{AsRawHandle, BorrowedHandle};
+            // The fixed host has no configure frame yet. All resources were
+            // verified/held above and its actual Job has already been assigned.
+            let registration = unsafe {
+                domains.register_native(
+                    BorrowedHandle::borrow_raw(runtime.child.as_raw_handle()),
+                    BorrowedHandle::borrow_raw(runtime.job.0 as *mut std::ffi::c_void),
+                    runtime._resources.clone(),
+                    crate::automatic_switch::live::OwnedDomainPurpose::PassiveStatistics,
+                )
+            };
+            match registration {
+                Ok(receipt) => runtime._domain = Some(receipt),
+                Err(_) => {
+                    runtime.stop()?;
+                    return fail("statistics_process_domain_unavailable");
+                }
+            }
+        }
+        #[cfg(not(windows))]
+        let _ = domains;
+        Ok(runtime)
     }
     pub fn cancellation(&self) -> CancelHandle {
         CancelHandle {

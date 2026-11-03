@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const path = require('node:path');
 const fs = require('node:fs');
 const os = require('node:os');
-const { createRuntime, publicSnapshot, period, history, sessions } = require('../service.cjs');
+const { createRuntime, publicSnapshot, period, history, sessions, retainWindowsEnvironment } = require('../service.cjs');
 const root = path.resolve(__dirname, '../../..');
 const sourceEngine = path.join(root, 'Companion/TokenMonitorEngine');
 const pinned = {repository:'Javis603/token-monitor',commit:'5d2db368d8313415763860d594de00e46a663418',version:'0.68.0'};
@@ -36,11 +36,65 @@ test('session history distinguishes unknown and empty and retains only valid mas
   assert.deepEqual(sessions({[key]:row}),{[key]:row});
   for(const value of [{raw:row},{[key]:[]},{[key]:{client:'private@example.invalid'}},{[key]:{turnEnded:'false'}},{[key]:{lastUsedAt:'2026-02-30T00:00:00Z'}},{[key]:{totalTokens:-1}},{[key]:{models:{'/private/model':1}}}])assert.throws(()=>sessions(value));
 });
+test('history availability comes only from the engine flag, never from empty history',()=>{
+  const value=response();
+  assert.deepEqual(publicSnapshot(value,null).payload.usage,{historyAvailable:null});
+  for(const flag of [true,false]){
+    value.payload.usage={historyAvailable:flag,privateDetail:'must not leave host'};
+    assert.deepEqual(publicSnapshot(value,null).payload.usage,{historyAvailable:flag});
+  }
+  value.payload.usage.historyAvailable='true';
+  assert.deepEqual(publicSnapshot(value,null).payload.usage,{historyAvailable:null});
+});
+test('actual upstream unknown session metadata retains usage through sanitization and projection',()=>{
+  const {normalizePeriod}=require(path.join(sourceEngine,'upstream/src/shared/usage.js'));
+  const {sanitize}=require(path.join(sourceEngine,'lib/sanitize.cjs'));
+  const upstream=normalizePeriod({totalTokens:160,sessions:{'codex:synthetic':{client:'codex',totalTokens:160,models:{'codex-test-model':160}}}});
+  assert.equal(Object.keys(upstream.sessions).length,1);
+  const raw=Object.values(upstream.sessions)[0];
+  for(const field of ['sessionKind','startedAt','lastUsedAt'])assert.equal(raw[field],'');
+  const projected=period(sanitize(upstream));
+  const [[key,row]]=Object.entries(projected.sessions);
+  assert.match(key,/^opaque-[a-f0-9]{24}$/);
+  assert.equal(projected.totalTokens,160);assert.equal(row.totalTokens,160);
+  assert.equal(row.client,'codex');assert.deepEqual(row.models,{'codex-test-model':160});
+  for(const field of ['sessionKind','startedAt','lastUsedAt']){
+    assert.equal(Object.hasOwn(row,field),false);
+    for(const invalid of [false,42,{},'private@example.invalid'])assert.throws(()=>sessions({[key]:{[field]:invalid}}));
+  }
+  assert.throws(()=>sessions({[key]:{client:''}}));
+});
 test('projection rejects private identities, nonfinite counters, excess history and wrong provenance',()=>{
   for(const key of ['private@example.invalid','C:\\Users\\private','/home/private','https://invalid.test','sk-abcdefghijk'])assert.throws(()=>period({models:{[key]:1}}));
   assert.throws(()=>period({totalTokens:NaN}));
   assert.throws(()=>history({daily:Array(10001).fill({date:'2026-01-01'})}));
   const wrong=response();wrong.engine={...pinned,commit:'old'};assert.throws(()=>publicSnapshot(wrong,null));
+});
+test('Windows scope retains only OS plumbing during actual targets and restores outer environment',async()=>{
+  const scope={...require(path.join(sourceEngine,'lib/runtime/source-scope.cjs'))};
+  const outer={...process.env},cwd=process.cwd();
+  const retained={SystemRoot:'synthetic-system',TEMP:os.tmpdir(),TMP:os.tmpdir(),API_KEY:'must not inherit',HTTPS_PROXY:'must not inherit'};
+  retainWindowsEnvironment(scope,retained);
+  const wrapped=scope.withTarget;retainWindowsEnvironment(scope,{SystemRoot:'must not replace'});assert.equal(scope.withTarget,wrapped);
+  const target={pathRole:'codexHome',root:cwd,providerIds:['codex']};
+  try{
+    for(const failure of [false,true]){
+      const collected=scope.withTarget(target,'UTC',async options=>{
+        for(const key of ['SystemRoot','TEMP','TMP']){assert.equal(options.env[key],retained[key]);assert.equal(process.env[key],retained[key]);}
+        assert.equal(options.env.WINDIR,retained.SystemRoot);
+        assert.equal(options.env.APPDATA,path.join(options.homeDir,'AppData/Roaming'));
+        assert.equal(options.env.LOCALAPPDATA,path.join(options.homeDir,'AppData/Local'));
+        assert.equal(process.env.HOME,options.homeDir);assert.equal(process.env.CODEX_HOME,cwd);
+        for(const key of ['API_KEY','HTTPS_PROXY']){assert.equal(options.env[key],undefined);assert.equal(process.env[key],undefined);}
+        assert.equal(process.env.PATH,'');
+        await Promise.resolve();if(failure)throw Error('synthetic-failure');
+      });
+      if(failure)await assert.rejects(collected,/synthetic-failure/);else await collected;
+      assert.deepEqual({...process.env},outer);assert.equal(process.cwd(),cwd);
+    }
+    const prepared=scope.scopedEnvironment(cwd,cwd,'UTC');
+    assert.equal(prepared.SystemRoot,retained.SystemRoot);assert.equal(prepared.API_KEY,undefined);
+  }finally{scope.disposeTarget(target);}
 });
 test('live tracker anchors initial totals then uses actual timed deltas; inactivity and midnight clear correctly',async()=>{
   let n=0;const h=harness(async()=>response(n));await h.runtime.configure(configure());await settle(h.runtime);assert.equal(h.runtime.sample(),null);
@@ -76,6 +130,8 @@ test('history graph work is reused for 60 seconds, refreshed explicitly and rese
 
 test('actual pinned handler preserves two providers and independent history/cost with synthetic runners', {skip:!process.env.TOKEN_MONITOR_TEST_ENGINE}, async()=>{
   const engine=path.resolve(process.env.TOKEN_MONITOR_TEST_ENGINE);
+  // Match the native host's scope setup before handler consumers load it.
+  if(process.platform==='win32')retainWindowsEnvironment(require(path.join(engine,'lib/runtime/source-scope.cjs')),process.env);
   const loader=require(path.join(engine,'lib/upstream/loader.cjs'));
   const handler=require(path.join(engine,'lib/handler.cjs')).handleRequest;
   const fixture=require(path.join(root,'tests/token-monitor-engine/cases/helpers/fixtures.cjs'));
@@ -89,6 +145,9 @@ test('actual pinned handler preserves two providers and independent history/cost
     const event=events.find(e=>e.event==='snapshot');assert.ok(event,JSON.stringify(events));const out=event.snapshot;
     assert.equal(out.status,'ok');assert.equal(out.payload.aggregate.today.totalTokens,300);assert.equal(out.payload.aggregate.today.clients.codex,100);assert.equal(out.payload.aggregate.today.clients.claude,200);
     assert.equal(out.payload.history.daily[0].tokens,100);assert.equal(out.payload.history.daily[0].perClient.codex.tokens,30);assert.equal(out.payload.history.daily[0].perClient.claude.tokens,70);assert.equal(out.payload.history.daily[0].cost,10);
+    // This fixture supplies graph rows but no complete upstream usage history.
+    // A visible graph must not promote the Engine's false flag to true.
+    assert.equal(out.payload.usage.historyAvailable,false);
     assert.ok(calls.every(([,id])=>['codex','claude'].includes(id)));const graphCalls=calls.filter(([kind])=>kind==='graph').length;assert.equal(graphCalls,2);
     clock+=2000;await settle(runtime);assert.equal(calls.filter(([kind])=>kind==='graph').length,graphCalls);
     assert.equal(out.authority,undefined);assert.equal(JSON.stringify(out).includes(home),false);

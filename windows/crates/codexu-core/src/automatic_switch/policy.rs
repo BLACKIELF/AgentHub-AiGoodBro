@@ -154,6 +154,27 @@ impl SafetySnapshot {
         generation: Option<&str>,
         now: u64,
     ) -> Result<()> {
+        self.validate(identity, credential_generation, generation, now, false)
+    }
+    /// An opt-in pause may observe running turns, but it does not relax native
+    /// identity, complete roster, human-input, legacy or foreground guards.
+    pub fn validate_pause(
+        &self,
+        identity: &str,
+        credential_generation: &str,
+        generation: Option<&str>,
+        now: u64,
+    ) -> Result<()> {
+        self.validate(identity, credential_generation, generation, now, true)
+    }
+    fn validate(
+        &self,
+        identity: &str,
+        credential_generation: &str,
+        generation: Option<&str>,
+        now: u64,
+        allow_running: bool,
+    ) -> Result<()> {
         if self.identity_hash != identity
             || !super::valid_hash(identity)
             || self.credential_generation != credential_generation
@@ -179,11 +200,8 @@ impl SafetySnapshot {
         if self.tasks.iter().any(|state| {
             matches!(
                 state,
-                TaskState::Running
-                    | TaskState::WaitingInput
-                    | TaskState::Recorded
-                    | TaskState::Disconnected
-            )
+                TaskState::WaitingInput | TaskState::Recorded | TaskState::Disconnected
+            ) || (!allow_running && *state == TaskState::Running)
         }) {
             return Err(Failure::TaskBusy);
         }

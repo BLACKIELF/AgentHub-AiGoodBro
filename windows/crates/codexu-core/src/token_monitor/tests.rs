@@ -133,6 +133,7 @@ fn service(data: PathBuf, sources: Vec<TokenMonitorSource>) -> Arc<TokenMonitorS
     Arc::new(TokenMonitorService {
         resources: data.join("resources"),
         data,
+        owned_domains: None,
         timezone: Mutex::new(String::new()),
         sources: Mutex::new(sources),
         enabled: Mutex::new(enabled),
@@ -281,6 +282,19 @@ fn actual_pinned_handler_projection_passes_native_gate_without_losing_multi_sour
     );
     assert_eq!(snapshot["payload"]["history"]["daily"][0]["tokens"], 100);
     assert_eq!(snapshot["payload"]["history"]["daily"][0]["cost"], 10);
+    for available in [json!(true), json!(false), Value::Null] {
+        let mut projected = snapshot.clone();
+        projected["payload"]["usage"] = json!({"historyAvailable":available});
+        validate_snapshot(&projected, &sources).unwrap();
+    }
+    for usage in [
+        json!({"historyAvailable":"true"}),
+        json!({"historyAvailable":true,"unverified":true}),
+    ] {
+        let mut projected = snapshot.clone();
+        projected["payload"]["usage"] = usage;
+        assert!(validate_snapshot(&projected, &sources).is_err());
+    }
     let mut wrong = snapshot.clone();
     wrong["payload"]["history"]["daily"][0]["perClient"]["codex"]["prompt"] = json!("private");
     assert!(validate_snapshot(&wrong, &sources).is_err());

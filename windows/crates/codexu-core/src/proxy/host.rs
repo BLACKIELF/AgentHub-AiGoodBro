@@ -161,6 +161,16 @@ impl ProxyHost {
         Ok(())
     }
     pub(crate) fn plus_policy(&self, limit: f64) -> Result<ProxyPreferences, ProxyFailure> {
+        self.quota_policy(limit, false)
+    }
+    pub(crate) fn shared_quota_policy(&self, limit: f64) -> Result<ProxyPreferences, ProxyFailure> {
+        self.quota_policy(limit, true)
+    }
+    fn quota_policy(
+        &self,
+        limit: f64,
+        include_pro: bool,
+    ) -> Result<ProxyPreferences, ProxyFailure> {
         if !limit.is_finite() || !(0.0..=100.0).contains(&limit) {
             return Err(ProxyFailure::InvalidSettings);
         }
@@ -168,9 +178,11 @@ impl ProxyHost {
         let mut targets = vec![];
         for id in &trusted {
             let e = self.gate.evidence(id)?;
-            if e.plan.as_deref() != Some("plus") {
-                continue;
-            }
+            let pro = match e.plan.as_deref() {
+                Some("plus") => false,
+                Some("pro" | "prolite") if include_pro => true,
+                _ => continue,
+            };
             if !e.identity_verified
                 || e.is_system_home
                 || e.profile_id != *id
@@ -179,18 +191,20 @@ impl ProxyHost {
             {
                 return Err(ProxyFailure::Identity);
             }
-            targets.push(id.clone());
+            targets.push((id.clone(), pro));
         }
         if targets.is_empty() {
             return Err(ProxyFailure::Identity);
         }
         let mut next = self.preferences.clone();
         next.known_ids = trusted;
-        for id in targets {
-            next.account_policies
-                .entry(id)
-                .or_default()
-                .five_hour_used_limit = limit;
+        for (id, pro) in targets {
+            let policy = next.account_policies.entry(id).or_default();
+            if pro {
+                policy.seven_day_used_limit = limit;
+            } else {
+                policy.five_hour_used_limit = limit;
+            }
         }
         self.validate_update(&next)?;
         Ok(next)
@@ -263,6 +277,49 @@ impl ProxyHost {
     }
     pub(crate) fn running_id(&self) -> Option<String> {
         self.running.then(|| self.run_id.clone())
+    }
+    pub(crate) fn registration_candidate(
+        &self,
+        id: &str,
+    ) -> Result<AccountRegistration, ProxyFailure> {
+        if !self.trusted_ids()?.contains(id) {
+            return Err(ProxyFailure::Identity);
+        }
+        let candidate = self.gate.registration(id)?;
+        if candidate.profile_id != id
+            || !policy::valid_hash(&candidate.identity_hash)
+            || candidate.identity_hash != candidate.identity_hash.to_ascii_lowercase()
+            || self.registered.iter().any(|(other, identity)| {
+                (other == id && identity != &candidate.identity_hash)
+                    || (!self.registered.contains_key(id)
+                        && other != id
+                        && identity == &candidate.identity_hash)
+            })
+        {
+            return Err(ProxyFailure::Identity);
+        }
+        Ok(candidate)
+    }
+    pub(crate) fn is_registered(&self, id: &str) -> bool {
+        self.registered.contains_key(id)
+    }
+    /// Called only after the owned helper's matching registration acknowledgement.
+    /// Existing request memberships remain frozen; new requests can discover it.
+    pub(crate) fn commit_registration(
+        &mut self,
+        run: &str,
+        id: &str,
+        identity: &str,
+    ) -> Result<(), ProxyFailure> {
+        if !self.run_matches(run) {
+            return Err(ProxyFailure::Stopping);
+        }
+        let current = self.registration_candidate(id)?;
+        if current.identity_hash != identity || self.registered.len() >= 100 {
+            return Err(ProxyFailure::Identity);
+        }
+        self.registered.insert(id.to_owned(), identity.to_owned());
+        Ok(())
     }
     pub(crate) fn has_unretired_run(&self) -> bool {
         !self.run_id.is_empty() || !self.leases.is_empty()

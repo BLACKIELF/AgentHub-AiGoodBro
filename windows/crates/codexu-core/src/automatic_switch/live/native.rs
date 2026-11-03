@@ -342,6 +342,7 @@ fn authenticate(
     directory: File,
     scope: &SystemDaemonScope,
     connect_started: u64,
+    domains: Arc<OwnedProcessDomains>,
 ) -> LiveResult<Peer> {
     let pid = peer_pid(socket)?;
     let process = unsafe { OpenProcess(0x0010_1000, 0, pid) };
@@ -392,6 +393,7 @@ fn authenticate(
     {
         return Err(LiveIssue::PeerUntrusted);
     }
+    let inventory = inventory::Inventory::new(&image, domains)?;
     let peer = Peer {
         _directory: directory,
         _image: image,
@@ -399,7 +401,7 @@ fn authenticate(
         created,
         pid,
         foreground: inventory::Foreground::new(pid)?,
-        inventory: inventory::Inventory::default(),
+        inventory,
     };
     peer.recheck()?;
     Ok(peer)
@@ -499,6 +501,7 @@ async fn socket_connect(path: &Path, stop: &AtomicBool) -> LiveResult<uds_window
 pub(super) async fn connect(
     scope: &SystemDaemonScope,
     stop: Arc<AtomicBool>,
+    domains: Arc<OwnedProcessDomains>,
 ) -> LiveResult<Connection> {
     let (path, directory) = private_socket_directory(&scope.canonical_home)?;
     let mut started = FileTime { low: 0, high: 0 };
@@ -507,7 +510,13 @@ pub(super) async fn connect(
     }
     let started = (u64::from(started.high) << 32) | u64::from(started.low);
     let stream = socket_connect(&path, &stop).await?;
-    let peer = authenticate(stream.as_raw_socket() as usize, directory, scope, started)?;
+    let peer = authenticate(
+        stream.as_raw_socket() as usize,
+        directory,
+        scope,
+        started,
+        domains,
+    )?;
     // Nothing has been sent to the peer before kernel/token/image verification.
     let stream = async_io::Async::new(LocalStream(stream))
         .map_err(|_| LiveIssue::Unavailable)?

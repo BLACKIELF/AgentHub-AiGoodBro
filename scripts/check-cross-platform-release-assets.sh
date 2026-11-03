@@ -30,8 +30,8 @@ windows_asset() {
 ASSETS=(
   "$(mac_asset arm64)"
   "$(mac_asset x86_64)"
-  "$(windows_asset "CodexAccountManagerNext-${VERSION}-windows-x86_64.msi")"
-  "$(windows_asset "CodexAccountManagerNext-${VERSION}-windows-x86_64-setup.exe")"
+  "$(windows_asset "AiGoodBro-${VERSION}-windows-x86_64.msi")"
+  "$(windows_asset "AiGoodBro-${VERSION}-windows-x86_64-setup.exe")"
 )
 
 hash_file() {
@@ -56,4 +56,4 @@ for asset in "${ASSETS[@]}"; do
   echo "verified: $asset"
 done
 
-echo "Cross-platform release assets verified for Codex Account Manager Next $VERSION"
+echo "Cross-platform release assets verified for AiGoodBro $VERSION"

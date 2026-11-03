@@ -5,7 +5,7 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "CLI probe tool for Codex Account Manager Next on Windows"
+description = "CLI probe tool for AiGoodBro on Windows"
 
 [[bin]]
 name = "codexu-probe"

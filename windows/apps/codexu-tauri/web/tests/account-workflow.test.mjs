@@ -4,7 +4,7 @@ import test from 'node:test';
 import ts from 'typescript';
 const source = await readFile(new URL('../src/utils/accountWorkflow.ts', import.meta.url), 'utf8');
 const code = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.ES2020 } }).outputText;
-const { parseWorkflowState, parseWorkflowModels, acceptWorkflowState, workflowError } = await import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}`);
+const { parseWorkflowState, parseWorkflowModels, acceptWorkflowState, workflowError, parseDispatchWindow } = await import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}`);
 const state = { profile_id: '1', preference: { participating: false, model: null, effort: null, revision: 3 }, phase: 'idle', started_at: null, supported: true };
 test('a delayed status response cannot re-enable an account that opted out', () => {
   const incoming = { ...state, phase: 'checking', preference: { ...state.preference, participating: true, revision: 2 } };
@@ -25,4 +25,12 @@ test('model choices only accept complete advertised reasoning capabilities', () 
   for (const value of [[], [row, row], [{ ...row, default_effort: 'ultra' }], [{ ...row, efforts: ['high', 'high'] }], [{ ...row, label: 'private@example.invalid' }]]) assert.throws(() => parseWorkflowModels(value));
   assert.match(workflowError('save_failed', false), /previous setting was retained/);
   assert.doesNotMatch(workflowError('private runtime data', false), /private runtime data/);
+});
+
+test('dispatch window accepts overnight and empty rules but rejects malformed or unknown timezone data', () => {
+  const window = { mode: 'onlyWithin', timeZoneIdentifier: 'Asia/Shanghai', intervals: [{ startMinute: 1380, endMinute: 60, allDays: false, weekdays: [1], allDay: false }] };
+  assert.deepEqual(parseDispatchWindow(window), window);
+  assert.deepEqual(parseWorkflowState({ ...state, preference: { ...state.preference, dispatch_window: window } }, '1').preference.dispatch_window, window);
+  for (const patch of [{ mode: 'allow' }, { timeZoneIdentifier: 'Not/AZone' }, { intervals: Array(33).fill(window.intervals[0]) }, { intervals: [{ ...window.intervals[0], weekdays: [] }] }, { intervals: [{ ...window.intervals[0], weekdays: [1, 1] }] }, { intervals: [{ ...window.intervals[0], endMinute: 1380 }] }]) assert.throws(() => parseDispatchWindow({ ...window, ...patch }));
+  for (const mode of ['unrestricted', 'onlyWithin', 'exceptWithin']) assert.equal(parseDispatchWindow({ ...window, mode, intervals: [] }).mode, mode);
 });

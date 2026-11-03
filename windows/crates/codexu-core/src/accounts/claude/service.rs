@@ -36,6 +36,8 @@ struct Ticket {
     written: Target,
     lease: Box<dyn SwitchMaintenanceLease>,
     locks: MutationLocks,
+    swap_locks: cswap::SwapLocks,
+    swap_records: Vec<Record>,
     expires_at: i64,
 }
 pub struct ClaudeSubscriptionManager {
@@ -235,7 +237,8 @@ impl ClaudeSubscriptionManager {
                 };
                 ClaudeSubscriptionDto {
                     id: r.id.clone(),
-                    label: r.label.clone(),
+                    registration_pending: false,
+                    label: r.display_label().to_owned(),
                     platform: "claude".into(),
                     storage_kind: "managed",
                     login_state: if pending {
@@ -252,6 +255,8 @@ impl ClaudeSubscriptionManager {
                     can_switch: valid && gate && !recovery && self.runtime.available(),
                     switch_block_reason: if recovery {
                         Some("recovery_required")
+                    } else if let Some(error) = r.source_error {
+                        Some(error)
                     } else if pending {
                         Some("claude_reauthentication_required")
                     } else if !valid {
@@ -507,6 +512,9 @@ impl ClaudeSubscriptionManager {
             .find(|r| r.credential.identity.fingerprint() == fingerprint)
             .map(|r| r.id.clone());
         let id = if let Some(id) = existing {
+            if store.vault.record(&id)?.source.is_some() {
+                return Err(fail("claude_swap_reference_exists"));
+            }
             if let Some(pending) = store.vault.refresh.get(&id) {
                 let token = identity::oauth(&verified.bytes, false)?;
                 let refresh = token
@@ -553,8 +561,12 @@ impl ClaudeSubscriptionManager {
             store.vault.records.push(Record {
                 id: id.clone(),
                 label,
+                remark: None,
                 revision: 1,
                 credential: verified,
+                source: None,
+                source_snapshot: None,
+                source_error: None,
             });
             id
         };
@@ -580,7 +592,7 @@ impl ClaudeSubscriptionManager {
     }
     /// The pending record is durable before a rotating grant is consumed. A
     /// lost response never permits retrying that old grant on a later attempt.
-    fn verified_saved(&self, id: &str) -> AccountResult<Record> {
+    fn verified_saved(&self, id: &str, swap_locks: &cswap::SwapLocks) -> AccountResult<Record> {
         self.quota_cache.invalidate(id);
         let (record, pending) = {
             let store = self.store()?;
@@ -589,6 +601,7 @@ impl ClaudeSubscriptionManager {
                 store.vault.refresh.get(id).cloned(),
             )
         };
+        cswap::check(&self.paths, &record)?;
         let expired = identity::oauth(&record.credential.bytes, false).is_err();
         let mut bytes = record.credential.bytes.clone();
         if expired || pending.is_some() {
@@ -606,7 +619,9 @@ impl ClaudeSubscriptionManager {
                 };
                 {
                     let mut store = self.store()?;
-                    if store.vault.record(id)?.revision != record.revision {
+                    if store.vault.record(id)?.revision != record.revision
+                        || store.vault.record(id)?.source_snapshot != record.source_snapshot
+                    {
                         return Err(fail("account_changed"));
                     }
                     store.vault.refresh.insert(id.into(), pending.clone());
@@ -632,7 +647,9 @@ impl ClaudeSubscriptionManager {
                 store.vault.refresh.get(id).unwrap().clone()
             };
             if pending.identity != record.credential.identity.fingerprint()
-                || pending.slot_digest != identity::digest(&record.credential.bytes)
+                || (pending.slot_digest != identity::digest(&record.credential.bytes)
+                    && !(record.source.is_some()
+                        && pending.successor.as_ref() == Some(&record.credential.bytes)))
             {
                 return Err(fail("claude_reauthentication_required"));
             }
@@ -651,13 +668,19 @@ impl ClaudeSubscriptionManager {
             return Err(fail("claude_credentials_changed"));
         }
         let mut store = self.store()?;
-        if store.vault.record(id)?.revision != record.revision {
+        if store.vault.record(id)?.revision != record.revision
+            || store.vault.record(id)?.source_snapshot != record.source_snapshot
+        {
             return Err(fail("account_changed"));
         }
         if verified.bytes == record.credential.bytes {
             verified.generation = record.credential.generation;
         }
         let updated = store.vault.record_mut(id)?;
+        cswap::write_back(&self.paths, updated, &verified.bytes, swap_locks)?;
+        if updated.source.is_some() {
+            verified.generation = identity::digest(&verified.bytes)[..32].into();
+        }
         updated.credential = verified;
         updated.revision += 1;
         let result = updated.clone();
@@ -707,7 +730,35 @@ impl ClaudeSubscriptionManager {
         let lease = self.maintenance(id)?;
         let before = Target::read(&self.paths)?;
         before.validate()?;
+        let source_identity = identity::Identity::from_account(&before.account()?)?.fingerprint();
+        // Same order as claude-swap: consumption locks, its global lock, then
+        // the official CLI mutation locks. Keep these through confirmation.
+        let swap_locks = {
+            let store = self.store()?;
+            cswap::SwapLocks::acquire(
+                &self.paths,
+                store
+                    .vault
+                    .records
+                    .iter()
+                    .filter(|r| {
+                        r.id == id || r.credential.identity.fingerprint() == source_identity
+                    })
+                    .filter_map(|r| r.source.clone()),
+            )?
+        };
         let locks = MutationLocks::acquire(&self.paths, &before)?;
+        let source_record = {
+            let store = self.store()?;
+            store
+                .vault
+                .records
+                .iter()
+                .find(|r| r.credential.identity.fingerprint() == source_identity)
+                .cloned()
+                .ok_or_else(|| fail("claude_current_account_not_saved"))?
+        };
+        cswap::check(&self.paths, &source_record)?;
         let source = self
             .runtime
             .verify(
@@ -718,16 +769,10 @@ impl ClaudeSubscriptionManager {
                 &before.account()?,
             )?
             .0;
-        let source_id = {
-            let store = self.store()?;
-            store
-                .vault
-                .records
-                .iter()
-                .find(|r| r.credential.identity.fingerprint() == source.identity.fingerprint())
-                .map(|r| r.id.clone())
-                .ok_or_else(|| fail("claude_current_account_not_saved"))?
-        };
+        if source.identity.fingerprint() != source_record.credential.identity.fingerprint() {
+            return Err(fail("claude_identity_mismatch"));
+        }
+        let source_id = source_record.id.clone();
         if source_id == id {
             return Ok(PreparedSwitchDto {
                 account_id: id.into(),
@@ -737,7 +782,7 @@ impl ClaudeSubscriptionManager {
                 expires_at: None,
             });
         }
-        let record = self.verified_saved(id)?;
+        let record = self.verified_saved(id, &swap_locks)?;
         locks.verify()?;
         lease.recheck()?;
         self.runtime.require_system_idle()?;
@@ -751,7 +796,13 @@ impl ClaudeSubscriptionManager {
                 return Err(fail("claude_reauthentication_required"));
             }
             let current = store.vault.record_mut(&source_id)?;
+            if current.revision != source_record.revision
+                || current.source_snapshot != source_record.source_snapshot
+            {
+                return Err(fail("account_changed"));
+            }
             let mut source = source;
+            cswap::write_back(&self.paths, current, &source.bytes, &swap_locks)?;
             if current.credential.bytes == source.bytes {
                 source.generation = current.credential.generation.clone();
             }
@@ -761,6 +812,13 @@ impl ClaudeSubscriptionManager {
             store.save()?;
             store.vault.revision
         };
+        let swap_records = self
+            .store()?
+            .vault
+            .records
+            .into_iter()
+            .filter(|r| r.source.is_some() && (r.id == id || r.id == source_id))
+            .collect();
         let written = before.merged(&record.credential)?;
         let expires_at = now() + 30;
         let ticket = nonce()?;
@@ -778,6 +836,8 @@ impl ClaudeSubscriptionManager {
                     written,
                     lease,
                     locks,
+                    swap_locks,
+                    swap_records,
                     expires_at,
                 },
             );
@@ -821,10 +881,19 @@ impl ClaudeSubscriptionManager {
         if ticket.expires_at <= now() {
             return Err(fail("switch_ticket_expired"));
         }
+        let validate_sources = || -> AccountResult<()> {
+            ticket.swap_locks.verify()?;
+            cswap::check(&self.paths, &ticket.record)?;
+            for record in &ticket.swap_records {
+                cswap::check(&self.paths, record)?;
+            }
+            Ok(())
+        };
         let validate = || -> AccountResult<()> {
             self.accepting()?;
             ticket.lease.recheck()?;
             ticket.locks.verify()?;
+            validate_sources()?;
             self.runtime.require_system_idle()?;
             self.runtime.validate_environment()?;
             if Target::read(&self.paths)? != ticket.before {
@@ -866,6 +935,7 @@ impl ClaudeSubscriptionManager {
                 return Err(fail("target_changed"));
             }
             ticket.locks.verify()?;
+            validate_sources()?;
             ticket.lease.recheck()?;
             self.runtime.require_system_idle()?;
             self.accepting()?;
@@ -889,6 +959,7 @@ impl ClaudeSubscriptionManager {
                 return Err(fail("claude_identity_mismatch"));
             }
             ticket.locks.verify()?;
+            validate_sources()?;
             ticket.lease.recheck()?;
             self.runtime.require_system_idle()?;
             self.accepting()?;
@@ -1042,6 +1113,7 @@ impl ClaudeSubscriptionManager {
             }
             store.vault.record(id)?.clone()
         };
+        cswap::check(&self.paths, &record)?;
         *attempt = self.quota_cache.begin(quota_scope(&record));
         if let Some(retry) = self
             .store()?
@@ -1076,6 +1148,7 @@ impl ClaudeSubscriptionManager {
         }
         self.accepting()?;
         let response = self.runtime.usage(&record.credential.bytes)?;
+        cswap::check(&self.paths, &record)?;
         if Target::read(&self.paths)? != before
             || self.store()?.vault.record(id)?.revision != record.revision
         {
@@ -1177,6 +1250,9 @@ impl ClaudeSubscriptionManager {
 }
 #[path = "catalog.rs"]
 mod catalog;
+#[path = "cswap.rs"]
+pub(super) mod cswap;
+pub use cswap::ClaudeSwapCandidate;
 #[path = "open_scope.rs"]
 mod open_scope;
 pub use open_scope::ClaudeOpenScope;

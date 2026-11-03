@@ -213,7 +213,7 @@ pub(crate) struct PublicData {
 }
 impl PublicData {
     pub fn valid(&self, now: i64) -> bool {
-        self.completed.len() <= 4
+        self.completed.len() <= 5
             && self.completed.values().all(|l| l.valid(now))
             && self.forecast.valid(now)
             && self.checkpoint.as_ref().is_none_or(Checkpoint::valid)

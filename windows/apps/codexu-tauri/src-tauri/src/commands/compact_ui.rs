@@ -21,9 +21,10 @@ pub async fn get_compact_ui_state(
 pub async fn set_compact_ui_preferences(
     state: State<'_, CompactAppState>,
     patch: serde_json::Value,
+    expected_bubble: Option<serde_json::Value>,
 ) -> Result<CompactUiState, String> {
     let service = state.0.clone();
-    tauri::async_runtime::spawn_blocking(move || service.save(patch))
+    tauri::async_runtime::spawn_blocking(move || service.save(patch, expected_bubble))
         .await
         .map_err(|_| "compact_unavailable".to_owned())?
 }

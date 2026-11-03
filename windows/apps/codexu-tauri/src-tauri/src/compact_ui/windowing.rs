@@ -92,15 +92,18 @@ pub fn ensure(app: &AppHandle, surface: Surface) -> Result<(WebviewWindow, bool)
         .inner_size(420., 640.)
         .visible(false)
         .focused(false)
-        .focusable(surface == Surface::Popover)
+        .focusable(matches!(surface, Surface::Popover | Surface::BubbleEditor))
         .decorations(false)
         .transparent(true)
         .skip_taskbar(true)
         .resizable(false)
         .maximizable(false)
         .minimizable(false)
-        .always_on_top(surface != Surface::Popover)
-        .shadow(matches!(surface, Surface::Popover | Surface::EdgeCard))
+        .always_on_top(!matches!(surface, Surface::Popover | Surface::BubbleEditor))
+        .shadow(matches!(
+            surface,
+            Surface::Popover | Surface::EdgeCard | Surface::FloatingBubble | Surface::BubbleEditor
+        ))
         .build()
         .map_err(|_| "compact_window_unavailable")?;
         Ok((window, true))
@@ -171,7 +174,9 @@ pub fn set_visible(window: &WebviewWindow, visible: bool) -> Result<bool, &'stat
 
 fn show_without_activation(window: &WebviewWindow) -> Result<(), &'static str> {
     #[cfg(windows)]
-    if Surface::from_label(window.label()).is_some_and(|surface| surface != Surface::Popover) {
+    if Surface::from_label(window.label())
+        .is_some_and(|surface| !matches!(surface, Surface::Popover | Surface::BubbleEditor))
+    {
         #[link(name = "user32")]
         extern "system" {
             fn ShowWindow(window: *mut std::ffi::c_void, command: i32) -> i32;
