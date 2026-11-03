@@ -191,6 +191,14 @@ jobs:
         installer: [msi, nsis]
     steps:
       - uses: actions/checkout@v4
+      - name: Stage pinned Companion resources for MSI verification
+        if: matrix.installer == 'msi'
+        shell: pwsh
+        run: |
+          python -B .\windows\companion\prepare.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -B .\windows\companion\prepare.py --verify-only
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Download this run's new AiGoodBro installers
         uses: actions/download-artifact@v4
         with:
