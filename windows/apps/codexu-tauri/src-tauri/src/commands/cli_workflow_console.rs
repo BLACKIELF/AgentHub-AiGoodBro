@@ -855,11 +855,26 @@ mod native {
                     .child
                     .as_ref()
                     .ok_or_else(|| io::Error::other("fake CLI child handle is missing"))?;
-                let child_signaled = match unsafe { WaitForSingleObject(child.raw(), 0) } {
-                    0 => true,
-                    258 => false,
-                    _ => return Err(io::Error::last_os_error()),
+                let child_wait_started = Instant::now();
+                let child_wait_initial = unsafe { WaitForSingleObject(child.raw(), 0) };
+                let (child_wait_final, child_wait_error) = match child_wait_initial {
+                    0 => (0, None),
+                    258 => {
+                        // Observe the exact child process after Job emptiness; keep the
+                        // same SYNCHRONIZE handle and require a signaled result.
+                        let final_status = unsafe { WaitForSingleObject(child.raw(), 2_000) };
+                        let error = if final_status == u32::MAX {
+                            Some(io::Error::last_os_error())
+                        } else {
+                            None
+                        };
+                        (final_status, error)
+                    }
+                    u32::MAX => (child_wait_initial, Some(io::Error::last_os_error())),
+                    other => (other, None),
                 };
+                let wait_elapsed_ms = child_wait_started.elapsed().as_millis();
+                let child_signaled = child_wait_final == 0;
                 let guard_held = !writable_open_succeeds(&self.executable);
                 {
                     let mut observed = self
@@ -870,9 +885,24 @@ mod native {
                     observed.child_signaled_after_stop = child_signaled;
                     observed.guard_held_after_stop = guard_held;
                 }
-                if !guard_held_before || !empty || count != 0 || !child_signaled || !guard_held {
+                let checks_passed =
+                    guard_held_before && empty && count == 0 && child_signaled && guard_held;
+                if child_wait_initial == 258 || !checks_passed || child_wait_error.is_some() {
+                    eprintln!(
+                        "fake CLI owned Job stop diagnostics: guard_before={guard_held_before} root_signaled=true job_empty={empty} job_active_count={count} child_wait_initial=0x{child_wait_initial:08x} child_wait_final=0x{child_wait_final:08x} wait_elapsed_ms={wait_elapsed_ms} guard_after={guard_held} wait_error={child_wait_error:?}"
+                    );
+                }
+                if let Some(error) = child_wait_error {
+                    return Err(error);
+                }
+                if child_wait_final != 0 {
+                    return Err(io::Error::other(format!(
+                        "known child did not signal after Job cleanup (wait code=0x{child_wait_final:08x})"
+                    )));
+                }
+                if !checks_passed {
                     return Err(io::Error::other(
-                        "stop did not confirm an empty Job, a signaled known child, or preserve the executable guard",
+                        "stop did not confirm an empty Job and preserve the executable guard",
                     ));
                 }
                 Ok(())

@@ -130,7 +130,9 @@ class Handler(BaseHTTPRequestHandler):
         return self.respond(404, {'error':'not_found'})
 
 server = Server(('127.0.0.1', 0))
-Path(ready).write_text(json.dumps({'port':server.server_port}), encoding='ascii')
+ready_tmp = ready + '.tmp'
+Path(ready_tmp).write_text(json.dumps({'port':server.server_port}), encoding='ascii')
+Path(ready_tmp).replace(ready)
 server.serve_forever(poll_interval=0.02)
 "#;
 
