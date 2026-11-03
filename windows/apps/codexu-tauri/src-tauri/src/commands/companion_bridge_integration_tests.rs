@@ -2789,8 +2789,8 @@ fn run_windows_python_receiver_e2e() {
         .join("windows/companion/next-dispatch.py")
         .canonicalize()
         .unwrap();
-    let install = root
-        .join("synthetic-home")
+    let synthetic_home = prepare_private_root(&root.join("synthetic-home")).unwrap();
+    let install = synthetic_home
         .join(".codex")
         .join("skills")
         .join("multi-agent-management");
