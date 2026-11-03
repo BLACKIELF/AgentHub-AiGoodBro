@@ -5,6 +5,46 @@ const FILE: &str = "companion-requests-v1.json";
 const MAX_BYTES: usize = 4 * 1024 * 1024;
 const MAX_ENTRIES: usize = 4096;
 
+fn debug_journal_storage_error(
+    stage: &str,
+    substage: Option<&str>,
+    error: &crate::accounts::AccountError,
+) {
+    #[cfg(debug_assertions)]
+    {
+        use std::io::Write;
+        let mut stderr = std::io::stderr().lock();
+        if let Some(substage) = substage {
+            let _ = writeln!(
+                stderr,
+                "AIGOODBRO_COMPANION_JOURNAL stage={stage}.{substage} account_code={}",
+                error.code
+            );
+        } else {
+            let _ = writeln!(
+                stderr,
+                "AIGOODBRO_COMPANION_JOURNAL stage={stage} account_code={}",
+                error.code
+            );
+        }
+    }
+    #[cfg(not(debug_assertions))]
+    let _ = (stage, substage, error);
+}
+
+fn debug_journal_mismatch(stage: &str, substage: &str) {
+    #[cfg(debug_assertions)]
+    {
+        use std::io::Write;
+        let _ = writeln!(
+            std::io::stderr().lock(),
+            "AIGOODBRO_COMPANION_JOURNAL stage={stage}.{substage} result=mismatch"
+        );
+    }
+    #[cfg(not(debug_assertions))]
+    let _ = (stage, substage);
+}
+
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct Binding {
@@ -79,7 +119,10 @@ impl Entry {
 }
 impl Journal {
     pub fn new(root: PathBuf) -> Result<Self> {
-        storage::ensure_no_links(&root).map_err(|_| fail("companion_storage_unavailable"))?;
+        storage::ensure_no_links(&root).map_err(|error| {
+            debug_journal_storage_error("journal.new.ensure_root", None, &error);
+            fail("companion_storage_unavailable")
+        })?;
         Ok(Self {
             root,
             #[cfg(test)]
@@ -88,9 +131,13 @@ impl Journal {
             fail_write: std::sync::atomic::AtomicUsize::new(usize::MAX),
         })
     }
-    fn read(&self) -> Result<(Document, Option<Vec<u8>>)> {
-        let prior = storage::read_bound_optional(&self.root.join(FILE), MAX_BYTES, true)
-            .map_err(|_| fail("companion_storage_unavailable"))?;
+    fn read(&self, stage: &'static str) -> Result<(Document, Option<Vec<u8>>)> {
+        let prior = storage::read_bound_optional(&self.root.join(FILE), MAX_BYTES, true).map_err(
+            |error| {
+                debug_journal_storage_error(stage, None, &error);
+                fail("companion_storage_unavailable")
+            },
+        )?;
         let doc = match &prior {
             None => Document {
                 schema: 1,
@@ -107,7 +154,7 @@ impl Journal {
         }
         Ok((doc, prior))
     }
-    fn save(&self, d: &Document, prior: &Option<Vec<u8>>) -> Result<()> {
+    fn save(&self, stage: &'static str, d: &Document, prior: &Option<Vec<u8>>) -> Result<()> {
         #[cfg(test)]
         {
             use std::sync::atomic::Ordering;
@@ -117,9 +164,10 @@ impl Journal {
             }
         }
         let path = self.root.join(FILE);
-        if storage::read_bound_optional(&path, MAX_BYTES, true)
-            .map_err(|_| fail("companion_storage_unavailable"))?
-            != *prior
+        if storage::read_bound_optional(&path, MAX_BYTES, true).map_err(|error| {
+            debug_journal_storage_error(stage, Some("prior_read"), &error);
+            fail("companion_storage_unavailable")
+        })? != *prior
         {
             return Err(fail("companion_journal_changed"));
         }
@@ -127,16 +175,20 @@ impl Journal {
         if bytes.len() > MAX_BYTES {
             return Err(fail("companion_journal_full"));
         }
-        storage::atomic_write(&path, &bytes).map_err(|_| fail("companion_storage_unavailable"))?;
+        storage::atomic_write(&path, &bytes).map_err(|error| {
+            debug_journal_storage_error(stage, Some("atomic_write"), &error);
+            fail("companion_storage_unavailable")
+        })?;
         #[cfg(unix)]
         std::fs::File::open(&self.root)
             .and_then(|f| f.sync_all())
             .map_err(|_| fail("companion_storage_unavailable"))?;
-        if storage::read_bound_optional(&path, MAX_BYTES, true)
-            .map_err(|_| fail("companion_storage_unavailable"))?
-            .as_deref()
-            != Some(bytes.as_slice())
-        {
+        let readback = storage::read_bound_optional(&path, MAX_BYTES, true).map_err(|error| {
+            debug_journal_storage_error(stage, Some("post_read"), &error);
+            fail("companion_storage_unavailable")
+        })?;
+        if readback.as_deref() != Some(bytes.as_slice()) {
+            debug_journal_mismatch(stage, "post_compare");
             return Err(fail("companion_storage_unavailable"));
         }
         Ok(())
@@ -145,12 +197,12 @@ impl Journal {
         if !digest(id) {
             return Err(fail("companion_invalid_request"));
         }
-        Ok(self.read()?.0.entries.get(id).cloned())
+        Ok(self.read("journal.get.read")?.0.entries.get(id).cloned())
     }
     pub fn claim(&self, id: &str, entry: &Entry) -> Result<bool> {
         let _lock =
             storage::StoreLock::acquire(&self.root).map_err(|_| fail("companion_journal_busy"))?;
-        let (mut d, prior) = self.read()?;
+        let (mut d, prior) = self.read("journal.claim.read")?;
         if let Some(existing) = d.entries.get(id) {
             if existing.binding != entry.binding {
                 return Err(fail("companion_request_changed"));
@@ -164,13 +216,13 @@ impl Journal {
             return Err(fail("companion_journal_full"));
         }
         d.entries.insert(id.into(), entry.clone());
-        self.save(&d, &prior)?;
+        self.save("journal.claim.save", &d, &prior)?;
         Ok(true)
     }
     pub fn advance(&self, id: &str, old: &Entry, phase: Phase) -> Result<Entry> {
         let _lock =
             storage::StoreLock::acquire(&self.root).map_err(|_| fail("companion_journal_busy"))?;
-        let (mut d, prior) = self.read()?;
+        let (mut d, prior) = self.read("journal.advance.read")?;
         if d.entries.get(id) != Some(old) {
             return Err(fail("companion_journal_changed"));
         }
@@ -188,7 +240,7 @@ impl Journal {
             return Err(fail("companion_journal_invalid"));
         }
         d.entries.insert(id.into(), next.clone());
-        self.save(&d, &prior)?;
+        self.save("journal.advance.save", &d, &prior)?;
         Ok(next)
     }
 }

@@ -1,4 +1,4 @@
-use super::{fail, identity::StoredCredential, AccountResult};
+use super::{fail, identity::StoredCredential, AccountError, AccountResult};
 use serde::{Deserialize, Serialize};
 #[cfg(not(windows))]
 use std::fs::OpenOptions;
@@ -11,6 +11,47 @@ use std::{
 const MAX_VAULT: usize = 16 * 1024 * 1024;
 pub(crate) const VAULT_CONTEXT: &str = "AiGoodBro.Next.Windows.accounts.v1";
 pub(crate) const JOURNAL_CONTEXT: &str = "AiGoodBro.Next.Windows.account-switch.v1";
+
+fn debug_storage_account_error(stage: &str, substage: &str, error: &AccountError) {
+    #[cfg(debug_assertions)]
+    {
+        use std::io::Write;
+        let _ = writeln!(
+            std::io::stderr().lock(),
+            "AIGOODBRO_ACCOUNT_STORAGE stage={stage}.{substage} account_code={}",
+            error.code
+        );
+    }
+    #[cfg(not(debug_assertions))]
+    let _ = (stage, substage, error);
+}
+
+fn debug_storage_os_error(stage: &str, substage: &str, error: &std::io::Error) {
+    #[cfg(debug_assertions)]
+    {
+        use std::io::Write;
+        let _ = writeln!(
+            std::io::stderr().lock(),
+            "AIGOODBRO_ACCOUNT_STORAGE stage={stage}.{substage} raw_os_error={:?}",
+            error.raw_os_error()
+        );
+    }
+    #[cfg(not(debug_assertions))]
+    let _ = (stage, substage, error);
+}
+
+fn debug_storage_windows_error(stage: &str, substage: &str, code: i32) {
+    #[cfg(debug_assertions)]
+    {
+        use std::io::Write;
+        let _ = writeln!(
+            std::io::stderr().lock(),
+            "AIGOODBRO_ACCOUNT_STORAGE stage={stage}.{substage} windows_error={code}"
+        );
+    }
+    #[cfg(not(debug_assertions))]
+    let _ = (stage, substage, code);
+}
 
 pub trait SecretProtector: Send + Sync {
     fn seal(&self, context: &str, plaintext: &[u8]) -> AccountResult<Vec<u8>>;
@@ -416,12 +457,23 @@ fn read_bound_optional_checked(
     private_owner: bool,
     require_owner: bool,
 ) -> AccountResult<Option<Vec<u8>>> {
-    ensure_no_links(path)?;
+    ensure_no_links(path).map_err(|error| {
+        debug_storage_account_error("read_bound_optional", "ensure_path", &error);
+        error
+    })?;
     match std::fs::symlink_metadata(path) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(_) => return Err(fail("account_storage_unavailable")),
+        Err(error) => {
+            debug_storage_os_error("read_bound_optional", "target_metadata", &error);
+            return Err(fail("account_storage_unavailable"));
+        }
         Ok(m) if !m.is_file() || m.len() > maximum as u64 => {
-            return Err(fail("account_storage_invalid"))
+            debug_storage_account_error(
+                "read_bound_optional",
+                "target_validation",
+                &fail("account_storage_invalid"),
+            );
+            return Err(fail("account_storage_invalid"));
         }
         Ok(_) => (),
     }
@@ -429,11 +481,18 @@ fn read_bound_optional_checked(
         file: &File,
         private_owner: bool,
         require_owner: bool,
+        stage: &'static str,
     ) -> AccountResult<(u64, u64, u64, Option<std::time::SystemTime>)> {
-        let meta = file
-            .metadata()
-            .map_err(|_| fail("account_storage_unavailable"))?;
+        let meta = file.metadata().map_err(|error| {
+            debug_storage_os_error(stage, "file_metadata", &error);
+            fail("account_storage_unavailable")
+        })?;
         if !meta.is_file() {
+            debug_storage_account_error(
+                stage,
+                "not_regular_file",
+                &fail("account_storage_invalid"),
+            );
             return Err(fail("account_storage_invalid"));
         }
         #[cfg(unix)]
@@ -459,12 +518,23 @@ fn read_bound_optional_checked(
             };
             let _ = private_owner;
             if require_owner {
-                super::native::private::check_owner_file(file)?;
+                super::native::private::check_owner_file(file).map_err(|error| {
+                    debug_storage_account_error(stage, "owner_check", &error);
+                    error
+                })?;
             }
             let mut info = BY_HANDLE_FILE_INFORMATION::default();
             unsafe { GetFileInformationByHandle(HANDLE(file.as_raw_handle()), &mut info) }
-                .map_err(|_| fail("account_storage_unavailable"))?;
+                .map_err(|error| {
+                    debug_storage_windows_error(stage, "file_information", error.code().0);
+                    fail("account_storage_unavailable")
+                })?;
             if info.nNumberOfLinks != 1 || info.dwFileAttributes & 0x400 != 0 {
+                debug_storage_account_error(
+                    stage,
+                    "link_or_reparse_validation",
+                    &fail("account_storage_invalid"),
+                );
                 return Err(fail("account_storage_invalid"));
             }
             return Ok((
@@ -487,24 +557,52 @@ fn read_bound_optional_checked(
         use std::os::windows::fs::OpenOptionsExt;
         options.share_mode(1 | 2).custom_flags(0x0020_0000);
     }
-    let mut file = options
-        .open(path)
-        .map_err(|_| fail("account_storage_unavailable"))?;
-    let before = identity(&file, private_owner, require_owner)?;
+    let mut file = options.open(path).map_err(|error| {
+        debug_storage_os_error("read_bound_optional", "open_initial", &error);
+        fail("account_storage_unavailable")
+    })?;
+    let before = identity(
+        &file,
+        private_owner,
+        require_owner,
+        "read_bound_optional.before",
+    )?;
     let mut bytes = Vec::new();
     (&mut file)
         .take(maximum as u64 + 1)
         .read_to_end(&mut bytes)
-        .map_err(|_| fail("account_storage_unavailable"))?;
-    ensure_no_links(path)?;
-    let current = options
-        .open(path)
-        .map_err(|_| fail("account_storage_unavailable"))?;
+        .map_err(|error| {
+            debug_storage_os_error("read_bound_optional", "read_contents", &error);
+            fail("account_storage_unavailable")
+        })?;
+    ensure_no_links(path).map_err(|error| {
+        debug_storage_account_error("read_bound_optional", "recheck_path", &error);
+        error
+    })?;
+    let current = options.open(path).map_err(|error| {
+        debug_storage_os_error("read_bound_optional", "open_recheck", &error);
+        fail("account_storage_unavailable")
+    })?;
     if bytes.len() > maximum
         || before.2 != bytes.len() as u64
-        || identity(&file, private_owner, require_owner)? != before
-        || identity(&current, private_owner, require_owner)? != before
+        || identity(
+            &file,
+            private_owner,
+            require_owner,
+            "read_bound_optional.identity_before",
+        )? != before
+        || identity(
+            &current,
+            private_owner,
+            require_owner,
+            "read_bound_optional.identity_recheck",
+        )? != before
     {
+        debug_storage_account_error(
+            "read_bound_optional",
+            "identity_or_length_mismatch",
+            &fail("account_storage_invalid"),
+        );
         return Err(fail("account_storage_invalid"));
     }
     Ok(Some(bytes))
@@ -606,7 +704,10 @@ pub(crate) fn ensure_no_links(path: &Path) -> AccountResult<()> {
                 }
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(_) => return Err(fail("account_storage_unavailable")),
+            Err(error) => {
+                debug_storage_os_error("ensure_no_links", "symlink_metadata", &error);
+                return Err(fail("account_storage_unavailable"));
+            }
         }
     }
     Ok(())

@@ -1,7 +1,7 @@
 //! Owner-private creation. An elevated process's default TokenOwner may be the
 //! Administrators group; only its actual TokenUser is our storage identity.
 //! Existing foreign-owned objects are rejected, never adopted or repaired.
-use super::{fail, AccountResult};
+use super::{fail, AccountError, AccountResult};
 use std::{
     ffi::c_void,
     fs::File,
@@ -149,6 +149,66 @@ impl Drop for Token {
 fn error() -> crate::accounts::AccountError {
     fail("private_storage_unavailable")
 }
+fn debug_private_account_error(stage: &str, error: AccountError) -> AccountError {
+    #[cfg(debug_assertions)]
+    {
+        use std::io::Write;
+        let _ = writeln!(
+            std::io::stderr().lock(),
+            "AIGOODBRO_PRIVATE_STORAGE stage={stage} account_code={}",
+            error.code
+        );
+    }
+    #[cfg(not(debug_assertions))]
+    let _ = stage;
+    error
+}
+fn debug_private_io_error(stage: &str, error: &std::io::Error) {
+    #[cfg(debug_assertions)]
+    {
+        use std::io::Write;
+        let _ = writeln!(
+            std::io::stderr().lock(),
+            "AIGOODBRO_PRIVATE_STORAGE stage={stage} raw_os_error={:?}",
+            error.raw_os_error()
+        );
+    }
+    #[cfg(not(debug_assertions))]
+    let _ = (stage, error);
+}
+fn debug_private_status(stage: &str, ntstatus: i32) {
+    #[cfg(debug_assertions)]
+    {
+        use std::io::Write;
+        let _ = writeln!(
+            std::io::stderr().lock(),
+            "AIGOODBRO_PRIVATE_STORAGE stage={stage} ntstatus={ntstatus}"
+        );
+    }
+    #[cfg(not(debug_assertions))]
+    let _ = (stage, ntstatus);
+}
+fn debug_private_win32_status(stage: &str, status: u32) {
+    #[cfg(debug_assertions)]
+    {
+        use std::io::Write;
+        let _ = writeln!(
+            std::io::stderr().lock(),
+            "AIGOODBRO_PRIVATE_STORAGE stage={stage} win32_status={status}"
+        );
+    }
+    #[cfg(not(debug_assertions))]
+    let _ = (stage, status);
+}
+fn debug_private_last_error(stage: &str) {
+    #[cfg(debug_assertions)]
+    {
+        let error = std::io::Error::last_os_error();
+        debug_private_io_error(stage, &error);
+    }
+    #[cfg(not(debug_assertions))]
+    let _ = stage;
+}
 fn wide(path: &Path) -> Vec<u16> {
     path.as_os_str().encode_wide().chain(Some(0)).collect()
 }
@@ -162,6 +222,7 @@ impl PrivateDescriptor {
     fn current() -> AccountResult<Self> {
         let mut token = std::ptr::null_mut();
         if unsafe { OpenProcessToken(GetCurrentProcess(), 8, &mut token) } == 0 {
+            debug_private_last_error("descriptor.open_process_token");
             return Err(error());
         }
         let token = Token(token);
@@ -170,6 +231,7 @@ impl PrivateDescriptor {
             GetTokenInformation(token.0, 1, std::ptr::null_mut(), 0, &mut needed);
         }
         if needed < std::mem::size_of::<usize>() as u32 || needed > 65536 {
+            debug_private_account_error("descriptor.token_user_size", error());
             return Err(error());
         }
         // TOKEN_USER starts with SID_AND_ATTRIBUTES; u64 storage is aligned on
@@ -178,14 +240,17 @@ impl PrivateDescriptor {
         if unsafe { GetTokenInformation(token.0, 1, user.as_mut_ptr().cast(), needed, &mut needed) }
             == 0
         {
+            debug_private_last_error("descriptor.read_token_user");
             return Err(error());
         }
         let sid = unsafe { *(user.as_ptr().cast::<*const c_void>()) };
         if sid.is_null() {
+            debug_private_account_error("descriptor.null_token_user_sid", error());
             return Err(error());
         }
         let mut text = std::ptr::null_mut();
         if unsafe { ConvertSidToStringSidW(sid, &mut text) } == 0 {
+            debug_private_last_error("descriptor.sid_to_string");
             return Err(error());
         }
         let allocation = Local(text.cast());
@@ -194,10 +259,11 @@ impl PrivateDescriptor {
             length += 1;
         }
         if length == 184 {
+            debug_private_account_error("descriptor.sid_string_length", error());
             return Err(error());
         }
         let user_text = String::from_utf16(unsafe { std::slice::from_raw_parts(text, length) })
-            .map_err(|_| error())?;
+            .map_err(|_| debug_private_account_error("descriptor.sid_string_decode", error()))?;
         drop(allocation);
         let sddl = format!("O:{user_text}D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;{user_text})\0")
             .encode_utf16()
@@ -212,6 +278,7 @@ impl PrivateDescriptor {
             )
         } == 0
         {
+            debug_private_last_error("descriptor.security_descriptor");
             return Err(error());
         }
         Ok(Self {
@@ -230,7 +297,7 @@ impl PrivateDescriptor {
     fn require_owner(&self, file: &File) -> AccountResult<()> {
         let mut owner = std::ptr::null_mut();
         let mut descriptor = std::ptr::null_mut();
-        if unsafe {
+        let status = unsafe {
             GetSecurityInfo(
                 file.as_raw_handle().cast(),
                 1,
@@ -241,12 +308,17 @@ impl PrivateDescriptor {
                 std::ptr::null_mut(),
                 &mut descriptor,
             )
-        } != 0
-        {
+        };
+        if status != 0 {
+            debug_private_win32_status("owner.get_security_info", status);
             return Err(error());
         }
         let _descriptor = Local(descriptor);
         if owner.is_null() || unsafe { EqualSid(owner, self.sid) } == 0 {
+            debug_private_account_error(
+                "owner.sid_mismatch",
+                fail("private_storage_owner_rejected"),
+            );
             return Err(fail("private_storage_owner_rejected"));
         }
         Ok(())
@@ -418,18 +490,28 @@ fn existing_target_owner(
     parent: &File,
     name: &[u16],
     descriptor: &PrivateDescriptor,
+    stage: &'static str,
 ) -> AccountResult<()> {
     match relative_file(parent, name, 0x0012_0080, 1, std::ptr::null_mut()) {
         Ok(file) => {
             use std::os::windows::fs::MetadataExt;
-            let metadata = file.metadata().map_err(|_| error())?;
+            let metadata = file.metadata().map_err(|os_error| {
+                debug_private_io_error(stage, &os_error);
+                error()
+            })?;
             if !metadata.is_file() || metadata.file_attributes() & 0x400 != 0 {
+                debug_private_account_error(stage, fail("account_path_linked"));
                 return Err(fail("account_path_linked"));
             }
-            descriptor.require_owner(&file)
+            descriptor
+                .require_owner(&file)
+                .map_err(|account_error| debug_private_account_error(stage, account_error))
         }
         Err(status) if status as u32 == 0xc000_0034 => Ok(()), // exact name not found; no adoption
-        Err(_) => Err(error()),
+        Err(status) => {
+            debug_private_status(stage, status);
+            Err(error())
+        }
     }
 }
 struct TemporaryFile {
@@ -467,43 +549,74 @@ fn atomic_write_inner(
     after_pin: impl FnOnce(&File),
 ) -> AccountResult<()> {
     use std::io::Write;
-    super::storage::ensure_no_links(path)?;
-    let parent_path = path.parent().ok_or_else(|| fail("account_paths_invalid"))?;
+    super::storage::ensure_no_links(path).map_err(|account_error| {
+        debug_private_account_error("atomic.ensure_path", account_error)
+    })?;
+    let parent_path = path.parent().ok_or_else(|| {
+        debug_private_account_error("atomic.parent_path", fail("account_paths_invalid"))
+    })?;
     // No FILE_SHARE_DELETE: the immediate parent cannot be renamed/replaced
     // while this transaction is active. Creation AND rename are relative to
     // this held directory, so renaming an ancestor cannot retarget the write.
     let parent =
-        opened(parent_path, 0x8012_0022, 1 | 2, std::ptr::null(), 3).map_err(|_| error())?;
+        opened(parent_path, 0x8012_0022, 1 | 2, std::ptr::null(), 3).map_err(|os_error| {
+            debug_private_io_error("atomic.open_parent", &os_error);
+            error()
+        })?;
     use std::os::windows::fs::MetadataExt;
-    let metadata = parent.metadata().map_err(|_| error())?;
+    let metadata = parent.metadata().map_err(|os_error| {
+        debug_private_io_error("atomic.parent_metadata", &os_error);
+        error()
+    })?;
     if !metadata.is_dir() || metadata.file_attributes() & 0x400 != 0 {
+        debug_private_account_error("atomic.parent_validation", fail("account_path_linked"));
         return Err(fail("account_path_linked"));
     }
-    let descriptor = PrivateDescriptor::current()?;
-    descriptor.require_owner(&parent)?;
-    let target = leaf(
-        path.file_name()
-            .ok_or_else(|| fail("account_paths_invalid"))?,
-    )?;
-    existing_target_owner(&parent, &target, &descriptor)?;
+    let descriptor = PrivateDescriptor::current().map_err(|account_error| {
+        debug_private_account_error("atomic.current_descriptor", account_error)
+    })?;
+    descriptor.require_owner(&parent).map_err(|account_error| {
+        debug_private_account_error("atomic.parent_owner", account_error)
+    })?;
+    let target = leaf(path.file_name().ok_or_else(|| {
+        debug_private_account_error("atomic.target_name", fail("account_paths_invalid"))
+    })?)
+    .map_err(|account_error| debug_private_account_error("atomic.target_name", account_error))?;
+    existing_target_owner(&parent, &target, &descriptor, "atomic.target_before")?;
     after_pin(&parent);
-    let name = format!(".aigoodbro-{}.tmp", crate::accounts::nonce()?);
-    let name = leaf(std::ffi::OsStr::new(&name))?;
-    let file = relative_file(&parent, &name, 0xc017_0000, 2, descriptor.descriptor.0)
-        .map_err(|_| error())?;
+    let nonce = crate::accounts::nonce().map_err(|account_error| {
+        debug_private_account_error("atomic.temporary_nonce", account_error)
+    })?;
+    let name = format!(".aigoodbro-{nonce}.tmp");
+    let name = leaf(std::ffi::OsStr::new(&name)).map_err(|account_error| {
+        debug_private_account_error("atomic.temporary_name", account_error)
+    })?;
+    let file = relative_file(&parent, &name, 0xc017_0000, 2, descriptor.descriptor.0).map_err(
+        |status| {
+            debug_private_status("atomic.create_temporary", status);
+            error()
+        },
+    )?;
     let mut temporary = TemporaryFile {
         file,
         committed: false,
     };
-    descriptor.require_owner(&temporary.file)?;
+    descriptor
+        .require_owner(&temporary.file)
+        .map_err(|account_error| {
+            debug_private_account_error("atomic.temporary_owner", account_error)
+        })?;
     temporary
         .file
         .write_all(bytes)
         .and_then(|_| temporary.file.sync_all())
-        .map_err(|_| fail("account_save_failed"))?;
+        .map_err(|os_error| {
+            debug_private_io_error("atomic.write_or_flush", &os_error);
+            fail("account_save_failed")
+        })?;
     // The read is also anchored. A foreign file that appeared since the first
     // check remains untouched; it cannot be made current-user owned here.
-    existing_target_owner(&parent, &target, &descriptor)?;
+    existing_target_owner(&parent, &target, &descriptor, "atomic.target_after_write")?;
     let offset = std::mem::offset_of!(RenameInfo, name);
     let size = (offset + target.len() * 2).max(std::mem::size_of::<RenameInfo>());
     let mut data = vec![0u64; size.div_ceil(8)];
@@ -522,7 +635,7 @@ fn atomic_write_inner(
         status: 0,
         information: 0,
     };
-    if unsafe {
+    let status = unsafe {
         NtSetInformationFile(
             temporary.file.as_raw_handle().cast(),
             &mut status,
@@ -530,12 +643,15 @@ fn atomic_write_inner(
             size as u32,
             10,
         )
-    } != 0
-    {
+    };
+    if status != 0 {
+        debug_private_status("atomic.rename", status);
         return Err(fail("account_save_failed"));
     }
     temporary.committed = true;
-    descriptor.require_owner(&temporary.file)
+    descriptor
+        .require_owner(&temporary.file)
+        .map_err(|account_error| debug_private_account_error("atomic.renamed_owner", account_error))
 }
 
 #[cfg(test)]
